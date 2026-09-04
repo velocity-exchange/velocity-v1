@@ -9,9 +9,9 @@ use {
         instructions::constraints::perp_market_valid,
         load_mut, msg,
         state::{
-            clob_crank::{CrankCostUnitsV0, CrankPaymentsV0},
+            clob_crank::{ClobCrankConditionsV0, CrankCostUnitsV0, CrankPaymentsV0},
             perp_market::PerpMarket,
-            prop_amm::QuoterSlabExt,
+            prop_amm::{ClobCrankBlockV0, ClobMarket, QuoterSlabExt, QuoterSlabV0, QuoterV0},
             state::State,
         },
         validate,
@@ -119,31 +119,12 @@ pub fn handle_update_perp_market_clob_quoter(
     let perp_market = &mut load_mut!(ctx.accounts.perp_market)?;
     msg!("perp market {}", perp_market.market_index);
 
-    // Binds the slab's book slot to this market and to the passed book
-    // account; the two identity checks below are the ones it does not run.
-    let clob = crate::state::prop_amm::ClobMarket::from_slab(
+    let (clob, clob_program) = bind_book_slot(
         &ctx.accounts.quoter_slab,
-        perp_market.market_index,
+        &ctx.accounts.quoter,
         &ctx.accounts.clob_market,
         &ctx.accounts.clob_program,
-    )?;
-    let clob_program = {
-        let book_slot = ctx
-            .accounts
-            .quoter_slab
-            .clob_slot(perp_market.market_index)?;
-        validate!(
-            book_slot.entry == ctx.accounts.quoter.key(),
-            ErrorCode::DefaultError,
-            "the slab's book slot holds entry {}, not the passed one",
-            book_slot.entry
-        )?;
-        book_slot.config.program_id
-    };
-    validate!(
-        clob_program == ctx.accounts.clob_program.key(),
-        ErrorCode::DefaultError,
-        "clob program does not match the quoter entry"
+        perp_market.market_index,
     )?;
     let keys = crate::instructions::ClobCrankConditionKeys {
         crank_conditions: ctx.accounts.crank_conditions.key(),
@@ -171,74 +152,12 @@ pub fn handle_update_perp_market_clob_quoter(
         "min_cross_surplus must cover what the reservoir pays for a cross"
     )?;
 
-    // The book's own floor on a resting order has to sit at or under the
-    // market's. A fill unwinds a culled remainder by releasing its base from
-    // the maker's open-order aggregate, and the size of that release is the
-    // book's word — bounded on the fill path by the market's minimum, which is
-    // only a bound at all while the book cannot cull something larger.
-    {
-        let rules = clob.reader().order_rules()?;
-        // A market with no minimum of its own has nothing to bound against, and
-        // nothing to bound: the book's cull fires on a remainder under *its*
-        // minimum, and releasing that from an aggregate the market never
-        // reserved against is a no-op.
-        validate!(
-            perp_market.market_stats.min_order_size == 0
-                || rules.min_order_size <= perp_market.market_stats.min_order_size,
-            ErrorCode::DefaultError,
-            "book minimum order size {} is above the market's {}",
-            rules.min_order_size,
-            perp_market.market_stats.min_order_size
-        )?;
-        // The book's place authority is its trust root: it settles for whoever
-        // it names as a maker, and velocity signs its CPIs as this key. Pin it
-        // to the market's quoter slab PDA — the one identity velocity signs
-        // every external quoter CPI as — so a book whose place authority is a
-        // stranger cannot be attached and, through it, forge orders for any
-        // loaded user. place_authority is immutable on the book, so a book that
-        // passes here stays pinned for the life of the attachment.
-        validate!(
-            rules.place_authority == ctx.accounts.quoter_slab.key().to_bytes(),
-            ErrorCode::DefaultError,
-            "book place authority is not the market's quoter slab"
-        )?;
-        // The book's grid must match the market's. A remainder aligned to the
-        // market can then always rest; an off-tick or off-step remainder would
-        // revert the whole fill that carried it.
-        validate!(
-            rules.tick_size == perp_market.order_tick_size,
-            ErrorCode::DefaultError,
-            "book tick {} does not match the market tick {}",
-            rules.tick_size,
-            perp_market.order_tick_size
-        )?;
-        validate!(
-            rules.step_size == perp_market.order_step_size,
-            ErrorCode::DefaultError,
-            "book step {} does not match the market step {}",
-            rules.step_size,
-            perp_market.order_step_size
-        )?;
-        // Mirror the placement rules onto the book's slot (the copy the
-        // take gate, the route's maker-priority skip and the remainder rest
-        // read instead of CPI'ing `order_rules_v0` per fill) and onto the
-        // staging entry, so a later re-approval copies them forward. The
-        // attach is the supported way to change an attached book's rules, so
-        // this write is where the mirror stays current.
-        {
-            let mut slots = ctx.accounts.quoter_slab.slots_mut()?;
-            let index = crate::state::prop_amm::clob_slot_index(&slots)
-                .ok_or_else(|| error!(ErrorCode::QuoterNotOnSlab))?;
-            slots[index].config.book_tick_size = rules.tick_size;
-            slots[index].config.book_min_order_size = rules.min_order_size;
-            slots[index].config.book_default_activation_delay_slots =
-                rules.default_activation_delay_slots;
-        }
-        let mut quoter = ctx.accounts.quoter.load_mut()?;
-        quoter.config.book_tick_size = rules.tick_size;
-        quoter.config.book_min_order_size = rules.min_order_size;
-        quoter.config.book_default_activation_delay_slots = rules.default_activation_delay_slots;
-    }
+    mirror_book_placement_rules(
+        &clob,
+        perp_market,
+        &ctx.accounts.quoter_slab,
+        &ctx.accounts.quoter,
+    )?;
 
     // The book's own conditions first: velocity registers which resolver
     // answers each one and what it pays, and the book keeps their wakes
@@ -262,42 +181,16 @@ pub fn handle_update_perp_market_clob_quoter(
         .load()?
         .refill_watermark(payments.max_payment())?;
 
-    // First attach initializes the conditions account; a re-attach rewrites
-    // the block in place. One borrow: a freshly initialized account's
-    // discriminator is not visible to a second load in the same instruction.
-    {
-        let mut conditions = ctx
-            .accounts
-            .crank_conditions
-            .load_init()
-            .or_else(|_| load_mut!(ctx.accounts.crank_conditions))?;
-        conditions.write_crank_conditions(
-            &keys,
-            perp_market.market_index,
-            payments,
-            min_cross_surplus,
-            expire_fallback_slots,
-            refill_watermark_lamports,
-        )?;
-        // A Custom quoter's cross conditions watch this same region for a
-        // cross against the book (`initialize_quoter_cross_conditions`), and
-        // read it from here rather than deriving it.
-        conditions.clob_block_offset = block.block_offset;
-        conditions.top_of_book_offset = block.top_of_book_offset;
-        conditions.top_of_book_len = block.top_of_book_len;
-        // State the reservoir's real balance now. The refill condition reads
-        // this field, and a mirror left at zero on an account that already
-        // holds lamports keeps the condition permanently due while the
-        // resolver keeps answering that there is no work.
-        conditions.spendable_mirror = ctx
-            .accounts
-            .crank_conditions
-            .to_account_info()
-            .lamports()
-            .saturating_sub(
-                Rent::get()?.minimum_balance(crate::state::clob_crank::ClobCrankConditionsV0::SIZE),
-            );
-    }
+    write_market_crank_conditions(
+        &ctx.accounts.crank_conditions,
+        &keys,
+        perp_market.market_index,
+        payments,
+        &block,
+        min_cross_surplus,
+        expire_fallback_slots,
+        refill_watermark_lamports,
+    )?;
 
     // A market names its book once, at registration (`initialize_quoter`),
     // and the accounts struct's `has_one = clob_market` holds this attach to
@@ -305,5 +198,156 @@ pub fn handle_update_perp_market_clob_quoter(
     // rests on it, so a path that could point the market at a second one
     // later would put every user a fill carries behind whoever holds the
     // admin key.
+    Ok(())
+}
+
+/// Bind the book the market's slab names, and run the two identity checks
+/// `ClobMarket::from_slab` does not: the slab's book slot holds the passed
+/// entry, and that entry names the passed CLOB program. Returns the bound book
+/// and the program id the entry registered.
+fn bind_book_slot<'a, 'info>(
+    quoter_slab: &'a AccountLoader<'info, QuoterSlabV0>,
+    quoter: &AccountLoader<'info, QuoterV0>,
+    clob_market: &'a AccountInfo<'info>,
+    clob_program: &'a AccountInfo<'info>,
+    market_index: u16,
+) -> Result<(ClobMarket<'a, 'info>, Pubkey)> {
+    // Binds the slab's book slot to this market and to the passed book
+    // account; the two identity checks below are the ones it does not run.
+    let clob = ClobMarket::from_slab(quoter_slab, market_index, clob_market, clob_program)?;
+    let registered_program = {
+        let book_slot = quoter_slab.clob_slot(market_index)?;
+        validate!(
+            book_slot.entry == quoter.key(),
+            ErrorCode::DefaultError,
+            "the slab's book slot holds entry {}, not the passed one",
+            book_slot.entry
+        )?;
+        book_slot.config.program_id
+    };
+    validate!(
+        registered_program == clob_program.key(),
+        ErrorCode::DefaultError,
+        "clob program does not match the quoter entry"
+    )?;
+    Ok((clob, registered_program))
+}
+
+/// Hold the book's placement rules to the market's, then mirror them onto the
+/// book's slab slot and onto the staging entry.
+///
+/// The book's own floor on a resting order has to sit at or under the
+/// market's. A fill unwinds a culled remainder by releasing its base from
+/// the maker's open-order aggregate, and the size of that release is the
+/// book's word — bounded on the fill path by the market's minimum, which is
+/// only a bound at all while the book cannot cull something larger.
+fn mirror_book_placement_rules(
+    clob: &ClobMarket<'_, '_>,
+    perp_market: &PerpMarket,
+    quoter_slab: &AccountLoader<QuoterSlabV0>,
+    quoter: &AccountLoader<QuoterV0>,
+) -> Result<()> {
+    let rules = clob.reader().order_rules()?;
+    // A market with no minimum of its own has nothing to bound against, and
+    // nothing to bound: the book's cull fires on a remainder under *its*
+    // minimum, and releasing that from an aggregate the market never
+    // reserved against is a no-op.
+    validate!(
+        perp_market.market_stats.min_order_size == 0
+            || rules.min_order_size <= perp_market.market_stats.min_order_size,
+        ErrorCode::DefaultError,
+        "book minimum order size {} is above the market's {}",
+        rules.min_order_size,
+        perp_market.market_stats.min_order_size
+    )?;
+    // The book's place authority is its trust root: it settles for whoever
+    // it names as a maker, and velocity signs its CPIs as this key. Pin it
+    // to the market's quoter slab PDA — the one identity velocity signs
+    // every external quoter CPI as — so a book whose place authority is a
+    // stranger cannot be attached and, through it, forge orders for any
+    // loaded user. place_authority is immutable on the book, so a book that
+    // passes here stays pinned for the life of the attachment.
+    validate!(
+        rules.place_authority == quoter_slab.key().to_bytes(),
+        ErrorCode::DefaultError,
+        "book place authority is not the market's quoter slab"
+    )?;
+    // The book's grid must match the market's. A remainder aligned to the
+    // market can then always rest; an off-tick or off-step remainder would
+    // revert the whole fill that carried it.
+    validate!(
+        rules.tick_size == perp_market.order_tick_size,
+        ErrorCode::DefaultError,
+        "book tick {} does not match the market tick {}",
+        rules.tick_size,
+        perp_market.order_tick_size
+    )?;
+    validate!(
+        rules.step_size == perp_market.order_step_size,
+        ErrorCode::DefaultError,
+        "book step {} does not match the market step {}",
+        rules.step_size,
+        perp_market.order_step_size
+    )?;
+    // Mirror the placement rules onto the book's slot (the copy the
+    // take gate, the route's maker-priority skip and the remainder rest
+    // read instead of CPI'ing `order_rules_v0` per fill) and onto the
+    // staging entry, so a later re-approval copies them forward. The
+    // attach is the supported way to change an attached book's rules, so
+    // this write is where the mirror stays current.
+    {
+        let mut slots = quoter_slab.slots_mut()?;
+        let index = crate::state::prop_amm::clob_slot_index(&slots)
+            .ok_or_else(|| error!(ErrorCode::QuoterNotOnSlab))?;
+        slots[index].config.book_tick_size = rules.tick_size;
+        slots[index].config.book_min_order_size = rules.min_order_size;
+        slots[index].config.book_default_activation_delay_slots =
+            rules.default_activation_delay_slots;
+    }
+    let mut quoter = quoter.load_mut()?;
+    quoter.config.book_tick_size = rules.tick_size;
+    quoter.config.book_min_order_size = rules.min_order_size;
+    quoter.config.book_default_activation_delay_slots = rules.default_activation_delay_slots;
+    Ok(())
+}
+
+/// First attach initializes the conditions account; a re-attach rewrites the
+/// block in place. One borrow: a freshly initialized account's discriminator
+/// is not visible to a second load in the same instruction.
+fn write_market_crank_conditions(
+    crank_conditions: &AccountLoader<ClobCrankConditionsV0>,
+    keys: &crate::instructions::ClobCrankConditionKeys,
+    market_index: u16,
+    payments: CrankPaymentsV0,
+    block: &ClobCrankBlockV0,
+    min_cross_surplus: u64,
+    expire_fallback_slots: u64,
+    refill_watermark_lamports: u64,
+) -> Result<()> {
+    let mut conditions = crank_conditions
+        .load_init()
+        .or_else(|_| load_mut!(crank_conditions))?;
+    conditions.write_crank_conditions(
+        keys,
+        market_index,
+        payments,
+        min_cross_surplus,
+        expire_fallback_slots,
+        refill_watermark_lamports,
+    )?;
+    // A Custom quoter's cross conditions watch this same region for a
+    // cross against the book (`initialize_quoter_cross_conditions`), and
+    // read it from here rather than deriving it.
+    conditions.clob_block_offset = block.block_offset;
+    conditions.top_of_book_offset = block.top_of_book_offset;
+    conditions.top_of_book_len = block.top_of_book_len;
+    // State the reservoir's real balance now. The refill condition reads
+    // this field, and a mirror left at zero on an account that already
+    // holds lamports keeps the condition permanently due while the
+    // resolver keeps answering that there is no work.
+    conditions.spendable_mirror = crank_conditions
+        .to_account_info()
+        .lamports()
+        .saturating_sub(Rent::get()?.minimum_balance(ClobCrankConditionsV0::SIZE));
     Ok(())
 }

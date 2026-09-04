@@ -276,13 +276,10 @@ pub fn crank_clob_removal(
         let payment = u64::from(load_mut!(conditions_loader)?.crank_payments.removal)
             .saturating_add(u64::from(escalation));
         if program_keeper_mode {
-            let conditions_info = conditions_loader.to_account_info();
-            let rent_minimum = Rent::get()?.minimum_balance(conditions_info.data_len());
-            ClobCrankConditionsV0::pay_keeper_lamports(
-                &conditions_info,
+            ClobCrankConditionsV0::pay_keeper(
+                conditions_loader,
                 &ctx.accounts.authority.to_account_info(),
                 payment,
-                rent_minimum,
             )?;
         }
     }
@@ -447,14 +444,7 @@ pub fn finish_trigger_crank<'info>(
             )?;
             u64::from(conditions.crank_payments.trigger)
         };
-        let info = reservoir.to_account_info();
-        let rent_minimum = Rent::get()?.minimum_balance(info.data_len());
-        ClobCrankConditionsV0::pay_keeper_lamports(
-            &info,
-            &authority.to_account_info(),
-            payment,
-            rent_minimum,
-        )?;
+        ClobCrankConditionsV0::pay_keeper(reservoir, &authority.to_account_info(), payment)?;
     }
     Ok(())
 }

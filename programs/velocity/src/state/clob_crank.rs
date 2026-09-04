@@ -564,6 +564,20 @@ impl ClobCrankConditionsV0 {
     /// empty reservoir.
     ///
     /// Returns the lamports paid.
+    /// Pay `amount` out of the reservoir to the keeper.
+    ///
+    /// The rent minimum is the reservoir's own, so a payment never takes the
+    /// account below the balance that keeps it alive.
+    pub fn pay_keeper<'info>(
+        conditions: &AccountLoader<'info, ClobCrankConditionsV0>,
+        keeper: &AccountInfo<'info>,
+        amount: u64,
+    ) -> Result<u64> {
+        let info = conditions.to_account_info();
+        let rent_minimum = Rent::get()?.minimum_balance(info.data_len());
+        Self::pay_keeper_lamports(&info, keeper, amount, rent_minimum)
+    }
+
     pub fn pay_keeper_lamports<'info>(
         conditions: &AccountInfo<'info>,
         keeper: &AccountInfo<'info>,

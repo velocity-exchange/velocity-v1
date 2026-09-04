@@ -107,11 +107,7 @@ pub fn handle_quote_router<'c: 'info, 'info>(
     let market_index = args.market_index;
 
     let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map,
-        mut oracle_map,
-    } = load_maps(
+    let mut maps: AccountMaps = load_maps(
         remaining_accounts_iter,
         &get_writable_perp_market_set(market_index),
         &MarketSet::new(),
@@ -123,10 +119,68 @@ pub fn handle_quote_router<'c: 'info, 'info>(
 
     // Quoter section: the market's slab plus the union of the consulted
     // quoters' CPI accounts.
-    let leftover: Vec<&AccountInfo<'info>> = remaining_accounts_iter.collect();
+    let leftover: Vec<&'info AccountInfo<'info>> = remaining_accounts_iter.collect();
     let accounts: Vec<AccountInfo<'info>> = leftover.iter().map(|info| (*info).clone()).collect();
-    let mut slab_loader: Option<AccountLoader<QuoterSlabV0>> = None;
-    for info in leftover {
+    let slab_loader = find_market_slab(&leftover, market_index)?;
+
+    let mut buffer = ctx.accounts.quote_buffer.load_mut()?;
+    buffer.begin(args.direction as u8, args.size, clock.slot);
+
+    quote_externals(
+        &args,
+        slab_loader.as_ref(),
+        &accounts,
+        &makers,
+        &mut maps,
+        &mut buffer,
+    )?;
+
+    // ---- DLOB makers next: one level per crossing resting order. ----
+    let (oracle_price, amm_snapshot) = {
+        let market = maps.perp_market_map.get_ref(&market_index)?;
+        let oracle_pd = *maps.oracle_map.get_price_data(&market.oracle_id())?;
+        (oracle_pd, market.amm)
+    };
+    quote_dlob_makers(
+        &args,
+        &makers,
+        &maps.perp_market_map,
+        &state,
+        oracle_price,
+        clock.slot,
+        &mut buffer,
+    )?;
+
+    quote_vamm(
+        &args,
+        &maps.perp_market_map,
+        &state,
+        oracle_price,
+        amm_snapshot,
+        clock.slot,
+        &mut buffer,
+    )?;
+
+    msg!(
+        "quoted {} sources for market {} at size {}",
+        buffer.source_count,
+        market_index,
+        args.size
+    );
+    Ok(())
+}
+
+/// The market's quoter slab, when the call carries one.
+///
+/// The slab is found by its discriminator rather than by position, because
+/// the quoter section is a union of account lists whose order the caller
+/// chooses. A slab for another market is refused: it would quote another
+/// market's books into this market's view.
+fn find_market_slab<'info>(
+    accounts: &[&'info AccountInfo<'info>],
+    market_index: u16,
+) -> Result<Option<AccountLoader<'info, QuoterSlabV0>>> {
+    for info in accounts.iter().copied() {
         let is_slab = info.owner == &crate::ID
             && info
                 .try_borrow_data()
@@ -143,88 +197,132 @@ pub fn handle_quote_router<'c: 'info, 'info>(
             loader.load()?.market,
             market_index
         )?;
-        slab_loader = Some(loader);
-        break;
+        return Ok(Some(loader));
     }
+    Ok(None)
+}
 
+/// One slot's answer to the view: what it quoted, and who it says it is.
+struct QuotedSlot<'info> {
+    /// Routing tier at a shared price: lower fills first, pro rata within.
+    priority: u8,
+    quoter_type: QuoterType,
+    /// The registry `user`: the margin account a Custom book is clamped to.
+    user: Pubkey,
+    /// The staging entry's address, which is the quoter's identity in the
+    /// buffer and in error messages.
+    entry: Pubkey,
+    /// Where the quoter wrote its ladder.
+    located: crate::state::prop_amm::ResponseLocationV0<'info>,
+}
+
+/// Quote one slab slot and locate the response it wrote.
+///
+/// `None` when the slot quotes nothing: it is suspended or deactivated, or a
+/// speed bump holds it back.
+fn quote_one_slot<'info>(
+    args: &QuoteRouterArgs,
+    slab_loader: &AccountLoader<'info, QuoterSlabV0>,
+    slot_index: usize,
+    accounts: &[AccountInfo<'info>],
+    scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
+) -> Result<Option<QuotedSlot<'info>>> {
+    let market_index = args.market_index;
+    let slots = slab_loader.slots()?;
+    let slot = &slots[slot_index];
+    if !slot.quotes() {
+        return Ok(None);
+    }
+    let entry_key = slot.entry;
+    // Maker priority, as the fill's route applies it: a book with a
+    // speed bump quotes no depth to unprotected flow, so this view
+    // must not show it any.
+    if slot.config.quoter_type == QuoterType::Clob
+        && !args.taker_served_window
+        && slot.config.book_default_activation_delay_slots > 0
+    {
+        return Ok(None);
+    }
+    let located = slot
+        .config
+        .quote_in_place(
+            market_index,
+            QuoteArgsV0 {
+                // The view settles nothing, so it constrains nothing:
+                // it reports the book as it stands.
+                caps: crate::state::prop_amm::QuoterUserCapsV0::EMPTY,
+                // No budgets to price, so nothing reads this.
+                reference_price: 0,
+                direction: args.direction,
+                size: args.size,
+                // A view has no settlement, so no loaded-user
+                // restriction: quote everything the book holds.
+                users: &[],
+                taker: None,
+                // No taker, so no price to bound the ladder at. A
+                // caller reads this view to decide what to route,
+                // which needs the depth a bound would cut.
+                limit_price: 0,
+                taker_served_window: args.taker_served_window,
+            },
+            slab_loader,
+            accounts,
+            scratch,
+        )
+        .map_err(|e| {
+            msg!("quoter {} quote failed: {}", entry_key, e);
+            ErrorCode::DefaultError
+        })?;
+    Ok(Some(QuotedSlot {
+        priority: slot.config.priority,
+        quoter_type: slot.config.quoter_type,
+        user: slot.config.user,
+        entry: entry_key,
+        located,
+    }))
+}
+
+/// Quote every consulted external quoter into the buffer.
+///
+/// The externals run first because their books are the vAMM's last look. A
+/// book is read straight out of the quoter's response account and copied
+/// once, into the buffer. Nothing holds a second copy: velocity's heap is
+/// 32 KB and never reclaims, and this runs once per quoter.
+fn quote_externals<'info>(
+    args: &QuoteRouterArgs,
+    slab_loader: Option<&AccountLoader<'info, QuoterSlabV0>>,
+    accounts: &[AccountInfo<'info>],
+    makers: &crate::state::user_map::UserMap,
+    maps: &mut AccountMaps,
+    buffer: &mut RouterQuoteBufferV0,
+) -> Result<()> {
+    // A transaction that carries no slab consults no quoter.
+    let Some(slab_loader) = slab_loader else {
+        return Ok(());
+    };
+    let market_index = args.market_index;
     let taker_direction = args.direction.to_position_direction();
-    let mut buffer = ctx.accounts.quote_buffer.load_mut()?;
-    buffer.begin(args.direction as u8, args.size, clock.slot);
-
-    // ---- Externals first: their books are the vAMM's last look. ----
-    // A book is read straight out of the quoter's response account and copied
-    // once, into the buffer. Nothing holds a second copy: velocity's heap is
-    // 32 KB and never reclaims, and this runs once per quoter.
     // One set of CPI buffers for every entry this view quotes.
-    let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
-    let consulted: Vec<usize> = match &slab_loader {
-        Some(loader) => {
-            let slots = loader.slots()?;
-            occupied_slots(&slots)
-                .filter(|(_, slot)| {
-                    find_account(&accounts, &slot.config.response_account).is_some()
-                })
-                .map(|(index, _)| index)
-                .collect()
-        }
-        None => Vec::new(),
+    let mut scratch = crate::state::prop_amm::QuoterCpiScratch::new();
+    let consulted: Vec<usize> = {
+        let slots = slab_loader.slots()?;
+        occupied_slots(&slots)
+            .filter(|(_, slot)| find_account(accounts, &slot.config.response_account).is_some())
+            .map(|(index, _)| index)
+            .collect()
     };
     for slot_index in consulted {
-        let slab_loader = slab_loader.as_ref().unwrap();
-        let (priority, quoter_type, quoter_user, entry_key, located) = {
-            let slots = slab_loader.slots()?;
-            let slot = &slots[slot_index];
-            if !slot.quotes() {
-                continue;
-            }
-            let entry_key = slot.entry;
-            // Maker priority, as the fill's route applies it: a book with a
-            // speed bump quotes no depth to unprotected flow, so this view
-            // must not show it any.
-            if slot.config.quoter_type == QuoterType::Clob
-                && !args.taker_served_window
-                && slot.config.book_default_activation_delay_slots > 0
-            {
-                continue;
-            }
-            let located = slot
-                .config
-                .quote_in_place(
-                    market_index,
-                    QuoteArgsV0 {
-                        // The view settles nothing, so it constrains nothing:
-                        // it reports the book as it stands.
-                        caps: crate::state::prop_amm::QuoterUserCapsV0::EMPTY,
-                        // No budgets to price, so nothing reads this.
-                        reference_price: 0,
-                        direction: args.direction,
-                        size: args.size,
-                        // A view has no settlement, so no loaded-user
-                        // restriction: quote everything the book holds.
-                        users: &[],
-                        taker: None,
-                        // No taker, so no price to bound the ladder at. A
-                        // caller reads this view to decide what to route,
-                        // which needs the depth a bound would cut.
-                        limit_price: 0,
-                        taker_served_window: args.taker_served_window,
-                    },
-                    slab_loader,
-                    &accounts,
-                    &mut cpi_scratch,
-                )
-                .map_err(|e| {
-                    msg!("quoter {} quote failed: {}", entry_key, e);
-                    ErrorCode::DefaultError
-                })?;
-            (
-                slot.config.priority,
-                slot.config.quoter_type,
-                slot.config.user,
-                entry_key,
-                located,
-            )
+        let Some(quoted) = quote_one_slot(args, slab_loader, slot_index, accounts, &mut scratch)?
+        else {
+            continue;
         };
+        let QuotedSlot {
+            priority,
+            quoter_type,
+            user: quoter_user,
+            entry: entry_key,
+            located,
+        } = quoted;
 
         // Verification: a Custom quoter's depth is never margin-reserved, so
         // clamp it to what its user can actually support. CLOB depth was
@@ -242,13 +340,13 @@ pub fn handle_quote_router<'c: 'info, 'info>(
         // Loading the makers is what it would take to close it.
         let cap = if quoter_type == QuoterType::Custom {
             margin_cap(
-                &makers,
+                makers,
                 &quoter_user,
                 market_index,
                 taker_direction.opposite(),
-                &perp_market_map,
-                &spot_market_map,
-                &mut oracle_map,
+                &maps.perp_market_map,
+                &maps.spot_market_map,
+                &mut maps.oracle_map,
             )?
         } else {
             u64::MAX
@@ -285,7 +383,7 @@ pub fn handle_quote_router<'c: 'info, 'info>(
             // is not bound to anyone velocity can name, which is the same
             // split settlement makes.
             let bound_to = (quoter_type == QuoterType::Custom)
-                .then(|| user_ref(&makers, &quoter_user))
+                .then(|| user_ref(makers, &quoter_user))
                 .flatten();
             let described = quoter_rows(
                 slab_loader,
@@ -295,25 +393,38 @@ pub fn handle_quote_router<'c: 'info, 'info>(
                 admitted,
                 rows_wanted,
                 &entry_key,
-                &accounts,
-                &mut cpi_scratch,
+                accounts,
+                &mut scratch,
                 bound_to,
-                &mut buffer,
+                buffer,
             )?;
             if !described {
-                attribute_to_user(&makers, &quoter_user, admitted, &mut buffer)?;
+                attribute_to_user(makers, &quoter_user, admitted, buffer)?;
             }
         }
     }
+    Ok(())
+}
 
-    // ---- DLOB makers next: one level per crossing resting order. ----
+/// Quote the DLOB makers this call carries: one level for every resting
+/// order that crosses.
+///
+/// Uses the fill path's own discovery predicate, so a book never advertises
+/// an order the fill would skip. The predicate refuses a wrong side, a wrong
+/// type, an untriggered order and an order that is not open.
+fn quote_dlob_makers(
+    args: &QuoteRouterArgs,
+    makers: &crate::state::user_map::UserMap,
+    perp_market_map: &crate::state::perp_market_map::PerpMarketMap,
+    state: &State,
+    oracle_price: crate::state::oracle::OraclePriceData,
+    slot: u64,
+    buffer: &mut RouterQuoteBufferV0,
+) -> Result<()> {
+    let market_index = args.market_index;
     let clob_tier = QuoterType::Clob.default_priority();
     let order_tick_size = perp_market_map.get_ref(&market_index)?.order_tick_size;
-    let (oracle_price, amm_snapshot) = {
-        let market = perp_market_map.get_ref(&market_index)?;
-        let oracle_pd = *oracle_map.get_price_data(&market.oracle_id())?;
-        (oracle_pd, market.amm)
-    };
+    let taker_direction = args.direction.to_position_direction();
     // The fill path's own discovery predicate, so a book never advertises an
     // order the fill would skip (wrong side/type, untriggered, not open).
     let maker_direction = taker_direction.opposite();
@@ -329,7 +440,7 @@ pub fn handle_quote_router<'c: 'info, 'info>(
             &crate::state::user::MarketType::Perp,
             market_index,
             Some(oracle_price.price),
-            clock.slot,
+            slot,
             order_tick_size,
             state.slot_clock(),
         )?;
@@ -355,13 +466,30 @@ pub fn handle_quote_router<'c: 'info, 'info>(
             })?;
         }
     }
+    Ok(())
+}
 
-    // ---- vAMM last, with everything above as its rivals (last look). ----
-    // Only on the pass that asked for it. The shading reads every other book
-    // in this call, so a pass carrying a subset would return a vAMM shaded
-    // against a subset, and a caller reading a market in several passes would
-    // get a different vAMM from each.
-    if args.include_vamm {
+/// Quote the vAMM into the buffer, with every book already in it as the
+/// vAMM's rivals.
+///
+/// Only on the pass that asked for it. The shading reads every other book in
+/// this call. A pass that carries a subset returns a vAMM shaded against a
+/// subset, so a caller that reads a market in several passes gets a different
+/// vAMM from each.
+fn quote_vamm(
+    args: &QuoteRouterArgs,
+    perp_market_map: &crate::state::perp_market_map::PerpMarketMap,
+    state: &State,
+    oracle_price: crate::state::oracle::OraclePriceData,
+    amm_snapshot: AMM,
+    slot: u64,
+    buffer: &mut RouterQuoteBufferV0,
+) -> Result<()> {
+    if !args.include_vamm {
+        return Ok(());
+    }
+    let market_index = args.market_index;
+    {
         // Quoted off a copy: `refresh` projects the curve, and this
         // instruction must not move the market's AMM.
         let mut amm: AMM = amm_snapshot;
@@ -370,7 +498,7 @@ pub fn handle_quote_router<'c: 'info, 'info>(
             MarketQuoteInputs::load(
                 &market,
                 oracle_price,
-                clock.slot,
+                slot,
                 &state.oracle_guard_rails.validity,
                 state.slot_clock(),
             )?
@@ -386,7 +514,7 @@ pub fn handle_quote_router<'c: 'info, 'info>(
                 levels: bytemuck::cast_slice(buffer.levels_for(index)),
             })
             .collect();
-        let ctx = inputs.ctx(clock.slot);
+        let ctx = inputs.ctx(slot);
         let amm_levels = {
             let mut quoter = AmmQuoter::for_amm(&mut amm);
             quoter.refresh(&ctx)?;
@@ -406,13 +534,6 @@ pub fn handle_quote_router<'c: 'info, 'info>(
             &amm_levels,
         )?;
     }
-
-    msg!(
-        "quoted {} sources for market {} at size {}",
-        buffer.source_count,
-        market_index,
-        args.size
-    );
     Ok(())
 }
 

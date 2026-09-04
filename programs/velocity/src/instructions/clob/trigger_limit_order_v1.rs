@@ -73,10 +73,11 @@ use {
             events::OrderActionExplanation,
             margin_calculation::MarginContext,
             market_status::MarketStatus,
-            perp_market_map::MarketSet,
+            oracle_map::OracleMap,
+            perp_market_map::{MarketSet, PerpMarketMap},
             prop_amm::{
-                ClobMarket, ClobPlaceOrderArgsV0, ClobSide, QuoterSlabExt, QuoterSlabV0,
-                WireDirectionExt,
+                ClobMarket, ClobOrderRefV0, ClobPlaceOrderArgsV0, ClobSide, QuoterSlabExt,
+                QuoterSlabV0, WireDirectionExt,
             },
             state::State,
             user::{MarketType, OrderBitFlag, OrderType, User, UserStats},
@@ -178,11 +179,7 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
     let filler_key = ctx.accounts.filler.key();
 
     let mut remaining_accounts = ctx.remaining_accounts.iter().peekable();
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map,
-        mut oracle_map,
-    } = load_maps(
+    let mut maps: AccountMaps = load_maps(
         &mut remaining_accounts,
         &MarketSet::new(),
         &MarketSet::new(),
@@ -213,132 +210,31 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
         let user = &mut load_mut!(ctx.accounts.user)?;
         let user_stats = load!(ctx.accounts.user_stats)?;
 
-        let order_index = user
-            .orders
-            .iter()
-            .position(|order| {
-                order.order_id == order_id && order.status == crate::state::user::OrderStatus::Open
-            })
-            .ok_or(ErrorCode::OrderDoesNotExist)?;
-
-        validate!(
-            user.orders[order_index].order_type == OrderType::TriggerLimit,
-            ErrorCode::OrderNotTriggerable,
-            "only trigger-limit orders place on the CLOB (stop-markets go through \
-             trigger_market_order_v1)"
-        )?;
-        validate!(
-            !user.orders[order_index].is_placed_on_clob(),
-            ErrorCode::OrderPlacedOnClob,
-            "order already rests on the CLOB"
-        )?;
-        validate!(
-            user.orders[order_index].market_type == MarketType::Perp
-                && user.orders[order_index].market_index == market_index,
-            ErrorCode::InvalidOrderMarketType,
-            "order is not a perp order on market {}",
-            market_index
-        )?;
-        validate!(
-            !user.orders[order_index].has_oracle_price_offset(),
-            ErrorCode::InvalidOrderOracleOffset,
-            "oracle-offset trigger orders cannot rest at a fixed CLOB price"
-        )?;
+        let order_index = find_armed_trigger_limit(user, order_id, market_index)?;
 
         validate_user_not_being_liquidated(
             user,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &maps.perp_market_map,
+            &maps.spot_market_map,
+            &mut maps.oracle_map,
             state.liquidation_margin_buffer_ratio,
         )?;
         validate!(!user.is_bankrupt(), ErrorCode::UserBankrupt)?;
 
-        let (oracle_price, trigger_price) = {
-            let perp_market = perp_market_map.get_ref(&market_index)?;
-            validate!(
-                matches!(perp_market.status, MarketStatus::Active),
-                ErrorCode::MarketPlaceOrderPaused,
-                "market not active"
-            )?;
-            validate!(
-                !perp_market.is_in_settlement(now),
-                ErrorCode::MarketPlaceOrderPaused,
-                "Market is in settlement mode",
-            )?;
+        let TriggerPrices {
+            oracle_price,
+            trigger_price,
+        } = read_trigger_prices(
+            &maps.perp_market_map,
+            &mut maps.oracle_map,
+            &state,
+            market_index,
+            now,
+        )?;
 
-            let (oracle_price_data, oracle_validity) = oracle_map.get_price_data_and_validity(
-                MarketType::Perp,
-                perp_market.market_index,
-                &perp_market.oracle_id(),
-                perp_market
-                    .market_stats
-                    .historical_oracle_data
-                    .last_oracle_price_twap,
-                perp_market.get_max_confidence_interval_multiplier()?,
-                perp_market.oracle_slot_delay_override,
-                perp_market.oracle_low_risk_slot_delay_override,
-                None,
-            )?;
-            let is_oracle_valid =
-                is_oracle_valid_for_action(oracle_validity, Some(VelocityAction::TriggerOrder))?;
-            validate!(is_oracle_valid, ErrorCode::InvalidOracle)?;
-
-            let oracle_price = oracle_price_data.price;
-            let oracle_too_divergent = is_oracle_too_divergent_with_twap_5min(
-                oracle_price,
-                perp_market
-                    .market_stats
-                    .historical_oracle_data
-                    .last_oracle_price_twap_5min,
-                state
-                    .oracle_guard_rails
-                    .max_oracle_twap_5min_percent_divergence()
-                    .cast()?,
-            )?;
-            validate!(
-                !oracle_too_divergent,
-                ErrorCode::OrderBreachesOraclePriceLimits,
-                "oracle price vs twap too divergent"
-            )?;
-
-            let trigger_price = perp_market.get_trigger_price(
-                oracle_price,
-                now,
-                state.use_median_trigger_price(),
-            )?;
-            (oracle_price, trigger_price)
-        };
-
-        let satisfied =
-            order_satisfies_trigger_condition(&user.orders[order_index], trigger_price)?;
-
-        // Edge gate after an eviction: a crank observing the price back on
-        // the non-trigger side re-arms the trigger for real; one observing
-        // it still through the trigger must wait for the recross.
-        if user.orders[order_index].is_bit_flag_set(OrderBitFlag::AwaitingTriggerRecross) {
-            validate!(
-                !satisfied,
-                ErrorCode::OrderAwaitingTriggerRecross,
-                "trigger price never crossed back after eviction"
-            )?;
-            user.orders[order_index].remove_bit_flag(OrderBitFlag::AwaitingTriggerRecross);
-            user.update_last_active_slot(slot);
-            msg!(
-                "trigger order {} observed the recross and is armed again",
-                order_id
-            );
+        if !observe_trigger_condition(user, order_index, order_id, trigger_price, slot)? {
             return Ok(());
         }
-
-        validate!(
-            satisfied,
-            ErrorCode::OrderDidNotSatisfyTriggerCondition,
-            "Order did not satisfy trigger condition. trigger_price: {} oracle_price: {} trigger_condition: {:?}",
-            trigger_price,
-            user.orders[order_index].trigger_price,
-            user.orders[order_index].trigger_condition
-        )?;
 
         // Reduce-only has no meaning on the book. The CLOB cannot clamp a fill
         // to the maker's position, so a reduce-only order that rests here fills
@@ -349,114 +245,44 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
         // rests flagged and the book clamps every fill against it to the
         // position it may reduce. A reduce-only trigger therefore rests here
         // like any other.
-
-        // Reserve worst-case aggregates for the resting order, then gate
-        // exactly like trigger_order: a risk-increasing trigger on a failing
-        // account cancels instead of placing.
-        let reduce_only = user.orders[order_index].reduce_only;
-        let direction = user.orders[order_index].direction;
-        let base_asset_amount = user.orders[order_index].get_base_asset_amount_unfilled(None)?;
-        let (_, worst_case_before) = user
-            .get_perp_position(market_index)?
-            .worst_case_liability_value(oracle_price)?;
-        {
-            let user_position = user.get_perp_position_mut(market_index)?;
-            increase_open_bids_and_asks(user_position, &direction, base_asset_amount, true)?;
-        }
-        let (_, worst_case_after) = user
-            .get_perp_position(market_index)?
-            .worst_case_liability_value(oracle_price)?;
-        let is_risk_increasing = worst_case_after > worst_case_before;
-
-        if is_risk_increasing && !user.orders[order_index].reduce_only {
-            let margin_calc = calculate_margin_requirement_and_total_collateral_and_liability_info(
-                user,
-                &perp_market_map,
-                &spot_market_map,
-                &mut oracle_map,
-                MarginContext::standard(MarginRequirementType::Initial),
-            )?;
-            let net_equity = calculate_net_equity_for_floor(
-                user,
-                &perp_market_map,
-                &spot_market_map,
-                &mut oracle_map,
-            )?;
-
-            // An unverifiable floor rejects the trigger instead of cancelling:
-            // a cancel is irreversible, so an oracle blip must not destroy a
-            // resting order the account may legitimately carry. The keeper
-            // retries once the feed recovers and the gate resolves either way.
-            if let Some(net_equity) = net_equity {
-                validate!(
-                    net_equity.all_oracles_valid,
-                    ErrorCode::InvalidOracle,
-                    "cannot verify equity floor {} + buffer {} with an invalid oracle (authority {} subaccount {})",
-                    user.equity_floor,
-                    user.equity_floor_buffer,
-                    user.authority,
-                    user.sub_account_id
-                )?;
-            }
-
-            if !margin_calc.meets_margin_requirement()
-                || net_equity.is_some_and(|net_equity| !net_equity.clears_buffered_floor(user))
-                || user_stats.is_equity_breaker_tripped()
-            {
-                // The slot reads as untriggered, so cancel_order won't unwind
-                // the aggregates we just reserved — take them back first.
-                let position_index = get_position_index(&user.perp_positions, market_index)?;
-                decrease_open_bids_and_asks(
-                    &mut user.perp_positions[position_index],
-                    &direction,
-                    base_asset_amount,
-                    true,
-                )?;
-                cancel_order(
-                    order_index,
-                    user,
-                    &user_key,
-                    &perp_market_map,
-                    &spot_market_map,
-                    &mut oracle_map,
-                    now,
-                    slot,
-                    OrderActionExplanation::InsufficientFreeCollateral,
-                    Some(&filler_key),
-                    0,
-                    false,
-                )?;
-                user.update_last_active_slot(slot);
-                return Ok(());
-            }
-        }
+        let Some(reserved) = reserve_and_gate_trigger(
+            user,
+            &user_stats,
+            order_index,
+            market_index,
+            oracle_price,
+            &mut maps,
+            &user_key,
+            &filler_key,
+            now,
+            slot,
+        )?
+        else {
+            return Ok(());
+        };
 
         // Trigger accepted: pay the keeper the flat reward from the user.
-        let is_filler_user = user_key == filler_key;
-        let mut filler = if !is_filler_user {
-            Some(load_mut!(ctx.accounts.filler)?)
-        } else {
-            None
-        };
-        let mut perp_market = perp_market_map.get_ref_mut(&market_index)?;
-        pay_keeper_flat_reward_for_perps(
+        pay_trigger_keeper(
             user,
-            filler.as_deref_mut(),
-            &mut perp_market,
+            &ctx.accounts.filler,
+            &maps.perp_market_map,
+            market_index,
             state.perp_fee_structure.flat_filler_fee,
+            &user_key,
+            &filler_key,
             slot,
         )?;
 
-        let side = match direction {
+        let side = match reserved.direction {
             PositionDirection::Long => ClobSide::Bid,
             PositionDirection::Short => ClobSide::Ask,
         };
         (
             side,
             user.orders[order_index].price,
-            base_asset_amount,
+            reserved.base_asset_amount,
             user.orders[order_index].max_ts,
-            reduce_only,
+            reserved.reduce_only,
             user.clob_user_ref(),
         )
     };
@@ -490,25 +316,14 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
     })?;
 
     // ---- Mark the slot as the placed shadow. ----
-    {
-        let mut user = load_mut!(ctx.accounts.user)?;
-        let order_index = user
-            .orders
-            .iter()
-            .position(|order| {
-                order.order_id == order_id && order.status == crate::state::user::OrderStatus::Open
-            })
-            .ok_or(ErrorCode::OrderDoesNotExist)?;
-        user.orders[order_index].set_clob_order_ref(order_ref.node_index, order_ref.order_id);
-        user.orders[order_index].add_bit_flag(OrderBitFlag::PlacedOnClob);
-        // A reduce-only trigger now rests on the book. Arm the counter so the
-        // router caps its fills until it leaves the book.
-        if reduce_only {
-            let position_index = get_position_index(&user.perp_positions, market_index)?;
-            user.perp_positions[position_index].arm_reduce_only_clob();
-        }
-        user.update_last_active_slot(slot);
-    }
+    mark_slot_placed(
+        &ctx.accounts.user,
+        order_id,
+        &order_ref,
+        market_index,
+        reduce_only,
+        slot,
+    )?;
 
     // A trigger that fired is an order that started resting, and it rests
     // under the id it armed under. The slot it came from is now a shadow, so
@@ -547,6 +362,341 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
         order_ref.node_index,
         user_key
     );
+    Ok(())
+}
+
+/// The armed slot this crank fires, by order id.
+///
+/// The slot must be an open trigger-limit on this perp market, and it must not
+/// already rest on the CLOB. It must also carry a fixed price, because an
+/// oracle-offset order has no price the book can hold.
+fn find_armed_trigger_limit(user: &User, order_id: u32, market_index: u16) -> Result<usize> {
+    let order_index = user
+        .orders
+        .iter()
+        .position(|order| {
+            order.order_id == order_id && order.status == crate::state::user::OrderStatus::Open
+        })
+        .ok_or(ErrorCode::OrderDoesNotExist)?;
+
+    validate!(
+        user.orders[order_index].order_type == OrderType::TriggerLimit,
+        ErrorCode::OrderNotTriggerable,
+        "only trigger-limit orders place on the CLOB (stop-markets go through \
+         trigger_market_order_v1)"
+    )?;
+    validate!(
+        !user.orders[order_index].is_placed_on_clob(),
+        ErrorCode::OrderPlacedOnClob,
+        "order already rests on the CLOB"
+    )?;
+    validate!(
+        user.orders[order_index].market_type == MarketType::Perp
+            && user.orders[order_index].market_index == market_index,
+        ErrorCode::InvalidOrderMarketType,
+        "order is not a perp order on market {}",
+        market_index
+    )?;
+    validate!(
+        !user.orders[order_index].has_oracle_price_offset(),
+        ErrorCode::InvalidOrderOracleOffset,
+        "oracle-offset trigger orders cannot rest at a fixed CLOB price"
+    )?;
+    Ok(order_index)
+}
+
+/// The prices a fired trigger is judged and reserved against.
+struct TriggerPrices {
+    /// The live oracle price. The reservation is sized against it.
+    oracle_price: i64,
+    /// The price the trigger condition reads.
+    trigger_price: u64,
+}
+
+/// Reads the prices for a trigger, and refuses a market or an oracle that
+/// cannot carry one.
+///
+/// The market must be active and out of settlement. The oracle must be valid
+/// for a trigger, and it must stay near the five-minute TWAP. A stale feed or
+/// a divergent feed can fire a stop that the market never reached.
+fn read_trigger_prices(
+    perp_market_map: &PerpMarketMap<'_>,
+    oracle_map: &mut OracleMap<'_>,
+    state: &State,
+    market_index: u16,
+    now: i64,
+) -> Result<TriggerPrices> {
+    let perp_market = perp_market_map.get_ref(&market_index)?;
+    validate!(
+        matches!(perp_market.status, MarketStatus::Active),
+        ErrorCode::MarketPlaceOrderPaused,
+        "market not active"
+    )?;
+    validate!(
+        !perp_market.is_in_settlement(now),
+        ErrorCode::MarketPlaceOrderPaused,
+        "Market is in settlement mode",
+    )?;
+
+    let (oracle_price_data, oracle_validity) = oracle_map.get_price_data_and_validity(
+        MarketType::Perp,
+        perp_market.market_index,
+        &perp_market.oracle_id(),
+        perp_market
+            .market_stats
+            .historical_oracle_data
+            .last_oracle_price_twap,
+        perp_market.get_max_confidence_interval_multiplier()?,
+        perp_market.oracle_slot_delay_override,
+        perp_market.oracle_low_risk_slot_delay_override,
+        None,
+    )?;
+    let is_oracle_valid =
+        is_oracle_valid_for_action(oracle_validity, Some(VelocityAction::TriggerOrder))?;
+    validate!(is_oracle_valid, ErrorCode::InvalidOracle)?;
+
+    let oracle_price = oracle_price_data.price;
+    let oracle_too_divergent = is_oracle_too_divergent_with_twap_5min(
+        oracle_price,
+        perp_market
+            .market_stats
+            .historical_oracle_data
+            .last_oracle_price_twap_5min,
+        state
+            .oracle_guard_rails
+            .max_oracle_twap_5min_percent_divergence()
+            .cast()?,
+    )?;
+    validate!(
+        !oracle_too_divergent,
+        ErrorCode::OrderBreachesOraclePriceLimits,
+        "oracle price vs twap too divergent"
+    )?;
+
+    let trigger_price =
+        perp_market.get_trigger_price(oracle_price, now, state.use_median_trigger_price())?;
+    Ok(TriggerPrices {
+        oracle_price,
+        trigger_price,
+    })
+}
+
+/// Whether the trigger fired.
+///
+/// A `false` answer ends the crank. The order observed the price back on the
+/// non-trigger side after an eviction, so it is armed again and nothing is
+/// placed.
+fn observe_trigger_condition(
+    user: &mut User,
+    order_index: usize,
+    order_id: u32,
+    trigger_price: u64,
+    slot: u64,
+) -> Result<bool> {
+    let satisfied = order_satisfies_trigger_condition(&user.orders[order_index], trigger_price)?;
+
+    // Edge gate after an eviction: a crank observing the price back on
+    // the non-trigger side re-arms the trigger for real; one observing
+    // it still through the trigger must wait for the recross.
+    if user.orders[order_index].is_bit_flag_set(OrderBitFlag::AwaitingTriggerRecross) {
+        validate!(
+            !satisfied,
+            ErrorCode::OrderAwaitingTriggerRecross,
+            "trigger price never crossed back after eviction"
+        )?;
+        user.orders[order_index].remove_bit_flag(OrderBitFlag::AwaitingTriggerRecross);
+        user.update_last_active_slot(slot);
+        msg!(
+            "trigger order {} observed the recross and is armed again",
+            order_id
+        );
+        return Ok(false);
+    }
+
+    validate!(
+        satisfied,
+        ErrorCode::OrderDidNotSatisfyTriggerCondition,
+        "Order did not satisfy trigger condition. trigger_price: {} oracle_price: {} trigger_condition: {:?}",
+        trigger_price,
+        user.orders[order_index].trigger_price,
+        user.orders[order_index].trigger_condition
+    )?;
+    Ok(true)
+}
+
+/// The exposure this crank reserved for the order it is about to place.
+struct ReservedTrigger {
+    direction: PositionDirection,
+    base_asset_amount: u64,
+    reduce_only: bool,
+}
+
+/// Reserves the worst-case aggregates for the resting order, then gates
+/// exactly like `trigger_order`.
+///
+/// `None` means the gate cancelled the order instead of placing it: a
+/// risk-increasing, non-reduce-only trigger on an account that fails initial
+/// margin, the buffered equity floor, or the authority equity breaker. The
+/// order is never re-armed, so an underfunded stop cannot livelock.
+#[allow(clippy::too_many_arguments)]
+fn reserve_and_gate_trigger(
+    user: &mut User,
+    user_stats: &UserStats,
+    order_index: usize,
+    market_index: u16,
+    oracle_price: i64,
+    maps: &mut AccountMaps<'_>,
+    user_key: &Pubkey,
+    filler_key: &Pubkey,
+    now: i64,
+    slot: u64,
+) -> Result<Option<ReservedTrigger>> {
+    let reduce_only = user.orders[order_index].reduce_only;
+    let direction = user.orders[order_index].direction;
+    let base_asset_amount = user.orders[order_index].get_base_asset_amount_unfilled(None)?;
+    let (_, worst_case_before) = user
+        .get_perp_position(market_index)?
+        .worst_case_liability_value(oracle_price)?;
+    {
+        let user_position = user.get_perp_position_mut(market_index)?;
+        increase_open_bids_and_asks(user_position, &direction, base_asset_amount, true)?;
+    }
+    let (_, worst_case_after) = user
+        .get_perp_position(market_index)?
+        .worst_case_liability_value(oracle_price)?;
+    let is_risk_increasing = worst_case_after > worst_case_before;
+
+    if is_risk_increasing && !user.orders[order_index].reduce_only {
+        let margin_calc = calculate_margin_requirement_and_total_collateral_and_liability_info(
+            user,
+            &maps.perp_market_map,
+            &maps.spot_market_map,
+            &mut maps.oracle_map,
+            MarginContext::standard(MarginRequirementType::Initial),
+        )?;
+        let net_equity = calculate_net_equity_for_floor(
+            user,
+            &maps.perp_market_map,
+            &maps.spot_market_map,
+            &mut maps.oracle_map,
+        )?;
+
+        // An unverifiable floor rejects the trigger instead of cancelling:
+        // a cancel is irreversible, so an oracle blip must not destroy a
+        // resting order the account may legitimately carry. The keeper
+        // retries once the feed recovers and the gate resolves either way.
+        if let Some(net_equity) = net_equity {
+            validate!(
+                net_equity.all_oracles_valid,
+                ErrorCode::InvalidOracle,
+                "cannot verify equity floor {} + buffer {} with an invalid oracle (authority {} subaccount {})",
+                user.equity_floor,
+                user.equity_floor_buffer,
+                user.authority,
+                user.sub_account_id
+            )?;
+        }
+
+        if !margin_calc.meets_margin_requirement()
+            || net_equity.is_some_and(|net_equity| !net_equity.clears_buffered_floor(user))
+            || user_stats.is_equity_breaker_tripped()
+        {
+            // The slot reads as untriggered, so cancel_order won't unwind
+            // the aggregates we just reserved — take them back first.
+            let position_index = get_position_index(&user.perp_positions, market_index)?;
+            decrease_open_bids_and_asks(
+                &mut user.perp_positions[position_index],
+                &direction,
+                base_asset_amount,
+                true,
+            )?;
+            cancel_order(
+                order_index,
+                user,
+                user_key,
+                &maps.perp_market_map,
+                &maps.spot_market_map,
+                &mut maps.oracle_map,
+                now,
+                slot,
+                OrderActionExplanation::InsufficientFreeCollateral,
+                Some(filler_key),
+                0,
+                false,
+            )?;
+            user.update_last_active_slot(slot);
+            return Ok(None);
+        }
+    }
+
+    Ok(Some(ReservedTrigger {
+        direction,
+        base_asset_amount,
+        reduce_only,
+    }))
+}
+
+/// Pays the crank its flat reward out of the user.
+///
+/// A user that cranks its own trigger pays nothing. The account is already
+/// borrowed here, and a reward it paid itself would move no value.
+#[allow(clippy::too_many_arguments)]
+fn pay_trigger_keeper(
+    user: &mut User,
+    filler: &AccountLoader<'_, User>,
+    perp_market_map: &PerpMarketMap<'_>,
+    market_index: u16,
+    flat_filler_fee: u64,
+    user_key: &Pubkey,
+    filler_key: &Pubkey,
+    slot: u64,
+) -> Result<()> {
+    let is_filler_user = user_key == filler_key;
+    let mut filler = if !is_filler_user {
+        Some(load_mut!(filler)?)
+    } else {
+        None
+    };
+    let mut perp_market = perp_market_map.get_ref_mut(&market_index)?;
+    pay_keeper_flat_reward_for_perps(
+        user,
+        filler.as_deref_mut(),
+        &mut perp_market,
+        flat_filler_fee,
+        slot,
+    )?;
+    Ok(())
+}
+
+/// Marks the armed slot as the shadow of the order that now rests on the book.
+///
+/// The slot keeps the trigger parameters and takes the CLOB handle. It stays
+/// untriggered, so every DLOB matching path ignores it.
+fn mark_slot_placed(
+    user_loader: &AccountLoader<'_, User>,
+    order_id: u32,
+    order_ref: &ClobOrderRefV0,
+    market_index: u16,
+    reduce_only: bool,
+    slot: u64,
+) -> Result<()> {
+    let mut user = load_mut!(user_loader)?;
+    let order_index = user
+        .orders
+        .iter()
+        .position(|order| {
+            order.order_id == order_id && order.status == crate::state::user::OrderStatus::Open
+        })
+        .ok_or(ErrorCode::OrderDoesNotExist)?;
+    user.orders[order_index].set_clob_order_ref(order_ref.node_index, order_ref.order_id);
+    user.orders[order_index].add_bit_flag(OrderBitFlag::PlacedOnClob);
+    // A reduce-only trigger now rests on the book. Arm the counter so the
+    // router caps its fills until it leaves the book.
+    if reduce_only {
+        let position_index = get_position_index(&user.perp_positions, market_index)?;
+        user.perp_positions[position_index].arm_reduce_only_clob();
+    }
+    user.update_last_active_slot(slot);
     Ok(())
 }
 

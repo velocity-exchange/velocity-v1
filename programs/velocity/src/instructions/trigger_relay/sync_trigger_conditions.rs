@@ -45,7 +45,7 @@ use {
     },
     anchor_lang::{prelude::*, Discriminator},
     relay_spec::{AccountRefV0, ConditionV0, CrankSpecV0},
-    std::{collections::BTreeMap, convert::TryInto},
+    std::collections::BTreeMap,
 };
 
 #[derive(Accounts)]
@@ -100,8 +100,76 @@ pub fn rewrite_trigger_conditions<'info>(
     remaining_accounts: &'info [AccountInfo<'info>],
     write_shared_list: bool,
 ) -> Result<()> {
-    // Classify the remaining accounts by discriminator; oracles are matched
-    // by pubkey against the loaded markets afterwards.
+    let mut inputs = collect_trigger_inputs(remaining_accounts)?;
+    let oracle_refs = resolve_oracle_watches(&mut inputs);
+
+    let user_key = user_loader.key();
+    let conditions_key = trigger_conditions.key();
+
+    let mut conditions = trigger_conditions
+        .load_init()
+        .or_else(|_| trigger_conditions.load_mut())?;
+    conditions.user = user_key;
+    conditions.init_block()?;
+    let stored = build_sync_accounts(conditions_key, user_key, oracle_refs, inputs.market_refs);
+    if write_shared_list {
+        conditions.write_sync_accounts(&stored)?;
+    }
+
+    let user = crate::load!(user_loader)?;
+    let mut slot_index = 0usize;
+    for order in user.orders.iter() {
+        if slot_index >= TRIGGER_CONDITION_SLOTS {
+            break;
+        }
+        let Some(trigger) = trigger_watch_for_order(order, &inputs.markets) else {
+            continue;
+        };
+        let (resolver_disc, meta) = route_trigger_resolver(order, trigger.clob)?;
+        let resolvers = conditions.write_slot_resolvers(
+            slot_index,
+            &slot_resolver_refs(conditions_key, user_key, trigger.oracle, order.market_index),
+        )?;
+        let spec = CrankSpecV0 {
+            resolver_program: crate::ID.to_bytes(),
+            resolver_disc,
+            min_payment: trigger.min_payment,
+        };
+        conditions.set_condition(
+            TRIGGER_SLOT_BASE + slot_index,
+            &ConditionV0::on_value_cross(
+                trigger.oracle.to_bytes(),
+                trigger.watch.price_offset,
+                trigger.watch.price_len,
+                // Signed: every registered watch layout stores its price
+                // as i64.
+                relay_spec::WatchValue::Signed(trigger.threshold),
+                trigger.cmp,
+                spec,
+                resolvers,
+            ),
+        )?;
+        conditions.trigger_slots[slot_index] = meta;
+        slot_index += 1;
+    }
+    clear_unused_trigger_slots(&mut conditions, slot_index)
+}
+
+/// The classified `remaining_accounts`: the per-market inputs a trigger
+/// watch is derived from, and the market references the stored list
+/// carries.
+struct TriggerInputs<'info> {
+    markets: BTreeMap<u16, MarketInputs>,
+    market_oracles: BTreeMap<Pubkey, u16>,
+    market_refs: Vec<AccountRefV0>,
+    oracle_infos: BTreeMap<Pubkey, &'info AccountInfo<'info>>,
+}
+
+/// Classify the remaining accounts by discriminator; oracles are matched
+/// by pubkey against the loaded markets afterwards.
+fn collect_trigger_inputs<'info>(
+    remaining_accounts: &'info [AccountInfo<'info>],
+) -> Result<TriggerInputs<'info>> {
     let mut markets: BTreeMap<u16, MarketInputs> = BTreeMap::new();
     let mut market_oracles: BTreeMap<Pubkey, u16> = BTreeMap::new();
     let mut market_refs: Vec<AccountRefV0> = Vec::new();
@@ -152,168 +220,186 @@ pub fn rewrite_trigger_conditions<'info>(
         // oracle accounts (PythLazer, prelaunch).
         oracle_infos.insert(*info.key, info);
     }
-    // Map section in load_maps order: oracles (readonly) first, then the
-    // spot/perp markets (writable). The watch layout is resolved off each
-    // oracle's bytes here, once, for the threshold conversion below.
-    let mut map_refs: Vec<AccountRefV0> = Vec::new();
-    for (key, info) in &oracle_infos {
-        map_refs.push(AccountRefV0::readonly(key.to_bytes()));
-        let Some(market_index) = market_oracles.get(key) else {
+
+    Ok(TriggerInputs {
+        markets,
+        market_oracles,
+        market_refs,
+        oracle_infos,
+    })
+}
+
+/// The watch layout is resolved off each oracle's bytes here, once, for
+/// the threshold conversion each armed order needs. The refs come back in
+/// map order, oracles first and readonly.
+fn resolve_oracle_watches(inputs: &mut TriggerInputs<'_>) -> Vec<AccountRefV0> {
+    let mut oracle_refs: Vec<AccountRefV0> = Vec::new();
+    for (key, info) in &inputs.oracle_infos {
+        oracle_refs.push(AccountRefV0::readonly(key.to_bytes()));
+        let Some(market_index) = inputs.market_oracles.get(key) else {
             continue;
         };
-        let entry = markets.entry(*market_index).or_default();
+        let entry = inputs.markets.entry(*market_index).or_default();
         if let Some(source) = entry.oracle_source {
             entry.watch = oracle_watch(info, source);
         }
     }
-    map_refs.extend(market_refs);
+    oracle_refs
+}
 
-    let user_key = user_loader.key();
-    let conditions_key = trigger_conditions.key();
-    let disc8 = |disc: &[u8]| -> Result<[u8; 8]> {
-        disc.try_into().map_err(|_| error!(ErrorCode::DefaultError))
-    };
-
-    let mut conditions = trigger_conditions
-        .load_init()
-        .or_else(|_| trigger_conditions.load_mut())?;
-    conditions.user = user_key;
-    conditions.init_block()?;
-    // The same stored list the liquidation sync writes: the resolver's
-    // named accounts, then the user's margin map. Either sync populating
-    // it is enough, and neither has to carry its own copy.
+/// The same stored list the liquidation sync writes: the resolver's
+/// named accounts, then the user's margin map. Either sync populating
+/// it is enough, and neither has to carry its own copy.
+///
+/// The map section follows load_maps order: oracles (readonly) first, then
+/// the spot/perp markets (writable).
+fn build_sync_accounts(
+    conditions_key: Pubkey,
+    user_key: Pubkey,
+    oracle_refs: Vec<AccountRefV0>,
+    market_refs: Vec<AccountRefV0>,
+) -> Vec<AccountRefV0> {
     let mut stored = vec![
         AccountRefV0::writable(crate::state::pdas::relay_scratch().to_bytes()),
         AccountRefV0::readonly(conditions_key.to_bytes()),
         AccountRefV0::readonly(user_key.to_bytes()),
         AccountRefV0::readonly(crate::state::pdas::state().to_bytes()),
     ];
-    stored.extend(map_refs);
-    if write_shared_list {
-        conditions.write_sync_accounts(&stored)?;
+    stored.extend(oracle_refs);
+    stored.extend(market_refs);
+    stored
+}
+
+/// The raw-price watch one armed trigger order rides on.
+struct TriggerWatch {
+    oracle: Pubkey,
+    watch: OracleWatchV0,
+    /// What the market's crank conditions pay for the trigger.
+    min_payment: u64,
+    /// The trigger price in the oracle's raw units.
+    threshold: i64,
+    /// The comparison byte `ConditionV0::on_value_cross` fires on.
+    cmp: u8,
+    /// (quoter slab, book, program) when a vetted CLOB is attached.
+    clob: Option<(Pubkey, Pubkey, Pubkey)>,
+}
+
+/// Derive the watch that arms one order. `None` leaves the order on the
+/// keeper-bot path: it does not trigger, its market is absent, or the
+/// market gives no oracle, no watch layout, or no keeper payment.
+fn trigger_watch_for_order(
+    order: &crate::state::user::Order,
+    markets: &BTreeMap<u16, MarketInputs>,
+) -> Option<TriggerWatch> {
+    // Skip a trigger already resting on a book: it deliberately reads
+    // as untriggered, so without this the watch re-fires every round
+    // and `trigger_limit_order_v1` rejects the staged crank each time.
+    if order.status != OrderStatus::Open
+        || !order.must_be_triggered()
+        || order.triggered()
+        || order.is_placed_on_clob()
+    {
+        return None;
     }
+    let inputs = markets.get(&order.market_index)?;
+    // Everything a watch needs, or the order stays keeper-only.
+    let (Some(oracle), Some(watch), Some(min_payment)) =
+        (inputs.oracle, inputs.watch, inputs.keeper_payment_lamports)
+    else {
+        return None;
+    };
+    let direction = match order.trigger_condition {
+        crate::state::user::OrderTriggerCondition::Above => WatchDirection::AtOrAbove,
+        crate::state::user::OrderTriggerCondition::Below => WatchDirection::AtOrBelow,
+        _ => return None,
+    };
+    let threshold = watch.raw_threshold(i128::from(order.trigger_price), direction)?;
+    Some(TriggerWatch {
+        oracle,
+        watch,
+        min_payment,
+        threshold,
+        cmp: direction.cmp(),
+        clob: inputs.clob,
+    })
+}
 
-    let user = crate::load!(user_loader)?;
-    let mut slot_index = 0usize;
-    for order in user.orders.iter() {
-        if slot_index >= TRIGGER_CONDITION_SLOTS {
-            break;
-        }
-        // Skip a trigger already resting on a book: it deliberately reads
-        // as untriggered, so without this the watch re-fires every round
-        // and `trigger_limit_order_v1` rejects the staged crank each time.
-        if order.status != OrderStatus::Open
-            || !order.must_be_triggered()
-            || order.triggered()
-            || order.is_placed_on_clob()
-        {
-            continue;
-        }
-        let Some(inputs) = markets.get(&order.market_index) else {
-            continue;
-        };
-        // Everything a watch needs, or the order stays keeper-only.
-        let (Some(oracle), Some(watch), Some(min_payment)) =
-            (inputs.oracle, inputs.watch, inputs.keeper_payment_lamports)
-        else {
-            continue;
-        };
-        let direction = match order.trigger_condition {
-            crate::state::user::OrderTriggerCondition::Above => WatchDirection::AtOrAbove,
-            crate::state::user::OrderTriggerCondition::Below => WatchDirection::AtOrBelow,
-            _ => continue,
-        };
-        let Some(threshold) = watch.raw_threshold(i128::from(order.trigger_price), direction)
-        else {
-            continue;
-        };
-        let cmp = direction.cmp();
-
-        // Route each fired trigger to its resolver by order type and whether
-        // the market has a CLOB. A trigger-limit with a fixed resting price
-        // rests whole on the book (`trigger_limit_order_v1`). A stop-market fires
-        // and fills against the book (`trigger_market_order_v1`). Everything else —
-        // any trigger on a market without a CLOB, or a trigger-limit with an
-        // oracle offset that cannot rest at a fixed price — stays on the plain
-        // trigger crank for a keeper bot to fill.
-        let clob_rest = order.order_type == OrderType::TriggerLimit
-            && order.oracle_price_offset == 0
-            && inputs.clob.is_some();
-        let clob_fill = order.order_type == OrderType::TriggerMarket && inputs.clob.is_some();
-        let (resolver_disc, meta) = if clob_rest || clob_fill {
-            let (slab, book, program) = inputs.clob.unwrap();
-            let disc = if clob_rest {
-                crate::instruction::ResolveTriggerLimitOrderV1::DISCRIMINATOR
-            } else {
-                crate::instruction::ResolveTriggerMarketOrderV1::DISCRIMINATOR
-            };
-            (
-                disc8(disc)?,
-                TriggerSlotMetaV0 {
-                    quoter_slab: slab,
-                    clob_market: book,
-                    clob_program: program,
-                    order_id: order.order_id,
-                    market_index: order.market_index,
-                    padding: [0; 2],
-                },
-            )
+/// Route each fired trigger to its resolver by order type and whether
+/// the market has a CLOB. A trigger-limit with a fixed resting price
+/// rests whole on the book (`trigger_limit_order_v1`). A stop-market fires
+/// and fills against the book (`trigger_market_order_v1`). Everything else —
+/// any trigger on a market without a CLOB, or a trigger-limit with an
+/// oracle offset that cannot rest at a fixed price — stays on the plain
+/// trigger crank for a keeper bot to fill.
+fn route_trigger_resolver(
+    order: &crate::state::user::Order,
+    clob: Option<(Pubkey, Pubkey, Pubkey)>,
+) -> Result<([u8; 8], TriggerSlotMetaV0)> {
+    let clob_rest = order.order_type == OrderType::TriggerLimit
+        && order.oracle_price_offset == 0
+        && clob.is_some();
+    let clob_fill = order.order_type == OrderType::TriggerMarket && clob.is_some();
+    if clob_rest || clob_fill {
+        let (slab, book, program) = clob.unwrap();
+        let disc = if clob_rest {
+            crate::instruction::ResolveTriggerLimitOrderV1::DISCRIMINATOR
         } else {
-            (
-                disc8(crate::instruction::ResolveTriggerOrder::DISCRIMINATOR)?,
-                TriggerSlotMetaV0 {
-                    quoter_slab: Pubkey::default(),
-                    clob_market: Pubkey::default(),
-                    clob_program: Pubkey::default(),
-                    order_id: order.order_id,
-                    market_index: order.market_index,
-                    padding: [0; 2],
-                },
-            )
+            crate::instruction::ResolveTriggerMarketOrderV1::DISCRIMINATOR
         };
-
-        let (perp_market_pda, _) = Pubkey::find_program_address(
-            &[b"perp_market", order.market_index.to_le_bytes().as_ref()],
-            &crate::ID,
-        );
-        // Every trigger resolver shares one account set: the scratch, the
-        // block, the user, and the slot's own oracle and perp market. The
-        // fire-to-book resolver stages a taker-origin rest, not a fill, so it
-        // reads no book and needs no CLOB accounts of its own.
-        let resolvers = conditions.write_slot_resolvers(
-            slot_index,
-            &[
-                AccountRefV0::writable(crate::state::pdas::relay_scratch().to_bytes()),
-                AccountRefV0::readonly(conditions_key.to_bytes()),
-                AccountRefV0::readonly(user_key.to_bytes()),
-                AccountRefV0::readonly(oracle.to_bytes()),
-                AccountRefV0::readonly(perp_market_pda.to_bytes()),
-            ],
-        )?;
-        let spec = CrankSpecV0 {
-            resolver_program: crate::ID.to_bytes(),
-            resolver_disc,
-            min_payment,
-        };
-        conditions.set_condition(
-            TRIGGER_SLOT_BASE + slot_index,
-            &ConditionV0::on_value_cross(
-                oracle.to_bytes(),
-                watch.price_offset,
-                watch.price_len,
-                // Signed: every registered watch layout stores its price
-                // as i64.
-                relay_spec::WatchValue::Signed(threshold),
-                cmp,
-                spec,
-                resolvers,
-            ),
-        )?;
-        conditions.trigger_slots[slot_index] = meta;
-        slot_index += 1;
+        Ok((
+            crate::instructions::relay_harness::disc8(disc)?,
+            TriggerSlotMetaV0 {
+                quoter_slab: slab,
+                clob_market: book,
+                clob_program: program,
+                order_id: order.order_id,
+                market_index: order.market_index,
+                padding: [0; 2],
+            },
+        ))
+    } else {
+        Ok((
+            crate::instructions::relay_harness::disc8(
+                crate::instruction::ResolveTriggerOrder::DISCRIMINATOR,
+            )?,
+            TriggerSlotMetaV0 {
+                quoter_slab: Pubkey::default(),
+                clob_market: Pubkey::default(),
+                clob_program: Pubkey::default(),
+                order_id: order.order_id,
+                market_index: order.market_index,
+                padding: [0; 2],
+            },
+        ))
     }
-    // Stale tail slots go quiet.
-    for index in slot_index..TRIGGER_CONDITION_SLOTS {
+}
+
+/// Every trigger resolver shares one account set: the scratch, the
+/// block, the user, and the slot's own oracle and perp market. The
+/// fire-to-book resolver stages a taker-origin rest, not a fill, so it
+/// reads no book and needs no CLOB accounts of its own.
+fn slot_resolver_refs(
+    conditions_key: Pubkey,
+    user_key: Pubkey,
+    oracle: Pubkey,
+    market_index: u16,
+) -> [AccountRefV0; 5] {
+    let (perp_market_pda, _) = Pubkey::find_program_address(
+        &[b"perp_market", market_index.to_le_bytes().as_ref()],
+        &crate::ID,
+    );
+    [
+        AccountRefV0::writable(crate::state::pdas::relay_scratch().to_bytes()),
+        AccountRefV0::readonly(conditions_key.to_bytes()),
+        AccountRefV0::readonly(user_key.to_bytes()),
+        AccountRefV0::readonly(oracle.to_bytes()),
+        AccountRefV0::readonly(perp_market_pda.to_bytes()),
+    ]
+}
+
+/// Stale tail slots go quiet.
+fn clear_unused_trigger_slots(conditions: &mut UserConditionsV0, from: usize) -> Result<()> {
+    for index in from..TRIGGER_CONDITION_SLOTS {
         conditions.set_condition(
             TRIGGER_SLOT_BASE + index,
             &relay_spec::bytemuck::Zeroable::zeroed(),

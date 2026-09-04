@@ -62,7 +62,7 @@ use {
     },
     anchor_lang::{prelude::*, Discriminator},
     relay_spec::{AccountRefV0, ConditionV0, CrankSpecV0},
-    std::{collections::BTreeMap, convert::TryInto},
+    std::collections::BTreeMap,
 };
 
 /// The user's account region a sync watch covers: `perp_positions` through
@@ -188,6 +188,62 @@ pub fn rewrite_liq_conditions<'info>(
     stamp_sync_slot: bool,
 ) -> Result<()> {
     let user_key = user_loader.key();
+    let mut inputs = collect_sync_inputs(remaining_accounts)?;
+    validate_market_coverage(user_loader, &inputs)?;
+    let oracle_refs = resolve_oracle_watches(&mut inputs);
+    let sync_accounts = build_sync_accounts(
+        liq_conditions.key(),
+        user_key,
+        oracle_refs,
+        inputs.market_refs,
+        inputs.tail_refs,
+    );
+
+    let mut conditions = liq_conditions
+        .load_init()
+        .or_else(|_| liq_conditions.load_mut())?;
+    conditions.user = user_key;
+    conditions.sync_payment_lamports = args.sync_payment_lamports;
+    if args.sync_fallback_slots > 0 {
+        conditions.sync_fallback_slots = args.sync_fallback_slots;
+    }
+    let fallback_slots = conditions.sync_fallback_slots.max(1);
+    conditions.init_block()?;
+    // What the threshold conditions point relay at (prefix + margin map).
+    // Every condition on this account points at the one stored list.
+    let resolvers = conditions.write_sync_accounts(&sync_accounts)?;
+
+    // Free collateral now — the distance each threshold is measured from.
+    let user = crate::load!(user_loader)?;
+    // Stamped before the thresholds so a sync that legitimately writes none
+    // still converges — the resolver compares digests, not slot contents.
+    conditions.positions_digest = UserConditionsV0::digest_positions(&user);
+    if stamp_sync_slot {
+        conditions.last_paid_sync_slot = Clock::get()?.slot;
+    }
+    arm_liveness_poll(&mut conditions, &inputs.perps, resolvers)?;
+    arm_self_maintenance(&mut conditions, user_key, args, fallback_slots, resolvers)
+}
+
+/// The classified `remaining_accounts`: the market inputs the thresholds
+/// come from, and the account references a staged executor reuses.
+struct SyncInputs<'info> {
+    perps: BTreeMap<u16, MarketInputs>,
+    spots: BTreeMap<u16, MarketInputs>,
+    /// Which market an oracle belongs to. The flag is true for a perp
+    /// market.
+    oracle_of_market: BTreeMap<Pubkey, (bool, u16)>,
+    market_refs: Vec<AccountRefV0>,
+    tail_refs: Vec<AccountRefV0>,
+    oracle_infos: BTreeMap<Pubkey, &'info AccountInfo<'info>>,
+}
+
+/// Sort `remaining_accounts` by account type into market inputs and the
+/// reference lists. Anything that is not a market or a crank account is a
+/// candidate oracle.
+fn collect_sync_inputs<'info>(
+    remaining_accounts: &'info [AccountInfo<'info>],
+) -> Result<SyncInputs<'info>> {
     let mut perps: BTreeMap<u16, MarketInputs> = BTreeMap::new();
     let mut spots: BTreeMap<u16, MarketInputs> = BTreeMap::new();
     let mut oracle_of_market: BTreeMap<Pubkey, (bool, u16)> = BTreeMap::new();
@@ -252,82 +308,97 @@ pub fn rewrite_liq_conditions<'info>(
         oracle_infos.insert(*info.key, info);
     }
 
-    // Every market the user is actually exposed in has to be present.
-    //
-    // The map above is built from whatever accounts the caller passed, and both
-    // entry points are permissionless — the resync names no signer at all. A
-    // caller that passes fewer markets than the user holds would otherwise
-    // write a block whose thresholds were derived from part of the account, and
-    // one that passes none writes an empty map. The staged resolvers read their
-    // account list back out of that map, so an emptied map means the
-    // liquidation resolver loads no markets and fails, and the staged repair
-    // inherits the same empty list and cannot recover it.
-    //
-    // The emptiness test is the margin engine's own `is_available`, not "holds
-    // a base amount": a position carrying only open orders, unsettled PnL or an
-    // isolated balance is one the margin walk still visits.
-    // A market entry is only usable if its oracle account rode along too. The
-    // market carries its oracle's pubkey, but the resolver reads the price off
-    // the oracle *account*; without it every wake fails and the block reads
-    // healthy while the user is never liquidated. A perp entry filed only from a
-    // ClobCrankConditionsV0 (which sets no oracle) fails this too, so the
-    // PerpMarket itself must be present. The quote market's default oracle needs
-    // no account. Both entry points are permissionless, so a caller cannot omit
-    // an oracle to shield a user.
-    let oracle_present = |oracle: Option<Pubkey>| -> bool {
-        oracle.is_some_and(|key| key == Pubkey::default() || oracle_infos.contains_key(&key))
-    };
-    {
-        let user = crate::load!(user_loader)?;
-        for position in user.perp_positions.iter() {
-            if position.is_available() {
-                continue;
-            }
-            validate!(
-                perps.contains_key(&position.market_index),
-                ErrorCode::InvalidUserConditionsSync,
-                "sync is missing perp market {}, which the user has exposure in",
-                position.market_index
-            )?;
-            validate!(
-                oracle_present(perps[&position.market_index].oracle),
-                ErrorCode::InvalidUserConditionsSync,
-                "sync is missing the oracle account for perp market {}",
-                position.market_index
-            )?;
-        }
-        for position in user.spot_positions.iter() {
-            if position.is_available() {
-                continue;
-            }
-            validate!(
-                spots.contains_key(&position.market_index),
-                ErrorCode::InvalidUserConditionsSync,
-                "sync is missing spot market {}, which the user has exposure in",
-                position.market_index
-            )?;
-            validate!(
-                oracle_present(spots[&position.market_index].oracle),
-                ErrorCode::InvalidUserConditionsSync,
-                "sync is missing the oracle account for spot market {}",
-                position.market_index
-            )?;
-        }
-    }
+    Ok(SyncInputs {
+        perps,
+        spots,
+        oracle_of_market,
+        market_refs,
+        tail_refs,
+        oracle_infos,
+    })
+}
 
-    // Oracle prices (readonly, first in map order). The watch layout is
-    // resolved off each oracle's bytes once, here, and carries both the
-    // current price and where a threshold condition should read it.
+/// Every market the user is actually exposed in has to be present.
+///
+/// The map above is built from whatever accounts the caller passed, and both
+/// entry points are permissionless — the resync names no signer at all. A
+/// caller that passes fewer markets than the user holds would otherwise
+/// write a block whose thresholds were derived from part of the account, and
+/// one that passes none writes an empty map. The staged resolvers read their
+/// account list back out of that map, so an emptied map means the
+/// liquidation resolver loads no markets and fails, and the staged repair
+/// inherits the same empty list and cannot recover it.
+///
+/// The emptiness test is the margin engine's own `is_available`, not "holds
+/// a base amount": a position carrying only open orders, unsettled PnL or an
+/// isolated balance is one the margin walk still visits.
+/// A market entry is only usable if its oracle account rode along too. The
+/// market carries its oracle's pubkey, but the resolver reads the price off
+/// the oracle *account*; without it every wake fails and the block reads
+/// healthy while the user is never liquidated. A perp entry filed only from a
+/// ClobCrankConditionsV0 (which sets no oracle) fails this too, so the
+/// PerpMarket itself must be present. The quote market's default oracle needs
+/// no account. Both entry points are permissionless, so a caller cannot omit
+/// an oracle to shield a user.
+fn validate_market_coverage(
+    user_loader: &AccountLoader<'_, User>,
+    inputs: &SyncInputs<'_>,
+) -> Result<()> {
+    let oracle_present = |oracle: Option<Pubkey>| -> bool {
+        oracle.is_some_and(|key| key == Pubkey::default() || inputs.oracle_infos.contains_key(&key))
+    };
+    let user = crate::load!(user_loader)?;
+    for position in user.perp_positions.iter() {
+        if position.is_available() {
+            continue;
+        }
+        validate!(
+            inputs.perps.contains_key(&position.market_index),
+            ErrorCode::InvalidUserConditionsSync,
+            "sync is missing perp market {}, which the user has exposure in",
+            position.market_index
+        )?;
+        validate!(
+            oracle_present(inputs.perps[&position.market_index].oracle),
+            ErrorCode::InvalidUserConditionsSync,
+            "sync is missing the oracle account for perp market {}",
+            position.market_index
+        )?;
+    }
+    for position in user.spot_positions.iter() {
+        if position.is_available() {
+            continue;
+        }
+        validate!(
+            inputs.spots.contains_key(&position.market_index),
+            ErrorCode::InvalidUserConditionsSync,
+            "sync is missing spot market {}, which the user has exposure in",
+            position.market_index
+        )?;
+        validate!(
+            oracle_present(inputs.spots[&position.market_index].oracle),
+            ErrorCode::InvalidUserConditionsSync,
+            "sync is missing the oracle account for spot market {}",
+            position.market_index
+        )?;
+    }
+    Ok(())
+}
+
+/// Oracle prices (readonly, first in map order). The watch layout is
+/// resolved off each oracle's bytes once, here, and carries both the
+/// current price and where a threshold condition should read it.
+fn resolve_oracle_watches(inputs: &mut SyncInputs<'_>) -> Vec<AccountRefV0> {
     let mut oracle_refs: Vec<AccountRefV0> = Vec::new();
-    for (key, info) in &oracle_infos {
+    for (key, info) in &inputs.oracle_infos {
         oracle_refs.push(AccountRefV0::readonly(key.to_bytes()));
-        let Some((is_perp, market_index)) = oracle_of_market.get(key).copied() else {
+        let Some((is_perp, market_index)) = inputs.oracle_of_market.get(key).copied() else {
             continue;
         };
         let entry = if is_perp {
-            perps.entry(market_index).or_default()
+            inputs.perps.entry(market_index).or_default()
         } else {
-            spots.entry(market_index).or_default()
+            inputs.spots.entry(market_index).or_default()
         };
         let Some(source) = entry.oracle_source else {
             continue;
@@ -341,16 +412,20 @@ pub fn rewrite_liq_conditions<'info>(
         entry.watch = Some(watch);
         entry.price = price;
     }
+    oracle_refs
+}
 
-    let conditions_key = liq_conditions.key();
-    let disc8 = |disc: &[u8]| -> Result<[u8; 8]> {
-        disc.try_into().map_err(|_| error!(ErrorCode::DefaultError))
-    };
-
-    // The account list staged executors reuse, in load_maps order.
-    // The stored list is also the threshold conditions' indirect resolver
-    // list, so it leads with the accounts `ResolveLiquidatePerpWithFill`
-    // names, in its declaration order. `read_sync_accounts` skips them.
+/// The account list staged executors reuse, in load_maps order.
+/// The stored list is also the threshold conditions' indirect resolver
+/// list, so it leads with the accounts `ResolveLiquidatePerpWithFill`
+/// names, in its declaration order. `read_sync_accounts` skips them.
+fn build_sync_accounts(
+    conditions_key: Pubkey,
+    user_key: Pubkey,
+    oracle_refs: Vec<AccountRefV0>,
+    market_refs: Vec<AccountRefV0>,
+    tail_refs: Vec<AccountRefV0>,
+) -> Vec<AccountRefV0> {
     let mut sync_accounts = vec![
         AccountRefV0::writable(pdas::relay_scratch().to_bytes()),
         AccountRefV0::readonly(conditions_key.to_bytes()),
@@ -360,60 +435,41 @@ pub fn rewrite_liq_conditions<'info>(
     sync_accounts.extend(oracle_refs);
     sync_accounts.extend(market_refs);
     sync_accounts.extend(tail_refs);
+    sync_accounts
+}
 
-    let mut conditions = liq_conditions
-        .load_init()
-        .or_else(|_| liq_conditions.load_mut())?;
-    conditions.user = user_key;
-    conditions.sync_payment_lamports = args.sync_payment_lamports;
-    if args.sync_fallback_slots > 0 {
-        conditions.sync_fallback_slots = args.sync_fallback_slots;
-    }
-    let fallback_slots = conditions.sync_fallback_slots.max(1);
-    conditions.init_block()?;
-    // What the threshold conditions point relay at (prefix + margin map).
-    // Every condition on this account points at the one stored list.
-    let resolvers = conditions.write_sync_accounts(&sync_accounts)?;
-
-    // Free collateral now — the distance each threshold is measured from.
-    let user = crate::load!(user_loader)?;
-    // Stamped before the thresholds so a sync that legitimately writes none
-    // still converges — the resolver compares digests, not slot contents.
-    conditions.positions_digest = UserConditionsV0::digest_positions(&user);
-    if stamp_sync_slot {
-        conditions.last_paid_sync_slot = Clock::get()?.slot;
-    }
-    // The threshold is priced at whichever stage this account is in.
-    //
-    // Cancelling always comes before liquidating: `force_cancel_clob_orders`
-    // answers to the initial requirement and liquidation to the maintenance
-    // one, so anything liquidatable was already cancellable and the two are
-    // stages of one ladder rather than separate watches. While the account
-    // rests orders on a book, the earlier crossing is the one worth waking
-    // at; once they are gone there is nothing to cancel and the watch belongs
-    // back at the liquidation price.
-    //
-    // Nothing has to move it. The self-maintenance watch below covers
-    // `[spot_positions, orders)`, which is where `open_orders` / `open_bids` /
-    // `open_asks` live, so the cancel that empties the book and the placement
-    // that refills it both re-run this sync and re-derive the stage.
-    // The whole of velocity's liquidation coverage for this account. It
-    // predicts nothing: it wakes on a clock and lets the resolver run the real
-    // maintenance-margin calculation, the same code the executor runs, which
-    // reports no work when the account is healthy.
-    //
-    // What this account carries for the resolver is the margin map — the
-    // markets and oracles that calculation needs — and keeping that list
-    // current is what the watch and the fallback above are for.
-    //
-    // Priced at the cheapest liquidation any of the user's markets pays. Relay
-    // holds a keeper's balance growth to the floor a condition advertises, so
-    // a floor above what the market actually pays would fail the crank it
-    // asked for.
-    // Priced at the cheapest liquidation any of this user's markets pays.
-    // Relay holds a keeper's balance growth to the floor a condition
-    // advertises, so a floor above what the market actually pays would fail
-    // the crank it asked for.
+/// The threshold is priced at whichever stage this account is in.
+///
+/// Cancelling always comes before liquidating: `force_cancel_clob_orders`
+/// answers to the initial requirement and liquidation to the maintenance
+/// one, so anything liquidatable was already cancellable and the two are
+/// stages of one ladder rather than separate watches. While the account
+/// rests orders on a book, the earlier crossing is the one worth waking
+/// at; once they are gone there is nothing to cancel and the watch belongs
+/// back at the liquidation price.
+///
+/// Nothing has to move it. The self-maintenance watch covers
+/// `[spot_positions, orders)`, which is where `open_orders` / `open_bids` /
+/// `open_asks` live, so the cancel that empties the book and the placement
+/// that refills it both re-run this sync and re-derive the stage.
+/// The whole of velocity's liquidation coverage for this account. It
+/// predicts nothing: it wakes on a clock and lets the resolver run the real
+/// maintenance-margin calculation, the same code the executor runs, which
+/// reports no work when the account is healthy.
+///
+/// What this account carries for the resolver is the margin map — the
+/// markets and oracles that calculation needs — and keeping that list
+/// current is what the watch and the fallback are for.
+///
+/// Priced at the cheapest liquidation any of the user's markets pays. Relay
+/// holds a keeper's balance growth to the floor a condition advertises, so
+/// a floor above what the market actually pays would fail the crank it
+/// asked for.
+fn arm_liveness_poll(
+    conditions: &mut UserConditionsV0,
+    perps: &BTreeMap<u16, MarketInputs>,
+    resolvers: relay_spec::ResolverListV0,
+) -> Result<()> {
     let poll_payment = perps
         .values()
         .filter_map(|inputs| inputs.keeper_payment_lamports)
@@ -425,21 +481,31 @@ pub fn rewrite_liq_conditions<'info>(
             LIQ_LIVENESS_POLL_SLOTS,
             CrankSpecV0 {
                 resolver_program: crate::ID.to_bytes(),
-                resolver_disc: disc8(
+                resolver_disc: crate::instructions::relay_harness::disc8(
                     crate::instruction::ResolveLiquidatePerpWithFill::DISCRIMINATOR,
                 )?,
                 min_payment: poll_payment,
             },
             resolvers,
         ),
-    )?;
+    )
+}
 
-    // Self-maintenance: the user's own position bytes changing re-derives
-    // the thresholds, and a coarse poll catches whatever that misses.
+/// Self-maintenance: the user's own position bytes changing re-derives
+/// the thresholds, and a coarse poll catches whatever that misses.
+fn arm_self_maintenance(
+    conditions: &mut UserConditionsV0,
+    user_key: Pubkey,
+    args: SyncLiqConditionsTerms,
+    fallback_slots: u64,
+    resolvers: relay_spec::ResolverListV0,
+) -> Result<()> {
     if args.sync_payment_lamports > 0 {
         let sync_spec = CrankSpecV0 {
             resolver_program: crate::ID.to_bytes(),
-            resolver_disc: disc8(crate::instruction::ResolveResyncLiqConditions::DISCRIMINATOR)?,
+            resolver_disc: crate::instructions::relay_harness::disc8(
+                crate::instruction::ResolveResyncLiqConditions::DISCRIMINATOR,
+            )?,
             min_payment: args.sync_payment_lamports,
         };
         let (watch_offset, watch_len) = user_positions_watch_region();

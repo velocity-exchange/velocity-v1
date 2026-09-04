@@ -29,8 +29,14 @@ use {
             calculate_net_equity_for_floor, MarginRequirementType,
         },
         state::{
-            margin_calculation::MarginContext, perp_market_map::MarketSet, prop_amm::QuoterSlabExt,
-            state::State, user::User, user_conditions::UserConditionsV0,
+            margin_calculation::MarginContext,
+            oracle_map::OracleMap,
+            perp_market_map::{MarketSet, PerpMarketMap},
+            prop_amm::QuoterSlabExt,
+            spot_market_map::SpotMarketMap,
+            state::State,
+            user::User,
+            user_conditions::UserConditionsV0,
         },
         validate,
     },
@@ -79,129 +85,39 @@ pub fn handle_resolve_liquidate_perp_with_fill<'c: 'info, 'info>(
             Some(state.oracle_guard_rails),
         )?;
 
-        // Stage one: a book this account may no longer rest risk-increasing
-        // orders on. The grounds are the executor's own — initial margin, a
-        // provable floor breach, or the authority-wide latch — recomputed
-        // here so the wake's conservative single-oracle estimate is never
-        // what acts.
-        let cancel_target = {
-            let user = crate::load!(ctx.accounts.user)?;
-            let initial = calculate_margin_requirement_and_total_collateral_and_liability_info(
-                &user,
-                &perp_market_map,
-                &spot_market_map,
-                &mut oracle_map,
-                MarginContext::standard(MarginRequirementType::Initial),
-            )?;
-            let below_floor = calculate_net_equity_for_floor(
-                &user,
-                &perp_market_map,
-                &spot_market_map,
-                &mut oracle_map,
-            )?
-            .is_some_and(|net_equity| net_equity.proves_below_floor(&user));
-            if initial.meets_margin_requirement() && !below_floor {
-                None
-            } else {
-                // One market per wake; relay comes back for the rest while
-                // the account still qualifies.
-                user.perp_positions
-                    .iter()
-                    .map(|position| position.market_index)
-                    .find(|market_index| user.clob_resident_open_orders(*market_index) > 0)
-            }
-        };
+        let cancel_target = find_cancel_target(
+            &ctx.accounts.user,
+            &perp_market_map,
+            &spot_market_map,
+            &mut oracle_map,
+        )?;
         if let Some(market_index) = cancel_target {
             let book = perp_market_map.get_ref(&market_index)?.clob_market;
             if book != Pubkey::default() {
-                let user_stats =
-                    crate::state::pdas::user_stats(&crate::load!(ctx.accounts.user)?.authority);
-                let (protocol_user, protocol_user_stats) = crate::state::pdas::protocol_user_pair();
-                // The book and its program come off the market's slab, which
-                // the sync stored in the list's inert tail alongside the
-                // margin map.
-                let quoter_slab = crate::state::pdas::quoter_slab(market_index);
-                let Some(slab_info) =
-                    crate::state::prop_amm::find_account(ctx.remaining_accounts, &quoter_slab)
-                else {
-                    msg!(
-                        "quoter slab {} absent from the stored list; cannot stage a cancel",
-                        quoter_slab
-                    );
-                    return Ok(None);
-                };
-                let slab =
-                    AccountLoader::<crate::state::prop_amm::QuoterSlabV0>::try_from(slab_info)?;
-                let (clob_market, clob_program) = {
-                    let slots = slab.slots()?;
-                    let Some(index) = crate::state::prop_amm::clob_slot_index(&slots) else {
-                        msg!("quoter slab holds no book slot; cannot stage a cancel");
-                        return Ok(None);
-                    };
-                    (
-                        slots[index].config.response_account,
-                        slots[index].config.program_id,
-                    )
-                };
-                return Ok(
-                    Some(
-                        crate::instructions::StagedCall::new::<
-                            crate::instruction::ForceCancelClobOrders,
-                        >(crate::accounts::ForceCancelClobOrders {
-                            state: ctx.accounts.state.key(),
-                            authority: crate::state::pdas::keeper_placeholder(),
-                            filler: protocol_user,
-                            filler_stats: protocol_user_stats,
-                            user: ctx.accounts.user.key(),
-                            user_stats,
-                            quoter_slab,
-                            clob_market,
-                            clob_program,
-                            crank_conditions: Some(crate::state::pdas::clob_crank_conditions(
-                                market_index,
-                            )),
-                        })
-                        .refs(stored)
-                        // The sweep takes the side that cannot be reducing, so
-                        // the resolver never has to read the book to name refs.
-                        .arg(
-                            crate::instructions::ForceCancelClobOrdersArgs {
-                                market_index,
-                                order_refs: Vec::new(),
-                            },
-                        )?,
-                    ),
+                return stage_force_cancel(
+                    ctx.accounts.state.key(),
+                    &ctx.accounts.user,
+                    ctx.remaining_accounts,
+                    market_index,
+                    stored,
                 );
             }
         }
 
         // Stage two: no orders left in the way, so the question is whether
         // this is liquidatable.
-        let liquidatable = {
-            let user = crate::load!(ctx.accounts.user)?;
-            let calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
-                &user,
-                &perp_market_map,
-                &spot_market_map,
-                &mut oracle_map,
-                MarginContext::liquidation(state.liquidation_margin_buffer_ratio),
-            )?;
-            !calculation.meets_margin_requirement()
-        };
+        let liquidatable = is_liquidatable(
+            &ctx.accounts.user,
+            &perp_market_map,
+            &spot_market_map,
+            &mut oracle_map,
+            state.liquidation_margin_buffer_ratio,
+        )?;
         if !liquidatable {
             return Ok(None);
         }
 
-        // Which market to liquidate: the user's largest live perp position.
-        let target = {
-            let user = crate::load!(ctx.accounts.user)?;
-            user.perp_positions
-                .iter()
-                .filter(|p| p.base_asset_amount != 0)
-                .max_by_key(|p| (p.base_asset_amount as i128).abs())
-                .map(|p| p.market_index)
-        };
-        let Some(market_index) = target else {
+        let Some(market_index) = largest_perp_position(&ctx.accounts.user)? else {
             // Spot-only distress. The account is liquidatable and the check
             // above proved it, but there is no crank that can act on it.
             //
@@ -216,30 +132,168 @@ pub fn handle_resolve_liquidate_perp_with_fill<'c: 'info, 'info>(
             return Ok(None);
         };
 
-        let (protocol_user, protocol_user_stats) = crate::state::pdas::protocol_user_pair();
-        let user_stats =
-            crate::state::pdas::user_stats(&crate::load!(ctx.accounts.user)?.authority);
-        Ok(Some(
-            // `liquidate_perp_with_fill` shares `liquidate_perp`'s account
-            // list, so the two cannot be paired by name: this is the
-            // inventory-free flavor, and staging the plain one would have
-            // the protocol acquire the position.
-            crate::instructions::StagedCall::new::<crate::instruction::LiquidatePerpWithFill>(
-                crate::accounts::LiquidatePerp {
-                    state: ctx.accounts.state.key(),
-                    authority: crate::state::pdas::keeper_placeholder(),
-                    liquidator: protocol_user,
-                    liquidator_stats: protocol_user_stats,
-                    user: ctx.accounts.user.key(),
-                    user_stats,
-                    crank_conditions: Some(crate::state::pdas::clob_crank_conditions(market_index)),
-                    // The crank reads its own priority fee back from
-                    // here to price the reimbursement.
-                    instructions_sysvar: Some(solana_program::sysvar::instructions::ID),
-                },
-            )
-            .refs(stored)
-            .arg(market_index)?,
-        ))
+        stage_liquidate_perp(
+            ctx.accounts.state.key(),
+            &ctx.accounts.user,
+            market_index,
+            stored,
+        )
+        .map(Some)
     })
+}
+
+/// Stage one: a book this account may no longer rest risk-increasing
+/// orders on. The grounds are the executor's own — initial margin, a
+/// provable floor breach, or the authority-wide latch — recomputed
+/// here so the wake's conservative single-oracle estimate is never
+/// what acts.
+fn find_cancel_target(
+    user_loader: &AccountLoader<'_, User>,
+    perp_market_map: &PerpMarketMap,
+    spot_market_map: &SpotMarketMap,
+    oracle_map: &mut OracleMap,
+) -> Result<Option<u16>> {
+    let user = crate::load!(user_loader)?;
+    let initial = calculate_margin_requirement_and_total_collateral_and_liability_info(
+        &user,
+        perp_market_map,
+        spot_market_map,
+        oracle_map,
+        MarginContext::standard(MarginRequirementType::Initial),
+    )?;
+    let below_floor =
+        calculate_net_equity_for_floor(&user, perp_market_map, spot_market_map, oracle_map)?
+            .is_some_and(|net_equity| net_equity.proves_below_floor(&user));
+    Ok(if initial.meets_margin_requirement() && !below_floor {
+        None
+    } else {
+        // One market per wake; relay comes back for the rest while
+        // the account still qualifies.
+        user.perp_positions
+            .iter()
+            .map(|position| position.market_index)
+            .find(|market_index| user.clob_resident_open_orders(*market_index) > 0)
+    })
+}
+
+/// Stage the cancel of the account's resting orders on `market_index`.
+/// The book and its program come off the market's slab, which the sync
+/// stored in the list's inert tail alongside the margin map. A slab the
+/// stored list does not carry leaves no work, because the liquidation must
+/// not run while risk-increasing orders rest.
+fn stage_force_cancel<'info>(
+    state_key: Pubkey,
+    user_loader: &AccountLoader<'_, User>,
+    remaining_accounts: &'info [AccountInfo<'info>],
+    market_index: u16,
+    stored: Vec<relay_spec::AccountRefV0>,
+) -> Result<Option<crate::instructions::StagedCall>> {
+    let user_stats = crate::state::pdas::user_stats(&crate::load!(user_loader)?.authority);
+    let (protocol_user, protocol_user_stats) = crate::state::pdas::protocol_user_pair();
+    let quoter_slab = crate::state::pdas::quoter_slab(market_index);
+    let Some(slab_info) = crate::state::prop_amm::find_account(remaining_accounts, &quoter_slab)
+    else {
+        msg!(
+            "quoter slab {} absent from the stored list; cannot stage a cancel",
+            quoter_slab
+        );
+        return Ok(None);
+    };
+    let slab = AccountLoader::<crate::state::prop_amm::QuoterSlabV0>::try_from(slab_info)?;
+    let (clob_market, clob_program) = {
+        let slots = slab.slots()?;
+        let Some(index) = crate::state::prop_amm::clob_slot_index(&slots) else {
+            msg!("quoter slab holds no book slot; cannot stage a cancel");
+            return Ok(None);
+        };
+        (
+            slots[index].config.response_account,
+            slots[index].config.program_id,
+        )
+    };
+    Ok(Some(
+        crate::instructions::StagedCall::new::<crate::instruction::ForceCancelClobOrders>(
+            crate::accounts::ForceCancelClobOrders {
+                state: state_key,
+                authority: crate::state::pdas::keeper_placeholder(),
+                filler: protocol_user,
+                filler_stats: protocol_user_stats,
+                user: user_loader.key(),
+                user_stats,
+                quoter_slab,
+                clob_market,
+                clob_program,
+                crank_conditions: Some(crate::state::pdas::clob_crank_conditions(market_index)),
+            },
+        )
+        .refs(stored)
+        // The sweep takes the side that cannot be reducing, so
+        // the resolver never has to read the book to name refs.
+        .arg(crate::instructions::ForceCancelClobOrdersArgs {
+            market_index,
+            order_refs: Vec::new(),
+        })?,
+    ))
+}
+
+/// The full maintenance-margin calculation, the same code the executor
+/// runs.
+fn is_liquidatable(
+    user_loader: &AccountLoader<'_, User>,
+    perp_market_map: &PerpMarketMap,
+    spot_market_map: &SpotMarketMap,
+    oracle_map: &mut OracleMap,
+    liquidation_margin_buffer_ratio: u32,
+) -> Result<bool> {
+    let user = crate::load!(user_loader)?;
+    let calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
+        &user,
+        perp_market_map,
+        spot_market_map,
+        oracle_map,
+        MarginContext::liquidation(liquidation_margin_buffer_ratio),
+    )?;
+    Ok(!calculation.meets_margin_requirement())
+}
+
+/// Which market to liquidate: the user's largest live perp position.
+fn largest_perp_position(user_loader: &AccountLoader<'_, User>) -> Result<Option<u16>> {
+    let user = crate::load!(user_loader)?;
+    Ok(user
+        .perp_positions
+        .iter()
+        .filter(|p| p.base_asset_amount != 0)
+        .max_by_key(|p| (p.base_asset_amount as i128).abs())
+        .map(|p| p.market_index))
+}
+
+/// Stage the liquidation of `market_index`.
+///
+/// `liquidate_perp_with_fill` shares `liquidate_perp`'s account list, so
+/// the two cannot be paired by name: this is the inventory-free flavor,
+/// and staging the plain one would have the protocol acquire the position.
+fn stage_liquidate_perp(
+    state_key: Pubkey,
+    user_loader: &AccountLoader<'_, User>,
+    market_index: u16,
+    stored: Vec<relay_spec::AccountRefV0>,
+) -> Result<crate::instructions::StagedCall> {
+    let (protocol_user, protocol_user_stats) = crate::state::pdas::protocol_user_pair();
+    let user_stats = crate::state::pdas::user_stats(&crate::load!(user_loader)?.authority);
+    crate::instructions::StagedCall::new::<crate::instruction::LiquidatePerpWithFill>(
+        crate::accounts::LiquidatePerp {
+            state: state_key,
+            authority: crate::state::pdas::keeper_placeholder(),
+            liquidator: protocol_user,
+            liquidator_stats: protocol_user_stats,
+            user: user_loader.key(),
+            user_stats,
+            crank_conditions: Some(crate::state::pdas::clob_crank_conditions(market_index)),
+            // The crank reads its own priority fee back from
+            // here to price the reimbursement.
+            instructions_sysvar: Some(solana_program::sysvar::instructions::ID),
+        },
+    )
+    .refs(stored)
+    .arg(market_index)
 }

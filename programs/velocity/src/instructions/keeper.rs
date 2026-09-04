@@ -2240,13 +2240,10 @@ pub fn handle_liquidate_perp_with_fill<'c: 'info, 'info>(
                 filled_quote,
             )?)
         };
-        let info = reservoir.to_account_info();
-        let rent_minimum = Rent::get()?.minimum_balance(info.data_len());
-        ClobCrankConditionsV0::pay_keeper_lamports(
-            &info,
+        ClobCrankConditionsV0::pay_keeper(
+            reservoir,
             &ctx.accounts.authority.to_account_info(),
             payment,
-            rent_minimum,
         )?;
     }
 

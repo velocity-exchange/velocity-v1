@@ -220,6 +220,14 @@ pub fn resolve_into<'info>(
     Ok(())
 }
 
+/// Narrow a generated discriminator to the width a crank spec holds.
+///
+/// Every resolver names its executor through a generated `DISCRIMINATOR`
+/// constant, which is a slice. A crank spec holds eight bytes.
+pub fn disc8(disc: &[u8]) -> Result<[u8; 8]> {
+    std::convert::TryInto::<[u8; 8]>::try_into(disc).map_err(|_| error!(ErrorCode::DefaultError))
+}
+
 /// Stage a call to one of velocity's own executors, named once.
 ///
 /// `staged_call!(TriggerOrder { state, user, .. })` expands to a

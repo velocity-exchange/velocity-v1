@@ -2,6 +2,7 @@ import { BN } from '@coral-xyz/anchor';
 
 import {
 	VIP_FEE_TIER_ONE_VOLUME_QUOTE,
+	VIP_FEE_TIER_THREE_VOLUME_QUOTE,
 	VIP_FEE_TIER_TWO_VOLUME_QUOTE,
 } from '../constants/numericConstants';
 import {
@@ -24,6 +25,7 @@ import { getUser30dRollingVolumeEstimate } from './trade';
 export const PERP_FEE_TIER_VOLUME_THRESHOLDS = [
 	VIP_FEE_TIER_ONE_VOLUME_QUOTE,
 	VIP_FEE_TIER_TWO_VOLUME_QUOTE,
+	VIP_FEE_TIER_THREE_VOLUME_QUOTE,
 ];
 
 /**
@@ -39,9 +41,9 @@ export const PERP_FEE_TIER_MAX_INDEX = PERP_FEE_TIER_VOLUME_THRESHOLDS.length;
  * The tier comes from the account's trailing 30-day volume projected to `now`
  * (`getUser30dRollingVolumeEstimate`, which applies virtually the same decay
  * the on-chain rolling sum applies lazily), taking the lowest-index tier whose
- * breakpoint the volume is still under. Tiers 0/1/2
- * are named Regular / VIP 1 / VIP 2; the names are presentation only,
- * selection is index-based.
+ * breakpoint the volume is still under. Tiers 0/1/2/3 are named Regular /
+ * VIP 1 / VIP 2 / VIP 3; the names are presentation only, selection is
+ * index-based.
  *
  * `state.promoFeeTier` then floors the result for everyone while it is set, so
  * an account already above the promo keeps its own tier and nobody is

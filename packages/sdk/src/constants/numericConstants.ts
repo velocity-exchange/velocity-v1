@@ -297,3 +297,10 @@ export const VIP_FEE_TIER_ONE_VOLUME_QUOTE = new BN(5_000_000).mul(
 export const VIP_FEE_TIER_TWO_VOLUME_QUOTE = new BN(80_000_000).mul(
 	QUOTE_PRECISION
 );
+
+/**
+ * Fee tier VIP 3 volume threshold
+ */
+export const VIP_FEE_TIER_THREE_VOLUME_QUOTE = new BN(200_000_000).mul(
+	QUOTE_PRECISION
+);

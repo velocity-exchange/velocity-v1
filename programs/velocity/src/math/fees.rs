@@ -6,7 +6,7 @@ use {
             constants::{
                 ACCELERATED_REFERRER_REWARD_NUMERATOR, FEE_ADJUSTMENT_MAX, FEE_DENOMINATOR,
                 FEE_PERCENTAGE_DENOMINATOR, FIVE_MILLION_QUOTE, PERP_FEE_TIER_MAX_INDEX, TEN_BPS,
-                TEN_MILLION_QUOTE,
+                TEN_MILLION_QUOTE, TWO_HUNDRED_MILLION_QUOTE,
             },
             helpers::get_proportion_u128,
             safe_math::SafeMath,
@@ -509,8 +509,9 @@ pub fn determine_user_fee_tier(
 }
 
 /// Select the perp fee tier from the trailing-30d volume, evaluated LIVE.
-/// The populated tiers are named Regular / VIP 1 / VIP 2 (indices 0/1/2);
-/// the names are presentation only, everything onchain is index-based.
+/// The populated tiers are named Regular / VIP 1 / VIP 2 / VIP 3 (indices
+/// 0/1/2/3); the names are presentation only, everything onchain is
+/// index-based.
 ///
 /// The volume window:
 /// the stored rolling sum decays lazily (only when the account trades; see
@@ -534,8 +535,11 @@ fn determine_perp_fee_tier(
 ) -> VelocityResult<FeeTier> {
     let total_30d_volume = user_stats.get_total_30d_volume_at(now)?;
 
-    const VOLUME_THRESHOLDS: [u64; PERP_FEE_TIER_MAX_INDEX] =
-        [FIVE_MILLION_QUOTE, TEN_MILLION_QUOTE * 8];
+    const VOLUME_THRESHOLDS: [u64; PERP_FEE_TIER_MAX_INDEX] = [
+        FIVE_MILLION_QUOTE,
+        TEN_MILLION_QUOTE * 8,
+        TWO_HUNDRED_MILLION_QUOTE,
+    ];
 
     let mut fee_tier_index = PERP_FEE_TIER_MAX_INDEX;
     for i in 0..PERP_FEE_TIER_MAX_INDEX {

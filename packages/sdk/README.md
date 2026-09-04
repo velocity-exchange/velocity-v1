@@ -1,5 +1,5 @@
 <div align="center">
-  <img height="120" src="https://docs.velocity.exchange/assets/velocity.svg" />
+  <img width="180" height="180" src="https://docs.velocity.exchange/assets/velocity.svg" />
 
   <h1 style="margin-top:20px;">Velocity Exchange</h1>
 

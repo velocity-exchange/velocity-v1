@@ -93,8 +93,16 @@ pub struct QuoterSlabV0 {
     /// signing needs the bump; a stored byte is cheaper than a derivation on
     /// every leg.
     pub bump: u8,
+    pub _pad: [u8; 3],
+    /// The market's book — the `Clob` slot's response account, written at
+    /// approval. Stored in the header so every accounts struct that names
+    /// both binds them with `has_one = clob_market`, a check the compiler
+    /// keeps on every context. Survives a book suspension, because the
+    /// removal paths must keep reaching a killed book; `Pubkey::default()`
+    /// means no book was ever approved.
+    pub clob_market: Pubkey,
     /// Header reserve, so future header fields never move the slot region.
-    pub padding: [u8; 123],
+    pub padding: [u8; 120],
 }
 
 impl Default for QuoterSlabV0 {
@@ -103,14 +111,16 @@ impl Default for QuoterSlabV0 {
             market: 0,
             capacity: 0,
             bump: 0,
-            padding: [0; 123],
+            _pad: [0; 3],
+            clob_market: Pubkey::default(),
+            padding: [0; 120],
         }
     }
 }
 
 // Zero-copy layout invariant (see docs/alignment-and-native-offsets.md):
 // no u128 fields, size (incl. 8-byte discriminator) ≡ 8 (mod 16).
-const_assert_eq!(std::mem::size_of::<QuoterSlabV0>(), 128);
+const_assert_eq!(std::mem::size_of::<QuoterSlabV0>(), 160);
 const_assert_eq!((QuoterSlabV0::SLOT_REGION_OFFSET - 8) % 16, 0);
 // The slot region must start 8-aligned so its u64 fields are aligned.
 const_assert_eq!(QuoterSlabV0::SLOT_REGION_OFFSET % 8, 0);

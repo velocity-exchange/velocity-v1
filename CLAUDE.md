@@ -287,6 +287,8 @@ are rewritten to concrete versions by `.github/scripts/rewrite-workspace-deps.mj
 
 **PRs that change user-facing behavior in a publishable package should include a changeset.** This includes new features, bug fixes, and API changes — but not chores, CI config, or internal refactors that don't affect consumers. To add one: run `bun run changeset` at the repo root, select the affected package(s), choose the bump type (patch/minor/major), and write a short description. Commit the generated `.changeset/*.md` file with your changes. Do not manually edit `package.json` versions — changesets and the "Version Packages" bot own those fields.
 
+**One changeset per feature branch.** While a branch is unmerged, it carries exactly one `.changeset/*.md` file; every later change on the branch folds into that file in place. The changeset becomes the published release notes, and a consumer only ever sees the branch's final surface — so rewrite it to describe that final surface, and delete anything an intra-branch change superseded ("X was renamed to Y" is noise when X never shipped). Never add a second changeset for the same branch.
+
 ## Devnet program upgrade
 
 Full runbook lives in [`deploy-scripts/README.md`](./deploy-scripts/README.md). Read its "Operational notes" section before any devnet upgrade. The key rules:
@@ -413,6 +415,8 @@ is simply never decoded.
 - Removing or adding a protocol feature
 
 Match the doc's existing structure: feature-level changes go in §2/§3, SDK surface in §4, ABI/layout notes in §5, and add a row to the PR change log in §6. Update the §7 checklist if the migration steps themselves change. Keep stated facts (sizes, pubkeys, counts) verified against the code, not guessed. Purely internal refactors that don't change the program ABI or SDK surface do not need a doc update.
+
+**One §6 row per branch.** While a branch is unmerged, it gets exactly one §6 row; every later change on the branch folds into that row (and into the branch's §2–§5 prose) in place. An integrator migrates against the branch's final state and never saw its intermediate ones, so rewrite the row to the final surface rather than narrating intra-branch history — a rename or a check that only ever existed inside the branch does not belong in the log. The same rule applies to a design doc's sync/change log: one entry per branch, edited in place.
 
 ### Error enum stability
 

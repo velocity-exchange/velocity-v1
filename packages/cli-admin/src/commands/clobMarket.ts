@@ -459,6 +459,7 @@ export function registerClobMarket(parent: Command): void {
 							admin: wallet,
 							state: await client.getStatePublicKey(),
 							quoter: quoterPda,
+							perpMarket,
 							quoterSlab,
 							quoterProgram: clobProgram,
 							quoterProgramData: clobProgramData,
@@ -578,28 +579,18 @@ export function registerClobMarket(parent: Command): void {
 				if (!marketInfo) {
 					throw new Error(`perp market ${marketIndex} not found`);
 				}
-				const clobMarket = new PublicKey(
+				// The market stores its book directly.
+				const book = new PublicKey(
 					(
 						client.program.coder.accounts.decode(
 							'perpMarket',
 							marketInfo.data
-						) as { clobQuoter: PublicKey }
-					).clobQuoter
+						) as { clobMarket: PublicKey }
+					).clobMarket
 				);
-				const entryInfo = await provider.connection.getAccountInfo(clobMarket);
-				if (!entryInfo) {
-					throw new Error(
-						`clob quoter entry ${clobMarket.toBase58()} not found`
-					);
+				if (book.equals(PublicKey.default)) {
+					throw new Error(`perp market ${marketIndex} names no book`);
 				}
-				const book = new PublicKey(
-					(
-						client.program.coder.accounts.decode(
-							'quoterV0',
-							entryInfo.data
-						) as { config: { responseAccount: PublicKey } }
-					).config.responseAccount
-				);
 				const watches: [Keypair, Keypair] = [
 					Keypair.generate(),
 					Keypair.generate(),

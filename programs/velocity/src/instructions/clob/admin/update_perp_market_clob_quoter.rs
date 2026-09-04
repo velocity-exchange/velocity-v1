@@ -24,7 +24,9 @@ pub struct AdminUpdatePerpMarketClobQuoter<'info> {
     #[account(mut, constraint = check_warm(&admin.key(), &state)?)]
     pub admin: Signer<'info>,
     pub state: AccountLoader<'info, State>,
-    #[account(mut)]
+    /// `has_one = clob_market` holds because registration
+    /// (`initialize_quoter`) designated the book before any attach.
+    #[account(mut, has_one = quoter_slab, has_one = clob_market)]
     pub perp_market: AccountLoader<'info, PerpMarket>,
     /// Writable: the attach mirrors the book's placement rules onto the
     /// staging entry, so a later re-approval copies them forward.
@@ -32,24 +34,20 @@ pub struct AdminUpdatePerpMarketClobQuoter<'info> {
     pub quoter: AccountLoader<'info, crate::state::prop_amm::QuoterV0>,
     /// Writable: the attach mirrors the book's placement rules onto the
     /// approved copy in the book's slot, so the hot paths read a loaded
-    /// field instead of CPI'ing `order_rules_v0`.
-    #[account(
-        mut,
-        seeds = [
-            crate::state::prop_amm::QUOTER_SLAB_PDA_SEED,
-            perp_market.load()?.market_index.to_le_bytes().as_ref(),
-        ],
-        bump
-    )]
+    /// field instead of CPI'ing `order_rules_v0`. Bound by the market's
+    /// `has_one`.
+    #[account(mut)]
     pub quoter_slab: AccountLoader<'info, crate::state::prop_amm::QuoterSlabV0>,
-    /// CHECK: validated against the book slot's registered response account
-    /// in the handler. Writable because the attach registers velocity's
+    /// CHECK: the perp market's `has_one` binds it to the book the market
+    /// designated. Writable because the attach registers velocity's
     /// resolvers on the book itself: the wakes for an expiry, an activation,
     /// a side at its cap and a crossed book are facts about this account, so
     /// the conditions that watch for them live on it.
     #[account(mut)]
     pub clob_market: UncheckedAccount<'info>,
-    /// CHECK: locked to the book slot's registered program in the handler.
+    /// CHECK: a Clob slot's program is pinned to velocity's CLOB at
+    /// registration; the handler re-checks through the slot.
+    #[account(address = crate::ids::clob_program::id())]
     pub clob_program: UncheckedAccount<'info>,
     /// The market's relay conditions + keeper reservoir, stood up (or
     /// re-priced) as part of the attach so a new market needs no separate
@@ -301,26 +299,11 @@ pub fn handle_update_perp_market_clob_quoter(
             );
     }
 
-    // A market names its book once. Re-pricing the crank config above is
-    // fine, and pointing the market at a *different* entry is not: a book
-    // settles for whoever rests on it, so swapping one in later would let
-    // whoever holds the admin key move every user a fill carries. Attaching
-    // is therefore a one-way door, and the way out of a bad book is the
-    // maker's kill switch and the approval flag, not a replacement.
-    validate!(
-        perp_market.clob_quoter == Pubkey::default()
-            || perp_market.clob_quoter == ctx.accounts.quoter.key(),
-        ErrorCode::DefaultError,
-        "perp market {} already names clob quoter {}",
-        perp_market.market_index,
-        perp_market.clob_quoter
-    )?;
-    msg!(
-        "perp_market.clob_quoter: {} -> {}",
-        perp_market.clob_quoter,
-        ctx.accounts.quoter.key()
-    );
-    perp_market.clob_quoter = ctx.accounts.quoter.key();
-
+    // A market names its book once, at registration (`initialize_quoter`),
+    // and the accounts struct's `has_one = clob_market` holds this attach to
+    // that designation. Nothing here writes it: a book settles for whoever
+    // rests on it, so a path that could point the market at a second one
+    // later would put every user a fill carries behind whoever holds the
+    // admin key.
     Ok(())
 }

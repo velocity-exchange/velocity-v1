@@ -9,8 +9,8 @@
 
 use {
     super::{
-        get_quoter_slab_signer_seeds, quoter_slab_clob, QuoterConfigV0, QuoterSlabV0, QuoterType,
-        CLOB_USER_REF_BYTES,
+        get_quoter_slab_signer_seeds, quoter_slab_clob, ClobUserRefV0, QuoterConfigV0,
+        QuoterSlabV0, QuoterType, CLOB_USER_REF_BYTES,
     },
     crate::{error::ErrorCode, msg, validate},
     anchor_lang::prelude::*,
@@ -459,16 +459,29 @@ impl ClobReader<'_, '_> {
 }
 
 impl crate::state::user::User {
-    /// Unwind this user's reserve for everything a bulk sweep took, and
-    /// report how many orders that was.
+    /// This user on the quoter wire, in its derivable form. Every CPI leg and
+    /// book report names a user this way, so the construction lives here
+    /// instead of at each call site.
+    pub fn clob_user_ref(&self) -> ClobUserRefV0 {
+        ClobUserRefV0 {
+            authority: self.authority,
+            sub_account_id: self.sub_account_id.into(),
+        }
+    }
+
+    /// Unwind this user's reserve for everything a bulk sweep took, held to
+    /// the reservation, and report how many orders that was.
     ///
-    /// One `decrease_open_bids_and_asks` per side by the summed base the
-    /// sweep reported: identical arithmetic to N per-order unwinds — each
-    /// placement reserved its own amount, so the sum can never exceed what is
-    /// reserved — at a cost that does not grow with the count. Both
-    /// directions regardless of which sides were asked for, so the reserve
-    /// moves by exactly what left the book rather than by what the caller
-    /// intended to take.
+    /// One release per side by the summed base the sweep reported: identical
+    /// arithmetic to N per-order unwinds — each placement reserved its own
+    /// amount, so the sum can never exceed what is reserved — at a cost that
+    /// does not grow with the count. Both directions regardless of which
+    /// sides were asked for, so the reserve moves by exactly what left the
+    /// book rather than by what the caller intended to take.
+    ///
+    /// The report is the book's word against margin it frees, so a report
+    /// above the reservation fails. [`Self::exit_swept_orders`] is the
+    /// lenient sibling for the owner's own exit.
     pub fn unwind_swept_orders(
         &mut self,
         clob: &ClobReader,
@@ -476,17 +489,50 @@ impl crate::state::user::User {
         sides: ClobCancelSides,
         swept: &ClobCancelAllOutcomeV0,
     ) -> Result<u32> {
+        self.unwind_swept(clob, market_index, sides, swept, true)
+    }
+
+    /// [`Self::unwind_swept_orders`] for the owner's own exit: the release
+    /// clamps at the reservation instead of failing, because a book that
+    /// reports garbage must not be able to keep its maker on it.
+    pub fn exit_swept_orders(
+        &mut self,
+        clob: &ClobReader,
+        market_index: u16,
+        sides: ClobCancelSides,
+        swept: &ClobCancelAllOutcomeV0,
+    ) -> Result<u32> {
+        self.unwind_swept(clob, market_index, sides, swept, false)
+    }
+
+    fn unwind_swept(
+        &mut self,
+        clob: &ClobReader,
+        market_index: u16,
+        sides: ClobCancelSides,
+        swept: &ClobCancelAllOutcomeV0,
+        held_to_reservation: bool,
+    ) -> Result<u32> {
         use crate::controller::position::{
-            decrease_open_bids_and_asks, get_position_index, PositionDirection,
+            decrease_open_bids_and_asks, get_position_index, release_reserved_open_base_for_exit,
+            PositionDirection,
         };
         let position_index = get_position_index(&self.perp_positions, market_index)?;
         for direction in [PositionDirection::Long, PositionDirection::Short] {
-            decrease_open_bids_and_asks(
-                &mut self.perp_positions[position_index],
-                &direction,
-                swept.base_for(direction),
-                true,
-            )?;
+            if held_to_reservation {
+                decrease_open_bids_and_asks(
+                    &mut self.perp_positions[position_index],
+                    &direction,
+                    swept.base_for(direction),
+                    true,
+                )?;
+            } else {
+                release_reserved_open_base_for_exit(
+                    &mut self.perp_positions[position_index],
+                    &direction,
+                    swept.base_for(direction),
+                )?;
+            }
         }
         let orders = swept.orders();
         self.perp_positions[position_index].open_orders = self.perp_positions[position_index]
@@ -497,7 +543,10 @@ impl crate::state::user::User {
         self.perp_positions[position_index]
             .disarm_reduce_only_clob_by(swept.reduce_only_orders().min(u16::MAX as u32) as u16);
         (0..orders).for_each(|_| self.decrement_open_orders(false));
-        self.release_swept_trigger_shadows(clob, market_index, sides)?;
+        let shadows = self.release_swept_trigger_shadows(clob, market_index, sides)?;
+        if shadows > 0 {
+            crate::msg!("released {} placed-trigger shadows", shadows);
+        }
         Ok(orders)
     }
 

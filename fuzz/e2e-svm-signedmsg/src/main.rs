@@ -512,10 +512,17 @@ mod regr_271_pause {
                 .create()
                 .unwrap();
 
-            // Perp market 0 ($1 QuoteAsset oracle).
+            // Perp market 0 ($1 QuoteAsset oracle). The market names its
+            // quoter slab PDA and its book account, because the signed-msg
+            // context binds them with `has_one` constraints.
             let (perp_market_pda, _) =
                 Pubkey::find_program_address(&[b"perp_market", &mi0], &program_id);
+            let (quoter_slab_pda, quoter_slab_bump) =
+                Pubkey::find_program_address(&[b"quoter_slab", &mi0], &program_id);
+            let clob_market_pda = Pubkey::new_from_array([8u8; 32]);
             let mut perp_market = build_perp_market(perp_market_pda);
+            perp_market.quoter_slab = anchor_pk(quoter_slab_pda);
+            perp_market.clob_market = anchor_pk(clob_market_pda);
             inject(&mut ctx, perp_market_pda, &mut perp_market);
 
             // Authority / taker.
@@ -567,14 +574,16 @@ mod regr_271_pause {
             let clob_program_id =
                 Pubkey::new_from_array(velocity::ids::clob_program::ID.to_bytes());
 
-            // Quoter slab PDA = ["quoter_slab", market_le_u16]. The account is
+            // Quoter slab at ["quoter_slab", market_le_u16]. The account is
             // the zero-copy header plus a slot region of `capacity` vacant
-            // (all-zero) slots.
-            let (quoter_slab_pda, _) =
-                Pubkey::find_program_address(&[b"quoter_slab", &mi0], &program_id);
+            // (all-zero) slots. The header must carry the real PDA bump and
+            // the book account, because the accounts struct binds the slab
+            // to the book with `has_one = clob_market`.
             let mut slab = velocity::state::prop_amm::QuoterSlabV0 {
                 market: 0,
                 capacity: 1,
+                bump: quoter_slab_bump,
+                clob_market: anchor_pk(clob_market_pda),
                 ..Default::default()
             };
             let mut slab_data = velocity::test_utils::get_anchor_account_bytes(&mut slab).to_vec();
@@ -590,7 +599,6 @@ mod regr_271_pause {
                 .create()
                 .unwrap();
 
-            let clob_market_pda = Pubkey::new_from_array([8u8; 32]);
             ctx.create_account()
                 .pubkey(clob_market_pda)
                 .owner(clob_program_id)

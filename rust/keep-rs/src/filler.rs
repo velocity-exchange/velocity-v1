@@ -350,7 +350,7 @@ impl FillerBot {
                                         filler_subaccount,
                                         signed_order,
                                         crosses,
-                                        perp_market.clob_quoter,
+                                        perp_market.clob_market,
                                         tx_worker_ref.clone(),
                                         attest,
                                         Arc::clone(&metrics),
@@ -1163,9 +1163,9 @@ async fn try_swift_fill(
     filler_subaccount: Pubkey,
     swift_order: SignedOrderInfo,
     crosses: MakerCrosses,
-    // The market's canonical CLOB registry entry (`PerpMarket.clob_quoter`);
+    // The market's book account (`PerpMarket.clob_market`);
     // `Pubkey::default()` when no book is attached.
-    clob_quoter: Pubkey,
+    clob_market: Pubkey,
     tx_worker_ref: TxSender,
     attest: Option<&'static crate::attest::AttestClient>,
     metrics: Arc<Metrics>,
@@ -1211,7 +1211,7 @@ async fn try_swift_fill(
     let Some(quoter_metas) = route_quoter_metas(
         velocity,
         taker_order.market_index,
-        clob_quoter,
+        clob_market,
         swift_order.route(),
         &swift_order,
     )
@@ -1430,20 +1430,12 @@ fn charge_quoter_failures(
 async fn route_quoter_metas(
     velocity: &VelocityClient,
     market_index: u16,
-    clob_quoter: Pubkey,
+    clob_market: Pubkey,
     route: Option<&[Pubkey]>,
     swift_order: &SignedOrderInfo,
 ) -> Option<Vec<AccountMeta>> {
-    let mut keys: Vec<Pubkey> = Vec::new();
-    if clob_quoter != Pubkey::default() {
-        keys.push(clob_quoter);
-    }
-    for key in route.unwrap_or_default() {
-        if !keys.contains(key) {
-            keys.push(*key);
-        }
-    }
-    if keys.is_empty() {
+    let route = route.unwrap_or_default();
+    if clob_market == Pubkey::default() && route.is_empty() {
         return Some(Vec::new());
     }
 
@@ -1464,11 +1456,17 @@ async fn route_quoter_metas(
         }
     };
 
-    // A slot is consulted by carrying its response account. A named entry
-    // with no live slot is dropped, exactly as the program drops it.
-    let consulted: Vec<&QuoterSlotV0> = keys
+    // A slot is consulted when the taker's route names its entry, or when
+    // it is the market's book. `PerpMarket.clob_market` stores the book
+    // account itself, so the book slot matches by its response account. A
+    // named entry with no live slot is dropped, exactly as the program
+    // drops it.
+    let consulted: Vec<&QuoterSlotV0> = slots
         .iter()
-        .filter_map(|key| slots.iter().find(|slot| slot.entry == *key))
+        .filter(|slot| {
+            (clob_market != Pubkey::default() && slot.config.response_account == clob_market)
+                || route.contains(&slot.entry)
+        })
         .filter(|slot| slot.quotes())
         .collect();
 

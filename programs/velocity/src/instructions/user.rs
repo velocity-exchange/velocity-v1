@@ -3602,10 +3602,7 @@ pub fn place_and_take_perp_order_v1<'c: 'info, 'info>(
                     PositionDirection::Short => crate::state::prop_amm::Direction::Short,
                 },
                 order.get_base_asset_amount_unfilled(position_base)?,
-                crate::state::prop_amm::ClobUserRefV0 {
-                    authority: user.authority,
-                    sub_account_id: user.sub_account_id,
-                },
+                user.clob_user_ref(),
                 fill_mode.quote_limit_price(
                     order,
                     clock.slot,
@@ -3662,7 +3659,7 @@ pub fn place_and_take_perp_order_v1<'c: 'info, 'info>(
         // because velocity's heap never gives a freed one back.
         let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
         let route = crate::instructions::QuotedRoute::assemble(tail, &inputs, &mut cpi_scratch)?;
-        route.require_baseline(perp_market_map.get_ref(&params.market_index)?.clob_quoter)?;
+        route.require_baseline(perp_market_map.get_ref(&params.market_index)?.clob_market)?;
         let mut book_storage =
             [crate::math::router::QuoterBook::default(); crate::instructions::MAX_ROUTE_QUOTERS];
         let book_refs = route.books(&mut book_storage);
@@ -3730,31 +3727,16 @@ pub fn place_and_take_perp_order_v1<'c: 'info, 'info>(
     // fill that already landed. The CLOB's `OrderRef` is left as the
     // transaction's return data for the client to persist as its cancel hint.
     if !is_immediate_or_cancel && order_unfilled {
-        let remainder = {
-            let order = &ephemeral_order;
-            let position_base = load!(user_loader)
-                .ok()
-                .and_then(|user| {
-                    user.get_perp_position(params.market_index)
-                        .map(|position| position.base_asset_amount)
-                        .ok()
-                })
-                .unwrap_or(0);
-            crate::instructions::restable_remainder_price(order, None).map(|price| {
-                (
-                    order.order_id,
-                    order.direction,
-                    price,
-                    order
-                        .get_base_asset_amount_unfilled(Some(position_base))
-                        .unwrap_or(0),
-                    order.max_ts,
-                    order.reduce_only,
-                )
-            })
-        };
-        if let Some((order_id, direction, price, unfilled, max_ts, reduce_only)) = remainder {
-            if unfilled > 0 {
+        let remainder = load!(user_loader).ok().and_then(|user| {
+            crate::instructions::restable_remainder(
+                &user,
+                &ephemeral_order,
+                params.market_index,
+                None,
+            )
+        });
+        if let Some(remainder) = remainder {
+            if remainder.unfilled > 0 {
                 crate::instructions::try_place_remainder_on_clob(
                     user_loader,
                     clob.quoter_slab,
@@ -3764,14 +3746,14 @@ pub fn place_and_take_perp_order_v1<'c: 'info, 'info>(
                     &spot_market_map,
                     &mut oracle_map,
                     params.market_index,
-                    direction,
-                    price,
-                    unfilled,
-                    max_ts,
-                    order_id,
+                    remainder.direction,
+                    remainder.price,
+                    remainder.unfilled,
+                    remainder.max_ts,
+                    ephemeral_order.order_id,
                     true,
                     false,
-                    reduce_only,
+                    remainder.reduce_only,
                     None,
                     &Clock::get()?,
                 )?;

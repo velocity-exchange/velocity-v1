@@ -90,6 +90,7 @@ fn approve_ix(as_admin: Pubkey, quoter: Pubkey, approved: bool) -> Instruction {
             admin: as_admin,
             state: state_pda(),
             quoter,
+            perp_market: perp_market_pda(0),
             quoter_slab: quoter_slab_pda(0),
             quoter_program: clob_id(),
             quoter_program_data: Some(program_data_pda(&clob_id())),
@@ -461,15 +462,8 @@ fn only_the_admin_may_register_a_book() {
     set_user(&mut svm, user, &maker.pubkey());
 
     let quoter = quoter_pda(0, &clob_id(), &user);
-    let init = |authority: Pubkey| {
-        init_quoter_ix(
-            authority,
-            quoter,
-            user,
-            QuoterType::Clob,
-            Pubkey::new_unique(),
-        )
-    };
+    let book = Pubkey::new_unique();
+    let init = |authority: Pubkey| init_quoter_ix(authority, quoter, user, QuoterType::Clob, book);
 
     assert!(
         send(&mut svm, &maker, init(maker.pubkey()), &[]).is_err(),
@@ -483,7 +477,7 @@ fn only_the_admin_may_register_a_book() {
     // that would settle for every user a fill carries.
     let market: velocity::state::perp_market::PerpMarket =
         read_zero_copy(&svm, &perp_market_pda(0));
-    assert_eq!(market.clob_quoter, quoter);
+    assert_eq!(market.clob_market, book);
 
     let other_user = Pubkey::new_unique();
     set_user(&mut svm, other_user, &admin.pubkey());
@@ -498,7 +492,7 @@ fn only_the_admin_may_register_a_book() {
     assert!(send(&mut svm, &admin, ix, &[]).is_err());
     let market: velocity::state::perp_market::PerpMarket =
         read_zero_copy(&svm, &perp_market_pda(0));
-    assert_eq!(market.clob_quoter, quoter, "the market kept its book");
+    assert_eq!(market.clob_market, book, "the market kept its book");
 }
 
 /// Approval right-sizes the slab. A Custom approval grows the account by

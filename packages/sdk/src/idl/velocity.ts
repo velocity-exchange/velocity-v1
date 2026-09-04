@@ -820,14 +820,20 @@ export type Velocity = {
           "name": "quoterSlab",
           "docs": [
             "The market's quoter slab"
+          ],
+          "relations": [
+            "perpMarket"
           ]
         },
         {
           "name": "clobMarket",
           "docs": [
-            "in the handler."
+            "designated."
           ],
-          "writable": true
+          "writable": true,
+          "relations": [
+            "perpMarket"
+          ]
         },
         {
           "name": "clobProgram",
@@ -966,16 +972,15 @@ export type Velocity = {
         {
           "name": "quoterSlab",
           "docs": [
-            "The market's quoter slab; the book's config is its `Clob` slot, bound",
-            "to this market and this book in the handler."
+            "The market's quoter slab; the book's config is its `Clob` slot."
           ]
         },
         {
           "name": "clobMarket",
-          "docs": [
-            "in the handler."
-          ],
-          "writable": true
+          "writable": true,
+          "relations": [
+            "quoterSlab"
+          ]
         },
         {
           "name": "clobProgram",
@@ -1328,14 +1333,20 @@ export type Velocity = {
           "docs": [
             "Deliberately not gated on active/approved: dead books still need",
             "their resting orders reclaimed."
+          ],
+          "relations": [
+            "perpMarket"
           ]
         },
         {
           "name": "clobMarket",
           "docs": [
-            "in the handler."
+            "designated."
           ],
-          "writable": true
+          "writable": true,
+          "relations": [
+            "perpMarket"
+          ]
         },
         {
           "name": "clobProgram",
@@ -1451,14 +1462,20 @@ export type Velocity = {
           "docs": [
             "Deliberately not gated on active/approved: dead books still need",
             "their resting orders reclaimed."
+          ],
+          "relations": [
+            "perpMarket"
           ]
         },
         {
           "name": "clobMarket",
           "docs": [
-            "in the handler."
+            "designated."
           ],
-          "writable": true
+          "writable": true,
+          "relations": [
+            "perpMarket"
+          ]
         },
         {
           "name": "clobProgram",
@@ -1640,32 +1657,12 @@ export type Velocity = {
           "name": "quoterSlab",
           "docs": [
             "The market's approved quoters — both legs' configs, and the identity",
-            "every quoter CPI signs as."
+            "every quoter CPI signs as. Bound by the market's `has_one`, which is a",
+            "memcmp where a seeds constraint pays a PDA derivation."
           ],
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  113,
-                  117,
-                  111,
-                  116,
-                  101,
-                  114,
-                  95,
-                  115,
-                  108,
-                  97,
-                  98
-                ]
-              },
-              {
-                "kind": "arg",
-                "path": "args.market_index"
-              }
-            ]
-          }
+          "relations": [
+            "perpMarket"
+          ]
         }
       ],
       "args": [
@@ -1750,7 +1747,10 @@ export type Velocity = {
             "(`ClobMarket::from_slab`), so a valid slot cannot be pointed at an",
             "arbitrary account."
           ],
-          "writable": true
+          "writable": true,
+          "relations": [
+            "quoterSlab"
+          ]
         },
         {
           "name": "clobProgram",
@@ -3128,7 +3128,10 @@ export type Velocity = {
             "(`ClobMarket::from_slab`), so a valid slot cannot be pointed at an",
             "arbitrary account."
           ],
-          "writable": true
+          "writable": true,
+          "relations": [
+            "quoterSlab"
+          ]
         },
         {
           "name": "clobProgram",
@@ -3294,15 +3297,16 @@ export type Velocity = {
           "name": "quoterSlab",
           "docs": [
             "Deliberately not gated on active/approved: dead books still need",
-            "failing makers' orders reclaimed."
+            "failing makers' orders reclaimed — the header's book pointer survives",
+            "a suspension, so the `has_one` still passes on a killed book."
           ]
         },
         {
           "name": "clobMarket",
-          "docs": [
-            "in the handler."
-          ],
-          "writable": true
+          "writable": true,
+          "relations": [
+            "quoterSlab"
+          ]
         },
         {
           "name": "clobProgram",
@@ -4876,7 +4880,7 @@ export type Velocity = {
           "name": "perpMarket",
           "docs": [
             "Written when the entry is the market's book: a Clob-type entry becomes",
-            "the market's `clob_quoter` here, once and for good."
+            "the market's `clob_market` here, once and for good."
           ],
           "writable": true,
           "pda": {
@@ -5003,32 +5007,13 @@ export type Velocity = {
           "name": "quoterSlab",
           "docs": [
             "The market's slab: the entry's approved config, and the book's — the",
-            "other leg of every staged cross — at slot 0."
+            "other leg of every staged cross — at slot 0. Bound by the market's",
+            "`has_one`, which is a memcmp where a seeds constraint pays a PDA",
+            "derivation."
           ],
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  113,
-                  117,
-                  111,
-                  116,
-                  101,
-                  114,
-                  95,
-                  115,
-                  108,
-                  97,
-                  98
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "quoter"
-              }
-            ]
-          }
+          "relations": [
+            "perpMarket"
+          ]
         },
         {
           "name": "marketConditions",
@@ -5151,7 +5136,9 @@ export type Velocity = {
         {
           "name": "perpMarket",
           "docs": [
-            "Existence check: a slab serves a market that exists."
+            "Existence check: a slab serves a market that exists. The market",
+            "stored the slab PDA at its own initialization, so the `has_one` holds",
+            "before the slab account exists."
           ],
           "pda": {
             "seeds": [
@@ -5204,7 +5191,10 @@ export type Velocity = {
                 "path": "args.market_index"
               }
             ]
-          }
+          },
+          "relations": [
+            "perpMarket"
+          ]
         },
         {
           "name": "rent",
@@ -7377,16 +7367,15 @@ export type Velocity = {
           "docs": [
             "The book's registry entry. The replacement leg additionally requires it",
             "to be active and approved.",
-            "The market's quoter slab; the book's config is its `Clob` slot, bound",
-            "to this market and this book in the handler."
+            "The market's quoter slab; the book's config is its `Clob` slot."
           ]
         },
         {
           "name": "clobMarket",
-          "docs": [
-            "in the handler."
-          ],
-          "writable": true
+          "writable": true,
+          "relations": [
+            "quoterSlab"
+          ]
         },
         {
           "name": "clobProgram",
@@ -7629,7 +7618,10 @@ export type Velocity = {
             "(`ClobMarket::from_slab`), so a valid slot can't be pointed at an",
             "arbitrary account."
           ],
-          "writable": true
+          "writable": true,
+          "relations": [
+            "quoterSlab"
+          ]
         },
         {
           "name": "clobProgram",
@@ -7759,7 +7751,10 @@ export type Velocity = {
             "(`ClobMarket::from_slab`), so a valid slot can't be pointed at an",
             "arbitrary account."
           ],
-          "writable": true
+          "writable": true,
+          "relations": [
+            "quoterSlab"
+          ]
         },
         {
           "name": "clobProgram",
@@ -8008,11 +8003,10 @@ export type Velocity = {
         },
         {
           "name": "clobMarket",
-          "docs": [
-            "(`ClobMarket::from_slab`), so a valid slot cannot be pointed at an",
-            "arbitrary account."
-          ],
-          "writable": true
+          "writable": true,
+          "relations": [
+            "quoterSlab"
+          ]
         },
         {
           "name": "clobProgram",
@@ -8107,8 +8101,7 @@ export type Velocity = {
         {
           "name": "quoteBuffer",
           "docs": [
-            "`has_one` pins the writer; the market is checked in the handler",
-            "because it comes in as an argument, not an account."
+            "`has_one` pins the writer, and the constraint pins the market."
           ],
           "writable": true
         }
@@ -9009,14 +9002,16 @@ export type Velocity = {
         {
           "name": "clobMarket",
           "docs": [
-            "same as the executor it stages.",
             "",
             "Writable for the book's response tail: the cross resolver asks the book",
             "for its resting orders through `quote_l3_v0`, which streams the answer",
             "into that tail. Nothing a resolver sends ever lands, and the tail is a",
             "scratch region the book rewrites on every quote."
           ],
-          "writable": true
+          "writable": true,
+          "relations": [
+            "quoterSlab"
+          ]
         },
         {
           "name": "quoterSlab"
@@ -9027,9 +9022,9 @@ export type Velocity = {
         {
           "name": "clobProgram",
           "docs": [
-            "the book which order to remove instead of reading its arena, so it",
-            "calls the program rather than parsing the account."
-          ]
+            "registration; the linkage check re-verifies through the slot."
+          ],
+          "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
         },
         {
           "name": "treasury",
@@ -9719,7 +9714,10 @@ export type Velocity = {
           "name": "user"
         },
         {
-          "name": "oracle"
+          "name": "oracle",
+          "relations": [
+            "perpMarket"
+          ]
         },
         {
           "name": "perpMarket"
@@ -9785,7 +9783,10 @@ export type Velocity = {
           "name": "user"
         },
         {
-          "name": "oracle"
+          "name": "oracle",
+          "relations": [
+            "perpMarket"
+          ]
         },
         {
           "name": "perpMarket"
@@ -9850,7 +9851,10 @@ export type Velocity = {
           "name": "user"
         },
         {
-          "name": "oracle"
+          "name": "oracle",
+          "relations": [
+            "perpMarket"
+          ]
         },
         {
           "name": "perpMarket"
@@ -11812,7 +11816,10 @@ export type Velocity = {
           "docs": [
             "in the handler."
           ],
-          "writable": true
+          "writable": true,
+          "relations": [
+            "quoterSlab"
+          ]
         },
         {
           "name": "clobProgram",
@@ -11971,7 +11978,10 @@ export type Velocity = {
         },
         {
           "name": "clobMarket",
-          "writable": true
+          "writable": true,
+          "relations": [
+            "quoterSlab"
+          ]
         },
         {
           "name": "clobProgram",
@@ -13831,6 +13841,10 @@ export type Velocity = {
         },
         {
           "name": "perpMarket",
+          "docs": [
+            "`has_one = clob_market` holds because registration",
+            "(`initialize_quoter`) designated the book before any attach."
+          ],
           "writable": true
         },
         {
@@ -13846,46 +13860,33 @@ export type Velocity = {
           "docs": [
             "Writable: the attach mirrors the book's placement rules onto the",
             "approved copy in the book's slot, so the hot paths read a loaded",
-            "field instead of CPI'ing `order_rules_v0`."
+            "field instead of CPI'ing `order_rules_v0`. Bound by the market's",
+            "`has_one`."
           ],
           "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  113,
-                  117,
-                  111,
-                  116,
-                  101,
-                  114,
-                  95,
-                  115,
-                  108,
-                  97,
-                  98
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "perpMarket"
-              }
-            ]
-          }
+          "relations": [
+            "perpMarket"
+          ]
         },
         {
           "name": "clobMarket",
           "docs": [
-            "in the handler. Writable because the attach registers velocity's",
+            "designated. Writable because the attach registers velocity's",
             "resolvers on the book itself: the wakes for an expiry, an activation,",
             "a side at its cap and a crossed book are facts about this account, so",
             "the conditions that watch for them live on it."
           ],
-          "writable": true
+          "writable": true,
+          "relations": [
+            "perpMarket"
+          ]
         },
         {
-          "name": "clobProgram"
+          "name": "clobProgram",
+          "docs": [
+            "registration; the handler re-checks through the slot."
+          ],
+          "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
         },
         {
           "name": "crankConditions",
@@ -15606,24 +15607,29 @@ export type Velocity = {
           ]
         },
         {
-          "name": "quoterSlab",
-          "writable": true,
+          "name": "perpMarket",
+          "docs": [
+            "The market the entry serves. A `Clob` approval is held to the book",
+            "this market designated at registration: the staging entry's response",
+            "account is maker-editable, so without the pin an edited entry could",
+            "put a different book into slot 0 than the one the market names."
+          ],
           "pda": {
             "seeds": [
               {
                 "kind": "const",
                 "value": [
-                  113,
-                  117,
-                  111,
-                  116,
+                  112,
                   101,
                   114,
+                  112,
                   95,
-                  115,
-                  108,
+                  109,
                   97,
-                  98
+                  114,
+                  107,
+                  101,
+                  116
                 ]
               },
               {
@@ -15632,6 +15638,13 @@ export type Velocity = {
               }
             ]
           }
+        },
+        {
+          "name": "quoterSlab",
+          "writable": true,
+          "relations": [
+            "perpMarket"
+          ]
         },
         {
           "name": "quoterProgram",
@@ -28045,29 +28058,42 @@ export type Velocity = {
             }
           },
           {
-            "name": "clobQuoter",
+            "name": "clobMarket",
             "docs": [
-              "The market's canonical CLOB quoter registry entry (`QuoterV0` PDA).",
-              "When set, every router fill must include it in its quoter section —",
-              "the mandatory-baseline rule: a route can't exclude the public book.",
-              "A dead entry (deactivated/unapproved) still has to be passed but is",
-              "skipped at quote time, so killing the book never bricks fills.",
+              "The market's canonical book — the CLOB market account, which is also",
+              "the book slot's response account on the slab. When set, every router",
+              "fill must consult it — the mandatory-baseline rule: a route can't",
+              "exclude the public book. A dead book still has to be passed but is",
+              "skipped at quote time, so killing it never bricks fills. Accounts",
+              "structs that name both bind them with `has_one = clob_market`.",
               "`Pubkey::default()` = no CLOB requirement. Carved out of master's",
               "reserved tail padding, so it keeps that account size."
             ],
             "type": "pubkey"
           },
           {
+            "name": "quoterSlab",
+            "docs": [
+              "The market's quoter slab PDA, written at market initialization. The",
+              "address is derivable from the market index, but the stored copy lets",
+              "every accounts struct that names both bind them with",
+              "`has_one = quoter_slab` — a memcmp instead of a PDA derivation, and a",
+              "check the compiler keeps on every context rather than one each",
+              "handler must remember."
+            ],
+            "type": "pubkey"
+          },
+          {
             "name": "paddingFuture",
             "docs": [
-              "Reserved for future fields (master's tail reservation, less the 32",
-              "bytes `clob_quoter` took). Existing accounts must be extended before",
-              "the program loads them with this layout."
+              "Reserved for future fields (master's tail reservation, less the 64",
+              "bytes `clob_quoter` and `quoter_slab` took). Existing accounts must be",
+              "extended before the program loads them with this layout."
             ],
             "type": {
               "array": [
                 "u8",
-                224
+                192
               ]
             }
           }
@@ -29245,16 +29271,12 @@ export type Velocity = {
             "type": "pubkey"
           },
           {
-            "name": "clobQuoter",
-            "docs": [
-              "The market's canonical CLOB entry / book / program, captured at",
-              "attach time (the resolver stages the executor's CLOB leg from here",
-              "without holding those accounts). Re-attach after a CLOB rotation."
-            ],
-            "type": "pubkey"
-          },
-          {
             "name": "clobMarket",
+            "docs": [
+              "The market's book and its program, captured at attach time (the",
+              "resolver stages the executor's CLOB leg from here without holding",
+              "those accounts). Re-attach after a CLOB rotation."
+            ],
             "type": "pubkey"
           },
           {
@@ -29288,7 +29310,7 @@ export type Velocity = {
             "type": {
               "array": [
                 "u8",
-                60
+                92
               ]
             }
           }
@@ -29352,6 +29374,27 @@ export type Velocity = {
             "type": "u8"
           },
           {
+            "name": "pad",
+            "type": {
+              "array": [
+                "u8",
+                3
+              ]
+            }
+          },
+          {
+            "name": "clobMarket",
+            "docs": [
+              "The market's book — the `Clob` slot's response account, written at",
+              "approval. Stored in the header so every accounts struct that names",
+              "both binds them with `has_one = clob_market`, a check the compiler",
+              "keeps on every context. Survives a book suspension, because the",
+              "removal paths must keep reaching a killed book; `Pubkey::default()`",
+              "means no book was ever approved."
+            ],
+            "type": "pubkey"
+          },
+          {
             "name": "padding",
             "docs": [
               "Header reserve, so future header fields never move the slot region."
@@ -29359,7 +29402,7 @@ export type Velocity = {
             "type": {
               "array": [
                 "u8",
-                123
+                120
               ]
             }
           }
@@ -29398,7 +29441,7 @@ export type Velocity = {
         "vetted config in the meantime.",
         "",
         "The entry's address is also the quoter's *identity*: signed routes name",
-        "it, `PerpMarket::clob_quoter` names it, relay conditions reference it, and",
+        "it, relay conditions reference it, and",
         "its slab slot records it."
       ],
       "serialization": "bytemuckunsafe",

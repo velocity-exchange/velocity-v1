@@ -522,6 +522,10 @@ export function registerQuoter(parent: Command): void {
 								: provider.wallet.publicKey,
 							state: await client.getStatePublicKey(),
 							quoter: quoterKey,
+							perpMarket: getPerpMarketPublicKeySync(
+								client.program.programId,
+								entry.config.market
+							),
 							quoterSlab: getQuoterSlabPublicKey(
 								client.program.programId,
 								entry.config.market

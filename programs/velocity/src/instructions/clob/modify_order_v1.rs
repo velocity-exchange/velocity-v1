@@ -47,7 +47,7 @@ use {
             perp_market_map::MarketSet,
             prop_amm::{
                 quoter_slab_clob, ClobCancelOrderArgsV0, ClobMarket, ClobOrderRefV0,
-                ClobPlaceOrderArgsV0, ClobUserRefV0, QuoterSlabV0, WireDirectionExt,
+                ClobPlaceOrderArgsV0, QuoterSlabV0, WireDirectionExt,
             },
             state::State,
             user::User,
@@ -69,11 +69,13 @@ pub struct ModifyOrderV1<'info> {
     pub authority: Signer<'info>,
     /// The book's registry entry. The replacement leg additionally requires it
     /// to be active and approved.
-    /// The market's quoter slab; the book's config is its `Clob` slot, bound
-    /// to this market and this book in the handler.
+    /// The market's quoter slab; the book's config is its `Clob` slot.
+    #[account(
+        has_one = clob_market,
+        constraint = quoter_slab.load()?.market == params.market_index,
+    )]
     pub quoter_slab: AccountLoader<'info, QuoterSlabV0>,
-    /// CHECK: validated against the book slot's registered response account
-    /// in the handler.
+    /// CHECK: the slab's `has_one` binds it to the book the admin approved.
     #[account(mut)]
     pub clob_market: UncheckedAccount<'info>,
     /// CHECK: a Clob slot's program is pinned to velocity's CLOB at
@@ -189,10 +191,7 @@ pub fn handle_modify_order_v1<'c: 'info, 'info>(
 
     let user_ref = {
         let user = crate::load!(ctx.accounts.user)?;
-        ClobUserRefV0 {
-            authority: user.authority,
-            sub_account_id: user.sub_account_id,
-        }
+        user.clob_user_ref()
     };
 
     // ---- Cancel first, so the margin gate below sees the net change. ----

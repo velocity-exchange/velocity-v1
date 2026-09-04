@@ -24,6 +24,45 @@ use {
     anchor_lang::prelude::*,
 };
 
+/// The restable remainder of `order` for its owner: the direction, the rest
+/// price, the base still unfilled, and the facts the rest carries. `None`
+/// when the order's own rules keep it off the book
+/// ([`restable_remainder_price`]) — an `unfilled` of zero is the caller's to
+/// skip, since some routes cancel first either way.
+///
+/// One derivation for every route that migrates a remainder, so a remainder
+/// that rests on one route rests on all of them.
+pub struct RestableRemainder {
+    pub direction: crate::controller::position::PositionDirection,
+    pub price: u64,
+    pub unfilled: u64,
+    pub max_ts: i64,
+    pub reduce_only: bool,
+}
+
+pub fn restable_remainder(
+    user: &User,
+    order: &crate::state::user::Order,
+    market_index: u16,
+    // See [`restable_remainder_price`]: only a fired trigger-market needs it.
+    rest_oracle_price: Option<i64>,
+) -> Option<RestableRemainder> {
+    let price = restable_remainder_price(order, rest_oracle_price)?;
+    let position_base = user
+        .get_perp_position(market_index)
+        .map(|position| position.base_asset_amount)
+        .unwrap_or(0);
+    Some(RestableRemainder {
+        direction: order.direction,
+        price,
+        unfilled: order
+            .get_base_asset_amount_unfilled(Some(position_base))
+            .unwrap_or(0),
+        max_ts: order.max_ts,
+        reduce_only: order.reduce_only,
+    })
+}
+
 /// The price an unfilled remainder can rest at on the book, or `None` when it
 /// cannot rest at all.
 ///
@@ -313,10 +352,7 @@ pub fn try_place_remainder_on_clob<'info>(
             msg!("remainder fails the placement margin gate; stays cancelled");
             return Ok(None);
         }
-        crate::state::prop_amm::ClobUserRefV0 {
-            authority: user.authority,
-            sub_account_id: user.sub_account_id,
-        }
+        user.clob_user_ref()
     };
 
     // CPI the placement (identity travels in the args; the user account is

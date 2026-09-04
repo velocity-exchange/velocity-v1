@@ -5402,9 +5402,10 @@ pub mod types {
         pub pending_revenue_share: u64,
         pub amm: AMM,
         pub hedge_config: HedgeConfig,
-        pub clob_quoter: Pubkey,
+        pub clob_market: Pubkey,
+        pub quoter_slab: Pubkey,
         #[serde(skip)]
-        pub _padding_future: Padding<224>,
+        pub _padding_future: Padding<192>,
     }
     #[repr(C)]
     #[derive(
@@ -5844,14 +5845,13 @@ pub mod types {
     pub struct QuoterCrossConditionsV0 {
         pub relay: RelayBlock3x48,
         pub quoter: Pubkey,
-        pub clob_quoter: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
         pub oracle: Pubkey,
         pub market_index: u16,
         pub quote_spot_market_index: u16,
         #[serde(skip)]
-        pub padding: Padding<60>,
+        pub padding: Padding<92>,
     }
     #[repr(C)]
     #[derive(
@@ -5870,8 +5870,10 @@ pub mod types {
         pub market: u16,
         pub capacity: u16,
         pub bump: u8,
+        pub _pad: [u8; 3],
+        pub clob_market: Pubkey,
         #[serde(skip)]
-        pub padding: Padding<123>,
+        pub padding: Padding<120>,
     }
     #[derive(
         AnchorSerialize,
@@ -7903,9 +7905,10 @@ pub mod accounts {
         pub pending_revenue_share: u64,
         pub amm: AMM,
         pub hedge_config: HedgeConfig,
-        pub clob_quoter: Pubkey,
+        pub clob_market: Pubkey,
+        pub quoter_slab: Pubkey,
         #[serde(skip)]
-        pub _padding_future: Padding<224>,
+        pub _padding_future: Padding<192>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for PerpMarket {
@@ -8085,14 +8088,13 @@ pub mod accounts {
     pub struct QuoterCrossConditionsV0 {
         pub relay: RelayBlock3x48,
         pub quoter: Pubkey,
-        pub clob_quoter: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
         pub oracle: Pubkey,
         pub market_index: u16,
         pub quote_spot_market_index: u16,
         #[serde(skip)]
-        pub padding: Padding<60>,
+        pub padding: Padding<92>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for QuoterCrossConditionsV0 {
@@ -8150,8 +8152,10 @@ pub mod accounts {
         pub market: u16,
         pub capacity: u16,
         pub bump: u8,
+        pub _pad: [u8; 3],
+        pub clob_market: Pubkey,
         #[serde(skip)]
-        pub padding: Padding<123>,
+        pub padding: Padding<120>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for QuoterSlabV0 {
@@ -27616,6 +27620,7 @@ pub mod accounts {
         pub admin: Pubkey,
         pub state: Pubkey,
         pub quoter: Pubkey,
+        pub perp_market: Pubkey,
         pub quoter_slab: Pubkey,
         pub quoter_program: Pubkey,
         pub quoter_program_data: Pubkey,
@@ -27649,6 +27654,11 @@ pub mod accounts {
                 },
                 AccountMeta {
                     pubkey: self.quoter,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.perp_market,
                     is_signer: false,
                     is_writable: false,
                 },

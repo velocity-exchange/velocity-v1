@@ -112,8 +112,8 @@ pub fn handle_resolve_liquidate_perp_with_fill<'c: 'info, 'info>(
             }
         };
         if let Some(market_index) = cancel_target {
-            let quoter = perp_market_map.get_ref(&market_index)?.clob_quoter;
-            if quoter != Pubkey::default() {
+            let book = perp_market_map.get_ref(&market_index)?.clob_market;
+            if book != Pubkey::default() {
                 let user_stats =
                     crate::state::pdas::user_stats(&crate::load!(ctx.accounts.user)?.authority);
                 let (protocol_user, protocol_user_stats) = crate::state::pdas::protocol_user_pair();

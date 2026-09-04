@@ -124,14 +124,17 @@ fn set_oracle(svm: &mut litesvm::LiteSVM, address: Pubkey, price_precision_price
 }
 
 /// The controller unit fixture's $100 market: 100-unit reserves at peg 100,
-/// 2% base spread, 10%/5% margin ratios. `clob_quoter` names the canonical
-/// CLOB entry whose slab slot every router fill must consult (the mandatory
-/// baseline).
-fn set_trading_perp_market(svm: &mut litesvm::LiteSVM, oracle: Pubkey, clob_quoter: Pubkey) {
+/// 2% base spread, 10%/5% margin ratios. `quoter_slab` carries the slab PDA,
+/// which `initialize_perp_market` writes, so the `has_one = quoter_slab`
+/// contexts accept the fixture. `clob_market` stays default here: the Clob
+/// registration in `register_clob_quoter` writes the book into it, the same
+/// one-way designation production makes.
+fn set_trading_perp_market(svm: &mut litesvm::LiteSVM, oracle: Pubkey) {
     let mut market: PerpMarket = Zeroable::zeroed();
     market.market_index = 0;
     market.status = MarketStatus::Active;
-    market.clob_quoter = anchor_lang::prelude::Pubkey::new_from_array(*clob_quoter.as_array());
+    market.quoter_slab =
+        anchor_lang::prelude::Pubkey::new_from_array(quoter_slab_pda(0).to_bytes());
     market.oracle = anchor_lang::prelude::Pubkey::new_from_array(*oracle.as_array());
     market.oracle_source = OracleSource::PythLazer;
     market.order_step_size = 1000;
@@ -463,6 +466,7 @@ fn register_clob_quoter(
             admin: admin.pubkey(),
             state: state_pda(),
             quoter,
+            perp_market: perp_market_pda(0),
             quoter_slab: quoter_slab_pda(0),
             quoter_program: clob_id(),
             quoter_program_data: Some(program_data_pda(&clob_id())),
@@ -597,12 +601,13 @@ fn setup() -> Fixture {
         &velocity_id(),
     )
     .0;
-    // The quoter PDA is derivable before the entry exists, so the market can
-    // name its canonical CLOB from birth.
+    // The staging entry's PDA, derivable before the entry exists. The market
+    // learns its book at registration, when `initialize_quoter` writes
+    // `clob_market`.
     let quoter = quoter_pda(0, &clob_id(), &clob_maker_user);
     set_trading_state(&mut svm, &admin.pubkey());
     set_oracle(&mut svm, oracle, (100 * PRICE_PRECISION) as i64, 10);
-    set_trading_perp_market(&mut svm, oracle, quoter);
+    set_trading_perp_market(&mut svm, oracle);
     set_quote_spot_market(&mut svm);
 
     let clob_market = init_clob_book(&mut svm, &clob_admin);
@@ -1902,6 +1907,7 @@ fn a_maker_cancels_off_a_suspended_book() {
             admin: fixture.admin.pubkey(),
             state: state_pda(),
             quoter: fixture.quoter,
+            perp_market: perp_market_pda(0),
             quoter_slab: fixture.quoter_slab,
             quoter_program: clob_id(),
             quoter_program_data: Some(program_data_pda(&clob_id())),
@@ -5530,6 +5536,7 @@ fn setup_midpoint_maker_with_flow(
             admin: fixture.admin.pubkey(),
             state: state_pda(),
             quoter: entry,
+            perp_market: perp_market_pda(0),
             quoter_slab: fixture.quoter_slab,
             quoter_program: midpoint_id(),
             quoter_program_data: Some(program_data_pda(&midpoint_id())),
@@ -5894,6 +5901,7 @@ fn declare_midpoint_watch(fixture: &mut Fixture, maker: &MidpointMaker) {
             admin: fixture.admin.pubkey(),
             state: state_pda(),
             quoter: maker.entry,
+            perp_market: perp_market_pda(0),
             quoter_slab: fixture.quoter_slab,
             quoter_program: midpoint_id(),
             quoter_program_data: Some(program_data_pda(&midpoint_id())),

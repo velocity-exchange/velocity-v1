@@ -29,6 +29,7 @@ use {
 };
 
 #[derive(Accounts)]
+#[instruction(args: PlaceAndTakePerpOrderV1Args)]
 pub struct PlaceAndTakeV1<'info> {
     pub state: AccountLoader<'info, State>,
     #[account(
@@ -44,6 +45,10 @@ pub struct PlaceAndTakeV1<'info> {
     pub authority: Signer<'info>,
     /// The market's quoter slab — the remainder only ever rests on the
     /// vetted book its `Clob` slot names.
+    #[account(
+        has_one = clob_market,
+        constraint = quoter_slab.load()?.market == args.params.market_index,
+    )]
     pub quoter_slab: AccountLoader<'info, QuoterSlabV0>,
     /// CHECK: validated against the book slot's registered response account
     /// (`ClobMarket::from_slab`), so a valid slot can't be pointed at an

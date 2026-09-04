@@ -885,8 +885,11 @@ pub fn handle_initialize_perp_market(
         fee_pool_buffer_target: FEE_POOL_TO_REVENUE_POOL_THRESHOLD as u64,
         // Set post-init via `update_perp_market_clob_quoter` once the CLOB's
         // registry entry exists (the entry itself needs the market first).
-        clob_quoter: Pubkey::default(),
-        _padding_future: [0; 224],
+        clob_market: Pubkey::default(),
+        // The slab PDA is derivable now, so it is stored at birth: every
+        // accounts struct that names both binds them with `has_one`.
+        quoter_slab: crate::state::pdas::quoter_slab(market_index),
+        _padding_future: [0; 192],
     };
 
     safe_increment!(state.number_of_markets, 1);

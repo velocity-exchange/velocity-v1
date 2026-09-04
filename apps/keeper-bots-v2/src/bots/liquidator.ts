@@ -1541,7 +1541,7 @@ export class LiquidatorBot implements Bot {
 		| undefined
 	> {
 		const perpMarket = this.velocityClient.getPerpMarketAccount(marketIndex);
-		if (!perpMarket || perpMarket.clobQuoter.equals(PublicKey.default)) {
+		if (!perpMarket || perpMarket.clobMarket.equals(PublicKey.default)) {
 			return undefined;
 		}
 		const { slots } = await this.velocityClient.getQuoterSlabAccount(

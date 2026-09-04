@@ -121,6 +121,10 @@ pub struct TriggerLimitOrderV1<'info> {
     /// The market's quoter slab — placement is only allowed on the vetted
     /// book its `Clob` slot names, same as a maker's own
     /// `place_and_make_perp_order_v1`.
+    #[account(
+        has_one = clob_market,
+        constraint = quoter_slab.load()?.market == args.market_index,
+    )]
     pub quoter_slab: AccountLoader<'info, QuoterSlabV0>,
     /// CHECK: validated against the book slot's registered response account
     /// in the handler.
@@ -453,10 +457,7 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
             base_asset_amount,
             user.orders[order_index].max_ts,
             reduce_only,
-            crate::state::prop_amm::ClobUserRefV0 {
-                authority: user.authority,
-                sub_account_id: user.sub_account_id,
-            },
+            user.clob_user_ref(),
         )
     };
 
@@ -562,8 +563,9 @@ pub struct ResolveTriggerLimitOrderV1<'info> {
     #[account(constraint = trigger_conditions.load()?.user == user.key())]
     pub trigger_conditions: AccountLoader<'info, crate::state::user_conditions::UserConditionsV0>,
     pub user: AccountLoader<'info, User>,
-    /// CHECK: validated against the market's oracle in the handler.
+    /// CHECK: the perp market's `has_one` binds it.
     pub oracle: UncheckedAccount<'info>,
+    #[account(has_one = oracle)]
     pub perp_market: AccountLoader<'info, crate::state::perp_market::PerpMarket>,
 }
 

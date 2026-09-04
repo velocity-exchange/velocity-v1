@@ -36,8 +36,8 @@ use {
             pdas,
             perp_market_map::MarketSet,
             prop_amm::{
-                find_account, occupied_slots, quoter_slab_slots, PriceLevel, QuoterConfigV0,
-                QuoterSlabV0, QuoterType,
+                find_account, occupied_slots, quoter_slab_slots, PriceLevel, QuoterSlabV0,
+                QuoterType,
             },
             state::State,
             user::{User, UserStats},
@@ -98,21 +98,19 @@ pub struct CrankCrossMatch<'info> {
     #[account(
         mut,
         seeds = [b"perp_market", args.market_index.to_le_bytes().as_ref()],
-        bump
+        bump,
+        has_one = quoter_slab
     )]
     pub perp_market: AccountLoader<'info, crate::state::perp_market::PerpMarket>,
     /// The market's approved quoters — both legs' configs, and the identity
-    /// every quoter CPI signs as.
-    #[account(
-        seeds = [
-            crate::state::prop_amm::QUOTER_SLAB_PDA_SEED,
-            args.market_index.to_le_bytes().as_ref(),
-        ],
-        bump
-    )]
+    /// every quoter CPI signs as. Bound by the market's `has_one`, which is a
+    /// memcmp where a seeds constraint pays a PDA derivation.
     pub quoter_slab: AccountLoader<'info, QuoterSlabV0>,
 }
 
+#[access_control(
+    fill_not_paused(&ctx.accounts.state)
+)]
 pub fn handle_crank_cross_match<'c: 'info, 'info>(
     ctx: Context<'info, CrankCrossMatch<'info>>,
     args: CrankCrossMatchArgs,
@@ -202,10 +200,7 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
 
     let taker_ref = {
         let taker = load!(ctx.accounts.taker)?;
-        crate::state::prop_amm::ClobUserRefV0 {
-            authority: taker.authority,
-            sub_account_id: taker.sub_account_id,
-        }
+        taker.clob_user_ref()
     };
     let users = crate::state::prop_amm::quoter_wire_users(
         makers_and_referrer
@@ -265,7 +260,15 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
             find(&clob.response_account)?.clone(),
             find(&config.program_id)?.clone(),
         ];
-        let (bids, asks) = book_sides(config, &clob.slab, market_index, &sides, &mut cpi_scratch)?;
+        let (bids, asks) = super::helpers::crank_common::book_l3_sides(
+            config,
+            &clob.slab,
+            market_index,
+            CROSS_ROWS_PER_SIDE,
+            &sides,
+            &mut cpi_scratch,
+        )?
+        .unwrap_or_default();
         for side in [&bids, &asks] {
             let mut depth = 0u64;
             for order in side {
@@ -494,41 +497,6 @@ struct ClobCross {
 /// next wake continues.
 const CROSS_ROWS_PER_SIDE: u16 = 32;
 
-/// One side of a book, best price first, through the same `quote_l3_v0` every
-/// source answers on.
-///
-/// The book has already applied its own rules about which of its orders are
-/// matchable right now, so a caller never reads the market account and never
-/// re-derives an activation slot or an expiry.
-fn clob_rows<'info>(
-    quoter: &QuoterConfigV0,
-    slab: &AccountLoader<'info, QuoterSlabV0>,
-    market_index: u16,
-    direction: crate::state::prop_amm::Direction,
-    accounts: &[AccountInfo<'info>],
-    scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
-) -> Result<Vec<crate::state::prop_amm::L3RowV0>> {
-    let located = quoter.quote_l3(
-        market_index,
-        crate::state::prop_amm::L3ArgsV0 {
-            direction,
-            // Zero describes the side up to `max_rows`: a cross is found by
-            // comparing the two sides, so neither has a size to stop at until
-            // the other has been read.
-            size: 0,
-            max_rows: CROSS_ROWS_PER_SIDE,
-        },
-        slab,
-        accounts,
-        scratch,
-    )?;
-    let Some(located) = located else {
-        return Ok(Vec::new());
-    };
-    let data = located.borrow()?;
-    Ok(located.l3_response(&data)?.rows.to_vec())
-}
-
 /// Whether this cross would take a taker-origin remainder's protection away
 /// part-way through the instruction.
 ///
@@ -562,48 +530,6 @@ fn strips_taker_origin_gate(
         })
     };
     exposed(bids, asks, |bid, ask| bid >= ask) || exposed(asks, bids, |ask, bid| bid >= ask)
-}
-
-/// Both sides of a book, best price first, as the rows the cross resolver
-/// reads. A taker of `Long` sweeps asks, so that read names the ask side.
-fn book_sides<'info>(
-    quoter: &QuoterConfigV0,
-    slab: &AccountLoader<'info, QuoterSlabV0>,
-    market_index: u16,
-    accounts: &[AccountInfo<'info>],
-    scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
-) -> Result<(
-    Vec<crate::math::crosses::RestingOrder>,
-    Vec<crate::math::crosses::RestingOrder>,
-)> {
-    // Map the L3 response in place: `from_row` copies each row, so the rows
-    // never need an owned intermediate the way `find_clob_cross` needs one.
-    let mut side = |direction| -> Result<Vec<crate::math::crosses::RestingOrder>> {
-        let located = quoter.quote_l3(
-            market_index,
-            crate::state::prop_amm::L3ArgsV0 {
-                direction,
-                size: 0,
-                max_rows: CROSS_ROWS_PER_SIDE,
-            },
-            slab,
-            accounts,
-            scratch,
-        )?;
-        let Some(located) = located else {
-            return Ok(Vec::new());
-        };
-        let data = located.borrow()?;
-        Ok(located
-            .l3_response(&data)?
-            .rows
-            .iter()
-            .map(crate::math::crosses::RestingOrder::from_row)
-            .collect())
-    };
-    let asks = side(crate::state::prop_amm::Direction::Long)?;
-    let bids = side(crate::state::prop_amm::Direction::Short)?;
-    Ok((bids, asks))
 }
 
 /// The crossing prefix of a book against itself: total matchable size, the
@@ -719,22 +645,28 @@ fn find_clob_cross(ctx: &Context<ResolveClobCrank>) -> Result<ClobCross> {
     // One side at a time: both responses land in the same region of the book's
     // response tail, so the first is copied out before the second CPI
     // overwrites it. A buyer consumes the asks.
-    let asks = clob_rows(
+    let asks = super::helpers::crank_common::book_l3_side(
         quoter,
         &ctx.accounts.quoter_slab,
         market_index,
         crate::state::prop_amm::Direction::Long,
+        CROSS_ROWS_PER_SIDE,
         &accounts,
         &mut cpi_scratch,
-    )?;
-    let bids = clob_rows(
+        |row| *row,
+    )?
+    .unwrap_or_default();
+    let bids = super::helpers::crank_common::book_l3_side(
         quoter,
         &ctx.accounts.quoter_slab,
         market_index,
         crate::state::prop_amm::Direction::Short,
+        CROSS_ROWS_PER_SIDE,
         &accounts,
         &mut cpi_scratch,
-    )?;
+        |row| *row,
+    )?
+    .unwrap_or_default();
     Ok(cross_prefix(&bids, &asks))
 }
 
@@ -852,10 +784,7 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
 
         let maker_ref = {
             let user = crate::load!(ctx.accounts.user)?;
-            crate::state::prop_amm::ClobUserRefV0 {
-                authority: user.authority,
-                sub_account_id: user.sub_account_id,
-            }
+            user.clob_user_ref()
         };
 
         // Both cross directions against the book, quoted the same way the
@@ -874,14 +803,17 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
             error!(ErrorCode::QuoterNotOnSlab)
         })?;
         let mut clob_book = |direction: crate::state::prop_amm::Direction| -> Result<Vec<_>> {
-            clob_rows(
+            Ok(super::helpers::crank_common::book_l3_side(
                 &slots[book_slot].config,
                 &ctx.accounts.quoter_slab,
                 market_index,
                 direction,
+                CROSS_ROWS_PER_SIDE,
                 &clob_accounts,
                 &mut cpi_scratch,
-            )
+                |row| *row,
+            )?
+            .unwrap_or_default())
         };
         // The entry's asks cross the book's bids, which is what a seller
         // consumes.

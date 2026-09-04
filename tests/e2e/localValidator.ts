@@ -668,6 +668,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 							admin: payer.publicKey,
 							state: await admin.getStatePublicKey(),
 							quoter,
+							perpMarket,
 							// Approval copies the staging config into the slab slot
 							// fills read; the slab has to exist first — and approval
 							// grows it to fit the slot, so the system program rides.

@@ -329,9 +329,14 @@ pub fn relay_scratch_pda() -> Pubkey {
 }
 
 /// Zeroed `PerpMarket` at the index-derived PDA — account identity only.
+/// `quoter_slab` carries the slab PDA, which `initialize_perp_market` writes,
+/// so the `has_one = quoter_slab` contexts accept the fixture. `clob_market`
+/// stays default: the fixture has no book, and a Clob registration writes it.
 pub fn set_perp_market(svm: &mut LiteSVM, market_index: u16) {
     let mut market: PerpMarket = Zeroable::zeroed();
     market.market_index = market_index;
+    market.quoter_slab =
+        anchor_lang::prelude::Pubkey::new_from_array(quoter_slab_pda(market_index).to_bytes());
     set_zero_copy_account(
         svm,
         perp_market_pda(market_index),

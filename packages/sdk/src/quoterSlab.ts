@@ -10,10 +10,10 @@ import {
 
 /**
  * Where a `QuoterSlabV0` account's slot region starts: the 8-byte
- * discriminator plus the fixed 128-byte header. Mirrors
+ * discriminator plus the fixed 160-byte header. Mirrors
  * `QuoterSlabV0::SLOT_REGION_OFFSET` on-chain.
  */
-export const QUOTER_SLAB_SLOT_REGION_OFFSET = 8 + 128;
+export const QUOTER_SLAB_SLOT_REGION_OFFSET = 8 + 160;
 
 /** Bytes one `QuoterSlotV0` occupies in the slot region. */
 export const QUOTER_SLAB_SLOT_SIZE = 776;
@@ -104,6 +104,7 @@ export function decodeQuoterSlab(data: Buffer): {
 		market: data.readUInt16LE(8),
 		capacity: data.readUInt16LE(10),
 		bump: data.readUInt8(12),
+		clobMarket: readPubkey(data, 16),
 		padding: [],
 	};
 	const slots: QuoterSlotV0[] = [];

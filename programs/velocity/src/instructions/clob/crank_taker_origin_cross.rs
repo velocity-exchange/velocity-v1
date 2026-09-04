@@ -74,7 +74,7 @@ use {
             perp_market_map::{get_writable_perp_market_set, MarketSet, PerpMarketMap},
             prop_amm::{
                 quoter_slab_clob, ClobFillArgsV0, ClobFillRequestV0, ClobMarket, ClobSide,
-                ClobUserRefV0, Direction, QuoterConfigV0, QuoterSlabV0, WireDirectionExt,
+                ClobUserRefV0, Direction, WireDirectionExt,
             },
             revenue_share::RevenueShareEscrowZeroCopyMut,
             signed_msg_user::{SignedMsgUserOrdersLoader, SIGNED_MSG_PDA_SEED},
@@ -133,6 +133,10 @@ pub struct CrankTakerOriginCross<'info> {
     )]
     pub taker_stats: AccountLoader<'info, UserStats>,
     /// The market's quoter slab; the book's config is its `Clob` slot.
+    #[account(
+        has_one = clob_market,
+        constraint = quoter_slab.load()?.market == args.market_index,
+    )]
     pub quoter_slab: AccountLoader<'info, crate::state::prop_amm::QuoterSlabV0>,
     /// CHECK: validated against the book slot's registered response account
     /// (`ClobMarket::from_slab`), so a valid slot cannot be pointed at an
@@ -206,61 +210,9 @@ fn counterparty_of(cross: &Cross, aggressor_side: ClobSide) -> RestingOrder {
 /// crank's compute budget on a book that does not need it.
 const MAX_CROSS_ROWS: u16 = 64;
 
-/// Both sides of the book, as the rows a cross resolution works from.
-///
-/// Two calls, one per side, because the book quotes a direction at a time. It
-/// is the whole picture that matters here rather than a prefix of one side: a
-/// remainder is frozen by whatever crosses it, and what crosses it is on the
-/// other side, so a reader that saw only one side could not tell a resolvable
-/// cross from a stuck one.
-///
-/// `quote_l3_v0` is the right read for this and `next_cross_v0` is not. The
-/// cross reports the two heads, which is enough only when the answer is a pair
-/// of best-priced orders; several remainders can cross at once, and resolving
-/// them needs every row, its rest order, and its flag.
-///
-/// `rows` bounds each side. Reading short costs throughput and nothing else:
-/// rows come best price first, so the edge truncates worse prices and deeper
-/// aggressors, never a better counterparty than the one this settles against.
-/// What is left crosses on the next crank.
-fn read_book_rows<'info>(
-    quoter: &QuoterConfigV0,
-    market_index: u16,
-    slab: &AccountLoader<'info, QuoterSlabV0>,
-    rows: u16,
-    accounts: &[AccountInfo<'info>],
-    scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
-) -> Result<(Vec<RestingOrder>, Vec<RestingOrder>)> {
-    let mut side = |direction: Direction| -> Result<Vec<RestingOrder>> {
-        let located = quoter
-            .quote_l3(
-                market_index,
-                crate::state::prop_amm::L3ArgsV0 {
-                    direction,
-                    // The whole side: a cross is a fact about the book, not
-                    // about a size somebody wants.
-                    size: 0,
-                    max_rows: rows.min(MAX_CROSS_ROWS),
-                },
-                slab,
-                accounts,
-                scratch,
-            )?
-            .ok_or(ErrorCode::NoTakerOriginCross)?;
-        let data = located.borrow()?;
-        Ok(located
-            .l3_response(&data)?
-            .rows
-            .iter()
-            .map(RestingOrder::from_row)
-            .collect())
-    };
-    // A taker of `Long` sweeps asks, so that read names the ask side.
-    let asks = side(Direction::Long)?;
-    let bids = side(Direction::Short)?;
-    Ok((bids, asks))
-}
-
+#[access_control(
+    fill_not_paused(&ctx.accounts.state)
+)]
 pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
     ctx: Context<'info, CrankTakerOriginCross<'info>>,
     args: CrankTakerOriginCrossArgs,
@@ -333,23 +285,21 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
     // price, falls out of the flags and the rest order on the rows themselves.
     let taker_ref = {
         let taker = load!(ctx.accounts.taker)?;
-        ClobUserRefV0 {
-            authority: taker.authority,
-            sub_account_id: taker.sub_account_id,
-        }
+        taker.clob_user_ref()
     };
     let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
-    let (bids, asks) = read_book_rows(
+    let (bids, asks) = super::helpers::crank_common::book_l3_sides(
         &book_slot.config,
-        market_index,
         &ctx.accounts.quoter_slab,
-        cross_rows,
+        market_index,
+        cross_rows.min(MAX_CROSS_ROWS),
         &[
             ctx.accounts.clob_market.to_account_info(),
             ctx.accounts.clob_program.to_account_info(),
         ],
         &mut cpi_scratch,
-    )?;
+    )?
+    .ok_or(ErrorCode::NoTakerOriginCross)?;
     // Price priority decides which crank owns the front of a book, and this
     // instruction is permissionless, so the rule is enforced here and not only
     // in the resolver that stages it. When neither head demands liquidity the
@@ -508,7 +458,7 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
     // Reuse the CPI scratch the book read filled: its buffers clear and refill
     // per leg, so one fill pays for one set of buffers.
     let route = crate::instructions::QuotedRoute::assemble(tail, &inputs, &mut cpi_scratch)?;
-    route.require_baseline(perp_market_map.get_ref(&market_index)?.clob_quoter)?;
+    route.require_baseline(perp_market_map.get_ref(&market_index)?.clob_market)?;
     route.require_signed_route(&signed_route, route_digest)?;
     let mut book_storage =
         [crate::math::router::QuoterBook::default(); crate::instructions::MAX_ROUTE_QUOTERS];
@@ -1134,14 +1084,15 @@ pub(super) fn stage_taker_origin_cross(
         ctx.accounts.clob_program.to_account_info(),
     ];
     let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
-    let (bids, asks) = read_book_rows(
+    let (bids, asks) = super::helpers::crank_common::book_l3_sides(
         &book_slot.config,
-        market_index,
         &ctx.accounts.quoter_slab,
+        market_index,
         MAX_CROSS_ROWS,
         &book_accounts,
         &mut cpi_scratch,
-    )?;
+    )?
+    .ok_or(ErrorCode::NoTakerOriginCross)?;
 
     // Price priority decides which crank owns the front of a book. A
     // maker-against-maker cross ahead of a remainder is `crank_cross_match`'s

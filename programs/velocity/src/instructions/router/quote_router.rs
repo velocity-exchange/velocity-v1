@@ -58,12 +58,16 @@ use {
 };
 
 #[derive(Accounts)]
+#[instruction(args: QuoteRouterArgs)]
 pub struct QuoteRouter<'info> {
     pub state: AccountLoader<'info, State>,
     pub authority: Signer<'info>,
-    /// `has_one` pins the writer; the market is checked in the handler
-    /// because it comes in as an argument, not an account.
-    #[account(mut, has_one = authority)]
+    /// `has_one` pins the writer, and the constraint pins the market.
+    #[account(
+        mut,
+        has_one = authority,
+        constraint = quote_buffer.load()?.market == args.market_index,
+    )]
     pub quote_buffer: AccountLoader<'info, RouterQuoteBufferV0>,
 }
 
@@ -145,13 +149,6 @@ pub fn handle_quote_router<'c: 'info, 'info>(
 
     let taker_direction = args.direction.to_position_direction();
     let mut buffer = ctx.accounts.quote_buffer.load_mut()?;
-    validate!(
-        buffer.market == market_index,
-        ErrorCode::DefaultError,
-        "quote buffer is for market {}, quote is for market {}",
-        buffer.market,
-        market_index
-    )?;
     buffer.begin(args.direction as u8, args.size, clock.slot);
 
     // ---- Externals first: their books are the vAMM's last look. ----
@@ -502,10 +499,7 @@ fn quoter_rows<'info>(
 /// carry its account.
 fn user_ref(makers: &crate::state::user_map::UserMap, user: &Pubkey) -> Option<ClobUserRefV0> {
     let maker = makers.get_ref(user).ok()?;
-    Some(ClobUserRefV0 {
-        authority: maker.authority,
-        sub_account_id: maker.sub_account_id,
-    })
+    Some(maker.clob_user_ref())
 }
 
 /// Record a ladder as one row against the user the registry names for it.

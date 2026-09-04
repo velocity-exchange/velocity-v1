@@ -57,6 +57,29 @@ pub struct ClobOrderFacts {
 }
 
 impl ClobOrderFacts {
+    /// The facts of an order the book removed, as its removal reported them.
+    /// A removal report carries the order's remaining size, so
+    /// `base_asset_amount_filled` is zero: the record describes what left the
+    /// book, not the order's fill history.
+    pub fn from_removed(
+        removed: &crate::state::prop_amm::ClobRemovedOrderV0,
+        market_index: u16,
+        slot: u64,
+    ) -> Self {
+        use crate::state::prop_amm::WireDirectionExt;
+        Self {
+            order_id: removed.client_order_id,
+            market_index,
+            direction: removed.side.to_position_direction(),
+            price: removed.price,
+            base_asset_amount: removed.base_asset_amount,
+            base_asset_amount_filled: 0,
+            max_ts: removed.max_ts,
+            slot,
+            taker_origin: removed.taker_origin,
+        }
+    }
+
     fn to_order(self, status: OrderStatus) -> Order {
         Order {
             slot: self.slot,

@@ -239,7 +239,8 @@ function mockPerpMarketCommon(): Omit<
 		fundingRampSlope: 1000000,
 		orderStepSize: new BN(1),
 		orderTickSize: new BN(1),
-		clobQuoter: PublicKey.default,
+		clobMarket: PublicKey.default,
+		quoterSlab: PublicKey.default,
 	};
 }
 

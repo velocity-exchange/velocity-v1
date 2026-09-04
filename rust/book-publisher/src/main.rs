@@ -407,8 +407,13 @@ async fn publish_market(
     // market account is the L3/best-makers source; the slot is vacant until a
     // book is approved.
     let slab_slots = velocity_router_sim::quoter_slab_slots(source, velocity, market_index).await?;
-    let clob_book_key = program::state::prop_amm::clob_slot_index(&slab_slots)
-        .map(|index| slab_slots[index].config.response_account);
+    let clob_slot = program::state::prop_amm::clob_slot_index(&slab_slots);
+    let clob_book_key = clob_slot.map(|index| slab_slots[index].config.response_account);
+    // The quote view names a quoter source by its staging entry, so the CLOB
+    // label resolves through the slab's book slot rather than the market.
+    let clob_entry = clob_slot
+        .map(|index| slab_slots[index].entry)
+        .unwrap_or_default();
 
     // A long taker consumes asks; a short taker consumes bids. Both go
     // through the health layer, so a quoter that breaks the simulation costs
@@ -487,7 +492,7 @@ async fn publish_market(
     let l2 = payload::l2_payload(
         market_index,
         &name,
-        &perp_market.clob_quoter,
+        &clob_entry,
         &asks,
         &bids,
         &decorations,

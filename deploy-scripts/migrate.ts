@@ -401,18 +401,13 @@ async function clobBookFor(
 	const perpMarket = getPerpMarketPublicKeySync(velocity, marketIndex);
 	const marketInfo = await connection.getAccountInfo(perpMarket);
 	if (!marketInfo) return undefined;
-	const { clobQuoter } = program.coder.accounts.decode(
+	// The market stores its book directly.
+	const { clobMarket } = program.coder.accounts.decode(
 		'perpMarket',
 		marketInfo.data
-	) as { clobQuoter: PublicKey };
-	if (!clobQuoter || clobQuoter.equals(PublicKey.default)) return undefined;
-	const entryInfo = await connection.getAccountInfo(new PublicKey(clobQuoter));
-	if (!entryInfo) return undefined;
-	const { config } = program.coder.accounts.decode(
-		'quoterV0',
-		entryInfo.data
-	) as { config: { responseAccount: PublicKey } };
-	return new PublicKey(config.responseAccount);
+	) as { clobMarket: PublicKey };
+	if (!clobMarket || clobMarket.equals(PublicKey.default)) return undefined;
+	return new PublicKey(clobMarket);
 }
 
 /** Register a relay watch over a conditions block, unless one already

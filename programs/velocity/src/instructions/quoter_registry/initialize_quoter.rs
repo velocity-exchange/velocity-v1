@@ -49,7 +49,7 @@ pub struct InitializeQuoter<'info> {
     )]
     pub quoter: AccountLoader<'info, QuoterV0>,
     /// Written when the entry is the market's book: a Clob-type entry becomes
-    /// the market's `clob_quoter` here, once and for good.
+    /// the market's `clob_market` here, once and for good.
     #[account(
         mut,
         seeds = [b"perp_market", args.market_index.to_le_bytes().as_ref()],
@@ -122,20 +122,19 @@ pub fn handle_initialize_quoter(
         // whoever rests on it, so a market that could be pointed at a second
         // one later would put every user a fill carries behind whoever holds
         // the admin key. Registering the book *is* the designation, and it is
-        // a one-way door.
+        // a one-way door. The stored key is the book account itself — the
+        // entry's response account — so every accounts struct that names the
+        // market and the book binds them with `has_one = clob_market`.
         let mut perp_market = ctx.accounts.perp_market.load_mut()?;
-        // A market may name its book before the entry exists — the PDA is
-        // derivable — so naming the entry being registered is the ordinary
-        // case. Naming a *different* one is the case this refuses.
         validate!(
-            perp_market.clob_quoter == Pubkey::default()
-                || perp_market.clob_quoter == ctx.accounts.quoter.key(),
+            perp_market.clob_market == Pubkey::default()
+                || perp_market.clob_market == args.response_account,
             ErrorCode::InvalidQuoterConfig,
-            "perp market {} already names clob quoter {}",
+            "perp market {} already names book {}",
             perp_market.market_index,
-            perp_market.clob_quoter
+            perp_market.clob_market
         )?;
-        perp_market.clob_quoter = ctx.accounts.quoter.key();
+        perp_market.clob_market = args.response_account;
     }
     if args.quoter_type == QuoterType::Custom {
         // Creation is consent: only the quoted user's authority may register

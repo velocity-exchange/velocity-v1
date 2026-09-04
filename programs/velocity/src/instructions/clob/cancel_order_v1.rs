@@ -36,13 +36,15 @@ pub struct CancelOrderV1<'info> {
     /// record is stamped with. Deliberately not an oracle account — a maker
     /// pulling orders off a book must not be able to fail on a stale feed.
     #[account(
-        constraint = perp_market.load()?.market_index == params.market_index
+        constraint = perp_market.load()?.market_index == params.market_index,
+        has_one = quoter_slab,
+        has_one = clob_market,
     )]
     pub perp_market: AccountLoader<'info, PerpMarket>,
     /// The market's quoter slab
     pub quoter_slab: AccountLoader<'info, QuoterSlabV0>,
-    /// CHECK: validated against the book slot's registered response account
-    /// in the handler.
+    /// CHECK: the perp market's `has_one` binds it to the book the market
+    /// designated.
     #[account(mut)]
     pub clob_market: UncheckedAccount<'info>,
     /// CHECK: a Clob slot's program is pinned to velocity's CLOB at
@@ -75,10 +77,7 @@ pub fn handle_cancel_order_v1(
     // CLOB verifies it against the node.
     let user_ref = {
         let user = crate::load!(ctx.accounts.user)?;
-        crate::state::prop_amm::ClobUserRefV0 {
-            authority: user.authority,
-            sub_account_id: user.sub_account_id,
-        }
+        user.clob_user_ref()
     };
     let removed = clob.cancel(ClobCancelOrderArgsV0 {
         order_ref: params.order_ref,
@@ -118,17 +117,7 @@ pub fn handle_cancel_order_v1(
             .historical_oracle_data
             .last_oracle_price,
         &ctx.accounts.user.key(),
-        super::ClobOrderFacts {
-            order_id: removed.client_order_id,
-            market_index: params.market_index,
-            direction: removed.side.to_position_direction(),
-            price: removed.price,
-            base_asset_amount: removed.base_asset_amount,
-            base_asset_amount_filled: 0,
-            max_ts: removed.max_ts,
-            slot: clock.slot,
-            taker_origin: removed.taker_origin,
-        },
+        super::ClobOrderFacts::from_removed(&removed, params.market_index, clock.slot),
         crate::state::events::OrderActionExplanation::None,
         None,
         None,

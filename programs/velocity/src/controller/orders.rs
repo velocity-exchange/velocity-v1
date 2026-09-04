@@ -4408,10 +4408,7 @@ fn fulfill_perp_order_router_pass(
     } else {
         makers_and_referrer.user_ref_index()?
     };
-    let taker_ref = crate::state::prop_amm::ClobUserRefV0 {
-        authority: taker.authority,
-        sub_account_id: taker.sub_account_id,
-    };
+    let taker_ref = taker.clob_user_ref();
     let protocol_authority = router.protocol_authority;
     // One bit per loaded user, in the order the map holds them. Set as each
     // balance change settles, so the obligation check at the end of the pass
@@ -5633,10 +5630,7 @@ pub fn cross_match(
         let mut market = perp_market_map.get_ref_mut(&market_index)?;
         settle_funding_payment(taker, &taker_key, &mut market, now)?;
     }
-    let taker_ref = crate::state::prop_amm::ClobUserRefV0 {
-        authority: taker.authority,
-        sub_account_id: taker.sub_account_id,
-    };
+    let taker_ref = taker.clob_user_ref();
     let protocol_authority = state.signer;
     let user_ref_index = makers_and_referrer.user_ref_index()?;
     let resolve_user = |user: &crate::state::prop_amm::ClobUserRefV0| -> VelocityResult<Pubkey> {

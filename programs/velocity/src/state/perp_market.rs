@@ -532,23 +532,32 @@ pub struct PerpMarket {
     /// This market's hedge (LP pool) configuration. Sits immediately after `amm`
     /// so the trailing `[amm, hedge_config]` span is the contiguous VLP region.
     pub hedge_config: HedgeConfig,
-    /// The market's canonical CLOB quoter registry entry (`QuoterV0` PDA).
-    /// When set, every router fill must include it in its quoter section —
-    /// the mandatory-baseline rule: a route can't exclude the public book.
-    /// A dead entry (deactivated/unapproved) still has to be passed but is
-    /// skipped at quote time, so killing the book never bricks fills.
+    /// The market's canonical book — the CLOB market account, which is also
+    /// the book slot's response account on the slab. When set, every router
+    /// fill must consult it — the mandatory-baseline rule: a route can't
+    /// exclude the public book. A dead book still has to be passed but is
+    /// skipped at quote time, so killing it never bricks fills. Accounts
+    /// structs that name both bind them with `has_one = clob_market`.
     /// `Pubkey::default()` = no CLOB requirement. Carved out of master's
     /// reserved tail padding, so it keeps that account size.
-    pub clob_quoter: Pubkey,
-    /// Reserved for future fields (master's tail reservation, less the 32
-    /// bytes `clob_quoter` took). Existing accounts must be extended before
-    /// the program loads them with this layout.
-    pub _padding_future: [u8; 224],
+    pub clob_market: Pubkey,
+    /// The market's quoter slab PDA, written at market initialization. The
+    /// address is derivable from the market index, but the stored copy lets
+    /// every accounts struct that names both bind them with
+    /// `has_one = quoter_slab` — a memcmp instead of a PDA derivation, and a
+    /// check the compiler keeps on every context rather than one each
+    /// handler must remember.
+    pub quoter_slab: Pubkey,
+    /// Reserved for future fields (master's tail reservation, less the 64
+    /// bytes `clob_quoter` and `quoter_slab` took). Existing accounts must be
+    /// extended before the program loads them with this layout.
+    pub _padding_future: [u8; 192],
 }
 
 const _: () = assert!(std::mem::size_of::<PerpMarket>() == 1552);
-const _: () = assert!(std::mem::offset_of!(PerpMarket, clob_quoter) == 1296);
-const _: () = assert!(std::mem::offset_of!(PerpMarket, _padding_future) == 1328);
+const _: () = assert!(std::mem::offset_of!(PerpMarket, clob_market) == 1296);
+const _: () = assert!(std::mem::offset_of!(PerpMarket, quoter_slab) == 1328);
+const _: () = assert!(std::mem::offset_of!(PerpMarket, _padding_future) == 1360);
 
 impl Default for PerpMarket {
     fn default() -> Self {
@@ -616,13 +625,14 @@ impl Default for PerpMarket {
             pending_revenue_share: 0,
             amm: AMM::default(),
             hedge_config: HedgeConfig::default(),
-            _padding_future: [0; 224],
+            quoter_slab: Pubkey::default(),
+            _padding_future: [0; 192],
             protocol_fee_pool: PoolBalance::default(),
             protocol_liquidation_fee: 0,
             taker_fee_addon_tenth_bps: 0,
             _padding_buffer: [0; 2],
             fee_pool_buffer_target: 0,
-            clob_quoter: Pubkey::default(),
+            clob_market: Pubkey::default(),
         }
     }
 }

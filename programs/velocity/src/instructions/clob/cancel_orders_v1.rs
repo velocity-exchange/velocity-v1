@@ -20,16 +20,14 @@
 
 use {
     crate::{
-        controller::position::{
-            get_position_index, release_reserved_open_base_for_exit, PositionDirection,
-        },
+        controller::position::PositionDirection,
         error::ErrorCode,
         instructions::constraints::*,
         load_mut, msg,
         state::{
             prop_amm::{
                 ClobCancelAllArgsV0, ClobCancelAllOutcomeExt, ClobCancelSides, ClobCancelSidesExt,
-                ClobMarket, ClobUserRefV0, QuoterSlabV0,
+                ClobMarket, QuoterSlabV0,
             },
             user::User,
         },
@@ -39,6 +37,7 @@ use {
 };
 
 #[derive(Accounts)]
+#[instruction(params: CancelOrdersV1Params)]
 pub struct CancelOrdersV1<'info> {
     #[account(
         mut,
@@ -46,11 +45,13 @@ pub struct CancelOrdersV1<'info> {
     )]
     pub user: AccountLoader<'info, User>,
     pub authority: Signer<'info>,
-    /// The market's quoter slab; the book's config is its `Clob` slot, bound
-    /// to this market and this book in the handler.
+    /// The market's quoter slab; the book's config is its `Clob` slot.
+    #[account(
+        has_one = clob_market,
+        constraint = quoter_slab.load()?.market == params.market_index,
+    )]
     pub quoter_slab: AccountLoader<'info, QuoterSlabV0>,
-    /// CHECK: validated against the book slot's registered response account
-    /// in the handler.
+    /// CHECK: the slab's `has_one` binds it to the book the admin approved.
     #[account(mut)]
     pub clob_market: UncheckedAccount<'info>,
     /// CHECK: a Clob slot's program is pinned to velocity's CLOB at
@@ -82,10 +83,7 @@ pub fn handle_cancel_orders_v1(
     // derivable form and the CLOB verifies it against every node it takes.
     let user_ref = {
         let user = crate::load!(ctx.accounts.user)?;
-        ClobUserRefV0 {
-            authority: user.authority,
-            sub_account_id: user.sub_account_id,
-        }
+        user.clob_user_ref()
     };
     let removed = clob.cancel_all(ClobCancelAllArgsV0 {
         user: user_ref,
@@ -131,48 +129,9 @@ pub fn handle_cancel_orders_v1(
 
     {
         let mut user = load_mut!(ctx.accounts.user)?;
-        let position_index = get_position_index(&user.perp_positions, params.market_index)?;
-
-        // One unwind per side, by the summed base the sweep reported. This is
-        // the whole point of the aggregate wire: the arithmetic is identical to
-        // N per-order unwinds at a fixed cost, because each placement reserved
-        // its own amount. That equality holds while the book reports what it
-        // holds, which is why the release below bounds the sum by the
-        // reservation rather than trusting it.
-        //
-        // It bounds rather than fails: this is the owner's own exit, and a book
-        // that reports garbage must not be able to keep them on it.
-        //
-        // Both sides regardless of what was requested, so the reserve always
-        // moves by exactly what left the book — the reserved aggregates track
-        // the book's contents, not the caller's intent.
-        [PositionDirection::Long, PositionDirection::Short]
-            .iter()
-            .try_for_each(|direction| -> Result<()> {
-                release_reserved_open_base_for_exit(
-                    &mut user.perp_positions[position_index],
-                    direction,
-                    removed.base_for(*direction),
-                )?;
-                Ok(())
-            })?;
-
-        let orders = removed.orders();
-        user.perp_positions[position_index].open_orders = user.perp_positions[position_index]
-            .open_orders
-            .saturating_sub(orders.min(u8::MAX as u32) as u8);
-        (0..orders).for_each(|_| user.decrement_open_orders(false));
-        // Disarm the reduce-only counter by however many the sweep removed.
-        user.perp_positions[position_index]
-            .disarm_reduce_only_clob_by(removed.reduce_only_orders().min(u16::MAX as u32) as u16);
-
-        // Free the placed-trigger shadows whose live orders the sweep took.
-        let shadows =
-            user.release_swept_trigger_shadows(&clob.reader(), params.market_index, params.sides)?;
-        if shadows > 0 {
-            msg!("released {} placed-trigger shadows", shadows);
-        }
-
+        // The owner's own exit, so the unwind clamps at the reservation: a
+        // book that reports garbage must not be able to keep its maker on it.
+        user.exit_swept_orders(&clob.reader(), params.market_index, params.sides, &removed)?;
         user.update_last_active_slot(clock.slot);
     }
 

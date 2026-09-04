@@ -51,7 +51,6 @@ use {
             prop_amm::{
                 occupied_slots, quoter_slab_slots, quoter_slab_slots_mut, slot_for_entry,
                 vacant_slot_index, validate_quoter_accounts, QuoterSlabV0, QuoterType, QuoterV0,
-                QUOTER_SLAB_PDA_SEED,
             },
             state::State,
         },
@@ -73,14 +72,17 @@ pub struct UpdateQuoterApproved<'info> {
     pub state: AccountLoader<'info, State>,
     /// The staging entry whose config is copied in (or whose copy is pulled).
     pub quoter: AccountLoader<'info, QuoterV0>,
+    /// The market the entry serves. A `Clob` approval is held to the book
+    /// this market designated at registration: the staging entry's response
+    /// account is maker-editable, so without the pin an edited entry could
+    /// put a different book into slot 0 than the one the market names.
     #[account(
-        mut,
-        seeds = [
-            QUOTER_SLAB_PDA_SEED,
-            quoter.load()?.config.market.to_le_bytes().as_ref(),
-        ],
-        bump
+        seeds = [b"perp_market", quoter.load()?.config.market.to_le_bytes().as_ref()],
+        bump,
+        has_one = quoter_slab
     )]
+    pub perp_market: AccountLoader<'info, crate::state::perp_market::PerpMarket>,
+    #[account(mut)]
     pub quoter_slab: AccountLoader<'info, QuoterSlabV0>,
     /// CHECK: locked to the entry's registered program. Read for its loader,
     /// which says whether a deploy slot exists to record.
@@ -334,6 +336,15 @@ pub fn handle_update_quoter_approved(
                 ErrorCode::InvalidQuoterConfig,
                 "the slab already holds a book slot"
             )?;
+            // The book the market designated at registration. The staging
+            // response account is maker-editable, so this is where an edit
+            // that points elsewhere is refused.
+            validate!(
+                ctx.accounts.perp_market.load()?.clob_market == config.response_account,
+                ErrorCode::InvalidQuoterConfig,
+                "the entry's book {} is not the market's designated book",
+                config.response_account
+            )?;
             0
         } else {
             match slot_for_entry(&slots, &entry_key) {
@@ -365,6 +376,12 @@ pub fn handle_update_quoter_approved(
             &ctx.accounts.system_program,
             index as u16 + 1,
         )?;
+    }
+    // The header mirrors the book's account so accounts structs can bind a
+    // slab to its book with `has_one = clob_market`. Kept through a book
+    // suspension: the removal paths must keep reaching a killed book.
+    if config.quoter_type == QuoterType::Clob {
+        ctx.accounts.quoter_slab.load_mut()?.clob_market = config.response_account;
     }
     let mut slots = quoter_slab_slots_mut(&ctx.accounts.quoter_slab)?;
     slots[index].entry = entry_key;

@@ -15,7 +15,7 @@ use {
             perp_market::PerpMarket,
             prop_amm::{
                 clob_slot_index, quoter_slab_slots, slot_for_entry, QuoterSlabV0, QuoterType,
-                QuoterV0, QUOTER_SLAB_PDA_SEED,
+                QuoterV0,
             },
             quoter_cross::{
                 QuoterCrossConditionsV0, QUOTER_CROSS_CLOB, QUOTER_CROSS_CONDITIONS_PDA_SEED,
@@ -40,18 +40,15 @@ pub struct InitializeQuoterCrossConditions<'info> {
     pub quoter: AccountLoader<'info, QuoterV0>,
     #[account(
         seeds = [b"perp_market", quoter.load()?.config.market.to_le_bytes().as_ref()],
-        bump
+        bump,
+        has_one = quoter_slab
     )]
     pub perp_market: AccountLoader<'info, PerpMarket>,
     /// The market's slab: the entry's approved config, and the book's — the
-    /// other leg of every staged cross — at slot 0.
-    #[account(
-        seeds = [
-            QUOTER_SLAB_PDA_SEED,
-            quoter.load()?.config.market.to_le_bytes().as_ref(),
-        ],
-        bump
-    )]
+    /// other leg of every staged cross — at slot 0. Bound by the market's
+    /// `has_one`, which is a memcmp where a seeds constraint pays a PDA
+    /// derivation.
+    #[account()]
     pub quoter_slab: AccountLoader<'info, QuoterSlabV0>,
     /// The market's crank conditions: the keeper-payment source of truth.
     #[account(
@@ -113,11 +110,11 @@ pub fn handle_initialize_quoter_cross_conditions(
         msg!("quoter slab holds no book slot");
         error!(ErrorCode::QuoterNotOnSlab)
     })?;
-    let (clob_entry, clob) = (slots[book_slot].entry, &slots[book_slot].config);
+    let clob = &slots[book_slot].config;
     validate!(
-        ctx.accounts.perp_market.load()?.clob_quoter == clob_entry,
+        ctx.accounts.perp_market.load()?.clob_market == clob.response_account,
         ErrorCode::InvalidQuoterConfig,
-        "market's canonical CLOB entry required"
+        "the slab's book is not the market's canonical book"
     )?;
 
     // Its resolver stages `crank_cross_match` and nothing else, so the floor
@@ -186,7 +183,6 @@ pub fn handle_initialize_quoter_cross_conditions(
         ctx.accounts.cross_conditions.load_mut()
     })?;
     conditions.quoter = ctx.accounts.quoter.key();
-    conditions.clob_quoter = clob_entry;
     conditions.clob_market = clob_market;
     conditions.clob_program = clob.program_id;
     conditions.oracle = oracle;

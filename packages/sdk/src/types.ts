@@ -605,8 +605,7 @@ export type QuoterCrossConditionsV0Account = {
 	relay: number[];
 	/** the Custom `QuoterV0` entry these conditions watch for crosses */
 	quoter: PublicKey;
-	/** the market's canonical CLOB entry, its book, and its program, captured at attach time */
-	clobQuoter: PublicKey;
+	/** the market's book and its program, captured at attach time */
 	clobMarket: PublicKey;
 	clobProgram: PublicKey;
 	/** the market's oracle, captured at attach time */
@@ -1660,8 +1659,10 @@ export type PerpMarketAccount = {
 	/** bitmask, see `MarketConfigFlag` */
 	marketConfig: number;
 
-	/** the market's canonical CLOB quoter registry entry; when set, every router fill must include it (mandatory baseline). Default pubkey = no requirement */
-	clobQuoter: PublicKey;
+	/** the market's canonical book (the CLOB market account); when set, every router fill must consult it (mandatory baseline). Default pubkey = no requirement */
+	clobMarket: PublicKey;
+	/** the market's quoter slab PDA, stored at market initialization so accounts structs bind the two with has_one */
+	quoterSlab: PublicKey;
 
 	// Fields migrated off AMM to top-level PerpMarket
 	oracle: PublicKey;
@@ -3302,7 +3303,7 @@ export type QuoterConfigV0 = {
 	executeAccountsCount: number;
 };
 
-/** Decoded mirror of the on-chain `QuoterV0` account: the *staging* half of the registry — one entry per (perp market, quoter program, quoted user), holding the config its authority proposes. Nothing fills from it: the admin copies it into the market's `QuoterSlabV0` (`updateQuoterApproved`), and fills read only that copy. The entry's address is the quoter's identity: signed routes name it, `PerpMarket.clobQuoter` names it, and its slab slot records it. */
+/** Decoded mirror of the on-chain `QuoterV0` account: the *staging* half of the registry — one entry per (perp market, quoter program, quoted user), holding the config its authority proposes. Nothing fills from it: the admin copies it into the market's `QuoterSlabV0` (`updateQuoterApproved`), and fills read only that copy. The entry's address is the quoter's identity: signed routes name it and its slab slot records it. */
 export type QuoterV0Account = {
 	config: QuoterConfigV0;
 	padding: number[];
@@ -3327,5 +3328,7 @@ export type QuoterSlabV0Account = {
 	capacity: number;
 	/** the slab PDA's bump; the slab signs every external quoter CPI */
 	bump: number;
+	/** the market's book — the Clob slot's response account, written at approval; survives a suspension. Default pubkey = no book approved */
+	clobMarket: PublicKey;
 	padding: number[];
 };

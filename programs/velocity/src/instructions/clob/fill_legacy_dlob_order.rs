@@ -46,6 +46,7 @@ use {
 };
 
 #[derive(Accounts)]
+#[instruction(args: FillLegacyDlobOrderArgs)]
 pub struct FillLegacyDlobOrder<'info> {
     pub state: AccountLoader<'info, State>,
     pub authority: Signer<'info>,
@@ -68,6 +69,10 @@ pub struct FillLegacyDlobOrder<'info> {
     pub user_stats: AccountLoader<'info, UserStats>,
     /// The market's quoter slab — a remainder only ever rests on the vetted
     /// book its `Clob` slot names.
+    #[account(
+        has_one = clob_market,
+        constraint = quoter_slab.load()?.market == args.market_index,
+    )]
     pub quoter_slab: AccountLoader<'info, QuoterSlabV0>,
     /// CHECK: validated against the book slot's registered response account
     /// (`ClobMarket::from_slab`), so a valid slot cannot be pointed at an

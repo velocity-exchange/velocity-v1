@@ -63,10 +63,9 @@ pub struct QuoterCrossConditionsV0 {
     pub relay: RelayBlock<QUOTER_CROSS_CONDITIONS, QUOTER_CROSS_RESOLVER_CAPACITY>,
     /// The Custom entry these conditions discover crosses for.
     pub quoter: Pubkey,
-    /// The market's canonical CLOB entry / book / program, captured at
-    /// attach time (the resolver stages the executor's CLOB leg from here
-    /// without holding those accounts). Re-attach after a CLOB rotation.
-    pub clob_quoter: Pubkey,
+    /// The market's book and its program, captured at attach time (the
+    /// resolver stages the executor's CLOB leg from here without holding
+    /// those accounts). Re-attach after a CLOB rotation.
     pub clob_market: Pubkey,
     pub clob_program: Pubkey,
     /// The market's oracle, captured at attach time (the staged executor's
@@ -78,7 +77,7 @@ pub struct QuoterCrossConditionsV0 {
     /// captured pubkeys, so a resolver that needs another fixed account can
     /// take it from here instead of forcing an `extend_account` migration on
     /// every attached quoter entry.
-    pub padding: [u8; 60],
+    pub padding: [u8; 92],
 }
 
 // `padding` is longer than 32 bytes, which `#[derive(Default)]` does not
@@ -88,13 +87,12 @@ impl Default for QuoterCrossConditionsV0 {
         Self {
             relay: RelayBlock::default(),
             quoter: Pubkey::default(),
-            clob_quoter: Pubkey::default(),
             clob_market: Pubkey::default(),
             clob_program: Pubkey::default(),
             oracle: Pubkey::default(),
             market_index: 0,
             quote_spot_market_index: 0,
-            padding: [0; 60],
+            padding: [0; 92],
         }
     }
 }
@@ -102,10 +100,10 @@ impl Default for QuoterCrossConditionsV0 {
 impl QuoterCrossConditionsV0 {
     pub const SIZE: usize = 8
         + RelayBlockV0::<QUOTER_CROSS_CONDITIONS, QUOTER_CROSS_RESOLVER_CAPACITY>::SIZE
-        + 5 * 32
+        + 4 * 32
         + 2
         + 2
-        + 60;
+        + 92;
 
     /// Write the resolver account list the conditions point at, and
     /// describe where it landed.

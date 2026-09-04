@@ -27,10 +27,13 @@ pub struct InitializeQuoterSlabArgs {
 pub struct InitializeQuoterSlab<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
-    /// Existence check: a slab serves a market that exists.
+    /// Existence check: a slab serves a market that exists. The market
+    /// stored the slab PDA at its own initialization, so the `has_one` holds
+    /// before the slab account exists.
     #[account(
         seeds = [b"perp_market", args.market_index.to_le_bytes().as_ref()],
-        bump
+        bump,
+        has_one = quoter_slab
     )]
     pub perp_market: AccountLoader<'info, PerpMarket>,
     #[account(

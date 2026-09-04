@@ -76,6 +76,10 @@ pub struct TriggerMarketOrderV1<'info> {
     pub user_stats: AccountLoader<'info, UserStats>,
     /// The market's quoter slab — the remainder only ever rests on the
     /// vetted book its `Clob` slot names.
+    #[account(
+        has_one = clob_market,
+        constraint = quoter_slab.load()?.market == args.market_index,
+    )]
     pub quoter_slab: AccountLoader<'info, QuoterSlabV0>,
     /// CHECK: validated against the book slot's registered response account.
     #[account(mut)]
@@ -200,10 +204,7 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
                 PositionDirection::Short => Direction::Short,
             },
             fired.get_base_asset_amount_unfilled(position_base)?,
-            ClobUserRefV0 {
-                authority: user.authority,
-                sub_account_id: user.sub_account_id,
-            },
+            user.clob_user_ref(),
             FillMode::Fill.quote_limit_price(
                 &fired,
                 clock.slot,
@@ -274,7 +275,7 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
 
         let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
         let route = crate::instructions::QuotedRoute::assemble(tail, &inputs, &mut cpi_scratch)?;
-        route.require_baseline(perp_market_map.get_ref(&market_index)?.clob_quoter)?;
+        route.require_baseline(perp_market_map.get_ref(&market_index)?.clob_market)?;
         let route_digest = crate::state::order_params::NO_ROUTE_DIGEST;
         route.require_signed_route(&signed_route, route_digest)?;
 
@@ -346,19 +347,16 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
         if user.is_being_liquidated() {
             None
         } else {
-            let position_base = user
-                .get_perp_position(market_index)
-                .map(|position| position.base_asset_amount)
-                .unwrap_or(0);
-            let unfilled = fired
-                .get_base_asset_amount_unfilled(Some(position_base))
-                .unwrap_or(0);
-            crate::instructions::restable_remainder_price(&fired, Some(rest_oracle_price))
-                .map(|price| (fired.direction, price, unfilled, fired.max_ts))
+            crate::instructions::restable_remainder(
+                &user,
+                &fired,
+                market_index,
+                Some(rest_oracle_price),
+            )
         }
     };
-    if let Some((direction, price, unfilled, max_ts)) = remainder {
-        if unfilled > 0 {
+    if let Some(remainder) = remainder {
+        if remainder.unfilled > 0 {
             crate::instructions::try_place_remainder_on_clob(
                 &ctx.accounts.user,
                 &ctx.accounts.quoter_slab,
@@ -368,14 +366,14 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
                 &spot_market_map,
                 &mut oracle_map,
                 market_index,
-                direction,
-                price,
-                unfilled,
-                max_ts,
+                remainder.direction,
+                remainder.price,
+                remainder.unfilled,
+                remainder.max_ts,
                 order_id,
                 true,
                 false,
-                fired.reduce_only,
+                remainder.reduce_only,
                 None,
                 clock,
             )?;
@@ -421,8 +419,9 @@ pub struct ResolveTriggerMarketOrderV1<'info> {
     #[account(constraint = trigger_conditions.load()?.user == user.key())]
     pub trigger_conditions: AccountLoader<'info, crate::state::user_conditions::UserConditionsV0>,
     pub user: AccountLoader<'info, User>,
-    /// CHECK: validated against the market's oracle in the handler.
+    /// CHECK: the perp market's `has_one` binds it.
     pub oracle: UncheckedAccount<'info>,
+    #[account(has_one = oracle)]
     pub perp_market: AccountLoader<'info, crate::state::perp_market::PerpMarket>,
 }
 

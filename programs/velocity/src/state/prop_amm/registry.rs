@@ -250,7 +250,7 @@ impl QuoterConfigV0 {
 /// vetted config in the meantime.
 ///
 /// The entry's address is also the quoter's *identity*: signed routes name
-/// it, `PerpMarket::clob_quoter` names it, relay conditions reference it, and
+/// it, relay conditions reference it, and
 /// its slab slot records it.
 #[account(zero_copy(unsafe))]
 #[derive(Eq, PartialEq, Debug)]

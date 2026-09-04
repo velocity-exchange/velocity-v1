@@ -32,12 +32,12 @@ use {
 /// Aggregated levels for one side: price → (source label → size).
 type SideLevels = BTreeMap<u64, BTreeMap<&'static str, u128>>;
 
-fn source_label(kind: QuotedSourceKind, key: &Pubkey, clob_quoter: &Pubkey) -> &'static str {
+fn source_label(kind: QuotedSourceKind, key: &Pubkey, clob_entry: &Pubkey) -> &'static str {
     match kind {
         QuotedSourceKind::Vamm => "vamm",
         QuotedSourceKind::DlobOrder => "dlob",
         QuotedSourceKind::Quoter => {
-            if key == clob_quoter {
+            if key == clob_entry {
                 "clob"
             } else {
                 "propamm"
@@ -46,10 +46,10 @@ fn source_label(kind: QuotedSourceKind, key: &Pubkey, clob_quoter: &Pubkey) -> &
     }
 }
 
-fn aggregate(view: &QuoteView, clob_quoter: &Pubkey) -> SideLevels {
+fn aggregate(view: &QuoteView, clob_entry: &Pubkey) -> SideLevels {
     let mut side: SideLevels = BTreeMap::new();
     for book in &view.books {
-        let label = source_label(book.kind, &book.key, clob_quoter);
+        let label = source_label(book.kind, &book.key, clob_entry);
         for level in &book.levels {
             *side
                 .entry(level.price)
@@ -152,14 +152,14 @@ pub fn build_decorations(
 pub fn l2_payload(
     market_index: u16,
     market_name: &str,
-    clob_quoter: &Pubkey,
+    clob_entry: &Pubkey,
     asks: &QuoteView,
     bids: &QuoteView,
     decorations: &Decorations,
     ts_ms: u128,
 ) -> Value {
-    let ask_levels = aggregate(asks, clob_quoter);
-    let bid_levels = aggregate(bids, clob_quoter);
+    let ask_levels = aggregate(asks, clob_entry);
+    let bid_levels = aggregate(bids, clob_entry);
 
     let best_ask = ask_levels.keys().next().copied();
     let best_bid = bid_levels.keys().next_back().copied();
@@ -614,24 +614,24 @@ mod tests {
 
     #[test]
     fn levels_merge_across_sources_with_a_per_source_breakdown() {
-        let clob_quoter = Pubkey::new_unique();
+        let clob_entry = Pubkey::new_unique();
         let vamm_key = Pubkey::new_unique();
         let asks = view(
             0,
             vec![
-                book(QuotedSourceKind::Quoter, clob_quoter, &[(99, 5), (100, 3)]),
+                book(QuotedSourceKind::Quoter, clob_entry, &[(99, 5), (100, 3)]),
                 book(QuotedSourceKind::Vamm, vamm_key, &[(99, 2), (101, 9)]),
             ],
         );
         let bids = view(
             1,
-            vec![book(QuotedSourceKind::Quoter, clob_quoter, &[(97, 4)])],
+            vec![book(QuotedSourceKind::Quoter, clob_entry, &[(97, 4)])],
         );
 
         let payload = l2_payload(
             7,
             "SOL-PERP",
-            &clob_quoter,
+            &clob_entry,
             &asks,
             &bids,
             &decorations(),
@@ -665,11 +665,11 @@ mod tests {
 
     #[test]
     fn non_canonical_quoters_label_as_propamm() {
-        let clob_quoter = Pubkey::new_unique();
+        let clob_entry = Pubkey::new_unique();
         let custom = Pubkey::new_unique();
         let asks = view(0, vec![book(QuotedSourceKind::Quoter, custom, &[(100, 1)])]);
         let bids = view(1, vec![]);
-        let payload = l2_payload(0, "X", &clob_quoter, &asks, &bids, &decorations(), 0);
+        let payload = l2_payload(0, "X", &clob_entry, &asks, &bids, &decorations(), 0);
         assert_eq!(payload["asks"][0]["sources"]["propamm"], "1");
         assert!(payload["bestBidPrice"].is_null());
         // One-sided book has no mark: falls back to the numeric oracle.
@@ -678,14 +678,14 @@ mod tests {
 
     #[test]
     fn groupings_bucket_away_from_the_touch_and_inherit_the_document() {
-        let clob_quoter = Pubkey::new_unique();
+        let clob_entry = Pubkey::new_unique();
         // Tick = 2: prices 99/101 bucket to 98/100 (bid floor) and
         // 100/102 (ask ceil) at group 1.
         let asks = view(
             0,
             vec![book(
                 QuotedSourceKind::Quoter,
-                clob_quoter,
+                clob_entry,
                 &[(99, 5), (101, 3)],
             )],
         );
@@ -693,11 +693,11 @@ mod tests {
             1,
             vec![book(
                 QuotedSourceKind::Quoter,
-                clob_quoter,
+                clob_entry,
                 &[(97, 4), (95, 2)],
             )],
         );
-        let l2 = l2_payload(3, "SOL-PERP", &clob_quoter, &asks, &bids, &decorations(), 9);
+        let l2 = l2_payload(3, "SOL-PERP", &clob_entry, &asks, &bids, &decorations(), 9);
         let grouped = grouped_payloads(&l2, 2);
         assert_eq!(grouped.len(), GROUPING_OPTIONS.len());
 

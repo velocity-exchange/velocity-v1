@@ -44,8 +44,8 @@ use {
             perp_market::PerpMarket,
             prop_amm::{
                 quoter_slab_clob, ClobEvictWorstArgsV0, ClobMarket, ClobReader,
-                ClobRemoveExpiredArgsV0, ClobRemovedOrderV0, ClobUserRefV0, QuoterSlabV0,
-                WireDirectionExt,
+                ClobRemoveExpiredArgsV0, ClobRemovedOrderV0, ClobUserRefV0, Direction, L3ArgsV0,
+                L3RowV0, QuoterConfigV0, QuoterCpiScratch, QuoterSlabV0, WireDirectionExt,
             },
             state::State,
             user::{User, UserStats},
@@ -85,13 +85,13 @@ pub struct CrankClobOrderRemoval<'info> {
     /// a race that removed someone else's order fails the whole crank.
     #[account(mut)]
     pub user: AccountLoader<'info, User>,
-    #[account(mut)]
+    #[account(mut, has_one = quoter_slab, has_one = clob_market)]
     pub perp_market: AccountLoader<'info, PerpMarket>,
     /// Deliberately not gated on active/approved: dead books still need
     /// their resting orders reclaimed.
     pub quoter_slab: AccountLoader<'info, QuoterSlabV0>,
-    /// CHECK: validated against the book slot's registered response account
-    /// in the handler.
+    /// CHECK: the perp market's `has_one` binds it to the book the market
+    /// designated.
     #[account(mut)]
     pub clob_market: UncheckedAccount<'info>,
     /// CHECK: a Clob slot's program is pinned to velocity's CLOB at
@@ -251,17 +251,7 @@ pub fn crank_clob_removal(
             clock.unix_timestamp,
             market.market_stats.historical_oracle_data.last_oracle_price,
             &ctx.accounts.user.key(),
-            super::ClobOrderFacts {
-                order_id: removed.client_order_id,
-                market_index,
-                direction: removed.side.to_position_direction(),
-                price: removed.price,
-                base_asset_amount: removed.base_asset_amount,
-                base_asset_amount_filled: 0,
-                max_ts: removed.max_ts,
-                slot: clock.slot,
-                taker_origin: removed.taker_origin,
-            },
+            super::ClobOrderFacts::from_removed(&removed, market_index, clock.slot),
             if is_evict {
                 OrderActionExplanation::ClobOrderEvicted
             } else {
@@ -317,8 +307,7 @@ pub struct ResolveClobCrank<'info> {
     /// Read-only: resolvers stage into the shared scratch account, not
     /// into the block they read.
     pub crank_conditions: AccountLoader<'info, ClobCrankConditionsV0>,
-    /// CHECK: validated against the book slot's registered response account,
-    /// same as the executor it stages.
+    /// CHECK: the slab's `has_one` binds it to the book the admin approved.
     ///
     /// Writable for the book's response tail: the cross resolver asks the book
     /// for its resting orders through `quote_l3_v0`, which streams the answer
@@ -326,11 +315,15 @@ pub struct ResolveClobCrank<'info> {
     /// scratch region the book rewrites on every quote.
     #[account(mut)]
     pub clob_market: UncheckedAccount<'info>,
+    #[account(
+        has_one = clob_market,
+        constraint = quoter_slab.load()?.market == crank_conditions.load()?.market_index,
+    )]
     pub quoter_slab: AccountLoader<'info, QuoterSlabV0>,
     pub state: AccountLoader<'info, State>,
-    /// CHECK: checked against the book slot's `program_id`. A resolver asks
-    /// the book which order to remove instead of reading its arena, so it
-    /// calls the program rather than parsing the account.
+    /// CHECK: a Clob slot's program is pinned to velocity's CLOB at
+    /// registration; the linkage check re-verifies through the slot.
+    #[account(address = crate::ids::clob_program::id())]
     pub clob_program: UncheckedAccount<'info>,
     /// Read-only: the refill resolver reads the levels a reservoir is held
     /// between, which are the treasury's setting rather than the market's.
@@ -550,4 +543,98 @@ pub fn find_fired_trigger(
         }
     }
     Ok(None)
+}
+
+/// One side of a book, best price first, through the same `quote_l3_v0`
+/// every source answers on, with each row mapped in place — `map` copies
+/// what it keeps, so the response never needs an owned intermediate on a
+/// heap that never reclaims.
+///
+/// `size: 0` describes the side up to `max_rows`: a cross is found by
+/// comparing the two sides, so neither has a size to stop at until the other
+/// has been read. Reading short costs throughput and nothing else: rows come
+/// best price first, so the edge truncates worse prices, never a better
+/// counterparty. `None` when the entry declares no L3 leg.
+pub(crate) fn book_l3_side<'info, T>(
+    quoter: &QuoterConfigV0,
+    slab: &AccountLoader<'info, QuoterSlabV0>,
+    market_index: u16,
+    direction: Direction,
+    max_rows: u16,
+    accounts: &[AccountInfo<'info>],
+    scratch: &mut QuoterCpiScratch<'info>,
+    map: impl Fn(&L3RowV0) -> T,
+) -> Result<Option<Vec<T>>> {
+    let located = quoter.quote_l3(
+        market_index,
+        L3ArgsV0 {
+            direction,
+            size: 0,
+            max_rows,
+        },
+        slab,
+        accounts,
+        scratch,
+    )?;
+    let Some(located) = located else {
+        return Ok(None);
+    };
+    let data = located.borrow()?;
+    Ok(Some(
+        located.l3_response(&data)?.rows.iter().map(map).collect(),
+    ))
+}
+
+/// Both sides of a book, as the resting orders a cross resolution works
+/// from: `(bids, asks)`.
+///
+/// Two calls, one per side, because both responses land in the same region
+/// of the book's response tail — the first is copied out before the second
+/// CPI overwrites it. It is the whole picture that matters to a cross: what
+/// crosses an order is on the other side, so a reader that saw only one side
+/// could not tell a resolvable cross from a stuck one. A taker of `Long`
+/// sweeps asks, so that read names the ask side. `None` when the entry
+/// declares no L3 leg.
+#[allow(clippy::type_complexity)]
+pub(crate) fn book_l3_sides<'info>(
+    quoter: &QuoterConfigV0,
+    slab: &AccountLoader<'info, QuoterSlabV0>,
+    market_index: u16,
+    max_rows: u16,
+    accounts: &[AccountInfo<'info>],
+    scratch: &mut QuoterCpiScratch<'info>,
+) -> Result<
+    Option<(
+        Vec<crate::math::crosses::RestingOrder>,
+        Vec<crate::math::crosses::RestingOrder>,
+    )>,
+> {
+    let from_row = crate::math::crosses::RestingOrder::from_row;
+    let Some(asks) = book_l3_side(
+        quoter,
+        slab,
+        market_index,
+        Direction::Long,
+        max_rows,
+        accounts,
+        scratch,
+        from_row,
+    )?
+    else {
+        return Ok(None);
+    };
+    let Some(bids) = book_l3_side(
+        quoter,
+        slab,
+        market_index,
+        Direction::Short,
+        max_rows,
+        accounts,
+        scratch,
+        from_row,
+    )?
+    else {
+        return Ok(None);
+    };
+    Ok(Some((bids, asks)))
 }

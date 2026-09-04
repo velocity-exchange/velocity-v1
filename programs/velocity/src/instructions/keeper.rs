@@ -117,7 +117,7 @@ use {
 /// call; each live consulted slot is quoted via CPI into a book, and
 /// allocations that land on a book execute through the same slot's
 /// `execute_v0`. No slab = vAMM + DLOB routing only —
-/// allowed only while the market names no canonical CLOB (`clob_quoter`).
+/// allowed only while the market names no canonical book (`clob_market`).
 #[access_control(
     fill_not_paused(&ctx.accounts.state)
 )]
@@ -303,10 +303,7 @@ fn fill_order<'c: 'info, 'info>(
         (
             direction,
             order.get_base_asset_amount_unfilled(position_base)?,
-            crate::state::prop_amm::ClobUserRefV0 {
-                authority: user.authority,
-                sub_account_id: user.sub_account_id,
-            },
+            user.clob_user_ref(),
             // A DLOB order carries no route. Only a signed message names one,
             // and such an order routes at placement and rests any remainder on
             // the market's CLOB, so what a route binds is the fill of that
@@ -370,7 +367,7 @@ fn fill_order<'c: 'info, 'info>(
     // because velocity's heap never gives a freed one back.
     let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
     let route = crate::instructions::QuotedRoute::assemble(tail, &inputs, &mut cpi_scratch)?;
-    route.require_baseline(perp_market_map.get_ref(&market_index)?.clob_quoter)?;
+    route.require_baseline(perp_market_map.get_ref(&market_index)?.clob_market)?;
     route.require_signed_route(&signed_route, route_digest)?;
     // Countable only now: the route is what says which entries arrived, and
     // the obligation is only consulted if a book later withholds.
@@ -439,26 +436,10 @@ fn fill_order<'c: 'info, 'info>(
             if base_asset_amount_filled == 0 && !order.has_auction() {
                 return Ok(());
             }
-            let position_base = user
-                .get_perp_position(market_index)
-                .map(|position| position.base_asset_amount)
-                .unwrap_or(0);
-            let Some(rest_price) = crate::instructions::restable_remainder_price(order, None)
-            else {
-                return Ok(());
-            };
-            Some((
-                order.direction,
-                rest_price,
-                order
-                    .get_base_asset_amount_unfilled(Some(position_base))
-                    .unwrap_or(0),
-                order.max_ts,
-                order.reduce_only,
-            ))
+            crate::instructions::restable_remainder(&user, order, market_index, None)
         };
-        if let Some((direction, price, unfilled, max_ts, reduce_only)) = remainder {
-            if unfilled > 0 {
+        if let Some(remainder) = remainder {
+            if remainder.unfilled > 0 {
                 controller::orders::cancel_order_by_order_id(
                     order_id,
                     accounts.user,
@@ -476,14 +457,14 @@ fn fill_order<'c: 'info, 'info>(
                     &spot_market_map,
                     &mut oracle_map,
                     market_index,
-                    direction,
-                    price,
-                    unfilled,
-                    max_ts,
+                    remainder.direction,
+                    remainder.price,
+                    remainder.unfilled,
+                    remainder.max_ts,
                     order_id,
                     true,
                     false,
-                    reduce_only,
+                    remainder.reduce_only,
                     None,
                     clock,
                 )?;
@@ -1063,10 +1044,7 @@ fn fill_signed_msg_taker_order<'c: 'info, 'info>(
                 PositionDirection::Short => Direction::Short,
             },
             order.get_base_asset_amount_unfilled(position_base)?,
-            crate::state::prop_amm::ClobUserRefV0 {
-                authority: user.authority,
-                sub_account_id: user.sub_account_id,
-            },
+            user.clob_user_ref(),
             // Zero progress prices the auction at its start. A signed-message
             // order takes only genuine improvement now and rests the rest, so
             // it never pays its own slippage bound to whoever lands first.
@@ -1126,7 +1104,7 @@ fn fill_signed_msg_taker_order<'c: 'info, 'info>(
 
     let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
     let route = crate::instructions::QuotedRoute::assemble(tail, &inputs, &mut cpi_scratch)?;
-    route.require_baseline(perp_market_map.get_ref(&market_index)?.clob_quoter)?;
+    route.require_baseline(perp_market_map.get_ref(&market_index)?.clob_market)?;
     let digest = placed.route_digest;
     route.require_signed_route(&placed.route, digest)?;
 
@@ -1212,15 +1190,7 @@ fn rest_signed_msg_remainder<'c: 'info, 'info>(
         if base_asset_amount_filled == 0 && !order.has_auction() {
             return Ok(());
         }
-        let position_base = user
-            .get_perp_position(market_index)
-            .map(|position| position.base_asset_amount)
-            .unwrap_or(0);
-        let unfilled = order
-            .get_base_asset_amount_unfilled(Some(position_base))
-            .unwrap_or(0);
-        crate::instructions::restable_remainder_price(order, None)
-            .map(|price| (order.direction, price, unfilled, order.max_ts))
+        crate::instructions::restable_remainder(&user, order, market_index, None)
     };
 
     // Immediate-or-cancel asked for no residual. The order never persisted, so
@@ -1230,10 +1200,10 @@ fn rest_signed_msg_remainder<'c: 'info, 'info>(
         return Ok(());
     }
 
-    let Some((direction, price, unfilled, max_ts)) = remainder else {
+    let Some(remainder) = remainder else {
         return Ok(());
     };
-    if unfilled == 0 {
+    if remainder.unfilled == 0 {
         return Ok(());
     }
 
@@ -1248,14 +1218,14 @@ fn rest_signed_msg_remainder<'c: 'info, 'info>(
         spot_market_map,
         oracle_map,
         market_index,
-        direction,
-        price,
-        unfilled,
-        max_ts,
+        remainder.direction,
+        remainder.price,
+        remainder.unfilled,
+        remainder.max_ts,
         placed.order_id,
         true,
         false,
-        placed.order.reduce_only,
+        remainder.reduce_only,
         None,
         clock,
     )?;
@@ -4992,10 +4962,9 @@ pub struct PlaceSignedMsgTakerOrder<'info> {
     /// The market's quoter slab. The remainder only ever rests on the vetted
     /// book its `Clob` slot names, and that book is the mandatory baseline of
     /// a router fill.
+    #[account(has_one = clob_market)]
     pub quoter_slab: AccountLoader<'info, QuoterSlabV0>,
-    /// CHECK: validated against the book slot's registered response account
-    /// (`ClobMarket::from_slab`), so a valid slot cannot be pointed at an
-    /// arbitrary account.
+    /// CHECK: the slab's `has_one` binds it to the book the admin approved.
     #[account(mut)]
     pub clob_market: UncheckedAccount<'info>,
     /// CHECK: a Clob slot's program is pinned to velocity's CLOB at
@@ -5531,8 +5500,9 @@ pub struct ResolveTriggerOrder<'info> {
     #[account(constraint = trigger_conditions.load()?.user == user.key())]
     pub trigger_conditions: AccountLoader<'info, UserConditionsV0>,
     pub user: AccountLoader<'info, User>,
-    /// CHECK: validated against the market's oracle in the handler.
+    /// CHECK: the perp market's `has_one` binds it.
     pub oracle: UncheckedAccount<'info>,
+    #[account(has_one = oracle)]
     pub perp_market: AccountLoader<'info, PerpMarket>,
 }
 

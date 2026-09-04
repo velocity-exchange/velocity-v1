@@ -120,10 +120,14 @@ pub struct ForceCancelClobOrders<'info> {
     #[account(constraint = is_stats_for_user(&user, &user_stats)?)]
     pub user_stats: AccountLoader<'info, UserStats>,
     /// Deliberately not gated on active/approved: dead books still need
-    /// failing makers' orders reclaimed.
+    /// failing makers' orders reclaimed — the header's book pointer survives
+    /// a suspension, so the `has_one` still passes on a killed book.
+    #[account(
+        has_one = clob_market,
+        constraint = quoter_slab.load()?.market == args.market_index,
+    )]
     pub quoter_slab: AccountLoader<'info, QuoterSlabV0>,
-    /// CHECK: validated against the book slot's registered response account
-    /// in the handler.
+    /// CHECK: the slab's `has_one` binds it to the book the admin approved.
     #[account(mut)]
     pub clob_market: UncheckedAccount<'info>,
     /// CHECK: a Clob slot's program is pinned to velocity's CLOB at
@@ -253,10 +257,7 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
             return Ok(());
         }
 
-        let user_ref = ClobUserRefV0 {
-            authority: user.authority,
-            sub_account_id: user.sub_account_id,
-        };
+        let user_ref = user.clob_user_ref();
         let position = user.get_perp_position(market_index).ok();
         let position_base = position.map(|p| p.base_asset_amount).unwrap_or(0);
 
@@ -429,17 +430,7 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
                 clock.unix_timestamp,
                 oracle_price,
                 &ctx.accounts.user.key(),
-                super::ClobOrderFacts {
-                    order_id: removed.client_order_id,
-                    market_index,
-                    direction,
-                    price: removed.price,
-                    base_asset_amount: removed.base_asset_amount,
-                    base_asset_amount_filled: 0,
-                    max_ts: removed.max_ts,
-                    slot: clock.slot,
-                    taker_origin: removed.taker_origin,
-                },
+                super::ClobOrderFacts::from_removed(&removed, market_index, clock.slot),
                 OrderActionExplanation::InsufficientFreeCollateral,
                 Some(ctx.accounts.filler.key()),
                 Some(state.perp_fee_structure.flat_filler_fee),

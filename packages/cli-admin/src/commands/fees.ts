@@ -493,11 +493,11 @@ export function registerFees(parent: Command): void {
 
 	withGlobalOptions(
 		fees
-			.command('set-schedule <tier0bp> <tier1bp> <tier2bp>')
+			.command('set-schedule <tier0bp> <tier1bp> <tier2bp> <tier3bp>')
 			.description(
 				'Rewrite the perp fee schedule in one instruction: taker fee (bps, decimals ok) for ' +
-					'the three live tiers (Regular / VIP 1 / VIP 2; the $5M/$80M 30d-volume thresholds ' +
-					'are program constants). Unused tiers 3-9 mirror tier 2. Fetches the current fee ' +
+					'the four live tiers (Regular / VIP 1 / VIP 2 / VIP 3; the $5M/$80M/$200M 30d-volume ' +
+					'thresholds are program constants). Unused tiers 4-9 mirror tier 3. Fetches the current fee ' +
 					'structure and patches only what is passed; maker rebate, referral fields, and the ' +
 					'amm/if split stay unchanged unless the matching option is given. Warm/cold admin.'
 			)
@@ -528,6 +528,7 @@ export function registerFees(parent: Command): void {
 			tier0bp: string,
 			tier1bp: string,
 			tier2bp: string,
+			tier3bp: string,
 			_flags,
 			cmd: Command
 		) => {
@@ -562,9 +563,9 @@ export function registerFees(parent: Command): void {
 					}
 					return numerator;
 				};
-				const tierBps = [tier0bp, tier1bp, tier2bp];
+				const tierBps = [tier0bp, tier1bp, tier2bp, tier3bp];
 				for (let i = 0; i < tiers.length; i++) {
-					const bp = tierBps[Math.min(i, 2)];
+					const bp = tierBps[Math.min(i, tierBps.length - 1)];
 					tiers[i].feeNumerator = bpToNumerator(bp, tiers[i].feeDenominator);
 					if (local.makerRebateBp !== undefined) {
 						tiers[i].makerRebateNumerator = bpToNumerator(
@@ -595,7 +596,7 @@ export function registerFees(parent: Command): void {
 				}
 
 				const label =
-					`fee schedule: tiers ${tier0bp}/${tier1bp}/${tier2bp}bp` +
+					`fee schedule: tiers ${tier0bp}/${tier1bp}/${tier2bp}/${tier3bp}bp` +
 					(local.makerRebateBp ? ` makerRebate=${local.makerRebateBp}bp` : '') +
 					(local.referrer ? ` referrer=${local.referrer}%` : '') +
 					(local.referee ? ` referee=${local.referee}%` : '') +
@@ -610,7 +611,7 @@ export function registerFees(parent: Command): void {
 				);
 				if (local.dryRun) {
 					console.log(label);
-					for (let i = 0; i < 3; i++) {
+					for (let i = 0; i < tierBps.length; i++) {
 						console.log(
 							`  tier ${i}: fee ${tiers[i].feeNumerator}/${tiers[i].feeDenominator} ` +
 								`makerRebate ${tiers[i].makerRebateNumerator}/${tiers[i].makerRebateDenominator} ` +
@@ -712,7 +713,7 @@ export function registerFees(parent: Command): void {
 		fees
 			.command('set-promo-tier <tier>')
 			.description(
-				'Set the promotional fee-tier floor: every account gets at least this perp fee tier while set (1 = VIP 1, 2 = VIP 2; accounts already above keep their tier). 0 disables; accounts revert to volume tiers on their next fill. Warm admin.'
+				'Set the promotional fee-tier floor: every account gets at least this perp fee tier while set (1 = VIP 1, 2 = VIP 2, 3 = VIP 3; accounts already above keep their tier). 0 disables; accounts revert to volume tiers on their next fill. Warm admin.'
 			)
 	).action(async (tier: string, _flags, cmd: Command) => {
 		const opts = readGlobalOpts(cmd);

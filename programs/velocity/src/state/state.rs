@@ -794,8 +794,10 @@ pub struct OrderFillerRewardStructure {
 }
 
 impl FeeStructure {
-    /// Three volume tiers (see `determine_perp_fee_tier` for the 30d-volume
-    /// thresholds): 4bps / 3bps / 2bps taker, flat -0.25bp maker rebate.
+    /// Four volume tiers (see `determine_perp_fee_tier` for the 30d-volume
+    /// thresholds): 4bps / 3bps / 2bps / 1.5bps taker, flat -0.25bp maker
+    /// rebate. Live rates are admin params (`update_perp_fee_structure`);
+    /// these only seed fresh state.
     /// Per-market absolute surcharges/discounts (e.g. volatile-alt add-ons)
     /// live on `PerpMarket.taker_fee_addon_tenth_bps`, not in the tiers.
     pub fn perps_default() -> Self {
@@ -823,6 +825,16 @@ impl FeeStructure {
         fee_tiers[2] = FeeTier {
             fee_numerator: 20,
             fee_denominator: FEE_DENOMINATOR, // 2 bps
+            maker_rebate_numerator: 25,
+            maker_rebate_denominator: 10 * FEE_DENOMINATOR, // 0.25bp
+            referrer_reward_numerator: 10,
+            referrer_reward_denominator: FEE_PERCENTAGE_DENOMINATOR, // 10% of taker fee
+            referee_fee_numerator: 5,
+            referee_fee_denominator: FEE_PERCENTAGE_DENOMINATOR, // 5%
+        };
+        fee_tiers[3] = FeeTier {
+            fee_numerator: 15,
+            fee_denominator: FEE_DENOMINATOR, // 1.5 bps
             maker_rebate_numerator: 25,
             maker_rebate_denominator: 10 * FEE_DENOMINATOR, // 0.25bp
             referrer_reward_numerator: 10,

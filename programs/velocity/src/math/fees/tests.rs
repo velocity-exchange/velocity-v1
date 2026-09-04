@@ -1281,11 +1281,23 @@ mod calcuate_fee_tiers {
             determine_user_fee_tier(&taker_stats, &fee_structure, &MarketType::Perp, 0, 0).unwrap();
         assert_eq!(res.fee_numerator, 30);
 
-        // above 80M -> tier 2
-        taker_stats.taker_volume_30d = 280_000_000 * QUOTE_PRECISION_U64;
+        // 80M-200M -> tier 2
+        taker_stats.taker_volume_30d = 150_000_000 * QUOTE_PRECISION_U64;
         let res =
             determine_user_fee_tier(&taker_stats, &fee_structure, &MarketType::Perp, 0, 0).unwrap();
         assert_eq!(res.fee_numerator, 275);
+
+        // exactly 200M -> tier 3 (thresholds are inclusive lower bounds)
+        taker_stats.taker_volume_30d = 200_000_000 * QUOTE_PRECISION_U64;
+        let res =
+            determine_user_fee_tier(&taker_stats, &fee_structure, &MarketType::Perp, 0, 0).unwrap();
+        assert_eq!(res.fee_numerator, 25);
+
+        // above 200M -> tier 3, nothing higher
+        taker_stats.taker_volume_30d = 2_000_000_000 * QUOTE_PRECISION_U64;
+        let res =
+            determine_user_fee_tier(&taker_stats, &fee_structure, &MarketType::Perp, 0, 0).unwrap();
+        assert_eq!(res.fee_numerator, 25);
 
         // maker volume counts toward the total too
         taker_stats.taker_volume_30d = 3_000_000 * QUOTE_PRECISION_U64;
@@ -1310,12 +1322,17 @@ mod calcuate_fee_tiers {
             determine_user_fee_tier(&taker_stats, &fee_structure, &MarketType::Perp, 0, 2).unwrap();
         assert_eq!(res.fee_numerator, 20);
 
+        // promo at the top tier puts everyone on it
+        let res =
+            determine_user_fee_tier(&taker_stats, &fee_structure, &MarketType::Perp, 0, 3).unwrap();
+        assert_eq!(res.fee_numerator, 15);
+
         // out-of-range promo clamps to the top tier (defensive only:
         // update_promo_fee_tier validates against PERP_FEE_TIER_MAX_INDEX,
         // so a stored value above it is unreachable via the admin ix)
         let res =
             determine_user_fee_tier(&taker_stats, &fee_structure, &MarketType::Perp, 0, 9).unwrap();
-        assert_eq!(res.fee_numerator, 20);
+        assert_eq!(res.fee_numerator, 15);
 
         // account already above the promo floor keeps its volume tier
         taker_stats.taker_volume_30d = 100_000_000 * QUOTE_PRECISION_U64;

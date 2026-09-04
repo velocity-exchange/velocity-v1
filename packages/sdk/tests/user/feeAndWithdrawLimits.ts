@@ -11,6 +11,8 @@ import {
 	getMarketFeesForFeeTier,
 	PerpMarketAccount,
 	PERP_FEE_TIER_MAX_INDEX,
+	PERP_FEE_TIER_VOLUME_THRESHOLDS,
+	VIP_FEE_TIER_THREE_VOLUME_QUOTE,
 	VIP_FEE_TIER_TWO_VOLUME_QUOTE,
 } from '../../src';
 import { assert } from '../../src/assert/assert';
@@ -255,9 +257,10 @@ const tieredFeeStructure = {
 		{ ...mockFeeTier, feeNumerator: 30, makerRebateNumerator: 1 },
 		{ ...mockFeeTier, feeNumerator: 20, makerRebateNumerator: 2 },
 		{ ...mockFeeTier, feeNumerator: 10, makerRebateNumerator: 3 },
+		{ ...mockFeeTier, feeNumerator: 5, makerRebateNumerator: 4 },
 		// Spare slots the program never selects, left with the zeroed
 		// denominators an unwritten slot really carries.
-		...Array.from({ length: 3 }, () => ({
+		...Array.from({ length: 2 }, () => ({
 			...mockFeeTier,
 			feeNumerator: 0,
 			feeDenominator: 0,
@@ -268,7 +271,8 @@ const tieredFeeStructure = {
 
 async function makePromoMockUser(
 	promoFeeTier: number,
-	takerVolume30D: BN = ZERO
+	takerVolume30D: BN = ZERO,
+	now: BN = new BN(Math.floor(Date.now() / 1000))
 ): Promise<User> {
 	const user = await makeMockUser(
 		_.cloneDeep(mockPerpMarkets),
@@ -290,7 +294,7 @@ async function makePromoMockUser(
 		takerVolume30D,
 		// The rolling estimate decays from the last update, so stamp it now to
 		// keep the full volume inside the window.
-		lastTakerVolume30DTs: new BN(Math.floor(Date.now() / 1000)),
+		lastTakerVolume30DTs: now,
 	};
 	user.velocityClient.getUserStatsOrThrow = () =>
 		({
@@ -309,6 +313,47 @@ async function makePromoMockUser(
 
 	return user;
 }
+
+describe('Perp fee tier ladder', () => {
+	// The breakpoints are hardcoded on chain and cannot be read back, so
+	// nothing else guards them against drifting from `determine_perp_fee_tier`.
+	it('pins the volume thresholds to $5M / $80M / $200M', () => {
+		const dollars = PERP_FEE_TIER_VOLUME_THRESHOLDS.map((t) =>
+			t.div(QUOTE_PRECISION).toNumber()
+		);
+		assert(
+			JSON.stringify(dollars) ===
+				JSON.stringify([5_000_000, 80_000_000, 200_000_000]),
+			`thresholds drifted from the program: ${dollars.join(', ')}`
+		);
+		assert(PERP_FEE_TIER_MAX_INDEX === 3);
+	});
+
+	it('selects the tier at each breakpoint', async () => {
+		// Read at the stamp time so a sub-second decay cannot push a volume
+		// sitting exactly on a breakpoint below it.
+		const now = new BN(Math.floor(Date.now() / 1000));
+		const cases: [BN, number][] = [
+			[ZERO, 0],
+			[PERP_FEE_TIER_VOLUME_THRESHOLDS[0].subn(1), 0],
+			[PERP_FEE_TIER_VOLUME_THRESHOLDS[0], 1],
+			[PERP_FEE_TIER_VOLUME_THRESHOLDS[1].subn(1), 1],
+			[PERP_FEE_TIER_VOLUME_THRESHOLDS[1], 2],
+			[PERP_FEE_TIER_VOLUME_THRESHOLDS[2].subn(1), 2],
+			[PERP_FEE_TIER_VOLUME_THRESHOLDS[2], 3],
+			[PERP_FEE_TIER_VOLUME_THRESHOLDS[2].muln(10), 3],
+		];
+		for (const [volume, expected] of cases) {
+			const user = await makePromoMockUser(0, volume, now);
+			assert(
+				user.getUserPerpFeeTierIndex(now) === expected,
+				`volume ${volume.toString()} expected tier ${expected}, got ${user.getUserPerpFeeTierIndex(
+					now
+				)}`
+			);
+		}
+	});
+});
 
 describe('Promo fee tier floor', () => {
 	it('lifts a zero-volume user to the promo tier', async () => {
@@ -332,6 +377,15 @@ describe('Promo fee tier floor', () => {
 			user.getUserPerpFeeTierIndex() === 2,
 			'the volume tier must win over a lower promo floor'
 		);
+
+		const whale = await makePromoMockUser(
+			2,
+			VIP_FEE_TIER_THREE_VOLUME_QUOTE.muln(2)
+		);
+		assert(
+			whale.getUserPerpFeeTierIndex() === 3,
+			'a top-tier account must keep its tier under a lower promo floor'
+		);
 	});
 
 	it('is a no-op when disabled', async () => {
@@ -340,12 +394,19 @@ describe('Promo fee tier floor', () => {
 		assert(user.getUserPerpFeeTierIndex() === 0);
 	});
 
+	it('puts everyone on the top tier when the promo points at it', async () => {
+		const user = await makePromoMockUser(PERP_FEE_TIER_MAX_INDEX);
+
+		assert(user.getUserPerpFeeTierIndex() === 3);
+		assert(user.getUserFeeTier(MarketType.PERP).feeNumerator === 5);
+	});
+
 	it('clamps a promo above the live tiers to the top live tier', async () => {
 		const user = await makePromoMockUser(5);
 
 		// Slots past the ladder have zeroed denominators; selecting one would
 		// divide to NaN rather than charge a fee.
-		assert(user.getUserPerpFeeTierIndex() === PERP_FEE_TIER_MAX_INDEX);
+		assert(user.getUserPerpFeeTierIndex() === 3);
 		assert(user.getUserFeeTier(MarketType.PERP).feeDenominator === 1000);
 	});
 

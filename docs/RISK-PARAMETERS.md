@@ -643,9 +643,9 @@ rewards, and the AMM/IF/protocol split of the remainder. A resting maker order o
 taker order is priced under whichever schedule is live at the instant it fills; nothing is
 grandfathered. `flat_filler_fee` also sets the keeper reward for expired, triggered, and
 force-cancelled orders (`controller/orders.rs:1325,1378,1469,3948,4144`). The array holds 10
-tier slots but only the first `PERP_FEE_TIER_MAX_INDEX + 1` = 3 are populated; which tier a
-taker gets is not admin-settable: the thresholds are hardcoded ($5M and $80M of trailing-30d
-volume, `math/fees.rs:511-512`), evaluated at every fill against a live-decayed volume
+tier slots but only the first `PERP_FEE_TIER_MAX_INDEX + 1` = 4 are populated; which tier a
+taker gets is not admin-settable: the thresholds are hardcoded ($5M, $80M and $200M of
+trailing-30d volume, `math/fees.rs` `VOLUME_THRESHOLDS`), evaluated at every fill against a live-decayed volume
 projection (`state/user.rs:2105`), so schedule changes bite at the account's next fill.
 
 **Per-market fee adjustment** scales the taker fee and maker rebate by up to +/-100% on every

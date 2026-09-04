@@ -389,12 +389,13 @@ export function registerShow(parent: Command): void {
 			const state = client.getStateAccount();
 
 			// Breakpoints mirror determine_perp_fee_tier (math/fees.rs) /
-			// User.getUserFeeTier: taker's rolling 30-day volume picks tiers 0-2
-			// (Regular / VIP 1 / VIP 2).
+			// User.getUserFeeTier: taker's rolling 30-day volume picks tiers 0-3
+			// (Regular / VIP 1 / VIP 2 / VIP 3).
 			const perpTierLabels = [
-				['Regular', '30d vol <  $5M '],
-				['VIP 1  ', '30d vol >= $5M '],
-				['VIP 2  ', '30d vol >= $80M'],
+				['Regular', '30d vol <  $5M  '],
+				['VIP 1  ', '30d vol >= $5M  '],
+				['VIP 2  ', '30d vol >= $80M '],
+				['VIP 3  ', '30d vol >= $200M'],
 			];
 			console.log('trading fees — perp (per fill, tier by taker 30d volume):');
 			perpTierLabels.forEach(([name, label], i) => {

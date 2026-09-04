@@ -2126,7 +2126,7 @@ export interface IWalletV2 extends IWallet {
 
 /** The fee schedule applied to fills in a market category (perp or spot); decoded from `StateAccount.perpFeeStructure`/`spotFeeStructure`. */
 export type FeeStructure = {
-	/** volume-based fee tiers, evaluated by the taker's 30-day volume; tier 0 (Regular) is the base/default tier, tiers 1/2 are VIP 1/VIP 2 */
+	/** volume-based fee tiers, evaluated by the taker's 30-day volume; tier 0 (Regular) is the base/default tier, tiers 1/2/3 are VIP 1/VIP 2/VIP 3 */
 	feeTiers: FeeTier[];
 	fillerRewardStructure: OrderFillerRewardStructure;
 	/** flat portion of the filler (keeper) reward, QUOTE_PRECISION (1e6) */

@@ -174,7 +174,6 @@ pub fn handle_quote_router<'c: 'info, 'info>(
     };
     for slot_index in consulted {
         let slab_loader = slab_loader.as_ref().unwrap();
-        let slab_bump = slab_loader.load()?.bump;
         let (priority, quoter_type, quoter_user, entry_key, located) = {
             let slots = quoter_slab_slots(slab_loader)?;
             let slot = &slots[slot_index];
@@ -213,8 +212,7 @@ pub fn handle_quote_router<'c: 'info, 'info>(
                         limit_price: 0,
                         taker_served_window: args.taker_served_window,
                     },
-                    slab_loader.as_ref(),
-                    slab_bump,
+                    slab_loader,
                     &accounts,
                     &mut cpi_scratch,
                 )
@@ -294,7 +292,6 @@ pub fn handle_quote_router<'c: 'info, 'info>(
                 .flatten();
             let described = quoter_rows(
                 slab_loader,
-                slab_bump,
                 slot_index,
                 market_index,
                 args.direction,
@@ -429,7 +426,6 @@ pub fn handle_quote_router<'c: 'info, 'info>(
 #[allow(clippy::too_many_arguments)]
 fn quoter_rows<'info>(
     slab_loader: &AccountLoader<'info, QuoterSlabV0>,
-    slab_bump: u8,
     slot_index: usize,
     market_index: u16,
     direction: Direction,
@@ -452,8 +448,7 @@ fn quoter_rows<'info>(
                 size: admitted,
                 max_rows: rows_wanted.min(u16::MAX as usize) as u16,
             },
-            slab_loader.as_ref(),
-            slab_bump,
+            slab_loader,
             accounts,
             scratch,
         )?

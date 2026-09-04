@@ -265,14 +265,7 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
             find(&clob.response_account)?.clone(),
             find(&config.program_id)?.clone(),
         ];
-        let (bids, asks) = book_sides(
-            config,
-            clob.slab.as_ref(),
-            clob.slab.load()?.bump,
-            market_index,
-            &sides,
-            &mut cpi_scratch,
-        )?;
+        let (bids, asks) = book_sides(config, &clob.slab, market_index, &sides, &mut cpi_scratch)?;
         for side in [&bids, &asks] {
             let mut depth = 0u64;
             for order in side {
@@ -509,8 +502,7 @@ const CROSS_ROWS_PER_SIDE: u16 = 32;
 /// re-derives an activation slot or an expiry.
 fn clob_rows<'info>(
     quoter: &QuoterConfigV0,
-    slab: &AccountInfo<'info>,
-    slab_bump: u8,
+    slab: &AccountLoader<'info, QuoterSlabV0>,
     market_index: u16,
     direction: crate::state::prop_amm::Direction,
     accounts: &[AccountInfo<'info>],
@@ -527,7 +519,6 @@ fn clob_rows<'info>(
             max_rows: CROSS_ROWS_PER_SIDE,
         },
         slab,
-        slab_bump,
         accounts,
         scratch,
     )?;
@@ -577,8 +568,7 @@ fn strips_taker_origin_gate(
 /// reads. A taker of `Long` sweeps asks, so that read names the ask side.
 fn book_sides<'info>(
     quoter: &QuoterConfigV0,
-    slab: &AccountInfo<'info>,
-    slab_bump: u8,
+    slab: &AccountLoader<'info, QuoterSlabV0>,
     market_index: u16,
     accounts: &[AccountInfo<'info>],
     scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
@@ -597,7 +587,6 @@ fn book_sides<'info>(
                 max_rows: CROSS_ROWS_PER_SIDE,
             },
             slab,
-            slab_bump,
             accounts,
             scratch,
         )?;
@@ -722,7 +711,6 @@ fn find_clob_cross(ctx: &Context<ResolveClobCrank>) -> Result<ClobCross> {
         return Ok(cross_prefix(&[], &[]));
     }
     let quoter = &book_slot.config;
-    let slab_bump = ctx.accounts.quoter_slab.load()?.bump;
     let accounts = [
         ctx.accounts.clob_market.to_account_info(),
         ctx.accounts.clob_program.to_account_info(),
@@ -733,8 +721,7 @@ fn find_clob_cross(ctx: &Context<ResolveClobCrank>) -> Result<ClobCross> {
     // overwrites it. A buyer consumes the asks.
     let asks = clob_rows(
         quoter,
-        ctx.accounts.quoter_slab.as_ref(),
-        slab_bump,
+        &ctx.accounts.quoter_slab,
         market_index,
         crate::state::prop_amm::Direction::Long,
         &accounts,
@@ -742,8 +729,7 @@ fn find_clob_cross(ctx: &Context<ResolveClobCrank>) -> Result<ClobCross> {
     )?;
     let bids = clob_rows(
         quoter,
-        ctx.accounts.quoter_slab.as_ref(),
-        slab_bump,
+        &ctx.accounts.quoter_slab,
         market_index,
         crate::state::prop_amm::Direction::Short,
         &accounts,
@@ -821,7 +807,6 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
             ctx.accounts.user.key()
         )?;
         let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
-        let slab_bump = ctx.accounts.quoter_slab.load()?.bump;
         // The resolver's own tail, searched rather than indexed: it is a
         // handful of accounts and this reads a few of them.
         let accounts: Vec<AccountInfo<'info>> = ctx.remaining_accounts.to_vec();
@@ -853,8 +838,7 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
                         // orders that rested through placement.
                         taker_served_window: true,
                     },
-                    ctx.accounts.quoter_slab.as_ref(),
-                    slab_bump,
+                    &ctx.accounts.quoter_slab,
                     &accounts,
                     &mut cpi_scratch,
                     &mut levels,
@@ -892,8 +876,7 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
         let mut clob_book = |direction: crate::state::prop_amm::Direction| -> Result<Vec<_>> {
             clob_rows(
                 &slots[book_slot].config,
-                ctx.accounts.quoter_slab.as_ref(),
-                slab_bump,
+                &ctx.accounts.quoter_slab,
                 market_index,
                 direction,
                 &clob_accounts,

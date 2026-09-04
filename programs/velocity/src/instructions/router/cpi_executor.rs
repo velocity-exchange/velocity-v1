@@ -102,10 +102,6 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
             msg!("router executor index {} out of range", index);
             ErrorCode::DefaultError
         })?;
-        let slab_bump = quoted.slab.load().map(|slab| slab.bump).map_err(|_| {
-            msg!("router executor failed to load the quoter slab");
-            ErrorCode::DefaultError
-        })?;
         let slots = quoter_slab_slots(&quoted.slab).map_err(|_| {
             msg!("router executor failed to load the quoter slab");
             ErrorCode::DefaultError
@@ -134,8 +130,7 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
                         limit_price: 0,
                         taker_served_window: self.taker_served_window,
                     },
-                    quoted.slab.as_ref(),
-                    slab_bump,
+                    &quoted.slab,
                     self.accounts,
                     self.scratch,
                     &mut levels,
@@ -220,10 +215,6 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
             msg!("router executor index {} out of range", index);
             ErrorCode::DefaultError
         })?;
-        let slab_bump = quoted.slab.load().map(|slab| slab.bump).map_err(|_| {
-            msg!("router executor failed to load the quoter slab");
-            ErrorCode::DefaultError
-        })?;
         let slots = quoter_slab_slots(&quoted.slab).map_err(|_| {
             msg!("router executor failed to load the quoter slab");
             ErrorCode::DefaultError
@@ -242,8 +233,7 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
                     taker: Some(self.taker),
                     taker_served_window: self.taker_served_window,
                 },
-                quoted.slab.as_ref(),
-                slab_bump,
+                &quoted.slab,
                 self.accounts,
                 self.scratch,
             )

@@ -1363,6 +1363,7 @@ mod tests {
             reference_price: -5,
             taker: Some(user(3, 1)),
             limit_price: 0,
+            taker_served_window: true,
         };
         let bytes = wincode::config::serialize(&args, ARGS_CONFIG).unwrap();
 
@@ -1378,7 +1379,7 @@ mod tests {
         assert_eq!(bytes.len(), args_size(&args).unwrap());
         assert_eq!(
             bytes.len(),
-            after_set + 1 + 8 + USER_CAPS_BYTES + 8 + 1 + UserRefV0::SIZE + 8
+            after_set + 1 + 8 + USER_CAPS_BYTES + 8 + 1 + UserRefV0::SIZE + 8 + 1
         );
 
         // And it reads back as a slice into those bytes, not a copy of them.
@@ -1398,10 +1399,11 @@ mod tests {
             caps: UserCapsV0::EMPTY,
             reference_price: 0,
             taker: None,
+            taker_served_window: false,
         };
         let bytes = wincode::config::serialize(&args, ARGS_CONFIG).unwrap();
         assert_eq!(&bytes[..4], &0u32.to_le_bytes());
-        assert_eq!(bytes.len(), 4 + 1 + 8 + USER_CAPS_BYTES + 8 + 1);
+        assert_eq!(bytes.len(), 4 + 1 + 8 + USER_CAPS_BYTES + 8 + 1 + 1);
         assert_eq!(bytes.len(), args_size(&args).unwrap());
 
         let read: ExecuteArgsV0 = wincode::config::deserialize(&bytes, ARGS_CONFIG).unwrap();

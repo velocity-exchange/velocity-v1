@@ -74,7 +74,7 @@ use {
             perp_market_map::{get_writable_perp_market_set, MarketSet, PerpMarketMap},
             prop_amm::{
                 quoter_slab_clob, ClobFillArgsV0, ClobFillRequestV0, ClobMarket, ClobSide,
-                ClobUserRefV0, Direction, QuoterConfigV0, WireDirectionExt,
+                ClobUserRefV0, Direction, QuoterConfigV0, QuoterSlabV0, WireDirectionExt,
             },
             revenue_share::RevenueShareEscrowZeroCopyMut,
             signed_msg_user::{SignedMsgUserOrdersLoader, SIGNED_MSG_PDA_SEED},
@@ -226,8 +226,7 @@ const MAX_CROSS_ROWS: u16 = 64;
 fn read_book_rows<'info>(
     quoter: &QuoterConfigV0,
     market_index: u16,
-    slab: &AccountInfo<'info>,
-    slab_bump: u8,
+    slab: &AccountLoader<'info, QuoterSlabV0>,
     rows: u16,
     accounts: &[AccountInfo<'info>],
     scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
@@ -244,7 +243,6 @@ fn read_book_rows<'info>(
                     max_rows: rows.min(MAX_CROSS_ROWS),
                 },
                 slab,
-                slab_bump,
                 accounts,
                 scratch,
             )?
@@ -344,8 +342,7 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
     let (bids, asks) = read_book_rows(
         &book_slot.config,
         market_index,
-        ctx.accounts.quoter_slab.as_ref(),
-        ctx.accounts.quoter_slab.load()?.bump,
+        &ctx.accounts.quoter_slab,
         cross_rows,
         &[
             ctx.accounts.clob_market.to_account_info(),
@@ -1140,8 +1137,7 @@ pub(super) fn stage_taker_origin_cross(
     let (bids, asks) = read_book_rows(
         &book_slot.config,
         market_index,
-        ctx.accounts.quoter_slab.as_ref(),
-        ctx.accounts.quoter_slab.load()?.bump,
+        &ctx.accounts.quoter_slab,
         MAX_CROSS_ROWS,
         &book_accounts,
         &mut cpi_scratch,

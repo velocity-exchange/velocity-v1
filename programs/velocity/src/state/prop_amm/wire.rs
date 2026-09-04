@@ -9,7 +9,7 @@
 use {
     super::{
         get_quoter_slab_signer_seeds, AmmAccountMeta, ClobCancelAllOutcomeV0, ClobCancelSides,
-        QuoterConfigV0, QuoterType,
+        QuoterConfigV0, QuoterSlabV0, QuoterType,
     },
     crate::{error::ErrorCode, msg, validate},
     anchor_lang::prelude::*,
@@ -755,15 +755,13 @@ impl QuoterConfigV0 {
         &self,
         market_index: u16,
         args: QuoteArgsV0<'_>,
-        slab: &AccountInfo<'info>,
-        slab_bump: u8,
+        slab: &AccountLoader<'info, QuoterSlabV0>,
         accounts: &[AccountInfo<'info>],
         scratch: &mut QuoterCpiScratch<'info>,
         // Where the quoted levels are appended. See `QuotedLadderV0::levels`.
         out: &mut Vec<PriceLevel>,
     ) -> Result<QuotedLadderV0> {
-        let located =
-            self.quote_in_place(market_index, args, slab, slab_bump, accounts, scratch)?;
+        let located = self.quote_in_place(market_index, args, slab, accounts, scratch)?;
         let data = located.borrow()?;
         let response = located.checked_quote_response(&data, args.direction)?;
         // The copy a fill earns: the split reads every book at once, and the
@@ -800,8 +798,7 @@ impl QuoterConfigV0 {
         &self,
         market_index: u16,
         args: QuoteArgsV0<'_>,
-        slab: &AccountInfo<'info>,
-        slab_bump: u8,
+        slab: &AccountLoader<'info, QuoterSlabV0>,
         accounts: &[AccountInfo<'info>],
         scratch: &mut QuoterCpiScratch<'info>,
     ) -> Result<ResponseLocationV0<'info>> {
@@ -811,7 +808,6 @@ impl QuoterConfigV0 {
             self.quote_leg_indexes(),
             &args,
             slab,
-            slab_bump,
             accounts,
             scratch,
         )
@@ -831,8 +827,7 @@ impl QuoterConfigV0 {
         &self,
         market_index: u16,
         args: L3ArgsV0,
-        slab: &AccountInfo<'info>,
-        slab_bump: u8,
+        slab: &AccountLoader<'info, QuoterSlabV0>,
         accounts: &[AccountInfo<'info>],
         scratch: &mut QuoterCpiScratch<'info>,
     ) -> Result<Option<ResponseLocationV0<'info>>> {
@@ -845,7 +840,6 @@ impl QuoterConfigV0 {
             self.quote_leg_indexes(),
             &args,
             slab,
-            slab_bump,
             accounts,
             scratch,
         )
@@ -860,8 +854,7 @@ impl QuoterConfigV0 {
         &self,
         market_index: u16,
         args: ExecuteArgsV0<'_>,
-        slab: &AccountInfo<'info>,
-        slab_bump: u8,
+        slab: &AccountLoader<'info, QuoterSlabV0>,
         accounts: &[AccountInfo<'info>],
         scratch: &mut QuoterCpiScratch<'info>,
     ) -> Result<ResponseLocationV0<'info>> {
@@ -871,7 +864,6 @@ impl QuoterConfigV0 {
             self.execute_leg_indexes(),
             &args,
             slab,
-            slab_bump,
             accounts,
             scratch,
         )
@@ -888,25 +880,28 @@ impl QuoterConfigV0 {
         discriminator: &[u8; 8],
         leg_indexes: &[u8],
         args: &A,
-        slab: &AccountInfo<'info>,
-        slab_bump: u8,
+        slab: &AccountLoader<'info, QuoterSlabV0>,
         accounts: &[AccountInfo<'info>],
         scratch: &mut QuoterCpiScratch<'info>,
     ) -> Result<ResponseLocationV0<'info>> {
+        // The bump is in the slab's own header, so no caller plumbs it. A
+        // read borrow, so a caller may hold the slot region while this runs.
+        let slab_bump = slab.load()?.bump;
+        let slab_info: &AccountInfo<'info> = slab.as_ref();
         let QuoterCpiScratch { instruction, infos } = scratch;
         instruction.program_id = self.program_id;
         write_quoter_account_metas(
             &mut instruction.accounts,
             self.leg_metas(leg_indexes)?,
-            slab.key,
+            slab_info.key,
         );
 
         infos.clear();
         for meta in instruction.accounts.iter() {
             // The slab is a named account of the outer instruction, not part
             // of the account tail the registered lists resolve against.
-            if meta.pubkey == *slab.key {
-                infos.push(slab.clone());
+            if meta.pubkey == *slab_info.key {
+                infos.push(slab_info.clone());
                 continue;
             }
             let info = find_account(accounts, &meta.pubkey).ok_or_else(|| {

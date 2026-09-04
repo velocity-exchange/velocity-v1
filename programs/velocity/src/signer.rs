@@ -49,7 +49,7 @@ pub fn get_signer_seeds(nonce: &u8) -> [&[u8]; 2] {
 
 #[cfg(test)]
 mod tests {
-    use {crate::state::prop_amm::QUOTER_SLAB_PDA_SEED, anchor_lang::prelude::Pubkey};
+    use {crate::state::pdas, anchor_lang::prelude::Pubkey};
 
     /// The quoter CPI signer must never be the vault authority.
     ///
@@ -64,12 +64,9 @@ mod tests {
         let (velocity_signer, _) =
             Pubkey::find_program_address(&[super::VELOCITY_SIGNER_SEED], &crate::ID);
         for market in 0u16..64 {
-            let (slab, _) = Pubkey::find_program_address(
-                &[QUOTER_SLAB_PDA_SEED, market.to_le_bytes().as_ref()],
-                &crate::ID,
-            );
             assert_ne!(
-                slab, velocity_signer,
+                pdas::quoter_slab(market),
+                velocity_signer,
                 "a quoter slab collided with the vault authority"
             );
         }

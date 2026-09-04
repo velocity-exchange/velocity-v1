@@ -212,7 +212,6 @@ impl<'info> QuotedRoute<'info> {
         let Some(slab_loader) = route.slab.clone() else {
             return Ok(route);
         };
-        let slab_bump = slab_loader.load()?.bump;
 
         // A consulted slot is one whose response account rides the
         // transaction. Collected before any quoting so the rival check below
@@ -305,8 +304,7 @@ impl<'info> QuotedRoute<'info> {
                         limit_price: inputs.limit_price,
                         taker_served_window: inputs.taker_served_window,
                     },
-                    slab_loader.as_ref(),
-                    slab_bump,
+                    &slab_loader,
                     route.accounts,
                     scratch,
                     &mut route.levels,

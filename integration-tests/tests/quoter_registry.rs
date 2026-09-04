@@ -93,7 +93,7 @@ fn approve_ix(as_admin: Pubkey, quoter: Pubkey, approved: bool) -> Instruction {
             quoter_slab: quoter_slab_pda(0),
             quoter_program: clob_id(),
             quoter_program_data: Some(program_data_pda(&clob_id())),
-            system_program: "11111111111111111111111111111111".parse().unwrap(),
+            system_program: system_program(),
         }
         .to_account_metas(None),
         data: velocity::instruction::UpdateQuoterApproved {

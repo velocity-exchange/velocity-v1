@@ -120,6 +120,14 @@ pub fn handle_update_perp_market_clob_quoter(
     let perp_market = &mut load_mut!(ctx.accounts.perp_market)?;
     msg!("perp market {}", perp_market.market_index);
 
+    // Binds the slab's book slot to this market and to the passed book
+    // account; the two identity checks below are the ones it does not run.
+    let clob = crate::state::prop_amm::ClobMarket::from_slab(
+        &ctx.accounts.quoter_slab,
+        perp_market.market_index,
+        &ctx.accounts.clob_market,
+        &ctx.accounts.clob_program,
+    )?;
     let clob_program = {
         let book_slot = crate::state::prop_amm::quoter_slab_clob(
             &ctx.accounts.quoter_slab,
@@ -131,12 +139,8 @@ pub fn handle_update_perp_market_clob_quoter(
             "the slab's book slot holds entry {}, not the passed one",
             book_slot.entry
         )?;
-        book_slot
-            .config
-            .validate_clob_book(perp_market.market_index, &ctx.accounts.clob_market.key())?;
         book_slot.config.program_id
     };
-
     validate!(
         clob_program == ctx.accounts.clob_program.key(),
         ErrorCode::DefaultError,
@@ -174,14 +178,7 @@ pub fn handle_update_perp_market_clob_quoter(
     // book's word — bounded on the fill path by the market's minimum, which is
     // only a bound at all while the book cannot cull something larger.
     {
-        let rules = crate::state::prop_amm::ClobMarket::from_slab(
-            &ctx.accounts.quoter_slab,
-            perp_market.market_index,
-            &ctx.accounts.clob_market,
-            &ctx.accounts.clob_program,
-        )?
-        .reader()
-        .order_rules()?;
+        let rules = clob.reader().order_rules()?;
         // A market with no minimum of its own has nothing to bound against, and
         // nothing to bound: the book's cull fires on a remainder under *its*
         // minimum, and releasing that from an aggregate the market never
@@ -250,17 +247,9 @@ pub fn handle_update_perp_market_clob_quoter(
     // current. What comes back — where its condition block sits, and which of
     // its bytes change when its top of book moves — is reported rather than
     // derived, so nothing here knows the market account's layout.
-    let block = {
-        crate::state::prop_amm::ClobMarket::from_slab(
-            &ctx.accounts.quoter_slab,
-            perp_market.market_index,
-            &ctx.accounts.clob_market,
-            &ctx.accounts.clob_program,
-        )?
-        .set_crank_conditions(crate::instructions::clob_crank_registration(
-            &keys, payments,
-        )?)?
-    };
+    let block = clob.set_crank_conditions(crate::instructions::clob_crank_registration(
+        &keys, payments,
+    )?)?;
     msg!(
         "clob crank conditions at book offset {}",
         block.block_offset

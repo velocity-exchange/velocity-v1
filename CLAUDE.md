@@ -237,7 +237,7 @@ is idempotent — it skips publish if that version is already on the registry. `
 for publishing because bun does not implement npm's OIDC trusted-publishing flow; workspace dep ranges
 are rewritten to concrete versions by `.github/scripts/rewrite-workspace-deps.mjs` before publish.
 
-**Release CLI:** `bun run release <status|checklist|program|npm|docker|infra>` (`scripts/release/`) drives the tag pushes, workflow dispatches, and infra pin updates above; it is read-only until `--execute` is passed. See the "Release CLI" section of [`deploy-scripts/README.md`](./deploy-scripts/README.md). When a tag convention, workflow name, or publish path changes in `.github/workflows/`, update the CLI in the same change.
+**Release CLI:** `bun run release <status|bump|devnet|npm|docker|infra|mainnet>` (`deploy-scripts/release.sh`) drives the tag pushes, workflow dispatches and infra pin updates above, in release order; it is read-only until `--execute` is passed. See the "Release CLI" section of [`deploy-scripts/README.md`](./deploy-scripts/README.md). When a tag convention, workflow name or publish path changes in `.github/workflows/`, update the script in the same change.
 
 **PRs that change user-facing behavior in a publishable package should include a changeset.** This includes new features, bug fixes, and API changes — but not chores, CI config, or internal refactors that don't affect consumers. To add one: run `bun run changeset` at the repo root, select the affected package(s), choose the bump type (patch/minor/major), and write a short description. Commit the generated `.changeset/*.md` file with your changes. Do not manually edit `package.json` versions — changesets and the "Version Packages" bot own those fields.
 

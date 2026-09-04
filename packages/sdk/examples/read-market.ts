@@ -38,32 +38,39 @@ async function main() {
 			accountLoader: new BulkAccountLoader(connection, 'confirmed', 1000),
 		},
 	});
-	await client.subscribe();
-
-	const solMarket = PerpMarkets[env].find((m) => m.baseAssetSymbol === 'SOL');
-	if (!solMarket) {
-		throw new Error('SOL-PERP not listed on this deployment');
+	// subscribe() resolves false rather than throwing when a subscription fails.
+	if (!(await client.subscribe())) {
+		throw new Error('failed to subscribe to Velocity accounts');
 	}
-	const marketIndex = solMarket.marketIndex;
 
-	const perpMarket = client.getPerpMarketAccountOrThrow(marketIndex);
-	const slot = await connection.getSlot();
-	const mmOracle = client.getMMOracleDataForPerpMarket(marketIndex, slot);
+	try {
+		const solMarket = PerpMarkets[env].find((m) => m.baseAssetSymbol === 'SOL');
+		if (!solMarket) {
+			throw new Error('SOL-PERP not listed on this deployment');
+		}
+		const marketIndex = solMarket.marketIndex;
 
-	const [bid, ask] = calculateBidAskPrice(
-		perpMarket.amm,
-		perpMarket.marketStats,
-		mmOracle,
-		true,
-		new BN(slot),
-		client.getStateAccount()
-	);
+		const perpMarket = client.getPerpMarketAccountOrThrow(marketIndex);
+		const slot = await connection.getSlot();
+		const mmOracle = client.getMMOracleDataForPerpMarket(marketIndex, slot);
 
-	console.log(`oracle:   $${convertToNumber(mmOracle.price, PRICE_PRECISION)}`);
-	console.log(`vAMM bid: $${convertToNumber(bid, PRICE_PRECISION)}`);
-	console.log(`vAMM ask: $${convertToNumber(ask, PRICE_PRECISION)}`);
+		const [bid, ask] = calculateBidAskPrice(
+			perpMarket.amm,
+			perpMarket.marketStats,
+			mmOracle,
+			true,
+			new BN(slot),
+			client.getStateAccount()
+		);
 
-	await client.unsubscribe();
+		console.log(
+			`oracle:   $${convertToNumber(mmOracle.price, PRICE_PRECISION)}`
+		);
+		console.log(`vAMM bid: $${convertToNumber(bid, PRICE_PRECISION)}`);
+		console.log(`vAMM ask: $${convertToNumber(ask, PRICE_PRECISION)}`);
+	} finally {
+		await client.unsubscribe();
+	}
 }
 
 main();

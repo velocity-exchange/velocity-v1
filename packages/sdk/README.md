@@ -6,7 +6,7 @@
   <p>
     <a href="https://www.npmjs.com/package/@velocity-exchange/sdk"><img alt="SDK npm package" src="https://img.shields.io/npm/v/@velocity-exchange/sdk" /></a>
     <a href="https://docs.velocity.exchange/developers"><img alt="Docs" src="https://img.shields.io/badge/docs-developers-blueviolet" /></a>
-    <a href="https://discord.com/invite/95kByNnDy5"><img alt="Discord Chat" src="https://img.shields.io/discord/889577356681945098?color=blueviolet" /></a>
+    <a href="https://discord.com/invite/95kByNnDy5"><img alt="Discord Chat" src="https://img.shields.io/discord/849494028176588802?color=blueviolet" /></a>
     <a href="https://opensource.org/licenses/Apache-2.0"><img alt="License" src="https://img.shields.io/github/license/velocity-exchange/velocity-v1?color=blueviolet" /></a>
   </p>
 </div>
@@ -54,7 +54,10 @@ import {
 
 const env: VelocityEnv = 'mainnet-beta';
 
-const connection = new Connection(process.env.RPC_URL, 'confirmed');
+const connection = new Connection(
+	process.env.RPC_URL ?? 'https://api.mainnet-beta.solana.com',
+	'confirmed'
+);
 
 // VelocityClient always requires a wallet, even on a read-only path. This
 // throwaway keypair is never used to sign.
@@ -69,11 +72,16 @@ const client = new VelocityClient({
 		accountLoader: new BulkAccountLoader(connection, 'confirmed', 1000),
 	},
 });
-await client.subscribe();
+// subscribe() resolves false rather than throwing when a subscription fails.
+if (!(await client.subscribe())) {
+	throw new Error('failed to subscribe to Velocity accounts');
+}
 
-const marketIndex = PerpMarkets[env].find(
-	(m) => m.baseAssetSymbol === 'SOL'
-).marketIndex;
+const solMarket = PerpMarkets[env].find((m) => m.baseAssetSymbol === 'SOL');
+if (!solMarket) {
+	throw new Error('SOL-PERP not listed on this deployment');
+}
+const marketIndex = solMarket.marketIndex;
 
 const perpMarket = client.getPerpMarketAccountOrThrow(marketIndex);
 const slot = await connection.getSlot();
@@ -94,8 +102,9 @@ console.log(`vAMM ask: $${convertToNumber(ask, PRICE_PRECISION)}`);
 
 ### Placing an order
 
-On devnet, assuming the wallet already has an initialized Velocity account with
-collateral. Full file: [`examples/place-order.ts`](./examples/place-order.ts).
+Continuing from the `client` and `marketIndex` above, but on devnet and with a
+wallet that already has an initialized Velocity account with collateral. Full
+runnable file: [`examples/place-order.ts`](./examples/place-order.ts).
 
 ```typescript
 import {
@@ -170,7 +179,7 @@ BN division truncates, so converting back to a JavaScript number by dividing wil
 silently lose the fractional part. Always use `convertToNumber`:
 
 ```typescript
-import { convertToNumber, PRICE_PRECISION } from '@velocity-exchange/sdk';
+import { BN, convertToNumber } from '@velocity-exchange/sdk';
 
 new BN(10500).div(new BN(1000)).toNumber(); // 10  — wrong
 convertToNumber(new BN(10500), new BN(1000)); // 10.5

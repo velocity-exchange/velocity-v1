@@ -5,7 +5,7 @@
 
   <p>
     <a href="https://docs.velocity.exchange/developers/trading-automation/keeper-bots"><img alt="Docs" src="https://img.shields.io/badge/docs-developers-blueviolet" /></a>
-    <a href="https://discord.com/invite/95kByNnDy5"><img alt="Discord Chat" src="https://img.shields.io/discord/889577356681945098?color=blueviolet" /></a>
+    <a href="https://discord.com/invite/95kByNnDy5"><img alt="Discord Chat" src="https://img.shields.io/discord/849494028176588802?color=blueviolet" /></a>
     <a href="https://opensource.org/licenses/Apache-2.0"><img alt="License" src="https://img.shields.io/github/license/project-serum/anchor?color=blueviolet" /></a>
   </p>
 </div>
@@ -64,7 +64,7 @@ A `ClearingHouseUser` must be created before interacting with the `ClearingHouse
 yarn run dev --init-user
 ```
 
-Alternatively, you can put the private key into a browser wallet and use the UI at https://app.drift.trade to initialize the user.
+Alternatively, you can put the private key into a browser wallet and use the UI at https://app.velocity.exchange to initialize the user.
 
 ## Collateral
 
@@ -76,9 +76,9 @@ A user must be initialized first before collateral may be deposited.
 yarn run dev --force-deposit 10000
 ```
 
-Alternatively, you can put the private key into a browser wallet and use the UI at https://app.drift.trade to deposit collateral.
+Alternatively, you can put the private key into a browser wallet and use the UI at https://app.velocity.exchange to deposit collateral.
 
-Free collateral is what is determines the size of borrows and perp positions that an account can have. Free collateral = total collateral - initial margin requirement. Total collateral is the value of the spot assets in your account + unrealized perp pnl. The initial margin requirement is the total weighted value of the perp positions and spot liabilities in your account. The initial margin requirement weights are determined [here](https://docs.velocity.exchange/protocol/trading/margin). In simple terms, free collateral is essentially the amount of total collateral that is not being used up by borrows and existing perp positions and open orders.
+Free collateral is what is determines the size of borrows and perp positions that an account can have. Free collateral = total collateral - initial margin requirement. Total collateral is the value of the spot assets in your account + unrealized perp pnl. The initial margin requirement is the total weighted value of the perp positions and spot liabilities in your account. The initial margin requirement weights are determined in the [margin documentation](https://docs.velocity.exchange/protocol/trading/margin). In simple terms, free collateral is essentially the amount of total collateral that is not being used up by borrows and existing perp positions and open orders.
 
 
 # Run Bots

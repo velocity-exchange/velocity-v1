@@ -44,23 +44,28 @@ async function main() {
 			accountLoader: new BulkAccountLoader(connection, 'confirmed', 1000),
 		},
 	});
-	await client.subscribe();
-
-	const solMarket = PerpMarkets[env].find((m) => m.baseAssetSymbol === 'SOL');
-	if (!solMarket) {
-		throw new Error('SOL-PERP not listed on this deployment');
+	// subscribe() resolves false rather than throwing when a subscription fails.
+	if (!(await client.subscribe())) {
+		throw new Error('failed to subscribe to Velocity accounts');
 	}
 
-	const txSig = await client.placePerpOrder(
-		getMarketOrderParams({
-			marketIndex: solMarket.marketIndex,
-			direction: PositionDirection.LONG,
-			baseAssetAmount: new BN(1).mul(BASE_PRECISION),
-		})
-	);
-	console.log(`placed 1 SOL-PERP long: ${txSig}`);
+	try {
+		const solMarket = PerpMarkets[env].find((m) => m.baseAssetSymbol === 'SOL');
+		if (!solMarket) {
+			throw new Error('SOL-PERP not listed on this deployment');
+		}
 
-	await client.unsubscribe();
+		const txSig = await client.placePerpOrder(
+			getMarketOrderParams({
+				marketIndex: solMarket.marketIndex,
+				direction: PositionDirection.LONG,
+				baseAssetAmount: new BN(1).mul(BASE_PRECISION),
+			})
+		);
+		console.log(`placed 1 SOL-PERP long: ${txSig}`);
+	} finally {
+		await client.unsubscribe();
+	}
 }
 
 main();

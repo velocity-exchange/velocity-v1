@@ -1,8 +1,8 @@
 ### Quick Start
 
-Drift Protocol Jit Market Making, offer fee rebates for providing liquidity.
+Velocity Jit Market Making, offer fee rebates for providing liquidity.
 
-1. create and fund an account on drift protocol
+1. create and fund an account on Velocity
 
 - can experiment using devnet, for mainnet make sure you understand the risks
 - see [keeper-bots-v2 readme](https://github.com/velocity-exchange/keeper-bots-v2#initialize-user)
@@ -32,5 +32,5 @@ Drift Protocol Jit Market Making, offer fee rebates for providing liquidity.
 
 6. join discord / open PR
 
-- drift protocol promotes a open and helpful development community
+- Velocity promotes a open and helpful development community
 - get technical help, discuss ideas, and make internet friends :D

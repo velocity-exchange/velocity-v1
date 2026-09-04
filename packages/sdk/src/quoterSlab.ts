@@ -103,6 +103,7 @@ export function decodeQuoterSlab(data: Buffer): {
 	const header: QuoterSlabV0Account = {
 		market: data.readUInt16LE(8),
 		capacity: data.readUInt16LE(10),
+		bump: data.readUInt8(12),
 		padding: [],
 	};
 	const slots: QuoterSlotV0[] = [];

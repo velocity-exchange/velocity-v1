@@ -3319,11 +3319,13 @@ export type QuoterSlotV0 = {
 	config: QuoterConfigV0;
 };
 
-/** Decoded mirror of the on-chain `QuoterSlabV0` account header: one slab per perp market, holding every approved quoter config in back-to-back `QuoterSlotV0`s after this fixed header. Capacity is the account's size (recorded here), not a layout constant. Use `decodeQuoterSlabSlots` to read the slot region. */
+/** Decoded mirror of the on-chain `QuoterSlabV0` account header: one slab per perp market, holding every approved quoter config in back-to-back `QuoterSlotV0`s after this fixed header. Capacity is the account's size (recorded here), not a layout constant; the approval flow keeps the account right-sized. Use `decodeQuoterSlabSlots` to read the slot region. */
 export type QuoterSlabV0Account = {
 	/** perp market this slab serves; also in the PDA seeds */
 	market: number;
-	/** slots the tail region holds; written at creation and when the account grows */
+	/** slots the tail region holds; approval grows it and revocation shrinks it */
 	capacity: number;
+	/** the slab PDA's bump; the slab signs every external quoter CPI */
+	bump: number;
 	padding: number[];
 };

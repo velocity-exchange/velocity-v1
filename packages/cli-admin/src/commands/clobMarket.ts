@@ -13,7 +13,6 @@ import {
 	getCrankTreasuryPublicKey,
 	getClobCrankConditionsPublicKey,
 	getPerpMarketPublicKeySync,
-	getClobAuthorityPublicKey,
 	getQuoterSlabPublicKey,
 	QuoterType,
 } from '@velocity-exchange/sdk';
@@ -244,16 +243,11 @@ export function registerClobMarket(parent: Command): void {
 			clobMarket
 				.command('init <market>')
 				.description(
-					"Stand up a perp market's CLOB in one command: create the book account, initialize it on the CLOB program (place_authority = the quoter CPI signer), create the market's quoter slab when missing, register its quoter entry and approve it into the slab, attach it as the market's canonical CLOB (creating the crank conditions + reservoir), and optionally register the relay watch and fund the reservoir. Signer must hold warm/cold admin (approval + attach). Direct-send only — fresh account keypairs must co-sign, so --multisig is rejected."
+					"Stand up a perp market's CLOB in one command: create the book account, initialize it on the CLOB program (place_authority = the market's quoter slab), create the market's quoter slab when missing, register its quoter entry and approve it into the slab, attach it as the market's canonical CLOB (creating the crank conditions + reservoir), and optionally register the relay watch and fund the reservoir. Signer must hold warm/cold admin (approval + attach). Direct-send only — fresh account keypairs must co-sign, so --multisig is rejected."
 				)
 		)
 			.requiredOption('--clob-program <pubkey>', 'deployed CLOB program id')
 			.option('--capacity <n>', 'order-node arena capacity', '4096')
-			.option(
-				'--slab-capacity <n>',
-				"quoter slab slots when the market's slab does not exist yet (slot 0 is the book; 1-64)",
-				'8'
-			)
 			.option(
 				'--quoter-user <pubkey>',
 				'quoter PDA user seed (unused for CLOB-type entries)',
@@ -308,7 +302,6 @@ export function registerClobMarket(parent: Command): void {
 			flags: ClobConfigFlags & {
 				clobProgram: string;
 				capacity: string;
-				slabCapacity: string;
 				quoterUser: string;
 				expireFallbackSlots: string;
 				minCrossSurplus: string;
@@ -332,8 +325,9 @@ export function registerClobMarket(parent: Command): void {
 			try {
 				const clobProgram = new PublicKey(flags.clobProgram);
 				const quoterUser = new PublicKey(flags.quoterUser);
-				const clobAuthority = getClobAuthorityPublicKey(
-					client.program.programId
+				const quoterSlab = getQuoterSlabPublicKey(
+					client.program.programId,
+					marketIndex
 				);
 				const perpMarket = getPerpMarketPublicKeySync(
 					client.program.programId,
@@ -346,11 +340,10 @@ export function registerClobMarket(parent: Command): void {
 				const wallet = provider.wallet.publicKey;
 
 				// 1. The book: a fresh account on the CLOB program, initialized
-				// with velocity's CLOB place authority. Deliberately its own key —
-				// not the vault authority, and not the per-entry signer a
-				// third-party quoter is handed. Signer privilege is inherited by a
-				// callee, and this key may place and cancel on any book for any
-				// user, so nothing outside velocity ever receives it.
+				// with the market's quoter slab as its place authority — the one
+				// identity velocity signs every external quoter CPI as.
+				// Deliberately not the vault authority: signer privilege is
+				// inherited by a callee, and the vault authority moves funds.
 				const book = Keypair.generate();
 				const space = clobMarketSpace(Number.parseInt(flags.capacity, 10));
 				const bookRent =
@@ -366,7 +359,7 @@ export function registerClobMarket(parent: Command): void {
 					programId: clobProgram,
 					keys: [
 						{ pubkey: wallet, isSigner: true, isWritable: false },
-						{ pubkey: clobAuthority, isSigner: false, isWritable: false },
+						{ pubkey: quoterSlab, isSigner: false, isWritable: false },
 						{ pubkey: book.publicKey, isSigner: false, isWritable: true },
 					],
 					data: Buffer.concat([
@@ -419,13 +412,13 @@ export function registerClobMarket(parent: Command): void {
 				);
 				// One unified account list; each leg names its slice by index.
 				// The quote leg reads the book; the execute leg also carries the
-				// place authority the book checks velocity's CPI signature against.
+				// quoter slab the book checks velocity's CPI signature against.
 				const registerAccounts =
 					client.program.instruction.updateQuoterAccounts(
 						{
 							metas: [
 								{ pubkey: book.publicKey, isWritable: true },
-								{ pubkey: clobAuthority, isWritable: false },
+								{ pubkey: quoterSlab, isWritable: false },
 							],
 							quoteIndexes: Buffer.from([0]),
 							executeIndexes: Buffer.from([0, 1]),
@@ -435,16 +428,11 @@ export function registerClobMarket(parent: Command): void {
 				// Approval copies the staging config into the market's slab, so
 				// the slab has to exist first. It is permissionless and shared by
 				// every quoter on the market, so create it only when missing.
-				const quoterSlab = getQuoterSlabPublicKey(
-					client.program.programId,
-					marketIndex
-				);
 				const slabIxs = (await provider.connection.getAccountInfo(quoterSlab))
 					? []
 					: [
 							client.program.instruction.initializeQuoterSlab(
-								marketIndex,
-								Number.parseInt(flags.slabCapacity, 10),
+								{ marketIndex },
 								{
 									accounts: {
 										payer: wallet,
@@ -464,16 +452,21 @@ export function registerClobMarket(parent: Command): void {
 					[clobProgram.toBuffer()],
 					BPF_LOADER_UPGRADEABLE_ID
 				);
-				const approve = client.program.instruction.updateQuoterApproved(true, {
-					accounts: {
-						admin: wallet,
-						state: await client.getStatePublicKey(),
-						quoter: quoterPda,
-						quoterSlab,
-						quoterProgram: clobProgram,
-						quoterProgramData: clobProgramData,
-					},
-				});
+				const approve = client.program.instruction.updateQuoterApproved(
+					{ approved: true },
+					{
+						accounts: {
+							admin: wallet,
+							state: await client.getStatePublicKey(),
+							quoter: quoterPda,
+							quoterSlab,
+							quoterProgram: clobProgram,
+							quoterProgramData: clobProgramData,
+							// Approval right-sizes the slab account.
+							systemProgram: SystemProgram.programId,
+						},
+					}
+				);
 				await provider.sendAndConfirm(
 					new Transaction().add(
 						...slabIxs,
@@ -489,9 +482,11 @@ export function registerClobMarket(parent: Command): void {
 				// 3. Attach: names the canonical CLOB and stands up the crank
 				// conditions + reservoir; optionally fund the reservoir.
 				const attach = client.program.instruction.updatePerpMarketClobQuoter(
-					crankCostUnits,
-					new BN(flags.expireFallbackSlots),
-					new BN(flags.minCrossSurplus),
+					{
+						crankCostUnits,
+						expireFallbackSlots: new BN(flags.expireFallbackSlots),
+						minCrossSurplus: new BN(flags.minCrossSurplus),
+					},
 					{
 						accounts: {
 							admin: wallet,
@@ -501,7 +496,6 @@ export function registerClobMarket(parent: Command): void {
 							quoterSlab,
 							clobMarket: book.publicKey,
 							clobProgram,
-							clobAuthority: client.getClobAuthorityPublicKey(),
 							crankConditions: conditions,
 							treasury: getCrankTreasuryPublicKey(client.program.programId),
 							rent: SYSVAR_RENT_PUBKEY,

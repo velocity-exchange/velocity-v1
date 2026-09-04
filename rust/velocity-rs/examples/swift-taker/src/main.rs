@@ -4,7 +4,7 @@ use base64::Engine;
 use nanoid::nanoid;
 use reqwest::header;
 use velocity_rs::{
-    constants::{derive_clob_authority, derive_quoter_slab},
+    constants::derive_quoter_slab,
     swift_order_subscriber::{SignedOrderInfo, SignedOrderType},
     types::{MarketType, OrderParams, OrderType, PositionDirection, SignedMsgOrderParamsMessage},
     ClobFillAccounts, Context, RpcClient, TransactionBuilder, VelocityClient, Wallet,
@@ -162,7 +162,6 @@ async fn swift_deposit_trade(
         quoter_slab: derive_quoter_slab(perp_market_index),
         clob_market: book.response_account,
         clob_program: book.program_id,
-        clob_authority: derive_clob_authority(),
         crank_conditions: None,
     };
 

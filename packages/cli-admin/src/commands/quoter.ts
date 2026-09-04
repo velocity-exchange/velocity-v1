@@ -223,66 +223,15 @@ export function registerQuoter(parent: Command): void {
 
 	withGlobalOptions(
 		quoter
-			.command('init-slab <market> [capacity]')
+			.command('init-slab <market>')
 			.description(
-				"Initialize a perp market's QuoterSlabV0 — the per-market account that holds every approved quoter config. One per market; approval (set-approved) copies a staging entry into a slot, and fills read only the slab. Slot 0 is reserved for the market's book, so [capacity] is 1 + the number of Custom quoters the market can hold (1-13 at creation — the runtime caps one allocation at 10,240 bytes — default 8; grow later with extend-slab). Permissionless; the signer pays the rent."
+				"Initialize a perp market's QuoterSlabV0 — the per-market account that holds every approved quoter config, and the identity velocity signs every external quoter CPI as. One per market; approval (set-approved) copies a staging entry into a slot and grows the account to fit it, so the slab is born with one slot (the book's) and stays right-sized. Permissionless; the signer pays the rent."
 			)
-	).action(
-		async (market: string, capacity: string | undefined, cmd: Command) => {
-			const marketIndex = Number.parseInt(market, 10);
-			const slots = Number.parseInt(capacity ?? '8', 10);
-			const opts = readGlobalOpts(cmd);
-			if (opts.multisig) {
-				throw new Error('init-slab is permissionless — direct-send only');
-			}
-			const provider = buildProvider(opts);
-			const client = await buildAdminClient(opts, false);
-			try {
-				const quoterSlab = getQuoterSlabPublicKey(
-					client.program.programId,
-					marketIndex
-				);
-				const ix = client.program.instruction.initializeQuoterSlab(
-					marketIndex,
-					slots,
-					{
-						accounts: {
-							payer: provider.wallet.publicKey,
-							perpMarket: getPerpMarketPublicKeySync(
-								client.program.programId,
-								marketIndex
-							),
-							quoterSlab,
-							rent: SYSVAR_RENT_PUBKEY,
-							systemProgram: SystemProgram.programId,
-						},
-					}
-				);
-				const result = await sendOrPropose(provider, [ix], undefined, '');
-				reportDispatch(
-					`quoter slab ${quoterSlab.toBase58()} initialized (market ${marketIndex}, capacity ${slots})`,
-					result
-				);
-			} finally {
-				if ((client as any).isSubscribed) {
-					await client.unsubscribe();
-				}
-			}
-		}
-	);
-
-	withGlobalOptions(
-		quoter
-			.command('extend-slab <market> <capacity>')
-			.description(
-				"Grow a perp market's QuoterSlabV0 to <capacity> total slots. The new tail bytes are vacant slots; occupied slots never move. One call can add at most 13 slots (the runtime's 10,240-byte growth ceiling) — repeat for more. Permissionless; the signer pays the added rent."
-			)
-	).action(async (market: string, capacity: string, cmd: Command) => {
+	).action(async (market: string, cmd: Command) => {
 		const marketIndex = Number.parseInt(market, 10);
-		const slots = Number.parseInt(capacity, 10);
 		const opts = readGlobalOpts(cmd);
 		if (opts.multisig) {
-			throw new Error('extend-slab is permissionless — direct-send only');
+			throw new Error('init-slab is permissionless — direct-send only');
 		}
 		const provider = buildProvider(opts);
 		const client = await buildAdminClient(opts, false);
@@ -291,20 +240,24 @@ export function registerQuoter(parent: Command): void {
 				client.program.programId,
 				marketIndex
 			);
-			const ix = client.program.instruction.extendQuoterSlab(
-				marketIndex,
-				slots,
+			const ix = client.program.instruction.initializeQuoterSlab(
+				{ marketIndex },
 				{
 					accounts: {
 						payer: provider.wallet.publicKey,
+						perpMarket: getPerpMarketPublicKeySync(
+							client.program.programId,
+							marketIndex
+						),
 						quoterSlab,
+						rent: SYSVAR_RENT_PUBKEY,
 						systemProgram: SystemProgram.programId,
 					},
 				}
 			);
 			const result = await sendOrPropose(provider, [ix], undefined, '');
 			reportDispatch(
-				`quoter slab ${quoterSlab.toBase58()} extended to ${slots} slots`,
+				`quoter slab ${quoterSlab.toBase58()} initialized (market ${marketIndex})`,
 				result
 			);
 		} finally {
@@ -491,19 +444,22 @@ export function registerQuoter(parent: Command): void {
 			const client = await buildAdminClient(opts, false);
 			try {
 				const quoterKey = new PublicKey(quoterArg);
-				const ix = client.program.instruction.updateQuoterActive(on, {
-					accounts: {
-						authority: flags.authority
-							? new PublicKey(flags.authority)
-							: provider.wallet.publicKey,
-						quoter: quoterKey,
-						quoterSlab: await liveSlabFor(
-							client,
-							provider.connection,
-							quoterKey
-						),
-					},
-				});
+				const ix = client.program.instruction.updateQuoterActive(
+					{ active: on },
+					{
+						accounts: {
+							authority: flags.authority
+								? new PublicKey(flags.authority)
+								: provider.wallet.publicKey,
+							quoter: quoterKey,
+							quoterSlab: await liveSlabFor(
+								client,
+								provider.connection,
+								quoterKey
+							),
+						},
+					}
+				);
 				const result = await sendOrPropose(
 					provider,
 					[ix],
@@ -557,21 +513,26 @@ export function registerQuoter(parent: Command): void {
 					[quoterProgram.toBuffer()],
 					BPF_LOADER_UPGRADEABLE_ID
 				);
-				const ix = client.program.instruction.updateQuoterApproved(on, {
-					accounts: {
-						admin: flags.admin
-							? new PublicKey(flags.admin)
-							: provider.wallet.publicKey,
-						state: await client.getStatePublicKey(),
-						quoter: quoterKey,
-						quoterSlab: getQuoterSlabPublicKey(
-							client.program.programId,
-							entry.config.market
-						),
-						quoterProgram,
-						quoterProgramData: on ? programData : null,
-					},
-				});
+				const ix = client.program.instruction.updateQuoterApproved(
+					{ approved: on },
+					{
+						accounts: {
+							admin: flags.admin
+								? new PublicKey(flags.admin)
+								: provider.wallet.publicKey,
+							state: await client.getStatePublicKey(),
+							quoter: quoterKey,
+							quoterSlab: getQuoterSlabPublicKey(
+								client.program.programId,
+								entry.config.market
+							),
+							quoterProgram,
+							quoterProgramData: on ? programData : null,
+							// Approval right-sizes the slab account.
+							systemProgram: SystemProgram.programId,
+						},
+					}
+				);
 				const result = await sendOrPropose(
 					provider,
 					[ix],
@@ -616,20 +577,23 @@ export function registerQuoter(parent: Command): void {
 			const client = await buildAdminClient(opts, false);
 			try {
 				const quoterKey = new PublicKey(quoterArg);
-				const ix = client.program.instruction.updateQuoterPriority(priority, {
-					accounts: {
-						admin: flags.admin
-							? new PublicKey(flags.admin)
-							: provider.wallet.publicKey,
-						state: await client.getStatePublicKey(),
-						quoter: quoterKey,
-						quoterSlab: await liveSlabFor(
-							client,
-							provider.connection,
-							quoterKey
-						),
-					},
-				});
+				const ix = client.program.instruction.updateQuoterPriority(
+					{ priority },
+					{
+						accounts: {
+							admin: flags.admin
+								? new PublicKey(flags.admin)
+								: provider.wallet.publicKey,
+							state: await client.getStatePublicKey(),
+							quoter: quoterKey,
+							quoterSlab: await liveSlabFor(
+								client,
+								provider.connection,
+								quoterKey
+							),
+						},
+					}
+				);
 				const result = await sendOrPropose(
 					provider,
 					[ix],
@@ -700,9 +664,11 @@ export function registerQuoter(parent: Command): void {
 					).config.programId
 				);
 				const ix = client.program.instruction.updatePerpMarketClobQuoter(
-					crankCostUnits,
-					new BN(expireFallbackSlots ?? 1500),
-					new BN(flags.minCrossSurplus),
+					{
+						crankCostUnits,
+						expireFallbackSlots: new BN(expireFallbackSlots ?? 1500),
+						minCrossSurplus: new BN(flags.minCrossSurplus),
+					},
 					{
 						accounts: {
 							admin: flags.admin
@@ -720,7 +686,6 @@ export function registerQuoter(parent: Command): void {
 							),
 							clobMarket: new PublicKey(clobMarket),
 							clobProgram: clobProgramId,
-							clobAuthority: client.getClobAuthorityPublicKey(),
 							crankConditions: getClobCrankConditionsPublicKey(
 								client.program.programId,
 								marketIndex
@@ -852,7 +817,7 @@ export function registerQuoter(parent: Command): void {
 			try {
 				const quoterKey = new PublicKey(quoterArg);
 				const ix = client.program.instruction.updateQuoterMaxOracleDeviation(
-					bps,
+					{ maxOracleDeviationBps: bps },
 					{
 						accounts: {
 							authority: flags.authority
@@ -924,7 +889,7 @@ export function registerQuoter(parent: Command): void {
 					client.program.programId
 				)[0];
 				const ix = client.program.instruction.initializeQuoterCrossConditions(
-					new BN(flags.fallbackSlots),
+					{ expireFallbackSlots: new BN(flags.fallbackSlots) },
 					{
 						accounts: {
 							payer: provider.wallet.publicKey,

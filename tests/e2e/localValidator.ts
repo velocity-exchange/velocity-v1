@@ -71,8 +71,6 @@ import {
 	getUserStatsAccountPublicKey,
 	getRelayScratchPublicKey,
 	getUserConditionsPublicKey,
-	getClobAuthorityPublicKey,
-	getQuoterSignerPublicKey,
 	getVelocitySignerPublicKey,
 	OracleSource,
 	PEG_PRECISION,
@@ -295,9 +293,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 	let velocitySigner: PublicKey;
 	/** Every book's `place_authority` — never the vault authority, and never
 	 * handed to a third-party quoter. */
-	let clobAuthority: PublicKey;
 	/** The midpoint entry's own quoter CPI signer, derived from that entry. */
-	let midQuoterSigner: PublicKey;
 	/** Resolved during bring-up: `routerTail` is synchronous. */
 	let statePdaCache: PublicKey;
 	let protocolUser: PublicKey;
@@ -665,24 +661,29 @@ describe('e2e localnet: programs + publisher + redis', function () {
 					},
 					{ accounts: { authority: args.authority, quoter } }
 				),
-				program.instruction.updateQuoterApproved(true, {
-					accounts: {
-						admin: payer.publicKey,
-						state: await admin.getStatePublicKey(),
-						quoter,
-						// Approval copies the staging config into the slab slot
-						// fills read; the slab has to exist first.
-						quoterSlab,
-						// Approval is approval of a binary, so the program has to
-						// be frozen and its program-data account says whether it
-						// is. These are deployed non-upgradeable in the harness.
-						quoterProgram: args.quoterProgram,
-						quoterProgramData: PublicKey.findProgramAddressSync(
-							[args.quoterProgram.toBuffer()],
-							BPF_LOADER_UPGRADEABLE_ID
-						)[0],
-					},
-				}),
+				program.instruction.updateQuoterApproved(
+					{ approved: true },
+					{
+						accounts: {
+							admin: payer.publicKey,
+							state: await admin.getStatePublicKey(),
+							quoter,
+							// Approval copies the staging config into the slab slot
+							// fills read; the slab has to exist first — and approval
+							// grows it to fit the slot, so the system program rides.
+							quoterSlab,
+							// Approval is approval of a binary, so the program has to
+							// be frozen and its program-data account says whether it
+							// is. These are deployed non-upgradeable in the harness.
+							quoterProgram: args.quoterProgram,
+							quoterProgramData: PublicKey.findProgramAddressSync(
+								[args.quoterProgram.toBuffer()],
+								BPF_LOADER_UPGRADEABLE_ID
+							)[0],
+							systemProgram: SystemProgram.programId,
+						},
+					}
+				),
 			],
 		};
 	};
@@ -715,7 +716,9 @@ describe('e2e localnet: programs + publisher + redis', function () {
 					})
 					.accountsStrict({
 						authority: payer.publicKey,
-						placeAuthority: clobAuthority,
+						// The market's slab is the identity velocity signs every
+						// external quoter CPI as, the book's included.
+						placeAuthority: quoterSlab,
 						market: clobBook.publicKey,
 					})
 					.instruction(),
@@ -732,10 +735,10 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			// The book answers who rests on it, so no reader decodes it.
 			quoteL3Discriminator: Array.from(ixDiscriminator('quote_l3_v0')),
 			// The quote leg reads the book; the execute leg also carries the
-			// place authority the book checks velocity's CPI signature against.
+			// quoter slab the book checks velocity's CPI signature against.
 			metas: [
 				{ pubkey: clobBook.publicKey, isWritable: true },
-				{ pubkey: clobAuthority, isWritable: false },
+				{ pubkey: quoterSlab, isWritable: false },
 			],
 			quoteIndexes: [0],
 			executeIndexes: [0, 1],
@@ -745,15 +748,18 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			// Approval needs the market's slab, and this is the market's first
 			// registration, so create it here. Slot 0 is the book's; the Custom
 			// quoters land on slots 1+.
-			admin.program.instruction.initializeQuoterSlab(0, 8, {
-				accounts: {
-					payer: payer.publicKey,
-					perpMarket,
-					quoterSlab,
-					rent: SYSVAR_RENT_PUBKEY,
-					systemProgram: SystemProgram.programId,
-				},
-			}),
+			admin.program.instruction.initializeQuoterSlab(
+				{ marketIndex: 0 },
+				{
+					accounts: {
+						payer: payer.publicKey,
+						perpMarket,
+						quoterSlab,
+						rent: SYSVAR_RENT_PUBKEY,
+						systemProgram: SystemProgram.programId,
+					},
+				}
+			),
 			...registration.ixs,
 		]);
 
@@ -764,24 +770,26 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		conditions = getClobCrankConditionsPublicKey(VELOCITY_ID, 0);
 		await send([
 			admin.program.instruction.updatePerpMarketClobQuoter(
-				// Cost units each crank requests. The lamport payments are derived
-				// from these and State.transactionFeeRails, which `initialize` sets
-				// to a flat fee per signature — so on this harness every crank pays
-				// that flat fee whatever it asks for.
 				{
-					removal: 30_000,
-					cross: 180_000,
-					takerOriginCross: 190_000,
-					trigger: 40_000,
-					liquidation: 120_000,
-					forceCancel: 60_000,
-					refill: 30_000,
+					// Cost units each crank requests. The lamport payments are
+					// derived from these and State.transactionFeeRails, which
+					// `initialize` sets to a flat fee per signature — so on this
+					// harness every crank pays that flat fee whatever it asks for.
+					crankCostUnits: {
+						removal: 30_000,
+						cross: 180_000,
+						takerOriginCross: 190_000,
+						trigger: 40_000,
+						liquidation: 120_000,
+						forceCancel: 60_000,
+						refill: 30_000,
+					},
+					expireFallbackSlots: new BN(1500), // cross fallback poll interval
+					// The attach requires a floor above zero, so this is the
+					// smallest one there is — the cross-match scenario below only
+					// asserts that a cross has to be profitable at all.
+					minCrossSurplus: new BN(1),
 				},
-				new BN(1500), // cross fallback poll interval
-				// The attach requires a floor above zero, so this is the smallest
-				// one there is — the cross-match scenario below only asserts that
-				// a cross has to be profitable at all.
-				new BN(1),
 				{
 					accounts: {
 						admin: payer.publicKey,
@@ -791,7 +799,6 @@ describe('e2e localnet: programs + publisher + redis', function () {
 						quoterSlab,
 						clobMarket: clobBook.publicKey,
 						clobProgram: CLOB_ID,
-						clobAuthority,
 						crankConditions: conditions,
 						treasury: getCrankTreasuryPublicKey(VELOCITY_ID),
 						rent: SYSVAR_RENT_PUBKEY,
@@ -805,11 +812,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 	/** Midpoint instance + spline, then its Custom registry entry. */
 	const midpointBringUp = async () => {
 		midInstance = midpointIx.instance(midMakerKp.publicKey);
-		// The instance's execute authority is the signer velocity CPIs *this
-		// entry* as, so the entry has to be derived before the instance is
-		// created. It is a PDA, so that is just arithmetic.
 		midEntry = quoterKey(MIDPOINT_ID, userOf(midMakerKp.publicKey));
-		midQuoterSigner = getQuoterSignerPublicKey(VELOCITY_ID, midEntry);
 		await send(
 			[
 				await midpointProgram.methods
@@ -827,7 +830,9 @@ describe('e2e localnet: programs + publisher + redis', function () {
 						payer: payer.publicKey,
 						authority: midConfigKp.publicKey,
 						userAuthority: midMakerKp.publicKey,
-						executeAuthority: midQuoterSigner,
+						// The market's slab is the identity velocity signs every
+						// external quoter CPI as.
+						executeAuthority: quoterSlab,
 						hotAuthority: midHotKp.publicKey,
 						quoter: midInstance,
 						systemProgram: SystemProgram.programId,
@@ -853,7 +858,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			// velocity State.
 			metas: [
 				{ pubkey: midInstance, isWritable: true },
-				{ pubkey: midQuoterSigner, isWritable: false },
+				{ pubkey: quoterSlab, isWritable: false },
 			],
 			quoteIndexes: [0],
 			executeIndexes: [0, 1],
@@ -954,7 +959,6 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				quoterSlab,
 				clobMarket: clobBook.publicKey,
 				clobProgram: CLOB_ID,
-				clobAuthority,
 			}
 			// activationDelaySlots omitted: the book's default, no attestation.
 		);
@@ -1182,13 +1186,8 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		]),
 		ro(quoterSlab),
 		rw(clobBook.publicKey),
-		ro(clobAuthority),
 		ro(CLOB_ID),
 		rw(midInstance),
-		// Velocity signs the midpoint execute CPI as this quoter-signer PDA;
-		// the quoter's registered execute leg names it, so the router needs it
-		// in the account map.
-		ro(midQuoterSigner),
 		ro(SYSVAR_INSTRUCTIONS_PUBKEY),
 		// Midpoint reads the live flow authority off velocity's State on both
 		// legs. The ix's own `state` account is not in the CPI account map —
@@ -1220,10 +1219,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		// book instead of staying in `User.orders`. Keepers use it in
 		// production (keep-rs's swift path), so the suite fills the same way.
 		admin.program.instruction.fillLegacyDlobOrder(
-			orderId,
-			null,
-			signedRoute,
-			0, // market_index — the conditions PDA seed needs it up front
+			{ marketIndex: 0, orderId, signedRoute },
 			{
 				accounts: {
 					state: await admin.getStatePublicKey(),
@@ -1235,7 +1231,6 @@ describe('e2e localnet: programs + publisher + redis', function () {
 					quoterSlab,
 					clobMarket: clobBook.publicKey,
 					clobProgram: CLOB_ID,
-					clobAuthority,
 					// Read for the filler obligation: whether the taker signed
 					// and how many accounts the transaction locks.
 					instructionsSysvar: SYSVAR_INSTRUCTIONS_PUBKEY,
@@ -1313,7 +1308,6 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		await airdrop(relayPayout.publicKey, 1);
 
 		velocitySigner = getVelocitySignerPublicKey(VELOCITY_ID);
-		clobAuthority = getClobAuthorityPublicKey(VELOCITY_ID);
 		usdcMint = await createUsdcMint();
 
 		// $100 oracle through the pyth stub program (drivable on a real
@@ -1777,7 +1771,6 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				quoterSlab,
 				clobMarket: clobBook.publicKey,
 				clobProgram: CLOB_ID,
-				clobAuthority,
 			}
 		);
 		await taker.sendTransaction(new Transaction().add(ix));
@@ -1911,7 +1904,6 @@ describe('e2e localnet: programs + publisher + redis', function () {
 					quoterSlab,
 					clobMarket: clobBook.publicKey,
 					clobProgram: CLOB_ID,
-					clobAuthority,
 				}
 			);
 			await taker.sendTransaction(new Transaction().add(ix));
@@ -2562,10 +2554,8 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			]),
 			ro(quoterSlab),
 			rw(clobBook.publicKey),
-			ro(clobAuthority),
 			ro(CLOB_ID),
 			rw(midInstance),
-			ro(midQuoterSigner),
 			ro(SYSVAR_INSTRUCTIONS_PUBKEY),
 			ro(statePdaCache),
 			ro(MIDPOINT_ID)

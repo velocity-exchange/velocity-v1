@@ -130,30 +130,18 @@ pub fn derive_velocity_signer() -> Pubkey {
     account
 }
 
-/// The `place_authority` every book is configured with, and what velocity signs
-/// its own CLOB calls as.
-///
-/// Deliberately not [`derive_velocity_signer`], which is the token authority on
-/// every vault, and deliberately not [`derive_quoter_signer`], which is what a
-/// third-party quoter is handed: signer privilege is inherited by a callee, and
-/// this key may place and cancel on any book for any user.
-pub fn derive_clob_authority() -> Pubkey {
-    let (account, _seed) = Pubkey::find_program_address(&[&b"clob_authority"[..]], &PROGRAM_ID);
-    account
-}
-
-/// The signer velocity CPIs one registry entry's quoter as, derived from that
-/// entry — so the signature authenticates velocity at that quoter and nowhere
-/// else. The authority on nothing.
-pub fn derive_quoter_signer(entry: &Pubkey) -> Pubkey {
-    let (account, _seed) =
-        Pubkey::find_program_address(&[&b"quoter_signer"[..], entry.as_ref()], &PROGRAM_ID);
-    account
-}
-
 /// The market's quoter slab: one account that holds every approved quoter
 /// config. Router fills and every CLOB order-flow instruction name it in
 /// place of per-quoter registry entries.
+///
+/// The slab is also the one signer for every external quoter CPI on its
+/// market — the book's `place_authority` and each midpoint quoter's
+/// `execute_authority`. Deliberately not [`derive_velocity_signer`], which is
+/// the token authority on every vault: signer privilege is inherited by a CPI
+/// callee. One shared key per market is safe because approval excludes other
+/// quoters' response accounts from a registered list, so a forwarded
+/// signature has no instruction it can complete. The canonical account of
+/// this model is `programs/velocity/src/signer.rs`.
 pub fn derive_quoter_slab(market_index: u16) -> Pubkey {
     let (account, _seed) = Pubkey::find_program_address(
         &[&b"quoter_slab"[..], &market_index.to_le_bytes()],

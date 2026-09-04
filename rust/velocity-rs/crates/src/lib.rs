@@ -2031,13 +2031,12 @@ pub struct ClobFillAccounts {
     pub market_index: u16,
     /// The market's `QuoterSlabV0` PDA (`["quoter_slab", market_index_le]`,
     /// [`constants::derive_quoter_slab`]). The slab holds every approved
-    /// quoter config, the book at slot 0.
+    /// quoter config, the book at slot 0. It is also the one signer velocity
+    /// CPIs external quoter programs as, the book's `place_authority`
+    /// included. See `velocity::signer`.
     pub quoter_slab: Pubkey,
     pub clob_market: Pubkey,
     pub clob_program: Pubkey,
-    /// The book's `place_authority`, which is its own PDA — not the per-entry
-    /// key a third-party quoter is handed. See `velocity::signer`.
-    pub clob_authority: Pubkey,
     /// Only `force_cancel_clob_orders` reads this — it is the wake-hint host
     /// for that sweep. The placement and fill builders do not use it.
     /// `None` = the market's crank conditions were never initialized.
@@ -2512,7 +2511,6 @@ impl<'a> TransactionBuilder<'a> {
                 quoter_slab: clob.quoter_slab,
                 clob_market: clob.clob_market,
                 clob_program: clob.clob_program,
-                clob_authority: clob.clob_authority,
                 crank_conditions: clob.crank_conditions,
             },
             [&self.account_data, user_account].into_iter(),
@@ -2528,8 +2526,10 @@ impl<'a> TransactionBuilder<'a> {
             program_id: constants::PROGRAM_ID,
             accounts,
             data: InstructionData::data(&program::instruction::ForceCancelClobOrders {
-                market_index: clob.market_index,
-                order_refs,
+                args: program::instructions::ForceCancelClobOrdersArgs {
+                    market_index: clob.market_index,
+                    order_refs,
+                },
             }),
         });
         self
@@ -2813,7 +2813,6 @@ impl<'a> TransactionBuilder<'a> {
                 quoter_slab: clob.quoter_slab,
                 clob_market: clob.clob_market,
                 clob_program: clob.clob_program,
-                clob_authority: clob.clob_authority,
             },
             [taker_account].into_iter(),
             self.force_markets.readable.iter(),
@@ -3534,7 +3533,6 @@ impl<'a> TransactionBuilder<'a> {
                     quoter_slab: clob.quoter_slab,
                     clob_market: clob.clob_market,
                     clob_program: clob.clob_program,
-                    clob_authority: clob.clob_authority,
                     // Always named. A fill that leaves a book short of an
                     // owner is refused unless velocity can count the
                     // transaction's accounts, and only this sysvar tells it.
@@ -3605,10 +3603,11 @@ impl<'a> TransactionBuilder<'a> {
             accounts,
             data: match &clob {
                 Some(clob) => InstructionData::data(&program::instruction::FillLegacyDlobOrder {
-                    order_id: taker_order_id,
-                    _maker_order_id: None,
-                    signed_route: signed_route.to_vec(),
-                    market_index: clob.market_index,
+                    args: program::instructions::FillLegacyDlobOrderArgs {
+                        market_index: clob.market_index,
+                        order_id: taker_order_id,
+                        signed_route: signed_route.to_vec(),
+                    },
                 }),
                 None => InstructionData::data(&program::instruction::FillPerpOrder {
                     order_id: taker_order_id,

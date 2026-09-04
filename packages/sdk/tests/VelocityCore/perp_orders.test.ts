@@ -65,13 +65,11 @@ describe('VelocityCore perp order instruction builders', () => {
 		expect(called[0][0]).toBe('v0');
 		expect(called[0][2]).toBe(256);
 
-		// CLOB accounts select the v1 route; an omitted crankConditions encodes
-		// as the program id (anchor's `None`).
+		// CLOB accounts select the v1 route, whose args ride one struct.
 		const clobAccounts = {
-			quoter: pk(),
+			quoterSlab: pk(),
 			clobMarket: pk(),
 			clobProgram: pk(),
-			clobAuthority: pk(),
 		};
 		await VelocityCore.buildPlaceAndTakePerpOrderInstruction({
 			program,
@@ -85,12 +83,16 @@ describe('VelocityCore perp order instruction builders', () => {
 			clobAccounts,
 		});
 		expect(called[1][0]).toBe('v1');
-		const withClob = called[1][3].accounts;
-		expect(withClob.quoter).toBe(clobAccounts.quoter);
+		expect(called[1][1]).toEqual({
+			params: { m: 0 },
+			successCondition: null,
+		});
+		const withClob = called[1][2].accounts;
+		expect(withClob.quoterSlab).toBe(clobAccounts.quoterSlab);
 		expect(withClob.clobMarket).toBe(clobAccounts.clobMarket);
 		expect(withClob.clobProgram).toBe(clobAccounts.clobProgram);
-		expect(withClob.clobAuthority).toBe(clobAccounts.clobAuthority);
-		expect(withClob.crankConditions).toBe(programId);
+		// An omitted flow authority encodes as the program id (anchor's `None`).
+		expect(withClob.flowAuthority).toBe(programId);
 	});
 
 	test('buildPlaceAndMakePerpOrderInstruction', async () => {
@@ -106,10 +108,9 @@ describe('VelocityCore perp order instruction builders', () => {
 			},
 		};
 		const clobAccounts = {
-			quoter: pk(),
+			quoterSlab: pk(),
 			clobMarket: pk(),
 			clobProgram: pk(),
-			clobAuthority: pk(),
 		};
 		const ix = await VelocityCore.buildPlaceAndMakePerpOrderInstruction({
 			program,
@@ -122,10 +123,14 @@ describe('VelocityCore perp order instruction builders', () => {
 			clobAccounts,
 		});
 		expect(ix).toBe(fakeIx as any);
-		// v1 takes only orderParams, then the accounts object — no taker.
-		expect(called[0][1].accounts.quoter).toBe(clobAccounts.quoter);
-		// An omitted crankConditions encodes as the program id.
-		expect(called[0][1].accounts.crankConditions).toBe(programId);
+		// v1 takes one args struct, then the accounts object — no taker.
+		expect(called[0][0]).toEqual({
+			params: {},
+			activationDelaySlots: null,
+		});
+		expect(called[0][1].accounts.quoterSlab).toBe(clobAccounts.quoterSlab);
+		// An omitted flow authority encodes as the program id (anchor's `None`).
+		expect(called[0][1].accounts.flowAuthority).toBe(programId);
 	});
 
 	test('buildCancelOrderInstruction', async () => {

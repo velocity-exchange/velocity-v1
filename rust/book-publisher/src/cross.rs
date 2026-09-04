@@ -19,11 +19,14 @@
 //! a PropAMM leg's pair comes from its registry entry's quoted user.
 
 use {
-    anyhow::{anyhow, Context, Result},
-    program::state::{
-        prop_amm::{ClobUserRefV0, QuoterSlotV0},
-        router_quote::QuotedSourceKind,
-        state::State,
+    anyhow::{anyhow, Result},
+    program::{
+        instructions::CrankCrossMatchArgs,
+        state::{
+            prop_amm::{ClobUserRefV0, QuoterSlotV0},
+            router_quote::QuotedSourceKind,
+            state::State,
+        },
     },
     relay_chain_source::ChainSource,
     solana_sdk::{
@@ -254,10 +257,11 @@ pub async fn find_cross_plan<S: ChainSource + ?Sized>(
     }
 
     // Assemble the executor call: named accounts, map section, maker
-    // (User, UserStats) pairs, then the market's slab and the union of the
-    // legs' registered CPI accounts. The whole registered list rides rather
-    // than the execute leg's subset: each leg resolves its accounts by index
-    // into the one list, so carrying the list is what guarantees the resolve.
+    // (User, UserStats) pairs, then the union of the legs' registered CPI
+    // accounts. The whole registered list rides rather than the execute
+    // leg's subset: each leg resolves its accounts by index into the one
+    // list, so carrying the list is what guarantees the resolve. The perp
+    // market and the slab are named accounts, so neither rides again here.
     let signer = velocity_signer_pda(velocity);
     let protocol_user = Pubkey::find_program_address(
         &[b"user", signer.as_ref(), 0u16.to_le_bytes().as_ref()],
@@ -285,16 +289,14 @@ pub async fn find_cross_plan<S: ChainSource + ?Sized>(
             taker: protocol_user,
             taker_stats: protocol_user_stats,
             crank_conditions: crank_conditions_pda(velocity, market_index),
+            perp_market: perp_market_pda(velocity, market_index),
+            quoter_slab: quoter_slab_pda(velocity, market_index),
         }
         .to_account_metas(None)
     };
     accounts.push(AccountMeta::new_readonly(*oracle, false));
     accounts.push(AccountMeta::new(
         spot_market_pda(velocity, quote_spot_market_index),
-        false,
-    ));
-    accounts.push(AccountMeta::new(
-        perp_market_pda(velocity, market_index),
         false,
     ));
     for maker in &makers {
@@ -304,10 +306,6 @@ pub async fn find_cross_plan<S: ChainSource + ?Sized>(
             false,
         ));
     }
-    accounts.push(AccountMeta::new_readonly(
-        quoter_slab_pda(velocity, market_index),
-        false,
-    ));
     for (key, writable) in &cpi_union {
         accounts.push(if *writable {
             AccountMeta::new(*key, false)
@@ -316,14 +314,16 @@ pub async fn find_cross_plan<S: ChainSource + ?Sized>(
         });
     }
 
-    use anchor_lang::{AnchorSerialize, Discriminator};
-    let mut data = program::instruction::CrankCrossMatch::DISCRIMINATOR.to_vec();
-    market_index
-        .serialize(&mut data)
-        .context("serialize cross args")?;
-    size.serialize(&mut data)?;
-    buy_index.serialize(&mut data)?;
-    sell_index.serialize(&mut data)?;
+    use anchor_lang::InstructionData;
+    let data = program::instruction::CrankCrossMatch {
+        args: CrankCrossMatchArgs {
+            market_index,
+            size,
+            buy_quoter_index: buy_index,
+            sell_quoter_index: sell_index,
+        },
+    }
+    .data();
 
     Ok(Some(CrossPlan {
         instruction: Instruction {

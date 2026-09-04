@@ -193,8 +193,6 @@ import { TokenFaucet } from './tokenFaucet';
 import { EventEmitter } from 'events';
 import StrictEventEmitter from 'strict-event-emitter-types';
 import {
-	getClobAuthorityPublicKey,
-	getQuoterSignerPublicKey,
 	getQuoterSlabPublicKey,
 	getClobCrankConditionsPublicKey,
 	getVelocitySignerPublicKey,
@@ -805,8 +803,8 @@ export class VelocityClient {
 	/**
 	 * Returns the program's PDA signer (used as the authority for vault CPIs), computing and caching
 	 * it on first call. Synchronous — the signer PDA has no seeds that require an on-chain lookup.
-	 * Not the key external-program CPIs sign as; see {@link getClobAuthorityPublicKey} and
-	 * {@link getQuoterSignerPublicKey}.
+	 * Not the key external-program CPIs sign as — that is the market's quoter slab; see
+	 * {@link getQuoterSlabPublicKey}.
 	 * @returns The velocity signer public key.
 	 */
 	public getSignerPublicKey(): PublicKey {
@@ -815,36 +813,6 @@ export class VelocityClient {
 		}
 		this.signerPublicKey = getVelocitySignerPublicKey(this.program.programId);
 		return this.signerPublicKey;
-	}
-
-	clobAuthorityPublicKey?: PublicKey;
-	/**
-	 * Returns every book's `place_authority` — the PDA velocity signs its own CLOB CPIs as, and what
-	 * a market's book is initialized with. A different key from {@link getSignerPublicKey} and from
-	 * {@link getQuoterSignerPublicKey}: it may place and cancel on any market for any user, so it is
-	 * never handed to a third-party program. Synchronous and cached.
-	 * @returns The CLOB place authority public key.
-	 */
-	public getClobAuthorityPublicKey(): PublicKey {
-		if (this.clobAuthorityPublicKey) {
-			return this.clobAuthorityPublicKey;
-		}
-		this.clobAuthorityPublicKey = getClobAuthorityPublicKey(
-			this.program.programId
-		);
-		return this.clobAuthorityPublicKey;
-	}
-
-	/**
-	 * Returns the PDA velocity signs one registry entry's `quote_v0`/`execute_v0` CPI as. Derived
-	 * from the entry, so the signature authenticates velocity at that quoter and nowhere else — it is
-	 * not any book's `place_authority`, and forwarding it to another quoter proves nothing there. The
-	 * key is the authority on nothing. Not cached: it varies per entry.
-	 * @param quoterEntry - The `QuoterV0` registry entry.
-	 * @returns That entry's quoter CPI signer public key.
-	 */
-	public getQuoterSignerPublicKey(quoterEntry: PublicKey): PublicKey {
-		return getQuoterSignerPublicKey(this.program.programId, quoterEntry);
 	}
 
 	/**
@@ -6195,7 +6163,7 @@ export class VelocityClient {
 		}));
 
 		return await this.program.instruction.refreshSpotMarketInterest(
-			marketIndexes,
+			{ marketIndexes },
 			{
 				accounts: {
 					state: await this.getStatePublicKey(),
@@ -8656,7 +8624,6 @@ export class VelocityClient {
 			quoterSlab: clobAccounts.quoterSlab,
 			clobMarket: clobAccounts.clobMarket,
 			clobProgram: clobAccounts.clobProgram,
-			clobAuthority: this.getClobAuthorityPublicKey(),
 			remainingAccounts: [...remainingAccounts, ...routeAccounts],
 			crankConditions: getClobCrankConditionsPublicKey(
 				this.program.programId,
@@ -8773,8 +8740,7 @@ export class VelocityClient {
 		});
 
 		return await this.program.instruction.forceCancelClobOrders(
-			marketIndex,
-			orderRefs,
+			{ marketIndex, orderRefs },
 			{
 				accounts: {
 					state: await this.getStatePublicKey(),
@@ -8789,7 +8755,6 @@ export class VelocityClient {
 					quoterSlab: clobAccounts.quoterSlab,
 					clobMarket: clobAccounts.clobMarket,
 					clobProgram: clobAccounts.clobProgram,
-					clobAuthority: this.getClobAuthorityPublicKey(),
 					crankConditions: getClobCrankConditionsPublicKey(
 						this.program.programId,
 						marketIndex
@@ -9464,7 +9429,6 @@ export class VelocityClient {
 			quoterSlab: PublicKey;
 			clobMarket: PublicKey;
 			clobProgram: PublicKey;
-			clobAuthority: PublicKey;
 		},
 		// Additional quoter entries and their registered CPI accounts, for a
 		// taker routing across PropAMMs beyond the mandatory CLOB + vAMM
@@ -9521,11 +9485,6 @@ export class VelocityClient {
 				{ pubkey: clobAccounts.quoterSlab, isWritable: false, isSigner: false },
 				{ pubkey: clobAccounts.clobMarket, isWritable: true, isSigner: false },
 				{
-					pubkey: clobAccounts.clobAuthority,
-					isWritable: false,
-					isSigner: false,
-				},
-				{
 					pubkey: clobAccounts.clobProgram,
 					isWritable: false,
 					isSigner: false,
@@ -9577,7 +9536,6 @@ export class VelocityClient {
 			quoterSlab: PublicKey;
 			clobMarket: PublicKey;
 			clobProgram: PublicKey;
-			clobAuthority: PublicKey;
 		},
 		txParams?: TxParams,
 		subAccountId?: number,
@@ -9616,7 +9574,6 @@ export class VelocityClient {
 			quoterSlab: PublicKey;
 			clobMarket: PublicKey;
 			clobProgram: PublicKey;
-			clobAuthority: PublicKey;
 		},
 		subAccountId?: number,
 		activationDelaySlots?: number | null
@@ -9818,7 +9775,6 @@ export class VelocityClient {
 			quoterSlab: PublicKey;
 			clobMarket: PublicKey;
 			clobProgram: PublicKey;
-			clobAuthority: PublicKey;
 		},
 		flowAttestation?: FlowAttestationV0
 	): Promise<TransactionSignature> {
@@ -9873,7 +9829,6 @@ export class VelocityClient {
 			quoterSlab: PublicKey;
 			clobMarket: PublicKey;
 			clobProgram: PublicKey;
-			clobAuthority: PublicKey;
 		},
 		/** Swift's detached attestation (`/attest`) for this order; absent rests the whole order on a bumped book. */
 		flowAttestation?: FlowAttestationV0
@@ -9966,7 +9921,6 @@ export class VelocityClient {
 						quoterSlab: clob.quoterSlab,
 						clobMarket: clob.clobMarket,
 						clobProgram: clob.clobProgram,
-						clobAuthority: clob.clobAuthority,
 					},
 					remainingAccounts,
 				}
@@ -13263,8 +13217,7 @@ export class VelocityClient {
 		);
 
 		return await this.program.instruction.forfeitRevenueShareOrder(
-			marketIndex,
-			orderIndex,
+			{ marketIndex, orderIndex },
 			{
 				accounts: {
 					state: await this.getStatePublicKey(),
@@ -13480,8 +13433,7 @@ export class VelocityClient {
 		}
 
 		return await this.program.instruction.settleRevenueShare(
-			marketIndex,
-			ownerSubAccountKeys.length,
+			{ marketIndex, numOwnerSubAccounts: ownerSubAccountKeys.length },
 			{
 				accounts: {
 					state: await this.getStatePublicKey(),
@@ -14253,7 +14205,6 @@ export class VelocityClient {
 		quoterSlab: PublicKey;
 		clobMarket: PublicKey;
 		clobProgram: PublicKey;
-		clobAuthority: PublicKey;
 	}> {
 		const { slots } = await this.getQuoterSlabAccount(marketIndex);
 		const book = slots[0];
@@ -14269,7 +14220,6 @@ export class VelocityClient {
 			// The book is the account the slot's responses are written into.
 			clobMarket: book.config.responseAccount,
 			clobProgram: book.config.programId,
-			clobAuthority: this.getClobAuthorityPublicKey(),
 		};
 	}
 
@@ -14294,7 +14244,6 @@ export class VelocityClient {
 		const clob = await this.getClobAccounts(params.marketIndex);
 		return await this.program.instruction.cancelOrderV1(params, {
 			accounts: {
-				state: await this.getStatePublicKey(),
 				perpMarket: await getPerpMarketPublicKey(
 					this.program.programId,
 					params.marketIndex
@@ -14304,7 +14253,6 @@ export class VelocityClient {
 				quoterSlab: clob.quoterSlab,
 				clobMarket: clob.clobMarket,
 				clobProgram: clob.clobProgram,
-				clobAuthority: clob.clobAuthority,
 			},
 		});
 	}
@@ -14357,7 +14305,6 @@ export class VelocityClient {
 				quoterSlab: clob.quoterSlab,
 				clobMarket: clob.clobMarket,
 				clobProgram: clob.clobProgram,
-				clobAuthority: clob.clobAuthority,
 				flowAuthority: flowAuthority ?? null,
 			},
 		});
@@ -14402,13 +14349,11 @@ export class VelocityClient {
 		const clob = await this.getClobAccounts(params.marketIndex);
 		return await this.program.instruction.cancelOrdersV1(params, {
 			accounts: {
-				state: await this.getStatePublicKey(),
 				user: await this.getUserAccountPublicKey(subAccountId),
 				authority: this.wallet.publicKey,
 				quoterSlab: clob.quoterSlab,
 				clobMarket: clob.clobMarket,
 				clobProgram: clob.clobProgram,
-				clobAuthority: clob.clobAuthority,
 			},
 		});
 	}

@@ -197,8 +197,7 @@ pub mod instructions {
     impl anchor_lang::InstructionData for ChangeSignedMsgWsDelegateStatus {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct CrankClobEvict {
-        pub market_index: u16,
-        pub side: SideV0,
+        pub args: CrankClobEvictArgs,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for CrankClobEvict {
@@ -208,8 +207,7 @@ pub mod instructions {
     impl anchor_lang::InstructionData for CrankClobEvict {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct CrankClobRemoveExpired {
-        pub market_index: u16,
-        pub order_ref: ClobOrderRefV0,
+        pub args: CrankClobRemoveExpiredArgs,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for CrankClobRemoveExpired {
@@ -219,10 +217,7 @@ pub mod instructions {
     impl anchor_lang::InstructionData for CrankClobRemoveExpired {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct CrankCrossMatch {
-        pub market_index: u16,
-        pub size: u64,
-        pub buy_quoter_index: u8,
-        pub sell_quoter_index: u8,
+        pub args: CrankCrossMatchArgs,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for CrankCrossMatch {
@@ -232,9 +227,7 @@ pub mod instructions {
     impl anchor_lang::InstructionData for CrankCrossMatch {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct CrankTakerOriginCross {
-        pub market_index: u16,
-        pub cross_rows: u16,
-        pub signed_route: Vec<Pubkey>,
+        pub args: CrankTakerOriginCrossArgs,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for CrankTakerOriginCross {
@@ -403,22 +396,8 @@ pub mod instructions {
     #[automatically_derived]
     impl anchor_lang::InstructionData for ExtendAccountDevnet {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
-    pub struct ExtendQuoterSlab {
-        pub market_index: u16,
-        pub capacity: u16,
-    }
-    #[automatically_derived]
-    impl anchor_lang::Discriminator for ExtendQuoterSlab {
-        const DISCRIMINATOR: &[u8] = &[73, 4, 123, 36, 156, 210, 246, 243];
-    }
-    #[automatically_derived]
-    impl anchor_lang::InstructionData for ExtendQuoterSlab {}
-    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct FillLegacyDlobOrder {
-        pub order_id: Option<u32>,
-        pub _maker_order_id: Option<u32>,
-        pub signed_route: Vec<Pubkey>,
-        pub market_index: u16,
+        pub args: FillLegacyDlobOrderArgs,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for FillLegacyDlobOrder {
@@ -440,8 +419,7 @@ pub mod instructions {
     impl anchor_lang::InstructionData for FillPerpOrder {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct ForceCancelClobOrders {
-        pub market_index: u16,
-        pub order_refs: Vec<ForceCancelClobRefV0>,
+        pub args: ForceCancelClobOrdersArgs,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for ForceCancelClobOrders {
@@ -477,8 +455,7 @@ pub mod instructions {
     impl anchor_lang::InstructionData for ForceWipeAccountsDevnet {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct ForfeitRevenueShareOrder {
-        pub market_index: u16,
-        pub order_index: u32,
+        pub args: ForfeitRevenueShareOrderArgs,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for ForfeitRevenueShareOrder {
@@ -628,7 +605,7 @@ pub mod instructions {
     impl anchor_lang::InstructionData for InitializeQuoter {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct InitializeQuoterCrossConditions {
-        pub expire_fallback_slots: u64,
+        pub args: InitializeQuoterCrossConditionsArgs,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for InitializeQuoterCrossConditions {
@@ -638,8 +615,7 @@ pub mod instructions {
     impl anchor_lang::InstructionData for InitializeQuoterCrossConditions {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct InitializeQuoterSlab {
-        pub market_index: u16,
-        pub capacity: u16,
+        pub args: InitializeQuoterSlabArgs,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for InitializeQuoterSlab {
@@ -685,7 +661,7 @@ pub mod instructions {
     impl anchor_lang::InstructionData for InitializeRevenueShareEscrow {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct InitializeRouterQuoteBuffer {
-        pub market_index: u16,
+        pub args: InitializeRouterQuoteBufferArgs,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for InitializeRouterQuoteBuffer {
@@ -954,8 +930,7 @@ pub mod instructions {
     impl anchor_lang::InstructionData for PauseSpotMarketDepositWithdraw {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct PlaceAndMakePerpOrderV1 {
-        pub params: OrderParams,
-        pub activation_delay_slots: Option<u32>,
+        pub args: PlaceAndMakePerpOrderV1Args,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for PlaceAndMakePerpOrderV1 {
@@ -976,8 +951,7 @@ pub mod instructions {
     impl anchor_lang::InstructionData for PlaceAndTakePerpOrder {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct PlaceAndTakePerpOrderV1 {
-        pub params: OrderParams,
-        pub success_condition: Option<u32>,
+        pub args: PlaceAndTakePerpOrderV1Args,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for PlaceAndTakePerpOrderV1 {
@@ -1078,7 +1052,7 @@ pub mod instructions {
     impl anchor_lang::InstructionData for ReclaimRent {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct RefillCrankReservoir {
-        pub market_index: u16,
+        pub args: RefillCrankReservoirArgs,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for RefillCrankReservoir {
@@ -1088,7 +1062,7 @@ pub mod instructions {
     impl anchor_lang::InstructionData for RefillCrankReservoir {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct RefreshSpotMarketInterest {
-        pub market_indexes: Vec<u16>,
+        pub args: RefreshSpotMarketInterestArgs,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for RefreshSpotMarketInterest {
@@ -1345,8 +1319,7 @@ pub mod instructions {
     impl anchor_lang::InstructionData for SettlePnl {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct SettleRevenueShare {
-        pub market_index: u16,
-        pub num_owner_sub_accounts: u8,
+        pub args: SettleRevenueShareArgs,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for SettleRevenueShare {
@@ -1377,8 +1350,7 @@ pub mod instructions {
     impl anchor_lang::InstructionData for SpecialTransferPerpPositionToVamm {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct SweepCrankReservoir {
-        pub market_index: u16,
-        pub lamports: u64,
+        pub args: SweepCrankReservoirArgs,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for SweepCrankReservoir {
@@ -1506,8 +1478,7 @@ pub mod instructions {
     impl anchor_lang::InstructionData for TransferPools {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct TriggerLimitOrderV1 {
-        pub market_index: u16,
-        pub order_id: u32,
+        pub args: TriggerLimitOrderV1Args,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for TriggerLimitOrderV1 {
@@ -1517,9 +1488,7 @@ pub mod instructions {
     impl anchor_lang::InstructionData for TriggerLimitOrderV1 {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct TriggerMarketOrderV1 {
-        pub market_index: u16,
-        pub order_id: u32,
-        pub signed_route: Vec<Pubkey>,
+        pub args: TriggerMarketOrderV1Args,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for TriggerMarketOrderV1 {
@@ -1645,8 +1614,7 @@ pub mod instructions {
     impl anchor_lang::InstructionData for UpdateConstituentStatus {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct UpdateCrankTreasury {
-        pub refill_target_cranks: u16,
-        pub refill_watermark_cranks: u16,
+        pub args: UpdateCrankTreasuryArgs,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for UpdateCrankTreasury {
@@ -1805,8 +1773,7 @@ pub mod instructions {
     impl anchor_lang::InstructionData for UpdateK {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct UpdateLiquidationCrankReimbursement {
-        pub share_bps: u16,
-        pub sol_spot_market_index: u16,
+        pub args: UpdateLiquidationCrankReimbursementArgs,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for UpdateLiquidationCrankReimbursement {
@@ -1960,9 +1927,7 @@ pub mod instructions {
     impl anchor_lang::InstructionData for UpdatePerpMarketBaseSpread {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct UpdatePerpMarketClobQuoter {
-        pub crank_cost_units: CrankCostUnitsV0,
-        pub expire_fallback_slots: u64,
-        pub min_cross_surplus: u64,
+        pub args: UpdatePerpMarketClobQuoterArgs,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for UpdatePerpMarketClobQuoter {
@@ -2384,7 +2349,7 @@ pub mod instructions {
     impl anchor_lang::InstructionData for UpdateQuoterAccounts {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct UpdateQuoterActive {
-        pub active: bool,
+        pub args: UpdateQuoterActiveArgs,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for UpdateQuoterActive {
@@ -2394,7 +2359,7 @@ pub mod instructions {
     impl anchor_lang::InstructionData for UpdateQuoterActive {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct UpdateQuoterApproved {
-        pub approved: bool,
+        pub args: UpdateQuoterApprovedArgs,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for UpdateQuoterApproved {
@@ -2414,7 +2379,7 @@ pub mod instructions {
     impl anchor_lang::InstructionData for UpdateQuoterConfig {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct UpdateQuoterMaxOracleDeviation {
-        pub max_oracle_deviation_bps: u32,
+        pub args: UpdateQuoterMaxOracleDeviationArgs,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for UpdateQuoterMaxOracleDeviation {
@@ -2424,7 +2389,7 @@ pub mod instructions {
     impl anchor_lang::InstructionData for UpdateQuoterMaxOracleDeviation {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct UpdateQuoterPriority {
-        pub priority: u8,
+        pub args: UpdateQuoterPriorityArgs,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for UpdateQuoterPriority {
@@ -2978,7 +2943,7 @@ pub mod instructions {
     impl anchor_lang::InstructionData for Withdraw {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct WithdrawCrankTreasury {
-        pub lamports: u64,
+        pub args: WithdrawCrankTreasuryArgs,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for WithdrawCrankTreasury {
@@ -3032,8 +2997,7 @@ pub mod instructions {
     impl anchor_lang::InstructionData for WithdrawProtocolFeesSpot {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct WithdrawProtocolUserDeposit {
-        pub market_index: u16,
-        pub amount: u64,
+        pub args: WithdrawProtocolUserDepositArgs,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for WithdrawProtocolUserDeposit {
@@ -3804,6 +3768,40 @@ pub mod types {
         Debug,
         PartialEq,
     )]
+    pub struct CrankClobEvictArgs {
+        pub market_index: u16,
+        pub side: SideV0,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct CrankClobRemoveExpiredArgs {
+        pub market_index: u16,
+        pub order_ref: ClobOrderRefV0,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
     pub struct CrankCostUnitsV0 {
         pub removal: u32,
         pub cross: u32,
@@ -3812,6 +3810,25 @@ pub mod types {
         pub liquidation: u32,
         pub force_cancel: u32,
         pub refill: u32,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct CrankCrossMatchArgs {
+        pub market_index: u16,
+        pub size: u64,
+        pub buy_quoter_index: u8,
+        pub sell_quoter_index: u8,
     }
     #[repr(C)]
     #[derive(
@@ -3835,6 +3852,15 @@ pub mod types {
         pub force_cancel: u32,
         pub refill: u32,
         pub padding: u32,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize, AnchorDeserialize, Serialize, Deserialize, Clone, Default, Debug, PartialEq,
+    )]
+    pub struct CrankTakerOriginCrossArgs {
+        pub market_index: u16,
+        pub cross_rows: u16,
+        pub signed_route: Vec<Pubkey>,
     }
     #[repr(C)]
     #[derive(
@@ -4031,6 +4057,15 @@ pub mod types {
     }
     #[repr(C)]
     #[derive(
+        AnchorSerialize, AnchorDeserialize, Serialize, Deserialize, Clone, Default, Debug, PartialEq,
+    )]
+    pub struct FillLegacyDlobOrderArgs {
+        pub market_index: u16,
+        pub order_id: Option<u32>,
+        pub signed_route: Vec<Pubkey>,
+    }
+    #[repr(C)]
+    #[derive(
         AnchorSerialize,
         AnchorDeserialize,
         InitSpace,
@@ -4066,6 +4101,14 @@ pub mod types {
     }
     #[repr(C)]
     #[derive(
+        AnchorSerialize, AnchorDeserialize, Serialize, Deserialize, Clone, Default, Debug, PartialEq,
+    )]
+    pub struct ForceCancelClobOrdersArgs {
+        pub market_index: u16,
+        pub order_refs: Vec<ForceCancelClobRefV0>,
+    }
+    #[repr(C)]
+    #[derive(
         AnchorSerialize,
         AnchorDeserialize,
         InitSpace,
@@ -4080,6 +4123,23 @@ pub mod types {
     pub struct ForceCancelClobRefV0 {
         pub order_ref: ClobOrderRefV0,
         pub side: SideV0,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct ForfeitRevenueShareOrderArgs {
+        pub market_index: u16,
+        pub order_index: u32,
     }
     #[repr(C)]
     #[derive(
@@ -4242,6 +4302,54 @@ pub mod types {
         pub quote_v0_discriminator: [u8; 8],
         pub quote_l3_v0_discriminator: [u8; 8],
         pub execute_v0_discriminator: [u8; 8],
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct InitializeQuoterCrossConditionsArgs {
+        pub expire_fallback_slots: u64,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct InitializeQuoterSlabArgs {
+        pub market_index: u16,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct InitializeRouterQuoteBufferArgs {
+        pub market_index: u16,
     }
     #[repr(C)]
     #[derive(
@@ -5360,6 +5468,40 @@ pub mod types {
         Debug,
         PartialEq,
     )]
+    pub struct PlaceAndMakePerpOrderV1Args {
+        pub params: OrderParams,
+        pub activation_delay_slots: Option<u32>,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct PlaceAndTakePerpOrderV1Args {
+        pub params: OrderParams,
+        pub success_condition: Option<u32>,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
     pub struct PoolBalance {
         pub scaled_balance: u128,
         pub market_index: u16,
@@ -5799,6 +5941,29 @@ pub mod types {
         Debug,
         PartialEq,
     )]
+    pub struct RefillCrankReservoirArgs {
+        pub market_index: u16,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize, AnchorDeserialize, Serialize, Deserialize, Clone, Default, Debug, PartialEq,
+    )]
+    pub struct RefreshSpotMarketInterestArgs {
+        pub market_indexes: Vec<u16>,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
     pub struct RelayBlock11x48 {
         pub bytes: ByteArray<3728>,
     }
@@ -6045,6 +6210,23 @@ pub mod types {
         pub quote_entry_amount: i64,
         pub settle_price: i64,
         pub explanation: SettlePnlExplanation,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct SettleRevenueShareArgs {
+        pub market_index: u16,
+        pub num_owner_sub_accounts: u8,
     }
     #[derive(
         AnchorSerialize,
@@ -6521,6 +6703,23 @@ pub mod types {
         Debug,
         PartialEq,
     )]
+    pub struct SweepCrankReservoirArgs {
+        pub market_index: u16,
+        pub lamports: u64,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
     pub struct SyncLiqConditionsArgs {
         pub sync_cost_units: u32,
         pub sync_fallback_slots: u64,
@@ -6676,6 +6875,32 @@ pub mod types {
         Debug,
         PartialEq,
     )]
+    pub struct TriggerLimitOrderV1Args {
+        pub market_index: u16,
+        pub order_id: u32,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize, AnchorDeserialize, Serialize, Deserialize, Clone, Default, Debug, PartialEq,
+    )]
+    pub struct TriggerMarketOrderV1Args {
+        pub market_index: u16,
+        pub order_id: u32,
+        pub signed_route: Vec<Pubkey>,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
     pub struct TriggerSlotMetaV0 {
         pub quoter_slab: Pubkey,
         pub clob_market: Pubkey,
@@ -6684,6 +6909,58 @@ pub mod types {
         pub market_index: u16,
         #[serde(skip)]
         pub padding: Padding<2>,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct UpdateCrankTreasuryArgs {
+        pub refill_target_cranks: u16,
+        pub refill_watermark_cranks: u16,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct UpdateLiquidationCrankReimbursementArgs {
+        pub share_bps: u16,
+        pub sol_spot_market_index: u16,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct UpdatePerpMarketClobQuoterArgs {
+        pub crank_cost_units: CrankCostUnitsV0,
+        pub expire_fallback_slots: u64,
+        pub min_cross_surplus: u64,
     }
     #[repr(C)]
     #[derive(
@@ -6724,11 +7001,75 @@ pub mod types {
         Debug,
         PartialEq,
     )]
+    pub struct UpdateQuoterActiveArgs {
+        pub active: bool,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct UpdateQuoterApprovedArgs {
+        pub approved: bool,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
     pub struct UpdateQuoterConfigArgs {
         pub response_account: Option<Pubkey>,
         pub quote_v0_discriminator: Option<[u8; 8]>,
         pub quote_l3_v0_discriminator: Option<[u8; 8]>,
         pub execute_v0_discriminator: Option<[u8; 8]>,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct UpdateQuoterMaxOracleDeviationArgs {
+        pub max_oracle_deviation_bps: u32,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct UpdateQuoterPriorityArgs {
+        pub priority: u8,
     }
     #[repr(C)]
     #[derive(
@@ -6892,6 +7233,39 @@ pub mod types {
         pub slots_before_stale_for_margin: i64,
         pub confidence_interval_max_size: u64,
         pub too_volatile_ratio: i64,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct WithdrawCrankTreasuryArgs {
+        pub lamports: u64,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct WithdrawProtocolUserDepositArgs {
+        pub market_index: u16,
+        pub amount: u64,
     }
     #[repr(C)]
     #[derive(
@@ -10316,6 +10690,8 @@ pub mod accounts {
         pub taker: Pubkey,
         pub taker_stats: Pubkey,
         pub crank_conditions: Pubkey,
+        pub perp_market: Pubkey,
+        pub quoter_slab: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for CrankCrossMatch {
@@ -10357,6 +10733,16 @@ pub mod accounts {
                     pubkey: self.crank_conditions,
                     is_signer: false,
                     is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.perp_market,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.quoter_slab,
+                    is_signer: false,
+                    is_writable: false,
                 },
             ]
         }
@@ -11931,76 +12317,6 @@ pub mod accounts {
     }
     #[automatically_derived]
     impl anchor_lang::AccountDeserialize for ExtendAccountDevnet {
-        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
-            let given_disc = &buf[..8];
-            if Self::DISCRIMINATOR != given_disc {
-                return Err(anchor_lang::error!(
-                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
-                ));
-            }
-            Self::try_deserialize_unchecked(buf)
-        }
-        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
-            let mut data: &[u8] = &buf[8..];
-            AnchorDeserialize::deserialize(&mut data)
-                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
-        }
-    }
-    #[repr(C)]
-    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
-    pub struct ExtendQuoterSlab {
-        pub payer: Pubkey,
-        pub quoter_slab: Pubkey,
-        pub system_program: Pubkey,
-    }
-    #[automatically_derived]
-    impl anchor_lang::Discriminator for ExtendQuoterSlab {
-        const DISCRIMINATOR: &[u8] = &[230, 111, 120, 227, 5, 32, 104, 141];
-    }
-    #[automatically_derived]
-    unsafe impl anchor_lang::__private::bytemuck::Pod for ExtendQuoterSlab {}
-    #[automatically_derived]
-    unsafe impl anchor_lang::__private::bytemuck::Zeroable for ExtendQuoterSlab {}
-    #[automatically_derived]
-    impl anchor_lang::ZeroCopy for ExtendQuoterSlab {}
-    #[automatically_derived]
-    impl anchor_lang::InstructionData for ExtendQuoterSlab {}
-    #[automatically_derived]
-    impl ToAccountMetas for ExtendQuoterSlab {
-        fn to_account_metas(&self) -> Vec<AccountMeta> {
-            vec![
-                AccountMeta {
-                    pubkey: self.payer,
-                    is_signer: true,
-                    is_writable: true,
-                },
-                AccountMeta {
-                    pubkey: self.quoter_slab,
-                    is_signer: false,
-                    is_writable: true,
-                },
-                AccountMeta {
-                    pubkey: self.system_program,
-                    is_signer: false,
-                    is_writable: false,
-                },
-            ]
-        }
-    }
-    #[automatically_derived]
-    impl anchor_lang::AccountSerialize for ExtendQuoterSlab {
-        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
-            if writer.write_all(Self::DISCRIMINATOR).is_err() {
-                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
-            }
-            if AnchorSerialize::serialize(self, writer).is_err() {
-                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
-            }
-            Ok(())
-        }
-    }
-    #[automatically_derived]
-    impl anchor_lang::AccountDeserialize for ExtendQuoterSlab {
         fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
             let given_disc = &buf[..8];
             if Self::DISCRIMINATOR != given_disc {
@@ -27303,6 +27619,7 @@ pub mod accounts {
         pub quoter_slab: Pubkey,
         pub quoter_program: Pubkey,
         pub quoter_program_data: Pubkey,
+        pub system_program: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for UpdateQuoterApproved {
@@ -27323,7 +27640,7 @@ pub mod accounts {
                 AccountMeta {
                     pubkey: self.admin,
                     is_signer: true,
-                    is_writable: false,
+                    is_writable: true,
                 },
                 AccountMeta {
                     pubkey: self.state,
@@ -27347,6 +27664,11 @@ pub mod accounts {
                 },
                 AccountMeta {
                     pubkey: self.quoter_program_data,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.system_program,
                     is_signer: false,
                     is_writable: false,
                 },

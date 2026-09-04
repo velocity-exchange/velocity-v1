@@ -114,21 +114,6 @@ pub fn velocity_signer_pda() -> (Pubkey, u8) {
     Pubkey::find_program_address(&[b"velocity_signer"], &velocity_id())
 }
 
-/// Every book's `place_authority` — what velocity signs its own CLOB calls as.
-/// Deliberately a different PDA from [`velocity_signer_pda`], which is the token
-/// authority on every vault, and from [`quoter_signer_pda`], which is what a
-/// third-party quoter is handed.
-pub fn clob_authority_pda() -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[b"clob_authority"], &velocity_id())
-}
-
-/// The signer velocity CPIs one registry entry's quoter as. Keyed by the entry,
-/// so a quoter's signature authenticates velocity at that quoter and nowhere
-/// else.
-pub fn quoter_signer_pda(entry: &Pubkey) -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[b"quoter_signer", entry.as_ref()], &velocity_id())
-}
-
 /// Anchor default instruction discriminator: sha256("global:<name>")[..8].
 pub fn ix_discriminator(name: &str) -> [u8; 8] {
     use sha2::{Digest, Sha256};
@@ -159,6 +144,12 @@ pub fn quoter_pda(market_index: u16, quoter_program: &Pubkey, user: &Pubkey) -> 
 
 /// The market's quoter slab: one account per market, holding every approved
 /// quoter config. Fills read only this account, never the staging entries.
+/// It is also the one identity velocity signs every external quoter CPI as —
+/// the book's `place_authority` and each quoter's `execute_authority`.
+/// Deliberately a different PDA from [`velocity_signer_pda`], which is the
+/// token authority on every vault; response-account exclusion at approval and
+/// the per-market seed keep the shared signature harmless (see
+/// `programs/velocity/src/signer.rs`).
 pub fn quoter_slab_pda(market_index: u16) -> Pubkey {
     Pubkey::find_program_address(
         &[b"quoter_slab", market_index.to_le_bytes().as_ref()],
@@ -168,13 +159,9 @@ pub fn quoter_slab_pda(market_index: u16) -> Pubkey {
 }
 
 /// Create the market's quoter slab through the real (permissionless)
-/// instruction. Returns the slab address.
-pub fn create_quoter_slab(
-    svm: &mut LiteSVM,
-    payer: &Keypair,
-    market_index: u16,
-    capacity: u16,
-) -> Pubkey {
+/// instruction. A slab is born at capacity 1 (slot 0, the book's); approval
+/// grows it by exactly the slot it needs. Returns the slab address.
+pub fn create_quoter_slab(svm: &mut LiteSVM, payer: &Keypair, market_index: u16) -> Pubkey {
     use anchor_lang::{InstructionData, ToAccountMetas};
     let slab = quoter_slab_pda(market_index);
     let ix = Instruction {
@@ -190,8 +177,7 @@ pub fn create_quoter_slab(
         }
         .to_account_metas(None),
         data: velocity::instruction::InitializeQuoterSlab {
-            market_index,
-            capacity,
+            args: velocity::instructions::InitializeQuoterSlabArgs { market_index },
         }
         .data(),
     };

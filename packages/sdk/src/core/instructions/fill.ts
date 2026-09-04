@@ -41,15 +41,15 @@ export async function buildFillPerpOrderInstruction(args: {
 		quoterSlab: PublicKey;
 		clobMarket: PublicKey;
 		clobProgram: PublicKey;
-		clobAuthority: PublicKey;
 	};
 }): Promise<TransactionInstruction> {
 	if (args.clobAccounts) {
 		return await (args.program.instruction as any).fillLegacyDlobOrder(
-			args.orderId,
-			null,
-			args.signedRoute ?? [],
-			args.clobAccounts.marketIndex,
+			{
+				marketIndex: args.clobAccounts.marketIndex,
+				orderId: args.orderId,
+				signedRoute: args.signedRoute ?? [],
+			},
 			{
 				accounts: {
 					state: args.state,
@@ -61,7 +61,6 @@ export async function buildFillPerpOrderInstruction(args: {
 					quoterSlab: args.clobAccounts.quoterSlab,
 					clobMarket: args.clobAccounts.clobMarket,
 					clobProgram: args.clobAccounts.clobProgram,
-					clobAuthority: args.clobAccounts.clobAuthority,
 					// Always named. A fill that leaves a book short of an owner
 					// is refused unless velocity can count the transaction's
 					// accounts, and only this sysvar tells it. It costs one

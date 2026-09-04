@@ -23,7 +23,7 @@ use {
     anchor_lang::{Discriminator, InstructionData, ToAccountMetas},
     anyhow::{anyhow, bail, Context, Result},
     program::{
-        instructions::QuoteRouterArgs,
+        instructions::{InitializeRouterQuoteBufferArgs, QuoteRouterArgs},
         state::{
             perp_market::PerpMarket,
             prop_amm::{
@@ -312,7 +312,10 @@ pub fn create_quote_buffer_ixs(
                 authority: *authority,
             }
             .to_account_metas(None),
-            data: program::instruction::InitializeRouterQuoteBuffer { market_index }.data(),
+            data: program::instruction::InitializeRouterQuoteBuffer {
+                args: InitializeRouterQuoteBufferArgs { market_index },
+            }
+            .data(),
         },
     ]
 }

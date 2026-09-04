@@ -76,7 +76,6 @@ export async function buildTriggerOrderInstruction(args: {
  * @param args.quoterSlab - the market's quoter slab (`QuoterSlabV0`).
  * @param args.clobMarket - the CLOB market account.
  * @param args.clobProgram - the CLOB program id.
- * @param args.clobAuthority - the CLOB place-authority PDA.
  * @param args.remainingAccounts - writable perp market + oracle `AccountMeta[]` for the order's market, followed by maker/referrer `(User, UserStats)` pairs, the taker's `RevenueShareEscrow` if builder codes are enabled, the referrer's readonly `UserStats` when referred, then the quoter section (the market's `QuoterSlabV0` plus the consulted quoters' CPI accounts).
  * @param args.signedRoute - must be empty. A DLOB trigger carries no signed route; the keeper answers for its account list through the filler obligation.
  * @param args.crankConditions - the market's crank-conditions PDA (wake hint); omitted = program-id placeholder.
@@ -96,7 +95,6 @@ export async function buildTriggerMarketOrderV1Instruction(args: {
 	quoterSlab: PublicKey;
 	clobMarket: PublicKey;
 	clobProgram: PublicKey;
-	clobAuthority: PublicKey;
 	remainingAccounts: AccountMeta[];
 	signedRoute?: PublicKey[];
 	crankConditions?: PublicKey;
@@ -105,9 +103,11 @@ export async function buildTriggerMarketOrderV1Instruction(args: {
 	// An omitted optional account is encoded as the program id — anchor's `None`.
 	const omitted = args.program.programId;
 	return await (args.program.instruction as any).triggerMarketOrderV1(
-		args.marketIndex,
-		args.orderId,
-		args.signedRoute ?? [],
+		{
+			marketIndex: args.marketIndex,
+			orderId: args.orderId,
+			signedRoute: args.signedRoute ?? [],
+		},
 		{
 			accounts: {
 				state: args.state,
@@ -119,7 +119,6 @@ export async function buildTriggerMarketOrderV1Instruction(args: {
 				quoterSlab: args.quoterSlab,
 				clobMarket: args.clobMarket,
 				clobProgram: args.clobProgram,
-				clobAuthority: args.clobAuthority,
 				crankConditions: args.crankConditions ?? omitted,
 				triggerConditions: args.triggerConditions ?? omitted,
 				// Always named. A fill that leaves a book short of an owner is

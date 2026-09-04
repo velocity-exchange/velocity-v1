@@ -36,7 +36,7 @@ use {
         RouteContext,
     },
     velocity_rs::{
-        constants::{derive_clob_authority, derive_quoter_slab, PROGRAM_ID},
+        constants::{derive_quoter_slab, PROGRAM_ID},
         dlob::{
             CrossesAndTopMakers, CrossingRegion, DLOBNotifier, L3Order, MakerCrosses, OrderKind,
             TakerOrder, DLOB,
@@ -1235,7 +1235,6 @@ async fn try_swift_fill(
         quoter_slab: derive_quoter_slab(taker_order.market_index),
         clob_market: config.response_account,
         clob_program: config.program_id,
-        clob_authority: derive_clob_authority(),
         crank_conditions: None,
     });
     // The placement routes and rests on the book, so it cannot be built at all
@@ -1616,7 +1615,6 @@ async fn try_swift_place(
         quoter_slab: derive_quoter_slab(market_index),
         clob_market: book_config.response_account,
         clob_program: book_config.program_id,
-        clob_authority: derive_clob_authority(),
         crank_conditions: None,
     };
 

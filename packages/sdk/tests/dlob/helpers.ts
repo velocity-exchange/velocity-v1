@@ -676,6 +676,15 @@ export const mockStateAccount: StateAccount = {
 	slotDurationPad: [0, 0],
 	slotDurationEffectiveSlot: new BN(0),
 	slotDurationTransitionSlots: [new BN(0), new BN(0), new BN(0), new BN(0)],
+	transactionFeeRails: {
+		inclusionLamports: 0,
+		signatureLamports: 0,
+		resourceFeeNumerator: 0,
+		resourceFeeDenominator: 1,
+		maxPriorityMicroLamportsPerCu: 0,
+	},
+	liquidationCrankReimbursementBps: 0,
+	solSpotMarketIndex: 0,
 };
 
 export class MockUserMap implements UserMapInterface {

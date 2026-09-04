@@ -10,10 +10,11 @@ use {
     solana_signer::Signer,
     velocity::{
         instructions::{
-            InitializeQuoterArgs, QuoterAccountMetaArg, UpdateQuoterAccountsArgs,
+            InitializeQuoterArgs, InitializeQuoterSlabArgs, QuoterAccountMetaArg,
+            UpdateQuoterAccountsArgs, UpdateQuoterActiveArgs, UpdateQuoterApprovedArgs,
             UpdateQuoterConfigArgs,
         },
-        state::prop_amm::{QuoterSlotV0, QuoterType, QuoterV0},
+        state::prop_amm::{QuoterSlabV0, QuoterSlotV0, QuoterType, QuoterV0},
     },
     velocity_integration_tests::*,
 };
@@ -92,13 +93,17 @@ fn approve_ix(as_admin: Pubkey, quoter: Pubkey, approved: bool) -> Instruction {
             quoter_slab: quoter_slab_pda(0),
             quoter_program: clob_id(),
             quoter_program_data: Some(program_data_pda(&clob_id())),
+            system_program: "11111111111111111111111111111111".parse().unwrap(),
         }
         .to_account_metas(None),
-        data: velocity::instruction::UpdateQuoterApproved { approved }.data(),
+        data: velocity::instruction::UpdateQuoterApproved {
+            args: UpdateQuoterApprovedArgs { approved },
+        }
+        .data(),
     }
 }
 
-fn slab_ix(payer: Pubkey, capacity: u16) -> Instruction {
+fn slab_ix(payer: Pubkey) -> Instruction {
     Instruction {
         program_id: velocity_id(),
         accounts: velocity::accounts::InitializeQuoterSlab {
@@ -110,11 +115,15 @@ fn slab_ix(payer: Pubkey, capacity: u16) -> Instruction {
         }
         .to_account_metas(None),
         data: velocity::instruction::InitializeQuoterSlab {
-            market_index: 0,
-            capacity,
+            args: InitializeQuoterSlabArgs { market_index: 0 },
         }
         .data(),
     }
+}
+
+fn slab_capacity(svm: &litesvm::LiteSVM) -> u16 {
+    let slab: QuoterSlabV0 = read_zero_copy(svm, &quoter_slab_pda(0));
+    slab.capacity
 }
 
 #[test]
@@ -162,14 +171,11 @@ fn quoter_registry_lifecycle() {
     )
     .is_err());
 
-    // Slab creation is permissionless, but the capacity is bounded.
-    assert!(send(&mut svm, &maker, slab_ix(maker.pubkey(), 0), &[]).is_err());
-    assert!(send(&mut svm, &maker, slab_ix(maker.pubkey(), 65), &[]).is_err());
-    send(&mut svm, &maker, slab_ix(maker.pubkey(), 4), &[]).unwrap();
-    // Every slot of a fresh slab is vacant.
-    for index in 0..4 {
-        assert!(read_slab_slot(&svm, 0, index).is_vacant());
-    }
+    // Slab creation is permissionless. A slab is born at one slot — slot 0,
+    // the book's, vacant — and approval grows it to fit each further quoter.
+    send(&mut svm, &maker, slab_ix(maker.pubkey()), &[]).unwrap();
+    assert_eq!(slab_capacity(&svm), 1);
+    assert!(read_slab_slot(&svm, 0, 0).is_vacant());
 
     // Approval is rejected while the account list is empty.
     assert!(send(
@@ -198,7 +204,8 @@ fn quoter_registry_lifecycle() {
     .unwrap();
 
     // Admin approves; a non-admin claiming the role can't. The copy lands in
-    // slot 1: slot 0 is reserved for the market's book.
+    // slot 1 — slot 0 is reserved for the market's book — and the approval
+    // grows the slab to fit it.
     assert!(send(
         &mut svm,
         &maker,
@@ -213,6 +220,7 @@ fn quoter_registry_lifecycle() {
         &[],
     )
     .unwrap();
+    assert_eq!(slab_capacity(&svm), 2);
     assert!(read_slab_slot(&svm, 0, 0).is_vacant());
     let slot: QuoterSlotV0 = read_slab_slot(&svm, 0, 1);
     assert_eq!(slot.entry.to_bytes(), quoter.to_bytes());
@@ -237,7 +245,10 @@ fn quoter_registry_lifecycle() {
             quoter_slab: slab,
         }
         .to_account_metas(None),
-        data: velocity::instruction::UpdateQuoterActive { active }.data(),
+        data: velocity::instruction::UpdateQuoterActive {
+            args: UpdateQuoterActiveArgs { active },
+        }
+        .data(),
     };
     assert!(send(
         &mut svm,
@@ -344,6 +355,9 @@ fn quoter_registry_lifecycle() {
     );
 
     // Revoking a Custom slot clears it: it has no resting state to unwind.
+    // The trailing vacancy goes back — the slab shrinks to slot 0 alone and
+    // the freed rent refunds the admin, far more than the transaction fee.
+    let balance_before = svm.get_balance(&admin.pubkey()).unwrap();
     send(
         &mut svm,
         &admin,
@@ -351,7 +365,8 @@ fn quoter_registry_lifecycle() {
         &[],
     )
     .unwrap();
-    assert!(read_slab_slot(&svm, 0, 1).is_vacant());
+    assert_eq!(slab_capacity(&svm), 1);
+    assert!(svm.get_balance(&admin.pubkey()).unwrap() > balance_before);
     // The staging entry survives revocation.
     let entry: QuoterV0 = read_zero_copy(&svm, &quoter);
     assert!(entry.config.is_active);
@@ -379,7 +394,7 @@ fn revoking_the_book_suspends_its_slot() {
         &[],
     )
     .unwrap();
-    create_quoter_slab(&mut svm, &admin, 0, 4);
+    create_quoter_slab(&mut svm, &admin, 0);
     send(
         &mut svm,
         &admin,
@@ -486,48 +501,183 @@ fn only_the_admin_may_register_a_book() {
     assert_eq!(market.clob_quoter, quoter, "the market kept its book");
 }
 
-/// Growing a slab adds vacant slots at the tail: the header's capacity moves
-/// up, occupied slots never move, and one call is bounded by the runtime's
-/// 10,240-byte growth ceiling.
+/// Approval right-sizes the slab. A Custom approval grows the account by
+/// exactly the slot it needs and the admin pays the added rent. Revoking a
+/// slot in the middle leaves later occupied slots in place; revoking the last
+/// occupied slot gives the trailing vacancy back and refunds the admin.
 #[test]
-fn extending_a_slab_adds_vacant_slots() {
+fn approval_grows_the_slab_and_revocation_shrinks_it() {
     let mut svm = svm();
-    let payer = Keypair::new();
-    svm.airdrop(&payer.pubkey(), 10_000_000_000).unwrap();
-    set_state(&mut svm, &payer.pubkey());
-    set_perp_market(&mut svm, 0);
-
-    send(&mut svm, &payer, slab_ix(payer.pubkey(), 2), &[]).unwrap();
-
-    let extend = |capacity: u16| Instruction {
-        program_id: velocity_id(),
-        accounts: velocity::accounts::ExtendQuoterSlab {
-            payer: payer.pubkey(),
-            quoter_slab: quoter_slab_pda(0),
-            system_program: system_program(),
-        }
-        .to_account_metas(None),
-        data: velocity::instruction::ExtendQuoterSlab {
-            market_index: 0,
-            capacity,
-        }
-        .data(),
-    };
-
-    // A target at or under the current capacity does not grow the slab.
-    assert!(send(&mut svm, &payer, extend(2), &[]).is_err());
-    // One call cannot add more than 13 slots.
-    assert!(send(&mut svm, &payer, extend(16), &[]).is_err());
-    send(&mut svm, &payer, extend(5), &[]).unwrap();
-
-    let slab: velocity::state::prop_amm::QuoterSlabV0 = read_zero_copy(&svm, &quoter_slab_pda(0));
-    assert_eq!(slab.capacity, 5);
-    for index in 0..5 {
-        assert!(read_slab_slot(&svm, 0, index).is_vacant());
+    let admin = Keypair::new();
+    let maker = Keypair::new();
+    for key in [&admin, &maker] {
+        svm.airdrop(&key.pubkey(), 10_000_000_000).unwrap();
     }
-    // A second call continues past the per-call ceiling.
-    send(&mut svm, &payer, extend(18), &[]).unwrap();
-    let slab: velocity::state::prop_amm::QuoterSlabV0 = read_zero_copy(&svm, &quoter_slab_pda(0));
-    assert_eq!(slab.capacity, 18);
-    assert!(read_slab_slot(&svm, 0, 17).is_vacant());
+    set_state(&mut svm, &admin.pubkey());
+    set_perp_market(&mut svm, 0);
+    send(&mut svm, &maker, slab_ix(maker.pubkey()), &[]).unwrap();
+    assert_eq!(slab_capacity(&svm), 1);
+
+    // Two Custom quoters, each with its own user and response account.
+    let register = |svm: &mut litesvm::LiteSVM| {
+        let user = Pubkey::new_unique();
+        set_user(svm, user, &maker.pubkey());
+        let quoter = quoter_pda(0, &clob_id(), &user);
+        let response = Pubkey::new_unique();
+        send(
+            svm,
+            &maker,
+            init_quoter_ix(maker.pubkey(), quoter, user, QuoterType::Custom, response),
+            &[],
+        )
+        .unwrap();
+        send(
+            svm,
+            &maker,
+            set_accounts_ix(maker.pubkey(), quoter, response),
+            &[],
+        )
+        .unwrap();
+        quoter
+    };
+    let first = register(&mut svm);
+    let second = register(&mut svm);
+
+    // Each approval grows the slab by exactly one slot; the admin pays the
+    // added rent, which lands on the slab account.
+    let balance_before = svm.get_balance(&admin.pubkey()).unwrap();
+    let slab_lamports_before = svm.get_account(&quoter_slab_pda(0)).unwrap().lamports;
+    send(
+        &mut svm,
+        &admin,
+        approve_ix(admin.pubkey(), first, true),
+        &[],
+    )
+    .unwrap();
+    assert_eq!(slab_capacity(&svm), 2);
+    assert!(svm.get_balance(&admin.pubkey()).unwrap() < balance_before);
+    assert!(svm.get_account(&quoter_slab_pda(0)).unwrap().lamports > slab_lamports_before);
+    send(
+        &mut svm,
+        &admin,
+        approve_ix(admin.pubkey(), second, true),
+        &[],
+    )
+    .unwrap();
+    assert_eq!(slab_capacity(&svm), 3);
+    assert_eq!(
+        read_slab_slot(&svm, 0, 1).entry.to_bytes(),
+        first.to_bytes()
+    );
+    assert_eq!(
+        read_slab_slot(&svm, 0, 2).entry.to_bytes(),
+        second.to_bytes()
+    );
+
+    // Revoking the middle slot cannot shrink: the slot behind it never moves.
+    send(
+        &mut svm,
+        &admin,
+        approve_ix(admin.pubkey(), first, false),
+        &[],
+    )
+    .unwrap();
+    assert_eq!(slab_capacity(&svm), 3);
+    assert!(read_slab_slot(&svm, 0, 1).is_vacant());
+
+    // Re-approval fills the vacancy instead of growing.
+    send(
+        &mut svm,
+        &admin,
+        approve_ix(admin.pubkey(), first, true),
+        &[],
+    )
+    .unwrap();
+    assert_eq!(slab_capacity(&svm), 3);
+    assert_eq!(
+        read_slab_slot(&svm, 0, 1).entry.to_bytes(),
+        first.to_bytes()
+    );
+    send(
+        &mut svm,
+        &admin,
+        approve_ix(admin.pubkey(), first, false),
+        &[],
+    )
+    .unwrap();
+
+    // Revoking the last occupied slot shrinks past every trailing vacancy —
+    // back to slot 0 alone — and the freed rent refunds the admin, far more
+    // than the transaction fee.
+    let balance_before = svm.get_balance(&admin.pubkey()).unwrap();
+    send(
+        &mut svm,
+        &admin,
+        approve_ix(admin.pubkey(), second, false),
+        &[],
+    )
+    .unwrap();
+    assert_eq!(slab_capacity(&svm), 1);
+    assert!(svm.get_balance(&admin.pubkey()).unwrap() > balance_before);
+}
+
+/// The capacity ceiling: a slab holds at most 128 slots, and only an approval
+/// that needs a slot past the ceiling is refused. The full slab is synthesized
+/// — approving 127 real quoters proves nothing more.
+#[test]
+fn a_full_slab_refuses_another_approval() {
+    let mut svm = svm();
+    let admin = Keypair::new();
+    let maker = Keypair::new();
+    for key in [&admin, &maker] {
+        svm.airdrop(&key.pubkey(), 10_000_000_000).unwrap();
+    }
+    set_state(&mut svm, &admin.pubkey());
+    set_perp_market(&mut svm, 0);
+    send(&mut svm, &maker, slab_ix(maker.pubkey()), &[]).unwrap();
+
+    // Grow the account to the ceiling and occupy every slot. Fixture-only:
+    // production reaches this shape through 128 approvals.
+    let slab_address = quoter_slab_pda(0);
+    let mut account = svm.get_account(&slab_address).unwrap();
+    account.data.resize(QuoterSlabV0::space(128), 0);
+    account.data[10..12].copy_from_slice(&128u16.to_le_bytes());
+    account.lamports = 100_000_000_000;
+    svm.set_account(slab_address, account).unwrap();
+    for index in 0..128 {
+        let mut slot: QuoterSlotV0 = bytemuck::Zeroable::zeroed();
+        slot.entry = Pubkey::new_unique().to_bytes().into();
+        write_slab_slot(&mut svm, 0, index, &slot);
+    }
+
+    let user = Pubkey::new_unique();
+    set_user(&mut svm, user, &maker.pubkey());
+    let quoter = quoter_pda(0, &clob_id(), &user);
+    let response = Pubkey::new_unique();
+    send(
+        &mut svm,
+        &maker,
+        init_quoter_ix(maker.pubkey(), quoter, user, QuoterType::Custom, response),
+        &[],
+    )
+    .unwrap();
+    send(
+        &mut svm,
+        &maker,
+        set_accounts_ix(maker.pubkey(), quoter, response),
+        &[],
+    )
+    .unwrap();
+    let err = send(
+        &mut svm,
+        &admin,
+        approve_ix(admin.pubkey(), quoter, true),
+        &[],
+    )
+    .unwrap_err();
+    assert!(
+        format!("{:?}", err.err).contains("6404"),
+        "expected QuoterSlabFull, got {:?}",
+        err.err
+    );
 }

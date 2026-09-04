@@ -461,7 +461,6 @@ mod regr_271_pause {
         pub quoter_slab_pda: Pubkey,
         pub clob_market_pda: Pubkey,
         pub clob_program_id: Pubkey,
-        pub clob_authority_pda: Pubkey,
         pub authority: Rc<Keypair>,
     }
 
@@ -599,11 +598,6 @@ mod regr_271_pause {
                 .create()
                 .unwrap();
 
-            // The accounts struct pins this address to the CLOB place-authority
-            // PDA, which is ["clob_authority"] under the velocity program.
-            let clob_authority_pda =
-                Pubkey::find_program_address(&[b"clob_authority"], &program_id).0;
-
             Regr271Pause {
                 ctx,
                 program_id,
@@ -616,7 +610,6 @@ mod regr_271_pause {
                 quoter_slab_pda,
                 clob_market_pda,
                 clob_program_id,
-                clob_authority_pda,
                 authority,
             }
         }
@@ -652,7 +645,6 @@ mod regr_271_pause {
                     AccountMeta::new_readonly(self.quoter_slab_pda, false),
                     AccountMeta::new(self.clob_market_pda, false),
                     AccountMeta::new_readonly(self.clob_program_id, false),
-                    AccountMeta::new_readonly(self.clob_authority_pda, false),
                     // remaining_accounts, in load_maps order [oracles, spot, perp]:
                     // quote spot market (w) then perp market (w). ($1 QuoteAsset
                     // oracle path needs no oracle account.)

@@ -48,6 +48,7 @@ export const mockOrder: Order = {
 	maxTs: ZERO,
 	bitFlags: 0,
 	postedSlotTail: 0,
+	padding: [0, 0, 0, 0],
 };
 
 export const mockSpotPosition: SpotPosition = {

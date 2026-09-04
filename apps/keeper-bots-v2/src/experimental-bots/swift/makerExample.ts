@@ -260,8 +260,6 @@ export class SwiftMaker {
 										// are written into.
 										clobMarket: book.config.responseAccount,
 										clobProgram: book.config.programId,
-										clobAuthority:
-											this.velocityClient.getClobAuthorityPublicKey(),
 									}
 								),
 							];

@@ -28,7 +28,7 @@ use {
     },
     tokio::sync::mpsc::error::TryRecvError,
     velocity_rs::{
-        constants::{derive_clob_authority, derive_clob_crank_conditions, derive_quoter_slab},
+        constants::{derive_clob_crank_conditions, derive_quoter_slab},
         dlob::{DLOBNotifier, L3Order, DLOB},
         grpc::{
             grpc_subscriber::{AccountFilter, GrpcConnectionOpts},
@@ -4614,7 +4614,6 @@ async fn resolve_clob_force_cancel(
         quoter_slab: derive_quoter_slab(market_index),
         clob_market: book.response_account,
         clob_program: book.program_id,
-        clob_authority: derive_clob_authority(),
         crank_conditions: Some(derive_clob_crank_conditions(market_index)),
     };
     Ok(Some((order_refs, clob_fill)))

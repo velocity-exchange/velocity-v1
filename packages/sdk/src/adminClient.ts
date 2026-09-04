@@ -5595,8 +5595,7 @@ export class AdminClient extends VelocityClient {
 		solSpotMarketIndex: number
 	): Promise<TransactionInstruction> {
 		return await this.program.instruction.updateLiquidationCrankReimbursement(
-			shareBps,
-			solSpotMarketIndex,
+			{ shareBps, solSpotMarketIndex },
 			{
 				accounts: {
 					admin: this.isSubscribed
@@ -5690,8 +5689,7 @@ export class AdminClient extends VelocityClient {
 		refillWatermarkCranks: number
 	): Promise<TransactionInstruction> {
 		return await this.program.instruction.updateCrankTreasury(
-			refillTargetCranks,
-			refillWatermarkCranks,
+			{ refillTargetCranks, refillWatermarkCranks },
 			{
 				accounts: {
 					treasury: getCrankTreasuryPublicKey(this.program.programId),
@@ -5737,8 +5735,7 @@ export class AdminClient extends VelocityClient {
 		lamports: BN
 	): Promise<TransactionInstruction> {
 		return await this.program.instruction.sweepCrankReservoir(
-			marketIndex,
-			lamports,
+			{ marketIndex, lamports },
 			{
 				accounts: {
 					treasury: getCrankTreasuryPublicKey(this.program.programId),
@@ -5782,15 +5779,18 @@ export class AdminClient extends VelocityClient {
 	public async getWithdrawCrankTreasuryIx(
 		lamports: BN
 	): Promise<TransactionInstruction> {
-		return await this.program.instruction.withdrawCrankTreasury(lamports, {
-			accounts: {
-				treasury: getCrankTreasuryPublicKey(this.program.programId),
-				admin: this.isSubscribed
-					? this.getStateAccount().warmAdmin
-					: this.wallet.publicKey,
-				state: await this.getStatePublicKey(),
-			},
-		});
+		return await this.program.instruction.withdrawCrankTreasury(
+			{ lamports },
+			{
+				accounts: {
+					treasury: getCrankTreasuryPublicKey(this.program.programId),
+					admin: this.isSubscribed
+						? this.getStateAccount().warmAdmin
+						: this.wallet.publicKey,
+					state: await this.getStatePublicKey(),
+				},
+			}
+		);
 	}
 
 	/**
@@ -6078,8 +6078,7 @@ export class AdminClient extends VelocityClient {
 		}
 
 		return await this.program.instruction.withdrawProtocolUserDeposit(
-			marketIndex,
-			amount,
+			{ marketIndex, amount },
 			{
 				accounts: {
 					state: await this.getStatePublicKey(),

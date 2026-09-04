@@ -5364,7 +5364,7 @@ fn idle_loaded_users<'info>(
         if authority == referrer_authority && referrer_authority != Pubkey::default() {
             continue;
         }
-        if (0..crate::instructions::MAX_ROUTE_QUOTERS).any(|i| executor.quoter_user(i) == *key) {
+        if (0..crate::state::prop_amm::MAX_ROUTE_QUOTERS).any(|i| executor.quoter_user(i) == *key) {
             continue;
         }
         idle = idle.saturating_add(1);

@@ -17,8 +17,7 @@ use {
         math::constants::MARGIN_PRECISION,
         msg,
         state::prop_amm::{
-            quoter_slab_slots_mut, slot_for_entry, QuoterSlabV0, QuoterType, QuoterV0,
-            QUOTER_SLAB_PDA_SEED,
+            slot_for_entry, QuoterSlabExt, QuoterSlabV0, QuoterType, QuoterV0, QUOTER_SLAB_PDA_SEED,
         },
         validate,
     },
@@ -80,7 +79,7 @@ pub fn handle_update_quoter_max_oracle_deviation(
     quoter.config.max_oracle_deviation_bps = max_oracle_deviation_bps;
     drop(quoter);
     if let Some(slab) = &ctx.accounts.quoter_slab {
-        let mut slots = quoter_slab_slots_mut(slab)?;
+        let mut slots = slab.slots_mut()?;
         if let Some(index) = slot_for_entry(&slots, &ctx.accounts.quoter.key()) {
             slots[index].config.max_oracle_deviation_bps = max_oracle_deviation_bps;
         }

@@ -29,8 +29,8 @@ use {
             calculate_net_equity_for_floor, MarginRequirementType,
         },
         state::{
-            margin_calculation::MarginContext, perp_market_map::MarketSet, state::State,
-            user::User, user_conditions::UserConditionsV0,
+            margin_calculation::MarginContext, perp_market_map::MarketSet, prop_amm::QuoterSlabExt,
+            state::State, user::User, user_conditions::UserConditionsV0,
         },
         validate,
     },
@@ -133,7 +133,7 @@ pub fn handle_resolve_liquidate_perp_with_fill<'c: 'info, 'info>(
                 let slab =
                     AccountLoader::<crate::state::prop_amm::QuoterSlabV0>::try_from(slab_info)?;
                 let (clob_market, clob_program) = {
-                    let slots = crate::state::prop_amm::quoter_slab_slots(&slab)?;
+                    let slots = slab.slots()?;
                     let Some(index) = crate::state::prop_amm::clob_slot_index(&slots) else {
                         msg!("quoter slab holds no book slot; cannot stage a cancel");
                         return Ok(None);

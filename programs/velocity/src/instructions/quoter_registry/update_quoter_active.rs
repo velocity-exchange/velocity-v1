@@ -8,7 +8,7 @@ use {
     crate::{
         error::ErrorCode,
         state::prop_amm::{
-            quoter_slab_slots_mut, slot_for_entry, QuoterSlabV0, QuoterV0, QUOTER_SLAB_PDA_SEED,
+            slot_for_entry, QuoterSlabExt, QuoterSlabV0, QuoterV0, QUOTER_SLAB_PDA_SEED,
         },
     },
     anchor_lang::prelude::*,
@@ -50,7 +50,7 @@ pub fn handle_update_quoter_active(
     let UpdateQuoterActiveArgs { active } = args;
     ctx.accounts.quoter.load_mut()?.config.is_active = active;
     if let Some(slab) = &ctx.accounts.quoter_slab {
-        let mut slots = quoter_slab_slots_mut(slab)?;
+        let mut slots = slab.slots_mut()?;
         if let Some(index) = slot_for_entry(&slots, &ctx.accounts.quoter.key()) {
             slots[index].config.is_active = active;
         }

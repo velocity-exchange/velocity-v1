@@ -73,8 +73,8 @@ use {
             pdas,
             perp_market_map::{get_writable_perp_market_set, MarketSet, PerpMarketMap},
             prop_amm::{
-                quoter_slab_clob, ClobFillArgsV0, ClobFillRequestV0, ClobMarket, ClobSide,
-                ClobUserRefV0, Direction, WireDirectionExt,
+                ClobFillArgsV0, ClobFillRequestV0, ClobMarket, ClobSide, ClobUserRefV0, Direction,
+                QuoterSlabExt, WireDirectionExt,
             },
             revenue_share::RevenueShareEscrowZeroCopyMut,
             signed_msg_user::{SignedMsgUserOrdersLoader, SIGNED_MSG_PDA_SEED},
@@ -264,7 +264,7 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
         "the counterparty section must not repeat the taker or the cranker"
     )?;
 
-    let book_slot = quoter_slab_clob(&ctx.accounts.quoter_slab, market_index)?;
+    let book_slot = ctx.accounts.quoter_slab.clob_slot(market_index)?;
     validate!(
         book_slot.quotes(),
         ErrorCode::DefaultError,
@@ -461,8 +461,8 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
     route.require_baseline(perp_market_map.get_ref(&market_index)?.clob_market)?;
     route.require_signed_route(&signed_route, route_digest)?;
     let mut book_storage =
-        [crate::math::router::QuoterBook::default(); crate::instructions::MAX_ROUTE_QUOTERS];
-    let books = route.books(&mut book_storage);
+        [crate::math::router::QuoterBook::default(); crate::state::prop_amm::MAX_ROUTE_QUOTERS];
+    let books = route.books(&mut book_storage)?;
     let mut executor = route.executor(&inputs, clock.slot, clock.unix_timestamp, &mut cpi_scratch);
     let mut router_inputs = crate::math::router::RouterFillInputs {
         books,
@@ -1069,7 +1069,7 @@ pub(super) fn stage_taker_origin_cross(
             conditions.quote_spot_market_index,
         )
     };
-    let book_slot = quoter_slab_clob(&ctx.accounts.quoter_slab, market_index)?;
+    let book_slot = ctx.accounts.quoter_slab.clob_slot(market_index)?;
     if !book_slot.quotes() {
         // The crank refuses a killed or unvetted book, so there is no work to
         // stage against one; reclaiming orders left on a dead book is the

@@ -6,7 +6,7 @@
 //! CLOB instruction resolve slots through the accessors here.
 
 use {
-    super::{QuoterConfigV0, QuoterType},
+    super::{find_account, QuoterConfigV0, QuoterType},
     crate::{error::ErrorCode, msg, validate},
     anchor_lang::prelude::*,
     static_assertions::const_assert_eq,
@@ -173,37 +173,6 @@ fn validate_slab_data(data: &[u8]) -> Result<usize> {
     Ok(capacity)
 }
 
-/// The slot region behind a slab account, read-only.
-pub fn quoter_slab_slots<'a, 'info>(
-    slab: &'a AccountLoader<'info, QuoterSlabV0>,
-) -> Result<std::cell::Ref<'a, [QuoterSlotV0]>> {
-    let info: &AccountInfo = slab.as_ref();
-    let data = info.try_borrow_data()?;
-    let capacity = validate_slab_data(&data)?;
-    Ok(std::cell::Ref::map(data, |data| {
-        let tail = &data[QuoterSlabV0::SLOT_REGION_OFFSET..];
-        bytemuck::cast_slice(&tail[..capacity * std::mem::size_of::<QuoterSlotV0>()])
-    }))
-}
-
-/// The slot region behind a slab account, writable.
-pub fn quoter_slab_slots_mut<'a, 'info>(
-    slab: &'a AccountLoader<'info, QuoterSlabV0>,
-) -> Result<std::cell::RefMut<'a, [QuoterSlotV0]>> {
-    let info: &AccountInfo = slab.as_ref();
-    validate!(
-        info.is_writable,
-        ErrorCode::InvalidQuoterConfig,
-        "quoter slab is not writable"
-    )?;
-    let data = info.try_borrow_mut_data()?;
-    let capacity = validate_slab_data(&data)?;
-    Ok(std::cell::RefMut::map(data, |data| {
-        let tail = &mut data[QuoterSlabV0::SLOT_REGION_OFFSET..];
-        bytemuck::cast_slice_mut(&mut tail[..capacity * std::mem::size_of::<QuoterSlotV0>()])
-    }))
-}
-
 /// The occupied slots, with their indexes. Indexes are the stable handle —
 /// a slot never moves while occupied.
 pub fn occupied_slots(slots: &[QuoterSlotV0]) -> impl Iterator<Item = (usize, &QuoterSlotV0)> {
@@ -241,30 +210,102 @@ pub fn clob_slot_index(slots: &[QuoterSlotV0]) -> Option<usize> {
         .map(|_| 0)
 }
 
-/// The market's book slot, or an error when the slab holds none or serves a
-/// different market — so a caller can never read another market's book
-/// config through a substituted slab.
+/// Quoters one transaction may consult.
 ///
-/// Deliberately not gated on `suspended`/`is_active`: those mean "may take
-/// new flow", and the removal paths must keep working on a killed or
-/// de-listed book. Callers that add flow gate on [`QuoterSlotV0::quotes`]
-/// themselves.
-pub fn quoter_slab_clob<'a, 'info>(
-    slab: &'a AccountLoader<'info, QuoterSlabV0>,
-    market_index: u16,
-) -> Result<std::cell::Ref<'a, QuoterSlotV0>> {
-    let market = slab.load()?.market;
-    validate!(
-        market == market_index,
-        ErrorCode::InvalidQuoterConfig,
-        "quoter slab is for market {}, call is for market {}",
-        market,
-        market_index
-    )?;
-    let slots = quoter_slab_slots(slab)?;
-    let index = clob_slot_index(&slots).ok_or_else(|| {
-        msg!("quoter slab for market {} holds no book", market);
-        error!(ErrorCode::QuoterNotOnSlab)
-    })?;
-    Ok(std::cell::Ref::map(slots, |slots| &slots[index]))
+/// Derived from the account-lock budget rather than chosen: a fill spends
+/// roughly 15 locks before its first quoter (one of them the slab, shared by
+/// all of them), and each quoter costs two more that nothing else shares —
+/// its program and its response account — against the 64 a transaction can
+/// name. Eight leaves room for the maker accounts a fill also carries. A
+/// transaction carrying more fails loudly.
+pub const MAX_ROUTE_QUOTERS: usize = 8;
+
+/// The slab loader's read surface. An extension trait, because the loader is
+/// anchor's type and an inherent impl is not available on it.
+pub trait QuoterSlabExt<'info> {
+    /// The slot region, read-only.
+    fn slots(&self) -> Result<std::cell::Ref<'_, [QuoterSlotV0]>>;
+
+    /// The slot region, writable.
+    fn slots_mut(&self) -> Result<std::cell::RefMut<'_, [QuoterSlotV0]>>;
+
+    /// The market's book slot, or an error when the slab holds none or
+    /// serves a different market — so a caller can never read another
+    /// market's book config through a substituted slab.
+    ///
+    /// Deliberately not gated on `suspended`/`is_active`: those mean "may
+    /// take new flow", and the removal paths must keep working on a killed or
+    /// de-listed book. Callers that add flow gate on
+    /// [`QuoterSlotV0::quotes`] themselves.
+    fn clob_slot(&self, market_index: u16) -> Result<std::cell::Ref<'_, QuoterSlotV0>>;
+
+    /// The consulted slots `tail` carries, by slot index: every occupied
+    /// slot whose response account rides the transaction, in slab order and
+    /// capped at [`MAX_ROUTE_QUOTERS`]. Consultation is presence — carrying a
+    /// slot's response account is the intent to consult it. Indexes rather
+    /// than copies: the slab is the one copy of every approved config, and a
+    /// reader takes a short borrow when it needs a field.
+    fn consulted_slots(&self, tail: &[AccountInfo<'info>]) -> Result<Vec<usize>>;
+}
+
+impl<'info> QuoterSlabExt<'info> for AccountLoader<'info, QuoterSlabV0> {
+    fn slots(&self) -> Result<std::cell::Ref<'_, [QuoterSlotV0]>> {
+        let info: &AccountInfo = self.as_ref();
+        let data = info.try_borrow_data()?;
+        let capacity = validate_slab_data(&data)?;
+        Ok(std::cell::Ref::map(data, |data| {
+            let tail = &data[QuoterSlabV0::SLOT_REGION_OFFSET..];
+            bytemuck::cast_slice(&tail[..capacity * std::mem::size_of::<QuoterSlotV0>()])
+        }))
+    }
+
+    fn slots_mut(&self) -> Result<std::cell::RefMut<'_, [QuoterSlotV0]>> {
+        let info: &AccountInfo = self.as_ref();
+        validate!(
+            info.is_writable,
+            ErrorCode::InvalidQuoterConfig,
+            "quoter slab is not writable"
+        )?;
+        let data = info.try_borrow_mut_data()?;
+        let capacity = validate_slab_data(&data)?;
+        Ok(std::cell::RefMut::map(data, |data| {
+            let tail = &mut data[QuoterSlabV0::SLOT_REGION_OFFSET..];
+            bytemuck::cast_slice_mut(&mut tail[..capacity * std::mem::size_of::<QuoterSlotV0>()])
+        }))
+    }
+
+    fn clob_slot(&self, market_index: u16) -> Result<std::cell::Ref<'_, QuoterSlotV0>> {
+        let market = self.load()?.market;
+        validate!(
+            market == market_index,
+            ErrorCode::InvalidQuoterConfig,
+            "quoter slab is for market {}, call is for market {}",
+            market,
+            market_index
+        )?;
+        let slots = self.slots()?;
+        let index = clob_slot_index(&slots).ok_or_else(|| {
+            msg!("quoter slab for market {} holds no book", market);
+            error!(ErrorCode::QuoterNotOnSlab)
+        })?;
+        Ok(std::cell::Ref::map(slots, |slots| &slots[index]))
+    }
+
+    fn consulted_slots(&self, tail: &[AccountInfo<'info>]) -> Result<Vec<usize>> {
+        let slots = self.slots()?;
+        let mut consulted = Vec::with_capacity(MAX_ROUTE_QUOTERS);
+        for (index, slot) in occupied_slots(&slots) {
+            if find_account(tail, &slot.config.response_account).is_none() {
+                continue;
+            }
+            validate!(
+                consulted.len() < MAX_ROUTE_QUOTERS,
+                ErrorCode::DefaultError,
+                "a fill may consult at most {} quoters",
+                MAX_ROUTE_QUOTERS
+            )?;
+            consulted.push(index);
+        }
+        Ok(consulted)
+    }
 }

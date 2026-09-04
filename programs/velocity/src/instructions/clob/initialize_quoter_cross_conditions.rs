@@ -14,8 +14,7 @@ use {
             clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             perp_market::PerpMarket,
             prop_amm::{
-                clob_slot_index, quoter_slab_slots, slot_for_entry, QuoterSlabV0, QuoterType,
-                QuoterV0,
+                clob_slot_index, slot_for_entry, QuoterSlabExt, QuoterSlabV0, QuoterType, QuoterV0,
             },
             quoter_cross::{
                 QuoterCrossConditionsV0, QUOTER_CROSS_CLOB, QUOTER_CROSS_CONDITIONS_PDA_SEED,
@@ -90,7 +89,7 @@ pub fn handle_initialize_quoter_cross_conditions(
         ErrorCode::DefaultError,
         "fallback interval must be nonzero"
     )?;
-    let slots = quoter_slab_slots(&ctx.accounts.quoter_slab)?;
+    let slots = ctx.accounts.quoter_slab.slots()?;
     let quoter_slot = slot_for_entry(&slots, &ctx.accounts.quoter.key()).ok_or_else(|| {
         msg!("quoter holds no slab slot; approve it first");
         error!(ErrorCode::QuoterNotOnSlab)

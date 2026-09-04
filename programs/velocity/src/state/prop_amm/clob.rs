@@ -9,8 +9,8 @@
 
 use {
     super::{
-        get_quoter_slab_signer_seeds, quoter_slab_clob, ClobUserRefV0, QuoterConfigV0,
-        QuoterSlabV0, QuoterType, CLOB_USER_REF_BYTES,
+        get_quoter_slab_signer_seeds, ClobUserRefV0, QuoterConfigV0, QuoterSlabExt, QuoterSlabV0,
+        QuoterType, CLOB_USER_REF_BYTES,
     },
     crate::{error::ErrorCode, msg, validate},
     anchor_lang::prelude::*,
@@ -248,7 +248,7 @@ impl<'a, 'info> ClobMarket<'a, 'info> {
         market: &'a AccountInfo<'info>,
         program: &'a AccountInfo<'info>,
     ) -> Result<Self> {
-        quoter_slab_clob(slab, market_index)?
+        slab.clob_slot(market_index)?
             .config
             .validate_clob_book(market_index, &market.key())?;
         let bump = slab.load()?.bump;

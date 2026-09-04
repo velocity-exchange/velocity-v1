@@ -43,8 +43,8 @@ use {
         state::{
             perp_market_map::{get_writable_perp_market_set, MarketSet},
             prop_amm::{
-                find_account, occupied_slots, quoter_slab_slots, ClobUserRefV0, Direction,
-                L3ArgsV0, PriceLevel, QuoteArgsV0, QuoterSlabV0, QuoterType, WireDirectionExt,
+                find_account, occupied_slots, ClobUserRefV0, Direction, L3ArgsV0, PriceLevel,
+                QuoteArgsV0, QuoterSlabExt, QuoterSlabV0, QuoterType, WireDirectionExt,
             },
             quoter::MarketQuoteInputs,
             router_quote::{QuotedRowV0, QuotedSourceKind, RouterQuoteBufferV0},
@@ -159,7 +159,7 @@ pub fn handle_quote_router<'c: 'info, 'info>(
     let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
     let consulted: Vec<usize> = match &slab_loader {
         Some(loader) => {
-            let slots = quoter_slab_slots(loader)?;
+            let slots = loader.slots()?;
             occupied_slots(&slots)
                 .filter(|(_, slot)| {
                     find_account(&accounts, &slot.config.response_account).is_some()
@@ -172,7 +172,7 @@ pub fn handle_quote_router<'c: 'info, 'info>(
     for slot_index in consulted {
         let slab_loader = slab_loader.as_ref().unwrap();
         let (priority, quoter_type, quoter_user, entry_key, located) = {
-            let slots = quoter_slab_slots(slab_loader)?;
+            let slots = slab_loader.slots()?;
             let slot = &slots[slot_index];
             if !slot.quotes() {
                 continue;
@@ -437,7 +437,7 @@ fn quoter_rows<'info>(
     buffer: &mut RouterQuoteBufferV0,
 ) -> Result<bool> {
     let located = {
-        let slots = quoter_slab_slots(slab_loader)?;
+        let slots = slab_loader.slots()?;
         slots[slot_index].config.quote_l3(
             market_index,
             L3ArgsV0 {

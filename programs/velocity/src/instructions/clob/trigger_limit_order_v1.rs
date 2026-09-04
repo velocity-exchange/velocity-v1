@@ -75,7 +75,7 @@ use {
             market_status::MarketStatus,
             perp_market_map::MarketSet,
             prop_amm::{
-                quoter_slab_clob, ClobMarket, ClobPlaceOrderArgsV0, ClobSide, QuoterSlabV0,
+                ClobMarket, ClobPlaceOrderArgsV0, ClobSide, QuoterSlabExt, QuoterSlabV0,
                 WireDirectionExt,
             },
             state::State,
@@ -192,7 +192,7 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
     )?;
 
     let clob = {
-        let slot = quoter_slab_clob(&ctx.accounts.quoter_slab, market_index)?;
+        let slot = ctx.accounts.quoter_slab.clob_slot(market_index)?;
         validate!(
             slot.quotes(),
             ErrorCode::DefaultError,

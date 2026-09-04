@@ -34,7 +34,7 @@ use {
             oracle::OracleSource,
             oracle_watch::{oracle_watch, OracleWatchV0, WatchDirection},
             perp_market::PerpMarket,
-            prop_amm::{clob_slot_index, quoter_slab_slots, QuoterSlabV0},
+            prop_amm::{clob_slot_index, QuoterSlabExt, QuoterSlabV0},
             spot_market::SpotMarket,
             user::{OrderStatus, OrderType, User},
             user_conditions::{
@@ -133,7 +133,7 @@ pub fn rewrite_trigger_conditions<'info>(
             }
             if let Ok(loader) = AccountLoader::<QuoterSlabV0>::try_from(info) {
                 let market = loader.load()?.market;
-                let slots = quoter_slab_slots(&loader)?;
+                let slots = loader.slots()?;
                 if let Some(index) = clob_slot_index(&slots) {
                     if slots[index].quotes() {
                         markets.entry(market).or_default().clob = Some((

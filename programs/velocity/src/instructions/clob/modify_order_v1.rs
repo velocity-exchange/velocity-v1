@@ -46,8 +46,8 @@ use {
             market_status::MarketStatus,
             perp_market_map::MarketSet,
             prop_amm::{
-                quoter_slab_clob, ClobCancelOrderArgsV0, ClobMarket, ClobOrderRefV0,
-                ClobPlaceOrderArgsV0, QuoterSlabV0, WireDirectionExt,
+                ClobCancelOrderArgsV0, ClobMarket, ClobOrderRefV0, ClobPlaceOrderArgsV0,
+                QuoterSlabExt, QuoterSlabV0, WireDirectionExt,
             },
             state::State,
             user::User,
@@ -144,7 +144,7 @@ pub fn handle_modify_order_v1<'c: 'info, 'info>(
     )?;
 
     let clob = {
-        let slot = quoter_slab_clob(&ctx.accounts.quoter_slab, params.market_index)?;
+        let slot = ctx.accounts.quoter_slab.clob_slot(params.market_index)?;
         // The replacement adds flow to the book, so it answers to the same
         // gate a fresh placement does.
         validate!(
@@ -174,7 +174,10 @@ pub fn handle_modify_order_v1<'c: 'info, 'info>(
     if let Some(requested) = params.activation_delay_slots {
         // The attach-written mirror, not a CPI (see
         // `QuoterConfigV0::book_tick_size`).
-        let default_delay = quoter_slab_clob(&ctx.accounts.quoter_slab, params.market_index)?
+        let default_delay = ctx
+            .accounts
+            .quoter_slab
+            .clob_slot(params.market_index)?
             .config
             .book_default_activation_delay_slots;
         if requested < default_delay {

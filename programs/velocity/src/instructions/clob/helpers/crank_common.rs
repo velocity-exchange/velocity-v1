@@ -43,9 +43,9 @@ use {
             pdas,
             perp_market::PerpMarket,
             prop_amm::{
-                quoter_slab_clob, ClobEvictWorstArgsV0, ClobMarket, ClobReader,
-                ClobRemoveExpiredArgsV0, ClobRemovedOrderV0, ClobUserRefV0, Direction, L3ArgsV0,
-                L3RowV0, QuoterConfigV0, QuoterCpiScratch, QuoterSlabV0, WireDirectionExt,
+                ClobEvictWorstArgsV0, ClobMarket, ClobReader, ClobRemoveExpiredArgsV0,
+                ClobRemovedOrderV0, ClobUserRefV0, Direction, L3ArgsV0, L3RowV0, QuoterConfigV0,
+                QuoterCpiScratch, QuoterSlabExt, QuoterSlabV0, WireDirectionExt,
             },
             state::State,
             user::{User, UserStats},
@@ -336,7 +336,7 @@ pub struct ResolveClobCrank<'info> {
 
 pub fn validate_linkage(ctx: &Context<ResolveClobCrank>) -> Result<()> {
     let market_index = ctx.accounts.crank_conditions.load()?.market_index;
-    let slot = quoter_slab_clob(&ctx.accounts.quoter_slab, market_index)?;
+    let slot = ctx.accounts.quoter_slab.clob_slot(market_index)?;
     slot.config
         .validate_clob_book(market_index, &ctx.accounts.clob_market.key())?;
     validate!(

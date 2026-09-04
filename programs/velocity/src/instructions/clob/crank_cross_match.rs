@@ -28,17 +28,14 @@ use {
         instructions::{
             constraints::*,
             relay_harness::{resolve_into, StagedCall},
-            router::{cpi_executor::CpiQuoterExecutor, quoted_route::QuotedEntry},
+            router::cpi_executor::CpiQuoterExecutor,
         },
         load, msg,
         state::{
             clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             pdas,
             perp_market_map::MarketSet,
-            prop_amm::{
-                find_account, occupied_slots, quoter_slab_slots, PriceLevel, QuoterSlabV0,
-                QuoterType,
-            },
+            prop_amm::{PriceLevel, QuoterSlabExt, QuoterSlabV0, QuoterType},
             state::State,
             user::{User, UserStats},
             user_map::load_user_maps,
@@ -150,43 +147,20 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
         load_user_maps(remaining_accounts_iter, true)?;
 
     // The account tail: the union of the consulted quoters' registered CPI
-    // accounts, same shape as the router fill's. A slot is consulted when its
-    // response account rides the tail. This crank does not quote, so each
-    // consulted slot carries no levels.
+    // accounts, same shape as the router fill's. This crank never quotes —
+    // the resolver already sized both legs — so it consults slots and takes
+    // no ladders.
     // Borrow the tail in place: the executor and the guard read it by
     // reference, so nothing needs an owned clone of every account.
     let tail_from = ctx.remaining_accounts.len() - remaining_accounts_iter.len();
     let tail = &ctx.remaining_accounts[tail_from..];
-    let mut quoted: Vec<QuotedEntry<'info>> = Vec::new();
-    {
-        let loader = &ctx.accounts.quoter_slab;
-        let slots = quoter_slab_slots(loader)?;
-        for (index, slot) in occupied_slots(&slots) {
-            if find_account(tail, &slot.config.response_account).is_none() {
-                continue;
-            }
-            quoted.push(QuotedEntry {
-                // The crank quotes the book unrestricted, so it never falls
-                // short of a user set.
-                withheld: crate::state::prop_amm::PriceLevel::default(),
-                slab: loader.clone(),
-                slot: index,
-                entry_key: slot.entry,
-                quoter_type: slot.config.quoter_type,
-                user: slot.config.user,
-                response_account: slot.config.response_account,
-                priority: slot.config.priority,
-                max_oracle_deviation_bps: slot.config.max_oracle_deviation_bps,
-                levels: 0..0,
-            });
-        }
-    }
+    let quoted = ctx.accounts.quoter_slab.consulted_slots(tail)?;
     // Legs are named by slab slot index — stable whatever else rides the
     // tail — and resolved to consulted entries here.
     let leg = |slot: u8| -> Result<usize> {
         quoted
             .iter()
-            .position(|entry| entry.slot == slot as usize)
+            .position(|&consulted| consulted == slot as usize)
             .ok_or_else(|| {
                 msg!(
                     "cross leg names slab slot {}, which the tail does not consult",
@@ -246,23 +220,23 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
     // below already runs, so a fresh order beyond what the cross could
     // touch defers nothing.
     let mut flow_served = true;
-    for clob in quoted
-        .iter()
-        .filter(|quoted| quoted.quoter_type == QuoterType::Clob)
-    {
+    for &slot_index in &quoted {
+        // Copy the config out so no slab borrow lives across the book CPI.
+        let config = ctx.accounts.quoter_slab.slots()?[slot_index].config;
+        if config.quoter_type != QuoterType::Clob {
+            continue;
+        }
         let find = |key: &Pubkey| {
             crate::state::prop_amm::find_account(tail, key)
                 .ok_or_else(|| error!(ErrorCode::DefaultError))
         };
-        let slots = quoter_slab_slots(&clob.slab)?;
-        let config = &slots[clob.slot].config;
         let sides = [
-            find(&clob.response_account)?.clone(),
+            find(&config.response_account)?.clone(),
             find(&config.program_id)?.clone(),
         ];
         let (bids, asks) = super::helpers::crank_common::book_l3_sides(
-            config,
-            &clob.slab,
+            &config,
+            &ctx.accounts.quoter_slab,
             market_index,
             CROSS_ROWS_PER_SIDE,
             &sides,
@@ -291,7 +265,8 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
         scratch: &mut cpi_scratch,
         caps: crate::state::prop_amm::QuoterUserCapsV0::EMPTY,
         reference_price: 0,
-        quoted: &quoted,
+        slab: Some(&ctx.accounts.quoter_slab),
+        slots: &quoted,
         market_index,
         accounts: tail,
         users: &users,
@@ -629,8 +604,7 @@ fn cross_prefix(
 /// Quote both sides of the market's book and cross them against each other.
 fn find_clob_cross(ctx: &Context<ResolveClobCrank>) -> Result<ClobCross> {
     let market_index = ctx.accounts.crank_conditions.load()?.market_index;
-    let book_slot =
-        crate::state::prop_amm::quoter_slab_clob(&ctx.accounts.quoter_slab, market_index)?;
+    let book_slot = ctx.accounts.quoter_slab.clob_slot(market_index)?;
     if !book_slot.quotes() {
         // A killed or unvetted book has no cross to stage; the conditions go
         // quiet rather than erroring forever.
@@ -718,7 +692,7 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
 ) -> Result<()> {
     resolve_into(&ctx.accounts.scratch, || {
         let quoter_entry_key = ctx.accounts.cross_conditions.load()?.quoter;
-        let slots = crate::state::prop_amm::quoter_slab_slots(&ctx.accounts.quoter_slab)?;
+        let slots = ctx.accounts.quoter_slab.slots()?;
         let Some(quoter_slot_index) =
             crate::state::prop_amm::slot_for_entry(&slots, &quoter_entry_key)
         else {

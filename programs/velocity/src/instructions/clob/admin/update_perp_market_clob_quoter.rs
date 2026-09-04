@@ -11,6 +11,7 @@ use {
         state::{
             clob_crank::{CrankCostUnitsV0, CrankPaymentsV0},
             perp_market::PerpMarket,
+            prop_amm::QuoterSlabExt,
             state::State,
         },
         validate,
@@ -127,10 +128,10 @@ pub fn handle_update_perp_market_clob_quoter(
         &ctx.accounts.clob_program,
     )?;
     let clob_program = {
-        let book_slot = crate::state::prop_amm::quoter_slab_clob(
-            &ctx.accounts.quoter_slab,
-            perp_market.market_index,
-        )?;
+        let book_slot = ctx
+            .accounts
+            .quoter_slab
+            .clob_slot(perp_market.market_index)?;
         validate!(
             book_slot.entry == ctx.accounts.quoter.key(),
             ErrorCode::DefaultError,
@@ -225,8 +226,7 @@ pub fn handle_update_perp_market_clob_quoter(
         // attach is the supported way to change an attached book's rules, so
         // this write is where the mirror stays current.
         {
-            let mut slots =
-                crate::state::prop_amm::quoter_slab_slots_mut(&ctx.accounts.quoter_slab)?;
+            let mut slots = ctx.accounts.quoter_slab.slots_mut()?;
             let index = crate::state::prop_amm::clob_slot_index(&slots)
                 .ok_or_else(|| error!(ErrorCode::QuoterNotOnSlab))?;
             slots[index].config.book_tick_size = rules.tick_size;

@@ -28,8 +28,8 @@ use {
         state::{
             order_params::{RouteDigest, NO_ROUTE_DIGEST},
             prop_amm::{
-                find_account, occupied_slots, quoter_slab_slots, slot_for_entry, ClobUserRefV0,
-                Direction, PriceLevel, QuoteArgsV0, QuoterSlabV0, QuoterSlotV0, QuoterType,
+                slot_for_entry, ClobUserRefV0, Direction, PriceLevel, QuoteArgsV0, QuoterSlabExt,
+                QuoterSlabV0, QuoterSlotV0, QuoterType, MAX_ROUTE_QUOTERS,
             },
         },
         validate,
@@ -63,65 +63,19 @@ fn quoter_reads_a_rival(slot: &QuoterSlotV0, rivals: &[Pubkey]) -> bool {
         .any(|meta| !own.contains(&meta.pubkey) && rivals.contains(&meta.pubkey))
 }
 
-/// Quoters one transaction may consult.
-///
-/// Derived from the account-lock budget rather than chosen: a fill spends
-/// roughly 15 locks before its first quoter (one of them the slab, shared by
-/// all of them), and each quoter costs two more that nothing else shares —
-/// its program and its response account — against the 64 a transaction can
-/// name. Eight leaves room for the maker accounts a fill also carries. A
-/// transaction carrying more fails loudly.
-pub const MAX_ROUTE_QUOTERS: usize = 8;
-
-/// One slot that quoted, with everything the fill later needs of it.
-///
-/// One record per slot rather than a column per field: the fill indexes these
-/// by book, and holding the fields apart made that alignment a promise in a
-/// comment instead of a property of the type.
-pub struct QuotedEntry<'info> {
-    /// The market's slab; with `slot`, where the approved config is re-read
-    /// when the execute leg runs.
-    pub slab: AccountLoader<'info, QuoterSlabV0>,
-    pub slot: usize,
-    /// The staging entry's address — the quoter's identity in signed routes,
-    /// events, and error messages.
-    pub entry_key: Pubkey,
-    /// Captured at quote time so the fill can ask without re-loading the slab.
-    pub quoter_type: QuoterType,
-    /// The registry `user`: the margin account the pre-execute clamp sizes a
-    /// Custom book against, and the only subject its response may name.
-    pub user: Pubkey,
-    /// For a CLOB slot this is the book, which is where the slot's permitted
-    /// subjects are read from.
-    pub response_account: Pubkey,
-    /// Routing tier at a shared price: lower fills first, pro rata within.
-    pub priority: u8,
-    /// The slot's declared oracle band, captured with the rest. Zero means it
-    /// declared none — see [`crate::state::prop_amm::QuoterConfigV0::max_oracle_deviation_bps`].
-    pub max_oracle_deviation_bps: u32,
-    /// What it quoted, best price first, as a run in [`QuotedRoute::levels`].
-    /// Held past the quoting CPI because every later allocation and price
-    /// check is measured against it, but pooled with every other slot's run
-    /// so a route costs one allocation rather than one per book.
-    pub levels: core::ops::Range<usize>,
-    /// Depth it says it holds at a better price than it quoted, and could not
-    /// offer because this transaction does not carry the accounts of the user
-    /// who owns it. A zero price means it reached everything it was asked
-    /// for. Never fillable — it is the number that keeps a worse-priced
-    /// source from taking what the book was standing on.
-    pub withheld: PriceLevel,
-}
-
 pub struct QuotedRoute<'info> {
     /// The account tail, borrowed straight from the instruction's remaining
     /// accounts. A quoter's registered account list is resolved against this by
     /// scanning it — nothing is cloned and no index is built.
     pub accounts: &'info [AccountInfo<'info>],
-    /// The slots that quoted, in slab order. Slots that quote nothing
-    /// (suspended, deactivated, skipped) are absent.
-    pub quoted: Vec<QuotedEntry<'info>>,
-    /// Every slot's quoted levels, one run after another.
-    /// [`QuotedEntry::levels`] indexes into this.
+    /// The slab slots that quoted, by index, in slab order. Slots that quote
+    /// nothing (suspended, deactivated, skipped) are absent.
+    pub quoted_slots: Vec<usize>,
+    /// What each quoted slot answered, aligned with `quoted_slots`: the
+    /// slot's run in `levels`, and the depth it withheld.
+    ladders: Vec<crate::state::prop_amm::QuotedLadderV0>,
+    /// Every slot's quoted levels, one run after another; each ladder's
+    /// range indexes into this.
     levels: Vec<PriceLevel>,
     /// The market's slab, when the transaction carried one. The mandatory
     /// baseline and the signed route are answered from it: whether an absent
@@ -185,7 +139,8 @@ impl<'info> QuotedRoute<'info> {
             // The one heap holder left, deliberately: a fixed array of these
             // is about a kilobyte, and this fill's stack frame is four — the
             // program has overflowed it before on a struct this size.
-            quoted: Vec::with_capacity(MAX_ROUTE_QUOTERS),
+            quoted_slots: Vec::with_capacity(MAX_ROUTE_QUOTERS),
+            ladders: Vec::with_capacity(MAX_ROUTE_QUOTERS),
             levels: Vec::new(),
             slab: None,
             carried: [Pubkey::default(); MAX_ROUTE_QUOTERS],
@@ -213,25 +168,15 @@ impl<'info> QuotedRoute<'info> {
             return Ok(route);
         };
 
-        // A consulted slot is one whose response account rides the
-        // transaction. Collected before any quoting so the rival check below
-        // can see slots that come later in the slab.
-        let mut consulted = [usize::MAX; MAX_ROUTE_QUOTERS];
+        // Collected before any quoting, so the rival check below can see
+        // slots that come later in the slab.
+        let consulted = slab_loader.consulted_slots(tail)?;
         let mut rivals = [Pubkey::default(); MAX_ROUTE_QUOTERS * 3];
         let mut rival_len = 0usize;
         {
-            let slots = quoter_slab_slots(&slab_loader)?;
-            for (index, slot) in occupied_slots(&slots) {
-                if find_account(tail, &slot.config.response_account).is_none() {
-                    continue;
-                }
-                validate!(
-                    route.carried_len < MAX_ROUTE_QUOTERS,
-                    ErrorCode::DefaultError,
-                    "a fill may consult at most {} quoters",
-                    MAX_ROUTE_QUOTERS
-                )?;
-                consulted[route.carried_len] = index;
+            let slots = slab_loader.slots()?;
+            for &index in &consulted {
+                let slot = &slots[index];
                 route.carried[route.carried_len] = slot.entry;
                 route.carried_len += 1;
                 for key in [
@@ -245,9 +190,9 @@ impl<'info> QuotedRoute<'info> {
             }
         }
 
-        for &index in consulted[..route.carried_len].iter() {
-            let quoted = {
-                let slots = quoter_slab_slots(&slab_loader)?;
+        for index in consulted {
+            let (ladder, quoter_type) = {
+                let slots = slab_loader.slots()?;
                 let slot = &slots[index];
                 if !slot.quotes() {
                     continue;
@@ -309,52 +254,29 @@ impl<'info> QuotedRoute<'info> {
                     scratch,
                     &mut route.levels,
                 )?;
-                (
-                    entry_key,
-                    slot.config.quoter_type,
-                    slot.config.user,
-                    slot.config.response_account,
-                    slot.config.priority,
-                    slot.config.max_oracle_deviation_bps,
-                    levels,
-                )
+                (levels, slot.config.quoter_type)
             };
-            let (
-                entry_key,
-                quoter_type,
-                user,
-                response_account,
-                priority,
-                max_oracle_deviation_bps,
-                quoted,
-            ) = quoted;
-            route.quoted.push(QuotedEntry {
-                slab: slab_loader.clone(),
-                slot: index,
-                entry_key,
-                quoter_type,
-                user,
-                response_account,
-                priority,
-                max_oracle_deviation_bps,
-                levels: quoted.levels.clone(),
-                // Only a book can withhold. A book walks the orders of many
-                // owners and stops at one this transaction cannot settle for.
-                // Every other quoter fills from the single `user` in its own
-                // registry slot, which a fill either carries or does not
-                // quote at all, so there is no owner for it to stop at.
-                //
-                // Dropped here rather than trusted and checked later: the
-                // report arms the filler obligation, so a quoter that set it
-                // would fail fills that carried it and the error would name
-                // the filler. Zeroing it at the source leaves nothing to
-                // report and no consumer to remember the rule.
-                withheld: if quoter_type == QuoterType::Clob {
-                    quoted.withheld
-                } else {
-                    PriceLevel::default()
-                },
+            // Only a book can withhold. A book walks the orders of many
+            // owners and stops at one this transaction cannot settle for.
+            // Every other quoter fills from the single `user` in its own
+            // registry slot, which a fill either carries or does not quote
+            // at all, so there is no owner for it to stop at.
+            //
+            // Dropped here rather than trusted and checked later: the report
+            // arms the filler obligation, so a quoter that set it would fail
+            // fills that carried it and the error would name the filler.
+            // Zeroing it at the source leaves nothing to report and no
+            // consumer to remember the rule.
+            let withheld = if quoter_type == QuoterType::Clob {
+                ladder.withheld
+            } else {
+                PriceLevel::default()
+            };
+            route.ladders.push(crate::state::prop_amm::QuotedLadderV0 {
+                levels: ladder.levels,
+                withheld,
             });
+            route.quoted_slots.push(index);
         }
         Ok(route)
     }
@@ -384,7 +306,7 @@ impl<'info> QuotedRoute<'info> {
             );
             return Err(ErrorCode::DefaultError.into());
         };
-        let slots = quoter_slab_slots(slab)?;
+        let slots = slab.slots()?;
         let book_quotes =
             slot_for_entry(&slots, &required_clob).is_some_and(|index| slots[index].quotes());
         validate!(
@@ -441,7 +363,7 @@ impl<'info> QuotedRoute<'info> {
             }
             let live = match &self.slab {
                 Some(slab) => {
-                    let slots = quoter_slab_slots(slab)?;
+                    let slots = slab.slots()?;
                     slot_for_entry(&slots, entry).is_some_and(|index| slots[index].quotes())
                 }
                 // No slab in the tail: liveness cannot be answered, and a
@@ -467,15 +389,21 @@ impl<'info> QuotedRoute<'info> {
     pub fn books<'a>(
         &'a self,
         into: &'a mut [QuoterBook<'a>; MAX_ROUTE_QUOTERS],
-    ) -> &'a [QuoterBook<'a>] {
-        for (slot, quoted) in into.iter_mut().zip(self.quoted.iter()) {
-            *slot = QuoterBook {
-                priority: quoted.priority,
-                levels: &self.levels[quoted.levels.clone()],
-                withheld: quoted.withheld,
-            };
+    ) -> Result<&'a [QuoterBook<'a>]> {
+        if let Some(slab) = &self.slab {
+            let slots = slab.slots()?;
+            for (book, (&index, ladder)) in into
+                .iter_mut()
+                .zip(self.quoted_slots.iter().zip(self.ladders.iter()))
+            {
+                *book = QuoterBook {
+                    priority: slots[index].config.priority,
+                    levels: &self.levels[ladder.levels.clone()],
+                    withheld: ladder.withheld,
+                };
+            }
         }
-        &into[..self.quoted.len()]
+        Ok(&into[..self.quoted_slots.len()])
     }
 
     /// The execute leg, borrowing what quoting already gathered.
@@ -490,7 +418,8 @@ impl<'info> QuotedRoute<'info> {
             scratch,
             caps: inputs.caps,
             reference_price: inputs.reference_price,
-            quoted: &self.quoted,
+            slab: self.slab.as_ref(),
+            slots: &self.quoted_slots,
             market_index: inputs.market_index,
             accounts: self.accounts,
             users: inputs.users,

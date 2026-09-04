@@ -5,14 +5,13 @@
 //! matches the books the entrypoint built: quoter `i` produced book `i`.
 
 use {
-    super::quoted_route::QuotedEntry,
     crate::{
         error::{ErrorCode, VelocityResult},
         msg,
         state::prop_amm::{
-            find_account, quoter_slab_slots, ClobCancelAllArgsV0, ClobCancelAllOutcomeV0,
-            ClobCancelSides, ClobMarket, ClobUserRefV0, Direction, ExecuteArgsV0,
-            ExternalQuoterExecutor, PriceLevel, QuoteArgsV0, QuoterSubjects, QuoterType,
+            find_account, ClobCancelAllArgsV0, ClobCancelAllOutcomeV0, ClobCancelSides, ClobMarket,
+            ClobUserRefV0, Direction, ExecuteArgsV0, ExternalQuoterExecutor, PriceLevel,
+            QuoteArgsV0, QuoterSlabExt, QuoterSlabV0, QuoterSlotV0, QuoterSubjects, QuoterType,
             ResponseLocationV0,
         },
     },
@@ -20,10 +19,15 @@ use {
 };
 
 pub struct CpiQuoterExecutor<'a, 'info> {
-    /// The entries that produced the router's external books, in book order,
-    /// each carrying what quoting captured of it. Borrowed: quoting already
-    /// owns these, and cloning them per fill spent heap for nothing.
-    pub quoted: &'a [QuotedEntry<'info>],
+    /// The market's slab. `None` when the transaction consulted nothing
+    /// external, in which case `slots` is empty and every accessor answers
+    /// its default.
+    pub slab: Option<&'a AccountLoader<'info, QuoterSlabV0>>,
+    /// The slab slot behind each of the route's external books, in book
+    /// order: book `i` executes through slot `slots[i]`. Everything else
+    /// about a quoter is read out of the slab on demand — the slab is the one
+    /// copy of every approved config, so nothing is captured ahead of time.
+    pub slots: &'a [usize],
     /// The perp market being filled — every entry must serve it.
     pub market_index: u16,
     /// The fill's account tail: the quoters' registered CPI accounts and their
@@ -52,41 +56,52 @@ pub struct CpiQuoterExecutor<'a, 'info> {
     pub now: i64,
 }
 
+impl<'a, 'info> CpiQuoterExecutor<'a, 'info> {
+    /// The slab, or the error every leg gives when the route carried none.
+    fn slab(&self) -> VelocityResult<&'a AccountLoader<'info, QuoterSlabV0>> {
+        self.slab.ok_or_else(|| {
+            msg!("router executor holds no quoter slab");
+            ErrorCode::DefaultError
+        })
+    }
+
+    /// Book `index`'s slab slot.
+    fn slot_index(&self, index: usize) -> VelocityResult<usize> {
+        self.slots.get(index).copied().ok_or_else(|| {
+            msg!("router executor index {} out of range", index);
+            ErrorCode::DefaultError
+        })
+    }
+
+    /// Read one thing off book `index`'s slot. A short borrow — the slot
+    /// region is free again before any CPI leg runs.
+    fn read<T>(&self, index: usize, read: impl FnOnce(&QuoterSlotV0) -> T) -> Option<T> {
+        let slot = *self.slots.get(index)?;
+        let slots = self.slab?.slots().ok()?;
+        slots.get(slot).map(read)
+    }
+}
+
 impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
     fn quoter_type(&self, index: usize) -> QuoterType {
-        self.quoted
-            .get(index)
-            .map(|quoted| quoted.quoter_type)
+        self.read(index, |slot| slot.config.quoter_type)
             .unwrap_or(QuoterType::Custom)
     }
 
     fn quoter_user(&self, index: usize) -> Pubkey {
-        self.quoted
-            .get(index)
-            .map(|quoted| quoted.user)
+        self.read(index, |slot| slot.config.user)
             .unwrap_or_default()
     }
 
     fn quoter_key(&self, index: usize) -> Pubkey {
-        self.quoted
-            .get(index)
-            .map(|quoted| quoted.entry_key)
-            .unwrap_or_default()
+        self.read(index, |slot| slot.entry).unwrap_or_default()
     }
 
     fn oracle_band(&self, index: usize, market_margin_ratio_initial: u32) -> u32 {
-        self.quoted
-            .get(index)
-            .map(|quoted| {
-                if quoted.max_oracle_deviation_bps == 0 {
-                    market_margin_ratio_initial
-                } else {
-                    quoted
-                        .max_oracle_deviation_bps
-                        .min(market_margin_ratio_initial)
-                }
-            })
-            .unwrap_or(market_margin_ratio_initial)
+        self.read(index, |slot| {
+            slot.config.oracle_band(market_margin_ratio_initial)
+        })
+        .unwrap_or(market_margin_ratio_initial)
     }
 
     fn resting_levels(
@@ -98,15 +113,13 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
         if self.quoter_type(index) != QuoterType::Clob {
             return Ok(None);
         }
-        let quoted = self.quoted.get(index).ok_or_else(|| {
-            msg!("router executor index {} out of range", index);
-            ErrorCode::DefaultError
-        })?;
-        let slots = quoter_slab_slots(&quoted.slab).map_err(|_| {
+        let slab = self.slab()?;
+        let slot = self.slot_index(index)?;
+        let slots = slab.slots().map_err(|_| {
             msg!("router executor failed to load the quoter slab");
             ErrorCode::DefaultError
         })?;
-        let config = &slots[quoted.slot].config;
+        let config = &slots[slot].config;
         // The book's own `quote_v0`, with the identities and budgets the
         // execute below carries. Quote and execute are held to spending the
         // same set the same way, so a ladder taken here is the one that
@@ -130,13 +143,13 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
                         limit_price: 0,
                         taker_served_window: self.taker_served_window,
                     },
-                    &quoted.slab,
+                    slab,
                     self.accounts,
                     self.scratch,
                     &mut levels,
                 )
                 .map_err(|_| {
-                    msg!("clob quote for entry {} failed", quoted.entry_key);
+                    msg!("clob quote for entry {} failed", slots[slot].entry);
                     ErrorCode::DefaultError
                 })
                 .map(|_| levels)?,
@@ -165,16 +178,14 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
         if self.quoter_type(index) != QuoterType::Clob {
             return Ok(None);
         }
-        let quoted = self.quoted.get(index).ok_or_else(|| {
-            msg!("router executor index {} out of range", index);
-            ErrorCode::DefaultError
-        })?;
+        let slab = self.slab()?;
+        let slot = self.slot_index(index)?;
         let (book, program) = {
-            let slots = quoter_slab_slots(&quoted.slab).map_err(|_| {
+            let slots = slab.slots().map_err(|_| {
                 msg!("router executor failed to load the quoter slab");
                 ErrorCode::DefaultError
             })?;
-            let config = &slots[quoted.slot].config;
+            let config = &slots[slot].config;
             let book = find_account(self.accounts, &config.response_account).ok_or_else(|| {
                 msg!(
                     "clob book {} missing from the account map",
@@ -191,7 +202,7 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
             })?;
             (book, program)
         };
-        let clob = ClobMarket::from_slab(&quoted.slab, self.market_index, book, program)
+        let clob = ClobMarket::from_slab(slab, self.market_index, book, program)
             .map_err(|_| ErrorCode::DefaultError)?;
         clob.cancel_all(ClobCancelAllArgsV0 {
             user,
@@ -211,16 +222,13 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
         direction: Direction,
         size: u64,
     ) -> VelocityResult<ResponseLocationV0<'info>> {
-        let quoted = self.quoted.get(index).ok_or_else(|| {
-            msg!("router executor index {} out of range", index);
-            ErrorCode::DefaultError
-        })?;
-        let slots = quoter_slab_slots(&quoted.slab).map_err(|_| {
+        let slab = self.slab()?;
+        let slot = self.slot_index(index)?;
+        let slots = slab.slots().map_err(|_| {
             msg!("router executor failed to load the quoter slab");
             ErrorCode::DefaultError
         })?;
-        let config = &slots[quoted.slot].config;
-        let entry_key = quoted.entry_key;
+        let config = &slots[slot].config;
         config
             .execute(
                 self.market_index,
@@ -233,7 +241,7 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
                     taker: Some(self.taker),
                     taker_served_window: self.taker_served_window,
                 },
-                &quoted.slab,
+                slab,
                 self.accounts,
                 self.scratch,
             )
@@ -242,7 +250,7 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
                 // serves many registry entries, so the program id an
                 // off-chain router reads out of the runtime's CPI brackets
                 // does not identify which entry failed. The key does.
-                msg!("quoter {} execute failed: {}", entry_key, e);
+                msg!("quoter {} execute failed: {}", slots[slot].entry, e);
                 ErrorCode::DefaultError
             })
     }

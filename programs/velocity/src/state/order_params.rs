@@ -947,11 +947,11 @@ pub const fn expected_signed_msg_network() -> u8 {
 /// silently truncated, which also keeps the message length bounded for
 /// off-chain buffers.
 ///
-/// It matches [`crate::instructions::MAX_ROUTE_QUOTERS`], because a
+/// It matches [`crate::state::prop_amm::MAX_ROUTE_QUOTERS`], because a
 /// taker may name every entry one transaction can carry and naming more than
 /// that could not be honoured. Raising this cap keeps every earlier message
 /// valid: the field is a borsh `Vec`, so the wire format does not change.
-pub const MAX_SIGNED_MSG_ROUTE_LEN: usize = crate::instructions::MAX_ROUTE_QUOTERS;
+pub const MAX_SIGNED_MSG_ROUTE_LEN: usize = crate::state::prop_amm::MAX_ROUTE_QUOTERS;
 
 /// Digest of a signed route: the `QuoterV0` entries a taker chose, reduced to
 /// the bytes a [`crate::state::signed_msg_user::SignedMsgOrderId`] can hold.

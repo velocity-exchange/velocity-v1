@@ -374,8 +374,8 @@ fn fill_order<'c: 'info, 'info>(
     obligation.unrouted_quoters = route.unrouted_quoters(&signed_route, route_digest);
 
     let mut book_storage =
-        [crate::math::router::QuoterBook::default(); crate::instructions::MAX_ROUTE_QUOTERS];
-    let books = route.books(&mut book_storage);
+        [crate::math::router::QuoterBook::default(); crate::state::prop_amm::MAX_ROUTE_QUOTERS];
+    let books = route.books(&mut book_storage)?;
     let mut executor = route.executor(&inputs, clock.slot, clock.unix_timestamp, &mut cpi_scratch);
     let mut router_inputs = RouterFillInputs {
         books,
@@ -1121,8 +1121,8 @@ fn fill_signed_msg_taker_order<'c: 'info, 'info>(
     };
 
     let mut book_storage =
-        [crate::math::router::QuoterBook::default(); crate::instructions::MAX_ROUTE_QUOTERS];
-    let books = route.books(&mut book_storage);
+        [crate::math::router::QuoterBook::default(); crate::state::prop_amm::MAX_ROUTE_QUOTERS];
+    let books = route.books(&mut book_storage)?;
     let mut executor = route.executor(&inputs, clock.slot, clock.unix_timestamp, &mut cpi_scratch);
     let mut router_inputs = RouterFillInputs {
         books,

@@ -114,7 +114,7 @@ use {
             oracle_map::OracleMap,
             perp_market_map::PerpMarketMap,
             prop_amm::{
-                clob_slot_index, find_account, quoter_slab_slots, ClobSide, QuoterSlabV0,
+                clob_slot_index, find_account, ClobSide, QuoterSlabExt, QuoterSlabV0,
                 QuoterUserCapV0, QuoterUserCapsV0,
                 MAX_CONSTRAINED_WIRE_USERS as USER_CAPS_CAPACITY,
             },
@@ -232,7 +232,7 @@ fn clob_books_in_route<'info>(tail: &'info [AccountInfo<'info>], market_index: u
         if loader.load()?.market != market_index {
             continue;
         }
-        let slots = quoter_slab_slots(&loader)?;
+        let slots = loader.slots()?;
         let consulted_book = clob_slot_index(&slots).is_some_and(|index| {
             find_account(tail, &slots[index].config.response_account).is_some()
         });

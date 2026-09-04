@@ -14,9 +14,7 @@ use {
         math::orders::is_order_position_reducing,
         msg,
         state::{
-            prop_amm::{
-                quoter_slab_clob, ClobMarket, ClobPlaceOrderArgsV0, ClobSide, QuoterSlabV0,
-            },
+            prop_amm::{ClobMarket, ClobPlaceOrderArgsV0, ClobSide, QuoterSlabExt, QuoterSlabV0},
             user::User,
         },
         validate,
@@ -174,7 +172,8 @@ pub fn attest_activation_delay(
     };
     // The attach-written mirror, not a CPI (see
     // `QuoterConfigV0::book_tick_size`).
-    let default_delay = quoter_slab_clob(quoter_slab, market_index)?
+    let default_delay = quoter_slab
+        .clob_slot(market_index)?
         .config
         .book_default_activation_delay_slots;
     if requested >= default_delay {
@@ -210,7 +209,8 @@ pub fn synchronous_take_allowed(
     }
     // The attach-written mirror, not a CPI: the slab is already loaded on
     // every path that asks.
-    Ok(quoter_slab_clob(quoter_slab, market_index)?
+    Ok(quoter_slab
+        .clob_slot(market_index)?
         .config
         .book_default_activation_delay_slots
         == 0)
@@ -276,7 +276,7 @@ pub fn try_place_remainder_on_clob<'info>(
     activation_delay_slots: Option<u32>,
     clock: &Clock,
 ) -> Result<Option<u64>> {
-    if !quoter_slab_clob(quoter_slab, market_index)?.quotes() {
+    if !quoter_slab.clob_slot(market_index)?.quotes() {
         msg!("clob quoter inactive; remainder stays cancelled");
         return Ok(None);
     }
@@ -289,7 +289,7 @@ pub fn try_place_remainder_on_clob<'info>(
     // remainders cannot arise: the attach pins the book's tick and step to the
     // market's, so a remainder aligned to the market is aligned to the book.
     let (min_order_size, order_tick_size) = {
-        let slot = quoter_slab_clob(quoter_slab, market_index)?;
+        let slot = quoter_slab.clob_slot(market_index)?;
         (slot.config.book_min_order_size, slot.config.book_tick_size)
     };
     if min_order_size != 0 && base_asset_amount < min_order_size {

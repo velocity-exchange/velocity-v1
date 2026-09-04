@@ -3661,8 +3661,8 @@ pub fn place_and_take_perp_order_v1<'c: 'info, 'info>(
         let route = crate::instructions::QuotedRoute::assemble(tail, &inputs, &mut cpi_scratch)?;
         route.require_baseline(perp_market_map.get_ref(&params.market_index)?.clob_market)?;
         let mut book_storage =
-            [crate::math::router::QuoterBook::default(); crate::instructions::MAX_ROUTE_QUOTERS];
-        let book_refs = route.books(&mut book_storage);
+            [crate::math::router::QuoterBook::default(); crate::state::prop_amm::MAX_ROUTE_QUOTERS];
+        let book_refs = route.books(&mut book_storage)?;
         let mut executor =
             route.executor(&inputs, clock.slot, clock.unix_timestamp, &mut cpi_scratch);
         let mut router_inputs = crate::math::router::RouterFillInputs {

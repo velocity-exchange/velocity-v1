@@ -49,8 +49,8 @@ use {
         error::ErrorCode,
         state::{
             prop_amm::{
-                occupied_slots, quoter_slab_slots, quoter_slab_slots_mut, slot_for_entry,
-                vacant_slot_index, validate_quoter_accounts, QuoterSlabV0, QuoterType, QuoterV0,
+                occupied_slots, slot_for_entry, vacant_slot_index, validate_quoter_accounts,
+                QuoterSlabExt, QuoterSlabV0, QuoterType, QuoterV0,
             },
             state::State,
         },
@@ -200,7 +200,7 @@ fn resize_slab<'info>(
 /// The smallest capacity that still holds every occupied slot. Never below
 /// one: slot 0 stays allocated for the market's book.
 fn fitted_capacity(slab: &AccountLoader<QuoterSlabV0>) -> Result<u16> {
-    let slots = quoter_slab_slots(slab)?;
+    let slots = slab.slots()?;
     Ok(slots
         .iter()
         .rposition(|slot| !slot.is_vacant())
@@ -224,7 +224,7 @@ pub fn handle_update_quoter_approved(
 
     if !approved {
         {
-            let mut slots = quoter_slab_slots_mut(&ctx.accounts.quoter_slab)?;
+            let mut slots = ctx.accounts.quoter_slab.slots_mut()?;
             let Some(index) = slot_for_entry(&slots, &entry_key) else {
                 msg!("quoter {} holds no slab slot; nothing to revoke", entry_key);
                 return Ok(());
@@ -287,7 +287,7 @@ pub fn handle_update_quoter_approved(
     validate_quoter_accounts(registered.iter().map(|meta| &meta.pubkey))?;
 
     let index = {
-        let slots = quoter_slab_slots(&ctx.accounts.quoter_slab)?;
+        let slots = ctx.accounts.quoter_slab.slots()?;
         // A route names the slots it consults by carrying their response
         // accounts, so two slots sharing one could not be carried apart.
         validate!(
@@ -383,7 +383,7 @@ pub fn handle_update_quoter_approved(
     if config.quoter_type == QuoterType::Clob {
         ctx.accounts.quoter_slab.load_mut()?.clob_market = config.response_account;
     }
-    let mut slots = quoter_slab_slots_mut(&ctx.accounts.quoter_slab)?;
+    let mut slots = ctx.accounts.quoter_slab.slots_mut()?;
     slots[index].entry = entry_key;
     slots[index].suspended = false;
     slots[index].config = *config;

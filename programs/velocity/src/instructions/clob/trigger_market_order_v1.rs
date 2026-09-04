@@ -295,8 +295,8 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
         };
 
         let mut book_storage =
-            [crate::math::router::QuoterBook::default(); crate::instructions::MAX_ROUTE_QUOTERS];
-        let books = route.books(&mut book_storage);
+            [crate::math::router::QuoterBook::default(); crate::state::prop_amm::MAX_ROUTE_QUOTERS];
+        let books = route.books(&mut book_storage)?;
         let mut executor =
             route.executor(&inputs, clock.slot, clock.unix_timestamp, &mut cpi_scratch);
         let mut router_inputs = crate::math::router::RouterFillInputs {

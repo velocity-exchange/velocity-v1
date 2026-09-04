@@ -6,66 +6,63 @@ The devnet program id is read from `[programs.devnet].velocity` in `Anchor.toml`
 
 ## Release CLI (`bun run release`)
 
-`scripts/release/` is the one entry point for a release: it reads the same files CI reads (`programs/*/Cargo.toml`, `packages/*/package.json`, `docker-info.json`, the tag conventions of the workflows) and drives the tag/dispatch steps described in the rest of this document. Every command is **read-only by default**; it prints what it found and what it would do. Add `--execute` to actually branch, commit, tag, push, dispatch, or shell into the infra repo. The bump commit runs in your terminal with your git identity, so a signing key's passphrase prompt appears as usual. It never approves or executes a Squads proposal, never merges a PR, and never touches the chain.
+[`release.sh`](./release.sh) is one verb per release step, in release order. It reads the files CI reads (`programs/*/Cargo.toml`, `packages/*/package.json`, `docker-info.json`, the workflows' tag conventions, the infra gitops manifests) and fires exactly one thing per verb: a git push, a `gh workflow run`, an infra `yarn deploy`. It then hands you the URL. It does not wait on CI, verify buffers, approve Squads or merge PRs; GitHub, `verify-buffer.sh`, Squads and ArgoCD do those, and `status` shows where each one stands.
+
+Every verb is **read-only by default** and prints what `--execute` would do. Zero dependencies beyond `git`, `gh`, `jq`.
 
 ```bash
-bun run release status                          # where every program, npm package, docker image (and gitops pin) stands
-bun run release checklist > release.md          # the runbook below, filled in with the current versions and commands
-
-bun run release program bump [prog] [version]   # release/<prog>-<ver> branch: Cargo.toml + lockfiles + IDLs regenerated, committed (your key), pushed, PR link
-bun run release program devnet [prog]           # gh workflow run manual-devnet-deploy.yaml, gh run watch, verify-buffer.sh --devnet
-bun run release program mainnet [prog]          # push program-<prog>-v<Cargo version> at origin/master, watch release-program.yaml, verify-buffer.sh
-
-bun run release npm [pkg...]                    # push npm-<pkg>-v<version> for every untagged packages/<pkg> version, watch npm-publish
-bun run release docker [app...|all|changed]     # push docker-<app>-v<next patch>, watch velocity-publish (default: apps with changes since their tag)
-bun run release infra [stage...] --infra <dir>  # infra-v3 `yarn deploy <app> <stage>` for every image whose gitops pin is behind
+bun run release                       # status: programs, npm, docker, gitops pins, and the one command to run next
+bun run release bump    [prog] [ver]  # release/<prog>-<ver> branch: Cargo.toml + lockfiles + IDLs, commit (your key), push, PR link
+bun run release devnet  [prog]        # gh workflow run manual-devnet-deploy.yaml            [--branch <ref>]
+bun run release npm     [pkg...]      # push npm-<pkg>-v<version> for every untagged package version, one push per tag
+bun run release docker  [app...]      # push docker-<app>-v<next patch> for images with commits since their tag, one push per tag
+bun run release infra   <stage...>    # infra-v3 `yarn deploy a,b,c <stage>` for every image whose pin is behind: one PR
+bun run release mainnet [prog]        # push program-<prog>-v<Cargo version> at origin/master
 ```
 
-Flags: `--execute` (mutate), `--infra <path>` or `VELOCITY_INFRA_DIR` (infrastructure-v3 checkout, needed for gitops pins and `infra`), `--rpc <url>` (RPC for `verify-buffer.sh`; default: the cluster's `rpcs` entry in the admin CLI config `~/.config/velocity-admin/config.json` / `VELOCITY_ADMIN_CONFIG`, else the public endpoint, never the solana CLI config), `--no-watch` (program deploys, npm, docker: trigger and exit instead of waiting for the run), `--no-verify` / `--skip-build` (program deploys), `--branch <ref>` (devnet source), `--as X.Y.Z` (docker, single app), `--images a,b` (infra), `--no-fetch`. `--help` works on every level (`bun run release program --help`). Colors follow `NO_COLOR`.
+Flags: `--execute`, `--infra <path>` (or `VELOCITY_INFRA_DIR`), `--branch <ref>` (devnet), `--no-fetch`, `--no-color`. Programs default to `velocity`; `jit_proxy` and (devnet only) `token_faucet` are the other choices.
 
-When a selection argument is omitted in a terminal, the CLI prompts for it (which program, which images, which stages; the sensible answer is preselected). Prompts only ever choose *what* to act on; without a TTY the same default is taken silently, so scripted runs are deterministic. Whether anything is mutated is decided by `--execute` alone.
+`status` also warns about things a human forgets: a Cargo version that is not ahead of the last `program-*` tag while the program has new commits (the tag would collide); velocity diffs since the last tag that touch the fee schedule (run `fees set-schedule` before the upgrade, see below), the error enum, or the IDL; an open changesets "Version Packages" PR; gitops pins older than the latest image. `devnet` and `mainnet` print the same warnings before firing. Docker versions come from the tag history, not from `apps/*/package.json`. The bump commit runs in your terminal with your git identity (a `gpg --clearsign` first, so the passphrase prompt is not buried under other output).
 
-The CLI is `scripts/release/*.ts`, run by bun, built on `commander` (commands, help, argument validation) and `@clack/prompts` (output, spinners, prompts), both already in the workspace lockfile. `index.ts` defines the commands; `status.ts`, `program.ts`, `publish.ts`, `infra.ts` implement them; `inventory.ts` reads the repo state (Cargo versions, tags, package.json, docker-info.json, gitops pins, the fee-schedule/error-enum/IDL diff checks); `sh.ts` wraps git/gh and holds the single `--execute` gate (`mutate()`); `ui.ts` wraps clack.
+### Release order
 
-What `status` checks beyond versions: a program crate whose Cargo version is not ahead of its last `program-*` tag while it has new commits (tag would collide), velocity diffs since the last tag that touch the fee schedule (stage `fees set-schedule` before the upgrade, see below), the error enum, or the IDL, the open changesets "Version Packages" PR, and gitops pins older than the latest published image. `program devnet|mainnet` print the same warnings before dispatching. Docker versions come from the tag history, not from `apps/*/package.json`.
-
-The sequence for a full release is what `checklist` prints: merge the Version Packages PR → `npm` → `program bump` PR → `docker` → devnet (pre-stage admin ixs, `program devnet`, Squads, verify, `infra master`) → mainnet (pre-stage admin ixs via `--multisig`, `program mainnet`, Squads, verify, `infra mainnet-beta`, then the infra `master → mainnet-beta` release PR).
-
-### Example: a devnet deploy, start to finish
-
-Program first, then the bots that talk to it. The program deploy, the image builds and the gitops pins are independent, so the three `--execute` commands can run in separate terminals at the same time.
+Devnet must run the exact bytes mainnet will get, so the version bump comes first and both clusters deploy the same sha.
 
 ```bash
-# once per shell
 export VELOCITY_INFRA_DIR=~/work/velocity/infrastructure-v3
-gh auth status                                   # dispatch + watch use gh
-aws sso login --sso-session velocity             # infra step resolves ECR digests
+aws sso login --sso-session velocity           # the infra step resolves ECR digests
 
-bun run release status                           # what is where; (!) lines are the things to act on
+bun run release                                # where are we; the last line is the next command
 
-# 1. program → devnet. Builds origin/master (or --branch <ref>) in CI, stages the
-#    buffer, proposes the Squads upgrade. No version bump needed for devnet.
-bun run release program devnet                   # dry run: shows the dispatch + what it will watch
-bun run release program devnet --execute         # ~15 min: gh workflow run → gh run watch → verify-buffer.sh --devnet
-#    ends with "approve + execute the proposal in the devnet Squads": do that in the Squads UI.
-#    In a hurry: --no-watch dispatches and exits; later run
-#    `bash deploy-scripts/verify-buffer.sh velocity --devnet` before signing.
+# 1. version bump PR
+bun run release bump --execute                 # release/velocity-X.Y.0 branch, PR link; merge it
 
-# 2. bot images. Prompt preselects the apps with commits since their last tag.
-bun run release docker --execute                 # tags docker-<app>-v<next>, pushes, watches the builds
-#    or explicit: bun run release docker keeper-bots-v2 dlob-server --execute
+# 2. program to devnet (that sha)
+bun run release devnet --execute               # dispatches CI; ~15 min
+bun run verify-buffer velocity --devnet        # when the run is green: hashes must match
+#    approve + execute the proposal in the devnet Squads
 
-# 3. gitops pins for the devnet stage. One `yarn deploy <a,b,c> master` in infra-v3
-#    for every image whose pin is behind → one deploy/<...> PR there.
-bun run release infra master                     # dry run: table of latest tag vs pinned version
-bun run release infra master --execute
-#    merge the infra-v3 PRs; ArgoCD rolls the workloads.
+# 3. packages and images (after the changesets "Version Packages" PR is merged)
+bun run release npm --execute                  # npm-sdk-vX.Y.Z etc.
+bun run release docker --execute               # docker-<app>-v<next> for every image with changes
 
-# 4. confirm
-bun run release status                           # devnet run sha == master, master pins == latest tags
+# 4. devnet bots
+bun run release infra master --execute         # one infra-v3 PR; merge it, ArgoCD rolls
+#    soak on devnet
+
+# 5. program to mainnet (same sha)
+bun run release mainnet --execute              # pushes program-velocity-vX.Y.0
+bun run verify-buffer velocity                 # when the run is green
+#    approve + execute the proposal in the mainnet Squads
+
+# 6. prod bots
+bun run release infra mainnet-beta --execute   # one infra-v3 PR; merge it
+#    then the infra-v3 master → mainnet-beta release PR (prod ArgoCD tracks that branch)
+
+bun run release                                # everything green: "nothing to release"
 ```
 
-Mainnet is the same shape with `program mainnet` (needs a landed `program bump` PR first, since the tag carries the Cargo version) and `infra mainnet-beta`, followed by the infra-v3 `master → mainnet-beta` release PR.
+Steps 2 and 3 are independent and can run in parallel. Any admin instruction the upgrade needs (a fee schedule change, for example) goes before the Squads execution on each cluster; `status` flags the known cases.
 
 ## Program upgrades via CI (preferred)
 

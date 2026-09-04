@@ -43,8 +43,9 @@ options:
   --buffer <pubkey>         verify this buffer instead of reading a run log
   --devnet                  strip mainnet-beta + enable the audit-gated
                             features (velocity devnet build flavor)
-  --rpc <url>               RPC used to read the on-chain buffer
-                            (default: solana CLI config)
+  --rpc <url>               RPC used to read the on-chain buffer (default: the
+                            cluster's rpcs entry in the admin CLI config
+                            ~/.config/velocity-admin/config.json, else public)
   --program-id <pubkey>     program id to fall back to when the buffer is
                             already applied (default: Anchor.toml devnet id)
   --image <docker-image>    verifiable-build image
@@ -73,86 +74,9 @@ skip_build=0
 verbose=0
 use_color=1
 
-# Output helpers. Progress goes to stderr and the result block to stdout, so
-# the verdict can be piped or captured without the build chatter.
-
-setup_colors() {
-	if [ "$use_color" -eq 1 ] && [ -t 2 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-}" != "dumb" ]; then
-		BOLD=$'\033[1m'; DIM=$'\033[2m'; RED=$'\033[31m'; GRN=$'\033[32m'
-		YLW=$'\033[33m'; CYN=$'\033[36m'; RST=$'\033[0m'
-	else
-		BOLD=""; DIM=""; RED=""; GRN=""; YLW=""; CYN=""; RST=""
-	fi
-}
-setup_colors
-
-header() { # $1 = title
-	printf '\n%s %s\n' "${CYN}▌${RST}" "${BOLD}$1${RST}" >&2
-}
-
-kv()     { printf '   %s%-17s%s %s\n' "$DIM" "$1" "$RST" "$2" >&2; }
-detail() { printf '      %s\n' "$*" >&2; }
-note()   { printf '      %s\n' "${DIM}$*${RST}" >&2; }
-warn()   { printf '      %s %s\n' "${YLW}!${RST}" "$*" >&2; }
-die()    { printf '\n%s %s\n' "${RED}error:${RST}" "$*" >&2; exit 1; }
-
-step_no=0
-steps_total=0
-step() { # $1 = title
-	step_no=$((step_no + 1))
-	printf '\n%s %s\n' "${CYN}[${step_no}/${steps_total}]${RST}" "${BOLD}$1${RST}" >&2
-}
-
-fmt_dur() { # $1 = seconds
-	if [ "$1" -ge 60 ]; then printf '%dm%02ds' $(($1 / 60)) $(($1 % 60));
-	else printf '%ds' "$1"; fi
-}
-
-short_pk() { printf '%s…%s' "${1:0:4}" "${1: -4}"; }
-
-# Run a command behind a single live progress line, or stream it inline with
-# --verbose. Output is buffered in a scratch file only so a failure can show
-# its tail; it is deleted either way. Returns the command's exit code.
-run_step() { # $1 = label, rest = argv
-	local label="$1"; shift
-	local rc=0 start=$SECONDS pid frame=0 out
-	local spin='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
-
-	if [ "$verbose" -eq 1 ]; then
-		"$@" 2>&1 | sed "s/^/      ${DIM}│${RST} /" || true
-		rc=${PIPESTATUS[0]}
-	else
-		out="$(mktemp)"
-		"$@" >"$out" 2>&1 &
-		pid=$!
-		if [ -t 2 ]; then
-			while kill -0 "$pid" 2>/dev/null; do
-				printf '\r      %s %s %s' \
-					"${CYN}${spin:$frame:1}${RST}" "$label" \
-					"${DIM}$(fmt_dur $((SECONDS - start)))${RST}" >&2
-				frame=$(((frame + 1) % 10))
-				sleep 0.2
-			done
-			printf '\r\033[2K' >&2
-		else
-			detail "${label}…"
-		fi
-		wait "$pid" || rc=$?
-	fi
-
-	local took; took="$(fmt_dur $((SECONDS - start)))"
-	if [ "$rc" -eq 0 ]; then
-		printf '      %s %s %s\n' "${GRN}✓${RST}" "$label" "${DIM}${took}${RST}" >&2
-	else
-		printf '      %s %s %s\n' "${RED}✗${RST}" "$label" "${DIM}${took}, exit ${rc}${RST}" >&2
-		if [ -n "${out:-}" ]; then
-			printf '      %s\n' "${DIM}last 30 lines (--verbose for all of it):${RST}" >&2
-			tail -30 "$out" | sed "s/^/      ${DIM}│${RST} /" >&2 || true
-		fi
-	fi
-	[ -z "${out:-}" ] || rm -f "$out"
-	return "$rc"
-}
+# Output helpers (header, kv, step, run_step, die, …) are shared with release.sh.
+# shellcheck source=_ui.sh
+source "$(cd "$(dirname "$0")" && pwd)/_ui.sh"
 
 
 # Newest successful deploy run for this program, when no run URL was given.
@@ -234,6 +158,29 @@ done
 
 [ -n "$program" ] || { usage >&2; die "missing <program> (velocity | token_faucet | jit_proxy)"; }
 
+# RPC for the on-chain reads: --rpc, else the cluster's shared entry in the
+# admin CLI config, else the public endpoint. Never the solana CLI config: it
+# usually points at mainnet, and a devnet buffer is then "not found" and the
+# verdict is computed against the wrong program.
+rpc_source="--rpc"
+if [ -z "$rpc" ]; then
+	cluster="mainnet-beta"
+	if [ "$devnet" -eq 1 ] || [ "$program" = "token_faucet" ]; then cluster="devnet"; fi
+	admin_cfg="${VELOCITY_ADMIN_CONFIG:-$HOME/.config/velocity-admin/config.json}"
+	if [ -f "$admin_cfg" ] && command -v jq >/dev/null; then
+		rpc="$(jq -r --arg c "$cluster" '.rpcs[$c] // empty' "$admin_cfg" 2>/dev/null || true)"
+		[ -z "$rpc" ] || rpc_source="admin-cli config rpcs.$cluster"
+	fi
+	if [ -z "$rpc" ]; then
+		case "$cluster" in
+			devnet) rpc="https://api.devnet.solana.com" ;;
+			*) rpc="https://api.mainnet-beta.solana.com" ;;
+		esac
+		rpc_source="public endpoint"
+	fi
+fi
+rpc_host="$(printf '%s' "$rpc" | sed -E 's#^[a-z]+://([^/?]+).*#\1#')"
+
 command -v solana-verify >/dev/null || die "solana-verify not found on PATH"
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
@@ -261,7 +208,7 @@ else
 fi
 kv "build flavor" "$flavor_desc"
 kv "image" "$image"
-kv "rpc" "${rpc:-${DIM}solana CLI config${RST}}"
+kv "rpc" "$rpc_host ${DIM}($rpc_source)${RST}"
 
 # 1. resolve the on-chain buffer address.
 logged_hash=""

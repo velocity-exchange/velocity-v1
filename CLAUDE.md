@@ -230,6 +230,7 @@ OIDC trusted publishing. `<pkg>` is the directory name under `packages/`:
 | `@velocity-exchange/sdk`        | `npm-sdk-v0.2.3`        |
 | `@velocity-exchange/admin-cli`  | `npm-cli-admin-v0.2.3`  |
 | `@velocity-exchange/vaults-sdk` | `npm-vaults-sdk-v0.2.3` |
+| `@velocity-exchange/jit-proxy`  | `npm-jit-proxy-v0.2.3`  |
 
 The tag version must match the `package.json` version set by the "Version Packages" PR. The workflow
 is idempotent — it skips publish if that version is already on the registry. `npm` (not `bun`) is used

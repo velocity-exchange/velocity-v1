@@ -6,7 +6,7 @@ Drift Protocol Jit Market Making, offer fee rebates for providing liquidity.
 
 - can experiment using devnet, for mainnet make sure you understand the risks
 - see [keeper-bots-v2 readme](https://github.com/velocity-exchange/keeper-bots-v2#initialize-user)
-- or see https://velocity-exchange.github.io/v2-teacher/#introduction
+- or see https://docs.velocity.exchange/developers
 
 2. get a private RPC endpoint
 

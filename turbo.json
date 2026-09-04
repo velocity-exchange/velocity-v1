@@ -19,7 +19,7 @@
 		},
 		"typecheck": {
 			"dependsOn": ["^build"],
-			"inputs": ["src/**", "tsconfig*.json", "package.json"]
+			"inputs": ["src/**", "examples/**", "tsconfig*.json", "package.json"]
 		},
 		"test": {
 			"dependsOn": ["^build"],

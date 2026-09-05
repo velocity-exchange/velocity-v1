@@ -382,6 +382,7 @@ impl FillerBot {
                                             signed_order,
                                             slot,
                                             tx_worker_ref.clone(),
+                                            attest,
                                         ).await;
                                         metrics.swift_placed.inc();
                                     }
@@ -1491,12 +1492,18 @@ async fn route_quoter_metas(
     )
 }
 
-/// Place a swift order on-chain without filling it.
+/// Place a swift order on-chain when this bot found no resting cross for it.
 ///
-/// Used when the order is not immediately fillable on arrival: placing it makes it a regular
-/// resting on-chain order that the normal per-slot fill path (and other keepers) can fill while
-/// it remains live, instead of dropping it. Emits a `swift_place` wide event at tx
-/// confirmation so the gas spent on placements can be measured against the fills they yield.
+/// The placement routes the order as it places it, so it is not a fill-free
+/// path: whatever it cannot fill rests on the market's book as a taker-origin
+/// remainder, where the activation-slot auction reaches it. Emits a
+/// `swift_place` wide event at tx confirmation so the gas spent on placements
+/// can be measured against the fills they yield.
+///
+/// It carries the attestation for the same reason a fill does. This bot
+/// searched only the resting liquidity it can see, so the quoters that gate on
+/// attested flow are exactly the ones it did not search. Placing unattested
+/// would route past them and rest an order they would have filled.
 async fn try_swift_place(
     velocity: &'static VelocityClient,
     priority_fee: u64,
@@ -1505,6 +1512,7 @@ async fn try_swift_place(
     swift_order: SignedOrderInfo,
     slot: u64,
     tx_worker_ref: TxSender,
+    attest: Option<&'static crate::attest::AttestClient>,
 ) {
     let market_index = swift_order.order_params().market_index;
     let taker_subaccount = swift_order.taker_subaccount();
@@ -1539,6 +1547,21 @@ async fn try_swift_place(
         crank_conditions: None,
     };
 
+    let flow_attestation: Option<FlowAttestationV0> = match attest {
+        Some(client) => match client.attest(swift_order.order_uuid_str()).await {
+            Ok(attestation) => Some(attestation),
+            Err(reason) => {
+                log::warn!(
+                    target: TARGET,
+                    "attestation fell through ({reason}); placing unattested. uuid={}",
+                    swift_order.order_uuid_str()
+                );
+                None
+            }
+        },
+        None => None,
+    };
+
     let tx = TransactionBuilder::new(
         velocity.program_data(),
         filler_subaccount,
@@ -1546,7 +1569,12 @@ async fn try_swift_place(
         false,
     )
     .with_priority_fee(priority_fee, Some(cu_limit))
-    .place_swift_order(&swift_order, &taker_account_data, clob_place, None)
+    .place_swift_order(
+        &swift_order,
+        &taker_account_data,
+        clob_place,
+        flow_attestation,
+    )
     .build();
 
     tx_worker_ref

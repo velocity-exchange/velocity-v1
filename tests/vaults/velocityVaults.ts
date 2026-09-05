@@ -15,8 +15,6 @@ import {
 	getUserAccountPublicKey,
 	UserAccount,
 	QUOTE_PRECISION,
-	getOrderParams,
-	MarketType,
 	PEG_PRECISION,
 	calculatePositionPNL,
 	getInsuranceFundStakeAccountPublicKey,
@@ -28,7 +26,6 @@ import {
 	VELOCITY_PROGRAM_ID as VELOCITY_PROGRAM_ID,
 	WRAPPED_SOL_MINT,
 	convertToNumber,
-	OrderParamsBitFlag,
 } from '@velocity-exchange/sdk';
 import {
 	bootstrapSignerClientAndUserBankrun,
@@ -836,90 +833,57 @@ describe('TestProtocolVaults', () => {
 
 		const fillerUser = fillerClient.velocityClient.getUser();
 
-		try {
-			// manager places long order and waits to be filler by the filler
-			const takerOrderParams = getLimitOrderParams({
-				marketIndex,
-				direction: PositionDirection.SHORT,
-				baseAssetAmount,
-				price: new BN((initialSolPerpPrice - 1) * PRICE_PRECISION.toNumber()),
-				auctionStartPrice: new BN(
-					initialSolPerpPrice * PRICE_PRECISION.toNumber()
-				),
-				auctionEndPrice: new BN(
-					(initialSolPerpPrice - 1) * PRICE_PRECISION.toNumber()
-				),
-				auctionDuration: 10,
-				userOrderId: 1,
-				postOnly: PostOnlyParams.NONE,
-			});
-			await fillerClient.velocityClient.placePerpOrder(takerOrderParams);
-		} catch (e) {
-			console.log('filler failed to short:', e);
-		}
+		// The filler rests a short taker order for the vault to trade against.
+		const takerOrderParams = getLimitOrderParams({
+			marketIndex,
+			direction: PositionDirection.SHORT,
+			baseAssetAmount,
+			price: new BN((initialSolPerpPrice - 1) * PRICE_PRECISION.toNumber()),
+			auctionStartPrice: new BN(
+				initialSolPerpPrice * PRICE_PRECISION.toNumber()
+			),
+			auctionEndPrice: new BN(
+				(initialSolPerpPrice - 1) * PRICE_PRECISION.toNumber()
+			),
+			auctionDuration: 10,
+			userOrderId: 1,
+			postOnly: PostOnlyParams.NONE,
+		});
+		await fillerClient.velocityClient.placePerpOrder(takerOrderParams);
+
 		await fillerUser.fetchAccounts();
 		const order = fillerUser.getOrderByUserOrderId(1);
 		assert(!order.postOnly);
 
-		try {
-			// vault trades against filler's long
-			const makerOrderParams = getLimitOrderParams({
-				marketIndex,
-				direction: PositionDirection.LONG,
-				baseAssetAmount,
-				price: new BN(initialSolPerpPrice).mul(PRICE_PRECISION),
-				userOrderId: 1,
-				postOnly: PostOnlyParams.MUST_POST_ONLY,
-				bitFlags: OrderParamsBitFlag.ImmediateOrCancel,
-			});
-			const orderParams = getOrderParams(makerOrderParams, {
-				marketType: MarketType.PERP,
-			});
-			const userStatsPublicKey =
-				delegateClient.velocityClient.getUserStatsAccountPublicKey();
+		// The vault rests the maker side at the price it wants, then the filler
+		// cranks the match. The vault is the maker on both legs of the round
+		// trip, so it earns the maker fee on each.
+		const makerOrderParams = getLimitOrderParams({
+			marketIndex,
+			direction: PositionDirection.LONG,
+			baseAssetAmount,
+			price: new BN(initialSolPerpPrice).mul(PRICE_PRECISION),
+			userOrderId: 1,
+			postOnly: PostOnlyParams.MUST_POST_ONLY,
+		});
+		await delegateClient.velocityClient.placePerpOrder(makerOrderParams);
 
-			const remainingAccounts =
-				delegateClient.velocityClient.getRemainingAccounts({
-					userAccounts: [
-						delegateActiveUser.getUserAccount(),
-						fillerUser.getUserAccount(),
-					],
-					useMarketLastSlotCache: true,
-					writablePerpMarketIndexes: [orderParams.marketIndex],
-				});
+		await delegateActiveUser.fetchAccounts();
+		const makerOrder = delegateActiveUser.getOrderByUserOrderId(1);
+		assert(makerOrder.postOnly, 'vault maker order is not post only');
 
-			const takerOrderId = order.orderId;
-			const placeAndMakeOrderIx =
-				await delegateClient.velocityClient.program.methods
-					.placeAndMakePerpOrder(orderParams, takerOrderId)
-					.accounts({
-						state: await delegateClient.velocityClient.getStatePublicKey(),
-						user: delegateActiveUser.userAccountPublicKey,
-						userStats: userStatsPublicKey,
-						taker: fillerUser.userAccountPublicKey,
-						takerStats:
-							fillerClient.velocityClient.getUserStatsAccountPublicKey(),
-						authority: delegateClient.velocityClient.wallet.publicKey,
-					})
-					.remainingAccounts(remainingAccounts)
-					.instruction();
-
-			const { slot } = await delegateClient.velocityClient.sendTransaction(
-				await delegateClient.velocityClient.buildTransaction(
-					placeAndMakeOrderIx,
-					delegateClient.velocityClient.txParams
-				),
-				[],
-				delegateClient.velocityClient.opts
-			);
-
-			delegateClient.velocityClient.perpMarketLastSlotCache.set(
-				orderParams.marketIndex,
-				slot
-			);
-		} catch (e) {
-			console.log('vault failed to long:', e);
-		}
+		await fillerClient.velocityClient.fillPerpOrder(
+			fillerUser.userAccountPublicKey,
+			fillerUser.getUserAccount(),
+			order,
+			{
+				maker: delegateActiveUser.userAccountPublicKey,
+				makerStats:
+					delegateClient.velocityClient.getUserStatsAccountPublicKey(),
+				makerUserAccount: delegateActiveUser.getUserAccount(),
+				order: makerOrder,
+			}
+		);
 
 		// check positions from vault and filler are accurate
 		await fillerUser.fetchAccounts();
@@ -989,90 +953,54 @@ describe('TestProtocolVaults', () => {
 		);
 		const fillerUser = fillerClient.velocityClient.getUser();
 
-		try {
-			// manager places long order and waits to be filler by the filler
-			const takerOrderParams = getLimitOrderParams({
-				marketIndex,
-				direction: PositionDirection.LONG,
-				baseAssetAmount,
-				price: new BN((finalSolPerpPrice + 1) * PRICE_PRECISION.toNumber()),
-				auctionStartPrice: new BN(
-					finalSolPerpPrice * PRICE_PRECISION.toNumber()
-				),
-				auctionEndPrice: new BN(
-					(finalSolPerpPrice + 1) * PRICE_PRECISION.toNumber()
-				),
-				auctionDuration: 10,
-				userOrderId: 1,
-				postOnly: PostOnlyParams.NONE,
-			});
-			await fillerClient.velocityClient.placePerpOrder(takerOrderParams);
-		} catch (e) {
-			console.log('filler failed to long:', e);
-		}
+		// The filler rests a long taker order for the vault to trade against.
+		const takerOrderParams = getLimitOrderParams({
+			marketIndex,
+			direction: PositionDirection.LONG,
+			baseAssetAmount,
+			price: new BN((finalSolPerpPrice + 1) * PRICE_PRECISION.toNumber()),
+			auctionStartPrice: new BN(finalSolPerpPrice * PRICE_PRECISION.toNumber()),
+			auctionEndPrice: new BN(
+				(finalSolPerpPrice + 1) * PRICE_PRECISION.toNumber()
+			),
+			auctionDuration: 10,
+			userOrderId: 1,
+			postOnly: PostOnlyParams.NONE,
+		});
+		await fillerClient.velocityClient.placePerpOrder(takerOrderParams);
+
 		await fillerUser.fetchAccounts();
 		const order = fillerUser.getOrderByUserOrderId(1);
 		assert(!order.postOnly);
 
-		try {
-			// vault trades against filler's long
-			const makerOrderParams = getLimitOrderParams({
-				marketIndex,
-				direction: PositionDirection.SHORT,
-				baseAssetAmount,
-				price: new BN(finalSolPerpPrice).mul(PRICE_PRECISION),
-				userOrderId: 1,
-				postOnly: PostOnlyParams.MUST_POST_ONLY,
-				bitFlags: OrderParamsBitFlag.ImmediateOrCancel,
-			});
-			const orderParams = getOrderParams(makerOrderParams, {
-				marketType: MarketType.PERP,
-			});
-			const userStatsPublicKey =
-				delegateClient.velocityClient.getUserStatsAccountPublicKey();
+		// The vault closes the long by making the other side of the filler's
+		// order, so it earns the maker fee on this leg too.
+		const makerOrderParams = getLimitOrderParams({
+			marketIndex,
+			direction: PositionDirection.SHORT,
+			baseAssetAmount,
+			price: new BN(finalSolPerpPrice).mul(PRICE_PRECISION),
+			userOrderId: 1,
+			postOnly: PostOnlyParams.MUST_POST_ONLY,
+		});
+		await delegateClient.velocityClient.placePerpOrder(makerOrderParams);
 
-			const remainingAccounts =
-				delegateClient.velocityClient.getRemainingAccounts({
-					userAccounts: [
-						delegateActiveUser.getUserAccount(),
-						fillerUser.getUserAccount(),
-					],
-					useMarketLastSlotCache: true,
-					writablePerpMarketIndexes: [orderParams.marketIndex],
-				});
+		await delegateActiveUser.fetchAccounts();
+		const makerOrder = delegateActiveUser.getOrderByUserOrderId(1);
+		assert(makerOrder.postOnly, 'vault maker order is not post only');
 
-			const takerOrderId = order.orderId;
-			const placeAndMakeOrderIx =
-				await delegateClient.velocityClient.program.methods
-					.placeAndMakePerpOrder(orderParams, takerOrderId)
-					.accounts({
-						state: await delegateClient.velocityClient.getStatePublicKey(),
-						user: delegateActiveUser.userAccountPublicKey,
-						userStats: userStatsPublicKey,
-						taker: fillerUser.userAccountPublicKey,
-						takerStats:
-							fillerClient.velocityClient.getUserStatsAccountPublicKey(),
-						authority: delegateClient.velocityClient.wallet.publicKey,
-					})
-					.remainingAccounts(remainingAccounts)
-					.instruction();
-
-			const { slot } = await delegateClient.velocityClient.sendTransaction(
-				await delegateClient.velocityClient.buildTransaction(
-					placeAndMakeOrderIx,
-					delegateClient.velocityClient.txParams
-				),
-				[],
-				delegateClient.velocityClient.opts
-			);
-
-			delegateClient.velocityClient.perpMarketLastSlotCache.set(
-				orderParams.marketIndex,
-				slot
-			);
-		} catch (e) {
-			console.log('vault failed to short:', e);
-		}
+		await fillerClient.velocityClient.fillPerpOrder(
+			fillerUser.userAccountPublicKey,
+			fillerUser.getUserAccount(),
+			order,
+			{
+				maker: delegateActiveUser.userAccountPublicKey,
+				makerStats:
+					delegateClient.velocityClient.getUserStatsAccountPublicKey(),
+				makerUserAccount: delegateActiveUser.getUserAccount(),
+				order: makerOrder,
+			}
+		);
 
 		// check positions from vault and filler are accurate
 		await fillerUser.fetchAccounts();

@@ -301,8 +301,8 @@ describe('e2e localnet: programs + publisher + redis', function () {
 
 	/** Every spawned service, with the log fd `after` has to close. */
 	const services: { child: ChildProcess; log: number }[] = [];
-	/** The retail-flow attestation key swift co-signs with; registered
-	 * on-chain as `State.hot_flow_authority`. */
+	/** The retail-flow attestation key swift signs attestations with;
+	 * registered on-chain as `State.hot_flow_authority`. */
 	const flowAuthorityKp = Keypair.generate();
 	/** Where relay pays its keeper: a plain account that never signs, which
 	 * is what the turner requires before it will crank an *untrusted*
@@ -1540,7 +1540,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		await registerWatch(clobBook.publicKey, bookBlockOffset);
 		startTurner();
 
-		// Attested flow: register swift's co-signing key as the on-chain
+		// Attested flow: register swift's attestation key as the on-chain
 		// flow authority, then bring swift up with it.
 		await admin.updateHotAdmin(
 			HotRole.FlowAuthority,
@@ -2401,10 +2401,10 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		// bring-up sees an empty world (and its intake simulation panics
 		// on missing market data — observed, not hypothetical).
 		await startSwift();
-		// Gate the midpoint on attestation: from here, only transactions
-		// co-signed by the flow authority see its books — which makes the
+		// Gate the midpoint on attestation: from here, only flow the
+		// program marked as attested sees its books. That makes the
 		// midpoint's participation below an on-chain proof that the
-		// co-signature carried, not just that the endpoints answered.
+		// attestation verified, not just that the endpoints answered.
 		await send(
 			[
 				await midpointProgram.methods
@@ -2519,16 +2519,52 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		});
 		const { uuid, signed } = accepted;
 
-		// The keeper's side, wire-for-wire what keep-rs does: the flow
-		// authority rides the compute-budget price instruction as a
-		// read-only co-signer, the transaction is signed against a fixed
-		// blockhash, and /attest is polled through the hold window.
+		// The keeper's side, wire-for-wire what a filler does: poll /attest
+		// through the hold window, then carry the detached attestation as an
+		// argument of the fill instruction. The flow authority signs no
+		// transaction, so nothing here is co-signed.
+		let sawHoldWindow = false;
+		let attested:
+			| { flowAuthority: string; signature: string; expiryTs: number }
+			| undefined;
+		for (let attempt = 0; attempt < 8 && !attested; attempt++) {
+			const res = await fetch(`${SWIFT_URL}/attest`, {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ uuid: Buffer.from(uuid).toString() }),
+			});
+			const body = await res.text();
+			if (res.status === 425) {
+				sawHoldWindow = true;
+				const { retryAfterMs } = JSON.parse(body) as {
+					retryAfterMs?: number;
+				};
+				await new Promise((r) => setTimeout(r, retryAfterMs ?? 250));
+				continue;
+			}
+			assert.equal(res.status, 200, `attest refused: ${body}`);
+			attested = JSON.parse(body);
+		}
+		assert.isTrue(sawHoldWindow, 'the hold window was observed');
+		assert.isOk(attested, 'attestation granted after the hold');
+		// Swift signs with the key the program checks against: the
+		// flow-authority hot role on `State`, set during bring-up.
+		assert.equal(
+			attested!.flowAuthority,
+			flowAuthorityKp.publicKey.toBase58(),
+			'the attestation came from the on-chain flow authority'
+		);
+		// The blob binds to the taker's own order signature and to an
+		// expiry. Velocity verifies it in-program, next to the taker
+		// signature it binds to.
+		const flowAttestation = {
+			signature: Array.from(Buffer.from(attested!.signature, 'base64')),
+			expiryTs: new BN(attested!.expiryTs),
+		};
+
 		const cuLimit = ComputeBudgetProgram.setComputeUnitLimit({
 			units: 1_400_000,
 		});
-		// Compute budget parses no accounts, so the co-signer meta rides
-		// here inertly — exactly how keep-rs marks an attested fill.
-		cuLimit.keys.push(signerRo(flowAuthorityKp.publicKey));
 		// One instruction: the signed message is verified in-program
 		// (brine-ed25519), so there is no separate ed25519 precompile.
 		const [placeIx] = await admin.getPlaceSignedMsgTakerPerpOrderIxs(
@@ -2540,7 +2576,11 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				takerUserAccount: taker.getUserAccount()!,
 				signingAuthority: takerKp.publicKey,
 			},
-			[cuLimit]
+			[cuLimit],
+			undefined,
+			undefined,
+			undefined,
+			flowAttestation
 		);
 		// The v1 signed-message ix places, fills, and rests in one call, so it
 		// carries the same maker maps and quoter tail a keeper fill does. The
@@ -2569,57 +2609,12 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		}).compileToV0Message([lookupTable]);
 		const tx = new VersionedTransaction(message);
 		tx.sign([payer]);
-		const raw = Buffer.from(tx.serialize()).toString('base64');
 
-		let sawHoldWindow = false;
-		let attested: Buffer | undefined;
-		for (let attempt = 0; attempt < 8 && !attested; attempt++) {
-			const res = await fetch(`${SWIFT_URL}/attest`, {
-				method: 'POST',
-				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({
-					uuid: Buffer.from(uuid).toString(),
-					transaction: raw,
-				}),
-			});
-			const body = await res.text();
-			if (res.status === 425) {
-				sawHoldWindow = true;
-				const { retryAfterMs } = JSON.parse(body) as {
-					retryAfterMs?: number;
-				};
-				await new Promise((r) => setTimeout(r, retryAfterMs ?? 250));
-				continue;
-			}
-			assert.equal(res.status, 200, `attest refused: ${body}`);
-			attested = Buffer.from(
-				(JSON.parse(body) as { transaction: string }).transaction,
-				'base64'
-			);
-		}
-		assert.isTrue(sawHoldWindow, 'the hold window was observed');
-		assert.isOk(attested, 'attestation granted after the hold');
-
-		// Submitting the co-signed bytes verbatim: the validator verifies
-		// BOTH signatures, so landing at all proves swift's co-signature.
-		// Simulated with sigVerify first — sendRawTransaction's preflight
-		// does NOT check signatures, so a bad co-signature would otherwise
-		// surface only as a transaction that silently never lands.
-		const verified = await connection.simulateTransaction(
-			VersionedTransaction.deserialize(attested!),
-			{ sigVerify: true, replaceRecentBlockhash: false }
-		);
-		assert.isNull(
-			verified.value.err,
-			`attested tx failed sigVerify simulation: ${JSON.stringify(
-				verified.value.err
-			)} ${JSON.stringify(verified.value.logs?.slice(-6))}`
-		);
-		// Preflight is skipped deliberately: the sigVerify simulation above
-		// is the stronger check (preflight does not verify signatures at
-		// all), and on this validator preflighted sends were dropped
-		// inconsistently while this path lands reliably.
-		const signature = await connection.sendRawTransaction(attested!, {
+		// Preflight is skipped deliberately: on this validator preflighted
+		// sends were dropped inconsistently while this path lands reliably.
+		// A refused attestation reverts the fill, and `confirmSignature`
+		// reports the program logs it reverted with.
+		const signature = await connection.sendRawTransaction(tx.serialize(), {
 			skipPreflight: true,
 			maxRetries: 20,
 		});
@@ -2634,9 +2629,10 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				.sub(positionBefore)
 				.toString()})`
 		);
-		// The attestation reached the midpoint: its books only open to co-signed
-		// flow now, and its maker settled part of the fill. Read that off the
-		// transaction, not off a position a later crank could move.
+		// The attestation reached the midpoint: its books only open to
+		// attested flow now, and its maker settled part of the fill. Read
+		// that off the transaction, not off a position a later crank could
+		// move.
 		const midFilled = await makerFilledBase(
 			signature,
 			userOf(midMakerKp.publicKey)

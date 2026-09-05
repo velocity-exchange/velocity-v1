@@ -1615,7 +1615,9 @@ pub fn fill_perp_order_with_router(
             "Market is in settlement mode",
         )?;
 
-        let oracle_price_data = oracle_map.get_price_data(&market.oracle_id())?;
+        let oracle_price_data = *oracle_map.get_price_data(&market.oracle_id())?;
+        // The exchange oracle's own validity, which only this path reads: a
+        // DLOB maker match is gated on the raw feed as well as the safe one.
         exchange_oracle_validity = oracle_validity(
             MarketType::Perp,
             market.market_index,
@@ -1623,7 +1625,7 @@ pub fn fill_perp_order_with_router(
                 .market_stats
                 .historical_oracle_data
                 .last_oracle_price_twap,
-            oracle_price_data,
+            &oracle_price_data,
             &state.oracle_guard_rails.validity,
             market.get_max_confidence_interval_multiplier()?,
             &market.oracle_source,
@@ -1634,31 +1636,9 @@ pub fn fill_perp_order_with_router(
             slot,
             state.slot_clock(),
         )?;
-        let mm_oracle_price_data = market.get_mm_oracle_price_data(
-            *oracle_price_data,
-            slot,
-            &state.oracle_guard_rails.validity,
-            state.slot_clock(),
-        )?;
-        let safe_oracle_price_data = mm_oracle_price_data.get_safe_oracle_price_data();
-        safe_oracle_validity = oracle_validity(
-            MarketType::Perp,
-            market.market_index,
-            market
-                .market_stats
-                .historical_oracle_data
-                .last_oracle_price_twap,
-            &safe_oracle_price_data,
-            &state.oracle_guard_rails.validity,
-            market.get_max_confidence_interval_multiplier()?,
-            &market.oracle_source,
-            oracle::LogMode::SafeMMOracle,
-            market.oracle_slot_delay_override,
-            mm_oracle_price_data.is_safe_price_mm_sourced(),
-            market.oracle_low_risk_slot_delay_override,
-            slot,
-            state.slot_clock(),
-        )?;
+        let (mm_oracle_price_data, safe_validity) =
+            safe_mm_oracle_state(market, state, &oracle_price_data, slot)?;
+        safe_oracle_validity = safe_validity;
 
         user_can_skip_duration = user.can_skip_auction_duration(user_stats, order_reduce_only)?;
         amm_is_available &= market.amm_can_fill_order(
@@ -5501,6 +5481,106 @@ fn crossing_prefix_size(
     crossed
 }
 
+/// The market's safe MM oracle price and how valid it is.
+///
+/// Every perp fill path reads the oracle this way: the MM price the market
+/// derives from the raw feed, then the validity of its safe, confidence
+/// bounded form. The caller passes the raw price data it already holds, so
+/// this never repeats the map lookup and never reorders it.
+fn safe_mm_oracle_state(
+    market: &PerpMarket,
+    state: &State,
+    oracle_price_data: &OraclePriceData,
+    slot: u64,
+) -> VelocityResult<(crate::state::oracle::MMOraclePriceData, OracleValidity)> {
+    let mm_oracle_price_data = market.get_mm_oracle_price_data(
+        *oracle_price_data,
+        slot,
+        &state.oracle_guard_rails.validity,
+        state.slot_clock(),
+    )?;
+    let safe_oracle_price_data = mm_oracle_price_data.get_safe_oracle_price_data();
+    let safe_oracle_validity = oracle::oracle_validity(
+        MarketType::Perp,
+        market.market_index,
+        market
+            .market_stats
+            .historical_oracle_data
+            .last_oracle_price_twap,
+        &safe_oracle_price_data,
+        &state.oracle_guard_rails.validity,
+        market.get_max_confidence_interval_multiplier()?,
+        &market.oracle_source,
+        oracle::LogMode::SafeMMOracle,
+        market.oracle_slot_delay_override,
+        mm_oracle_price_data.is_safe_price_mm_sourced(),
+        market.oracle_low_risk_slot_delay_override,
+        slot,
+        state.slot_clock(),
+    )?;
+    Ok((mm_oracle_price_data, safe_oracle_validity))
+}
+
+/// The oracle state a crossed-book crank checks before it moves a position.
+///
+/// A crank matches two resting sources at a price the oracle bounds, so it
+/// holds the oracle to the rules an ordinary fill holds it to. The market
+/// must not be in settlement. Its fills must not be paused. The safe MM
+/// oracle must permit a match fill. The mark must sit inside the market's
+/// price band.
+///
+/// `crank` names the caller in the error message, so a refusal says which
+/// crank refused. The market stays borrowed by the caller, which reads its
+/// own extra fields after this returns.
+struct CrankOraclePreflight {
+    oracle_price: i64,
+    /// Whether the oracle is too stale for the margin checks to trust it.
+    stale_for_margin: bool,
+    /// Open interest before the crank, which the post-fill rule measures
+    /// against.
+    open_interest: u128,
+}
+
+fn crank_oracle_preflight(
+    market: &mut PerpMarket,
+    state: &State,
+    oracle_map: &mut OracleMap,
+    clock: &Clock,
+    crank: &str,
+) -> VelocityResult<CrankOraclePreflight> {
+    validation::perp_market::validate_perp_market(market)?;
+    validate!(
+        !market.is_in_settlement(clock.unix_timestamp),
+        ErrorCode::MarketFillOrderPaused,
+        "Market is in settlement mode",
+    )?;
+    validate!(
+        !market.is_operation_paused(PerpOperation::Fill),
+        ErrorCode::MarketFillOrderPaused,
+        "Market fills paused",
+    )?;
+
+    let oracle_price_data = *oracle_map.get_price_data(&market.oracle_id())?;
+    let (mm_oracle_price_data, safe_oracle_validity) =
+        safe_mm_oracle_state(market, state, &oracle_price_data, clock.slot)?;
+    validate!(
+        is_oracle_valid_for_action(safe_oracle_validity, Some(VelocityAction::FillOrderMatch))?,
+        ErrorCode::InvalidOracle,
+        "oracle not valid for {}",
+        crank
+    )?;
+    let oracle_price = mm_oracle_price_data.get_price();
+    validate_market_within_price_band(market, state, oracle_price)?;
+    Ok(CrankOraclePreflight {
+        oracle_price,
+        stale_for_margin: state
+            .slot_clock()
+            .elapsed_slot_delta(mm_oracle_price_data.get_delay().max(0) as u64, clock.slot)
+            > state.oracle_guard_rails.validity.stale_for_margin_ms(),
+        open_interest: market.get_open_interest(),
+    })
+}
+
 /// Match two crossed external sources against each other with the protocol
 /// `User` as the pass-through taker — the arb bot the cross-match crank
 /// runs. Buy `size` from the `buy_index` book's asks, then sell exactly what
@@ -5550,63 +5630,13 @@ pub fn cross_match(
         "cross size must be nonzero"
     )?;
 
-    // ---- Oracle pre-flight, mirroring the fill path. ----
-    let (oracle_price, oracle_stale_for_margin, perp_market_oi_before) = {
+    let CrankOraclePreflight {
+        oracle_price,
+        stale_for_margin: oracle_stale_for_margin,
+        open_interest: perp_market_oi_before,
+    } = {
         let market = &mut perp_market_map.get_ref_mut(&market_index)?;
-        validation::perp_market::validate_perp_market(market)?;
-        validate!(
-            !market.is_in_settlement(now),
-            ErrorCode::MarketFillOrderPaused,
-            "Market is in settlement mode",
-        )?;
-        validate!(
-            !market.is_operation_paused(PerpOperation::Fill),
-            ErrorCode::MarketFillOrderPaused,
-            "Market fills paused",
-        )?;
-
-        let oracle_price_data = oracle_map.get_price_data(&market.oracle_id())?;
-        let mm_oracle_price_data = market.get_mm_oracle_price_data(
-            *oracle_price_data,
-            slot,
-            &state.oracle_guard_rails.validity,
-            state.slot_clock(),
-        )?;
-        let safe_oracle_price_data = mm_oracle_price_data.get_safe_oracle_price_data();
-        let safe_oracle_validity = oracle::oracle_validity(
-            MarketType::Perp,
-            market.market_index,
-            market
-                .market_stats
-                .historical_oracle_data
-                .last_oracle_price_twap,
-            &safe_oracle_price_data,
-            &state.oracle_guard_rails.validity,
-            market.get_max_confidence_interval_multiplier()?,
-            &market.oracle_source,
-            oracle::LogMode::SafeMMOracle,
-            market.oracle_slot_delay_override,
-            mm_oracle_price_data.is_safe_price_mm_sourced(),
-            market.oracle_low_risk_slot_delay_override,
-            clock.slot,
-            state.slot_clock(),
-        )?;
-        validate!(
-            is_oracle_valid_for_action(safe_oracle_validity, Some(VelocityAction::FillOrderMatch))?,
-            ErrorCode::InvalidOracle,
-            "oracle not valid for cross match"
-        )?;
-        let oracle_price = mm_oracle_price_data.get_price();
-        validate_market_within_price_band(market, state, oracle_price)?;
-        let oracle_stale_for_margin = state
-            .slot_clock()
-            .elapsed_slot_delta(mm_oracle_price_data.get_delay().max(0) as u64, slot)
-            > state.oracle_guard_rails.validity.stale_for_margin_ms();
-        (
-            oracle_price,
-            oracle_stale_for_margin,
-            market.get_open_interest(),
-        )
+        crank_oracle_preflight(market, state, oracle_map, clock, "cross match")?
     };
 
     // Settle funding for everyone the legs can touch BEFORE any position
@@ -6105,58 +6135,12 @@ pub fn price_taker_origin_cross(
         taker_fee_addon,
     ) = {
         let market = &mut perp_market_map.get_ref_mut(&market_index)?;
-        validation::perp_market::validate_perp_market(market)?;
-        validate!(
-            !market.is_in_settlement(clock.unix_timestamp),
-            ErrorCode::MarketFillOrderPaused,
-            "Market is in settlement mode",
-        )?;
-        validate!(
-            !market.is_operation_paused(PerpOperation::Fill),
-            ErrorCode::MarketFillOrderPaused,
-            "Market fills paused",
-        )?;
-
-        let oracle_price_data = oracle_map.get_price_data(&market.oracle_id())?;
-        let mm_oracle_price_data = market.get_mm_oracle_price_data(
-            *oracle_price_data,
-            clock.slot,
-            &state.oracle_guard_rails.validity,
-            state.slot_clock(),
-        )?;
-        let safe_oracle_price_data = mm_oracle_price_data.get_safe_oracle_price_data();
-        let safe_oracle_validity = oracle::oracle_validity(
-            MarketType::Perp,
-            market.market_index,
-            market
-                .market_stats
-                .historical_oracle_data
-                .last_oracle_price_twap,
-            &safe_oracle_price_data,
-            &state.oracle_guard_rails.validity,
-            market.get_max_confidence_interval_multiplier()?,
-            &market.oracle_source,
-            oracle::LogMode::SafeMMOracle,
-            market.oracle_slot_delay_override,
-            mm_oracle_price_data.is_safe_price_mm_sourced(),
-            market.oracle_low_risk_slot_delay_override,
-            clock.slot,
-            state.slot_clock(),
-        )?;
-        validate!(
-            is_oracle_valid_for_action(safe_oracle_validity, Some(VelocityAction::FillOrderMatch))?,
-            ErrorCode::InvalidOracle,
-            "oracle not valid for taker-origin cross"
-        )?;
-        let oracle_price = mm_oracle_price_data.get_price();
-        validate_market_within_price_band(market, state, oracle_price)?;
+        let preflight =
+            crank_oracle_preflight(market, state, oracle_map, clock, "taker-origin cross")?;
         (
-            oracle_price,
-            state
-                .slot_clock()
-                .elapsed_slot_delta(mm_oracle_price_data.get_delay().max(0) as u64, clock.slot)
-                > state.oracle_guard_rails.validity.stale_for_margin_ms(),
-            market.get_open_interest(),
+            preflight.oracle_price,
+            preflight.stale_for_margin,
+            preflight.open_interest,
             market.fee_adjustment,
             market.taker_fee_addon_tenth_bps,
         )

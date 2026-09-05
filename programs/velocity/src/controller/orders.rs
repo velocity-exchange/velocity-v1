@@ -5603,7 +5603,7 @@ fn crank_oracle_preflight(
 pub fn cross_match(
     state: &State,
     market_index: u16,
-    mut size: u64,
+    size: u64,
     buy_index: usize,
     sell_index: usize,
     taker_loader: &AccountLoader<User>,
@@ -5663,19 +5663,6 @@ pub fn cross_match(
     let taker_ref = taker.clob_user_ref();
     let protocol_authority = state.signer;
     let user_ref_index = makers_and_referrer.user_ref_index()?;
-    let resolve_user = |user: &crate::state::prop_amm::ClobUserRefV0| -> VelocityResult<Pubkey> {
-        user_ref_index
-            .get(&(user.authority, user.sub_account_id))
-            .copied()
-            .ok_or_else(|| {
-                msg!(
-                    "cross leg returned a balance change for an unloaded user {}/{}",
-                    user.authority,
-                    user.sub_account_id
-                );
-                ErrorCode::DefaultError
-            })
-    };
 
     let taker_position_index = get_position_index(&taker.perp_positions, market_index)
         .or_else(|_| add_new_position(&mut taker.perp_positions, market_index))?;
@@ -5692,31 +5679,12 @@ pub fn cross_match(
     let mut no_escrow: Option<&mut RevenueShareEscrowZeroCopyMut> = None;
     let mut filler_reward_paid = 0u64;
 
-    // Bound the cross to the prefix where the two books actually cross. The
-    // caller names `size`, and past the crossing depth the extra fills
-    // non-crossed levels — which lets a caller that rests its own orders at
-    // intermediate prices siphon the spread the protocol would have taken, and
-    // lets a sweep run past a taker-origin order the dedicated crank owes an
-    // improvement to. Computable only when both sides are books (a ladder to
-    // read); a Custom side is bounded by its pre-execute margin clamp and the
-    // surplus floor instead. The two ladders come from the same quote the
-    // execute below fills, so the boundary they show is the one it hits.
-    // Read each side's ladder once, here. The legs settle against these same
-    // ladders below rather than re-quoting the books: a leg fills a prefix of
-    // what it reads, so the ladder read at `size` covers the smaller
-    // `leg_size`, and the buy leg consumes only its own book, leaving the sell
-    // ladder unchanged for the second leg. A Custom side reads `None` and its
-    // leg is bounded by its margin clamp and the surplus floor instead.
-    let buy_asks =
-        executor.resting_levels(buy_index, crate::state::prop_amm::Direction::Long, size)?;
-    let sell_bids =
-        executor.resting_levels(sell_index, crate::state::prop_amm::Direction::Short, size)?;
-    if let (Some(buy_asks), Some(sell_bids)) = (&buy_asks, &sell_bids) {
-        size = size.min(crossing_prefix_size(buy_asks, sell_bids));
-    }
-    let leg_ladders = [buy_asks, sell_bids];
+    let CrossPrefix {
+        size,
+        ladders: leg_ladders,
+    } = bound_cross_to_crossing_prefix(executor, buy_index, sell_index, size)?;
 
-    let mut leg_totals: [(u64, u64); 2] = [(0, 0); 2];
+    let mut leg_totals = [CrossLegFill::default(); 2];
     let legs = [
         (buy_index, PositionDirection::Long),
         (sell_index, PositionDirection::Short),
@@ -5724,324 +5692,602 @@ pub fn cross_match(
     #[allow(clippy::needless_range_loop)]
     for (leg, (book_index, taker_direction)) in legs.iter().copied().enumerate() {
         // The sell leg must return exactly what the buy leg took.
-        let leg_size = if leg == 0 { size } else { leg_totals[0].0 };
+        let leg_size = if leg == 0 {
+            size
+        } else {
+            leg_totals[0].base_filled
+        };
         if leg_size == 0 {
             break;
         }
 
-        // Custom PropAMM depth is never margin-reserved; clamp the leg to
-        // what the quoter's own account supports before mutating external
-        // state, exactly like the fill's pre-execute clamp.
-        if executor.quoter_type(book_index) == crate::state::prop_amm::QuoterType::Custom {
-            let quoter_user_key = executor.quoter_user(book_index);
-            validate!(
-                quoter_user_key != taker_key,
-                ErrorCode::DefaultError,
-                "cross leg quotes for the protocol user itself"
-            )?;
-            let maker_direction = taker_direction.opposite();
-            let position_index = {
-                let mut maker = makers_and_referrer.get_ref_mut(&quoter_user_key)?;
-                get_position_index(&maker.perp_positions, market_index)
-                    .or_else(|_| add_new_position(&mut maker.perp_positions, market_index))?
-            };
-            let maker = makers_and_referrer.get_ref(&quoter_user_key)?;
-            let cap = crate::math::orders::calculate_max_perp_order_size(
-                &maker,
-                position_index,
-                market_index,
-                maker_direction,
-                perp_market_map,
-                spot_market_map,
-                oracle_map,
-            )?;
-            validate!(
-                cap >= leg_size,
-                ErrorCode::CrossMatchImbalanced,
-                "cross leg {} margin cap {} below leg size {}",
-                leg,
-                cap,
-                leg_size
-            )?;
-        }
-
-        // The leg's ephemeral order (settlement reads direction + slot + id).
-        // A local, not an `orders` slot: the settlement takes the order
-        // itself, so this leg never needs the protocol user to have a free
-        // one.
-        let mut taker_order = Order {
-            slot,
-            order_id,
+        leg_totals[leg] = settle_cross_leg(
+            state,
             market_index,
-            status: OrderStatus::Open,
-            order_type: OrderType::Market,
-            market_type: MarketType::Perp,
-            direction: taker_direction,
-            base_asset_amount: leg_size,
-            existing_position_direction: taker_direction,
-            ..Order::default()
-        };
-        let taker_existing_position_params_before = taker.perp_positions[taker_position_index]
-            .get_existing_position_params_for_order_action(taker_direction);
-
-        let cpi_direction = match taker_direction {
-            PositionDirection::Long => crate::state::prop_amm::Direction::Long,
-            PositionDirection::Short => crate::state::prop_amm::Direction::Short,
-        };
-        let subjects = executor.subjects(book_index, cpi_direction, leg_size)?;
-        // The ladder this leg settles against, read once above before any
-        // execute consumed a book. A cross has no `quote_v0` leg to bind
-        // against (the crank's account list carries only the execute surface),
-        // so the run these orders rest at stands in as the quote. A Custom
-        // entry offers none, and there it is the entry's single consenting
-        // `user` plus the surplus check that bound the leg.
-        let resting = leg_ladders[leg].as_ref();
-        let located = executor.execute(book_index, cpi_direction, leg_size)?;
-        let data = located.borrow()?;
-        let response = located.execute_response(&data)?;
-        let maker_aggregates_tracked = executor.quoter_type(book_index).tracks_maker_aggregates();
-        let maker_direction = taker_direction.opposite();
-
-        let (leg_base, leg_quote) = response.changes.iter().try_fold(
-            (0u64, 0u64),
-            |(base, quote), change| -> VelocityResult<(u64, u64)> {
-                // A zero-base change carries no fill; its quote would be summed
-                // here but skipped by the per-change price and subject checks
-                // below. Reject it so a cross leg cannot smuggle quote past them.
-                validate!(
-                    change.base_size > 0,
-                    ErrorCode::QuoterFillOffQuote,
-                    "cross leg quoter {} returned a zero-base balance change carrying {} quote",
-                    executor.quoter_key(book_index),
-                    change.quote_size
-                )?;
-                Ok((
-                    base.safe_add(change.base_size)?,
-                    quote.safe_add(change.quote_size)?,
-                ))
-            },
-        )?;
-        // These are real orders rather than a quoted ladder, so they price at
-        // their own size with no step quantization.
-        let quoted = match resting {
-            Some(levels) if leg_base > 0 => {
-                Some(crate::math::router::quoted_prefix(levels, 1, leg_base)?)
-            }
-            _ => None,
-        };
-        if let Some(quoted) = quoted.as_ref() {
-            validate!(
-                crate::math::router::validate_executed_notional(quoted, leg_quote)?,
-                ErrorCode::QuoterFillOffQuote,
-                "quoter {} filled {}/{} outside the book it swept ({}..{})",
-                executor.quoter_key(book_index),
-                leg_quote,
-                leg_base,
-                quoted.best_price,
-                quoted.worst_price
-            )?;
-        }
-
-        let mut market = perp_market_map.get_ref_mut(&market_index)?;
-        for (change_index, change) in response.changes.iter().enumerate() {
-            if change.base_size == 0 {
-                continue;
-            }
-            // The count of orders this change completed, walked once for both
-            // the band check and the open-order decrement.
-            let completed = response.completed_count(change_index);
-            let maker_key = resolve_user(&change.user)?;
-            validate!(
-                subjects.permits(&change.user, &maker_key, &taker_ref, &protocol_authority),
-                ErrorCode::QuoterSubjectNotPermitted,
-                "quoter {} may not act against user {} (the protocol user \
-                 itself is never a subject)",
-                executor.quoter_key(book_index),
-                maker_key
-            )?;
-            if let Some(quoted) = quoted.as_ref() {
-                validate!(
-                    crate::math::router::validate_change_notional(
-                        quoted,
-                        change.base_size,
-                        change.quote_size,
-                        merged_orders(completed)?,
-                    )?,
-                    ErrorCode::QuoterFillOffQuote,
-                    "quoter {} priced user {} outside the book it swept",
-                    executor.quoter_key(book_index),
-                    maker_key
-                )?;
-            }
-            // Per-leg oracle band, as the router fill applies. A cross settles
-            // real makers at the crossed prices; bound each against oracle so a
-            // maker resting far off it is not filled at that price.
-            let change_price = (change.quote_size as u128)
-                .safe_mul(BASE_PRECISION_U64.cast()?)?
-                .safe_div(change.base_size.cast()?)?
-                .cast::<u64>()?;
-            validate!(
-                !crate::math::orders::limit_price_breaches_maker_oracle_price_bands(
-                    change_price,
-                    maker_direction,
-                    oracle_price,
-                    executor.oracle_band(book_index, market.margin_ratio_initial),
-                )?,
-                ErrorCode::QuoterFillOffQuote,
-                "quoter {} filled user {} at {} outside the oracle band",
-                executor.quoter_key(book_index),
-                maker_key,
-                change_price
-            )?;
-            let mut maker = makers_and_referrer.get_ref_mut(&maker_key)?;
-            let mut maker_stats = Some(makers_and_referrer_stats.get_ref_mut(&maker.authority)?);
-            let (base_filled, quote_filled) = settle_external_match_fill(
-                change.base_size,
-                change.quote_size,
-                market.deref_mut(),
-                taker,
-                &mut taker_stats,
-                taker_position_index,
-                &mut taker_order,
-                &taker_key,
-                taker_direction,
-                taker_existing_position_params_before,
-                &mut maker,
-                maker_stats.as_deref_mut(),
-                &maker_key,
-                maker_aggregates_tracked,
-                response.sole_client_order_id(change_index),
-                None,
-                oracle_price,
-                &mut none_filler,
-                &mut none_filler_stats,
-                &taker_key,
-                &mut no_escrow,
-                false,
-                &state.perp_fee_structure,
-                oracle_map,
-                false,
-                now,
-                slot,
-                state.promo_fee_tier,
-                // The crank's taker is the protocol User. It has no builder
-                // escrow, so there is no builder fee to allow.
-                false,
-                // The ephemeral taker never reserved, so nothing to unwind.
-                false,
-                &mut filler_reward_paid,
-            )?;
-            leg_totals[leg].0 = leg_totals[leg].0.safe_add(base_filled)?;
-            leg_totals[leg].1 = leg_totals[leg].1.safe_add(quote_filled)?;
-
-            let maker_position_index = get_position_index(&maker.perp_positions, market_index)?;
-            update_maker_fills_map(
-                &mut maker_fills,
-                &maker_key,
-                maker_direction,
-                base_filled,
-                maker.perp_positions[maker_position_index].is_isolated(),
-            )?;
-            if maker_aggregates_tracked {
-                position::release_reserved_open_orders(
-                    &mut maker.perp_positions[maker_position_index],
-                    completed.cast()?,
-                )?;
-                for clob_order_id in response.completed_for(change_index) {
-                    maker.decrement_open_orders(false);
-                    maker.release_placed_trigger_slot(
-                        market_index,
-                        clob_order_id,
-                        OrderStatus::Filled,
-                    );
-                }
-            }
-        }
-        if maker_aggregates_tracked {
-            for cancelled in response.cancelled {
-                let maker_key = resolve_user(&cancelled.user)?;
-                validate!(
-                    subjects.permits(&cancelled.user, &maker_key, &taker_ref, &protocol_authority),
-                    ErrorCode::QuoterSubjectNotPermitted,
-                    "quoter {} may not cancel for user {}",
-                    executor.quoter_key(book_index),
-                    maker_key
-                )?;
-                // A cull is a remainder the book refused to let rest, so it is
-                // below the book's own minimum — and the attach requires that
-                // minimum to be at or under the market's. The release below
-                // holds the figure to the maker's whole reservation; this holds
-                // it to the one order a cull can be about.
-                //
-                // A market with no minimum of its own bounds nothing, which is
-                // the same case the attach lets through.
-                validate!(
-                    market.market_stats.min_order_size == 0
-                        || cancelled.base_asset_amount < market.market_stats.min_order_size,
-                    ErrorCode::QuoterFillOffQuote,
-                    "quoter {} culled {} base, at or above the market minimum {}",
-                    executor.quoter_key(book_index),
-                    cancelled.base_asset_amount,
-                    market.market_stats.min_order_size
-                )?;
-                let mut maker = makers_and_referrer.get_ref_mut(&maker_key)?;
-                let maker_position_index = get_position_index(&maker.perp_positions, market_index)?;
-                position::release_reserved_open_base(
-                    &mut maker.perp_positions[maker_position_index],
-                    &maker_direction,
-                    cancelled.base_asset_amount,
-                )?;
-                position::release_reserved_open_orders(
-                    &mut maker.perp_positions[maker_position_index],
-                    1,
-                )?;
-                maker.decrement_open_orders(false);
-                maker.release_placed_trigger_slot(
-                    market_index,
-                    cancelled.order_id,
-                    OrderStatus::Canceled,
-                );
-                let is_isolated = maker.perp_positions[maker_position_index].is_isolated();
-                drop(maker);
-                crate::instructions::emit_clob_cancel_record(
-                    now,
-                    oracle_price,
-                    &maker_key,
-                    crate::instructions::ClobOrderFacts {
-                        order_id: cancelled.client_order_id,
-                        market_index,
-                        direction: maker_direction,
-                        price: cancelled.price,
-                        base_asset_amount: cancelled.base_asset_amount,
-                        base_asset_amount_filled: 0,
-                        max_ts: 0,
-                        slot,
-                        taker_origin: false,
-                    },
-                    OrderActionExplanation::ClobRemainderCulled,
-                    None,
-                    None,
-                    is_isolated,
-                )?;
-            }
-        }
-        validate!(
-            leg_totals[leg].0 <= leg_size,
-            ErrorCode::DefaultError,
-            "cross leg {} overfilled: {} > {}",
             leg,
-            leg_totals[leg].0,
-            leg_size
+            book_index,
+            taker_direction,
+            leg_size,
+            order_id,
+            leg_ladders[leg].as_deref(),
+            taker,
+            &mut taker_stats,
+            &taker_key,
+            &taker_ref,
+            taker_position_index,
+            &protocol_authority,
+            &user_ref_index,
+            makers_and_referrer,
+            makers_and_referrer_stats,
+            executor,
+            perp_market_map,
+            spot_market_map,
+            oracle_map,
+            oracle_price,
+            &mut maker_fills,
+            &mut none_filler,
+            &mut none_filler_stats,
+            &mut no_escrow,
+            &mut filler_reward_paid,
+            now,
+            slot,
         )?;
     }
 
-    let (base_matched, _) = leg_totals[0];
+    let CrossSurplus {
+        base_matched,
+        surplus,
+    } = validate_cross_surplus(
+        taker,
+        taker_position_index,
+        base_before,
+        quote_before,
+        &leg_totals,
+        min_surplus,
+    )?;
+    taker.update_last_active_slot(slot);
+
+    // Shared post-fill invariants: the per-maker margin/equity-floor/breaker
+    // checks over both legs' fills, plus the stale-oracle OI rule. The taker
+    // side of the shared check passes trivially — the protocol User's base
+    // is unchanged and its quote strictly grew.
+    fulfill_perp_order_post_checks(
+        taker,
+        &mut taker_stats,
+        makers_and_referrer,
+        makers_and_referrer_stats,
+        spot_market_map,
+        perp_market_map,
+        oracle_map,
+        market_index,
+        base_matched,
+        leg_totals[0].quote_filled,
+        &maker_fills,
+        true,
+        false,
+        perp_market_oi_before,
+        oracle_stale_for_margin,
+        false,
+        now,
+    )?;
+
+    Ok((base_matched, surplus.cast()?))
+}
+
+/// The size a cross runs at, and the ladder each of its legs settles against.
+struct CrossPrefix {
+    /// The caller's size, cut back to the depth the two books cross over.
+    size: u64,
+    /// The buy leg's asks and the sell leg's bids, indexed by leg. A side
+    /// velocity cannot read the liquidity of holds `None`.
+    ladders: [Option<Vec<crate::state::prop_amm::PriceLevel>>; 2],
+}
+
+/// Bound the cross to the prefix where the two books actually cross. The
+/// caller names `size`, and past the crossing depth the extra fills
+/// non-crossed levels — which lets a caller that rests its own orders at
+/// intermediate prices siphon the spread the protocol would have taken, and
+/// lets a sweep run past a taker-origin order the dedicated crank owes an
+/// improvement to. Computable only when both sides are books (a ladder to
+/// read); a Custom side is bounded by its pre-execute margin clamp and the
+/// surplus floor instead. The two ladders come from the same quote the
+/// execute below fills, so the boundary they show is the one it hits.
+/// Read each side's ladder once, here. The legs settle against these same
+/// ladders below rather than re-quoting the books: a leg fills a prefix of
+/// what it reads, so the ladder read at `size` covers the smaller
+/// `leg_size`, and the buy leg consumes only its own book, leaving the sell
+/// ladder unchanged for the second leg. A Custom side reads `None` and its
+/// leg is bounded by its margin clamp and the surplus floor instead.
+fn bound_cross_to_crossing_prefix(
+    executor: &mut dyn crate::state::prop_amm::ExternalQuoterExecutor,
+    buy_index: usize,
+    sell_index: usize,
+    mut size: u64,
+) -> VelocityResult<CrossPrefix> {
+    let buy_asks =
+        executor.resting_levels(buy_index, crate::state::prop_amm::Direction::Long, size)?;
+    let sell_bids =
+        executor.resting_levels(sell_index, crate::state::prop_amm::Direction::Short, size)?;
+    if let (Some(buy_asks), Some(sell_bids)) = (&buy_asks, &sell_bids) {
+        size = size.min(crossing_prefix_size(buy_asks, sell_bids));
+    }
+    Ok(CrossPrefix {
+        size,
+        ladders: [buy_asks, sell_bids],
+    })
+}
+
+/// What one leg of a cross filled.
+#[derive(Clone, Copy, Default)]
+struct CrossLegFill {
+    base_filled: u64,
+    quote_filled: u64,
+}
+
+/// Custom PropAMM depth is never margin-reserved; clamp the leg to
+/// what the quoter's own account supports before mutating external
+/// state, exactly like the fill's pre-execute clamp.
+#[allow(clippy::too_many_arguments)]
+fn clamp_custom_quoter_cross_leg(
+    executor: &dyn crate::state::prop_amm::ExternalQuoterExecutor,
+    book_index: usize,
+    leg: usize,
+    leg_size: u64,
+    market_index: u16,
+    taker_key: &Pubkey,
+    taker_direction: PositionDirection,
+    makers_and_referrer: &UserMap,
+    perp_market_map: &PerpMarketMap,
+    spot_market_map: &SpotMarketMap,
+    oracle_map: &mut OracleMap,
+) -> VelocityResult<()> {
+    if executor.quoter_type(book_index) != crate::state::prop_amm::QuoterType::Custom {
+        return Ok(());
+    }
+    let quoter_user_key = executor.quoter_user(book_index);
     validate!(
-        leg_totals[1].0 == base_matched,
+        quoter_user_key != *taker_key,
+        ErrorCode::DefaultError,
+        "cross leg quotes for the protocol user itself"
+    )?;
+    let maker_direction = taker_direction.opposite();
+    let position_index = {
+        let mut maker = makers_and_referrer.get_ref_mut(&quoter_user_key)?;
+        get_position_index(&maker.perp_positions, market_index)
+            .or_else(|_| add_new_position(&mut maker.perp_positions, market_index))?
+    };
+    let maker = makers_and_referrer.get_ref(&quoter_user_key)?;
+    let cap = crate::math::orders::calculate_max_perp_order_size(
+        &maker,
+        position_index,
+        market_index,
+        maker_direction,
+        perp_market_map,
+        spot_market_map,
+        oracle_map,
+    )?;
+    validate!(
+        cap >= leg_size,
+        ErrorCode::CrossMatchImbalanced,
+        "cross leg {} margin cap {} below leg size {}",
+        leg,
+        cap,
+        leg_size
+    )?;
+    Ok(())
+}
+
+/// Settle one leg of a cross: execute `leg_size` on the leg's book, then
+/// take each balance change it returns through the standard external-match
+/// fill.
+///
+/// Every change is checked before it settles. It must carry base, name a
+/// user the quoter may act for, price inside the ladder the leg reads, and
+/// price inside the market's oracle band. A book-backed quoter also unwinds
+/// the maker aggregates its filled and culled orders reserved.
+#[allow(clippy::too_many_arguments)]
+fn settle_cross_leg(
+    state: &State,
+    market_index: u16,
+    leg: usize,
+    book_index: usize,
+    taker_direction: PositionDirection,
+    leg_size: u64,
+    order_id: u32,
+    // The ladder this leg settles against, read once above before any
+    // execute consumed a book. A cross has no `quote_v0` leg to bind
+    // against (the crank's account list carries only the execute surface),
+    // so the run these orders rest at stands in as the quote. A Custom
+    // entry offers none, and there it is the entry's single consenting
+    // `user` plus the surplus check that bound the leg.
+    resting: Option<&[crate::state::prop_amm::PriceLevel]>,
+    taker: &mut User,
+    taker_stats: &mut UserStats,
+    taker_key: &Pubkey,
+    taker_ref: &crate::state::prop_amm::ClobUserRefV0,
+    taker_position_index: usize,
+    protocol_authority: &Pubkey,
+    user_ref_index: &BTreeMap<(Pubkey, u16), Pubkey>,
+    makers_and_referrer: &UserMap,
+    makers_and_referrer_stats: &UserStatsMap,
+    executor: &mut dyn crate::state::prop_amm::ExternalQuoterExecutor,
+    perp_market_map: &PerpMarketMap,
+    spot_market_map: &SpotMarketMap,
+    oracle_map: &mut OracleMap,
+    oracle_price: i64,
+    maker_fills: &mut BTreeMap<Pubkey, (i64, bool)>,
+    none_filler: &mut Option<&mut User>,
+    none_filler_stats: &mut Option<&mut UserStats>,
+    no_escrow: &mut Option<&mut RevenueShareEscrowZeroCopyMut>,
+    filler_reward_paid: &mut u64,
+    now: i64,
+    slot: u64,
+) -> VelocityResult<CrossLegFill> {
+    let resolve_user = |user: &crate::state::prop_amm::ClobUserRefV0| -> VelocityResult<Pubkey> {
+        user_ref_index
+            .get(&(user.authority, user.sub_account_id))
+            .copied()
+            .ok_or_else(|| {
+                msg!(
+                    "cross leg returned a balance change for an unloaded user {}/{}",
+                    user.authority,
+                    user.sub_account_id
+                );
+                ErrorCode::DefaultError
+            })
+    };
+
+    clamp_custom_quoter_cross_leg(
+        executor,
+        book_index,
+        leg,
+        leg_size,
+        market_index,
+        taker_key,
+        taker_direction,
+        makers_and_referrer,
+        perp_market_map,
+        spot_market_map,
+        oracle_map,
+    )?;
+
+    // The leg's ephemeral order (settlement reads direction + slot + id).
+    // A local, not an `orders` slot: the settlement takes the order
+    // itself, so this leg never needs the protocol user to have a free
+    // one.
+    let mut taker_order = Order {
+        slot,
+        order_id,
+        market_index,
+        status: OrderStatus::Open,
+        order_type: OrderType::Market,
+        market_type: MarketType::Perp,
+        direction: taker_direction,
+        base_asset_amount: leg_size,
+        existing_position_direction: taker_direction,
+        ..Order::default()
+    };
+    let taker_existing_position_params_before = taker.perp_positions[taker_position_index]
+        .get_existing_position_params_for_order_action(taker_direction);
+
+    let cpi_direction = match taker_direction {
+        PositionDirection::Long => crate::state::prop_amm::Direction::Long,
+        PositionDirection::Short => crate::state::prop_amm::Direction::Short,
+    };
+    let subjects = executor.subjects(book_index, cpi_direction, leg_size)?;
+    let located = executor.execute(book_index, cpi_direction, leg_size)?;
+    let data = located.borrow()?;
+    let response = located.execute_response(&data)?;
+    let maker_aggregates_tracked = executor.quoter_type(book_index).tracks_maker_aggregates();
+    let maker_direction = taker_direction.opposite();
+
+    let quoted = cross_leg_quoted_prefix(executor, book_index, &response, resting)?;
+
+    let mut leg_total = CrossLegFill::default();
+    let mut market = perp_market_map.get_ref_mut(&market_index)?;
+    for (change_index, change) in response.changes.iter().enumerate() {
+        if change.base_size == 0 {
+            continue;
+        }
+        // The count of orders this change completed, walked once for both
+        // the band check and the open-order decrement.
+        let completed = response.completed_count(change_index);
+        let maker_key = resolve_user(&change.user)?;
+        validate!(
+            subjects.permits(&change.user, &maker_key, taker_ref, protocol_authority),
+            ErrorCode::QuoterSubjectNotPermitted,
+            "quoter {} may not act against user {} (the protocol user \
+             itself is never a subject)",
+            executor.quoter_key(book_index),
+            maker_key
+        )?;
+        if let Some(quoted) = quoted.as_ref() {
+            validate!(
+                crate::math::router::validate_change_notional(
+                    quoted,
+                    change.base_size,
+                    change.quote_size,
+                    merged_orders(completed)?,
+                )?,
+                ErrorCode::QuoterFillOffQuote,
+                "quoter {} priced user {} outside the book it swept",
+                executor.quoter_key(book_index),
+                maker_key
+            )?;
+        }
+        // Per-leg oracle band, as the router fill applies. A cross settles
+        // real makers at the crossed prices; bound each against oracle so a
+        // maker resting far off it is not filled at that price.
+        let change_price = (change.quote_size as u128)
+            .safe_mul(BASE_PRECISION_U64.cast()?)?
+            .safe_div(change.base_size.cast()?)?
+            .cast::<u64>()?;
+        validate!(
+            !crate::math::orders::limit_price_breaches_maker_oracle_price_bands(
+                change_price,
+                maker_direction,
+                oracle_price,
+                executor.oracle_band(book_index, market.margin_ratio_initial),
+            )?,
+            ErrorCode::QuoterFillOffQuote,
+            "quoter {} filled user {} at {} outside the oracle band",
+            executor.quoter_key(book_index),
+            maker_key,
+            change_price
+        )?;
+        let mut maker = makers_and_referrer.get_ref_mut(&maker_key)?;
+        let mut maker_stats = Some(makers_and_referrer_stats.get_ref_mut(&maker.authority)?);
+        let (base_filled, quote_filled) = settle_external_match_fill(
+            change.base_size,
+            change.quote_size,
+            market.deref_mut(),
+            taker,
+            taker_stats,
+            taker_position_index,
+            &mut taker_order,
+            taker_key,
+            taker_direction,
+            taker_existing_position_params_before,
+            &mut maker,
+            maker_stats.as_deref_mut(),
+            &maker_key,
+            maker_aggregates_tracked,
+            response.sole_client_order_id(change_index),
+            None,
+            oracle_price,
+            none_filler,
+            none_filler_stats,
+            taker_key,
+            no_escrow,
+            false,
+            &state.perp_fee_structure,
+            oracle_map,
+            false,
+            now,
+            slot,
+            state.promo_fee_tier,
+            // The crank's taker is the protocol User. It has no builder
+            // escrow, so there is no builder fee to allow.
+            false,
+            // The ephemeral taker never reserved, so nothing to unwind.
+            false,
+            filler_reward_paid,
+        )?;
+        leg_total.base_filled = leg_total.base_filled.safe_add(base_filled)?;
+        leg_total.quote_filled = leg_total.quote_filled.safe_add(quote_filled)?;
+
+        let maker_position_index = get_position_index(&maker.perp_positions, market_index)?;
+        update_maker_fills_map(
+            maker_fills,
+            &maker_key,
+            maker_direction,
+            base_filled,
+            maker.perp_positions[maker_position_index].is_isolated(),
+        )?;
+        if maker_aggregates_tracked {
+            position::release_reserved_open_orders(
+                &mut maker.perp_positions[maker_position_index],
+                completed.cast()?,
+            )?;
+            for clob_order_id in response.completed_for(change_index) {
+                maker.decrement_open_orders(false);
+                maker.release_placed_trigger_slot(market_index, clob_order_id, OrderStatus::Filled);
+            }
+        }
+    }
+    if maker_aggregates_tracked {
+        unwind_culled_cross_remainders(
+            executor,
+            book_index,
+            &market,
+            market_index,
+            maker_direction,
+            response.cancelled,
+            &subjects,
+            taker_ref,
+            protocol_authority,
+            &resolve_user,
+            makers_and_referrer,
+            oracle_price,
+            now,
+            slot,
+        )?;
+    }
+    validate!(
+        leg_total.base_filled <= leg_size,
+        ErrorCode::DefaultError,
+        "cross leg {} overfilled: {} > {}",
+        leg,
+        leg_total.base_filled,
+        leg_size
+    )?;
+    Ok(leg_total)
+}
+
+/// Unwind the aggregates of the remainders the book culled on this leg.
+///
+/// A book cancels a remainder it will not let rest. The maker keeps the
+/// reservation that remainder took until velocity releases it here.
+#[allow(clippy::too_many_arguments)]
+fn unwind_culled_cross_remainders(
+    executor: &dyn crate::state::prop_amm::ExternalQuoterExecutor,
+    book_index: usize,
+    market: &PerpMarket,
+    market_index: u16,
+    maker_direction: PositionDirection,
+    cancelled_remainders: &[crate::state::prop_amm::CancelledRemainderV0],
+    subjects: &crate::state::prop_amm::QuoterSubjects,
+    taker_ref: &crate::state::prop_amm::ClobUserRefV0,
+    protocol_authority: &Pubkey,
+    resolve_user: &dyn Fn(&crate::state::prop_amm::ClobUserRefV0) -> VelocityResult<Pubkey>,
+    makers_and_referrer: &UserMap,
+    oracle_price: i64,
+    now: i64,
+    slot: u64,
+) -> VelocityResult<()> {
+    for cancelled in cancelled_remainders {
+        let maker_key = resolve_user(&cancelled.user)?;
+        validate!(
+            subjects.permits(&cancelled.user, &maker_key, taker_ref, protocol_authority),
+            ErrorCode::QuoterSubjectNotPermitted,
+            "quoter {} may not cancel for user {}",
+            executor.quoter_key(book_index),
+            maker_key
+        )?;
+        // A cull is a remainder the book refused to let rest, so it is
+        // below the book's own minimum — and the attach requires that
+        // minimum to be at or under the market's. The release below
+        // holds the figure to the maker's whole reservation; this holds
+        // it to the one order a cull can be about.
+        //
+        // A market with no minimum of its own bounds nothing, which is
+        // the same case the attach lets through.
+        validate!(
+            market.market_stats.min_order_size == 0
+                || cancelled.base_asset_amount < market.market_stats.min_order_size,
+            ErrorCode::QuoterFillOffQuote,
+            "quoter {} culled {} base, at or above the market minimum {}",
+            executor.quoter_key(book_index),
+            cancelled.base_asset_amount,
+            market.market_stats.min_order_size
+        )?;
+        let mut maker = makers_and_referrer.get_ref_mut(&maker_key)?;
+        let maker_position_index = get_position_index(&maker.perp_positions, market_index)?;
+        position::release_reserved_open_base(
+            &mut maker.perp_positions[maker_position_index],
+            &maker_direction,
+            cancelled.base_asset_amount,
+        )?;
+        position::release_reserved_open_orders(&mut maker.perp_positions[maker_position_index], 1)?;
+        maker.decrement_open_orders(false);
+        maker.release_placed_trigger_slot(market_index, cancelled.order_id, OrderStatus::Canceled);
+        let is_isolated = maker.perp_positions[maker_position_index].is_isolated();
+        drop(maker);
+        crate::instructions::emit_clob_cancel_record(
+            now,
+            oracle_price,
+            &maker_key,
+            crate::instructions::ClobOrderFacts {
+                order_id: cancelled.client_order_id,
+                market_index,
+                direction: maker_direction,
+                price: cancelled.price,
+                base_asset_amount: cancelled.base_asset_amount,
+                base_asset_amount_filled: 0,
+                max_ts: 0,
+                slot,
+                taker_origin: false,
+            },
+            OrderActionExplanation::ClobRemainderCulled,
+            None,
+            None,
+            is_isolated,
+        )?;
+    }
+    Ok(())
+}
+
+/// The prefix of resting orders this leg priced against, once the response
+/// has been checked against it.
+///
+/// `None` when the leg has no ladder to bind against, which is a Custom
+/// quoter or a response that filled nothing.
+fn cross_leg_quoted_prefix(
+    executor: &dyn crate::state::prop_amm::ExternalQuoterExecutor,
+    book_index: usize,
+    response: &crate::state::prop_amm::ExecuteResponseV0,
+    resting: Option<&[crate::state::prop_amm::PriceLevel]>,
+) -> VelocityResult<Option<crate::math::router::QuotedPrefix>> {
+    let (leg_base, leg_quote) = response.changes.iter().try_fold(
+        (0u64, 0u64),
+        |(base, quote), change| -> VelocityResult<(u64, u64)> {
+            // A zero-base change carries no fill; its quote would be summed
+            // here but skipped by the per-change price and subject checks
+            // below. Reject it so a cross leg cannot smuggle quote past them.
+            validate!(
+                change.base_size > 0,
+                ErrorCode::QuoterFillOffQuote,
+                "cross leg quoter {} returned a zero-base balance change carrying {} quote",
+                executor.quoter_key(book_index),
+                change.quote_size
+            )?;
+            Ok((
+                base.safe_add(change.base_size)?,
+                quote.safe_add(change.quote_size)?,
+            ))
+        },
+    )?;
+    // These are real orders rather than a quoted ladder, so they price at
+    // their own size with no step quantization.
+    let quoted = match resting {
+        Some(levels) if leg_base > 0 => {
+            Some(crate::math::router::quoted_prefix(levels, 1, leg_base)?)
+        }
+        _ => None,
+    };
+    if let Some(quoted) = quoted.as_ref() {
+        validate!(
+            crate::math::router::validate_executed_notional(quoted, leg_quote)?,
+            ErrorCode::QuoterFillOffQuote,
+            "quoter {} filled {}/{} outside the book it swept ({}..{})",
+            executor.quoter_key(book_index),
+            leg_quote,
+            leg_base,
+            quoted.best_price,
+            quoted.worst_price
+        )?;
+    }
+    Ok(quoted)
+}
+
+/// The base both legs matched, and the quote the protocol kept for it.
+struct CrossSurplus {
+    base_matched: u64,
+    surplus: i64,
+}
+
+/// Check that the two legs balanced and that the protocol gained on the
+/// cross.
+///
+/// The legs must match the same base, and the taker's base must return to
+/// where it started. The taker's quote delta is the crossed spread net of
+/// both legs' taker fees. It must be positive and at or above the market's
+/// floor, so the protocol never runs a losing cross.
+fn validate_cross_surplus(
+    taker: &User,
+    taker_position_index: usize,
+    base_before: i64,
+    quote_before: i64,
+    leg_totals: &[CrossLegFill; 2],
+    min_surplus: u64,
+) -> VelocityResult<CrossSurplus> {
+    let base_matched = leg_totals[0].base_filled;
+    validate!(
+        leg_totals[1].base_filled == base_matched,
         ErrorCode::CrossMatchImbalanced,
         "cross legs imbalanced: bought {} sold {}",
         base_matched,
-        leg_totals[1].0
+        leg_totals[1].base_filled
     )?;
     validate!(
         base_matched > 0,
@@ -6065,33 +6311,10 @@ pub fn cross_match(
         surplus,
         min_surplus
     )?;
-    taker.update_last_active_slot(slot);
-
-    // Shared post-fill invariants: the per-maker margin/equity-floor/breaker
-    // checks over both legs' fills, plus the stale-oracle OI rule. The taker
-    // side of the shared check passes trivially — the protocol User's base
-    // is unchanged and its quote strictly grew.
-    fulfill_perp_order_post_checks(
-        taker,
-        &mut taker_stats,
-        makers_and_referrer,
-        makers_and_referrer_stats,
-        spot_market_map,
-        perp_market_map,
-        oracle_map,
-        market_index,
+    Ok(CrossSurplus {
         base_matched,
-        leg_totals[0].1,
-        &maker_fills,
-        true,
-        false,
-        perp_market_oi_before,
-        oracle_stale_for_margin,
-        false,
-        now,
-    )?;
-
-    Ok((base_matched, surplus.cast()?))
+        surplus,
+    })
 }
 
 /// The oracle pre-flight and R5 pricing of one taker-origin cross, before any

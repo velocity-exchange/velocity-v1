@@ -1,25 +1,28 @@
-//! Client for swift's `POST /attest` — the flow-authority co-signature
-//! that marks a fill as attested retail flow.
+//! Client for swift's `POST /attest` — the detached flow attestation that
+//! marks a fill as attested retail flow.
 //!
-//! Quoters gating on `require_attested_flow` (the midpoint) only quote
-//! attested transactions, and place_and_make_perp_order_v1 only grants
-//! faster-than-default activation to them — so a swift-order fill that
-//! carries the co-signature reaches strictly more liquidity. The flow:
-//! build the fill with the flow authority as a read-only co-signer (hung
-//! off a compute-budget instruction, whose accounts nothing parses), sign
-//! our own slot against a fixed blockhash, post the transaction to swift,
-//! and submit what comes back verbatim — both signatures are over the same
-//! message, so nothing may be re-signed afterwards.
+//! Quoters that gate on `require_attested_flow` (the midpoint) quote only to
+//! attested flow, and place_and_make_perp_order_v1 grants faster-than-default
+//! activation only to it. A fill that carries the attestation therefore
+//! reaches more liquidity.
 //!
-//! Attestation failing is degradation, not failure: the caller falls back
-//! to the plain unattested transaction and fills whatever quotes without
-//! the marker.
+//! The attestation binds to the order, not to a transaction: swift signs the
+//! flow authority's key over the order's own signature and an expiry. The
+//! keeper asks for it with the order uuid alone, before it builds anything,
+//! and passes the blob as the fill's `flow_attestation` argument. Velocity
+//! verifies it in-program, next to the taker signature it binds to. Nothing
+//! about the transaction is fixed by it, so the fill still simulates, sizes
+//! its compute limit, and signs on the ordinary send path.
+//!
+//! Attestation failing is degradation, not failure: the caller falls back to
+//! an unattested fill and takes whatever quotes without the marker.
 
 use {
     base64::Engine,
     serde::Deserialize,
-    solana_sdk::{pubkey::Pubkey, transaction::VersionedTransaction},
-    std::time::Duration,
+    solana_sdk::pubkey::Pubkey,
+    std::{str::FromStr, time::Duration},
+    velocity_rs::program::FlowAttestationV0,
 };
 
 const TARGET: &str = "attest";
@@ -38,7 +41,11 @@ pub struct AttestClient {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AttestOk {
-    transaction: String,
+    flow_authority: String,
+    /// The detached attestation signature, base64.
+    signature: String,
+    /// Unix seconds the attestation is good until.
+    expiry_ts: i64,
 }
 
 #[derive(Deserialize)]
@@ -70,25 +77,15 @@ impl AttestClient {
         })
     }
 
-    pub fn flow_authority(&self) -> Pubkey {
-        self.flow_authority
-    }
-
-    /// Ask swift to co-sign `tx` for `uuid`. Returns the co-signed
-    /// transaction, retrying through the hold window (425 + retryAfterMs).
-    pub async fn attest(
-        &self,
-        uuid: &str,
-        tx: &VersionedTransaction,
-    ) -> Result<VersionedTransaction, String> {
-        let encoded = base64::engine::general_purpose::STANDARD
-            .encode(bincode::serialize(tx).map_err(|e| e.to_string())?);
+    /// Ask swift for the flow attestation on `uuid`. Retries through the
+    /// hold window (425 plus `retryAfterMs`).
+    pub async fn attest(&self, uuid: &str) -> Result<FlowAttestationV0, String> {
         let endpoint = format!("{}/attest", self.url);
         for attempt in 0..MAX_ATTEMPTS {
             let response = self
                 .http
                 .post(&endpoint)
-                .json(&serde_json::json!({ "uuid": uuid, "transaction": encoded }))
+                .json(&serde_json::json!({ "uuid": uuid }))
                 .send()
                 .await
                 .map_err(|e| format!("attest request failed: {e}"))?;
@@ -98,11 +95,7 @@ impl AttestClient {
                     .json()
                     .await
                     .map_err(|e| format!("attest response undecodable: {e}"))?;
-                let raw = base64::engine::general_purpose::STANDARD
-                    .decode(&ok.transaction)
-                    .map_err(|e| format!("attested tx not base64: {e}"))?;
-                return bincode::deserialize(&raw)
-                    .map_err(|e| format!("attested tx undecodable: {e}"));
+                return self.decode(ok);
             }
             let err: AttestErr = response.json().await.unwrap_or(AttestErr {
                 error: status.to_string(),
@@ -120,6 +113,30 @@ impl AttestClient {
         }
         Err("attest retries exhausted".into())
     }
+
+    /// The program verifies the attestation against `State.hot_flow_authority`,
+    /// which is the key this client was built from. A blob signed by another
+    /// key fails the fill on chain, so it is refused here, where the reason
+    /// is still readable.
+    fn decode(&self, ok: AttestOk) -> Result<FlowAttestationV0, String> {
+        let flow_authority = Pubkey::from_str(&ok.flow_authority)
+            .map_err(|e| format!("attest flowAuthority unreadable: {e}"))?;
+        if flow_authority != self.flow_authority {
+            return Err(format!(
+                "attest signed by {flow_authority}, but the chain names {}",
+                self.flow_authority
+            ));
+        }
+        let signature: [u8; 64] = base64::engine::general_purpose::STANDARD
+            .decode(&ok.signature)
+            .map_err(|e| format!("attest signature not base64: {e}"))?
+            .try_into()
+            .map_err(|raw: Vec<u8>| format!("attest signature is {} bytes, not 64", raw.len()))?;
+        Ok(FlowAttestationV0 {
+            signature,
+            expiry_ts: ok.expiry_ts,
+        })
+    }
 }
 
 /// `wss://swift.example.com/ws` → `https://swift.example.com`.
@@ -136,6 +153,14 @@ fn http_from_ws(ws: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    fn client(flow_authority: Pubkey) -> AttestClient {
+        AttestClient {
+            url: "http://127.0.0.1:3111".to_string(),
+            flow_authority,
+            http: reqwest::Client::new(),
+        }
+    }
+
     #[test]
     fn http_base_derives_from_the_ws_url() {
         assert_eq!(
@@ -146,5 +171,38 @@ mod tests {
             http_from_ws("ws://127.0.0.1:3111").as_deref(),
             Some("http://127.0.0.1:3111")
         );
+    }
+
+    #[test]
+    fn a_response_decodes_into_the_attestation_the_fill_carries() {
+        let flow_authority = Pubkey::new_unique();
+        let attestation = client(flow_authority)
+            .decode(AttestOk {
+                flow_authority: flow_authority.to_string(),
+                signature: base64::engine::general_purpose::STANDARD.encode([7u8; 64]),
+                expiry_ts: 1_700_000_000,
+            })
+            .expect("decodes");
+        assert_eq!(attestation.signature, [7u8; 64]);
+        assert_eq!(attestation.expiry_ts, 1_700_000_000);
+    }
+
+    #[test]
+    fn a_stranger_key_and_a_short_signature_are_refused() {
+        let flow_authority = Pubkey::new_unique();
+        assert!(client(flow_authority)
+            .decode(AttestOk {
+                flow_authority: Pubkey::new_unique().to_string(),
+                signature: base64::engine::general_purpose::STANDARD.encode([7u8; 64]),
+                expiry_ts: 1_700_000_000,
+            })
+            .is_err());
+        assert!(client(flow_authority)
+            .decode(AttestOk {
+                flow_authority: flow_authority.to_string(),
+                signature: base64::engine::general_purpose::STANDARD.encode([7u8; 32]),
+                expiry_ts: 1_700_000_000,
+            })
+            .is_err());
     }
 }

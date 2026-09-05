@@ -54,6 +54,7 @@ use {
                 time::{Millis, SlotClock},
             },
             state::prop_amm::{ClobUserRefV0, QuoterConfigV0, QuoterSlotV0},
+            FlowAttestationV0,
         },
         swift_order_subscriber::{SignedOrderInfo, SwiftOrderStream},
         types::{
@@ -1206,8 +1207,8 @@ async fn try_swift_fill(
     }
 
     // The fill's quoter section, appended to the fill instruction's remaining
-    // accounts below. One network round trip per entry, done before assembly
-    // so both assembly passes produce the same account list.
+    // accounts below. One network round trip per entry, so it runs before the
+    // fill is assembled.
     let Some(quoter_metas) = route_quoter_metas(
         velocity,
         taker_order.market_index,
@@ -1271,101 +1272,90 @@ async fn try_swift_fill(
         );
     }
 
-    // The whole fill is assembled twice at most: once with the flow
-    // authority riding a compute-budget instruction as a read-only
-    // co-signer (compute budget parses no accounts, so the marker is
-    // inert), and — only if attestation falls through — once plain.
-    let assemble = |co_signer: Option<Pubkey>| -> (VersionedMessage, u64) {
-        let tx_builder = TransactionBuilder::new(
-            velocity.program_data(),
-            filler_subaccount,
-            std::borrow::Cow::Borrowed(&filler_account_data),
-            false,
-        );
-        let tx_builder = tx_builder
-            .with_priority_fee(priority_fee, Some(cu_limit))
-            .place_swift_order(&swift_order, &taker_account_data, clob_place, None);
-        // A borrow whose spot market has not accrued interest recently is
-        // valued too low in the fill's margin check. Crank the stale markets
-        // in the same transaction, ahead of the fill.
-        let mut tx_builder =
-            with_spot_interest_cranks(tx_builder, velocity, &taker_account_data, &maker_accounts)
-                .fill_perp_order(
-                    taker_order.market_index,
-                    taker_subaccount,
-                    &taker_account_data,
-                    &taker_stats,
-                    None, // Some(taker_order_id), // assuming we're fast enough that its the taker_order_id, should be ok for retail
-                    maker_accounts.as_slice(),
-                    Some(swift_order.has_builder()),
-                    // The taker's own choice of quoters, straight off the message
-                    // they signed. The program checks it against the digest it
-                    // stamped on the order, so this cannot be substituted.
-                    swift_order.route().unwrap_or(&[]),
-                    clob_fill,
-                );
-
-        // The quoter section rides the fill instruction's remaining accounts:
-        // the program reads everything past the map/user/escrow sections as
-        // registry entries plus their CPI accounts. Appended before the CU
-        // bump below so the bump sees the real account count.
-        if !quoter_metas.is_empty() {
-            let last = tx_builder.ixs().len() - 1;
-            let mut fill_ix = tx_builder.ixs()[last].clone();
-            fill_ix.accounts.extend(quoter_metas.iter().cloned());
-            tx_builder = tx_builder.set_ix(last, fill_ix);
-        }
-
-        // Ask for the ceiling here and let the send path size it down. It
-        // simulates before it signs, so the limit that gets signed comes from
-        // what the transaction burned rather than from a guess about the shape
-        // of its account list — and the limit that gets signed is the one the
-        // network bills.
-        let effective_cu_limit = MAX_COMPUTE_UNITS as u32;
-        tx_builder = tx_builder.set_ix(
-            1,
-            ComputeBudgetInstruction::set_compute_unit_limit(effective_cu_limit),
-        );
-        if let Some(flow) = co_signer {
-            let mut price_ix = tx_builder.ixs()[0].clone();
-            price_ix
-                .accounts
-                .push(solana_sdk::instruction::AccountMeta::new_readonly(
-                    flow, true,
-                ));
-            tx_builder = tx_builder.set_ix(0, price_ix);
-        }
-        (tx_builder.build(), effective_cu_limit as u64)
-    };
-
-    let intent = || TxIntent::SwiftFill {
-        uuid: swift_order.order_uuid(),
-        market_index: taker_order.market_index,
-        taker_user: taker_subaccount,
-        maker_crosses: crosses.clone(),
-    };
-
-    if let Some(client) = attest {
-        match attested_swift_fill(velocity, client, &swift_order, &assemble).await {
-            Ok((tx, effective_cu_limit, simulation)) => {
-                tx_worker_ref
-                    .send_signed_tx(tx, simulation, intent(), effective_cu_limit)
-                    .await;
-                return;
-            }
+    // The attestation binds to the order alone, so swift releases it before
+    // the fill exists. Ask for it first and build the fill around it. A fill
+    // that carries it reaches the quoters that gate on attested flow, and on
+    // a book with a speed bump the order fills at once instead of only
+    // resting. Attestation failing is degradation, not failure: the fill goes
+    // out unattested and takes whatever quotes without the marker.
+    let flow_attestation: Option<FlowAttestationV0> = match attest {
+        Some(client) => match client.attest(swift_order.order_uuid_str()).await {
+            Ok(attestation) => Some(attestation),
             Err(reason) => {
                 log::warn!(
                     target: TARGET,
                     "attestation fell through ({reason}); filling unattested. uuid={}",
                     swift_order.order_uuid_str()
                 );
+                None
             }
-        }
+        },
+        None => None,
+    };
+
+    let tx_builder = TransactionBuilder::new(
+        velocity.program_data(),
+        filler_subaccount,
+        std::borrow::Cow::Borrowed(&filler_account_data),
+        false,
+    )
+    .with_priority_fee(priority_fee, Some(cu_limit))
+    .place_swift_order(
+        &swift_order,
+        &taker_account_data,
+        clob_place,
+        flow_attestation,
+    );
+    // A borrow whose spot market has not accrued interest recently is
+    // valued too low in the fill's margin check. Crank the stale markets
+    // in the same transaction, ahead of the fill.
+    let mut tx_builder =
+        with_spot_interest_cranks(tx_builder, velocity, &taker_account_data, &maker_accounts)
+            .fill_perp_order(
+                taker_order.market_index,
+                taker_subaccount,
+                &taker_account_data,
+                &taker_stats,
+                None, // Some(taker_order_id), // assuming we're fast enough that its the taker_order_id, should be ok for retail
+                maker_accounts.as_slice(),
+                Some(swift_order.has_builder()),
+                // The taker's own choice of quoters, straight off the message
+                // they signed. The program checks it against the digest it
+                // stamped on the order, so this cannot be substituted.
+                swift_order.route().unwrap_or(&[]),
+                clob_fill,
+            );
+
+    // The quoter section rides the fill instruction's remaining accounts:
+    // the program reads everything past the map/user/escrow sections as
+    // registry entries plus their CPI accounts. Appended before the CU
+    // bump below so the bump sees the real account count.
+    if !quoter_metas.is_empty() {
+        let last = tx_builder.ixs().len() - 1;
+        let mut fill_ix = tx_builder.ixs()[last].clone();
+        fill_ix.accounts.extend(quoter_metas.iter().cloned());
+        tx_builder = tx_builder.set_ix(last, fill_ix);
     }
 
-    let (tx, effective_cu_limit) = assemble(None);
+    // Ask for the ceiling here and let the send path size it down. It
+    // simulates before it signs, so the limit that gets signed comes from
+    // what the transaction burned rather than from a guess about the shape
+    // of its account list — and the limit that gets signed is the one the
+    // network bills.
+    let effective_cu_limit = MAX_COMPUTE_UNITS as u32;
+    tx_builder = tx_builder.set_ix(
+        1,
+        ComputeBudgetInstruction::set_compute_unit_limit(effective_cu_limit),
+    );
+
+    let intent = TxIntent::SwiftFill {
+        uuid: swift_order.order_uuid(),
+        market_index: taker_order.market_index,
+        taker_user: taker_subaccount,
+        maker_crosses: crosses,
+    };
     tx_worker_ref
-        .send_tx(tx, intent(), effective_cu_limit)
+        .send_tx(tx_builder.build(), intent, effective_cu_limit as u64)
         .await;
 }
 
@@ -1470,13 +1460,12 @@ async fn route_quoter_metas(
         .filter(|slot| slot.quotes())
         .collect();
 
-    // Writability ORs across slots. The union is a BTreeMap so two keepers
-    // building the same fill emit byte-identical account lists — the
-    // attestation signs one fixed message, so a nondeterministic order would
-    // make co-signatures unreproducible. The whole registered list rides
-    // rather than one leg's subset: each leg resolves its accounts by index
-    // into the one list, so carrying the list is what guarantees the resolve
-    // — a signer a quoter registered is in it by construction.
+    // Writability ORs across slots. The union is a BTreeMap, so a key two
+    // slots register rides once and the same fill built twice emits the same
+    // account list. The whole registered list rides rather than one leg's
+    // subset: each leg resolves its accounts by index into the one list, so
+    // carrying the list is what guarantees the resolve. A signer a quoter
+    // registered is in it by construction.
     let mut cpi_union: BTreeMap<Pubkey, bool> = BTreeMap::new();
     for slot in &consulted {
         for meta in slot.config.registered_accounts() {
@@ -1500,72 +1489,6 @@ async fn route_quoter_metas(
         }))
         .collect(),
     )
-}
-
-/// Build, self-sign, and get the flow-authority co-signature for a swift
-/// fill. Both signatures cover one fixed message, so the blockhash is set
-/// here and nothing may re-sign the result.
-///
-/// Which is why the compute limit is sized *here*. Every other path leaves it
-/// to the send path, which simulates before it signs; this one cannot, because
-/// by the time it is signed a second party has signed the same bytes. The
-/// simulation runs against the unattested assembly — the flow authority rides
-/// a compute-budget instruction as a read-only co-signer and executes nothing,
-/// so it costs no compute — and its verdict is handed on so the worker does
-/// not ask again.
-async fn attested_swift_fill(
-    velocity: &'static VelocityClient,
-    client: &crate::attest::AttestClient,
-    swift_order: &SignedOrderInfo,
-    assemble: &dyn Fn(Option<Pubkey>) -> (VersionedMessage, u64),
-) -> Result<
-    (
-        VersionedTransaction,
-        u64,
-        Option<SdkResult<RpcSimulateTransactionResult>>,
-    ),
-    String,
-> {
-    let (mut message, mut effective_cu_limit) = assemble(Some(client.flow_authority()));
-    let (probe, _) = assemble(None);
-    let simulation = velocity
-        .simulate_tx_with_commitment(probe, Some(CommitmentConfig::processed()))
-        .await;
-    if let Ok(result) = &simulation {
-        if result.err.is_none() {
-            if let Some(units) = result.units_consumed {
-                let sized = size_compute_limit(units);
-                set_compute_unit_limit(&mut message, sized);
-                effective_cu_limit = u64::from(sized);
-            }
-        }
-    }
-    let blockhash = velocity
-        .get_latest_blockhash()
-        .await
-        .map_err(|e| format!("no blockhash: {e:?}"))?;
-    message.set_recent_blockhash(blockhash);
-
-    let own = velocity
-        .wallet()
-        .sign_message(&message.serialize())
-        .map_err(|e| format!("wallet signing failed: {e:?}"))?;
-    let signer = velocity.wallet().signer();
-    let own_index = message
-        .static_account_keys()
-        .iter()
-        .position(|key| *key == signer)
-        .ok_or("wallet signer missing from message")?;
-    let mut signatures =
-        vec![Signature::default(); message.header().num_required_signatures as usize];
-    signatures[own_index] = own;
-    let tx = VersionedTransaction {
-        signatures,
-        message,
-    };
-
-    let attested = client.attest(swift_order.order_uuid_str(), &tx).await?;
-    Ok((attested, effective_cu_limit, Some(simulation)))
 }
 
 /// Place a swift order on-chain without filling it.
@@ -3607,37 +3530,6 @@ impl TxSender {
         cu_limit: u64,
     ) -> Option<Signature> {
         self.queue_tx(tx, None, false, intent, cu_limit).await
-    }
-
-    /// Enqueue a transaction whose signatures are already complete (the
-    /// attested-flow path: the flow authority co-signed a fixed message,
-    /// so re-signing at a fresh blockhash would invalidate it).
-    pub async fn send_signed_tx(
-        &self,
-        tx: VersionedTransaction,
-        presimulated: Option<SdkResult<RpcSimulateTransactionResult>>,
-        intent: TxIntent,
-        cu_limit: u64,
-    ) -> Option<Signature> {
-        let sig = tx.signatures[0];
-        self.tx
-            .send(TxWork::Send {
-                tx,
-                // Two signatures cover these exact bytes, so the limit inside
-                // them is fixed. It was sized before the co-signature, off the
-                // simulation handed in here.
-                presimulated,
-                simulation_tx: None,
-                require_fill_event: false,
-                ts: SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis() as u64,
-                intent,
-                cu_limit,
-            })
-            .ok()?;
-        Some(sig)
     }
 
     pub async fn send_fill_tx(

@@ -292,6 +292,17 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
     drop(book_slot);
 
     let taker_direction = aggressor_side.to_position_direction();
+    let cx = TakerOriginContext {
+        accounts: &*ctx.accounts,
+        market_index,
+        taker_ref,
+        taker_direction,
+        state: &state,
+        makers_and_referrer: &makers_and_referrer,
+        makers_and_referrer_stats: &makers_and_referrer_stats,
+        clock: &clock,
+        program_keeper_mode,
+    };
 
     // Two remainders crossing are the one case the router cannot reach.
     //
@@ -304,53 +315,34 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
     // after, rather than asking the book to match orders it is right to refuse.
     if counterparty.taker_origin {
         return settle_taker_origin_pair(
-            &ctx,
-            market_index,
-            aggressor_side,
+            &cx,
             &subject,
             &subject_order,
             &counterparty,
             &perp_market_map,
             &spot_market_map,
             &mut oracle_map,
-            &makers_and_referrer,
-            &makers_and_referrer_stats,
-            &state,
-            program_keeper_mode,
-            &clock,
         );
     }
 
-    // ---- The order is a local. It came off a book and belongs to no `orders`
-    // slot, so the fill takes it directly and the taker never needs a spare
-    // one — its reservation is still on it from when the remainder rested.
-    let mut order =
-        controller::orders::taker_origin_order(market_index, taker_direction, &subject_order);
-
-    let route_digest = signed_route_digest(
-        &ctx.accounts.signed_msg_user_orders,
-        subject_order.order_ref.order_id,
-    )?;
+    let route_claim = SignedRouteClaim {
+        quoters: &signed_route,
+        digest: signed_route_digest(
+            &ctx.accounts.signed_msg_user_orders,
+            subject_order.order_ref.order_id,
+        )?,
+    };
 
     let tail_from = ctx.remaining_accounts.len() - remaining_accounts_iter.len();
     let tail = &ctx.remaining_accounts[tail_from..];
     let (base_filled, quote_filled) = route_and_fill_remainder(
-        &ctx,
-        market_index,
+        &cx,
         tail,
-        &mut order,
         &subject_order,
-        taker_direction,
-        taker_ref,
-        &signed_route,
-        route_digest,
-        &state,
+        &route_claim,
         &perp_market_map,
         &spot_market_map,
         &mut oracle_map,
-        &makers_and_referrer,
-        &makers_and_referrer_stats,
-        &clock,
         &mut cpi_scratch,
     )?;
 
@@ -360,30 +352,19 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
         .safe_div(base_filled.cast()?)?
         .cast::<u64>()?;
     let (fee, crank_reward) = pay_crank_reward(
-        &ctx,
-        market_index,
-        taker_direction,
-        subject_order.price,
+        &cx,
+        &subject_order,
         fill_price,
         base_filled,
         quote_filled,
-        subject_order.placed_slot,
-        &state,
         &perp_market_map,
         &spot_market_map,
         &mut oracle_map,
-        &clock,
     )?;
 
-    let remainder_base_asset_amount = report_fill_to_book(
-        &ctx,
-        market_index,
-        &subject_order,
-        taker_direction,
-        base_filled,
-    )?;
+    let remainder_base_asset_amount = report_fill_to_book(&cx, &subject_order, base_filled)?;
 
-    pay_crank_lamports(&ctx, program_keeper_mode)?;
+    pay_crank_lamports(&cx)?;
 
     emit!(TakerOriginCrossRecordV1 {
         ts: clock.unix_timestamp,
@@ -409,6 +390,29 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
         crank_reward
     );
     Ok(())
+}
+
+/// What every step of one crank shares.
+///
+/// The handler builds this once, after the book read decides which row
+/// aggresses. Everything in it is fixed for the whole crank: the market, the
+/// taker, the accounts the transaction carries, and the clock the settlement
+/// reads. The three market maps stay separate parameters, as every other
+/// instruction in this program passes them.
+struct TakerOriginContext<'a, 'info> {
+    accounts: &'a CrankTakerOriginCross<'info>,
+    market_index: u16,
+    /// The taker's identity as the book reports it on its own rows.
+    taker_ref: ClobUserRefV0,
+    /// The side the taker's remainder demanded liquidity on.
+    taker_direction: PositionDirection,
+    state: &'a State,
+    makers_and_referrer: &'a UserMap<'info>,
+    makers_and_referrer_stats: &'a UserStatsMap<'info>,
+    clock: &'a Clock,
+    /// True when the protocol `User` cranks. Then the reservoir pays the
+    /// keeper its lamports.
+    program_keeper_mode: bool,
 }
 
 /// The cross this crank settles, and the two rows it settles between.
@@ -499,6 +503,19 @@ fn resolve_subject_cross<'info>(
     })
 }
 
+/// The route claim the crank makes on the taker's behalf.
+///
+/// The two halves are always read together: the quoters the crank names, and
+/// the digest the taker's own record holds. A claim is good only when the two
+/// agree.
+struct SignedRouteClaim<'a> {
+    /// The quoters the crank claims the taker's signer chose. Empty claims
+    /// the market baseline.
+    quoters: &'a [Pubkey],
+    /// The digest the taker's signed-message record holds for this order.
+    digest: crate::state::order_params::RouteDigest,
+}
+
 /// The route the taker's signer chose, if it had one.
 ///
 /// Absent reads as unrouted, and absent covers three real cases: a remainder
@@ -534,48 +551,44 @@ fn signed_route_digest(
 /// Returns the base and the quote the fill took.
 #[allow(clippy::too_many_arguments)]
 fn route_and_fill_remainder<'info>(
-    ctx: &Context<'info, CrankTakerOriginCross<'info>>,
-    market_index: u16,
+    cx: &TakerOriginContext<'_, 'info>,
     tail: &'info [AccountInfo<'info>],
-    order: &mut crate::state::user::Order,
     subject_order: &RestingOrder,
-    taker_direction: PositionDirection,
-    taker_ref: ClobUserRefV0,
-    signed_route: &[Pubkey],
-    route_digest: crate::state::order_params::RouteDigest,
-    state: &State,
+    route_claim: &SignedRouteClaim<'_>,
     perp_market_map: &PerpMarketMap<'info>,
     spot_market_map: &SpotMarketMap<'info>,
     oracle_map: &mut OracleMap<'info>,
-    makers_and_referrer: &UserMap<'info>,
-    makers_and_referrer_stats: &UserStatsMap<'info>,
-    clock: &Clock,
     cpi_scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
 ) -> Result<(u64, u64)> {
+    // The order is a local. It came off a book and belongs to no `orders`
+    // slot, so the fill takes it directly and the taker never needs a spare
+    // one — its reservation is still on it from when the remainder rested.
+    let mut order =
+        controller::orders::taker_origin_order(cx.market_index, cx.taker_direction, subject_order);
+
     let route_reference_price = {
-        let oracle_id = perp_market_map.get_ref(&market_index)?.oracle_id();
+        let oracle_id = perp_market_map.get_ref(&cx.market_index)?.oracle_id();
         oracle_map.get_price_data(&oracle_id)?.price
     };
-    let direction = match taker_direction {
+    let direction = match cx.taker_direction {
         PositionDirection::Long => Direction::Long,
         PositionDirection::Short => Direction::Short,
     };
     let inputs = crate::instructions::QuoteInputs {
         caps: crate::state::prop_amm::QuoterUserCapsV0::EMPTY,
-        market_index,
+        market_index: cx.market_index,
         direction,
         size: subject_order.base_asset_amount,
         users: &crate::state::prop_amm::quoter_wire_users(
-            makers_and_referrer
-                .user_ref_index()?
-                .into_keys()
-                .map(|(authority, sub_account_id)| ClobUserRefV0 {
+            cx.makers_and_referrer.user_ref_index()?.into_keys().map(
+                |(authority, sub_account_id)| ClobUserRefV0 {
                     authority,
                     sub_account_id,
-                }),
+                },
+            ),
         )?,
         reference_price: route_reference_price,
-        taker: taker_ref,
+        taker: cx.taker_ref,
         limit_price: subject_order.price,
         // The crank vouches for measured rest, not for its own nature: on a
         // zero-delay book "rested through placement" is a zero-length
@@ -583,7 +596,7 @@ fn route_and_fill_remainder<'info>(
         // subject is the flow this fill transmits, so its age is the claim.
         taker_served_window: crate::math::crosses::served_window(
             subject_order.placed_slot,
-            clock.slot,
+            cx.clock.slot,
         ),
     };
     let inputs = crate::instructions::QuoteInputs {
@@ -591,13 +604,13 @@ fn route_and_fill_remainder<'info>(
             tail,
             &inputs,
             &mut crate::instructions::CapInputs {
-                makers_and_referrer,
-                makers_and_referrer_stats,
+                makers_and_referrer: cx.makers_and_referrer,
+                makers_and_referrer_stats: cx.makers_and_referrer_stats,
                 perp_market_map,
                 spot_market_map,
                 oracle_map: &mut *oracle_map,
-                slot: clock.slot,
-                now: clock.unix_timestamp,
+                slot: cx.clock.slot,
+                now: cx.clock.unix_timestamp,
             },
         )?,
         ..inputs
@@ -606,26 +619,26 @@ fn route_and_fill_remainder<'info>(
     // Reuse the CPI scratch the book read filled: its buffers clear and refill
     // per leg, so one fill pays for one set of buffers.
     let route = crate::instructions::QuotedRoute::assemble(tail, &inputs, cpi_scratch)?;
-    route.require_baseline(perp_market_map.get_ref(&market_index)?.clob_market)?;
-    route.require_signed_route(signed_route, route_digest)?;
+    route.require_baseline(perp_market_map.get_ref(&cx.market_index)?.clob_market)?;
+    route.require_signed_route(route_claim.quoters, route_claim.digest)?;
     let mut book_storage =
         [crate::math::router::QuoterBook::default(); crate::state::prop_amm::MAX_ROUTE_QUOTERS];
     let books = route.books(&mut book_storage)?;
-    let mut executor = route.executor(&inputs, clock.slot, clock.unix_timestamp, cpi_scratch);
+    let mut executor = route.executor(&inputs, cx.clock.slot, cx.clock.unix_timestamp, cpi_scratch);
     let mut router_inputs = crate::math::router::RouterFillInputs {
         books,
         executor: &mut executor,
-        protocol_authority: state.signer,
+        protocol_authority: cx.state.signer,
         obligation: crate::math::router::FillerObligation {
             // The taker is not here to choose the account list, so the cranker
             // answers for what it left out, as a keeper fill does.
             taker_signed: false,
             tx_accounts: Some(
                 crate::instructions::optional_accounts::tx_writable_lock_count(
-                    &ctx.accounts.instructions_sysvar.to_account_info(),
+                    &cx.accounts.instructions_sysvar.to_account_info(),
                 )?,
             ),
-            unrouted_quoters: route.unrouted_quoters(signed_route, route_digest),
+            unrouted_quoters: route.unrouted_quoters(route_claim.quoters, route_claim.digest),
         },
     };
 
@@ -636,20 +649,20 @@ fn route_and_fill_remainder<'info>(
         // The remainder rested on the book first, so it holds an
         // `open_bids`/`open_asks` reservation this fill unwinds.
         controller::orders::FillTarget::Detached {
-            order,
+            order: &mut order,
             reserved: true,
         },
-        state,
-        &ctx.accounts.taker,
-        &ctx.accounts.taker_stats,
+        cx.state,
+        &cx.accounts.taker,
+        &cx.accounts.taker_stats,
         spot_market_map,
         perp_market_map,
         oracle_map,
-        &ctx.accounts.taker,
-        &ctx.accounts.taker_stats,
-        makers_and_referrer,
-        makers_and_referrer_stats,
-        clock,
+        &cx.accounts.taker,
+        &cx.accounts.taker_stats,
+        cx.makers_and_referrer,
+        cx.makers_and_referrer_stats,
+        cx.clock,
         FillMode::Fill,
         &mut router_inputs,
         &mut None,
@@ -673,47 +686,42 @@ fn route_and_fill_remainder<'info>(
 /// the price the fill reached, not against one counterparty's quote.
 #[allow(clippy::too_many_arguments)]
 fn pay_crank_reward<'info>(
-    ctx: &Context<'info, CrankTakerOriginCross<'info>>,
-    market_index: u16,
-    taker_direction: PositionDirection,
-    rest_price: u64,
+    cx: &TakerOriginContext<'_, 'info>,
+    rested: &RestingOrder,
     fill_price: u64,
     base_filled: u64,
     quote_filled: u64,
-    order_slot: u64,
-    state: &State,
     perp_market_map: &PerpMarketMap<'info>,
     spot_market_map: &SpotMarketMap<'info>,
     oracle_map: &mut OracleMap<'info>,
-    clock: &Clock,
 ) -> Result<(crate::math::fees::TakerOriginCrossFee, u64)> {
     let (fee, _, _, _) = {
-        let taker_stats = load!(ctx.accounts.taker_stats)?;
+        let taker_stats = load!(cx.accounts.taker_stats)?;
         controller::orders::price_taker_origin_cross(
-            state,
-            market_index,
-            taker_direction,
-            rest_price,
+            cx.state,
+            cx.market_index,
+            cx.taker_direction,
+            rested.price,
             fill_price,
             base_filled,
-            order_slot,
+            rested.placed_slot,
             &taker_stats,
             perp_market_map,
             oracle_map,
-            clock,
+            cx.clock,
         )?
     };
     let crank_reward = controller::orders::pay_taker_origin_crank_reward(
-        market_index,
+        cx.market_index,
         &fee,
         quote_filled,
-        &ctx.accounts.taker,
-        &ctx.accounts.filler,
-        &ctx.accounts.filler_stats,
+        &cx.accounts.taker,
+        &cx.accounts.filler,
+        &cx.accounts.filler_stats,
         perp_market_map,
         spot_market_map,
         oracle_map,
-        clock,
+        cx.clock,
     )?;
     Ok((fee, crank_reward))
 }
@@ -729,18 +737,16 @@ fn pay_crank_reward<'info>(
 ///
 /// Returns the base the remainder still rests at.
 fn report_fill_to_book<'info>(
-    ctx: &Context<'info, CrankTakerOriginCross<'info>>,
-    market_index: u16,
+    cx: &TakerOriginContext<'_, 'info>,
     subject_order: &RestingOrder,
-    taker_direction: PositionDirection,
     base_filled: u64,
 ) -> Result<u64> {
     let filled = {
         let clob = ClobMarket::from_slab(
-            &ctx.accounts.quoter_slab,
-            market_index,
-            &ctx.accounts.clob_market,
-            &ctx.accounts.clob_program,
+            &cx.accounts.quoter_slab,
+            cx.market_index,
+            &cx.accounts.clob_market,
+            &cx.accounts.clob_program,
         )?;
         clob.fill(ClobFillArgsV0 {
             fills: vec![ClobFillRequestV0 {
@@ -760,10 +766,10 @@ fn report_fill_to_book<'info>(
         // returned rather than off `order`, which a detached fill does not
         // write back.
         let release_slot = base_filled < subject_order.base_asset_amount;
-        let mut taker = load_mut!(ctx.accounts.taker)?;
+        let mut taker = load_mut!(cx.accounts.taker)?;
         taker.unwind_removed_clob_order(
-            market_index,
-            &taker_direction,
+            cx.market_index,
+            &cx.taker_direction,
             filled.culled_base_asset_amount,
             subject_order.order_ref.order_id,
             release_slot,
@@ -776,21 +782,18 @@ fn report_fill_to_book<'info>(
 }
 
 /// The keeper's lamports, as every CLOB crank pays them.
-fn pay_crank_lamports<'info>(
-    ctx: &Context<'info, CrankTakerOriginCross<'info>>,
-    program_keeper_mode: bool,
-) -> Result<()> {
-    let Some(conditions_loader) = &ctx.accounts.crank_conditions else {
+fn pay_crank_lamports<'info>(cx: &TakerOriginContext<'_, 'info>) -> Result<()> {
+    let Some(conditions_loader) = &cx.accounts.crank_conditions else {
         return Ok(());
     };
     let payment = {
         let conditions = load_mut!(conditions_loader)?;
         u64::from(conditions.crank_payments.taker_origin_cross)
     };
-    if program_keeper_mode {
+    if cx.program_keeper_mode {
         ClobCrankConditionsV0::pay_keeper(
             conditions_loader,
-            &ctx.accounts.authority.to_account_info(),
+            &cx.accounts.authority.to_account_info(),
             payment,
         )?;
     }
@@ -800,18 +803,15 @@ fn pay_crank_lamports<'info>(
 /// What the taker gained and what the cranker took out of it. The per-source
 /// detail rides the fill's own `OrderActionRecord`s; this is what those cannot
 /// say.
-#[allow(clippy::too_many_arguments)]
 fn emit_taker_origin_record<'info>(
-    ctx: &Context<'info, CrankTakerOriginCross<'info>>,
-    market_index: u16,
-    aggressor: &RestingOrder,
-    base_filled: u64,
-    quote_filled: u64,
+    cx: &TakerOriginContext<'_, 'info>,
+    pair: &RemainderPair<'_>,
     fill_price: u64,
     crank_reward: u64,
     remainder_base_asset_amount: u64,
-    clock: &Clock,
 ) {
+    let (aggressor, base_filled, quote_filled) =
+        (pair.aggressor, pair.base_filled, pair.quote_filled);
     let improvement = quote_filled
         .max(controller::orders::clob_notional(aggressor.price, base_filled).unwrap_or(0))
         .saturating_sub(
@@ -819,11 +819,11 @@ fn emit_taker_origin_record<'info>(
                 .min(controller::orders::clob_notional(aggressor.price, base_filled).unwrap_or(0)),
         );
     emit!(TakerOriginCrossRecordV1 {
-        ts: clock.unix_timestamp,
-        slot: clock.slot,
-        market_index,
-        taker: ctx.accounts.taker.key(),
-        filler: ctx.accounts.filler.key(),
+        ts: cx.clock.unix_timestamp,
+        slot: cx.clock.slot,
+        market_index: cx.market_index,
+        taker: cx.accounts.taker.key(),
+        filler: cx.accounts.filler.key(),
         base_asset_amount: base_filled,
         quote_asset_amount: quote_filled,
         rest_price: aggressor.price,
@@ -843,6 +843,18 @@ fn emit_taker_origin_record<'info>(
     );
 }
 
+/// Two crossed remainders, and the size and price their match settles at.
+struct RemainderPair<'a> {
+    /// The later of the two to rest, which aggresses.
+    aggressor: &'a RestingOrder,
+    /// The earlier one, whose price the match settles at.
+    counterparty: &'a RestingOrder,
+    /// The counterparty's margin account, as the user map keys it.
+    maker_key: Pubkey,
+    base_filled: u64,
+    quote_filled: u64,
+}
+
 /// Settle two crossed remainders against each other, and tell the book.
 ///
 /// No intermediary and no router. Both orders are on the book, both are frozen
@@ -855,29 +867,22 @@ fn emit_taker_origin_record<'info>(
 /// The cranker is paid out of the improvement, as on every other path here, so
 /// no filler is passed to the settlement and no reward comes out of the taker
 /// fee.
-#[allow(clippy::too_many_arguments)]
 fn settle_taker_origin_pair<'c: 'info, 'info>(
-    ctx: &Context<'info, CrankTakerOriginCross<'info>>,
-    market_index: u16,
-    aggressor_side: ClobSide,
+    cx: &TakerOriginContext<'_, 'info>,
     cross: &Cross,
     aggressor: &RestingOrder,
     counterparty: &RestingOrder,
     perp_market_map: &PerpMarketMap<'info>,
     spot_market_map: &SpotMarketMap<'info>,
     oracle_map: &mut OracleMap<'info>,
-    makers_and_referrer: &UserMap<'info>,
-    makers_and_referrer_stats: &UserStatsMap<'info>,
-    state: &State,
-    program_keeper_mode: bool,
-    clock: &Clock,
 ) -> Result<()> {
-    let taker_direction = aggressor_side.to_position_direction();
+    let taker_direction = cx.taker_direction;
     let base_filled = cross.base_asset_amount;
     // The earlier order's price, which is what the resolution settled on.
     let price = counterparty.price;
     let quote_filled = controller::orders::clob_notional(price, base_filled)?;
-    let maker_key = *makers_and_referrer
+    let maker_key = *cx
+        .makers_and_referrer
         .user_ref_index()?
         .get(&(
             counterparty.user.authority,
@@ -891,11 +896,18 @@ fn settle_taker_origin_pair<'c: 'info, 'info>(
             );
             ErrorCode::UserNotFound
         })?;
+    let pair = RemainderPair {
+        aggressor,
+        counterparty,
+        maker_key,
+        base_filled,
+        quote_filled,
+    };
 
     let mut order =
-        controller::orders::taker_origin_order(market_index, taker_direction, aggressor);
+        controller::orders::taker_origin_order(cx.market_index, taker_direction, aggressor);
     let (oracle_price, margin_ratio_initial) = {
-        let market = perp_market_map.get_ref(&market_index)?;
+        let market = perp_market_map.get_ref(&cx.market_index)?;
         let oracle_id = market.oracle_id();
         let margin_ratio_initial = market.margin_ratio_initial;
         drop(market);
@@ -924,87 +936,45 @@ fn settle_taker_origin_pair<'c: 'info, 'info>(
         oracle_price
     )?;
     bind_aggressor_size(
-        &ctx.accounts.taker,
-        market_index,
+        &cx.accounts.taker,
+        cx.market_index,
         taker_direction,
         base_filled,
         order.reduce_only,
     )?;
-    bind_counterparty_size(
-        counterparty,
-        makers_and_referrer,
-        maker_key,
-        market_index,
-        taker_direction,
-        base_filled,
-    )?;
+    bind_counterparty_size(cx, &pair)?;
 
-    settle_pair_funding(
-        ctx,
-        market_index,
-        maker_key,
-        perp_market_map,
-        makers_and_referrer,
-        clock,
-    )?;
+    settle_pair_funding(cx, &pair, perp_market_map)?;
 
     settle_pair_match(
-        ctx,
-        market_index,
-        aggressor,
-        counterparty,
-        maker_key,
+        cx,
+        &pair,
         &mut order,
-        base_filled,
-        quote_filled,
         oracle_price,
-        taker_direction,
         perp_market_map,
         oracle_map,
-        makers_and_referrer,
-        makers_and_referrer_stats,
-        state,
-        clock,
     )?;
 
-    report_pair_fill_to_book(
-        ctx,
-        market_index,
-        aggressor,
-        counterparty,
-        maker_key,
-        taker_direction,
-        base_filled,
-        makers_and_referrer,
-    )?;
+    report_pair_fill_to_book(cx, &pair)?;
 
     let (_, crank_reward) = pay_crank_reward(
-        ctx,
-        market_index,
-        taker_direction,
-        aggressor.price,
+        cx,
+        aggressor,
         price,
         base_filled,
         quote_filled,
-        aggressor.placed_slot,
-        state,
         perp_market_map,
         spot_market_map,
         oracle_map,
-        clock,
     )?;
 
-    pay_crank_lamports(ctx, program_keeper_mode)?;
+    pay_crank_lamports(cx)?;
     emit_taker_origin_record(
-        ctx,
-        market_index,
-        aggressor,
-        base_filled,
-        quote_filled,
+        cx,
+        &pair,
         price,
         crank_reward,
         aggressor.base_asset_amount.saturating_sub(base_filled),
-        clock,
     );
     Ok(())
 }
@@ -1055,28 +1025,24 @@ fn bind_aggressor_size(
 /// counterparty rests bids and reduces a short; a short counterparty rests
 /// asks and reduces a long, so the cover is the position held the other way.
 fn bind_counterparty_size<'info>(
-    counterparty: &RestingOrder,
-    makers_and_referrer: &UserMap<'info>,
-    maker_key: Pubkey,
-    market_index: u16,
-    taker_direction: PositionDirection,
-    base_filled: u64,
+    cx: &TakerOriginContext<'_, 'info>,
+    pair: &RemainderPair<'_>,
 ) -> Result<()> {
-    if !counterparty.reduce_only {
+    if !pair.counterparty.reduce_only {
         return Ok(());
     }
-    let counterparty_user = makers_and_referrer.get_ref(&maker_key)?;
-    let cp_index = get_position_index(&counterparty_user.perp_positions, market_index)?;
+    let counterparty_user = cx.makers_and_referrer.get_ref(&pair.maker_key)?;
+    let cp_index = get_position_index(&counterparty_user.perp_positions, cx.market_index)?;
     let base = counterparty_user.perp_positions[cp_index].base_asset_amount;
-    let cp_cover = match taker_direction.opposite() {
+    let cp_cover = match cx.taker_direction.opposite() {
         PositionDirection::Long => base.min(0).unsigned_abs(),
         PositionDirection::Short => base.max(0).unsigned_abs(),
     };
     validate!(
-        base_filled <= cp_cover,
+        pair.base_filled <= cp_cover,
         ErrorCode::QuoterReportExceedsReservation,
         "the cross filled {} base against a reduce-only counterparty covering {}",
-        base_filled,
+        pair.base_filled,
         cp_cover
     )?;
     Ok(())
@@ -1089,22 +1055,19 @@ fn bind_counterparty_size<'info>(
 /// `cross_match` paths pre-settle the same way. This two-remainder path must
 /// match them, or it reverts whenever either party holds a position.
 fn settle_pair_funding<'info>(
-    ctx: &Context<'info, CrankTakerOriginCross<'info>>,
-    market_index: u16,
-    maker_key: Pubkey,
+    cx: &TakerOriginContext<'_, 'info>,
+    pair: &RemainderPair<'_>,
     perp_market_map: &PerpMarketMap<'info>,
-    makers_and_referrer: &UserMap<'info>,
-    clock: &Clock,
 ) -> Result<()> {
-    let now = clock.unix_timestamp;
-    let taker_key = ctx.accounts.taker.key();
-    let mut market = perp_market_map.get_ref_mut(&market_index)?;
-    let mut taker = load_mut!(ctx.accounts.taker)?;
+    let now = cx.clock.unix_timestamp;
+    let taker_key = cx.accounts.taker.key();
+    let mut market = perp_market_map.get_ref_mut(&cx.market_index)?;
+    let mut taker = load_mut!(cx.accounts.taker)?;
     crate::controller::funding::settle_funding_payment(&mut taker, &taker_key, &mut market, now)?;
-    let mut counterparty_user = makers_and_referrer.get_ref_mut(&maker_key)?;
+    let mut counterparty_user = cx.makers_and_referrer.get_ref_mut(&pair.maker_key)?;
     crate::controller::funding::settle_funding_payment(
         &mut counterparty_user,
-        &maker_key,
+        &pair.maker_key,
         &mut market,
         now,
     )?;
@@ -1115,70 +1078,66 @@ fn settle_pair_funding<'info>(
 ///
 /// No filler goes into the settlement, so no reward comes out of the taker
 /// fee. The cranker is paid out of the improvement instead.
-#[allow(clippy::too_many_arguments)]
 fn settle_pair_match<'info>(
-    ctx: &Context<'info, CrankTakerOriginCross<'info>>,
-    market_index: u16,
-    aggressor: &RestingOrder,
-    counterparty: &RestingOrder,
-    maker_key: Pubkey,
+    cx: &TakerOriginContext<'_, 'info>,
+    pair: &RemainderPair<'_>,
     order: &mut crate::state::user::Order,
-    base_filled: u64,
-    quote_filled: u64,
     oracle_price: i64,
-    taker_direction: PositionDirection,
     perp_market_map: &PerpMarketMap<'info>,
     oracle_map: &mut OracleMap<'info>,
-    makers_and_referrer: &UserMap<'info>,
-    makers_and_referrer_stats: &UserStatsMap<'info>,
-    state: &State,
-    clock: &Clock,
 ) -> Result<()> {
-    let mut market = perp_market_map.get_ref_mut(&market_index)?;
-    let mut taker = load_mut!(ctx.accounts.taker)?;
-    let mut taker_stats = load_mut!(ctx.accounts.taker_stats)?;
-    let taker_position_index = get_position_index(&taker.perp_positions, market_index)?;
+    let taker_direction = cx.taker_direction;
+    let mut market = perp_market_map.get_ref_mut(&cx.market_index)?;
+    let mut taker = load_mut!(cx.accounts.taker)?;
+    let mut taker_stats = load_mut!(cx.accounts.taker_stats)?;
+    let taker_position_index = get_position_index(&taker.perp_positions, cx.market_index)?;
     let taker_existing_position_params = taker.perp_positions[taker_position_index]
         .get_existing_position_params_for_order_action(taker_direction);
-    let mut maker = makers_and_referrer.get_ref_mut(&maker_key)?;
-    let mut maker_stats = Some(makers_and_referrer_stats.get_ref_mut(&maker.authority)?);
-    let taker_key = ctx.accounts.taker.key();
+    let mut maker = cx.makers_and_referrer.get_ref_mut(&pair.maker_key)?;
+    let mut maker_stats = Some(cx.makers_and_referrer_stats.get_ref_mut(&maker.authority)?);
+    let taker_key = cx.accounts.taker.key();
     let mut none_filler: Option<&mut User> = None;
     let mut none_filler_stats: Option<&mut UserStats> = None;
     let mut no_escrow: Option<&mut RevenueShareEscrowZeroCopyMut> = None;
     let mut filler_reward_paid = 0u64;
     controller::orders::settle_external_match_fill(
-        base_filled,
-        quote_filled,
+        pair.base_filled,
+        pair.quote_filled,
         market.deref_mut(),
-        &mut taker,
-        &mut taker_stats,
-        taker_position_index,
-        order,
-        &taker_key,
-        taker_direction,
-        taker_existing_position_params,
+        &mut controller::orders::TakerSide {
+            user: &mut taker,
+            stats: &mut taker_stats,
+            key: taker_key,
+            position_index: taker_position_index,
+            order,
+            direction: taker_direction,
+            existing_position_params_before: taker_existing_position_params,
+        },
         &mut maker,
         maker_stats.as_deref_mut(),
-        &maker_key,
+        &pair.maker_key,
         // A CLOB order's worst case is reserved through velocity at
         // placement, so its fill unwinds that reservation.
         true,
-        Some(counterparty.order_ref.order_id as u32),
-        Some(aggressor.price),
+        Some(pair.counterparty.order_ref.order_id as u32),
+        Some(pair.aggressor.price),
         oracle_price,
-        &mut none_filler,
-        &mut none_filler_stats,
-        &taker_key,
-        &mut no_escrow,
-        false,
-        &state.perp_fee_structure,
+        &mut controller::orders::FillerSide {
+            user: &mut none_filler,
+            stats: &mut none_filler_stats,
+            key: taker_key,
+            rev_share_escrow: &mut no_escrow,
+        },
+        &controller::orders::FillPolicy {
+            fee_structure: &cx.state.perp_fee_structure,
+            referrer_is_accelerated: false,
+            is_liquidation: false,
+            promo_fee_tier: cx.state.promo_fee_tier,
+            builder_fee_allowed: false,
+        },
         oracle_map,
-        false,
-        clock.unix_timestamp,
-        clock.slot,
-        state.promo_fee_tier,
-        false,
+        cx.clock.unix_timestamp,
+        cx.clock.slot,
         // The aggressor rested on the book first, so its reservation is
         // still on it and this fill unwinds it.
         true,
@@ -1191,33 +1150,26 @@ fn settle_pair_match<'info>(
 ///
 /// One call for both sides. Each order shrinks in place, and the book culls
 /// whichever leftover falls under its minimum.
-#[allow(clippy::too_many_arguments)]
 fn report_pair_fill_to_book<'info>(
-    ctx: &Context<'info, CrankTakerOriginCross<'info>>,
-    market_index: u16,
-    aggressor: &RestingOrder,
-    counterparty: &RestingOrder,
-    maker_key: Pubkey,
-    taker_direction: PositionDirection,
-    base_filled: u64,
-    makers_and_referrer: &UserMap<'info>,
+    cx: &TakerOriginContext<'_, 'info>,
+    pair: &RemainderPair<'_>,
 ) -> Result<()> {
     let filled = {
         let clob = ClobMarket::from_slab(
-            &ctx.accounts.quoter_slab,
-            market_index,
-            &ctx.accounts.clob_market,
-            &ctx.accounts.clob_program,
+            &cx.accounts.quoter_slab,
+            cx.market_index,
+            &cx.accounts.clob_market,
+            &cx.accounts.clob_program,
         )?;
         clob.fill(ClobFillArgsV0 {
             fills: vec![
                 ClobFillRequestV0 {
-                    order_ref: aggressor.order_ref,
-                    base_asset_amount: base_filled,
+                    order_ref: pair.aggressor.order_ref,
+                    base_asset_amount: pair.base_filled,
                 },
                 ClobFillRequestV0 {
-                    order_ref: counterparty.order_ref,
-                    base_asset_amount: base_filled,
+                    order_ref: pair.counterparty.order_ref,
+                    base_asset_amount: pair.base_filled,
                 },
             ],
         })?
@@ -1230,29 +1182,29 @@ fn report_pair_fill_to_book<'info>(
             continue;
         }
         let direction = if owner_is_taker {
-            taker_direction
+            cx.taker_direction
         } else {
-            taker_direction.opposite()
+            cx.taker_direction.opposite()
         };
         if owner_is_taker {
-            let mut taker = load_mut!(ctx.accounts.taker)?;
+            let mut taker = load_mut!(cx.accounts.taker)?;
             taker.unwind_removed_clob_order(
-                market_index,
+                cx.market_index,
                 &direction,
                 leg.culled_base_asset_amount,
                 leg.order_id,
                 true,
-                aggressor.reduce_only,
+                pair.aggressor.reduce_only,
             )?;
         } else {
-            let mut maker = makers_and_referrer.get_ref_mut(&maker_key)?;
+            let mut maker = cx.makers_and_referrer.get_ref_mut(&pair.maker_key)?;
             maker.unwind_removed_clob_order(
-                market_index,
+                cx.market_index,
                 &direction,
                 leg.culled_base_asset_amount,
                 leg.order_id,
                 true,
-                counterparty.reduce_only,
+                pair.counterparty.reduce_only,
             )?;
         }
     }

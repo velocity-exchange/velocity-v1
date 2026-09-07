@@ -214,6 +214,13 @@ moves between them, the output says so. Add `--raw` for the full argument list, 
 instruction data and complete logs. Non-velocity instructions still show their accounts, with
 SOL transfers decoded to an amount.
 
+Strings that came off the chain (program logs, decoded instruction arguments, decoded account
+fields, market names) are rendered through `ui.safe`, which turns every control character into
+U+FFFD. A proposal's inner instructions are simulated during review, before approval, so a
+proposer can put any program in a proposal and have its `msg!` output reach the reviewer's
+terminal; without that, an escape sequence in a log could move the cursor and repaint the
+review with forged output. Substituting rather than dropping keeps the tampering visible.
+
 ## Output conventions
 
 The read-heavy commands (`show`, `whoami`, `multisig proposals|inspect`, and every dry run)

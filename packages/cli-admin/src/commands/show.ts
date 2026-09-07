@@ -74,8 +74,16 @@ function describeBitmask(
 	return `${value} (0b${value.toString(2).padStart(8, '0')}) = ${names}`;
 }
 
-/** Render any decoded account field: pubkeys as base58, BNs as decimals, arrays/structs inline. */
+/**
+ * Render any decoded account field: pubkeys as base58, BNs as decimals,
+ * arrays/structs inline. Sanitized: account fields are chain data and a
+ * string field can carry terminal escapes.
+ */
 function formatField(value: unknown): string {
+	return ui.safe(renderField(value));
+}
+
+function renderField(value: unknown): string {
 	if (value === undefined || value === null) {
 		return '(none)';
 	}
@@ -86,11 +94,11 @@ function formatField(value: unknown): string {
 		return value.toString();
 	}
 	if (Array.isArray(value)) {
-		return `[${value.map(formatField).join(', ')}]`;
+		return `[${value.map(renderField).join(', ')}]`;
 	}
 	if (typeof value === 'object') {
 		const entries = Object.entries(value as Record<string, unknown>).map(
-			([k, v]) => `${k}: ${formatField(v)}`
+			([k, v]) => `${k}: ${renderField(v)}`
 		);
 		return `{ ${entries.join(', ')} }`;
 	}
@@ -465,7 +473,7 @@ export function registerShow(parent: Command): void {
 					.sort((a, b) => a.marketIndex - b.marketIndex)
 					.map((market) => [
 						pc.dim(`[${market.marketIndex}]`),
-						pc.bold(decodeName(market.name)),
+						pc.bold(ui.safe(decodeName(market.name))),
 						pc.dim(
 							`fee adj ${describeFeeAdjustment(market.feeAdjustment)}, addon ${
 								market.takerFeeAddonTenthBps / 10
@@ -490,7 +498,7 @@ export function registerShow(parent: Command): void {
 					.sort((a, b) => a.marketIndex - b.marketIndex)
 					.map((market) => [
 						pc.dim(`[${market.marketIndex}]`),
-						pc.bold(decodeName(market.name)),
+						pc.bold(ui.safe(decodeName(market.name))),
 						pc.dim(`fee adj ${describeFeeAdjustment(market.feeAdjustment)}`),
 						pc.dim(
 							`liq: liquidator ${pct1e6(market.liquidatorFee)}, if ${pct1e6(

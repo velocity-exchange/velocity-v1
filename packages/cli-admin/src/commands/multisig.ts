@@ -644,7 +644,7 @@ export function registerMultisig(parent: Command): void {
 			for (const entry of shownLogs) {
 				// Some admin handlers log a whole struct on one line; keep the
 				// screen readable and leave the full text to --raw.
-				const text = entry.replace(/^Program log: /, '');
+				const text = ui.safe(entry.replace(/^Program log: /, ''));
 				if (!local.raw && text.length > 160) {
 					ui.line(pc.dim(`${text.slice(0, 160)}…`));
 					truncated = true;
@@ -702,7 +702,7 @@ export function registerMultisig(parent: Command): void {
 			ui.header('can it execute now', ui.bad('no'));
 			ui.line(pc.red(JSON.stringify(readiness.value.err)));
 			for (const entry of (readiness.value.logs ?? []).slice(-6)) {
-				ui.note(entry);
+				ui.note(ui.safe(entry));
 			}
 		}
 		console.log('');
@@ -916,8 +916,16 @@ function accountFlags(
 	};
 }
 
-/** Render one decoded value as a single line: pubkeys, BNs, anchor enums. */
+/**
+ * Render one decoded value as a single line: pubkeys, BNs, anchor enums. The
+ * result is sanitized because instruction arguments and account fields are
+ * chain data, so a borsh string can carry terminal escapes.
+ */
 function formatValue(value: unknown): string {
+	return ui.safe(renderValue(value));
+}
+
+function renderValue(value: unknown): string {
 	if (value === null || value === undefined) {
 		return String(value);
 	}

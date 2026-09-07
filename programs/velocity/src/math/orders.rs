@@ -2,6 +2,7 @@ use {
     crate::{
         controller::position::{PositionDelta, PositionDirection},
         error::{ErrorCode, VelocityResult},
+        instructions::optional_accounts::AccountMaps,
         load,
         math::{
             casting::Cast,
@@ -24,12 +25,9 @@ use {
         state::{
             margin_calculation::{MarginCalculation, MarginContext},
             oracle::{OraclePriceData, StrictOraclePrice},
-            oracle_map::OracleMap,
             order_params::PostOnlyParam,
             perp_market::{PerpMarket, AMM},
-            perp_market_map::PerpMarketMap,
             spot_market::SpotMarket,
-            spot_market_map::SpotMarketMap,
             user::{
                 MarketType, Order, OrderBitFlag, OrderFillSimulation, OrderStatus,
                 OrderTriggerCondition, PerpPosition, User,
@@ -762,17 +760,13 @@ pub fn calculate_max_perp_order_size(
     position_index: usize,
     market_index: u16,
     direction: PositionDirection,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
 ) -> VelocityResult<u64> {
     let margin_context = MarginContext::standard(MarginRequirementType::Initial).strict(true);
     // calculate initial margin requirement
     let margin_calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
         user,
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
         margin_context,
     )?;
 
@@ -790,12 +784,18 @@ pub fn calculate_max_perp_order_size(
             .cast::<i128>()?
     };
 
-    let perp_market = perp_market_map.get_ref(&market_index)?;
+    let perp_market = maps.perp_market_map.get_ref(&market_index)?;
 
-    let oracle_price_data_price = oracle_map.get_price_data(&perp_market.oracle_id())?.price;
+    let oracle_price_data_price = maps
+        .oracle_map
+        .get_price_data(&perp_market.oracle_id())?
+        .price;
 
-    let quote_spot_market = spot_market_map.get_ref(&perp_market.quote_spot_market_index)?;
-    let quote_oracle_price = oracle_map
+    let quote_spot_market = maps
+        .spot_market_map
+        .get_ref(&perp_market.quote_spot_market_index)?;
+    let quote_oracle_price = maps
+        .oracle_map
         .get_price_data(&quote_spot_market.oracle_id())?
         .price
         .max(
@@ -921,9 +921,7 @@ pub fn calculate_max_spot_order_size(
     user: &User,
     market_index: u16,
     direction: PositionDirection,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
 ) -> VelocityResult<u64> {
     // calculate initial margin requirement
     let MarginCalculation {
@@ -932,9 +930,7 @@ pub fn calculate_max_spot_order_size(
         ..
     } = calculate_margin_requirement_and_total_collateral_and_liability_info(
         user,
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
         MarginContext::standard(MarginRequirementType::Initial).strict(true),
     )?;
 
@@ -945,9 +941,9 @@ pub fn calculate_max_spot_order_size(
     let mut order_size_to_flip = 0_u64;
     let free_collateral = total_collateral.safe_sub(margin_requirement.cast()?)?;
 
-    let spot_market = spot_market_map.get_ref(&market_index)?;
+    let spot_market = maps.spot_market_map.get_ref(&market_index)?;
 
-    let oracle_price_data = oracle_map.get_price_data(&spot_market.oracle_id())?;
+    let oracle_price_data = maps.oracle_map.get_price_data(&spot_market.oracle_id())?;
     let twap = spot_market
         .historical_oracle_data
         .last_oracle_price_twap_5min;

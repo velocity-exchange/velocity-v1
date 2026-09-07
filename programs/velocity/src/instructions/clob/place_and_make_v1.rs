@@ -12,11 +12,7 @@ use {
     crate::{
         controller,
         error::ErrorCode,
-        instructions::{
-            constraints::*,
-            optional_accounts::{load_maps, AccountMaps},
-            try_place_remainder_on_clob,
-        },
+        instructions::{constraints::*, optional_accounts::load_maps, try_place_remainder_on_clob},
         load, load_mut,
         state::{
             order_params::{OrderParams, PlaceOrderOptions, PostOnlyParam},
@@ -98,11 +94,7 @@ pub fn handle_place_and_make_perp_order_v1<'c: 'info, 'info>(
     let user_key = ctx.accounts.user.key();
 
     let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map,
-        mut oracle_map,
-    } = load_maps(
+    let mut maps = load_maps(
         remaining_accounts_iter,
         &get_writable_perp_market_set(params.market_index),
         &MarketSet::new(),
@@ -133,9 +125,7 @@ pub fn handle_place_and_make_perp_order_v1<'c: 'info, 'info>(
         controller::orders::expire_orders(
             &mut user,
             &user_key,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             clock.unix_timestamp,
             clock.slot,
         )?;
@@ -143,9 +133,7 @@ pub fn handle_place_and_make_perp_order_v1<'c: 'info, 'info>(
             &state,
             &mut user,
             user_key,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             &clock,
             params,
             // The order rests straight on the CLOB; its CLOB placement record
@@ -195,9 +183,7 @@ pub fn handle_place_and_make_perp_order_v1<'c: 'info, 'info>(
         &ctx.accounts.quoter_slab,
         &ctx.accounts.clob_market.to_account_info(),
         &ctx.accounts.clob_program.to_account_info(),
-        &perp_market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         params.market_index,
         order.direction,
         rest_price,

@@ -124,7 +124,7 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
     let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
     // The perp market is a named account, so the maps section carries only
     // the oracle and the quote spot market.
-    let mut oracle_map = crate::state::oracle_map::OracleMap::load(
+    let oracle_map = crate::state::oracle_map::OracleMap::load(
         remaining_accounts_iter,
         clock.slot,
         state.slot_clock(),
@@ -143,6 +143,13 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
         &oracle_map,
         clock.slot,
     )?;
+    // The perp market arrives named rather than through the maps section, so
+    // the bundle is built here instead of by `load_maps`.
+    let mut maps = crate::instructions::optional_accounts::AccountMaps {
+        perp_market_map,
+        spot_market_map,
+        oracle_map,
+    };
     let (makers_and_referrer, makers_and_referrer_stats) =
         load_user_maps(remaining_accounts_iter, true)?;
 
@@ -204,8 +211,8 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
     let cross_floor = cross_surplus_floor(
         &ctx.accounts.crank_conditions,
         &state,
-        &spot_market_map,
-        &mut oracle_map,
+        &maps.spot_market_map,
+        &mut maps.oracle_map,
     )?;
 
     let (base_matched, surplus) = controller::orders::cross_match(
@@ -219,9 +226,7 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
         &makers_and_referrer,
         &makers_and_referrer_stats,
         &mut executor,
-        &perp_market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         &clock,
         cross_floor,
     )?;

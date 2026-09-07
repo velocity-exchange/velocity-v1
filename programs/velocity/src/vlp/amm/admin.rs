@@ -17,7 +17,7 @@ use {
         controller::{self, spot_balance::execute_transfer_between_pools},
         error::ErrorCode,
         instructions::{
-            optional_accounts::{get_token_mint, load_maps, AccountMaps},
+            optional_accounts::{get_token_mint, load_maps},
             *,
         },
         load, load_mut,
@@ -99,11 +99,7 @@ pub fn handle_update_initial_amm_cache_info<'c: 'info, 'info>(
     let slot = Clock::get()?.slot;
     let state = ctx.accounts.state.load()?;
 
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map: _,
-        mut oracle_map,
-    } = load_maps(
+    let mut maps = load_maps(
         &mut ctx.remaining_accounts.iter().peekable(),
         &MarketSet::new(),
         &MarketSet::new(),
@@ -113,9 +109,9 @@ pub fn handle_update_initial_amm_cache_info<'c: 'info, 'info>(
     )?;
 
     let validity = ctx.accounts.state.load()?.oracle_guard_rails.validity;
-    for (_, perp_market_loader) in perp_market_map.0 {
+    for (_, perp_market_loader) in maps.perp_market_map.0 {
         let perp_market = perp_market_loader.load()?;
-        let oracle_data = oracle_map.get_price_data(&perp_market.oracle_id())?;
+        let oracle_data = maps.oracle_map.get_price_data(&perp_market.oracle_id())?;
         let mm_oracle_data = perp_market.get_mm_oracle_price_data(
             *oracle_data,
             slot,

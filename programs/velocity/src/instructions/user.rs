@@ -67,13 +67,12 @@ use {
             margin_calculation::MarginContext,
             market_status::MarketStatus,
             oracle::StrictOraclePrice,
-            oracle_map::OracleMap,
             order_params::{
                 parse_optional_params, ModifyOrderParams, OrderParams,
                 PlaceAndTakeOrderSuccessCondition, PlaceOrderOptions, PostOnlyParam,
             },
             paused_operations::{PerpOperation, SpotOperation},
-            perp_market_map::{get_writable_perp_market_set, MarketSet, PerpMarketMap},
+            perp_market_map::{get_writable_perp_market_set, MarketSet},
             revenue_share::{
                 BuilderInfo, RevenueShare, RevenueShareEscrow, RevenueShareEscrowLoader,
                 RevenueShareOrder, REVENUE_SHARE_ESCROW_PDA_SEED, REVENUE_SHARE_PDA_SEED,
@@ -85,7 +84,7 @@ use {
             },
             spot_market::{SpotBalanceType, SpotMarket},
             spot_market_map::{
-                get_writable_spot_market_set, get_writable_spot_market_set_from_many, SpotMarketMap,
+                get_writable_spot_market_set, get_writable_spot_market_set_from_many,
             },
             state::State,
             traits::Size,
@@ -596,11 +595,7 @@ pub fn handle_deposit<'c: 'info, 'info>(
     let slot = clock.slot;
 
     let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map,
-        mut oracle_map,
-    } = load_maps(
+    let mut maps = load_maps(
         remaining_accounts_iter,
         &MarketSet::new(),
         &get_writable_spot_market_set(market_index),
@@ -617,8 +612,8 @@ pub fn handle_deposit<'c: 'info, 'info>(
 
     validate!(!user.is_bankrupt(), ErrorCode::UserBankrupt)?;
 
-    let mut spot_market = spot_market_map.get_ref_mut(&market_index)?;
-    let oracle_price_data = *oracle_map.get_price_data(&spot_market.oracle_id())?;
+    let mut spot_market = maps.spot_market_map.get_ref_mut(&market_index)?;
+    let oracle_price_data = *maps.oracle_map.get_price_data(&spot_market.oracle_id())?;
 
     validate!(
         user.pool_id == spot_market.pool_id,
@@ -720,9 +715,7 @@ pub fn handle_deposit<'c: 'info, 'info>(
         // try to update liquidation status if user is was already being liq'd
         let is_being_liquidated = is_cross_margin_being_liquidated(
             user,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             state.liquidation_margin_buffer_ratio,
         )?;
 
@@ -733,7 +726,7 @@ pub fn handle_deposit<'c: 'info, 'info>(
 
     user.update_last_active_slot(slot);
 
-    let spot_market = &mut spot_market_map.get_ref_mut(&market_index)?;
+    let spot_market = &mut maps.spot_market_map.get_ref_mut(&market_index)?;
 
     controller::token::receive(
         &ctx.accounts.token_program,
@@ -832,11 +825,7 @@ pub fn handle_withdraw<'c: 'info, 'info>(
     )?;
 
     let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map,
-        mut oracle_map,
-    } = load_maps(
+    let mut maps = load_maps(
         remaining_accounts_iter,
         &MarketSet::new(),
         &get_writable_spot_market_set(market_index),
@@ -850,8 +839,8 @@ pub fn handle_withdraw<'c: 'info, 'info>(
     validate!(!user.is_bankrupt(), ErrorCode::UserBankrupt)?;
 
     let (spot_market_is_reduce_only, refreshed_liability_twaps) = {
-        let spot_market = &mut spot_market_map.get_ref_mut(&market_index)?;
-        let oracle_price_data = oracle_map.get_price_data(&spot_market.oracle_id())?;
+        let spot_market = &mut maps.spot_market_map.get_ref_mut(&market_index)?;
+        let oracle_price_data = maps.oracle_map.get_price_data(&spot_market.oracle_id())?;
 
         // #81: snapshot the withdrawn (liability) market's oracle TWAPs BEFORE this
         // in-instruction cumulative-interest update refreshes them, hold the pre-refresh
@@ -911,15 +900,10 @@ pub fn handle_withdraw<'c: 'info, 'info>(
                 ErrorCode::ReduceOnlyWithdrawIncreasedRisk
             )?;
 
-            let max_withdrawable_amount = calculate_max_withdrawable_amount(
-                market_index,
-                user,
-                &perp_market_map,
-                &spot_market_map,
-                &mut oracle_map,
-            )?;
+            let max_withdrawable_amount =
+                calculate_max_withdrawable_amount(market_index, user, &mut maps)?;
 
-            let spot_market = &spot_market_map.get_ref(&market_index)?;
+            let spot_market = &maps.spot_market_map.get_ref(&market_index)?;
             let existing_deposit_amount = user.spot_positions[position_index]
                 .get_token_amount(spot_market)?
                 .cast::<u64>()?;
@@ -931,8 +915,8 @@ pub fn handle_withdraw<'c: 'info, 'info>(
             amount
         };
 
-        let spot_market = &mut spot_market_map.get_ref_mut(&market_index)?;
-        let oracle_price_data = oracle_map.get_price_data(&spot_market.oracle_id())?;
+        let spot_market = &mut maps.spot_market_map.get_ref_mut(&market_index)?;
+        let oracle_price_data = maps.oracle_map.get_price_data(&spot_market.oracle_id())?;
 
         user.increment_total_withdraws(
             amount,
@@ -956,21 +940,16 @@ pub fn handle_withdraw<'c: 'info, 'info>(
     // `cumulative_borrow_interest` — the due interest is simply missing from the
     // initial-margin check, and those markets arrive read-only so they cannot be
     // refreshed here. Require their accrual to be recent instead.
-    math::margin::validate_spot_borrow_interest_fresh_for_margin(user, &spot_market_map, now)?;
+    math::margin::validate_spot_borrow_interest_fresh_for_margin(user, &maps.spot_market_map, now)?;
 
-    user.meets_withdraw_margin_requirement(
-        &perp_market_map,
-        &spot_market_map,
-        &mut oracle_map,
-        MarginRequirementType::Initial,
-    )?;
+    user.meets_withdraw_margin_requirement(&mut maps, MarginRequirementType::Initial)?;
 
-    validate_spot_margin_trading(user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
+    validate_spot_margin_trading(user, &mut maps)?;
 
     // #81: the margin checks have now been evaluated against the pre-refresh snapshots;
     // restore both refreshed oracle TWAPs so the account persists the up-to-date values.
     {
-        let mut spot_market = spot_market_map.get_ref_mut(&market_index)?;
+        let mut spot_market = maps.spot_market_map.get_ref_mut(&market_index)?;
         spot_market.historical_oracle_data.last_oracle_price_twap = refreshed_liability_twaps.0;
         spot_market
             .historical_oracle_data
@@ -983,8 +962,11 @@ pub fn handle_withdraw<'c: 'info, 'info>(
 
     user.update_last_active_slot(slot);
 
-    let mut spot_market = spot_market_map.get_ref_mut(&market_index)?;
-    let oracle_price = oracle_map.get_price_data(&spot_market.oracle_id())?.price;
+    let mut spot_market = maps.spot_market_map.get_ref_mut(&market_index)?;
+    let oracle_price = maps
+        .oracle_map
+        .get_price_data(&spot_market.oracle_id())?
+        .price;
 
     let is_borrow = user
         .get_spot_position(market_index)
@@ -1074,11 +1056,7 @@ pub fn handle_transfer_deposit_by_delegate<'c: 'info, 'info>(
         "delegate transfer not allowed"
     )?;
 
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map,
-        mut oracle_map,
-    } = load_maps(
+    let mut maps = load_maps(
         &mut ctx.remaining_accounts.iter().peekable(),
         &MarketSet::new(),
         &get_writable_spot_market_set(market_index),
@@ -1108,7 +1086,7 @@ pub fn handle_transfer_deposit_by_delegate<'c: 'info, 'info>(
         )?;
 
         let (to_user_net_equity, to_user_oracles_valid) =
-            calculate_user_equity(to_user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
+            calculate_user_equity(to_user, &mut maps)?;
 
         // Cure eligibility must not be decided off an invalid price, matching
         // the validity the trip and the reset require of the same metric.
@@ -1146,12 +1124,8 @@ pub fn handle_transfer_deposit_by_delegate<'c: 'info, 'info>(
         // a subaccount inside the buffer band (at/above floor) may still
         // rebalance floor away. Measured as net equity, matching the breaker
         // trip threshold.
-        let (from_user_net_equity, from_user_oracles_valid) = calculate_user_equity(
-            from_user,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
-        )?;
+        let (from_user_net_equity, from_user_oracles_valid) =
+            calculate_user_equity(from_user, &mut maps)?;
 
         // Defusal eligibility must not be decided off an invalid price. The
         // counterpart `trip_equity_floor_breaker` requires valid oracles, so
@@ -1186,9 +1160,7 @@ pub fn handle_transfer_deposit_by_delegate<'c: 'info, 'info>(
         market_index,
         amount,
         ctx.accounts.spot_market_vault.amount,
-        &perp_market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         now,
         slot,
         state.funding_paused()?,
@@ -1196,7 +1168,7 @@ pub fn handle_transfer_deposit_by_delegate<'c: 'info, 'info>(
 
     if equity_floor_delta > 0 {
         let (to_user_net_equity, to_user_oracles_valid) =
-            calculate_user_equity(to_user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
+            calculate_user_equity(to_user, &mut maps)?;
 
         // The new floor must be backed by equity that is actually measurable.
         // A stale-high price would otherwise let a floor land on a subaccount
@@ -1265,11 +1237,7 @@ pub fn handle_transfer_deposit<'c: 'info, 'info>(
         "cant transfer between the same user account"
     )?;
 
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map,
-        mut oracle_map,
-    } = load_maps(
+    let mut maps = load_maps(
         &mut ctx.remaining_accounts.iter().peekable(),
         &MarketSet::new(),
         &get_writable_spot_market_set(market_index),
@@ -1287,9 +1255,7 @@ pub fn handle_transfer_deposit<'c: 'info, 'info>(
         market_index,
         amount,
         ctx.accounts.spot_market_vault.amount,
-        &perp_market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         now,
         slot,
         state.funding_paused()?,
@@ -1316,9 +1282,7 @@ fn transfer_spot_deposit(
     market_index: u16,
     amount: u64,
     spot_market_vault_amount: u64,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
     now: i64,
     slot: u64,
     funding_paused: bool,
@@ -1341,7 +1305,7 @@ fn transfer_spot_deposit(
         // refresh still weights the full elapsed interval. That TWAP keeps advancing
         // on every other spot path and via the permissionless
         // `update_spot_market_cumulative_interest` crank.
-        let spot_market = &mut spot_market_map.get_ref_mut(&market_index)?;
+        let spot_market = &mut maps.spot_market_map.get_ref_mut(&market_index)?;
         controller::spot_balance::update_spot_market_cumulative_interest(
             spot_market,
             None,
@@ -1351,28 +1315,29 @@ fn transfer_spot_deposit(
     }
 
     let oracle_price = {
-        let spot_market = &spot_market_map.get_ref(&market_index)?;
-        oracle_map.get_price_data(&spot_market.oracle_id())?.price
+        let spot_market = &maps.spot_market_map.get_ref(&market_index)?;
+        maps.oracle_map
+            .get_price_data(&spot_market.oracle_id())?
+            .price
     };
 
     // Mirror direct-withdraw's reduce-only cap on the source debit so an internal
     // transfer can't open or grow a borrow in a reduce-only spot market.
-    let amount = if spot_market_map.get_ref(&market_index)?.is_reduce_only() {
+    let amount = if maps
+        .spot_market_map
+        .get_ref(&market_index)?
+        .is_reduce_only()
+    {
         let position_index = from_user.force_get_spot_position_index(market_index)?;
         validate!(
             from_user.spot_positions[position_index].balance_type == SpotBalanceType::Deposit,
             ErrorCode::ReduceOnlyWithdrawIncreasedRisk
         )?;
 
-        let max_withdrawable_amount = calculate_max_withdrawable_amount(
-            market_index,
-            from_user,
-            perp_market_map,
-            spot_market_map,
-            oracle_map,
-        )?;
+        let max_withdrawable_amount =
+            calculate_max_withdrawable_amount(market_index, from_user, maps)?;
 
-        let spot_market = &spot_market_map.get_ref(&market_index)?;
+        let spot_market = &maps.spot_market_map.get_ref(&market_index)?;
         let existing_deposit_amount = from_user.spot_positions[position_index]
             .get_token_amount(spot_market)?
             .cast::<u64>()?;
@@ -1385,7 +1350,7 @@ fn transfer_spot_deposit(
     };
 
     {
-        let spot_market = &mut spot_market_map.get_ref_mut(&market_index)?;
+        let spot_market = &mut maps.spot_market_map.get_ref_mut(&market_index)?;
 
         validate!(
             from_user.pool_id == spot_market.pool_id,
@@ -1413,16 +1378,15 @@ fn transfer_spot_deposit(
     // OtterSec #135: same shape as `handle_withdraw`. This handler cranks only the
     // market being transferred, and the account's other borrow markets arrive
     // read-only, so their un-booked interest is missing from the check below.
-    math::margin::validate_spot_borrow_interest_fresh_for_margin(from_user, spot_market_map, now)?;
-
-    from_user.meets_withdraw_margin_requirement(
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
-        MarginRequirementType::Initial,
+    math::margin::validate_spot_borrow_interest_fresh_for_margin(
+        from_user,
+        &maps.spot_market_map,
+        now,
     )?;
 
-    validate_spot_margin_trading(from_user, perp_market_map, spot_market_map, oracle_map)?;
+    from_user.meets_withdraw_margin_requirement(maps, MarginRequirementType::Initial)?;
+
+    validate_spot_margin_trading(from_user, maps)?;
 
     if from_user.is_cross_margin_being_liquidated() {
         from_user.exit_cross_margin_liquidation();
@@ -1431,7 +1395,7 @@ fn transfer_spot_deposit(
     from_user.update_last_active_slot(slot);
 
     {
-        let spot_market = &mut spot_market_map.get_ref_mut(&market_index)?;
+        let spot_market = &mut maps.spot_market_map.get_ref_mut(&market_index)?;
 
         let deposit_record_id = get_then_update_id!(spot_market, next_deposit_record_id);
         let deposit_record = DepositRecord {
@@ -1458,7 +1422,7 @@ fn transfer_spot_deposit(
     }
 
     {
-        let spot_market = &mut spot_market_map.get_ref_mut(&market_index)?;
+        let spot_market = &mut maps.spot_market_map.get_ref_mut(&market_index)?;
 
         validate!(
             to_user.pool_id == spot_market.pool_id,
@@ -1541,7 +1505,7 @@ fn transfer_spot_deposit(
 
     to_user.update_last_active_slot(slot);
 
-    let spot_market = spot_market_map.get_ref(&market_index)?;
+    let spot_market = maps.spot_market_map.get_ref(&market_index)?;
     math::spot_withdraw::validate_spot_market_vault_amount(&spot_market, spot_market_vault_amount)?;
 
     // Mirror direct-deposit admission: enforce the aggregate deposit cap after crediting.
@@ -1641,11 +1605,7 @@ pub fn handle_transfer_pools<'c: 'info, 'info>(
         "cant transfer between the same pool"
     )?;
 
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map,
-        mut oracle_map,
-    } = load_maps(
+    let mut maps = load_maps(
         &mut ctx.remaining_accounts.iter().peekable(),
         &MarketSet::new(),
         &get_writable_spot_market_set_from_many(vec![
@@ -1659,10 +1619,14 @@ pub fn handle_transfer_pools<'c: 'info, 'info>(
         Some(state.oracle_guard_rails),
     )?;
 
-    let mut deposit_from_spot_market = spot_market_map.get_ref_mut(&deposit_from_market_index)?;
-    let mut deposit_to_spot_market = spot_market_map.get_ref_mut(&deposit_to_market_index)?;
-    let mut borrow_from_spot_market = spot_market_map.get_ref_mut(&borrow_from_market_index)?;
-    let mut borrow_to_spot_market = spot_market_map.get_ref_mut(&borrow_to_market_index)?;
+    let mut deposit_from_spot_market = maps
+        .spot_market_map
+        .get_ref_mut(&deposit_from_market_index)?;
+    let mut deposit_to_spot_market = maps.spot_market_map.get_ref_mut(&deposit_to_market_index)?;
+    let mut borrow_from_spot_market = maps
+        .spot_market_map
+        .get_ref_mut(&borrow_from_market_index)?;
+    let mut borrow_to_spot_market = maps.spot_market_map.get_ref_mut(&borrow_to_market_index)?;
 
     validate!(
         deposit_from_spot_market.mint == deposit_to_spot_market.mint,
@@ -1694,14 +1658,18 @@ pub fn handle_transfer_pools<'c: 'info, 'info>(
         "deposit from and to spot markets must have different pool ids"
     )?;
 
-    let deposit_from_oracle_price_data =
-        *oracle_map.get_price_data(&deposit_from_spot_market.oracle_id())?;
-    let deposit_to_oracle_price_data =
-        *oracle_map.get_price_data(&deposit_to_spot_market.oracle_id())?;
-    let borrow_from_oracle_price_data =
-        *oracle_map.get_price_data(&borrow_from_spot_market.oracle_id())?;
-    let borrow_to_oracle_price_data =
-        *oracle_map.get_price_data(&borrow_to_spot_market.oracle_id())?;
+    let deposit_from_oracle_price_data = *maps
+        .oracle_map
+        .get_price_data(&deposit_from_spot_market.oracle_id())?;
+    let deposit_to_oracle_price_data = *maps
+        .oracle_map
+        .get_price_data(&deposit_to_spot_market.oracle_id())?;
+    let borrow_from_oracle_price_data = *maps
+        .oracle_map
+        .get_price_data(&borrow_from_spot_market.oracle_id())?;
+    let borrow_to_oracle_price_data = *maps
+        .oracle_map
+        .get_price_data(&borrow_to_spot_market.oracle_id())?;
 
     // Accrue interest on all four markets, but pass `None` so this transfer does NOT
     // advance their *oracle* TWAPs (OtterSec #134 — the same shape as #110/#111).
@@ -1989,41 +1957,32 @@ pub fn handle_transfer_pools<'c: 'info, 'info>(
     // `to_user`, so each one releases value against its own debt valuation.
     math::margin::validate_spot_borrow_interest_fresh_for_margin(
         from_user,
-        &spot_market_map,
+        &maps.spot_market_map,
         clock.unix_timestamp,
     )?;
     math::margin::validate_spot_borrow_interest_fresh_for_margin(
         to_user,
-        &spot_market_map,
+        &maps.spot_market_map,
         clock.unix_timestamp,
     )?;
 
     from_user.meets_withdraw_margin_requirement_swap(
-        &perp_market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         MarginRequirementType::Initial,
         false,
     )?;
 
     to_user.meets_withdraw_margin_requirement_swap(
-        &perp_market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         MarginRequirementType::Initial,
         false,
     )?;
 
-    validate_spot_margin_trading(
-        from_user,
-        &perp_market_map,
-        &spot_market_map,
-        &mut oracle_map,
-    )?;
+    validate_spot_margin_trading(from_user, &mut maps)?;
 
     from_user.update_last_active_slot(slot);
 
-    validate_spot_margin_trading(to_user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
+    validate_spot_margin_trading(to_user, &mut maps)?;
 
     to_user.update_last_active_slot(slot);
 
@@ -2035,10 +1994,10 @@ pub fn handle_transfer_pools<'c: 'info, 'info>(
         to_user.exit_cross_margin_liquidation();
     }
 
-    let deposit_from_spot_market = spot_market_map.get_ref(&deposit_from_market_index)?;
-    let deposit_to_spot_market = spot_market_map.get_ref(&deposit_to_market_index)?;
-    let borrow_from_spot_market = spot_market_map.get_ref(&borrow_from_market_index)?;
-    let borrow_to_spot_market = spot_market_map.get_ref(&borrow_to_market_index)?;
+    let deposit_from_spot_market = maps.spot_market_map.get_ref(&deposit_from_market_index)?;
+    let deposit_to_spot_market = maps.spot_market_map.get_ref(&deposit_to_market_index)?;
+    let borrow_from_spot_market = maps.spot_market_map.get_ref(&borrow_from_market_index)?;
+    let borrow_to_spot_market = maps.spot_market_map.get_ref(&borrow_to_market_index)?;
 
     if deposit_transfer > 0 {
         let token_program_pubkey = deposit_from_spot_market.get_token_program();
@@ -2173,11 +2132,7 @@ pub fn handle_transfer_perp_position<'c: 'info, 'info>(
         "cant transfer between the same user account"
     )?;
 
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map,
-        mut oracle_map,
-    } = load_maps(
+    let mut maps = load_maps(
         &mut ctx.remaining_accounts.iter().peekable(),
         &get_writable_perp_market_set(market_index),
         &MarketSet::new(),
@@ -2194,14 +2149,14 @@ pub fn handle_transfer_perp_position<'c: 'info, 'info>(
     settle_funding_payment(
         from_user,
         &from_user_key,
-        perp_market_map.get_ref_mut(&market_index)?.deref_mut(),
+        maps.perp_market_map.get_ref_mut(&market_index)?.deref_mut(),
         now,
     )?;
 
     settle_funding_payment(
         to_user,
         &to_user_key,
-        perp_market_map.get_ref_mut(&market_index)?.deref_mut(),
+        maps.perp_market_map.get_ref_mut(&market_index)?.deref_mut(),
         now,
     )?;
 
@@ -2210,9 +2165,9 @@ pub fn handle_transfer_perp_position<'c: 'info, 'info>(
     let step_size;
     let tick_size;
     {
-        let perp_market = perp_market_map.get_ref(&market_index)?;
+        let perp_market = maps.perp_market_map.get_ref(&market_index)?;
         oi_before = perp_market.get_open_interest();
-        let (oracle_price_data, oracle_validity) = oracle_map.get_price_data_and_validity(
+        let (oracle_price_data, oracle_validity) = maps.oracle_map.get_price_data_and_validity(
             MarketType::Perp,
             market_index,
             &perp_market.oracle_id(),
@@ -2325,7 +2280,7 @@ pub fn handle_transfer_perp_position<'c: 'info, 'info>(
         to_existing_quote_entry_amount,
         to_existing_base_asset_amount,
     ) = {
-        let mut market = perp_market_map.get_ref_mut(&market_index)?;
+        let mut market = maps.perp_market_map.get_ref_mut(&market_index)?;
 
         let from_user_position = from_user.force_get_perp_position_mut(market_index)?;
 
@@ -2365,9 +2320,7 @@ pub fn handle_transfer_perp_position<'c: 'info, 'info>(
     let from_user_margin_calculation =
         calculate_margin_requirement_and_total_collateral_and_liability_info(
             from_user,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             from_user_margin_context,
         )?;
 
@@ -2377,12 +2330,7 @@ pub fn handle_transfer_perp_position<'c: 'info, 'info>(
         "from user margin requirement is greater than total collateral"
     )?;
 
-    if let Some(from_user_net_equity) = calculate_net_equity_for_floor(
-        from_user,
-        &perp_market_map,
-        &spot_market_map,
-        &mut oracle_map,
-    )? {
+    if let Some(from_user_net_equity) = calculate_net_equity_for_floor(from_user, &mut maps)? {
         from_user_net_equity.validate_clears_buffered_floor(from_user)?;
     }
 
@@ -2391,9 +2339,7 @@ pub fn handle_transfer_perp_position<'c: 'info, 'info>(
     let to_user_margin_requirement =
         calculate_margin_requirement_and_total_collateral_and_liability_info(
             to_user,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             to_user_margin_context,
         )?;
 
@@ -2407,16 +2353,11 @@ pub fn handle_transfer_perp_position<'c: 'info, 'info>(
     // or above its own admin-set equity floor (mirrors the from-side check
     // above). A recipient that passes initial margin can still land below its
     // warm-admin floor, which would otherwise leave the floor unenforced.
-    if let Some(to_user_net_equity) = calculate_net_equity_for_floor(
-        to_user,
-        &perp_market_map,
-        &spot_market_map,
-        &mut oracle_map,
-    )? {
+    if let Some(to_user_net_equity) = calculate_net_equity_for_floor(to_user, &mut maps)? {
         to_user_net_equity.validate_clears_buffered_floor(to_user)?;
     }
 
-    let mut perp_market = perp_market_map.get_ref_mut(&market_index)?;
+    let mut perp_market = maps.perp_market_map.get_ref_mut(&market_index)?;
     let oi_after = perp_market.get_open_interest();
 
     validate!(
@@ -2537,11 +2478,7 @@ pub fn handle_deposit_into_isolated_perp_position<'c: 'info, 'info>(
     let slot = clock.slot;
 
     let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map,
-        mut oracle_map,
-    } = load_maps(
+    let mut maps = load_maps(
         remaining_accounts_iter,
         &MarketSet::new(),
         &get_writable_spot_market_set(spot_market_index),
@@ -2555,9 +2492,7 @@ pub fn handle_deposit_into_isolated_perp_position<'c: 'info, 'info>(
     controller::isolated_position::deposit_into_isolated_perp_position(
         user_key,
         &mut user,
-        &perp_market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         slot,
         now,
         &state,
@@ -2566,7 +2501,7 @@ pub fn handle_deposit_into_isolated_perp_position<'c: 'info, 'info>(
         amount,
     )?;
 
-    let spot_market = spot_market_map.get_ref(&spot_market_index)?;
+    let spot_market = maps.spot_market_map.get_ref(&spot_market_index)?;
 
     controller::token::receive(
         &ctx.accounts.token_program,
@@ -2621,11 +2556,7 @@ pub fn handle_transfer_isolated_perp_position_deposit<'c: 'info, 'info>(
         "user bankrupt"
     )?;
 
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map,
-        mut oracle_map,
-    } = load_maps(
+    let mut maps = load_maps(
         &mut ctx.remaining_accounts.iter().peekable(),
         &MarketSet::new(),
         &get_writable_spot_market_set(spot_market_index),
@@ -2637,9 +2568,7 @@ pub fn handle_transfer_isolated_perp_position_deposit<'c: 'info, 'info>(
     controller::isolated_position::transfer_isolated_perp_position_deposit(
         user,
         Some(user_stats),
-        &perp_market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         slot,
         now,
         spot_market_index,
@@ -2648,7 +2577,7 @@ pub fn handle_transfer_isolated_perp_position_deposit<'c: 'info, 'info>(
         state.funding_paused()?,
     )?;
 
-    let spot_market = spot_market_map.get_ref(&spot_market_index)?;
+    let spot_market = maps.spot_market_map.get_ref(&spot_market_index)?;
     math::spot_withdraw::validate_spot_market_vault_amount(
         &spot_market,
         ctx.accounts.spot_market_vault.amount,
@@ -2676,11 +2605,7 @@ pub fn handle_withdraw_from_isolated_perp_position<'c: 'info, 'info>(
     let state = ctx.accounts.state.load()?;
 
     let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map,
-        mut oracle_map,
-    } = load_maps(
+    let mut maps = load_maps(
         remaining_accounts_iter,
         &MarketSet::new(),
         &get_writable_spot_market_set(spot_market_index),
@@ -2695,9 +2620,7 @@ pub fn handle_withdraw_from_isolated_perp_position<'c: 'info, 'info>(
         user_key,
         user,
         &mut user_stats,
-        &perp_market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         slot,
         now,
         spot_market_index,
@@ -2706,7 +2629,7 @@ pub fn handle_withdraw_from_isolated_perp_position<'c: 'info, 'info>(
         state.funding_paused()?,
     )?;
 
-    let spot_market = spot_market_map.get_ref(&spot_market_index)?;
+    let spot_market = maps.spot_market_map.get_ref(&spot_market_index)?;
 
     controller::token::send_from_program_vault(
         &ctx.accounts.token_program,
@@ -2746,11 +2669,7 @@ pub fn handle_place_perp_order<'c: 'info, 'info>(
     let state = ctx.accounts.state.load()?;
 
     let mut remaining_accounts = ctx.remaining_accounts.iter().peekable();
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map,
-        mut oracle_map,
-    } = load_maps(
+    let mut maps = load_maps(
         &mut remaining_accounts,
         &MarketSet::new(),
         &MarketSet::new(),
@@ -2792,9 +2711,7 @@ pub fn handle_place_perp_order<'c: 'info, 'info>(
         &*ctx.accounts.state.load()?,
         &mut user,
         user_key,
-        &perp_market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         clock,
         params,
         PlaceOrderOptions::default(),
@@ -2814,11 +2731,7 @@ pub fn handle_cancel_order<'c: 'info, 'info>(
     let clock = &Clock::get()?;
     let state = ctx.accounts.state.load()?;
 
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map,
-        mut oracle_map,
-    } = load_maps(
+    let mut maps = load_maps(
         &mut ctx.remaining_accounts.iter().peekable(),
         &MarketSet::new(),
         &MarketSet::new(),
@@ -2832,14 +2745,7 @@ pub fn handle_cancel_order<'c: 'info, 'info>(
         None => load!(ctx.accounts.user)?.get_last_order_id(),
     };
 
-    controller::orders::cancel_order_by_order_id(
-        order_id,
-        &ctx.accounts.user,
-        &perp_market_map,
-        &spot_market_map,
-        &mut oracle_map,
-        clock,
-    )?;
+    controller::orders::cancel_order_by_order_id(order_id, &ctx.accounts.user, &mut maps, clock)?;
 
     Ok(())
 }
@@ -2854,11 +2760,7 @@ pub fn handle_cancel_order_by_user_id<'c: 'info, 'info>(
     let clock = &Clock::get()?;
     let state = ctx.accounts.state.load()?;
 
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map,
-        mut oracle_map,
-    } = load_maps(
+    let mut maps = load_maps(
         &mut ctx.remaining_accounts.iter().peekable(),
         &MarketSet::new(),
         &MarketSet::new(),
@@ -2870,9 +2772,7 @@ pub fn handle_cancel_order_by_user_id<'c: 'info, 'info>(
     controller::orders::cancel_order_by_user_order_id(
         user_order_id,
         &ctx.accounts.user,
-        &perp_market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         clock,
     )?;
 
@@ -2889,11 +2789,7 @@ pub fn handle_cancel_orders_by_ids<'c: 'info, 'info>(
     let clock = &Clock::get()?;
     let state = ctx.accounts.state.load()?;
 
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map,
-        mut oracle_map,
-    } = load_maps(
+    let mut maps = load_maps(
         &mut ctx.remaining_accounts.iter().peekable(),
         &MarketSet::new(),
         &MarketSet::new(),
@@ -2906,9 +2802,7 @@ pub fn handle_cancel_orders_by_ids<'c: 'info, 'info>(
         controller::orders::cancel_order_by_order_id(
             order_id,
             &ctx.accounts.user,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             clock,
         )?;
     }
@@ -2928,11 +2822,7 @@ pub fn handle_cancel_orders<'c: 'info, 'info>(
     let clock = &Clock::get()?;
     let state = ctx.accounts.state.load()?;
 
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map,
-        mut oracle_map,
-    } = load_maps(
+    let mut maps = load_maps(
         &mut ctx.remaining_accounts.iter().peekable(),
         &MarketSet::new(),
         &MarketSet::new(),
@@ -2948,9 +2838,7 @@ pub fn handle_cancel_orders<'c: 'info, 'info>(
         &mut user,
         &user_key,
         None,
-        &perp_market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         clock.unix_timestamp,
         clock.slot,
         OrderActionExplanation::None,
@@ -2974,11 +2862,7 @@ pub fn handle_modify_order<'c: 'info, 'info>(
     let clock = &Clock::get()?;
     let state = ctx.accounts.state.load()?;
 
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map,
-        mut oracle_map,
-    } = load_maps(
+    let mut maps = load_maps(
         &mut ctx.remaining_accounts.iter().peekable(),
         &MarketSet::new(),
         &MarketSet::new(),
@@ -2997,9 +2881,7 @@ pub fn handle_modify_order<'c: 'info, 'info>(
         modify_order_params,
         &ctx.accounts.user,
         &state,
-        &perp_market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         clock,
     )?;
 
@@ -3017,11 +2899,7 @@ pub fn handle_modify_order_by_user_order_id<'c: 'info, 'info>(
     let clock = &Clock::get()?;
     let state = ctx.accounts.state.load()?;
 
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map,
-        mut oracle_map,
-    } = load_maps(
+    let mut maps = load_maps(
         &mut ctx.remaining_accounts.iter().peekable(),
         &MarketSet::new(),
         &MarketSet::new(),
@@ -3035,9 +2913,7 @@ pub fn handle_modify_order_by_user_order_id<'c: 'info, 'info>(
         modify_order_params,
         &ctx.accounts.user,
         &state,
-        &perp_market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         clock,
     )?;
 
@@ -3080,11 +2956,7 @@ fn place_orders<'c: 'info, 'info>(
     let state = ctx.accounts.state.load()?;
 
     let mut remaining_accounts = ctx.remaining_accounts.iter().peekable();
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map,
-        mut oracle_map,
-    } = load_maps(
+    let mut maps = load_maps(
         &mut remaining_accounts,
         &MarketSet::new(),
         &MarketSet::new(),
@@ -3099,11 +2971,11 @@ fn place_orders<'c: 'info, 'info>(
         PlaceOrdersInput::ScaleOrders(scale_params) => {
             let order_step_size = match scale_params.market_type {
                 MarketType::Perp => {
-                    let market = perp_market_map.get_ref(&scale_params.market_index)?;
+                    let market = maps.perp_market_map.get_ref(&scale_params.market_index)?;
                     market.order_step_size
                 }
                 MarketType::Spot => {
-                    let market = spot_market_map.get_ref(&scale_params.market_index)?;
+                    let market = maps.spot_market_map.get_ref(&scale_params.market_index)?;
                     market.order_step_size
                 }
             };
@@ -3174,9 +3046,7 @@ fn place_orders<'c: 'info, 'info>(
             &state,
             &mut user,
             user_key,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             clock,
             *params,
             PlaceOrderOptions {
@@ -3209,24 +3079,10 @@ fn place_orders<'c: 'info, 'info>(
     //   - some risk-increasing         -> initial margin in each risk scope
     if !results.is_empty() {
         if risk_scopes.is_empty() {
-            meets_place_order_margin_requirement(
-                &user,
-                &perp_market_map,
-                &spot_market_map,
-                &mut oracle_map,
-                false,
-                None,
-            )?;
+            meets_place_order_margin_requirement(&user, &mut maps, false, None)?;
         } else {
             risk_scopes.iter().try_for_each(|&isolated_market_index| {
-                meets_place_order_margin_requirement(
-                    &user,
-                    &perp_market_map,
-                    &spot_market_map,
-                    &mut oracle_map,
-                    true,
-                    isolated_market_index,
-                )
+                meets_place_order_margin_requirement(&user, &mut maps, true, isolated_market_index)
             })?;
         }
     }
@@ -3302,11 +3158,7 @@ pub fn place_and_take_perp_order_legacy<'c: 'info, 'info>(
     let state = state_loader.load()?;
 
     let remaining_accounts_iter = &mut remaining_accounts.iter().peekable();
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map,
-        mut oracle_map,
-    } = load_maps(
+    let mut maps = load_maps(
         remaining_accounts_iter,
         &get_writable_perp_market_set(params.market_index),
         &MarketSet::new(),
@@ -3365,9 +3217,7 @@ pub fn place_and_take_perp_order_legacy<'c: 'info, 'info>(
         &state,
         &mut user,
         user_key,
-        &perp_market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         &clock,
         params,
         PlaceOrderOptions::default(),
@@ -3389,9 +3239,7 @@ pub fn place_and_take_perp_order_legacy<'c: 'info, 'info>(
         &state,
         user_loader,
         user_stats_loader,
-        &spot_market_map,
-        &perp_market_map,
-        &mut oracle_map,
+        &mut maps,
         &user_loader.clone(),
         &user_stats_loader.clone(),
         &makers_and_referrer,
@@ -3411,9 +3259,7 @@ pub fn place_and_take_perp_order_legacy<'c: 'info, 'info>(
         controller::orders::cancel_order_by_order_id(
             order_id,
             user_loader,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             &Clock::get()?,
         )?;
     }
@@ -3449,11 +3295,7 @@ pub fn place_and_take_perp_order_v1<'c: 'info, 'info>(
     let state = state_loader.load()?;
 
     let remaining_accounts_iter = &mut remaining_accounts.iter().peekable();
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map,
-        mut oracle_map,
-    } = load_maps(
+    let mut maps = load_maps(
         remaining_accounts_iter,
         &get_writable_perp_market_set(params.market_index),
         &MarketSet::new(),
@@ -3532,9 +3374,7 @@ pub fn place_and_take_perp_order_v1<'c: 'info, 'info>(
     controller::orders::expire_orders(
         &mut user,
         &user_key,
-        &perp_market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         clock.unix_timestamp,
         clock.slot,
     )?;
@@ -3542,9 +3382,7 @@ pub fn place_and_take_perp_order_v1<'c: 'info, 'info>(
         &state,
         &mut user,
         user_key,
-        &perp_market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         &clock,
         params,
         PlaceOrderOptions::default(),
@@ -3606,7 +3444,7 @@ pub fn place_and_take_perp_order_v1<'c: 'info, 'info>(
                 fill_mode.quote_limit_price(
                     order,
                     clock.slot,
-                    perp_market_map
+                    maps.perp_market_map
                         .get_ref(&params.market_index)?
                         .order_tick_size,
                     state.slot_clock(),
@@ -3614,8 +3452,11 @@ pub fn place_and_take_perp_order_v1<'c: 'info, 'info>(
             )
         };
         let route_reference_price = {
-            let oracle_id = perp_market_map.get_ref(&params.market_index)?.oracle_id();
-            oracle_map.get_price_data(&oracle_id)?.price
+            let oracle_id = maps
+                .perp_market_map
+                .get_ref(&params.market_index)?
+                .oracle_id();
+            maps.oracle_map.get_price_data(&oracle_id)?.price
         };
         let inputs = crate::instructions::QuoteInputs {
             // Filled in below, once the makers on the books are sized.
@@ -3644,9 +3485,7 @@ pub fn place_and_take_perp_order_v1<'c: 'info, 'info>(
                 &mut crate::instructions::CapInputs {
                     makers_and_referrer: &makers_and_referrer,
                     makers_and_referrer_stats: &makers_and_referrer_stats,
-                    perp_market_map: &perp_market_map,
-                    spot_market_map: &spot_market_map,
-                    oracle_map: &mut oracle_map,
+                    maps: &mut maps,
                     slot: clock.slot,
                     now: clock.unix_timestamp,
                 },
@@ -3659,7 +3498,11 @@ pub fn place_and_take_perp_order_v1<'c: 'info, 'info>(
         // because velocity's heap never gives a freed one back.
         let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
         let route = crate::instructions::QuotedRoute::assemble(tail, &inputs, &mut cpi_scratch)?;
-        route.require_baseline(perp_market_map.get_ref(&params.market_index)?.clob_market)?;
+        route.require_baseline(
+            maps.perp_market_map
+                .get_ref(&params.market_index)?
+                .clob_market,
+        )?;
         let mut book_storage =
             [crate::math::router::QuoterBook::default(); crate::state::prop_amm::MAX_ROUTE_QUOTERS];
         let book_refs = route.books(&mut book_storage)?;
@@ -3686,9 +3529,7 @@ pub fn place_and_take_perp_order_v1<'c: 'info, 'info>(
             &state,
             user_loader,
             user_stats_loader,
-            &spot_market_map,
-            &perp_market_map,
-            &mut oracle_map,
+            &mut maps,
             &user_loader.clone(),
             &user_stats_loader.clone(),
             &makers_and_referrer,
@@ -3742,9 +3583,7 @@ pub fn place_and_take_perp_order_v1<'c: 'info, 'info>(
                     clob.quoter_slab,
                     clob.clob_market,
                     clob.clob_program,
-                    &perp_market_map,
-                    &spot_market_map,
-                    &mut oracle_map,
+                    &mut maps,
                     params.market_index,
                     remainder.direction,
                     remainder.price,
@@ -3807,12 +3646,7 @@ pub fn handle_update_user_margin_trading_enabled<'c: 'info, 'info>(
     margin_trading_enabled: bool,
 ) -> Result<()> {
     let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map,
-        mut oracle_map,
-        ..
-    } = load_maps(
+    let mut maps = load_maps(
         remaining_accounts_iter,
         &MarketSet::new(),
         &MarketSet::new(),
@@ -3824,8 +3658,7 @@ pub fn handle_update_user_margin_trading_enabled<'c: 'info, 'info>(
     let mut user = load_mut!(ctx.accounts.user)?;
     user.is_margin_trading_enabled = margin_trading_enabled;
 
-    validate_spot_margin_trading(&user, &perp_market_map, &spot_market_map, &mut oracle_map)
-        .map_err(|_| ErrorCode::MarginOrdersOpen)?;
+    validate_spot_margin_trading(&user, &mut maps).map_err(|_| ErrorCode::MarginOrdersOpen)?;
 
     Ok(())
 }
@@ -3836,12 +3669,7 @@ pub fn handle_update_user_pool_id<'c: 'info, 'info>(
     pool_id: u8,
 ) -> Result<()> {
     let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map,
-        mut oracle_map,
-        ..
-    } = load_maps(
+    let mut maps = load_maps(
         remaining_accounts_iter,
         &MarketSet::new(),
         &MarketSet::new(),
@@ -3854,7 +3682,7 @@ pub fn handle_update_user_pool_id<'c: 'info, 'info>(
     user.pool_id = pool_id;
 
     // will throw if user has deposits/positions in other pools
-    meets_initial_margin_requirement(&user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
+    meets_initial_margin_requirement(&user, &mut maps)?;
 
     Ok(())
 }
@@ -4144,11 +3972,7 @@ pub fn handle_begin_swap<'c: 'info, 'info>(
     let now = clock.unix_timestamp;
 
     let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map,
-        mut oracle_map,
-    } = load_maps(
+    let mut maps = load_maps(
         remaining_accounts_iter,
         &MarketSet::new(),
         &get_writable_spot_market_set_from_many(vec![in_market_index, out_market_index]),
@@ -4167,13 +3991,11 @@ pub fn handle_begin_swap<'c: 'info, 'info>(
 
     math::liquidation::validate_user_not_being_liquidated(
         &mut user,
-        &perp_market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         ctx.accounts.state.load()?.liquidation_margin_buffer_ratio,
     )?;
 
-    let mut in_spot_market = spot_market_map.get_ref_mut(&in_market_index)?;
+    let mut in_spot_market = maps.spot_market_map.get_ref_mut(&in_market_index)?;
 
     validate!(
         in_spot_market.fills_enabled(),
@@ -4210,7 +4032,7 @@ pub fn handle_begin_swap<'c: 'info, 'info>(
         state.funding_paused()?,
     )?;
 
-    let mut out_spot_market = spot_market_map.get_ref_mut(&out_market_index)?;
+    let mut out_spot_market = maps.spot_market_map.get_ref_mut(&out_market_index)?;
 
     let in_spot_has_transfer_hook = in_spot_market.has_transfer_hook();
     let out_spot_has_transfer_hook = out_spot_market.has_transfer_hook();
@@ -4450,11 +4272,7 @@ pub fn handle_end_swap<'c: 'info, 'info>(
     let now = clock.unix_timestamp;
 
     let remaining_accounts = &mut ctx.remaining_accounts.iter().peekable();
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map,
-        mut oracle_map,
-    } = load_maps(
+    let mut maps = load_maps(
         remaining_accounts,
         &MarketSet::new(),
         &get_writable_spot_market_set_from_many(vec![in_market_index, out_market_index]),
@@ -4479,7 +4297,7 @@ pub fn handle_end_swap<'c: 'info, 'info>(
         ErrorCode::ExchangePaused
     )?;
 
-    let mut in_spot_market = spot_market_map.get_ref_mut(&in_market_index)?;
+    let mut in_spot_market = maps.spot_market_map.get_ref_mut(&in_market_index)?;
 
     validate!(
         !in_spot_market.is_operation_paused(SpotOperation::Withdraw),
@@ -4494,7 +4312,7 @@ pub fn handle_end_swap<'c: 'info, 'info>(
         "the in_spot_market must have a flash loan amount set"
     )?;
 
-    let (in_oracle_data, in_oracle_validity) = oracle_map.get_price_data_and_validity(
+    let (in_oracle_data, in_oracle_validity) = maps.oracle_map.get_price_data_and_validity(
         MarketType::Spot,
         in_spot_market.market_index,
         &in_spot_market.oracle_id(),
@@ -4510,7 +4328,7 @@ pub fn handle_end_swap<'c: 'info, 'info>(
     let in_oracle_data = *in_oracle_data;
     let in_oracle_price = in_oracle_data.price;
 
-    let mut out_spot_market = spot_market_map.get_ref_mut(&out_market_index)?;
+    let mut out_spot_market = maps.spot_market_map.get_ref_mut(&out_market_index)?;
 
     validate!(
         !out_spot_market.is_operation_paused(SpotOperation::Deposit),
@@ -4519,7 +4337,7 @@ pub fn handle_end_swap<'c: 'info, 'info>(
         out_market_index
     )?;
 
-    let (out_oracle_data, out_oracle_validity) = oracle_map.get_price_data_and_validity(
+    let (out_oracle_data, out_oracle_validity) = maps.oracle_map.get_price_data_and_validity(
         MarketType::Spot,
         out_spot_market.market_index,
         &out_spot_market.oracle_id(),
@@ -4898,27 +4716,19 @@ pub fn handle_end_swap<'c: 'info, 'info>(
     // OtterSec #135: same shape as `handle_withdraw`. This handler cranks only the
     // two markets it swaps between, and the account's other borrow markets arrive
     // read-only, so their un-booked interest is missing from the check below.
-    math::margin::validate_spot_borrow_interest_fresh_for_margin(&user, &spot_market_map, now)?;
-
-    user.meets_withdraw_margin_requirement_swap(
-        &perp_market_map,
-        &spot_market_map,
-        &mut oracle_map,
-        margin_type,
-        strictly_reducing,
+    math::margin::validate_spot_borrow_interest_fresh_for_margin(
+        &user,
+        &maps.spot_market_map,
+        now,
     )?;
+
+    user.meets_withdraw_margin_requirement_swap(&mut maps, margin_type, strictly_reducing)?;
 
     // The exempt swap skips the buffered-floor gate and may legally end below
     // the raw floor; arm the breaker inline instead of waiting for the
     // permissionless trip.
     if strictly_reducing {
-        controller::equity_floor::try_lazy_equity_breaker_trip(
-            &user,
-            &mut user_stats,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
-        )?;
+        controller::equity_floor::try_lazy_equity_breaker_trip(&user, &mut user_stats, &mut maps)?;
     }
 
     user.update_last_active_slot(slot);
@@ -4936,7 +4746,7 @@ pub fn handle_end_swap<'c: 'info, 'info>(
     };
     emit!(swap_record);
 
-    let mut out_spot_market = spot_market_map.get_ref_mut(&out_market_index)?;
+    let mut out_spot_market = maps.spot_market_map.get_ref_mut(&out_market_index)?;
 
     validate!(
         out_spot_market.flash_loan_initial_token_amount == 0
@@ -4945,7 +4755,7 @@ pub fn handle_end_swap<'c: 'info, 'info>(
         "end_swap ended in invalid state"
     )?;
 
-    let mut in_spot_market = spot_market_map.get_ref_mut(&in_market_index)?;
+    let mut in_spot_market = maps.spot_market_map.get_ref_mut(&in_market_index)?;
 
     validate!(
         in_spot_market.flash_loan_initial_token_amount == 0
@@ -5028,11 +4838,7 @@ pub fn handle_special_transfer_perp_position_to_vamm<'c: 'info, 'info>(
         "user is being liquidated"
     )?;
 
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map,
-        mut oracle_map,
-    } = load_maps(
+    let mut maps = load_maps(
         &mut ctx.remaining_accounts.iter().peekable(),
         &get_writable_perp_market_set(market_index),
         &MarketSet::new(),
@@ -5047,7 +4853,7 @@ pub fn handle_special_transfer_perp_position_to_vamm<'c: 'info, 'info>(
     settle_funding_payment(
         &mut user,
         &user_key,
-        perp_market_map.get_ref_mut(&market_index)?.deref_mut(),
+        maps.perp_market_map.get_ref_mut(&market_index)?.deref_mut(),
         now,
     )?;
 
@@ -5056,7 +4862,7 @@ pub fn handle_special_transfer_perp_position_to_vamm<'c: 'info, 'info>(
     let oracle_price;
     let oi_before;
     {
-        let perp_market = perp_market_map.get_ref(&market_index)?;
+        let perp_market = maps.perp_market_map.get_ref(&market_index)?;
         oi_before = perp_market.get_open_interest();
 
         validate!(
@@ -5065,7 +4871,7 @@ pub fn handle_special_transfer_perp_position_to_vamm<'c: 'info, 'info>(
             "perp market fills paused"
         )?;
 
-        let (oracle_price_data, oracle_validity) = oracle_map.get_price_data_and_validity(
+        let (oracle_price_data, oracle_validity) = maps.oracle_map.get_price_data_and_validity(
             MarketType::Perp,
             market_index,
             &perp_market.oracle_id(),
@@ -5099,7 +4905,7 @@ pub fn handle_special_transfer_perp_position_to_vamm<'c: 'info, 'info>(
             "user has no position in market"
         )?;
 
-        let market = perp_market_map.get_ref(&market_index)?;
+        let market = maps.perp_market_map.get_ref(&market_index)?;
 
         validate!(
             position.base_asset_amount.signum()
@@ -5166,7 +4972,7 @@ pub fn handle_special_transfer_perp_position_to_vamm<'c: 'info, 'info>(
         get_position_delta_for_fill(transfer_amount_abs, base_asset_value, direction_to_close)?;
 
     {
-        let mut market = perp_market_map.get_ref_mut(&market_index)?;
+        let mut market = maps.perp_market_map.get_ref_mut(&market_index)?;
         let position = user.force_get_perp_position_mut(market_index)?;
 
         update_position_and_market(position, &mut market, &position_delta)?;
@@ -5191,9 +4997,7 @@ pub fn handle_special_transfer_perp_position_to_vamm<'c: 'info, 'info>(
     let user_margin_calculation =
         calculate_margin_requirement_and_total_collateral_and_liability_info(
             &user,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             user_margin_context,
         )?;
 
@@ -5203,7 +5007,10 @@ pub fn handle_special_transfer_perp_position_to_vamm<'c: 'info, 'info>(
         "user margin requirement is greater than total collateral"
     )?;
 
-    let oi_after = perp_market_map.get_ref(&market_index)?.get_open_interest();
+    let oi_after = maps
+        .perp_market_map
+        .get_ref(&market_index)?
+        .get_open_interest();
 
     validate!(
         oi_after <= oi_before,

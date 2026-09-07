@@ -3404,6 +3404,11 @@ pub mod fulfill_order {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut taker = User {
             orders: get_orders(Order {
@@ -3490,7 +3495,7 @@ pub mod fulfill_order {
             &taker.orders[order_index],
             min_auction_duration,
             &market,
-            &mut oracle_map,
+            &mut maps.oracle_map,
             slot,
             user_can_skip_auction_duration,
         );
@@ -3516,9 +3521,7 @@ pub mod fulfill_order {
                 key: filler_key,
                 rev_share_escrow: &mut None,
             },
-            &spot_market_map,
-            &market_map,
-            &mut oracle_map,
+            &mut maps,
             &crate::state::state::ValidityGuardRails::default(),
             &fee_structure,
             Some(market.market_stats.historical_oracle_data.last_oracle_price),
@@ -3572,7 +3575,7 @@ pub mod fulfill_order {
         assert_eq!(filler_stats.filler_volume_30d, 100261386);
         assert_eq!(filler.perp_positions[0].quote_asset_amount, 5012);
 
-        let market_after = market_map.get_ref(&0).unwrap();
+        let market_after = maps.perp_market_map.get_ref(&0).unwrap();
         assert_eq!(market_after.amm.base_asset_amount_with_amm, 500000000);
         assert_eq!(market_after.base_asset_amount_long, 1000000000);
         assert_eq!(market_after.base_asset_amount_short, -500000000);
@@ -3672,6 +3675,11 @@ pub mod fulfill_order {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut taker = User {
             orders: get_orders(Order {
@@ -3714,7 +3722,7 @@ pub mod fulfill_order {
             &taker.orders[order_index],
             0,
             &market,
-            &mut oracle_map,
+            &mut maps.oracle_map,
             slot,
             user_can_skip_auction_duration,
         );
@@ -3737,9 +3745,7 @@ pub mod fulfill_order {
                 key: filler_key,
                 rev_share_escrow: &mut None,
             },
-            &spot_market_map,
-            &market_map,
-            &mut oracle_map,
+            &mut maps,
             &crate::state::state::OracleGuardRails::default().validity,
             &fee_structure,
             Some(market.market_stats.historical_oracle_data.last_oracle_price),
@@ -3769,7 +3775,7 @@ pub mod fulfill_order {
         // The executed curve matches the routing projection: the AMM snapped
         // toward the oracle before quoting (then the sell moved it back down
         // a touch), so the post-fill reserve price sits near 102, not 100.
-        let market_after = market_map.get_ref(&0).unwrap();
+        let market_after = maps.perp_market_map.get_ref(&0).unwrap();
         let reserve_price_after = market_after.amm.reserve_price().unwrap();
         assert!(reserve_price_after > 101 * PRICE_PRECISION as u64);
     }
@@ -3846,6 +3852,11 @@ pub mod fulfill_order {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut taker = User {
             orders: get_orders(Order {
@@ -3888,7 +3899,7 @@ pub mod fulfill_order {
             &taker.orders[order_index],
             0,
             &market,
-            &mut oracle_map,
+            &mut maps.oracle_map,
             slot,
             user_can_skip_auction_duration,
         );
@@ -3909,9 +3920,7 @@ pub mod fulfill_order {
                 key: filler_key,
                 rev_share_escrow: &mut None,
             },
-            &spot_market_map,
-            &market_map,
-            &mut oracle_map,
+            &mut maps,
             &crate::state::state::OracleGuardRails::default().validity,
             &fee_structure,
             Some(market.market_stats.historical_oracle_data.last_oracle_price),
@@ -3933,7 +3942,7 @@ pub mod fulfill_order {
         assert_eq!(base_asset_amount, 0);
         assert_eq!(quote_asset_amount, 0);
 
-        let market_after = market_map.get_ref(&0).unwrap();
+        let market_after = maps.perp_market_map.get_ref(&0).unwrap();
         let reserve_price_after = market_after.amm.reserve_price().unwrap();
         assert_eq!(reserve_price_after, 100 * PRICE_PRECISION as u64);
     }
@@ -4013,6 +4022,11 @@ pub mod fulfill_order {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut taker = User {
             orders: get_orders(Order {
@@ -4055,7 +4069,7 @@ pub mod fulfill_order {
             &taker.orders[order_index],
             0,
             &market,
-            &mut oracle_map,
+            &mut maps.oracle_map,
             slot,
             user_can_skip_auction_duration,
         );
@@ -4076,9 +4090,7 @@ pub mod fulfill_order {
                 key: filler_key,
                 rev_share_escrow: &mut None,
             },
-            &spot_market_map,
-            &market_map,
-            &mut oracle_map,
+            &mut maps,
             &crate::state::state::OracleGuardRails::default().validity,
             &fee_structure,
             Some(market.market_stats.historical_oracle_data.last_oracle_price),
@@ -4104,7 +4116,7 @@ pub mod fulfill_order {
         // snapped from the stored 100 to near 102, and `last_update_slot`
         // advanced to this slot so a subsequent same-slot fill skips the
         // projection.
-        let market_after = market_map.get_ref(&0).unwrap();
+        let market_after = maps.perp_market_map.get_ref(&0).unwrap();
         let reserve_price_after = market_after.amm.reserve_price().unwrap();
         assert!(reserve_price_after > 101 * PRICE_PRECISION as u64);
         assert!(reserve_price_after < 103 * PRICE_PRECISION as u64);
@@ -4176,6 +4188,11 @@ pub mod fulfill_order {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut taker = User {
             orders: get_orders(Order {
@@ -4274,7 +4291,7 @@ pub mod fulfill_order {
             &taker.orders[order_index],
             min_auction_duration,
             &market,
-            &mut oracle_map,
+            &mut maps.oracle_map,
             slot,
             user_can_skip_auction_duration,
         );
@@ -4308,9 +4325,7 @@ pub mod fulfill_order {
                 key: filler_key,
                 rev_share_escrow: &mut None,
             },
-            &spot_market_map,
-            &market_map,
-            &mut oracle_map,
+            &mut maps,
             &crate::state::state::ValidityGuardRails::default(),
             &fee_structure,
             Some(market.market_stats.historical_oracle_data.last_oracle_price),
@@ -4413,6 +4428,11 @@ pub mod fulfill_order {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut taker = User {
             orders: get_orders(Order {
@@ -4500,7 +4520,7 @@ pub mod fulfill_order {
             &taker.orders[order_index],
             min_auction_duration,
             &market,
-            &mut oracle_map,
+            &mut maps.oracle_map,
             slot,
             user_can_skip_auction_duration,
         );
@@ -4526,9 +4546,7 @@ pub mod fulfill_order {
                 key: filler_key,
                 rev_share_escrow: &mut None,
             },
-            &spot_market_map,
-            &market_map,
-            &mut oracle_map,
+            &mut maps,
             &crate::state::state::ValidityGuardRails::default(),
             &fee_structure,
             Some(market.market_stats.historical_oracle_data.last_oracle_price),
@@ -4579,7 +4597,7 @@ pub mod fulfill_order {
         assert_eq!(filler_stats.filler_volume_30d, 100283883);
         assert_eq!(filler.perp_positions[0].quote_asset_amount, 5014);
 
-        let market_after = market_map.get_ref(&0).unwrap();
+        let market_after = maps.perp_market_map.get_ref(&0).unwrap();
         assert_eq!(market_after.amm.base_asset_amount_with_amm, 500000000);
         assert_eq!(market_after.base_asset_amount_long, 1000000000);
         assert_eq!(market_after.base_asset_amount_short, -500000000);
@@ -4648,6 +4666,11 @@ pub mod fulfill_order {
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
         let mut oracle_map = get_oracle_map();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut taker = User {
             orders: get_orders(Order {
@@ -4732,7 +4755,7 @@ pub mod fulfill_order {
             &taker.orders[order_index],
             min_auction_duration,
             &market,
-            &mut oracle_map,
+            &mut maps.oracle_map,
             slot,
             user_can_skip_auction_duration,
         );
@@ -4758,9 +4781,7 @@ pub mod fulfill_order {
                 key: filler_key,
                 rev_share_escrow: &mut None,
             },
-            &spot_market_map,
-            &market_map,
-            &mut oracle_map,
+            &mut maps,
             &crate::state::state::ValidityGuardRails::default(),
             &fee_structure,
             None,
@@ -4806,7 +4827,7 @@ pub mod fulfill_order {
         assert_eq!(maker_stats.fees.total_fee_rebate, 15000);
         assert_eq!(maker_stats.maker_volume_30d, 50 * QUOTE_PRECISION_U64);
 
-        let market_after = market_map.get_ref(&0).unwrap();
+        let market_after = maps.perp_market_map.get_ref(&0).unwrap();
         assert_eq!(market_after.amm.base_asset_amount_with_amm, 0);
         assert_eq!(market_after.base_asset_amount_long, 500000000);
         assert_eq!(market_after.base_asset_amount_short, -500000000);
@@ -4884,6 +4905,11 @@ pub mod fulfill_order {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut taker = User {
             orders: get_orders(Order {
@@ -4929,7 +4955,7 @@ pub mod fulfill_order {
             &taker.orders[order_index],
             min_auction_duration,
             &market,
-            &mut oracle_map,
+            &mut maps.oracle_map,
             slot,
             user_can_skip_auction_duration,
         );
@@ -4950,9 +4976,7 @@ pub mod fulfill_order {
                 key: filler_key,
                 rev_share_escrow: &mut None,
             },
-            &spot_market_map,
-            &market_map,
-            &mut oracle_map,
+            &mut maps,
             &crate::state::state::ValidityGuardRails::default(),
             &fee_structure,
             Some(market.market_stats.historical_oracle_data.last_oracle_price),
@@ -4985,7 +5009,7 @@ pub mod fulfill_order {
         assert_eq!(taker_stats.taker_volume_30d, 101010109);
         assert!(taker.orders[0].is_available());
 
-        let market_after = market_map.get_ref(&0).unwrap();
+        let market_after = maps.perp_market_map.get_ref(&0).unwrap();
         assert_eq!(market_after.amm.base_asset_amount_with_amm, 1000000000);
         assert_eq!(market_after.base_asset_amount_long, 1000000000);
         assert_eq!(market_after.base_asset_amount_short, 0);
@@ -5065,6 +5089,11 @@ pub mod fulfill_order {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut taker = User {
             orders: get_orders(Order {
@@ -5153,7 +5182,7 @@ pub mod fulfill_order {
             &taker.orders[order_index],
             min_auction_duration,
             &market,
-            &mut oracle_map,
+            &mut maps.oracle_map,
             slot,
             user_can_skip_auction_duration,
         );
@@ -5181,9 +5210,7 @@ pub mod fulfill_order {
                 key: filler_key,
                 rev_share_escrow: &mut None,
             },
-            &spot_market_map,
-            &market_map,
-            &mut oracle_map,
+            &mut maps,
             &crate::state::state::ValidityGuardRails::default(),
             &fee_structure,
             Some(market.market_stats.historical_oracle_data.last_oracle_price),
@@ -5204,9 +5231,7 @@ pub mod fulfill_order {
 
         let margin_calc = calculate_margin_requirement_and_total_collateral_and_liability_info(
             &maker,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             MarginContext::liquidation(0),
         )
         .unwrap();
@@ -5283,6 +5308,11 @@ pub mod fulfill_order {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut taker = User {
             orders: get_orders(Order {
@@ -5370,7 +5400,7 @@ pub mod fulfill_order {
             &taker.orders[order_index],
             min_auction_duration,
             &market,
-            &mut oracle_map,
+            &mut maps.oracle_map,
             slot,
             user_can_skip_auction_duration,
         );
@@ -5398,9 +5428,7 @@ pub mod fulfill_order {
                 key: filler_key,
                 rev_share_escrow: &mut None,
             },
-            &spot_market_map,
-            &market_map,
-            &mut oracle_map,
+            &mut maps,
             &crate::state::state::ValidityGuardRails::default(),
             &fee_structure,
             Some(market.market_stats.historical_oracle_data.last_oracle_price),
@@ -5489,6 +5517,11 @@ pub mod fulfill_order {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut taker = User {
             orders: get_orders(Order {
@@ -5540,7 +5573,7 @@ pub mod fulfill_order {
             &taker.orders[order_index],
             min_auction_duration,
             &market,
-            &mut oracle_map,
+            &mut maps.oracle_map,
             slot,
             user_can_skip_auction_duration,
         );
@@ -5561,9 +5594,7 @@ pub mod fulfill_order {
                 key: filler_key,
                 rev_share_escrow: &mut None,
             },
-            &spot_market_map,
-            &market_map,
-            &mut oracle_map,
+            &mut maps,
             &crate::state::state::ValidityGuardRails::default(),
             &fee_structure,
             Some(market.market_stats.historical_oracle_data.last_oracle_price),
@@ -5595,7 +5626,7 @@ pub mod fulfill_order {
         assert_eq!(taker_stats.taker_volume_30d, 0);
         assert_eq!(taker_stats.maker_volume_30d, 3499697);
 
-        let market_after = market_map.get_ref(&0).unwrap();
+        let market_after = maps.perp_market_map.get_ref(&0).unwrap();
         assert_eq!(market_after.amm.base_asset_amount_with_amm, -35032000);
         assert_eq!(market_after.base_asset_amount_long, 0);
         assert_eq!(market_after.base_asset_amount_short, -35032000);
@@ -5607,7 +5638,7 @@ pub mod fulfill_order {
         assert_eq!(market_after.amm.total_fee_minus_distributions, 0);
         assert_eq!(market_after.amm.net_revenue_since_last_funding, 0);
 
-        let market_after = market_map.get_ref(&0).unwrap();
+        let market_after = maps.perp_market_map.get_ref(&0).unwrap();
         let reserve_price = market_after.amm.reserve_price().unwrap();
         let bid_price = market_after.amm.bid_price(reserve_price, 0, 0).unwrap();
         assert_eq!(bid_price, 99929972); // ~ 99.9 * (1.0003)
@@ -5682,6 +5713,11 @@ pub mod fulfill_order {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut taker = User {
             orders: get_orders(Order {
@@ -5733,7 +5769,7 @@ pub mod fulfill_order {
             &taker.orders[order_index],
             min_auction_duration,
             &market,
-            &mut oracle_map,
+            &mut maps.oracle_map,
             slot,
             user_can_skip_auction_duration,
         );
@@ -5754,9 +5790,7 @@ pub mod fulfill_order {
                 key: filler_key,
                 rev_share_escrow: &mut None,
             },
-            &spot_market_map,
-            &market_map,
-            &mut oracle_map,
+            &mut maps,
             &crate::state::state::ValidityGuardRails::default(),
             &fee_structure,
             Some(market.market_stats.historical_oracle_data.last_oracle_price),
@@ -5788,7 +5822,7 @@ pub mod fulfill_order {
         assert_eq!(taker_stats.taker_volume_30d, 0);
         assert_eq!(taker_stats.maker_volume_30d, 3500096);
 
-        let market_after = market_map.get_ref(&0).unwrap();
+        let market_after = maps.perp_market_map.get_ref(&0).unwrap();
         assert_eq!(market_after.amm.base_asset_amount_with_amm, 34966000);
         assert_eq!(market_after.base_asset_amount_long, 34966000);
         assert_eq!(market_after.base_asset_amount_short, 0);
@@ -5800,7 +5834,7 @@ pub mod fulfill_order {
         assert_eq!(market_after.amm.total_fee_minus_distributions, 0);
         assert_eq!(market_after.amm.net_revenue_since_last_funding, 0);
 
-        let market_after = market_map.get_ref(&0).unwrap();
+        let market_after = maps.perp_market_map.get_ref(&0).unwrap();
         let reserve_price = market_after.amm.reserve_price().unwrap();
         let ask_price = market_after.amm.ask_price(reserve_price, 0, 0).unwrap();
         assert_eq!(ask_price, 100069968); // ~ 100.1 * (0.9997)
@@ -5883,6 +5917,11 @@ pub mod fulfill_order {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut taker = User {
             orders: get_orders(Order {
@@ -5940,9 +5979,7 @@ pub mod fulfill_order {
             &state,
             &user_account_loader,
             &user_stats_account_loader,
-            &spot_market_map,
-            &market_map,
-            &mut oracle_map,
+            &mut maps,
             &filler_account_loader,
             &filler_stats_account_loader,
             &UserMap::empty(),
@@ -5959,16 +5996,15 @@ pub mod fulfill_order {
         // Will fill if MM oracle price is not too volatile at mm oracle price
         market.market_stats.mm_oracle_price = 101 * PRICE_PRECISION_I64;
         create_anchor_account_info!(market, PerpMarket, market_account_info);
-        let market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
+        let perp_market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
+        maps.perp_market_map = perp_market_map;
 
         let (base_asset_amount, quote_asset_amount) = fill_perp_order(
             1,
             &state,
             &user_account_loader,
             &user_stats_account_loader,
-            &spot_market_map,
-            &market_map,
-            &mut oracle_map,
+            &mut maps,
             &filler_account_loader,
             &filler_stats_account_loader,
             &UserMap::empty(),
@@ -6210,6 +6246,11 @@ pub mod fulfill_order {
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
         let mut oracle_map = get_oracle_map();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut taker_orders = [Order::default(); 32];
         taker_orders[0] = Order {
@@ -6344,8 +6385,8 @@ pub mod fulfill_order {
         let is_amm_available = get_amm_is_available(
             &taker.orders[order_index],
             min_auction_duration,
-            &market_map.get_ref(&0).unwrap(),
-            &mut oracle_map,
+            &maps.perp_market_map.get_ref(&0).unwrap(),
+            &mut maps.oracle_map,
             slot,
             user_can_skip_auction_duration,
         );
@@ -6371,9 +6412,7 @@ pub mod fulfill_order {
                 key: filler_key,
                 rev_share_escrow: &mut None,
             },
-            &spot_market_map,
-            &market_map,
-            &mut oracle_map,
+            &mut maps,
             &crate::state::state::ValidityGuardRails::default(),
             &fee_structure,
             None,
@@ -6433,7 +6472,7 @@ pub mod fulfill_order {
         assert_eq!(maker.perp_positions[0], maker_before.perp_positions[0]);
         assert_eq!(maker.orders[0], maker_before.orders[0]);
 
-        let market_after = market_map.get_ref(&0).unwrap();
+        let market_after = maps.perp_market_map.get_ref(&0).unwrap();
         assert_eq!(market_after.amm.base_asset_amount_with_amm, 0);
         assert_eq!(market_after.base_asset_amount_long, 500000000);
         assert_eq!(market_after.base_asset_amount_short, -500000000);
@@ -6538,6 +6577,11 @@ pub mod fulfill_order {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut taker = User {
             orders: get_orders(Order {
@@ -6619,8 +6663,8 @@ pub mod fulfill_order {
         let is_amm_available = get_amm_is_available(
             &taker.orders[order_index],
             min_auction_duration,
-            &market_map.get_ref(&0).unwrap(),
-            &mut oracle_map,
+            &maps.perp_market_map.get_ref(&0).unwrap(),
+            &mut maps.oracle_map,
             slot,
             user_can_skip_auction_duration,
         );
@@ -6646,9 +6690,7 @@ pub mod fulfill_order {
                 key: maker_key,
                 rev_share_escrow: &mut None,
             },
-            &spot_market_map,
-            &market_map,
-            &mut oracle_map,
+            &mut maps,
             &crate::state::state::ValidityGuardRails::default(),
             &fee_structure,
             Some(market.market_stats.historical_oracle_data.last_oracle_price),
@@ -6776,6 +6818,11 @@ pub mod fulfill_order {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut taker = User {
             orders: get_orders(Order {
@@ -6877,9 +6924,7 @@ pub mod fulfill_order {
                 key: filler_key,
                 rev_share_escrow: &mut None,
             },
-            &spot_market_map,
-            &market_map,
-            &mut oracle_map,
+            &mut maps,
             &crate::state::state::ValidityGuardRails::default(),
             &fee_structure,
             Some(market.market_stats.historical_oracle_data.last_oracle_price),
@@ -6911,7 +6956,7 @@ pub mod fulfill_order {
         );
 
         // The AMM curve and net position are untouched — no JIT swap happened.
-        let market_after = market_map.get_ref(&0).unwrap();
+        let market_after = maps.perp_market_map.get_ref(&0).unwrap();
         assert_eq!(market_after.amm.base_asset_amount_with_amm, 0);
         assert_eq!(
             market_after.amm.base_asset_reserve,
@@ -6989,6 +7034,11 @@ pub mod fulfill_order {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut taker = User {
             orders: get_orders(Order {
@@ -7038,7 +7088,7 @@ pub mod fulfill_order {
             &taker.orders[order_index],
             min_auction_duration,
             &market,
-            &mut oracle_map,
+            &mut maps.oracle_map,
             slot,
             user_can_skip_auction_duration,
         );
@@ -7062,9 +7112,7 @@ pub mod fulfill_order {
                 key: filler_key,
                 rev_share_escrow: &mut None,
             },
-            &spot_market_map,
-            &market_map,
-            &mut oracle_map,
+            &mut maps,
             &crate::state::state::ValidityGuardRails::default(),
             &fee_structure,
             Some(market.market_stats.historical_oracle_data.last_oracle_price),
@@ -7085,7 +7133,7 @@ pub mod fulfill_order {
         assert_eq!(base_asset_amount, 0);
         assert_eq!(taker.perp_positions[0].base_asset_amount, 0);
 
-        let market_after = market_map.get_ref(&0).unwrap();
+        let market_after = maps.perp_market_map.get_ref(&0).unwrap();
         assert_eq!(market_after.amm.base_asset_amount_with_amm, -1000000000);
     }
 }
@@ -7212,6 +7260,11 @@ pub mod fill_order {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut user = User {
             authority: Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap(), // different authority than filler
@@ -7312,9 +7365,7 @@ pub mod fill_order {
             &state,
             &user_account_loader,
             &user_stats_account_loader,
-            &spot_market_map,
-            &market_map,
-            &mut oracle_map,
+            &mut maps,
             &filler_account_loader,
             &filler_stats_account_loader,
             &makers_and_referrers,
@@ -7421,6 +7472,11 @@ pub mod fill_order {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut user = User {
             authority: Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap(), // different authority than filler
@@ -7524,9 +7580,7 @@ pub mod fill_order {
             &state,
             &user_account_loader,
             &user_stats_account_loader,
-            &spot_market_map,
-            &market_map,
-            &mut oracle_map,
+            &mut maps,
             &filler_account_loader,
             &filler_stats_account_loader,
             &makers_and_referrers,
@@ -7585,6 +7639,11 @@ pub mod fill_order {
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
         let mut oracle_map = get_oracle_map();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut user = User {
             authority: Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap(),
@@ -7653,9 +7712,7 @@ pub mod fill_order {
             &state,
             &user_account_loader,
             &user_stats_account_loader,
-            &spot_market_map,
-            &market_map,
-            &mut oracle_map,
+            &mut maps,
             &filler_account_loader,
             &filler_stats_account_loader,
             &UserMap::empty(),
@@ -7767,6 +7824,11 @@ pub mod fill_order {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut user = User {
             orders: get_orders(Order {
@@ -7825,9 +7887,7 @@ pub mod fill_order {
             &state,
             &user_account_loader,
             &user_stats_account_loader,
-            &spot_market_map,
-            &market_map,
-            &mut oracle_map,
+            &mut maps,
             &filler_account_loader,
             &filler_stats_account_loader,
             &UserMap::empty(),
@@ -7985,6 +8045,11 @@ pub mod force_cancel_orders {
             true,
         )
         .unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut orders = [Order::default(); 32];
         orders[0] = Order {
@@ -8084,9 +8149,7 @@ pub mod force_cancel_orders {
         force_cancel_orders(
             &state,
             &user_account_loader,
-            &spot_market_map,
-            &market_map,
-            &mut oracle_map,
+            &mut maps,
             &filler_account_loader,
             &clock,
         )
@@ -8244,6 +8307,11 @@ pub mod cancel_reduce_only_trigger_orders {
             true,
         )
         .unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut orders = [Order::default(); 32];
         orders[0] = Order {
@@ -8318,9 +8386,7 @@ pub mod cancel_reduce_only_trigger_orders {
             &mut user,
             &Pubkey::default(),
             Some(&Pubkey::default()),
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             0,
             0,
             0,
@@ -8553,6 +8619,11 @@ pub mod get_maker_orders_info {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let taker_key = Pubkey::default();
         let taker_authority =
@@ -8639,9 +8710,7 @@ pub mod get_maker_orders_info {
         let mut filler = User::default();
 
         let maker_order_price_and_indexes = get_maker_orders_info(
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             &makers_and_referrers,
             &taker_key,
             &user.orders[0],
@@ -8755,6 +8824,11 @@ pub mod get_maker_orders_info {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let taker_key = Pubkey::default();
         let taker_authority =
@@ -8842,9 +8916,7 @@ pub mod get_maker_orders_info {
         let mut filler = User::default();
 
         let maker_order_price_and_indexes = get_maker_orders_info(
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             &makers_and_referrers,
             &taker_key,
             &user.orders[0],
@@ -8958,6 +9030,11 @@ pub mod get_maker_orders_info {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let taker_key = Pubkey::default();
         let taker_authority =
@@ -9034,9 +9111,7 @@ pub mod get_maker_orders_info {
         let mut filler = User::default();
 
         let maker_order_price_and_indexes = get_maker_orders_info(
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             &makers_and_referrers,
             &taker_key,
             &user.orders[0],
@@ -9142,6 +9217,11 @@ pub mod get_maker_orders_info {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let taker_key = Pubkey::default();
         let taker_authority =
@@ -9284,9 +9364,7 @@ pub mod get_maker_orders_info {
         let mut filler = User::default();
 
         let maker_order_price_and_indexes = get_maker_orders_info(
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             &makers_and_referrers,
             &taker_key,
             &user.orders[0],
@@ -9400,6 +9478,11 @@ pub mod get_maker_orders_info {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let taker_key = Pubkey::default();
         let taker_authority =
@@ -9516,9 +9599,7 @@ pub mod get_maker_orders_info {
         let mut filler = User::default();
 
         let maker_order_price_and_indexes = get_maker_orders_info(
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             &makers_and_referrers,
             &taker_key,
             &user.orders[0],
@@ -10115,6 +10196,11 @@ pub mod maker_floor_prune {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         // taker buys, so the maker's sells are the resting side
         let taker_order = Order {
@@ -10171,9 +10257,7 @@ pub mod maker_floor_prune {
         let filler_key = Pubkey::default();
 
         get_maker_orders_info(
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             &makers_and_referrers,
             &taker_key,
             &taker_order,
@@ -10785,6 +10869,11 @@ pub mod builder_fee_margin_gate {
             true,
         )
         .unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         // Long one unit, closing it with a builder-coded market sell. The order
         // reduces the position, so the post-fill check uses maintenance margin.
@@ -10849,7 +10938,7 @@ pub mod builder_fee_margin_gate {
             &taker.orders[order_index],
             0,
             &market,
-            &mut oracle_map,
+            &mut maps.oracle_map,
             slot,
             user_can_skip_auction_duration,
         );
@@ -10884,9 +10973,7 @@ pub mod builder_fee_margin_gate {
                 key: filler_key,
                 rev_share_escrow: &mut Some(&mut escrow),
             },
-            &spot_market_map,
-            &market_map,
-            &mut oracle_map,
+            &mut maps,
             &ValidityGuardRails::default(),
             &fee_structure,
             Some(market.market_stats.historical_oracle_data.last_oracle_price),
@@ -11119,6 +11206,11 @@ mod taker_floor_unverifiable_withholds_fill {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map =
             SpotMarketMap::load_multiple(vec![&spot_market_account_info], true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         // A quarter unit either way: short reduces the one-unit long, long
         // increases it.
@@ -11187,7 +11279,7 @@ mod taker_floor_unverifiable_withholds_fill {
             &taker.orders[order_index],
             0,
             &market,
-            &mut oracle_map,
+            &mut maps.oracle_map,
             slot,
             user_can_skip_auction_duration,
         );
@@ -11209,9 +11301,7 @@ mod taker_floor_unverifiable_withholds_fill {
                 key: filler_key,
                 rev_share_escrow: &mut None,
             },
-            &spot_market_map,
-            &market_map,
-            &mut oracle_map,
+            &mut maps,
             &ValidityGuardRails::default(),
             &fee_structure,
             Some(market.market_stats.historical_oracle_data.last_oracle_price),
@@ -11451,6 +11541,11 @@ mod fill_gates_apply_to_a_reducing_fill {
             true,
         )
         .unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut taker_spot_positions = [SpotPosition::default(); 8];
         taker_spot_positions[0] = SpotPosition {
@@ -11574,9 +11669,7 @@ mod fill_gates_apply_to_a_reducing_fill {
                 key: filler_key,
                 rev_share_escrow: &mut None,
             },
-            &spot_market_map,
-            &market_map,
-            &mut oracle_map,
+            &mut maps,
             &ValidityGuardRails::default(),
             &super::get_fee_structure(),
             Some(market.market_stats.historical_oracle_data.last_oracle_price),

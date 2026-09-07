@@ -13,10 +13,7 @@ use {
     },
     anchor_lang::prelude::*,
     anchor_spl::token::{burn, transfer, Burn, Mint, Token, TokenAccount, Transfer},
-    velocity::{
-        instructions::optional_accounts::AccountMaps, math::safe_math::SafeMath, program::Velocity,
-        state::user::User,
-    },
+    velocity::{math::safe_math::SafeMath, program::Velocity, state::user::User},
 };
 
 pub fn redeem_tokens<'info>(
@@ -51,11 +48,7 @@ pub fn redeem_tokens<'info>(
 
     let user = ctx.accounts.velocity_user.load()?;
     let spot_market_index = vault.spot_market_index;
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map,
-        mut oracle_map,
-    } = ctx.load_maps(
+    let mut maps = ctx.load_maps(
         clock.slot,
         Some(spot_market_index),
         vp.is_some(),
@@ -63,8 +56,7 @@ pub fn redeem_tokens<'info>(
         &ctx.accounts.velocity_state,
     )?;
 
-    let vault_equity =
-        vault.calculate_equity(&user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
+    let vault_equity = vault.calculate_equity(&user, &mut maps)?;
 
     validate!(
         !vault_depositor.last_withdraw_request.pending(),
@@ -73,8 +65,8 @@ pub fn redeem_tokens<'info>(
     )?;
 
     let total_supply_before = ctx.accounts.mint.supply;
-    let spot_market = spot_market_map.get_ref(&spot_market_index)?;
-    let oracle = oracle_map.get_price_data(&spot_market.oracle_id())?;
+    let spot_market = maps.spot_market_map.get_ref(&spot_market_index)?;
+    let oracle = maps.oracle_map.get_price_data(&spot_market.oracle_id())?;
     // redeem_tokens crystallizes the management fee and the tokenized depositor's profit share.
     let (shares_to_transfer, mut vp) = tokenized_vault_depositor.redeem_tokens(
         &mut vault,

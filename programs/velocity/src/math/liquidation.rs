@@ -1,5 +1,6 @@
 use crate::{
     error::{ErrorCode, VelocityResult},
+    instructions::optional_accounts::AccountMaps,
     math::{
         casting::Cast,
         constants::{
@@ -19,11 +20,8 @@ use crate::{
     state::{
         margin_calculation::MarginContext,
         oracle::OraclePriceData,
-        oracle_map::OracleMap,
         perp_market::PerpMarket,
-        perp_market_map::PerpMarketMap,
         spot_market::{SpotBalanceType, SpotMarket},
-        spot_market_map::SpotMarketMap,
         user::{OrderType, User},
     },
     validate, MarketType, OrderParams, PositionDirection,
@@ -270,16 +268,12 @@ pub fn calculate_asset_transfer_for_liability_transfer(
 
 pub fn is_cross_margin_being_liquidated(
     user: &User,
-    market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
     liquidation_margin_buffer_ratio: u32,
 ) -> VelocityResult<bool> {
     let margin_calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
         user,
-        market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
         MarginContext::liquidation(liquidation_margin_buffer_ratio),
     )?;
 
@@ -290,9 +284,7 @@ pub fn is_cross_margin_being_liquidated(
 
 pub fn validate_user_not_being_liquidated(
     user: &mut User,
-    market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
     liquidation_margin_buffer_ratio: u32,
 ) -> VelocityResult {
     if !user.is_being_liquidated() {
@@ -301,9 +293,7 @@ pub fn validate_user_not_being_liquidated(
 
     let margin_calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
         user,
-        market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
         MarginContext::liquidation(liquidation_margin_buffer_ratio),
     )?;
 
@@ -339,17 +329,13 @@ pub fn validate_user_not_being_liquidated(
 
 pub fn is_isolated_margin_being_liquidated(
     user: &User,
-    market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
     perp_market_index: u16,
     liquidation_margin_buffer_ratio: u32,
 ) -> VelocityResult<bool> {
     let margin_calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
         user,
-        market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
         MarginContext::liquidation(liquidation_margin_buffer_ratio),
     )?;
 

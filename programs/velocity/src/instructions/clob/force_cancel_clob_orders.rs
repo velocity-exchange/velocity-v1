@@ -49,8 +49,7 @@ use {
             clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             events::OrderActionExplanation,
             margin_calculation::MarginContext,
-            oracle_map::OracleMap,
-            perp_market_map::{MarketSet, PerpMarketMap},
+            perp_market_map::MarketSet,
             prop_amm::{
                 ClobCancelAllArgsV0, ClobCancelAllOutcomeV0, ClobCancelOrderArgsV0,
                 ClobCancelSides, ClobCancelSidesExt, ClobMarket, ClobOrderRefV0,
@@ -172,11 +171,7 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
         order_refs.len()
     )?;
 
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map,
-        mut oracle_map,
-    } = load_maps(
+    let mut maps = load_maps(
         &mut ctx.remaining_accounts.iter().peekable(),
         &MarketSet::new(),
         &get_writable_spot_market_set(QUOTE_SPOT_MARKET_INDEX),
@@ -197,14 +192,7 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
     // orders. ----
     let plan = {
         let user = &mut load_mut!(ctx.accounts.user)?;
-        if !has_force_cancel_grounds(
-            user,
-            &ctx.accounts.user_stats,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
-            market_index,
-        )? {
+        if !has_force_cancel_grounds(user, &ctx.accounts.user_stats, &mut maps, market_index)? {
             return Ok(());
         }
 
@@ -228,8 +216,8 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
     // Stamped on every cancel record below. Read once, before the user
     // borrow, because the record is the only thing that wants it.
     let oracle_price = {
-        let oracle_id = perp_market_map.get_ref(&market_index)?.oracle_id();
-        oracle_map.get_price_data(&oracle_id)?.price
+        let oracle_id = maps.perp_market_map.get_ref(&market_index)?.oracle_id();
+        maps.oracle_map.get_price_data(&oracle_id)?.price
     };
 
     // Orders this crank actually reclaimed. The reservoir pays for work, and
@@ -248,7 +236,7 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
     unwind_cancelled_orders(
         ctx.accounts,
         &state,
-        &spot_market_map,
+        &maps.spot_market_map,
         &clob,
         &clock,
         market_index,
@@ -310,9 +298,7 @@ struct SweepDecision {
 fn has_force_cancel_grounds(
     user: &User,
     user_stats: &AccountLoader<'_, UserStats>,
-    perp_market_map: &PerpMarketMap<'_>,
-    spot_market_map: &SpotMarketMap<'_>,
-    oracle_map: &mut OracleMap<'_>,
+    maps: &mut AccountMaps,
     market_index: u16,
 ) -> Result<bool> {
     validate!(
@@ -323,18 +309,15 @@ fn has_force_cancel_grounds(
 
     let margin_calc = calculate_margin_requirement_and_total_collateral_and_liability_info(
         user,
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
         MarginContext::standard(MarginRequirementType::Initial),
     )?;
     // "Below floor" authorizes a keeper against the user here, so it fails
     // closed the other way from the gates that restrict the user: the floor
     // counts as grounds only when every oracle is valid and the trusted
     // value sits below it, so a bad price cannot manufacture authorization.
-    let below_equity_floor =
-        calculate_net_equity_for_floor(user, perp_market_map, spot_market_map, oracle_map)?
-            .is_some_and(|net_equity| net_equity.proves_below_floor(user));
+    let below_equity_floor = calculate_net_equity_for_floor(user, maps)?
+        .is_some_and(|net_equity| net_equity.proves_below_floor(user));
     // A tripped breaker is grounds on its own. It is the authority-wide
     // latch that says one of this authority's subaccounts was proven
     // below its floor, it is already permissionless to set, and while it

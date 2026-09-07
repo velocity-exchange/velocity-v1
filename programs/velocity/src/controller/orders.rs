@@ -17,7 +17,9 @@ use {
             spot_position::decrease_spot_open_bids_and_asks,
         },
         error::{ErrorCode, VelocityResult},
-        get_struct_values, get_then_update_id, load, load_mut,
+        get_struct_values, get_then_update_id,
+        instructions::optional_accounts::AccountMaps,
+        load, load_mut,
         math::{
             auction::{calculate_auction_params_for_trigger_order, calculate_auction_prices},
             casting::Cast,
@@ -57,7 +59,6 @@ use {
                 RevenueShareEscrowZeroCopyMut, RevenueShareOrder, RevenueShareOrderBitFlag,
             },
             spot_market::{SpotBalanceType, SpotMarket},
-            spot_market_map::SpotMarketMap,
             state::{FeeStructure, *},
             traits::Size,
             user::{
@@ -135,9 +136,7 @@ pub struct BuiltPerpOrder {
 pub fn build_perp_order(
     state: &State,
     user: &mut User,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
     clock: &Clock,
     mut params: OrderParams,
     options: &PlaceOrderOptions,
@@ -147,27 +146,34 @@ pub fn build_perp_order(
     let slot: u64 = clock.slot;
 
     let market_index = params.market_index;
-    let market = &perp_market_map.get_ref(&market_index)?;
-    let force_reduce_only = market.is_reduce_only()?;
+    // The market's own gates, and the one value the sizing below reads. The
+    // borrow ends with this block, because a maximum-size order prices
+    // against every market the user holds and needs the whole map set.
+    let (force_reduce_only, order_step_size) = {
+        let market = maps.perp_market_map.get_ref(&market_index)?;
+        let force_reduce_only = market.is_reduce_only()?;
 
-    validate!(
-        !matches!(market.status, MarketStatus::Initialized),
-        ErrorCode::MarketBeingInitialized,
-        "Market is being initialized"
-    )?;
+        validate!(
+            !matches!(market.status, MarketStatus::Initialized),
+            ErrorCode::MarketBeingInitialized,
+            "Market is being initialized"
+        )?;
 
-    validate!(
-        user.pool_id == 0,
-        ErrorCode::InvalidPoolId,
-        "user pool id ({}) != 0",
-        user.pool_id
-    )?;
+        validate!(
+            user.pool_id == 0,
+            ErrorCode::InvalidPoolId,
+            "user pool id ({}) != 0",
+            user.pool_id
+        )?;
 
-    validate!(
-        !market.is_in_settlement(now),
-        ErrorCode::MarketPlaceOrderPaused,
-        "Market is in settlement mode",
-    )?;
+        validate!(
+            !market.is_in_settlement(now),
+            ErrorCode::MarketPlaceOrderPaused,
+            "Market is in settlement mode",
+        )?;
+
+        (force_reduce_only, market.order_step_size)
+    };
 
     let position_index = get_position_index(&user.perp_positions, market_index)
         .or_else(|_| add_new_position(&mut user.perp_positions, market_index))?;
@@ -175,11 +181,11 @@ pub fn build_perp_order(
     // Increment open orders for existing position
     let (existing_position_direction, order_base_asset_amount) = {
         validate!(
-            params.base_asset_amount >= market.order_step_size,
+            params.base_asset_amount >= order_step_size,
             ErrorCode::OrderAmountTooSmall,
             "params.base_asset_amount={} cannot be below market.order_step_size={}",
             params.base_asset_amount,
-            market.order_step_size
+            order_step_size
         )?;
 
         let base_asset_amount = if params.base_asset_amount == u64::MAX
@@ -190,12 +196,10 @@ pub fn build_perp_order(
                 position_index,
                 params.market_index,
                 params.direction,
-                perp_market_map,
-                spot_market_map,
-                oracle_map,
+                maps,
             )?
         } else {
-            standardize_base_asset_amount(params.base_asset_amount, market.order_step_size)?
+            standardize_base_asset_amount(params.base_asset_amount, order_step_size)?
         };
 
         let existing_position_direction = if let Some(existing_position_direction_override) =
@@ -214,7 +218,8 @@ pub fn build_perp_order(
         (existing_position_direction, base_asset_amount)
     };
 
-    let oracle_price_data = oracle_map.get_price_data(&market.oracle_id())?;
+    let market = &maps.perp_market_map.get_ref(&market_index)?;
+    let oracle_price_data = maps.oracle_map.get_price_data(&market.oracle_id())?;
 
     // Downstream auction-param / price / validation logic reads the AMM's
     // cached spread state directly (refreshed by the keeper crank / fill
@@ -379,9 +384,7 @@ pub fn place_perp_order(
     state: &State,
     user: &mut User,
     user_key: Pubkey,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
     clock: &Clock,
     params: OrderParams,
     mut options: PlaceOrderOptions,
@@ -391,27 +394,13 @@ pub fn place_perp_order(
     let slot: u64 = clock.slot;
 
     if !options.is_liquidation() {
-        validate_user_not_being_liquidated(
-            user,
-            perp_market_map,
-            spot_market_map,
-            oracle_map,
-            state.liquidation_margin_buffer_ratio,
-        )?;
+        validate_user_not_being_liquidated(user, maps, state.liquidation_margin_buffer_ratio)?;
     }
 
     validate!(!user.is_bankrupt(), ErrorCode::UserBankrupt)?;
 
     if options.try_expire_orders {
-        expire_orders(
-            user,
-            &user_key,
-            perp_market_map,
-            spot_market_map,
-            oracle_map,
-            now,
-            slot,
-        )?;
+        expire_orders(user, &user_key, maps, now, slot)?;
     }
 
     if user.is_reduce_only() {
@@ -442,17 +431,8 @@ pub fn place_perp_order(
 
     let market_index = params.market_index;
 
-    let Some(built) = build_perp_order(
-        state,
-        user,
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
-        clock,
-        params,
-        &options,
-        rev_share_order,
-    )?
+    let Some(built) =
+        build_perp_order(state, user, maps, clock, params, &options, rev_share_order)?
     else {
         return Ok(PlaceOrderResult::default());
     };
@@ -491,9 +471,7 @@ pub fn place_perp_order(
     if options.enforce_margin_check && !options.is_liquidation() {
         meets_place_order_margin_requirement(
             user,
-            perp_market_map,
-            spot_market_map,
-            oracle_map,
+            maps,
             options.risk_increasing,
             isolated_market_index,
         )?;
@@ -506,7 +484,7 @@ pub fn place_perp_order(
         )?;
     }
 
-    let market = &perp_market_map.get_ref(&market_index)?;
+    let market = &maps.perp_market_map.get_ref(&market_index)?;
     let max_oi = market.max_open_interest;
     if max_oi != 0 && risk_increasing {
         let oi_plus_order = match new_order.direction {
@@ -551,7 +529,7 @@ pub fn place_perp_order(
         taker_order,
         maker,
         maker_order,
-        oracle_map.get_price_data(&market.oracle_id())?.price,
+        maps.oracle_map.get_price_data(&market.oracle_id())?.price,
         new_order.bit_flags,
         None,
         None,
@@ -597,9 +575,7 @@ pub fn check_prospective_order_margin(
     update_open_bids_and_asks: bool,
     risk_increasing: bool,
     isolated_market_index: Option<u16>,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
 ) -> VelocityResult<()> {
     increase_open_bids_and_asks(
         &mut user.perp_positions[position_index],
@@ -611,14 +587,8 @@ pub fn check_prospective_order_margin(
     // counts the prospective one too.
     let open_orders_before = user.perp_positions[position_index].open_orders;
     user.perp_positions[position_index].open_orders = open_orders_before.saturating_add(1);
-    let checked = meets_place_order_margin_requirement(
-        user,
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
-        risk_increasing,
-        isolated_market_index,
-    );
+    let checked =
+        meets_place_order_margin_requirement(user, maps, risk_increasing, isolated_market_index);
     user.perp_positions[position_index].open_orders = open_orders_before;
     decrease_open_bids_and_asks(
         &mut user.perp_positions[position_index],
@@ -652,9 +622,7 @@ pub fn create_ephemeral_perp_order(
     state: &State,
     user: &mut User,
     user_key: Pubkey,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
     clock: &Clock,
     params: OrderParams,
     mut options: PlaceOrderOptions,
@@ -664,13 +632,7 @@ pub fn create_ephemeral_perp_order(
     let slot: u64 = clock.slot;
 
     if !options.is_liquidation() {
-        validate_user_not_being_liquidated(
-            user,
-            perp_market_map,
-            spot_market_map,
-            oracle_map,
-            state.liquidation_margin_buffer_ratio,
-        )?;
+        validate_user_not_being_liquidated(user, maps, state.liquidation_margin_buffer_ratio)?;
     }
 
     validate!(!user.is_bankrupt(), ErrorCode::UserBankrupt)?;
@@ -685,17 +647,8 @@ pub fn create_ephemeral_perp_order(
 
     let market_index = params.market_index;
 
-    let Some(built) = build_perp_order(
-        state,
-        user,
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
-        clock,
-        params,
-        &options,
-        rev_share_order,
-    )?
+    let Some(built) =
+        build_perp_order(state, user, maps, clock, params, &options, rev_share_order)?
     else {
         return Ok(None);
     };
@@ -727,9 +680,7 @@ pub fn create_ephemeral_perp_order(
             order.update_open_bids_and_asks(),
             options.risk_increasing,
             isolated_market_index,
-            perp_market_map,
-            spot_market_map,
-            oracle_map,
+            maps,
         )?;
     }
 
@@ -740,7 +691,7 @@ pub fn create_ephemeral_perp_order(
         )?;
     }
 
-    let market = &perp_market_map.get_ref(&market_index)?;
+    let market = &maps.perp_market_map.get_ref(&market_index)?;
     let max_oi = market.max_open_interest;
     if max_oi != 0 && risk_increasing {
         let oi_plus_order = match order.direction {
@@ -786,7 +737,7 @@ pub fn create_ephemeral_perp_order(
             taker_order,
             maker,
             maker_order,
-            oracle_map.get_price_data(&market.oracle_id())?.price,
+            maps.oracle_map.get_price_data(&market.oracle_id())?.price,
             order.bit_flags,
             None,
             None,
@@ -880,9 +831,7 @@ pub fn cancel_orders(
     user: &mut User,
     user_key: &Pubkey,
     filler_key: Option<&Pubkey>,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
     now: i64,
     slot: u64,
     explanation: OrderActionExplanation,
@@ -935,9 +884,7 @@ pub fn cancel_orders(
             order_index,
             user,
             user_key,
-            perp_market_map,
-            spot_market_map,
-            oracle_map,
+            maps,
             now,
             slot,
             explanation,
@@ -955,9 +902,7 @@ pub fn cancel_orders(
 pub fn cancel_order_by_order_id(
     order_id: u32,
     user: &AccountLoader<User>,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
     clock: &Clock,
 ) -> VelocityResult {
     let user_key = user.key();
@@ -974,9 +919,7 @@ pub fn cancel_order_by_order_id(
         order_index,
         user,
         &user_key,
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
         clock.unix_timestamp,
         clock.slot,
         OrderActionExplanation::None,
@@ -993,9 +936,7 @@ pub fn cancel_order_by_order_id(
 pub fn cancel_order_by_user_order_id(
     user_order_id: u8,
     user: &AccountLoader<User>,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
     clock: &Clock,
 ) -> VelocityResult {
     let user_key = user.key();
@@ -1016,9 +957,7 @@ pub fn cancel_order_by_user_order_id(
         order_index,
         user,
         &user_key,
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
         clock.unix_timestamp,
         clock.slot,
         OrderActionExplanation::None,
@@ -1036,9 +975,7 @@ pub fn cancel_order(
     order_index: usize,
     user: &mut User,
     user_key: &Pubkey,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
     now: i64,
     _slot: u64,
     explanation: OrderActionExplanation,
@@ -1070,9 +1007,13 @@ pub fn cancel_order(
     )?;
 
     let oracle_id = if is_perp_order {
-        perp_market_map.get_ref(&order_market_index)?.oracle_id()
+        maps.perp_market_map
+            .get_ref(&order_market_index)?
+            .oracle_id()
     } else {
-        spot_market_map.get_ref(&order_market_index)?.oracle_id()
+        maps.spot_market_map
+            .get_ref(&order_market_index)?
+            .oracle_id()
     };
 
     if !skip_log {
@@ -1106,7 +1047,7 @@ pub fn cancel_order(
             taker_order,
             maker,
             maker_order,
-            oracle_map.get_price_data(&oracle_id)?.price,
+            maps.oracle_map.get_price_data(&oracle_id)?.price,
             bit_flags,
             None,
             None,
@@ -1181,9 +1122,7 @@ pub fn modify_order(
     modify_order_params: ModifyOrderParams,
     user_loader: &AccountLoader<User>,
     state: &State,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
     clock: &Clock,
 ) -> VelocityResult {
     let user_key = user_loader.key();
@@ -1234,9 +1173,7 @@ pub fn modify_order(
         order_index,
         &mut user,
         &user_key,
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
         clock.unix_timestamp,
         clock.slot,
         OrderActionExplanation::None,
@@ -1257,9 +1194,7 @@ pub fn modify_order(
             state,
             &mut user,
             user_key,
-            perp_market_map,
-            spot_market_map,
-            oracle_map,
+            maps,
             clock,
             order_params,
             PlaceOrderOptions::default(),
@@ -1376,9 +1311,7 @@ pub fn fill_perp_order(
     state: &State,
     user: &AccountLoader<User>,
     user_stats: &AccountLoader<UserStats>,
-    spot_market_map: &SpotMarketMap,
-    perp_market_map: &PerpMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
     filler: &AccountLoader<User>,
     filler_stats: &AccountLoader<UserStats>,
     makers_and_referrer: &UserMap,
@@ -1402,9 +1335,7 @@ pub fn fill_perp_order(
         state,
         user,
         user_stats,
-        spot_market_map,
-        perp_market_map,
-        oracle_map,
+        maps,
         filler,
         filler_stats,
         makers_and_referrer,
@@ -1449,9 +1380,7 @@ pub fn fill_perp_order_with_router(
     state: &State,
     user: &AccountLoader<User>,
     user_stats: &AccountLoader<UserStats>,
-    spot_market_map: &SpotMarketMap,
-    perp_market_map: &PerpMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
     filler: &AccountLoader<User>,
     filler_stats: &AccountLoader<UserStats>,
     makers_and_referrer: &UserMap,
@@ -1504,7 +1433,7 @@ pub fn fill_perp_order_with_router(
     )?;
 
     // settle lp position so its tradeable
-    let mut market = perp_market_map.get_ref_mut(&market_index)?;
+    let mut market = maps.perp_market_map.get_ref_mut(&market_index)?;
     settle_funding_payment(user, &user_key, &mut market, now)?;
 
     validate!(
@@ -1559,13 +1488,8 @@ pub fn fill_perp_order_with_router(
     }
 
     if !fill_mode.is_liquidation() {
-        match validate_user_not_being_liquidated(
-            user,
-            perp_market_map,
-            spot_market_map,
-            oracle_map,
-            state.liquidation_margin_buffer_ratio,
-        ) {
+        match validate_user_not_being_liquidated(user, maps, state.liquidation_margin_buffer_ratio)
+        {
             Ok(_) => {}
             Err(_) => {
                 msg!("user is being liquidated");
@@ -1607,7 +1531,7 @@ pub fn fill_perp_order_with_router(
     let amm_not_globally_paused: bool = !state.amm_paused()?;
     let mut amm_is_available: bool = amm_not_globally_paused;
     {
-        let market = &mut perp_market_map.get_ref_mut(&market_index)?;
+        let market = &mut maps.perp_market_map.get_ref_mut(&market_index)?;
         validation::perp_market::validate_perp_market(market)?;
         validate!(
             !market.is_in_settlement(now),
@@ -1615,7 +1539,7 @@ pub fn fill_perp_order_with_router(
             "Market is in settlement mode",
         )?;
 
-        let oracle_price_data = *oracle_map.get_price_data(&market.oracle_id())?;
+        let oracle_price_data = *maps.oracle_map.get_price_data(&market.oracle_id())?;
         // The exchange oracle's own validity, which only this path reads: a
         // DLOB maker match is gated on the raw feed as well as the safe one.
         exchange_oracle_validity = oracle_validity(
@@ -1744,9 +1668,7 @@ pub fn fill_perp_order_with_router(
     };
 
     let mut maker_orders_info = get_maker_orders_info(
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
         makers_and_referrer,
         &user_key,
         &order,
@@ -1812,12 +1734,14 @@ pub fn fill_perp_order_with_router(
     let should_cancel_reduce_only = should_cancel_reduce_only_order(
         &order,
         existing_base_asset_amount,
-        perp_market_map.get_ref_mut(&market_index)?.order_step_size,
+        maps.perp_market_map
+            .get_ref_mut(&market_index)?
+            .order_step_size,
     )?;
 
     if should_expire_order || should_cancel_reduce_only {
         let filler_reward = {
-            let mut market = perp_market_map.get_ref_mut(&market_index)?;
+            let mut market = maps.perp_market_map.get_ref_mut(&market_index)?;
             pay_keeper_flat_reward_for_perps(
                 user,
                 filler.as_deref_mut(),
@@ -1839,9 +1763,7 @@ pub fn fill_perp_order_with_router(
             order_index.safe_unwrap()?,
             user,
             &user_key,
-            perp_market_map,
-            spot_market_map,
-            oracle_map,
+            maps,
             now,
             slot,
             explanation,
@@ -1874,9 +1796,7 @@ pub fn fill_perp_order_with_router(
                 key: filler_key,
                 rev_share_escrow,
             },
-            spot_market_map,
-            perp_market_map,
-            oracle_map,
+            maps,
             &state.oracle_guard_rails.validity,
             &state.perp_fee_structure,
             valid_oracle_price,
@@ -1907,7 +1827,7 @@ pub fn fill_perp_order_with_router(
         let fill_price =
             calculate_fill_price(quote_asset_amount, base_asset_amount, BASE_PRECISION_U64)?;
 
-        let mut perp_market = perp_market_map.get_ref_mut(&market_index)?;
+        let mut perp_market = maps.perp_market_map.get_ref_mut(&market_index)?;
         validate_fill_price_within_price_bands(
             fill_price,
             oracle_price,
@@ -1926,12 +1846,14 @@ pub fn fill_perp_order_with_router(
     let should_cancel_reduce_only = should_cancel_reduce_only_order(
         &order,
         base_asset_amount_after,
-        perp_market_map.get_ref_mut(&market_index)?.order_step_size,
+        maps.perp_market_map
+            .get_ref_mut(&market_index)?
+            .order_step_size,
     )?;
 
     if should_cancel_reduce_only {
         let filler_reward = {
-            let mut market = perp_market_map.get_ref_mut(&market_index)?;
+            let mut market = maps.perp_market_map.get_ref_mut(&market_index)?;
             pay_keeper_flat_reward_for_perps(
                 user,
                 filler.as_deref_mut(),
@@ -1947,9 +1869,7 @@ pub fn fill_perp_order_with_router(
             order_index.safe_unwrap()?,
             user,
             &user_key,
-            perp_market_map,
-            spot_market_map,
-            oracle_map,
+            maps,
             now,
             slot,
             explanation,
@@ -1967,9 +1887,7 @@ pub fn fill_perp_order_with_router(
             user,
             &user_key,
             Some(&filler_key),
-            perp_market_map,
-            spot_market_map,
-            oracle_map,
+            maps,
             now,
             slot,
             market_index,
@@ -1981,7 +1899,7 @@ pub fn fill_perp_order_with_router(
     }
 
     {
-        let market = perp_market_map.get_ref(&market_index)?;
+        let market = maps.perp_market_map.get_ref(&market_index)?;
 
         let open_interest = market.get_open_interest();
         let max_open_interest = market.max_open_interest;
@@ -1997,7 +1915,7 @@ pub fn fill_perp_order_with_router(
 
     // Try to update the funding rate at the end of every trade
     {
-        let market = &mut perp_market_map.get_ref_mut(&market_index)?;
+        let market = &mut maps.perp_market_map.get_ref_mut(&market_index)?;
         let funding_paused =
             state.funding_paused()? || market.is_operation_paused(PerpOperation::UpdateFunding);
 
@@ -2011,7 +1929,7 @@ pub fn fill_perp_order_with_router(
         controller::funding::update_funding_rate(
             market_index,
             market,
-            oracle_map,
+            &mut maps.oracle_map,
             now,
             slot,
             &state.oracle_guard_rails,
@@ -2117,9 +2035,7 @@ impl MakerOrderInfo {
 }
 
 fn get_maker_orders_info(
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
     makers_and_referrer: &UserMap,
     taker_key: &Pubkey,
     taker_order: &Order,
@@ -2153,7 +2069,9 @@ fn get_maker_orders_info(
             continue;
         }
 
-        let mut market = perp_market_map.get_ref_mut(&taker_order.market_index)?;
+        let mut market = maps
+            .perp_market_map
+            .get_ref_mut(&taker_order.market_index)?;
         let maker_order_price_and_indexes = find_maker_orders(
             &maker,
             &maker_direction,
@@ -2162,7 +2080,7 @@ fn get_maker_orders_info(
             Some(oracle_price),
             slot,
             market.order_tick_size,
-            oracle_map.slot_clock,
+            maps.oracle_map.slot_clock,
         )?;
 
         if maker_order_price_and_indexes.is_empty() {
@@ -2196,12 +2114,7 @@ fn get_maker_orders_info(
         let maker_can_match =
             can_floored_user_match_with_exchange_oracle(&maker, exchange_match_fills_allowed);
         let maker_floor_unverifiable = if maker_can_match {
-            match calculate_net_equity_for_floor(
-                &maker,
-                perp_market_map,
-                spot_market_map,
-                oracle_map,
-            )? {
+            match calculate_net_equity_for_floor(&maker, maps)? {
                 Some(net_equity) => !net_equity.all_oracles_valid,
                 None => false,
             }
@@ -2225,7 +2138,7 @@ fn get_maker_orders_info(
             let maker_order_price = *maker_order_price;
 
             let maker_order = &maker.orders[maker_order_index];
-            if !is_maker_for_taker(maker_order, taker_order, slot, oracle_map.slot_clock)? {
+            if !is_maker_for_taker(maker_order, taker_order, slot, maps.oracle_map.slot_clock)? {
                 continue;
             }
 
@@ -2262,7 +2175,8 @@ fn get_maker_orders_info(
                 || should_cancel_reduce_only_order
             {
                 let filler_reward = {
-                    let mut market = perp_market_map
+                    let mut market = maps
+                        .perp_market_map
                         .get_ref_mut(&maker.orders[maker_order_index].market_index)?;
                     pay_keeper_flat_reward_for_perps(
                         &mut maker,
@@ -2285,9 +2199,7 @@ fn get_maker_orders_info(
                     maker_order_index,
                     maker.deref_mut(),
                     maker_key,
-                    perp_market_map,
-                    spot_market_map,
-                    oracle_map,
+                    maps,
                     now,
                     slot,
                     explanation,
@@ -2513,9 +2425,7 @@ fn fulfill_perp_order(
     makers_and_referrer_stats: &UserStatsMap,
     maker_orders_info: &[MakerOrderInfo],
     filler: &mut FillerSide,
-    spot_market_map: &SpotMarketMap,
-    perp_market_map: &PerpMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
     validity_guard_rails: &ValidityGuardRails,
     fee_structure: &FeeStructure,
     valid_oracle_price: Option<i64>,
@@ -2559,12 +2469,7 @@ fn fulfill_perp_order(
     // fillable; `user_order_position_decreasing` decides both. A liquidation
     // fill skips the gate, so it must skip this precheck too.
     if user.equity_floor > 0 && !fill_mode.is_liquidation() && !user_order_position_decreasing {
-        let taker_floor_unverifiable = match calculate_net_equity_for_floor(
-            user,
-            perp_market_map,
-            spot_market_map,
-            oracle_map,
-        )? {
+        let taker_floor_unverifiable = match calculate_net_equity_for_floor(user, maps)? {
             Some(net_equity) => !net_equity.all_oracles_valid,
             None => false,
         };
@@ -2628,9 +2533,7 @@ fn fulfill_perp_order(
 
         let calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
             user,
-            perp_market_map,
-            spot_market_map,
-            oracle_map,
+            maps,
             MarginContext::standard_with_config(margin_type_config)
                 .strict(true)
                 .ignore_invalid_deposit_oracles(true),
@@ -2639,13 +2542,13 @@ fn fulfill_perp_order(
         calculation.meets_margin_requirement() && calculation.all_liability_oracles_valid
     };
 
-    let perp_market = perp_market_map.get_ref(&market_index)?;
+    let perp_market = maps.perp_market_map.get_ref(&market_index)?;
     let limit_price = fill_mode.get_limit_price(
         user_order,
         valid_oracle_price,
         slot,
         perp_market.order_tick_size,
-        oracle_map.slot_clock,
+        maps.oracle_map.slot_clock,
     )?;
     let perp_market_oi_before = perp_market.get_open_interest();
     drop(perp_market);
@@ -2660,9 +2563,7 @@ fn fulfill_perp_order(
         makers_and_referrer_stats,
         maker_orders_info,
         filler,
-        spot_market_map,
-        perp_market_map,
-        oracle_map,
+        maps,
         validity_guard_rails,
         &FillPolicy {
             fee_structure,
@@ -2685,9 +2586,7 @@ fn fulfill_perp_order(
         user_stats,
         makers_and_referrer,
         makers_and_referrer_stats,
-        spot_market_map,
-        perp_market_map,
-        oracle_map,
+        maps,
         market_index,
         base_asset_amount,
         quote_asset_amount,
@@ -2711,9 +2610,7 @@ fn fulfill_perp_order_post_checks(
     user_stats: &mut UserStats,
     makers_and_referrer: &UserMap,
     makers_and_referrer_stats: &UserStatsMap,
-    spot_market_map: &SpotMarketMap,
-    perp_market_map: &PerpMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
     market_index: u16,
     base_asset_amount: u64,
     quote_asset_amount: u64,
@@ -2785,11 +2682,7 @@ fn fulfill_perp_order_post_checks(
 
         let taker_margin_calculation =
             calculate_margin_requirement_and_total_collateral_and_liability_info(
-                user,
-                perp_market_map,
-                spot_market_map,
-                oracle_map,
-                context,
+                user, maps, context,
             )?;
 
         if !taker_margin_calculation.meets_margin_requirement() {
@@ -2850,7 +2743,7 @@ fn fulfill_perp_order_post_checks(
         // The crank is permissionless and can be bundled into the same transaction.
         crate::math::margin::validate_spot_borrow_interest_fresh_for_margin(
             user,
-            spot_market_map,
+            &maps.spot_market_map,
             now,
         )?;
 
@@ -2864,22 +2757,14 @@ fn fulfill_perp_order_post_checks(
             // A risk-increasing fill must prove the taker clears its buffered
             // floor: an invalid oracle cannot price the taker up through the
             // floor and buy the fill.
-            if let Some(taker_net_equity) =
-                calculate_net_equity_for_floor(user, perp_market_map, spot_market_map, oracle_map)?
-            {
+            if let Some(taker_net_equity) = calculate_net_equity_for_floor(user, maps)? {
                 taker_net_equity.validate_clears_buffered_floor(user)?;
             }
         } else {
             // A reducing fill is exempt from the buffered-floor gate and may
             // legally leave the subaccount below its raw floor; arm the
             // breaker inline instead of waiting for the permissionless trip.
-            controller::equity_floor::try_lazy_equity_breaker_trip(
-                user,
-                user_stats,
-                perp_market_map,
-                spot_market_map,
-                oracle_map,
-            )?;
+            controller::equity_floor::try_lazy_equity_breaker_trip(user, user_stats, maps)?;
         }
     }
 
@@ -2935,11 +2820,7 @@ fn fulfill_perp_order_post_checks(
 
         let maker_margin_calculation =
             calculate_margin_requirement_and_total_collateral_and_liability_info(
-                &maker,
-                perp_market_map,
-                spot_market_map,
-                oracle_map,
-                context,
+                &maker, maps, context,
             )?;
 
         if !maker_margin_calculation.meets_margin_requirement() {
@@ -2986,7 +2867,7 @@ fn fulfill_perp_order_post_checks(
 
             crate::math::margin::validate_spot_borrow_interest_fresh_for_margin(
                 &maker,
-                spot_market_map,
+                &maps.spot_market_map,
                 now,
             )?;
         }
@@ -3007,12 +2888,7 @@ fn fulfill_perp_order_post_checks(
             // its oracles is invalid. What reverts here is a genuine value
             // breach (or a fill that flipped a reducing order into new
             // risk).
-            if let Some(maker_net_equity) = calculate_net_equity_for_floor(
-                &maker,
-                perp_market_map,
-                spot_market_map,
-                oracle_map,
-            )? {
+            if let Some(maker_net_equity) = calculate_net_equity_for_floor(&maker, maps)? {
                 maker_net_equity.validate_clears_buffered_floor(&maker)?;
             }
         } else if maker.equity_floor > 0 {
@@ -3021,21 +2897,13 @@ fn fulfill_perp_order_post_checks(
             // the breaker inline instead of waiting for the permissionless
             // trip.
             if maker.authority == user.authority {
-                controller::equity_floor::try_lazy_equity_breaker_trip(
-                    &maker,
-                    user_stats,
-                    perp_market_map,
-                    spot_market_map,
-                    oracle_map,
-                )?;
+                controller::equity_floor::try_lazy_equity_breaker_trip(&maker, user_stats, maps)?;
             } else {
                 let mut maker_stats = makers_and_referrer_stats.get_ref_mut(&maker.authority)?;
                 controller::equity_floor::try_lazy_equity_breaker_trip(
                     &maker,
                     &mut maker_stats,
-                    perp_market_map,
-                    spot_market_map,
-                    oracle_map,
+                    maps,
                 )?;
             }
         }
@@ -3053,7 +2921,10 @@ fn fulfill_perp_order_post_checks(
     }
 
     if oracle_stale_for_margin {
-        let perp_market_oi_after = perp_market_map.get_ref(&market_index)?.get_open_interest();
+        let perp_market_oi_after = maps
+            .perp_market_map
+            .get_ref(&market_index)?
+            .get_open_interest();
         validate!(
             perp_market_oi_after <= perp_market_oi_before,
             ErrorCode::InvalidOracle,
@@ -4345,9 +4216,7 @@ fn fulfill_perp_order_router_pass(
     makers_and_referrer_stats: &UserStatsMap,
     maker_orders_info: &[MakerOrderInfo],
     filler: &mut FillerSide,
-    spot_market_map: &SpotMarketMap,
-    perp_market_map: &PerpMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
     validity_guard_rails: &ValidityGuardRails,
     policy: &FillPolicy,
     taker_limit_price: Option<u64>,
@@ -4475,12 +4344,12 @@ fn fulfill_perp_order_router_pass(
     // Runs before this market's `RefMut` is taken, because the margin walk
     // values every market the quoted user touches.
     let (band_oracle_price, market_margin_ratio_initial) = {
-        let market = perp_market_map.get_ref(&market_index)?;
+        let market = maps.perp_market_map.get_ref(&market_index)?;
         let oracle_id = market.oracle_id();
         let margin_ratio_initial = market.margin_ratio_initial;
         drop(market);
         (
-            oracle_map.get_price_data(&oracle_id)?.price,
+            maps.oracle_map.get_price_data(&oracle_id)?.price,
             margin_ratio_initial,
         )
     };
@@ -4505,9 +4374,7 @@ fn fulfill_perp_order_router_pass(
                         position_index,
                         market_index,
                         maker_direction,
-                        perp_market_map,
-                        spot_market_map,
-                        oracle_map,
+                        maps,
                     )?
                 }
                 QuoterType::Clob | QuoterType::Vamm => return Ok(None),
@@ -4558,17 +4425,17 @@ fn fulfill_perp_order_router_pass(
             .unwrap_or(external_books[i].levels)
     };
 
-    let mut market = perp_market_map.get_ref_mut(&market_index)?;
+    let mut market = maps.perp_market_map.get_ref_mut(&market_index)?;
 
     // ---- Oracle context + AMM refresh (shared with the quote view). ----
-    let oracle_pd = *oracle_map.get_price_data(&market.oracle_id())?;
+    let oracle_pd = *maps.oracle_map.get_price_data(&market.oracle_id())?;
     let oracle_price = oracle_pd.price;
     let quote_inputs = QuoteInputs::load(
         &market,
         oracle_pd,
         slot,
         validity_guard_rails,
-        oracle_map.slot_clock,
+        maps.oracle_map.slot_clock,
     )?;
     let sanitize_clamp_denom = quote_inputs.sanitize_clamp_denominator;
     let order_tick_size = quote_inputs.tick_size;
@@ -4793,7 +4660,7 @@ fn fulfill_perp_order_router_pass(
         tick: order_tick_size,
         step_size: order_step_size,
         slot,
-        slot_clock: oracle_map.slot_clock,
+        slot_clock: maps.oracle_map.slot_clock,
         base_precision: BASE_PRECISION_U64,
         market_status: MarketStatus::default(),
         market_config: 0,
@@ -4872,7 +4739,7 @@ fn fulfill_perp_order_router_pass(
             oracle_price,
             filler,
             policy,
-            oracle_map,
+            &mut maps.oracle_map,
             now,
             slot,
             taker_reserved,
@@ -4937,7 +4804,7 @@ fn fulfill_perp_order_router_pass(
             &mut cranking_maker_stats_opt,
             filler,
             policy,
-            oracle_map,
+            &mut maps.oracle_map,
             now,
             slot,
             vamm_maker_rebate,
@@ -5124,7 +4991,7 @@ fn fulfill_perp_order_router_pass(
                 oracle_price,
                 filler,
                 policy,
-                oracle_map,
+                &mut maps.oracle_map,
                 now,
                 slot,
                 taker_reserved,
@@ -5387,9 +5254,7 @@ fn cancel_reduce_only_trigger_orders(
     user: &mut User,
     user_key: &Pubkey,
     filler_key: Option<&Pubkey>,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
     now: i64,
     slot: u64,
     perp_market_index: u16,
@@ -5419,9 +5284,7 @@ fn cancel_reduce_only_trigger_orders(
             order_index,
             user,
             user_key,
-            perp_market_map,
-            spot_market_map,
-            oracle_map,
+            maps,
             now,
             slot,
             OrderActionExplanation::ReduceOnlyOrderIncreasedPosition,
@@ -5603,9 +5466,7 @@ pub fn cross_match(
     makers_and_referrer: &UserMap,
     makers_and_referrer_stats: &UserStatsMap,
     executor: &mut dyn crate::state::prop_amm::ExternalQuoterExecutor,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
     clock: &Clock,
     // Floor on the protocol's quote surplus, from the market's crank
     // conditions. A cross the protocol nets less than this on is not worth
@@ -5627,8 +5488,8 @@ pub fn cross_match(
         stale_for_margin: oracle_stale_for_margin,
         open_interest: perp_market_oi_before,
     } = {
-        let market = &mut perp_market_map.get_ref_mut(&market_index)?;
-        crank_oracle_preflight(market, state, oracle_map, clock, "cross match")?
+        let market = &mut maps.perp_market_map.get_ref_mut(&market_index)?;
+        crank_oracle_preflight(market, state, &mut maps.oracle_map, clock, "cross match")?
     };
 
     // Settle funding for everyone the legs can touch BEFORE any position
@@ -5637,7 +5498,7 @@ pub fn cross_match(
     // market's, and a maker who last traded before a funding update fails
     // that invariant otherwise.
     {
-        let mut market = perp_market_map.get_ref_mut(&market_index)?;
+        let mut market = maps.perp_market_map.get_ref_mut(&market_index)?;
         for (maker_key, maker_loader) in makers_and_referrer.0.iter() {
             let mut maker = load_mut!(maker_loader)?;
             if maker.get_perp_position(market_index).is_ok() {
@@ -5649,7 +5510,7 @@ pub fn cross_match(
     let taker = &mut load_mut!(taker_loader)?;
     let mut taker_stats = load_mut!(taker_stats_loader)?;
     {
-        let mut market = perp_market_map.get_ref_mut(&market_index)?;
+        let mut market = maps.perp_market_map.get_ref_mut(&market_index)?;
         settle_funding_payment(taker, &taker_key, &mut market, now)?;
     }
     let taker_ref = taker.clob_user_ref();
@@ -5720,9 +5581,7 @@ pub fn cross_match(
             taker,
             &mut taker_stats,
             executor,
-            perp_market_map,
-            spot_market_map,
-            oracle_map,
+            maps,
             &mut maker_fills,
             &mut filler_reward_paid,
         )?;
@@ -5750,9 +5609,7 @@ pub fn cross_match(
         &mut taker_stats,
         makers_and_referrer,
         makers_and_referrer_stats,
-        spot_market_map,
-        perp_market_map,
-        oracle_map,
+        maps,
         market_index,
         base_matched,
         leg_totals[0].quote_filled,
@@ -5858,9 +5715,7 @@ fn clamp_custom_quoter_cross_leg(
     ctx: &CrossContext,
     leg: &CrossLeg,
     executor: &dyn crate::state::prop_amm::ExternalQuoterExecutor,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
 ) -> VelocityResult<()> {
     if executor.quoter_type(leg.book_index) != crate::state::prop_amm::QuoterType::Custom {
         return Ok(());
@@ -5883,9 +5738,7 @@ fn clamp_custom_quoter_cross_leg(
         position_index,
         ctx.market_index,
         maker_direction,
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
     )?;
     validate!(
         cap >= leg.leg_size,
@@ -5913,9 +5766,7 @@ fn settle_cross_leg(
     taker: &mut User,
     taker_stats: &mut UserStats,
     executor: &mut dyn crate::state::prop_amm::ExternalQuoterExecutor,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
     maker_fills: &mut BTreeMap<Pubkey, (i64, bool)>,
     filler_reward_paid: &mut u64,
 ) -> VelocityResult<CrossLegFill> {
@@ -5933,14 +5784,7 @@ fn settle_cross_leg(
             })
     };
 
-    clamp_custom_quoter_cross_leg(
-        ctx,
-        leg,
-        executor,
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
-    )?;
+    clamp_custom_quoter_cross_leg(ctx, leg, executor, maps)?;
 
     // The leg's ephemeral order (settlement reads direction + slot + id).
     // A local, not an `orders` slot: the settlement takes the order
@@ -5984,7 +5828,7 @@ fn settle_cross_leg(
     let mut no_escrow: Option<&mut RevenueShareEscrowZeroCopyMut> = None;
 
     let mut leg_total = CrossLegFill::default();
-    let mut market = perp_market_map.get_ref_mut(&ctx.market_index)?;
+    let mut market = maps.perp_market_map.get_ref_mut(&ctx.market_index)?;
     for (change_index, change) in response.changes.iter().enumerate() {
         if change.base_size == 0 {
             continue;
@@ -6080,7 +5924,7 @@ fn settle_cross_leg(
                 // escrow, so there is no builder fee to allow.
                 builder_fee_allowed: false,
             },
-            oracle_map,
+            &mut maps.oracle_map,
             ctx.now,
             ctx.slot,
             // The ephemeral taker never reserved, so nothing to unwind.
@@ -6435,9 +6279,7 @@ pub fn trigger_order(
     state: &State,
     user: &AccountLoader<User>,
     user_stats: &AccountLoader<UserStats>,
-    spot_market_map: &SpotMarketMap,
-    perp_market_map: &PerpMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
     filler: &AccountLoader<User>,
     clock: &Clock,
     // Returns whether the trigger did payable work: `true` when it triggered
@@ -6496,17 +6338,11 @@ pub fn trigger_order(
         "Order must be a perp order"
     )?;
 
-    validate_user_not_being_liquidated(
-        user,
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
-        state.liquidation_margin_buffer_ratio,
-    )?;
+    validate_user_not_being_liquidated(user, maps, state.liquidation_margin_buffer_ratio)?;
 
     validate!(!user.is_bankrupt(), ErrorCode::UserBankrupt)?;
 
-    let perp_market = perp_market_map.get_ref_mut(&market_index)?;
+    let perp_market = maps.perp_market_map.get_ref_mut(&market_index)?;
 
     // Triggering starts the order's auction (and pays the keeper reward), so it
     // is part of the fill lifecycle: respect the market-scoped fill pause the
@@ -6531,7 +6367,7 @@ pub fn trigger_order(
         "Market is in settlement mode",
     )?;
 
-    let (oracle_price_data, oracle_validity) = oracle_map.get_price_data_and_validity(
+    let (oracle_price_data, oracle_validity) = maps.oracle_map.get_price_data_and_validity(
         MarketType::Perp,
         perp_market.market_index,
         &perp_market.oracle_id(),
@@ -6644,14 +6480,11 @@ pub fn trigger_order(
     if is_risk_increasing && !user.orders[order_index].reduce_only {
         let margin_calc = calculate_margin_requirement_and_total_collateral_and_liability_info(
             user,
-            perp_market_map,
-            spot_market_map,
-            oracle_map,
+            maps,
             MarginContext::standard(MarginRequirementType::Initial),
         )?;
 
-        let net_equity =
-            calculate_net_equity_for_floor(user, perp_market_map, spot_market_map, oracle_map)?;
+        let net_equity = calculate_net_equity_for_floor(user, maps)?;
 
         // An unverifiable floor rejects the trigger instead of cancelling:
         // a cancel is irreversible, so an oracle blip must not destroy a
@@ -6681,9 +6514,7 @@ pub fn trigger_order(
                 order_index,
                 user,
                 &user_key,
-                perp_market_map,
-                spot_market_map,
-                oracle_map,
+                maps,
                 now,
                 slot,
                 OrderActionExplanation::InsufficientFreeCollateral,
@@ -6699,13 +6530,7 @@ pub fn trigger_order(
             // doubles as the trip.
             drop(user_stats);
             let mut user_stats = load_mut!(user_stats_loader)?;
-            controller::equity_floor::try_lazy_equity_breaker_trip(
-                user,
-                &mut user_stats,
-                perp_market_map,
-                spot_market_map,
-                oracle_map,
-            )?;
+            controller::equity_floor::try_lazy_equity_breaker_trip(user, &mut user_stats, maps)?;
 
             // The cancel did no payable trigger work — the user paid no flat
             // reward here, so the crank must not draw the reservoir either.
@@ -6720,7 +6545,7 @@ pub fn trigger_order(
         None
     };
 
-    let mut perp_market = perp_market_map.get_ref_mut(&market_index)?;
+    let mut perp_market = maps.perp_market_map.get_ref_mut(&market_index)?;
 
     let filler_reward = pay_keeper_flat_reward_for_perps(
         user,
@@ -6790,9 +6615,7 @@ pub fn trigger_and_route_order(
     state: &State,
     user: &AccountLoader<User>,
     user_stats: &AccountLoader<UserStats>,
-    spot_market_map: &SpotMarketMap,
-    perp_market_map: &PerpMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
     filler: &AccountLoader<User>,
     clock: &Clock,
 ) -> VelocityResult<Option<Order>> {
@@ -6843,20 +6666,14 @@ pub fn trigger_and_route_order(
         "Order must be a perp order"
     )?;
 
-    validate_user_not_being_liquidated(
-        user,
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
-        state.liquidation_margin_buffer_ratio,
-    )?;
+    validate_user_not_being_liquidated(user, maps, state.liquidation_margin_buffer_ratio)?;
     validate!(!user.is_bankrupt(), ErrorCode::UserBankrupt)?;
 
     // Validate market state and oracle, and price the trigger. The market
     // borrow is dropped before the margin calc, which walks every market
     // itself.
     let (oracle_price_data, oracle_price, trigger_price) = {
-        let perp_market = perp_market_map.get_ref(&market_index)?;
+        let perp_market = maps.perp_market_map.get_ref(&market_index)?;
         validate!(
             !perp_market.is_operation_paused(PerpOperation::Fill),
             ErrorCode::MarketFillOrderPaused,
@@ -6871,7 +6688,7 @@ pub fn trigger_and_route_order(
             "Market is in settlement mode",
         )?;
 
-        let (oracle_price_data, oracle_validity) = oracle_map.get_price_data_and_validity(
+        let (oracle_price_data, oracle_validity) = maps.oracle_map.get_price_data_and_validity(
             MarketType::Perp,
             perp_market.market_index,
             &perp_market.oracle_id(),
@@ -6926,7 +6743,7 @@ pub fn trigger_and_route_order(
     // fill does not rest.
     let mut fired = user.orders[order_index];
     {
-        let perp_market = perp_market_map.get_ref(&market_index)?;
+        let perp_market = maps.perp_market_map.get_ref(&market_index)?;
         update_trigger_order_params(
             &mut fired,
             &oracle_price_data,
@@ -6978,13 +6795,10 @@ pub fn trigger_and_route_order(
     if is_risk_increasing && !fired.reduce_only {
         let margin_calc = calculate_margin_requirement_and_total_collateral_and_liability_info(
             user,
-            perp_market_map,
-            spot_market_map,
-            oracle_map,
+            maps,
             MarginContext::standard(MarginRequirementType::Initial),
         )?;
-        let net_equity =
-            calculate_net_equity_for_floor(user, perp_market_map, spot_market_map, oracle_map)?;
+        let net_equity = calculate_net_equity_for_floor(user, maps)?;
         if let Some(net_equity) = net_equity {
             validate!(
                 net_equity.all_oracles_valid,
@@ -7004,9 +6818,7 @@ pub fn trigger_and_route_order(
                 order_index,
                 user,
                 &user_key,
-                perp_market_map,
-                spot_market_map,
-                oracle_map,
+                maps,
                 now,
                 slot,
                 OrderActionExplanation::InsufficientFreeCollateral,
@@ -7017,13 +6829,7 @@ pub fn trigger_and_route_order(
             user.update_last_active_slot(slot);
             drop(user_stats);
             let mut user_stats = load_mut!(user_stats_loader)?;
-            controller::equity_floor::try_lazy_equity_breaker_trip(
-                user,
-                &mut user_stats,
-                perp_market_map,
-                spot_market_map,
-                oracle_map,
-            )?;
+            controller::equity_floor::try_lazy_equity_breaker_trip(user, &mut user_stats, maps)?;
             return Ok(None);
         }
     }
@@ -7047,7 +6853,7 @@ pub fn trigger_and_route_order(
         None
     };
     let filler_reward = {
-        let mut perp_market = perp_market_map.get_ref_mut(&market_index)?;
+        let mut perp_market = maps.perp_market_map.get_ref_mut(&market_index)?;
         pay_keeper_flat_reward_for_perps(
             user,
             filler.as_deref_mut(),
@@ -7161,9 +6967,7 @@ fn update_trigger_order_params(
 pub fn force_cancel_orders(
     state: &State,
     user_account_loader: &AccountLoader<User>,
-    spot_market_map: &SpotMarketMap,
-    perp_market_map: &PerpMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
     filler: &AccountLoader<User>,
     clock: &Clock,
 ) -> VelocityResult {
@@ -7184,9 +6988,7 @@ pub fn force_cancel_orders(
 
     let margin_calc = calculate_margin_requirement_and_total_collateral_and_liability_info(
         user,
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
         MarginContext::standard(MarginRequirementType::Initial),
     )?;
 
@@ -7196,9 +6998,8 @@ pub fn force_cancel_orders(
     // it, so a bad price cannot manufacture authorization. Under oracle
     // degradation the keeper falls back to the margin arm, which keeps
     // force-cancel available on a margin-breached account.
-    let below_equity_floor =
-        calculate_net_equity_for_floor(user, perp_market_map, spot_market_map, oracle_map)?
-            .is_some_and(|net_equity| net_equity.proves_below_floor(user));
+    let below_equity_floor = calculate_net_equity_for_floor(user, maps)?
+        .is_some_and(|net_equity| net_equity.proves_below_floor(user));
     let meets_initial_margin_requirement = margin_calc.meets_margin_requirement();
 
     validate!(
@@ -7227,7 +7028,7 @@ pub fn force_cancel_orders(
 
         let fee = match market_type {
             MarketType::Spot => {
-                let spot_market = spot_market_map.get_ref(&market_index)?;
+                let spot_market = maps.spot_market_map.get_ref(&market_index)?;
                 let token_amount = user
                     .get_spot_position(market_index)?
                     .get_signed_token_amount(&spot_market)?
@@ -7281,9 +7082,7 @@ pub fn force_cancel_orders(
             order_index,
             user,
             &user_key,
-            perp_market_map,
-            spot_market_map,
-            oracle_map,
+            maps,
             now,
             slot,
             OrderActionExplanation::InsufficientFreeCollateral,
@@ -7296,7 +7095,9 @@ pub fn force_cancel_orders(
     pay_keeper_flat_reward_for_spot(
         user,
         Some(filler),
-        spot_market_map.get_quote_spot_market_mut()?.deref_mut(),
+        maps.spot_market_map
+            .get_quote_spot_market_mut()?
+            .deref_mut(),
         total_fee,
         slot,
     )?;
@@ -7413,9 +7214,7 @@ pub fn pay_keeper_flat_reward_for_spot(
 pub fn expire_orders(
     user: &mut User,
     user_key: &Pubkey,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
     now: i64,
     slot: u64,
 ) -> VelocityResult {
@@ -7428,9 +7227,7 @@ pub fn expire_orders(
             order_index,
             user,
             user_key,
-            perp_market_map,
-            spot_market_map,
-            oracle_map,
+            maps,
             now,
             slot,
             OrderActionExplanation::OrderExpired,
@@ -7500,9 +7297,7 @@ pub fn pay_taker_origin_crank_reward(
     taker_loader: &AccountLoader<User>,
     filler_loader: &AccountLoader<User>,
     filler_stats_loader: &AccountLoader<UserStats>,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
     clock: &Clock,
 ) -> VelocityResult<u64> {
     if fee.crank_reward == 0 {
@@ -7511,7 +7306,7 @@ pub fn pay_taker_origin_crank_reward(
     let paid = {
         let mut taker = load_mut!(taker_loader)?;
         let mut filler = load_mut!(filler_loader)?;
-        let mut market = perp_market_map.get_ref_mut(&market_index)?;
+        let mut market = maps.perp_market_map.get_ref_mut(&market_index)?;
         let paid = pay_keeper_flat_reward_for_perps(
             &mut taker,
             Some(&mut filler),
@@ -7537,15 +7332,10 @@ pub fn pay_taker_origin_crank_reward(
     // The debit lands after the fill's own checks, so this is where the taker
     // is held to maintenance margin for it.
     let taker = load!(taker_loader)?;
-    crate::math::margin::meets_maintenance_margin_requirement(
-        &taker,
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
-    )?
-    .then_some(paid)
-    .ok_or_else(|| {
-        msg!("crank reward would leave the taker below maintenance margin");
-        ErrorCode::InsufficientCollateral
-    })
+    crate::math::margin::meets_maintenance_margin_requirement(&taker, maps)?
+        .then_some(paid)
+        .ok_or_else(|| {
+            msg!("crank reward would leave the taker below maintenance margin");
+            ErrorCode::InsufficientCollateral
+        })
 }

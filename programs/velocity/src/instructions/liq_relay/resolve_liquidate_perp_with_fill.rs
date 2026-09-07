@@ -29,14 +29,8 @@ use {
             calculate_net_equity_for_floor, MarginRequirementType,
         },
         state::{
-            margin_calculation::MarginContext,
-            oracle_map::OracleMap,
-            perp_market_map::{MarketSet, PerpMarketMap},
-            prop_amm::QuoterSlabExt,
-            spot_market_map::SpotMarketMap,
-            state::State,
-            user::User,
-            user_conditions::UserConditionsV0,
+            margin_calculation::MarginContext, perp_market_map::MarketSet, prop_amm::QuoterSlabExt,
+            state::State, user::User, user_conditions::UserConditionsV0,
         },
         validate,
     },
@@ -72,11 +66,7 @@ pub fn handle_resolve_liquidate_perp_with_fill<'c: 'info, 'info>(
             ErrorCode::DefaultError,
             "resolver needs the stored margin-map accounts"
         )?;
-        let AccountMaps {
-            perp_market_map,
-            spot_market_map,
-            mut oracle_map,
-        } = load_maps(
+        let mut maps = load_maps(
             &mut ctx.remaining_accounts.iter().peekable(),
             &MarketSet::new(),
             &MarketSet::new(),
@@ -85,14 +75,9 @@ pub fn handle_resolve_liquidate_perp_with_fill<'c: 'info, 'info>(
             Some(state.oracle_guard_rails),
         )?;
 
-        let cancel_target = find_cancel_target(
-            &ctx.accounts.user,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
-        )?;
+        let cancel_target = find_cancel_target(&ctx.accounts.user, &mut maps)?;
         if let Some(market_index) = cancel_target {
-            let book = perp_market_map.get_ref(&market_index)?.clob_market;
+            let book = maps.perp_market_map.get_ref(&market_index)?.clob_market;
             if book != Pubkey::default() {
                 return stage_force_cancel(
                     ctx.accounts.state.key(),
@@ -108,9 +93,7 @@ pub fn handle_resolve_liquidate_perp_with_fill<'c: 'info, 'info>(
         // this is liquidatable.
         let liquidatable = is_liquidatable(
             &ctx.accounts.user,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             state.liquidation_margin_buffer_ratio,
         )?;
         if !liquidatable {
@@ -149,21 +132,16 @@ pub fn handle_resolve_liquidate_perp_with_fill<'c: 'info, 'info>(
 /// what acts.
 fn find_cancel_target(
     user_loader: &AccountLoader<'_, User>,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
 ) -> Result<Option<u16>> {
     let user = crate::load!(user_loader)?;
     let initial = calculate_margin_requirement_and_total_collateral_and_liability_info(
         &user,
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
         MarginContext::standard(MarginRequirementType::Initial),
     )?;
-    let below_floor =
-        calculate_net_equity_for_floor(&user, perp_market_map, spot_market_map, oracle_map)?
-            .is_some_and(|net_equity| net_equity.proves_below_floor(&user));
+    let below_floor = calculate_net_equity_for_floor(&user, maps)?
+        .is_some_and(|net_equity| net_equity.proves_below_floor(&user));
     Ok(if initial.meets_margin_requirement() && !below_floor {
         None
     } else {
@@ -240,17 +218,13 @@ fn stage_force_cancel<'info>(
 /// runs.
 fn is_liquidatable(
     user_loader: &AccountLoader<'_, User>,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
     liquidation_margin_buffer_ratio: u32,
 ) -> Result<bool> {
     let user = crate::load!(user_loader)?;
     let calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
         &user,
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
         MarginContext::liquidation(liquidation_margin_buffer_ratio),
     )?;
     Ok(!calculation.meets_margin_requirement())

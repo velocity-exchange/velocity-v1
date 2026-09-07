@@ -6,9 +6,7 @@ use {
         AccountMapProvider, Vault, WithdrawUnit,
     },
     anchor_lang::prelude::*,
-    velocity::{
-        instructions::optional_accounts::AccountMaps, program::Velocity, state::user::User,
-    },
+    velocity::{program::Velocity, state::user::User},
 };
 
 pub fn manager_request_withdraw<'info>(
@@ -34,11 +32,7 @@ pub fn manager_request_withdraw<'info>(
     let user = ctx.accounts.velocity_user.load()?;
     let spot_market_index = vault.spot_market_index;
 
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map,
-        mut oracle_map,
-    } = ctx.load_maps(
+    let mut maps = ctx.load_maps(
         clock.slot,
         Some(spot_market_index),
         vp.is_some(),
@@ -46,11 +40,10 @@ pub fn manager_request_withdraw<'info>(
         &ctx.accounts.velocity_state,
     )?;
 
-    let vault_equity =
-        vault.calculate_equity(&user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
+    let vault_equity = vault.calculate_equity(&user, &mut maps)?;
 
-    let spot_market = spot_market_map.get_ref(&spot_market_index)?;
-    let oracle = oracle_map.get_price_data(&spot_market.oracle_id())?;
+    let spot_market = maps.spot_market_map.get_ref(&spot_market_index)?;
+    let oracle = maps.oracle_map.get_price_data(&spot_market.oracle_id())?;
 
     vault.manager_request_withdraw(
         &mut vp,

@@ -1117,7 +1117,7 @@ mod calculate_max_spot_order_size {
         let mut oracle_map =
             OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
-        let _market_map = PerpMarketMap::empty();
+        let market_map = PerpMarketMap::empty();
 
         let mut usdc_spot_market = SpotMarket {
             market_index: 0,
@@ -1157,6 +1157,11 @@ mod calculate_max_spot_order_size {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -1177,15 +1182,8 @@ mod calculate_max_spot_order_size {
             ..User::default()
         };
 
-        let max_order_size = calculate_max_spot_order_size(
-            &user,
-            1,
-            PositionDirection::Long,
-            &PerpMarketMap::empty(),
-            &spot_market_map,
-            &mut oracle_map,
-        )
-        .unwrap();
+        let max_order_size =
+            calculate_max_spot_order_size(&user, 1, PositionDirection::Long, &mut maps).unwrap();
 
         assert_eq!(max_order_size, 454545000000);
 
@@ -1198,9 +1196,7 @@ mod calculate_max_spot_order_size {
             ..
         } = calculate_margin_requirement_and_total_collateral_and_liability_info(
             &user,
-            &PerpMarketMap::empty(),
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             MarginContext::standard(MarginRequirementType::Initial).strict(true),
         )
         .unwrap();
@@ -1224,7 +1220,7 @@ mod calculate_max_spot_order_size {
         let mut oracle_map =
             OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
-        let _market_map = PerpMarketMap::empty();
+        let market_map = PerpMarketMap::empty();
 
         let mut usdc_spot_market = SpotMarket {
             market_index: 0,
@@ -1264,6 +1260,11 @@ mod calculate_max_spot_order_size {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -1285,15 +1286,8 @@ mod calculate_max_spot_order_size {
             ..User::default()
         };
 
-        let max_order_size = calculate_max_spot_order_size(
-            &user,
-            1,
-            PositionDirection::Long,
-            &PerpMarketMap::empty(),
-            &spot_market_map,
-            &mut oracle_map,
-        )
-        .unwrap();
+        let max_order_size =
+            calculate_max_spot_order_size(&user, 1, PositionDirection::Long, &mut maps).unwrap();
 
         assert_eq!(max_order_size, 1000000000000);
 
@@ -1305,9 +1299,7 @@ mod calculate_max_spot_order_size {
             ..
         } = calculate_margin_requirement_and_total_collateral_and_liability_info(
             &user,
-            &PerpMarketMap::empty(),
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             MarginContext::standard(MarginRequirementType::Initial).strict(true),
         )
         .unwrap();
@@ -1332,7 +1324,7 @@ mod calculate_max_spot_order_size {
         let mut oracle_map =
             OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
-        let _market_map = PerpMarketMap::empty();
+        let market_map = PerpMarketMap::empty();
 
         let mut usdc_spot_market = SpotMarket {
             market_index: 0,
@@ -1372,6 +1364,11 @@ mod calculate_max_spot_order_size {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -1392,15 +1389,8 @@ mod calculate_max_spot_order_size {
             ..User::default()
         };
 
-        let max_order_size = calculate_max_spot_order_size(
-            &user,
-            1,
-            PositionDirection::Short,
-            &PerpMarketMap::empty(),
-            &spot_market_map,
-            &mut oracle_map,
-        )
-        .unwrap();
+        let max_order_size =
+            calculate_max_spot_order_size(&user, 1, PositionDirection::Short, &mut maps).unwrap();
 
         assert_eq!(max_order_size, 454545000000);
 
@@ -1413,9 +1403,7 @@ mod calculate_max_spot_order_size {
             ..
         } = calculate_margin_requirement_and_total_collateral_and_liability_info(
             &user,
-            &PerpMarketMap::empty(),
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             MarginContext::standard(MarginRequirementType::Initial).strict(true),
         )
         .unwrap();
@@ -1439,7 +1427,7 @@ mod calculate_max_spot_order_size {
         let mut oracle_map =
             OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
-        let _market_map = PerpMarketMap::empty();
+        let market_map = PerpMarketMap::empty();
 
         let mut usdc_spot_market = SpotMarket {
             market_index: 0,
@@ -1479,6 +1467,11 @@ mod calculate_max_spot_order_size {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -1500,15 +1493,8 @@ mod calculate_max_spot_order_size {
             ..User::default()
         };
 
-        let max_order_size = calculate_max_spot_order_size(
-            &user,
-            1,
-            PositionDirection::Short,
-            &PerpMarketMap::empty(),
-            &spot_market_map,
-            &mut oracle_map,
-        )
-        .unwrap();
+        let max_order_size =
+            calculate_max_spot_order_size(&user, 1, PositionDirection::Short, &mut maps).unwrap();
 
         assert_eq!(max_order_size, 3227272272726);
     }
@@ -1529,7 +1515,7 @@ mod calculate_max_spot_order_size {
         let mut oracle_map =
             OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
-        let _market_map = PerpMarketMap::empty();
+        let market_map = PerpMarketMap::empty();
 
         let mut usdc_spot_market = SpotMarket {
             market_index: 0,
@@ -1569,6 +1555,11 @@ mod calculate_max_spot_order_size {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -1590,15 +1581,8 @@ mod calculate_max_spot_order_size {
             ..User::default()
         };
 
-        let max_order_size = calculate_max_spot_order_size(
-            &user,
-            1,
-            PositionDirection::Long,
-            &PerpMarketMap::empty(),
-            &spot_market_map,
-            &mut oracle_map,
-        )
-        .unwrap();
+        let max_order_size =
+            calculate_max_spot_order_size(&user, 1, PositionDirection::Long, &mut maps).unwrap();
 
         assert_eq!(max_order_size, 199999800000);
 
@@ -1611,9 +1595,7 @@ mod calculate_max_spot_order_size {
             ..
         } = calculate_margin_requirement_and_total_collateral_and_liability_info(
             &user,
-            &PerpMarketMap::empty(),
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             MarginContext::standard(MarginRequirementType::Initial).strict(true),
         )
         .unwrap();
@@ -1637,7 +1619,7 @@ mod calculate_max_spot_order_size {
         let mut oracle_map =
             OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
-        let _market_map = PerpMarketMap::empty();
+        let market_map = PerpMarketMap::empty();
 
         let mut usdc_spot_market = SpotMarket {
             market_index: 0,
@@ -1677,6 +1659,11 @@ mod calculate_max_spot_order_size {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -1698,15 +1685,8 @@ mod calculate_max_spot_order_size {
             ..User::default()
         };
 
-        let max_order_size = calculate_max_spot_order_size(
-            &user,
-            1,
-            PositionDirection::Short,
-            &PerpMarketMap::empty(),
-            &spot_market_map,
-            &mut oracle_map,
-        )
-        .unwrap();
+        let max_order_size =
+            calculate_max_spot_order_size(&user, 1, PositionDirection::Short, &mut maps).unwrap();
 
         assert_eq!(max_order_size, 199999800000);
 
@@ -1719,9 +1699,7 @@ mod calculate_max_spot_order_size {
             ..
         } = calculate_margin_requirement_and_total_collateral_and_liability_info(
             &user,
-            &PerpMarketMap::empty(),
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             MarginContext::standard(MarginRequirementType::Initial).strict(true),
         )
         .unwrap();
@@ -1745,7 +1723,7 @@ mod calculate_max_spot_order_size {
         let mut oracle_map =
             OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
-        let _market_map = PerpMarketMap::empty();
+        let market_map = PerpMarketMap::empty();
 
         let mut usdc_spot_market = SpotMarket {
             market_index: 0,
@@ -1786,6 +1764,11 @@ mod calculate_max_spot_order_size {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -1806,15 +1789,8 @@ mod calculate_max_spot_order_size {
             ..User::default()
         };
 
-        let max_order_size = calculate_max_spot_order_size(
-            &user,
-            1,
-            PositionDirection::Long,
-            &PerpMarketMap::empty(),
-            &spot_market_map,
-            &mut oracle_map,
-        )
-        .unwrap();
+        let max_order_size =
+            calculate_max_spot_order_size(&user, 1, PositionDirection::Long, &mut maps).unwrap();
 
         // assert_eq!(max_order_size, 454545000000);
 
@@ -1827,9 +1803,7 @@ mod calculate_max_spot_order_size {
             ..
         } = calculate_margin_requirement_and_total_collateral_and_liability_info(
             &user,
-            &PerpMarketMap::empty(),
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             MarginContext::standard(MarginRequirementType::Initial).strict(true),
         )
         .unwrap();
@@ -1853,7 +1827,7 @@ mod calculate_max_spot_order_size {
         let mut oracle_map =
             OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
-        let _market_map = PerpMarketMap::empty();
+        let market_map = PerpMarketMap::empty();
 
         let mut usdc_spot_market = SpotMarket {
             market_index: 0,
@@ -1894,6 +1868,11 @@ mod calculate_max_spot_order_size {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -1914,15 +1893,8 @@ mod calculate_max_spot_order_size {
             ..User::default()
         };
 
-        let max_order_size = calculate_max_spot_order_size(
-            &user,
-            1,
-            PositionDirection::Short,
-            &PerpMarketMap::empty(),
-            &spot_market_map,
-            &mut oracle_map,
-        )
-        .unwrap();
+        let max_order_size =
+            calculate_max_spot_order_size(&user, 1, PositionDirection::Short, &mut maps).unwrap();
 
         assert_eq!(max_order_size, 90927185437);
 
@@ -1935,9 +1907,7 @@ mod calculate_max_spot_order_size {
             ..
         } = calculate_margin_requirement_and_total_collateral_and_liability_info(
             &user,
-            &PerpMarketMap::empty(),
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             MarginContext::standard(MarginRequirementType::Initial).strict(true),
         )
         .unwrap();
@@ -2054,6 +2024,11 @@ mod calculate_max_perp_order_size {
         let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -2072,16 +2047,8 @@ mod calculate_max_perp_order_size {
             ..User::default()
         };
 
-        let max_order_size = calculate_max_perp_order_size(
-            &user,
-            0,
-            0,
-            PositionDirection::Long,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
-        )
-        .unwrap();
+        let max_order_size =
+            calculate_max_perp_order_size(&user, 0, 0, PositionDirection::Long, &mut maps).unwrap();
 
         assert_eq!(max_order_size, 499999500000);
 
@@ -2094,9 +2061,7 @@ mod calculate_max_perp_order_size {
             ..
         } = calculate_margin_requirement_and_total_collateral_and_liability_info(
             &user,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             MarginContext::standard(MarginRequirementType::Initial).strict(true),
         )
         .unwrap();
@@ -2175,6 +2140,11 @@ mod calculate_max_perp_order_size {
         let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -2194,16 +2164,8 @@ mod calculate_max_perp_order_size {
             ..User::default()
         };
 
-        let max_order_size = calculate_max_perp_order_size(
-            &user,
-            0,
-            0,
-            PositionDirection::Long,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
-        )
-        .unwrap();
+        let max_order_size =
+            calculate_max_perp_order_size(&user, 0, 0, PositionDirection::Long, &mut maps).unwrap();
 
         assert_eq!(max_order_size, 500000000000);
     }
@@ -2279,6 +2241,11 @@ mod calculate_max_perp_order_size {
         let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -2297,16 +2264,9 @@ mod calculate_max_perp_order_size {
             ..User::default()
         };
 
-        let max_order_size = calculate_max_perp_order_size(
-            &user,
-            0,
-            0,
-            PositionDirection::Short,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
-        )
-        .unwrap();
+        let max_order_size =
+            calculate_max_perp_order_size(&user, 0, 0, PositionDirection::Short, &mut maps)
+                .unwrap();
 
         assert_eq!(max_order_size, 499999500000);
 
@@ -2319,9 +2279,7 @@ mod calculate_max_perp_order_size {
             ..
         } = calculate_margin_requirement_and_total_collateral_and_liability_info(
             &user,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             MarginContext::standard(MarginRequirementType::Initial).strict(true),
         )
         .unwrap();
@@ -2400,6 +2358,11 @@ mod calculate_max_perp_order_size {
         let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -2419,16 +2382,9 @@ mod calculate_max_perp_order_size {
             ..User::default()
         };
 
-        let max_order_size = calculate_max_perp_order_size(
-            &user,
-            0,
-            0,
-            PositionDirection::Short,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
-        )
-        .unwrap();
+        let max_order_size =
+            calculate_max_perp_order_size(&user, 0, 0, PositionDirection::Short, &mut maps)
+                .unwrap();
 
         assert_eq!(max_order_size, 500000000000);
     }
@@ -2504,6 +2460,11 @@ mod calculate_max_perp_order_size {
         let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -2523,16 +2484,8 @@ mod calculate_max_perp_order_size {
             ..User::default()
         };
 
-        let max_order_size = calculate_max_perp_order_size(
-            &user,
-            0,
-            0,
-            PositionDirection::Long,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
-        )
-        .unwrap();
+        let max_order_size =
+            calculate_max_perp_order_size(&user, 0, 0, PositionDirection::Long, &mut maps).unwrap();
 
         assert_eq!(max_order_size, 49999950000);
 
@@ -2545,9 +2498,7 @@ mod calculate_max_perp_order_size {
             ..
         } = calculate_margin_requirement_and_total_collateral_and_liability_info(
             &user,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             MarginContext::standard(MarginRequirementType::Initial).strict(true),
         )
         .unwrap();
@@ -2626,6 +2577,11 @@ mod calculate_max_perp_order_size {
         let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -2645,16 +2601,9 @@ mod calculate_max_perp_order_size {
             ..User::default()
         };
 
-        let max_order_size = calculate_max_perp_order_size(
-            &user,
-            0,
-            0,
-            PositionDirection::Short,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
-        )
-        .unwrap();
+        let max_order_size =
+            calculate_max_perp_order_size(&user, 0, 0, PositionDirection::Short, &mut maps)
+                .unwrap();
 
         assert_eq!(max_order_size, 49999950000);
 
@@ -2667,9 +2616,7 @@ mod calculate_max_perp_order_size {
             ..
         } = calculate_margin_requirement_and_total_collateral_and_liability_info(
             &user,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             MarginContext::standard(MarginRequirementType::Initial).strict(true),
         )
         .unwrap();
@@ -2749,6 +2696,11 @@ mod calculate_max_perp_order_size {
         let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -2767,16 +2719,8 @@ mod calculate_max_perp_order_size {
             ..User::default()
         };
 
-        let max_order_size = calculate_max_perp_order_size(
-            &user,
-            0,
-            0,
-            PositionDirection::Long,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
-        )
-        .unwrap();
+        let max_order_size =
+            calculate_max_perp_order_size(&user, 0, 0, PositionDirection::Long, &mut maps).unwrap();
 
         assert_eq!(max_order_size, 365897914000);
 
@@ -2789,9 +2733,7 @@ mod calculate_max_perp_order_size {
             ..
         } = calculate_margin_requirement_and_total_collateral_and_liability_info(
             &user,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             MarginContext::standard(MarginRequirementType::Initial).strict(true),
         )
         .unwrap();
@@ -2871,6 +2813,11 @@ mod calculate_max_perp_order_size {
         let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -2890,16 +2837,8 @@ mod calculate_max_perp_order_size {
             ..User::default()
         };
 
-        let max_order_size = calculate_max_perp_order_size(
-            &user,
-            0,
-            0,
-            PositionDirection::Long,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
-        )
-        .unwrap();
+        let max_order_size =
+            calculate_max_perp_order_size(&user, 0, 0, PositionDirection::Long, &mut maps).unwrap();
 
         assert_eq!(max_order_size, 49999950000);
 
@@ -2912,9 +2851,7 @@ mod calculate_max_perp_order_size {
             ..
         } = calculate_margin_requirement_and_total_collateral_and_liability_info(
             &user,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             MarginContext::standard(MarginRequirementType::Initial).strict(true),
         )
         .unwrap();
@@ -2993,6 +2930,11 @@ mod calculate_max_perp_order_size {
         let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -3012,16 +2954,9 @@ mod calculate_max_perp_order_size {
             ..User::default()
         };
 
-        let max_order_size = calculate_max_perp_order_size(
-            &user,
-            0,
-            0,
-            PositionDirection::Short,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
-        )
-        .unwrap();
+        let max_order_size =
+            calculate_max_perp_order_size(&user, 0, 0, PositionDirection::Short, &mut maps)
+                .unwrap();
 
         assert_eq!(max_order_size, 49999950000);
 
@@ -3034,9 +2969,7 @@ mod calculate_max_perp_order_size {
             ..
         } = calculate_margin_requirement_and_total_collateral_and_liability_info(
             &user,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             MarginContext::standard(MarginRequirementType::Initial).strict(true),
         )
         .unwrap();
@@ -3116,6 +3049,11 @@ mod calculate_max_perp_order_size {
         let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -3134,16 +3072,9 @@ mod calculate_max_perp_order_size {
             ..User::default()
         };
 
-        let max_order_size = calculate_max_perp_order_size(
-            &user,
-            0,
-            0,
-            PositionDirection::Short,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
-        )
-        .unwrap();
+        let max_order_size =
+            calculate_max_perp_order_size(&user, 0, 0, PositionDirection::Short, &mut maps)
+                .unwrap();
 
         assert_eq!(max_order_size, 365897914000);
 
@@ -3156,9 +3087,7 @@ mod calculate_max_perp_order_size {
             ..
         } = calculate_margin_requirement_and_total_collateral_and_liability_info(
             &user,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             MarginContext::standard(MarginRequirementType::Initial).strict(true),
         )
         .unwrap();
@@ -3411,6 +3340,11 @@ mod calculate_max_perp_order_size {
             None,
         )
         .unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: perp_market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let user_str = String::from("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AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACOYEXJZAAAAJXJPrFDAAAA9pN6AgAAAAActHWX3////+mmH/L/////dTk4gv3///8AAAAAAAAAAJ3LyxQAAAAACCQAAAAAAABjAAAAAAEAAAAAAAEAAAAAT4VaaAAAAAAAAAAAAAAAAA==");
         let mut decoded_bytes = base64::decode(user_str).unwrap();
@@ -3427,16 +3361,8 @@ mod calculate_max_perp_order_size {
 
         let mut user = user_account_loader.load_mut().unwrap();
 
-        let max_order_size = calculate_max_perp_order_size(
-            &user,
-            0,
-            1,
-            PositionDirection::Long,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
-        )
-        .unwrap();
+        let max_order_size =
+            calculate_max_perp_order_size(&user, 0, 1, PositionDirection::Long, &mut maps).unwrap();
 
         // User is under-margined: total_collateral < margin_requirement,
         // so no additional BTC-PERP long can be opened (swift order would fail).
@@ -3451,9 +3377,7 @@ mod calculate_max_perp_order_size {
             ..
         } = calculate_margin_requirement_and_total_collateral_and_liability_info(
             &user,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             MarginContext::standard(MarginRequirementType::Initial).strict(true),
         )
         .unwrap();

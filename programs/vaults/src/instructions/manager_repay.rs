@@ -16,7 +16,6 @@ use {
     anchor_spl::token::{self, Token, TokenAccount, Transfer},
     velocity::{
         cpi::accounts::Deposit as VelocityDeposit,
-        instructions::optional_accounts::AccountMaps,
         math::safe_math::SafeMath,
         program::Velocity,
         state::user::{User, UserStats},
@@ -54,11 +53,7 @@ pub fn manager_repay<'info>(
     let fee_update = ctx.fee_update(vp.is_some(), has_fee_update);
     vault.validate_fee_update(&fee_update)?;
 
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map,
-        mut oracle_map,
-    } = ctx.load_maps(
+    let mut maps = ctx.load_maps(
         clock.slot,
         Some(repay_spot_market_index),
         vp.is_some(),
@@ -70,9 +65,9 @@ pub fn manager_repay<'info>(
 
     // velocity program will check validity
 
-    let repay_spot_market = spot_market_map.get_ref(&repay_spot_market_index)?;
+    let repay_spot_market = maps.spot_market_map.get_ref(&repay_spot_market_index)?;
     let repay_spot_market_index = repay_spot_market.market_index;
-    let deposit_spot_market = spot_market_map.get_ref(&vault.spot_market_index)?;
+    let deposit_spot_market = maps.spot_market_map.get_ref(&vault.spot_market_index)?;
     let deposit_spot_market_index = deposit_spot_market.market_index;
 
     let velocity_spot_market_vault = &ctx.accounts.velocity_spot_market_vault;
@@ -82,11 +77,20 @@ pub fn manager_repay<'info>(
         "velocity_spot_market_vault needs to match repay_spot_market_index"
     )?;
 
-    let repay_oracle = *oracle_map.get_price_data(&repay_spot_market.oracle_id())?;
-    let deposit_oracle = *oracle_map.get_price_data(&deposit_spot_market.oracle_id())?;
+    let repay_oracle = *maps
+        .oracle_map
+        .get_price_data(&repay_spot_market.oracle_id())?;
+    let deposit_oracle = *maps
+        .oracle_map
+        .get_price_data(&deposit_spot_market.oracle_id())?;
+    let _repay_decimals = repay_spot_market.decimals;
+    let _deposit_decimals = deposit_spot_market.decimals;
+    // The equity read walks every market the vault holds, so it takes the
+    // whole map set. The two market borrows end first.
+    drop(repay_spot_market);
+    drop(deposit_spot_market);
 
-    let vault_equity_before =
-        vault.calculate_equity(&user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
+    let vault_equity_before = vault.calculate_equity(&user, &mut maps)?;
 
     let value_repayed = if let Some(repay_value) = repay_value {
         repay_value
@@ -97,8 +101,6 @@ pub fn manager_repay<'info>(
     let previous_borrow_value = vault.manager_borrowed_value;
     vault.manager_borrowed_value = vault.manager_borrowed_value.safe_sub(value_repayed)?;
 
-    drop(repay_spot_market);
-    drop(deposit_spot_market);
     drop(vault);
     drop(user);
     drop(vp);
@@ -109,8 +111,7 @@ pub fn manager_repay<'info>(
     let vault = ctx.accounts.vault.load_mut()?;
     let user = ctx.accounts.velocity_user.load()?;
 
-    let vault_equity_after =
-        vault.calculate_equity(&user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
+    let vault_equity_after = vault.calculate_equity(&user, &mut maps)?;
 
     emit!(ManagerRepayRecord {
         ts: now,

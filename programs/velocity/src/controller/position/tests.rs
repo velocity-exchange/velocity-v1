@@ -324,6 +324,11 @@ fn amm_pred_expiry_price_yes_market_example() {
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map: SpotMarketMap<'_> =
         SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+    let mut maps = crate::instructions::optional_accounts::AccountMaps {
+        perp_market_map: perp_market_map,
+        spot_market_map,
+        oracle_map,
+    };
     let market_index;
 
     {
@@ -341,22 +346,15 @@ fn amm_pred_expiry_price_yes_market_example() {
 
     crate::vlp::amm::refresh::update_amm(
         market_index,
-        &perp_market_map,
-        &mut oracle_map,
+        &maps.perp_market_map,
+        &mut maps.oracle_map,
         &state,
         &clock,
     )
     .unwrap();
 
-    crate::vlp::amm::refresh::settle_expired_market(
-        market_index,
-        &perp_market_map,
-        &mut oracle_map,
-        &spot_market_map,
-        &state,
-        &clock,
-    )
-    .unwrap();
+    crate::vlp::amm::refresh::settle_expired_market(market_index, &mut maps, &state, &clock)
+        .unwrap();
 
     {
         let perp_market = perp_market_loader.load_mut().unwrap();
@@ -452,6 +450,11 @@ fn amm_pred_expiry_price_market_example() {
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map: SpotMarketMap<'_> =
         SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+    let mut maps = crate::instructions::optional_accounts::AccountMaps {
+        perp_market_map: perp_market_map,
+        spot_market_map,
+        oracle_map,
+    };
     let market_index;
 
     {
@@ -469,22 +472,15 @@ fn amm_pred_expiry_price_market_example() {
 
     crate::vlp::amm::refresh::update_amm(
         market_index,
-        &perp_market_map,
-        &mut oracle_map,
+        &maps.perp_market_map,
+        &mut maps.oracle_map,
         &state,
         &clock,
     )
     .unwrap();
 
-    crate::vlp::amm::refresh::settle_expired_market(
-        market_index,
-        &perp_market_map,
-        &mut oracle_map,
-        &spot_market_map,
-        &state,
-        &clock,
-    )
-    .unwrap();
+    crate::vlp::amm::refresh::settle_expired_market(market_index, &mut maps, &state, &clock)
+        .unwrap();
 
     {
         let perp_market = perp_market_loader.load_mut().unwrap();
@@ -579,6 +575,11 @@ fn amm_pred_settle_market_example() {
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map: SpotMarketMap<'_> =
         SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+    let mut maps = crate::instructions::optional_accounts::AccountMaps {
+        perp_market_map: perp_market_map,
+        spot_market_map,
+        oracle_map,
+    };
     let market_index;
 
     {
@@ -589,22 +590,15 @@ fn amm_pred_settle_market_example() {
 
     crate::vlp::amm::refresh::update_amm(
         market_index,
-        &perp_market_map,
-        &mut oracle_map,
+        &maps.perp_market_map,
+        &mut maps.oracle_map,
         &state,
         &clock,
     )
     .unwrap();
 
-    crate::vlp::amm::refresh::settle_expired_market(
-        market_index,
-        &perp_market_map,
-        &mut oracle_map,
-        &spot_market_map,
-        &state,
-        &clock,
-    )
-    .unwrap();
+    crate::vlp::amm::refresh::settle_expired_market(market_index, &mut maps, &state, &clock)
+        .unwrap();
 }
 
 #[test]
@@ -3059,19 +3053,16 @@ fn settle_expired_market_prices_against_pnl_pool_only() {
     let pre_fix_fee_pool_contribution = 490 * QUOTE_PRECISION_I128;
     create_anchor_account_info!(market, PerpMarket, market_account_info);
     let perp_market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
+    let mut maps = crate::instructions::optional_accounts::AccountMaps {
+        perp_market_map: perp_market_map,
+        spot_market_map,
+        oracle_map,
+    };
 
-    crate::vlp::amm::refresh::settle_expired_market(
-        0,
-        &perp_market_map,
-        &mut oracle_map,
-        &spot_market_map,
-        &state,
-        &clock,
-    )
-    .unwrap();
+    crate::vlp::amm::refresh::settle_expired_market(0, &mut maps, &state, &clock).unwrap();
 
-    let m = perp_market_map.get_ref(&0).unwrap();
-    let quote_spot_market = spot_market_map.get_ref(&0).unwrap();
+    let m = maps.perp_market_map.get_ref(&0).unwrap();
+    let quote_spot_market = maps.spot_market_map.get_ref(&0).unwrap();
 
     let pnl_pool = get_token_amount(
         m.pnl_pool.scaled_balance,
@@ -3302,19 +3293,16 @@ fn settle_expired_market_reserves_pending_revenue_share() {
     market.pending_revenue_share = owed;
     create_anchor_account_info!(market, PerpMarket, market_account_info);
     let perp_market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
+    let mut maps = crate::instructions::optional_accounts::AccountMaps {
+        perp_market_map: perp_market_map,
+        spot_market_map,
+        oracle_map,
+    };
 
-    crate::vlp::amm::refresh::settle_expired_market(
-        0,
-        &perp_market_map,
-        &mut oracle_map,
-        &spot_market_map,
-        &state,
-        &clock,
-    )
-    .unwrap();
+    crate::vlp::amm::refresh::settle_expired_market(0, &mut maps, &state, &clock).unwrap();
 
-    let m = perp_market_map.get_ref(&0).unwrap();
-    let quote_spot_market = spot_market_map.get_ref(&0).unwrap();
+    let m = maps.perp_market_map.get_ref(&0).unwrap();
+    let quote_spot_market = maps.spot_market_map.get_ref(&0).unwrap();
     let pnl_pool = get_token_amount(
         m.pnl_pool.scaled_balance,
         &quote_spot_market,

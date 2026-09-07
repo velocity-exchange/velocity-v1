@@ -251,6 +251,11 @@ pub mod amm_jit {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         // Taker buys 1 with a 105 limit — room for the maker AND the full
         // vAMM ladder (rungs are marginal prices, the deepest sits ~103).
@@ -360,9 +365,7 @@ pub mod amm_jit {
                 key: filler_key,
                 rev_share_escrow: &mut None,
             },
-            &spot_market_map,
-            &market_map,
-            &mut oracle_map,
+            &mut maps,
             &crate::state::state::ValidityGuardRails::default(),
             &fee_structure,
             Some(market.market_stats.historical_oracle_data.last_oracle_price),
@@ -396,7 +399,7 @@ pub mod amm_jit {
         );
 
         // The vAMM's half moved the AMM's counterparty position.
-        let market_after = market_map.get_ref(&0).unwrap();
+        let market_after = maps.perp_market_map.get_ref(&0).unwrap();
         assert_eq!(
             market_after.amm.base_asset_amount_with_amm,
             AMM_RESERVE_PRECISION as i128
@@ -528,6 +531,11 @@ pub mod amm_jit {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut taker = User {
             orders: get_orders(Order {
@@ -693,9 +701,7 @@ pub mod amm_jit {
                 key: filler_key,
                 rev_share_escrow: &mut None,
             },
-            &spot_market_map,
-            &market_map,
-            &mut oracle_map,
+            &mut maps,
             &crate::state::state::ValidityGuardRails::default(),
             &fee_structure,
             Some(market.market_stats.historical_oracle_data.last_oracle_price),
@@ -745,7 +751,7 @@ pub mod amm_jit {
         );
 
         // No vAMM participation.
-        let market_after = market_map.get_ref(&0).unwrap();
+        let market_after = maps.perp_market_map.get_ref(&0).unwrap();
         assert_eq!(
             market_after.amm.base_asset_amount_with_amm,
             (AMM_RESERVE_PRECISION / 2) as i128
@@ -880,6 +886,11 @@ pub mod amm_jit {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut taker = User {
             orders: get_orders(Order {
@@ -1041,9 +1052,7 @@ pub mod amm_jit {
                 key: filler_key,
                 rev_share_escrow: &mut None,
             },
-            &spot_market_map,
-            &market_map,
-            &mut oracle_map,
+            &mut maps,
             &crate::state::state::ValidityGuardRails::default(),
             &fee_structure,
             Some(market.market_stats.historical_oracle_data.last_oracle_price),
@@ -1195,6 +1204,11 @@ pub mod amm_jit {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut taker = User {
             orders: get_orders(Order {
@@ -1364,9 +1378,7 @@ pub mod amm_jit {
                 key: filler_key,
                 rev_share_escrow: &mut None,
             },
-            &spot_market_map,
-            &market_map,
-            &mut oracle_map,
+            &mut maps,
             &crate::state::state::ValidityGuardRails::default(),
             &fee_structure,
             Some(market.market_stats.historical_oracle_data.last_oracle_price),
@@ -1509,6 +1521,11 @@ pub mod amm_jit {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut taker = User {
             orders: get_orders(Order {
@@ -1616,9 +1633,7 @@ pub mod amm_jit {
                 key: filler_key,
                 rev_share_escrow: &mut None,
             },
-            &spot_market_map,
-            &market_map,
-            &mut oracle_map,
+            &mut maps,
             &crate::state::state::ValidityGuardRails::default(),
             &fee_structure,
             Some(market.market_stats.historical_oracle_data.last_oracle_price),
@@ -1656,7 +1671,7 @@ pub mod amm_jit {
             custom_maker_after.perp_positions[0].base_asset_amount,
             -(requested as i64)
         );
-        let market_after = market_map.get_ref(&0).unwrap();
+        let market_after = maps.perp_market_map.get_ref(&0).unwrap();
         assert_eq!(
             market_after.amm.base_asset_amount_with_amm,
             (AMM_RESERVE_PRECISION / 2) as i128 + (BASE_PRECISION_U64 - requested) as i128

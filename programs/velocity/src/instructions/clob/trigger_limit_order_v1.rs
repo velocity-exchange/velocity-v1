@@ -212,13 +212,7 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
 
         let order_index = find_armed_trigger_limit(user, order_id, market_index)?;
 
-        validate_user_not_being_liquidated(
-            user,
-            &maps.perp_market_map,
-            &maps.spot_market_map,
-            &mut maps.oracle_map,
-            state.liquidation_margin_buffer_ratio,
-        )?;
+        validate_user_not_being_liquidated(user, &mut maps, state.liquidation_margin_buffer_ratio)?;
         validate!(!user.is_bankrupt(), ErrorCode::UserBankrupt)?;
 
         let TriggerPrices {
@@ -569,17 +563,10 @@ fn reserve_and_gate_trigger(
     if is_risk_increasing && !user.orders[order_index].reduce_only {
         let margin_calc = calculate_margin_requirement_and_total_collateral_and_liability_info(
             user,
-            &maps.perp_market_map,
-            &maps.spot_market_map,
-            &mut maps.oracle_map,
+            maps,
             MarginContext::standard(MarginRequirementType::Initial),
         )?;
-        let net_equity = calculate_net_equity_for_floor(
-            user,
-            &maps.perp_market_map,
-            &maps.spot_market_map,
-            &mut maps.oracle_map,
-        )?;
+        let net_equity = calculate_net_equity_for_floor(user, maps)?;
 
         // An unverifiable floor rejects the trigger instead of cancelling:
         // a cancel is irreversible, so an oracle blip must not destroy a
@@ -614,9 +601,7 @@ fn reserve_and_gate_trigger(
                 order_index,
                 user,
                 user_key,
-                &maps.perp_market_map,
-                &maps.spot_market_map,
-                &mut maps.oracle_map,
+                maps,
                 now,
                 slot,
                 OrderActionExplanation::InsufficientFreeCollateral,

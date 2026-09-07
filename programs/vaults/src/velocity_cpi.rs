@@ -4,8 +4,7 @@ use {
     std::collections::BTreeSet,
     velocity::{
         cpi::accounts::RefreshSpotMarketInterest as VelocityRefreshSpotMarketInterest,
-        instructions::optional_accounts::{load_maps, AccountMaps},
-        state::user::User,
+        instructions::optional_accounts::load_maps, state::user::User,
     },
 };
 
@@ -54,9 +53,7 @@ pub fn spot_markets_that_price_equity<'info>(
     if !isolated_perp_market_indexes.is_empty() {
         let slot_clock =
             velocity::state::state::State::slot_clock_from_account_info(velocity_state)?;
-        let AccountMaps {
-            perp_market_map, ..
-        } = load_maps(
+        let maps = load_maps(
             &mut remaining_accounts.iter().peekable(),
             &BTreeSet::new(),
             &BTreeSet::new(),
@@ -66,7 +63,8 @@ pub fn spot_markets_that_price_equity<'info>(
         )?;
 
         for perp_market_index in isolated_perp_market_indexes {
-            let quote_spot_market_index = perp_market_map
+            let quote_spot_market_index = maps
+                .perp_market_map
                 .get_ref(&perp_market_index)?
                 .quote_spot_market_index;
             if !market_indexes.contains(&quote_spot_market_index) {

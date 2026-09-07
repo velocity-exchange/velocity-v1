@@ -78,7 +78,6 @@ use {
             },
             revenue_share::RevenueShareEscrowZeroCopyMut,
             signed_msg_user::{SignedMsgUserOrdersLoader, SIGNED_MSG_PDA_SEED},
-            spot_market_map::SpotMarketMap,
             state::State,
             user::{User, UserStats},
             user_map::{load_user_maps, UserMap, UserStatsMap},
@@ -239,11 +238,7 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
     )?;
 
     let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map,
-        mut oracle_map,
-    } = load_maps(
+    let mut maps = load_maps(
         remaining_accounts_iter,
         &get_writable_perp_market_set(market_index),
         &MarketSet::new(),
@@ -314,15 +309,7 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
     // computed that above, so it settles the pair itself and tells the book
     // after, rather than asking the book to match orders it is right to refuse.
     if counterparty.taker_origin {
-        return settle_taker_origin_pair(
-            &cx,
-            &subject,
-            &subject_order,
-            &counterparty,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
-        );
+        return settle_taker_origin_pair(&cx, &subject, &subject_order, &counterparty, &mut maps);
     }
 
     let route_claim = SignedRouteClaim {
@@ -340,9 +327,7 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
         tail,
         &subject_order,
         &route_claim,
-        &perp_market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         &mut cpi_scratch,
     )?;
 
@@ -357,9 +342,7 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
         fill_price,
         base_filled,
         quote_filled,
-        &perp_market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
     )?;
 
     let remainder_base_asset_amount = report_fill_to_book(&cx, &subject_order, base_filled)?;
@@ -555,9 +538,7 @@ fn route_and_fill_remainder<'info>(
     tail: &'info [AccountInfo<'info>],
     subject_order: &RestingOrder,
     route_claim: &SignedRouteClaim<'_>,
-    perp_market_map: &PerpMarketMap<'info>,
-    spot_market_map: &SpotMarketMap<'info>,
-    oracle_map: &mut OracleMap<'info>,
+    maps: &mut AccountMaps<'info>,
     cpi_scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
 ) -> Result<(u64, u64)> {
     // The order is a local. It came off a book and belongs to no `orders`
@@ -567,8 +548,8 @@ fn route_and_fill_remainder<'info>(
         controller::orders::taker_origin_order(cx.market_index, cx.taker_direction, subject_order);
 
     let route_reference_price = {
-        let oracle_id = perp_market_map.get_ref(&cx.market_index)?.oracle_id();
-        oracle_map.get_price_data(&oracle_id)?.price
+        let oracle_id = maps.perp_market_map.get_ref(&cx.market_index)?.oracle_id();
+        maps.oracle_map.get_price_data(&oracle_id)?.price
     };
     let direction = match cx.taker_direction {
         PositionDirection::Long => Direction::Long,
@@ -606,9 +587,7 @@ fn route_and_fill_remainder<'info>(
             &mut crate::instructions::CapInputs {
                 makers_and_referrer: cx.makers_and_referrer,
                 makers_and_referrer_stats: cx.makers_and_referrer_stats,
-                perp_market_map,
-                spot_market_map,
-                oracle_map: &mut *oracle_map,
+                maps,
                 slot: cx.clock.slot,
                 now: cx.clock.unix_timestamp,
             },
@@ -619,7 +598,7 @@ fn route_and_fill_remainder<'info>(
     // Reuse the CPI scratch the book read filled: its buffers clear and refill
     // per leg, so one fill pays for one set of buffers.
     let route = crate::instructions::QuotedRoute::assemble(tail, &inputs, cpi_scratch)?;
-    route.require_baseline(perp_market_map.get_ref(&cx.market_index)?.clob_market)?;
+    route.require_baseline(maps.perp_market_map.get_ref(&cx.market_index)?.clob_market)?;
     route.require_signed_route(route_claim.quoters, route_claim.digest)?;
     let mut book_storage =
         [crate::math::router::QuoterBook::default(); crate::state::prop_amm::MAX_ROUTE_QUOTERS];
@@ -655,9 +634,7 @@ fn route_and_fill_remainder<'info>(
         cx.state,
         &cx.accounts.taker,
         &cx.accounts.taker_stats,
-        spot_market_map,
-        perp_market_map,
-        oracle_map,
+        maps,
         &cx.accounts.taker,
         &cx.accounts.taker_stats,
         cx.makers_and_referrer,
@@ -691,9 +668,7 @@ fn pay_crank_reward<'info>(
     fill_price: u64,
     base_filled: u64,
     quote_filled: u64,
-    perp_market_map: &PerpMarketMap<'info>,
-    spot_market_map: &SpotMarketMap<'info>,
-    oracle_map: &mut OracleMap<'info>,
+    maps: &mut AccountMaps,
 ) -> Result<(crate::math::fees::TakerOriginCrossFee, u64)> {
     let (fee, _, _, _) = {
         let taker_stats = load!(cx.accounts.taker_stats)?;
@@ -706,8 +681,8 @@ fn pay_crank_reward<'info>(
             base_filled,
             rested.placed_slot,
             &taker_stats,
-            perp_market_map,
-            oracle_map,
+            &maps.perp_market_map,
+            &mut maps.oracle_map,
             cx.clock,
         )?
     };
@@ -718,9 +693,7 @@ fn pay_crank_reward<'info>(
         &cx.accounts.taker,
         &cx.accounts.filler,
         &cx.accounts.filler_stats,
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
         cx.clock,
     )?;
     Ok((fee, crank_reward))
@@ -872,9 +845,7 @@ fn settle_taker_origin_pair<'c: 'info, 'info>(
     cross: &Cross,
     aggressor: &RestingOrder,
     counterparty: &RestingOrder,
-    perp_market_map: &PerpMarketMap<'info>,
-    spot_market_map: &SpotMarketMap<'info>,
-    oracle_map: &mut OracleMap<'info>,
+    maps: &mut AccountMaps<'info>,
 ) -> Result<()> {
     let taker_direction = cx.taker_direction;
     let base_filled = cross.base_asset_amount;
@@ -907,12 +878,12 @@ fn settle_taker_origin_pair<'c: 'info, 'info>(
     let mut order =
         controller::orders::taker_origin_order(cx.market_index, taker_direction, aggressor);
     let (oracle_price, margin_ratio_initial) = {
-        let market = perp_market_map.get_ref(&cx.market_index)?;
+        let market = maps.perp_market_map.get_ref(&cx.market_index)?;
         let oracle_id = market.oracle_id();
         let margin_ratio_initial = market.margin_ratio_initial;
         drop(market);
         (
-            oracle_map.get_price_data(&oracle_id)?.price,
+            maps.oracle_map.get_price_data(&oracle_id)?.price,
             margin_ratio_initial,
         )
     };
@@ -944,29 +915,21 @@ fn settle_taker_origin_pair<'c: 'info, 'info>(
     )?;
     bind_counterparty_size(cx, &pair)?;
 
-    settle_pair_funding(cx, &pair, perp_market_map)?;
+    settle_pair_funding(cx, &pair, &maps.perp_market_map)?;
 
     settle_pair_match(
         cx,
         &pair,
         &mut order,
         oracle_price,
-        perp_market_map,
-        oracle_map,
+        &maps.perp_market_map,
+        &mut maps.oracle_map,
     )?;
 
     report_pair_fill_to_book(cx, &pair)?;
 
-    let (_, crank_reward) = pay_crank_reward(
-        cx,
-        aggressor,
-        price,
-        base_filled,
-        quote_filled,
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
-    )?;
+    let (_, crank_reward) =
+        pay_crank_reward(cx, aggressor, price, base_filled, quote_filled, maps)?;
 
     pay_crank_lamports(cx)?;
     emit_taker_origin_record(

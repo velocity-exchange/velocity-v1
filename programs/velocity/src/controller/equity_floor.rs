@@ -11,14 +11,10 @@
 
 use crate::{
     error::VelocityResult,
+    instructions::optional_accounts::AccountMaps,
     math::margin::calculate_user_equity_for_trip,
     msg,
-    state::{
-        oracle_map::OracleMap,
-        perp_market_map::PerpMarketMap,
-        spot_market_map::SpotMarketMap,
-        user::{User, UserStats},
-    },
+    state::user::{User, UserStats},
 };
 
 /// Arms the authority-wide equity breaker if the subaccount's net equity is
@@ -38,16 +34,13 @@ use crate::{
 pub fn try_lazy_equity_breaker_trip(
     user: &User,
     user_stats: &mut UserStats,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
 ) -> VelocityResult {
     if user.equity_floor == 0 || user_stats.is_equity_breaker_tripped() {
         return Ok(());
     }
 
-    let trip_equity =
-        calculate_user_equity_for_trip(user, perp_market_map, spot_market_map, oracle_map)?;
+    let trip_equity = calculate_user_equity_for_trip(user, maps)?;
 
     if trip_equity.proves_breach(user) {
         msg!(
@@ -69,6 +62,7 @@ mod tests {
         super::try_lazy_equity_breaker_trip,
         crate::{
             create_anchor_account_info,
+            instructions::optional_accounts::AccountMaps,
             math::{
                 constants::{
                     AMM_RESERVE_PRECISION, BASE_PRECISION_I64, PEG_PRECISION, PRICE_PRECISION,
@@ -171,6 +165,11 @@ mod tests {
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
         let spot_market_map =
             SpotMarketMap::load_one(&usdc_spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -195,14 +194,7 @@ mod tests {
         let mut user_stats = UserStats::default();
         user_stats.set_equity_breaker_tripped(already_tripped);
 
-        try_lazy_equity_breaker_trip(
-            &user,
-            &mut user_stats,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
-        )
-        .unwrap();
+        try_lazy_equity_breaker_trip(&user, &mut user_stats, &mut maps).unwrap();
 
         user_stats
     }

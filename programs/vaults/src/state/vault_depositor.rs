@@ -25,10 +25,7 @@ use {
             margin::{meets_initial_margin_requirement, validate_spot_margin_trading},
             safe_math::SafeMath,
         },
-        state::{
-            oracle_map::OracleMap, perp_market_map::PerpMarketMap, spot_market::SpotBalanceType,
-            spot_market_map::SpotMarketMap, user::User,
-        },
+        state::{spot_market::SpotBalanceType, user::User},
     },
     velocity_macros::assert_no_slop,
 };
@@ -846,9 +843,7 @@ impl VaultDepositor {
         vault: &Vault,
         vault_equity: u64,
         velocity_user: &mut User,
-        perp_market_map: &PerpMarketMap,
-        spot_market_map: &SpotMarketMap,
-        oracle_map: &mut OracleMap,
+        maps: &mut velocity::instructions::optional_accounts::AccountMaps,
     ) -> Result<()> {
         let shares_value = depositor_shares_to_vault_amount(
             self.last_withdraw_request.shares,
@@ -857,7 +852,7 @@ impl VaultDepositor {
         )?;
         let withdraw_amount = self.last_withdraw_request.value.min(shares_value);
 
-        let mut spot_market = spot_market_map.get_ref_mut(&vault.spot_market_index)?;
+        let mut spot_market = maps.spot_market_map.get_ref_mut(&vault.spot_market_index)?;
 
         // Save relevant data before updating balances
         let spot_market_deposit_balance_before = spot_market.deposit_balance;
@@ -874,19 +869,9 @@ impl VaultDepositor {
 
         drop(spot_market);
 
-        let sufficient_collateral = meets_initial_margin_requirement(
-            velocity_user,
-            perp_market_map,
-            spot_market_map,
-            oracle_map,
-        )?;
+        let sufficient_collateral = meets_initial_margin_requirement(velocity_user, maps)?;
 
-        let margin_trading_ok = match validate_spot_margin_trading(
-            velocity_user,
-            perp_market_map,
-            spot_market_map,
-            oracle_map,
-        ) {
+        let margin_trading_ok = match validate_spot_margin_trading(velocity_user, maps) {
             Ok(_) => true,
             Err(VelocityErrorCode::MarginTradingDisabled) => false,
             Err(e) => {
@@ -905,7 +890,7 @@ impl VaultDepositor {
         }
 
         // Must reset velocity accounts afterward else ix will fail
-        let mut spot_market = spot_market_map.get_ref_mut(&vault.spot_market_index)?;
+        let mut spot_market = maps.spot_market_map.get_ref_mut(&vault.spot_market_index)?;
         spot_market.deposit_balance = spot_market_deposit_balance_before;
         spot_market.borrow_balance = spot_market_borrow_balance_before;
 

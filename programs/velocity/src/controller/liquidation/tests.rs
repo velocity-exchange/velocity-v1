@@ -107,6 +107,11 @@ pub mod liquidate_perp {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: perp_market_map,
+            spot_market_map,
+            oracle_map,
+        };
         let mut user = User {
             orders: [Order::default(); 32],
             perp_positions: [PerpPosition::default(); 8],
@@ -149,9 +154,7 @@ pub mod liquidate_perp {
             &mut liquidator,
             &liquidator_key,
             &mut liquidator_stats,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             slot,
             now,
             &state,
@@ -222,6 +225,11 @@ pub mod liquidate_perp {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: perp_market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut user = User {
             orders: get_orders(Order {
@@ -279,9 +287,7 @@ pub mod liquidate_perp {
             &mut liquidator,
             &liquidator_key,
             &mut liquidator_stats,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             slot,
             now,
             &state,
@@ -305,7 +311,7 @@ pub mod liquidate_perp {
             -99 * QUOTE_PRECISION_I64
         );
 
-        let market_after = perp_market_map.get_ref(&0).unwrap();
+        let market_after = maps.perp_market_map.get_ref(&0).unwrap();
         assert_eq!(market_after.fee_ledger.total_liquidation_fee, 0);
     }
 
@@ -377,6 +383,11 @@ pub mod liquidate_perp {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: perp_market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut user = User {
             orders: get_orders(Order {
@@ -437,9 +448,7 @@ pub mod liquidate_perp {
             &mut liquidator,
             &liquidator_key,
             &mut liquidator_stats,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             slot,
             now,
             &state,
@@ -512,6 +521,11 @@ pub mod liquidate_perp {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: perp_market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut user = User {
             orders: get_orders(Order {
@@ -572,9 +586,7 @@ pub mod liquidate_perp {
             &mut liquidator,
             &liquidator_key,
             &mut liquidator_stats,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             slot,
             now,
             &state,
@@ -664,6 +676,11 @@ pub mod liquidate_perp {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: perp_market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut user = User {
             orders: get_orders(Order {
@@ -723,9 +740,7 @@ pub mod liquidate_perp {
             &mut liquidator,
             &liquidator_key,
             &mut liquidator_stats,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             slot,
             now,
             &state,
@@ -805,6 +820,11 @@ pub mod liquidate_perp {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: perp_market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut user = User {
             orders: get_orders(Order {
@@ -862,9 +882,7 @@ pub mod liquidate_perp {
             &mut liquidator,
             &liquidator_key,
             &mut liquidator_stats,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             slot,
             now,
             &state,
@@ -888,7 +906,7 @@ pub mod liquidate_perp {
             101 * QUOTE_PRECISION_I64
         );
 
-        let market_after = perp_market_map.get_ref(&0).unwrap();
+        let market_after = maps.perp_market_map.get_ref(&0).unwrap();
         assert_eq!(market_after.fee_ledger.total_liquidation_fee, 0);
     }
 
@@ -951,6 +969,11 @@ pub mod liquidate_perp {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: perp_market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut user = User {
             orders: get_orders(Order {
@@ -1010,9 +1033,7 @@ pub mod liquidate_perp {
             &mut liquidator,
             &liquidator_key,
             &mut liquidator_stats,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             slot,
             now,
             &state,
@@ -1089,6 +1110,11 @@ pub mod liquidate_perp {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: perp_market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut user = User {
             orders: get_orders(Order {
@@ -1146,9 +1172,7 @@ pub mod liquidate_perp {
             &mut liquidator,
             &liquidator_key,
             &mut liquidator_stats,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             slot,
             now,
             &state,
@@ -1171,7 +1195,7 @@ pub mod liquidate_perp {
         );
         assert_eq!(liquidator.perp_positions[0].quote_asset_amount, -49500000);
 
-        let market_after = perp_market_map.get_ref(&0).unwrap();
+        let market_after = maps.perp_market_map.get_ref(&0).unwrap();
         assert_eq!(market_after.fee_ledger.total_liquidation_fee, 0)
     }
 
@@ -1235,6 +1259,11 @@ pub mod liquidate_perp {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: perp_market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut user = User {
             orders: get_orders(Order {
@@ -1297,9 +1326,7 @@ pub mod liquidate_perp {
             &mut liquidator,
             &liquidator_key,
             &mut liquidator_stats,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             slot,
             now,
             &state,
@@ -1319,9 +1346,7 @@ pub mod liquidate_perp {
             ..
         } = calculate_margin_requirement_and_total_collateral_and_liability_info(
             &user,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             MarginContext::liquidation(state.liquidation_margin_buffer_ratio),
         )
         .unwrap();
@@ -1332,7 +1357,8 @@ pub mod liquidate_perp {
             margin_requirement_plus_buffer
         );
 
-        let oracle_price = oracle_map
+        let oracle_price = maps
+            .oracle_map
             .get_price_data(&(
                 oracle_price_key,
                 crate::state::oracle::OracleSource::PythLazer,
@@ -1353,7 +1379,7 @@ pub mod liquidate_perp {
         assert_eq!(liquidator.perp_positions[0].base_asset_amount, 1800000000);
         assert_eq!(liquidator.perp_positions[0].quote_asset_amount, -178200000);
 
-        let market_after = perp_market_map.get_ref(&0).unwrap();
+        let market_after = maps.perp_market_map.get_ref(&0).unwrap();
         assert_eq!(market_after.fee_ledger.total_liquidation_fee, 1800000)
     }
 
@@ -1422,6 +1448,11 @@ pub mod liquidate_perp {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: perp_market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut user = User {
             orders: get_orders(Order {
@@ -1458,24 +1489,15 @@ pub mod liquidate_perp {
             ..
         } = calculate_margin_requirement_and_total_collateral_and_liability_info(
             &user,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             MarginContext::standard(MarginRequirementType::Maintenance),
         )
         .unwrap();
         assert_eq!(margin_req, 140014010000);
-        assert!(!is_cross_margin_being_liquidated(
-            &user,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
-            0
-        )
-        .unwrap());
+        assert!(!is_cross_margin_being_liquidated(&user, &mut maps, 0).unwrap());
 
         {
-            let market_to_edit = &mut perp_market_map.get_ref_mut(&0).unwrap();
+            let market_to_edit = &mut maps.perp_market_map.get_ref_mut(&0).unwrap();
             market_to_edit.imf_factor *= 10;
         }
 
@@ -1484,21 +1506,12 @@ pub mod liquidate_perp {
             ..
         } = calculate_margin_requirement_and_total_collateral_and_liability_info(
             &user,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             MarginContext::standard(MarginRequirementType::Maintenance),
         )
         .unwrap();
         assert_eq!(margin_req2, 1040104010000);
-        assert!(is_cross_margin_being_liquidated(
-            &user,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
-            MARGIN_PRECISION / 50
-        )
-        .unwrap());
+        assert!(is_cross_margin_being_liquidated(&user, &mut maps, MARGIN_PRECISION / 50).unwrap());
 
         let mut liquidator = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -1531,9 +1544,7 @@ pub mod liquidate_perp {
             &mut liquidator,
             &liquidator_key,
             &mut liquidator_stats,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             slot,
             now,
             &state,
@@ -1556,7 +1567,7 @@ pub mod liquidate_perp {
             -99 * QUOTE_PRECISION_I64
         );
 
-        let market_after = perp_market_map.get_ref(&0).unwrap();
+        let market_after = maps.perp_market_map.get_ref(&0).unwrap();
         // IF-first split: the IF keeps its full 1% (margin budget allowed it),
         // the protocol captures its 0.5% on top; total_liquidation_fee records
         // both cuts (the full amount charged to the liquidatee)
@@ -1634,6 +1645,11 @@ pub mod liquidate_perp {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: perp_market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut user = User {
             orders: get_orders(Order {
@@ -1692,9 +1708,7 @@ pub mod liquidate_perp {
             &mut liquidator,
             &liquidator_key,
             &mut liquidator_stats,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             slot,
             now,
             &state,
@@ -1766,6 +1780,11 @@ pub mod liquidate_perp {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: perp_market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut user = User {
             orders: get_orders(Order {
@@ -1824,9 +1843,7 @@ pub mod liquidate_perp {
             &mut liquidator,
             &liquidator_key,
             &mut liquidator_stats,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             slot,
             now,
             &state,
@@ -1898,6 +1915,11 @@ pub mod liquidate_perp {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: perp_market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut user = User {
             spot_positions: get_spot_positions(SpotPosition {
@@ -1948,9 +1970,7 @@ pub mod liquidate_perp {
             &mut liquidator,
             &liquidator_key,
             &mut liquidator_stats,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             slot,
             now,
             &state,
@@ -1974,7 +1994,7 @@ pub mod liquidate_perp {
             -99 * QUOTE_PRECISION_I64 / 100
         );
 
-        let market_after = perp_market_map.get_ref(&0).unwrap();
+        let market_after = maps.perp_market_map.get_ref(&0).unwrap();
         assert_eq!(
             market_after.fee_ledger.total_liquidation_fee,
             QUOTE_PRECISION / 100
@@ -2041,6 +2061,11 @@ pub mod liquidate_perp {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: perp_market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut user = User {
             orders: get_orders(Order {
@@ -2103,9 +2128,7 @@ pub mod liquidate_perp {
             &mut liquidator,
             &liquidator_key,
             &mut liquidator_stats,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             slot,
             now,
             &state,
@@ -2128,9 +2151,7 @@ pub mod liquidate_perp {
             &mut liquidator,
             &liquidator_key,
             &mut liquidator_stats,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             slot,
             now,
             &state,
@@ -2147,9 +2168,7 @@ pub mod liquidate_perp {
             ..
         } = calculate_margin_requirement_and_total_collateral_and_liability_info(
             &user,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             MarginContext::liquidation(state.liquidation_margin_buffer_ratio),
         )
         .unwrap();
@@ -2173,9 +2192,7 @@ pub mod liquidate_perp {
             &mut liquidator,
             &liquidator_key,
             &mut liquidator_stats,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             slot,
             now,
             &state,
@@ -2198,9 +2215,7 @@ pub mod liquidate_perp {
             &mut liquidator,
             &liquidator_key,
             &mut liquidator_stats,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             slot,
             now,
             &state,
@@ -2217,9 +2232,7 @@ pub mod liquidate_perp {
             ..
         } = calculate_margin_requirement_and_total_collateral_and_liability_info(
             &user,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             MarginContext::liquidation(state.liquidation_margin_buffer_ratio),
         )
         .unwrap();
@@ -2243,9 +2256,7 @@ pub mod liquidate_perp {
             &mut liquidator,
             &liquidator_key,
             &mut liquidator_stats,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             slot,
             now,
             &state,
@@ -2318,6 +2329,11 @@ pub mod liquidate_perp {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: perp_market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut user = User {
             orders: get_orders(Order {
@@ -2380,9 +2396,7 @@ pub mod liquidate_perp {
             &mut liquidator,
             &liquidator_key,
             &mut liquidator_stats,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             slot,
             now,
             &state,
@@ -2455,6 +2469,11 @@ pub mod liquidate_perp {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: perp_market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut user = User {
             perp_positions: get_positions(PerpPosition {
@@ -2505,9 +2524,7 @@ pub mod liquidate_perp {
             &mut liquidator,
             &liquidator_key,
             &mut liquidator_stats,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             slot,
             now,
             &state,
@@ -2583,6 +2600,11 @@ pub mod liquidate_perp {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: perp_market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut user = User {
             perp_positions: get_positions(PerpPosition {
@@ -2633,16 +2655,14 @@ pub mod liquidate_perp {
             &mut liquidator,
             &liquidator_key,
             &mut liquidator_stats,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             slot,
             now,
             &state,
         )
         .unwrap();
 
-        let market_after = perp_market_map.get_ref(&0).unwrap();
+        let market_after = maps.perp_market_map.get_ref(&0).unwrap();
         // .5% * 100 * .95 =$0.475
         assert_eq!(market_after.fee_ledger.total_liquidation_fee, 475000);
     }
@@ -2711,6 +2731,11 @@ pub mod liquidate_perp {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: perp_market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut user = User {
             perp_positions: get_positions(PerpPosition {
@@ -2761,16 +2786,14 @@ pub mod liquidate_perp {
             &mut liquidator,
             &liquidator_key,
             &mut liquidator_stats,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             slot,
             now,
             &state,
         )
         .unwrap();
 
-        let market_after = perp_market_map.get_ref(&0).unwrap();
+        let market_after = maps.perp_market_map.get_ref(&0).unwrap();
         assert!(!user.is_cross_margin_being_liquidated());
         assert_eq!(market_after.fee_ledger.total_liquidation_fee, 41787043);
     }
@@ -2870,6 +2893,11 @@ pub mod liquidate_perp {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: perp_market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let spot_positions = [SpotPosition::default(); 8];
         let mut perp_positions = [PerpPosition::default(); 8];
@@ -2931,9 +2959,7 @@ pub mod liquidate_perp {
             &mut liquidator,
             &liquidator_key,
             &mut liquidator_stats,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             slot,
             now,
             &state,
@@ -2951,9 +2977,7 @@ pub mod liquidate_perp {
             &mut liquidator,
             &liquidator_key,
             &mut liquidator_stats,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             slot,
             now,
             &state,
@@ -3068,6 +3092,11 @@ pub mod liquidate_perp_with_fill {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: perp_market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let user_key = Pubkey::new_unique();
         let liquidator_key = Pubkey::new_unique();
@@ -3187,9 +3216,7 @@ pub mod liquidate_perp_with_fill {
             &liquidator_stats_account_loader,
             &makers_and_referrers,
             &maker_and_referrer_stats,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             &clock,
             &state,
         )
@@ -3209,7 +3236,7 @@ pub mod liquidate_perp_with_fill {
         assert_eq!(liquidator.perp_positions[0].base_asset_amount, 0);
         assert_eq!(liquidator.perp_positions[0].quote_asset_amount, 1440);
 
-        let market_after = perp_market_map.get_ref(&0).unwrap();
+        let market_after = maps.perp_market_map.get_ref(&0).unwrap();
         assert_eq!(market_after.fee_ledger.total_liquidation_fee, 360000);
 
         // A liquidation does not enroll the liquidatee, who holds the taker seat without
@@ -3288,6 +3315,11 @@ pub mod liquidate_perp_with_fill {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: perp_market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let user_key = Pubkey::new_unique();
         let liquidator_key = Pubkey::new_unique();
@@ -3407,9 +3439,7 @@ pub mod liquidate_perp_with_fill {
             &liquidator_stats_account_loader,
             &makers_and_referrers,
             &maker_and_referrer_stats,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             &clock,
             &state,
         )
@@ -3429,7 +3459,7 @@ pub mod liquidate_perp_with_fill {
         assert_eq!(liquidator.perp_positions[0].base_asset_amount, 0);
         assert_eq!(liquidator.perp_positions[0].quote_asset_amount, 1440);
 
-        let market_after = perp_market_map.get_ref(&0).unwrap();
+        let market_after = maps.perp_market_map.get_ref(&0).unwrap();
         assert_eq!(market_after.fee_ledger.total_liquidation_fee, 360000);
     }
 
@@ -3501,6 +3531,11 @@ pub mod liquidate_perp_with_fill {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: perp_market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let user_key = Pubkey::new_unique();
         let liquidator_key = Pubkey::new_unique();
@@ -3581,9 +3616,7 @@ pub mod liquidate_perp_with_fill {
             &liquidator_stats_account_loader,
             &UserMap::empty(),
             &UserStatsMap::empty(),
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             &clock,
             &state,
         )
@@ -3599,7 +3632,7 @@ pub mod liquidate_perp_with_fill {
         assert_eq!(liquidator.perp_positions[0].base_asset_amount, 0);
         assert_eq!(liquidator.perp_positions[0].quote_asset_amount, 1434);
 
-        let market_after = perp_market_map.get_ref(&0).unwrap();
+        let market_after = maps.perp_market_map.get_ref(&0).unwrap();
         assert_eq!(market_after.fee_ledger.total_liquidation_fee, 358708);
     }
 
@@ -3671,6 +3704,11 @@ pub mod liquidate_perp_with_fill {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: perp_market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let user_key = Pubkey::new_unique();
         let liquidator_key = Pubkey::new_unique();
@@ -3751,9 +3789,7 @@ pub mod liquidate_perp_with_fill {
             &liquidator_stats_account_loader,
             &UserMap::empty(),
             &UserStatsMap::empty(),
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             &clock,
             &state,
         )
@@ -3769,7 +3805,7 @@ pub mod liquidate_perp_with_fill {
         assert_eq!(liquidator.perp_positions[0].base_asset_amount, 0);
         assert_eq!(liquidator.perp_positions[0].quote_asset_amount, 1445);
 
-        let market_after = perp_market_map.get_ref(&0).unwrap();
+        let market_after = maps.perp_market_map.get_ref(&0).unwrap();
         assert_eq!(market_after.fee_ledger.total_liquidation_fee, 361300);
     }
 }
@@ -3874,6 +3910,11 @@ pub mod liquidate_spot {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: perp_market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -3924,9 +3965,7 @@ pub mod liquidate_spot {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             &state,
@@ -4020,6 +4059,11 @@ pub mod liquidate_spot {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: perp_market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         // 100 sol deposit ($8.1k weighted at the stale price) vs 9500 usdc borrow -> liquidatable
         let mut spot_positions = [SpotPosition::default(); 8];
@@ -4071,9 +4115,7 @@ pub mod liquidate_spot {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             &state,
@@ -4166,6 +4208,11 @@ pub mod liquidate_spot {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: perp_market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -4216,9 +4263,7 @@ pub mod liquidate_spot {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             &state,
@@ -4307,6 +4352,11 @@ pub mod liquidate_spot {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: perp_market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         // 10000 usdc deposit vs 90 sol borrow ($9.9k at the stale $110, $10.9k weighted)
         // -> liquidatable at the stale price (solvent at the $100 twap)
@@ -4359,9 +4409,7 @@ pub mod liquidate_spot {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             &state,
@@ -4455,6 +4503,11 @@ pub mod liquidate_spot {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: perp_market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         // 10000 usdc deposit vs 60 sol borrow ($9.3k at $155, $10.23k weighted) -> the
         // account is liquidatable and solvent, so the band is the only thing that can stop
@@ -4508,9 +4561,7 @@ pub mod liquidate_spot {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             &state,
@@ -4521,7 +4572,8 @@ pub mod liquidate_spot {
         // Control: the refresh did run and did drag the stored 5-minute TWAP up to the
         // clamp, where the same oracle clears the band. Reading the field is what the band
         // must not do. If this trips, the fixture no longer reproduces the flip.
-        let refreshed_twap_5min = spot_market_map
+        let refreshed_twap_5min = maps
+            .spot_market_map
             .get_ref(&1)
             .unwrap()
             .historical_oracle_data
@@ -4618,6 +4670,11 @@ pub mod liquidate_spot {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: perp_market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -4668,9 +4725,7 @@ pub mod liquidate_spot {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             &state,
@@ -4747,6 +4802,11 @@ pub mod liquidate_spot {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: perp_market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_market = [SpotPosition::default(); 8];
         spot_market[0] = SpotPosition {
@@ -4797,9 +4857,7 @@ pub mod liquidate_spot {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             &state,
@@ -4807,7 +4865,8 @@ pub mod liquidate_spot {
         .is_err());
 
         // move twap closer to oracle price (within 80% below)
-        let mut market1 = spot_market_map
+        let mut market1 = maps
+            .spot_market_map
             .get_ref_mut(&sol_market.market_index)
             .unwrap();
         market1.historical_oracle_data.last_oracle_price_twap =
@@ -4823,9 +4882,7 @@ pub mod liquidate_spot {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             &state,
@@ -4912,6 +4969,11 @@ pub mod liquidate_spot {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -4961,9 +5023,7 @@ pub mod liquidate_spot {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             &state,
@@ -4981,9 +5041,7 @@ pub mod liquidate_spot {
             ..
         } = calculate_margin_requirement_and_total_collateral_and_liability_info(
             &user,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             MarginContext::liquidation(liquidation_buffer),
         )
         .unwrap();
@@ -4994,11 +5052,12 @@ pub mod liquidate_spot {
 
         let token_amount = get_token_amount(
             user.spot_positions[1].scaled_balance as u128,
-            spot_market_map.get_ref(&1).unwrap().deref(),
+            maps.spot_market_map.get_ref(&1).unwrap().deref(),
             &user.spot_positions[1].balance_type,
         )
         .unwrap();
-        let oracle_price_data = oracle_map
+        let oracle_price_data = maps
+            .oracle_map
             .get_price_data(&(
                 sol_oracle_price_key,
                 crate::state::oracle::OracleSource::PythLazer,
@@ -5050,7 +5109,7 @@ pub mod liquidate_spot {
         );
         assert_eq!(liquidator.spot_positions[1].scaled_balance, 593824001);
 
-        let market_after = spot_market_map.get_ref(&1).unwrap();
+        let market_after = maps.spot_market_map.get_ref(&1).unwrap();
         let market_revenue = get_token_amount(
             market_after.revenue_pool.scaled_balance,
             &market_after,
@@ -5129,6 +5188,11 @@ pub mod liquidate_spot {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: perp_market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -5178,9 +5242,7 @@ pub mod liquidate_spot {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             &state,
@@ -5252,6 +5314,11 @@ pub mod liquidate_spot {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: perp_market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -5301,9 +5368,7 @@ pub mod liquidate_spot {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             &state,
@@ -5376,6 +5441,11 @@ pub mod liquidate_spot {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -5425,9 +5495,7 @@ pub mod liquidate_spot {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             &state,
@@ -5506,6 +5574,11 @@ pub mod liquidate_spot {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -5557,9 +5630,7 @@ pub mod liquidate_spot {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             &state,
@@ -5578,9 +5649,7 @@ pub mod liquidate_spot {
             ..
         } = calculate_margin_requirement_and_total_collateral_and_liability_info(
             &user,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             MarginContext::liquidation(liquidation_buffer),
         )
         .unwrap();
@@ -5602,9 +5671,7 @@ pub mod liquidate_spot {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             &state,
@@ -5622,9 +5689,7 @@ pub mod liquidate_spot {
             ..
         } = calculate_margin_requirement_and_total_collateral_and_liability_info(
             &user,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             MarginContext::liquidation(liquidation_buffer),
         )
         .unwrap();
@@ -5647,9 +5712,7 @@ pub mod liquidate_spot {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             &state,
@@ -5746,6 +5809,11 @@ pub mod liquidate_spot {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[1] = SpotPosition {
@@ -5797,16 +5865,14 @@ pub mod liquidate_spot {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             &state,
         )
         .unwrap();
 
-        let liability_market = spot_market_map.get_ref(&1).unwrap();
+        let liability_market = maps.spot_market_map.get_ref(&1).unwrap();
         let revenue_pool_token_amount = get_token_amount(
             liability_market.revenue_pool.scaled_balance,
             &liability_market,
@@ -5815,12 +5881,11 @@ pub mod liquidate_spot {
         .unwrap();
 
         assert_eq!(revenue_pool_token_amount, 23944781); // 2.39%
+        drop(liability_market);
 
         let margin_calc = calculate_margin_requirement_and_total_collateral_and_liability_info(
             &user,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             MarginContext::liquidation(liquidation_buffer),
         )
         .unwrap();
@@ -5956,6 +6021,11 @@ pub mod liquidate_borrow_for_perp_pnl {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -5997,9 +6067,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             10,
@@ -6114,6 +6182,11 @@ pub mod liquidate_borrow_for_perp_pnl {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -6155,9 +6228,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             10,
@@ -6278,6 +6349,11 @@ pub mod liquidate_borrow_for_perp_pnl {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -6319,9 +6395,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             10,
@@ -6334,7 +6408,8 @@ pub mod liquidate_borrow_for_perp_pnl {
         // Control: this instruction's own refresh did drag the stored 5min TWAP nearly all
         // the way to the stale $110, so pricing off the field would have handed over close
         // to the stale-price amount. If this trips, the fixture no longer reproduces it.
-        let refreshed_twap_5min = spot_market_map
+        let refreshed_twap_5min = maps
+            .spot_market_map
             .get_ref(&1)
             .unwrap()
             .historical_oracle_data
@@ -6443,6 +6518,11 @@ pub mod liquidate_borrow_for_perp_pnl {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -6485,9 +6565,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             liquidation_buffer,
@@ -6506,9 +6584,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             ..
         } = calculate_margin_requirement_and_total_collateral_and_liability_info(
             &user,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             MarginContext::liquidation(liquidation_buffer),
         )
         .unwrap();
@@ -6518,11 +6594,12 @@ pub mod liquidate_borrow_for_perp_pnl {
 
         let token_amount = get_token_amount(
             user.spot_positions[0].scaled_balance as u128,
-            spot_market_map.get_ref(&1).unwrap().deref(),
+            maps.spot_market_map.get_ref(&1).unwrap().deref(),
             &user.spot_positions[0].balance_type,
         )
         .unwrap();
-        let oracle_price_data = oracle_map
+        let oracle_price_data = maps
+            .oracle_map
             .get_price_data(&(
                 sol_oracle_price_key,
                 crate::state::oracle::OracleSource::PythLazer,
@@ -6543,7 +6620,7 @@ pub mod liquidate_borrow_for_perp_pnl {
         assert_eq!(liquidator.spot_positions[1].scaled_balance, 642260001);
         assert_eq!(liquidator.perp_positions[0].quote_asset_amount, 64933193);
 
-        let market_after = spot_market_map.get_ref(&1).unwrap();
+        let market_after = maps.spot_market_map.get_ref(&1).unwrap();
         let market_revenue = get_token_amount(
             market_after.revenue_pool.scaled_balance,
             &market_after,
@@ -6642,6 +6719,11 @@ pub mod liquidate_borrow_for_perp_pnl {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -6683,9 +6765,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             10,
@@ -6795,6 +6875,11 @@ pub mod liquidate_borrow_for_perp_pnl {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -6837,9 +6922,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             10,
@@ -6940,6 +7023,11 @@ pub mod liquidate_borrow_for_perp_pnl {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -6982,9 +7070,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             10,
@@ -7086,6 +7172,11 @@ pub mod liquidate_borrow_for_perp_pnl {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -7128,9 +7219,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             liquidation_buffer,
@@ -7241,6 +7330,11 @@ pub mod liquidate_borrow_for_perp_pnl {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -7283,9 +7377,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             liquidation_buffer,
@@ -7306,9 +7398,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             ..
         } = calculate_margin_requirement_and_total_collateral_and_liability_info(
             &user,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             MarginContext::liquidation(liquidation_buffer),
         )
         .unwrap();
@@ -7330,9 +7420,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             liquidation_buffer,
@@ -7353,9 +7441,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             ..
         } = calculate_margin_requirement_and_total_collateral_and_liability_info(
             &user,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             MarginContext::liquidation(liquidation_buffer),
         )
         .unwrap();
@@ -7377,9 +7463,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             liquidation_buffer,
@@ -7523,6 +7607,11 @@ pub mod liquidate_perp_pnl_for_deposit {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -7564,9 +7653,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             MARGIN_PRECISION / 50, // 2% buffer
@@ -7704,6 +7791,11 @@ pub mod liquidate_perp_pnl_for_deposit {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -7745,9 +7837,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             10,
@@ -7864,6 +7954,11 @@ pub mod liquidate_perp_pnl_for_deposit {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -7905,9 +8000,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             10,
@@ -7989,6 +8082,11 @@ pub mod liquidate_perp_pnl_for_deposit {
         let spot_market_map =
             SpotMarketMap::load_multiple(Vec::from([&usdc_spot_market_account_info]), true)
                 .unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -8030,9 +8128,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             10,
@@ -8145,6 +8241,11 @@ pub mod liquidate_perp_pnl_for_deposit {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -8186,9 +8287,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             MARGIN_PRECISION / 50,
@@ -8208,7 +8307,7 @@ pub mod liquidate_perp_pnl_for_deposit {
         assert_eq!(liquidator.spot_positions[1].scaled_balance, 259212000);
         assert_eq!(liquidator.perp_positions[0].quote_asset_amount, -25636363);
 
-        let market_after = market_map.get_ref(&0).unwrap();
+        let market_after = maps.perp_market_map.get_ref(&0).unwrap();
         assert_eq!(market_after.fee_ledger.total_liquidation_fee, 0);
     }
 
@@ -8301,6 +8400,11 @@ pub mod liquidate_perp_pnl_for_deposit {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -8342,9 +8446,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             10,
@@ -8459,6 +8561,11 @@ pub mod liquidate_perp_pnl_for_deposit {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -8500,9 +8607,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             10,
@@ -8615,6 +8720,11 @@ pub mod liquidate_perp_pnl_for_deposit {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -8657,9 +8767,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             10,
@@ -8760,6 +8868,11 @@ pub mod liquidate_perp_pnl_for_deposit {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -8802,9 +8915,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             10,
@@ -8906,6 +9017,11 @@ pub mod liquidate_perp_pnl_for_deposit {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -8947,9 +9063,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             MARGIN_PRECISION / 50,
@@ -9064,6 +9178,11 @@ pub mod liquidate_perp_pnl_for_deposit {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -9106,9 +9225,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             liquidation_buffer,
@@ -9125,9 +9242,7 @@ pub mod liquidate_perp_pnl_for_deposit {
 
         let calc = calculate_margin_requirement_and_total_collateral_and_liability_info(
             &user,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             MarginContext::liquidation(liquidation_buffer),
         )
         .unwrap();
@@ -9148,9 +9263,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             liquidation_buffer,
@@ -9167,9 +9280,7 @@ pub mod liquidate_perp_pnl_for_deposit {
 
         let calc = calculate_margin_requirement_and_total_collateral_and_liability_info(
             &user,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             MarginContext::liquidation(liquidation_buffer),
         )
         .unwrap();
@@ -9190,9 +9301,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             liquidation_buffer,
@@ -9298,6 +9407,11 @@ pub mod liquidate_perp_pnl_for_deposit {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -9345,9 +9459,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             // 2% liquidation margin buffer: it must stay above the market's 1%
@@ -9376,9 +9488,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             &state,
@@ -9396,9 +9506,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             200,
@@ -9420,9 +9528,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             200,
@@ -9441,7 +9547,13 @@ pub mod liquidate_perp_pnl_for_deposit {
         // withholds the whole pending IF tranche until the resolver runs, so
         // nobody can drain it in between.
         assert!(user.perp_positions[0].has_bankruptcy_claim());
-        assert_eq!(market_map.get_ref(&0).unwrap().pending_bankruptcy_claims, 1);
+        assert_eq!(
+            maps.perp_market_map
+                .get_ref(&0)
+                .unwrap()
+                .pending_bankruptcy_claims,
+            1
+        );
     }
 
     #[test]
@@ -9568,6 +9680,11 @@ pub mod liquidate_perp_pnl_for_deposit {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -9621,9 +9738,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             // 2% liquidation margin buffer: it must stay above the market's 1%
@@ -9646,9 +9761,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             200,
@@ -9668,9 +9781,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             200,
@@ -9816,6 +9927,11 @@ pub mod liquidate_perp_pnl_for_deposit {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -9867,9 +9983,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             // 2% liquidation margin buffer: it must stay above the market's 1%
@@ -10001,6 +10115,11 @@ pub mod resolve_perp_bankruptcy {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut user = User {
             orders: get_orders(Order {
@@ -10062,7 +10181,7 @@ pub mod resolve_perp_bankruptcy {
         // harness's default-zero stamp would make the settle realize a spurious
         // payment and shift total_fee_minus_distributions).
         {
-            let mut m = market_map.get_ref_mut(&0).unwrap();
+            let mut m = maps.perp_market_map.get_ref_mut(&0).unwrap();
             m.amm.last_cumulative_funding_rate_long = m.cumulative_funding_rate_long as i64;
             m.amm.last_cumulative_funding_rate_short = m.cumulative_funding_rate_short as i64;
         }
@@ -10077,9 +10196,7 @@ pub mod resolve_perp_bankruptcy {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             0,
             false,
@@ -10087,7 +10204,10 @@ pub mod resolve_perp_bankruptcy {
         .unwrap();
 
         assert_eq!(expected_user, user);
-        assert_eq!(expected_market, market_map.get_ref(&0).unwrap().clone());
+        assert_eq!(
+            expected_market,
+            maps.perp_market_map.get_ref(&0).unwrap().clone()
+        );
 
         let mut affected_long_user = User {
             orders: [Order::default(); 32],
@@ -10115,7 +10235,7 @@ pub mod resolve_perp_bankruptcy {
         expected_affected_long_user.cumulative_perp_funding = -50 * QUOTE_PRECISION_I64;
 
         {
-            let mut market = market_map.get_ref_mut(&0).unwrap();
+            let mut market = maps.perp_market_map.get_ref_mut(&0).unwrap();
             settle_funding_payment(
                 &mut affected_long_user,
                 &Pubkey::default(),
@@ -10153,7 +10273,7 @@ pub mod resolve_perp_bankruptcy {
         expected_affected_short_user.cumulative_perp_funding = -50 * QUOTE_PRECISION_I64;
 
         {
-            let mut market = market_map.get_ref_mut(&0).unwrap();
+            let mut market = maps.perp_market_map.get_ref_mut(&0).unwrap();
             settle_funding_payment(
                 &mut affected_short_user,
                 &Pubkey::default(),
@@ -10231,6 +10351,11 @@ pub mod resolve_perp_bankruptcy {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         // Bankrupt user carries a $100 quote loss and no base.
         let mut user = User {
@@ -10268,9 +10393,7 @@ pub mod resolve_perp_bankruptcy {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             0,
             false,
@@ -10279,7 +10402,10 @@ pub mod resolve_perp_bankruptcy {
 
         // The socialized loss is now recorded as an obligation.
         assert_eq!(
-            market_map.get_ref(&0).unwrap().net_unsettled_funding_pnl,
+            maps.perp_market_map
+                .get_ref(&0)
+                .unwrap()
+                .net_unsettled_funding_pnl,
             -100 * QUOTE_PRECISION_I64
         );
 
@@ -10311,13 +10437,17 @@ pub mod resolve_perp_bankruptcy {
                 ..User::default()
             };
 
-            let mut market = market_map.get_ref_mut(&0).unwrap();
+            let mut market = maps.perp_market_map.get_ref_mut(&0).unwrap();
             settle_funding_payment(&mut affected_user, &Pubkey::default(), &mut market, now)
                 .unwrap();
         }
 
         // All settled: only rounding dust remains, not the full socialized loss.
-        let residual = market_map.get_ref(&0).unwrap().net_unsettled_funding_pnl;
+        let residual = maps
+            .perp_market_map
+            .get_ref(&0)
+            .unwrap()
+            .net_unsettled_funding_pnl;
         assert!(
             residual.abs() <= 10,
             "net_unsettled residual {} exceeds rounding bound",
@@ -10395,6 +10525,11 @@ pub mod resolve_perp_bankruptcy {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut user = User {
             orders: [Order::default(); 32],
@@ -10443,9 +10578,7 @@ pub mod resolve_perp_bankruptcy {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             0,
             false,
@@ -10453,7 +10586,10 @@ pub mod resolve_perp_bankruptcy {
         .unwrap();
 
         assert_eq!(expected_user, user);
-        assert_eq!(expected_market, market_map.get_ref(&0).unwrap().clone());
+        assert_eq!(
+            expected_market,
+            maps.perp_market_map.get_ref(&0).unwrap().clone()
+        );
     }
 
     #[test]
@@ -10522,6 +10658,11 @@ pub mod resolve_perp_bankruptcy {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         // No open orders, no deposits, negative perp quote: economically
         // bankrupt. Crucially, status is NOT Bankrupt and next_liquidation_id is
@@ -10561,9 +10702,7 @@ pub mod resolve_perp_bankruptcy {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             0,
             false,
@@ -10648,6 +10787,11 @@ pub mod resolve_perp_bankruptcy {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut user = User {
             orders: get_orders(Order {
@@ -10704,7 +10848,7 @@ pub mod resolve_perp_bankruptcy {
         // Model the production invariant (see successful_resolve_perp_bankruptcy):
         // the AMM stamp is not lagging at entry, so #89's settle-first is a no-op.
         {
-            let mut m = market_map.get_ref_mut(&0).unwrap();
+            let mut m = maps.perp_market_map.get_ref_mut(&0).unwrap();
             m.amm.last_cumulative_funding_rate_long = m.cumulative_funding_rate_long as i64;
             m.amm.last_cumulative_funding_rate_short = m.cumulative_funding_rate_short as i64;
         }
@@ -10730,9 +10874,7 @@ pub mod resolve_perp_bankruptcy {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             0,
             false,
@@ -10741,7 +10883,10 @@ pub mod resolve_perp_bankruptcy {
 
         assert_eq!(user.total_social_loss, 100000000);
         assert_eq!(expected_user, user);
-        assert_eq!(expected_market, market_map.get_ref(&0).unwrap().clone());
+        assert_eq!(
+            expected_market,
+            maps.perp_market_map.get_ref(&0).unwrap().clone()
+        );
 
         let mut affected_long_user = User {
             orders: [Order::default(); 32],
@@ -10769,7 +10914,7 @@ pub mod resolve_perp_bankruptcy {
         expected_affected_long_user.cumulative_perp_funding = -20 * QUOTE_PRECISION_I64;
 
         {
-            let mut market = market_map.get_ref_mut(&0).unwrap();
+            let mut market = maps.perp_market_map.get_ref_mut(&0).unwrap();
             settle_funding_payment(
                 &mut affected_long_user,
                 &Pubkey::default(),
@@ -10807,7 +10952,7 @@ pub mod resolve_perp_bankruptcy {
         expected_affected_short_user.cumulative_perp_funding = -20 * QUOTE_PRECISION_I64;
 
         {
-            let mut market = market_map.get_ref_mut(&0).unwrap();
+            let mut market = maps.perp_market_map.get_ref_mut(&0).unwrap();
             settle_funding_payment(
                 &mut affected_short_user,
                 &Pubkey::default(),
@@ -10904,6 +11049,11 @@ pub mod resolve_perp_bankruptcy {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut user = User {
             orders: get_orders(Order {
@@ -10961,7 +11111,7 @@ pub mod resolve_perp_bankruptcy {
         // Model the production invariant (see successful_resolve_perp_bankruptcy):
         // the AMM stamp is not lagging at entry, so #89's settle-first is a no-op.
         {
-            let mut m = market_map.get_ref_mut(&0).unwrap();
+            let mut m = maps.perp_market_map.get_ref_mut(&0).unwrap();
             m.amm.last_cumulative_funding_rate_long = m.cumulative_funding_rate_long as i64;
             m.amm.last_cumulative_funding_rate_short = m.cumulative_funding_rate_short as i64;
         }
@@ -10987,9 +11137,7 @@ pub mod resolve_perp_bankruptcy {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             100 * QUOTE_PRECISION_I64 as u64, // IF vault balance (capped by quote_max_insurance)
             false,
@@ -10997,7 +11145,10 @@ pub mod resolve_perp_bankruptcy {
         .unwrap();
 
         assert_eq!(expected_user, user);
-        assert_eq!(expected_market, market_map.get_ref(&0).unwrap().clone());
+        assert_eq!(
+            expected_market,
+            maps.perp_market_map.get_ref(&0).unwrap().clone()
+        );
     }
 
     /// When the market's in-transit IF cut alone covers the whole loss,
@@ -11065,6 +11216,11 @@ pub mod resolve_perp_bankruptcy {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut user = User {
             orders: get_orders(Order {
@@ -11122,9 +11278,7 @@ pub mod resolve_perp_bankruptcy {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             0,
             false,
@@ -11132,7 +11286,7 @@ pub mod resolve_perp_bankruptcy {
         .unwrap();
 
         assert_eq!(expected_user, user);
-        let market_after = market_map.get_ref(&0).unwrap().clone();
+        let market_after = maps.perp_market_map.get_ref(&0).unwrap().clone();
         // no socialization: funding rates and social-loss counters untouched,
         // the AMM's clawback cap untouched
         assert_eq!(market_after.total_social_loss, 0);
@@ -11233,6 +11387,11 @@ pub mod resolve_perp_bankruptcy {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut user = User {
             perp_positions: get_positions(PerpPosition {
@@ -11265,8 +11424,8 @@ pub mod resolve_perp_bankruptcy {
         // attacker front-runs the resolution with a permissionless sweep:
         // the floor covers the whole pending IF fee, nothing may leave
         {
-            let mut market = market_map.get_ref_mut(&0).unwrap();
-            let mut spot_market = spot_market_map.get_ref_mut(&0).unwrap();
+            let mut market = maps.perp_market_map.get_ref_mut(&0).unwrap();
+            let mut spot_market = maps.spot_market_map.get_ref_mut(&0).unwrap();
             let (if_swept, _, _) =
                 sweep_market_fees(&mut market, &mut spot_market, 0, now, false).unwrap();
             assert_eq!(if_swept, 0);
@@ -11282,9 +11441,7 @@ pub mod resolve_perp_bankruptcy {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             0,
             false,
@@ -11292,7 +11449,7 @@ pub mod resolve_perp_bankruptcy {
         .unwrap();
 
         // tranche 1 fully absorbed the loss despite the sweep attempt
-        let market_after = market_map.get_ref(&0).unwrap().clone();
+        let market_after = maps.perp_market_map.get_ref(&0).unwrap().clone();
         assert_eq!(
             market_after.fee_ledger.pending_if_fee,
             50 * QUOTE_PRECISION_I64 as u128
@@ -11392,6 +11549,11 @@ pub mod resolve_perp_bankruptcy {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut user = User {
             perp_positions: get_positions(PerpPosition {
@@ -11422,15 +11584,27 @@ pub mod resolve_perp_bankruptcy {
         let liquidator_key = Pubkey::default();
 
         // the liquidation that latched the user booked the debt here
-        flag_perp_bankruptcy_claim(&mut user, 0, &market_map).unwrap();
+        flag_perp_bankruptcy_claim(&mut user, 0, &maps.perp_market_map).unwrap();
         assert!(user.perp_positions[0].has_bankruptcy_claim());
-        assert_eq!(market_map.get_ref(&0).unwrap().pending_bankruptcy_claims, 1);
+        assert_eq!(
+            maps.perp_market_map
+                .get_ref(&0)
+                .unwrap()
+                .pending_bankruptcy_claims,
+            1
+        );
         // a second latch counts the same debt once
-        flag_perp_bankruptcy_claim(&mut user, 0, &market_map).unwrap();
-        assert_eq!(market_map.get_ref(&0).unwrap().pending_bankruptcy_claims, 1);
+        flag_perp_bankruptcy_claim(&mut user, 0, &maps.perp_market_map).unwrap();
+        assert_eq!(
+            maps.perp_market_map
+                .get_ref(&0)
+                .unwrap()
+                .pending_bankruptcy_claims,
+            1
+        );
         // the floor alone would protect nothing here
         assert_eq!(
-            market_map
+            maps.perp_market_map
                 .get_ref(&0)
                 .unwrap()
                 .get_bankruptcy_if_floor()
@@ -11440,8 +11614,8 @@ pub mod resolve_perp_bankruptcy {
 
         // attacker front-runs the resolution with a permissionless sweep
         {
-            let mut market = market_map.get_ref_mut(&0).unwrap();
-            let mut spot_market = spot_market_map.get_ref_mut(&0).unwrap();
+            let mut market = maps.perp_market_map.get_ref_mut(&0).unwrap();
+            let mut spot_market = maps.spot_market_map.get_ref_mut(&0).unwrap();
             let (if_swept, _, _) =
                 sweep_market_fees(&mut market, &mut spot_market, 0, now, false).unwrap();
             assert_eq!(if_swept, 0);
@@ -11457,9 +11631,7 @@ pub mod resolve_perp_bankruptcy {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             0,
             false,
@@ -11467,7 +11639,7 @@ pub mod resolve_perp_bankruptcy {
         .unwrap();
 
         // tranche 1 absorbed the loss: no social loss, funding untouched
-        let market_after = market_map.get_ref(&0).unwrap().clone();
+        let market_after = maps.perp_market_map.get_ref(&0).unwrap().clone();
         assert_eq!(
             market_after.fee_ledger.pending_if_fee,
             50 * QUOTE_PRECISION_I64 as u128
@@ -11488,8 +11660,8 @@ pub mod resolve_perp_bankruptcy {
         assert!(!user.perp_positions[0].has_bankruptcy_claim());
         assert_eq!(market_after.pending_bankruptcy_claims, 0);
         {
-            let mut market = market_map.get_ref_mut(&0).unwrap();
-            let mut spot_market = spot_market_map.get_ref_mut(&0).unwrap();
+            let mut market = maps.perp_market_map.get_ref_mut(&0).unwrap();
+            let mut spot_market = maps.spot_market_map.get_ref_mut(&0).unwrap();
             let (if_swept, _, _) =
                 sweep_market_fees(&mut market, &mut spot_market, 0, now, false).unwrap();
             assert_eq!(if_swept, 50 * QUOTE_PRECISION);
@@ -11707,6 +11879,11 @@ pub mod resolve_perp_bankruptcy {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut user = User {
             perp_positions: get_positions(PerpPosition {
@@ -11738,8 +11915,8 @@ pub mod resolve_perp_bankruptcy {
 
         // no floor: the front-running sweep drains the entire tranche
         {
-            let mut market = market_map.get_ref_mut(&0).unwrap();
-            let mut spot_market = spot_market_map.get_ref_mut(&0).unwrap();
+            let mut market = maps.perp_market_map.get_ref_mut(&0).unwrap();
+            let mut spot_market = maps.spot_market_map.get_ref_mut(&0).unwrap();
             let (if_swept, _, _) =
                 sweep_market_fees(&mut market, &mut spot_market, 0, now, false).unwrap();
             assert_eq!(if_swept, 150 * QUOTE_PRECISION);
@@ -11752,9 +11929,7 @@ pub mod resolve_perp_bankruptcy {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             0,
             false,
@@ -11762,7 +11937,7 @@ pub mod resolve_perp_bankruptcy {
         .unwrap();
 
         // with no tranche left, the whole loss socializes: counterparties pay
-        let market_after = market_map.get_ref(&0).unwrap().clone();
+        let market_after = maps.perp_market_map.get_ref(&0).unwrap().clone();
         assert_eq!(
             market_after.total_social_loss,
             100 * QUOTE_PRECISION_I64 as u128
@@ -11839,6 +12014,11 @@ pub mod resolve_perp_bankruptcy {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut user = User {
             orders: get_orders(Order {
@@ -11896,7 +12076,7 @@ pub mod resolve_perp_bankruptcy {
         // Model the production invariant (see successful_resolve_perp_bankruptcy):
         // the AMM stamp is not lagging at entry, so #89's settle-first is a no-op.
         {
-            let mut m = market_map.get_ref_mut(&0).unwrap();
+            let mut m = maps.perp_market_map.get_ref_mut(&0).unwrap();
             m.amm.last_cumulative_funding_rate_long = m.cumulative_funding_rate_long as i64;
             m.amm.last_cumulative_funding_rate_short = m.cumulative_funding_rate_short as i64;
         }
@@ -11915,9 +12095,7 @@ pub mod resolve_perp_bankruptcy {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             0,
             false,
@@ -11925,7 +12103,7 @@ pub mod resolve_perp_bankruptcy {
         .unwrap();
 
         assert_eq!(expected_user, user);
-        let market_after = market_map.get_ref(&0).unwrap().clone();
+        let market_after = maps.perp_market_map.get_ref(&0).unwrap().clone();
         // counter-only: no tokens moved anywhere
         assert_eq!(market_after.pnl_pool.scaled_balance, 0);
         assert_eq!(market_after.amm.fee_pool.scaled_balance, 0);
@@ -11998,6 +12176,11 @@ pub mod resolve_perp_bankruptcy {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         // $100 of bad debt, and a $40 quote credit that landed after the latch was set.
         let mut user = User {
@@ -12030,9 +12213,7 @@ pub mod resolve_perp_bankruptcy {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             0,
             false,
@@ -12046,7 +12227,7 @@ pub mod resolve_perp_bankruptcy {
         assert_eq!(user.total_social_loss, 60 * QUOTE_PRECISION_U64);
         // The setoff lands exactly where an insurance payment would have, backing the
         // counterparties this spares from socialization.
-        let market_after = market_map.get_ref(&0).unwrap().clone();
+        let market_after = maps.perp_market_map.get_ref(&0).unwrap().clone();
         assert_eq!(
             market_after.pnl_pool.scaled_balance,
             40 * SPOT_BALANCE_PRECISION
@@ -12147,6 +12328,11 @@ pub mod resolve_perp_bankruptcy {
             true,
         )
         .unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         // Slot 0 must stay the quote row -- `get_spot_position_index` enforces
         // "first spot position is always quote asset". The SOL deposit goes in slot 1.
@@ -12183,9 +12369,7 @@ pub mod resolve_perp_bankruptcy {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             1_000 * QUOTE_PRECISION_U64,
             false,
@@ -12302,6 +12486,11 @@ pub mod resolve_perp_bankruptcy {
         create_anchor_account_info!(usdc_market, SpotMarket, usdc_spot_market_account_info);
         let spot_market_map =
             SpotMarketMap::load_one(&usdc_spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         // A $100 debt beside a $500 claim, latched, holding no deposit of its own.
         let mut perp_positions = [PerpPosition::default(); 8];
@@ -12327,8 +12516,14 @@ pub mod resolve_perp_bankruptcy {
         };
 
         // The latch booked the debt against the market, which freezes its fee sweep.
-        flag_perp_bankruptcy_claim(&mut user, 0, &market_map).unwrap();
-        assert_eq!(market_map.get_ref(&0).unwrap().pending_bankruptcy_claims, 1);
+        flag_perp_bankruptcy_claim(&mut user, 0, &maps.perp_market_map).unwrap();
+        assert_eq!(
+            maps.perp_market_map
+                .get_ref(&0)
+                .unwrap()
+                .pending_bankruptcy_claims,
+            1
+        );
 
         let mut liquidator = User::default();
         let user_key = Pubkey::default();
@@ -12340,9 +12535,7 @@ pub mod resolve_perp_bankruptcy {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             1_000 * QUOTE_PRECISION_U64,
             false,
@@ -12360,12 +12553,20 @@ pub mod resolve_perp_bankruptcy {
             400 * QUOTE_PRECISION_I64
         );
         assert_eq!(
-            market_map.get_ref(&1).unwrap().pnl_pool.scaled_balance,
+            maps.perp_market_map
+                .get_ref(&1)
+                .unwrap()
+                .pnl_pool
+                .scaled_balance,
             400 * SPOT_BALANCE_PRECISION,
             "the claim market's pool paid exactly the debt"
         );
         assert_eq!(
-            market_map.get_ref(&0).unwrap().pnl_pool.scaled_balance,
+            maps.perp_market_map
+                .get_ref(&0)
+                .unwrap()
+                .pnl_pool
+                .scaled_balance,
             100 * SPOT_BALANCE_PRECISION,
             "the setoff put those tokens where the insurance draw would have gone"
         );
@@ -12376,7 +12577,13 @@ pub mod resolve_perp_bankruptcy {
 
         // The booking went with the debt, so the market's fee sweep runs again.
         assert!(!user.perp_positions[0].has_bankruptcy_claim());
-        assert_eq!(market_map.get_ref(&0).unwrap().pending_bankruptcy_claims, 0);
+        assert_eq!(
+            maps.perp_market_map
+                .get_ref(&0)
+                .unwrap()
+                .pending_bankruptcy_claims,
+            0
+        );
     }
 
     /// The same full recovery keeps the latch when a liability remains elsewhere on the estate.
@@ -12502,6 +12709,11 @@ pub mod resolve_perp_bankruptcy {
             true,
         )
         .unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut perp_positions = [PerpPosition::default(); 8];
         perp_positions[0] = PerpPosition {
@@ -12544,9 +12756,7 @@ pub mod resolve_perp_bankruptcy {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             1_000 * QUOTE_PRECISION_U64,
             false,
@@ -12658,6 +12868,11 @@ pub mod resolve_spot_bankruptcy {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut user = User {
             orders: get_orders(Order {
@@ -12713,9 +12928,7 @@ pub mod resolve_spot_bankruptcy {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             0,
             false,
@@ -12723,9 +12936,12 @@ pub mod resolve_spot_bankruptcy {
         .unwrap();
 
         assert_eq!(expected_user, user);
-        assert_eq!(expected_spot_market, *spot_market_map.get_ref(&0).unwrap());
+        assert_eq!(
+            expected_spot_market,
+            *maps.spot_market_map.get_ref(&0).unwrap()
+        );
 
-        let spot_market = spot_market_map.get_ref_mut(&0).unwrap();
+        let spot_market = maps.spot_market_map.get_ref_mut(&0).unwrap();
         let deposit_balance = spot_market.deposit_balance;
         let deposit_token_amount =
             get_token_amount(deposit_balance, &spot_market, &SpotBalanceType::Deposit).unwrap();
@@ -12797,6 +13013,11 @@ pub mod resolve_spot_bankruptcy {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         // User is cross-margin bankrupt with BOTH a spot borrow and a bad-debt
         // perp position (base 0, negative quote) still outstanding.
@@ -12838,9 +13059,7 @@ pub mod resolve_spot_bankruptcy {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             0,
             false,
@@ -12911,6 +13130,11 @@ pub mod resolve_spot_bankruptcy {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut user = User {
             orders: get_orders(Order {
@@ -12970,9 +13194,7 @@ pub mod resolve_spot_bankruptcy {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             (40 * QUOTE_PRECISION + 1) as u64,
             false,
@@ -12981,9 +13203,12 @@ pub mod resolve_spot_bankruptcy {
 
         assert_eq!(if_payment, (40 * QUOTE_PRECISION) as u64);
         assert_eq!(expected_user, user);
-        assert_eq!(expected_spot_market, *spot_market_map.get_ref(&0).unwrap());
+        assert_eq!(
+            expected_spot_market,
+            *maps.spot_market_map.get_ref(&0).unwrap()
+        );
 
-        let spot_market = spot_market_map.get_ref_mut(&0).unwrap();
+        let spot_market = maps.spot_market_map.get_ref_mut(&0).unwrap();
         let deposit_balance = spot_market.deposit_balance;
         let deposit_token_amount =
             get_token_amount(deposit_balance, &spot_market, &SpotBalanceType::Deposit).unwrap();
@@ -13057,6 +13282,11 @@ pub mod resolve_spot_bankruptcy {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut user = User {
             orders: get_orders(Order {
@@ -13114,9 +13344,7 @@ pub mod resolve_spot_bankruptcy {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             0,
             false,
@@ -13125,9 +13353,12 @@ pub mod resolve_spot_bankruptcy {
 
         assert_eq!(if_payment, 0);
         assert_eq!(expected_user, user);
-        assert_eq!(expected_spot_market, *spot_market_map.get_ref(&0).unwrap());
+        assert_eq!(
+            expected_spot_market,
+            *maps.spot_market_map.get_ref(&0).unwrap()
+        );
 
-        let spot_market = spot_market_map.get_ref_mut(&0).unwrap();
+        let spot_market = maps.spot_market_map.get_ref_mut(&0).unwrap();
         let deposit_balance = spot_market.deposit_balance;
         let deposit_token_amount =
             get_token_amount(deposit_balance, &spot_market, &SpotBalanceType::Deposit).unwrap();
@@ -13205,6 +13436,11 @@ pub mod resolve_spot_bankruptcy {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut user = User {
             orders: get_orders(Order {
@@ -13261,9 +13497,7 @@ pub mod resolve_spot_bankruptcy {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             0,
             false,
@@ -13272,9 +13506,12 @@ pub mod resolve_spot_bankruptcy {
 
         assert_eq!(if_payment, 0);
         assert_eq!(expected_user, user);
-        assert_eq!(expected_spot_market, *spot_market_map.get_ref(&0).unwrap());
+        assert_eq!(
+            expected_spot_market,
+            *maps.spot_market_map.get_ref(&0).unwrap()
+        );
 
-        let spot_market = spot_market_map.get_ref_mut(&0).unwrap();
+        let spot_market = maps.spot_market_map.get_ref_mut(&0).unwrap();
         let deposit_balance = spot_market.deposit_balance;
         let deposit_token_amount =
             get_token_amount(deposit_balance, &spot_market, &SpotBalanceType::Deposit).unwrap();
@@ -13350,6 +13587,11 @@ pub mod resolve_spot_bankruptcy {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut user = User {
             orders: get_orders(Order {
@@ -13412,9 +13654,7 @@ pub mod resolve_spot_bankruptcy {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             (40 * QUOTE_PRECISION + 1) as u64,
             false,
@@ -13425,9 +13665,12 @@ pub mod resolve_spot_bankruptcy {
         // revenue pool tranche needs no token movement
         assert_eq!(if_payment, (40 * QUOTE_PRECISION) as u64);
         assert_eq!(expected_user, user);
-        assert_eq!(expected_spot_market, *spot_market_map.get_ref(&0).unwrap());
+        assert_eq!(
+            expected_spot_market,
+            *maps.spot_market_map.get_ref(&0).unwrap()
+        );
 
-        let spot_market = spot_market_map.get_ref_mut(&0).unwrap();
+        let spot_market = maps.spot_market_map.get_ref_mut(&0).unwrap();
         let deposit_balance = spot_market.deposit_balance;
         let deposit_token_amount =
             get_token_amount(deposit_balance, &spot_market, &SpotBalanceType::Deposit).unwrap();
@@ -13538,6 +13781,11 @@ pub mod set_user_status_to_being_liquidated {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: perp_market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut user = User {
             orders: get_orders(Order {
@@ -13576,14 +13824,7 @@ pub mod set_user_status_to_being_liquidated {
             ..Default::default()
         };
 
-        let result = set_user_status_to_being_liquidated(
-            &mut user,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
-            slot,
-            &state,
-        );
+        let result = set_user_status_to_being_liquidated(&mut user, &mut maps, slot, &state);
 
         assert_eq!(result, Err(ErrorCode::SufficientCollateral));
     }
@@ -13628,28 +13869,19 @@ pub mod set_user_status_to_being_liquidated {
         let mut spot_market = SpotMarket::default();
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: perp_market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
-        let mut result = set_user_status_to_being_liquidated(
-            &mut user,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
-            slot,
-            &state,
-        );
+        let mut result = set_user_status_to_being_liquidated(&mut user, &mut maps, slot, &state);
 
         assert_eq!(result, Err(ErrorCode::UserBankrupt));
 
         user.remove_user_status(UserStatus::Bankrupt);
         user.add_user_status(UserStatus::BeingLiquidated);
-        result = set_user_status_to_being_liquidated(
-            &mut user,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
-            slot,
-            &state,
-        );
+        result = set_user_status_to_being_liquidated(&mut user, &mut maps, slot, &state);
         assert_eq!(result, Err(ErrorCode::UserIsBeingLiquidated));
     }
 
@@ -13713,6 +13945,11 @@ pub mod set_user_status_to_being_liquidated {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: perp_market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut user = User {
             orders: get_orders(Order {
@@ -13744,14 +13981,7 @@ pub mod set_user_status_to_being_liquidated {
             ..Default::default()
         };
 
-        let result = set_user_status_to_being_liquidated(
-            &mut user,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
-            slot,
-            &state,
-        );
+        let result = set_user_status_to_being_liquidated(&mut user, &mut maps, slot, &state);
 
         assert_eq!(user.status, UserStatus::BeingLiquidated as u8);
         assert_eq!(result, Ok(()));
@@ -13857,6 +14087,11 @@ pub mod liquidate_spot_with_swap {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -13911,9 +14146,7 @@ pub mod liquidate_spot_with_swap {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             &state,
@@ -13929,9 +14162,7 @@ pub mod liquidate_spot_with_swap {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             &state,
@@ -13945,9 +14176,7 @@ pub mod liquidate_spot_with_swap {
             &mut user,
             &user_key,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             &state,
@@ -13958,8 +14187,8 @@ pub mod liquidate_spot_with_swap {
 
         assert_eq!(user.is_cross_margin_being_liquidated(), false);
 
-        let quote_spot_market = spot_market_map.get_ref(&0).unwrap();
-        let sol_spot_market = spot_market_map.get_ref(&1).unwrap();
+        let quote_spot_market = maps.spot_market_map.get_ref(&0).unwrap();
+        let sol_spot_market = maps.spot_market_map.get_ref(&1).unwrap();
 
         assert_eq!(
             user.spot_positions[0]
@@ -14062,6 +14291,11 @@ pub mod liquidate_spot_with_swap {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -14113,9 +14347,7 @@ pub mod liquidate_spot_with_swap {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             &state,
@@ -14130,9 +14362,7 @@ pub mod liquidate_spot_with_swap {
             &mut user,
             &user_key,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             &state,
@@ -14149,9 +14379,7 @@ pub mod liquidate_spot_with_swap {
             &mut user,
             &user_key,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             &state,
@@ -14247,6 +14475,11 @@ pub mod liquidate_spot_with_swap {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -14298,9 +14531,7 @@ pub mod liquidate_spot_with_swap {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             &state,
@@ -14309,7 +14540,7 @@ pub mod liquidate_spot_with_swap {
 
         // begin left the 5-minute TWAP exactly where it found it, so end still reads $100.
         assert_eq!(
-            spot_market_map
+            maps.spot_market_map
                 .get_ref(&1)
                 .unwrap()
                 .historical_oracle_data
@@ -14325,9 +14556,7 @@ pub mod liquidate_spot_with_swap {
             &mut user,
             &user_key,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             &state,
@@ -14344,9 +14573,7 @@ pub mod liquidate_spot_with_swap {
             &mut user,
             &user_key,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             &state,
@@ -14436,6 +14663,11 @@ pub mod liquidate_spot_with_swap {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -14487,9 +14719,7 @@ pub mod liquidate_spot_with_swap {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             &state,
@@ -14504,9 +14734,7 @@ pub mod liquidate_spot_with_swap {
             &mut user,
             &user_key,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             &state,
@@ -14523,9 +14751,7 @@ pub mod liquidate_spot_with_swap {
             &mut user,
             &user_key,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             &state,
@@ -14685,6 +14911,11 @@ mod liquidate_dust_spot_market {
             None,
         )
         .unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: perp_market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut state = State::default();
         state
@@ -14730,9 +14961,7 @@ mod liquidate_dust_spot_market {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             clock_slot,
             &state,
@@ -14849,6 +15078,11 @@ pub mod liquidate_isolated_perp {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: perp_market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut user = User {
             orders: get_orders(Order {
@@ -14907,9 +15141,7 @@ pub mod liquidate_isolated_perp {
             &mut liquidator,
             &liquidator_key,
             &mut liquidator_stats,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             slot,
             now,
             &state,
@@ -14933,7 +15165,7 @@ pub mod liquidate_isolated_perp {
             -99 * QUOTE_PRECISION_I64
         );
 
-        let market_after = perp_market_map.get_ref(&0).unwrap();
+        let market_after = maps.perp_market_map.get_ref(&0).unwrap();
         assert_eq!(market_after.fee_ledger.total_liquidation_fee, 0);
     }
 
@@ -15000,6 +15232,11 @@ pub mod liquidate_isolated_perp {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: perp_market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut user = User {
             orders: get_orders(Order {
@@ -15058,9 +15295,7 @@ pub mod liquidate_isolated_perp {
             &mut liquidator,
             &liquidator_key,
             &mut liquidator_stats,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             slot,
             now,
             &state,
@@ -15084,7 +15319,7 @@ pub mod liquidate_isolated_perp {
             101 * QUOTE_PRECISION_I64
         );
 
-        let market_after = perp_market_map.get_ref(&0).unwrap();
+        let market_after = maps.perp_market_map.get_ref(&0).unwrap();
         assert_eq!(market_after.fee_ledger.total_liquidation_fee, 0);
     }
 
@@ -15148,6 +15383,11 @@ pub mod liquidate_isolated_perp {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: perp_market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut user = User {
             orders: get_orders(Order {
@@ -15206,9 +15446,7 @@ pub mod liquidate_isolated_perp {
             &mut liquidator,
             &liquidator_key,
             &mut liquidator_stats,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             slot,
             now,
             &state,
@@ -15225,9 +15463,7 @@ pub mod liquidate_isolated_perp {
         let margin_calculation =
             calculate_margin_requirement_and_total_collateral_and_liability_info(
                 &user,
-                &perp_market_map,
-                &spot_market_map,
-                &mut oracle_map,
+                &mut maps,
                 MarginContext::liquidation(state.liquidation_margin_buffer_ratio),
             )
             .unwrap();
@@ -15245,7 +15481,8 @@ pub mod liquidate_isolated_perp {
             margin_requirement_plus_buffer
         );
 
-        let oracle_price = oracle_map
+        let oracle_price = maps
+            .oracle_map
             .get_price_data(&(
                 oracle_price_key,
                 crate::state::oracle::OracleSource::PythLazer,
@@ -15266,7 +15503,7 @@ pub mod liquidate_isolated_perp {
         assert_eq!(liquidator.perp_positions[0].base_asset_amount, 1800000000);
         assert_eq!(liquidator.perp_positions[0].quote_asset_amount, -178200000);
 
-        let market_after = perp_market_map.get_ref(&0).unwrap();
+        let market_after = maps.perp_market_map.get_ref(&0).unwrap();
         assert_eq!(market_after.fee_ledger.total_liquidation_fee, 1800000)
     }
 
@@ -15330,6 +15567,11 @@ pub mod liquidate_isolated_perp {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: perp_market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut user = User {
             orders: get_orders(Order {
@@ -15387,9 +15629,7 @@ pub mod liquidate_isolated_perp {
             &mut liquidator,
             &liquidator_key,
             &mut liquidator_stats,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             slot,
             now,
             &state,
@@ -15464,6 +15704,11 @@ pub mod liquidate_isolated_perp {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: perp_market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut user = User {
             perp_positions: get_positions(PerpPosition {
@@ -15510,16 +15755,14 @@ pub mod liquidate_isolated_perp {
             &mut liquidator,
             &liquidator_key,
             &mut liquidator_stats,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             slot,
             now,
             &state,
         )
         .unwrap();
 
-        let market_after = perp_market_map.get_ref(&0).unwrap();
+        let market_after = maps.perp_market_map.get_ref(&0).unwrap();
         // .5% * 100 * .95 =$0.475
         assert_eq!(market_after.fee_ledger.total_liquidation_fee, 475000);
     }
@@ -15588,6 +15831,11 @@ pub mod liquidate_isolated_perp {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: perp_market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut user = User {
             perp_positions: get_positions(PerpPosition {
@@ -15634,16 +15882,14 @@ pub mod liquidate_isolated_perp {
             &mut liquidator,
             &liquidator_key,
             &mut liquidator_stats,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             slot,
             now,
             &state,
         )
         .unwrap();
 
-        let market_after = perp_market_map.get_ref(&0).unwrap();
+        let market_after = maps.perp_market_map.get_ref(&0).unwrap();
         assert!(!user.is_isolated_margin_being_liquidated(0).unwrap());
         assert_eq!(market_after.fee_ledger.total_liquidation_fee, 41787043);
     }
@@ -15735,6 +15981,11 @@ pub mod liquidate_isolated_perp {
             &mut spot_market_account_infos.iter().peekable(),
         )
         .unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: perp_market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut user = User {
             orders: get_orders(Order {
@@ -15814,9 +16065,7 @@ pub mod liquidate_isolated_perp {
             &mut liquidator,
             &liquidator_key,
             &mut liquidator_stats,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             slot,
             now,
             &state,
@@ -15833,9 +16082,7 @@ pub mod liquidate_isolated_perp {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             &state,
@@ -15846,9 +16093,7 @@ pub mod liquidate_isolated_perp {
         let margin_calculation =
             calculate_margin_requirement_and_total_collateral_and_liability_info(
                 &user,
-                &perp_market_map,
-                &spot_market_map,
-                &mut oracle_map,
+                &mut maps,
                 MarginContext::liquidation(state.liquidation_margin_buffer_ratio),
             )
             .unwrap();
@@ -15877,9 +16122,7 @@ pub mod liquidate_isolated_perp {
             &mut liquidator,
             &liquidator_key,
             &mut liquidator_stats,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             slot,
             now,
             &state,
@@ -15987,6 +16230,11 @@ pub mod liquidate_isolated_perp {
             &mut spot_market_account_infos.iter().peekable(),
         )
         .unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: perp_market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut user = User {
             orders: get_orders(Order {
@@ -16039,9 +16287,7 @@ pub mod liquidate_isolated_perp {
         let margin_calculation =
             calculate_margin_requirement_and_total_collateral_and_liability_info(
                 &user,
-                &perp_market_map,
-                &spot_market_map,
-                &mut oracle_map,
+                &mut maps,
                 MarginContext::liquidation(10),
             )
             .unwrap();
@@ -16056,13 +16302,7 @@ pub mod liquidate_isolated_perp {
         user.status = crate::state::user::UserStatus::BeingLiquidated as u8;
         user.perp_positions[0].position_flag |= PositionFlag::BeingLiquidated as u8;
 
-        let result = validate_user_not_being_liquidated(
-            &mut user,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
-            10,
-        );
+        let result = validate_user_not_being_liquidated(&mut user, &mut maps, 10);
 
         // Cross flag cleared, but the still-active isolated liquidation blocks exit.
         assert_eq!(result, Err(ErrorCode::UserIsBeingLiquidated));
@@ -16193,6 +16433,11 @@ pub mod liquidate_isolated_perp_pnl_for_deposit {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let spot_positions = [SpotPosition::default(); 8];
         let mut user = User {
@@ -16230,9 +16475,7 @@ pub mod liquidate_isolated_perp_pnl_for_deposit {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             // 2% liquidation margin buffer: it must stay above the market's 1%
@@ -16350,6 +16593,11 @@ pub mod liquidate_isolated_perp_pnl_for_deposit {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let spot_positions = [SpotPosition::default(); 8];
         let mut user = User {
@@ -16387,9 +16635,7 @@ pub mod liquidate_isolated_perp_pnl_for_deposit {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             slot,
             MARGIN_PRECISION / 50,
@@ -16411,16 +16657,14 @@ pub mod liquidate_isolated_perp_pnl_for_deposit {
 
         let calc = calculate_margin_requirement_and_total_collateral_and_liability_info(
             &user,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             MarginContext::liquidation(MARGIN_PRECISION / 50),
         )
         .unwrap();
 
         assert_eq!(calc.meets_margin_requirement(), false);
 
-        let market_after = market_map.get_ref(&0).unwrap();
+        let market_after = maps.perp_market_map.get_ref(&0).unwrap();
         assert_eq!(market_after.fee_ledger.total_liquidation_fee, 0);
         drop(market_after);
 
@@ -16430,9 +16674,7 @@ pub mod liquidate_isolated_perp_pnl_for_deposit {
             &user_key,
             &mut liquidator,
             &liquidator_key,
-            &market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             now,
             0,
             false,
@@ -16583,6 +16825,11 @@ mod liquidation_mode {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -16618,9 +16865,7 @@ mod liquidation_mode {
         let margin_calculation =
             calculate_margin_requirement_and_total_collateral_and_liability_info(
                 &user_isolated_position_being_liquidated,
-                &market_map,
-                &spot_market_map,
-                &mut oracle_map,
+                &mut maps,
                 MarginContext::liquidation(liquidation_margin_buffer_ratio),
             )
             .unwrap();
@@ -16668,9 +16913,7 @@ mod liquidation_mode {
         let margin_calculation =
             calculate_margin_requirement_and_total_collateral_and_liability_info(
                 &user_cross_margin_being_liquidated,
-                &market_map,
-                &spot_market_map,
-                &mut oracle_map,
+                &mut maps,
                 MarginContext::liquidation(liquidation_margin_buffer_ratio),
             )
             .unwrap();

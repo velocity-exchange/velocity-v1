@@ -102,6 +102,11 @@ fn can_transfer_to_isolated_when_cross_still_meets_after_withdraw() {
     };
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+    let mut maps = crate::instructions::optional_accounts::AccountMaps {
+        perp_market_map: perp_market_map,
+        spot_market_map,
+        oracle_map,
+    };
 
     // User state AFTER transfer: cross has 400 USDC, isolated perp has received 100.
     // No cross perp positions, so cross margin requirement = 0. Cross still meets.
@@ -131,9 +136,7 @@ fn can_transfer_to_isolated_when_cross_still_meets_after_withdraw() {
     let _user_stats = UserStats::default();
 
     let result = user.meets_transfer_isolated_position_deposit_margin_requirement(
-        &perp_market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         MarginTypeConfig::CrossMarginOverride {
             margin_requirement_type: MarginRequirementType::Initial,
             default_margin_requirement_type: MarginRequirementType::Maintenance,
@@ -220,6 +223,11 @@ fn cannot_transfer_to_isolated_when_cross_would_fail_after_withdraw() {
     };
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+    let mut maps = crate::instructions::optional_accounts::AccountMaps {
+        perp_market_map: perp_market_map,
+        spot_market_map,
+        oracle_map,
+    };
 
     // User state AFTER transfer: cross has only 30 USDC (we transferred 50), and has a cross
     // perp position on market 1: 10 long @ $100 = $1000 notional, initial margin 10% = $100.
@@ -259,9 +267,7 @@ fn cannot_transfer_to_isolated_when_cross_would_fail_after_withdraw() {
     let _user_stats = UserStats::default();
 
     let result = user.meets_transfer_isolated_position_deposit_margin_requirement(
-        &perp_market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         MarginTypeConfig::CrossMarginOverride {
             margin_requirement_type: MarginRequirementType::Initial,
             default_margin_requirement_type: MarginRequirementType::Maintenance,
@@ -341,6 +347,11 @@ fn can_transfer_from_isolated_when_isolated_still_meets_after_withdraw() {
     };
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+    let mut maps = crate::instructions::optional_accounts::AccountMaps {
+        perp_market_map: perp_market_map,
+        spot_market_map,
+        oracle_map,
+    };
 
     // Isolated position: 1 SOL long @ $100 = $100 notional, initial margin 10% = $10.
     // Isolated collateral $200 -> easily meets. Controller passes (0, 0) for withdraw when
@@ -365,9 +376,7 @@ fn can_transfer_from_isolated_when_isolated_still_meets_after_withdraw() {
     let _user_stats = UserStats::default();
 
     let result = user.meets_transfer_isolated_position_deposit_margin_requirement(
-        &perp_market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         MarginTypeConfig::IsolatedPositionOverride {
             margin_requirement_type: MarginRequirementType::Initial,
             default_isolated_margin_requirement_type: MarginRequirementType::Maintenance,
@@ -450,6 +459,11 @@ fn cannot_transfer_from_isolated_when_isolated_would_fail() {
     };
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+    let mut maps = crate::instructions::optional_accounts::AccountMaps {
+        perp_market_map: perp_market_map,
+        spot_market_map,
+        oracle_map,
+    };
 
     // Isolated position: 10 SOL long @ $100 = $1000 notional, initial margin 10% = $100.
     // Isolated collateral only $30 (e.g. after moving most to cross) -> fails Initial.
@@ -473,9 +487,7 @@ fn cannot_transfer_from_isolated_when_isolated_would_fail() {
     let _user_stats = UserStats::default();
 
     let result = user.meets_transfer_isolated_position_deposit_margin_requirement(
-        &perp_market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         MarginTypeConfig::IsolatedPositionOverride {
             market_index: 0,
             margin_requirement_type: MarginRequirementType::Initial,

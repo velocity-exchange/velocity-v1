@@ -3,6 +3,7 @@ use {
         controller::position::{add_new_position, get_position_index, PositionDirection},
         error::{ErrorCode, VelocityResult},
         get_then_update_id,
+        instructions::optional_accounts::AccountMaps,
         math::{
             auction::{calculate_auction_price, is_auction_complete},
             casting::Cast,
@@ -33,10 +34,7 @@ use {
             events::{emit_accelerated_referral_status_changed, AcceleratedReferralStatusChange},
             margin_calculation::{MarginContext, MarginTypeConfig},
             oracle::StrictOraclePrice,
-            oracle_map::OracleMap,
-            perp_market_map::PerpMarketMap,
             spot_market::{SpotBalance, SpotBalanceType, SpotMarket},
-            spot_market_map::SpotMarketMap,
             traits::Size,
         },
         validate, ID,
@@ -885,9 +883,7 @@ impl User {
     /// still deleverage; the handler bounds its value loss against oracle.
     pub fn meets_withdraw_margin_requirement_swap(
         &mut self,
-        perp_market_map: &PerpMarketMap,
-        spot_market_map: &SpotMarketMap,
-        oracle_map: &mut OracleMap,
+        maps: &mut AccountMaps,
         margin_requirement_type: MarginRequirementType,
         strictly_reducing: bool,
     ) -> VelocityResult<bool> {
@@ -897,11 +893,7 @@ impl User {
             .ignore_invalid_deposit_oracles(true);
 
         let calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
-            self,
-            perp_market_map,
-            spot_market_map,
-            oracle_map,
-            context,
+            self, maps, context,
         )?;
 
         if calculation.margin_requirement > 0 || calculation.get_num_of_liabilities()? > 0 {
@@ -922,9 +914,7 @@ impl User {
         )?;
 
         if !strictly_reducing {
-            if let Some(net_equity) =
-                calculate_net_equity_for_floor(self, perp_market_map, spot_market_map, oracle_map)?
-            {
+            if let Some(net_equity) = calculate_net_equity_for_floor(self, maps)? {
                 net_equity.validate_clears_buffered_floor(self)?;
             }
         }
@@ -934,9 +924,7 @@ impl User {
 
     pub fn meets_withdraw_margin_requirement(
         &mut self,
-        perp_market_map: &PerpMarketMap,
-        spot_market_map: &SpotMarketMap,
-        oracle_map: &mut OracleMap,
+        maps: &mut AccountMaps,
         margin_requirement_type: MarginRequirementType,
     ) -> VelocityResult<bool> {
         let strict = margin_requirement_type == MarginRequirementType::Initial;
@@ -945,11 +933,7 @@ impl User {
             .ignore_invalid_deposit_oracles(true);
 
         let calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
-            self,
-            perp_market_map,
-            spot_market_map,
-            oracle_map,
-            context,
+            self, maps, context,
         )?;
 
         if calculation.margin_requirement > 0 || calculation.get_num_of_liabilities()? > 0 {
@@ -969,9 +953,7 @@ impl User {
             calculation
         )?;
 
-        if let Some(net_equity) =
-            calculate_net_equity_for_floor(self, perp_market_map, spot_market_map, oracle_map)?
-        {
+        if let Some(net_equity) = calculate_net_equity_for_floor(self, maps)? {
             net_equity.validate_clears_buffered_floor(self)?;
         }
 
@@ -980,9 +962,7 @@ impl User {
 
     pub fn meets_transfer_isolated_position_deposit_margin_requirement(
         &mut self,
-        perp_market_map: &PerpMarketMap,
-        spot_market_map: &SpotMarketMap,
-        oracle_map: &mut OracleMap,
+        maps: &mut AccountMaps,
         margin_type_config: MarginTypeConfig,
         to_isolated_position: bool,
         isolated_market_index: u16,
@@ -998,11 +978,7 @@ impl User {
             .ignore_invalid_deposit_oracles(true);
 
         let calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
-            self,
-            perp_market_map,
-            spot_market_map,
-            oracle_map,
-            context,
+            self, maps, context,
         )?;
 
         if calculation.margin_requirement > 0 || calculation.get_num_of_liabilities()? > 0 {
@@ -1025,9 +1001,7 @@ impl User {
         // Measured as net equity, matching every other floor gate. The margin
         // numerator never subtracts borrows, so it passes where net equity
         // fails.
-        if let Some(net_equity) =
-            calculate_net_equity_for_floor(self, perp_market_map, spot_market_map, oracle_map)?
-        {
+        if let Some(net_equity) = calculate_net_equity_for_floor(self, maps)? {
             net_equity.validate_clears_buffered_floor(self)?;
         }
 

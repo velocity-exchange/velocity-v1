@@ -5,6 +5,7 @@ use {
     crate::{
         controller::spot_balance::update_spot_balances,
         error::{ErrorCode, *},
+        instructions::optional_accounts::AccountMaps,
         load_mut,
         math::{
             bn,
@@ -26,7 +27,6 @@ use {
             perp_market::PerpMarket,
             perp_market_map::PerpMarketMap,
             spot_market::{SpotBalance, SpotBalanceType},
-            spot_market_map::SpotMarketMap,
             state::{OracleGuardRails, State},
             user::MarketType,
         },
@@ -430,14 +430,12 @@ pub fn apply_cost_to_market(
 
 pub fn settle_expired_market(
     market_index: u16,
-    market_map: &PerpMarketMap,
-    _oracle_map: &mut OracleMap,
-    spot_market_map: &SpotMarketMap,
+    maps: &mut AccountMaps,
     _state: &State,
     clock: &Clock,
 ) -> VelocityResult {
     let now = clock.unix_timestamp;
-    let market = &mut market_map.get_ref_mut(&market_index)?;
+    let market = &mut maps.perp_market_map.get_ref_mut(&market_index)?;
 
     validate!(
         market.expiry_ts != 0,
@@ -453,7 +451,7 @@ pub fn settle_expired_market(
         now
     )?;
 
-    let spot_market = &mut spot_market_map.get_ref_mut(&QUOTE_SPOT_MARKET_INDEX)?;
+    let spot_market = &mut maps.spot_market_map.get_ref_mut(&QUOTE_SPOT_MARKET_INDEX)?;
     // tfmd contains only the AMM's own equity post-isolation: the whole
     // surplus is spendable on the expiry settlement (no protocol floor)
     let budget = market.amm.total_fee_minus_distributions.max(0);

@@ -357,7 +357,7 @@ pub trait VaultDepositorBase {
         let (to_manager_profit_share, to_protocol_profit_share) =
             to.apply_profit_share(vault_equity, vault, vault_protocol)?;
 
-        let (withdraw_value, n_shares) = withdraw_unit.get_withdraw_value_and_shares(
+        let (_withdraw_value, n_shares) = withdraw_unit.get_withdraw_value_and_shares(
             withdraw_amount,
             vault_equity,
             self.get_vault_shares(),

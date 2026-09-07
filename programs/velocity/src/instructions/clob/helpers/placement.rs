@@ -10,6 +10,7 @@ use {
             add_new_position, get_position_index, increase_open_bids_and_asks, PositionDirection,
         },
         error::ErrorCode,
+        instructions::optional_accounts::AccountMaps,
         load_mut,
         math::orders::is_order_position_reducing,
         msg,
@@ -240,9 +241,7 @@ pub fn try_place_remainder_on_clob<'info>(
     quoter_slab: &AccountLoader<'info, QuoterSlabV0>,
     clob_market: &AccountInfo<'info>,
     clob_program: &AccountInfo<'info>,
-    perp_market_map: &crate::state::perp_market_map::PerpMarketMap,
-    spot_market_map: &crate::state::spot_market_map::SpotMarketMap,
-    oracle_map: &mut crate::state::oracle_map::OracleMap,
+    maps: &mut AccountMaps,
     market_index: u16,
     direction: PositionDirection,
     price: u64,
@@ -343,9 +342,7 @@ pub fn try_place_remainder_on_clob<'info>(
             true,
             risk_increasing,
             isolated_market_index,
-            perp_market_map,
-            spot_market_map,
-            oracle_map,
+            maps,
         )
         .is_err()
         {

@@ -2298,6 +2298,11 @@ pub mod meets_withdraw_margin_requirement {
             &mut spot_market_account_infos.iter().peekable(),
         )
         .unwrap();
+        let mut maps = crate::instructions::optional_accounts::AccountMaps {
+            perp_market_map: perp_market_map,
+            spot_market_map,
+            oracle_map,
+        };
 
         let mut user = User {
             orders: get_orders(Order {
@@ -2346,19 +2351,13 @@ pub mod meets_withdraw_margin_requirement {
             ..PerpPosition::default()
         };
 
-        let result = user.meets_withdraw_margin_requirement(
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
-            MarginRequirementType::Initial,
-        );
+        let result =
+            user.meets_withdraw_margin_requirement(&mut maps, MarginRequirementType::Initial);
 
         assert_eq!(result, Err(ErrorCode::InsufficientCollateral));
 
         let result: Result<bool, ErrorCode> = user.meets_withdraw_margin_requirement_swap(
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
+            &mut maps,
             MarginRequirementType::Initial,
             false,
         );

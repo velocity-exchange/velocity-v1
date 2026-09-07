@@ -2,6 +2,7 @@ use {
     super::spot_balance::get_token_amount,
     crate::{
         error::{ErrorCode, VelocityResult},
+        instructions::optional_accounts::AccountMaps,
         math::{
             casting::Cast,
             constants::{
@@ -31,7 +32,6 @@ use {
             },
             market_status::MarketStatus,
             oracle::{OraclePriceData, StrictOraclePrice},
-            oracle_map::OracleMap,
             perp_market::{ContractTier, PerpMarket},
             perp_market_map::PerpMarketMap,
             spot_market::{AssetTier, SpotBalanceType, SpotMarket},
@@ -358,9 +358,7 @@ pub fn max_spot_interest_staleness_for_margin(spot_market: &SpotMarket) -> Veloc
 
 pub fn calculate_margin_requirement_and_total_collateral_and_liability_info(
     user: &User,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
     context: MarginContext,
 ) -> VelocityResult<MarginCalculation> {
     let mut calculation = MarginCalculation::new(context);
@@ -388,8 +386,8 @@ pub fn calculate_margin_requirement_and_total_collateral_and_liability_info(
             continue;
         }
 
-        let spot_market = spot_market_map.get_ref(&spot_position.market_index)?;
-        let (oracle_price_data, oracle_validity) = oracle_map.get_price_data_and_validity(
+        let spot_market = maps.spot_market_map.get_ref(&spot_position.market_index)?;
+        let (oracle_price_data, oracle_validity) = maps.oracle_map.get_price_data_and_validity(
             MarketType::Spot,
             spot_market.market_index,
             &spot_market.oracle_id(),
@@ -624,7 +622,9 @@ pub fn calculate_margin_requirement_and_total_collateral_and_liability_info(
             continue;
         }
 
-        let market = &perp_market_map.get_ref(&market_position.market_index)?;
+        let market = &maps
+            .perp_market_map
+            .get_ref(&market_position.market_index)?;
 
         validate!(
             user_pool_id == market.pool_id,
@@ -634,9 +634,11 @@ pub fn calculate_margin_requirement_and_total_collateral_and_liability_info(
             market.pool_id,
         )?;
 
-        let quote_spot_market = spot_market_map.get_ref(&market.quote_spot_market_index)?;
-        let (quote_oracle_price_data, quote_oracle_validity) = oracle_map
-            .get_price_data_and_validity(
+        let quote_spot_market = maps
+            .spot_market_map
+            .get_ref(&market.quote_spot_market_index)?;
+        let (quote_oracle_price_data, quote_oracle_validity) =
+            maps.oracle_map.get_price_data_and_validity(
                 MarketType::Spot,
                 quote_spot_market.market_index,
                 &quote_spot_market.oracle_id(),
@@ -658,7 +660,7 @@ pub fn calculate_margin_requirement_and_total_collateral_and_liability_info(
         );
         drop(quote_spot_market);
 
-        let (oracle_price_data, oracle_validity) = oracle_map.get_price_data_and_validity(
+        let (oracle_price_data, oracle_validity) = maps.oracle_map.get_price_data_and_validity(
             MarketType::Perp,
             market.market_index,
             &market.oracle_id(),
@@ -712,7 +714,9 @@ pub fn calculate_margin_requirement_and_total_collateral_and_liability_info(
             )?;
 
         if market_position.is_isolated() {
-            let quote_spot_market = spot_market_map.get_ref(&market.quote_spot_market_index)?;
+            let quote_spot_market = maps
+                .spot_market_map
+                .get_ref(&market.quote_spot_market_index)?;
             let quote_token_amount = get_token_amount(
                 market_position
                     .isolated_position_scaled_balance
@@ -821,9 +825,7 @@ pub fn validate_any_isolated_tier_requirements(
 
 pub fn meets_place_order_margin_requirement(
     user: &User,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
     risk_increasing: bool,
     isolated_market_index: Option<u16>,
 ) -> VelocityResult {
@@ -846,9 +848,7 @@ pub fn meets_place_order_margin_requirement(
 
     let calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
         user,
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
         MarginContext::standard_with_config(margin_type_config).strict(true),
     )?;
 
@@ -858,9 +858,7 @@ pub fn meets_place_order_margin_requirement(
     }
 
     if risk_increasing {
-        if let Some(net_equity) =
-            calculate_net_equity_for_floor(user, perp_market_map, spot_market_map, oracle_map)?
-        {
+        if let Some(net_equity) = calculate_net_equity_for_floor(user, maps)? {
             net_equity.validate_clears_buffered_floor(user)?;
         }
     }
@@ -872,15 +870,11 @@ pub fn meets_place_order_margin_requirement(
 
 pub fn meets_initial_margin_requirement(
     user: &User,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
 ) -> VelocityResult<bool> {
     calculate_margin_requirement_and_total_collateral_and_liability_info(
         user,
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
         MarginContext::standard(MarginRequirementType::Initial),
     )
     .map(|calc| calc.meets_margin_requirement())
@@ -888,15 +882,11 @@ pub fn meets_initial_margin_requirement(
 
 pub fn meets_settle_pnl_maintenance_margin_requirement(
     user: &User,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
 ) -> VelocityResult<bool> {
     calculate_margin_requirement_and_total_collateral_and_liability_info(
         user,
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
         MarginContext::standard(MarginRequirementType::Maintenance).strict(true),
     )
     .map(|calc| calc.meets_margin_requirement())
@@ -904,15 +894,11 @@ pub fn meets_settle_pnl_maintenance_margin_requirement(
 
 pub fn meets_maintenance_margin_requirement(
     user: &User,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
 ) -> VelocityResult<bool> {
     calculate_margin_requirement_and_total_collateral_and_liability_info(
         user,
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
         MarginContext::standard(MarginRequirementType::Maintenance),
     )
     .map(|calc| calc.meets_margin_requirement())
@@ -921,25 +907,24 @@ pub fn meets_maintenance_margin_requirement(
 pub fn calculate_max_withdrawable_amount(
     market_index: u16,
     user: &User,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
 ) -> VelocityResult<u64> {
     let calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
         user,
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
         MarginContext::standard(MarginRequirementType::Initial),
     )?;
 
-    let spot_market = &mut spot_market_map.get_ref(&market_index)?;
+    let spot_market = &mut maps.spot_market_map.get_ref(&market_index)?;
 
     let token_amount = user
         .get_spot_position(market_index)?
         .get_token_amount(spot_market)?;
 
-    let oracle_price = oracle_map.get_price_data(&spot_market.oracle_id())?.price;
+    let oracle_price = maps
+        .oracle_map
+        .get_price_data(&spot_market.oracle_id())?
+        .price;
 
     let asset_weight = spot_market.get_asset_weight(
         token_amount,
@@ -976,16 +961,11 @@ pub fn calculate_max_withdrawable_amount(
         .cast()
 }
 
-pub fn validate_spot_margin_trading(
-    user: &User,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
-) -> VelocityResult {
+pub fn validate_spot_margin_trading(user: &User, maps: &mut AccountMaps) -> VelocityResult {
     if user.is_margin_trading_enabled {
         for perp_position in &user.perp_positions {
             if !perp_position.is_available() {
-                let perp_market = perp_market_map.get_ref(&perp_position.market_index)?;
+                let perp_market = maps.perp_market_map.get_ref(&perp_position.market_index)?;
 
                 validate!(
                     perp_market.contract_tier != ContractTier::Isolated,
@@ -1003,7 +983,7 @@ pub fn validate_spot_margin_trading(
     for spot_position in &user.spot_positions {
         let asks = spot_position.open_asks;
         if asks < 0 {
-            let spot_market = spot_market_map.get_ref(&spot_position.market_index)?;
+            let spot_market = maps.spot_market_map.get_ref(&spot_position.market_index)?;
             let signed_token_amount = spot_position.get_signed_token_amount(&spot_market)?;
             // The user can have:
             // 1. no open asks with an existing short
@@ -1018,8 +998,8 @@ pub fn validate_spot_margin_trading(
 
         let bids = spot_position.open_bids;
         if bids > 0 {
-            let spot_market = spot_market_map.get_ref(&spot_position.market_index)?;
-            let oracle_price_data = oracle_map.get_price_data(&spot_market.oracle_id())?;
+            let spot_market = maps.spot_market_map.get_ref(&spot_position.market_index)?;
+            let oracle_price_data = maps.oracle_map.get_price_data(&spot_market.oracle_id())?;
             let open_bids_value =
                 get_token_value(-bids as i128, spot_market.decimals, oracle_price_data.price)?;
 
@@ -1030,7 +1010,7 @@ pub fn validate_spot_margin_trading(
     let mut quote_token_amount = 0_i128;
     let quote_spot_position = user.get_quote_spot_position();
     if !quote_spot_position.is_available() {
-        let quote_spot_market = spot_market_map.get_quote_spot_market()?;
+        let quote_spot_market = maps.spot_market_map.get_quote_spot_market()?;
         quote_token_amount = quote_spot_position.get_signed_token_amount(&quote_spot_market)?;
     }
 
@@ -1051,12 +1031,7 @@ pub fn validate_spot_margin_trading(
 /// since then is not applied here. That staleness is shared with the margin
 /// engine, always overstates equity by the unaccrued borrow cost, and is
 /// bounded by the permissionless interest and funding cranks.
-pub fn calculate_user_equity(
-    user: &User,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
-) -> VelocityResult<(i128, bool)> {
+pub fn calculate_user_equity(user: &User, maps: &mut AccountMaps) -> VelocityResult<(i128, bool)> {
     let mut net_usd_value: i128 = 0;
     let mut all_oracles_valid = true;
 
@@ -1065,8 +1040,8 @@ pub fn calculate_user_equity(
             continue;
         }
 
-        let spot_market = spot_market_map.get_ref(&spot_position.market_index)?;
-        let (oracle_price_data, oracle_validity) = oracle_map.get_price_data_and_validity(
+        let spot_market = maps.spot_market_map.get_ref(&spot_position.market_index)?;
+        let (oracle_price_data, oracle_validity) = maps.oracle_map.get_price_data_and_validity(
             MarketType::Spot,
             spot_market.market_index,
             &spot_market.oracle_id(),
@@ -1091,12 +1066,16 @@ pub fn calculate_user_equity(
             continue;
         }
 
-        let market = &perp_market_map.get_ref(&market_position.market_index)?;
+        let market = &maps
+            .perp_market_map
+            .get_ref(&market_position.market_index)?;
 
         let quote_oracle_price = {
-            let quote_spot_market = spot_market_map.get_ref(&market.quote_spot_market_index)?;
-            let (quote_oracle_price_data, quote_oracle_validity) = oracle_map
-                .get_price_data_and_validity(
+            let quote_spot_market = maps
+                .spot_market_map
+                .get_ref(&market.quote_spot_market_index)?;
+            let (quote_oracle_price_data, quote_oracle_validity) =
+                maps.oracle_map.get_price_data_and_validity(
                     MarketType::Spot,
                     quote_spot_market.market_index,
                     &quote_spot_market.oracle_id(),
@@ -1130,7 +1109,7 @@ pub fn calculate_user_equity(
             quote_oracle_price_data.price
         };
 
-        let (oracle_price_data, oracle_validity) = oracle_map.get_price_data_and_validity(
+        let (oracle_price_data, oracle_validity) = maps.oracle_map.get_price_data_and_validity(
             MarketType::Perp,
             market.market_index,
             &market.oracle_id(),
@@ -1262,16 +1241,13 @@ impl FloorNetEquity {
 /// decision they make.
 pub fn calculate_net_equity_for_floor(
     user: &User,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
 ) -> VelocityResult<Option<FloorNetEquity>> {
     if user.equity_floor == 0 {
         return Ok(None);
     }
 
-    let (value, all_oracles_valid) =
-        calculate_user_equity(user, perp_market_map, spot_market_map, oracle_map)?;
+    let (value, all_oracles_valid) = calculate_user_equity(user, maps)?;
 
     Ok(Some(FloorNetEquity {
         value,
@@ -1334,9 +1310,7 @@ impl TripNetEquity {
 /// first, which is explicit and auditable.
 pub fn calculate_user_equity_for_trip(
     user: &User,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
 ) -> VelocityResult<TripNetEquity> {
     let unprovable = TripNetEquity {
         equity_upper_bound: 0,
@@ -1350,8 +1324,8 @@ pub fn calculate_user_equity_for_trip(
             continue;
         }
 
-        let spot_market = spot_market_map.get_ref(&spot_position.market_index)?;
-        let (oracle_price_data, oracle_validity) = oracle_map.get_price_data_and_validity(
+        let spot_market = maps.spot_market_map.get_ref(&spot_position.market_index)?;
+        let (oracle_price_data, oracle_validity) = maps.oracle_map.get_price_data_and_validity(
             MarketType::Spot,
             spot_market.market_index,
             &spot_market.oracle_id(),
@@ -1403,15 +1377,19 @@ pub fn calculate_user_equity_for_trip(
             continue;
         }
 
-        let market = &perp_market_map.get_ref(&market_position.market_index)?;
+        let market = &maps
+            .perp_market_map
+            .get_ref(&market_position.market_index)?;
 
         // The quote leg stays strict. The quote oracle prices every pnl
         // conversion, so its verdict is not attributable to one dust
         // position and cannot be conceded away.
         let quote_oracle_price = {
-            let quote_spot_market = spot_market_map.get_ref(&market.quote_spot_market_index)?;
-            let (quote_oracle_price_data, quote_oracle_validity) = oracle_map
-                .get_price_data_and_validity(
+            let quote_spot_market = maps
+                .spot_market_map
+                .get_ref(&market.quote_spot_market_index)?;
+            let (quote_oracle_price_data, quote_oracle_validity) =
+                maps.oracle_map.get_price_data_and_validity(
                     MarketType::Spot,
                     quote_spot_market.market_index,
                     &quote_spot_market.oracle_id(),
@@ -1445,7 +1423,7 @@ pub fn calculate_user_equity_for_trip(
             quote_oracle_price_data.price
         };
 
-        let (oracle_price_data, oracle_validity) = oracle_map.get_price_data_and_validity(
+        let (oracle_price_data, oracle_validity) = maps.oracle_map.get_price_data_and_validity(
             MarketType::Perp,
             market.market_index,
             &market.oracle_id(),

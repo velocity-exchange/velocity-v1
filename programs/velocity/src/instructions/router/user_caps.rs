@@ -99,7 +99,7 @@
 use {
     crate::{
         controller::position::PositionDirection,
-        instructions::router::quoted_route::QuoteInputs,
+        instructions::{optional_accounts::AccountMaps, router::quoted_route::QuoteInputs},
         math::{
             casting::Cast,
             constants::BASE_PRECISION_U64,
@@ -111,14 +111,11 @@ use {
         },
         state::{
             margin_calculation::{MarginContext, MarginTypeConfig},
-            oracle_map::OracleMap,
-            perp_market_map::PerpMarketMap,
             prop_amm::{
                 clob_slot_index, find_account, ClobSide, QuoterSlabExt, QuoterSlabV0,
                 QuoterUserCapV0, QuoterUserCapsV0,
                 MAX_CONSTRAINED_WIRE_USERS as USER_CAPS_CAPACITY,
             },
-            spot_market_map::SpotMarketMap,
             user::{MarketType, OrderStatus},
             user_map::{UserMap, UserStatsMap},
         },
@@ -137,9 +134,7 @@ const BPS_DENOM: i128 = 10_000;
 pub struct CapInputs<'a, 'info> {
     pub makers_and_referrer: &'a UserMap<'info>,
     pub makers_and_referrer_stats: &'a UserStatsMap<'info>,
-    pub perp_market_map: &'a PerpMarketMap<'info>,
-    pub spot_market_map: &'a SpotMarketMap<'info>,
-    pub oracle_map: &'a mut OracleMap<'info>,
+    pub maps: &'a mut AccountMaps<'info>,
     pub slot: u64,
     pub now: i64,
 }
@@ -290,12 +285,7 @@ impl CapInputs<'_, '_> {
         // Equity above `floor + buffer` is the first budget. A floor that cannot
         // be verified, or one already breached, leaves no budget at all.
         let mut budget = i128::MAX;
-        if let Some(net_equity) = calculate_net_equity_for_floor(
-            &maker,
-            self.perp_market_map,
-            self.spot_market_map,
-            self.oracle_map,
-        )? {
+        if let Some(net_equity) = calculate_net_equity_for_floor(&maker, self.maps)? {
             if !net_equity.all_oracles_valid || !net_equity.clears_buffered_floor(&maker) {
                 return Ok(0);
             }
@@ -326,9 +316,7 @@ impl CapInputs<'_, '_> {
         };
         let calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
             &maker,
-            self.perp_market_map,
-            self.spot_market_map,
-            self.oracle_map,
+            self.maps,
             MarginContext::standard_with_config(margin_type_config)
                 .ignore_invalid_deposit_oracles(true),
         )?;

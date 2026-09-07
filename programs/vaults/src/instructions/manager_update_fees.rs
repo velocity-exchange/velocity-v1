@@ -12,10 +12,7 @@ use {
         validate, AccountMapProvider, Vault, VaultProtocolProvider,
     },
     anchor_lang::prelude::*,
-    velocity::{
-        instructions::optional_accounts::AccountMaps, math::safe_math::SafeMath, program::Velocity,
-        state::user::User,
-    },
+    velocity::{math::safe_math::SafeMath, program::Velocity, state::user::User},
 };
 
 pub fn manager_update_fees<'info>(
@@ -59,11 +56,7 @@ pub fn manager_update_fees<'info>(
         // path settles the fee through apply_fee rather than writing the new policy directly.
         // apply_fee is the only installer: it accrues the closing interval at the old policy,
         // validates the queued policy against live protocol state, then installs.
-        let AccountMaps {
-            perp_market_map,
-            spot_market_map,
-            mut oracle_map,
-        } = ctx.load_maps(
+        let mut maps = ctx.load_maps(
             clock.slot,
             Some(vault.spot_market_index),
             vp.is_some(),
@@ -73,7 +66,7 @@ pub fn manager_update_fees<'info>(
 
         let vault_equity = {
             let user = ctx.accounts.velocity_user.load()?;
-            vault.calculate_equity(&user, &perp_market_map, &spot_market_map, &mut oracle_map)?
+            vault.calculate_equity(&user, &mut maps)?
         };
 
         vault.apply_fee(

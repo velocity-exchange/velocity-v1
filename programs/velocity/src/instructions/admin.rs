@@ -7,10 +7,7 @@ use {
         },
         error::ErrorCode,
         get_then_update_id,
-        instructions::{
-            constraints::*,
-            optional_accounts::{load_maps, AccountMaps},
-        },
+        instructions::{constraints::*, optional_accounts::load_maps},
         load_mut,
         math::{
             self, bn,
@@ -3715,11 +3712,7 @@ pub fn handle_settle_expired_market<'c: 'info, 'info>(
     let _now = clock.unix_timestamp;
     let state = ctx.accounts.state.load()?;
 
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map,
-        mut oracle_map,
-    } = load_maps(
+    let mut maps = load_maps(
         &mut ctx.remaining_accounts.iter().peekable(),
         &get_writable_perp_market_set(market_index),
         &get_writable_spot_market_set(QUOTE_SPOT_MARKET_INDEX),
@@ -3733,8 +3726,8 @@ pub fn handle_settle_expired_market<'c: 'info, 'info>(
     // price, not AMM peg or reserves. The AMM refresh that used to fire
     // here was cargo-cult.
     {
-        let mut perp_market = perp_market_map.get_ref_mut(&market_index)?;
-        let oracle_price_data = oracle_map.get_price_data(&perp_market.oracle_id())?;
+        let mut perp_market = maps.perp_market_map.get_ref_mut(&market_index)?;
+        let oracle_price_data = maps.oracle_map.get_price_data(&perp_market.oracle_id())?;
         let mm_oracle_price_data = perp_market.get_mm_oracle_price_data(
             *oracle_price_data,
             clock.slot,
@@ -3756,14 +3749,7 @@ pub fn handle_settle_expired_market<'c: 'info, 'info>(
         )?;
     }
 
-    crate::vlp::amm::refresh::settle_expired_market(
-        market_index,
-        &perp_market_map,
-        &mut oracle_map,
-        &spot_market_map,
-        &state,
-        &clock,
-    )?;
+    crate::vlp::amm::refresh::settle_expired_market(market_index, &mut maps, &state, &clock)?;
 
     Ok(())
 }
@@ -3785,11 +3771,7 @@ pub fn handle_admin_deposit<'c: 'info, 'info>(
     let slot = clock.slot;
 
     let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
-    let AccountMaps {
-        perp_market_map: _,
-        spot_market_map,
-        mut oracle_map,
-    } = load_maps(
+    let mut maps = load_maps(
         remaining_accounts_iter,
         &MarketSet::new(),
         &get_writable_spot_market_set(market_index),
@@ -3806,8 +3788,8 @@ pub fn handle_admin_deposit<'c: 'info, 'info>(
 
     validate!(!user.is_bankrupt(), ErrorCode::UserBankrupt)?;
 
-    let mut spot_market = spot_market_map.get_ref_mut(&market_index)?;
-    let oracle_price_data = *oracle_map.get_price_data(&spot_market.oracle_id())?;
+    let mut spot_market = maps.spot_market_map.get_ref_mut(&market_index)?;
+    let oracle_price_data = *maps.oracle_map.get_price_data(&spot_market.oracle_id())?;
 
     validate!(
         user.pool_id == spot_market.pool_id,
@@ -3880,7 +3862,7 @@ pub fn handle_admin_deposit<'c: 'info, 'info>(
 
     user.update_last_active_slot(slot);
 
-    let spot_market = &mut spot_market_map.get_ref_mut(&market_index)?;
+    let spot_market = &mut maps.spot_market_map.get_ref_mut(&market_index)?;
     let user_token_amount_after = user.get_total_token_amount(spot_market)?;
 
     controller::token::receive(
@@ -4843,11 +4825,7 @@ pub fn handle_reset_equity_floor_breaker<'c: 'info, 'info>(
 
     let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
     let user_map = load_user_map(remaining_accounts_iter, false)?;
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map,
-        mut oracle_map,
-    } = load_maps(
+    let mut maps = load_maps(
         remaining_accounts_iter,
         &MarketSet::new(),
         &MarketSet::new(),
@@ -4884,8 +4862,7 @@ pub fn handle_reset_equity_floor_breaker<'c: 'info, 'info>(
             continue;
         }
 
-        let (net_equity, all_oracles_valid) =
-            calculate_user_equity(&user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
+        let (net_equity, all_oracles_valid) = calculate_user_equity(&user, &mut maps)?;
 
         // An unfreeze must not be granted off an invalid price, mirroring
         // the trip's own oracle-validity requirement.

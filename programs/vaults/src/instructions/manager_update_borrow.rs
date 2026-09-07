@@ -9,10 +9,7 @@ use {
         validate, AccountMapProvider, Vault,
     },
     anchor_lang::prelude::*,
-    velocity::{
-        instructions::optional_accounts::AccountMaps,
-        state::user::{User, UserStats},
-    },
+    velocity::state::user::{User, UserStats},
 };
 
 pub fn manager_update_borrow<'info>(
@@ -38,11 +35,7 @@ pub fn manager_update_borrow<'info>(
     let fee_update = ctx.fee_update(vp.is_some(), has_fee_update);
     vault.validate_fee_update(&fee_update)?;
 
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map,
-        mut oracle_map,
-    } = ctx.load_maps(
+    let mut maps = ctx.load_maps(
         clock.slot,
         None,
         vp.is_some(),
@@ -52,8 +45,7 @@ pub fn manager_update_borrow<'info>(
 
     let user = ctx.accounts.velocity_user.load()?;
 
-    let vault_equity_before =
-        vault.calculate_equity(&user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
+    let vault_equity_before = vault.calculate_equity(&user, &mut maps)?;
 
     let previous_borrow_value = vault.manager_borrowed_value;
     vault.manager_borrowed_value = new_borrow_value;
@@ -65,8 +57,7 @@ pub fn manager_update_borrow<'info>(
     let vault = ctx.accounts.vault.load()?;
     let user = ctx.accounts.velocity_user.load()?;
 
-    let vault_equity_after =
-        vault.calculate_equity(&user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
+    let vault_equity_after = vault.calculate_equity(&user, &mut maps)?;
 
     emit!(ManagerUpdateBorrowRecord {
         ts: now,

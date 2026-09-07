@@ -28,12 +28,7 @@ use {
             oracle::{is_oracle_valid_for_action, LogMode, VelocityAction},
             safe_math::SafeMath,
         },
-        state::{
-            oracle_map::OracleMap,
-            perp_market_map::PerpMarketMap,
-            spot_market_map::SpotMarketMap,
-            user::{MarketType, User},
-        },
+        state::user::{MarketType, User},
     },
     velocity_macros::assert_no_slop,
 };
@@ -578,12 +573,9 @@ impl Vault {
     pub fn calculate_equity(
         &self,
         user: &User,
-        perp_market_map: &PerpMarketMap,
-        spot_market_map: &SpotMarketMap,
-        oracle_map: &mut OracleMap,
+        maps: &mut velocity::instructions::optional_accounts::AccountMaps,
     ) -> VaultResult<u64> {
-        let (vault_equity, all_oracles_valid) =
-            calculate_user_equity(user, perp_market_map, spot_market_map, oracle_map)?;
+        let (vault_equity, all_oracles_valid) = calculate_user_equity(user, maps)?;
 
         validate!(
             all_oracles_valid,
@@ -596,7 +588,7 @@ impl Vault {
             "vault equity negative"
         )?;
 
-        let spot_market = spot_market_map.get_ref(&self.spot_market_index)?;
+        let spot_market = maps.spot_market_map.get_ref(&self.spot_market_index)?;
         let spot_market_precision = spot_market.get_precision().cast::<i128>()?;
         // Fetch the denomination-market oracle WITH validity and gate on it before
         // using it as the NAV divisor. `calculate_user_equity` above only validates
@@ -609,7 +601,7 @@ impl Vault {
         // `VelocityAction::MarginCalc` (rejects NonPositive / TooVolatile /
         // TooUncertain / StaleForMargin), keeping both sides of the equity
         // computation consistent.
-        let (oracle_price_data, oracle_validity) = oracle_map.get_price_data_and_validity(
+        let (oracle_price_data, oracle_validity) = maps.oracle_map.get_price_data_and_validity(
             MarketType::Spot,
             spot_market.market_index,
             &spot_market.oracle_id(),

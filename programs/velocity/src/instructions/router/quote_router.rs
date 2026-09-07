@@ -344,9 +344,7 @@ fn quote_externals<'info>(
                 &quoter_user,
                 market_index,
                 taker_direction.opposite(),
-                &maps.perp_market_map,
-                &maps.spot_market_map,
-                &mut maps.oracle_map,
+                maps,
             )?
         } else {
             u64::MAX
@@ -674,9 +672,7 @@ fn margin_cap(
     user: &Pubkey,
     market_index: u16,
     maker_direction: PositionDirection,
-    perp_market_map: &crate::state::perp_market_map::PerpMarketMap,
-    spot_market_map: &crate::state::spot_market_map::SpotMarketMap,
-    oracle_map: &mut crate::state::oracle_map::OracleMap,
+    maps: &mut AccountMaps,
 ) -> Result<u64> {
     let position_index = {
         let Ok(maker) = makers.get_ref(user) else {
@@ -719,8 +715,6 @@ fn margin_cap(
         position_index,
         market_index,
         maker_direction,
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
+        maps,
     )?)
 }

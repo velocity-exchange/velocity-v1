@@ -1696,6 +1696,11 @@ fn attempt_borrow_with_massive_upnl() {
     let spot_market_account_infos =
         Vec::from([&spot_market_account_info, &sol_spot_market_account_info]);
     let spot_market_map = SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+    let mut maps = crate::instructions::optional_accounts::AccountMaps {
+        perp_market_map: perp_market_map,
+        spot_market_map,
+        oracle_map,
+    };
 
     // user has 100 sol
     let mut spot_positions = [SpotPosition::default(); 8];
@@ -1727,9 +1732,7 @@ fn attempt_borrow_with_massive_upnl() {
         ..
     } = calculate_margin_requirement_and_total_collateral_and_liability_info(
         &user,
-        &perp_market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         MarginContext::standard(MarginRequirementType::Initial),
     )
     .unwrap();
@@ -1743,9 +1746,7 @@ fn attempt_borrow_with_massive_upnl() {
         ..
     } = calculate_margin_requirement_and_total_collateral_and_liability_info(
         &user,
-        &perp_market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         MarginContext::standard(MarginRequirementType::Maintenance),
     )
     .unwrap();
@@ -1753,7 +1754,7 @@ fn attempt_borrow_with_massive_upnl() {
     assert_eq!(margin_requirement, 5_000_000_000);
     assert_eq!(total_collateral, 108_900_000_000); //100* 100 *.9 + upnl = $108_900
 
-    let mut market = perp_market_map.get_ref_mut(&0).unwrap();
+    let mut market = maps.perp_market_map.get_ref_mut(&0).unwrap();
     // assert_eq!(market.pnl_pool.scaled_balance, 960549500000);
     market.unrealized_pnl_initial_asset_weight = SPOT_WEIGHT_PRECISION;
     drop(market);
@@ -1764,9 +1765,7 @@ fn attempt_borrow_with_massive_upnl() {
         ..
     } = calculate_margin_requirement_and_total_collateral_and_liability_info(
         &user,
-        &perp_market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         MarginContext::standard(MarginRequirementType::Initial),
     )
     .unwrap();

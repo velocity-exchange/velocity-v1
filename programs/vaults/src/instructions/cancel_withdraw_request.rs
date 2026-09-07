@@ -8,7 +8,6 @@ use {
     },
     anchor_lang::prelude::*,
     velocity::{
-        instructions::optional_accounts::AccountMaps,
         math::casting::Cast,
         program::Velocity,
         state::user::{User, UserStats},
@@ -39,11 +38,7 @@ pub fn cancel_withdraw_request<'info>(
     let mut fee_update = ctx.fee_update(vp.is_some(), has_fee_update);
     vault.validate_fee_update(&fee_update)?;
 
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map,
-        mut oracle_map,
-    } = ctx.load_maps(
+    let mut maps = ctx.load_maps(
         clock.slot,
         None,
         vp.is_some(),
@@ -51,11 +46,10 @@ pub fn cancel_withdraw_request<'info>(
         &ctx.accounts.velocity_state,
     )?;
 
-    let vault_equity =
-        vault.calculate_equity(&user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
+    let vault_equity = vault.calculate_equity(&user, &mut maps)?;
 
-    let spot_market = spot_market_map.get_ref(&vault.spot_market_index)?;
-    let oracle = oracle_map.get_price_data(&spot_market.oracle_id())?;
+    let spot_market = maps.spot_market_map.get_ref(&vault.spot_market_index)?;
+    let oracle = maps.oracle_map.get_price_data(&spot_market.oracle_id())?;
 
     vault_depositor.cancel_withdraw_request(
         vault_equity.cast()?,

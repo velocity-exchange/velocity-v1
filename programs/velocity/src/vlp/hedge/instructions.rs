@@ -12,7 +12,7 @@ use {
         get_then_update_id,
         instructions::{
             constraints::*,
-            optional_accounts::{get_whitelist_token, load_maps, AccountMaps},
+            optional_accounts::{get_whitelist_token, load_maps},
         },
         math::{
             self,
@@ -163,11 +163,7 @@ pub fn handle_update_lp_pool_aum<'c: 'info, 'info>(
 
     let remaining_accounts = &mut ctx.remaining_accounts.iter().peekable();
 
-    let AccountMaps {
-        perp_market_map: _,
-        spot_market_map,
-        mut oracle_map,
-    } = load_maps(
+    let mut maps = load_maps(
         remaining_accounts,
         &MarketSet::new(),
         &MarketSet::new(),
@@ -204,8 +200,8 @@ pub fn handle_update_lp_pool_aum<'c: 'info, 'info>(
     let (aum, crypto_delta, derivative_groups) = lp_pool.update_aum(
         slot,
         &constituent_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &maps.spot_market_map,
+        &mut maps.oracle_map,
         &constituent_target_base,
         &amm_cache,
     )?;
@@ -230,8 +226,8 @@ pub fn handle_update_lp_pool_aum<'c: 'info, 'info>(
         aum,
         &derivative_groups,
         &constituent_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &maps.spot_market_map,
+        &mut maps.oracle_map,
         &mut constituent_target_base,
     )?;
 
@@ -302,11 +298,7 @@ pub fn handle_lp_pool_swap<'c: 'info, 'info>(
         "Constituent correlations lp pool pubkey does not match lp pool pubkey",
     )?;
 
-    let AccountMaps {
-        perp_market_map: _,
-        spot_market_map,
-        mut oracle_map,
-    } = load_maps(
+    let mut maps = load_maps(
         &mut ctx.remaining_accounts.iter().peekable(),
         &MarketSet::new(),
         &MarketSet::new(),
@@ -315,8 +307,8 @@ pub fn handle_lp_pool_swap<'c: 'info, 'info>(
         Some(state.oracle_guard_rails),
     )?;
 
-    let in_spot_market = spot_market_map.get_ref(&in_market_index)?;
-    let out_spot_market = spot_market_map.get_ref(&out_market_index)?;
+    let in_spot_market = maps.spot_market_map.get_ref(&in_market_index)?;
+    let out_spot_market = maps.spot_market_map.get_ref(&out_market_index)?;
 
     if in_constituent.is_reduce_only()?
         && !in_constituent.is_operation_reducing(&in_spot_market, true)?
@@ -335,7 +327,7 @@ pub fn handle_lp_pool_swap<'c: 'info, 'info>(
     let in_oracle_id = in_spot_market.oracle_id();
     let out_oracle_id = out_spot_market.oracle_id();
 
-    let (in_oracle, in_oracle_validity) = oracle_map.get_price_data_and_validity(
+    let (in_oracle, in_oracle_validity) = maps.oracle_map.get_price_data_and_validity(
         MarketType::Spot,
         in_spot_market.market_index,
         &in_oracle_id,
@@ -347,7 +339,7 @@ pub fn handle_lp_pool_swap<'c: 'info, 'info>(
     )?;
     let in_oracle = *in_oracle;
 
-    let (out_oracle, out_oracle_validity) = oracle_map.get_price_data_and_validity(
+    let (out_oracle, out_oracle_validity) = maps.oracle_map.get_price_data_and_validity(
         MarketType::Spot,
         out_spot_market.market_index,
         &out_oracle_id,
@@ -544,11 +536,7 @@ pub fn handle_view_lp_pool_swap_fees<'c: 'info, 'info>(
     let constituent_target_base: AccountZeroCopy<'_, TargetsDatum, ConstituentTargetBaseFixed> =
         ctx.accounts.constituent_target_base.load_zc()?;
 
-    let AccountMaps {
-        perp_market_map: _,
-        spot_market_map,
-        mut oracle_map,
-    } = load_maps(
+    let mut maps = load_maps(
         &mut ctx.remaining_accounts.iter().peekable(),
         &MarketSet::new(),
         &MarketSet::new(),
@@ -557,13 +545,13 @@ pub fn handle_view_lp_pool_swap_fees<'c: 'info, 'info>(
         Some(state.oracle_guard_rails),
     )?;
 
-    let in_spot_market = spot_market_map.get_ref(&in_market_index)?;
-    let out_spot_market = spot_market_map.get_ref(&out_market_index)?;
+    let in_spot_market = maps.spot_market_map.get_ref(&in_market_index)?;
+    let out_spot_market = maps.spot_market_map.get_ref(&out_market_index)?;
 
     let in_oracle_id = in_spot_market.oracle_id();
     let out_oracle_id = out_spot_market.oracle_id();
 
-    let (in_oracle, _) = oracle_map.get_price_data_and_validity(
+    let (in_oracle, _) = maps.oracle_map.get_price_data_and_validity(
         MarketType::Spot,
         in_spot_market.market_index,
         &in_oracle_id,
@@ -575,7 +563,7 @@ pub fn handle_view_lp_pool_swap_fees<'c: 'info, 'info>(
     )?;
     let in_oracle = *in_oracle;
 
-    let (out_oracle, _) = oracle_map.get_price_data_and_validity(
+    let (out_oracle, _) = maps.oracle_map.get_price_data_and_validity(
         MarketType::Spot,
         out_spot_market.market_index,
         &out_oracle_id,
@@ -675,11 +663,7 @@ pub fn handle_lp_pool_add_liquidity<'c: 'info, 'info>(
         "Constituent target base lp pool pubkey does not match lp pool pubkey",
     )?;
 
-    let AccountMaps {
-        perp_market_map: _,
-        spot_market_map,
-        mut oracle_map,
-    } = load_maps(
+    let mut maps = load_maps(
         remaining_accounts,
         &MarketSet::new(),
         &get_writable_spot_market_set_from_many(vec![in_market_index]),
@@ -697,7 +681,7 @@ pub fn handle_lp_pool_add_liquidity<'c: 'info, 'info>(
         )?;
     }
 
-    let mut in_spot_market = spot_market_map.get_ref_mut(&in_market_index)?;
+    let mut in_spot_market = maps.spot_market_map.get_ref_mut(&in_market_index)?;
 
     if in_constituent.is_reduce_only()?
         && !in_constituent.is_operation_reducing(&in_spot_market, true)?
@@ -708,7 +692,7 @@ pub fn handle_lp_pool_add_liquidity<'c: 'info, 'info>(
 
     let in_oracle_id = in_spot_market.oracle_id();
 
-    let (in_oracle, in_oracle_validity) = oracle_map.get_price_data_and_validity(
+    let (in_oracle, in_oracle_validity) = maps.oracle_map.get_price_data_and_validity(
         MarketType::Spot,
         in_spot_market.market_index,
         &in_oracle_id,
@@ -919,11 +903,7 @@ pub fn handle_view_lp_pool_add_liquidity_fees<'c: 'info, 'info>(
 
     let constituent_target_base = ctx.accounts.constituent_target_base.load_zc()?;
 
-    let AccountMaps {
-        perp_market_map: _,
-        spot_market_map,
-        mut oracle_map,
-    } = load_maps(
+    let mut maps = load_maps(
         remaining_accounts,
         &MarketSet::new(),
         &MarketSet::new(),
@@ -932,11 +912,11 @@ pub fn handle_view_lp_pool_add_liquidity_fees<'c: 'info, 'info>(
         Some(state.oracle_guard_rails),
     )?;
 
-    let in_spot_market = spot_market_map.get_ref(&in_market_index)?;
+    let in_spot_market = maps.spot_market_map.get_ref(&in_market_index)?;
 
     let in_oracle_id = in_spot_market.oracle_id();
 
-    let (in_oracle, in_oracle_validity) = oracle_map.get_price_data_and_validity(
+    let (in_oracle, in_oracle_validity) = maps.oracle_map.get_price_data_and_validity(
         MarketType::Spot,
         in_spot_market.market_index,
         &in_oracle_id,
@@ -1061,11 +1041,7 @@ pub fn handle_lp_pool_remove_liquidity<'c: 'info, 'info>(
 
     let remaining_accounts = &mut ctx.remaining_accounts.iter().peekable();
 
-    let AccountMaps {
-        perp_market_map: _,
-        spot_market_map,
-        mut oracle_map,
-    } = load_maps(
+    let mut maps = load_maps(
         remaining_accounts,
         &MarketSet::new(),
         &get_writable_spot_market_set_from_many(vec![out_market_index]),
@@ -1074,7 +1050,7 @@ pub fn handle_lp_pool_remove_liquidity<'c: 'info, 'info>(
         Some(state.oracle_guard_rails),
     )?;
 
-    let mut out_spot_market = spot_market_map.get_ref_mut(&out_market_index)?;
+    let mut out_spot_market = maps.spot_market_map.get_ref_mut(&out_market_index)?;
 
     if out_constituent.is_reduce_only()?
         && !out_constituent.is_operation_reducing(&out_spot_market, false)?
@@ -1085,7 +1061,7 @@ pub fn handle_lp_pool_remove_liquidity<'c: 'info, 'info>(
 
     let out_oracle_id = out_spot_market.oracle_id();
 
-    let (out_oracle, out_oracle_validity) = oracle_map.get_price_data_and_validity(
+    let (out_oracle, out_oracle_validity) = maps.oracle_map.get_price_data_and_validity(
         MarketType::Spot,
         out_spot_market.market_index,
         &out_oracle_id,
@@ -1332,11 +1308,7 @@ pub fn handle_view_lp_pool_remove_liquidity_fees<'c: 'info, 'info>(
 
     let remaining_accounts = &mut ctx.remaining_accounts.iter().peekable();
 
-    let AccountMaps {
-        perp_market_map: _,
-        spot_market_map,
-        mut oracle_map,
-    } = load_maps(
+    let mut maps = load_maps(
         remaining_accounts,
         &MarketSet::new(),
         &get_writable_spot_market_set_from_many(vec![out_market_index]),
@@ -1345,11 +1317,11 @@ pub fn handle_view_lp_pool_remove_liquidity_fees<'c: 'info, 'info>(
         Some(state.oracle_guard_rails),
     )?;
 
-    let out_spot_market = spot_market_map.get_ref_mut(&out_market_index)?;
+    let out_spot_market = maps.spot_market_map.get_ref_mut(&out_market_index)?;
 
     let out_oracle_id = out_spot_market.oracle_id();
 
-    let (out_oracle, out_oracle_validity) = oracle_map.get_price_data_and_validity(
+    let (out_oracle, out_oracle_validity) = maps.oracle_map.get_price_data_and_validity(
         MarketType::Spot,
         out_spot_market.market_index,
         &out_oracle_id,

@@ -17,7 +17,6 @@ use {
     anchor_spl::token::{self, Token, TokenAccount, Transfer},
     velocity::{
         cpi::accounts::Withdraw as VelocityWithdraw,
-        instructions::optional_accounts::AccountMaps,
         math::safe_math::SafeMath,
         program::Velocity,
         state::user::{User, UserStats},
@@ -54,11 +53,7 @@ pub fn manager_borrow<'info>(
     let fee_update = ctx.fee_update(vp.is_some(), has_fee_update);
     vault.validate_fee_update(&fee_update)?;
 
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map,
-        mut oracle_map,
-    } = ctx.load_maps(
+    let mut maps = ctx.load_maps(
         clock.slot,
         Some(borrow_spot_market_index),
         vp.is_some(),
@@ -70,8 +65,8 @@ pub fn manager_borrow<'info>(
 
     // velocity program will check validity
 
-    let borrow_spot_market = spot_market_map.get_ref(&borrow_spot_market_index)?;
-    let deposit_spot_market = spot_market_map.get_ref(&vault.spot_market_index)?;
+    let borrow_spot_market = maps.spot_market_map.get_ref(&borrow_spot_market_index)?;
+    let deposit_spot_market = maps.spot_market_map.get_ref(&vault.spot_market_index)?;
 
     let velocity_spot_market_vault = &ctx.accounts.velocity_spot_market_vault;
     validate!(
@@ -80,24 +75,31 @@ pub fn manager_borrow<'info>(
         "velocity_spot_market_vault needs to match borrow_spot_market_index"
     )?;
 
-    let borrow_oracle = *oracle_map.get_price_data(&borrow_spot_market.oracle_id())?;
-    let deposit_oracle = *oracle_map.get_price_data(&deposit_spot_market.oracle_id())?;
+    let borrow_oracle = *maps
+        .oracle_map
+        .get_price_data(&borrow_spot_market.oracle_id())?;
+    let deposit_oracle = *maps
+        .oracle_map
+        .get_price_data(&deposit_spot_market.oracle_id())?;
+    let borrow_decimals = borrow_spot_market.decimals;
+    let deposit_decimals = deposit_spot_market.decimals;
+    // The equity read walks every market the vault holds, so it takes the
+    // whole map set. The two market borrows end first.
+    drop(borrow_spot_market);
+    drop(deposit_spot_market);
 
-    let vault_equity =
-        vault.calculate_equity(&user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
+    let vault_equity = vault.calculate_equity(&user, &mut maps)?;
 
     let borrow_value = token_a_to_token_b(
         borrow_amount,
         borrow_oracle.price,
-        borrow_spot_market.decimals,
+        borrow_decimals,
         deposit_oracle.price,
-        deposit_spot_market.decimals,
+        deposit_decimals,
     )?;
     let previous_borrow_value = vault.manager_borrowed_value;
     vault.manager_borrowed_value = vault.manager_borrowed_value.safe_add(borrow_value)?;
 
-    drop(borrow_spot_market);
-    drop(deposit_spot_market);
     drop(vault);
     drop(user);
     drop(vp);
@@ -108,11 +110,16 @@ pub fn manager_borrow<'info>(
 
     let vault = ctx.accounts.vault.load_mut()?;
     let user = ctx.accounts.velocity_user.load()?;
-    let borrow_spot_market = spot_market_map.get_ref(&borrow_spot_market_index)?;
-    let deposit_spot_market = spot_market_map.get_ref(&vault.spot_market_index)?;
+    let (borrow_market_index, deposit_market_index) = {
+        let borrow_spot_market = maps.spot_market_map.get_ref(&borrow_spot_market_index)?;
+        let deposit_spot_market = maps.spot_market_map.get_ref(&vault.spot_market_index)?;
+        (
+            borrow_spot_market.market_index,
+            deposit_spot_market.market_index,
+        )
+    };
 
-    let vault_equity_after =
-        vault.calculate_equity(&user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
+    let vault_equity_after = vault.calculate_equity(&user, &mut maps)?;
 
     emit!(ManagerBorrowRecord {
         ts: now,
@@ -120,9 +127,9 @@ pub fn manager_borrow<'info>(
         manager: vault.manager,
         borrow_amount,
         borrow_value,
-        borrow_spot_market_index: borrow_spot_market.market_index,
+        borrow_spot_market_index: borrow_market_index,
         borrow_oracle_price: borrow_oracle.price,
-        deposit_spot_market_index: deposit_spot_market.market_index,
+        deposit_spot_market_index: deposit_market_index,
         deposit_oracle_price: deposit_oracle.price,
         vault_equity,
     });

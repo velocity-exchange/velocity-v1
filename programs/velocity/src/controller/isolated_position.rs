@@ -1,13 +1,13 @@
 use {
     super::position::get_position_index,
     crate::{
-        controller,
         controller::{
-            spot_balance::update_spot_balances,
+            self, spot_balance::update_spot_balances,
             spot_position::update_spot_balances_and_cumulative_deposits,
         },
         error::{ErrorCode, VelocityResult},
         get_then_update_id,
+        instructions::optional_accounts::AccountMaps,
         math::{
             casting::Cast,
             liquidation::is_isolated_margin_being_liquidated,
@@ -19,11 +19,8 @@ use {
             events::{DepositDirection, DepositExplanation, DepositRecord},
             margin_calculation::MarginTypeConfig,
             market_status::MarketStatus,
-            oracle_map::OracleMap,
             paused_operations::SpotOperation,
-            perp_market_map::PerpMarketMap,
             spot_market::SpotBalanceType,
-            spot_market_map::SpotMarketMap,
             state::State,
             user::{User, UserStats},
         },
@@ -38,9 +35,7 @@ mod tests;
 pub fn deposit_into_isolated_perp_position<'c: 'info, 'info>(
     user_key: Pubkey,
     user: &mut User,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
     slot: u64,
     now: i64,
     state: &State,
@@ -56,7 +51,7 @@ pub fn deposit_into_isolated_perp_position<'c: 'info, 'info>(
 
     validate!(!user.is_bankrupt(), ErrorCode::UserBankrupt)?;
 
-    let perp_market = perp_market_map.get_ref(&perp_market_index)?;
+    let perp_market = maps.perp_market_map.get_ref(&perp_market_index)?;
 
     validate!(
         perp_market.quote_spot_market_index == spot_market_index,
@@ -65,9 +60,10 @@ pub fn deposit_into_isolated_perp_position<'c: 'info, 'info>(
         perp_market.quote_spot_market_index,
         spot_market_index
     )?;
+    drop(perp_market);
 
-    let mut spot_market = spot_market_map.get_ref_mut(&spot_market_index)?;
-    let oracle_price_data = *oracle_map.get_price_data(&spot_market.oracle_id())?;
+    let mut spot_market = maps.spot_market_map.get_ref_mut(&spot_market_index)?;
+    let oracle_price_data = *maps.oracle_map.get_price_data(&spot_market.oracle_id())?;
 
     validate!(
         user.pool_id == spot_market.pool_id,
@@ -148,9 +144,7 @@ pub fn deposit_into_isolated_perp_position<'c: 'info, 'info>(
         // try to update liquidation status if user is was already being liq'd
         let is_being_liquidated = is_isolated_margin_being_liquidated(
             user,
-            perp_market_map,
-            spot_market_map,
-            oracle_map,
+            maps,
             perp_market_index,
             state.liquidation_margin_buffer_ratio,
         )?;
@@ -162,7 +156,7 @@ pub fn deposit_into_isolated_perp_position<'c: 'info, 'info>(
 
     user.update_last_active_slot(slot);
 
-    let spot_market = &mut spot_market_map.get_ref_mut(&spot_market_index)?;
+    let spot_market = &mut maps.spot_market_map.get_ref_mut(&spot_market_index)?;
 
     let deposit_record_id = get_then_update_id!(spot_market, next_deposit_record_id);
     let oracle_price = oracle_price_data.price;
@@ -212,9 +206,7 @@ pub fn deposit_into_isolated_perp_position<'c: 'info, 'info>(
 pub fn transfer_isolated_perp_position_deposit<'c: 'info, 'info>(
     user: &mut User,
     user_stats: Option<&mut UserStats>,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
     slot: u64,
     now: i64,
     spot_market_index: u16,
@@ -232,8 +224,8 @@ pub fn transfer_isolated_perp_position_deposit<'c: 'info, 'info>(
 
     let tvl_before;
     {
-        let perp_market = &perp_market_map.get_ref(&perp_market_index)?;
-        let spot_market = &mut spot_market_map.get_ref_mut(&spot_market_index)?;
+        let perp_market = &maps.perp_market_map.get_ref(&perp_market_index)?;
+        let spot_market = &mut maps.spot_market_map.get_ref_mut(&spot_market_index)?;
 
         validate!(
             perp_market.quote_spot_market_index == spot_market_index,
@@ -274,7 +266,7 @@ pub fn transfer_isolated_perp_position_deposit<'c: 'info, 'info>(
     }
 
     if amount > 0 {
-        let mut spot_market = spot_market_map.get_ref_mut(&spot_market_index)?;
+        let mut spot_market = maps.spot_market_map.get_ref_mut(&spot_market_index)?;
 
         let spot_position_index = user.force_get_spot_position_index(spot_market.market_index)?;
         update_spot_balances_and_cumulative_deposits(
@@ -298,9 +290,7 @@ pub fn transfer_isolated_perp_position_deposit<'c: 'info, 'info>(
 
         if let Some(_user_stats) = user_stats {
             user.meets_transfer_isolated_position_deposit_margin_requirement(
-                perp_market_map,
-                spot_market_map,
-                oracle_map,
+                maps,
                 MarginTypeConfig::CrossMarginOverride {
                     margin_requirement_type: MarginRequirementType::Initial,
                     default_margin_requirement_type: MarginRequirementType::Maintenance,
@@ -309,7 +299,7 @@ pub fn transfer_isolated_perp_position_deposit<'c: 'info, 'info>(
                 perp_market_index,
             )?;
 
-            validate_spot_margin_trading(user, perp_market_map, spot_market_map, oracle_map)?;
+            validate_spot_margin_trading(user, maps)?;
 
             if user.is_cross_margin_being_liquidated() {
                 user.exit_cross_margin_liquidation();
@@ -319,7 +309,7 @@ pub fn transfer_isolated_perp_position_deposit<'c: 'info, 'info>(
             return Err(ErrorCode::DefaultError);
         }
     } else {
-        let mut spot_market = spot_market_map.get_ref_mut(&spot_market_index)?;
+        let mut spot_market = maps.spot_market_map.get_ref_mut(&spot_market_index)?;
 
         let isolated_perp_position_token_amount = user
             .force_get_isolated_perp_position_mut(perp_market_index)?
@@ -361,9 +351,7 @@ pub fn transfer_isolated_perp_position_deposit<'c: 'info, 'info>(
 
         if let Some(_user_stats) = user_stats {
             user.meets_transfer_isolated_position_deposit_margin_requirement(
-                perp_market_map,
-                spot_market_map,
-                oracle_map,
+                maps,
                 MarginTypeConfig::IsolatedPositionOverride {
                     margin_requirement_type: MarginRequirementType::Initial,
                     default_isolated_margin_requirement_type: MarginRequirementType::Maintenance,
@@ -385,7 +373,7 @@ pub fn transfer_isolated_perp_position_deposit<'c: 'info, 'info>(
 
     user.update_last_active_slot(slot);
 
-    let spot_market = spot_market_map.get_ref(&spot_market_index)?;
+    let spot_market = maps.spot_market_map.get_ref(&spot_market_index)?;
 
     let tvl_after = spot_market.get_tvl()?;
 
@@ -404,9 +392,7 @@ pub fn withdraw_from_isolated_perp_position<'c: 'info, 'info>(
     user_key: Pubkey,
     user: &mut User,
     _user_stats: &mut UserStats,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
+    maps: &mut AccountMaps,
     slot: u64,
     now: i64,
     spot_market_index: u16,
@@ -423,7 +409,7 @@ pub fn withdraw_from_isolated_perp_position<'c: 'info, 'info>(
     validate!(!user.is_bankrupt(), ErrorCode::UserBankrupt)?;
 
     {
-        let perp_market = &perp_market_map.get_ref(&perp_market_index)?;
+        let perp_market = &maps.perp_market_map.get_ref(&perp_market_index)?;
 
         validate!(
             perp_market.quote_spot_market_index == spot_market_index,
@@ -433,8 +419,8 @@ pub fn withdraw_from_isolated_perp_position<'c: 'info, 'info>(
             spot_market_index
         )?;
 
-        let spot_market = &mut spot_market_map.get_ref_mut(&spot_market_index)?;
-        let oracle_price_data = oracle_map.get_price_data(&spot_market.oracle_id())?;
+        let spot_market = &mut maps.spot_market_map.get_ref_mut(&spot_market_index)?;
+        let oracle_price_data = maps.oracle_map.get_price_data(&spot_market.oracle_id())?;
 
         // Accrue interest, but pass `None` so this instruction does NOT advance the
         // market's *oracle* TWAPs (OtterSec #134 — the same shape as #110/#111).
@@ -554,16 +540,11 @@ pub fn withdraw_from_isolated_perp_position<'c: 'info, 'info>(
     // check below.
     crate::math::margin::validate_spot_borrow_interest_fresh_for_margin(
         user,
-        spot_market_map,
+        &maps.spot_market_map,
         now,
     )?;
 
-    user.meets_withdraw_margin_requirement(
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
-        MarginRequirementType::Initial,
-    )?;
+    user.meets_withdraw_margin_requirement(maps, MarginRequirementType::Initial)?;
 
     if user.is_isolated_margin_being_liquidated(perp_market_index)? {
         user.exit_isolated_margin_liquidation(perp_market_index)?;
@@ -571,8 +552,11 @@ pub fn withdraw_from_isolated_perp_position<'c: 'info, 'info>(
 
     user.update_last_active_slot(slot);
 
-    let mut spot_market = spot_market_map.get_ref_mut(&spot_market_index)?;
-    let oracle_price = oracle_map.get_price_data(&spot_market.oracle_id())?.price;
+    let mut spot_market = maps.spot_market_map.get_ref_mut(&spot_market_index)?;
+    let oracle_price = maps
+        .oracle_map
+        .get_price_data(&spot_market.oracle_id())?
+        .price;
 
     let deposit_record_id = get_then_update_id!(spot_market, next_deposit_record_id);
     let deposit_record = DepositRecord {

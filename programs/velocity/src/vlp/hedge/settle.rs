@@ -10,7 +10,7 @@ use {
         controller::{self, orders::validate_market_within_price_band},
         error::ErrorCode,
         get_then_update_id,
-        instructions::optional_accounts::{load_maps, AccountMaps},
+        instructions::optional_accounts::load_maps,
         math::{
             self, casting::Cast, constants::QUOTE_SPOT_MARKET_INDEX, safe_math::SafeMath,
             spot_balance::get_token_amount,
@@ -70,11 +70,7 @@ pub fn handle_settle_perp_to_lp_pool<'c: 'info, 'info>(
         .safe_add(quote_constituent.vault_token_balance as u128)?;
 
     let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map: _,
-        oracle_map: _,
-    } = load_maps(
+    let maps = load_maps(
         remaining_accounts_iter,
         &MarketSet::new(),
         &MarketSet::new(),
@@ -83,7 +79,7 @@ pub fn handle_settle_perp_to_lp_pool<'c: 'info, 'info>(
         None,
     )?;
 
-    for (_, perp_market_loader) in perp_market_map.0.iter() {
+    for (_, perp_market_loader) in maps.perp_market_map.0.iter() {
         let mut perp_market = perp_market_loader.load_mut()?;
         if lp_pool.lp_pool_id != perp_market.hedge_config.pool_id {
             msg!(

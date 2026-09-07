@@ -44,13 +44,11 @@ use {
         msg,
         state::{
             market_status::MarketStatus,
-            oracle_map::OracleMap,
             perp_market_map::{MarketSet, PerpMarketMap},
             prop_amm::{
                 ClobCancelOrderArgsV0, ClobMarket, ClobOrderRefV0, ClobPlaceOrderArgsV0,
                 ClobRemovedOrderV0, QuoterSlabExt, QuoterSlabV0, WireDirectionExt,
             },
-            spot_market_map::SpotMarketMap,
             state::State,
             user::User,
         },
@@ -132,11 +130,7 @@ pub fn handle_modify_order_v1<'c: 'info, 'info>(
     let state = ctx.accounts.state.load()?;
 
     let mut remaining_accounts = ctx.remaining_accounts.iter().peekable();
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map,
-        mut oracle_map,
-    } = load_maps(
+    let mut maps = load_maps(
         &mut remaining_accounts,
         &MarketSet::new(),
         &MarketSet::new(),
@@ -149,7 +143,7 @@ pub fn handle_modify_order_v1<'c: 'info, 'info>(
         &ctx.accounts.quoter_slab,
         &ctx.accounts.clob_market,
         &ctx.accounts.clob_program,
-        &perp_market_map,
+        &maps.perp_market_map,
         params.market_index,
     )?;
 
@@ -185,9 +179,7 @@ pub fn handle_modify_order_v1<'c: 'info, 'info>(
 
     reserve_replacement_margin(
         &ctx.accounts.user,
-        &perp_market_map,
-        &spot_market_map,
-        &mut oracle_map,
+        &mut maps,
         params.market_index,
         &terms,
         removed.base_asset_amount,
@@ -336,9 +328,7 @@ fn resolve_replacement_terms(
 #[allow(clippy::too_many_arguments)]
 fn reserve_replacement_margin<'info>(
     user_loader: &AccountLoader<'info, User>,
-    perp_market_map: &PerpMarketMap<'_>,
-    spot_market_map: &SpotMarketMap<'_>,
-    oracle_map: &mut OracleMap<'_>,
+    maps: &mut AccountMaps,
     market_index: u16,
     terms: &ReplacementTerms,
     cancelled_base_asset_amount: u64,
@@ -377,14 +367,7 @@ fn reserve_replacement_margin<'info>(
     let isolated_market_index = (risk_increasing
         && user.perp_positions[position_index].is_isolated())
     .then_some(market_index);
-    meets_place_order_margin_requirement(
-        &user,
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
-        risk_increasing,
-        isolated_market_index,
-    )?;
+    meets_place_order_margin_requirement(&user, maps, risk_increasing, isolated_market_index)?;
     user.update_last_active_slot(slot);
     Ok(())
 }

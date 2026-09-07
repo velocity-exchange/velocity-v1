@@ -9,10 +9,7 @@ use {
         validate, AccountMapProvider, Vault, VaultDepositor, VaultProtocolProvider, WithdrawUnit,
     },
     anchor_lang::prelude::*,
-    velocity::{
-        instructions::optional_accounts::AccountMaps, math::safe_math::SafeMath, program::Velocity,
-        state::user::User,
-    },
+    velocity::{math::safe_math::SafeMath, program::Velocity, state::user::User},
 };
 
 pub fn transfer_vault_depositor_shares<'info>(
@@ -62,11 +59,7 @@ pub fn transfer_vault_depositor_shares<'info>(
     let user = ctx.accounts.velocity_user.load()?;
     let spot_market_index = vault.spot_market_index;
 
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map,
-        mut oracle_map,
-    } = ctx.load_maps(
+    let mut maps = ctx.load_maps(
         clock.slot,
         Some(spot_market_index),
         vp.is_some(),
@@ -74,8 +67,7 @@ pub fn transfer_vault_depositor_shares<'info>(
         &ctx.accounts.velocity_state,
     )?;
 
-    let vault_equity =
-        vault.calculate_equity(&user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
+    let vault_equity = vault.calculate_equity(&user, &mut maps)?;
 
     validate!(
         !vault_depositor.last_withdraw_request.pending(),
@@ -89,8 +81,8 @@ pub fn transfer_vault_depositor_shares<'info>(
         "Cannot transfer shares to a depositor with a pending withdraw request"
     )?;
 
-    let spot_market = spot_market_map.get_ref(&spot_market_index)?;
-    let oracle = oracle_map.get_price_data(&spot_market.oracle_id())?;
+    let spot_market = maps.spot_market_map.get_ref(&spot_market_index)?;
+    let oracle = maps.oracle_map.get_price_data(&spot_market.oracle_id())?;
 
     let total_shares_before = vault_depositor
         .get_vault_shares()

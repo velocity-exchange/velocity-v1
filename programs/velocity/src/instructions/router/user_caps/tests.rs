@@ -152,6 +152,11 @@ fn budget(case: Case) -> u64 {
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_info);
     let spot_market_map =
         crate::state::spot_market_map::SpotMarketMap::load_one(&spot_market_info, true).unwrap();
+    let mut maps = crate::instructions::optional_accounts::AccountMaps {
+        perp_market_map: perp_market_map,
+        spot_market_map,
+        oracle_map,
+    };
 
     let authority = Pubkey::from_str(AUTHORITY).unwrap();
     let mut orders = [Order::default(); 32];
@@ -199,9 +204,7 @@ fn budget(case: Case) -> u64 {
     CapInputs {
         makers_and_referrer: &makers,
         makers_and_referrer_stats: &stats_map,
-        perp_market_map: &perp_market_map,
-        spot_market_map: &spot_market_map,
-        oracle_map: &mut oracle_map,
+        maps: &mut maps,
         slot,
         now: 0,
     }

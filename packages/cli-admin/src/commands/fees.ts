@@ -645,7 +645,7 @@ export function registerFees(parent: Command): void {
 							`amm ${feeStructure.ammFeeNumerator}%, if ${feeStructure.ifFeeNumerator}%, protocol residual`
 						)
 					);
-					ui.note('tiers 4-9 mirror the last tier given');
+					ui.note('tiers 4-9 mirror the last tier');
 					await reportDryRun(
 						provider,
 						[ix],

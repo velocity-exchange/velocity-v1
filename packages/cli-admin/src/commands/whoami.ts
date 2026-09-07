@@ -69,7 +69,7 @@ export function registerWhoami(parent: Command): void {
 				ui.line(`${pc.green('✓')} ${role}`);
 			}
 		} else {
-			ui.note('this signer holds no State roles on this cluster');
+			ui.note('none');
 		}
 		ui.kv('cold admin', pc.dim(admins.coldAdmin.toBase58()));
 		ui.kv('warm admin', pc.dim(admins.warmAdmin.toBase58()));
@@ -114,7 +114,7 @@ export function registerWhoami(parent: Command): void {
 			} catch {
 				ui.header('multisig', ui.bad('not found'));
 				ui.kv('address', pc.dim(opts.multisig));
-				ui.note('no Squads account at this address on this cluster');
+				ui.note('no Squads account here');
 			}
 		}
 		console.log('');

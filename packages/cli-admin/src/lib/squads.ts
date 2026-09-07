@@ -175,7 +175,7 @@ export async function reportDryRun(
 	);
 
 	if (!multisigPda) {
-		ui.kv('dispatch', 'direct send (1 transaction, 1 signature)');
+		ui.kv('dispatch', 'direct send');
 		ui.kv('network fee', pc.dim('~5000 lamports'));
 		return;
 	}
@@ -254,10 +254,10 @@ export async function reportDryRun(
 	);
 	ui.kv(
 		'proposer rent',
-		`~${(rent / 1e9).toFixed(4)} SOL ${pc.dim('reclaimable after execution')}`
+		`~${(rent / 1e9).toFixed(4)} SOL ${pc.dim('reclaimable')}`
 	);
 	ui.kv('network fee', pc.dim('~5000 lamports'));
-	ui.note('members must approve and execute before this lands');
+	ui.note('needs approval and execution');
 }
 
 export function reportDispatch(label: string, result: DispatchResult): void {
@@ -270,8 +270,5 @@ export function reportDispatch(label: string, result: DispatchResult): void {
 	ui.kv('proposal', pc.bold(`#${result.transactionIndex.toString()}`));
 	ui.kv('multisig', pc.dim(result.multisig.toBase58()));
 	ui.kv('signature', pc.dim(result.signature));
-	ui.note(
-		`review it: velocity-admin multisig inspect ${result.transactionIndex}`
-	);
-	ui.note('members must approve and execute before it lands');
+	ui.note(`velocity-admin multisig inspect ${result.transactionIndex}`);
 }

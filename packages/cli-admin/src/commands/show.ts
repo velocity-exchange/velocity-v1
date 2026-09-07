@@ -5,7 +5,6 @@ import {
 	ExchangeStatus,
 	FeatureBitFlags,
 	FeeStructure,
-	FeeTier,
 	HotRole,
 	LpPoolFeatureBitFlags,
 	SolvencyStatus,
@@ -45,24 +44,6 @@ function describeFeeAdjustment(adjustment: number): string {
 	return `${adjustment > 0 ? '+' : ''}${adjustment}% of tier fee/rebate`;
 }
 
-function describeFeeTier(tier: FeeTier): string {
-	return [
-		`taker ${asBps(tier.feeNumerator, tier.feeDenominator)}`,
-		`maker rebate ${asBps(
-			tier.makerRebateNumerator,
-			tier.makerRebateDenominator
-		)}`,
-		`referrer reward ${asPct(
-			tier.referrerRewardNumerator,
-			tier.referrerRewardDenominator
-		)} of taker fee`,
-		`referee discount ${asPct(
-			tier.refereeFeeNumerator,
-			tier.refereeFeeDenominator
-		)}`,
-	].join(' | ');
-}
-
 function printFillerReward(structure: FeeStructure): void {
 	ui.kv(
 		'filler reward',
@@ -72,11 +53,10 @@ function printFillerReward(structure: FeeStructure): void {
 			)} + ${asPct(
 				structure.fillerRewardStructure.rewardNumerator,
 				structure.fillerRewardStructure.rewardDenominator
-			)} variable, carved out of the taker fee ` +
-				`(time-based floor $${trimZeros(
-					structure.fillerRewardStructure.timeBasedRewardLowerBound.toNumber() /
-						1_000_000
-				)})`
+			)}, floor $${trimZeros(
+				structure.fillerRewardStructure.timeBasedRewardLowerBound.toNumber() /
+					1_000_000
+			)}`
 		)
 	);
 }
@@ -401,7 +381,7 @@ export function registerShow(parent: Command): void {
 				'perp trading fees',
 				state.promoFeeTier > 0
 					? pc.yellow(
-							`promo: everyone pays at least ${
+							`promo floor: ${
 								perpTierLabels[state.promoFeeTier]?.[0]?.trim() ??
 								`tier ${state.promoFeeTier}`
 							}`
@@ -435,7 +415,7 @@ export function registerShow(parent: Command): void {
 								tier.refereeFeeDenominator
 							)}`
 						),
-						promoted ? pc.dim('(below the promo floor)') : '',
+						promoted ? pc.dim('below floor') : '',
 					];
 				})
 			);
@@ -444,13 +424,35 @@ export function registerShow(parent: Command): void {
 				'split',
 				pc.dim(
 					`amm ${state.perpFeeStructure.ammFeeNumerator}%, ` +
-						`if ${state.perpFeeStructure.ifFeeNumerator}%, protocol residual ` +
-						'(of what is left after rebate, referral and filler)'
+						`if ${state.perpFeeStructure.ifFeeNumerator}%, protocol residual`
 				)
 			);
 
 			ui.header('spot trading fees', pc.dim('all users pay tier 0'));
-			ui.kv('tier 0', describeFeeTier(state.spotFeeStructure.feeTiers[0]));
+			const spotTier = state.spotFeeStructure.feeTiers[0];
+			ui.table([
+				[
+					pc.bold('tier 0'),
+					`taker ${pc.bold(
+						asBps(spotTier.feeNumerator, spotTier.feeDenominator)
+					)}`,
+					pc.dim(
+						`maker ${asBps(
+							spotTier.makerRebateNumerator,
+							spotTier.makerRebateDenominator
+						)} rebate`
+					),
+					pc.dim(
+						`referrer ${asPct(
+							spotTier.referrerRewardNumerator,
+							spotTier.referrerRewardDenominator
+						)}, referee ${asPct(
+							spotTier.refereeFeeNumerator,
+							spotTier.refereeFeeDenominator
+						)}`
+					),
+				],
+			]);
 			printFillerReward(state.spotFeeStructure);
 
 			ui.header(
@@ -476,9 +478,7 @@ export function registerShow(parent: Command): void {
 						),
 					])
 			);
-			ui.note(
-				'the liquidator fee ramps to min(3x base, maintenance margin) while unfilled'
-			);
+			ui.note('liquidator fee ramps to min(3x base, maintenance margin)');
 
 			ui.header(
 				'spot markets',

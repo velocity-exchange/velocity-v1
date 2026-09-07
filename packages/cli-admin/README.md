@@ -47,7 +47,7 @@ multisig must exist on that cluster; its vault 0 is matched against the
 live State admins and mismatches are called out.
 
 Explicit flags always override the profile. Every command that touches the
-chain prints a one-line context header (cluster · profile · signer · dispatch
+chain prints a one-line context header (cluster, profile, signer, dispatch
 mode), and dies when a declared env contradicts the RPC's actual genesis
 hash. Mainnet direct sends ask for interactive confirmation; pass `--yes`
 (implied when stdin is not a TTY) to skip.
@@ -196,13 +196,13 @@ questions a signer actually has, in plain terms:
 
 ▌ what changes on chain                          ✓ simulates clean, 2,464 CU
    State 2etx5NvPNxeMZ7EfHE6GjJfW2imRYEUANehNS1WB4CVW
-      promoFeeTier  2 → 3  every account now pays at least tier 3 (2 bps taker)
+      promoFeeTier  2 → 3
 
 ▌ program logs
    state.promo_fee_tier: 2 -> 3
 
 ▌ can it execute now                                                ! not yet
-   waiting on approvals. That is the approval gate, not a fault.
+   pending approval
 ```
 
 The "what changes" block is the point: it simulates the proposal's own instructions with the
@@ -213,11 +213,6 @@ perp market's mm-oracle fields) do not show up as changes the proposal makes; if
 moves between them, the output says so. Add `--raw` for the full argument list, raw
 instruction data and complete logs. Non-velocity instructions still show their accounts, with
 SOL transfers decoded to an amount.
-
-Where a raw field hides what actually changed, the diff carries a plain-language note derived
-from the same simulated bytes: a promo tier index resolves to the taker fee that tier charges,
-a fee numerator to its rate in bps. Numerators alone are how `6 5 4 2` reads as four ordinary
-integers rather than as a fee increase for every account.
 
 ## Output conventions
 

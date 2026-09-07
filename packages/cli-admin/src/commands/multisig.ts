@@ -159,7 +159,7 @@ export function registerMultisig(parent: Command): void {
 				rows.push([
 					pc.dim(`#${index}`),
 					pc.dim('gone'),
-					pc.dim('closed, or a vault transaction with no proposal'),
+					pc.dim('closed or never proposed'),
 					'',
 				]);
 				return;
@@ -180,13 +180,12 @@ export function registerMultisig(parent: Command): void {
 						: pc.yellow(`executable in ${formatDuration(executableAt - now)}`);
 			} else if (status === 'Active') {
 				statusCell = index <= stale ? pc.red('stale') : pc.yellow('active');
+				const missing = info.threshold - proposal.approved.length;
 				extra =
 					index <= stale
-						? pc.dim('superseded by a config change, cannot execute')
+						? pc.dim('superseded by a config change')
 						: pc.dim(
-								`${info.threshold - proposal.approved.length} more approval${
-									info.threshold - proposal.approved.length === 1 ? '' : 's'
-								} needed`
+								`${missing} more approval${missing === 1 ? '' : 's'} needed`
 						  );
 			}
 			rows.push([
@@ -277,12 +276,10 @@ export function registerMultisig(parent: Command): void {
 		ms
 			.command('inspect <index>')
 			.description(
-				'Read a pending proposal end to end: status and approvals, each inner ' +
-					'instruction decoded to its name, arguments and named accounts, the ' +
-					'account fields it would change (before -> after, simulated against ' +
-					'current chain state), the program logs, and whether it can execute ' +
-					'yet. Read-only: no keypair beyond the configured signer is used and ' +
-					'nothing is sent.'
+				'Decode a proposal: status and approvals, each instruction with its ' +
+					'arguments and named accounts, the account fields it would change ' +
+					'(before -> after, simulated against current state), program logs, ' +
+					'and whether it can execute. Read-only, nothing is sent.'
 			)
 			.option(
 				'--raw',
@@ -387,10 +384,7 @@ export function registerMultisig(parent: Command): void {
 		if (kind === 'Active') {
 			const need = info.threshold - approved;
 			if (stale) {
-				ui.kv(
-					'',
-					pc.red('superseded by a config change, it can no longer execute')
-				);
+				ui.kv('', pc.red('stale, superseded by a config change'));
 			} else if (need > 0) {
 				ui.kv(
 					'',
@@ -440,7 +434,7 @@ export function registerMultisig(parent: Command): void {
 				ui.line(
 					`${step} ${pc.yellow('cannot decode')} ${pc.dim(
 						isVelocity
-							? 'unknown discriminator on the velocity program'
+							? 'unknown discriminator'
 							: `program ${ix.programId.toBase58()}`
 					)}`
 				);
@@ -564,9 +558,7 @@ export function registerMultisig(parent: Command): void {
 				writable.map((k) => new PublicKey(k))
 			);
 			before = fetched.map((a) => a?.data);
-			baselineNote =
-				'before-state was read separately from the simulation, so a field ' +
-				'another program writes continuously may appear below';
+			baselineNote = 'baseline read separately, unrelated writes may appear';
 		}
 		const slotDrift = Math.abs(effect.context.slot - baseline.context.slot);
 
@@ -580,7 +572,6 @@ export function registerMultisig(parent: Command): void {
 		);
 		if (effect.value.err) {
 			ui.line(pc.red(JSON.stringify(effect.value.err)));
-			ui.note('executing the proposal in this state would not go through.');
 		} else {
 			let changed = 0;
 			writable.forEach((key, i) => {
@@ -609,42 +600,37 @@ export function registerMultisig(parent: Command): void {
 				);
 				if (!type) {
 					ui.note(
-						`${prev.length}B → ${next.length}B, not a velocity account so fields are not decoded`,
+						`${prev.length}B → ${next.length}B, not a velocity account`,
 						'      '
 					);
 					return;
 				}
-				const decodedAfter = program.coder.accounts.decode(type, next);
 				const diff = diffFields(
 					program.coder.accounts.decode(type, prev),
-					decodedAfter
+					program.coder.accounts.decode(type, next)
 				);
 				if (diff.length === 0) {
 					ui.note('bytes differ but no decoded field changed', '      ');
 					return;
 				}
 				ui.table(
-					diff.map(({ path, from, to }) => [
-						pc.dim(path),
-						ui.change(from, to),
-						pc.dim(explainChange(type, path, decodedAfter) ?? ''),
-					]),
+					diff.map(({ path, from, to }) => [pc.dim(path), ui.change(from, to)]),
 					'      '
 				);
 			});
 			if (changed === 0) {
-				ui.line(pc.dim("nothing: no writable account's data changes"));
+				ui.line(pc.dim('no account data changes'));
 				if (proposal?.status.__kind === 'Executed') {
-					ui.note('this proposal already executed, its effect is on chain');
+					ui.note('already executed');
 				}
 			}
 			if (baselineNote) {
 				ui.note(baselineNote);
 			} else if (slotDrift !== 0) {
 				ui.note(
-					`chain moved ${slotDrift} slot${
+					`baseline is ${slotDrift} slot${
 						slotDrift === 1 ? '' : 's'
-					} between snapshots; a continuously-written field may show here`
+					} off, unrelated writes may appear`
 				);
 			}
 		}
@@ -670,7 +656,7 @@ export function registerMultisig(parent: Command): void {
 				!local.raw &&
 				(truncated || (!effect.value.err && logs.length > shownLogs.length))
 			) {
-				ui.note('--raw for the full log, including invoke and success lines');
+				ui.note('--raw for full logs');
 			}
 		}
 
@@ -705,18 +691,13 @@ export function registerMultisig(parent: Command): void {
 				`${pc.bold(`velocity-admin multisig execute ${transactionIndex}`)}` +
 					`  ${pc.dim(`(${ui.count(readiness.value.unitsConsumed ?? 0)} CU)`)}`
 			);
-			ui.note(
-				'the Squads UI executes at the 200k default, too low for CPI-heavy inner transactions'
-			);
+			ui.note('the Squads UI executes at the 200k default');
 		} else if (proposal && settled.includes(proposal.status.__kind)) {
 			const kindLower = proposal.status.__kind.toLowerCase();
 			ui.header('can it execute now', pc.dim(`already ${kindLower}`));
-			ui.note(`nothing left to do with this proposal`);
 		} else if (JSON.stringify(readiness.value.err).includes('6008')) {
 			ui.header('can it execute now', ui.warn('not yet'));
-			ui.note(
-				'waiting on approvals. That is the approval gate, not a fault in the transaction.'
-			);
+			ui.note('pending approval');
 		} else {
 			ui.header('can it execute now', ui.bad('no'));
 			ui.line(pc.red(JSON.stringify(readiness.value.err)));
@@ -1062,57 +1043,6 @@ function describeSystemIx(
 		default:
 			return undefined;
 	}
-}
-
-/**
- * Plain-language consequence for the field diffs whose raw value hides what
- * actually changed for users. A fee numerator is meaningless without its
- * denominator, and a promo tier index is meaningless without the schedule it
- * points into; both are read from the simulated post-state, so the note is
- * derived from the same bytes as the diff rather than from assumptions.
- */
-function explainChange(
-	accountType: string,
-	path: string,
-	after: Record<string, unknown>
-): string | undefined {
-	// Anchor lowercases IDL account names when it builds the Program's coder,
-	// so this sees "state" where the IDL file says "State".
-	if (accountType.toLowerCase() !== 'state') {
-		return undefined;
-	}
-	const bps = (tier: Record<string, unknown>): string | undefined => {
-		const numerator = Number(tier?.feeNumerator);
-		const denominator = Number(tier?.feeDenominator);
-		if (!Number.isFinite(numerator) || !denominator) {
-			return undefined;
-		}
-		return `${+((numerator / denominator) * 10_000).toFixed(4)} bps`;
-	};
-	const tiers = ((
-		after.perpFeeStructure as { feeTiers?: Record<string, unknown>[] }
-	)?.feeTiers ?? []) as Record<string, unknown>[];
-
-	if (path === 'promoFeeTier') {
-		const index = Number(after.promoFeeTier);
-		if (index === 0) {
-			return 'promo off, every account pays its own volume tier';
-		}
-		const rate = tiers[index] ? bps(tiers[index]) : undefined;
-		return `every account now pays at least tier ${index}${
-			rate ? ` (${rate} taker)` : ''
-		}`;
-	}
-	const tierMatch = /^perpFeeStructure\.feeTiers\.(\d+)\.feeNumerator$/.exec(
-		path
-	);
-	if (tierMatch) {
-		const rate = tiers[Number(tierMatch[1])]
-			? bps(tiers[Number(tierMatch[1])])
-			: undefined;
-		return rate ? `tier ${tierMatch[1]} taker fee is now ${rate}` : undefined;
-	}
-	return undefined;
 }
 
 /** Which IDL account type this data is, by its 8-byte discriminator. */

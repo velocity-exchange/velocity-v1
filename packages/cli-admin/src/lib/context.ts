@@ -90,21 +90,26 @@ export async function announceContext(
 		yes: args.yes ?? false,
 	};
 
+	// One dim line on stderr: which chain, as whom, and whether anything sent
+	// lands directly or as a proposal. Kept to short keys so it reads as a
+	// status bar rather than competing with the command's own output.
 	const clusterLabel =
 		cluster === 'mainnet-beta'
 			? pc.red(pc.bold(cluster))
 			: cluster === 'unknown'
-			? pc.yellow(`${cluster} (genesis check failed, env=${env})`)
+			? pc.yellow(`unknown chain (genesis check failed, env=${env})`)
 			: pc.green(cluster);
-	const mode = args.multisig
-		? `proposal → ${args.multisig.toBase58()}`
-		: 'direct';
-	console.error(
-		pc.dim('──') +
-			` ${clusterLabel} ${pc.dim('·')} ${
-				args.profile ? `${args.profile} ${pc.dim('·')} ` : ''
-			}signer ${shorten(args.signer)} ${pc.dim('·')} ${mode}`
+	const parts = [clusterLabel];
+	if (args.profile) {
+		parts.push(pc.dim(args.profile));
+	}
+	parts.push(pc.dim(shorten(args.signer)));
+	parts.push(
+		args.multisig
+			? pc.dim(`proposes to ${shorten(args.multisig)}`)
+			: pc.dim('sends directly')
 	);
+	console.error(`  ${parts.join(pc.dim('  '))}`);
 	return env;
 }
 

@@ -47,7 +47,7 @@ multisig must exist on that cluster; its vault 0 is matched against the
 live State admins and mismatches are called out.
 
 Explicit flags always override the profile. Every command that touches the
-chain prints a one-line context header (cluster · profile · signer · dispatch
+chain prints a one-line context header (cluster, profile, signer, dispatch
 mode), and dies when a declared env contradicts the RPC's actual genesis
 hash. Mainnet direct sends ask for interactive confirmation; pass `--yes`
 (implied when stdin is not a TTY) to skip.
@@ -135,7 +135,7 @@ velocity-admin lut extend [address] [--dry-run]                  # add every mis
 velocity-admin multisig create --proposer <pubkey> [--name <name>]  # create a Squads V4 1/1 multisig
 velocity-admin multisig proposals [--limit <n>]                  # recent proposals: status, approvals, timelock ETA
 velocity-admin multisig execute <index> [--cu-limit <units>] [--cu-price <microLamports>]  # execute an approved proposal as a member; sets a CU limit (Squads UI executes at the 200k default, too low for CPI-heavy inner txs)
-velocity-admin multisig inspect <index> [--accounts]             # decode a vault tx's inner instructions (lookup tables resolved) + simulate execution at full CU; sim reports InvalidProposalStatus until approved
+velocity-admin multisig inspect <index> [--raw]                  # review a pending proposal: decoded instructions + args + named accounts, the account fields it would change (before -> after), program logs, and whether it can execute yet
 velocity-admin multisig set-rent-collector <pubkey>              # propose a config tx setting the rent collector (required by close-accounts); executing any config tx marks still-Active vault proposals stale
 velocity-admin multisig close-accounts [--dry-run]               # reclaim rent from settled proposals (Executed/Rejected/Cancelled + stale non-approved); requires the multisig's rent collector to be set
 
@@ -175,6 +175,60 @@ default 200k compute budget. Set ~1M in the UI's execute modal, or use `multisig
 from a machine holding a member key. Inner transactions never carry compute-budget
 instructions (not CPI-able) — a red UI simulation on an unapproved proposal is normal;
 verify with `multisig inspect`.
+
+**Reviewing a proposal before you approve it**: `multisig inspect <index>` is read-only and
+needs no member key, so any reviewer can run it from their own machine. It answers the
+questions a signer actually has, in plain terms:
+
+```
+▌ proposal #112                                              ! 3/4 approvals
+   status        Active, 3 of 4 approvals
+                 1 more approval needed to execute
+   multisig      7qipzLR9j1JcvdxE1XJEFgvoyFmgBpgw5hMdHBMPcJtM
+   proposer      prpHJmuXnqdaz92tBVdwsqmqyhqPLuq5Km35a5QWco3
+   runs as       8jj7zJgdr5bDndc7evM74FMGwzLPmd4u4QxNzFi1BMai (vault 0)
+
+▌ what it does                                                 1 instruction
+   1. velocity updatePromoFeeTier
+      promoFeeTier  3
+      admin  signer  writable  8jj7zJgdr…  (this multisig's vault 0)
+      state  ·       writable  2etx5NvPN…
+
+▌ what changes on chain                          ✓ simulates clean, 2,464 CU
+   State 2etx5NvPNxeMZ7EfHE6GjJfW2imRYEUANehNS1WB4CVW
+      promoFeeTier  2 → 3
+
+▌ program logs
+   state.promo_fee_tier: 2 -> 3
+
+▌ can it execute now                                                ! not yet
+   pending approval
+```
+
+The "what changes" block is the point: it simulates the proposal's own instructions with the
+vault as signer, so it produces a real before/after field diff at any proposal status, rather
+than waiting for approval the way simulating the Squads execute wrapper does. Both snapshots
+come from simulations issued back to back, so accounts other programs write continuously (a
+perp market's mm-oracle fields) do not show up as changes the proposal makes; if the chain
+moves between them, the output says so. Add `--raw` for the full argument list, raw
+instruction data and complete logs. Non-velocity instructions still show their accounts, with
+SOL transfers decoded to an amount.
+
+Strings that came off the chain (program logs, decoded instruction arguments, decoded account
+fields, market names) are rendered through `ui.safe`, which turns every control character into
+U+FFFD. A proposal's inner instructions are simulated during review, before approval, so a
+proposer can put any program in a proposal and have its `msg!` output reach the reviewer's
+terminal; without that, an escape sequence in a log could move the cursor and repaint the
+review with forged output. Substituting rather than dropping keeps the tampering visible.
+
+## Output conventions
+
+The read-heavy commands (`show`, `whoami`, `multisig proposals|inspect`, and every dry run)
+share the layout in `src/lib/ui.ts`: a `▌` section marker with the verdict for that section
+right-aligned, then `label   value` rows beneath it. Colour is from `picocolors`, which turns
+itself off when stdout is not a TTY or `NO_COLOR` is set, so redirecting to a file or piping
+into Slack gives clean text. Prefer these helpers over bare `console.log` in new commands so
+the tool keeps reading as one thing.
 
 **Listing a new market**: init and parameterise the market, then extend the market
 address lookup table (`lut show` to see what is missing, `lut extend` to add it). Services

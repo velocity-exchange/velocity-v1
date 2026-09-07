@@ -5,7 +5,6 @@ import {
 	ExchangeStatus,
 	FeatureBitFlags,
 	FeeStructure,
-	FeeTier,
 	HotRole,
 	LpPoolFeatureBitFlags,
 	SolvencyStatus,
@@ -13,8 +12,10 @@ import {
 	getTokenAmount,
 	SpotBalanceType,
 } from '@velocity-exchange/sdk';
+import pc from 'picocolors';
 import { readGlobalOpts, withGlobalOptions } from '../lib/options';
 import { buildAdminClient, buildProvider } from '../lib/provider';
+import * as ui from '../lib/ui';
 
 /** Render `numerator / denominator` as basis points (e.g. taker fee). */
 function asBps(numerator: number, denominator: number): string {
@@ -43,36 +44,20 @@ function describeFeeAdjustment(adjustment: number): string {
 	return `${adjustment > 0 ? '+' : ''}${adjustment}% of tier fee/rebate`;
 }
 
-function describeFeeTier(tier: FeeTier): string {
-	return [
-		`taker ${asBps(tier.feeNumerator, tier.feeDenominator)}`,
-		`maker rebate ${asBps(
-			tier.makerRebateNumerator,
-			tier.makerRebateDenominator
-		)}`,
-		`referrer reward ${asPct(
-			tier.referrerRewardNumerator,
-			tier.referrerRewardDenominator
-		)} of taker fee`,
-		`referee discount ${asPct(
-			tier.refereeFeeNumerator,
-			tier.refereeFeeDenominator
-		)}`,
-	].join(' | ');
-}
-
 function printFillerReward(structure: FeeStructure): void {
-	console.log(
-		'  filler (keeper) reward, carved out of the taker fee:',
-		`flat $${trimZeros(structure.flatFillerFee.toNumber() / 1_000_000)}`,
-		`+ ${asPct(
-			structure.fillerRewardStructure.rewardNumerator,
-			structure.fillerRewardStructure.rewardDenominator
-		)} variable component`,
-		`(time-based lower bound $${trimZeros(
-			structure.fillerRewardStructure.timeBasedRewardLowerBound.toNumber() /
-				1_000_000
-		)})`
+	ui.kv(
+		'filler reward',
+		pc.dim(
+			`flat $${trimZeros(
+				structure.flatFillerFee.toNumber() / 1_000_000
+			)} + ${asPct(
+				structure.fillerRewardStructure.rewardNumerator,
+				structure.fillerRewardStructure.rewardDenominator
+			)}, floor $${trimZeros(
+				structure.fillerRewardStructure.timeBasedRewardLowerBound.toNumber() /
+					1_000_000
+			)}`
+		)
 	);
 }
 
@@ -89,8 +74,16 @@ function describeBitmask(
 	return `${value} (0b${value.toString(2).padStart(8, '0')}) = ${names}`;
 }
 
-/** Render any decoded account field: pubkeys as base58, BNs as decimals, arrays/structs inline. */
+/**
+ * Render any decoded account field: pubkeys as base58, BNs as decimals,
+ * arrays/structs inline. Sanitized: account fields are chain data and a
+ * string field can carry terminal escapes.
+ */
 function formatField(value: unknown): string {
+	return ui.safe(renderField(value));
+}
+
+function renderField(value: unknown): string {
 	if (value === undefined || value === null) {
 		return '(none)';
 	}
@@ -101,11 +94,11 @@ function formatField(value: unknown): string {
 		return value.toString();
 	}
 	if (Array.isArray(value)) {
-		return `[${value.map(formatField).join(', ')}]`;
+		return `[${value.map(renderField).join(', ')}]`;
 	}
 	if (typeof value === 'object') {
 		const entries = Object.entries(value as Record<string, unknown>).map(
-			([k, v]) => `${k}: ${formatField(v)}`
+			([k, v]) => `${k}: ${renderField(v)}`
 		);
 		return `{ ${entries.join(', ')} }`;
 	}
@@ -128,46 +121,42 @@ export function registerShow(parent: Command): void {
 		const client = await buildAdminClient(opts);
 		try {
 			const state = client.getStateAccount();
-			console.log('cold admin:', state.coldAdmin.toBase58());
-			console.log('warm admin:', state.warmAdmin.toBase58());
-			console.log(
-				'pause admin:',
-				state.pauseAdmin.equals(PublicKey.default)
-					? '(unset)'
-					: state.pauseAdmin.toBase58()
+			const key = (value: PublicKey) =>
+				value.equals(PublicKey.default)
+					? pc.dim('(unset)')
+					: pc.dim(value.toBase58());
+
+			ui.header('admin authorities');
+			ui.table([
+				[pc.bold('cold'), pc.dim(state.coldAdmin.toBase58())],
+				[pc.bold('warm'), pc.dim(state.warmAdmin.toBase58())],
+				[pc.bold('pause'), key(state.pauseAdmin)],
+			]);
+
+			ui.header('hot roles');
+			ui.table(
+				Object.values(HotRole).map((role) => {
+					const field = `hot${role.charAt(0).toUpperCase()}${role.slice(
+						1
+					)}` as keyof typeof state;
+					const value = state[field] as unknown as PublicKey | undefined;
+					return [pc.bold(role), value ? key(value) : pc.dim('(unset)')];
+				})
 			);
-			for (const role of Object.values(HotRole)) {
-				const key = `hot${role.charAt(0).toUpperCase()}${role.slice(
-					1
-				)}` as keyof typeof state;
-				const value = state[key] as unknown as PublicKey | undefined;
-				const display =
-					value && !value.equals(PublicKey.default)
-						? value.toBase58()
-						: '(unset)';
-				console.log(`hot.${role}:`, display);
-			}
-			const recipientPerp = state.protocolFeeRecipientPerp;
-			console.log(
-				'protocol fee recipient (perp):',
-				recipientPerp.equals(PublicKey.default)
-					? '(unset)'
-					: recipientPerp.toBase58()
-			);
-			const recipientSpot = state.protocolFeeRecipientSpot;
-			console.log(
-				'protocol fee recipient (spot):',
-				recipientSpot.equals(PublicKey.default)
-					? '(unset)'
-					: recipientSpot.toBase58()
-			);
-			console.log(
-				'trade-fee split: amm =',
-				`${state.perpFeeStructure.ammFeeNumerator}%,`,
-				'if =',
-				`${state.perpFeeStructure.ifFeeNumerator}%,`,
-				'protocol = residual'
-			);
+
+			ui.header('protocol fees');
+			ui.table([
+				[pc.bold('recipient perp'), key(state.protocolFeeRecipientPerp)],
+				[pc.bold('recipient spot'), key(state.protocolFeeRecipientSpot)],
+				[
+					pc.bold('split'),
+					pc.dim(
+						`amm ${state.perpFeeStructure.ammFeeNumerator}%, if ` +
+							`${state.perpFeeStructure.ifFeeNumerator}%, protocol residual`
+					),
+				],
+			]);
+			console.log('');
 		} finally {
 			await client.unsubscribe();
 		}
@@ -206,17 +195,16 @@ export function registerShow(parent: Command): void {
 			};
 
 			const statePk = await client.getStatePublicKey();
-			console.log('state account:', statePk.toBase58());
-			const width = Math.max(
-				...Object.keys(state as unknown as object).map((k) => k.length)
+			ui.header('State', pc.dim(statePk.toBase58()));
+			ui.table(
+				Object.entries(state as unknown as Record<string, unknown>).map(
+					([field, value]) => [
+						pc.dim(field),
+						decoded[field] ? pc.bold(decoded[field]) : formatField(value),
+					]
+				)
 			);
-			for (const [key, value] of Object.entries(
-				state as unknown as Record<string, unknown>
-			)) {
-				console.log(
-					`  ${key.padEnd(width)}  ${decoded[key] ?? formatField(value)}`
-				);
-			}
+			console.log('');
 		} finally {
 			await client.unsubscribe();
 		}
@@ -397,68 +385,134 @@ export function registerShow(parent: Command): void {
 				['VIP 2  ', '30d vol >= $80M '],
 				['VIP 3  ', '30d vol >= $200M'],
 			];
-			console.log('trading fees — perp (per fill, tier by taker 30d volume):');
-			perpTierLabels.forEach(([name, label], i) => {
-				console.log(
-					`  ${name} (tier ${i}, ${label}):`,
-					describeFeeTier(state.perpFeeStructure.feeTiers[i])
-				);
-			});
-			printFillerReward(state.perpFeeStructure);
-			console.log(
-				'  remainder split (after rebate/referral/filler): amm =',
-				`${state.perpFeeStructure.ammFeeNumerator}%,`,
-				'if =',
-				`${state.perpFeeStructure.ifFeeNumerator}%,`,
-				'protocol = residual'
+			ui.header(
+				'perp trading fees',
+				state.promoFeeTier > 0
+					? pc.yellow(
+							`promo floor: ${
+								perpTierLabels[state.promoFeeTier]?.[0]?.trim() ??
+								`tier ${state.promoFeeTier}`
+							}`
+					  )
+					: pc.dim('tier by taker 30d volume')
 			);
-			if (state.promoFeeTier > 0) {
-				const promoName =
-					perpTierLabels[state.promoFeeTier]?.[0]?.trim() ??
-					`tier ${state.promoFeeTier}`;
-				console.log(
-					`  PROMO ACTIVE: every account gets at least ${promoName} (tier ${state.promoFeeTier})`
-				);
-			}
+			ui.table(
+				perpTierLabels.map(([name, label], i) => {
+					const tier = state.perpFeeStructure.feeTiers[i];
+					const promoted = state.promoFeeTier > 0 && i < state.promoFeeTier;
+					return [
+						promoted ? pc.dim(name.trim()) : pc.bold(name.trim()),
+						pc.dim(label.trim()),
+						`taker ${
+							promoted
+								? pc.dim(asBps(tier.feeNumerator, tier.feeDenominator))
+								: pc.bold(asBps(tier.feeNumerator, tier.feeDenominator))
+						}`,
+						pc.dim(
+							`maker ${asBps(
+								tier.makerRebateNumerator,
+								tier.makerRebateDenominator
+							)} rebate`
+						),
+						pc.dim(
+							`referrer ${asPct(
+								tier.referrerRewardNumerator,
+								tier.referrerRewardDenominator
+							)}, referee ${asPct(
+								tier.refereeFeeNumerator,
+								tier.refereeFeeDenominator
+							)}`
+						),
+						promoted ? pc.dim('below floor') : '',
+					];
+				})
+			);
+			printFillerReward(state.perpFeeStructure);
+			ui.kv(
+				'split',
+				pc.dim(
+					`amm ${state.perpFeeStructure.ammFeeNumerator}%, ` +
+						`if ${state.perpFeeStructure.ifFeeNumerator}%, protocol residual`
+				)
+			);
 
-			console.log('\ntrading fees — spot (per fill, all users pay tier 0):');
-			console.log(`  ${describeFeeTier(state.spotFeeStructure.feeTiers[0])}`);
+			ui.header('spot trading fees', pc.dim('all users pay tier 0'));
+			const spotTier = state.spotFeeStructure.feeTiers[0];
+			ui.table([
+				[
+					pc.bold('tier 0'),
+					`taker ${pc.bold(
+						asBps(spotTier.feeNumerator, spotTier.feeDenominator)
+					)}`,
+					pc.dim(
+						`maker ${asBps(
+							spotTier.makerRebateNumerator,
+							spotTier.makerRebateDenominator
+						)} rebate`
+					),
+					pc.dim(
+						`referrer ${asPct(
+							spotTier.referrerRewardNumerator,
+							spotTier.referrerRewardDenominator
+						)}, referee ${asPct(
+							spotTier.refereeFeeNumerator,
+							spotTier.refereeFeeDenominator
+						)}`
+					),
+				],
+			]);
 			printFillerReward(state.spotFeeStructure);
 
-			console.log(
-				'\nperp markets (liquidation fees are paid by the liquidatee; liquidator fee ramps up to min(3x base, maintenance margin) while unfilled):'
+			ui.header(
+				'perp markets',
+				pc.dim('liquidation fees paid by the liquidatee')
 			);
-			const perpMarkets = client
-				.getPerpMarketAccounts()
-				.sort((a, b) => a.marketIndex - b.marketIndex);
-			for (const market of perpMarkets) {
-				console.log(
-					`  [${market.marketIndex}] ${decodeName(market.name)}:`,
-					`fee adjustment ${describeFeeAdjustment(market.feeAdjustment)},`,
-					`taker addon ${market.takerFeeAddonTenthBps / 10}bps |`,
-					`liquidation: liquidator ${pct1e6(market.liquidatorFee)},`,
-					`if ${pct1e6(market.ifLiquidationFee)},`,
-					`protocol ${pct1e6(market.protocolLiquidationFee)}`
-				);
-			}
+			ui.table(
+				client
+					.getPerpMarketAccounts()
+					.sort((a, b) => a.marketIndex - b.marketIndex)
+					.map((market) => [
+						pc.dim(`[${market.marketIndex}]`),
+						pc.bold(ui.safe(decodeName(market.name))),
+						pc.dim(
+							`fee adj ${describeFeeAdjustment(market.feeAdjustment)}, addon ${
+								market.takerFeeAddonTenthBps / 10
+							}bps`
+						),
+						pc.dim(
+							`liq: liquidator ${pct1e6(market.liquidatorFee)}, if ${pct1e6(
+								market.ifLiquidationFee
+							)}, protocol ${pct1e6(market.protocolLiquidationFee)}`
+						),
+					])
+			);
+			ui.note('liquidator fee ramps to min(3x base, maintenance margin)');
 
-			console.log(
-				'\nspot markets (interest carveouts are shares of deposit-interest gains, not extra user charges):'
+			ui.header(
+				'spot markets',
+				pc.dim('carveouts are shares of deposit interest')
 			);
-			const spotMarkets = client
-				.getSpotMarketAccounts()
-				.sort((a, b) => a.marketIndex - b.marketIndex);
-			for (const market of spotMarkets) {
-				console.log(
-					`  [${market.marketIndex}] ${decodeName(market.name)}:`,
-					`fee adjustment ${describeFeeAdjustment(market.feeAdjustment)} |`,
-					`liquidation: liquidator ${pct1e6(market.liquidatorFee)},`,
-					`if ${pct1e6(market.ifLiquidationFee)},`,
-					`protocol ${pct1e6(market.protocolLiquidationFee)} |`,
-					`interest carveout: if ${pct1e6(market.insuranceFund.ifFeeFactor)},`,
-					`protocol ${pct1e6(market.protocolFeeFactor)}`
-				);
-			}
+			ui.table(
+				client
+					.getSpotMarketAccounts()
+					.sort((a, b) => a.marketIndex - b.marketIndex)
+					.map((market) => [
+						pc.dim(`[${market.marketIndex}]`),
+						pc.bold(ui.safe(decodeName(market.name))),
+						pc.dim(`fee adj ${describeFeeAdjustment(market.feeAdjustment)}`),
+						pc.dim(
+							`liq: liquidator ${pct1e6(market.liquidatorFee)}, if ${pct1e6(
+								market.ifLiquidationFee
+							)}, protocol ${pct1e6(market.protocolLiquidationFee)}`
+						),
+						pc.dim(
+							`carveout: if ${pct1e6(
+								market.insuranceFund.ifFeeFactor
+							)}, protocol ${pct1e6(market.protocolFeeFactor)}`
+						),
+					])
+			);
+			console.log('');
 		} finally {
 			await client.unsubscribe();
 		}

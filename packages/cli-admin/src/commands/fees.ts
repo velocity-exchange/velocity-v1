@@ -12,8 +12,10 @@ import {
 	TransferFeeAndPnlPoolDirection,
 	ACCELERATED_REFERRER_REWARD_PERCENT,
 } from '@velocity-exchange/sdk';
+import pc from 'picocolors';
 import { readGlobalOpts, withGlobalOptions } from '../lib/options';
 import { buildAdminClient, buildProvider } from '../lib/provider';
+import * as ui from '../lib/ui';
 import {
 	reportDispatch,
 	reportDryRun,
@@ -610,18 +612,40 @@ export function registerFees(parent: Command): void {
 					resolveAdminAuthority(provider, multisigPda)
 				);
 				if (local.dryRun) {
-					console.log(label);
-					for (let i = 0; i < tierBps.length; i++) {
-						console.log(
-							`  tier ${i}: fee ${tiers[i].feeNumerator}/${tiers[i].feeDenominator} ` +
-								`makerRebate ${tiers[i].makerRebateNumerator}/${tiers[i].makerRebateDenominator} ` +
-								`referrer ${tiers[i].referrerRewardNumerator}/${tiers[i].referrerRewardDenominator} ` +
-								`referee ${tiers[i].refereeFeeNumerator}/${tiers[i].refereeFeeDenominator}`
-						);
-					}
-					console.log(
-						`  split: amm=${feeStructure.ammFeeNumerator}% if=${feeStructure.ifFeeNumerator}% protocol=residual`
+					const bps = (numerator: number, denominator: number) =>
+						`${+((numerator / denominator) * 10_000).toFixed(4)} bps`;
+					ui.header('perp fee schedule', pc.dim('proposed'));
+					ui.table(
+						tierBps.map((_, i) => {
+							const live = current.feeTiers[i];
+							const next = tiers[i];
+							const from = bps(live.feeNumerator, live.feeDenominator);
+							const to = bps(next.feeNumerator, next.feeDenominator);
+							return [
+								pc.dim(`tier ${i}`),
+								from === to
+									? `taker ${pc.dim(to)}`
+									: `taker ${ui.change(from, to)}`,
+								pc.dim(
+									`maker ${bps(
+										next.makerRebateNumerator,
+										next.makerRebateDenominator
+									)} rebate`
+								),
+								pc.dim(
+									`referrer ${next.referrerRewardNumerator}%, referee ${next.refereeFeeNumerator}%`
+								),
+								from === to ? pc.dim('unchanged') : '',
+							];
+						})
 					);
+					ui.kv(
+						'split',
+						pc.dim(
+							`amm ${feeStructure.ammFeeNumerator}%, if ${feeStructure.ifFeeNumerator}%, protocol residual`
+						)
+					);
+					ui.note('tiers 4-9 mirror the last tier given');
 					await reportDryRun(
 						provider,
 						[ix],

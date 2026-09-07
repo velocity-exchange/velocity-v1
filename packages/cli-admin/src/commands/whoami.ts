@@ -4,6 +4,7 @@ import { Command } from 'commander';
 import pc from 'picocolors';
 import { readGlobalOpts, withGlobalOptions } from '../lib/options';
 import { buildProvider, loadKeypair } from '../lib/provider';
+import * as ui from '../lib/ui';
 import { detectCluster } from '../lib/context';
 import { fetchStateAdmins } from '../lib/state';
 
@@ -33,20 +34,18 @@ export function registerWhoami(parent: Command): void {
 				? cluster
 				: opts.env;
 
-		console.log(`signer:   ${pc.bold(signer.toBase58())}`);
-		console.log(
-			`cluster:  ${cluster}${
+		const lamports = await provider.connection.getBalance(signer);
+		ui.header('whoami', opts.profile ? pc.dim(opts.profile) : undefined);
+		ui.kv('signer', pc.bold(signer.toBase58()));
+		ui.kv(
+			'cluster',
+			`${cluster}${
 				opts.envExplicit && cluster !== 'unknown' && cluster !== opts.env
-					? pc.yellow(` (WARNING: env says ${opts.env})`)
+					? pc.yellow(`  env says ${opts.env}, they disagree`)
 					: ''
 			}`
 		);
-		if (opts.profile) {
-			console.log(`profile:  ${opts.profile}`);
-		}
-		const lamports = await provider.connection.getBalance(signer);
-		console.log(`balance:  ${(lamports / 1e9).toFixed(4)} SOL`);
-		console.log();
+		ui.kv('balance', `${(lamports / 1e9).toFixed(4)} SOL`);
 
 		const admins = await fetchStateAdmins(provider.connection, env);
 		const held: string[] = [];
@@ -61,22 +60,21 @@ export function registerWhoami(parent: Command): void {
 		for (const [role, pk] of Object.entries(admins.hotRoles)) {
 			holds(role, pk);
 		}
+		ui.header(
+			'State roles held',
+			held.length > 0 ? ui.ok(`${held.length}`) : pc.dim('none')
+		);
 		if (held.length > 0) {
-			console.log(pc.bold('state roles held by this signer:'));
-			for (const r of held) {
-				console.log(`  ${pc.green('✓')} ${r}`);
+			for (const role of held) {
+				ui.line(`${pc.green('✓')} ${role}`);
 			}
 		} else {
-			console.log('this signer holds no State roles on this cluster.');
+			ui.note('this signer holds no State roles on this cluster');
 		}
-		console.log(
-			pc.dim(
-				`  (cold ${admins.coldAdmin.toBase58()} · warm ${admins.warmAdmin.toBase58()})`
-			)
-		);
+		ui.kv('cold admin', pc.dim(admins.coldAdmin.toBase58()));
+		ui.kv('warm admin', pc.dim(admins.warmAdmin.toBase58()));
 
 		if (opts.multisig) {
-			console.log();
 			const multisigPda = new PublicKey(opts.multisig);
 			try {
 				const ms = await multisigSdk.accounts.Multisig.fromAccountAddress(
@@ -85,11 +83,6 @@ export function registerWhoami(parent: Command): void {
 				);
 				const member = ms.members.find((m) => m.key.equals(signer));
 				const [vault] = multisigSdk.getVaultPda({ multisigPda, index: 0 });
-				console.log(pc.bold(`multisig ${multisigPda.toBase58()}:`));
-				console.log(
-					`  ${member ? pc.green('✓ member') : pc.yellow('✗ not a member')}` +
-						` · threshold ${ms.threshold} · timelock ${Number(ms.timeLock)}s`
-				);
 				const vaultRoles: string[] = [];
 				if (vault.equals(admins.coldAdmin)) {
 					vaultRoles.push('cold admin');
@@ -97,19 +90,33 @@ export function registerWhoami(parent: Command): void {
 				if (vault.equals(admins.warmAdmin)) {
 					vaultRoles.push('warm admin');
 				}
-				console.log(
-					`  vault 0 ${vault.toBase58()}` +
-						(vaultRoles.length
-							? ` = State ${vaultRoles.join(' + ')}`
-							: ' (not a State admin)')
+				ui.header(
+					'multisig',
+					member ? ui.ok('you are a member') : ui.warn('you are not a member')
 				);
-			} catch {
-				console.log(
-					pc.yellow(
-						`multisig ${opts.multisig}: no Squads account on this cluster`
+				ui.kv('address', pc.dim(multisigPda.toBase58()));
+				ui.kv(
+					'policy',
+					pc.dim(
+						`threshold ${ms.threshold} of ${
+							ms.members.length
+						}, timelock ${Number(ms.timeLock)}s`
 					)
 				);
+				ui.kv(
+					'vault 0',
+					`${pc.dim(vault.toBase58())}  ${
+						vaultRoles.length
+							? pc.green(`State ${vaultRoles.join(' + ')}`)
+							: pc.dim('not a State admin')
+					}`
+				);
+			} catch {
+				ui.header('multisig', ui.bad('not found'));
+				ui.kv('address', pc.dim(opts.multisig));
+				ui.note('no Squads account at this address on this cluster');
 			}
 		}
+		console.log('');
 	});
 }

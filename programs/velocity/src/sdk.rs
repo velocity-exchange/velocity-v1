@@ -13,6 +13,7 @@
 use {
     crate::{
         error::VelocityResult,
+        instructions::optional_accounts::AccountMaps,
         math::{
             margin::calculate_margin_requirement_and_total_collateral_and_liability_info as _calc_margin,
             time::SlotClock,
@@ -276,7 +277,13 @@ pub fn calculate_margin(
         accounts.oracle_guard_rails,
     )?;
 
-    _calc_margin(user, &perp_map, &spot_map, &mut oracle_map, context)
+    let mut maps = AccountMaps {
+        perp_market_map: perp_map,
+        spot_market_map: spot_map,
+        oracle_map,
+    };
+
+    _calc_margin(user, &mut maps, context)
 }
 
 /// Compute the oracle price for a single oracle account.

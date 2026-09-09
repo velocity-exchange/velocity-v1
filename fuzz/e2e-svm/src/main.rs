@@ -2369,6 +2369,13 @@ impl Fixture {
         let (Some(sm0), Some(sm1)) = (self.read_spot_market(), self.read_spot_market_1()) else {
             return false;
         };
+        // The pool-1 markets must be valued through their OWN SpotMarket, not
+        // market 0's — see the match below. Refusing to judge when either is
+        // unreadable is the conservative direction.
+        let (Some(sm2), Some(sm3)) = (self.read_pool1_market_a(), self.read_pool1_market_b())
+        else {
+            return false;
+        };
 
         let mut assets: i128 = 0;
         let mut liabs: i128 = 0;
@@ -2376,10 +2383,25 @@ impl Fixture {
             if sp.scaled_balance == 0 {
                 continue;
             }
-            // Markets 2/3 mirror 0/1 by mint but are QuoteAsset-priced.
+            // Markets 2/3 mirror 0/1 BY MINT — so market 3 is 9-decimal like
+            // market 1 — but both are QuoteAsset-priced at $1.
+            //
+            // Each must be valued through its OWN SpotMarket. `get_token_amount`
+            // takes `precision_decrease` from whichever market it is handed, so
+            // passing market 0 (6 decimals) for a market-3 balance (9 decimals)
+            // understates it by 1000x; and understating a DEPOSIT makes the
+            // account read as more insolvent than it is, which is the
+            // false-positive direction and now costs the rest of the action
+            // sequence. Market 2's decimals do line up with market 0's, but it
+            // would still read market 0's interest indices rather than its own.
+            //
+            // Latent today — `market_ras` passes only markets 0 and 1, so the
+            // victim cannot hold a 2/3 position on the `liquidate_spot` path —
+            // but the arm exists to handle them, so it should be right.
             let (m, px, dec) = match sp.market_index {
                 1 => (&sm1, px_1, 9u32),
-                3 => (&sm0, PRICE_PRECISION as i128, 9u32),
+                2 => (&sm2, PRICE_PRECISION as i128, 6u32),
+                3 => (&sm3, PRICE_PRECISION as i128, 9u32),
                 _ => (&sm0, PRICE_PRECISION as i128, 6u32),
             };
             let tok = velocity::math::spot_balance::get_token_amount(
@@ -5803,6 +5825,14 @@ impl Fixture {
     fn read_spot_market_1(&self) -> Option<SpotMarket> {
         read_zc::<SpotMarket>(&self.ctx, &self.spot_market_1_pda)
     }
+    /// Pool-1 market A = spot market index 2 (mirrors market 0, USDC, 6 decimals).
+    fn read_pool1_market_a(&self) -> Option<SpotMarket> {
+        read_zc::<SpotMarket>(&self.ctx, &self.pool1_market_a_pda)
+    }
+    /// Pool-1 market B = spot market index 3 (mirrors market 1, SOL, 9 decimals).
+    fn read_pool1_market_b(&self) -> Option<SpotMarket> {
+        read_zc::<SpotMarket>(&self.ctx, &self.pool1_market_b_pda)
+    }
     fn read_perp_market(&self) -> Option<PerpMarket> {
         read_zc::<PerpMarket>(&self.ctx, &self.perp_market_pda)
     }
@@ -7260,6 +7290,34 @@ fn invariant_solvency(fixture: &mut Fixture) {
             shortfall,
             m.market_index
         );
+
+        // The program's OWN authoritative statement, extended to the two pool-1
+        // markets nothing else covers. `market_ras` passes only markets 0 and 1,
+        // so no instruction loads 2/3 and no other family reads them — this
+        // scaled comparison was their only check.
+        //
+        // `validate_spot_balances` returns `depositors_amount - borrowers_amount`
+        // in TOKEN units, which is the index-drift-corrected form of the scaled
+        // comparison above; a negative claim is bad debt no depositor balance
+        // backs. Same known-bug slack.
+        //
+        // Restricted to the pool-1 markets on purpose: markets 0 and 1 are
+        // already covered by Family I through
+        // `validate_spot_market_vault_amount`, which is the stronger statement
+        // (it reconciles against real vault tokens, not just the ledger).
+        if matches!(label, "pool-1 market A" | "pool-1 market B") {
+            let claim = velocity::math::spot_withdraw::validate_spot_balances(&m)
+                .map(|c| c as i128)
+                .unwrap_or(0);
+            fuzz_assert!(
+                claim >= -(KNOWN_REPAY_ROUNDING_SLACK as i128),
+                "family XIX: {} depositors_claim is NEGATIVE ({}) — borrows exceed deposits in \
+                 TOKEN units (market_index={})",
+                label,
+                claim,
+                m.market_index
+            );
+        }
     }
 
     // --- Family XVIII: liquidation liveness (DoS). ---

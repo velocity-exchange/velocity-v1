@@ -3361,11 +3361,7 @@ fn settle_amm_house_fill(
 
     if builder_fee != 0 {
         if let (Some(idx), Some(escrow)) = (builder_order_idx, filler.rev_share_escrow.as_mut()) {
-            let order = escrow.get_order_mut(idx)?;
-            order.fees_accrued = order.fees_accrued.safe_add(builder_fee)?;
-            // mirror the per-order accrual into the market aggregate the fee
-            // sweep reserves (audit #73)
-            market.accrue_pending_revenue_share(builder_fee)?;
+            accrue_revenue_share(escrow, idx, builder_fee, market)?;
         } else {
             validate!(
                 false,
@@ -3410,10 +3406,7 @@ fn settle_amm_house_fill(
     if let (Some(idx), Some(escrow)) =
         (referrer_builder_order_idx, filler.rev_share_escrow.as_mut())
     {
-        let order = escrow.get_order_mut(idx)?;
-        order.fees_accrued = order.fees_accrued.safe_add(referrer_reward)?;
-        // mirror into the market aggregate the fee sweep reserves (audit #73)
-        market.accrue_pending_revenue_share(referrer_reward)?;
+        accrue_revenue_share(escrow, idx, referrer_reward, market)?;
     }
 
     if user_fee != 0 || builder_fee != 0 {
@@ -3489,19 +3482,8 @@ fn settle_amm_house_fill(
     } else {
         OrderActionExplanation::OrderFilledWithAMM
     };
-    let mut order_action_bit_flags: u8 = 0;
-    order_action_bit_flags = set_order_bit_flag(
-        order_action_bit_flags,
-        taker.order.is_signed_msg(),
-        OrderBitFlag::SignedMessage,
-    );
-    if taker.user.perp_positions[taker.position_index].is_isolated() {
-        order_action_bit_flags = set_order_bit_flag(
-            order_action_bit_flags,
-            true,
-            OrderBitFlag::IsIsolatedPosition,
-        );
-    }
+    // The house is the counterparty, so it holds no position to be isolated.
+    let order_action_bit_flags = fill_record_bit_flags(taker, false);
 
     let (
         taker_existing_quote_entry_amount,
@@ -3567,6 +3549,38 @@ fn settle_amm_house_fill(
 #[allow(clippy::too_many_arguments)]
 /// Settle a single `DlobMatch` fill (taker vs a resting DLOB maker order).
 /// Returns `(base_filled, quote_filled, maker_base_filled)` to accumulate.
+/// Accrue a revenue-share amount against the builder's order.
+///
+/// The per-order accrual is mirrored into the market aggregate the fee sweep
+/// reserves against (audit #73), so the two never drift.
+fn accrue_revenue_share(
+    escrow: &mut RevenueShareEscrowZeroCopyMut,
+    order_index: u32,
+    amount: u64,
+    market: &mut PerpMarket,
+) -> VelocityResult<()> {
+    let order = escrow.get_order_mut(order_index)?;
+    order.fees_accrued = order.fees_accrued.safe_add(amount)?;
+    market.accrue_pending_revenue_share(amount)?;
+    Ok(())
+}
+
+/// The bit flags every fill record carries.
+///
+/// A signed-message order is marked so a consumer can tell swift flow from
+/// on-chain flow. A fill is marked isolated when either side settles into an
+/// isolated position, because the record then describes a position whose
+/// collateral is not the account's.
+fn fill_record_bit_flags(taker: &TakerSide, maker_is_isolated: bool) -> u8 {
+    let flags = set_order_bit_flag(0, taker.order.is_signed_msg(), OrderBitFlag::SignedMessage);
+    let taker_is_isolated = taker.user.perp_positions[taker.position_index].is_isolated();
+    set_order_bit_flag(
+        flags,
+        taker_is_isolated || maker_is_isolated,
+        OrderBitFlag::IsIsolatedPosition,
+    )
+}
+
 fn settle_dlob_match_fill(
     fill: &QuoterFill,
     market: &mut PerpMarket,
@@ -3719,11 +3733,7 @@ fn settle_dlob_match_fill(
         if let (Some(idx), Some(escrow)) =
             (builder_order_idx, filler.rev_share_escrow.as_deref_mut())
         {
-            let order = escrow.get_order_mut(idx)?;
-            order.fees_accrued = order.fees_accrued.safe_add(builder_fee)?;
-            // mirror the per-order accrual into the market aggregate the fee
-            // sweep reserves (audit #73)
-            market.accrue_pending_revenue_share(builder_fee)?;
+            accrue_revenue_share(escrow, idx, builder_fee, market)?;
         } else {
             validate!(
                 false,
@@ -3806,10 +3816,7 @@ fn settle_dlob_match_fill(
         referrer_builder_order_idx,
         filler.rev_share_escrow.as_deref_mut(),
     ) {
-        let order = escrow.get_order_mut(idx)?;
-        order.fees_accrued = order.fees_accrued.safe_add(referrer_reward)?;
-        // mirror into the market aggregate the fee sweep reserves (audit #73)
-        market.accrue_pending_revenue_share(referrer_reward)?;
+        accrue_revenue_share(escrow, idx, referrer_reward, market)?;
     }
 
     // Update taker order BEFORE event emit.
@@ -3854,21 +3861,10 @@ fn settle_dlob_match_fill(
     } else {
         OrderActionExplanation::OrderFilledWithMatch
     };
-    let mut order_action_bit_flags: u8 = 0;
-    order_action_bit_flags = set_order_bit_flag(
-        order_action_bit_flags,
-        taker.order.is_signed_msg(),
-        OrderBitFlag::SignedMessage,
+    let order_action_bit_flags = fill_record_bit_flags(
+        taker,
+        maker_user.perp_positions[maker_position_index].is_isolated(),
     );
-    if taker.user.perp_positions[taker.position_index].is_isolated()
-        || maker_user.perp_positions[maker_position_index].is_isolated()
-    {
-        order_action_bit_flags = set_order_bit_flag(
-            order_action_bit_flags,
-            true,
-            OrderBitFlag::IsIsolatedPosition,
-        );
-    }
 
     let (taker_existing_quote_entry_amount, taker_existing_base_asset_amount) =
         calculate_existing_position_fields_for_order_action(
@@ -4047,9 +4043,7 @@ pub(crate) fn settle_external_match_fill(
         if let (Some(idx), Some(escrow)) =
             (builder_order_idx, filler.rev_share_escrow.as_deref_mut())
         {
-            let order = escrow.get_order_mut(idx)?;
-            order.fees_accrued = order.fees_accrued.safe_add(builder_fee)?;
-            market.accrue_pending_revenue_share(builder_fee)?;
+            accrue_revenue_share(escrow, idx, builder_fee, market)?;
         } else {
             validate!(
                 false,
@@ -4115,9 +4109,7 @@ pub(crate) fn settle_external_match_fill(
         referrer_builder_order_idx,
         filler.rev_share_escrow.as_deref_mut(),
     ) {
-        let order = escrow.get_order_mut(idx)?;
-        order.fees_accrued = order.fees_accrued.safe_add(referrer_reward)?;
-        market.accrue_pending_revenue_share(referrer_reward)?;
+        accrue_revenue_share(escrow, idx, referrer_reward, market)?;
     }
 
     let is_taker_filled_after_this =
@@ -4160,21 +4152,10 @@ pub(crate) fn settle_external_match_fill(
     } else {
         OrderActionExplanation::OrderFilledWithExternalQuoter
     };
-    let mut order_action_bit_flags: u8 = 0;
-    order_action_bit_flags = set_order_bit_flag(
-        order_action_bit_flags,
-        taker.order.is_signed_msg(),
-        OrderBitFlag::SignedMessage,
+    let order_action_bit_flags = fill_record_bit_flags(
+        taker,
+        maker.user.perp_positions[maker.position_index].is_isolated(),
     );
-    if taker.user.perp_positions[taker.position_index].is_isolated()
-        || maker.user.perp_positions[maker.position_index].is_isolated()
-    {
-        order_action_bit_flags = set_order_bit_flag(
-            order_action_bit_flags,
-            true,
-            OrderBitFlag::IsIsolatedPosition,
-        );
-    }
 
     let (taker_existing_quote_entry_amount, taker_existing_base_asset_amount) =
         calculate_existing_position_fields_for_order_action(

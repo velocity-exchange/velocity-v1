@@ -64,8 +64,8 @@ WORKDIR /app
 RUN apk add --no-cache --virtual .build python3 make g++ \
  && npm install --no-save --no-audit --no-fund \
       bigint-buffer@1.1.5 \
-      @triton-one/yellowstone-grpc@5.0.5 \
-      helius-laserstream@0.1.8 \
+      @triton-one/yellowstone-grpc@6.0.0 \
+      helius-laserstream@0.8.5 \
       rpc-websockets@7.5.1 \
  && apk del .build
 COPY --from=builder /app/${APP_PATH}/${APP_OUT} ./${APP_OUT}

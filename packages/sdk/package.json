@@ -115,7 +115,7 @@
 	},
 	"description": "SDK for Velocity Protocol",
 	"engines": {
-		"node": ">=20"
+		"node": ">=20.18.0"
 	},
 	"resolutions": {
 		"@solana/web3.js": "1.99.0",

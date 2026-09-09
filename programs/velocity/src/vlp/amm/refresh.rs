@@ -226,7 +226,7 @@ pub fn compute_amm_refresh_validity(
 
 /// Same as `compute_amm_refresh_validity` but takes the guard-rail config
 /// directly. Use this when you only have a `&ValidityGuardRails` available
-/// (e.g. inside `fulfill_perp_order_step`, which doesn't carry `&State`).
+/// (e.g. inside `fulfill_perp_order`, which does not carry `&State`).
 pub fn compute_amm_refresh_validity_with_guard_rails(
     market: &PerpMarket,
     mm_oracle_price_data: &MMOraclePriceData,

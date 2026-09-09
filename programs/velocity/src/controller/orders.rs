@@ -1,6 +1,6 @@
 //! Order lifecycle: placement validation, cancellation, and fill matching (perp + spot).
 //! Margin math → `crate::math::margin`. Liquidation fills → `crate::controller::liquidation`.
-//! `fill_perp_order` / `fulfill_perp_order_step` = keeper fill dispatch and maker matching.
+//! `fill_perp_order` / `fulfill_perp_order` = keeper fill dispatch and maker matching.
 //! `place_perp_order` / `place_spot_order` = user-facing placement with auction parameter derivation.
 //! `cancel_order` / `cancel_orders_by_*` = cancellation paths (user-initiated and expiry).
 
@@ -3004,11 +3004,17 @@ pub fn credit_filler_perp_pnl(
     Ok(())
 }
 
-/// Build and emit an `OrderActionRecord`. Extracted out of
-/// `fulfill_perp_order_step` so its 480-byte `OrderActionRecord` plus the
-/// two `Option<Order>` copies live in this helper's frame rather than the
-/// already-large orchestrator's frame — the SBPF stack-overwrite check
-/// otherwise fires.
+/// Build and emit an `OrderActionRecord`.
+///
+/// The record is 480 bytes, and the two `Option<Order>` copies are large
+/// again. This function is separate so that all three live in its own frame.
+/// A settlement path that built them would hold them in a frame that is
+/// already large, and the SBPF stack-overwrite check then fires.
+///
+/// The long parameter list is what makes that work. Do not group these
+/// parameters into a struct. The caller builds a struct in its own frame,
+/// which is the cost this function exists to avoid. The check runs only on
+/// an SBF target, so a host test reports nothing when it regresses.
 #[allow(clippy::too_many_arguments)]
 #[inline(never)]
 fn emit_perp_action_record(

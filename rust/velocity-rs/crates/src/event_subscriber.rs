@@ -481,15 +481,23 @@ impl<T: EventRpcProvider> PolledEventStream<T> {
                 }
                 let meta = meta.unwrap();
 
-                if let Some(VersionedTransaction { message, .. }) = transaction.decode() {
-                    // only txs interacting with velocity program
-                    if !message
-                        .static_account_keys()
-                        .iter()
-                        .any(|k| k == &constants::PROGRAM_ID)
-                    {
-                        continue;
-                    }
+                // Fail closed: if we cannot decode the wire tx (e.g. unsupported
+                // version under the current solana-* crates), skip rather than
+                // processing logs without a PROGRAM_ID account-keys check.
+                let Some(VersionedTransaction { message, .. }) = transaction.decode() else {
+                    warn!(
+                        target: LOG_TARGET,
+                        "poll skipping undecodable tx: {signature:?}"
+                    );
+                    continue;
+                };
+                // only txs interacting with velocity program
+                if !message
+                    .static_account_keys()
+                    .iter()
+                    .any(|k| k == &constants::PROGRAM_ID)
+                {
+                    continue;
                 }
                 // ignore failed txs
                 if meta.err.is_some() {

@@ -125,7 +125,7 @@ export async function fetchLogs(
  * Fetches `getTransaction` for a batch of signatures in a single RPC batch
  * request, with a 10-second overall timeout.
  * @param connection RPC connection.
- * @param signatures Signatures to fetch (fetched as `maxSupportedTransactionVersion: 0`).
+ * @param signatures Signatures to fetch (fetched as `maxSupportedTransactionVersion: 1`).
  * @param finality Commitment to fetch each transaction at.
  * @returns One `Log` per signature that returned a result (signatures the RPC couldn't resolve are silently dropped, not padded with placeholders).
  * @throws (rejects) if the batch RPC call doesn't complete within 10 seconds.
@@ -139,7 +139,7 @@ export async function fetchTransactionLogs(
 	for (const signature of signatures) {
 		const args = [
 			signature,
-			{ commitment: finality, maxSupportedTransactionVersion: 0 },
+			{ commitment: finality, maxSupportedTransactionVersion: 1 },
 		];
 
 		requests.push({

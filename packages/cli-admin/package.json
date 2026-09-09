@@ -43,7 +43,7 @@
 		"@clack/prompts": "0.11.0",
 		"@coral-xyz/anchor": "0.32.1",
 		"@velocity-exchange/sdk": "workspace:*",
-		"@solana/web3.js": "1.98.4",
+		"@solana/web3.js": "1.99.0",
 		"@sqds/multisig": "2.1.3",
 		"commander": "12.1.0",
 		"picocolors": "1.1.1"

@@ -92,7 +92,7 @@ export async function printTxLogs(
 ): Promise<Array<any>> {
 	const tx = await connection.getTransaction(txSig, {
 		commitment: 'confirmed',
-		maxSupportedTransactionVersion: 0,
+		maxSupportedTransactionVersion: 1,
 	});
 	const events = [];
 	// On bankrun a tx is only retrievable from the BankrunConnection it was sent

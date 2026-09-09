@@ -65,7 +65,7 @@ async fn main() {
                     &signature,
                     RpcTransactionConfig {
                         encoding: Some(solana_transaction_status::UiTransactionEncoding::Base64),
-                        max_supported_transaction_version: Some(0),
+                        max_supported_transaction_version: Some(1),
                         ..Default::default()
                     },
                 )

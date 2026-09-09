@@ -61,7 +61,7 @@ impl EventRpcProvider for RpcClient {
                     &signature,
                     RpcTransactionConfig {
                         encoding: Some(UiTransactionEncoding::Base64),
-                        max_supported_transaction_version: Some(0),
+                        max_supported_transaction_version: Some(1),
                         ..Default::default()
                     },
                 )
@@ -1415,7 +1415,7 @@ mod test {
             },
             meta,
         }
-        .encode(UiTransactionEncoding::Base64, Some(0), false)
+        .encode(UiTransactionEncoding::Base64, Some(1), false)
         .unwrap()
     }
 

@@ -1474,7 +1474,7 @@ export class SpotFillerMultithreaded {
 					txSigsBatch.map((tx) => tx[0]),
 					{
 						commitment: 'confirmed',
-						maxSupportedTransactionVersion: 0,
+						maxSupportedTransactionVersion: 1,
 					}
 				);
 				for (let j = 0; j < txs.length; j++) {
@@ -1665,7 +1665,7 @@ export class SpotFillerMultithreaded {
 			);
 			txResp = await this.velocityClient.connection.getTransaction(txSig, {
 				commitment: 'confirmed',
-				maxSupportedTransactionVersion: 0,
+				maxSupportedTransactionVersion: 1,
 			});
 
 			if (txResp === null) {

@@ -165,11 +165,7 @@ mod tests {
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
         let spot_market_map =
             SpotMarketMap::load_one(&usdc_spot_market_account_info, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {

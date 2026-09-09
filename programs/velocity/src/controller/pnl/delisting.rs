@@ -16,7 +16,10 @@ fn get_user_keys() -> (Pubkey, Pubkey, Pubkey) {
 
 #[cfg(test)]
 pub mod delisting_test {
-    use crate::math::time::{Millis, SlotClock};
+    use crate::{
+        instructions::optional_accounts::AccountMaps,
+        math::time::{Millis, SlotClock},
+    };
     // use crate::controller::orders::fill_order;
     use {
         super::*,
@@ -129,11 +132,7 @@ pub mod delisting_test {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let state = State {
             oracle_guard_rails: OracleGuardRails {
@@ -240,11 +239,7 @@ pub mod delisting_test {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let state = State {
             oracle_guard_rails: OracleGuardRails {
@@ -347,11 +342,7 @@ pub mod delisting_test {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let state = State {
             oracle_guard_rails: OracleGuardRails {
@@ -462,11 +453,7 @@ pub mod delisting_test {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let state = State {
             oracle_guard_rails: OracleGuardRails {
@@ -577,11 +564,7 @@ pub mod delisting_test {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let state = State {
             oracle_guard_rails: OracleGuardRails {
@@ -697,11 +680,7 @@ pub mod delisting_test {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         // taker wants to go long (would improve balance)
         let mut taker = User {
@@ -911,11 +890,7 @@ pub mod delisting_test {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let state = State {
             settlement_duration: 1,
@@ -1060,11 +1035,7 @@ pub mod delisting_test {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         // taker wants to go long (would improve balance)
         let mut taker = User {
@@ -1266,11 +1237,7 @@ pub mod delisting_test {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         // taker wants to go long (would improve balance)
         let mut taker = User {
@@ -1480,11 +1447,7 @@ pub mod delisting_test {
             Vec::from([&spot_market_account_info, &sol_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         // taker wants to go long (would improve balance)
         let mut longer = User {
@@ -1865,11 +1828,7 @@ pub mod delisting_test {
             Vec::from([&spot_market_account_info, &sol_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         // taker wants to go long (would improve balance)
         let mut longer = User {
@@ -2233,11 +2192,7 @@ pub mod delisting_test {
             Vec::from([&spot_market_account_info, &sol_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         // taker wants to go long (would improve balance)
         let mut longer = User {

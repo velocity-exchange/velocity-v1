@@ -6,6 +6,7 @@ use {
         },
         create_anchor_account_info,
         error::ErrorCode,
+        instructions::optional_accounts::AccountMaps,
         math::{
             constants::{
                 AMM_RESERVE_PRECISION, BASE_PRECISION_I128, BASE_PRECISION_I64, BPS_PRECISION,
@@ -1696,11 +1697,7 @@ fn attempt_borrow_with_massive_upnl() {
     let spot_market_account_infos =
         Vec::from([&spot_market_account_info, &sol_spot_market_account_info]);
     let spot_market_map = SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-    let mut maps = crate::instructions::optional_accounts::AccountMaps {
-        perp_market_map: perp_market_map,
-        spot_market_map,
-        oracle_map,
-    };
+    let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
     // user has 100 sol
     let mut spot_positions = [SpotPosition::default(); 8];

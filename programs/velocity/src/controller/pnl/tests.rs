@@ -3,6 +3,7 @@ use {
         controller::pnl::settle_pnl,
         create_anchor_account_info,
         error::ErrorCode,
+        instructions::optional_accounts::AccountMaps,
         math::{
             casting::Cast,
             constants::{
@@ -129,11 +130,7 @@ pub fn user_no_position() {
     };
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-    let mut maps = crate::instructions::optional_accounts::AccountMaps {
-        perp_market_map: market_map,
-        spot_market_map,
-        oracle_map,
-    };
+    let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
     let mut user = User {
         perp_positions: [PerpPosition::default(); 8],
@@ -258,11 +255,7 @@ pub fn user_does_not_meet_maintenance_requirement() {
     };
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-    let mut maps = crate::instructions::optional_accounts::AccountMaps {
-        perp_market_map: market_map,
-        spot_market_map,
-        oracle_map,
-    };
+    let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
     let mut user = User {
         perp_positions: get_positions(PerpPosition {
@@ -394,11 +387,7 @@ pub fn user_does_not_meet_strict_maintenance_requirement() {
     };
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-    let mut maps = crate::instructions::optional_accounts::AccountMaps {
-        perp_market_map: market_map,
-        spot_market_map,
-        oracle_map,
-    };
+    let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
     let mut user = User {
         perp_positions: get_positions(PerpPosition {
@@ -535,11 +524,7 @@ pub fn user_unsettled_negative_pnl() {
     };
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-    let mut maps = crate::instructions::optional_accounts::AccountMaps {
-        perp_market_map: market_map,
-        spot_market_map,
-        oracle_map,
-    };
+    let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
     let mut user = User {
         perp_positions: get_positions(PerpPosition {
@@ -679,11 +664,7 @@ pub fn user_unsettled_positive_pnl_more_than_pool() {
     };
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-    let mut maps = crate::instructions::optional_accounts::AccountMaps {
-        perp_market_map: market_map,
-        spot_market_map,
-        oracle_map,
-    };
+    let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
     let mut user = User {
         perp_positions: get_positions(PerpPosition {
@@ -823,11 +804,7 @@ pub fn user_unsettled_positive_pnl_less_than_pool() {
     };
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-    let mut maps = crate::instructions::optional_accounts::AccountMaps {
-        perp_market_map: market_map,
-        spot_market_map,
-        oracle_map,
-    };
+    let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
     let mut user = User {
         perp_positions: get_positions(PerpPosition {
@@ -965,11 +942,7 @@ pub fn market_fee_pool_receives_portion() {
     };
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-    let mut maps = crate::instructions::optional_accounts::AccountMaps {
-        perp_market_map: market_map,
-        spot_market_map,
-        oracle_map,
-    };
+    let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
     let mut user = User {
         perp_positions: get_positions(PerpPosition {
@@ -1117,11 +1090,7 @@ pub fn market_fee_pool_pays_back_to_pnl_pool() {
     };
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-    let mut maps = crate::instructions::optional_accounts::AccountMaps {
-        perp_market_map: market_map,
-        spot_market_map,
-        oracle_map,
-    };
+    let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
     let mut user = User {
         perp_positions: get_positions(PerpPosition {
@@ -1262,11 +1231,7 @@ pub fn user_long_positive_unrealized_pnl_up_to_max_positive_pnl() {
     };
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-    let mut maps = crate::instructions::optional_accounts::AccountMaps {
-        perp_market_map: market_map,
-        spot_market_map,
-        oracle_map,
-    };
+    let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
     let mut user = User {
         perp_positions: get_positions(PerpPosition {
@@ -1408,11 +1373,7 @@ pub fn user_long_positive_unrealized_pnl_up_to_max_positive_pnl_price_breached()
     };
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-    let mut maps = crate::instructions::optional_accounts::AccountMaps {
-        perp_market_map: market_map,
-        spot_market_map,
-        oracle_map,
-    };
+    let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
     let mut user = User {
         perp_positions: get_positions(PerpPosition {
@@ -1551,11 +1512,7 @@ pub fn user_long_negative_unrealized_pnl() {
     };
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-    let mut maps = crate::instructions::optional_accounts::AccountMaps {
-        perp_market_map: market_map,
-        spot_market_map,
-        oracle_map,
-    };
+    let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
     let mut user = User {
         perp_positions: get_positions(PerpPosition {
@@ -1697,11 +1654,7 @@ pub fn user_short_positive_unrealized_pnl_up_to_max_positive_pnl() {
     };
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-    let mut maps = crate::instructions::optional_accounts::AccountMaps {
-        perp_market_map: market_map,
-        spot_market_map,
-        oracle_map,
-    };
+    let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
     let mut user = User {
         perp_positions: get_positions(PerpPosition {
@@ -1843,11 +1796,7 @@ pub fn user_short_negative_unrealized_pnl() {
     };
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-    let mut maps = crate::instructions::optional_accounts::AccountMaps {
-        perp_market_map: market_map,
-        spot_market_map,
-        oracle_map,
-    };
+    let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
     let mut user = User {
         perp_positions: get_positions(PerpPosition {
@@ -2020,11 +1969,7 @@ pub fn user_invalid_oracle_position() {
         / 33;
     create_anchor_account_info!(market, PerpMarket, market_account_info);
     let market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
-    let mut maps = crate::instructions::optional_accounts::AccountMaps {
-        perp_market_map: market_map,
-        spot_market_map,
-        oracle_map,
-    };
+    let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
     assert!(!market
         .is_price_divergence_ok_for_settle_pnl(oracle_price.price)
         .unwrap());
@@ -2312,11 +2257,7 @@ pub fn isolated_perp_position_negative_pnl() {
     };
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-    let mut maps = crate::instructions::optional_accounts::AccountMaps {
-        perp_market_map: market_map,
-        spot_market_map,
-        oracle_map,
-    };
+    let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
     let mut user = User {
         perp_positions: get_positions(PerpPosition {
@@ -2454,11 +2395,7 @@ pub fn isolated_perp_position_user_unsettled_positive_pnl_less_than_pool() {
     };
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-    let mut maps = crate::instructions::optional_accounts::AccountMaps {
-        perp_market_map: market_map,
-        spot_market_map,
-        oracle_map,
-    };
+    let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
     let mut user = User {
         perp_positions: get_positions(PerpPosition {

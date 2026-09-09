@@ -96,11 +96,7 @@ pub fn simulate_place_perp_order(
     let mut rev_share_order = None;
     // The simulation only cares whether placement succeeds; the
     // `PlaceOrderResult` (batch risk accounting) is irrelevant here.
-    let mut maps = AccountMaps {
-        perp_market_map: perp_map,
-        spot_market_map: spot_map,
-        oracle_map,
-    };
+    let mut maps = AccountMaps::new(perp_map, spot_map, oracle_map);
     place_perp_order(
         &state,
         &mut user,

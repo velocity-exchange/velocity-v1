@@ -277,11 +277,7 @@ pub fn calculate_margin(
         accounts.oracle_guard_rails,
     )?;
 
-    let mut maps = AccountMaps {
-        perp_market_map: perp_map,
-        spot_market_map: spot_map,
-        oracle_map,
-    };
+    let mut maps = AccountMaps::new(perp_map, spot_map, oracle_map);
 
     _calc_margin(user, &mut maps, context)
 }

@@ -401,6 +401,7 @@ mod calculate_margin_requirement_and_total_collateral {
     use {
         crate::{
             create_anchor_account_info,
+            instructions::optional_accounts::AccountMaps,
             math::{
                 constants::{
                     AMM_RESERVE_PRECISION, BASE_PRECISION_I64, LIQUIDATION_FEE_PRECISION,
@@ -485,11 +486,7 @@ mod calculate_margin_requirement_and_total_collateral {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -579,11 +576,7 @@ mod calculate_margin_requirement_and_total_collateral {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -676,11 +669,7 @@ mod calculate_margin_requirement_and_total_collateral {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -787,11 +776,7 @@ mod calculate_margin_requirement_and_total_collateral {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -976,11 +961,7 @@ mod calculate_margin_requirement_and_total_collateral {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -1153,11 +1134,7 @@ mod calculate_margin_requirement_and_total_collateral {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -1279,11 +1256,7 @@ mod calculate_margin_requirement_and_total_collateral {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -1467,11 +1440,7 @@ mod calculate_margin_requirement_and_total_collateral {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[1] = SpotPosition {
@@ -1590,11 +1559,7 @@ mod calculate_margin_requirement_and_total_collateral {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[1] = SpotPosition {
@@ -1749,11 +1714,7 @@ mod calculate_margin_requirement_and_total_collateral {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -1860,11 +1821,7 @@ mod calculate_margin_requirement_and_total_collateral {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -1977,11 +1934,7 @@ mod calculate_margin_requirement_and_total_collateral {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[1] = SpotPosition {
@@ -2089,11 +2042,7 @@ mod calculate_margin_requirement_and_total_collateral {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[1] = SpotPosition {
@@ -2138,6 +2087,7 @@ mod calculate_margin_requirement_and_total_collateral_and_liability_info {
         crate::{
             controller::position::PositionDirection,
             create_anchor_account_info,
+            instructions::optional_accounts::AccountMaps,
             math::{
                 constants::{
                     AMM_RESERVE_PRECISION, LIQUIDATION_FEE_PRECISION, MARGIN_PRECISION,
@@ -2239,11 +2189,7 @@ mod calculate_margin_requirement_and_total_collateral_and_liability_info {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -2351,11 +2297,7 @@ mod calculate_margin_requirement_and_total_collateral_and_liability_info {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         // just usdc and resting limit order
         let mut spot_positions = [SpotPosition::default(); 8];
@@ -2505,11 +2447,7 @@ mod calculate_margin_requirement_and_total_collateral_and_liability_info {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -2615,11 +2553,7 @@ mod calculate_margin_requirement_and_total_collateral_and_liability_info {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -2771,11 +2705,7 @@ mod calculate_margin_requirement_and_total_collateral_and_liability_info {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -2936,11 +2866,7 @@ mod calculate_margin_requirement_and_total_collateral_and_liability_info {
         };
         create_anchor_account_info!(market, PerpMarket, market_account_info);
         let perp_market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -3086,11 +3012,7 @@ mod calculate_margin_requirement_and_total_collateral_and_liability_info {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -3136,6 +3058,7 @@ mod calculate_max_withdrawable_amount {
     use {
         crate::{
             create_anchor_account_info,
+            instructions::optional_accounts::AccountMaps,
             math::{
                 constants::{
                     LIQUIDATION_FEE_PRECISION, SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64,
@@ -3211,11 +3134,7 @@ mod calculate_max_withdrawable_amount {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -3298,11 +3217,7 @@ mod calculate_max_withdrawable_amount {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -3384,11 +3299,7 @@ mod calculate_max_withdrawable_amount {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -3422,6 +3333,7 @@ mod validate_spot_margin_trading {
         crate::{
             create_anchor_account_info,
             error::ErrorCode,
+            instructions::optional_accounts::AccountMaps,
             math::{
                 constants::{
                     LIQUIDATION_FEE_PRECISION, SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64,
@@ -3499,11 +3411,7 @@ mod validate_spot_margin_trading {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -3582,11 +3490,7 @@ mod validate_spot_margin_trading {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -3665,11 +3569,7 @@ mod validate_spot_margin_trading {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -3748,11 +3648,7 @@ mod validate_spot_margin_trading {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -3831,11 +3727,7 @@ mod validate_spot_margin_trading {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -3914,11 +3806,7 @@ mod validate_spot_margin_trading {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -4016,11 +3904,7 @@ mod validate_spot_margin_trading {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -4064,6 +3948,7 @@ mod calculate_user_equity {
     use {
         crate::{
             create_anchor_account_info,
+            instructions::optional_accounts::AccountMaps,
             math::{
                 constants::{
                     SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64,
@@ -4162,11 +4047,7 @@ mod calculate_user_equity {
         let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -4270,11 +4151,7 @@ mod calculate_user_equity {
         let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -4375,11 +4252,7 @@ mod calculate_user_equity {
         let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -4461,11 +4334,7 @@ mod calculate_user_equity {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -4498,6 +4367,7 @@ mod floor_net_equity {
     use {
         crate::{
             create_anchor_account_info,
+            instructions::optional_accounts::AccountMaps,
             math::{
                 constants::{
                     QUOTE_PRECISION_U64, SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64,
@@ -4584,11 +4454,7 @@ mod floor_net_equity {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -4678,6 +4544,7 @@ mod trip_net_equity {
     use {
         crate::{
             create_anchor_account_info,
+            instructions::optional_accounts::AccountMaps,
             math::{
                 constants::{
                     AMM_RESERVE_PRECISION, BASE_PRECISION_I64, EQUITY_FLOOR_TRIP_DUST_ALLOWANCE,
@@ -4772,11 +4639,7 @@ mod trip_net_equity {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -4876,11 +4739,7 @@ mod trip_net_equity {
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
         let spot_market_map =
             SpotMarketMap::load_one(&usdc_spot_market_account_info, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -5197,6 +5056,7 @@ mod pools {
         crate::{
             create_anchor_account_info,
             error::ErrorCode,
+            instructions::optional_accounts::AccountMaps,
             math::{
                 constants::{
                     BASE_PRECISION_I64, SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64,
@@ -5261,11 +5121,7 @@ mod pools {
         let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -5318,11 +5174,7 @@ mod pools {
         let perp_market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
 
         let spot_market_map = SpotMarketMap::empty();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let user = User {
             perp_positions: get_positions(PerpPosition {
@@ -5348,6 +5200,7 @@ mod isolated_position {
     use {
         crate::{
             create_anchor_account_info,
+            instructions::optional_accounts::AccountMaps,
             math::{
                 constants::{
                     AMM_RESERVE_PRECISION, BASE_PRECISION_I64, LIQUIDATION_FEE_PRECISION,
@@ -5448,11 +5301,7 @@ mod isolated_position {
         ]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -5548,6 +5397,7 @@ mod meets_place_order_margin_requirement_with_isolated {
         crate::{
             controller::position::PositionDirection,
             create_anchor_account_info,
+            instructions::optional_accounts::AccountMaps,
             math::{
                 constants::{
                     AMM_RESERVE_PRECISION, BASE_PRECISION_I64, BASE_PRECISION_U64, PEG_PRECISION,
@@ -5640,11 +5490,7 @@ mod meets_place_order_margin_requirement_with_isolated {
         let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         // User has:
         // - 1000 USDC cross collateral
@@ -5749,11 +5595,7 @@ mod meets_place_order_margin_requirement_with_isolated {
         let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -5832,11 +5674,7 @@ mod meets_place_order_margin_requirement_with_isolated {
         let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -5922,11 +5760,7 @@ mod meets_place_order_margin_requirement_with_isolated {
         let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -6011,11 +5845,7 @@ mod meets_place_order_margin_requirement_with_isolated {
         let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -6099,11 +5929,7 @@ mod meets_place_order_margin_requirement_with_isolated {
         let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -6190,11 +6016,7 @@ mod meets_place_order_margin_requirement_with_isolated {
         let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -6279,11 +6101,7 @@ mod meets_place_order_margin_requirement_with_isolated {
         let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -6415,11 +6233,7 @@ mod meets_place_order_margin_requirement_with_isolated {
         let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         // User has:
         // - 1000 USDC cross collateral
@@ -6588,11 +6402,7 @@ mod meets_place_order_margin_requirement_with_isolated {
         let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         // User has:
         // - 80 USDC cross collateral
@@ -6771,11 +6581,7 @@ mod meets_place_order_margin_requirement_with_isolated {
         let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         // User has:
         // - 110 USDC cross collateral (PASSES initial margin for cross position)
@@ -6941,11 +6747,7 @@ mod meets_place_order_margin_requirement_with_isolated {
         let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         // User has:
         // - 1000 USDC cross collateral (plenty of buffer)
@@ -7097,11 +6899,7 @@ mod meets_place_order_margin_requirement_with_isolated {
         let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         // User has:
         // - 1000 USDC cross collateral
@@ -7255,11 +7053,7 @@ mod meets_place_order_margin_requirement_with_isolated {
         let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -7352,11 +7146,7 @@ mod meets_place_order_margin_requirement_with_isolated {
         let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -7447,11 +7237,7 @@ mod meets_place_order_margin_requirement_with_isolated {
         let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -7573,11 +7359,7 @@ mod meets_place_order_margin_requirement_with_isolated {
         let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -7706,11 +7488,7 @@ mod meets_place_order_margin_requirement_with_isolated {
         let spot_market_account_infos = Vec::from([&usdc_spot_market_account_info]);
         let spot_market_map =
             SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut spot_positions = [SpotPosition::default(); 8];
         spot_positions[0] = SpotPosition {
@@ -8018,6 +7796,7 @@ mod fill_perp_order_margin_requirement_with_isolated {
     use {
         crate::{
             create_anchor_account_info,
+            instructions::optional_accounts::AccountMaps,
             math::{
                 constants::{
                     AMM_RESERVE_PRECISION, BASE_PRECISION_I64, PEG_PRECISION,
@@ -8137,11 +7916,7 @@ mod fill_perp_order_margin_requirement_with_isolated {
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
         let spot_market_map =
             SpotMarketMap::load_multiple(vec![&usdc_spot_market_account_info], true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         f(&mut maps)
     }

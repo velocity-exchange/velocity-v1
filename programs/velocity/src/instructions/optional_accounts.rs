@@ -43,6 +43,26 @@ pub struct AccountMaps<'a> {
     pub oracle_map: OracleMap<'a>,
 }
 
+impl<'a> AccountMaps<'a> {
+    /// The bundle, from maps a caller already loaded.
+    ///
+    /// [`load_maps`] reads all three out of one account list, which is what
+    /// an instruction handler has. A caller that loads them separately, or
+    /// that names the perp market as its own account, builds the bundle
+    /// here instead.
+    pub fn new(
+        perp_market_map: PerpMarketMap<'a>,
+        spot_market_map: SpotMarketMap<'a>,
+        oracle_map: OracleMap<'a>,
+    ) -> Self {
+        Self {
+            perp_market_map,
+            spot_market_map,
+            oracle_map,
+        }
+    }
+}
+
 pub fn load_maps<'a, 'b>(
     account_info_iter: &mut Peekable<Iter<'a, AccountInfo<'a>>>,
     writable_perp_markets: &'b MarketSet,

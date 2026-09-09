@@ -2182,6 +2182,7 @@ pub mod meets_withdraw_margin_requirement {
             controller::position::PositionDirection,
             create_anchor_account_info,
             error::ErrorCode,
+            instructions::optional_accounts::AccountMaps,
             math::{
                 constants::{
                     AMM_RESERVE_PRECISION, BASE_PRECISION_I128, BASE_PRECISION_I64,
@@ -2298,11 +2299,7 @@ pub mod meets_withdraw_margin_requirement {
             &mut spot_market_account_infos.iter().peekable(),
         )
         .unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut user = User {
             orders: get_orders(Order {

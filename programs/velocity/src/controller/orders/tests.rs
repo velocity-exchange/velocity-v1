@@ -3166,6 +3166,7 @@ pub mod fulfill_order {
             create_anchor_account_info,
             error::ErrorCode,
             get_orders,
+            instructions::optional_accounts::AccountMaps,
             math::{
                 constants::{
                     AMM_RESERVE_PRECISION, BASE_PRECISION_I64, BASE_PRECISION_U64,
@@ -3404,11 +3405,7 @@ pub mod fulfill_order {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let mut taker = User {
             orders: get_orders(Order {
@@ -3675,11 +3672,7 @@ pub mod fulfill_order {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let mut taker = User {
             orders: get_orders(Order {
@@ -3852,11 +3845,7 @@ pub mod fulfill_order {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let mut taker = User {
             orders: get_orders(Order {
@@ -4022,11 +4011,7 @@ pub mod fulfill_order {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let mut taker = User {
             orders: get_orders(Order {
@@ -4188,11 +4173,7 @@ pub mod fulfill_order {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let mut taker = User {
             orders: get_orders(Order {
@@ -4428,11 +4409,7 @@ pub mod fulfill_order {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let mut taker = User {
             orders: get_orders(Order {
@@ -4666,11 +4643,7 @@ pub mod fulfill_order {
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
         let mut oracle_map = get_oracle_map();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let mut taker = User {
             orders: get_orders(Order {
@@ -4905,11 +4878,7 @@ pub mod fulfill_order {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let mut taker = User {
             orders: get_orders(Order {
@@ -5089,11 +5058,7 @@ pub mod fulfill_order {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let mut taker = User {
             orders: get_orders(Order {
@@ -5308,11 +5273,7 @@ pub mod fulfill_order {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let mut taker = User {
             orders: get_orders(Order {
@@ -5517,11 +5478,7 @@ pub mod fulfill_order {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let mut taker = User {
             orders: get_orders(Order {
@@ -5713,11 +5670,7 @@ pub mod fulfill_order {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let mut taker = User {
             orders: get_orders(Order {
@@ -5917,11 +5870,7 @@ pub mod fulfill_order {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let mut taker = User {
             orders: get_orders(Order {
@@ -6246,11 +6195,7 @@ pub mod fulfill_order {
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
         let mut oracle_map = get_oracle_map();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let mut taker_orders = [Order::default(); 32];
         taker_orders[0] = Order {
@@ -6577,11 +6522,7 @@ pub mod fulfill_order {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let mut taker = User {
             orders: get_orders(Order {
@@ -6818,11 +6759,7 @@ pub mod fulfill_order {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let mut taker = User {
             orders: get_orders(Order {
@@ -7034,11 +6971,7 @@ pub mod fulfill_order {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let mut taker = User {
             orders: get_orders(Order {
@@ -7145,6 +7078,7 @@ pub mod fill_order {
             controller::{orders::fill_perp_order, position::PositionDirection},
             create_anchor_account_info,
             error::ErrorCode,
+            instructions::optional_accounts::AccountMaps,
             math::{
                 constants::{
                     AMM_RESERVE_PRECISION, BASE_PRECISION_I64, BASE_PRECISION_U64, PEG_PRECISION,
@@ -7260,11 +7194,7 @@ pub mod fill_order {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let mut user = User {
             authority: Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap(), // different authority than filler
@@ -7472,11 +7402,7 @@ pub mod fill_order {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let mut user = User {
             authority: Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap(), // different authority than filler
@@ -7639,11 +7565,7 @@ pub mod fill_order {
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
 
         let mut oracle_map = get_oracle_map();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let mut user = User {
             authority: Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap(),
@@ -7824,11 +7746,7 @@ pub mod fill_order {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let mut user = User {
             orders: get_orders(Order {
@@ -7908,6 +7826,7 @@ pub mod force_cancel_orders {
         crate::{
             controller::{orders::force_cancel_orders, position::PositionDirection},
             create_anchor_account_info,
+            instructions::optional_accounts::AccountMaps,
             math::{
                 constants::{
                     AMM_RESERVE_PRECISION, BASE_PRECISION_I64, BASE_PRECISION_U64,
@@ -8045,11 +7964,7 @@ pub mod force_cancel_orders {
             true,
         )
         .unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let mut orders = [Order::default(); 32];
         orders[0] = Order {
@@ -8172,6 +8087,7 @@ pub mod cancel_reduce_only_trigger_orders {
         crate::{
             controller::{orders::cancel_reduce_only_trigger_orders, position::PositionDirection},
             create_anchor_account_info,
+            instructions::optional_accounts::AccountMaps,
             math::{
                 constants::{
                     AMM_RESERVE_PRECISION, BASE_PRECISION_I64, LAMPORTS_PER_SOL_I64, PEG_PRECISION,
@@ -8307,11 +8223,7 @@ pub mod cancel_reduce_only_trigger_orders {
             true,
         )
         .unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let mut orders = [Order::default(); 32];
         orders[0] = Order {
@@ -8505,6 +8417,7 @@ pub mod get_maker_orders_info {
         crate::{
             controller::{orders::get_maker_orders_info, position::PositionDirection},
             create_anchor_account_info, get_orders,
+            instructions::optional_accounts::AccountMaps,
             math::{
                 constants::{
                     AMM_RESERVE_PRECISION, BASE_PRECISION_I64, BASE_PRECISION_U64, PEG_PRECISION,
@@ -8619,11 +8532,7 @@ pub mod get_maker_orders_info {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let taker_key = Pubkey::default();
         let taker_authority =
@@ -8824,11 +8733,7 @@ pub mod get_maker_orders_info {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let taker_key = Pubkey::default();
         let taker_authority =
@@ -9030,11 +8935,7 @@ pub mod get_maker_orders_info {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let taker_key = Pubkey::default();
         let taker_authority =
@@ -9217,11 +9118,7 @@ pub mod get_maker_orders_info {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let taker_key = Pubkey::default();
         let taker_authority =
@@ -9478,11 +9375,7 @@ pub mod get_maker_orders_info {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let taker_key = Pubkey::default();
         let taker_authority =
@@ -10083,6 +9976,7 @@ pub mod maker_floor_prune {
                 position::PositionDirection,
             },
             create_anchor_account_info,
+            instructions::optional_accounts::AccountMaps,
             math::{
                 constants::{
                     AMM_RESERVE_PRECISION, BASE_PRECISION_I64, BASE_PRECISION_U64, PEG_PRECISION,
@@ -10196,11 +10090,7 @@ pub mod maker_floor_prune {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         // taker buys, so the maker's sells are the resting side
         let taker_order = Order {
@@ -10579,6 +10469,7 @@ pub mod builder_fee_margin_gate {
                 position::PositionDirection,
             },
             create_anchor_account_info,
+            instructions::optional_accounts::AccountMaps,
             math::{
                 constants::{
                     AMM_RESERVE_PRECISION, BASE_PRECISION_I64, BASE_PRECISION_U64,
@@ -10869,11 +10760,7 @@ pub mod builder_fee_margin_gate {
             true,
         )
         .unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         // Long one unit, closing it with a builder-coded market sell. The order
         // reduces the position, so the post-fill check uses maintenance margin.
@@ -11065,6 +10952,7 @@ mod taker_floor_unverifiable_withholds_fill {
                 position::PositionDirection,
             },
             create_anchor_account_info,
+            instructions::optional_accounts::AccountMaps,
             math::{
                 constants::{
                     AMM_RESERVE_PRECISION, BASE_PRECISION_I64, BASE_PRECISION_U64,
@@ -11206,11 +11094,7 @@ mod taker_floor_unverifiable_withholds_fill {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map =
             SpotMarketMap::load_multiple(vec![&spot_market_account_info], true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         // A quarter unit either way: short reduces the one-unit long, long
         // increases it.
@@ -11380,6 +11264,7 @@ mod fill_gates_apply_to_a_reducing_fill {
             create_anchor_account_info,
             error::ErrorCode,
             get_orders,
+            instructions::optional_accounts::AccountMaps,
             math::{
                 constants::{
                     AMM_RESERVE_PRECISION, BASE_PRECISION_I64, BASE_PRECISION_U64, PEG_PRECISION,
@@ -11541,11 +11426,7 @@ mod fill_gates_apply_to_a_reducing_fill {
             true,
         )
         .unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
 
         let mut taker_spot_positions = [SpotPosition::default(); 8];
         taker_spot_positions[0] = SpotPosition {

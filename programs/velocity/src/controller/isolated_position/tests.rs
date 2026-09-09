@@ -1,9 +1,11 @@
+use crate::instructions::optional_accounts::AccountMaps;
 pub mod deposit_into_isolated_perp_position {
     use {
         crate::{
             controller::isolated_position::deposit_into_isolated_perp_position,
             create_anchor_account_info,
             error::ErrorCode,
+            instructions::optional_accounts::AccountMaps,
             math::{
                 constants::{
                     AMM_RESERVE_PRECISION, BASE_PRECISION_I128, LIQUIDATION_FEE_PRECISION,
@@ -94,11 +96,7 @@ pub mod deposit_into_isolated_perp_position {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut user = User::default();
 
@@ -191,11 +189,7 @@ pub mod deposit_into_isolated_perp_position {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut user = User::default();
         user.perp_positions[0] = PerpPosition {
@@ -295,11 +289,7 @@ pub mod deposit_into_isolated_perp_position {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut user = User::default();
         let user_key = Pubkey::default();
@@ -362,6 +352,7 @@ pub mod transfer_isolated_perp_position_deposit {
             controller::isolated_position::transfer_isolated_perp_position_deposit,
             create_anchor_account_info,
             error::ErrorCode,
+            instructions::optional_accounts::AccountMaps,
             math::{
                 constants::{
                     AMM_RESERVE_PRECISION, BASE_PRECISION_I128, LIQUIDATION_FEE_PRECISION,
@@ -453,11 +444,7 @@ pub mod transfer_isolated_perp_position_deposit {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut user = User::default();
         user.spot_positions[0] = SpotPosition {
@@ -557,11 +544,7 @@ pub mod transfer_isolated_perp_position_deposit {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut user = User::default();
         user.spot_positions[0] = SpotPosition {
@@ -657,11 +640,7 @@ pub mod transfer_isolated_perp_position_deposit {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut user = User::default();
         user.spot_positions[0] = SpotPosition {
@@ -752,11 +731,7 @@ pub mod transfer_isolated_perp_position_deposit {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut user = User::default();
         user.perp_positions[0] = PerpPosition {
@@ -858,11 +833,7 @@ pub mod transfer_isolated_perp_position_deposit {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut user = User::default();
         user.perp_positions[0] = PerpPosition {
@@ -953,11 +924,7 @@ pub mod transfer_isolated_perp_position_deposit {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut user = User::default();
         user.perp_positions[0] = PerpPosition {
@@ -992,6 +959,7 @@ pub mod withdraw_from_isolated_perp_position {
             controller::isolated_position::withdraw_from_isolated_perp_position,
             create_anchor_account_info,
             error::ErrorCode,
+            instructions::optional_accounts::AccountMaps,
             math::{
                 constants::{
                     AMM_RESERVE_PRECISION, BASE_PRECISION_I128, LIQUIDATION_FEE_PRECISION,
@@ -1083,11 +1051,7 @@ pub mod withdraw_from_isolated_perp_position {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut user = User::default();
         user.perp_positions[0] = PerpPosition {
@@ -1186,11 +1150,7 @@ pub mod withdraw_from_isolated_perp_position {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut user = User::default();
         user.perp_positions[0] = PerpPosition {
@@ -1283,11 +1243,7 @@ pub mod withdraw_from_isolated_perp_position {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut user = User::default();
         user.perp_positions[0] = PerpPosition {
@@ -1389,11 +1345,7 @@ pub mod withdraw_from_isolated_perp_position {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut user = User::default();
         user.perp_positions[0] = PerpPosition {
@@ -1523,11 +1475,7 @@ pub mod withdraw_from_isolated_perp_position {
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-        let mut maps = crate::instructions::optional_accounts::AccountMaps {
-            perp_market_map: perp_market_map,
-            spot_market_map,
-            oracle_map,
-        };
+        let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
         let mut user = User::default();
         user.perp_positions[0] = PerpPosition {

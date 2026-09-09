@@ -8,6 +8,7 @@ use {
     super::*,
     crate::{
         create_anchor_account_info,
+        instructions::optional_accounts::AccountMaps,
         math::constants::{
             AMM_RESERVE_PRECISION, BASE_PRECISION_I64, PEG_PRECISION, PRICE_PRECISION,
             QUOTE_PRECISION_I64, SPOT_BALANCE_PRECISION_U64, SPOT_CUMULATIVE_INTEREST_PRECISION,
@@ -152,11 +153,7 @@ fn budget(case: Case) -> u64 {
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_info);
     let spot_market_map =
         crate::state::spot_market_map::SpotMarketMap::load_one(&spot_market_info, true).unwrap();
-    let mut maps = crate::instructions::optional_accounts::AccountMaps {
-        perp_market_map: perp_market_map,
-        spot_market_map,
-        oracle_map,
-    };
+    let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
 
     let authority = Pubkey::from_str(AUTHORITY).unwrap();
     let mut orders = [Order::default(); 32];

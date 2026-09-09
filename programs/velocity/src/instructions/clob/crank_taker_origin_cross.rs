@@ -1075,6 +1075,9 @@ fn settle_pair_match<'info>(
             order,
             direction: taker_direction,
             existing_position_params_before: taker_existing_position_params,
+            // The aggressor rested on the book first, so its reservation is
+            // still on it and this fill unwinds it.
+            reserved: true,
         },
         &mut maker,
         maker_stats.as_deref_mut(),
@@ -1101,9 +1104,6 @@ fn settle_pair_match<'info>(
         oracle_map,
         cx.clock.unix_timestamp,
         cx.clock.slot,
-        // The aggressor rested on the book first, so its reservation is
-        // still on it and this fill unwinds it.
-        true,
         &mut filler_reward_paid,
     )?;
     Ok(())

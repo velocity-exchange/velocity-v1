@@ -3166,6 +3166,10 @@ pub(crate) struct TakerSide<'a> {
     /// Base and quote of the position before this fill, when the caller
     /// already read them.
     pub existing_position_params_before: Option<(u64, u64)>,
+    /// Whether the taker owns an `open_bids`/`open_asks` + `open_orders`
+    /// reservation the fill must unwind. False for a fresh ephemeral taker
+    /// that never reserved.
+    pub reserved: bool,
 }
 
 /// Who takes the filler reward, and where a builder fee is escrowed. A path
@@ -3218,9 +3222,6 @@ fn settle_amm_house_fill(
     now: i64,
     slot: u64,
     vamm_maker_rebate: bool,
-    // Whether the taker owns an `open_bids`/`open_asks` reservation this fill
-    // must unwind. False for a fresh ephemeral taker that never reserved.
-    taker_reserved: bool,
     // Filler reward already paid by earlier legs of this same fill. The
     // time-based component of the reward is size-independent, so it is a
     // per-fill allowance the legs draw down rather than one each.
@@ -3413,7 +3414,7 @@ fn settle_amm_house_fill(
     // Only unwind a reservation the taker actually took. A fresh ephemeral
     // taker never reserved, and unwinding here would eat a co-resident order's
     // `open_bids`/`open_asks`.
-    if taker_reserved {
+    if taker.reserved {
         decrease_open_bids_and_asks(
             &mut taker.user.perp_positions[taker.position_index],
             &taker.direction,
@@ -3525,9 +3526,6 @@ fn settle_dlob_match_fill(
     oracle_map: &mut OracleMap,
     now: i64,
     slot: u64,
-    // Whether the taker owns an `open_bids`/`open_asks` reservation this fill
-    // must unwind. False for a fresh ephemeral taker that never reserved.
-    taker_reserved: bool,
     // Filler reward already paid by earlier legs of this same fill. The
     // time-based component of the reward is size-independent, so it is a
     // per-fill allowance the legs draw down rather than one each.
@@ -3771,7 +3769,7 @@ fn settle_dlob_match_fill(
     // Only unwind a reservation the taker actually took. A fresh ephemeral
     // taker never reserved, and unwinding here would eat a co-resident order's
     // `open_bids`/`open_asks`.
-    if taker_reserved {
+    if taker.reserved {
         decrease_open_bids_and_asks(
             &mut taker.user.perp_positions[taker.position_index],
             &taker.direction,
@@ -3893,9 +3891,6 @@ pub(crate) fn settle_external_match_fill(
     oracle_map: &mut OracleMap,
     now: i64,
     slot: u64,
-    // Whether the taker owns an `open_bids`/`open_asks` reservation this fill
-    // must unwind. False for a fresh ephemeral taker that never reserved.
-    taker_reserved: bool,
     // Filler reward already paid by earlier legs of this same fill. The
     // time-based component of the reward is size-independent, so it is a
     // per-fill allowance the legs draw down rather than one each.
@@ -4094,7 +4089,7 @@ pub(crate) fn settle_external_match_fill(
     // Only unwind a reservation the taker actually took. A fresh ephemeral
     // taker never reserved, and unwinding here would eat a co-resident order's
     // `open_bids`/`open_asks`.
-    if taker_reserved {
+    if taker.reserved {
         decrease_open_bids_and_asks(
             &mut taker.user.perp_positions[taker.position_index],
             &taker.direction,
@@ -4277,6 +4272,7 @@ fn fulfill_perp_order_router_pass(
         order: taker_order,
         direction: taker_direction,
         existing_position_params_before: taker_existing_position_params_before,
+        reserved: taker_reserved,
     };
 
     // Resolves a wire user reference against the loaded set. Only an external
@@ -4742,7 +4738,6 @@ fn fulfill_perp_order_router_pass(
             &mut maps.oracle_map,
             now,
             slot,
-            taker_reserved,
             &mut filler_reward_paid,
         )?;
         total_base = total_base.safe_add(base_filled)?;
@@ -4808,7 +4803,6 @@ fn fulfill_perp_order_router_pass(
             now,
             slot,
             vamm_maker_rebate,
-            taker_reserved,
             &mut filler_reward_paid,
         )?;
         total_base = total_base.safe_add(base_filled)?;
@@ -4994,7 +4988,6 @@ fn fulfill_perp_order_router_pass(
                 &mut maps.oracle_map,
                 now,
                 slot,
-                taker_reserved,
                 &mut filler_reward_paid,
             )?;
             total_base = total_base.safe_add(base_filled)?;
@@ -5901,6 +5894,8 @@ fn settle_cross_leg(
                 order: &mut taker_order,
                 direction: leg.taker_direction,
                 existing_position_params_before: taker_existing_position_params_before,
+                // The ephemeral taker never reserved, so nothing to unwind.
+                reserved: false,
             },
             &mut maker,
             maker_stats.as_deref_mut(),
@@ -5927,8 +5922,6 @@ fn settle_cross_leg(
             &mut maps.oracle_map,
             ctx.now,
             ctx.slot,
-            // The ephemeral taker never reserved, so nothing to unwind.
-            false,
             filler_reward_paid,
         )?;
         leg_total.base_filled = leg_total.base_filled.safe_add(base_filled)?;

@@ -377,6 +377,8 @@ pub mod fulfill_order_with_maker_order {
                 order: &mut taker_order,
                 direction: taker_direction,
                 existing_position_params_before: taker_existing_position_params_before,
+                // The taker is a normally placed order that reserved.
+                reserved: true,
             },
             &mut maker_opt,
             &mut maker_stats_opt,
@@ -404,8 +406,6 @@ pub mod fulfill_order_with_maker_order {
             oracle_map,
             now,
             slot,
-            // The taker is a normally placed order that reserved.
-            true,
             // Single-leg shim: no earlier leg has drawn on the allowance.
             &mut 0,
         );

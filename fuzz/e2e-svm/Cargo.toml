@@ -9,9 +9,9 @@ edition = "2021"
 
 [dependencies]
 # Crucible framework, pinned to the exact commit.
-crucible-fuzzer = { git = "https://github.com/asymmetric-research/crucible", rev = "daeaa4d4a4e334175c4f171daacc7e177ad2fae0" }
-crucible-test-context = { git = "https://github.com/asymmetric-research/crucible", rev = "daeaa4d4a4e334175c4f171daacc7e177ad2fae0" }
-crucible-idl-gen = { git = "https://github.com/asymmetric-research/crucible", rev = "daeaa4d4a4e334175c4f171daacc7e177ad2fae0" }
+crucible-fuzzer = { git = "https://github.com/asymmetric-research/crucible", rev = "086b423506bf4928a878f292e34c7beed9c7056d" }
+crucible-test-context = { git = "https://github.com/asymmetric-research/crucible", rev = "086b423506bf4928a878f292e34c7beed9c7056d" }
+crucible-idl-gen = { git = "https://github.com/asymmetric-research/crucible", rev = "086b423506bf4928a878f292e34c7beed9c7056d" }
 
 # velocity as a HOST library — same feature set as build-devnet.sh so the host
 # structs match the loaded .so layout. Used for zero-copy account reads.
@@ -22,6 +22,23 @@ velocity = { path = "../../programs/velocity", default-features = false, feature
   "fuzz-fixtures",
 ] }
 velocity-fuzz-common = { path = "../velocity-fuzz-common" }
+
+# Same crate velocity itself verifies Lazer messages with. Used to BUILD the
+# signed price update (`SolanaMessage` envelope + LE payload) so the harness
+# drives the real `update_pyth_lazer_oracle` path instead of only poking the
+# oracle account host-side.
+pyth_lazer = { path = "../../programs/pyth-lazer", features = ["no-entrypoint"] }
+
+# Not used directly — declared to turn ON litesvm's `precompiles` feature via
+# cargo feature unification, which crucible-test-context does not enable.
+# Without it the native Ed25519Program is simply absent from the VM and any
+# transaction referencing it dies with `InvalidProgramForExecution`, so the
+# whole signed-message ("swift") order surface is unreachable.
+# The `=` pin is required, not stylistic: crucible pins litesvm exactly, and a
+# caret range here resolves a SECOND litesvm whose feature set is unified
+# separately — the precompiles never reach the VM crucible actually builds.
+# Keep this version identical to crucible's own pin.
+litesvm = { version = "=0.15.2", features = ["precompiles"] }
 
 anchor-lang = "1.0"
 arbitrary = { version = "1", features = ["derive"] }
@@ -34,6 +51,8 @@ solana-keypair = "3.0"
 solana-signer = "3.0"
 solana-instruction = "3.0"
 bytemuck = "1.14"
+# Byte-order writer for the Lazer payload (LE), matching pyth_lazer's own encoder.
+byteorder = "1.4"
 
 [[bin]]
 name = "invariant_test"

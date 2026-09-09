@@ -1,0 +1,32 @@
+# AR fuzzing bundle target list — the single source of truth for build-bundle.sh
+# and the committed manifest.fc.json. One discovery harness per line:
+#
+#     svm <crate> <feature> [corpus-generation]
+#
+#   svm   = LiteSVM end-to-end ON-CHAIN harness (crucible driver): loads the
+#           compiled velocity.so into LiteSVM and drives real instructions.
+#   crate   directory name under fuzz/
+#   feature the cargo feature selecting one harness
+#   corpus-generation
+#           optional suffix appended to the lineage name. The server keys a
+#           lineage's accumulated corpus to its NAME, so bumping this starts the
+#           lineage over with an empty corpus. Only bump it to deliberately
+#           discard a corpus — see the _c2 note below.
+#
+# Only end-to-end crucible SVM harnesses ship here — crucible instruments the
+# SVM, so on-chain execution is the only surface it covers with real edges.
+# Only open-ended discovery harnesses (invariant_*) belong here; scenario and
+# regression harnesses are compile-gated in CI, not bundled.
+#
+# After editing: `bash fuzz/build-bundle.sh --check` must pass (keeps the
+# committed manifest.fc.json in sync), same contract as fuzz/sync-idls.sh.
+
+# --- SVM tier: end-to-end LiteSVM (loads target/deploy/velocity.so) ---
+#
+# _c2 = corpus generation 2. The first-generation lineages accumulated a delta
+# corpus of ~71M inputs (11.7 GB) that cmin could no longer consolidate, so every
+# merge inherited the whole backlog and the main corpus stayed frozen at its
+# 2026-07-28 contents. These lineages start that corpus over. Do not drop the
+# suffix — that would re-point the campaign at the stale first-generation corpus.
+svm e2e-svm invariant_solvency _c2
+svm e2e-svm-liq invariant_liq _c2

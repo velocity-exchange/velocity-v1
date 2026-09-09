@@ -3172,6 +3172,64 @@ pub(crate) struct TakerSide<'a> {
     pub reserved: bool,
 }
 
+/// The maker side of one external fill: whose liquidity filled it, and where
+/// the fill lands in their account.
+///
+/// `stats` is absent when the maker and the taker are the same account. The
+/// maker volume is then recorded on the taker's stats instead.
+pub(crate) struct MakerSide<'a, 'stats> {
+    pub user: &'a mut User,
+    pub stats: Option<&'stats mut UserStats>,
+    pub key: Pubkey,
+    /// Opposite the taker's, by construction.
+    pub direction: PositionDirection,
+    pub position_index: usize,
+    /// Base and quote of the position before this fill, when the position
+    /// already had one.
+    pub existing_position_params: Option<(u64, u64)>,
+    /// Whether the maker owns an open-order reservation the fill must
+    /// release. The quoter reports it: a quoter that keeps its makers'
+    /// aggregates holds the reservation velocity took at placement. This is
+    /// [`TakerSide::reserved`] for the other side of the same fill.
+    pub reserved: bool,
+    /// The maker's own id for the order this fill came off, when the response
+    /// named exactly one. It is what lets the fill record attribute to a book
+    /// order. `None` when the change merged several and no single order owns
+    /// it.
+    pub order_id: Option<u32>,
+}
+
+impl<'a, 'stats> MakerSide<'a, 'stats> {
+    /// Bind the maker to the position this fill lands in. A maker that holds
+    /// no position in this market gets one.
+    #[allow(clippy::too_many_arguments)]
+    pub fn bind(
+        user: &'a mut User,
+        stats: Option<&'stats mut UserStats>,
+        key: Pubkey,
+        taker_direction: PositionDirection,
+        market_index: u16,
+        reserved: bool,
+        order_id: Option<u32>,
+    ) -> VelocityResult<Self> {
+        let direction = taker_direction.opposite();
+        let position_index = get_position_index(&user.perp_positions, market_index)
+            .or_else(|_| add_new_position(&mut user.perp_positions, market_index))?;
+        let existing_position_params = user.perp_positions[position_index]
+            .get_existing_position_params_for_order_action(direction);
+        Ok(Self {
+            user,
+            stats,
+            key,
+            direction,
+            position_index,
+            existing_position_params,
+            reserved,
+            order_id,
+        })
+    }
+}
+
 /// Who takes the filler reward, and where a builder fee is escrowed. A path
 /// that pays no filler holds `None` in each option.
 ///
@@ -3867,23 +3925,16 @@ fn settle_dlob_match_fill(
 /// which is the maker-side price contract here. The taker side validates
 /// against the effective taker limit as usual.
 ///
-/// `maker_aggregates_tracked`: CLOB orders are margin-reserved through
-/// velocity at placement (`open_bids`/`open_asks`), so their fills unwind
-/// those aggregates; Custom PropAMM depth is never reserved.
+/// [`MakerSide::reserved`]: CLOB orders are margin-reserved through velocity
+/// at placement (`open_bids`/`open_asks`), so their fills release those
+/// aggregates. Custom PropAMM depth is never reserved.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn settle_external_match_fill(
     base_filled: u64,
     quote_filled: u64,
     market: &mut PerpMarket,
     taker: &mut TakerSide,
-    maker_user: &mut User,
-    mut maker_stats: Option<&mut UserStats>,
-    maker_key: &Pubkey,
-    maker_aggregates_tracked: bool,
-    // The maker's own id for the order this fill came off, when the response
-    // named exactly one. It is what lets the fill record attribute to a book
-    // order; `None` when the change merged several and no single order owns it.
-    maker_order_id: Option<u32>,
+    maker: &mut MakerSide,
     taker_limit_price: Option<u64>,
     oracle_price: i64,
     filler: &mut FillerSide,
@@ -3896,12 +3947,6 @@ pub(crate) fn settle_external_match_fill(
     // per-fill allowance the legs draw down rather than one each.
     filler_reward_paid: &mut u64,
 ) -> VelocityResult<(u64, u64)> {
-    let maker_direction = taker.direction.opposite();
-    let maker_position_index = get_position_index(&maker_user.perp_positions, market.market_index)
-        .or_else(|_| add_new_position(&mut maker_user.perp_positions, market.market_index))?;
-    let maker_existing_position_params = maker_user.perp_positions[maker_position_index]
-        .get_existing_position_params_for_order_action(maker_direction);
-
     if let Some(limit) = taker_limit_price {
         validate_fill_price(
             quote_filled,
@@ -3913,13 +3958,13 @@ pub(crate) fn settle_external_match_fill(
         )?;
     }
 
-    let maker_pd = get_position_delta_for_fill(base_filled, quote_filled, maker_direction)?;
+    let maker_pd = get_position_delta_for_fill(base_filled, quote_filled, maker.direction)?;
     update_position_and_market(
-        &mut maker_user.perp_positions[maker_position_index],
+        &mut maker.user.perp_positions[maker.position_index],
         market,
         &maker_pd,
     )?;
-    if let Some(ms) = maker_stats.as_mut() {
+    if let Some(ms) = maker.stats.as_mut() {
         ms.update_maker_volume_30d(quote_filled, now)?;
     } else {
         taker.stats.update_maker_volume_30d(quote_filled, now)?;
@@ -3957,7 +4002,7 @@ pub(crate) fn settle_external_match_fill(
     let filler_multiplier = if reward_filler {
         calculate_filler_multiplier_for_matched_orders(
             avg_fill_price,
-            maker_direction,
+            maker.direction,
             oracle_price,
         )?
     } else {
@@ -3978,7 +4023,7 @@ pub(crate) fn settle_external_match_fill(
         ..
     } = fees::calculate_fee_for_fulfillment_with_match(
         taker.stats,
-        &maker_stats,
+        &maker.stats,
         quote_filled,
         policy.fee_structure,
         taker.order.slot,
@@ -4036,11 +4081,11 @@ pub(crate) fn settle_external_match_fill(
         .increment_total_referee_discount(referee_discount)?;
 
     controller::position::update_quote_asset_and_break_even_amount(
-        &mut maker_user.perp_positions[maker_position_index],
+        &mut maker.user.perp_positions[maker.position_index],
         market,
         maker_rebate.cast()?,
     )?;
-    if let Some(ms) = maker_stats.as_mut() {
+    if let Some(ms) = maker.stats.as_mut() {
         ms.increment_total_rebate(maker_rebate)?;
     } else {
         taker.stats.increment_total_rebate(maker_rebate)?;
@@ -4102,10 +4147,10 @@ pub(crate) fn settle_external_match_fill(
     // is the single place every external settlement passes through — the
     // router fill, both cross cranks — which is what stops a caller from
     // settling one without the bound.
-    if maker_aggregates_tracked {
+    if maker.reserved {
         position::release_reserved_open_base(
-            &mut maker_user.perp_positions[maker_position_index],
-            &maker_direction,
+            &mut maker.user.perp_positions[maker.position_index],
+            &maker.direction,
             base_filled,
         )?;
     }
@@ -4122,7 +4167,7 @@ pub(crate) fn settle_external_match_fill(
         OrderBitFlag::SignedMessage,
     );
     if taker.user.perp_positions[taker.position_index].is_isolated()
-        || maker_user.perp_positions[maker_position_index].is_isolated()
+        || maker.user.perp_positions[maker.position_index].is_isolated()
     {
         order_action_bit_flags = set_order_bit_flag(
             order_action_bit_flags,
@@ -4139,7 +4184,7 @@ pub(crate) fn settle_external_match_fill(
     let (maker_existing_quote_entry_amount, maker_existing_base_asset_amount) =
         calculate_existing_position_fields_for_order_action(
             base_filled,
-            maker_existing_position_params,
+            maker.existing_position_params,
         )?;
     let taker_order_for_record = *taker.order;
     emit_perp_action_record(
@@ -4157,12 +4202,12 @@ pub(crate) fn settle_external_match_fill(
         None,
         Some(taker.key),
         Some(taker_order_for_record),
-        Some(*maker_key),
-        maker_order_id.map(|order_id| Order {
+        Some(maker.key),
+        maker.order_id.map(|order_id| Order {
             order_id,
             market_index: market.market_index,
             market_type: MarketType::Perp,
-            direction: maker_direction,
+            direction: maker.direction,
             status: OrderStatus::Open,
             order_type: OrderType::Limit,
             post_only: true,
@@ -4971,16 +5016,21 @@ fn fulfill_perp_order_router_pass(
             } else {
                 Some(makers_and_referrer_stats.get_ref_mut(&maker.authority)?)
             };
+            let mut maker_side = MakerSide::bind(
+                &mut maker,
+                maker_stats.as_deref_mut(),
+                maker_key,
+                taker.direction,
+                market_index,
+                maker_aggregates_tracked,
+                response.sole_client_order_id(change_index),
+            )?;
             let (base_filled, quote_filled) = settle_external_match_fill(
                 change.base_size,
                 change.quote_size,
                 market.deref_mut(),
                 &mut taker,
-                &mut maker,
-                maker_stats.as_deref_mut(),
-                &maker_key,
-                maker_aggregates_tracked,
-                response.sole_client_order_id(change_index),
+                &mut maker_side,
                 effective_taker_limit,
                 oracle_price,
                 filler,
@@ -5882,6 +5932,15 @@ fn settle_cross_leg(
             ctx.makers_and_referrer_stats
                 .get_ref_mut(&maker.authority)?,
         );
+        let mut maker_side = MakerSide::bind(
+            &mut maker,
+            maker_stats.as_deref_mut(),
+            maker_key,
+            leg.taker_direction,
+            ctx.market_index,
+            maker_aggregates_tracked,
+            response.sole_client_order_id(change_index),
+        )?;
         let (base_filled, quote_filled) = settle_external_match_fill(
             change.base_size,
             change.quote_size,
@@ -5897,11 +5956,7 @@ fn settle_cross_leg(
                 // The ephemeral taker never reserved, so nothing to unwind.
                 reserved: false,
             },
-            &mut maker,
-            maker_stats.as_deref_mut(),
-            &maker_key,
-            maker_aggregates_tracked,
-            response.sole_client_order_id(change_index),
+            &mut maker_side,
             None,
             ctx.oracle_price,
             &mut FillerSide {

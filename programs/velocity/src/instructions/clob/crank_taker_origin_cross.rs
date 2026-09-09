@@ -1063,6 +1063,17 @@ fn settle_pair_match<'info>(
     let mut none_filler_stats: Option<&mut UserStats> = None;
     let mut no_escrow: Option<&mut RevenueShareEscrowZeroCopyMut> = None;
     let mut filler_reward_paid = 0u64;
+    let mut maker_side = controller::orders::MakerSide::bind(
+        &mut maker,
+        maker_stats.as_deref_mut(),
+        pair.maker_key,
+        taker_direction,
+        cx.market_index,
+        // A CLOB order's worst case is reserved through velocity at
+        // placement, so its fill unwinds that reservation.
+        true,
+        Some(pair.counterparty.order_ref.order_id as u32),
+    )?;
     controller::orders::settle_external_match_fill(
         pair.base_filled,
         pair.quote_filled,
@@ -1079,13 +1090,7 @@ fn settle_pair_match<'info>(
             // still on it and this fill unwinds it.
             reserved: true,
         },
-        &mut maker,
-        maker_stats.as_deref_mut(),
-        &pair.maker_key,
-        // A CLOB order's worst case is reserved through velocity at
-        // placement, so its fill unwinds that reservation.
-        true,
-        Some(pair.counterparty.order_ref.order_id as u32),
+        &mut maker_side,
         Some(pair.aggressor.price),
         oracle_price,
         &mut controller::orders::FillerSide {

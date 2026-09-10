@@ -1025,6 +1025,9 @@ mod test {
             commitment: CommitmentConfig::confirmed(),
         };
 
+        // Captured on devnet, where the program is deployed under a different
+        // address; the parser only decodes payloads logged while PROGRAM_ID is
+        // the executing program.
         let logs: Vec<String> = [
             "Program ComputeBudget111111111111111111111111111111 invoke [1]",
             "Program ComputeBudget111111111111111111111111111111 success",
@@ -1050,7 +1053,10 @@ mod test {
             "Program log: pnl 792986",
             "Program J1TPRoXCtGuMcWiWFE6RB9eZU8U35PBMETCwNQLCNPhQ consumed 738458 of 1399850 compute units",
             "Program J1TPRoXCtGuMcWiWFE6RB9eZU8U35PBMETCwNQLCNPhQ success",
-            ].into_iter().map(Into::into).collect();
+            ]
+        .into_iter()
+        .map(|line| line.replace("dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH", &PROGRAM_ID.to_string()))
+        .collect();
 
         log_stream.process_log(338797360, RpcLogsResponse {
             signature: "2jLk34wWwgecuws9iD9Ug63JdL8kYBePdtcakzG34zEx9KYVYD6HuokxMZYpFw799cJZBcaCMZ47WAxkGJjM7zNC".into(),
@@ -1485,6 +1491,120 @@ mod test {
     #[test]
     fn poll_parses_undecodable_tx_instead_of_dropping() {
         assert!(poll_should_parse_velocity_logs(&undecodable_tx(), "sig"));
+    }
+
+    /// A transaction v1 wire payload (SIMD-0385), laid out byte by byte: the
+    /// `0x81` version byte, then the message whose compute budget lives in a
+    /// config mask instead of instructions, then the signatures at the END with
+    /// no length prefix. solana-* 3.x has no v1 message type to build one with,
+    /// so the bytes are assembled here rather than through a crate API.
+    fn v1_wire_transaction(signature: &Signature, payer: &Pubkey) -> EncodedTransaction {
+        let mut bytes = vec![0x81];
+        // header: 1 required signature, 0 readonly signed, 1 readonly unsigned
+        bytes.extend_from_slice(&[1, 0, 1]);
+        // config mask: bit 2 set, so a compute unit limit follows the addresses
+        bytes.extend_from_slice(&0b100u32.to_le_bytes());
+        // lifetime specifier (recent blockhash)
+        bytes.extend_from_slice(Hash::new_unique().as_ref());
+        bytes.push(1); // one instruction
+        bytes.push(2); // two addresses
+        bytes.extend_from_slice(payer.as_ref());
+        bytes.extend_from_slice(PROGRAM_ID.as_ref());
+        // the compute unit limit named by the mask
+        bytes.extend_from_slice(&300_000u32.to_le_bytes());
+        // instruction header: program at address index 1, no accounts, no data
+        bytes.extend_from_slice(&[1, 0, 0, 0]);
+        bytes.extend_from_slice(signature.as_ref());
+
+        EncodedTransaction::Binary(
+            base64::engine::general_purpose::STANDARD.encode(&bytes),
+            solana_transaction_status::TransactionBinaryEncoding::Base64,
+        )
+    }
+
+    #[tokio::test]
+    async fn polled_event_stream_parses_v1_wire_format_tx() {
+        let _ = env_logger::try_init();
+
+        struct OneTxProvider {
+            signature: String,
+            tx: EncodedTransactionWithStatusMeta,
+        }
+
+        impl EventRpcProvider for Arc<OneTxProvider> {
+            fn get_tx(
+                &self,
+                _signature: Signature,
+            ) -> BoxFuture<SdkResult<EncodedTransactionWithStatusMeta>> {
+                ready(Ok(self.tx.clone())).boxed()
+            }
+            fn get_tx_signatures(
+                &self,
+                _account: Pubkey,
+                _after: Option<Signature>,
+                limit: Option<usize>,
+            ) -> BoxFuture<SdkResult<Vec<String>>> {
+                // the limited call is the initial cursor fetch; serve the tx to the
+                // poll loop only, so it is processed exactly once
+                let signatures = if limit.is_some() {
+                    Vec::new()
+                } else {
+                    vec![self.signature.clone()]
+                };
+                ready(Ok(signatures)).boxed()
+            }
+        }
+
+        let sub_account = Pubkey::new_unique();
+        let signature = Signature::new_unique();
+        let mut tx = make_transaction(
+            sub_account,
+            signature,
+            Some(vec![
+                format!("Program {PROGRAM_ID} invoke [1]"),
+                format!(
+                    "{PROGRAM_LOG}{}",
+                    serialize_event(OrderRecord {
+                        ts: 1_700_000_000,
+                        user: sub_account,
+                        order: Order {
+                            order_id: 9,
+                            ..Default::default()
+                        },
+                    })
+                ),
+                format!("Program {PROGRAM_ID} success"),
+            ]),
+        );
+        // the only difference from a v0 poll: the RPC hands back a v1 payload.
+        // solana-* 3.x cannot deserialize it, so the poller walks the logs anyway;
+        // once the 4.2 crates land it deserializes and the account-keys check finds
+        // PROGRAM_ID. Either way the tx's events must reach the subscriber.
+        tx.transaction = v1_wire_transaction(&signature, &sub_account);
+        assert!(poll_should_parse_velocity_logs(&tx.transaction, "sig"));
+
+        let (event_tx, mut event_rx) = channel(16);
+        tokio::spawn(
+            PolledEventStream {
+                cache: Arc::new(RwLock::new(TxSignatureCache::new(16))),
+                provider: Arc::new(OneTxProvider {
+                    signature: signature.to_string(),
+                    tx,
+                }),
+                sub_account,
+                event_tx,
+            }
+            .stream_fn(),
+        );
+
+        let event = tokio::time::timeout(Duration::from_secs(5), event_rx.recv())
+            .await
+            .expect("event before timeout")
+            .expect("event");
+        assert!(
+            matches!(&event, VelocityEvent::OrderCreate { order, .. } if order.order_id == 9),
+            "expected the v1 tx's OrderCreate, got: {event:?}"
+        );
     }
 
     #[test]

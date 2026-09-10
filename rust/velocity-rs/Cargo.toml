@@ -46,7 +46,11 @@ reqwest = { version = "0.12", features = ["json"] }
 rustc-hash = "2.1.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-solana-account-decoder-client-types = "4.2.2"
+# The crate is `#![cfg(feature = "agave-unstable-api")]` and gates Base64Zstd
+# decoding behind `zstd`; both arrive only via solana-rpc-client today. Declared
+# here so losing that edge is a resolution error, not accounts silently
+# decoding to `None`.
+solana-account-decoder-client-types = { version = "4.2.2", features = ["agave-unstable-api", "zstd"] }
 solana-account = "4.3"
 solana-commitment-config = "3"
 solana-compute-budget-interface = "3"

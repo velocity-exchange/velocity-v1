@@ -399,8 +399,8 @@ fn poll_should_parse_velocity_logs(transaction: &EncodedTransaction, signature: 
             .iter()
             .any(|k| k == &PROGRAM_ID),
         None => {
-            // Post-4.2 this is nearly every polled tx until the crate bump lands, so
-            // keep it at debug like the other per-tx poll messages.
+            // A corrupt payload, or a wire version newer than these crates. Keep it at
+            // debug like the other per-tx poll messages.
             debug!(
                 target: LOG_TARGET,
                 "poll undecodable tx, walking logs without account-keys check: {signature}"
@@ -417,6 +417,11 @@ pub struct PolledEventStream<T: EventRpcProvider> {
     sub_account: Pubkey,
 }
 
+/// How often the poller re-reads signatures. A flat throttle to avoid spamming the
+/// RPC, not a slot count: mainnet slot time keeps falling and this poll does not
+/// track it, so each tick just returns more signatures.
+const POLL_INTERVAL: Duration = Duration::from_millis(400);
+
 impl<T: EventRpcProvider> PolledEventStream<T> {
     async fn stream_fn(self) {
         debug!(target: LOG_TARGET, "poll events for {:?}", self.sub_account);
@@ -432,8 +437,7 @@ impl<T: EventRpcProvider> PolledEventStream<T> {
         let mut last_seen_tx = res.expect("fetched tx").first().cloned();
         let provider_ref = &self.provider;
         'outer: loop {
-            // don't needlessly spam the RPC or hog the executor
-            tokio::time::sleep(Duration::from_millis(400)).await;
+            tokio::time::sleep(POLL_INTERVAL).await;
 
             debug!(target: LOG_TARGET, "poll txs for events");
             let signatures = provider_ref
@@ -1498,8 +1502,8 @@ mod test {
     /// A transaction v1 wire payload (SIMD-0385), laid out byte by byte: the
     /// `0x81` version byte, then the message whose compute budget lives in a
     /// config mask instead of instructions, then the signatures at the END with
-    /// no length prefix. solana-* 3.x has no v1 message type to build one with,
-    /// so the bytes are assembled here rather than through a crate API.
+    /// no length prefix. Assembled byte by byte rather than through the crate API
+    /// so the test pins the wire layout, not whatever the crates round-trip.
     fn v1_wire_transaction(signature: &Signature, payer: &Pubkey) -> EncodedTransaction {
         let mut bytes = vec![0x81];
         // header: 1 required signature, 0 readonly signed, 1 readonly unsigned
@@ -1579,10 +1583,18 @@ mod test {
             ]),
         );
         // the only difference from a v0 poll: the RPC hands back a v1 payload.
-        // solana-* 3.x cannot deserialize it, so the poller walks the logs anyway;
-        // once the 4.2 crates land it deserializes and the account-keys check finds
-        // PROGRAM_ID. Either way the tx's events must reach the subscriber.
         tx.transaction = v1_wire_transaction(&signature, &sub_account);
+        // Assert the decode itself, not just the outcome: the log-walk fallback in
+        // `poll_should_parse_velocity_logs` returns true for an UNDECODABLE tx too, so
+        // without this the test passes on a crate stack that cannot read v1 at all.
+        assert!(
+            matches!(
+                tx.transaction.decode().map(|t| t.message),
+                Some(VersionedMessage::V1(_))
+            ),
+            "v1 wire payload must deserialize as V1, got: {:?}",
+            tx.transaction.decode().map(|t| t.message)
+        );
         assert!(poll_should_parse_velocity_logs(&tx.transaction, "sig"));
 
         let (event_tx, mut event_rx) = channel(16);

@@ -25,9 +25,11 @@ means every `cargo update` can pull breaking changes.
 - **Apple Silicon:** use an x86_64 toolchain (`rustup override set stable-x86_64-apple-darwin`,
   Rosetta required) — see [Setup](#setup). Native aarch64 toolchains are unsupported for
   code that deserializes the program's zero-copy accounts.
-- velocity-rs is built on the **solana `3.x` crate family** (`solana-rpc-client`,
-  `solana-pubkey`, `solana-transaction`, …). Apps pinned to the legacy `solana-sdk 1.x/2.x`
-  types will hit type mismatches at the API boundary.
+- velocity-rs is built on the **solana `4.x` RPC/tx crate line** (`solana-rpc-client`,
+  `solana-pubkey`, `solana-transaction`, …), which is what decodes SIMD-0385 transaction v1.
+  A few split crates that never left 3.x (`solana-commitment-config`, `solana-keypair`,
+  `solana-signature`, …) stay there. Apps pinned to the legacy `solana-sdk 1.x/2.x` types
+  will hit type mismatches at the API boundary.
 
 No FFI layer, no submodules, no build-time codegen for consumers: the crate depends on
 the `velocity` program crate as a plain host-library path-dep within the repo, and the

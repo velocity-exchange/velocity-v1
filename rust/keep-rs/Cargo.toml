@@ -31,7 +31,11 @@ pyth-lazer-protocol = "0.7.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 solana-account = "4.3"
-solana-account-decoder-client-types = "4.2.2"
+# The crate is `#![cfg(feature = "agave-unstable-api")]` and gates Base64Zstd
+# decoding behind `zstd`; both arrive only via solana-rpc-client today. Declared
+# here so losing that edge is a resolution error, not accounts silently
+# decoding to `None`.
+solana-account-decoder-client-types = { version = "4.2.2", features = ["agave-unstable-api", "zstd"] }
 solana-rpc-client = "4.2.2"
 solana-rpc-client-api = "4.2.2"
 solana-commitment-config = "3"

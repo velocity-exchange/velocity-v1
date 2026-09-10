@@ -13,7 +13,11 @@ gjson = "0.8.1"
 log = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
-solana-account-decoder-client-types = "4.2.2"
+# The crate is `#![cfg(feature = "agave-unstable-api")]` and gates Base64Zstd
+# decoding behind `zstd`; both arrive only via solana-rpc-client today. Declared
+# here so losing that edge is a resolution error, not accounts silently
+# decoding to `None`.
+solana-account-decoder-client-types = { version = "4.2.2", features = ["agave-unstable-api", "zstd"] }
 solana-clock = "3"
 solana-pubkey = "4.2"
 solana-signature = "3"

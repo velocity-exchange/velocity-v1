@@ -19,8 +19,9 @@ use {
     anchor_lang::Discriminator,
     dashmap::DashMap,
     futures_util::FutureExt,
+    solana_clock::Slot,
     solana_compute_budget_interface::ComputeBudgetInstruction,
-    solana_sdk::{clock::Slot, signature::Signature},
+    solana_signature::Signature,
     std::{
         collections::{BTreeMap, HashMap, HashSet},
         sync::{Arc, RwLock},

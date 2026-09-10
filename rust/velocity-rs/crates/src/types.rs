@@ -108,7 +108,7 @@ use crate::{
 };
 
 pub mod solana_sdk {
-    //! convenience type re-exports for solana v3 crates in v2 format
+    //! convenience type re-exports for solana v4 crates in v2 format
     pub use solana_account as account;
     pub mod clock {
         pub type Slot = u64;

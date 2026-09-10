@@ -78,6 +78,7 @@ const errorCodesToSuppress = [
 	6095, // Error Code: InsufficientCollateralForSettlingPNL. Error Number: 6095. Error Message: InsufficientCollateralForSettlingPNL.
 	6251, // Error Code: FundingWasNotUpdated. Error Number: 6251. Error Message: FundingWasNotUpdated. (expected when the oracle is too stale to update funding; fundingRateUpdater suppresses it too)
 	6259, // Error Code: NoUnsettledPnl. Error Number: 6259. Error Message: NoUnsettledPnl.
+	6260, // Error Code: PnlPoolCantSettleUser. Error Number: 6260. Error Message: PnlPoolCantSettleUser. (the pnl pool has nothing to pay the user with; a later pass settles it once the pool is funded)
 ];
 
 // =============================================================================
@@ -1130,6 +1131,39 @@ export class UserPnlSettlerBot implements Bot {
 		};
 	}
 
+	/**
+	 * Reads what a market's pnl pool can pay out right now, mirroring settle_pnl: `pool`
+	 * is the pool's token balance, `excess` is what is left of it once the pnl users are
+	 * collectively owed (`netUserPnl`) is reserved. Settling someone else's positive pnl
+	 * against a non-positive `excess` fails the ix with PnlPoolCantSettleUser.
+	 */
+	private pnlPoolCapacity(
+		perpMarket: PerpMarketAccount,
+		oraclePriceData: OraclePriceData
+	): { pool: BN; excess: BN } {
+		const pnlPoolSpotMarket = this.velocityClient.getSpotMarketAccount(
+			perpMarket.pnlPool.marketIndex
+		);
+		if (!pnlPoolSpotMarket) {
+			logger.warn(
+				`Spot market ${perpMarket.pnlPool.marketIndex} not found for PnL pool, treating it as empty`
+			);
+			return { pool: ZERO, excess: ZERO };
+		}
+
+		const pool = getTokenAmount(
+			perpMarket.pnlPool.scaledBalance,
+			pnlPoolSpotMarket,
+			SpotBalanceType.DEPOSIT
+		);
+		const netUserPnl = calculateNetUserPnl(perpMarket, oraclePriceData);
+		const excess = netUserPnl.lt(pool)
+			? pool.sub(BN.max(netUserPnl, ZERO))
+			: ZERO;
+
+		return { pool, excess };
+	}
+
 	private async canSettlePositivePnl(
 		user: any,
 		userUnsettledPnl: BN,
@@ -1142,32 +1176,12 @@ export class UserPnlSettlerBot implements Bot {
 			return false;
 		}
 
-		const pnlPool = perpMarket.pnlPool;
-		const pnlPoolSpotMarket = this.velocityClient.getSpotMarketAccount(
-			pnlPool.marketIndex
-		);
-		if (!pnlPoolSpotMarket) {
-			logger.warn(
-				`Spot market ${pnlPool.marketIndex} not found for PnL pool, skipping positive PnL settlement check`
-			);
-			return false;
-		}
-		const pnlPoolTokenAmount = getTokenAmount(
-			pnlPool.scaledBalance,
-			pnlPoolSpotMarket,
-			SpotBalanceType.DEPOSIT
-		);
+		const { pool: pnlPoolTokenAmount, excess: maxPnlPoolExcess } =
+			this.pnlPoolCapacity(perpMarket, oraclePriceData);
 
 		const pnlToSettleWithUser = BN.min(userUnsettledPnl, pnlPoolTokenAmount);
 		if (pnlToSettleWithUser.lte(ZERO)) {
 			return false;
-		}
-
-		const netUserPnl = calculateNetUserPnl(perpMarket, oraclePriceData);
-
-		let maxPnlPoolExcess = ZERO;
-		if (netUserPnl.lt(pnlPoolTokenAmount)) {
-			maxPnlPoolExcess = pnlPoolTokenAmount.sub(BN.max(netUserPnl, ZERO));
 		}
 
 		// we're only allowed to settle positive pnl if pnl pool is in excess
@@ -1252,10 +1266,52 @@ export class UserPnlSettlerBot implements Bot {
 					continue;
 				}
 
-				const pnl = convertToNumber(
-					perpPosition.quoteAssetAmount,
-					QUOTE_PRECISION
+				const oraclePriceData = this.getOracleDataForPerpMarketSafe(
+					perpPosition.marketIndex
 				);
+				const spotMarket = this.velocityClient.getSpotMarketAccount(
+					QUOTE_SPOT_MARKET_INDEX
+				);
+				if (!oraclePriceData || !spotMarket) {
+					continue;
+				}
+
+				const claimablePnl = calculateClaimablePnl(
+					perpMarket,
+					spotMarket,
+					perpPosition,
+					oraclePriceData
+				);
+
+				// Positive pnl is paid out of the market's pnl pool, and a keeper is never
+				// the user's authority or delegate, so it may only be taken while the pool
+				// holds more than the pnl users are collectively owed. Queueing past that
+				// fails the ix with PnlPoolCantSettleUser, and since this pass runs hourly
+				// off the same account state it retries the same users every hour.
+				if (claimablePnl.gt(ZERO)) {
+					const { pool, excess } = this.pnlPoolCapacity(
+						perpMarket,
+						oraclePriceData
+					);
+					if (excess.lte(ZERO)) {
+						logger.info(
+							`[trySettleUsersWithNoPositions] Skipping user ${user
+								.getUserAccountPublicKey()
+								.toBase58()} in market ${
+								perpPosition.marketIndex
+							}: claimable ${convertToNumber(
+								claimablePnl,
+								QUOTE_PRECISION
+							)}, pnl pool ${convertToNumber(
+								pool,
+								QUOTE_PRECISION
+							)}, excess ${convertToNumber(excess, QUOTE_PRECISION)}`
+						);
+						continue;
+					}
+				}
+
+				const pnl = convertToNumber(claimablePnl, QUOTE_PRECISION);
 				if (pnl !== 0) {
 					logger.info(
 						`[trySettleUsersWithNoPositions] User ${user

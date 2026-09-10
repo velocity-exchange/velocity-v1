@@ -34,7 +34,7 @@ use {
             CrossesAndTopMakers, CrossingRegion, DLOBNotifier, L3Order, MakerCrosses, OrderKind,
             TakerOrder, DLOB,
         },
-        event_subscriber::VelocityEvent,
+        event_subscriber::{parse_velocity_logs, VelocityEvent},
         grpc::{
             grpc_subscriber::{AccountFilter, GrpcConnectionOpts},
             AccountUpdate, TransactionUpdate,
@@ -2715,27 +2715,15 @@ impl TxWorker {
                                 let tx_confirmed_slot = tx_log.slot;
                                 let mut actual_fills = 0;
                                 let mut triggered = false;
-                                for (tx_idx, log) in logs.iter().enumerate() {
-                                    if let Some(event) = velocity_rs::event_subscriber::try_parse_log(
-                                        log.as_str(),
-                                        &sig,
-                                        tx_idx,
-                                    ) {
-                                        if let VelocityEvent::OrderFill { ..} = event
-                                        {
-                                            actual_fills += 1;
-                                        } else if let VelocityEvent::OrderTrigger { .. } = event {
-                                            triggered = true;
-                                            metrics.trigger_actual.inc();
-                                        } else if log.as_str().contains("exceeded CUs meter") {
-                                            metrics
-                                            .tx_failed
-                                            .with_label_values(&[
-                                                intent_label,
-                                                "insufficient_cus",
-                                            ])
-                                            .inc();
-                                        }
+                                for event in parse_velocity_logs(
+                                    logs.iter().map(String::as_str),
+                                    &sig,
+                                ) {
+                                    if let VelocityEvent::OrderFill { .. } = event {
+                                        actual_fills += 1;
+                                    } else if let VelocityEvent::OrderTrigger { .. } = event {
+                                        triggered = true;
+                                        metrics.trigger_actual.inc();
                                     }
                                 }
                                 let confirmation_slots = tx_confirmed_slot - sent_slot;
@@ -3213,10 +3201,12 @@ fn is_expected_fill_event(event: &VelocityEvent, intent: &TxIntent) -> bool {
 }
 
 fn simulation_has_expected_fill(logs: Option<&[String]>, intent: &TxIntent) -> bool {
-    logs.into_iter().flatten().enumerate().any(|(tx_idx, log)| {
-        velocity_rs::event_subscriber::try_parse_log(log, "simulation", tx_idx)
-            .is_some_and(|event| is_expected_fill_event(&event, intent))
+    logs.map(|logs| {
+        parse_velocity_logs(logs.iter().map(String::as_str), "simulation")
+            .into_iter()
+            .any(|event| is_expected_fill_event(&event, intent))
     })
+    .unwrap_or(false)
 }
 
 #[derive(Clone)]

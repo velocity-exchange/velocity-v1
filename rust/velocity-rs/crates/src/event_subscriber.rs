@@ -218,14 +218,11 @@ impl LogEventStream {
             target: LOG_TARGET,
             "log extracting events, slot: {slot}, tx: {signature:?}"
         );
-        for (tx_idx, log) in response.logs.iter().enumerate() {
-            // a velocity sub-account should not interact with any other program by definition
-            if let Some(event) = try_parse_log(log.as_str(), &signature, tx_idx) {
-                // unrelated events from same tx should not be emitted e.g. a filler tx which produces other fill events
-                if event.pertains_to(self.sub_account) && self.event_tx.send(event).await.is_err() {
-                    warn!("event receiver closed");
-                    return;
-                }
+        for event in parse_velocity_logs(response.logs.iter().map(String::as_str), &signature) {
+            // unrelated events from same tx should not be emitted e.g. a filler tx which produces other fill events
+            if event.pertains_to(self.sub_account) && self.event_tx.send(event).await.is_err() {
+                warn!("event receiver closed");
+                return;
             }
         }
     }
@@ -303,13 +300,11 @@ impl GrpcLogEventStream {
             "log extracting events, slot: {}, tx: {}", event.slot, signature
         );
         let logs = &event.meta.log_messages;
-        for (tx_idx, log) in logs.iter().enumerate() {
-            if let Some(event) = try_parse_log(log.as_str(), &signature.to_string(), tx_idx) {
-                // unrelated events from same tx should not be emitted e.g. a filler tx which produces other fill events
-                if event.pertains_to(self.sub_account) && self.event_tx.send(event).await.is_err() {
-                    warn!("event receiver closed");
-                    return;
-                }
+        for event in parse_velocity_logs(logs.iter().map(String::as_str), &signature.to_string()) {
+            // unrelated events from same tx should not be emitted e.g. a filler tx which produces other fill events
+            if event.pertains_to(self.sub_account) && self.event_tx.send(event).await.is_err() {
+                warn!("event receiver closed");
+                return;
             }
         }
     }
@@ -388,12 +383,14 @@ async fn grpc_log_stream(
     })
 }
 
-/// Whether a polled tx should have its logs parsed for Velocity events.
+/// Whether a polled tx should have its logs walked for Velocity events.
 ///
-/// Prefer the decoded message's static account keys. `solana-*` 3.x cannot
-/// deserialize v1 wire format (`decode()` is `None`); in that case parse logs
-/// anyway — `try_parse_log` is discriminator-gated — so Velocity events are
-/// not dropped while the 4.2 crate bump is still outstanding.
+/// Prefer the decoded message's static account keys as a cheap skip when
+/// `PROGRAM_ID` is absent. `solana-*` 3.x cannot deserialize v1 wire format
+/// (`decode()` is `None`); in that case still walk the logs so Velocity
+/// events are not dropped while the 4.2 crate bump is outstanding. Walking
+/// is not enough on its own: `parse_velocity_logs` only decodes payloads
+/// while `PROGRAM_ID` is the executing program in the invocation stack.
 fn poll_should_parse_velocity_logs(transaction: &EncodedTransaction, signature: &str) -> bool {
     match transaction.decode() {
         Some(VersionedTransaction { message, .. }) => message
@@ -401,11 +398,9 @@ fn poll_should_parse_velocity_logs(transaction: &EncodedTransaction, signature: 
             .iter()
             .any(|k| k == &PROGRAM_ID),
         None => {
-            // Discriminator parsing in `try_parse_log` is the real filter;
-            // skipping here would drop Velocity v1 events until solana-* 4.2.
             warn!(
                 target: LOG_TARGET,
-                "poll undecodable tx, parsing logs without account-keys check: {signature}"
+                "poll undecodable tx, walking logs without account-keys check: {signature}"
             );
             true
         }
@@ -506,9 +501,9 @@ impl<T: EventRpcProvider> PolledEventStream<T> {
                 }
                 let meta = meta.unwrap();
 
-                // Prefer the account-keys gate. solana-* 3.x cannot decode v1
-                // wire format, so fall back to discriminator log parsing
-                // rather than dropping Velocity events.
+                // Prefer the account-keys cheap-skip. solana-* 3.x cannot
+                // decode v1 wire format, so still walk logs rather than
+                // dropping Velocity events. Parsing itself is invocation-gated.
                 if !poll_should_parse_velocity_logs(&transaction, signature.as_str()) {
                     continue;
                 }
@@ -518,12 +513,11 @@ impl<T: EventRpcProvider> PolledEventStream<T> {
                 }
 
                 if let OptionSerializer::Some(logs) = meta.log_messages {
-                    for (tx_idx, log) in logs.iter().enumerate() {
-                        if let Some(event) = try_parse_log(log.as_str(), signature.as_str(), tx_idx)
-                        {
-                            if event.pertains_to(self.sub_account) {
-                                self.event_tx.try_send(event).expect("sent");
-                            }
+                    for event in
+                        parse_velocity_logs(logs.iter().map(String::as_str), signature.as_str())
+                    {
+                        if event.pertains_to(self.sub_account) {
+                            self.event_tx.try_send(event).expect("sent");
                         }
                     }
                 }
@@ -566,9 +560,82 @@ impl Stream for VelocityEventStream {
 const PROGRAM_LOG: &str = "Program log: ";
 const PROGRAM_DATA: &str = "Program data: ";
 
+/// CPI invocation stack while walking a transaction's log lines.
+/// `true` frames are `PROGRAM_ID`; `false` frames are any other program.
+#[derive(Default)]
+pub struct ProgramInvocationStack {
+    stack: Vec<bool>,
+}
+
+impl ProgramInvocationStack {
+    fn observe(&mut self, raw: &str) {
+        let log_start = raw.split_once(':').map(|(head, _)| head).unwrap_or(raw);
+        if log_start.starts_with("Program ")
+            && (log_start.ends_with(" success") || log_start.ends_with(" failed"))
+        {
+            self.stack.pop();
+        } else if log_start.starts_with(velocity_program_invoke_prefix()) {
+            self.stack.push(true);
+        } else if log_start.contains(" invoke") {
+            self.stack.push(false);
+        }
+    }
+
+    fn is_velocity_executing(&self) -> bool {
+        self.stack.last() == Some(&true)
+    }
+}
+
+fn velocity_program_invoke_prefix() -> &'static str {
+    static PREFIX: OnceLock<String> = OnceLock::new();
+    PREFIX.get_or_init(|| format!("Program {PROGRAM_ID} invoke"))
+}
+
+/// Parse Velocity events from a transaction's logs.
+///
+/// Only `Program log:` / `Program data:` lines emitted while `PROGRAM_ID` is
+/// the currently executing program (including nested CPI) are decoded. This
+/// keeps unrelated programs' matching discriminators away from
+/// [`VelocityEvent::from_discriminant`].
+pub fn parse_velocity_logs<'a>(
+    logs: impl IntoIterator<Item = &'a str>,
+    signature: &str,
+) -> Vec<VelocityEvent> {
+    let mut invocation = ProgramInvocationStack::default();
+    let mut events = Vec::new();
+    for (tx_idx, log) in logs.into_iter().enumerate() {
+        if log.starts_with("Log truncated") {
+            break;
+        }
+        if let Some(event) = try_parse_log(&mut invocation, log, signature, tx_idx) {
+            events.push(event);
+        }
+    }
+    events
+}
+
 /// Try deserialize a velocity event type from raw log string
 /// https://github.com/coral-xyz/anchor/blob/9d947cb26b693e85e1fd26072bb046ff8f95bdcf/client/src/lib.rs#L552
-pub fn try_parse_log(raw: &str, signature: &str, tx_idx: usize) -> Option<VelocityEvent> {
+///
+/// Updates `invocation` from invoke/success/failed lines and only decodes a
+/// payload while `PROGRAM_ID` is executing. Callers walking a full tx log
+/// should reuse the same stack across lines (see [`parse_velocity_logs`]).
+pub fn try_parse_log(
+    invocation: &mut ProgramInvocationStack,
+    raw: &str,
+    signature: &str,
+    tx_idx: usize,
+) -> Option<VelocityEvent> {
+    invocation.observe(raw);
+    if !invocation.is_velocity_executing() {
+        return None;
+    }
+    try_parse_program_log(raw, signature, tx_idx)
+}
+
+/// Decode a single `Program log:` / `Program data:` payload with no CPI-stack
+/// check. Prefer [`try_parse_log`] / [`parse_velocity_logs`] on real tx logs.
+fn try_parse_program_log(raw: &str, signature: &str, tx_idx: usize) -> Option<VelocityEvent> {
     // Log emitted from the current program.
     if let Some(log) = raw
         .strip_prefix(PROGRAM_LOG)
@@ -1076,18 +1143,16 @@ mod test {
             0,
         );
 
-        let logs = &[
+        let logs = [
+            format!("Program {PROGRAM_ID} invoke [1]"),
             "Program log: Instruction: TriggerOrder".to_string(),
             format!("{PROGRAM_DATA}{}", serialize_event(oar)),
-            "Program dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH success".to_string(),
+            format!("Program {PROGRAM_ID} success"),
         ];
 
-        let mut trigger = None;
-        for log in logs {
-            if let Some(event @ VelocityEvent::OrderTrigger { .. }) = try_parse_log(log, "sig", 0) {
-                trigger = Some(event);
-            }
-        }
+        let trigger = parse_velocity_logs(logs.iter().map(String::as_str), "sig")
+            .into_iter()
+            .find(|event| matches!(event, VelocityEvent::OrderTrigger { .. }));
         assert_eq!(
             trigger,
             Some(VelocityEvent::OrderTrigger {
@@ -1154,20 +1219,17 @@ mod test {
             0,
         );
 
-        let cpi_logs = &[
-            "Program J1TPRoXCtGuMcWiWFE6RB9eZU8U35PBMETCwNQLCNPhQ invoke [1]".to_string(),
+        let cpi_logs = [
+            format!("Program {} invoke [1]", crate::constants::JIT_PROXY_ID),
             "Program log: Instruction: ArbPerp".to_string(),
-            "Program dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH invoke [2]".to_string(),
+            format!("Program {PROGRAM_ID} invoke [2]"),
             format!("{PROGRAM_DATA}{}", serialize_event(order_record)),
             format!("{PROGRAM_DATA}{}", serialize_event(fill)),
-            "Program J1TPRoXCtGuMcWiWFE6RB9eZU8U35PBMETCwNQLCNPhQ success".to_string(),
+            format!("Program {PROGRAM_ID} success"),
+            format!("Program {} success", crate::constants::JIT_PROXY_ID),
         ];
 
-        let events: Vec<VelocityEvent> = cpi_logs
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, log)| try_parse_log(log, "sig", idx))
-            .collect();
+        let events = parse_velocity_logs(cpi_logs.iter().map(String::as_str), "sig");
 
         assert!(
             events.iter().any(
@@ -1302,8 +1364,10 @@ mod test {
                     sub_account,
                     Signature::from_str(s).unwrap(),
                     Some(vec![
+                        format!("Program {PROGRAM_ID} invoke [1]"),
                         format!("{PROGRAM_LOG}{}", serialize_event(oar)),
-                        format!("{PROGRAM_LOG}{}", serialize_event(or),),
+                        format!("{PROGRAM_LOG}{}", serialize_event(or)),
+                        format!("Program {PROGRAM_ID} success"),
                     ]),
                 ),
             );
@@ -1380,19 +1444,15 @@ mod test {
         };
 
         let logs = [
-            "Program dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH invoke [1]".to_string(),
+            format!("Program {PROGRAM_ID} invoke [1]"),
             "Program log: Instruction: BeginSwap".to_string(),
             "Program log: Instruction: EndSwap".to_string(),
             format!("{PROGRAM_DATA}{}", serialize_event(swap)),
-            "Program dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH success".to_string(),
+            format!("Program {PROGRAM_ID} success"),
         ];
 
         let sig = "2M1e4UJ1x6rwvjFR6kh5CDCWZg8NcGeqzT2GbDRGaC2TmZDgNTNbKSn4Y4pu11apErVycpk5p3Hq6Tg2nrFdGimm";
-        let res: Vec<VelocityEvent> = logs
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, log)| try_parse_log(log, sig, idx))
-            .collect();
+        let res = parse_velocity_logs(logs.iter().map(String::as_str), sig);
         assert_eq!(
             res[0],
             VelocityEvent::Swap {
@@ -1419,6 +1479,54 @@ mod test {
     #[test]
     fn poll_parses_undecodable_tx_instead_of_dropping() {
         assert!(poll_should_parse_velocity_logs(&undecodable_tx(), "sig"));
+    }
+
+    #[test]
+    fn ignores_malformed_payload_emitted_outside_program_id() {
+        let _ = env_logger::try_init();
+
+        let mut malformed = OrderActionRecord::DISCRIMINATOR.to_vec();
+        malformed.extend_from_slice(&[0xff; 4]);
+        let malformed_b64 = base64::engine::general_purpose::STANDARD.encode(&malformed);
+
+        let user = Pubkey::new_unique();
+        let swap = SwapRecord {
+            ts: 1_700_000_000,
+            user,
+            amount_out: 2,
+            amount_in: 1,
+            out_market_index: 1,
+            in_market_index: 0,
+            out_oracle_price: 0,
+            in_oracle_price: 0,
+            fee: 0,
+        };
+
+        let other = Pubkey::new_unique();
+        let logs = [
+            format!("Program {other} invoke [1]"),
+            format!("{PROGRAM_DATA}{malformed_b64}"),
+            format!("Program {other} success"),
+            format!("Program {PROGRAM_ID} invoke [1]"),
+            format!("{PROGRAM_DATA}{}", serialize_event(swap)),
+            format!("Program {PROGRAM_ID} success"),
+        ];
+
+        let events = parse_velocity_logs(logs.iter().map(String::as_str), "sig");
+        assert_eq!(
+            events,
+            vec![VelocityEvent::Swap {
+                user,
+                amount_in: 1,
+                amount_out: 2,
+                market_in: 0,
+                market_out: 1,
+                fee: 0,
+                ts: 1_700_000_000,
+                signature: "sig".into(),
+                tx_idx: 4,
+            }]
+        );
     }
 
     /// Make transaction with dummy instruction for velocity program

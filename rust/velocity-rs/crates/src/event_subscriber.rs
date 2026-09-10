@@ -386,11 +386,12 @@ async fn grpc_log_stream(
 /// Whether a polled tx should have its logs walked for Velocity events.
 ///
 /// Prefer the decoded message's static account keys as a cheap skip when
-/// `PROGRAM_ID` is absent. `solana-*` 3.x cannot deserialize v1 wire format
-/// (`decode()` is `None`); in that case still walk the logs so Velocity
-/// events are not dropped while the 4.2 crate bump is outstanding. Walking
-/// is not enough on its own: `parse_velocity_logs` only decodes payloads
-/// while `PROGRAM_ID` is the executing program in the invocation stack.
+/// `PROGRAM_ID` is absent. A payload these crates cannot deserialize at all
+/// (`decode()` is `None`: corrupt, or a wire version newer than this crate
+/// stack) still has its logs walked, so Velocity events are not dropped.
+/// Walking is not enough on its own: `parse_velocity_logs` only decodes
+/// payloads while `PROGRAM_ID` is the executing program in the invocation
+/// stack.
 fn poll_should_parse_velocity_logs(transaction: &EncodedTransaction, signature: &str) -> bool {
     match transaction.decode() {
         Some(VersionedTransaction { message, .. }) => message
@@ -503,9 +504,10 @@ impl<T: EventRpcProvider> PolledEventStream<T> {
                 }
                 let meta = meta.unwrap();
 
-                // Prefer the account-keys cheap-skip. solana-* 3.x cannot
-                // decode v1 wire format, so still walk logs rather than
-                // dropping Velocity events. Parsing itself is invocation-gated.
+                // Prefer the account-keys cheap-skip. A payload that does not
+                // deserialize (corrupt, or a wire version newer than these
+                // crates) still has its logs walked rather than dropping
+                // Velocity events. Parsing itself is invocation-gated.
                 if !poll_should_parse_velocity_logs(&transaction, signature.as_str()) {
                     continue;
                 }

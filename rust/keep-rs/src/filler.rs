@@ -2846,24 +2846,31 @@ impl TxWorker {
                                     "tx failed: {err:?}, intent: {intent_label}, liquidatee: {:?}, sig: {signature}",
                                     intent.liquidatee()
                                 );
+                                let logs: Option<Vec<String>> = meta.log_messages.clone().into();
                                 // Log program logs from failed liquidation txs
                                 if intent.is_liquidation() {
-                                    let logs: Option<Vec<String>> = meta.log_messages.clone().into();
-                                    if let Some(logs) = logs {
-                                        for log_line in &logs {
+                                    if let Some(logs) = logs.as_ref() {
+                                        for log_line in logs {
                                             if log_line.contains("Error") || log_line.contains("error") || log_line.contains("failed") || log_line.contains("Program log:") {
                                                 log::warn!(target: TARGET, "  tx log: {}", log_line);
                                             }
                                         }
                                     }
                                 }
-                                // tx failed with error
+                                // tx failed with error. CU exhaustion lands here: the VM
+                                // reports it as ProgramFailedToComplete, which it shares with
+                                // other faults, so the log line is what identifies it.
+                                let reason = if logs
+                                    .as_ref()
+                                    .is_some_and(|logs| logs.iter().any(|l| l.contains("exceeded CUs meter")))
+                                {
+                                    "insufficient_cus".to_string()
+                                } else {
+                                    format!("{err:?}")
+                                };
                                 metrics
                                     .tx_failed
-                                    .with_label_values(&[
-                                        intent_label,
-                                        &format!("{:?}", err),
-                                    ])
+                                    .with_label_values(&[intent_label, &reason])
                                     .inc();
                                 emit_tx_event(
                                     &intent,

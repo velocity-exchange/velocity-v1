@@ -398,7 +398,9 @@ fn poll_should_parse_velocity_logs(transaction: &EncodedTransaction, signature: 
             .iter()
             .any(|k| k == &PROGRAM_ID),
         None => {
-            warn!(
+            // Post-4.2 this is nearly every polled tx until the crate bump lands, so
+            // keep it at debug like the other per-tx poll messages.
+            debug!(
                 target: LOG_TARGET,
                 "poll undecodable tx, walking logs without account-keys check: {signature}"
             );

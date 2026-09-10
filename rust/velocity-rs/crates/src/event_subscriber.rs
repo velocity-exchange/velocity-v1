@@ -519,7 +519,11 @@ impl<T: EventRpcProvider> PolledEventStream<T> {
                         parse_velocity_logs(logs.iter().map(String::as_str), signature.as_str())
                     {
                         if event.pertains_to(self.sub_account) {
-                            self.event_tx.try_send(event).expect("sent");
+                            // A full channel or a closed receiver must not take the
+                            // poll task down with it.
+                            if let Err(err) = self.event_tx.try_send(event) {
+                                warn!(target: LOG_TARGET, "poll dropping event: {err}");
+                            }
                         }
                     }
                 }

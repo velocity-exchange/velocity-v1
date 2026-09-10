@@ -11,7 +11,7 @@ import {
 	RedisClient,
 	RedisClientPrefix,
 } from '@velocity-exchange/common/clients';
-import { COMMON_UI_UTILS } from '@velocity-exchange/common';
+import { chunks } from '@velocity-exchange/common';
 import { logger } from './utils/logger';
 import { ZSTDDecoder } from 'zstddec';
 import { performance } from 'perf_hooks';
@@ -157,7 +157,7 @@ async function syncPubKeys(
 	const keysToRemove = currentKeys.filter((key) => !newKeys.includes(key));
 
 	// Remove outdated keys
-	const removalBatches = COMMON_UI_UTILS.chunks(keysToRemove, 100);
+	const removalBatches = chunks(keysToRemove, 100);
 	for (const batch of removalBatches) {
 		await Promise.all(
 			batch.map((key) => redisClient.lRem('user_pubkeys', 0, key))
@@ -165,7 +165,7 @@ async function syncPubKeys(
 	}
 
 	// Add missing keys
-	const additionBatches = COMMON_UI_UTILS.chunks(keysToAdd, 100);
+	const additionBatches = chunks(keysToAdd, 100);
 	for (const batch of additionBatches) {
 		await redisClient.rPush('user_pubkeys', ...batch);
 	}

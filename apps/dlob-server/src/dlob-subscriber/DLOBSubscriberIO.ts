@@ -33,7 +33,7 @@ import {
 import { OffloadQueue } from '../utils/offload';
 import { setHealthStatus, HEALTH_STATUS } from '../core/healthCheck';
 import { CounterValue } from '../core/metricsV2';
-import { COMMON_MATH } from '@velocity-exchange/common';
+import { calculateSpreadBidAskMark } from '@velocity-exchange/common';
 
 export type wsMarketArgs = {
 	marketIndex: number;
@@ -392,7 +392,7 @@ export class DLOBSubscriberIO extends DLOBSubscriber {
 			latestSlot: new BN(this.slotSource.getSlot()),
 		});
 		const { markPrice, bestBidPrice, bestAskPrice, spreadPct, spreadQuote } =
-			COMMON_MATH.calculateSpreadBidAskMark(l2, oracleData?.price);
+			calculateSpreadBidAskMark(l2, oracleData?.price);
 		const slot = l2.slot;
 
 		if (slot) {

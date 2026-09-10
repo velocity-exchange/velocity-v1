@@ -34,7 +34,7 @@ use {
             CrossesAndTopMakers, CrossingRegion, DLOBNotifier, L3Order, MakerCrosses, OrderKind,
             TakerOrder, DLOB,
         },
-        event_subscriber::VelocityEvent,
+        event_subscriber::{parse_velocity_logs, VelocityEvent},
         grpc::{
             grpc_subscriber::{AccountFilter, GrpcConnectionOpts},
             AccountUpdate, TransactionUpdate,
@@ -2700,7 +2700,7 @@ impl TxWorker {
                     RpcTransactionConfig {
                         encoding: Some(UiTransactionEncoding::Base64),
                         commitment: Some(CommitmentConfig::confirmed()),
-                        max_supported_transaction_version: Some(0),
+                        max_supported_transaction_version: Some(1),
                     },
                 )
                 .await
@@ -2715,27 +2715,15 @@ impl TxWorker {
                                 let tx_confirmed_slot = tx_log.slot;
                                 let mut actual_fills = 0;
                                 let mut triggered = false;
-                                for (tx_idx, log) in logs.iter().enumerate() {
-                                    if let Some(event) = velocity_rs::event_subscriber::try_parse_log(
-                                        log.as_str(),
-                                        &sig,
-                                        tx_idx,
-                                    ) {
-                                        if let VelocityEvent::OrderFill { ..} = event
-                                        {
-                                            actual_fills += 1;
-                                        } else if let VelocityEvent::OrderTrigger { .. } = event {
-                                            triggered = true;
-                                            metrics.trigger_actual.inc();
-                                        } else if log.as_str().contains("exceeded CUs meter") {
-                                            metrics
-                                            .tx_failed
-                                            .with_label_values(&[
-                                                intent_label,
-                                                "insufficient_cus",
-                                            ])
-                                            .inc();
-                                        }
+                                for event in parse_velocity_logs(
+                                    logs.iter().map(String::as_str),
+                                    &sig,
+                                ) {
+                                    if let VelocityEvent::OrderFill { .. } = event {
+                                        actual_fills += 1;
+                                    } else if let VelocityEvent::OrderTrigger { .. } = event {
+                                        triggered = true;
+                                        metrics.trigger_actual.inc();
                                     }
                                 }
                                 let confirmation_slots = tx_confirmed_slot - sent_slot;
@@ -2858,24 +2846,31 @@ impl TxWorker {
                                     "tx failed: {err:?}, intent: {intent_label}, liquidatee: {:?}, sig: {signature}",
                                     intent.liquidatee()
                                 );
+                                let logs: Option<Vec<String>> = meta.log_messages.clone().into();
                                 // Log program logs from failed liquidation txs
                                 if intent.is_liquidation() {
-                                    let logs: Option<Vec<String>> = meta.log_messages.clone().into();
-                                    if let Some(logs) = logs {
-                                        for log_line in &logs {
+                                    if let Some(logs) = logs.as_ref() {
+                                        for log_line in logs {
                                             if log_line.contains("Error") || log_line.contains("error") || log_line.contains("failed") || log_line.contains("Program log:") {
                                                 log::warn!(target: TARGET, "  tx log: {}", log_line);
                                             }
                                         }
                                     }
                                 }
-                                // tx failed with error
+                                // tx failed with error. CU exhaustion lands here: the VM
+                                // reports it as ProgramFailedToComplete, which it shares with
+                                // other faults, so the log line is what identifies it.
+                                let reason = if logs
+                                    .as_ref()
+                                    .is_some_and(|logs| logs.iter().any(|l| l.contains("exceeded CUs meter")))
+                                {
+                                    "insufficient_cus".to_string()
+                                } else {
+                                    format!("{err:?}")
+                                };
                                 metrics
                                     .tx_failed
-                                    .with_label_values(&[
-                                        intent_label,
-                                        &format!("{:?}", err),
-                                    ])
+                                    .with_label_values(&[intent_label, &reason])
                                     .inc();
                                 emit_tx_event(
                                     &intent,
@@ -3213,10 +3208,12 @@ fn is_expected_fill_event(event: &VelocityEvent, intent: &TxIntent) -> bool {
 }
 
 fn simulation_has_expected_fill(logs: Option<&[String]>, intent: &TxIntent) -> bool {
-    logs.into_iter().flatten().enumerate().any(|(tx_idx, log)| {
-        velocity_rs::event_subscriber::try_parse_log(log, "simulation", tx_idx)
-            .is_some_and(|event| is_expected_fill_event(&event, intent))
+    logs.map(|logs| {
+        parse_velocity_logs(logs.iter().map(String::as_str), "simulation")
+            .into_iter()
+            .any(|event| is_expected_fill_event(&event, intent))
     })
+    .unwrap_or(false)
 }
 
 #[derive(Clone)]

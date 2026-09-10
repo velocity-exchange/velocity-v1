@@ -213,7 +213,7 @@ export class TxSender {
 					txSigsBatch.map((tx) => tx[0]),
 					{
 						commitment: 'confirmed',
-						maxSupportedTransactionVersion: 0,
+						maxSupportedTransactionVersion: 1,
 					}
 				);
 				for (let j = 0; j < txs.length; j++) {

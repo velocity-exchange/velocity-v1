@@ -625,6 +625,7 @@ describe('spot swap', () => {
 				txO.txSig,
 				{
 					commitment: 'confirmed',
+					maxSupportedTransactionVersion: 1,
 				}
 			);
 			console.log('tx logs', txL.meta.logMessages);

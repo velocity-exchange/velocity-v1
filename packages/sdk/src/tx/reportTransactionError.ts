@@ -39,7 +39,7 @@ const getTransactionResult = async (
 	}
 	const finality = commitmentToFinality(resolvedCommitment);
 	return await connection.getTransaction(txSig, {
-		maxSupportedTransactionVersion: 0,
+		maxSupportedTransactionVersion: 1,
 		commitment: finality,
 	});
 };

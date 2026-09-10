@@ -330,8 +330,12 @@ export async function printTxLogs(
 ): Promise<void> {
 	console.log(
 		'tx logs',
-		(await connection.getTransaction(txSig, { commitment: 'confirmed' })).meta
-			.logMessages
+		(
+			await connection.getTransaction(txSig, {
+				commitment: 'confirmed',
+				maxSupportedTransactionVersion: 1,
+			})
+		).meta.logMessages
 	);
 }
 export async function mintToInsuranceFund(

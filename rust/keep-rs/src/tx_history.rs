@@ -6,7 +6,7 @@ use {
     solana_rpc_client_api::config::RpcTransactionConfig,
     solana_sdk::{pubkey::Pubkey, signature::Signature},
     std::sync::Arc,
-    velocity_rs::event_subscriber::VelocityEvent,
+    velocity_rs::event_subscriber::{parse_velocity_logs, VelocityEvent},
 };
 
 #[derive(Parser, Debug)]
@@ -65,7 +65,7 @@ async fn main() {
                     &signature,
                     RpcTransactionConfig {
                         encoding: Some(solana_transaction_status::UiTransactionEncoding::Base64),
-                        max_supported_transaction_version: Some(0),
+                        max_supported_transaction_version: Some(1),
                         ..Default::default()
                     },
                 )
@@ -98,19 +98,17 @@ async fn main() {
                         continue;
                     }
                     let logs = meta.log_messages.unwrap();
-                    for (tx_idx, log) in logs.iter().enumerate() {
+                    for log in &logs {
                         if log.contains("Order does not exist") {
                             had_order_dne = true;
                         }
-                        if let Some(event) =
-                            velocity_rs::event_subscriber::try_parse_log(log.as_str(), &sig, tx_idx)
-                        {
-                            if let VelocityEvent::OrderFill { .. } = event {
-                                had_fill = true;
-                            }
-                            if let VelocityEvent::OrderTrigger { .. } = event {
-                                had_trigger = true;
-                            }
+                    }
+                    for event in parse_velocity_logs(logs.iter().map(String::as_str), &sig) {
+                        if let VelocityEvent::OrderFill { .. } = event {
+                            had_fill = true;
+                        }
+                        if let VelocityEvent::OrderTrigger { .. } = event {
+                            had_trigger = true;
                         }
                     }
                 }

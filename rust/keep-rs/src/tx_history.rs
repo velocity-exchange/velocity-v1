@@ -2,9 +2,10 @@ use {
     clap::Parser,
     futures_util::{stream::FuturesUnordered, StreamExt},
     solana_commitment_config::CommitmentConfig,
+    solana_pubkey::Pubkey,
     solana_rpc_client::nonblocking::rpc_client::RpcClient,
     solana_rpc_client_api::config::RpcTransactionConfig,
-    solana_sdk::{pubkey::Pubkey, signature::Signature},
+    solana_signature::Signature,
     std::sync::Arc,
     velocity_rs::event_subscriber::{parse_velocity_logs, VelocityEvent},
 };

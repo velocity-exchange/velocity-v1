@@ -10,7 +10,7 @@ use {
         },
         subscription::{Response, SubscribeRequest, SubscriptionId},
     },
-    solana_sdk::signature::Signature,
+    solana_signature::Signature,
     std::{
         collections::HashSet,
         time::{Duration, SystemTime, UNIX_EPOCH},
@@ -1062,7 +1062,7 @@ mod tests {
             payload::{PayloadData, PayloadFeedData, PayloadPropertyValue},
             router::{ChannelId, Price, PriceFeedId, TimestampUs},
         },
-        solana_sdk::signature::Signature,
+        solana_signature::Signature,
         std::num::NonZeroI64,
         velocity_rs::{
             program::math::time::{Millis, SlotClock},

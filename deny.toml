@@ -50,9 +50,6 @@ allow-git = [
 	# fork we control rather than the pre-rename drift-labs one (#414); pinning it
 	# to a rev is still worth doing.
 	"https://github.com/velocity-exchange/tungstenite-rs",
-
-	# Yellowstone gRPC client/proto, pinned to a rev in rust/velocity-rs/Cargo.toml.
-	"https://github.com/rpcpool/yellowstone-grpc",
 ]
 
 # ---------------------------------------------------------------------------

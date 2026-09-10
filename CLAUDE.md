@@ -194,7 +194,7 @@ two `cargo +nightly fmt` invocations above don't reach: each `fuzz/<crate>/` is 
 `rust/` is a **second Cargo workspace** holding the imported Rust crates: `velocity-rs` (Rust SDK),
 `keep-rs` (keeper bots, binary `keeprs`), and `swift` (tx server, binary `swift-server`). It is
 deliberately separate from the program workspace (root `Cargo.toml` has `exclude = ["rust"]`) so its
-solana-sdk 3.x dependency tree never unifies with the program's SBF build. It has its own
+split solana 4.2 crate tree never unifies with the program's SBF build. It has its own
 `rust/Cargo.lock` and builds into `rust/target/` (via `rust/.cargo/config.toml`), never clobbering
 `./target`. Build/check it with `cargo check --manifest-path rust/Cargo.toml` (or `bun run rust:build`).
 

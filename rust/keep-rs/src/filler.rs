@@ -15,12 +15,12 @@ use {
     pyth_lazer_protocol::router::TimestampUs,
     solana_account_decoder_client_types::UiAccountEncoding,
     solana_compute_budget_interface::ComputeBudgetInstruction,
+    solana_instruction::error::InstructionError,
     solana_rpc_client_api::config::{
         RpcAccountInfoConfig, RpcProgramAccountsConfig, RpcTransactionConfig,
     },
-    solana_sdk::{
-        instruction::InstructionError, signature::Signature, transaction::TransactionError,
-    },
+    solana_signature::Signature,
+    solana_transaction::TransactionError,
     solana_transaction_status_client_types::{UiTransactionEncoding, UiTransactionError},
     std::{
         collections::{BTreeMap, HashSet},
@@ -2252,20 +2252,18 @@ pub async fn setup_grpc(
 pub async fn sync_stats_accounts(
     velocity: &VelocityClient,
 ) -> Result<(), solana_rpc_client_api::client_error::Error> {
-    let stats_sync_result = velocity
-        .rpc()
-        .get_program_accounts_with_config(
-            &PROGRAM_ID,
-            RpcProgramAccountsConfig {
-                filters: Some(vec![velocity_rs::memcmp::get_user_stats_filter()]),
-                account_config: RpcAccountInfoConfig {
-                    encoding: Some(UiAccountEncoding::Base64Zstd),
-                    ..Default::default()
-                },
+    let stats_sync_result = get_program_accounts_decoded(
+        velocity,
+        RpcProgramAccountsConfig {
+            filters: Some(vec![velocity_rs::memcmp::get_user_stats_filter()]),
+            account_config: RpcAccountInfoConfig {
+                encoding: Some(UiAccountEncoding::Base64Zstd),
                 ..Default::default()
             },
-        )
-        .await;
+            ..Default::default()
+        },
+    )
+    .await;
 
     match stats_sync_result {
         Ok(accounts) => {
@@ -2295,23 +2293,21 @@ pub async fn sync_user_accounts(
     velocity: &VelocityClient,
     dlob_notifier: &DLOBNotifier,
 ) -> Result<(), solana_rpc_client_api::client_error::Error> {
-    let sync_result = velocity
-        .rpc()
-        .get_program_accounts_with_config(
-            &PROGRAM_ID,
-            RpcProgramAccountsConfig {
-                filters: Some(vec![
-                    velocity_rs::memcmp::get_non_idle_user_filter(),
-                    velocity_rs::memcmp::get_user_filter(),
-                ]),
-                account_config: RpcAccountInfoConfig {
-                    encoding: Some(UiAccountEncoding::Base64Zstd),
-                    ..Default::default()
-                },
+    let sync_result = get_program_accounts_decoded(
+        velocity,
+        RpcProgramAccountsConfig {
+            filters: Some(vec![
+                velocity_rs::memcmp::get_non_idle_user_filter(),
+                velocity_rs::memcmp::get_user_filter(),
+            ]),
+            account_config: RpcAccountInfoConfig {
+                encoding: Some(UiAccountEncoding::Base64Zstd),
                 ..Default::default()
             },
-        )
-        .await;
+            ..Default::default()
+        },
+    )
+    .await;
 
     match sync_result {
         Ok(accounts) => {
@@ -2337,6 +2333,37 @@ pub async fn sync_user_accounts(
             Err(err)
         }
     }
+}
+
+/// `RpcClient::get_program_accounts_with_config` was removed in solana-rpc-client 4.2.
+/// Decode `UiAccount`s from the replacement so callers still see binary `Account` data.
+///
+/// Anza's own helper panics on an account it cannot decode. This one runs on the
+/// filler and liquidator startup path, where an RPC that ignores the requested
+/// `Base64Zstd` encoding should degrade like any other sync failure, so skip those
+/// accounts and report how many were lost.
+async fn get_program_accounts_decoded(
+    velocity: &VelocityClient,
+    config: RpcProgramAccountsConfig,
+) -> Result<Vec<(Pubkey, solana_account::Account)>, solana_rpc_client_api::client_error::Error> {
+    let ui_accounts = velocity
+        .rpc()
+        .get_program_ui_accounts_with_config(&PROGRAM_ID, config)
+        .await?;
+    let returned = ui_accounts.len();
+    let accounts: Vec<(Pubkey, solana_account::Account)> = ui_accounts
+        .into_iter()
+        .filter_map(|(pubkey, ui)| ui.to_account().map(|account| (pubkey, account)))
+        .collect();
+    if accounts.len() < returned {
+        log::warn!(
+            target: "dlob",
+            "skipped {} of {returned} program accounts: not returned in a binary encoding",
+            returned - accounts.len()
+        );
+    }
+
+    Ok(accounts)
 }
 
 async fn subscribe_grpc(
@@ -3299,7 +3326,8 @@ mod tests {
             mm_oracle_stale_for_amm_immediate, order_dedup_key, record_perp_fill_fallback,
             vamm_can_fill_taker, CrossAction, Pubkey, TxIntent, VelocityEvent,
         },
-        solana_sdk::{instruction::InstructionError, transaction::TransactionError},
+        solana_instruction::error::InstructionError,
+        solana_transaction::TransactionError,
         std::borrow::Cow,
         velocity_rs::{
             constants::ProgramData,

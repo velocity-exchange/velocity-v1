@@ -11,11 +11,12 @@ members = [
 
 # This is a SEPARATE workspace from the program workspace at the repo root
 # (which is `exclude = ["rust"]`). Keeping it separate isolates the heavy
-# solana-sdk 3.x dependency tree used by velocity-rs/keep-rs/swift from the
+# solana 4.x RPC/tx crate line used by velocity-rs/keep-rs/swift from the
 # program's SBF build, and gives this side its own Cargo.lock and target dir
 # (see .cargo/config.toml). The `drift` (velocity) program crate is consumed
 # as a HOST library path-dep (../../programs/velocity) — independent of the
-# `cargo build-sbf` program build.
+# `cargo build-sbf` program build. The program crate itself stays on
+# solana-program 3 / Anchor 1.0 until Anchor supports the 4.x crate line.
 
 # NOT the program's `lto = "fat", codegen-units = 1` (that profile is tuned for
 # the on-chain SBF artifact). These crates build for the host; keep dev/release

@@ -8,7 +8,9 @@ use log::warn;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use tokio::sync::oneshot;
 
-pub const DEFAULT_REFRESH_FREQUENCY: Duration = Duration::from_millis(5 * 400);
+/// How often to re-read priority fees. A flat interval, not a slot count:
+/// mainnet slot time keeps falling, and this RPC read does not track it.
+pub const DEFAULT_REFRESH_FREQUENCY: Duration = Duration::from_secs(2);
 pub const DEFAULT_SLOT_WINDOW: Slot = 30;
 
 /// Subscribes to network priority fees given some accounts.

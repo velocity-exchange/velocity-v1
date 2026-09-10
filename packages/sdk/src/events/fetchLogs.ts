@@ -30,10 +30,12 @@ const eventTypeByLowercaseName = new Map<string, EventType>(
 
 type Log = { txSig: TransactionSignature; slot: number; logs: string[] };
 type FetchLogsResponse = {
-	earliestTx: string;
-	mostRecentTx: string;
-	earliestSlot: number;
-	mostRecentSlot: number;
+	/** Oldest signature safe to page backwards from; undefined when a `getTransaction` failed on the newest signature in the page. */
+	earliestTx: string | undefined;
+	/** Newest signature safe to resume forwards from; undefined when a `getTransaction` failed on the oldest signature in the page. */
+	mostRecentTx: string | undefined;
+	earliestSlot: number | undefined;
+	mostRecentSlot: number | undefined;
 	transactionLogs: Log[];
 	mostRecentBlockTime: number | undefined;
 };
@@ -61,7 +63,7 @@ function mapTransactionResponseToLog(
  * @param untilTx Stop at (exclusive of) this signature.
  * @param limit Max signatures to request from `getSignaturesForAddress`; RPC default applies if omitted.
  * @param batchSize Number of `getTransaction` calls batched per RPC round-trip; defaults to 25.
- * @returns `undefined` if no non-failed signatures were found in range, or if every signature safe to resume from failed to fetch (the caller should keep its current cursor and retry); otherwise the transaction logs plus the earliest/most-recent signature, slot, and block time safe to resume from, for use as the next `beforeTx`/`mostRecentSeenTx` cursor.
+ * @returns `undefined` if no non-failed signatures were found in range; otherwise the transaction logs plus the earliest/most-recent signature, slot, and block time safe to resume from, for use as the next `beforeTx`/`mostRecentSeenTx` cursor. A cursor side with no safe signature left (a `getTransaction` failed on the outermost one) comes back undefined while the fetched logs are still returned, so the caller can deliver them and then keep or stop at the cursor it already has.
  */
 export async function fetchLogs(
 	connection: Connection,
@@ -134,23 +136,24 @@ export async function fetchLogs(
 		? Math.min(...erroredIndexes) - 1
 		: filteredSignatures.length - 1;
 
-	if (mostRecentIndex < 0 || earliestIndex >= filteredSignatures.length) {
-		// No signature on the safe side of the failures, so there is no cursor we
-		// can hand back without skipping one. The caller keeps the cursor it
-		// already has and retries this window on its next pass.
-		return undefined;
-	}
-
-	const earliest = filteredSignatures[earliestIndex];
-	const mostRecent = filteredSignatures[mostRecentIndex];
+	// A side with no signature left past the failures gets an undefined cursor
+	// instead of sinking the whole response: the logs that did come back are
+	// still returned so the caller can deliver them, and with no cursor to
+	// advance to the caller keeps (or stops at) the one it already has.
+	const earliest =
+		earliestIndex < filteredSignatures.length
+			? filteredSignatures[earliestIndex]
+			: undefined;
+	const mostRecent =
+		mostRecentIndex >= 0 ? filteredSignatures[mostRecentIndex] : undefined;
 
 	return {
 		transactionLogs: transactionLogs,
-		earliestTx: earliest.signature,
-		mostRecentTx: mostRecent.signature,
-		earliestSlot: earliest.slot,
-		mostRecentSlot: mostRecent.slot,
-		mostRecentBlockTime: mostRecent.blockTime ?? undefined,
+		earliestTx: earliest?.signature,
+		mostRecentTx: mostRecent?.signature,
+		earliestSlot: earliest?.slot,
+		mostRecentSlot: mostRecent?.slot,
+		mostRecentBlockTime: mostRecent?.blockTime ?? undefined,
 	};
 }
 

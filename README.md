@@ -30,7 +30,7 @@ are migrating from the Drift SDK, [docs/DRIFT-TO-VELOCITY.md](./docs/DRIFT-TO-VE
 
 The two Cargo workspaces are deliberately separate: the root workspace builds the on-chain
 programs (SBF), while `rust/` consumes the program as a host library with its own lockfile and
-`rust/target/`, so its solana-sdk 4.2.x tree never unifies with the SBF build.
+`rust/target/`, so its split solana 4.2 crate tree never unifies with the SBF build.
 
 ## Deployments
 

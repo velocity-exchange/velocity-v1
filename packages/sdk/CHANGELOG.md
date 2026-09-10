@@ -1,5 +1,13 @@
 # @velocity-exchange/sdk
 
+## 0.23.1
+
+### Patch Changes
+
+- [#502](https://github.com/velocity-exchange/velocity-v1/pull/502) [`a655327`](https://github.com/velocity-exchange/velocity-v1/commit/a655327291a5ef9238bae929f19d06158db512a4) Thanks [@ChesterSim](https://github.com/ChesterSim)! - Stop `EventSubscriber.fetchPreviousTx` from dropping logs it already fetched.
+
+  `fetchLogs` held its `earliestTx`/`mostRecentTx` resume cursors behind a failed `getTransaction` and returned `undefined` when neither end of the page was safe to resume from, which the backfill could not tell apart from "nothing to fetch". It now returns the fetched logs with only the unsafe cursor field left `undefined`, so `fetchPreviousTx` delivers that page's events before it stops and `PollingLogProvider` still skips the tick and retries with the cursor it already has.
+
 ## 0.23.0
 
 ### Minor Changes

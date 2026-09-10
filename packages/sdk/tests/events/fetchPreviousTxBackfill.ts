@@ -16,9 +16,13 @@ const HISTORY = Array.from({ length: 9 }, (_, index) => ({
 
 /**
  * Minimal stand-in for `Connection`: pages `HISTORY` newest-first, `PAGE_SIZE`
- * at a time, and fails `getTransaction` for `failOnce` the first time only.
+ * at a time, fails `getTransaction` for `failOnce` the first time only, and
+ * fails it every time for anything in `failAlways`.
  */
-function stubConnection(failOnce: string): Connection {
+function stubConnection(
+	failOnce: string,
+	failAlways: string[] = []
+): Connection {
 	let failed = false;
 
 	return {
@@ -36,8 +40,11 @@ function stubConnection(failOnce: string): Connection {
 		_rpcBatchRequest: async (requests: { args: any[] }[]) =>
 			requests.map(({ args }) => {
 				const signature = args[0] as string;
-				if (signature === failOnce && !failed) {
-					failed = true;
+				if (
+					failAlways.includes(signature) ||
+					(signature === failOnce && !failed)
+				) {
+					failed = failed || signature === failOnce;
 					return {
 						error: {
 							code: -32015,
@@ -81,6 +88,18 @@ describe('fetchPreviousTx backfill budget', () => {
 		// Counting the duplicate stopped at sig6.
 		expect(subscriber.getEventsByTx('sig8'), 'sig8').to.not.equal(undefined);
 		expect(subscriber.getEventsByTx('sig5'), 'sig5').to.not.equal(undefined);
+	});
+
+	it('delivers the page it fetched when no signature is safe to page back from', async () => {
+		// sig9 is the newest signature in the first page and keeps failing, so
+		// `fetchLogs` has no `earliestTx` to hand back and the backfill must stop.
+		// sig7 and sig8 were fetched, and dropping them is the log loss this guards.
+		const subscriber = subscriberFor(stubConnection('none', ['sig9']), 5);
+
+		await subscriber.fetchPreviousTx(true);
+
+		expect(subscriber.getEventsByTx('sig8'), 'sig8').to.not.equal(undefined);
+		expect(subscriber.getEventsByTx('sig7'), 'sig7').to.not.equal(undefined);
 	});
 
 	it('stops once maxTx transactions are fetched when nothing fails', async () => {

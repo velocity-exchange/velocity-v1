@@ -84,9 +84,41 @@ describe('fetchLogs cursor', () => {
 		expect(response?.earliestTx).to.equal('sigD');
 	});
 
-	it('returns undefined when no signature is safe to resume from', async () => {
-		expect(await fetch(['sigA'])).to.equal(undefined);
-		expect(await fetch(SIGNATURES)).to.equal(undefined);
+	it('leaves a cursor undefined but still returns the logs it fetched', async () => {
+		// sigA is the oldest, so nothing is safe to resume forwards from, but the
+		// rest of the page was fetched and must not be thrown away.
+		const oldestFailed = await fetch(['sigA']);
+		expect(oldestFailed?.mostRecentTx, 'mostRecentTx').to.equal(undefined);
+		expect(oldestFailed?.mostRecentSlot, 'mostRecentSlot').to.equal(undefined);
+		// `earliestTx` is fed back as `beforeTx`, so it stays just newer than sigA.
+		expect(oldestFailed?.earliestTx, 'earliestTx').to.equal('sigB');
+		expect(oldestFailed?.transactionLogs.map((log) => log.txSig)).to.deep.equal(
+			['sigB', 'sigC', 'sigD']
+		);
+
+		// sigD is the newest, so there is nothing to page backwards from.
+		const newestFailed = await fetch(['sigD']);
+		expect(newestFailed?.earliestTx, 'earliestTx').to.equal(undefined);
+		expect(newestFailed?.earliestSlot, 'earliestSlot').to.equal(undefined);
+		expect(newestFailed?.mostRecentTx, 'mostRecentTx').to.equal('sigC');
+
+		// Every signature failing leaves both cursors undefined and no logs, but
+		// it is still a response rather than the "nothing in range" undefined.
+		const allFailed = await fetch(SIGNATURES);
+		expect(allFailed?.transactionLogs).to.deep.equal([]);
+		expect(allFailed?.earliestTx).to.equal(undefined);
+		expect(allFailed?.mostRecentTx).to.equal(undefined);
+	});
+
+	it('returns undefined when there is nothing in range', async () => {
+		const connection = {
+			getSignaturesForAddress: async () => [],
+			_rpcBatchRequest: async () => [],
+		} as unknown as Connection;
+
+		const response = await fetchLogs(connection, PublicKey.default, 'confirmed');
+
+		expect(response).to.equal(undefined);
 	});
 
 	it('still advances past a signature the RPC has no transaction for', async () => {

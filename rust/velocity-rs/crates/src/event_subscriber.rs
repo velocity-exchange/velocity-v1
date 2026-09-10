@@ -23,7 +23,8 @@ use solana_rpc_client_api::{
     response::RpcLogsResponse,
 };
 use solana_transaction_status::{
-    option_serializer::OptionSerializer, EncodedTransactionWithStatusMeta, UiTransactionEncoding,
+    option_serializer::OptionSerializer, EncodedTransaction, EncodedTransactionWithStatusMeta,
+    UiTransactionEncoding,
 };
 use tokio::{
     sync::{
@@ -387,6 +388,30 @@ async fn grpc_log_stream(
     })
 }
 
+/// Whether a polled tx should have its logs parsed for Velocity events.
+///
+/// Prefer the decoded message's static account keys. `solana-*` 3.x cannot
+/// deserialize v1 wire format (`decode()` is `None`); in that case parse logs
+/// anyway — `try_parse_log` is discriminator-gated — so Velocity events are
+/// not dropped while the 4.2 crate bump is still outstanding.
+fn poll_should_parse_velocity_logs(transaction: &EncodedTransaction, signature: &str) -> bool {
+    match transaction.decode() {
+        Some(VersionedTransaction { message, .. }) => message
+            .static_account_keys()
+            .iter()
+            .any(|k| k == &PROGRAM_ID),
+        None => {
+            // Discriminator parsing in `try_parse_log` is the real filter;
+            // skipping here would drop Velocity v1 events until solana-* 4.2.
+            warn!(
+                target: LOG_TARGET,
+                "poll undecodable tx, parsing logs without account-keys check: {signature}"
+            );
+            true
+        }
+    }
+}
+
 pub struct PolledEventStream<T: EventRpcProvider> {
     cache: Arc<RwLock<TxSignatureCache>>,
     event_tx: Sender<VelocityEvent>,
@@ -481,22 +506,10 @@ impl<T: EventRpcProvider> PolledEventStream<T> {
                 }
                 let meta = meta.unwrap();
 
-                // Fail closed: if we cannot decode the wire tx (e.g. unsupported
-                // version under the current solana-* crates), skip rather than
-                // processing logs without a PROGRAM_ID account-keys check.
-                let Some(VersionedTransaction { message, .. }) = transaction.decode() else {
-                    warn!(
-                        target: LOG_TARGET,
-                        "poll skipping undecodable tx: {signature:?}"
-                    );
-                    continue;
-                };
-                // only txs interacting with velocity program
-                if !message
-                    .static_account_keys()
-                    .iter()
-                    .any(|k| k == &constants::PROGRAM_ID)
-                {
+                // Prefer the account-keys gate. solana-* 3.x cannot decode v1
+                // wire format, so fall back to discriminator log parsing
+                // rather than dropping Velocity events.
+                if !poll_should_parse_velocity_logs(&transaction, signature.as_str()) {
                     continue;
                 }
                 // ignore failed txs
@@ -1394,6 +1407,18 @@ mod test {
                 tx_idx: 3,
             }
         );
+    }
+
+    fn undecodable_tx() -> EncodedTransaction {
+        EncodedTransaction::Binary(
+            "not-valid-base64!!!".into(),
+            solana_transaction_status::TransactionBinaryEncoding::Base64,
+        )
+    }
+
+    #[test]
+    fn poll_parses_undecodable_tx_instead_of_dropping() {
+        assert!(poll_should_parse_velocity_logs(&undecodable_tx(), "sig"));
     }
 
     /// Make transaction with dummy instruction for velocity program

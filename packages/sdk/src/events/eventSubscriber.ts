@@ -395,10 +395,16 @@ export class EventSubscriber {
 				break;
 			}
 
-			txFetched += response.transactionLogs.length;
 			beforeTx = response.earliestTx;
 
 			for (const { txSig, slot, logs } of response.transactionLogs) {
+				// `earliestTx` is held back behind a failed `getTransaction` (see
+				// `fetchLogs`), so the next page overlaps this one. Only transactions
+				// we have not already decoded count toward `maxTx`, otherwise the
+				// retried window eats the backfill budget.
+				if (!this.txEventCache.has(txSig)) {
+					txFetched++;
+				}
 				this.handleTxLogs(txSig, slot, logs, response.mostRecentBlockTime);
 			}
 		}

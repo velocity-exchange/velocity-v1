@@ -61,7 +61,7 @@ function mapTransactionResponseToLog(
  * @param untilTx Stop at (exclusive of) this signature.
  * @param limit Max signatures to request from `getSignaturesForAddress`; RPC default applies if omitted.
  * @param batchSize Number of `getTransaction` calls batched per RPC round-trip; defaults to 25.
- * @returns `undefined` if no non-failed signatures were found in range; otherwise the transaction logs plus the earliest/most-recent signature, slot, and block time observed, for use as the next `beforeTx`/`mostRecentSeenTx` cursor.
+ * @returns `undefined` if no non-failed signatures were found in range, or if every signature safe to resume from failed to fetch (the caller should keep its current cursor and retry); otherwise the transaction logs plus the earliest/most-recent signature, slot, and block time safe to resume from, for use as the next `beforeTx`/`mostRecentSeenTx` cursor.
  */
 export async function fetchLogs(
 	connection: Connection,
@@ -96,20 +96,53 @@ export async function fetchLogs(
 
 	const chunkedSignatures = chunk(filteredSignatures, batchSize);
 
+	// Signatures whose `getTransaction` came back as a JSON-RPC error. These are
+	// retryable (rate limit, node hiccup, unsupported tx version), so the resume
+	// cursors below must not move past them.
+	const erroredSignatures = new Set<TransactionSignature>();
+
 	const transactionLogs = (
 		await Promise.all(
 			chunkedSignatures.map(async (chunk) => {
 				return await fetchTransactionLogs(
 					connection,
 					chunk.map((confirmedSignature) => confirmedSignature.signature),
-					finality
+					finality,
+					erroredSignatures
 				);
 			})
 		)
 	).flat();
 
-	const earliest = filteredSignatures[0];
-	const mostRecent = filteredSignatures[filteredSignatures.length - 1];
+	// `filteredSignatures` is oldest-first. `mostRecentTx` is the forward resume
+	// cursor (`PollingLogProvider` feeds it back as `untilTx`, so the next poll
+	// only sees newer signatures) and must stop just before the oldest failure.
+	// `earliestTx` is the backward one (`EventSubscriber.fetchPreviousTx` feeds it
+	// back as `beforeTx`, paging into older history) and must stop just after the
+	// newest failure. Either way a failed signature stays in range for a later
+	// fetch instead of being skipped for good.
+	const erroredIndexes = filteredSignatures
+		.map((signature, index) =>
+			erroredSignatures.has(signature.signature) ? index : -1
+		)
+		.filter((index) => index !== -1);
+
+	const earliestIndex = erroredIndexes.length
+		? Math.max(...erroredIndexes) + 1
+		: 0;
+	const mostRecentIndex = erroredIndexes.length
+		? Math.min(...erroredIndexes) - 1
+		: filteredSignatures.length - 1;
+
+	if (mostRecentIndex < 0 || earliestIndex >= filteredSignatures.length) {
+		// No signature on the safe side of the failures, so there is no cursor we
+		// can hand back without skipping one. The caller keeps the cursor it
+		// already has and retries this window on its next pass.
+		return undefined;
+	}
+
+	const earliest = filteredSignatures[earliestIndex];
+	const mostRecent = filteredSignatures[mostRecentIndex];
 
 	return {
 		transactionLogs: transactionLogs,
@@ -127,13 +160,15 @@ export async function fetchLogs(
  * @param connection RPC connection.
  * @param signatures Signatures to fetch (fetched as `maxSupportedTransactionVersion: 1`).
  * @param finality Commitment to fetch each transaction at.
- * @returns One `Log` per signature that returned a result (signatures the RPC couldn't resolve are silently dropped, not padded with placeholders).
+ * @param erroredSignatures Optional set, populated with each signature whose `getTransaction` returned a JSON-RPC error so the caller can avoid advancing a cursor past it.
+ * @returns One `Log` per signature that returned a result (signatures the RPC couldn't resolve are dropped, not padded with placeholders; errored ones are logged).
  * @throws (rejects) if the batch RPC call doesn't complete within 10 seconds.
  */
 export async function fetchTransactionLogs(
 	connection: Connection,
 	signatures: TransactionSignature[],
-	finality: Finality
+	finality: Finality,
+	erroredSignatures?: Set<TransactionSignature>
 ): Promise<Log[]> {
 	const requests = new Array<{ methodName: string; args: any }>();
 	for (const signature of signatures) {
@@ -159,9 +194,17 @@ export async function fetchTransactionLogs(
 	}
 
 	const logs = new Array<Log>();
-	for (const rpcResponse of rpcResponses) {
+	for (let index = 0; index < rpcResponses.length; index++) {
+		const rpcResponse = rpcResponses[index];
 		if (rpcResponse.result) {
 			logs.push(mapTransactionResponseToLog(rpcResponse.result));
+		} else if (rpcResponse.error) {
+			// One unreadable entry must not sink the whole batch, so log and carry on.
+			const signature = signatures[index];
+			console.error(
+				`fetchTransactionLogs: getTransaction failed for ${signature}: ${rpcResponse.error.code} ${rpcResponse.error.message}`
+			);
+			erroredSignatures?.add(signature);
 		}
 	}
 

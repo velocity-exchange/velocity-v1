@@ -39,7 +39,10 @@ import {
 	MID_MAJOR_MARKETS,
 } from './constants';
 import { AuctionParamArgs } from './types';
-import { COMMON_MATH, ENUM_UTILS } from '@velocity-exchange/common';
+import {
+	calculateSpreadBidAskMark,
+	ENUM_UTILS,
+} from '@velocity-exchange/common';
 import { TakerFillVsOracleBpsRedisResult } from '../athena/repositories/fillQualityAnalytics';
 
 const MAX_FILL_QUALITY_AGE_MS = 10 * 60 * 1000; // 10 minutes
@@ -877,10 +880,7 @@ export const getEstimatedPrices = async (
 	// Get oracle price
 	const oraclePrice = new BN(oracleData?.price || 0).mul(PRICE_PRECISION);
 
-	const spreadInfo = COMMON_MATH.calculateSpreadBidAskMark(
-		l2Formatted,
-		oraclePrice
-	);
+	const spreadInfo = calculateSpreadBidAskMark(l2Formatted, oraclePrice);
 
 	const markPrice = spreadInfo?.markPrice ?? oraclePrice;
 
@@ -1045,10 +1045,7 @@ export const mapToMarketOrderParams = async (
 				const oraclePrice = oracleData.price ?? ZERO;
 
 				// Detect if orderbook is crossed
-				const spreadInfo = COMMON_MATH.calculateSpreadBidAskMark(
-					l2Formatted,
-					oraclePrice
-				);
+				const spreadInfo = calculateSpreadBidAskMark(l2Formatted, oraclePrice);
 
 				// TODO - apply this to all apiVersions once testing is complete.
 				conditionalParams = {
@@ -1583,10 +1580,7 @@ export const calculateDynamicSlippage = (
 		const oraclePrice = new BN(oracleData?.price || 0).mul(PRICE_PRECISION);
 
 		// Calculate actual spread
-		const spreadInfo = COMMON_MATH.calculateSpreadBidAskMark(
-			l2Formatted,
-			oraclePrice
-		);
+		const spreadInfo = calculateSpreadBidAskMark(l2Formatted, oraclePrice);
 
 		const spreadPctNum = BigNum.from(
 			spreadInfo.spreadPct,
@@ -1719,10 +1713,7 @@ export const getEstimatedPricesWithL2 = async (
 	// Get oracle price
 	const oraclePrice = oracleData.price ?? ZERO;
 
-	const spreadInfo = COMMON_MATH.calculateSpreadBidAskMark(
-		l2Formatted,
-		oraclePrice
-	);
+	const spreadInfo = calculateSpreadBidAskMark(l2Formatted, oraclePrice);
 
 	const markPrice = spreadInfo?.markPrice ?? oraclePrice;
 

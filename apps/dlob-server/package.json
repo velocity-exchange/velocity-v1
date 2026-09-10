@@ -9,7 +9,7 @@
 		"@aws-sdk/client-kinesis": "3.1065.0",
 		"@aws-sdk/util-retry": "3.374.0",
 		"@coral-xyz/anchor": "0.29.0",
-		"@velocity-exchange/common": "0.0.1",
+		"@velocity-exchange/common": "0.10.1",
 		"@velocity-exchange/sdk": "workspace:*",
 		"@opentelemetry/api": "1.7.0",
 		"@opentelemetry/exporter-prometheus": "0.31.0",

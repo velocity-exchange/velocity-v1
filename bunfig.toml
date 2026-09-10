@@ -1,3 +1,6 @@
 [install]
 exact = true
 minimumReleaseAge = 604800 # 7 days
+# @velocity-exchange/common 0.10.1 published 2026-09-10;
+# remove once it clears the 7-day window (2026-09-17).
+minimumReleaseAgeExcludes = ["@velocity-exchange/common"]

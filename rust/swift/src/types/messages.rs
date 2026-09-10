@@ -317,6 +317,12 @@ where
 }
 
 /// Deserialize solana transaction
+///
+/// bincode covers legacy and v0 only. A transaction v1 payload (SIMD-0385) is
+/// laid out for wincode and fails here at the config mask, so this endpoint
+/// rejects one with a bare "invalid deposit tx". That is unreachable while
+/// callers build deposits with @solana/web3.js 1.x, whose MessageV1 cannot
+/// serialize or sign; revisit when a caller moves to a client that can.
 pub fn deser_transaction<'de, D>(deserializer: D) -> Result<VersionedTransaction, D::Error>
 where
     D: serde::Deserializer<'de>,

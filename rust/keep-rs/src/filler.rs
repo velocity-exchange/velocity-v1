@@ -2337,23 +2337,33 @@ pub async fn sync_user_accounts(
 
 /// `RpcClient::get_program_accounts_with_config` was removed in solana-rpc-client 4.2.
 /// Decode `UiAccount`s from the replacement so callers still see binary `Account` data.
+///
+/// Anza's own helper panics on an account it cannot decode. This one runs on the
+/// filler and liquidator startup path, where an RPC that ignores the requested
+/// `Base64Zstd` encoding should degrade like any other sync failure, so skip those
+/// accounts and report how many were lost.
 async fn get_program_accounts_decoded(
     velocity: &VelocityClient,
     config: RpcProgramAccountsConfig,
 ) -> Result<Vec<(Pubkey, solana_account::Account)>, solana_rpc_client_api::client_error::Error> {
-    Ok(velocity
+    let ui_accounts = velocity
         .rpc()
         .get_program_ui_accounts_with_config(&PROGRAM_ID, config)
-        .await?
+        .await?;
+    let returned = ui_accounts.len();
+    let accounts: Vec<(Pubkey, solana_account::Account)> = ui_accounts
         .into_iter()
-        .map(|(pubkey, ui)| {
-            (
-                pubkey,
-                ui.to_account()
-                    .expect("program account was requested with a binary encoding (Base64Zstd)"),
-            )
-        })
-        .collect())
+        .filter_map(|(pubkey, ui)| ui.to_account().map(|account| (pubkey, account)))
+        .collect();
+    if accounts.len() < returned {
+        log::warn!(
+            target: "dlob",
+            "skipped {} of {returned} program accounts: not returned in a binary encoding",
+            returned - accounts.len()
+        );
+    }
+
+    Ok(accounts)
 }
 
 async fn subscribe_grpc(

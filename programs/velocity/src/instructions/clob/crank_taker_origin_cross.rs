@@ -68,7 +68,6 @@ use {
             clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             events::TakerOriginCrossRecordV1,
             fill_mode::FillMode,
-            oracle_map::OracleMap,
             order_params::NO_ROUTE_DIGEST,
             pdas,
             perp_market_map::{get_writable_perp_market_set, MarketSet, PerpMarketMap},
@@ -629,25 +628,31 @@ fn route_and_fill_remainder<'info>(
     // taker fee. The cranker is paid below, out of the improvement it actually
     // delivered — a crank that improves nothing is worth nothing.
     let (base_filled, quote_filled) = controller::orders::fill_perp_order(
-        // The remainder rested on the book first, so it holds an
-        // `open_bids`/`open_asks` reservation this fill unwinds.
-        controller::orders::FillTarget::Detached {
-            order: &mut order,
-            reserved: true,
+        controller::orders::FillRequest {
+            // The remainder rested on the book first, so it holds an
+            // `open_bids`/`open_asks` reservation this fill unwinds.
+            target: controller::orders::FillTarget::Detached {
+                order: &mut order,
+                reserved: true,
+            },
+            mode: FillMode::Fill,
+            referrer_is_accelerated: false,
         },
         cx.state,
-        &cx.accounts.taker,
-        &cx.accounts.taker_stats,
-        maps,
-        &cx.accounts.taker,
-        &cx.accounts.taker_stats,
-        cx.makers_and_referrer,
-        cx.makers_and_referrer_stats,
         cx.clock,
-        FillMode::Fill,
+        controller::orders::PerpFillAccounts {
+            user: &cx.accounts.taker,
+            user_stats: &cx.accounts.taker_stats,
+            filler: &cx.accounts.taker,
+            filler_stats: &cx.accounts.taker_stats,
+            rev_share_escrow: &mut None,
+        },
+        &mut controller::orders::FillParties {
+            maps,
+            makers_and_referrer: cx.makers_and_referrer,
+            makers_and_referrer_stats: cx.makers_and_referrer_stats,
+        },
         &mut router_inputs,
-        &mut None,
-        false,
     )?;
     // Nothing beat the resting price. Reverting puts the remainder back where
     // it was — the cancel above is undone with it — so an unprofitable crank
@@ -1123,9 +1128,10 @@ fn settle_pair_match<'info>(
         Some(pair.counterparty.order_ref.order_id as u32),
     )?;
     controller::orders::settle_external_match_fill(
-        pair.base_filled,
-        pair.quote_filled,
-        market.deref_mut(),
+        controller::orders::FillAmounts {
+            base: pair.base_filled,
+            quote: pair.quote_filled,
+        },
         &mut controller::orders::TakerSide {
             user: &mut taker,
             stats: &mut taker_stats,
@@ -1139,25 +1145,24 @@ fn settle_pair_match<'info>(
             reserved: true,
         },
         &mut maker_side,
-        Some(pair.aggressor.price),
-        oracle_price,
+        &controller::orders::ExternalMatch {
+            taker_limit: Some(pair.aggressor.price),
+            oracle_price,
+        },
         &mut controller::orders::FillerSide {
             user: &mut none_filler,
             stats: &mut none_filler_stats,
             key: taker_key,
             rev_share_escrow: &mut no_escrow,
         },
-        &controller::orders::FillPolicy {
-            fee_structure: &cx.state.perp_fee_structure,
-            referrer_is_accelerated: false,
-            is_liquidation: false,
-            promo_fee_tier: cx.state.promo_fee_tier,
-            builder_fee_allowed: false,
+        &mut controller::orders::SettleContext {
+            market: market.deref_mut(),
+            policy: &controller::orders::FillPolicy::for_settlement(cx.state),
+            oracle_map,
+            now: cx.clock.unix_timestamp,
+            slot: cx.clock.slot,
+            filler_reward_paid: &mut filler_reward_paid,
         },
-        oracle_map,
-        cx.clock.unix_timestamp,
-        cx.clock.slot,
-        &mut filler_reward_paid,
     )?;
     drop(maker_stats);
     drop(maker);
@@ -1271,27 +1276,35 @@ mod post_checks {
             counterparty_is_isolated,
         )?;
 
-        let taker = load!(taker_loader)?;
-        let mut taker_stats = load_mut!(taker_stats_loader)?;
-        controller::orders::fulfill_perp_order_post_checks(
-            &taker,
-            &mut taker_stats,
-            makers_and_referrer,
-            makers_and_referrer_stats,
-            maps,
+        let limits = controller::orders::TakerRiskLimits {
             market_index,
-            fill.base_filled,
-            fill.quote_filled,
-            &maker_fills,
-            facts.aggressor_order_decreasing,
-            facts.aggressor_is_isolated,
-            facts.perp_market_oi_before,
-            facts.oracle_stale_for_margin,
+            order_decreasing: facts.aggressor_order_decreasing,
+            is_isolated: facts.aggressor_is_isolated,
+            oracle_stale_for_margin: facts.oracle_stale_for_margin,
             // A cross of two resting remainders is never a liquidation.
-            false,
+            is_liquidation: false,
             // Both legs are ordinary users who keep the positions this
             // settles, so both carry their own risk and both are checked.
-            false,
+            exposure_closed_by_caller: false,
+            perp_market_oi_before: facts.perp_market_oi_before,
+        };
+        let taker = load!(taker_loader)?;
+        let mut taker_stats = load_mut!(taker_stats_loader)?;
+        limits.check_after_fill(
+            &mut controller::orders::TakerRefs {
+                user: &taker,
+                stats: &mut taker_stats,
+            },
+            &mut controller::orders::FillParties {
+                maps,
+                makers_and_referrer,
+                makers_and_referrer_stats,
+            },
+            controller::orders::FillAmounts {
+                base: fill.base_filled,
+                quote: fill.quote_filled,
+            },
+            &maker_fills,
             now,
         )?;
         Ok(PairChecked(()))

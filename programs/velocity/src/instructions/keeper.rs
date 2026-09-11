@@ -382,20 +382,26 @@ fn fill_order<'c: 'info, 'info>(
     };
 
     let (base_asset_amount_filled, _) = controller::orders::fill_perp_order(
-        controller::orders::FillTarget::Slot(order_id),
+        controller::orders::FillRequest {
+            target: controller::orders::FillTarget::Slot(order_id),
+            mode: FillMode::Fill,
+            referrer_is_accelerated,
+        },
         &*accounts.state.load()?,
-        accounts.user,
-        accounts.user_stats,
-        &mut maps,
-        accounts.filler,
-        accounts.filler_stats,
-        &makers_and_referrer,
-        &makers_and_referrer_stats,
         clock,
-        FillMode::Fill,
+        controller::orders::PerpFillAccounts {
+            user: accounts.user,
+            user_stats: accounts.user_stats,
+            filler: accounts.filler,
+            filler_stats: accounts.filler_stats,
+            rev_share_escrow: &mut escrow.as_mut(),
+        },
+        &mut controller::orders::FillParties {
+            maps: &mut maps,
+            makers_and_referrer: &makers_and_referrer,
+            makers_and_referrer_stats: &makers_and_referrer_stats,
+        },
         &mut router_inputs,
-        &mut escrow.as_mut(),
-        referrer_is_accelerated,
     )?;
 
     // v1 route only: a restable remainder belongs on the book, not in
@@ -1082,25 +1088,31 @@ fn fill_signed_msg_taker_order<'c: 'info, 'info>(
     };
 
     let (base_asset_amount_filled, _) = controller::orders::fill_perp_order(
-        // The taker order is ephemeral: it never reserved, so the fill unwinds
-        // no exposure for it.
-        controller::orders::FillTarget::Detached {
-            order: &mut placed.order,
-            reserved: false,
+        controller::orders::FillRequest {
+            // The taker order is ephemeral: it never reserved, so the fill
+            // unwinds no exposure for it.
+            target: controller::orders::FillTarget::Detached {
+                order: &mut placed.order,
+                reserved: false,
+            },
+            mode: FillMode::PlaceAndTake(placed.is_immediate_or_cancel, 0),
+            referrer_is_accelerated,
         },
         state,
-        &ctx.accounts.user,
-        &ctx.accounts.user_stats,
-        maps,
-        &ctx.accounts.filler,
-        &ctx.accounts.filler_stats,
-        makers_and_referrer,
-        makers_and_referrer_stats,
         clock,
-        FillMode::PlaceAndTake(placed.is_immediate_or_cancel, 0),
+        controller::orders::PerpFillAccounts {
+            user: &ctx.accounts.user,
+            user_stats: &ctx.accounts.user_stats,
+            filler: &ctx.accounts.filler,
+            filler_stats: &ctx.accounts.filler_stats,
+            rev_share_escrow: &mut escrow.as_mut(),
+        },
+        &mut controller::orders::FillParties {
+            maps,
+            makers_and_referrer,
+            makers_and_referrer_stats,
+        },
         &mut router_inputs,
-        &mut escrow.as_mut(),
-        referrer_is_accelerated,
     )?;
     Ok(base_asset_amount_filled)
 }

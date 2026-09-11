@@ -20,6 +20,7 @@ use {
         state::{
             market_status::MarketStatus,
             oracle::{HistoricalOracleData, OracleSource},
+            oracle_map::OracleMap,
             perp_market::{MarketStats, PerpMarket},
             pyth_lazer_oracle::PythLazerOracle,
             spot_market::{SpotBalanceType, SpotMarket},

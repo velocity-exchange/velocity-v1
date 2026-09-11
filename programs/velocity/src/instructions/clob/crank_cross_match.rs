@@ -477,23 +477,29 @@ fn run_cross_leg<'info>(
     };
 
     let (base_filled, _) = controller::orders::fill_perp_order(
-        controller::orders::FillTarget::Detached {
-            order: &mut order,
-            reserved: false,
+        controller::orders::FillRequest {
+            target: controller::orders::FillTarget::Detached {
+                order: &mut order,
+                reserved: false,
+            },
+            mode: FillMode::Fill,
+            referrer_is_accelerated: false,
         },
         legs.state,
-        &legs.accounts.taker,
-        &legs.accounts.taker_stats,
-        maps,
-        &legs.accounts.taker,
-        &legs.accounts.taker_stats,
-        legs.makers_and_referrer,
-        legs.makers_and_referrer_stats,
         legs.clock,
-        FillMode::Fill,
+        controller::orders::PerpFillAccounts {
+            user: &legs.accounts.taker,
+            user_stats: &legs.accounts.taker_stats,
+            filler: &legs.accounts.taker,
+            filler_stats: &legs.accounts.taker_stats,
+            rev_share_escrow: &mut None,
+        },
+        &mut controller::orders::FillParties {
+            maps,
+            makers_and_referrer: legs.makers_and_referrer,
+            makers_and_referrer_stats: legs.makers_and_referrer_stats,
+        },
         &mut router_inputs,
-        &mut None,
-        false,
     )?;
     // Read straight after the fill, with no second settle: the fill's own
     // funding update belongs to whoever holds the position next, and the next

@@ -412,25 +412,31 @@ fn route_fill_fired_order<'info>(
     };
 
     controller::orders::fill_perp_order(
-        // The fired order is ephemeral: it never reserved, so the fill
-        // unwinds no exposure for it.
-        controller::orders::FillTarget::Detached {
-            order: fired,
-            reserved: false,
+        controller::orders::FillRequest {
+            // The fired order is ephemeral: it never reserved, so the fill
+            // unwinds no exposure for it.
+            target: controller::orders::FillTarget::Detached {
+                order: fired,
+                reserved: false,
+            },
+            mode: FillMode::Fill,
+            referrer_is_accelerated: tail.referrer_is_accelerated,
         },
         state,
-        &ctx.accounts.user,
-        &ctx.accounts.user_stats,
-        maps,
-        &ctx.accounts.filler,
-        &ctx.accounts.filler_stats,
-        &tail.makers_and_referrer,
-        &tail.makers_and_referrer_stats,
         clock,
-        FillMode::Fill,
+        controller::orders::PerpFillAccounts {
+            user: &ctx.accounts.user,
+            user_stats: &ctx.accounts.user_stats,
+            filler: &ctx.accounts.filler,
+            filler_stats: &ctx.accounts.filler_stats,
+            rev_share_escrow: &mut tail.escrow.as_mut(),
+        },
+        &mut controller::orders::FillParties {
+            maps,
+            makers_and_referrer: &tail.makers_and_referrer,
+            makers_and_referrer_stats: &tail.makers_and_referrer_stats,
+        },
         &mut router_inputs,
-        &mut tail.escrow.as_mut(),
-        tail.referrer_is_accelerated,
     )?;
     Ok(())
 }

@@ -3525,24 +3525,31 @@ pub fn place_and_take_perp_order_v1<'c: 'info, 'info>(
             worst_fill_price: None,
         };
         controller::orders::fill_perp_order(
-            // Ephemeral taker: it never reserved, so the fill unwinds nothing.
-            controller::orders::FillTarget::Detached {
-                order,
-                reserved: false,
+            controller::orders::FillRequest {
+                // Ephemeral taker: it never reserved, so the fill unwinds
+                // nothing.
+                target: controller::orders::FillTarget::Detached {
+                    order,
+                    reserved: false,
+                },
+                mode: fill_mode,
+                referrer_is_accelerated,
             },
             &state,
-            user_loader,
-            user_stats_loader,
-            &mut maps,
-            &user_loader.clone(),
-            &user_stats_loader.clone(),
-            &makers_and_referrer,
-            &makers_and_referrer_stats,
             &Clock::get()?,
-            fill_mode,
+            controller::orders::PerpFillAccounts {
+                user: user_loader,
+                user_stats: user_stats_loader,
+                filler: &user_loader.clone(),
+                filler_stats: &user_stats_loader.clone(),
+                rev_share_escrow: &mut escrow.as_mut(),
+            },
+            &mut controller::orders::FillParties {
+                maps: &mut maps,
+                makers_and_referrer: &makers_and_referrer,
+                makers_and_referrer_stats: &makers_and_referrer_stats,
+            },
             &mut router_inputs,
-            &mut escrow.as_mut(),
-            referrer_is_accelerated,
         )?
     };
 

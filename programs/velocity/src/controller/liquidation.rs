@@ -810,14 +810,14 @@ pub fn liquidate_perp(
     Ok(())
 }
 
-pub fn liquidate_perp_with_fill(
+pub fn liquidate_perp_with_fill<'info>(
     market_index: u16,
-    user_loader: &AccountLoader<User>,
+    user_loader: &AccountLoader<'info, User>,
     user_key: &Pubkey,
-    user_stats_loader: &AccountLoader<UserStats>,
-    liquidator_loader: &AccountLoader<User>,
+    user_stats_loader: &AccountLoader<'info, UserStats>,
+    liquidator_loader: &AccountLoader<'info, User>,
     liquidator_key: &Pubkey,
-    liquidator_stats_loader: &AccountLoader<UserStats>,
+    liquidator_stats_loader: &AccountLoader<'info, UserStats>,
     makers_and_referrer: &UserMap,
     makers_and_referrer_stats: &UserStatsMap,
     maps: &mut AccountMaps,

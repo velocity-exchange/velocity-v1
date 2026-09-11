@@ -362,15 +362,28 @@ pub mod fulfill_order_with_maker_order {
         };
 
         let oracle_price = oracle_price_data.price;
-        let mut maker_opt: Option<&mut User> = Some(maker);
+        let maker_position_index =
+            get_position_index(&maker.perp_positions, market.market_index).unwrap();
         let mut maker_stats_opt: Option<&mut UserStats> = maker_stats.take();
         // The settle takes the order itself. Copy it out, let the settle work
         // on that, and put it back — passing a temporary here would discard
         // every mutation the fill makes to it.
         let mut taker_order = taker.orders[taker_order_index];
+        // Single-leg shim: no earlier leg has drawn on the allowance.
+        let mut filler_reward_paid = 0;
+        let policy = super::super::FillPolicy {
+            fee_structure,
+            validity_guard_rails: &ValidityGuardRails::default(),
+            referrer_is_accelerated: false,
+            is_liquidation,
+            promo_fee_tier: 0,
+            vamm_maker_rebate: false,
+            // The step-level harness has no margin context. Allow the builder
+            // fee so these tests measure fee math, not the margin gate.
+            builder_fee_allowed: true,
+        };
         let result = super::super::settle_dlob_match_fill(
             &fill,
-            market,
             &mut super::super::TakerSide {
                 user: taker,
                 stats: taker_stats,
@@ -382,34 +395,36 @@ pub mod fulfill_order_with_maker_order {
                 // The taker is a normally placed order that reserved.
                 reserved: true,
             },
-            &mut maker_opt,
-            &mut maker_stats_opt,
-            Some(maker_order_index),
-            Some(maker_key),
-            maker_existing_position_params,
-            Some(maker_price),
-            effective_taker_limit,
-            oracle_price,
+            &mut super::super::MakerSide {
+                user: maker,
+                stats: maker_stats_opt.as_deref_mut(),
+                key: *maker_key,
+                direction: taker_direction.opposite(),
+                position_index: maker_position_index,
+                existing_position_params: maker_existing_position_params,
+                reserved: true,
+                order_id: None,
+            },
+            &super::super::DlobMatch {
+                order_index: maker_order_index,
+                maker_price,
+                taker_limit: effective_taker_limit.unwrap(),
+                oracle_price,
+            },
             &mut super::super::FillerSide {
                 user: filler,
                 stats: filler_stats,
                 key: *filler_key,
                 rev_share_escrow,
             },
-            &super::super::FillPolicy {
-                fee_structure,
-                referrer_is_accelerated: false,
-                is_liquidation,
-                promo_fee_tier: 0,
-                // The step-level harness has no margin context. Allow the builder
-                // fee so these tests measure fee math, not the margin gate.
-                builder_fee_allowed: true,
+            &mut super::super::SettleContext {
+                market,
+                policy: &policy,
+                oracle_map,
+                now,
+                slot,
+                filler_reward_paid: &mut filler_reward_paid,
             },
-            oracle_map,
-            now,
-            slot,
-            // Single-leg shim: no earlier leg has drawn on the allowance.
-            &mut 0,
         );
         taker.orders[taker_order_index] = taker_order;
         // Restore the caller's `maker_stats` so the test can keep using it.
@@ -3160,8 +3175,9 @@ pub mod fulfill_order {
         crate::{
             controller::{
                 orders::{
-                    fill_perp_order_without_external_books, fulfill_perp_order,
-                    validate_market_within_price_band, FillerSide,
+                    fill_perp_order_without_external_books, fill_within_taker_risk_limits,
+                    validate_market_within_price_band, FillConditions, FillParties, FillTerms,
+                    FillerSide, OfferedLiquidity, TakerSide,
                 },
                 position::PositionDirection,
             },
@@ -3501,39 +3517,44 @@ pub mod fulfill_order {
 
         no_router!(router);
         let mut order = taker.orders[order_index];
-        let (base_asset_amount, _) = fulfill_perp_order(
-            &mut taker,
-            &mut order,
-            &taker_key,
-            &mut taker_stats,
-            &makers_and_referrers,
-            &maker_and_referrer_stats,
-            &[maker_row(
-                &makers_and_referrers,
-                &Pubkey::default(),
-                0,
-                100_010_000 * PRICE_PRECISION_U64 / 1_000_000,
-            )],
+        let (base_asset_amount, _) = fill_within_taker_risk_limits(
+            &mut TakerSide::bind(&mut taker, &mut taker_stats, taker_key, &mut order, true)
+                .unwrap(),
+            &FillTerms {
+                fee_structure: &fee_structure,
+                validity_guard_rails: &crate::state::state::ValidityGuardRails::default(),
+                promo_fee_tier: 0,
+                referrer_is_accelerated: false,
+                vamm_maker_rebate: false,
+            },
+            &FillConditions::for_layer_test(
+                FillMode::Fill,
+                now,
+                slot,
+                Some(market.market_stats.historical_oracle_data.last_oracle_price),
+                is_amm_available,
+                false,
+            ),
+            &mut FillParties {
+                maps: &mut maps,
+                makers_and_referrer: &makers_and_referrers,
+                makers_and_referrer_stats: &maker_and_referrer_stats,
+            },
+            &mut OfferedLiquidity {
+                dlob_makers: &[maker_row(
+                    &makers_and_referrers,
+                    &Pubkey::default(),
+                    0,
+                    100_010_000 * PRICE_PRECISION_U64 / 1_000_000,
+                )],
+                router: &mut router,
+            },
             &mut FillerSide {
                 user: &mut Some(&mut filler),
                 stats: &mut Some(&mut filler_stats),
                 key: filler_key,
                 rev_share_escrow: &mut None,
             },
-            &mut maps,
-            &crate::state::state::ValidityGuardRails::default(),
-            &fee_structure,
-            Some(market.market_stats.historical_oracle_data.last_oracle_price),
-            now,
-            slot,
-            is_amm_available,
-            FillMode::Fill,
-            false,
-            &mut router,
-            false,
-            false,
-            0,
-            true,
         )
         .unwrap();
         taker.orders[order_index] = order;
@@ -3726,34 +3747,39 @@ pub mod fulfill_order {
         no_router!(router);
         no_router!(router);
         let mut order = taker.orders[order_index];
-        let (base_asset_amount, quote_asset_amount) = fulfill_perp_order(
-            &mut taker,
-            &mut order,
-            &taker_key,
-            &mut taker_stats,
-            &UserMap::empty(),
-            &UserStatsMap::empty(),
-            &[],
+        let (base_asset_amount, quote_asset_amount) = fill_within_taker_risk_limits(
+            &mut TakerSide::bind(&mut taker, &mut taker_stats, taker_key, &mut order, true)
+                .unwrap(),
+            &FillTerms {
+                fee_structure: &fee_structure,
+                validity_guard_rails: &crate::state::state::OracleGuardRails::default().validity,
+                promo_fee_tier: 0,
+                referrer_is_accelerated: false,
+                vamm_maker_rebate: false,
+            },
+            &FillConditions::for_layer_test(
+                FillMode::Fill,
+                now,
+                slot,
+                Some(market.market_stats.historical_oracle_data.last_oracle_price),
+                is_amm_available,
+                false,
+            ),
+            &mut FillParties {
+                maps: &mut maps,
+                makers_and_referrer: &UserMap::empty(),
+                makers_and_referrer_stats: &UserStatsMap::empty(),
+            },
+            &mut OfferedLiquidity {
+                dlob_makers: &[],
+                router: &mut router,
+            },
             &mut FillerSide {
                 user: &mut Some(&mut filler),
                 stats: &mut Some(&mut filler_stats),
                 key: filler_key,
                 rev_share_escrow: &mut None,
             },
-            &mut maps,
-            &crate::state::state::OracleGuardRails::default().validity,
-            &fee_structure,
-            Some(market.market_stats.historical_oracle_data.last_oracle_price),
-            now,
-            slot,
-            is_amm_available,
-            FillMode::Fill,
-            false,
-            &mut router,
-            false,
-            false,
-            0,
-            true,
         )
         .unwrap();
         taker.orders[order_index] = order;
@@ -3897,34 +3923,39 @@ pub mod fulfill_order {
 
         no_router!(router);
         let mut order = taker.orders[order_index];
-        let (base_asset_amount, quote_asset_amount) = fulfill_perp_order(
-            &mut taker,
-            &mut order,
-            &taker_key,
-            &mut taker_stats,
-            &UserMap::empty(),
-            &UserStatsMap::empty(),
-            &[],
+        let (base_asset_amount, quote_asset_amount) = fill_within_taker_risk_limits(
+            &mut TakerSide::bind(&mut taker, &mut taker_stats, taker_key, &mut order, true)
+                .unwrap(),
+            &FillTerms {
+                fee_structure: &fee_structure,
+                validity_guard_rails: &crate::state::state::OracleGuardRails::default().validity,
+                promo_fee_tier: 0,
+                referrer_is_accelerated: false,
+                vamm_maker_rebate: false,
+            },
+            &FillConditions::for_layer_test(
+                FillMode::Fill,
+                now,
+                slot,
+                Some(market.market_stats.historical_oracle_data.last_oracle_price),
+                is_amm_available,
+                false,
+            ),
+            &mut FillParties {
+                maps: &mut maps,
+                makers_and_referrer: &UserMap::empty(),
+                makers_and_referrer_stats: &UserStatsMap::empty(),
+            },
+            &mut OfferedLiquidity {
+                dlob_makers: &[],
+                router: &mut router,
+            },
             &mut FillerSide {
                 user: &mut Some(&mut filler),
                 stats: &mut Some(&mut filler_stats),
                 key: filler_key,
                 rev_share_escrow: &mut None,
             },
-            &mut maps,
-            &crate::state::state::OracleGuardRails::default().validity,
-            &fee_structure,
-            Some(market.market_stats.historical_oracle_data.last_oracle_price),
-            now,
-            slot,
-            is_amm_available,
-            FillMode::Fill,
-            false,
-            &mut router,
-            false,
-            false,
-            0,
-            true,
         )
         .unwrap();
         taker.orders[order_index] = order;
@@ -4063,34 +4094,39 @@ pub mod fulfill_order {
 
         no_router!(router);
         let mut order = taker.orders[order_index];
-        let (base_asset_amount, quote_asset_amount) = fulfill_perp_order(
-            &mut taker,
-            &mut order,
-            &taker_key,
-            &mut taker_stats,
-            &UserMap::empty(),
-            &UserStatsMap::empty(),
-            &[],
+        let (base_asset_amount, quote_asset_amount) = fill_within_taker_risk_limits(
+            &mut TakerSide::bind(&mut taker, &mut taker_stats, taker_key, &mut order, true)
+                .unwrap(),
+            &FillTerms {
+                fee_structure: &fee_structure,
+                validity_guard_rails: &crate::state::state::OracleGuardRails::default().validity,
+                promo_fee_tier: 0,
+                referrer_is_accelerated: false,
+                vamm_maker_rebate: false,
+            },
+            &FillConditions::for_layer_test(
+                FillMode::Fill,
+                now,
+                slot,
+                Some(market.market_stats.historical_oracle_data.last_oracle_price),
+                is_amm_available,
+                false,
+            ),
+            &mut FillParties {
+                maps: &mut maps,
+                makers_and_referrer: &UserMap::empty(),
+                makers_and_referrer_stats: &UserStatsMap::empty(),
+            },
+            &mut OfferedLiquidity {
+                dlob_makers: &[],
+                router: &mut router,
+            },
             &mut FillerSide {
                 user: &mut Some(&mut filler),
                 stats: &mut Some(&mut filler_stats),
                 key: filler_key,
                 rev_share_escrow: &mut None,
             },
-            &mut maps,
-            &crate::state::state::OracleGuardRails::default().validity,
-            &fee_structure,
-            Some(market.market_stats.historical_oracle_data.last_oracle_price),
-            now,
-            slot,
-            is_amm_available,
-            FillMode::Fill,
-            false,
-            &mut router,
-            false,
-            false,
-            0,
-            true,
         )
         .unwrap();
         taker.orders[order_index] = order;
@@ -4281,47 +4317,52 @@ pub mod fulfill_order {
 
         no_router!(router);
         let mut order = taker.orders[order_index];
-        let (base_asset_amount, _) = fulfill_perp_order(
-            &mut taker,
-            &mut order,
-            &taker_key,
-            &mut taker_stats,
-            &makers_and_referrers,
-            &maker_and_referrer_stats,
-            &[
-                maker_row(
-                    &makers_and_referrers,
-                    &maker_key,
-                    0,
-                    90 * PRICE_PRECISION_U64,
-                ),
-                maker_row(
-                    &makers_and_referrers,
-                    &maker_key,
-                    1,
-                    95 * PRICE_PRECISION_U64,
-                ),
-            ],
+        let (base_asset_amount, _) = fill_within_taker_risk_limits(
+            &mut TakerSide::bind(&mut taker, &mut taker_stats, taker_key, &mut order, true)
+                .unwrap(),
+            &FillTerms {
+                fee_structure: &fee_structure,
+                validity_guard_rails: &crate::state::state::ValidityGuardRails::default(),
+                promo_fee_tier: 0,
+                referrer_is_accelerated: false,
+                vamm_maker_rebate: false,
+            },
+            &FillConditions::for_layer_test(
+                FillMode::Fill,
+                now,
+                slot,
+                Some(market.market_stats.historical_oracle_data.last_oracle_price),
+                is_amm_available,
+                false,
+            ),
+            &mut FillParties {
+                maps: &mut maps,
+                makers_and_referrer: &makers_and_referrers,
+                makers_and_referrer_stats: &maker_and_referrer_stats,
+            },
+            &mut OfferedLiquidity {
+                dlob_makers: &[
+                    maker_row(
+                        &makers_and_referrers,
+                        &maker_key,
+                        0,
+                        90 * PRICE_PRECISION_U64,
+                    ),
+                    maker_row(
+                        &makers_and_referrers,
+                        &maker_key,
+                        1,
+                        95 * PRICE_PRECISION_U64,
+                    ),
+                ],
+                router: &mut router,
+            },
             &mut FillerSide {
                 user: &mut Some(&mut filler),
                 stats: &mut Some(&mut filler_stats),
                 key: filler_key,
                 rev_share_escrow: &mut None,
             },
-            &mut maps,
-            &crate::state::state::ValidityGuardRails::default(),
-            &fee_structure,
-            Some(market.market_stats.historical_oracle_data.last_oracle_price),
-            now,
-            slot,
-            is_amm_available,
-            FillMode::Fill,
-            false,
-            &mut router,
-            false,
-            false,
-            0,
-            true,
         )
         .unwrap();
         taker.orders[order_index] = order;
@@ -4506,39 +4547,44 @@ pub mod fulfill_order {
 
         no_router!(router);
         let mut order = taker.orders[order_index];
-        let (base_asset_amount, _) = fulfill_perp_order(
-            &mut taker,
-            &mut order,
-            &taker_key,
-            &mut taker_stats,
-            &makers_and_referrers,
-            &maker_and_referrer_stats,
-            &[super::maker_row(
-                &makers_and_referrers,
-                &maker_key,
-                0,
-                100_010_000 * PRICE_PRECISION_U64 / 1_000_000,
-            )],
+        let (base_asset_amount, _) = fill_within_taker_risk_limits(
+            &mut TakerSide::bind(&mut taker, &mut taker_stats, taker_key, &mut order, true)
+                .unwrap(),
+            &FillTerms {
+                fee_structure: &fee_structure,
+                validity_guard_rails: &crate::state::state::ValidityGuardRails::default(),
+                promo_fee_tier: 0,
+                referrer_is_accelerated: false,
+                vamm_maker_rebate: false,
+            },
+            &FillConditions::for_layer_test(
+                FillMode::Fill,
+                now,
+                slot,
+                Some(market.market_stats.historical_oracle_data.last_oracle_price),
+                is_amm_available,
+                false,
+            ),
+            &mut FillParties {
+                maps: &mut maps,
+                makers_and_referrer: &makers_and_referrers,
+                makers_and_referrer_stats: &maker_and_referrer_stats,
+            },
+            &mut OfferedLiquidity {
+                dlob_makers: &[super::maker_row(
+                    &makers_and_referrers,
+                    &maker_key,
+                    0,
+                    100_010_000 * PRICE_PRECISION_U64 / 1_000_000,
+                )],
+                router: &mut router,
+            },
             &mut FillerSide {
                 user: &mut Some(&mut filler),
                 stats: &mut Some(&mut filler_stats),
                 key: filler_key,
                 rev_share_escrow: &mut None,
             },
-            &mut maps,
-            &crate::state::state::ValidityGuardRails::default(),
-            &fee_structure,
-            Some(market.market_stats.historical_oracle_data.last_oracle_price),
-            now,
-            slot,
-            is_amm_available,
-            FillMode::Fill,
-            false,
-            &mut router,
-            false,
-            false,
-            0,
-            true,
         )
         .unwrap();
         taker.orders[order_index] = order;
@@ -4737,39 +4783,44 @@ pub mod fulfill_order {
 
         no_router!(router);
         let mut order = taker.orders[order_index];
-        let (base_asset_amount, _) = fulfill_perp_order(
-            &mut taker,
-            &mut order,
-            &taker_key,
-            &mut taker_stats,
-            &makers_and_referrers,
-            &maker_and_referrer_stats,
-            &[super::maker_row(
-                &makers_and_referrers,
-                &maker_key,
-                0,
-                100 * PRICE_PRECISION_U64,
-            )],
+        let (base_asset_amount, _) = fill_within_taker_risk_limits(
+            &mut TakerSide::bind(&mut taker, &mut taker_stats, taker_key, &mut order, true)
+                .unwrap(),
+            &FillTerms {
+                fee_structure: &fee_structure,
+                validity_guard_rails: &crate::state::state::ValidityGuardRails::default(),
+                promo_fee_tier: 0,
+                referrer_is_accelerated: false,
+                vamm_maker_rebate: false,
+            },
+            &FillConditions::for_layer_test(
+                FillMode::Fill,
+                now,
+                slot,
+                None,
+                is_amm_available,
+                false,
+            ),
+            &mut FillParties {
+                maps: &mut maps,
+                makers_and_referrer: &makers_and_referrers,
+                makers_and_referrer_stats: &maker_and_referrer_stats,
+            },
+            &mut OfferedLiquidity {
+                dlob_makers: &[super::maker_row(
+                    &makers_and_referrers,
+                    &maker_key,
+                    0,
+                    100 * PRICE_PRECISION_U64,
+                )],
+                router: &mut router,
+            },
             &mut FillerSide {
                 user: &mut None,
                 stats: &mut None,
                 key: filler_key,
                 rev_share_escrow: &mut None,
             },
-            &mut maps,
-            &crate::state::state::ValidityGuardRails::default(),
-            &fee_structure,
-            None,
-            now,
-            slot,
-            is_amm_available,
-            FillMode::Fill,
-            false,
-            &mut router,
-            false,
-            false,
-            0,
-            true,
         )
         .unwrap();
         taker.orders[order_index] = order;
@@ -4933,34 +4984,39 @@ pub mod fulfill_order {
 
         no_router!(router);
         let mut order = taker.orders[order_index];
-        let (base_asset_amount, _) = fulfill_perp_order(
-            &mut taker,
-            &mut order,
-            &taker_key,
-            &mut taker_stats,
-            &UserMap::empty(),
-            &UserStatsMap::empty(),
-            &[],
+        let (base_asset_amount, _) = fill_within_taker_risk_limits(
+            &mut TakerSide::bind(&mut taker, &mut taker_stats, taker_key, &mut order, true)
+                .unwrap(),
+            &FillTerms {
+                fee_structure: &fee_structure,
+                validity_guard_rails: &crate::state::state::ValidityGuardRails::default(),
+                promo_fee_tier: 0,
+                referrer_is_accelerated: false,
+                vamm_maker_rebate: false,
+            },
+            &FillConditions::for_layer_test(
+                FillMode::Fill,
+                now,
+                slot,
+                Some(market.market_stats.historical_oracle_data.last_oracle_price),
+                is_amm_available,
+                false,
+            ),
+            &mut FillParties {
+                maps: &mut maps,
+                makers_and_referrer: &UserMap::empty(),
+                makers_and_referrer_stats: &UserStatsMap::empty(),
+            },
+            &mut OfferedLiquidity {
+                dlob_makers: &[],
+                router: &mut router,
+            },
             &mut FillerSide {
                 user: &mut None,
                 stats: &mut None,
                 key: filler_key,
                 rev_share_escrow: &mut None,
             },
-            &mut maps,
-            &crate::state::state::ValidityGuardRails::default(),
-            &fee_structure,
-            Some(market.market_stats.historical_oracle_data.last_oracle_price),
-            now,
-            slot,
-            is_amm_available,
-            FillMode::Fill,
-            false,
-            &mut router,
-            false,
-            false,
-            0,
-            true,
         )
         .unwrap();
         taker.orders[order_index] = order;
@@ -5156,14 +5212,31 @@ pub mod fulfill_order {
 
         no_router!(router);
         let mut order = taker.orders[order_index];
-        let result = fulfill_perp_order(
-            &mut taker,
-            &mut order,
-            &taker_key,
-            &mut taker_stats,
-            &makers_and_referrers,
-            &maker_and_referrer_stats,
-            // Discovery returns the maker's own limit price; the router quotes
+        let result = fill_within_taker_risk_limits(
+            &mut TakerSide::bind(&mut taker, &mut taker_stats, taker_key, &mut order, true)
+                .unwrap(),
+            &FillTerms {
+                fee_structure: &fee_structure,
+                validity_guard_rails: &crate::state::state::ValidityGuardRails::default(),
+                promo_fee_tier: 0,
+                referrer_is_accelerated: false,
+                vamm_maker_rebate: false,
+            },
+            &FillConditions::for_layer_test(
+                FillMode::Fill,
+                now,
+                slot,
+                Some(market.market_stats.historical_oracle_data.last_oracle_price),
+                is_amm_available,
+                false,
+            ),
+            &mut FillParties {
+                maps: &mut maps,
+                makers_and_referrer: &makers_and_referrers,
+                makers_and_referrer_stats: &maker_and_referrer_stats,
+            },
+            &mut OfferedLiquidity {
+                dlob_makers: // Discovery returns the maker's own limit price; the router quotes
             // the book at it, so it has to match the order (it is the level).
             &[super::maker_row(
                 &makers_and_referrers,
@@ -5171,26 +5244,14 @@ pub mod fulfill_order {
                 0,
                 100 * PRICE_PRECISION_U64,
             )],
+                router: &mut router,
+            },
             &mut FillerSide {
                 user: &mut Some(&mut filler),
                 stats: &mut Some(&mut filler_stats),
                 key: filler_key,
                 rev_share_escrow: &mut None,
             },
-            &mut maps,
-            &crate::state::state::ValidityGuardRails::default(),
-            &fee_structure,
-            Some(market.market_stats.historical_oracle_data.last_oracle_price),
-            now,
-            slot,
-            is_amm_available,
-            FillMode::Fill,
-            false,
-            &mut router,
-            false,
-            false,
-            0,
-            true,
         );
         taker.orders[order_index] = order;
 
@@ -5370,14 +5431,31 @@ pub mod fulfill_order {
 
         no_router!(router);
         let mut order = taker.orders[order_index];
-        let result = fulfill_perp_order(
-            &mut taker,
-            &mut order,
-            &taker_key,
-            &mut taker_stats,
-            &makers_and_referrers,
-            &maker_and_referrer_stats,
-            // Discovery returns the maker's own limit price; the router quotes
+        let result = fill_within_taker_risk_limits(
+            &mut TakerSide::bind(&mut taker, &mut taker_stats, taker_key, &mut order, true)
+                .unwrap(),
+            &FillTerms {
+                fee_structure: &fee_structure,
+                validity_guard_rails: &crate::state::state::ValidityGuardRails::default(),
+                promo_fee_tier: 0,
+                referrer_is_accelerated: false,
+                vamm_maker_rebate: false,
+            },
+            &FillConditions::for_layer_test(
+                FillMode::Fill,
+                now,
+                slot,
+                Some(market.market_stats.historical_oracle_data.last_oracle_price),
+                is_amm_available,
+                false,
+            ),
+            &mut FillParties {
+                maps: &mut maps,
+                makers_and_referrer: &makers_and_referrers,
+                makers_and_referrer_stats: &maker_and_referrer_stats,
+            },
+            &mut OfferedLiquidity {
+                dlob_makers: // Discovery returns the maker's own limit price; the router quotes
             // the book at it, so it has to match the order (it is the level).
             &[super::maker_row(
                 &makers_and_referrers,
@@ -5385,26 +5463,14 @@ pub mod fulfill_order {
                 0,
                 95 * PRICE_PRECISION_U64,
             )],
+                router: &mut router,
+            },
             &mut FillerSide {
                 user: &mut Some(&mut filler),
                 stats: &mut Some(&mut filler_stats),
                 key: filler_key,
                 rev_share_escrow: &mut None,
             },
-            &mut maps,
-            &crate::state::state::ValidityGuardRails::default(),
-            &fee_structure,
-            Some(market.market_stats.historical_oracle_data.last_oracle_price),
-            now,
-            slot,
-            is_amm_available,
-            FillMode::Fill,
-            false,
-            &mut router,
-            false,
-            false,
-            0,
-            true,
         );
         taker.orders[order_index] = order;
 
@@ -5539,34 +5605,39 @@ pub mod fulfill_order {
 
         no_router!(router);
         let mut order = taker.orders[order_index];
-        let (base_asset_amount, _) = fulfill_perp_order(
-            &mut taker,
-            &mut order,
-            &taker_key,
-            &mut taker_stats,
-            &makers_and_referrers,
-            &maker_and_referrer_stats,
-            &[],
+        let (base_asset_amount, _) = fill_within_taker_risk_limits(
+            &mut TakerSide::bind(&mut taker, &mut taker_stats, taker_key, &mut order, true)
+                .unwrap(),
+            &FillTerms {
+                fee_structure: &fee_structure,
+                validity_guard_rails: &crate::state::state::ValidityGuardRails::default(),
+                promo_fee_tier: 0,
+                referrer_is_accelerated: false,
+                vamm_maker_rebate: false,
+            },
+            &FillConditions::for_layer_test(
+                FillMode::Fill,
+                now,
+                slot,
+                Some(market.market_stats.historical_oracle_data.last_oracle_price),
+                is_amm_available,
+                false,
+            ),
+            &mut FillParties {
+                maps: &mut maps,
+                makers_and_referrer: &makers_and_referrers,
+                makers_and_referrer_stats: &maker_and_referrer_stats,
+            },
+            &mut OfferedLiquidity {
+                dlob_makers: &[],
+                router: &mut router,
+            },
             &mut FillerSide {
                 user: &mut Some(&mut filler),
                 stats: &mut Some(&mut filler_stats),
                 key: filler_key,
                 rev_share_escrow: &mut None,
             },
-            &mut maps,
-            &crate::state::state::ValidityGuardRails::default(),
-            &fee_structure,
-            Some(market.market_stats.historical_oracle_data.last_oracle_price),
-            now,
-            slot,
-            is_amm_available,
-            FillMode::Fill,
-            false,
-            &mut router,
-            false,
-            false,
-            0,
-            true,
         )
         .unwrap();
         taker.orders[order_index] = order;
@@ -5731,34 +5802,39 @@ pub mod fulfill_order {
 
         no_router!(router);
         let mut order = taker.orders[order_index];
-        let (base_asset_amount, _) = fulfill_perp_order(
-            &mut taker,
-            &mut order,
-            &taker_key,
-            &mut taker_stats,
-            &makers_and_referrers,
-            &maker_and_referrer_stats,
-            &[],
+        let (base_asset_amount, _) = fill_within_taker_risk_limits(
+            &mut TakerSide::bind(&mut taker, &mut taker_stats, taker_key, &mut order, true)
+                .unwrap(),
+            &FillTerms {
+                fee_structure: &fee_structure,
+                validity_guard_rails: &crate::state::state::ValidityGuardRails::default(),
+                promo_fee_tier: 0,
+                referrer_is_accelerated: false,
+                vamm_maker_rebate: false,
+            },
+            &FillConditions::for_layer_test(
+                FillMode::Fill,
+                now,
+                slot,
+                Some(market.market_stats.historical_oracle_data.last_oracle_price),
+                is_amm_available,
+                false,
+            ),
+            &mut FillParties {
+                maps: &mut maps,
+                makers_and_referrer: &makers_and_referrers,
+                makers_and_referrer_stats: &maker_and_referrer_stats,
+            },
+            &mut OfferedLiquidity {
+                dlob_makers: &[],
+                router: &mut router,
+            },
             &mut FillerSide {
                 user: &mut Some(&mut filler),
                 stats: &mut Some(&mut filler_stats),
                 key: filler_key,
                 rev_share_escrow: &mut None,
             },
-            &mut maps,
-            &crate::state::state::ValidityGuardRails::default(),
-            &fee_structure,
-            Some(market.market_stats.historical_oracle_data.last_oracle_price),
-            now,
-            slot,
-            is_amm_available,
-            FillMode::Fill,
-            false,
-            &mut router,
-            false,
-            false,
-            0,
-            true,
         )
         .unwrap();
         taker.orders[order_index] = order;
@@ -6340,39 +6416,44 @@ pub mod fulfill_order {
 
         no_router!(router);
         let mut order = taker.orders[order_index];
-        let (base_asset_amount, _) = fulfill_perp_order(
-            &mut taker,
-            &mut order,
-            &taker_key,
-            &mut taker_stats,
-            &makers_and_referrers,
-            &maker_and_referrer_stats,
-            &[super::maker_row(
-                &makers_and_referrers,
-                &maker_key,
-                1,
-                100 * PRICE_PRECISION_U64,
-            )],
+        let (base_asset_amount, _) = fill_within_taker_risk_limits(
+            &mut TakerSide::bind(&mut taker, &mut taker_stats, taker_key, &mut order, true)
+                .unwrap(),
+            &FillTerms {
+                fee_structure: &fee_structure,
+                validity_guard_rails: &crate::state::state::ValidityGuardRails::default(),
+                promo_fee_tier: 0,
+                referrer_is_accelerated: false,
+                vamm_maker_rebate: false,
+            },
+            &FillConditions::for_layer_test(
+                FillMode::Fill,
+                now,
+                slot,
+                None,
+                is_amm_available,
+                false,
+            ),
+            &mut FillParties {
+                maps: &mut maps,
+                makers_and_referrer: &makers_and_referrers,
+                makers_and_referrer_stats: &maker_and_referrer_stats,
+            },
+            &mut OfferedLiquidity {
+                dlob_makers: &[super::maker_row(
+                    &makers_and_referrers,
+                    &maker_key,
+                    1,
+                    100 * PRICE_PRECISION_U64,
+                )],
+                router: &mut router,
+            },
             &mut FillerSide {
                 user: &mut None,
                 stats: &mut None,
                 key: filler_key,
                 rev_share_escrow: &mut None,
             },
-            &mut maps,
-            &crate::state::state::ValidityGuardRails::default(),
-            &fee_structure,
-            None,
-            now,
-            slot,
-            is_amm_available,
-            FillMode::Fill,
-            false,
-            &mut router,
-            false,
-            false,
-            0,
-            true,
         )
         .unwrap();
         taker.orders[order_index] = order;
@@ -6614,39 +6695,44 @@ pub mod fulfill_order {
 
         no_router!(router);
         let mut order = taker.orders[order_index];
-        let (base_asset_amount, _) = fulfill_perp_order(
-            &mut taker,
-            &mut order,
-            &taker_key,
-            &mut taker_stats,
-            &makers_and_referrers,
-            &maker_and_referrer_stats,
-            &[super::maker_row(
-                &makers_and_referrers,
-                &maker_key,
-                0,
-                100_010_000 * PRICE_PRECISION_U64 / 1_000_000,
-            )],
+        let (base_asset_amount, _) = fill_within_taker_risk_limits(
+            &mut TakerSide::bind(&mut taker, &mut taker_stats, taker_key, &mut order, true)
+                .unwrap(),
+            &FillTerms {
+                fee_structure: &fee_structure,
+                validity_guard_rails: &crate::state::state::ValidityGuardRails::default(),
+                promo_fee_tier: 0,
+                referrer_is_accelerated: false,
+                vamm_maker_rebate: false,
+            },
+            &FillConditions::for_layer_test(
+                FillMode::Fill,
+                now,
+                slot,
+                Some(market.market_stats.historical_oracle_data.last_oracle_price),
+                is_amm_available,
+                false,
+            ),
+            &mut FillParties {
+                maps: &mut maps,
+                makers_and_referrer: &makers_and_referrers,
+                makers_and_referrer_stats: &maker_and_referrer_stats,
+            },
+            &mut OfferedLiquidity {
+                dlob_makers: &[super::maker_row(
+                    &makers_and_referrers,
+                    &maker_key,
+                    0,
+                    100_010_000 * PRICE_PRECISION_U64 / 1_000_000,
+                )],
+                router: &mut router,
+            },
             &mut FillerSide {
                 user: &mut None,
                 stats: &mut None,
                 key: maker_key,
                 rev_share_escrow: &mut None,
             },
-            &mut maps,
-            &crate::state::state::ValidityGuardRails::default(),
-            &fee_structure,
-            Some(market.market_stats.historical_oracle_data.last_oracle_price),
-            now,
-            slot,
-            is_amm_available,
-            FillMode::Fill,
-            false,
-            &mut router,
-            false,
-            false,
-            0,
-            true,
         )
         .unwrap();
         taker.orders[order_index] = order;
@@ -6844,39 +6930,44 @@ pub mod fulfill_order {
         no_router!(router);
 
         let mut order = taker.orders[order_index];
-        let (base_asset_amount, _) = fulfill_perp_order(
-            &mut taker,
-            &mut order,
-            &taker_key,
-            &mut taker_stats,
-            &makers_and_referrers,
-            &maker_and_referrer_stats,
-            &[super::maker_row(
-                &makers_and_referrers,
-                &maker_key,
-                0,
-                100_010_000 * PRICE_PRECISION_U64 / 1_000_000,
-            )],
+        let (base_asset_amount, _) = fill_within_taker_risk_limits(
+            &mut TakerSide::bind(&mut taker, &mut taker_stats, taker_key, &mut order, true)
+                .unwrap(),
+            &FillTerms {
+                fee_structure: &fee_structure,
+                validity_guard_rails: &crate::state::state::ValidityGuardRails::default(),
+                promo_fee_tier: 0,
+                referrer_is_accelerated: false,
+                vamm_maker_rebate: false,
+            },
+            &FillConditions::for_layer_test(
+                FillMode::Fill,
+                now,
+                slot,
+                Some(market.market_stats.historical_oracle_data.last_oracle_price),
+                amm_is_available,
+                false,
+            ),
+            &mut FillParties {
+                maps: &mut maps,
+                makers_and_referrer: &makers_and_referrers,
+                makers_and_referrer_stats: &maker_and_referrer_stats,
+            },
+            &mut OfferedLiquidity {
+                dlob_makers: &[super::maker_row(
+                    &makers_and_referrers,
+                    &maker_key,
+                    0,
+                    100_010_000 * PRICE_PRECISION_U64 / 1_000_000,
+                )],
+                router: &mut router,
+            },
             &mut FillerSide {
                 user: &mut Some(&mut filler),
                 stats: &mut Some(&mut filler_stats),
                 key: filler_key,
                 rev_share_escrow: &mut None,
             },
-            &mut maps,
-            &crate::state::state::ValidityGuardRails::default(),
-            &fee_structure,
-            Some(market.market_stats.historical_oracle_data.last_oracle_price),
-            now,
-            slot,
-            amm_is_available,
-            FillMode::Fill,
-            false,
-            &mut router,
-            false,
-            false,
-            0,
-            true,
         )
         .unwrap();
         taker.orders[order_index] = order;
@@ -7033,34 +7124,39 @@ pub mod fulfill_order {
 
         no_router!(router);
         let mut order = taker.orders[order_index];
-        let (base_asset_amount, _) = fulfill_perp_order(
-            &mut taker,
-            &mut order,
-            &taker_key,
-            &mut taker_stats,
-            &UserMap::empty(),
-            &UserStatsMap::empty(),
-            &[],
+        let (base_asset_amount, _) = fill_within_taker_risk_limits(
+            &mut TakerSide::bind(&mut taker, &mut taker_stats, taker_key, &mut order, true)
+                .unwrap(),
+            &FillTerms {
+                fee_structure: &fee_structure,
+                validity_guard_rails: &crate::state::state::ValidityGuardRails::default(),
+                promo_fee_tier: 0,
+                referrer_is_accelerated: false,
+                vamm_maker_rebate: false,
+            },
+            &FillConditions::for_layer_test(
+                FillMode::Fill,
+                now,
+                slot,
+                Some(market.market_stats.historical_oracle_data.last_oracle_price),
+                is_amm_available,
+                false,
+            ),
+            &mut FillParties {
+                maps: &mut maps,
+                makers_and_referrer: &UserMap::empty(),
+                makers_and_referrer_stats: &UserStatsMap::empty(),
+            },
+            &mut OfferedLiquidity {
+                dlob_makers: &[],
+                router: &mut router,
+            },
             &mut FillerSide {
                 user: &mut Some(&mut filler),
                 stats: &mut Some(&mut filler_stats),
                 key: filler_key,
                 rev_share_escrow: &mut None,
             },
-            &mut maps,
-            &crate::state::state::ValidityGuardRails::default(),
-            &fee_structure,
-            Some(market.market_stats.historical_oracle_data.last_oracle_price),
-            now,
-            slot,
-            is_amm_available,
-            FillMode::Fill,
-            false,
-            &mut router,
-            false,
-            false,
-            0,
-            true,
         )
         .unwrap();
         taker.orders[order_index] = order;
@@ -8625,15 +8721,18 @@ pub mod get_maker_orders_info {
         let maker_order_price_and_indexes = get_maker_orders_info(
             &mut maps,
             &makers_and_referrers,
-            &taker_key,
-            &user.orders[0],
             &mut Some(&mut filler),
-            &filler_key,
-            0,
-            oracle_price,
-            true,
-            clock.unix_timestamp,
-            clock.slot,
+            &super::super::MakerSearch {
+                taker_key: &taker_key,
+                taker_order: &user.orders[0],
+                maker_direction: user.orders[0].direction.opposite(),
+                filler_key: &filler_key,
+                filler_reward: 0,
+                oracle_price,
+                exchange_match_fills_allowed: true,
+                now: clock.unix_timestamp,
+                slot: clock.slot,
+            },
         )
         .unwrap();
 
@@ -8827,15 +8926,18 @@ pub mod get_maker_orders_info {
         let maker_order_price_and_indexes = get_maker_orders_info(
             &mut maps,
             &makers_and_referrers,
-            &taker_key,
-            &user.orders[0],
             &mut Some(&mut filler),
-            &filler_key,
-            0,
-            oracle_price,
-            true,
-            clock.unix_timestamp,
-            clock.slot,
+            &super::super::MakerSearch {
+                taker_key: &taker_key,
+                taker_order: &user.orders[0],
+                maker_direction: user.orders[0].direction.opposite(),
+                filler_key: &filler_key,
+                filler_reward: 0,
+                oracle_price,
+                exchange_match_fills_allowed: true,
+                now: clock.unix_timestamp,
+                slot: clock.slot,
+            },
         )
         .unwrap();
 
@@ -9018,15 +9120,18 @@ pub mod get_maker_orders_info {
         let maker_order_price_and_indexes = get_maker_orders_info(
             &mut maps,
             &makers_and_referrers,
-            &taker_key,
-            &user.orders[0],
             &mut Some(&mut filler),
-            &filler_key,
-            0,
-            oracle_price,
-            true,
-            clock.unix_timestamp,
-            clock.slot,
+            &super::super::MakerSearch {
+                taker_key: &taker_key,
+                taker_order: &user.orders[0],
+                maker_direction: user.orders[0].direction.opposite(),
+                filler_key: &filler_key,
+                filler_reward: 0,
+                oracle_price,
+                exchange_match_fills_allowed: true,
+                now: clock.unix_timestamp,
+                slot: clock.slot,
+            },
         )
         .unwrap();
 
@@ -9267,15 +9372,18 @@ pub mod get_maker_orders_info {
         let maker_order_price_and_indexes = get_maker_orders_info(
             &mut maps,
             &makers_and_referrers,
-            &taker_key,
-            &user.orders[0],
             &mut Some(&mut filler),
-            &filler_key,
-            0,
-            oracle_price,
-            true,
-            clock.unix_timestamp,
-            clock.slot,
+            &super::super::MakerSearch {
+                taker_key: &taker_key,
+                taker_order: &user.orders[0],
+                maker_direction: user.orders[0].direction.opposite(),
+                filler_key: &filler_key,
+                filler_reward: 0,
+                oracle_price,
+                exchange_match_fills_allowed: true,
+                now: clock.unix_timestamp,
+                slot: clock.slot,
+            },
         )
         .unwrap();
 
@@ -9498,15 +9606,18 @@ pub mod get_maker_orders_info {
         let maker_order_price_and_indexes = get_maker_orders_info(
             &mut maps,
             &makers_and_referrers,
-            &taker_key,
-            &user.orders[0],
             &mut Some(&mut filler),
-            &filler_key,
-            0,
-            oracle_price,
-            true,
-            clock.unix_timestamp,
-            clock.slot,
+            &super::super::MakerSearch {
+                taker_key: &taker_key,
+                taker_order: &user.orders[0],
+                maker_direction: user.orders[0].direction.opposite(),
+                filler_key: &filler_key,
+                filler_reward: 0,
+                oracle_price,
+                exchange_match_fills_allowed: true,
+                now: clock.unix_timestamp,
+                slot: clock.slot,
+            },
         )
         .unwrap();
 
@@ -10153,15 +10264,18 @@ pub mod maker_floor_prune {
         get_maker_orders_info(
             &mut maps,
             &makers_and_referrers,
-            &taker_key,
-            &taker_order,
             &mut None,
-            &filler_key,
-            0,
-            100 * PRICE_PRECISION_I64,
-            exchange_match_fills_allowed,
-            now,
-            slot,
+            &super::super::MakerSearch {
+                taker_key: &taker_key,
+                taker_order: &taker_order,
+                maker_direction: taker_order.direction.opposite(),
+                filler_key: &filler_key,
+                filler_reward: 0,
+                oracle_price: 100 * PRICE_PRECISION_I64,
+                exchange_match_fills_allowed,
+                now,
+                slot,
+            },
         )
         .unwrap()
     }
@@ -10469,7 +10583,10 @@ pub mod builder_fee_margin_gate {
         super::*,
         crate::{
             controller::{
-                orders::{fulfill_perp_order, FillerSide},
+                orders::{
+                    fill_within_taker_risk_limits, FillConditions, FillParties, FillTerms,
+                    FillerSide, OfferedLiquidity, TakerSide,
+                },
                 position::PositionDirection,
             },
             create_anchor_account_info,
@@ -10852,34 +10969,39 @@ pub mod builder_fee_margin_gate {
             worst_fill_price: None,
         };
         let mut order = taker.orders[order_index];
-        let (base_filled, _) = fulfill_perp_order(
-            &mut taker,
-            &mut order,
-            &taker_key,
-            &mut taker_stats,
-            &UserMap::empty(),
-            &UserStatsMap::empty(),
-            &[],
+        let (base_filled, _) = fill_within_taker_risk_limits(
+            &mut TakerSide::bind(&mut taker, &mut taker_stats, taker_key, &mut order, true)
+                .unwrap(),
+            &FillTerms {
+                fee_structure: &fee_structure,
+                validity_guard_rails: &ValidityGuardRails::default(),
+                promo_fee_tier: 0,
+                referrer_is_accelerated: false,
+                vamm_maker_rebate: false,
+            },
+            &FillConditions::for_layer_test(
+                FillMode::Fill,
+                now,
+                slot,
+                Some(market.market_stats.historical_oracle_data.last_oracle_price),
+                is_amm_available,
+                false,
+            ),
+            &mut FillParties {
+                maps: &mut maps,
+                makers_and_referrer: &UserMap::empty(),
+                makers_and_referrer_stats: &UserStatsMap::empty(),
+            },
+            &mut OfferedLiquidity {
+                dlob_makers: &[],
+                router: &mut router_inputs,
+            },
             &mut FillerSide {
                 user: &mut Some(&mut filler),
                 stats: &mut Some(&mut filler_stats),
                 key: filler_key,
                 rev_share_escrow: &mut Some(&mut escrow),
             },
-            &mut maps,
-            &ValidityGuardRails::default(),
-            &fee_structure,
-            Some(market.market_stats.historical_oracle_data.last_oracle_price),
-            now,
-            slot,
-            is_amm_available,
-            FillMode::Fill,
-            false,
-            &mut router_inputs,
-            false,
-            false,
-            0,
-            true,
         )
         .unwrap();
         taker.orders[order_index] = order;
@@ -10954,7 +11076,10 @@ mod taker_floor_unverifiable_withholds_fill {
         super::*,
         crate::{
             controller::{
-                orders::{fulfill_perp_order, FillerSide},
+                orders::{
+                    fill_within_taker_risk_limits, FillConditions, FillParties, FillTerms,
+                    FillerSide, OfferedLiquidity, TakerSide,
+                },
                 position::PositionDirection,
             },
             create_anchor_account_info,
@@ -11177,34 +11302,39 @@ mod taker_floor_unverifiable_withholds_fill {
 
         no_router!(router_inputs);
         let mut order = taker.orders[order_index];
-        let (base_filled, _) = fulfill_perp_order(
-            &mut taker,
-            &mut order,
-            &taker_key,
-            &mut taker_stats,
-            &UserMap::empty(),
-            &UserStatsMap::empty(),
-            &[],
+        let (base_filled, _) = fill_within_taker_risk_limits(
+            &mut TakerSide::bind(&mut taker, &mut taker_stats, taker_key, &mut order, true)
+                .unwrap(),
+            &FillTerms {
+                fee_structure: &fee_structure,
+                validity_guard_rails: &ValidityGuardRails::default(),
+                promo_fee_tier: 0,
+                referrer_is_accelerated: false,
+                vamm_maker_rebate: false,
+            },
+            &FillConditions::for_layer_test(
+                FillMode::Fill,
+                now,
+                slot,
+                Some(market.market_stats.historical_oracle_data.last_oracle_price),
+                is_amm_available,
+                false,
+            ),
+            &mut FillParties {
+                maps: &mut maps,
+                makers_and_referrer: &UserMap::empty(),
+                makers_and_referrer_stats: &UserStatsMap::empty(),
+            },
+            &mut OfferedLiquidity {
+                dlob_makers: &[],
+                router: &mut router_inputs,
+            },
             &mut FillerSide {
                 user: &mut Some(&mut filler),
                 stats: &mut Some(&mut filler_stats),
                 key: filler_key,
                 rev_share_escrow: &mut None,
             },
-            &mut maps,
-            &ValidityGuardRails::default(),
-            &fee_structure,
-            Some(market.market_stats.historical_oracle_data.last_oracle_price),
-            now,
-            slot,
-            is_amm_available,
-            FillMode::Fill,
-            false,
-            &mut router_inputs,
-            false,
-            false,
-            0,
-            true,
         )
         .unwrap();
         taker.orders[order_index] = order;
@@ -11264,7 +11394,10 @@ mod fill_gates_apply_to_a_reducing_fill {
     use {
         crate::{
             controller::{
-                orders::{fulfill_perp_order, FillerSide},
+                orders::{
+                    fill_within_taker_risk_limits, FillConditions, FillParties, FillTerms,
+                    FillerSide, OfferedLiquidity, TakerSide,
+                },
                 position::PositionDirection,
             },
             create_anchor_account_info,
@@ -11539,39 +11672,44 @@ mod fill_gates_apply_to_a_reducing_fill {
             worst_fill_price: None,
         };
         let mut order = taker.orders[0];
-        fulfill_perp_order(
-            &mut taker,
-            &mut order,
-            &taker_key,
-            &mut taker_stats,
-            &makers_and_referrers,
-            &maker_and_referrer_stats,
-            &[super::maker_row(
-                &makers_and_referrers,
-                &maker_key,
-                0,
-                100 * PRICE_PRECISION_U64,
-            )],
+        fill_within_taker_risk_limits(
+            &mut TakerSide::bind(&mut taker, &mut taker_stats, taker_key, &mut order, true)
+                .unwrap(),
+            &FillTerms {
+                fee_structure: &super::get_fee_structure(),
+                validity_guard_rails: &ValidityGuardRails::default(),
+                promo_fee_tier: 0,
+                referrer_is_accelerated: false,
+                vamm_maker_rebate: false,
+            },
+            &FillConditions::for_layer_test(
+                FillMode::Fill,
+                NOW,
+                SLOT,
+                Some(market.market_stats.historical_oracle_data.last_oracle_price),
+                false,
+                false,
+            ),
+            &mut FillParties {
+                maps: &mut maps,
+                makers_and_referrer: &makers_and_referrers,
+                makers_and_referrer_stats: &maker_and_referrer_stats,
+            },
+            &mut OfferedLiquidity {
+                dlob_makers: &[super::maker_row(
+                    &makers_and_referrers,
+                    &maker_key,
+                    0,
+                    100 * PRICE_PRECISION_U64,
+                )],
+                router: &mut router_inputs,
+            },
             &mut FillerSide {
                 user: &mut Some(&mut filler),
                 stats: &mut Some(&mut filler_stats),
                 key: filler_key,
                 rev_share_escrow: &mut None,
             },
-            &mut maps,
-            &ValidityGuardRails::default(),
-            &super::get_fee_structure(),
-            Some(market.market_stats.historical_oracle_data.last_oracle_price),
-            NOW,
-            SLOT,
-            false,
-            FillMode::Fill,
-            false,
-            &mut router_inputs,
-            false,
-            false,
-            0,
-            true,
         )
         .map(|_| ())
     }

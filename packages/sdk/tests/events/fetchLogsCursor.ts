@@ -110,6 +110,53 @@ describe('fetchLogs cursor', () => {
 		expect(allFailed?.mostRecentTx).to.equal(undefined);
 	});
 
+	it('does not attribute a failure to the wrong signature when the RPC reorders the batch', async () => {
+		// JSON-RPC lets a server return batch responses in any order, so position
+		// says nothing about which signature a bare error object belongs to.
+		const connection = {
+			getSignaturesForAddress: async () =>
+				SIGNATURES.map((signature, index) => ({
+					signature,
+					slot: 100 + index,
+					err: null,
+					memo: null,
+					blockTime: 1_700_000_000 + index,
+				})),
+			_rpcBatchRequest: async (requests: { args: any[] }[]) =>
+				requests
+					.map(({ args }) => {
+						const signature = args[0] as string;
+						if (signature === 'sigB') {
+							return {
+								error: { code: -32015, message: 'not supported' },
+							};
+						}
+						return {
+							result: {
+								slot: 100 + SIGNATURES.indexOf(signature),
+								transaction: { signatures: [signature] },
+								meta: { logMessages: [] },
+							},
+						};
+					})
+					.reverse(),
+		} as unknown as Connection;
+
+		const response = await fetchLogs(connection, PublicKey.default, 'confirmed');
+
+		// sigB is the one that failed. Reading the error by position blames sigC
+		// instead and hands back sigB as the forward cursor, dropping sigB for good.
+		expect(response?.mostRecentTx).to.equal('sigA');
+		expect(response?.earliestTx).to.equal('sigC');
+		// The reordering must not disturb the logs themselves; each result carries
+		// its own signature, so they come back oldest-first regardless.
+		expect(response?.transactionLogs.map((log) => log.txSig)).to.deep.equal([
+			'sigA',
+			'sigC',
+			'sigD',
+		]);
+	});
+
 	it('returns undefined when there is nothing in range', async () => {
 		const connection = {
 			getSignaturesForAddress: async () => [],

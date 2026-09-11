@@ -295,6 +295,7 @@ fn arm(ctx: &mut Ctx) {
 fn quote_args<'a>(direction: Direction, size: u64) -> QuoteArgsV0<'a> {
     QuoteArgsV0 {
         taker_served_window: true,
+        consume_reservation: false,
         direction,
         size,
         users: &[],
@@ -328,6 +329,7 @@ fn execute_ix_served(
     instruction::ExecuteV0 {
         args: ExecuteArgsV0 {
             taker_served_window,
+            consume_reservation: false,
             direction,
             size,
             users: &[],
@@ -668,6 +670,7 @@ fn quoted_user_gates_apply() {
         &ctx,
         QuoteArgsV0 {
             taker_served_window: true,
+            consume_reservation: false,
             users: &[stranger],
             ..quote_args(Direction::Long, UNIT)
         },
@@ -680,6 +683,7 @@ fn quoted_user_gates_apply() {
         &ctx,
         QuoteArgsV0 {
             taker_served_window: true,
+            consume_reservation: false,
             caps: UserCapsV0::EMPTY,
             reference_price: 0,
             taker: Some(quoted),
@@ -694,6 +698,7 @@ fn quoted_user_gates_apply() {
         &ctx,
         QuoteArgsV0 {
             taker_served_window: true,
+            consume_reservation: false,
             users: &[stranger, quoted],
             caps: UserCapsV0::EMPTY,
             reference_price: 0,
@@ -721,6 +726,7 @@ fn a_protected_flow_instance_refuses_an_unprotected_taker() {
         &ctx,
         QuoteArgsV0 {
             taker_served_window: false,
+            consume_reservation: false,
             ..quote_args(Direction::Long, UNIT)
         },
     );
@@ -751,6 +757,7 @@ fn an_unprotected_instance_ignores_the_flag() {
         &ctx,
         QuoteArgsV0 {
             taker_served_window: false,
+            consume_reservation: false,
             ..quote_args(Direction::Long, UNIT)
         },
     );

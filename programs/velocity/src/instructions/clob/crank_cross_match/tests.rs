@@ -1,15 +1,15 @@
-//! Which crossing prefix the cross resolver offers `crank_cross_match`.
+//! What the cross resolver offers `crank_cross_match`, and the rules the
+//! crank holds its two legs to.
 //!
-//! The input is the book's own `quote_l3_v0` answer, so these cases say
-//! nothing about how the book stores an order; the litesvm crank tests pin the
-//! reporting against the real CLOB program.
+//! The prefix cases take the book's own `quote_l3_v0` answer as their input,
+//! so they say nothing about how the book stores an order; the litesvm crank
+//! tests pin the reporting against the real CLOB program. The leg rules take
+//! what the router pass reports, so they say nothing about how a leg reached
+//! a price.
 
 use {
     super::*,
-    crate::{
-        math::crosses::RestingOrder,
-        state::prop_amm::{ClobOrderRefV0, ClobUserRefV0, L3RowV0, L3_ROW_FLAG_TAKER_ORIGIN},
-    },
+    crate::state::prop_amm::{ClobUserRefV0, L3RowV0, L3_ROW_FLAG_TAKER_ORIGIN},
 };
 
 const UNIT: u64 = crate::math::constants::BASE_PRECISION_U64;
@@ -122,94 +122,163 @@ fn a_crossed_taker_remainder_is_not_offered_to_the_arb_crank() {
     );
 }
 
-/// The gate-strip guard: which crosses this crank may not take.
+/// The three rules that turn a pair of router fills into a cross.
 ///
-/// Rows here are [`RestingOrder`]s rather than raw `quote_l3_v0` rows, because
-/// that is what the guard reads.
-mod gate {
-    use super::{
-        super::strips_taker_origin_gate, ClobOrderRefV0, ClobUserRefV0, Pubkey, RestingOrder,
-    };
+/// Every figure here is what the fill reports back: the base each leg took,
+/// the worst price any one source of it reached, and what the leg did to the
+/// protocol `User`'s quote net of the taker fee it paid.
+mod cross_rules {
+    use super::{super::*, PRICE, UNIT};
 
-    fn order(id: u64, price: u64, size: u64, owner: u8, taker_origin: bool) -> RestingOrder {
-        RestingOrder {
-            order_ref: ClobOrderRefV0 {
-                node_index: id as u32,
-                order_id: id,
-            },
-            user: ClobUserRefV0 {
-                authority: Pubkey::new_from_array([owner; 32]),
-                sub_account_id: 0,
-            },
-            price,
-            base_asset_amount: size,
-            taker_origin,
-            reduce_only: false,
-            placed_slot: id,
+    fn leg(base_filled: u64, worst_price: u64, quote_delta: i64) -> CrossLegFilled {
+        CrossLegFilled {
+            base_filled,
+            quote_delta,
+            worst_price,
         }
     }
 
-    fn remainder(id: u64, price: u64, size: u64, owner: u8) -> RestingOrder {
-        order(id, price, size, owner, true)
-    }
-
-    fn maker(id: u64, price: u64, size: u64, owner: u8) -> RestingOrder {
-        order(id, price, size, owner, false)
-    }
-
-    /// A maker pair at the front of the book crosses over a remainder that sits
-    /// behind it. The cross takes half the ask, so the rest of it still crosses
-    /// the remainder and the book keeps withholding it. This is the case the
-    /// arbitrage crank exists for, and it must not be refused.
+    /// Bought no worse than it sold, flat afterwards, and the protocol kept
+    /// more than the floor asks for.
     #[test]
-    fn a_cross_that_leaves_the_remainder_covered_is_allowed() {
-        let bids = [maker(1, 102, 5, 0xA), remainder(2, 101, 10, 0xB)];
-        let asks = [maker(3, 99, 10, 0xC)];
-
-        assert!(!strips_taker_origin_gate(&bids, &asks, 5));
+    fn a_balanced_fully_crossed_pair_clears() {
+        let surplus = validate_cross_legs(
+            &leg(UNIT, 99 * PRICE, -99_500_000),
+            &leg(UNIT, 101 * PRICE, 101_000_000),
+            (0, 0),
+            1_000_000,
+        )
+        .unwrap();
+        assert_eq!(surplus.base_matched, UNIT);
+        assert_eq!(surplus.surplus, 1_500_000);
     }
 
-    /// The same book, with the cross taking the whole ask. Nothing crosses the
-    /// remainder afterwards, so the gate stops firing part-way through the
-    /// instruction and the second leg would fill the remainder at its own 101.
+    /// A size past the crossing depth. The tail of each leg runs through
+    /// levels that do not cross — the buy pays up to 100.5 and the sell
+    /// receives down to 99.5 — and the totals still show a surplus, because
+    /// the crossed front of the cross paid for the uncrossed tail. The
+    /// marginal rule is what refuses it; the floor cannot.
     #[test]
-    fn a_cross_that_consumes_the_remainders_cover_is_refused() {
-        let bids = [maker(1, 102, 10, 0xA), remainder(2, 101, 10, 0xB)];
-        let asks = [maker(3, 99, 10, 0xC)];
-
-        assert!(strips_taker_origin_gate(&bids, &asks, 10));
+    fn a_size_past_the_crossing_depth_is_refused_even_when_the_totals_clear() {
+        let err = validate_cross_legs(
+            &leg(2 * UNIT, 100_500_000, -199_500_000),
+            &leg(2 * UNIT, 99_500_000, 201_000_000),
+            (0, 0),
+            1_000_000,
+        )
+        .expect_err("part of the size did not cross");
+        assert_eq!(err, ErrorCode::CrossMatchLegsDoNotCross.into());
     }
 
-    /// A remainder nothing crosses has no gate to lose. It rests at its own
-    /// price like any other order, which is what an unmatched remainder is for,
-    /// so its presence alone never blocks arbitrage elsewhere on the book.
+    /// The boundary case: every unit crossed at exactly one price. It is
+    /// admitted by the marginal rule, and the floor is what decides it.
     #[test]
-    fn an_uncrossed_remainder_does_not_block_the_crank() {
-        let bids = [maker(1, 102, 10, 0xA), remainder(2, 98, 10, 0xB)];
-        let asks = [maker(3, 99, 10, 0xC)];
-
-        assert!(!strips_taker_origin_gate(&bids, &asks, 10));
+    fn legs_that_meet_at_one_price_still_cross() {
+        assert!(validate_cross_legs(
+            &leg(UNIT, 100 * PRICE, -99_500_000),
+            &leg(UNIT, 100 * PRICE, 100_500_000),
+            (0, 0),
+            1_000_000,
+        )
+        .is_ok());
     }
 
-    /// Cover that is itself a remainder is not cover this crank can consume:
-    /// the book withholds that one too, so it stays and keeps the gate firing.
-    /// Counting it would let the cross proceed on protection it cannot remove.
+    /// The sell leg must return exactly what the buy leg took.
     #[test]
-    fn a_remainder_does_not_count_as_another_remainders_cover() {
-        let bids = [remainder(1, 101, 10, 0xA)];
-        let asks = [remainder(2, 99, 10, 0xB), maker(3, 100, 10, 0xC)];
-
-        assert!(strips_taker_origin_gate(&bids, &asks, 10));
+    fn legs_that_matched_different_base_are_refused() {
+        let err = validate_cross_legs(
+            &leg(UNIT, 99 * PRICE, -99_500_000),
+            &leg(UNIT / 2, 101 * PRICE, 50_500_000),
+            (0, 0),
+            0,
+        )
+        .expect_err("the legs are imbalanced");
+        assert_eq!(err, ErrorCode::CrossMatchImbalanced.into());
     }
 
-    /// The rule reads both sides. A remainder resting on the ask side loses its
-    /// cover the same way, and the leg that sweeps bids is what would take it.
+    /// And the protocol must end the crank holding what it started with, so
+    /// the crank never leaves a position behind.
     #[test]
-    fn a_remainder_on_the_ask_side_is_covered_too() {
-        let bids = [maker(1, 101, 10, 0xA)];
-        let asks = [maker(2, 99, 10, 0xB), remainder(3, 100, 10, 0xC)];
+    fn a_taker_that_did_not_return_to_flat_is_refused() {
+        let err = validate_cross_legs(
+            &leg(UNIT, 99 * PRICE, -99_500_000),
+            &leg(UNIT, 101 * PRICE, 101_000_000),
+            (0, UNIT as i64),
+            0,
+        )
+        .expect_err("the protocol user kept base");
+        assert_eq!(err, ErrorCode::CrossMatchImbalanced.into());
+    }
 
-        assert!(strips_taker_origin_gate(&bids, &asks, 10));
-        assert!(!strips_taker_origin_gate(&bids, &asks, 5));
+    /// A cross the protocol barely clears is not worth the lamports the
+    /// reservoir pays to land it.
+    #[test]
+    fn a_surplus_under_the_floor_is_refused() {
+        let err = validate_cross_legs(
+            &leg(UNIT, 99 * PRICE, -99_500_000),
+            &leg(UNIT, 101 * PRICE, 100_499_999),
+            (0, 0),
+            1_000_000,
+        )
+        .expect_err("the surplus is under the floor");
+        assert_eq!(err, ErrorCode::CrossMatchUnprofitable.into());
+    }
+
+    /// Nothing crossed at all, which is what a leg the book had no depth for
+    /// comes back as.
+    #[test]
+    fn a_cross_that_filled_nothing_is_refused() {
+        let err = validate_cross_legs(&leg(0, 0, 0), &leg(0, 0, 0), (0, 0), 0)
+            .expect_err("nothing crossed");
+        assert_eq!(err, ErrorCode::CrossMatchUnprofitable.into());
+    }
+}
+
+/// Where a cross leg bounds itself.
+///
+/// A leg brings no price of its own — the crossed prices are what it exists
+/// to reach — so it bounds itself at the edge of the market's maker band,
+/// which is the widest price the fill would settle a maker at anyway.
+mod leg_bound {
+    use super::{super::*, PRICE};
+
+    const ORACLE: i64 = 100 * PRICE as i64;
+    /// Ten percent, in MARGIN_PRECISION units.
+    const BAND: u32 = 1_000;
+
+    fn breaches(price: u64, direction: PositionDirection) -> bool {
+        crate::math::orders::limit_price_breaches_maker_oracle_price_bands(
+            price, direction, ORACLE, BAND,
+        )
+        .unwrap()
+    }
+
+    /// The bound sits exactly where the band starts refusing, on both sides,
+    /// so it discards no price the fill would have taken.
+    #[test]
+    fn a_leg_is_bounded_at_the_first_price_the_band_refuses() {
+        let buy = leg_limit_price(PositionDirection::Long, ORACLE, BAND).unwrap();
+        assert_eq!(buy, 110 * PRICE);
+        assert!(breaches(buy, PositionDirection::Long));
+        assert!(!breaches(buy - 1, PositionDirection::Long));
+
+        let sell = leg_limit_price(PositionDirection::Short, ORACLE, BAND).unwrap();
+        assert_eq!(sell, 90 * PRICE);
+        assert!(breaches(sell, PositionDirection::Short));
+        assert!(!breaches(sell + 1, PositionDirection::Short));
+    }
+
+    /// A market with no band of its own bounds a leg at the oracle price,
+    /// which is the tightest the rule can be rather than an absent bound.
+    #[test]
+    fn a_market_with_no_band_bounds_both_legs_at_oracle() {
+        assert_eq!(
+            leg_limit_price(PositionDirection::Long, ORACLE, 0).unwrap(),
+            ORACLE as u64
+        );
+        assert_eq!(
+            leg_limit_price(PositionDirection::Short, ORACLE, 0).unwrap(),
+            ORACLE as u64
+        );
     }
 }

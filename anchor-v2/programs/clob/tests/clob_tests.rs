@@ -17,7 +17,7 @@ use {
             MarketConfigV0, OrderBitFlag, OrderNodeV0, OrderRefV0, Side, UserCapsV0, UserRefV0,
             CANCEL_ALL_ORDERS_CEILING, CRANK_ACTIVATION, CRANK_BLOCK_OFFSET, CRANK_CAPACITY,
             CRANK_CONDITIONS, CRANK_CROSS, CRANK_EXPIRY, EXECUTE_FILLS_CEILING, ORDERS_OFFSET,
-            REMOVED_ORDER_BYTES,
+            REMOVED_ORDER_BYTES, RESERVATION_GRACE_SLOTS_CEILING,
         },
         CancelAllArgsV0, CancelOrderArgsV0, ClobRemovalKindV0, CrankAccountV0,
         CrankConditionsArgsV0, CrankResolverV0, EvictWorstArgsV0, ExecuteArgsV0, NextRemovalArgsV0,
@@ -315,6 +315,7 @@ fn quote_meta_limited(
     let ix = instruction::QuoteV0 {
         args: QuoteArgsV0 {
             taker_served_window: true,
+            consume_reservation: false,
             caps: UserCapsV0::EMPTY,
             reference_price: 0,
             direction,
@@ -344,6 +345,55 @@ fn quote(ctx: &mut Ctx, direction: Direction, size: u64) -> Vec<(u64, u64)> {
     quote_users(ctx, direction, size, None)
 }
 
+/// A quote that reaches the depth a crossing taker remainder claims: the read
+/// the crank that settles the cross makes.
+fn quote_consuming(ctx: &mut Ctx, direction: Direction, size: u64) -> Vec<(u64, u64)> {
+    let ix = instruction::QuoteV0 {
+        args: QuoteArgsV0 {
+            taker_served_window: true,
+            consume_reservation: true,
+            caps: UserCapsV0::EMPTY,
+            reference_price: 0,
+            direction,
+            size,
+            users: &[],
+            taker: None,
+            limit_price: 0,
+        },
+    }
+    .to_instruction(accounts::QuoteV0 {
+        market: addr(ctx.market),
+    });
+    let meta = send(ctx, ix).unwrap();
+    parse_levels(&read_response(ctx, &meta))
+}
+
+/// The fill half of the same read.
+fn execute_consuming(
+    ctx: &mut Ctx,
+    direction: Direction,
+    size: u64,
+) -> Vec<([u8; 32], u64, u64, Vec<u64>)> {
+    let ix = instruction::ExecuteV0 {
+        args: ExecuteArgsV0 {
+            taker_served_window: true,
+            consume_reservation: true,
+            caps: UserCapsV0::EMPTY,
+            reference_price: 0,
+            direction,
+            size,
+            users: &[],
+            taker: None,
+        },
+    }
+    .to_instruction(accounts::ExecuteV0 {
+        market: addr(ctx.market),
+        place_authority: addr(ctx.place_auth.pubkey()),
+    });
+    let meta = send(ctx, ix).unwrap();
+    parse_balance_changes(&read_response(ctx, &meta))
+}
+
 /// `(price, base)` the quote gave up on for want of a loaded user, or `None`
 /// when it reached everything it was asked for.
 fn quote_withheld(
@@ -367,6 +417,7 @@ fn execute_meta_users(
     let ix = instruction::ExecuteV0 {
         args: ExecuteArgsV0 {
             taker_served_window: true,
+            consume_reservation: false,
             caps: UserCapsV0::EMPTY,
             reference_price: 0,
             direction,
@@ -756,6 +807,7 @@ fn execute_rejects_unauthorized_caller() {
 
     let args = || ExecuteArgsV0 {
         taker_served_window: true,
+        consume_reservation: false,
         caps: UserCapsV0::EMPTY,
         reference_price: 0,
         direction: Direction::Long,
@@ -1502,6 +1554,7 @@ fn the_l3_read_flags_the_orders_that_can_end_a_walk() {
             direction: Direction::Long,
             size: 0,
             max_rows: 8,
+            consume_reservation: false,
         },
     }
     .to_instruction(accounts::QuoteL3V0 {
@@ -1723,6 +1776,7 @@ fn cu_benchmarks() {
     let ix = instruction::QuoteV0 {
         args: QuoteArgsV0 {
             taker_served_window: true,
+            consume_reservation: false,
             caps: UserCapsV0::EMPTY,
             reference_price: 0,
             direction: Direction::Short,
@@ -1947,6 +2001,7 @@ fn an_execute_at_the_ceilings_fits_the_response_and_emits_the_record() {
     let ix = instruction::ExecuteV0 {
         args: ExecuteArgsV0 {
             taker_served_window: true,
+            consume_reservation: false,
             caps: UserCapsV0::EMPTY,
             reference_price: 0,
             direction: Direction::Long,
@@ -2050,6 +2105,7 @@ fn quote_taker(ctx: &mut Ctx, direction: Direction, size: u64, taker: Address) -
     let ix = instruction::QuoteV0 {
         args: QuoteArgsV0 {
             taker_served_window: true,
+            consume_reservation: false,
             caps: UserCapsV0::EMPTY,
             reference_price: 0,
             direction,
@@ -2075,6 +2131,7 @@ fn execute_taker(
     let ix = instruction::ExecuteV0 {
         args: ExecuteArgsV0 {
             taker_served_window: true,
+            consume_reservation: false,
             caps: UserCapsV0::EMPTY,
             reference_price: 0,
             direction,
@@ -2173,13 +2230,14 @@ fn the_taker_origin_flag_round_trips_through_place_and_removal() {
     assert!(!parse_removed(&meta.return_data.data).6);
 }
 
-/// The gate, on-chain, and velocity's whole cross-resolution path with it: a
-/// taker remainder at 101 with a maker ask at 99 against it is passed over
-/// rather than bought at 101 by whoever lands first, the counterparty is
-/// ordinary fillable depth at its own 99 (the leg velocity runs), and the
-/// remainder then comes off by cancel saying it was the aggressor.
+/// The reservation on-chain, in both directions, and velocity's whole
+/// cross-resolution path with it: a taker remainder at 101 with a maker ask at
+/// 99 against it is not bought at 101 by whoever lands first, the 99 it crosses
+/// is claimed so nobody else can buy that improvement either, and the crank
+/// that owes the taker the improvement reaches the ask at its own 99 and then
+/// lifts the remainder off by cancel, which says it was the aggressor.
 #[test]
-fn a_crossed_taker_remainder_is_passed_over_and_its_counterparty_is_not() {
+fn a_crossed_taker_remainder_and_the_depth_it_crosses_are_both_withheld() {
     let mut ctx = setup();
     let taker = addr(Pubkey::new_unique());
     let maker = addr(Pubkey::new_unique());
@@ -2187,17 +2245,22 @@ fn a_crossed_taker_remainder_is_passed_over_and_its_counterparty_is_not() {
     place(&mut ctx, place_args(Side::Ask, 99, 5), maker);
     advance_slot(&mut ctx, 1);
 
-    // Nothing else rests on the bid side, so a taker going that way finds no
+    // Nothing else rests on either side, so a taker going either way finds no
     // depth — the call lands and fills nothing, and the book is untouched.
     assert!(quote(&mut ctx, Direction::Short, u64::MAX).is_empty());
     assert!(execute(&mut ctx, Direction::Short, 5).is_empty());
+    assert!(quote(&mut ctx, Direction::Long, u64::MAX).is_empty());
+    assert!(execute(&mut ctx, Direction::Long, 5).is_empty());
     let state = market_state(&ctx);
     assert_eq!((state.bid_count, state.ask_count), (1, 1));
 
-    // Taking the ask at its own 99 is ordinary liquidity taking, and is the
-    // price the pair settles at.
-    assert_eq!(quote(&mut ctx, Direction::Long, u64::MAX), vec![(99, 5)]);
-    let changes = execute(&mut ctx, Direction::Long, 5);
+    // The crank reaches the ask at its own 99, which is the price the pair
+    // settles at and the improvement the remainder came for.
+    assert_eq!(
+        quote_consuming(&mut ctx, Direction::Long, u64::MAX),
+        vec![(99, 5)]
+    );
+    let changes = execute_consuming(&mut ctx, Direction::Long, 5);
     assert_eq!(changes, vec![(maker.to_bytes(), 5, 495, vec![2])]);
 
     // Then the remainder comes off, reporting which side was the aggressor.
@@ -2208,6 +2271,49 @@ fn a_crossed_taker_remainder_is_passed_over_and_its_counterparty_is_not() {
         (101, 5, Side::Bid.to_u8(), true)
     );
     assert_eq!(market_state(&ctx).bid_count, 0);
+}
+
+/// The grace window is market config, because 32 slots is a guess and the
+/// only lever a live market has over how long a stalled crank holds claimed
+/// depth. The ceiling refuses a window that outlives the transaction it
+/// covers.
+#[test]
+fn the_reservation_grace_window_is_settable_and_bounded() {
+    let mut ctx = setup();
+    let set_grace = |ctx: &mut Ctx, slots: u16| {
+        let ix = instruction::UpdateMarketV0 {
+            args: UpdateMarketArgsV0 {
+                reservation_grace_slots: Some(slots),
+                ..Default::default()
+            },
+        }
+        .to_instruction(accounts::UpdateMarketV0 {
+            market: addr(ctx.market),
+            authority: addr(ctx.admin.pubkey()),
+        });
+        send(ctx, ix)
+    };
+
+    assert_clob_err(
+        set_grace(&mut ctx, RESERVATION_GRACE_SLOTS_CEILING + 1),
+        err_code(clob::error::ClobError::InvalidConfig),
+    );
+    set_grace(&mut ctx, RESERVATION_GRACE_SLOTS_CEILING).unwrap();
+    assert_eq!(
+        market_state(&ctx).reservation_grace_slots,
+        RESERVATION_GRACE_SLOTS_CEILING
+    );
+
+    // Zero is the tightest setting, and it reaches the book: a claim ends the
+    // slot its remainder activates, so the 99 the remainder crosses is
+    // ordinary depth to any taker from then on.
+    set_grace(&mut ctx, 0).unwrap();
+    let taker = addr(Pubkey::new_unique());
+    let maker = addr(Pubkey::new_unique());
+    place(&mut ctx, taker_origin_args(Side::Bid, 101, 5), taker);
+    place(&mut ctx, place_args(Side::Ask, 99, 5), maker);
+    advance_slot(&mut ctx, 1);
+    assert_eq!(quote(&mut ctx, Direction::Long, u64::MAX), vec![(99, 5)]);
 }
 
 /// Skipping rather than failing is what keeps the rest of the side alive. A
@@ -2340,9 +2446,13 @@ fn quote_and_execute_skip_the_same_order() {
     assert_eq!(state.ask_count, 1);
     assert!(node(&ctx, state.best_ask).is_taker_origin());
 
-    // The crossing bid is ordinary depth the other way — the fill velocity's
-    // cross resolution runs.
-    assert_eq!(quote(&mut ctx, Direction::Short, u64::MAX), vec![(101, 5)]);
+    // The bid the remainder crosses is claimed, so it is not ordinary depth
+    // the other way either. Only the crank settling the cross reaches it.
+    assert!(quote(&mut ctx, Direction::Short, u64::MAX).is_empty());
+    assert_eq!(
+        quote_consuming(&mut ctx, Direction::Short, u64::MAX),
+        vec![(101, 5)]
+    );
 
     // With the cross gone the remainder is ordinary depth again, at its own
     // price.
@@ -2376,6 +2486,7 @@ fn cu_benchmark_quote_with_a_taker_origin_head() {
     let ix = instruction::QuoteV0 {
         args: QuoteArgsV0 {
             taker_served_window: true,
+            consume_reservation: false,
             caps: UserCapsV0::EMPTY,
             reference_price: 0,
             direction: Direction::Short,
@@ -2396,6 +2507,75 @@ fn cu_benchmark_quote_with_a_taker_origin_head() {
     println!(
         "CU — quote(full side, uncrossed taker-origin at head): {}",
         meta.compute_units_consumed
+    );
+}
+
+/// What the crossing reservation costs the two instructions that spend real
+/// compute on it: a side walked to its fill cap with claimants resting against
+/// it, against the same walk with nothing claimed.
+///
+/// The fused walk is where this design spends. It reads one node per claimant
+/// for a whole walk of the side, so the number to watch is the step from no
+/// claimants to several, not the step from one order to many.
+#[test]
+fn cu_benchmark_quote_and_execute_with_claimants_resting() {
+    // Claimants on the ask side, each claiming one bid order whole.
+    const CLAIMANTS: u64 = 8;
+    const SIZE: u64 = 10;
+
+    let bench = |claimants: u64| -> (u64, u64) {
+        let mut ctx = setup();
+        let maker = addr(Pubkey::new_unique());
+        let taker = addr(Pubkey::new_unique());
+        // A full bid side of distinct levels, so the walk runs to the fill cap.
+        for i in 0..PER_SIDE as u64 - 1 {
+            let ix = place_ix(&ctx, place_args(Side::Bid, 1_000 - i, SIZE), maker);
+            send(&mut ctx, ix).unwrap();
+        }
+        // Remainders that cross the whole bid side, so every claim is tested
+        // and honoured rather than skipped on price.
+        for _ in 0..claimants {
+            let ix = place_ix(&ctx, taker_origin_args(Side::Ask, 1, SIZE), taker);
+            send(&mut ctx, ix).unwrap();
+        }
+        advance_slot(&mut ctx, 1);
+
+        let ix = instruction::QuoteV0 {
+            args: QuoteArgsV0 {
+                taker_served_window: true,
+                consume_reservation: false,
+                caps: UserCapsV0::EMPTY,
+                reference_price: 0,
+                direction: Direction::Short,
+                size: u64::MAX,
+                users: &[],
+                taker: None,
+                limit_price: 0,
+            },
+        }
+        .to_instruction(accounts::QuoteV0 {
+            market: addr(ctx.market),
+        });
+        let quote_meta = send(&mut ctx, ix).unwrap();
+        // The claimed prefix is missing from the ladder, and the ladder still
+        // runs to this market's `max_execute_fills`.
+        let levels = parse_levels(&read_response(&ctx, &quote_meta));
+        assert_eq!(levels.len(), 64);
+        assert_eq!(levels[0].0, 1_000 - claimants);
+
+        let execute_meta = execute_meta(&mut ctx, Direction::Short, 64 * SIZE).unwrap();
+        (
+            quote_meta.compute_units_consumed,
+            execute_meta.compute_units_consumed,
+        )
+    };
+
+    let (quote_bare, execute_bare) = bench(0);
+    let (quote_claimed, execute_claimed) = bench(CLAIMANTS);
+    println!(
+        "CU — quote(full side): {quote_bare} bare, {quote_claimed} with {CLAIMANTS} claimants          ({:+}); execute(64 fills): {execute_bare} bare, {execute_claimed} with {CLAIMANTS}          claimants ({:+})",
+        quote_claimed as i64 - quote_bare as i64,
+        execute_claimed as i64 - execute_bare as i64,
     );
 }
 
@@ -2421,6 +2601,7 @@ fn quote_l3_reports_the_orders_behind_the_ladder() {
                 direction: Direction::Long,
                 size,
                 max_rows,
+                consume_reservation: false,
             },
         }
         .to_instruction(accounts::QuoteL3V0 {
@@ -2462,6 +2643,7 @@ fn quote_l3_reports_the_orders_behind_the_ladder() {
             direction: Direction::Long,
             size: 0,
             max_rows: L3_ROWS_CEILING,
+            consume_reservation: false,
         },
     }
     .to_instruction(accounts::QuoteL3V0 {

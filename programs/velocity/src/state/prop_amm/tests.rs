@@ -261,6 +261,7 @@ fn the_user_set_encodes_to_what_it_carries() {
     let live = [user_ref(1, 0), user_ref(2, 7)];
     let args = QuoteArgsV0 {
         taker_served_window: true,
+        consume_reservation: false,
         users: &live,
         direction: Direction::Long,
         size: 1,
@@ -282,6 +283,7 @@ fn the_user_set_encodes_to_what_it_carries() {
 
     let empty = QuoteArgsV0 {
         taker_served_window: true,
+        consume_reservation: false,
         users: &[],
         ..args
     };
@@ -394,6 +396,7 @@ fn the_cpi_buffer_holds_exactly_what_the_args_serialize_to() {
     // The widest each leg can be: a full user set and a taker present.
     let quote = QuoteArgsV0 {
         taker_served_window: true,
+        consume_reservation: false,
         users: &all,
         direction: Direction::Long,
         size: u64::MAX,
@@ -404,6 +407,7 @@ fn the_cpi_buffer_holds_exactly_what_the_args_serialize_to() {
     };
     let execute = ExecuteArgsV0 {
         taker_served_window: true,
+        consume_reservation: false,
         users: &all,
         direction: Direction::Long,
         size: u64::MAX,
@@ -432,6 +436,7 @@ fn the_cpi_buffer_holds_exactly_what_the_args_serialize_to() {
         for taker in [None, Some(user_ref(0xFF, 0))] {
             let args = QuoteArgsV0 {
                 taker_served_window: true,
+                consume_reservation: false,
                 users: &all[..count],
                 taker,
                 ..quote

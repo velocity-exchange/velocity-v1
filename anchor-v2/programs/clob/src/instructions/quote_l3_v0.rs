@@ -34,6 +34,7 @@ pub fn handle_quote_l3_v0(
         args.direction,
         args.size,
         args.max_rows,
+        args.consume_reservation,
         clock.slot,
         clock.unix_timestamp,
     )

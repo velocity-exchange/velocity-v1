@@ -2668,3 +2668,42 @@ mod accelerated_referral_status {
         );
     }
 }
+
+mod isolated_position_slot_lifetime {
+    use crate::{
+        controller::position::{add_new_position, get_position_index},
+        math::constants::BASE_PRECISION_I64,
+        state::user::{PerpPosition, PositionFlag, User},
+    };
+
+    /// A CLOB order reads its margin regime back off the owner's position, so
+    /// the slot must stay that order's for as long as the order rests.
+    ///
+    /// The position here holds no base and no isolated collateral. The
+    /// resting order alone keeps the slot claimed, which is what stops
+    /// `add_new_position` from handing it to another market and clearing the
+    /// isolated flag under the order.
+    #[test]
+    fn isolated_slot_is_not_recycled_while_clob_order_rests() {
+        let mut user = User::default();
+        user.perp_positions[0] = PerpPosition {
+            market_index: 1,
+            open_orders: 1,
+            open_bids: BASE_PRECISION_I64,
+            position_flag: PositionFlag::IsolatedPosition as u8,
+            isolated_position_scaled_balance: 0,
+            ..PerpPosition::default()
+        };
+
+        assert!(!user.perp_positions[0].is_available());
+        assert_eq!(get_position_index(&user.perp_positions, 1), Ok(0));
+
+        let new_index = add_new_position(&mut user.perp_positions, 2).unwrap();
+        assert_ne!(new_index, 0);
+        assert_eq!(user.perp_positions[0].market_index, 1);
+        assert_eq!(
+            user.perp_positions[0].position_flag,
+            PositionFlag::IsolatedPosition as u8
+        );
+    }
+}

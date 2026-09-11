@@ -396,7 +396,7 @@ pub fn try_place_remainder_on_clob<'info>(
     // arm. The validate above reversed its model, so a position it freshly
     // added reads as available again and `get_position_index` skips it;
     // re-adding finds or revives the same slot.
-    {
+    let is_isolated_position = {
         let mut user = load_mut!(user_loader)?;
         let position_index = get_position_index(&user.perp_positions, market_index)
             .or_else(|_| add_new_position(&mut user.perp_positions, market_index))?;
@@ -414,7 +414,10 @@ pub fn try_place_remainder_on_clob<'info>(
             user.perp_positions[position_index].arm_reduce_only_clob();
         }
         user.update_last_active_slot(clock.slot);
-    }
+        // The order now holds `open_orders` on this position, so its margin
+        // regime cannot change while it rests. The record states it.
+        user.perp_positions[position_index].is_isolated()
+    };
 
     super::emit_clob_place_record(
         clock.unix_timestamp,
@@ -430,6 +433,7 @@ pub fn try_place_remainder_on_clob<'info>(
             slot: clock.slot,
             taker_origin,
         },
+        is_isolated_position,
     )?;
 
     msg!(

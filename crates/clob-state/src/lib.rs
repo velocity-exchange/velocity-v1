@@ -50,7 +50,7 @@ pub const NIL: u32 = u32::MAX;
 /// stays the book's — `clob::state` asserts the two agree at compile time, so
 /// a header that grows fails the book's own build rather than silently moving
 /// the arena under a reader.
-pub const ORDERS_OFFSET: usize = 9624;
+pub const ORDERS_OFFSET: usize = 9648;
 
 /// Flags on a node's `bit_flags` byte.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -89,10 +89,12 @@ impl OrderBitFlag {
 /// stored inline (no seat table): user capacity is order capacity, governed
 /// by the one eviction rule.
 ///
-/// Deliberately kept at 96 bytes, and now with one spare byte: the node is
-/// the per-order cost of a market (capacity × this size is the account's
-/// rent), so growth room lives on the header instead. A future field wider
-/// than `padding0` needs an `OrderNodeV1` arena.
+/// 104 bytes, with one spare byte. The node is the per-order cost of a market
+/// (capacity times this size is the account's rent), so growth room lives on
+/// the header and a field belongs here only when a walk of one side has to
+/// read it. The two taker-origin links are that case: the reservation walk
+/// enumerates the claimants on a side, and reaching them through the
+/// price-sorted list would read every order on it.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
 #[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
@@ -118,6 +120,16 @@ pub struct OrderNodeV0 {
     pub prev: u32,
     /// Away from the best of book (or next free node); [`NIL`] if tail.
     pub next: u32,
+    /// Toward the oldest taker-origin order on this side; [`NIL`] if head.
+    /// Meaningless unless [`OrderBitFlag::TakerOrigin`] is set.
+    pub taker_origin_prev: u32,
+    /// Toward the newest taker-origin order on this side; [`NIL`] if tail.
+    ///
+    /// The side's taker-origin orders are threaded on their own list, in rest
+    /// order. A crossing remainder claims the depth it crosses, so every read
+    /// of a side has to enumerate the remainders that claim it. The list makes
+    /// that cost the number of remainders instead of the number of orders.
+    pub taker_origin_next: u32,
     pub bit_flags: u8,
     pub padding0: u8,
     /// Sub-account half of the user identity (see `authority`).
@@ -135,7 +147,7 @@ pub fn node_bytes(node: &OrderNodeV0) -> &[u8] {
 
 /// Encoded width of one arena slot.
 pub const NODE_BYTES: usize = core::mem::size_of::<OrderNodeV0>();
-const _: () = assert!(NODE_BYTES == 96);
+const _: () = assert!(NODE_BYTES == 104);
 
 impl OrderNodeV0 {
     pub fn user_ref(&self) -> UserRefV0 {
@@ -237,6 +249,8 @@ mod tests {
             placed_slot: 0,
             prev: NIL,
             next: NIL,
+            taker_origin_prev: NIL,
+            taker_origin_next: NIL,
             bit_flags: OrderBitFlag::Open.bit_if(open),
             padding0: 0,
             sub_account_id: 0,

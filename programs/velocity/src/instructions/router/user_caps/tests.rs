@@ -48,6 +48,9 @@ struct Case {
     dlob_bid: u64,
     taker_size: u64,
     books: u32,
+    /// Quote held by the market's own isolated position, in whole dollars.
+    /// `None` leaves the position cross-margined.
+    isolated: Option<u64>,
 }
 
 impl Default for Case {
@@ -62,6 +65,7 @@ impl Default for Case {
             dlob_bid: 0,
             taker_size: BASE_PRECISION_I64 as u64,
             books: 1,
+            isolated: None,
         }
     }
 }
@@ -94,6 +98,7 @@ fn budget(case: Case) -> u64 {
         dlob_bid,
         taker_size,
         books,
+        isolated,
     } = case;
     let slot = if stale_oracle { 100_000 } else { 1 };
 
@@ -176,6 +181,12 @@ fn budget(case: Case) -> u64 {
             market_index: 0,
             base_asset_amount: position_base,
             open_bids,
+            position_flag: isolated
+                .map(|_| crate::state::user::PositionFlag::IsolatedPosition as u8)
+                .unwrap_or(0),
+            isolated_position_scaled_balance: isolated
+                .map(|quote| quote * SPOT_BALANCE_PRECISION_U64)
+                .unwrap_or(0),
             ..PerpPosition::default()
         }),
         spot_positions: get_spot_positions(SpotPosition {
@@ -349,5 +360,56 @@ fn a_dlob_order_is_not_mistaken_for_book_depth() {
             ..thin_maker()
         }),
         45 * QUOTE
+    );
+}
+
+/// An isolated maker is budgeted from the collateral of the isolated position
+/// itself, not from whatever the account holds in cross.
+///
+/// The book is position-blind and velocity is not: it picks the margin scope
+/// from the maker's live position, so a maker flush in cross but holding
+/// nothing against its isolated position has no room for a fill that grows it.
+#[test]
+fn an_isolated_maker_is_budgeted_from_its_isolated_collateral() {
+    // Flush in cross, empty in the isolated position the fill would land in.
+    assert_eq!(
+        budget(Case {
+            deposit: 100_000,
+            position_base: 0,
+            open_bids: 200 * BASE_PRECISION_I64,
+            taker_size: 200 * BASE_PRECISION_I64 as u64,
+            isolated: Some(0),
+            ..Case::default()
+        }),
+        0,
+        "cross collateral does not back an isolated position's fill"
+    );
+
+    // The control: the same numbers, cross-margined, do have room. So the zero
+    // above is the isolated scope refusing cross collateral, not the fill
+    // being unaffordable.
+    assert!(
+        budget(Case {
+            deposit: 100_000,
+            position_base: 0,
+            open_bids: 200 * BASE_PRECISION_I64,
+            taker_size: 200 * BASE_PRECISION_I64 as u64,
+            isolated: None,
+            ..Case::default()
+        }) > 0,
+        "the same deposit backs a cross-margined fill"
+    );
+
+    // The same maker, with the isolated position funded, has room.
+    assert!(
+        budget(Case {
+            deposit: 100_000,
+            position_base: 0,
+            open_bids: 200 * BASE_PRECISION_I64,
+            taker_size: 200 * BASE_PRECISION_I64 as u64,
+            isolated: Some(50_000),
+            ..Case::default()
+        }) > 0,
+        "an isolated position funded for the fill is budgeted for it"
     );
 }

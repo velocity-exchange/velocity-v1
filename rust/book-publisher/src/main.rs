@@ -142,6 +142,12 @@ fn maybe_local_sim<S: ChainSource + 'static>(inner: S, pool: usize) -> Arc<dyn C
 }
 
 /// Create + initialize a market's quote buffer if it doesn't exist yet.
+/// Compute units requested for `crank_cross_match`. Measured at about 328,000
+/// for a self-crossed book: each of the crank's two legs is a whole router
+/// fill, with its own quote, split, execute and post-fill checks. The headroom
+/// covers a cross that reaches more sources than a book against itself.
+const CROSS_MATCH_COMPUTE_UNITS: u32 = 500_000;
+
 async fn ensure_buffer(
     source: &Arc<dyn ChainSource>,
     velocity: &Pubkey,
@@ -601,8 +607,17 @@ async fn publish_market(
         .await?
         {
             let blockhash = source.latest_blockhash().await?;
+            // The crank runs two whole router fills, so it costs well past the
+            // 200,000 an instruction gets by default. Without a request of its
+            // own the simulation below always fails to complete and no cross is
+            // ever sent.
             let tx = solana_sdk::transaction::Transaction::new_signed_with_payer(
-                &[plan.instruction.clone()],
+                &[
+                    solana_compute_budget_interface::ComputeBudgetInstruction::set_compute_unit_limit(
+                        CROSS_MATCH_COMPUTE_UNITS,
+                    ),
+                    plan.instruction.clone(),
+                ],
                 Some(authority),
                 &[payer],
                 blockhash.hash,

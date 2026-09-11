@@ -1564,7 +1564,7 @@ export type Velocity = {
         {
           "name": "authority",
           "docs": [
-            "No signature: the executor's own profitability predicate is the gate."
+            "No signature: the cross's own profitability rules are the gate."
           ],
           "writable": true
         },
@@ -1656,13 +1656,21 @@ export type Velocity = {
         {
           "name": "quoterSlab",
           "docs": [
-            "The market's approved quoters — both legs' configs, and the identity",
-            "every quoter CPI signs as. Bound by the market's `has_one`, which is a",
-            "memcmp where a seeds constraint pays a PDA derivation."
+            "The market's approved quoters. Bound by the market's `has_one`, which",
+            "is a memcmp where a seeds constraint pays a PDA derivation. Each leg",
+            "assembles its route off the copy that rides the account tail, as every",
+            "router fill does."
           ],
           "relations": [
             "perpMarket"
           ]
+        },
+        {
+          "name": "instructionsSysvar",
+          "docs": [
+            "many account locks the transaction holds, and this is what counts them."
+          ],
+          "address": "Sysvar1nstructions1111111111111111111111111"
         }
       ],
       "args": [
@@ -21772,6 +21780,16 @@ export type Velocity = {
       "code": 6405,
       "name": "quoterNotOnSlab",
       "msg": "The market's quoter slab holds no approved copy of this entry"
+    },
+    {
+      "code": 6406,
+      "name": "crossMatchLegsDoNotCross",
+      "msg": "Cross match sold below the price its buy leg paid"
+    },
+    {
+      "code": 6407,
+      "name": "takerExposureNotProtocolOwned",
+      "msg": "Only the protocol user may skip the taker checks of a fill"
     }
   ],
   "types": [
@@ -23422,22 +23440,11 @@ export type Velocity = {
           {
             "name": "size",
             "docs": [
-              "Base to take from each leg. The executor reverts unless both legs",
-              "balance exactly at this size."
+              "Base the buy leg takes. The sell leg returns exactly what the buy leg",
+              "filled, and the cross is refused unless every unit of it crossed — so",
+              "a size past the crossing depth fails rather than sweeping through it."
             ],
             "type": "u64"
-          },
-          {
-            "name": "buyQuoterIndex",
-            "docs": [
-              "Legs, as slab slot indexes: the entry whose ask the pass-through",
-              "taker buys, and the one whose bid it sells into. The book is slot 0."
-            ],
-            "type": "u8"
-          },
-          {
-            "name": "sellQuoterIndex",
-            "type": "u8"
           }
         ]
       }

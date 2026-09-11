@@ -38,6 +38,7 @@ pub fn handle_execute_v0(
         &args.caps,
         args.reference_price,
         args.taker.as_ref(),
+        args.consume_reservation,
         clock.slot,
         clock.unix_timestamp,
     )?;

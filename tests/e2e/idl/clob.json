@@ -1356,6 +1356,84 @@
             }
           },
           {
+            "name": "taker_origin_head",
+            "docs": [
+              "Oldest taker-origin order on each side, indexed by [`Side`] (bid 0,",
+              "ask 1). [`NIL`] when the side holds none.",
+              "",
+              "A taker-origin order is a migrated taker remainder, and it claims the",
+              "depth it crosses on the other side (see `crate::book`'s reservation).",
+              "Every read of a side therefore has to enumerate the remainders resting",
+              "on the opposite one, so they are threaded on their own list rather than",
+              "found by walking a price-sorted side.",
+              "",
+              "The list is in rest order, which costs nothing to keep: `next_order_id`",
+              "only increases, so the newest taker-origin order always has the highest",
+              "id and appending it at the tail is both O(1) and already sorted."
+            ],
+            "type": {
+              "array": [
+                "u32",
+                2
+              ]
+            }
+          },
+          {
+            "name": "taker_origin_tail",
+            "docs": [
+              "Newest taker-origin order on each side, so an append is O(1)."
+            ],
+            "type": {
+              "array": [
+                "u32",
+                2
+              ]
+            }
+          },
+          {
+            "name": "taker_origin_count",
+            "docs": [
+              "Taker-origin orders on each side. Bounds the claimant hops one read of",
+              "a side may take, so a corrupt list cannot spin."
+            ],
+            "type": {
+              "array": [
+                "u16",
+                2
+              ]
+            }
+          },
+          {
+            "name": "reservation_grace_slots",
+            "docs": [
+              "Slots past its activation slot for which a taker remainder's claim on",
+              "the depth it crosses is still honoured.",
+              "",
+              "The claim hides that depth from every caller but the crank that owes",
+              "the taker its improvement, so a crank that never lands would hold the",
+              "top of book indefinitely. Past this window the claim stops being",
+              "honoured and the depth is ordinary again. Zero means a claim ends the",
+              "slot the remainder activates.",
+              "",
+              "`update_market_v0` writes it, bounded by",
+              "[`RESERVATION_GRACE_SLOTS_CEILING`]. A fresh market starts at",
+              "[`DEFAULT_RESERVATION_GRACE_SLOTS`]."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "padding1",
+            "docs": [
+              "Keeps `response` on the 8-byte step its records are cast at."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                2
+              ]
+            }
+          },
+          {
             "name": "response",
             "docs": [
               "Scratch region `quote_v0`/`execute_v0` stream their response into;",
@@ -1713,6 +1791,15 @@
               "must carry the value its quote carried."
             ],
             "type": "bool"
+          },
+          {
+            "name": "consume_reservation",
+            "docs": [
+              "Same contract as [`QuoteArgsV0::consume_reservation`], and the same",
+              "rule: the execute must carry the value its quote carried, or it walks",
+              "a different set of orders than the one it quoted."
+            ],
+            "type": "bool"
           }
         ]
       }
@@ -1945,6 +2032,15 @@
               "Stop after this many rows, whatever `size` is left."
             ],
             "type": "u16"
+          },
+          {
+            "name": "consume_reservation",
+            "docs": [
+              "Report the depth a crossing taker remainder claims as available. Same",
+              "contract as [`QuoteArgsV0::consume_reservation`], on the surface a",
+              "caller resolves a cross from."
+            ],
+            "type": "bool"
           }
         ]
       }
@@ -2812,6 +2908,22 @@
               "`require_attested_flow`) refuses when this is false."
             ],
             "type": "bool"
+          },
+          {
+            "name": "consume_reservation",
+            "docs": [
+              "Fill the depth a crossing taker remainder claims.",
+              "",
+              "A book withholds the depth an unfilled taker remainder crosses, so the",
+              "improvement over that remainder's resting price reaches the taker",
+              "rather than whoever lands a transaction first. The crank that settles",
+              "the cross is the one caller that must reach it, and it says so here.",
+              "",
+              "The caller asserts it, like `users` and `caps`: the quoter",
+              "authenticates the caller, and the caller is the settlement engine. A",
+              "quoter that reserves nothing ignores it."
+            ],
+            "type": "bool"
           }
         ]
       }
@@ -3047,6 +3159,12 @@
           },
           {
             "name": "max_execute_users",
+            "type": {
+              "option": "u16"
+            }
+          },
+          {
+            "name": "reservation_grace_slots",
             "type": {
               "option": "u16"
             }

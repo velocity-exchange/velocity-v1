@@ -177,7 +177,7 @@ pub fn handle_modify_order_v1<'c: 'info, 'info>(
 
     let terms = resolve_replacement_terms(&params, &removed)?;
 
-    reserve_replacement_margin(
+    let is_isolated_position = reserve_replacement_margin(
         &ctx.accounts.user,
         &mut maps,
         params.market_index,
@@ -234,6 +234,7 @@ pub fn handle_modify_order_v1<'c: 'info, 'info>(
             slot: clock.slot,
             taker_origin: removed.taker_origin,
         },
+        is_isolated_position,
     )?;
 
     msg!(
@@ -325,6 +326,11 @@ fn resolve_replacement_terms(
 /// Re-reserve the aggregates net of the cancel, then gate margin exactly like
 /// a placement. Both legs are inside this transaction, so a failure unwinds
 /// the cancel with it — the maker never ends up flat.
+///
+/// Reports whether the position is isolated, for the place record. The
+/// reservation keeps `open_orders` on the position across the whole modify,
+/// so the replacement rests under the same margin regime the cancelled order
+/// held.
 #[allow(clippy::too_many_arguments)]
 fn reserve_replacement_margin<'info>(
     user_loader: &AccountLoader<'info, User>,
@@ -333,7 +339,7 @@ fn reserve_replacement_margin<'info>(
     terms: &ReplacementTerms,
     cancelled_base_asset_amount: u64,
     slot: u64,
-) -> Result<()> {
+) -> Result<bool> {
     let mut user = load_mut!(user_loader)?;
     validate!(
         !user.is_bankrupt(),
@@ -369,7 +375,7 @@ fn reserve_replacement_margin<'info>(
     .then_some(market_index);
     meets_place_order_margin_requirement(&user, maps, risk_increasing, isolated_market_index)?;
     user.update_last_active_slot(slot);
-    Ok(())
+    Ok(user.perp_positions[position_index].is_isolated())
 }
 
 /// A placed trigger's shadow follows its live order to the new handle;

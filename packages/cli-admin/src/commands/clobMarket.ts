@@ -27,6 +27,7 @@ const BPF_LOADER_UPGRADEABLE_ID = new PublicKey(
 	'BPFLoaderUpgradeab1e11111111111111111111111'
 );
 import { buildAdminClient, buildProvider } from '../lib/provider';
+import { reportDispatch, sendOrPropose } from '../lib/squads';
 
 /** Anchor default instruction discriminator: sha256("global:<name>")[..8]. */
 function ixDiscriminator(name: string): Buffer {
@@ -40,12 +41,13 @@ const WATCH_ACCOUNT_LEN = 112;
 const DEFAULT_RELAY_PROGRAM = '4D5tPhw9sqkdkR5CpmP427TH6y9p9AMuKUukUEHn3Mpu';
 
 /**
- * `[disc][ClobHeaderV0 8352][len u32][pad to 8]` then the order-node arena
- * (96 bytes per node). Mirrors the CLOB program's `ORDERS_OFFSET`.
+ * `[disc][ClobHeaderV0 9636][len u32][pad to 8]` then the order-node arena
+ * (104 bytes per node). Mirrors the CLOB program's `ORDERS_OFFSET`, which is
+ * pinned there against `clob-state`'s own copy of the number.
  */
 function clobMarketSpace(capacity: number): number {
-	const ordersOffset = Math.ceil((8 + 8352 + 4) / 8) * 8;
-	return ordersOffset + capacity * 96;
+	const ordersOffset = Math.ceil((8 + 9636 + 4) / 8) * 8;
+	return ordersOffset + capacity * 104;
 }
 
 type ClobConfigFlags = {
@@ -56,7 +58,7 @@ type ClobConfigFlags = {
 	blockingMinSize: string;
 	defaultActivationDelay: string;
 	maxActivationDelay: string;
-	graceSlots: string;
+	unknownUserGraceSlots: string;
 	evictThreshold: string;
 	maxQuoteLevels: string;
 	maxExecuteFills: string;
@@ -85,7 +87,7 @@ function clobMarketConfig(marketIndex: number, flags: ClobConfigFlags): Buffer {
 		u64(flags.blockingMinSize),
 		u32(Number.parseInt(flags.defaultActivationDelay, 10)),
 		u32(Number.parseInt(flags.maxActivationDelay, 10)),
-		u32(Number.parseInt(flags.graceSlots, 10)),
+		u32(Number.parseInt(flags.unknownUserGraceSlots, 10)),
 		u32(Number.parseInt(flags.evictThreshold, 10)),
 		u16(Number.parseInt(flags.maxQuoteLevels, 10)),
 		u16(Number.parseInt(flags.maxExecuteFills, 10)),
@@ -141,7 +143,9 @@ async function watchRegistrationIxs(
 
 /** Just enough of a connection to fetch an account and price its rent. */
 type RpcConnection = {
-	getAccountInfo(key: PublicKey): Promise<{ data: Buffer } | null>;
+	getAccountInfo(
+		key: PublicKey
+	): Promise<{ data: Buffer; owner: PublicKey } | null>;
 	getMinimumBalanceForRentExemption(n: number): Promise<number>;
 };
 
@@ -218,6 +222,96 @@ async function marketWatchIxs(
 	];
 }
 
+/** The mutable half of the book's header, as `update_market_v0` takes it. */
+type ClobUpdateFlags = {
+	tickSize?: string;
+	stepSize?: string;
+	minOrderSize?: string;
+	blockingMinSize?: string;
+	defaultActivationDelay?: string;
+	maxActivationDelay?: string;
+	unknownUserGraceSlots?: string;
+	evictThreshold?: string;
+	maxQuoteLevels?: string;
+	maxExecuteFills?: string;
+	maxExecuteUsers?: string;
+	reservationGraceSlots?: string;
+};
+
+/**
+ * Borsh wire of the CLOB's `UpdateMarketArgsV0`: twelve options in the order
+ * the book declares them, each a presence byte followed by the value when
+ * present. An absent field leaves the book's current setting alone.
+ *
+ * Returns `undefined` when no field is set, since that call would write
+ * nothing and still pay a transaction.
+ */
+function clobUpdateMarketArgs(flags: ClobUpdateFlags): Buffer | undefined {
+	const opt = (width: number, value?: string) => {
+		if (value === undefined) {
+			return Buffer.from([0]);
+		}
+		const b = Buffer.alloc(1 + width);
+		b.writeUInt8(1, 0);
+		new BN(value).toArrayLike(Buffer, 'le', width).copy(b, 1);
+		return b;
+	};
+	const fields: Buffer[] = [
+		opt(8, flags.tickSize),
+		opt(8, flags.stepSize),
+		opt(8, flags.minOrderSize),
+		opt(8, flags.blockingMinSize),
+		opt(4, flags.defaultActivationDelay),
+		opt(4, flags.maxActivationDelay),
+		opt(4, flags.unknownUserGraceSlots),
+		opt(4, flags.evictThreshold),
+		opt(2, flags.maxQuoteLevels),
+		opt(2, flags.maxExecuteFills),
+		opt(2, flags.maxExecuteUsers),
+		opt(2, flags.reservationGraceSlots),
+	];
+	return fields.some((f) => f.length > 1) ? Buffer.concat(fields) : undefined;
+}
+
+/**
+ * The book a perp market names, and the program that owns it.
+ *
+ * Both are read on chain rather than passed: the market stores its book, and
+ * the book account's owner is the CLOB program deployment it lives on.
+ */
+async function marketBook(
+	client: AccountDecoder,
+	connection: RpcConnection,
+	perpMarket: PublicKey,
+	marketIndex: number
+): Promise<{ book: PublicKey; program: PublicKey; authority: PublicKey }> {
+	const marketInfo = await connection.getAccountInfo(perpMarket);
+	if (!marketInfo) {
+		throw new Error(`perp market ${marketIndex} not found`);
+	}
+	const book = new PublicKey(
+		(
+			client.program.coder.accounts.decode('perpMarket', marketInfo.data) as {
+				clobMarket: PublicKey;
+			}
+		).clobMarket
+	);
+	if (book.equals(PublicKey.default)) {
+		throw new Error(`perp market ${marketIndex} names no book`);
+	}
+	const bookInfo = await connection.getAccountInfo(book);
+	if (!bookInfo) {
+		throw new Error(`book ${book.toBase58()} not found`);
+	}
+	// `ClobHeaderV0.authority` is the header's first field, after the 8-byte
+	// discriminator. It is the one signer `update_market_v0` accepts.
+	return {
+		book,
+		program: bookInfo.owner,
+		authority: new PublicKey(bookInfo.data.subarray(8, 40)),
+	};
+}
+
 /**
  * CLOB market bring-up. One command stands a market's whole CLOB up: the
  * book account on the CLOB program, the market's quoter slab when it does
@@ -272,7 +366,11 @@ export function registerClobMarket(parent: Command): void {
 				'1'
 			)
 			.option('--max-activation-delay <slots>', 'max caller-chosen delay', '20')
-			.option('--grace-slots <n>', 'unknown-user grace window', '2')
+			.option(
+				'--unknown-user-grace-slots <n>',
+				'grace window for an order whose owner a caller does not carry: a fill walk skips such an order for this many slots after it becomes matchable, and stops on it after that. Named for the header field it writes, so it is not confused with --reservation-grace-slots on update-config',
+				'2'
+			)
 			.option(
 				'--evict-threshold <n>',
 				'per-side soft cap enabling the evict crank',
@@ -616,4 +714,77 @@ export function registerClobMarket(parent: Command): void {
 			}
 		}
 	);
+
+	withGlobalOptions(
+		clobMarket
+			.command('update-config <market>')
+			.description(
+				"Retune an existing book's mutable config through the CLOB's update_market_v0 (the book's authority signs). Only the flags passed are written; the rest keep their current setting. base_precision, market_index and place_authority are immutable and are not offered. The book and its program are read off the perp market, so no program id is needed."
+			)
+			.option('--tick-size <n>', 'price tick (PRICE_PRECISION)')
+			.option('--step-size <n>', 'size step (base precision)')
+			.option('--min-order-size <n>', 'minimum order size (base precision)')
+			.option(
+				'--blocking-min-size <n>',
+				'floor on the size of an order that may end a fill walk when its owner is not carried; 0 disables'
+			)
+			.option('--default-activation-delay <slots>', 'default taker speed bump')
+			.option('--max-activation-delay <slots>', 'max caller-chosen delay')
+			.option(
+				'--unknown-user-grace-slots <n>',
+				'grace window for an order whose owner a caller does not carry'
+			)
+			.option(
+				'--evict-threshold <n>',
+				'per-side soft cap enabling the evict crank'
+			)
+			.option('--max-quote-levels <n>', 'quote response level cap')
+			.option('--max-execute-fills <n>', 'execute response fill cap')
+			.option('--max-execute-users <n>', 'execute user-set cap')
+			.option(
+				'--reservation-grace-slots <n>',
+				"slots past its activation slot for which a taker remainder's claim on the depth it crosses is still honoured. A claim hides that depth from every caller but the crank that owes the taker its improvement, so this is what bounds a crank that never lands. 0 ends a claim the slot its remainder activates; 150 slots is the ceiling, which is how long a transaction stays valid after its blockhash"
+			)
+	).action(async (market: string, flags: ClobUpdateFlags, cmd: Command) => {
+		const marketIndex = Number.parseInt(market, 10);
+		const args = clobUpdateMarketArgs(flags);
+		if (!args) {
+			throw new Error(
+				'update-config writes nothing: pass at least one config flag (see --help)'
+			);
+		}
+		const opts = readGlobalOpts(cmd);
+		const provider = buildProvider(opts);
+		const client = await buildAdminClient(opts, false);
+		try {
+			const { book, program, authority } = await marketBook(
+				client,
+				provider.connection,
+				getPerpMarketPublicKeySync(client.program.programId, marketIndex),
+				marketIndex
+			);
+			const ix = new TransactionInstruction({
+				programId: program,
+				keys: [
+					{ pubkey: book, isSigner: false, isWritable: true },
+					{ pubkey: authority, isSigner: true, isWritable: false },
+				],
+				data: Buffer.concat([ixDiscriminator('update_market_v0'), args]),
+			});
+			const result = await sendOrPropose(
+				provider,
+				[ix],
+				opts.multisig ? new PublicKey(opts.multisig) : undefined,
+				'velocity-admin clob-market update-config'
+			);
+			reportDispatch(
+				`book ${book.toBase58()} config updated (authority ${authority.toBase58()})`,
+				result
+			);
+		} finally {
+			if ((client as any).isSubscribed) {
+				await client.unsubscribe();
+			}
+		}
+	});
 }

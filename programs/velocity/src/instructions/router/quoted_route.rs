@@ -121,6 +121,15 @@ pub struct QuoteInputs<'a> {
     /// skip in [`QuotedRoute::assemble`]: a book with a nonzero default
     /// activation delay quotes no depth when this is false.
     pub taker_served_window: bool,
+    /// Whether this fill settles a crossing taker remainder itself, and so
+    /// reads a book with every crossing reservation ignored.
+    ///
+    /// A remainder claims the depth it crosses, and that depth leaves the
+    /// matchable set for everyone else. Only the crank that owes the taker its
+    /// improvement may take it, so only that crank passes `true`. Every other
+    /// route must pass `false`, or a caller could fill the cover a remainder is
+    /// waiting on and take the improvement itself.
+    pub consume_reservation: bool,
 }
 
 impl<'info> QuotedRoute<'info> {
@@ -248,6 +257,7 @@ impl<'info> QuotedRoute<'info> {
                         taker: Some(inputs.taker),
                         limit_price: inputs.limit_price,
                         taker_served_window: inputs.taker_served_window,
+                        consume_reservation: inputs.consume_reservation,
                     },
                     &slab_loader,
                     route.accounts,
@@ -307,10 +317,21 @@ impl<'info> QuotedRoute<'info> {
             return Err(ErrorCode::DefaultError.into());
         };
         let slots = slab.slots()?;
-        let book_quotes =
-            slot_for_entry(&slots, &required_clob).is_some_and(|index| slots[index].quotes());
+        // The market names its book by the account the book answers on, which
+        // approval holds equal to that entry's response account. The slab is
+        // keyed by entry, and a route reports the entries it consulted, so the
+        // lookup goes through the response account to learn which entry is the
+        // book. Matching the book's address against entry keys finds nothing
+        // and quietly excuses every fill from the baseline.
+        let book = crate::state::prop_amm::occupied_slots(&slots)
+            .find(|(_, slot)| slot.config.response_account == required_clob);
+        // No slot at all is a book that was never approved or was revoked,
+        // which is the dead-book case: nothing to consult.
+        let Some((_, slot)) = book else {
+            return Ok(());
+        };
         validate!(
-            !book_quotes || self.carried().contains(&required_clob),
+            !slot.quotes() || self.carried().contains(&slot.entry),
             ErrorCode::DefaultError,
             "router fill must include the market's CLOB quoter {}",
             required_clob
@@ -425,6 +446,7 @@ impl<'info> QuotedRoute<'info> {
             users: inputs.users,
             taker: inputs.taker,
             taker_served_window: inputs.taker_served_window,
+            consume_reservation: inputs.consume_reservation,
             slot,
             now,
         }

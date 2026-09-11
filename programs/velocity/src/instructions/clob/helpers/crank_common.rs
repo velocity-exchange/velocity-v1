@@ -553,6 +553,7 @@ pub(crate) fn book_l3_side<'info, T>(
     max_rows: u16,
     accounts: &[AccountInfo<'info>],
     scratch: &mut QuoterCpiScratch<'info>,
+    consume_reservation: bool,
     map: impl Fn(&L3RowV0) -> T,
 ) -> Result<Option<Vec<T>>> {
     let located = quoter.quote_l3(
@@ -561,6 +562,7 @@ pub(crate) fn book_l3_side<'info, T>(
             direction,
             size: 0,
             max_rows,
+            consume_reservation,
         },
         slab,
         accounts,
@@ -593,6 +595,7 @@ pub(crate) fn book_l3_sides<'info>(
     max_rows: u16,
     accounts: &[AccountInfo<'info>],
     scratch: &mut QuoterCpiScratch<'info>,
+    consume_reservation: bool,
 ) -> Result<
     Option<(
         Vec<crate::math::crosses::RestingOrder>,
@@ -608,6 +611,7 @@ pub(crate) fn book_l3_sides<'info>(
         max_rows,
         accounts,
         scratch,
+        consume_reservation,
         from_row,
     )?
     else {
@@ -621,6 +625,7 @@ pub(crate) fn book_l3_sides<'info>(
         max_rows,
         accounts,
         scratch,
+        consume_reservation,
         from_row,
     )?
     else {

@@ -59,6 +59,24 @@ pub const CRANK_RESOLVER_CAPACITY: usize = 8;
 
 pub const ZERO_ADDRESS: Address = Address::new_from_array([0u8; 32]);
 
+/// [`ClobHeaderV0::reservation_grace_slots`] a fresh market starts with.
+///
+/// Two seconds of slots. It has to cover the transaction that resolves a
+/// cross — the crank is woken by a relay condition the moment the cross
+/// appears — and it is the longest the claimed depth stays out of the
+/// matchable set when that crank never lands.
+pub const DEFAULT_RESERVATION_GRACE_SLOTS: u16 = 32;
+
+/// Ceiling on [`ClobHeaderV0::reservation_grace_slots`], enforced by
+/// `update_market_v0`.
+///
+/// The window only has to cover the crank transaction that resolves the
+/// cross. A transaction is invalid more than 150 slots after its blockhash. A
+/// crank that misses that window must be sent again with a fresh blockhash,
+/// so a wider grace does not help it land. It only holds the claimed depth
+/// out of the matchable set for longer.
+pub const RESERVATION_GRACE_SLOTS_CEILING: u16 = 150;
+
 /// Response region size. Responses live in the header (quoter interface:
 /// return data carries only a [`ResponsePointerV0`]), so payload size is not
 /// bound by the 1024-byte return-data cap.
@@ -443,6 +461,39 @@ pub struct ClobHeaderV0 {
     /// moving `response`, changing the account size, or migrating every live
     /// market. Must stay zero until claimed.
     pub padding: [u8; 104],
+    /// Oldest taker-origin order on each side, indexed by [`Side`] (bid 0,
+    /// ask 1). [`NIL`] when the side holds none.
+    ///
+    /// A taker-origin order is a migrated taker remainder, and it claims the
+    /// depth it crosses on the other side (see `crate::book`'s reservation).
+    /// Every read of a side therefore has to enumerate the remainders resting
+    /// on the opposite one, so they are threaded on their own list rather than
+    /// found by walking a price-sorted side.
+    ///
+    /// The list is in rest order, which costs nothing to keep: `next_order_id`
+    /// only increases, so the newest taker-origin order always has the highest
+    /// id and appending it at the tail is both O(1) and already sorted.
+    pub taker_origin_head: [u32; 2],
+    /// Newest taker-origin order on each side, so an append is O(1).
+    pub taker_origin_tail: [u32; 2],
+    /// Taker-origin orders on each side. Bounds the claimant hops one read of
+    /// a side may take, so a corrupt list cannot spin.
+    pub taker_origin_count: [u16; 2],
+    /// Slots past its activation slot for which a taker remainder's claim on
+    /// the depth it crosses is still honoured.
+    ///
+    /// The claim hides that depth from every caller but the crank that owes
+    /// the taker its improvement, so a crank that never lands would hold the
+    /// top of book indefinitely. Past this window the claim stops being
+    /// honoured and the depth is ordinary again. Zero means a claim ends the
+    /// slot the remainder activates.
+    ///
+    /// `update_market_v0` writes it, bounded by
+    /// [`RESERVATION_GRACE_SLOTS_CEILING`]. A fresh market starts at
+    /// [`DEFAULT_RESERVATION_GRACE_SLOTS`].
+    pub reservation_grace_slots: u16,
+    /// Keeps `response` on the 8-byte step its records are cast at.
+    pub padding1: [u8; 2],
     /// Scratch region `quote_v0`/`execute_v0` stream their response into;
     /// return data carries a [`ResponsePointerV0`] locating it. Last field, so
     /// [`RESPONSE_OFFSET`] is the header size minus its length.
@@ -663,13 +714,13 @@ pub const FILL_BATCH_CEILING: usize = 8;
 ///
 /// Its `taker_origin` flag is the only place this program reports that an
 /// order was a migrated taker remainder. A taker-origin cross cannot go
-/// through `execute_v0` at all — [`crate::book`]'s gate refuses to fill a
-/// taker-origin order that has a live crossing counterparty — so a caller
-/// resolves one by taking the counterparty's side with `execute_v0` and
-/// lifting the taker-origin order off the book with `cancel_order_v0`, which
-/// returns this. Without the flag the caller cannot tell which of the two
-/// removed orders was demanding liquidity, and so cannot know which side's
-/// price the match settles at.
+/// through an ordinary `execute_v0` at all: `crate::book`'s reservation
+/// withholds both the remainder and the depth it crosses. So a caller resolves
+/// one by taking the counterparty's side with `execute_v0` and
+/// `consume_reservation`, then lifting the taker-origin order off the book
+/// with `cancel_order_v0`, which returns this. Without the flag the caller
+/// cannot tell which of the two removed orders was demanding liquidity, and so
+/// cannot know which side's price the match settles at.
 pub use clob_wire::RemovedOrderV0;
 /// What one order in a `fill_v0` came to. Declared by `clob-wire`.
 pub use clob_wire::{FillArgsV0, FillOutcomeV0, FillRequestV0, FilledOrderV0 as FilledOrder};

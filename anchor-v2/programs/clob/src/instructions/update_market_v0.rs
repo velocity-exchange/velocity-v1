@@ -1,7 +1,10 @@
 use {
     crate::{
         error::ClobError,
-        state::{ClobMarketV0, EXECUTE_FILLS_CEILING, EXECUTE_USERS_CEILING, QUOTE_LEVELS_CEILING},
+        state::{
+            ClobMarketV0, EXECUTE_FILLS_CEILING, EXECUTE_USERS_CEILING, QUOTE_LEVELS_CEILING,
+            RESERVATION_GRACE_SLOTS_CEILING,
+        },
     },
     anchor_lang::prelude::*,
 };
@@ -28,6 +31,7 @@ pub struct UpdateMarketArgsV0 {
     pub max_quote_levels: Option<u16>,
     pub max_execute_fills: Option<u16>,
     pub max_execute_users: Option<u16>,
+    pub reservation_grace_slots: Option<u16>,
 }
 
 pub fn handle_update_market_v0(
@@ -84,6 +88,18 @@ pub fn handle_update_market_v0(
             crate::error::ClobError::InvalidConfig
         );
         market.max_execute_users = v;
+    }
+    if let Some(v) = args.reservation_grace_slots {
+        // A claim holds top-of-book depth out of the matchable set, and only
+        // the cross crank can consume it. The ceiling keeps a crank that
+        // never lands from holding that depth for longer than one transaction
+        // stays valid. Zero is a valid setting. A claim then ends the slot its
+        // remainder activates.
+        require!(
+            v <= RESERVATION_GRACE_SLOTS_CEILING,
+            crate::error::ClobError::InvalidConfig
+        );
+        market.reservation_grace_slots = v;
     }
     require!(
         market.default_activation_delay_slots <= market.max_activation_delay_slots,

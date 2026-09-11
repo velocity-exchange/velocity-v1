@@ -7,7 +7,6 @@
 
 use {
     crate::{
-        controller::position::get_position_index,
         error::ErrorCode,
         instructions::constraints::*,
         load_mut, msg,
@@ -104,8 +103,13 @@ pub fn handle_cancel_order_v1(
         removed.order_id,
     )?;
     user.update_last_active_slot(clock.slot);
-    let position_index = get_position_index(&user.perp_positions, params.market_index)?;
-    let is_isolated_position = user.perp_positions[position_index].is_isolated();
+    // An order that never filled leaves its owner with no position in the
+    // market, which is the ordinary case for a cancel. A missing position is
+    // not isolated, so the record says so rather than the cancel failing.
+    let is_isolated_position = user
+        .get_perp_position(params.market_index)
+        .map(|position| position.is_isolated())
+        .unwrap_or(false);
     drop(user);
 
     super::emit_clob_cancel_record(

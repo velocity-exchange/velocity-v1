@@ -3827,8 +3827,6 @@ pub mod types {
     pub struct CrankCrossMatchArgs {
         pub market_index: u16,
         pub size: u64,
-        pub buy_quoter_index: u8,
-        pub sell_quoter_index: u8,
     }
     #[repr(C)]
     #[derive(
@@ -10696,6 +10694,7 @@ pub mod accounts {
         pub crank_conditions: Pubkey,
         pub perp_market: Pubkey,
         pub quoter_slab: Pubkey,
+        pub instructions_sysvar: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for CrankCrossMatch {
@@ -10745,6 +10744,11 @@ pub mod accounts {
                 },
                 AccountMeta {
                     pubkey: self.quoter_slab,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.instructions_sysvar,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -33210,6 +33214,10 @@ pub mod errors {
         QuoterSlabFull,
         #[msg("The market's quoter slab holds no approved copy of this entry")]
         QuoterNotOnSlab,
+        #[msg("Cross match sold below the price its buy leg paid")]
+        CrossMatchLegsDoNotCross,
+        #[msg("Only the protocol user may skip the taker checks of a fill")]
+        TakerExposureNotProtocolOwned,
     }
 }
 pub mod events {

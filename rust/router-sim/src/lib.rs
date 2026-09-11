@@ -343,6 +343,9 @@ pub mod l3 {
                 direction,
                 size,
                 max_rows: limit.min(u16::MAX as usize) as u16,
+                // A view of what a caller may take, so the depth a taker
+                // remainder claims stays out of it.
+                consume_reservation: false,
             },
         )
         .map_err(|err| anyhow!("serialize l3 args: {err}"))?;

@@ -1390,6 +1390,16 @@ impl PerpPosition {
         self.market_index == market_index && !self.is_available()
     }
 
+    /// Whether the slot holds nothing, so `add_new_position` may take it for
+    /// another market.
+    ///
+    /// A CLOB order depends on this staying false while it rests. The book
+    /// holds no margin regime of its own: the isolated flag lives on this
+    /// position, and every path that fills or removes a book order reads it
+    /// back from here to pick the collateral pool the order settles against.
+    /// A resting order holds `open_orders` on this position, so
+    /// `has_open_order()` is true, the slot cannot be recycled under it, and
+    /// the flag it reads back is the one it rested under.
     pub fn is_available(&self) -> bool {
         !self.is_open_position()
             && !self.has_open_order()

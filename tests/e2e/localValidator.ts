@@ -174,7 +174,7 @@ async function pollUntil<T>(
 // counts and the tops of book both fall out of it. Simulated, like any
 // read-only leg: nothing lands and the book is untouched.
 
-const CLOB_NODE_LEN = 96;
+const CLOB_NODE_LEN = 104;
 
 type ClobView = {
 	bidCount: number;

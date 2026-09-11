@@ -5,6 +5,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
+solana-compute-budget-interface = "3"
 # Quote-view assembly + decoding over a chain source.
 velocity-router-sim = { path = "../router-sim" }
 velocity-quoter-health = { path = "../quoter-health" }

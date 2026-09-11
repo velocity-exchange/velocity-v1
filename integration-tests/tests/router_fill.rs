@@ -324,6 +324,7 @@ fn clob_side(fixture: &Fixture, direction: Direction) -> Vec<L3RowV0> {
             // Zero describes the side up to `max_rows`.
             size: 0,
             max_rows: 128,
+            consume_reservation: false,
         },
     )
     .unwrap();
@@ -752,7 +753,7 @@ fn place_clob_ask(fixture: &mut Fixture, price: u64, size: u64) -> ClobOrderRefV
 /// co-signing the transaction, and pass with it — while at-or-above the
 /// default stays permissionless.
 /// `UpdateMarketArgsV0` setting only `default_activation_delay_slots`:
-/// eleven `Option`s, each a presence byte, in the order the book declares them.
+/// twelve `Option`s, each a presence byte, in the order the book declares them.
 fn set_clob_default_activation_delay(fixture: &mut Fixture, slots: u32) {
     let mut args = Vec::new();
     for _ in 0..4 {
@@ -760,8 +761,9 @@ fn set_clob_default_activation_delay(fixture: &mut Fixture, slots: u32) {
     }
     args.push(1u8);
     args.extend_from_slice(&slots.to_le_bytes());
-    for _ in 0..6 {
-        args.push(0u8); // max activation delay, grace, evict threshold, ceilings
+    for _ in 0..7 {
+        args.push(0u8); // max activation delay, grace, evict threshold, ceilings,
+                        // reservation grace
     }
     let admin = fixture.clob_admin.insecure_clone();
     let ix = clob_ix(
@@ -2469,6 +2471,16 @@ fn crank_conditions_pda() -> Pubkey {
 
 /// The protocol-owned filler: a `User`/`UserStats` pair whose authority is
 /// the velocity signer PDA, at the derivation the resolvers stage.
+/// The protocol's own `User`: the pass-through taker of the cross crank and
+/// the sink its surplus lands in.
+///
+/// It deposits nothing, and that is the property under test. A cross is two
+/// sequential fills, so between them the protocol holds the whole size as an
+/// ordinary position. The taker's own post-fill checks are suppressed for a
+/// cross, because that exposure closes inside the instruction and the crank
+/// asserts the end state itself, so the protocol never has to be capitalized
+/// to warehouse a cross it closes in the same call. A balance here would hide
+/// a regression in that rule.
 fn set_protocol_user(svm: &mut litesvm::LiteSVM) -> Pubkey {
     let (signer, _) = velocity_signer_pda();
     let user = Pubkey::find_program_address(
@@ -2482,6 +2494,11 @@ fn set_protocol_user(svm: &mut litesvm::LiteSVM) -> Pubkey {
     user
 }
 
+/// The book's default grace window, after which a crossing remainder's claim
+/// stops being honoured and the depth it held is ordinary again. Mirrors
+/// `DEFAULT_RESERVATION_GRACE_SLOTS` in the book program.
+const RESERVATION_GRACE_SLOTS: u64 = 32;
+
 /// Cost units to sync with when the test does not care what the sync costs.
 const ANY_SYNC_COST_UNITS: u32 = 20_000;
 
@@ -2490,7 +2507,11 @@ const ANY_SYNC_COST_UNITS: u32 = 20_000;
 /// fixture starts on, the figure does not reach the payment.
 const ANY_CRANK_COST_UNITS: CrankCostUnitsV0 = CrankCostUnitsV0 {
     removal: 30_000,
-    cross: 180_000,
+    // Measured at 327,593 for a self-crossed book: the crank runs two whole
+    // router fills, each with its own quote, split, execute and post-fill
+    // checks. The figure is well past one instruction's 200,000 default, so a
+    // caller has to request its budget.
+    cross: 340_000,
     taker_origin_cross: 190_000,
     trigger: 40_000,
     liquidation: 120_000,
@@ -2777,7 +2798,13 @@ fn run_staged_executor(
         data,
     };
     let keeper = fixture.keeper.insecure_clone();
-    send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
+    send_with_ixs(
+        &mut fixture.svm,
+        &keeper,
+        &[compute_unit_limit_ix(1_400_000), ix],
+        &[],
+    )
+    .unwrap();
 }
 
 /// The staged executor as an instruction, for a test that expects it to fail.
@@ -3902,12 +3929,16 @@ fn a_cross_below_the_markets_surplus_floor_is_declined() {
             crank_conditions: conditions,
             perp_market: perp_market_pda(0),
             quoter_slab: fixture.quoter_slab,
+            instructions_sysvar: instructions_sysvar(),
         }
         .to_account_metas(None);
         accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
         accounts.push(AccountMeta::new(spot_market_pda(0), false));
         accounts.push(AccountMeta::new(fixture.clob_maker_user, false));
         accounts.push(AccountMeta::new(maker_stats, false));
+        // The quoter section: the slab each leg assembles its route from,
+        // then the book's own accounts.
+        accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
         accounts.push(AccountMeta::new(fixture.clob_market, false));
         accounts.push(AccountMeta::new_readonly(clob_id(), false));
         Instruction {
@@ -3916,9 +3947,11 @@ fn a_cross_below_the_markets_surplus_floor_is_declined() {
             data: velocity::instruction::CrankCrossMatch {
                 args: CrankCrossMatchArgs {
                     market_index: 0,
-                    size: UNIT,
-                    buy_quoter_index: 0,
-                    sell_quoter_index: 0,
+                    // Exactly the crossing depth. Both legs route across
+                    // every source, so a size past it would take the vAMM
+                    // on the wrong side of both legs and fail the marginal
+                    // price rule.
+                    size: UNIT / 2,
                 },
             }
             .data(),
@@ -3926,7 +3959,13 @@ fn a_cross_below_the_markets_surplus_floor_is_declined() {
     };
     let ix = cross_ix();
     let keeper = fixture.keeper.insecure_clone();
-    let err = send(&mut fixture.svm, &keeper, ix.clone(), &[]).unwrap_err();
+    let err = send_with_ixs(
+        &mut fixture.svm,
+        &keeper,
+        &[compute_unit_limit_ix(1_400_000), ix.clone()],
+        &[],
+    )
+    .unwrap_err();
     let logs = err.meta.logs.join(" ");
     assert!(
         logs.contains("CrossMatchUnprofitable") || logs.contains("below the market's floor"),
@@ -3939,7 +3978,13 @@ fn a_cross_below_the_markets_surplus_floor_is_declined() {
     // Re-price the floor to zero — the same cross now lands, so it was the
     // floor that declined it and not the cross itself.
     init_crank_conditions_with_floor(&mut fixture, PAYMENT, 1);
-    send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
+    send_with_ixs(
+        &mut fixture.svm,
+        &keeper,
+        &[compute_unit_limit_ix(1_400_000), ix],
+        &[],
+    )
+    .unwrap();
     let maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
     assert_eq!(maker.perp_positions[0].open_orders, 0);
     assert_eq!(maker.perp_positions[0].base_asset_amount, 0);
@@ -4016,6 +4061,7 @@ fn cross_match_crank_fills_a_crossed_clob_and_keeps_the_spread() {
             crank_conditions: conditions,
             perp_market: perp_market_pda(0),
             quoter_slab: fixture.quoter_slab,
+            instructions_sysvar: instructions_sysvar(),
         }
         .to_account_metas(None);
         // Maps, then the maker pair, then the quoter section.
@@ -4023,6 +4069,9 @@ fn cross_match_crank_fills_a_crossed_clob_and_keeps_the_spread() {
         accounts.push(AccountMeta::new(spot_market_pda(0), false));
         accounts.push(AccountMeta::new(fixture.clob_maker_user, false));
         accounts.push(AccountMeta::new(maker_stats, false));
+        // The quoter section: the slab each leg assembles its route from,
+        // then the book's own accounts.
+        accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
         accounts.push(AccountMeta::new(fixture.clob_market, false));
         accounts.push(AccountMeta::new_readonly(clob_id(), false));
         Instruction {
@@ -4031,16 +4080,24 @@ fn cross_match_crank_fills_a_crossed_clob_and_keeps_the_spread() {
             data: velocity::instruction::CrankCrossMatch {
                 args: CrankCrossMatchArgs {
                     market_index: 0,
-                    size: UNIT,
-                    buy_quoter_index: 0,
-                    sell_quoter_index: 0,
+                    // Exactly the crossing depth. Both legs route across
+                    // every source, so a size past it would take the vAMM
+                    // on the wrong side of both legs and fail the marginal
+                    // price rule.
+                    size: UNIT / 2,
                 },
             }
             .data(),
         }
     };
     let keeper = fixture.keeper.insecure_clone();
-    let meta = send(&mut fixture.svm, &keeper, cross_ix(), &[]).unwrap();
+    let meta = send_with_ixs(
+        &mut fixture.svm,
+        &keeper,
+        &[compute_unit_limit_ix(1_400_000), cross_ix()],
+        &[],
+    )
+    .unwrap();
     // The crank pays its keeper out of the reservoir, priced from the cost
     // units an admin measured — so what this burns is what a market has to
     // register for it.
@@ -4082,7 +4139,13 @@ fn cross_match_crank_fills_a_crossed_clob_and_keeps_the_spread() {
     );
 
     // Nothing crossed anymore: the predicate fails the crank.
-    let err = send(&mut fixture.svm, &keeper, cross_ix(), &[]).expect_err("no cross left");
+    let err = send_with_ixs(
+        &mut fixture.svm,
+        &keeper,
+        &[compute_unit_limit_ix(1_400_000), cross_ix()],
+        &[],
+    )
+    .expect_err("no cross left");
     let logs = format!("{:?}", err.meta.logs);
     assert!(
         logs.contains("CrossMatch") || logs.contains("nothing crossed"),
@@ -4814,7 +4877,12 @@ fn an_unattested_taker_on_a_bumped_book_rests_instead_of_filling() {
         "the maker's quote was not taken"
     );
 
-    // Attested: the same take fills synchronously off the book.
+    // Attested flow fills off the book, but only depth no remainder has
+    // claimed. The order that just rested crosses this ask and holds it, and a
+    // claim outranks any later taker however its flow is attested — taking
+    // that ask at the maker's price is exactly the frontrun the claim exists
+    // to stop, and attestation is not a ticket past it. So this take fills
+    // nothing and the ask still stands.
     send_with_ixs(
         &mut fixture.svm,
         &taker_authority,
@@ -4824,22 +4892,27 @@ fn an_unattested_taker_on_a_bumped_book_rests_instead_of_filling() {
     .unwrap();
     let taker: User = read_zero_copy(&fixture.svm, &taker_user);
     assert_eq!(
-        taker.perp_positions[0].base_asset_amount,
-        (UNIT / 2) as i64,
-        "attested flow fills off the book"
+        taker.perp_positions[0].base_asset_amount, 0,
+        "the claimed ask is withheld from attested flow too"
     );
-    assert_eq!(clob_ask_count(&fixture), 0);
+    assert_eq!(clob_ask_count(&fixture), 1, "the claimed ask still stands");
 
-    // Past its activation slot, with the crossing ask gone, the unattested
-    // order shows as ordinary resting depth: it rested — it never filled.
-    fixture.svm.warp_to_slot(20);
+    // Once the claim lapses the ask is ordinary depth again, and both orders
+    // rest: the unattested one never filled, and neither did the attested one.
+    let clock: solana_clock::Clock = fixture.svm.get_sysvar();
+    let lapsed = clock.slot + RESERVATION_GRACE_SLOTS + 1;
+    fixture.svm.warp_to_slot(lapsed);
     set_oracle(
         &mut fixture.svm,
         fixture.oracle,
         (100 * PRICE_PRECISION) as i64,
-        20,
+        lapsed,
     );
-    assert_eq!(clob_bid_count(&fixture), 1, "the unattested order rests");
+    assert_eq!(
+        clob_bid_count(&fixture),
+        2,
+        "both takes rest: neither reached the claimed ask"
+    );
 }
 
 /// A fill skips a latched maker and lands, instead of reverting on them.
@@ -6129,16 +6202,22 @@ fn generic_quoter_cross_conditions_discover_and_fill_a_midpoint_clob_cross() {
     // order cannot rest and crank back-to-back into `require_attested_flow`
     // liquidity.
     let keeper = fixture.keeper.insecure_clone();
-    let err = send(
+    let err = send_with_ixs(
         &mut fixture.svm,
         &keeper,
-        staged_executor_ix(&resolved, payout),
+        &[
+            compute_unit_limit_ix(1_400_000),
+            staged_executor_ix(&resolved, payout),
+        ],
         &[],
     )
     .unwrap_err();
+    // The instance quotes nothing, so the buy leg reaches only the vAMM and
+    // the sell leg only the book: the two legs do not cross, which is a more
+    // specific refusal than an unprofitable total.
     assert!(
-        format!("{:?}", err.err).contains("6380"),
-        "expected CrossMatchUnprofitable while the flow is fresh, got {:?}",
+        format!("{:?}", err.err).contains("6406"),
+        "expected the legs not to cross while the flow is fresh, got {:?}",
         err.err
     );
 
@@ -9348,7 +9427,7 @@ fn cross_conditions_stage_the_pair_branch_with_the_later_remainder_as_taker() {
 /// the taker's. The asks here are exactly the crossing depth, which is the
 /// second shape.
 #[test]
-fn the_arb_crank_clears_the_front_of_book_before_the_remainders_own_cross() {
+fn a_claim_outranks_a_better_priced_maker_and_holds_the_front_until_it_lapses() {
     let mut fixture = setup();
     pause_amm_fill(&mut fixture.svm);
     const PAYMENT: u64 = 10_000;
@@ -9394,6 +9473,31 @@ fn the_arb_crank_clears_the_front_of_book_before_the_remainders_own_cross() {
 
     let payout = Pubkey::new_unique();
     fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
+
+    // The remainder claims the whole 99 ask it crosses, and a claim outranks
+    // any maker: the 102 bid is better priced but takes nothing while the
+    // claim stands. So the arb cross in front of the remainder cannot run, and
+    // the remainder's own cross cannot either, because neither head of the
+    // book is taker-origin. Both cranks stay quiet and the book stays crossed.
+    // That is the accepted cost of the claim outranking price, and it is
+    // bounded: the claim stops being honoured a grace window after the
+    // remainder activates, and the arb crank clears the front then.
+    assert!(
+        run_cross_resolver(&mut fixture, conditions).is_none(),
+        "the claim holds the ask, so neither crank has work"
+    );
+
+    // Past the grace window the claim is inert and the front of book is an
+    // ordinary maker cross again.
+    let clock: solana_clock::Clock = fixture.svm.get_sysvar();
+    let lapsed = clock.slot + RESERVATION_GRACE_SLOTS + 1;
+    fixture.svm.warp_to_slot(lapsed);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        lapsed,
+    );
     let resolved = run_cross_resolver(&mut fixture, conditions).expect("the front of book crosses");
     assert_eq!(
         resolved.executor_disc,
@@ -9754,17 +9858,20 @@ fn trigger_market_order_v1_fires_a_stop_market_straight_to_the_book() {
     );
 }
 
-/// The arbitrage crank refuses a book holding a crossed taker remainder.
+/// The arbitrage crank cannot reach a crossed taker remainder's cover.
 ///
-/// The book's own gate cannot cover this: the arb crank's first leg can
-/// consume the whole opposite side, after which nothing crosses the remainder
-/// and taking it is legitimate as far as the CLOB can tell — so the second leg
-/// would fill it at its own resting price and the improvement would land with
-/// the protocol, which is the outcome the taker-origin path exists to prevent.
-/// Relay never stages that, but the instruction is permissionless, so a
-/// hand-built one has to be refused.
+/// The remainder claims the depth it crosses, and claimed depth leaves the
+/// book's matchable set for every caller that does not consume reservations.
+/// This crank never does, so the ask the remainder crosses is invisible to
+/// it, its buy leg finds nothing, and the cross is refused for having matched
+/// no base. The improvement stays with `crank_taker_origin_cross`, which is
+/// the only caller that may take that cover and the one that owes the taker
+/// the difference.
+///
+/// No predicate does this. The crank is permissionless and the caller names
+/// the size, so a rule that refused only some sizes would leave the rest.
 #[test]
-fn the_arb_crank_refuses_a_book_holding_a_crossed_taker_remainder() {
+fn the_arb_crank_cannot_reach_a_crossed_taker_remainders_cover() {
     let mut fixture = setup();
     pause_amm_fill(&mut fixture.svm);
     const PAYMENT: u64 = 10_000;
@@ -9810,16 +9917,18 @@ fn the_arb_crank_refuses_a_book_holding_a_crossed_taker_remainder() {
         crank_conditions: conditions,
         perp_market: perp_market_pda(0),
         quoter_slab: fixture.quoter_slab,
+        instructions_sysvar: instructions_sysvar(),
     }
     .to_account_metas(None);
     accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
     accounts.push(AccountMeta::new(spot_market_pda(0), false));
-    // Both owners loaded, which is what lets a hand-built call settle against
-    // the remainder at all.
+    // Both owners loaded, which is what would let a hand-built call settle
+    // against the remainder if the book offered it at all.
     accounts.push(AccountMeta::new(taker.user, false));
     accounts.push(AccountMeta::new(taker.stats, false));
     accounts.push(AccountMeta::new(maker.user, false));
     accounts.push(AccountMeta::new(maker.stats, false));
+    accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
     accounts.push(AccountMeta::new(fixture.clob_market, false));
     accounts.push(AccountMeta::new_readonly(clob_id(), false));
 
@@ -9830,8 +9939,6 @@ fn the_arb_crank_refuses_a_book_holding_a_crossed_taker_remainder() {
             args: CrankCrossMatchArgs {
                 market_index: 0,
                 size: UNIT / 2,
-                buy_quoter_index: 0,
-                sell_quoter_index: 0,
             },
         }
         .data(),
@@ -9845,7 +9952,7 @@ fn the_arb_crank_refuses_a_book_holding_a_crossed_taker_remainder() {
     )
     .expect_err("the arb crank must not touch a crossed remainder");
     assert!(
-        format!("{:?}", err.meta.logs).contains("CrossedTakerRemainderPending"),
+        format!("{:?}", err.meta.logs).contains("CrossMatchUnprofitable"),
         "unexpected: {:?}",
         err.meta.logs
     );

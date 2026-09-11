@@ -817,8 +817,8 @@ pub struct L3RowV0 {
     pub node_index: u32,
     /// Who this row settles against.
     pub user: UserRefV0,
-    /// [`L3_ROW_FLAG_TAKER_ORIGIN`], and room for the next fact a row has to
-    /// carry.
+    /// [`L3_ROW_FLAG_TAKER_ORIGIN`] and its siblings, and room for the next
+    /// fact a row has to carry.
     pub flags: u8,
     pub _pad: [u8; 1],
     /// Slot the order was placed in. Its id already orders it against the
@@ -862,6 +862,22 @@ pub const L3_ROW_FLAG_BLOCKS_WALK: u8 = 2;
 /// The quoter sets it, so the reader never reads the owner's position to guess.
 pub const L3_ROW_FLAG_REDUCE_ONLY: u8 = 4;
 
+/// Part of this row's size, or all of it, is claimed by a crossing taker
+/// remainder, so the quoter will not sell it to this caller. `size` already
+/// has the claim subtracted; the flag says why it is short of what the order
+/// holds.
+///
+/// A book quotes an unfilled taker remainder it was handed like any other
+/// resting order, and the remainder claims the depth it crosses so that the
+/// improvement reaches the taker rather than whoever lands a transaction
+/// first. A claim is transient: it lapses if nothing settles the cross, and
+/// the depth is ordinary again.
+///
+/// A caller that displays depth drops what this marks. A caller that settles
+/// the cross reads the same book with `consume_reservation` and sees the whole
+/// size.
+pub const L3_ROW_FLAG_RESERVED: u8 = 8;
+
 /// Encoded width of an [`L3RowV0`].
 pub const L3_ROW_BYTES: usize = core::mem::size_of::<L3RowV0>();
 
@@ -901,6 +917,10 @@ pub struct L3ArgsV0 {
     pub size: u64,
     /// Stop after this many rows, whatever `size` is left.
     pub max_rows: u16,
+    /// Report the depth a crossing taker remainder claims as available. Same
+    /// contract as [`QuoteArgsV0::consume_reservation`], on the surface a
+    /// caller resolves a cross from.
+    pub consume_reservation: bool,
 }
 
 /// Arguments to `quote_v0`: what a taker wants, and who the caller can settle
@@ -956,6 +976,17 @@ pub struct QuoteArgsV0<'a> {
     /// quoter that only serves protected flow (the midpoint's
     /// `require_attested_flow`) refuses when this is false.
     pub taker_served_window: bool,
+    /// Fill the depth a crossing taker remainder claims.
+    ///
+    /// A book withholds the depth an unfilled taker remainder crosses, so the
+    /// improvement over that remainder's resting price reaches the taker
+    /// rather than whoever lands a transaction first. The crank that settles
+    /// the cross is the one caller that must reach it, and it says so here.
+    ///
+    /// The caller asserts it, like `users` and `caps`: the quoter
+    /// authenticates the caller, and the caller is the settlement engine. A
+    /// quoter that reserves nothing ignores it.
+    pub consume_reservation: bool,
 }
 
 /// Arguments to `execute_v0`: commit a fill.
@@ -982,6 +1013,10 @@ pub struct ExecuteArgsV0<'a> {
     /// Same contract as [`QuoteArgsV0::taker_served_window`]. The execute
     /// must carry the value its quote carried.
     pub taker_served_window: bool,
+    /// Same contract as [`QuoteArgsV0::consume_reservation`], and the same
+    /// rule: the execute must carry the value its quote carried, or it walks
+    /// a different set of orders than the one it quoted.
+    pub consume_reservation: bool,
 }
 
 /// The framing of the request half.
@@ -1364,6 +1399,7 @@ mod tests {
             taker: Some(user(3, 1)),
             limit_price: 0,
             taker_served_window: true,
+            consume_reservation: false,
         };
         let bytes = wincode::config::serialize(&args, ARGS_CONFIG).unwrap();
 
@@ -1379,7 +1415,7 @@ mod tests {
         assert_eq!(bytes.len(), args_size(&args).unwrap());
         assert_eq!(
             bytes.len(),
-            after_set + 1 + 8 + USER_CAPS_BYTES + 8 + 1 + UserRefV0::SIZE + 8 + 1
+            after_set + 1 + 8 + USER_CAPS_BYTES + 8 + 1 + UserRefV0::SIZE + 8 + 1 + 1
         );
 
         // And it reads back as a slice into those bytes, not a copy of them.
@@ -1400,10 +1436,11 @@ mod tests {
             reference_price: 0,
             taker: None,
             taker_served_window: false,
+            consume_reservation: false,
         };
         let bytes = wincode::config::serialize(&args, ARGS_CONFIG).unwrap();
         assert_eq!(&bytes[..4], &0u32.to_le_bytes());
-        assert_eq!(bytes.len(), 4 + 1 + 8 + USER_CAPS_BYTES + 8 + 1 + 1);
+        assert_eq!(bytes.len(), 4 + 1 + 8 + USER_CAPS_BYTES + 8 + 1 + 1 + 1);
         assert_eq!(bytes.len(), args_size(&args).unwrap());
 
         let read: ExecuteArgsV0 = wincode::config::deserialize(&bytes, ARGS_CONFIG).unwrap();

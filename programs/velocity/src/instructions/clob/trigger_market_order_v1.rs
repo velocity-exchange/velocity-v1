@@ -359,6 +359,7 @@ fn route_fill_fired_order<'info>(
         taker: route_inputs.taker,
         limit_price: route_inputs.limit_price,
         taker_served_window,
+        consume_reservation: false,
     };
     let inputs = crate::instructions::QuoteInputs {
         caps: crate::instructions::build_user_caps(
@@ -405,10 +406,12 @@ fn route_fill_fired_order<'info>(
         books,
         executor: &mut executor,
         protocol_authority: state.signer,
+        taker_exposure_closed_by_caller: false,
         obligation,
+        worst_fill_price: None,
     };
 
-    controller::orders::fill_perp_order_with_router(
+    controller::orders::fill_perp_order(
         // The fired order is ephemeral: it never reserved, so the fill
         // unwinds no exposure for it.
         controller::orders::FillTarget::Detached {

@@ -10,9 +10,8 @@ use {
         msg,
         state::prop_amm::{
             find_account, ClobCancelAllArgsV0, ClobCancelAllOutcomeV0, ClobCancelSides, ClobMarket,
-            ClobUserRefV0, Direction, ExecuteArgsV0, ExternalQuoterExecutor, PriceLevel,
-            QuoteArgsV0, QuoterSlabExt, QuoterSlabV0, QuoterSlotV0, QuoterSubjects, QuoterType,
-            ResponseLocationV0,
+            ClobUserRefV0, Direction, ExecuteArgsV0, ExternalQuoterExecutor, QuoterSlabExt,
+            QuoterSlabV0, QuoterSlotV0, QuoterSubjects, QuoterType, ResponseLocationV0,
         },
     },
     anchor_lang::prelude::*,
@@ -40,6 +39,9 @@ pub struct CpiQuoterExecutor<'a, 'info> {
     /// Forwarded on every quote and execute leg — see
     /// [`crate::instructions::QuoteInputs::taker_served_window`].
     pub taker_served_window: bool,
+    /// Forwarded on every quote and execute leg — see
+    /// [`crate::instructions::QuoteInputs::consume_reservation`].
+    pub consume_reservation: bool,
     /// The loaded-user set forwarded on every execute (quoters must not fill
     /// anyone else), in the wire's derivable form.
     pub users: &'a [ClobUserRefV0],
@@ -102,58 +104,6 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
             slot.config.oracle_band(market_margin_ratio_initial)
         })
         .unwrap_or(market_margin_ratio_initial)
-    }
-
-    fn resting_levels(
-        &mut self,
-        index: usize,
-        direction: Direction,
-        size: u64,
-    ) -> VelocityResult<Option<Vec<PriceLevel>>> {
-        if self.quoter_type(index) != QuoterType::Clob {
-            return Ok(None);
-        }
-        let slab = self.slab()?;
-        let slot = self.slot_index(index)?;
-        let slots = slab.slots().map_err(|_| {
-            msg!("router executor failed to load the quoter slab");
-            ErrorCode::DefaultError
-        })?;
-        let config = &slots[slot].config;
-        // The book's own `quote_v0`, with the identities and budgets the
-        // execute below carries. Quote and execute are held to spending the
-        // same set the same way, so a ladder taken here is the one that
-        // execute fills — which is what makes it a bound the fill can be
-        // checked against.
-        // Quoted once here, so the pool is the list this returns.
-        let mut levels = Vec::new();
-        Ok(Some(
-            config
-                .quote(
-                    self.market_index,
-                    QuoteArgsV0 {
-                        users: self.users,
-                        direction,
-                        size,
-                        caps: self.caps,
-                        reference_price: self.reference_price,
-                        taker: Some(self.taker),
-                        // The bound is the fill's own, applied by the caller
-                        // against the ladder that comes back.
-                        limit_price: 0,
-                        taker_served_window: self.taker_served_window,
-                    },
-                    slab,
-                    self.accounts,
-                    self.scratch,
-                    &mut levels,
-                )
-                .map_err(|_| {
-                    msg!("clob quote for entry {} failed", slots[slot].entry);
-                    ErrorCode::DefaultError
-                })
-                .map(|_| levels)?,
-        ))
     }
 
     fn subjects(
@@ -240,6 +190,7 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
                     users: self.users,
                     taker: Some(self.taker),
                     taker_served_window: self.taker_served_window,
+                    consume_reservation: self.consume_reservation,
                 },
                 slab,
                 self.accounts,

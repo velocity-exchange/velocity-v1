@@ -7,7 +7,9 @@ use {
     crate::{
         controller::{
             funding::settle_funding_payment,
-            orders::{self, cancel_order, fill_perp_order, place_perp_order},
+            orders::{
+                self, cancel_order, fill_perp_order_without_external_books, place_perp_order,
+            },
             position::{
                 get_position_index, update_position_and_market, update_quote_asset_amount,
                 update_quote_asset_and_break_even_amount, update_settled_pnl, PositionDirection,
@@ -1211,7 +1213,7 @@ pub fn liquidate_perp_with_fill(
     drop(user);
     drop(liquidator);
 
-    let (fill_base_asset_amount, fill_quote_asset_amount) = fill_perp_order(
+    let (fill_base_asset_amount, fill_quote_asset_amount) = fill_perp_order_without_external_books(
         order_id,
         state,
         user_loader,

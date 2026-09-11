@@ -334,6 +334,7 @@ pub mod amm_jit {
             books: &[],
             executor: &mut no_externals,
             protocol_authority: Pubkey::default(),
+            taker_exposure_closed_by_caller: false,
             // Test fixtures stand in for a taker-signed fill: no filler
             // obligation, so a withheld book does not end the pass.
             obligation: crate::math::router::FillerObligation {
@@ -341,6 +342,7 @@ pub mod amm_jit {
                 tx_accounts: None,
                 unrouted_quoters: 0,
             },
+            worst_fill_price: None,
         };
         let mut order = taker.orders[0];
         let (base_asset_amount, quote_asset_amount) = fulfill_perp_order(
@@ -400,6 +402,66 @@ pub mod amm_jit {
         assert_eq!(
             market_after.amm.base_asset_amount_with_amm,
             AMM_RESERVE_PRECISION as i128
+        );
+
+        // The pass reports the worst price a single source reached, which is
+        // the vAMM's slice here. The blended average is lower than that and
+        // higher than the maker's 100, so neither total could have said it.
+        let worst = router_inputs.worst_fill_price.expect("the fill moved base");
+        let blended = quote_asset_amount * BASE_PRECISION_U64 / base_asset_amount;
+        assert!(
+            worst > blended && blended > 100 * PRICE_PRECISION_U64,
+            "worst {worst} blended {blended}"
+        );
+
+        // Suppressing the taker's own post-fill checks is the cross's
+        // exemption, and it is earned by identity rather than claimed. This
+        // taker is an ordinary account, so asking for it is refused before the
+        // fill does any work. Without the identity rule a caller could skip
+        // the margin, equity-breaker and open-interest checks for anyone.
+        let oracle_price_for_refusal = market_after
+            .market_stats
+            .historical_oracle_data
+            .last_oracle_price;
+        drop(market_after);
+        // The fixture leaves every key at the default, which makes the taker
+        // indistinguishable from the protocol user. Name a real protocol
+        // authority so the identity rule has something to refuse.
+        router_inputs.protocol_authority = Pubkey::new_unique();
+        router_inputs.taker_exposure_closed_by_caller = true;
+        let mut order = taker.orders[0];
+        let refused = fulfill_perp_order(
+            &mut taker,
+            &mut order,
+            &taker_key,
+            &mut taker_stats,
+            &makers_and_referrers,
+            &maker_and_referrer_stats,
+            &[],
+            &mut FillerSide {
+                user: &mut Some(&mut filler),
+                stats: &mut Some(&mut filler_stats),
+                key: filler_key,
+                rev_share_escrow: &mut None,
+            },
+            &mut maps,
+            &crate::state::state::ValidityGuardRails::default(),
+            &fee_structure,
+            Some(oracle_price_for_refusal),
+            now,
+            slot,
+            true,
+            FillMode::Fill,
+            false,
+            &mut router_inputs,
+            false,
+            false,
+            0,
+            true,
+        );
+        assert_eq!(
+            refused,
+            Err(crate::error::ErrorCode::TakerExposureNotProtocolOwned)
         );
     }
 
@@ -665,6 +727,7 @@ pub mod amm_jit {
             books: &external_books,
             executor: &mut executor,
             protocol_authority: Pubkey::default(),
+            taker_exposure_closed_by_caller: false,
             // Test fixtures stand in for a taker-signed fill: no filler
             // obligation, so a withheld book does not end the pass.
             obligation: crate::math::router::FillerObligation {
@@ -672,6 +735,7 @@ pub mod amm_jit {
                 tx_accounts: None,
                 unrouted_quoters: 0,
             },
+            worst_fill_price: None,
         };
 
         let mut order = taker.orders[0];
@@ -748,6 +812,15 @@ pub mod amm_jit {
         assert_eq!(
             market_after.amm.base_asset_amount_with_amm,
             (AMM_RESERVE_PRECISION / 2) as i128
+        );
+
+        // The worst price is the DLOB maker's 100, not the 99.5 blend of the
+        // two halves. A cross leg is bound on this figure, so a source that
+        // priced worse than the other leg's best cannot hide inside an
+        // average that still looks crossed.
+        assert_eq!(
+            router_inputs.worst_fill_price,
+            Some(100 * PRICE_PRECISION_U64)
         );
     }
 
@@ -1012,6 +1085,7 @@ pub mod amm_jit {
             books: &external_books,
             executor: &mut executor,
             protocol_authority: Pubkey::default(),
+            taker_exposure_closed_by_caller: false,
             // Test fixtures stand in for a taker-signed fill: no filler
             // obligation, so a withheld book does not end the pass.
             obligation: crate::math::router::FillerObligation {
@@ -1019,6 +1093,7 @@ pub mod amm_jit {
                 tx_accounts: None,
                 unrouted_quoters: 0,
             },
+            worst_fill_price: None,
         };
 
         let mut order = taker.orders[0];
@@ -1334,6 +1409,7 @@ pub mod amm_jit {
             books: &external_books,
             executor: &mut executor,
             protocol_authority: Pubkey::default(),
+            taker_exposure_closed_by_caller: false,
             // Test fixtures stand in for a taker-signed fill: no filler
             // obligation, so a withheld book does not end the pass.
             obligation: crate::math::router::FillerObligation {
@@ -1341,6 +1417,7 @@ pub mod amm_jit {
                 tx_accounts: None,
                 unrouted_quoters: 0,
             },
+            worst_fill_price: None,
         };
 
         let mut order = taker.orders[0];
@@ -1590,6 +1667,7 @@ pub mod amm_jit {
             books: &external_books,
             executor: &mut executor,
             protocol_authority: Pubkey::default(),
+            taker_exposure_closed_by_caller: false,
             // Test fixtures stand in for a taker-signed fill: no filler
             // obligation, so a withheld book does not end the pass.
             obligation: crate::math::router::FillerObligation {
@@ -1597,6 +1675,7 @@ pub mod amm_jit {
                 tx_accounts: None,
                 unrouted_quoters: 0,
             },
+            worst_fill_price: None,
         };
 
         let mut order = taker.orders[0];
@@ -1657,6 +1736,377 @@ pub mod amm_jit {
             market_after.amm.base_asset_amount_with_amm,
             (AMM_RESERVE_PRECISION / 2) as i128 + (BASE_PRECISION_U64 - requested) as i128
         );
+    }
+
+    /// One fill takes a CLOB book and a Custom PropAMM in the same pass, and
+    /// the pass reports the worse of the two prices.
+    ///
+    /// This is what lets `crank_cross_match` middle a PropAMM against the
+    /// book. Its legs used to name one source each and read that source's
+    /// resting ladder to bound themselves, which only a book can answer — so
+    /// a PropAMM could never be a leg. A leg is now an ordinary router fill
+    /// over every source the transaction carries, and the worst price it
+    /// reports is what the other leg is measured against.
+    #[test]
+    fn a_clob_and_a_custom_book_fill_one_pass_and_the_worst_price_spans_both() {
+        use crate::state::prop_amm::{
+            ClobUserRefV0, CompletedOrderV0, Direction, ExternalQuoterExecutor, PriceLevel,
+            QuoterType, UserBalanceChangeV0,
+        };
+
+        /// Book 0 is a CLOB, book 1 a Custom PropAMM. Each answers for its
+        /// own maker at its own price.
+        struct MockTwoBookExecutor {
+            users: [Pubkey; 2],
+            user_refs: [ClobUserRefV0; 2],
+            prices: [u64; 2],
+            requested: [u64; 2],
+        }
+        impl ExternalQuoterExecutor<'static> for MockTwoBookExecutor {
+            fn quoter_type(&self, index: usize) -> QuoterType {
+                if index == 0 {
+                    QuoterType::Clob
+                } else {
+                    QuoterType::Custom
+                }
+            }
+            fn quoter_user(&self, index: usize) -> Pubkey {
+                self.users[index]
+            }
+            fn quoter_key(&self, index: usize) -> Pubkey {
+                self.users[index]
+            }
+            fn subjects(
+                &self,
+                index: usize,
+                _direction: Direction,
+                _size: u64,
+            ) -> crate::error::VelocityResult<crate::state::prop_amm::QuoterSubjects> {
+                Ok(if index == 0 {
+                    crate::state::prop_amm::QuoterSubjects::Book
+                } else {
+                    crate::state::prop_amm::QuoterSubjects::Account(self.users[index])
+                })
+            }
+            fn execute(
+                &mut self,
+                index: usize,
+                _direction: Direction,
+                size: u64,
+            ) -> crate::error::VelocityResult<crate::state::prop_amm::ResponseLocationV0<'static>>
+            {
+                self.requested[index] = size;
+                let quote_size = ((size as u128) * (self.prices[index] as u128)
+                    / BASE_PRECISION_U64 as u128) as u64;
+                let completed: &[CompletedOrderV0] = if index == 0 {
+                    &[CompletedOrderV0 {
+                        order_id: 1,
+                        change_index: 0,
+                        client_order_id: 0,
+                    }]
+                } else {
+                    &[]
+                };
+                Ok(response_account(
+                    &[UserBalanceChangeV0 {
+                        base_size: size,
+                        quote_size,
+                        user: self.user_refs[index],
+                        _pad: [0; 6],
+                    }],
+                    completed,
+                ))
+            }
+        }
+
+        let now = 0_i64;
+        let slot = 0_u64;
+
+        let mut oracle_price = get_pyth_price(100, 6);
+        let oracle_price_key =
+            Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+        create_anchor_account_info!(
+            oracle_price,
+            &oracle_price_key,
+            PythLazerOracle,
+            oracle_account_info
+        );
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
+
+        let mut market = PerpMarket {
+            amm: AMM {
+                base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                base_asset_amount_with_amm: (AMM_RESERVE_PRECISION / 2) as i128,
+                sqrt_k: 100 * AMM_RESERVE_PRECISION,
+                peg_multiplier: 100 * PEG_PRECISION,
+                max_slippage_ratio: 50,
+                max_fill_reserve_fraction: 100,
+                base_spread: 20000,
+                ..AMM::default()
+            },
+            base_asset_amount_long: (AMM_RESERVE_PRECISION / 2) as i128,
+            order_step_size: 1000,
+            order_tick_size: 1,
+            oracle: oracle_price_key,
+            oracle_source: crate::state::oracle::OracleSource::PythLazer,
+            market_stats: MarketStats {
+                historical_oracle_data: HistoricalOracleData {
+                    last_oracle_price: (100 * PRICE_PRECISION) as i64,
+                    last_oracle_price_twap: (100 * PRICE_PRECISION) as i64,
+                    last_oracle_price_twap_5min: (100 * PRICE_PRECISION) as i64,
+                    ..HistoricalOracleData::default()
+                },
+                ..MarketStats::default()
+            },
+            margin_ratio_initial: 1000,
+            margin_ratio_maintenance: 500,
+            status: MarketStatus::Initialized,
+            ..PerpMarket::default_test()
+        };
+        market.amm.max_base_asset_reserve = u64::MAX as u128;
+        market.amm.min_base_asset_reserve = 0;
+
+        create_anchor_account_info!(market, PerpMarket, market_account_info);
+        let market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
+
+        let mut spot_market = SpotMarket {
+            market_index: 0,
+            oracle_source: OracleSource::QuoteAsset,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 6,
+            initial_asset_weight: SPOT_WEIGHT_PRECISION,
+            maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
+            historical_oracle_data: HistoricalOracleData::default_price(QUOTE_PRECISION_I64),
+            ..SpotMarket::default()
+        };
+        create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
+        let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
+
+        // Buys 1 with a 105 limit: room for both books and for the vAMM,
+        // which quotes above both and so wins nothing.
+        let mut taker = User {
+            orders: get_orders(Order {
+                market_index: 0,
+                status: OrderStatus::Open,
+                order_type: OrderType::Limit,
+                direction: PositionDirection::Long,
+                base_asset_amount: BASE_PRECISION_U64,
+                slot: 0,
+                price: 105 * PRICE_PRECISION_U64,
+                ..Order::default()
+            }),
+            perp_positions: get_positions(PerpPosition {
+                market_index: 0,
+                open_orders: 1,
+                open_bids: BASE_PRECISION_I64,
+                ..PerpPosition::default()
+            }),
+            spot_positions: get_spot_positions(SpotPosition {
+                market_index: 0,
+                balance_type: SpotBalanceType::Deposit,
+                scaled_balance: 1000 * SPOT_BALANCE_PRECISION_U64,
+                ..SpotPosition::default()
+            }),
+            ..User::default()
+        };
+
+        // The book's maker holds the open-order aggregates a velocity-mediated
+        // CLOB placement reserves, and no velocity order.
+        let clob_maker_key =
+            Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
+        let clob_maker_authority =
+            Pubkey::from_str("6ncQ5nmiZjHJK8QPGevKJnnLKtSXjZ4Q2r8bTHTNiFEf").unwrap();
+        let mut clob_maker = User {
+            authority: clob_maker_authority,
+            open_orders: 1,
+            has_open_order: true,
+            perp_positions: get_positions(PerpPosition {
+                market_index: 0,
+                open_orders: 1,
+                open_asks: -BASE_PRECISION_I64 / 2,
+                ..PerpPosition::default()
+            }),
+            spot_positions: get_spot_positions(SpotPosition {
+                market_index: 0,
+                balance_type: SpotBalanceType::Deposit,
+                scaled_balance: 100 * 100 * SPOT_BALANCE_PRECISION_U64,
+                ..SpotPosition::default()
+            }),
+            ..User::default()
+        };
+        create_anchor_account_info!(clob_maker, &clob_maker_key, User, clob_maker_info);
+        let mut makers_and_referrers = UserMap::load_one(&clob_maker_info).unwrap();
+
+        // The PropAMM's quoted user reserves nothing — its depth is bounded
+        // by the pre-execute margin clamp instead, and its collateral here is
+        // deep enough that the clamp keeps the whole half.
+        let custom_maker_key =
+            Pubkey::from_str("CLoB111111111111111111111111111111111111111").unwrap();
+        let custom_maker_authority =
+            Pubkey::from_str("9Q5nmiZjHJK8QPGevKJnnLKtSXjZ4Q2r8bTHTNiFEf1").unwrap();
+        let mut custom_maker = User {
+            authority: custom_maker_authority,
+            spot_positions: get_spot_positions(SpotPosition {
+                market_index: 0,
+                balance_type: SpotBalanceType::Deposit,
+                scaled_balance: 100 * 100 * SPOT_BALANCE_PRECISION_U64,
+                ..SpotPosition::default()
+            }),
+            ..User::default()
+        };
+        create_anchor_account_info!(custom_maker, &custom_maker_key, User, custom_maker_info);
+        makers_and_referrers.0.insert(
+            custom_maker_key,
+            anchor_lang::prelude::AccountLoader::try_from(&custom_maker_info).unwrap(),
+        );
+
+        let mut filler = User::default();
+        let fee_structure = get_fee_structure();
+        let (taker_key, _, filler_key) = get_user_keys();
+        let mut taker_stats = UserStats::default();
+        let mut clob_maker_stats = UserStats {
+            authority: clob_maker_authority,
+            ..UserStats::default()
+        };
+        create_anchor_account_info!(clob_maker_stats, UserStats, clob_maker_stats_info);
+        let mut maker_and_referrer_stats = UserStatsMap::load_one(&clob_maker_stats_info).unwrap();
+        let mut custom_maker_stats = UserStats {
+            authority: custom_maker_authority,
+            ..UserStats::default()
+        };
+        create_anchor_account_info!(custom_maker_stats, UserStats, custom_maker_stats_info);
+        maker_and_referrer_stats.0.insert(
+            custom_maker_authority,
+            anchor_lang::prelude::AccountLoader::try_from(&custom_maker_stats_info).unwrap(),
+        );
+        let mut filler_stats = UserStats::default();
+
+        // The CLOB at 99 and the PropAMM at 100. The split is price-first, so
+        // the book's half goes first and the PropAMM's half sets the worst
+        // price of the pass.
+        let clob_levels = [PriceLevel {
+            price: 99 * PRICE_PRECISION_U64,
+            size: BASE_PRECISION_U64 / 2,
+        }];
+        let custom_levels = [PriceLevel {
+            price: 100 * PRICE_PRECISION_U64,
+            size: BASE_PRECISION_U64 / 2,
+        }];
+        let external_books = [
+            crate::math::router::QuoterBook {
+                priority: QuoterType::Clob.default_priority(),
+                levels: &clob_levels,
+                withheld: PriceLevel::default(),
+            },
+            crate::math::router::QuoterBook {
+                priority: QuoterType::Custom.default_priority(),
+                levels: &custom_levels,
+                withheld: PriceLevel::default(),
+            },
+        ];
+        let mut executor = MockTwoBookExecutor {
+            users: [clob_maker_key, custom_maker_key],
+            user_refs: [
+                ClobUserRefV0 {
+                    authority: clob_maker_authority,
+                    sub_account_id: 0,
+                },
+                ClobUserRefV0 {
+                    authority: custom_maker_authority,
+                    sub_account_id: 0,
+                },
+            ],
+            prices: [99 * PRICE_PRECISION_U64, 100 * PRICE_PRECISION_U64],
+            requested: [0; 2],
+        };
+        let mut router_inputs = crate::math::router::RouterFillInputs {
+            books: &external_books,
+            executor: &mut executor,
+            protocol_authority: Pubkey::default(),
+            taker_exposure_closed_by_caller: false,
+            // Test fixtures stand in for a taker-signed fill: no filler
+            // obligation, so a withheld book does not end the pass.
+            obligation: crate::math::router::FillerObligation {
+                taker_signed: true,
+                tx_accounts: None,
+                unrouted_quoters: 0,
+            },
+            worst_fill_price: None,
+        };
+
+        let mut order = taker.orders[0];
+        let (base_asset_amount, quote_asset_amount) = fulfill_perp_order(
+            &mut taker,
+            &mut order,
+            &taker_key,
+            &mut taker_stats,
+            &makers_and_referrers,
+            &maker_and_referrer_stats,
+            &[],
+            &mut FillerSide {
+                user: &mut Some(&mut filler),
+                stats: &mut Some(&mut filler_stats),
+                key: filler_key,
+                rev_share_escrow: &mut None,
+            },
+            &mut maps,
+            &crate::state::state::ValidityGuardRails::default(),
+            &fee_structure,
+            Some(market.market_stats.historical_oracle_data.last_oracle_price),
+            now,
+            slot,
+            true,
+            FillMode::Fill,
+            false,
+            &mut router_inputs,
+            false,
+            false,
+            0,
+            true,
+        )
+        .unwrap();
+        // The PropAMM's 100 is the worst of the two, so a cross leg built
+        // this way is measured against 100 rather than the 99.5 blend.
+        let worst_fill_price = router_inputs.worst_fill_price;
+        let requested = executor.requested;
+
+        // Both sources filled their half, in one pass, with no vAMM slice.
+        assert_eq!(base_asset_amount, BASE_PRECISION_U64);
+        assert_eq!(
+            quote_asset_amount,
+            (99 * QUOTE_PRECISION_I64 / 2 + 100 * QUOTE_PRECISION_I64 / 2) as u64
+        );
+        assert_eq!(requested, [BASE_PRECISION_U64 / 2; 2]);
+        assert_eq!(
+            taker.perp_positions[0].base_asset_amount,
+            BASE_PRECISION_I64
+        );
+
+        let clob_maker_after = makers_and_referrers.get_ref(&clob_maker_key).unwrap();
+        assert_eq!(
+            clob_maker_after.perp_positions[0].base_asset_amount,
+            -BASE_PRECISION_I64 / 2
+        );
+        // The book's reservation unwound; the PropAMM had none to unwind.
+        assert_eq!(clob_maker_after.perp_positions[0].open_asks, 0);
+        assert_eq!(clob_maker_after.perp_positions[0].open_orders, 0);
+        let custom_maker_after = makers_and_referrers.get_ref(&custom_maker_key).unwrap();
+        assert_eq!(
+            custom_maker_after.perp_positions[0].base_asset_amount,
+            -BASE_PRECISION_I64 / 2
+        );
+        assert_eq!(custom_maker_after.perp_positions[0].open_asks, 0);
+
+        let market_after = maps.perp_market_map.get_ref(&0).unwrap();
+        assert_eq!(
+            market_after.amm.base_asset_amount_with_amm,
+            (AMM_RESERVE_PRECISION / 2) as i128
+        );
+
+        assert_eq!(worst_fill_price, Some(100 * PRICE_PRECISION_U64));
     }
 }
 

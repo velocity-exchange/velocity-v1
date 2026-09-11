@@ -8,10 +8,12 @@
 //! conditions (an `OnAccountChange` watch over the book's bests plus an
 //! `EverySlots` poll) remain the liveness floor for CLOB×CLOB, and the
 //! executor is its own predicate either way — it reverts unless the legs
-//! balance and the spread nets positive after both legs' taker fees, so a
-//! submission raced by a fill just fails a simulation. PropAMM×CLOB is
-//! *only* discoverable here: a fixed four-account relay resolver cannot
-//! quote a PropAMM.
+//! balance, every unit of the size crossed, and the spread nets positive
+//! after both legs' taker fees, so a submission raced by a fill just fails a
+//! simulation. The size a plan carries is therefore the crossing depth and
+//! never more: a bigger one runs its tail through levels that do not cross,
+//! and the crank refuses it. PropAMM×CLOB is *only* discoverable here: a
+//! fixed four-account relay resolver cannot quote a PropAMM.
 //!
 //! Maker accounts are derived, never fetched-and-parsed: CLOB nodes carry
 //! `(authority, sub_account_id)`, so both the `User` and `UserStats` PDAs
@@ -222,26 +224,23 @@ pub async fn find_cross_plan<S: ChainSource + ?Sized>(
         return Ok(None);
     };
 
-    // Resolve both legs to their slab slots (they may be the same slot: an
-    // internally crossed CLOB). The executor names legs by slab slot index,
-    // and it consults a slot because the tail carries its response account.
+    // Resolve both sides to their slab slots (they may be the same slot: an
+    // internally crossed CLOB). The crank names no legs — each of its two
+    // fills routes across every source the tail carries — so what the slots
+    // are for is the account union below.
     let slots = quoter_slab_slots(source, velocity, market_index).await?;
-    let slot_for = |entry: Pubkey| -> Result<(u8, QuoterSlotV0)> {
+    let slot_for = |entry: Pubkey| -> Result<QuoterSlotV0> {
         slots
             .iter()
-            .enumerate()
-            .find(|(_, slot)| slot.entry == entry)
-            .map(|(index, slot)| (index as u8, *slot))
+            .find(|slot| slot.entry == entry)
+            .copied()
             .ok_or_else(|| anyhow!("quoter {entry} has no slab slot"))
     };
-    // A view book's key is the staging entry — the ask book fills the buy
-    // leg and the bid book the sell leg.
-    let (buy_index, buy_slot) = slot_for(ask_book.key)?;
-    let (sell_index, sell_slot) = slot_for(bid_book.key)?;
-    let legs: Vec<QuoterSlotV0> = if buy_index == sell_index {
-        vec![buy_slot]
+    // A view book's key is the staging entry.
+    let legs: Vec<QuoterSlotV0> = if ask_book.key == bid_book.key {
+        vec![slot_for(ask_book.key)?]
     } else {
-        vec![buy_slot, sell_slot]
+        vec![slot_for(ask_book.key)?, slot_for(bid_book.key)?]
     };
 
     // Maker pairs per leg, capped; the cross size shrinks to what the staged
@@ -260,8 +259,10 @@ pub async fn find_cross_plan<S: ChainSource + ?Sized>(
     // (User, UserStats) pairs, then the union of the legs' registered CPI
     // accounts. The whole registered list rides rather than the execute
     // leg's subset: each leg resolves its accounts by index into the one
-    // list, so carrying the list is what guarantees the resolve. The perp
-    // market and the slab are named accounts, so neither rides again here.
+    // list, so carrying the list is what guarantees the resolve. The slab
+    // rides the union as well as being named, because each leg assembles its
+    // route from the tail and a route without the slab consults nothing
+    // external. The perp market is named only.
     let signer = velocity_signer_pda(velocity);
     let protocol_user = Pubkey::find_program_address(
         &[b"user", signer.as_ref(), 0u16.to_le_bytes().as_ref()],
@@ -271,6 +272,9 @@ pub async fn find_cross_plan<S: ChainSource + ?Sized>(
     let protocol_user_stats = user_stats_pda(velocity, &signer);
 
     let mut cpi_union: BTreeMap<Pubkey, bool> = BTreeMap::new();
+    cpi_union
+        .entry(quoter_slab_pda(velocity, market_index))
+        .or_default();
     for slot in &legs {
         for meta in slot.config.registered_accounts() {
             *cpi_union.entry(meta.pubkey).or_default() |= meta.is_writable;
@@ -291,6 +295,7 @@ pub async fn find_cross_plan<S: ChainSource + ?Sized>(
             crank_conditions: crank_conditions_pda(velocity, market_index),
             perp_market: perp_market_pda(velocity, market_index),
             quoter_slab: quoter_slab_pda(velocity, market_index),
+            instructions_sysvar: solana_sdk::sysvar::instructions::ID,
         }
         .to_account_metas(None)
     };
@@ -316,12 +321,7 @@ pub async fn find_cross_plan<S: ChainSource + ?Sized>(
 
     use anchor_lang::InstructionData;
     let data = program::instruction::CrankCrossMatch {
-        args: CrankCrossMatchArgs {
-            market_index,
-            size,
-            buy_quoter_index: buy_index,
-            sell_quoter_index: sell_index,
-        },
+        args: CrankCrossMatchArgs { market_index, size },
     }
     .data();
 

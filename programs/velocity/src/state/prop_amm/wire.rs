@@ -295,7 +295,8 @@ pub use quoter_spec::{
 /// The caller reserves exactly this much in one shot. Every field the args
 /// serializer writes has to be counted here: one byte short and the `Vec`
 /// doubles, which on this heap means the fill runs out of memory rather than
-/// slowing down. The trailing byte is `taker_served_window`.
+/// slowing down. The two trailing bytes are `taker_served_window` and
+/// `consume_reservation`.
 pub const fn quoter_cpi_data_len(users: usize, taker: bool) -> usize {
     8 + 1
         + 8
@@ -304,7 +305,7 @@ pub const fn quoter_cpi_data_len(users: usize, taker: bool) -> usize {
         + 8
         + 1
         + if taker { CLOB_USER_REF_BYTES } else { 0 }
-        + 1
+        + 2
 }
 
 /// The same for a quote, which also carries the caller's worst acceptable
@@ -628,22 +629,6 @@ pub trait ExternalQuoterExecutor<'info> {
     /// carries no registry entry can say.
     fn oracle_band(&self, _index: usize, market_margin_ratio_initial: u32) -> u32 {
         market_margin_ratio_initial
-    }
-
-    /// The prices quoter `index`'s liquidity rests at, for a caller with no
-    /// quote leg to bind its fill against — the cross cranks, whose account
-    /// list carries only the execute surface.
-    ///
-    /// Must be called before [`Self::execute`]: it reads state execute is
-    /// about to consume. `None` when velocity cannot read the quoter's
-    /// liquidity, which is every quoter that is not a book.
-    fn resting_levels(
-        &mut self,
-        _index: usize,
-        _direction: Direction,
-        _size: u64,
-    ) -> crate::error::VelocityResult<Option<Vec<PriceLevel>>> {
-        Ok(None)
     }
 
     /// The users quoter `index` may return balance changes for.

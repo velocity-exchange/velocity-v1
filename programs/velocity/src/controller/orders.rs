@@ -17,7 +17,7 @@ use {
             spot_position::decrease_spot_open_bids_and_asks,
         },
         error::{ErrorCode, VelocityResult},
-        get_struct_values, get_then_update_id,
+        get_then_update_id,
         instructions::optional_accounts::AccountMaps,
         load, load_mut,
         math::{
@@ -35,6 +35,7 @@ use {
                 self, is_oracle_valid_for_action, oracle_validity, OracleValidity, VelocityAction,
             },
             orders::*,
+            router::{split_across_quoters, QuoterAllocation, QuoterBook, RouterFillInputs},
             safe_math::SafeMath,
             safe_unwrap::SafeUnwrap,
             time::{legacy_slot_duration_u8_raw, Millis, SlotClock},
@@ -54,7 +55,11 @@ use {
             paused_operations::PerpOperation,
             perp_market::PerpMarket,
             perp_market_map::PerpMarketMap,
-            quoter::{DlobOrderQuoter, MarketQuoteInputs as QuoteInputs, QuoteContext, QuoterFill},
+            prop_amm::{ClobUserRefV0, Direction, PriceLevel, QuoterType},
+            quoter::{
+                DlobOrderQuoter, MarketQuoteInputs as QuoteInputs, QuoteContext, QuoterFill,
+                RouterQuoter,
+            },
             revenue_share::{
                 RevenueShareEscrowZeroCopyMut, RevenueShareOrder, RevenueShareOrderBitFlag,
             },
@@ -72,7 +77,10 @@ use {
             self,
             order::{validate_order, validate_order_for_force_reduce_only},
         },
-        vlp::amm::{math::amm::calculate_amm_available_liquidity, AmmQuoter},
+        vlp::amm::{
+            math::amm::calculate_amm_available_liquidity, router_adapter::vamm_quote_levels,
+            AmmQuoter,
+        },
     },
     anchor_lang::prelude::*,
     std::{collections::BTreeMap, ops::DerefMut},
@@ -983,13 +991,13 @@ pub fn cancel_order(
     filler_reward: u64,
     skip_log: bool,
 ) -> VelocityResult {
-    let (order_status, order_market_index, order_direction, order_market_type) = get_struct_values!(
-        user.orders[order_index],
-        status,
-        market_index,
-        direction,
-        market_type
-    );
+    let Order {
+        status: order_status,
+        market_index: order_market_index,
+        direction: order_direction,
+        market_type: order_market_type,
+        ..
+    } = user.orders[order_index];
 
     let is_perp_order = order_market_type == MarketType::Perp;
 
@@ -1301,12 +1309,11 @@ fn merge_modify_order_params_with_existing_order(
     }))
 }
 
-/// [`fill_perp_order_with_router`] with no external quoter books: the router
-/// pass still runs — vAMM ladder + passed DLOB makers — the split just has
-/// no CPI books to price in. This is every fill entrypoint that doesn't
-/// carry quoter accounts (place-and-take flows; external books there are a
-/// planned follow-up).
-pub fn fill_perp_order(
+/// [`fill_perp_order`] with no external quoter books. The route still runs
+/// over the vAMM ladder and the passed DLOB makers. The split has no CPI book
+/// to price in. This is every fill entrypoint that carries no quoter accounts
+/// (place-and-take flows; external books there are a planned follow-up).
+pub fn fill_perp_order_without_external_books(
     order_id: u32,
     state: &State,
     user: &AccountLoader<User>,
@@ -1326,11 +1333,13 @@ pub fn fill_perp_order(
         books: &[],
         executor: &mut no_externals,
         protocol_authority: state.signer,
+        taker_exposure_closed_by_caller: false,
         // This path carries no external book, so nothing can withhold depth
         // and the obligation is never reached.
         obligation: crate::math::router::FillerObligation::default(),
+        worst_fill_price: None,
     };
-    fill_perp_order_with_router(
+    fill_perp_order(
         FillTarget::Slot(order_id),
         state,
         user,
@@ -1348,9 +1357,6 @@ pub fn fill_perp_order(
     )
 }
 
-/// [`fill_perp_order`] taking the caller's external quoter books explicitly.
-/// The fill routes across the vAMM, the passed DLOB makers, and those books.
-#[allow(clippy::too_many_arguments)]
 /// Which order a fill is for, and whether the owner has a slot holding it.
 ///
 /// A fill works on the order itself. Most orders live in their owner's `orders`
@@ -1375,7 +1381,17 @@ pub enum FillTarget<'a> {
     },
 }
 
-pub fn fill_perp_order_with_router(
+/// Fill one perp order, from the owner's slot or from the caller (see
+/// [`FillTarget`]).
+///
+/// This step owns what surrounds the fill. It validates the market and the
+/// order, refreshes the market oracle statistics, collects the DLOB maker
+/// orders the fill may match, and applies the bookkeeping the fill leaves
+/// behind: the order write-back, the fill-price band, the reduce-only cancel,
+/// the open-interest cap and the funding update. [`fulfill_perp_order`] does
+/// the fill itself.
+#[allow(clippy::too_many_arguments)]
+pub fn fill_perp_order(
     target: FillTarget<'_>,
     state: &State,
     user: &AccountLoader<User>,
@@ -1423,8 +1439,13 @@ pub fn fill_perp_order_with_router(
         }
     };
 
-    let (order_status, market_index, order_market_type, order_reduce_only) =
-        get_struct_values!(order, status, market_index, market_type, reduce_only);
+    let Order {
+        status: order_status,
+        market_index,
+        market_type: order_market_type,
+        reduce_only: order_reduce_only,
+        ..
+    } = order;
 
     validate!(
         order_market_type == MarketType::Perp,
@@ -2444,6 +2465,19 @@ fn fulfill_perp_order(
     // reservation the fill must unwind. False for a fresh ephemeral taker.
     taker_reserved: bool,
 ) -> VelocityResult<(u64, u64)> {
+    // The exemption is earned by identity, not claimed by a flag. The protocol
+    // `User` is the only taker whose exposure a caller closes inside the
+    // instruction, and `protocol_authority` is `State::signer`, written by the
+    // entrypoint from the account the runtime verified. A path that sets the
+    // flag for any other account is refused here rather than trusted.
+    if router.taker_exposure_closed_by_caller {
+        validate!(
+            user.sub_account_id == 0 && user.authority == router.protocol_authority,
+            ErrorCode::TakerExposureNotProtocolOwned,
+            "only the protocol user may settle a fill whose taker checks the caller closes"
+        )?;
+    }
+
     let market_index = user_order.market_index;
 
     let user_order_position_decreasing =
@@ -2554,7 +2588,7 @@ fn fulfill_perp_order(
     drop(perp_market);
 
     let mut maker_fills: BTreeMap<Pubkey, (i64, bool)> = BTreeMap::new();
-    let (base_asset_amount, quote_asset_amount) = fulfill_perp_order_router_pass(
+    let (base_asset_amount, quote_asset_amount) = route_and_settle_perp_fill(
         user,
         user_order,
         user_key,
@@ -2596,16 +2630,21 @@ fn fulfill_perp_order(
         perp_market_oi_before,
         oracle_stale_for_margin,
         fill_mode.is_liquidation(),
+        router.taker_exposure_closed_by_caller,
         now,
     )
 }
 
-/// Post-fill invariants the router pass runs after it settles its allocations:
+/// Post-fill invariants a fill runs after it settles its allocations:
 /// fill-amount coherence, the taker's fill-margin + equity-floor/breaker
 /// check, per-maker margin + equity-floor checks over the accumulated
 /// `maker_fills`, and the stale-oracle OI rule.
+///
+/// [`route_and_settle_perp_fill`] runs these for every fill it settles. A path
+/// that settles a match itself must call this directly, or the fill lands with
+/// no collateral check behind it.
 #[allow(clippy::too_many_arguments)]
-fn fulfill_perp_order_post_checks(
+pub(crate) fn fulfill_perp_order_post_checks(
     user: &User,
     user_stats: &mut UserStats,
     makers_and_referrer: &UserMap,
@@ -2620,6 +2659,9 @@ fn fulfill_perp_order_post_checks(
     perp_market_oi_before: u128,
     oracle_stale_for_margin: bool,
     is_liquidation: bool,
+    // See `RouterFillInputs::taker_exposure_closed_by_caller`. Suppresses the
+    // taker's own checks only; every maker keeps all of theirs.
+    taker_exposure_closed_by_caller: bool,
     now: i64,
 ) -> VelocityResult<(u64, u64)> {
     validate!(
@@ -2640,7 +2682,7 @@ fn fulfill_perp_order_post_checks(
         base_asset_amount
     )?;
 
-    if !is_liquidation {
+    if !is_liquidation && !taker_exposure_closed_by_caller {
         let margin_requirement_type = if user_order_position_decreasing {
             MarginRequirementType::Maintenance
         } else {
@@ -2936,7 +2978,7 @@ fn fulfill_perp_order_post_checks(
 }
 
 #[inline(always)]
-fn update_maker_fills_map(
+pub(crate) fn update_maker_fills_map(
     map: &mut BTreeMap<Pubkey, (i64, bool)>,
     maker_key: &Pubkey,
     maker_direction: PositionDirection,
@@ -2957,7 +2999,7 @@ fn update_maker_fills_map(
     Ok(())
 }
 
-fn determine_if_user_order_is_position_decreasing(
+pub(crate) fn determine_if_user_order_is_position_decreasing(
     user: &User,
     market_index: u16,
     order: &Order,
@@ -3178,6 +3220,48 @@ pub(crate) struct TakerSide<'a> {
     pub reserved: bool,
 }
 
+impl<'a> TakerSide<'a> {
+    /// Bind the taker to the position this fill settles into.
+    ///
+    /// An ephemeral taker holds only the empty position `build_perp_order`
+    /// added, which `get_position_index` skips as available.
+    /// `add_new_position` reuses that same slot, so the fill settles into it.
+    /// A slot order always has a findable position from its placement, so the
+    /// fallback never fires for one.
+    pub(crate) fn bind(
+        user: &'a mut User,
+        stats: &'a mut UserStats,
+        key: Pubkey,
+        order: &'a mut Order,
+        reserved: bool,
+    ) -> VelocityResult<Self> {
+        let direction = order.direction;
+        let market_index = order.market_index;
+        let position_index = get_position_index(&user.perp_positions, market_index)
+            .or_else(|_| add_new_position(&mut user.perp_positions, market_index))?;
+        let existing_position_params_before = user.perp_positions[position_index]
+            .get_existing_position_params_for_order_action(direction);
+        Ok(Self {
+            user,
+            stats,
+            key,
+            position_index,
+            order,
+            direction,
+            existing_position_params_before,
+            reserved,
+        })
+    }
+
+    /// How much of the order is still to fill, capped by the position it
+    /// settles into.
+    pub(crate) fn unfilled_target(&self) -> VelocityResult<u64> {
+        self.order.get_base_asset_amount_unfilled(Some(
+            self.user.perp_positions[self.position_index].base_asset_amount,
+        ))
+    }
+}
+
 /// The maker side of one external fill: whose liquidity filled it, and where
 /// the fill lands in their account.
 ///
@@ -3208,6 +3292,14 @@ pub(crate) struct MakerSide<'a, 'stats> {
 impl<'a, 'stats> MakerSide<'a, 'stats> {
     /// Bind the maker to the position this fill lands in. A maker that holds
     /// no position in this market gets one.
+    ///
+    /// A fresh position is cross-margined, so this fallback would settle a
+    /// book order into the wrong collateral pool if it ever fired for one. It
+    /// cannot: a resting CLOB order holds `open_orders` and `open_bids` or
+    /// `open_asks` on its owner's position, so that slot is never available
+    /// and never recycled, and the order keeps one margin regime for its whole
+    /// life. The fallback is for a maker the fill reaches with no book order
+    /// behind it.
     #[allow(clippy::too_many_arguments)]
     pub fn bind(
         user: &'a mut User,
@@ -3571,6 +3663,35 @@ fn accrue_revenue_share(
     Ok(())
 }
 
+/// Fold one settled allocation into the worst price the fill has reached.
+///
+/// Worse means higher for a buy and lower for a sell. The price is the
+/// allocation's own quote over its own base, floored, which is how every other
+/// per-fill price in this file is derived. Both directions round the same way,
+/// so a caller comparing a buy price against a sell price compares two numbers
+/// that were rounded alike.
+fn note_worst_fill_price(
+    worst: &mut Option<u64>,
+    direction: PositionDirection,
+    base_filled: u64,
+    quote_filled: u64,
+) -> VelocityResult {
+    if base_filled == 0 {
+        return Ok(());
+    }
+    let price = quote_filled
+        .cast::<u128>()?
+        .safe_mul(BASE_PRECISION_U64.cast()?)?
+        .safe_div(base_filled.cast()?)?
+        .cast::<u64>()?;
+    *worst = Some(match (*worst, direction) {
+        (None, _) => price,
+        (Some(seen), PositionDirection::Long) => seen.max(price),
+        (Some(seen), PositionDirection::Short) => seen.min(price),
+    });
+    Ok(())
+}
+
 /// The bit flags every fill record carries.
 ///
 /// A signed-message order is marked so a consumer can tell swift flow from
@@ -3672,7 +3793,7 @@ fn settle_dlob_match_fill(
     // A maker that cranks its own fill arrives as `filler: None` with
     // `filler_key` naming itself: it is already loaded in the maker map, and
     // the same account cannot be loaded mutably twice (see `is_filler_maker`
-    // in `fill_perp_order_with_router`). It did the keeper's work on a slice it
+    // in `fill_perp_order`). It did the keeper's work on a slice it
     // actually filled, so it earns the reward for that slice -- which spreads a
     // multi-maker fill's reward pro rata, since each slice's reward is computed
     // from the base that slice filled. A taker filling its own order names
@@ -3922,8 +4043,8 @@ fn settle_dlob_match_fill(
 /// schedule (maker rebate), position updates on both sides, filler reward,
 /// referrer/builder accrual, and the fill record (with no maker order).
 ///
-/// The maker side has no `validate_fill_price` — the router pass already
-/// enforced per-unit at-or-better against this quoter's own quoted levels,
+/// The maker side has no `validate_fill_price`. The route already enforced
+/// per-unit at-or-better against this quoter's own quoted levels,
 /// which is the maker-side price contract here. The taker side validates
 /// against the effective taker limit as usual.
 ///
@@ -4213,164 +4334,151 @@ pub(crate) fn settle_external_match_fill(
     Ok((base_filled, quote_filled))
 }
 
-/// Fulfillment: one pass over every liquidity source.
-///
-/// Quote (sanitized DLOB makers as single-level books, external CPI books,
-/// the vAMM ladder last with everything else as its last look), split the
-/// taker's unfilled size across the union by priority tier, then execute and
-/// settle each allocation through the fee-policy-keyed settle functions.
-///
-/// One quote/route pass rather than the route-then-quote-per-method loop this
-/// replaced, which is why there is no scratch-AMM projection (routing and
-/// quoting see the same curve), no separate JIT participant (the vAMM's
-/// last-look shading is its general form), and no per-step fallback recompute
-/// (one effective taker limit bounds every book up front).
-///
-/// External books are priced into the split; allocations that land on them
-/// execute through `RouterFillInputs::executor` (the CPI leg the fill
-/// entrypoint supplies) and settle per returned balance change against the
-/// loaded makers. Maker prices are the sanitized frozen prices from
-/// discovery; `DlobOrderQuoter::execute` requotes off the same
-/// oracle/slot/tick so the two agree by construction, and
-/// `settle_dlob_match_fill`'s `validate_fill_price` enforces it.
-#[allow(clippy::too_many_arguments)]
-fn fulfill_perp_order_router_pass(
-    taker: &mut User,
-    taker_order: &mut Order,
-    taker_key: &Pubkey,
-    taker_stats: &mut UserStats,
-    makers_and_referrer: &UserMap,
-    makers_and_referrer_stats: &UserStatsMap,
-    maker_orders_info: &[MakerOrderInfo],
-    filler: &mut FillerSide,
-    maps: &mut AccountMaps,
-    validity_guard_rails: &ValidityGuardRails,
-    policy: &FillPolicy,
-    taker_limit_price: Option<u64>,
-    now: i64,
-    slot: u64,
-    amm_is_available: bool,
-    router: &mut crate::math::router::RouterFillInputs,
-    vamm_maker_rebate: bool,
-    // Whether the taker owns an `open_bids`/`open_asks` + `open_orders`
-    // reservation the fill must unwind. False for a fresh ephemeral taker that
-    // never reserved. See `FillTarget::Detached`.
-    taker_reserved: bool,
-    maker_fills: &mut BTreeMap<Pubkey, (i64, bool)>,
-) -> VelocityResult<(u64, u64)> {
-    use crate::{
-        math::router::{split_across_quoters, QuoterBook},
-        state::{
-            prop_amm::{Direction, PriceLevel, QuoterType},
-            quoter::RouterQuoter,
-        },
-        vlp::amm::router_adapter::vamm_quote_levels,
-    };
+/// One maker order the fill may match, as the single price level the split
+/// sees. The price is the sanitized one discovery froze the order at.
+struct RouterMaker {
+    key: Pubkey,
+    order_index: usize,
+    price: u64,
+    unfilled: u64,
+    is_isolated: bool,
+}
 
-    let external_books = router.books;
+/// What the fill prices against, read once before any allocation executes:
+/// the market snapshot every quoter quotes from, the vAMM state the deferred
+/// mark TWAP needs, and the two limits the ladders are cut at.
+struct FillMarketSetup {
+    /// The market fields quoting reads, owned so the caller can hold the AMM
+    /// mutably while it quotes.
+    quote_inputs: QuoteInputs,
+    /// The vAMM bid and ask after the refresh, and the spreads that produced
+    /// them. The deferred mark TWAP reads all five.
+    amm_bid_price: u64,
+    amm_ask_price: u64,
+    amm_base_spread: u32,
+    amm_long_spread: u32,
+    amm_short_spread: u32,
+    /// The ceiling the vAMM ladder is cut at, tighter than the one the maker
+    /// books get.
+    ///
+    /// A post-only taker acts as a maker, so its limit is buffered by the
+    /// maker rebate it earns and stepped one tick inside the limit. A ladder
+    /// bounded by the raw limit instead lets a post-only order sweep past the
+    /// buffer. That is more size, and every unit priced at the raw limit
+    /// rather than the buffered one, which is LP value handed to the taker.
+    /// The maker books keep the raw limit, because the buffer is the AMM's
+    /// and not theirs.
+    amm_taker_limit: Option<u64>,
+    /// The one ceiling every maker book is cut at. A market order falls back
+    /// to the AMM fallback price, so a router sweep stays price-bounded the
+    /// way the legacy match legs were.
+    effective_taker_limit: Option<u64>,
+}
 
-    let market_index = taker_order.market_index;
+impl FillMarketSetup {
+    /// Refresh the vAMM and read everything the fill quotes against.
+    #[allow(clippy::too_many_arguments)]
+    fn load(
+        amm_quoter: &mut AmmQuoter,
+        quote_inputs: QuoteInputs,
+        taker: &TakerSide,
+        policy: &FillPolicy,
+        taker_limit_price: Option<u64>,
+        market_fee_adjustment: i16,
+        now: i64,
+        slot: u64,
+    ) -> VelocityResult<Self> {
+        amm_quoter.refresh(&quote_inputs.ctx(slot))?;
+        let reserve_after_setup = amm_quoter.amm.reserve_price()?;
+        let (amm_bid_price, amm_ask_price) = amm_quoter.amm_bid_ask(reserve_after_setup)?;
+        let amm_base_spread = amm_quoter.amm_base_spread();
+        let amm_long_spread = amm_quoter.amm.long_spread;
+        let amm_short_spread = amm_quoter.amm.short_spread;
 
-    // ---- Taker order fields (mirrors the step's capture). ----
-    // An ephemeral taker holds only the empty position `build_perp_order` added;
-    // `add_new_position` reuses that slot so the fill can settle into it.
-    let taker_position_index = get_position_index(&taker.perp_positions, market_index)
-        .or_else(|_| add_new_position(&mut taker.perp_positions, market_index))?;
-    let taker_existing_position_before =
-        taker.perp_positions[taker_position_index].base_asset_amount;
-    let taker_existing_position_params_before = taker.perp_positions[taker_position_index]
-        .get_existing_position_params_for_order_action(taker_order.direction);
-    let (order_post_only, order_slot, taker_direction, order_id) =
-        get_struct_values!(taker_order, post_only, slot, direction, order_id);
-    let maker_direction = taker_direction.opposite();
-    let direction = match taker_direction {
-        PositionDirection::Long => Direction::Long,
-        PositionDirection::Short => Direction::Short,
-    };
+        let amm_taker_limit = crate::math::orders::calculate_effective_amm_taker_limit(
+            taker.order,
+            taker_limit_price,
+            None,
+            &crate::math::fees::determine_user_fee_tier(
+                taker.stats,
+                policy.fee_structure,
+                &MarketType::Perp,
+                now,
+                policy.promo_fee_tier,
+            )?,
+            market_fee_adjustment,
+            quote_inputs.tick_size,
+        )?;
 
-    let target_size =
-        taker_order.get_base_asset_amount_unfilled(Some(taker_existing_position_before))?;
-    if target_size == 0 {
-        return Ok((0, 0));
-    }
-
-    // Every leg of this fill settles the same taker, through the same order,
-    // into the same position.
-    let mut taker = TakerSide {
-        user: taker,
-        stats: taker_stats,
-        key: *taker_key,
-        position_index: taker_position_index,
-        order: taker_order,
-        direction: taker_direction,
-        existing_position_params_before: taker_existing_position_params_before,
-        reserved: taker_reserved,
-    };
-
-    // Resolves a wire user reference against the loaded set. Only an external
-    // quoter's balance change names a wire user, so a fill with no external
-    // books never queries this. Building it there loads every user, so skip it
-    // when there are no external books to resolve for.
-    let user_ref_index = if external_books.is_empty() {
-        std::collections::BTreeMap::new()
-    } else {
-        makers_and_referrer.user_ref_index()?
-    };
-    let taker_ref = taker.user.clob_user_ref();
-    let protocol_authority = router.protocol_authority;
-    // One bit per loaded user, in the order the map holds them. Set as each
-    // balance change settles, so the obligation check at the end of the pass
-    // can name a loaded user that did nothing. The wire carries at most
-    // `MAX_QUOTER_WIRE_USERS` users, which is inside a `u64`.
-    let mut settled_users: u64 = 0;
-    let mut mark_settled = |key: &Pubkey| {
-        if let Some(index) = makers_and_referrer.0.keys().position(|held| held == key) {
-            if index < u64::BITS as usize {
-                settled_users |= 1u64 << index;
+        let effective_taker_limit = match taker_limit_price {
+            Some(price) => Some(price),
+            None => {
+                let amm: &crate::vlp::amm::AMM = amm_quoter.amm;
+                let amm_available = calculate_amm_available_liquidity(
+                    amm,
+                    &taker.direction,
+                    quote_inputs.step_size,
+                )?;
+                Some(amm.get_fallback_price(
+                    &quote_inputs.stats,
+                    &taker.direction,
+                    amm_available,
+                    quote_inputs.oracle_price,
+                    taker.order.seconds_til_expiry(now),
+                    quote_inputs.stats.min_order_size,
+                )?)
             }
-        }
-    };
-    let resolve_user = |user: &crate::state::prop_amm::ClobUserRefV0| -> VelocityResult<Pubkey> {
-        user_ref_index
-            .get(&(user.authority, user.sub_account_id))
-            .copied()
-            .ok_or_else(|| {
-                msg!(
-                    "quoter returned a balance change for an unloaded user {}/{}",
-                    user.authority,
-                    user.sub_account_id
-                );
-                ErrorCode::DefaultError
-            })
-    };
+        };
 
-    // ---- Pre-execute depth clamps on external books. ----
-    // Both clamps answer one problem: size the split routes to a book that
-    // the post-fill checks then refuse fails the whole fill, taking the
-    // taker and every other maker in the transaction with it. Both cut a
-    // prefix off the book's own quoted ladder, so what survives is still
-    // depth that quoter promised and the `ext_base == allocation.base` bound
-    // below still holds.
-    //
-    // Custom: a PropAMM's depth is never margin-reserved, so the cap is what
-    // the quoted user's account supports right now. Its declared oracle band,
-    // if it has one, cuts the same ladder: levels outside the band are dropped
-    // before the split reaches them, so a maker's own ceiling costs it
-    // allocation instead of failing a fill that carries other makers. The
-    // response is still held to the band afterwards — the trim is what keeps an
-    // honest quoter inside it, the check is what catches one that is not.
-    //
-    // The band always cuts the taker-favourable end of the ladder, because that
-    // is the end that prices against the maker.
-    //
-    // A CLOB needs no clamp: its makers are sized before the books are
-    // quoted and the book passes over anyone out of room, mid-book, so the
-    // depth behind them is still quoted and still fillable
-    // (`build_user_caps`). Truncating in front of them, which is all a clamp
-    // out here can do, would cost every order behind.
-    //
-    // Runs before this market's `RefMut` is taken, because the margin walk
-    // values every market the quoted user touches.
+        Ok(Self {
+            quote_inputs,
+            amm_bid_price,
+            amm_ask_price,
+            amm_base_spread,
+            amm_long_spread,
+            amm_short_spread,
+            amm_taker_limit,
+            effective_taker_limit,
+        })
+    }
+}
+
+/// Cut each external book's ladder to depth the fill can settle.
+///
+/// Both clamps answer one problem: size the split routes to a book that the
+/// post-fill checks then refuse fails the whole fill, and takes the taker and
+/// every other maker in the transaction with it. Both cut a prefix off the
+/// book's own quoted ladder, so what survives is still depth that quoter
+/// promised and the `ext_base == allocation.base` bound still holds.
+///
+/// Custom: a PropAMM's depth is never margin-reserved, so the cap is what the
+/// quoted user's account supports right now. Its declared oracle band, if it
+/// has one, cuts the same ladder: levels outside the band are dropped before
+/// the split reaches them, so a maker's own ceiling costs it allocation
+/// instead of failing a fill that carries other makers. The response is still
+/// held to the band afterwards. The trim is what keeps an honest quoter
+/// inside it, and the check is what catches one that is not.
+///
+/// The band always cuts the taker-favourable end of the ladder, because that
+/// is the end that prices against the maker.
+///
+/// A CLOB needs no clamp. Its makers are sized before the books are quoted,
+/// and the book passes over anyone out of room mid-book, so the depth behind
+/// them is still quoted and still fillable (`build_user_caps`). Truncating in
+/// front of them, which is all a clamp out here can do, would cost every
+/// order behind.
+///
+/// Runs before this market's `RefMut` is taken, because the margin walk
+/// values every market the quoted user touches.
+fn clamp_external_depth(
+    maps: &mut AccountMaps,
+    makers_and_referrer: &UserMap,
+    router: &RouterFillInputs,
+    market_index: u16,
+    taker_key: &Pubkey,
+    maker_direction: PositionDirection,
+) -> VelocityResult<Vec<Option<Vec<PriceLevel>>>> {
+    let external_books = router.books;
     let (band_oracle_price, market_margin_ratio_initial) = {
         let market = maps.perp_market_map.get_ref(&market_index)?;
         let oracle_id = market.oracle_id();
@@ -4381,7 +4489,7 @@ fn fulfill_perp_order_router_pass(
             margin_ratio_initial,
         )
     };
-    let clamped_books: Vec<Option<Vec<PriceLevel>>> = (0..external_books.len())
+    (0..external_books.len())
         .map(|i| -> VelocityResult<Option<Vec<PriceLevel>>> {
             let cap = match router.executor.quoter_type(i) {
                 QuoterType::Custom => {
@@ -4446,452 +4554,688 @@ fn fulfill_perp_order_router_pass(
                 .collect();
             Ok(Some(levels))
         })
-        .collect::<VelocityResult<_>>()?;
-    let external_levels = |i: usize| -> &[PriceLevel] {
-        clamped_books[i]
-            .as_deref()
-            .unwrap_or(external_books[i].levels)
-    };
+        .collect()
+}
 
-    let mut market = maps.perp_market_map.get_ref_mut(&market_index)?;
+/// One perp fill in progress: what every step of the route reads, built once
+/// by [`PerpFill::new`]. A step takes this and its own arguments.
+///
+/// Two things are deliberately not fields. The market is one: the vAMM quoter
+/// borrows `market.amm` for the whole quote window, so a step reached through
+/// this struct while that borrow is live would collide with it. The filler is
+/// the other: its four lifetimes are load-bearing, and folding them in would
+/// put nine lifetime parameters on every step. Both are named by the steps
+/// that use them.
+struct PerpFill<'a, 'o, 'm, 's, 't, 'r, 'b, 'info> {
+    oracle_map: &'a mut OracleMap<'o>,
+    makers_and_referrer: &'a UserMap<'m>,
+    makers_and_referrer_stats: &'a UserStatsMap<'s>,
+    /// Signed base each maker filled, and whether that maker is isolated.
+    /// The post-fill checks read it.
+    maker_fills: &'a mut BTreeMap<Pubkey, (i64, bool)>,
+    policy: &'a FillPolicy<'a>,
+    router: &'a mut RouterFillInputs<'r, 'b, 'info>,
+    /// [`RouterFillInputs::books`], read out once so a step can hold a ladder
+    /// while the executor runs.
+    external_books: &'r [QuoterBook<'b>],
+    taker: TakerSide<'t>,
+    setup: FillMarketSetup,
+    market_index: u16,
+    /// Opposite the taker's, by construction.
+    maker_direction: PositionDirection,
+    /// The taker's side, as the router states it.
+    route_direction: Direction,
+    filler_key: Pubkey,
+    now: i64,
+    slot: u64,
+    /// Whether the vAMM may fill this order at all.
+    amm_is_available: bool,
+    vamm_maker_rebate: bool,
+    taker_limit_price: Option<u64>,
+    /// True when a book stopped its walk at an owner this transaction does
+    /// not carry. Only then does the fill owe the obligation check, which is
+    /// what keeps that cost off every ordinary fill.
+    withheld_depth: bool,
+    /// Resolves a wire user reference against the loaded set. Empty when no
+    /// external book can name one.
+    user_ref_index: BTreeMap<(Pubkey, u16), Pubkey>,
+    taker_ref: ClobUserRefV0,
+    /// Base and quote settled so far, over every source.
+    base_filled: u64,
+    quote_filled: u64,
+    /// The worst price any one source of this fill executed at.
+    worst_fill_price: Option<u64>,
+    /// The size-independent part of the filler reward this fill already paid.
+    /// Each leg draws down what earlier legs paid, so a taker crossing several
+    /// sources pays that component once.
+    filler_reward_paid: u64,
+    /// One bit per loaded user, in the order the map holds them. Set as each
+    /// balance change settles, so the obligation check can name a loaded user
+    /// that did nothing.
+    settled_users: u64,
+}
 
-    // ---- Oracle context + AMM refresh (shared with the quote view). ----
-    let oracle_pd = *maps.oracle_map.get_price_data(&market.oracle_id())?;
-    let oracle_price = oracle_pd.price;
-    let quote_inputs = QuoteInputs::load(
-        &market,
-        oracle_pd,
-        slot,
-        validity_guard_rails,
-        maps.oracle_map.slot_clock,
-    )?;
-    let sanitize_clamp_denom = quote_inputs.sanitize_clamp_denominator;
-    let order_tick_size = quote_inputs.tick_size;
-    let order_step_size = quote_inputs.step_size;
-    let setup_ctx = quote_inputs.ctx(slot);
-    let market_fee_adjustment = market.fee_adjustment;
-    let mut amm_quoter = AmmQuoter::for_amm(&mut market.amm);
-    amm_quoter.refresh(&setup_ctx)?;
-    let reserve_after_setup = amm_quoter.amm.reserve_price()?;
-    let (amm_bid_price, amm_ask_price) = amm_quoter.amm_bid_ask(reserve_after_setup)?;
-    let amm_base_spread = amm_quoter.amm_base_spread();
-    let amm_long_spread = amm_quoter.amm.long_spread;
-    let amm_short_spread = amm_quoter.amm.short_spread;
-
-    // The vAMM gets a *tighter* ceiling than the maker books do, and it is
-    // not cosmetic: a post-only taker acts as a maker, so its limit is
-    // buffered by the maker rebate it earns and stepped one tick inside the
-    // limit (`calculate_effective_amm_taker_limit`). Bounding the ladder by
-    // the raw limit instead lets a post-only order sweep past the buffer —
-    // more size, and every unit priced at the raw limit rather than the
-    // buffered one, which is LP value handed to the taker. Maker books keep
-    // the raw limit: the buffer is the AMM's, not theirs.
-    let amm_taker_limit = crate::math::orders::calculate_effective_amm_taker_limit(
-        taker.order,
-        taker_limit_price,
-        None,
-        &crate::math::fees::determine_user_fee_tier(
-            taker.stats,
-            policy.fee_structure,
-            &MarketType::Perp,
+impl<'a, 'o, 'm, 's, 't, 'r, 'b, 'info> PerpFill<'a, 'o, 'm, 's, 't, 'r, 'b, 'info> {
+    /// The context, from what the fill entrypoint already holds.
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        oracle_map: &'a mut OracleMap<'o>,
+        makers_and_referrer: &'a UserMap<'m>,
+        makers_and_referrer_stats: &'a UserStatsMap<'s>,
+        maker_fills: &'a mut BTreeMap<Pubkey, (i64, bool)>,
+        policy: &'a FillPolicy<'a>,
+        router: &'a mut RouterFillInputs<'r, 'b, 'info>,
+        taker: TakerSide<'t>,
+        setup: FillMarketSetup,
+        filler_key: Pubkey,
+        amm_is_available: bool,
+        vamm_maker_rebate: bool,
+        taker_limit_price: Option<u64>,
+        now: i64,
+        slot: u64,
+    ) -> VelocityResult<Self> {
+        let external_books = router.books;
+        // Only an external quoter's balance change names a wire user, so a
+        // fill with no external book never resolves one. Building the index
+        // loads every user, so skip it when there is nothing to resolve for.
+        let user_ref_index = if external_books.is_empty() {
+            BTreeMap::new()
+        } else {
+            makers_and_referrer.user_ref_index()?
+        };
+        Ok(Self {
+            market_index: taker.order.market_index,
+            maker_direction: taker.direction.opposite(),
+            route_direction: match taker.direction {
+                PositionDirection::Long => Direction::Long,
+                PositionDirection::Short => Direction::Short,
+            },
+            taker_ref: taker.user.clob_user_ref(),
+            withheld_depth: external_books
+                .iter()
+                .any(|book| book.withheld.price != 0 && book.withheld.size != 0),
+            external_books,
+            user_ref_index,
+            oracle_map,
+            makers_and_referrer,
+            makers_and_referrer_stats,
+            maker_fills,
+            policy,
+            router,
+            taker,
+            setup,
+            filler_key,
+            amm_is_available,
+            vamm_maker_rebate,
+            taker_limit_price,
             now,
-            policy.promo_fee_tier,
-        )?,
-        market_fee_adjustment,
-        order_tick_size,
-    )?;
+            slot,
+            base_filled: 0,
+            quote_filled: 0,
+            worst_fill_price: None,
+            filler_reward_paid: 0,
+            settled_users: 0,
+        })
+    }
 
-    // One effective limit bounds every book. Market orders fall back to the
-    // AMM fallback price so a router sweep stays price-bounded, exactly like
-    // the legacy match legs.
-    let effective_taker_limit = match taker_limit_price {
-        Some(price) => Some(price),
-        None => {
-            let amm_ref: &crate::vlp::amm::AMM = amm_quoter.amm;
-            let amm_available =
-                calculate_amm_available_liquidity(amm_ref, &taker_direction, order_step_size)?;
-            Some(amm_ref.get_fallback_price(
-                &quote_inputs.stats,
-                &taker_direction,
-                amm_available,
-                oracle_price,
-                taker.order.seconds_til_expiry(now),
-                quote_inputs.stats.min_order_size,
-            )?)
-        }
-    };
-    let within_limit = |levels: &[PriceLevel]| -> usize {
-        let Some(limit) = effective_taker_limit else {
+    /// Where a ladder stops. Levels past the taker's effective limit are
+    /// outside what this fill accepts.
+    fn within_limit(&self, levels: &[PriceLevel]) -> usize {
+        let Some(limit) = self.setup.effective_taker_limit else {
             return levels.len();
         };
         levels
             .iter()
-            .position(|level| match taker_direction {
+            .position(|level| match self.taker.direction {
                 PositionDirection::Long => level.price > limit,
                 PositionDirection::Short => level.price < limit,
             })
             .unwrap_or(levels.len())
-    };
-
-    // ---- Quote: maker books as plain data (frozen sanitized prices). ----
-    struct RouterMaker {
-        key: Pubkey,
-        order_index: usize,
-        price: u64,
-        unfilled: u64,
-        is_isolated: bool,
     }
-    let mut router_makers: Vec<RouterMaker> = Vec::with_capacity(maker_orders_info.len());
-    for info in maker_orders_info {
-        let maker_key = &info.key(makers_and_referrer)?;
-        let maker_order_index = &info.slot();
-        let maker_price = &info.price;
-        let maker = makers_and_referrer.get_ref(maker_key)?;
-        let position = maker.get_perp_position(market_index)?;
-        let unfilled = maker.orders[*maker_order_index]
-            .get_base_asset_amount_unfilled(Some(position.base_asset_amount))?;
-        if unfilled == 0 {
-            continue;
+
+    /// Hand the worst price any one source executed at back to the caller.
+    ///
+    /// The fill's own return value is the base and the blended quote, and a
+    /// blend hides its own tail. A caller that must know whether every unit
+    /// cleared a price reads this instead.
+    fn report_worst_fill_price(&mut self) {
+        self.router.worst_fill_price = self.worst_fill_price;
+    }
+
+    /// Record what one settled source moved.
+    fn note_fill(&mut self, base_filled: u64, quote_filled: u64) -> VelocityResult {
+        self.base_filled = self.base_filled.safe_add(base_filled)?;
+        self.quote_filled = self.quote_filled.safe_add(quote_filled)?;
+        note_worst_fill_price(
+            &mut self.worst_fill_price,
+            self.taker.direction,
+            base_filled,
+            quote_filled,
+        )
+    }
+
+    /// Mark a loaded user as one this fill moved. Only a fill that owes the
+    /// obligation check reads the marks, so nothing else pays for them.
+    fn mark_settled(&mut self, key: &Pubkey) {
+        if !self.withheld_depth {
+            return;
         }
-        router_makers.push(RouterMaker {
-            key: *maker_key,
-            order_index: *maker_order_index,
-            price: *maker_price,
-            unfilled,
-            is_isolated: position.is_isolated(),
-        });
-    }
-    let maker_levels: Vec<[PriceLevel; 1]> = router_makers
-        .iter()
-        .map(|maker| {
-            [PriceLevel {
-                price: maker.price,
-                size: maker.unfilled,
-            }]
-        })
-        .collect();
-
-    // Every book but the vAMM's, built once. The vAMM shades against this set
-    // as its last look, and the split then runs over the same set with the
-    // vAMM appended, so `books` takes this allocation over rather than
-    // collecting the same rows a second time. The runtime's allocator never
-    // reclaims, so a second copy is heap this instruction does not get back.
-    let clob_tier = QuoterType::Clob.default_priority();
-    let rivals: Vec<QuoterBook> = external_books
-        .iter()
-        .enumerate()
-        .map(|(i, book)| {
-            let levels = external_levels(i);
-            QuoterBook {
-                priority: book.priority,
-                levels: &levels[..within_limit(levels)],
-                withheld: book.withheld,
+        if let Some(index) = self
+            .makers_and_referrer
+            .0
+            .keys()
+            .position(|held| held == key)
+        {
+            if index < u64::BITS as usize {
+                self.settled_users |= 1u64 << index;
             }
-        })
-        .chain(maker_levels.iter().map(|levels| QuoterBook {
-            priority: clob_tier,
-            levels: &levels[..within_limit(levels.as_slice())],
-            withheld: PriceLevel::default(),
-        }))
-        .collect();
+        }
+    }
 
-    // The vAMM quotes last: every other book is its last look.
-    let amm_levels: Vec<PriceLevel> = if amm_is_available {
+    /// Resolve a wire user reference against the loaded set.
+    fn resolve_user(&self, user: &ClobUserRefV0) -> VelocityResult<Pubkey> {
+        self.user_ref_index
+            .get(&(user.authority, user.sub_account_id))
+            .copied()
+            .ok_or_else(|| {
+                msg!(
+                    "quoter returned a balance change for an unloaded user {}/{}",
+                    user.authority,
+                    user.sub_account_id
+                );
+                ErrorCode::DefaultError
+            })
+    }
+
+    /// The maker orders this fill may match, as plain price levels frozen at
+    /// the prices discovery sanitized them to.
+    ///
+    /// A maker order with nothing left to fill is dropped here, so the split
+    /// never allocates to it.
+    fn quote_dlob_makers(
+        &self,
+        maker_orders_info: &[MakerOrderInfo],
+    ) -> VelocityResult<Vec<RouterMaker>> {
+        maker_orders_info.iter().try_fold(
+            Vec::with_capacity(maker_orders_info.len()),
+            |mut makers, info| -> VelocityResult<Vec<RouterMaker>> {
+                let key = info.key(self.makers_and_referrer)?;
+                let order_index = info.slot();
+                let maker = self.makers_and_referrer.get_ref(&key)?;
+                let position = maker.get_perp_position(self.market_index)?;
+                let unfilled = maker.orders[order_index]
+                    .get_base_asset_amount_unfilled(Some(position.base_asset_amount))?;
+                if unfilled > 0 {
+                    makers.push(RouterMaker {
+                        key,
+                        order_index,
+                        price: info.price,
+                        unfilled,
+                        is_isolated: position.is_isolated(),
+                    });
+                }
+                Ok(makers)
+            },
+        )
+    }
+
+    /// Every book but the vAMM's, each cut at the taker's effective limit.
+    ///
+    /// The vAMM shades against this set as its last look, and the split then
+    /// runs over the same set with the vAMM appended. The caller hands this
+    /// allocation on rather than collecting the same rows a second time: the
+    /// runtime's allocator never reclaims, so a second copy is heap the
+    /// instruction does not get back.
+    fn rival_books<'l>(
+        &self,
+        clamped_books: &'l [Option<Vec<PriceLevel>>],
+        maker_levels: &'l [[PriceLevel; 1]],
+    ) -> Vec<QuoterBook<'l>>
+    where
+        'r: 'l,
+        'b: 'l,
+    {
+        let external_books: &'r [QuoterBook<'b>] = self.external_books;
+        let clob_tier = QuoterType::Clob.default_priority();
+        external_books
+            .iter()
+            .enumerate()
+            .map(|(i, book)| {
+                let levels: &'l [PriceLevel] = clamped_books[i].as_deref().unwrap_or(book.levels);
+                QuoterBook {
+                    priority: book.priority,
+                    levels: &levels[..self.within_limit(levels)],
+                    withheld: book.withheld,
+                }
+            })
+            .chain(maker_levels.iter().map(|levels| QuoterBook {
+                priority: clob_tier,
+                levels: &levels[..self.within_limit(levels.as_slice())],
+                withheld: PriceLevel::default(),
+            }))
+            .collect()
+    }
+
+    /// The vAMM ladder. The vAMM quotes last, so every other book is its last
+    /// look.
+    fn quote_vamm(
+        &self,
+        amm_quoter: &AmmQuoter,
+        rivals: &[QuoterBook],
+        target_size: u64,
+    ) -> VelocityResult<Vec<PriceLevel>> {
+        if !self.amm_is_available {
+            return Ok(vec![]);
+        }
         vamm_quote_levels(
-            amm_quoter.amm,
-            direction,
+            &*amm_quoter.amm,
+            self.route_direction,
             target_size,
-            order_step_size,
-            &rivals,
+            self.setup.quote_inputs.step_size,
+            rivals,
             // Fall back to the shared limit when the order has no limit of
-            // its own (a market order): `amm_taker_limit` is None then.
-            amm_taker_limit.or(effective_taker_limit),
-        )?
-    } else {
-        vec![]
-    };
+            // its own. A market order has no `amm_taker_limit`.
+            self.setup
+                .amm_taker_limit
+                .or(self.setup.effective_taker_limit),
+        )
+    }
 
-    // ---- Split across the union, all books truncated at the limit. ----
-    //
-    // The vAMM book is NOT re-truncated: `vamm_quote_levels` already capped the
-    // ladder at the limit, and its per-rung prices are rounded slice averages —
-    // comparing those to the limit would drop dust rungs whose true cost is
-    // inside it.
-    let mut books = rivals;
-    books.push(QuoterBook {
-        priority: QuoterType::Vamm.default_priority(),
-        levels: &amm_levels,
-        withheld: PriceLevel::default(),
-    });
-    // A book that stops its walk at an order whose owner this transaction does
-    // not carry reports the depth behind it as withheld. Velocity holds back no
-    // taker size for it: the taker asked to trade, the rest of the route can
-    // fill, and the aged order keeps its place in the queue because the book
-    // stopped its own walk. What the withheld report drives instead is the
-    // obligation check at the end of this pass, which asks whether the party
-    // that built the transaction could have carried that owner.
-    let withheld_depth = external_books
-        .iter()
-        .any(|book| book.withheld.price != 0 && book.withheld.size != 0);
-    let allocations = split_across_quoters(direction, target_size, &books, order_step_size)?;
-    let externals_end = external_books.len();
-    let makers_end = externals_end + maker_levels.len();
-
-    // ---- Execute the vAMM allocation, then release &mut market.amm. ----
-    let amm_allocation = allocations[makers_end];
-    let amm_fill = if amm_allocation.base > 0 {
-        let fill =
-            RouterQuoter::execute(&mut amm_quoter, &setup_ctx, direction, amm_allocation.base)?;
+    /// Execute the vAMM's allocation, held to the ladder it quoted.
+    fn execute_vamm(
+        &self,
+        amm_quoter: &mut AmmQuoter,
+        allocation: &QuoterAllocation,
+    ) -> VelocityResult<Option<QuoterFill>> {
+        if allocation.base == 0 {
+            return Ok(None);
+        }
+        let fill = RouterQuoter::execute(
+            amm_quoter,
+            &self.setup.quote_inputs.ctx(self.slot),
+            self.route_direction,
+            allocation.base,
+        )?;
         validate!(
-            fill.base_filled <= amm_allocation.base,
+            fill.base_filled <= allocation.base,
             ErrorCode::DefaultError,
             "router vAMM overfilled: {} > {}",
             fill.base_filled,
-            amm_allocation.base
+            allocation.base
         )?;
         validate!(
             crate::controller::matching::fill_at_or_better(
-                taker_direction,
+                self.taker.direction,
                 &fill,
-                &amm_allocation,
+                allocation,
                 BASE_PRECISION_U64
             )?,
             ErrorCode::DefaultError,
             "router vAMM filled worse than quoted: fill {}/{} vs quoted {}/{}",
             fill.quote_filled,
             fill.base_filled,
-            amm_allocation.quote,
-            amm_allocation.base
+            allocation.quote,
+            allocation.base
         )?;
-        (fill.base_filled > 0).then_some(fill)
-    } else {
-        None
-    };
-    let _ = amm_quoter;
+        Ok((fill.base_filled > 0).then_some(fill))
+    }
 
-    // ---- Execute + settle each maker allocation. ----
-    // Re-quote against the *same* oracle price discovery froze the book at
-    // (the MM price), not the confidence-bounded safe price. An oracle-offset
-    // maker prices off `ctx.oracle`, so using a different price here would
-    // re-quote it away from its quoted level and trip the at-or-better check —
-    // failing the whole fill closed instead of filling.
-    let discovery_oracle = OraclePriceData {
-        price: quote_inputs.mm_oracle.get_price(),
-        ..quote_inputs.safe_oracle
-    };
-    let ctx = QuoteContext {
-        stats: &quote_inputs.stats,
-        oracle: &discovery_oracle,
-        mm_oracle: None,
-        oracle_validity: None,
-        fee_budget: 0,
-        tick: order_tick_size,
-        step_size: order_step_size,
-        slot,
-        slot_clock: maps.oracle_map.slot_clock,
-        base_precision: BASE_PRECISION_U64,
-        market_status: MarketStatus::default(),
-        market_config: 0,
-    };
-    let mut total_base = 0u64;
-    let mut total_quote = 0u64;
-    // The filler reward's time-based component is size-independent, so it is
-    // an allowance for the whole fill: each leg draws down what earlier legs
-    // already paid instead of being granted it afresh. Otherwise a taker
-    // crossing N sources pays that component N times.
-    let mut filler_reward_paid = 0_u64;
-    for (i, router_maker) in router_makers.iter().enumerate() {
-        let allocation = allocations[externals_end + i];
-        if allocation.base == 0 {
-            continue;
+    /// The oracle a DLOB maker is re-quoted against.
+    ///
+    /// The *same* price discovery froze the book at, which is the MM price
+    /// and not the confidence-bounded safe price. An oracle-offset maker
+    /// prices off `ctx.oracle`, so a different price here re-quotes it away
+    /// from its quoted level and trips the at-or-better check. That fails the
+    /// whole fill closed instead of filling.
+    fn discovery_oracle(&self) -> OraclePriceData {
+        OraclePriceData {
+            price: self.setup.quote_inputs.mm_oracle.get_price(),
+            ..self.setup.quote_inputs.safe_oracle
         }
-        let mut maker = makers_and_referrer.get_ref_mut(&router_maker.key)?;
-        // The settle helpers update positions directly, so the maker's
-        // funding must be current first — same pre-flight every match path
-        // runs (a stale stamp fails `update_position_and_market`'s check).
-        settle_funding_payment(&mut maker, &router_maker.key, market.deref_mut(), now)?;
-        let maker_existing_position_params = maker
-            .get_perp_position(market_index)?
-            .get_existing_position_params_for_order_action(maker_direction);
-        let fill = {
-            let mut dlob = DlobOrderQuoter::new(
-                &mut maker.orders[router_maker.order_index],
-                router_maker.unfilled,
-            );
-            RouterQuoter::execute(&mut dlob, &ctx, direction, allocation.base)?
-        };
-        if fill.base_filled == 0 {
-            continue;
+    }
+
+    /// The context one DLOB maker's order re-quotes through.
+    fn dlob_quote_context<'q>(&'q self, oracle: &'q OraclePriceData) -> QuoteContext<'q> {
+        QuoteContext {
+            stats: &self.setup.quote_inputs.stats,
+            oracle,
+            mm_oracle: None,
+            oracle_validity: None,
+            fee_budget: 0,
+            tick: self.setup.quote_inputs.tick_size,
+            step_size: self.setup.quote_inputs.step_size,
+            slot: self.slot,
+            slot_clock: self.oracle_map.slot_clock,
+            base_precision: BASE_PRECISION_U64,
+            market_status: MarketStatus::default(),
+            market_config: 0,
         }
-        if withheld_depth {
-            mark_settled(&router_maker.key);
-        }
+    }
+
+    /// Hold one maker's fill to the allocation it answers.
+    fn check_dlob_fill(
+        &self,
+        maker_key: &Pubkey,
+        fill: &QuoterFill,
+        allocation: &QuoterAllocation,
+    ) -> VelocityResult {
         validate!(
             fill.base_filled <= allocation.base,
             ErrorCode::DefaultError,
             "router maker {} overfilled: {} > {}",
-            router_maker.key,
+            maker_key,
             fill.base_filled,
             allocation.base
         )?;
         validate!(
             crate::controller::matching::fill_at_or_better(
-                taker_direction,
-                &fill,
-                &allocation,
+                self.taker.direction,
+                fill,
+                allocation,
                 BASE_PRECISION_U64
             )?,
             ErrorCode::DefaultError,
             "router maker {} filled worse than quoted",
-            router_maker.key
+            maker_key
         )?;
+        Ok(())
+    }
 
-        let mut maker_stats = if maker.authority == taker.user.authority {
+    /// Execute and settle every DLOB maker's allocation.
+    fn settle_dlob_allocations(
+        &mut self,
+        market: &mut PerpMarket,
+        filler: &mut FillerSide,
+        makers: &[RouterMaker],
+        allocations: &[QuoterAllocation],
+    ) -> VelocityResult {
+        makers
+            .iter()
+            .zip(allocations)
+            .try_for_each(|(maker, allocation)| {
+                self.settle_dlob_allocation(market, filler, maker, allocation)
+            })
+    }
+
+    /// Execute one maker's allocation off their resting order, then settle it.
+    fn settle_dlob_allocation(
+        &mut self,
+        market: &mut PerpMarket,
+        filler: &mut FillerSide,
+        router_maker: &RouterMaker,
+        allocation: &QuoterAllocation,
+    ) -> VelocityResult {
+        if allocation.base == 0 {
+            return Ok(());
+        }
+        let mut maker = self.makers_and_referrer.get_ref_mut(&router_maker.key)?;
+        // The settle helpers update positions directly, so the maker's
+        // funding must be current first. Every match path runs the same
+        // pre-flight, and a stale stamp fails `update_position_and_market`.
+        settle_funding_payment(&mut maker, &router_maker.key, market, self.now)?;
+        let maker_existing_position_params = maker
+            .get_perp_position(self.market_index)?
+            .get_existing_position_params_for_order_action(self.maker_direction);
+
+        let discovery_oracle = self.discovery_oracle();
+        let fill = {
+            let ctx = self.dlob_quote_context(&discovery_oracle);
+            let mut dlob = DlobOrderQuoter::new(
+                &mut maker.orders[router_maker.order_index],
+                router_maker.unfilled,
+            );
+            RouterQuoter::execute(&mut dlob, &ctx, self.route_direction, allocation.base)?
+        };
+        if fill.base_filled == 0 {
+            return Ok(());
+        }
+        self.mark_settled(&router_maker.key);
+        self.check_dlob_fill(&router_maker.key, &fill, allocation)?;
+
+        let mut maker_stats = if maker.authority == self.taker.user.authority {
             None
         } else {
-            Some(makers_and_referrer_stats.get_ref_mut(&maker.authority)?)
+            Some(
+                self.makers_and_referrer_stats
+                    .get_ref_mut(&maker.authority)?,
+            )
         };
         let mut maker_opt: Option<&mut User> = Some(&mut maker);
         let mut maker_stats_opt: Option<&mut UserStats> = maker_stats.as_deref_mut();
         let (base_filled, quote_filled, maker_filled) = settle_dlob_match_fill(
             &fill,
-            market.deref_mut(),
-            &mut taker,
+            market,
+            &mut self.taker,
             &mut maker_opt,
             &mut maker_stats_opt,
             Some(router_maker.order_index),
             Some(&router_maker.key),
             maker_existing_position_params,
             Some(router_maker.price),
-            effective_taker_limit,
-            oracle_price,
+            self.setup.effective_taker_limit,
+            self.setup.quote_inputs.oracle_price,
             filler,
-            policy,
-            &mut maps.oracle_map,
-            now,
-            slot,
-            &mut filler_reward_paid,
+            self.policy,
+            self.oracle_map,
+            self.now,
+            self.slot,
+            &mut self.filler_reward_paid,
         )?;
-        total_base = total_base.safe_add(base_filled)?;
-        total_quote = total_quote.safe_add(quote_filled)?;
+        self.note_fill(base_filled, quote_filled)?;
         if maker_filled != 0 {
             update_maker_fills_map(
-                maker_fills,
+                self.maker_fills,
                 &router_maker.key,
-                maker_direction,
+                self.maker_direction,
                 maker_filled,
                 router_maker.is_isolated,
             )?;
         }
-        // Once-per-order open-orders counter (mirrors the step's finalize).
+        // Once-per-order open-orders counter.
         if maker.orders[router_maker.order_index].get_base_asset_amount_unfilled(None)? == 0 {
-            let maker_position_index = get_position_index(&maker.perp_positions, market_index)?;
+            let maker_position_index =
+                get_position_index(&maker.perp_positions, self.market_index)?;
             let has_auction = maker.orders[router_maker.order_index].has_auction();
             maker.decrement_open_orders(has_auction);
             maker.perp_positions[maker_position_index].open_orders -= 1;
         }
+        Ok(())
     }
 
-    // ---- Settle the vAMM fill. ----
-    if let Some(fill) = amm_fill {
+    /// Settle the vAMM's fill against the house.
+    ///
+    /// Runs after the DLOB legs, which have released their borrows by here.
+    fn settle_vamm_allocation(
+        &mut self,
+        market: &mut PerpMarket,
+        filler: &mut FillerSide,
+        fill: &QuoterFill,
+        allocation: &QuoterAllocation,
+    ) -> VelocityResult {
         // A maker that cranked this fill did the keeper's work for the *whole*
         // order, not just its own slice, so it earns the reward on the vAMM
         // slice too. It arrives as `filler: None` with `filler_key` naming
-        // itself (already loaded in the maker map, so it cannot be loaded a
-        // second time as the filler). Gated on it having actually filled, so a
-        // maker that names itself but wins no allocation earns nothing. The
-        // DLOB loop above has released its borrows by here.
-        let cranking_maker_key = (filler.user.is_none() && maker_fills.contains_key(&filler.key))
-            .then_some(&filler.key)
-            .filter(|key| makers_and_referrer.0.contains_key(key));
+        // itself. It is already loaded in the maker map, so it cannot be
+        // loaded a second time as the filler. The reward is gated on it having
+        // actually filled, so a maker that names itself but wins no allocation
+        // earns nothing.
+        let cranking_maker_key = (filler.user.is_none()
+            && self.maker_fills.contains_key(&self.filler_key))
+        .then_some(self.filler_key)
+        .filter(|key| self.makers_and_referrer.0.contains_key(key));
         let mut cranking_maker = match cranking_maker_key {
-            Some(key) => Some(makers_and_referrer.get_ref_mut(key)?),
+            Some(key) => Some(self.makers_and_referrer.get_ref_mut(&key)?),
             None => None,
         };
         let mut cranking_maker_stats = match cranking_maker.as_deref() {
-            Some(maker) if maker.authority != taker.user.authority => {
-                Some(makers_and_referrer_stats.get_ref_mut(&maker.authority)?)
-            }
+            Some(maker) if maker.authority != self.taker.user.authority => Some(
+                self.makers_and_referrer_stats
+                    .get_ref_mut(&maker.authority)?,
+            ),
             _ => None,
         };
         let mut cranking_maker_opt: Option<&mut User> = cranking_maker.as_deref_mut();
         let mut cranking_maker_stats_opt: Option<&mut UserStats> =
             cranking_maker_stats.as_deref_mut();
+        // Read off the order before the taker side is borrowed. A fill never
+        // changes any of the three.
+        let order_post_only = self.taker.order.post_only;
+        let order_slot = self.taker.order.slot;
+        let order_id = self.taker.order.order_id;
         let (base_filled, quote_filled) = settle_amm_house_fill(
-            &fill,
-            market.deref_mut(),
-            &mut taker,
+            fill,
+            market,
+            &mut self.taker,
             order_post_only,
             order_slot,
             order_id,
-            taker_limit_price,
-            amm_allocation.quote,
-            amm_allocation.base,
+            self.taker_limit_price,
+            allocation.quote,
+            allocation.base,
             &mut cranking_maker_opt,
             &mut cranking_maker_stats_opt,
             filler,
-            policy,
-            &mut maps.oracle_map,
-            now,
-            slot,
-            vamm_maker_rebate,
-            &mut filler_reward_paid,
+            self.policy,
+            self.oracle_map,
+            self.now,
+            self.slot,
+            self.vamm_maker_rebate,
+            &mut self.filler_reward_paid,
         )?;
-        total_base = total_base.safe_add(base_filled)?;
-        total_quote = total_quote.safe_add(quote_filled)?;
+        self.note_fill(base_filled, quote_filled)
     }
 
-    // ---- Execute + settle each external allocation via the CPI leg. ----
-    // The response is untrusted on three axes, and each is bounded before a
-    // single balance is moved: the volume (never more than allocated), the
-    // price (inside the levels this quoter quoted moments ago, in this same
-    // transaction), and the subject (a user this quoter is allowed to act
-    // against — the loaded set is far wider than that, and it holds the taker
-    // and every rival quoter's makers).
-    for (i, allocation) in allocations[..externals_end].iter().enumerate() {
+    /// Execute and settle every external book's allocation through its CPI
+    /// leg.
+    fn settle_external_allocations(
+        &mut self,
+        market: &mut PerpMarket,
+        filler: &mut FillerSide,
+        books: &[QuoterBook],
+        allocations: &[QuoterAllocation],
+    ) -> VelocityResult {
+        books
+            .iter()
+            .zip(allocations)
+            .enumerate()
+            .try_for_each(|(index, (book, allocation))| {
+                self.settle_external_allocation(market, filler, index, book.levels, allocation)
+            })
+    }
+
+    /// Execute one external book's allocation and settle what it answers.
+    ///
+    /// The response is untrusted on three axes, and each is bounded before a
+    /// single balance moves: the volume (never more than allocated), the
+    /// price (inside the levels this quoter quoted moments ago, in this same
+    /// transaction), and the subject (a user this quoter is allowed to act
+    /// against — the loaded set is far wider than that, and it holds the
+    /// taker and every rival quoter's makers).
+    fn settle_external_allocation(
+        &mut self,
+        market: &mut PerpMarket,
+        filler: &mut FillerSide,
+        index: usize,
+        quoted_levels: &[PriceLevel],
+        allocation: &QuoterAllocation,
+    ) -> VelocityResult {
         if allocation.base == 0 {
-            continue;
+            return Ok(());
         }
         // Before the CPI: a book-backed quoter's permitted subjects live in
         // the state its execute is about to consume.
-        let subjects = router.executor.subjects(i, direction, allocation.base)?;
-        // The guard lives here, for exactly as long as this leg reads the
-        // response — so the records below borrow out of the quoter's account
-        // instead of being copied onto velocity's heap.
-        // Priced before the CPI: execute overwrites the very buffer the ladder
-        // was read from.
+        let subjects =
+            self.router
+                .executor
+                .subjects(index, self.route_direction, allocation.base)?;
+        // Priced before the CPI: execute overwrites the very buffer the
+        // ladder was read from.
         //
-        // Quantized at the same step the split used. The split skips a level's
-        // sub-step tail, so it reaches further down the ladder than an
-        // unquantized walk of the same base would, and the two disagree about
-        // which levels the allocation was cut from. The band below is built
-        // from this prefix's best and worst price, so a prefix that stopped
-        // short rejects an honest fill priced at the level the split actually
-        // allocated at.
-        let quoted =
-            crate::math::router::quoted_prefix(books[i].levels, order_step_size, allocation.base)?;
-        let located = router.executor.execute(i, direction, allocation.base)?;
+        // Quantized at the same step the split used. The split skips a
+        // level's sub-step tail, so it reaches further down the ladder than
+        // an unquantized walk of the same base does, and the two then
+        // disagree about which levels the allocation was cut from. The band
+        // below is built from this prefix's best and worst price, so a prefix
+        // that stopped short refuses an honest fill priced at the level the
+        // split allocated at.
+        let quoted = crate::math::router::quoted_prefix(
+            quoted_levels,
+            self.setup.quote_inputs.step_size,
+            allocation.base,
+        )?;
+        // The guard lives here, for exactly as long as this leg reads the
+        // response, so the records below borrow out of the quoter's account
+        // instead of being copied onto velocity's heap.
+        let located = self
+            .router
+            .executor
+            .execute(index, self.route_direction, allocation.base)?;
         let data = located.borrow()?;
         let response = located.execute_response(&data)?;
         // CLOB orders are margin-reserved through velocity at placement, so
-        // their fills/culls unwind open-order aggregates; Custom PropAMM
+        // their fills and culls unwind open-order aggregates. Custom PropAMM
         // depth is never reserved, so there is nothing to unwind.
-        let maker_aggregates_tracked = router.executor.quoter_type(i).tracks_maker_aggregates();
+        let maker_aggregates_tracked = self
+            .router
+            .executor
+            .quoter_type(index)
+            .tracks_maker_aggregates();
 
+        self.validate_external_volume_and_price(index, &response, allocation)?;
+
+        for change_index in 0..response.changes.len() {
+            self.settle_external_change(
+                market,
+                filler,
+                index,
+                &response,
+                change_index,
+                &subjects,
+                &quoted,
+                maker_aggregates_tracked,
+            )?;
+        }
+
+        if maker_aggregates_tracked {
+            self.unwind_culled_remainders(market, index, &response, &subjects)?;
+        }
+        Ok(())
+    }
+
+    /// Hold a whole response to the allocation it answers.
+    ///
+    /// A quote is what its quoter can deliver. The CLOB spends execute's own
+    /// fill and user budget while it walks, and a custom quoter's ladder was
+    /// already cut to what its own margin supports, so the allocation is
+    /// fillable in full. Anything else is the quoter contradicting its own
+    /// quote.
+    ///
+    /// Delivering nothing is the same contradiction as delivering part, and
+    /// is treated the same way. It used to be skipped, which let a quoter win
+    /// base off a tight quote and hand the taker a hole: the size went
+    /// nowhere, and a source that would have filled it never saw it. An
+    /// allocation of zero is already skipped by the caller, so reaching here
+    /// with nothing means this quoter was given real size.
+    fn validate_external_volume_and_price(
+        &self,
+        index: usize,
+        response: &crate::state::prop_amm::ExecuteResponseV0,
+        allocation: &QuoterAllocation,
+    ) -> VelocityResult {
         let (ext_base, ext_quote) = response.changes.iter().try_fold(
             (0u64, 0u64),
             |(base, quote), change| -> VelocityResult<(u64, u64)> {
                 // A zero-base change is not a fill, so it has no place in the
-                // response. Admitting one lets a quoter carry quote on a record
-                // the per-change band and the subject check both skip (they
-                // continue on base_size == 0), while its quote was already
-                // summed here. A short taker is then settled at the quoter's
-                // worst rung and the quoter keeps the difference.
+                // response. Admitting one lets a quoter carry quote on a
+                // record the per-change band and the subject check both skip
+                // (they continue on base_size == 0), while its quote was
+                // already summed here. A short taker is then settled at the
+                // quoter's worst rung and the quoter keeps the difference.
                 validate!(
                     change.base_size > 0,
                     ErrorCode::QuoterFillOffQuote,
                     "quoter {} returned a zero-base balance change carrying {} quote",
-                    router.executor.quoter_key(i),
+                    self.router.executor.quoter_key(index),
                     change.quote_size
                 )?;
                 Ok((
@@ -4900,23 +5244,11 @@ fn fulfill_perp_order_router_pass(
                 ))
             },
         )?;
-        // A quote is what its quoter can deliver. The CLOB spends execute's own
-        // fill and user budget while it walks, and a custom quoter's ladder was
-        // already cut to what its own margin supports — so the allocation is
-        // fillable in full. Anything else is the quoter contradicting its own
-        // quote.
-        //
-        // Delivering nothing is the same contradiction as delivering part, and
-        // is treated the same way. It used to be skipped, which let a quoter
-        // win base off a tight quote and hand the taker a hole: the size went
-        // nowhere, and a source that would have filled it never saw it. An
-        // allocation of zero is already skipped above, so reaching here with
-        // nothing means this quoter was given real size.
         validate!(
             ext_base <= allocation.base,
             ErrorCode::QuoterOverfilled,
             "quoter {} filled {} of the {} it quoted",
-            router.executor.quoter_key(i),
+            self.router.executor.quoter_key(index),
             ext_base,
             allocation.base
         )?;
@@ -4924,7 +5256,7 @@ fn fulfill_perp_order_router_pass(
             ext_base == allocation.base,
             ErrorCode::QuoterFilledShort,
             "quoter {} filled {} of the {} it quoted",
-            router.executor.quoter_key(i),
+            self.router.executor.quoter_key(index),
             ext_base,
             allocation.base
         )?;
@@ -4934,274 +5266,520 @@ fn fulfill_perp_order_router_pass(
             crate::math::router::validate_allocated_notional(allocation, ext_quote)?,
             ErrorCode::QuoterFillOffQuote,
             "quoter {} filled {}/{} off its quote of {}",
-            router.executor.quoter_key(i),
+            self.router.executor.quoter_key(index),
             ext_quote,
             ext_base,
             allocation.scaled_quote
         )?;
-
-        for (change_index, change) in response.changes.iter().enumerate() {
-            if change.base_size == 0 {
-                continue;
-            }
-            // The count of orders this change completed, walked once for both
-            // the band check and the open-order decrement.
-            let completed = response.completed_count(change_index);
-            let maker_key = resolve_user(&change.user)?;
-            if withheld_depth {
-                mark_settled(&maker_key);
-            }
-            validate!(
-                subjects.permits(&change.user, &maker_key, &taker_ref, &protocol_authority),
-                ErrorCode::QuoterSubjectNotPermitted,
-                "quoter {} may not act against user {}",
-                router.executor.quoter_key(i),
-                maker_key
-            )?;
-            validate!(
-                crate::math::router::validate_change_notional(
-                    &quoted,
-                    change.base_size,
-                    change.quote_size,
-                    merged_orders(completed)?,
-                )?,
-                ErrorCode::QuoterFillOffQuote,
-                "quoter {} priced user {} outside its quoted band",
-                router.executor.quoter_key(i),
-                maker_key
-            )?;
-            // Per-leg oracle band. The quoted-band and the aggregate checks
-            // bound a change against the quoter's own quote and the blended
-            // average, but a single maker can still sit far from oracle while
-            // the blend passes — value moved onto that maker at a price the
-            // average hides. Bound each maker's fill price the way the DLOB
-            // match path bounds a resting maker order.
-            let change_price = (change.quote_size as u128)
-                .safe_mul(BASE_PRECISION_U64.cast()?)?
-                .safe_div(change.base_size.cast()?)?
-                .cast::<u64>()?;
-            validate!(
-                !crate::math::orders::limit_price_breaches_maker_oracle_price_bands(
-                    change_price,
-                    maker_direction,
-                    oracle_price,
-                    router.executor.oracle_band(i, market.margin_ratio_initial),
-                )?,
-                ErrorCode::QuoterFillOffQuote,
-                "quoter {} filled user {} at {} outside the oracle band",
-                router.executor.quoter_key(i),
-                maker_key,
-                change_price
-            )?;
-            let mut maker = makers_and_referrer.get_ref_mut(&maker_key)?;
-            // Same pre-flight as the DLOB leg: the maker's funding stamp
-            // must be current before `settle_external_match_fill` touches
-            // their position.
-            settle_funding_payment(&mut maker, &maker_key, market.deref_mut(), now)?;
-            let mut maker_stats = if maker.authority == taker.user.authority {
-                None
-            } else {
-                Some(makers_and_referrer_stats.get_ref_mut(&maker.authority)?)
-            };
-            let mut maker_side = MakerSide::bind(
-                &mut maker,
-                maker_stats.as_deref_mut(),
-                maker_key,
-                taker.direction,
-                market_index,
-                maker_aggregates_tracked,
-                response.sole_client_order_id(change_index),
-            )?;
-            let (base_filled, quote_filled) = settle_external_match_fill(
-                change.base_size,
-                change.quote_size,
-                market.deref_mut(),
-                &mut taker,
-                &mut maker_side,
-                effective_taker_limit,
-                oracle_price,
-                filler,
-                policy,
-                &mut maps.oracle_map,
-                now,
-                slot,
-                &mut filler_reward_paid,
-            )?;
-            total_base = total_base.safe_add(base_filled)?;
-            total_quote = total_quote.safe_add(quote_filled)?;
-
-            let maker_position_index = get_position_index(&maker.perp_positions, market_index)?;
-            update_maker_fills_map(
-                maker_fills,
-                &maker_key,
-                maker_direction,
-                base_filled,
-                maker.perp_positions[maker_position_index].is_isolated(),
-            )?;
-            if maker_aggregates_tracked {
-                position::release_reserved_open_orders(
-                    &mut maker.perp_positions[maker_position_index],
-                    completed.cast()?,
-                )?;
-                for clob_order_id in response.completed_for(change_index) {
-                    maker.decrement_open_orders(false);
-                    // A fully-consumed order may be a placed trigger's live
-                    // half; the shadow slot frees with it.
-                    maker.release_placed_trigger_slot(
-                        market_index,
-                        clob_order_id,
-                        OrderStatus::Filled,
-                    );
-                }
-            }
-        }
-
-        // Sub-min remainders the quoter culled with this fill: unwind the
-        // remainder from the maker's aggregates (that maker was just filled,
-        // so they are loaded). A cull releases a margin reservation, so it is
-        // held to the same subject rule as a balance change.
-        if maker_aggregates_tracked {
-            for cancelled in response.cancelled {
-                let maker_key = resolve_user(&cancelled.user)?;
-                validate!(
-                    subjects.permits(&cancelled.user, &maker_key, &taker_ref, &protocol_authority),
-                    ErrorCode::QuoterSubjectNotPermitted,
-                    "quoter {} may not cancel for user {}",
-                    router.executor.quoter_key(i),
-                    maker_key
-                )?;
-                // A cull is a remainder the book refused to let rest, so it is
-                // below the book's own minimum — and the attach requires that
-                // minimum to be at or under the market's. The release below
-                // holds the figure to the maker's whole reservation; this holds
-                // it to the one order a cull can be about.
-                //
-                // A market with no minimum of its own bounds nothing, which is
-                // the same case the attach lets through.
-                validate!(
-                    market.market_stats.min_order_size == 0
-                        || cancelled.base_asset_amount < market.market_stats.min_order_size,
-                    ErrorCode::QuoterFillOffQuote,
-                    "quoter {} culled {} base, at or above the market minimum {}",
-                    router.executor.quoter_key(i),
-                    cancelled.base_asset_amount,
-                    market.market_stats.min_order_size
-                )?;
-                let mut maker = makers_and_referrer.get_ref_mut(&maker_key)?;
-                let maker_position_index = get_position_index(&maker.perp_positions, market_index)?;
-                position::release_reserved_open_base(
-                    &mut maker.perp_positions[maker_position_index],
-                    &maker_direction,
-                    cancelled.base_asset_amount,
-                )?;
-                position::release_reserved_open_orders(
-                    &mut maker.perp_positions[maker_position_index],
-                    1,
-                )?;
-                maker.decrement_open_orders(false);
-                maker.release_placed_trigger_slot(
-                    market_index,
-                    cancelled.order_id,
-                    OrderStatus::Canceled,
-                );
-                let is_isolated = maker.perp_positions[maker_position_index].is_isolated();
-                drop(maker);
-                // The cull is the only removal on this path velocity authors,
-                // and it is bounded at one per book, so the record is one
-                // record. Everything else the fill removed was consumed, and
-                // a consumed order is reported by the fill.
-                crate::instructions::emit_clob_cancel_record(
-                    now,
-                    market.market_stats.historical_oracle_data.last_oracle_price,
-                    &maker_key,
-                    crate::instructions::ClobOrderFacts {
-                        order_id: cancelled.client_order_id,
-                        market_index,
-                        direction: maker_direction,
-                        price: cancelled.price,
-                        base_asset_amount: cancelled.base_asset_amount,
-                        base_asset_amount_filled: 0,
-                        max_ts: 0,
-                        slot,
-                        taker_origin: false,
-                    },
-                    OrderActionExplanation::ClobRemainderCulled,
-                    None,
-                    None,
-                    is_isolated,
-                )?;
-            }
-        }
+        Ok(())
     }
 
-    if total_base == 0 {
+    /// Hold one balance change to the quote it came off and to the subject
+    /// rule of the quoter that returned it.
+    #[allow(clippy::too_many_arguments)]
+    fn check_external_change(
+        &self,
+        index: usize,
+        change: &crate::state::prop_amm::UserBalanceChangeV0,
+        maker_key: &Pubkey,
+        completed: usize,
+        subjects: &crate::state::prop_amm::QuoterSubjects,
+        quoted: &crate::math::router::QuotedPrefix,
+        market_margin_ratio_initial: u32,
+    ) -> VelocityResult {
+        validate!(
+            subjects.permits(
+                &change.user,
+                maker_key,
+                &self.taker_ref,
+                &self.router.protocol_authority
+            ),
+            ErrorCode::QuoterSubjectNotPermitted,
+            "quoter {} may not act against user {}",
+            self.router.executor.quoter_key(index),
+            maker_key
+        )?;
+        validate!(
+            crate::math::router::validate_change_notional(
+                quoted,
+                change.base_size,
+                change.quote_size,
+                merged_orders(completed)?,
+            )?,
+            ErrorCode::QuoterFillOffQuote,
+            "quoter {} priced user {} outside its quoted band",
+            self.router.executor.quoter_key(index),
+            maker_key
+        )?;
+        // Per-leg oracle band. The quoted-band and the aggregate checks bound
+        // a change against the quoter's own quote and the blended average,
+        // but a single maker can still sit far from oracle while the blend
+        // passes. That is value moved onto that maker at a price the average
+        // hides. Bound each maker's fill price the way the DLOB match path
+        // bounds a resting maker order.
+        let change_price = (change.quote_size as u128)
+            .safe_mul(BASE_PRECISION_U64.cast()?)?
+            .safe_div(change.base_size.cast()?)?
+            .cast::<u64>()?;
+        validate!(
+            !crate::math::orders::limit_price_breaches_maker_oracle_price_bands(
+                change_price,
+                self.maker_direction,
+                self.setup.quote_inputs.oracle_price,
+                self.router
+                    .executor
+                    .oracle_band(index, market_margin_ratio_initial),
+            )?,
+            ErrorCode::QuoterFillOffQuote,
+            "quoter {} filled user {} at {} outside the oracle band",
+            self.router.executor.quoter_key(index),
+            maker_key,
+            change_price
+        )?;
+        Ok(())
+    }
+
+    /// Settle one balance change out of an external book's response.
+    #[allow(clippy::too_many_arguments)]
+    fn settle_external_change(
+        &mut self,
+        market: &mut PerpMarket,
+        filler: &mut FillerSide,
+        index: usize,
+        response: &crate::state::prop_amm::ExecuteResponseV0,
+        change_index: usize,
+        subjects: &crate::state::prop_amm::QuoterSubjects,
+        quoted: &crate::math::router::QuotedPrefix,
+        maker_aggregates_tracked: bool,
+    ) -> VelocityResult {
+        let change = &response.changes[change_index];
+        if change.base_size == 0 {
+            return Ok(());
+        }
+        // The count of orders this change completed, walked once for both the
+        // band check and the open-order decrement.
+        let completed = response.completed_count(change_index);
+        let maker_key = self.resolve_user(&change.user)?;
+        self.mark_settled(&maker_key);
+        self.check_external_change(
+            index,
+            change,
+            &maker_key,
+            completed,
+            subjects,
+            quoted,
+            market.margin_ratio_initial,
+        )?;
+        let mut maker = self.makers_and_referrer.get_ref_mut(&maker_key)?;
+        // Same pre-flight as the DLOB leg: the maker's funding stamp must be
+        // current before `settle_external_match_fill` touches their position.
+        settle_funding_payment(&mut maker, &maker_key, market, self.now)?;
+        let mut maker_stats = if maker.authority == self.taker.user.authority {
+            None
+        } else {
+            Some(
+                self.makers_and_referrer_stats
+                    .get_ref_mut(&maker.authority)?,
+            )
+        };
+        let mut maker_side = MakerSide::bind(
+            &mut maker,
+            maker_stats.as_deref_mut(),
+            maker_key,
+            self.taker.direction,
+            self.market_index,
+            maker_aggregates_tracked,
+            response.sole_client_order_id(change_index),
+        )?;
+        let (base_filled, quote_filled) = settle_external_match_fill(
+            change.base_size,
+            change.quote_size,
+            market,
+            &mut self.taker,
+            &mut maker_side,
+            self.setup.effective_taker_limit,
+            self.setup.quote_inputs.oracle_price,
+            filler,
+            self.policy,
+            self.oracle_map,
+            self.now,
+            self.slot,
+            &mut self.filler_reward_paid,
+        )?;
+        self.note_fill(base_filled, quote_filled)?;
+
+        let maker_position_index = get_position_index(&maker.perp_positions, self.market_index)?;
+        update_maker_fills_map(
+            self.maker_fills,
+            &maker_key,
+            self.maker_direction,
+            base_filled,
+            maker.perp_positions[maker_position_index].is_isolated(),
+        )?;
+        if maker_aggregates_tracked {
+            position::release_reserved_open_orders(
+                &mut maker.perp_positions[maker_position_index],
+                completed.cast()?,
+            )?;
+            for clob_order_id in response.completed_for(change_index) {
+                maker.decrement_open_orders(false);
+                // A fully-consumed order may be a placed trigger's live half.
+                // The shadow slot frees with it.
+                maker.release_placed_trigger_slot(
+                    self.market_index,
+                    clob_order_id,
+                    OrderStatus::Filled,
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Unwind the sub-minimum remainders a quoter culled with this fill.
+    ///
+    /// The maker was just filled, so they are loaded. A cull releases a
+    /// margin reservation, so it is held to the same subject rule as a
+    /// balance change.
+    fn unwind_culled_remainders(
+        &mut self,
+        market: &mut PerpMarket,
+        index: usize,
+        response: &crate::state::prop_amm::ExecuteResponseV0,
+        subjects: &crate::state::prop_amm::QuoterSubjects,
+    ) -> VelocityResult {
+        for cancelled in response.cancelled {
+            let maker_key = self.resolve_user(&cancelled.user)?;
+            validate!(
+                subjects.permits(
+                    &cancelled.user,
+                    &maker_key,
+                    &self.taker_ref,
+                    &self.router.protocol_authority
+                ),
+                ErrorCode::QuoterSubjectNotPermitted,
+                "quoter {} may not cancel for user {}",
+                self.router.executor.quoter_key(index),
+                maker_key
+            )?;
+            // A cull is a remainder the book refused to let rest, so it is
+            // below the book's own minimum. The attach requires that minimum
+            // to be at or under the market's. The release below holds the
+            // figure to the maker's whole reservation; this holds it to the
+            // one order a cull can be about.
+            //
+            // A market with no minimum of its own bounds nothing, which is
+            // the same case the attach lets through.
+            validate!(
+                market.market_stats.min_order_size == 0
+                    || cancelled.base_asset_amount < market.market_stats.min_order_size,
+                ErrorCode::QuoterFillOffQuote,
+                "quoter {} culled {} base, at or above the market minimum {}",
+                self.router.executor.quoter_key(index),
+                cancelled.base_asset_amount,
+                market.market_stats.min_order_size
+            )?;
+            let mut maker = self.makers_and_referrer.get_ref_mut(&maker_key)?;
+            let maker_position_index =
+                get_position_index(&maker.perp_positions, self.market_index)?;
+            position::release_reserved_open_base(
+                &mut maker.perp_positions[maker_position_index],
+                &self.maker_direction,
+                cancelled.base_asset_amount,
+            )?;
+            position::release_reserved_open_orders(
+                &mut maker.perp_positions[maker_position_index],
+                1,
+            )?;
+            maker.decrement_open_orders(false);
+            maker.release_placed_trigger_slot(
+                self.market_index,
+                cancelled.order_id,
+                OrderStatus::Canceled,
+            );
+            let is_isolated = maker.perp_positions[maker_position_index].is_isolated();
+            drop(maker);
+            // The cull is the only removal on this path velocity authors, and
+            // it is bounded at one per book, so the record is one record.
+            // Everything else the fill removed was consumed, and a consumed
+            // order is reported by the fill.
+            crate::instructions::emit_clob_cancel_record(
+                self.now,
+                market.market_stats.historical_oracle_data.last_oracle_price,
+                &maker_key,
+                crate::instructions::ClobOrderFacts {
+                    order_id: cancelled.client_order_id,
+                    market_index: self.market_index,
+                    direction: self.maker_direction,
+                    price: cancelled.price,
+                    base_asset_amount: cancelled.base_asset_amount,
+                    base_asset_amount_filled: 0,
+                    max_ts: 0,
+                    slot: self.slot,
+                    taker_origin: false,
+                },
+                OrderActionExplanation::ClobRemainderCulled,
+                None,
+                None,
+                is_isolated,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// The deferred mark TWAP and the 24-hour volume. Both are gated on a
+    /// real fill.
+    fn update_mark_twap_and_volume(&self, market: &mut PerpMarket) -> VelocityResult {
+        let twap_trade_price = match self.taker.direction {
+            PositionDirection::Long => self.setup.amm_ask_price,
+            PositionDirection::Short => self.setup.amm_bid_price,
+        };
+        market.market_stats.update_mark_twap_with_amm_bid_ask(
+            self.setup.amm_bid_price,
+            self.setup.amm_ask_price,
+            self.setup.amm_base_spread,
+            self.setup.amm_long_spread,
+            self.setup.amm_short_spread,
+            self.now,
+            Some(twap_trade_price),
+            Some(self.taker.direction),
+            self.setup.quote_inputs.sanitize_clamp_denominator,
+            self.setup.quote_inputs.tick_size,
+        )?;
+        market
+            .market_stats
+            .update_volume_24h(self.quote_filled, self.taker.direction, self.now)
+    }
+
+    /// The taker's once-per-order open-orders counter.
+    ///
+    /// Only a taker that reserved at placement unwinds a count here. A fresh
+    /// ephemeral taker never incremented one, so a decrement would underflow
+    /// the per-position `u8` and wrongly drop the user-level count.
+    fn decrement_taker_open_orders(&mut self) -> VelocityResult {
+        if !self.taker.reserved || self.taker.order.get_base_asset_amount_unfilled(None)? != 0 {
+            return Ok(());
+        }
+        let has_auction = self.taker.order.has_auction();
+        self.taker.user.decrement_open_orders(has_auction);
+        self.taker.user.perp_positions[self.taker.position_index].open_orders -= 1;
+        Ok(())
+    }
+
+    /// What the party that built the transaction owes when a book withheld
+    /// depth.
+    ///
+    /// A book asked for an owner this transaction does not carry. Whoever
+    /// built the transaction owes the taker every maker it had room for, so
+    /// count the loaded users that filled nothing and hold no role in the
+    /// fill. Those accounts spent locks the missing maker needed.
+    fn check_withheld_obligation(&self) -> VelocityResult {
+        if !self.withheld_depth {
+            return Ok(());
+        }
+        // `settled_users` and `idle_loaded_users` address loaded users by a
+        // bit in a u64. A loaded map past 64 users cannot mark a filled maker
+        // beyond index 64 as settled, so it would read as idle and fail an
+        // honest fill. Guard the assumption loudly. The wire user set is
+        // capped well under 64 (`MAX_QUOTER_WIRE_USERS`), so a real fill never
+        // reaches this. If the caps ever grow, widen the bitmap instead of
+        // silently miscounting.
+        validate!(
+            self.makers_and_referrer.0.len() <= u64::BITS as usize,
+            ErrorCode::DefaultError,
+            "loaded user map has {} users, past the 64 the obligation bitmap covers",
+            self.makers_and_referrer.0.len()
+        )?;
+        let idle = idle_loaded_users(
+            self.makers_and_referrer,
+            self.settled_users,
+            &self.taker.key,
+            &self.filler_key,
+            self.taker.stats.referrer,
+            &*self.router.executor,
+        )?;
+        crate::math::router::withheld_obligation(&self.router.obligation, idle)
+    }
+}
+
+/// Fulfillment: one pass over every liquidity source.
+///
+/// Quote (sanitized DLOB makers as single-level books, external CPI books,
+/// the vAMM ladder last with everything else as its last look), split the
+/// taker's unfilled size across the union by priority tier, then execute and
+/// settle each allocation through the fee-policy-keyed settle functions.
+///
+/// One quote/route pass rather than the route-then-quote-per-method loop this
+/// replaced, which is why there is no scratch-AMM projection (routing and
+/// quoting see the same curve), no separate JIT participant (the vAMM's
+/// last-look shading is its general form), and no per-step fallback recompute
+/// (one effective taker limit bounds every book up front).
+///
+/// External books are priced into the split; allocations that land on them
+/// execute through `RouterFillInputs::executor` (the CPI leg the fill
+/// entrypoint supplies) and settle per returned balance change against the
+/// loaded makers. Maker prices are the sanitized frozen prices from
+/// discovery; `DlobOrderQuoter::execute` requotes off the same
+/// oracle/slot/tick so the two agree by construction, and
+/// `settle_dlob_match_fill`'s `validate_fill_price` enforces it.
+///
+/// The steps run in the order they are written below. [`PerpFill`] carries
+/// what they share.
+#[allow(clippy::too_many_arguments)]
+fn route_and_settle_perp_fill(
+    taker: &mut User,
+    taker_order: &mut Order,
+    taker_key: &Pubkey,
+    taker_stats: &mut UserStats,
+    makers_and_referrer: &UserMap,
+    makers_and_referrer_stats: &UserStatsMap,
+    maker_orders_info: &[MakerOrderInfo],
+    filler: &mut FillerSide,
+    maps: &mut AccountMaps,
+    validity_guard_rails: &ValidityGuardRails,
+    policy: &FillPolicy,
+    taker_limit_price: Option<u64>,
+    now: i64,
+    slot: u64,
+    amm_is_available: bool,
+    router: &mut RouterFillInputs,
+    vamm_maker_rebate: bool,
+    // Whether the taker owns an `open_bids`/`open_asks` + `open_orders`
+    // reservation the fill must unwind. False for a fresh ephemeral taker that
+    // never reserved. See `FillTarget::Detached`.
+    taker_reserved: bool,
+    maker_fills: &mut BTreeMap<Pubkey, (i64, bool)>,
+) -> VelocityResult<(u64, u64)> {
+    // ---- Bind the taker's position. ----
+    let market_index = taker_order.market_index;
+    let taker = TakerSide::bind(taker, taker_stats, *taker_key, taker_order, taker_reserved)?;
+    let target_size = taker.unfilled_target()?;
+    if target_size == 0 {
         return Ok((0, 0));
     }
 
-    // ---- Deferred mark-TWAP + volume, gated on a real fill (mirrors the
-    // step's 3b). ----
-    let twap_trade_price = match taker_direction {
-        PositionDirection::Long => amm_ask_price,
-        PositionDirection::Short => amm_bid_price,
-    };
-    market.market_stats.update_mark_twap_with_amm_bid_ask(
-        amm_bid_price,
-        amm_ask_price,
-        amm_base_spread,
-        amm_long_spread,
-        amm_short_spread,
-        now,
-        Some(twap_trade_price),
-        Some(taker_direction),
-        sanitize_clamp_denom,
-        order_tick_size,
+    // ---- Clamp external depth, before this market's `RefMut` is taken. ----
+    let clamped_books = clamp_external_depth(
+        maps,
+        makers_and_referrer,
+        router,
+        market_index,
+        &taker.key,
+        taker.direction.opposite(),
     )?;
-    market
-        .market_stats
-        .update_volume_24h(total_quote, taker_direction, now)?;
 
-    // Once-per-order taker open-orders counter (mirrors the step's finalize).
-    // Only a taker that reserved at placement unwinds a count here. A fresh
-    // ephemeral taker never incremented, so decrementing would underflow the
-    // per-position `u8` and wrongly drop the user-level count.
-    if taker_reserved && taker.order.get_base_asset_amount_unfilled(None)? == 0 {
-        taker.user.decrement_open_orders(taker.order.has_auction());
-        taker.user.perp_positions[taker.position_index].open_orders -= 1;
-    }
+    // ---- The market snapshot every source quotes against. ----
+    let AccountMaps {
+        perp_market_map,
+        oracle_map,
+        ..
+    } = maps;
+    let mut market = perp_market_map.get_ref_mut(&market_index)?;
+    let oracle_price_data = *oracle_map.get_price_data(&market.oracle_id())?;
+    let quote_inputs = QuoteInputs::load(
+        &market,
+        oracle_price_data,
+        slot,
+        validity_guard_rails,
+        oracle_map.slot_clock,
+    )?;
+    let market_fee_adjustment = market.fee_adjustment;
+    let mut amm_quoter = AmmQuoter::for_amm(&mut market.amm);
+    let setup = FillMarketSetup::load(
+        &mut amm_quoter,
+        quote_inputs,
+        &taker,
+        policy,
+        taker_limit_price,
+        market_fee_adjustment,
+        now,
+        slot,
+    )?;
+    let step_size = setup.quote_inputs.step_size;
 
-    // A book asked for an owner this transaction does not carry. Whoever built
-    // the transaction owes the taker every maker it had room for, so count the
-    // loaded users that filled nothing and hold no role in the fill. Those
-    // accounts spent locks the missing maker needed.
+    let mut fill = PerpFill::new(
+        oracle_map,
+        makers_and_referrer,
+        makers_and_referrer_stats,
+        maker_fills,
+        policy,
+        router,
+        taker,
+        setup,
+        filler.key,
+        amm_is_available,
+        vamm_maker_rebate,
+        taker_limit_price,
+        now,
+        slot,
+    )?;
+
+    // ---- Quote the sources: externals, then DLOB makers, then the vAMM. ----
+    let router_makers = fill.quote_dlob_makers(maker_orders_info)?;
+    let maker_levels: Vec<[PriceLevel; 1]> = router_makers
+        .iter()
+        .map(|maker| {
+            [PriceLevel {
+                price: maker.price,
+                size: maker.unfilled,
+            }]
+        })
+        .collect();
+    let rivals = fill.rival_books(&clamped_books, &maker_levels);
+    let amm_levels = fill.quote_vamm(&amm_quoter, &rivals, target_size)?;
+
+    // ---- Split across the union, every maker book truncated at the limit. ----
     //
-    // Only reached when a book withheld depth, which is what keeps the cost of
-    // this off every ordinary fill.
-    if withheld_depth {
-        // `settled_users` and `idle_loaded_users` address loaded users by a bit
-        // in a u64. A loaded map past 64 users cannot mark a filled maker
-        // beyond index 64 as settled, so it would read as idle and fail an
-        // honest fill. Guard the assumption loudly. The wire user set is capped
-        // well under 64 (`MAX_QUOTER_WIRE_USERS`), so a real fill never reaches
-        // this; if the caps ever grow, widen the bitmap instead of silently
-        // miscounting.
-        validate!(
-            makers_and_referrer.0.len() <= u64::BITS as usize,
-            ErrorCode::DefaultError,
-            "loaded user map has {} users, past the 64 the obligation bitmap covers",
-            makers_and_referrer.0.len()
-        )?;
-        let idle = idle_loaded_users(
-            makers_and_referrer,
-            settled_users,
-            taker_key,
-            &filler.key,
-            taker.stats.referrer,
-            router.executor,
-        )?;
-        crate::math::router::withheld_obligation(&router.obligation, idle)?;
+    // The vAMM book is NOT re-truncated: `vamm_quote_levels` already capped
+    // the ladder at the limit, and its per-rung prices are rounded slice
+    // averages. Comparing those to the limit would drop dust rungs whose true
+    // cost is inside it.
+    //
+    // `books` takes the rival allocation over. It is declared after
+    // `amm_levels` so it drops first, which is what lets it hold a level of
+    // the vAMM's ladder.
+    let mut books = rivals;
+    books.push(QuoterBook {
+        priority: QuoterType::Vamm.default_priority(),
+        levels: &amm_levels,
+        withheld: PriceLevel::default(),
+    });
+    let allocations = split_across_quoters(fill.route_direction, target_size, &books, step_size)?;
+    let externals_end = fill.external_books.len();
+    let makers_end = externals_end + maker_levels.len();
+
+    // ---- Execute the vAMM allocation, then release `market.amm`. ----
+    let amm_allocation = allocations[makers_end];
+    let amm_fill = fill.execute_vamm(&mut amm_quoter, &amm_allocation)?;
+    drop(amm_quoter);
+
+    // ---- Settle each source. ----
+    fill.settle_dlob_allocations(
+        market.deref_mut(),
+        filler,
+        &router_makers,
+        &allocations[externals_end..makers_end],
+    )?;
+    if let Some(amm_fill) = amm_fill {
+        fill.settle_vamm_allocation(market.deref_mut(), filler, &amm_fill, &amm_allocation)?;
+    }
+    fill.settle_external_allocations(
+        market.deref_mut(),
+        filler,
+        &books[..externals_end],
+        &allocations[..externals_end],
+    )?;
+
+    fill.report_worst_fill_price();
+
+    if fill.base_filled == 0 {
+        return Ok((0, 0));
     }
 
-    Ok((total_base, total_quote))
+    fill.update_mark_twap_and_volume(market.deref_mut())?;
+    fill.decrement_taker_open_orders()?;
+    fill.check_withheld_obligation()?;
+
+    Ok((fill.base_filled, fill.quote_filled))
 }
 
 /// Loaded users that the fill did not move and that hold no role in it.
@@ -5327,45 +5905,6 @@ fn cancel_reduce_only_trigger_orders(
     Ok(())
 }
 
-/// The cumulative base where a buy book's asks still cross a sell book's bids.
-///
-/// `asks` and `bids` are best-first — asks ascending in price, bids descending —
-/// the order a book quotes them in. Pairing them unit for unit, a cross is
-/// profitable while the marginal ask is at or below the marginal bid; this is
-/// the size at which that stops. A cross sized to this fills only crossed levels
-/// on both legs, so no unit trades at a loss and none sweeps past the crossing
-/// region into the caller's own intermediate orders.
-fn crossing_prefix_size(
-    asks: &[crate::state::prop_amm::PriceLevel],
-    bids: &[crate::state::prop_amm::PriceLevel],
-) -> u64 {
-    let mut ai = 0usize;
-    let mut bi = 0usize;
-    let mut a_rem = asks.first().map_or(0, |level| level.size);
-    let mut b_rem = bids.first().map_or(0, |level| level.size);
-    let mut crossed = 0u64;
-    while ai < asks.len() && bi < bids.len() {
-        if a_rem == 0 {
-            ai += 1;
-            a_rem = asks.get(ai).map_or(0, |level| level.size);
-            continue;
-        }
-        if b_rem == 0 {
-            bi += 1;
-            b_rem = bids.get(bi).map_or(0, |level| level.size);
-            continue;
-        }
-        if asks[ai].price > bids[bi].price {
-            break;
-        }
-        let take = a_rem.min(b_rem);
-        crossed = crossed.saturating_add(take);
-        a_rem -= take;
-        b_rem -= take;
-    }
-    crossed
-}
-
 /// The market's safe MM oracle price and how valid it is.
 ///
 /// Every perp fill path reads the oracle this way: the MM price the market
@@ -5417,16 +5956,16 @@ fn safe_mm_oracle_state(
 /// `crank` names the caller in the error message, so a refusal says which
 /// crank refused. The market stays borrowed by the caller, which reads its
 /// own extra fields after this returns.
-struct CrankOraclePreflight {
-    oracle_price: i64,
+pub(crate) struct CrankOraclePreflight {
+    pub oracle_price: i64,
     /// Whether the oracle is too stale for the margin checks to trust it.
-    stale_for_margin: bool,
+    pub stale_for_margin: bool,
     /// Open interest before the crank, which the post-fill rule measures
     /// against.
-    open_interest: u128,
+    pub open_interest: u128,
 }
 
-fn crank_oracle_preflight(
+pub(crate) fn crank_oracle_preflight(
     market: &mut PerpMarket,
     state: &State,
     oracle_map: &mut OracleMap,
@@ -5466,765 +6005,21 @@ fn crank_oracle_preflight(
     })
 }
 
-/// Match two crossed external sources against each other with the protocol
-/// `User` as the pass-through taker — the arb bot the cross-match crank
-/// runs. Buy `size` from the `buy_index` book's asks, then sell exactly what
-/// filled into the `sell_index` book's bids (the two indexes may name the
-/// same book: an internally crossed CLOB). Both legs settle through the
-/// standard external-match path, so every maker experiences an ordinary
-/// fill — positions, match fees, records, aggregate unwinds, and the shared
-/// post-fill margin checks all apply.
-///
-/// The taker side needs no margin: its base is asserted unchanged (an
-/// imbalanced pair of legs reverts), and its quote delta — the crossed
-/// spread net of both legs' taker fees — must be strictly positive, so the
-/// protocol never runs a losing cross and a fee-gulfed cross simply rests.
-/// The taker's two orders are ephemeral: written into a free slot for the
-/// legs' settlement (fee schedule, fill records) and cleared before return,
-/// never counted in any open-order accounting.
-///
-/// Returns `(base_matched, quote_surplus)`.
-#[allow(clippy::too_many_arguments)]
-pub fn cross_match(
-    state: &State,
-    market_index: u16,
-    size: u64,
-    buy_index: usize,
-    sell_index: usize,
-    taker_loader: &AccountLoader<User>,
-    taker_stats_loader: &AccountLoader<UserStats>,
-    makers_and_referrer: &UserMap,
-    makers_and_referrer_stats: &UserStatsMap,
-    executor: &mut dyn crate::state::prop_amm::ExternalQuoterExecutor,
-    maps: &mut AccountMaps,
-    clock: &Clock,
-    // Floor on the protocol's quote surplus, from the market's crank
-    // conditions. A cross the protocol nets less than this on is not worth
-    // the lamports the reservoir pays out for it.
-    min_surplus: u64,
-) -> VelocityResult<(u64, u64)> {
-    let now = clock.unix_timestamp;
-    let slot = clock.slot;
-    let taker_key = taker_loader.key();
-
-    validate!(
-        size > 0,
-        ErrorCode::DefaultError,
-        "cross size must be nonzero"
-    )?;
-
-    let CrankOraclePreflight {
-        oracle_price,
-        stale_for_margin: oracle_stale_for_margin,
-        open_interest: perp_market_oi_before,
-    } = {
-        let market = &mut maps.perp_market_map.get_ref_mut(&market_index)?;
-        crank_oracle_preflight(market, state, &mut maps.oracle_map, clock, "cross match")?
-    };
-
-    // Settle funding for everyone the legs can touch BEFORE any position
-    // update, mirroring the fill path's pre-flight: `update_position_and_market`
-    // requires each position's `last_cumulative_funding_rate` to match the
-    // market's, and a maker who last traded before a funding update fails
-    // that invariant otherwise.
-    {
-        let mut market = maps.perp_market_map.get_ref_mut(&market_index)?;
-        for (maker_key, maker_loader) in makers_and_referrer.0.iter() {
-            let mut maker = load_mut!(maker_loader)?;
-            if maker.get_perp_position(market_index).is_ok() {
-                settle_funding_payment(&mut maker, maker_key, &mut market, now)?;
-            }
-        }
-    }
-
-    let taker = &mut load_mut!(taker_loader)?;
-    let mut taker_stats = load_mut!(taker_stats_loader)?;
-    {
-        let mut market = maps.perp_market_map.get_ref_mut(&market_index)?;
-        settle_funding_payment(taker, &taker_key, &mut market, now)?;
-    }
-    let taker_ref = taker.clob_user_ref();
-    let protocol_authority = state.signer;
-    let user_ref_index = makers_and_referrer.user_ref_index()?;
-
-    let taker_position_index = get_position_index(&taker.perp_positions, market_index)
-        .or_else(|_| add_new_position(&mut taker.perp_positions, market_index))?;
-    let base_before = taker.perp_positions[taker_position_index].base_asset_amount;
-    let quote_before = taker.perp_positions[taker_position_index].quote_asset_amount;
-
-    // Both legs' fill records share one order id (see `taker_order` below).
-    let order_id = taker.next_order_id;
-    taker.next_order_id = taker.next_order_id.wrapping_add(1).max(1);
-
-    let mut maker_fills: BTreeMap<Pubkey, (i64, bool)> = BTreeMap::new();
-    let mut filler_reward_paid = 0u64;
-
-    // Read once, before the first leg. Every leg settles the same taker
-    // under the same order id, at the same oracle price.
-    let ctx = CrossContext {
-        state,
-        market_index,
-        oracle_price,
-        order_id,
-        taker_key,
-        taker_ref,
-        taker_position_index,
-        protocol_authority,
-        user_ref_index: &user_ref_index,
-        makers_and_referrer,
-        makers_and_referrer_stats,
-        now,
-        slot,
-    };
-
-    let CrossPrefix {
-        size,
-        ladders: leg_ladders,
-    } = bound_cross_to_crossing_prefix(executor, buy_index, sell_index, size)?;
-
-    let mut leg_totals = [CrossLegFill::default(); 2];
-    let legs = [
-        (buy_index, PositionDirection::Long),
-        (sell_index, PositionDirection::Short),
-    ];
-    #[allow(clippy::needless_range_loop)]
-    for (leg, (book_index, taker_direction)) in legs.iter().copied().enumerate() {
-        // The sell leg must return exactly what the buy leg took.
-        let leg_size = if leg == 0 {
-            size
-        } else {
-            leg_totals[0].base_filled
-        };
-        if leg_size == 0 {
-            break;
-        }
-
-        leg_totals[leg] = settle_cross_leg(
-            &ctx,
-            &CrossLeg {
-                leg,
-                book_index,
-                taker_direction,
-                leg_size,
-                resting: leg_ladders[leg].as_deref(),
-            },
-            taker,
-            &mut taker_stats,
-            executor,
-            maps,
-            &mut maker_fills,
-            &mut filler_reward_paid,
-        )?;
-    }
-
-    let CrossSurplus {
-        base_matched,
-        surplus,
-    } = validate_cross_surplus(
-        taker,
-        taker_position_index,
-        base_before,
-        quote_before,
-        &leg_totals,
-        min_surplus,
-    )?;
-    taker.update_last_active_slot(slot);
-
-    // Shared post-fill invariants: the per-maker margin/equity-floor/breaker
-    // checks over both legs' fills, plus the stale-oracle OI rule. The taker
-    // side of the shared check passes trivially — the protocol User's base
-    // is unchanged and its quote strictly grew.
-    fulfill_perp_order_post_checks(
-        taker,
-        &mut taker_stats,
-        makers_and_referrer,
-        makers_and_referrer_stats,
-        maps,
-        market_index,
-        base_matched,
-        leg_totals[0].quote_filled,
-        &maker_fills,
-        true,
-        false,
-        perp_market_oi_before,
-        oracle_stale_for_margin,
-        false,
-        now,
-    )?;
-
-    Ok((base_matched, surplus.cast()?))
-}
-
-/// The size a cross runs at, and the ladder each of its legs settles against.
-struct CrossPrefix {
-    /// The caller's size, cut back to the depth the two books cross over.
-    size: u64,
-    /// The buy leg's asks and the sell leg's bids, indexed by leg. A side
-    /// velocity cannot read the liquidity of holds `None`.
-    ladders: [Option<Vec<crate::state::prop_amm::PriceLevel>>; 2],
-}
-
-/// Bound the cross to the prefix where the two books actually cross. The
-/// caller names `size`, and past the crossing depth the extra fills
-/// non-crossed levels — which lets a caller that rests its own orders at
-/// intermediate prices siphon the spread the protocol would have taken, and
-/// lets a sweep run past a taker-origin order the dedicated crank owes an
-/// improvement to. Computable only when both sides are books (a ladder to
-/// read); a Custom side is bounded by its pre-execute margin clamp and the
-/// surplus floor instead. The two ladders come from the same quote the
-/// execute below fills, so the boundary they show is the one it hits.
-/// Read each side's ladder once, here. The legs settle against these same
-/// ladders below rather than re-quoting the books: a leg fills a prefix of
-/// what it reads, so the ladder read at `size` covers the smaller
-/// `leg_size`, and the buy leg consumes only its own book, leaving the sell
-/// ladder unchanged for the second leg. A Custom side reads `None` and its
-/// leg is bounded by its margin clamp and the surplus floor instead.
-fn bound_cross_to_crossing_prefix(
-    executor: &mut dyn crate::state::prop_amm::ExternalQuoterExecutor,
-    buy_index: usize,
-    sell_index: usize,
-    mut size: u64,
-) -> VelocityResult<CrossPrefix> {
-    let buy_asks =
-        executor.resting_levels(buy_index, crate::state::prop_amm::Direction::Long, size)?;
-    let sell_bids =
-        executor.resting_levels(sell_index, crate::state::prop_amm::Direction::Short, size)?;
-    if let (Some(buy_asks), Some(sell_bids)) = (&buy_asks, &sell_bids) {
-        size = size.min(crossing_prefix_size(buy_asks, sell_bids));
-    }
-    Ok(CrossPrefix {
-        size,
-        ladders: [buy_asks, sell_bids],
-    })
-}
-
-/// What one leg of a cross filled.
-#[derive(Clone, Copy, Default)]
-struct CrossLegFill {
-    base_filled: u64,
-    quote_filled: u64,
-}
-
-/// What every leg of a cross reads and never changes. It is built once,
-/// before the first leg runs.
-struct CrossContext<'a, 'b, 'c> {
-    state: &'a State,
-    market_index: u16,
-    oracle_price: i64,
-    order_id: u32,
-    taker_key: Pubkey,
-    taker_ref: crate::state::prop_amm::ClobUserRefV0,
-    taker_position_index: usize,
-    protocol_authority: Pubkey,
-    user_ref_index: &'a BTreeMap<(Pubkey, u16), Pubkey>,
-    makers_and_referrer: &'a UserMap<'b>,
-    makers_and_referrer_stats: &'a UserStatsMap<'c>,
-    now: i64,
-    slot: u64,
-}
-
-/// The one leg of a cross that settles now.
-struct CrossLeg<'a> {
-    leg: usize,
-    book_index: usize,
-    taker_direction: PositionDirection,
-    leg_size: u64,
-    // The ladder this leg settles against, read once above before any
-    // execute consumed a book. A cross has no `quote_v0` leg to bind
-    // against (the crank's account list carries only the execute surface),
-    // so the run these orders rest at stands in as the quote. A Custom
-    // entry offers none, and there it is the entry's single consenting
-    // `user` plus the surplus check that bound the leg.
-    resting: Option<&'a [crate::state::prop_amm::PriceLevel]>,
-}
-
-/// Custom PropAMM depth is never margin-reserved; clamp the leg to
-/// what the quoter's own account supports before mutating external
-/// state, exactly like the fill's pre-execute clamp.
-fn clamp_custom_quoter_cross_leg(
-    ctx: &CrossContext,
-    leg: &CrossLeg,
-    executor: &dyn crate::state::prop_amm::ExternalQuoterExecutor,
-    maps: &mut AccountMaps,
-) -> VelocityResult<()> {
-    if executor.quoter_type(leg.book_index) != crate::state::prop_amm::QuoterType::Custom {
-        return Ok(());
-    }
-    let quoter_user_key = executor.quoter_user(leg.book_index);
-    validate!(
-        quoter_user_key != ctx.taker_key,
-        ErrorCode::DefaultError,
-        "cross leg quotes for the protocol user itself"
-    )?;
-    let maker_direction = leg.taker_direction.opposite();
-    let position_index = {
-        let mut maker = ctx.makers_and_referrer.get_ref_mut(&quoter_user_key)?;
-        get_position_index(&maker.perp_positions, ctx.market_index)
-            .or_else(|_| add_new_position(&mut maker.perp_positions, ctx.market_index))?
-    };
-    let maker = ctx.makers_and_referrer.get_ref(&quoter_user_key)?;
-    let cap = crate::math::orders::calculate_max_perp_order_size(
-        &maker,
-        position_index,
-        ctx.market_index,
-        maker_direction,
-        maps,
-    )?;
-    validate!(
-        cap >= leg.leg_size,
-        ErrorCode::CrossMatchImbalanced,
-        "cross leg {} margin cap {} below leg size {}",
-        leg.leg,
-        cap,
-        leg.leg_size
-    )?;
-    Ok(())
-}
-
-/// Settle one leg of a cross: execute `leg_size` on the leg's book, then
-/// take each balance change it returns through the standard external-match
-/// fill.
-///
-/// Every change is checked before it settles. It must carry base, name a
-/// user the quoter may act for, price inside the ladder the leg reads, and
-/// price inside the market's oracle band. A book-backed quoter also unwinds
-/// the maker aggregates its filled and culled orders reserved.
-#[allow(clippy::too_many_arguments)]
-fn settle_cross_leg(
-    ctx: &CrossContext,
-    leg: &CrossLeg,
-    taker: &mut User,
-    taker_stats: &mut UserStats,
-    executor: &mut dyn crate::state::prop_amm::ExternalQuoterExecutor,
-    maps: &mut AccountMaps,
-    maker_fills: &mut BTreeMap<Pubkey, (i64, bool)>,
-    filler_reward_paid: &mut u64,
-) -> VelocityResult<CrossLegFill> {
-    let resolve_user = |user: &crate::state::prop_amm::ClobUserRefV0| -> VelocityResult<Pubkey> {
-        ctx.user_ref_index
-            .get(&(user.authority, user.sub_account_id))
-            .copied()
-            .ok_or_else(|| {
-                msg!(
-                    "cross leg returned a balance change for an unloaded user {}/{}",
-                    user.authority,
-                    user.sub_account_id
-                );
-                ErrorCode::DefaultError
-            })
-    };
-
-    clamp_custom_quoter_cross_leg(ctx, leg, executor, maps)?;
-
-    // The leg's ephemeral order (settlement reads direction + slot + id).
-    // A local, not an `orders` slot: the settlement takes the order
-    // itself, so this leg never needs the protocol user to have a free
-    // one.
-    let mut taker_order = Order {
-        slot: ctx.slot,
-        order_id: ctx.order_id,
-        market_index: ctx.market_index,
-        status: OrderStatus::Open,
-        order_type: OrderType::Market,
-        market_type: MarketType::Perp,
-        direction: leg.taker_direction,
-        base_asset_amount: leg.leg_size,
-        existing_position_direction: leg.taker_direction,
-        ..Order::default()
-    };
-    let taker_existing_position_params_before = taker.perp_positions[ctx.taker_position_index]
-        .get_existing_position_params_for_order_action(leg.taker_direction);
-
-    let cpi_direction = match leg.taker_direction {
-        PositionDirection::Long => crate::state::prop_amm::Direction::Long,
-        PositionDirection::Short => crate::state::prop_amm::Direction::Short,
-    };
-    let subjects = executor.subjects(leg.book_index, cpi_direction, leg.leg_size)?;
-    let located = executor.execute(leg.book_index, cpi_direction, leg.leg_size)?;
-    let data = located.borrow()?;
-    let response = located.execute_response(&data)?;
-    let maker_aggregates_tracked = executor
-        .quoter_type(leg.book_index)
-        .tracks_maker_aggregates();
-    let maker_direction = leg.taker_direction.opposite();
-
-    let quoted = cross_leg_quoted_prefix(leg, executor, &response)?;
-
-    // A cross pays no filler and has no builder escrow. The settlement
-    // reads each of these through `if let Some(..)`, so the leg hands it
-    // empty ones.
-    let mut none_filler: Option<&mut User> = None;
-    let mut none_filler_stats: Option<&mut UserStats> = None;
-    let mut no_escrow: Option<&mut RevenueShareEscrowZeroCopyMut> = None;
-
-    let mut leg_total = CrossLegFill::default();
-    let mut market = maps.perp_market_map.get_ref_mut(&ctx.market_index)?;
-    for (change_index, change) in response.changes.iter().enumerate() {
-        if change.base_size == 0 {
-            continue;
-        }
-        // The count of orders this change completed, walked once for both
-        // the band check and the open-order decrement.
-        let completed = response.completed_count(change_index);
-        let maker_key = resolve_user(&change.user)?;
-        validate!(
-            subjects.permits(
-                &change.user,
-                &maker_key,
-                &ctx.taker_ref,
-                &ctx.protocol_authority
-            ),
-            ErrorCode::QuoterSubjectNotPermitted,
-            "quoter {} may not act against user {} (the protocol user \
-             itself is never a subject)",
-            executor.quoter_key(leg.book_index),
-            maker_key
-        )?;
-        if let Some(quoted) = quoted.as_ref() {
-            validate!(
-                crate::math::router::validate_change_notional(
-                    quoted,
-                    change.base_size,
-                    change.quote_size,
-                    merged_orders(completed)?,
-                )?,
-                ErrorCode::QuoterFillOffQuote,
-                "quoter {} priced user {} outside the book it swept",
-                executor.quoter_key(leg.book_index),
-                maker_key
-            )?;
-        }
-        // Per-leg oracle band, as the router fill applies. A cross settles
-        // real makers at the crossed prices; bound each against oracle so a
-        // maker resting far off it is not filled at that price.
-        let change_price = (change.quote_size as u128)
-            .safe_mul(BASE_PRECISION_U64.cast()?)?
-            .safe_div(change.base_size.cast()?)?
-            .cast::<u64>()?;
-        validate!(
-            !crate::math::orders::limit_price_breaches_maker_oracle_price_bands(
-                change_price,
-                maker_direction,
-                ctx.oracle_price,
-                executor.oracle_band(leg.book_index, market.margin_ratio_initial),
-            )?,
-            ErrorCode::QuoterFillOffQuote,
-            "quoter {} filled user {} at {} outside the oracle band",
-            executor.quoter_key(leg.book_index),
-            maker_key,
-            change_price
-        )?;
-        let mut maker = ctx.makers_and_referrer.get_ref_mut(&maker_key)?;
-        let mut maker_stats = Some(
-            ctx.makers_and_referrer_stats
-                .get_ref_mut(&maker.authority)?,
-        );
-        let mut maker_side = MakerSide::bind(
-            &mut maker,
-            maker_stats.as_deref_mut(),
-            maker_key,
-            leg.taker_direction,
-            ctx.market_index,
-            maker_aggregates_tracked,
-            response.sole_client_order_id(change_index),
-        )?;
-        let (base_filled, quote_filled) = settle_external_match_fill(
-            change.base_size,
-            change.quote_size,
-            market.deref_mut(),
-            &mut TakerSide {
-                user: &mut *taker,
-                stats: &mut *taker_stats,
-                key: ctx.taker_key,
-                position_index: ctx.taker_position_index,
-                order: &mut taker_order,
-                direction: leg.taker_direction,
-                existing_position_params_before: taker_existing_position_params_before,
-                // The ephemeral taker never reserved, so nothing to unwind.
-                reserved: false,
-            },
-            &mut maker_side,
-            None,
-            ctx.oracle_price,
-            &mut FillerSide {
-                user: &mut none_filler,
-                stats: &mut none_filler_stats,
-                key: ctx.taker_key,
-                rev_share_escrow: &mut no_escrow,
-            },
-            &FillPolicy {
-                fee_structure: &ctx.state.perp_fee_structure,
-                referrer_is_accelerated: false,
-                is_liquidation: false,
-                promo_fee_tier: ctx.state.promo_fee_tier,
-                // The crank's taker is the protocol User. It has no builder
-                // escrow, so there is no builder fee to allow.
-                builder_fee_allowed: false,
-            },
-            &mut maps.oracle_map,
-            ctx.now,
-            ctx.slot,
-            filler_reward_paid,
-        )?;
-        leg_total.base_filled = leg_total.base_filled.safe_add(base_filled)?;
-        leg_total.quote_filled = leg_total.quote_filled.safe_add(quote_filled)?;
-
-        let maker_position_index = get_position_index(&maker.perp_positions, ctx.market_index)?;
-        update_maker_fills_map(
-            maker_fills,
-            &maker_key,
-            maker_direction,
-            base_filled,
-            maker.perp_positions[maker_position_index].is_isolated(),
-        )?;
-        if maker_aggregates_tracked {
-            position::release_reserved_open_orders(
-                &mut maker.perp_positions[maker_position_index],
-                completed.cast()?,
-            )?;
-            for clob_order_id in response.completed_for(change_index) {
-                maker.decrement_open_orders(false);
-                maker.release_placed_trigger_slot(
-                    ctx.market_index,
-                    clob_order_id,
-                    OrderStatus::Filled,
-                );
-            }
-        }
-    }
-    if maker_aggregates_tracked {
-        unwind_culled_cross_remainders(
-            ctx,
-            leg,
-            executor,
-            &market,
-            maker_direction,
-            response.cancelled,
-            &subjects,
-            &resolve_user,
-        )?;
-    }
-    validate!(
-        leg_total.base_filled <= leg.leg_size,
-        ErrorCode::DefaultError,
-        "cross leg {} overfilled: {} > {}",
-        leg.leg,
-        leg_total.base_filled,
-        leg.leg_size
-    )?;
-    Ok(leg_total)
-}
-
-/// Unwind the aggregates of the remainders the book culled on this leg.
-///
-/// A book cancels a remainder it will not let rest. The maker keeps the
-/// reservation that remainder took until velocity releases it here.
-#[allow(clippy::too_many_arguments)]
-fn unwind_culled_cross_remainders(
-    ctx: &CrossContext,
-    leg: &CrossLeg,
-    executor: &dyn crate::state::prop_amm::ExternalQuoterExecutor,
-    market: &PerpMarket,
-    maker_direction: PositionDirection,
-    cancelled_remainders: &[crate::state::prop_amm::CancelledRemainderV0],
-    subjects: &crate::state::prop_amm::QuoterSubjects,
-    resolve_user: &dyn Fn(&crate::state::prop_amm::ClobUserRefV0) -> VelocityResult<Pubkey>,
-) -> VelocityResult<()> {
-    for cancelled in cancelled_remainders {
-        let maker_key = resolve_user(&cancelled.user)?;
-        validate!(
-            subjects.permits(
-                &cancelled.user,
-                &maker_key,
-                &ctx.taker_ref,
-                &ctx.protocol_authority
-            ),
-            ErrorCode::QuoterSubjectNotPermitted,
-            "quoter {} may not cancel for user {}",
-            executor.quoter_key(leg.book_index),
-            maker_key
-        )?;
-        // A cull is a remainder the book refused to let rest, so it is
-        // below the book's own minimum — and the attach requires that
-        // minimum to be at or under the market's. The release below
-        // holds the figure to the maker's whole reservation; this holds
-        // it to the one order a cull can be about.
-        //
-        // A market with no minimum of its own bounds nothing, which is
-        // the same case the attach lets through.
-        validate!(
-            market.market_stats.min_order_size == 0
-                || cancelled.base_asset_amount < market.market_stats.min_order_size,
-            ErrorCode::QuoterFillOffQuote,
-            "quoter {} culled {} base, at or above the market minimum {}",
-            executor.quoter_key(leg.book_index),
-            cancelled.base_asset_amount,
-            market.market_stats.min_order_size
-        )?;
-        let mut maker = ctx.makers_and_referrer.get_ref_mut(&maker_key)?;
-        let maker_position_index = get_position_index(&maker.perp_positions, ctx.market_index)?;
-        position::release_reserved_open_base(
-            &mut maker.perp_positions[maker_position_index],
-            &maker_direction,
-            cancelled.base_asset_amount,
-        )?;
-        position::release_reserved_open_orders(&mut maker.perp_positions[maker_position_index], 1)?;
-        maker.decrement_open_orders(false);
-        maker.release_placed_trigger_slot(
-            ctx.market_index,
-            cancelled.order_id,
-            OrderStatus::Canceled,
-        );
-        let is_isolated = maker.perp_positions[maker_position_index].is_isolated();
-        drop(maker);
-        crate::instructions::emit_clob_cancel_record(
-            ctx.now,
-            ctx.oracle_price,
-            &maker_key,
-            crate::instructions::ClobOrderFacts {
-                order_id: cancelled.client_order_id,
-                market_index: ctx.market_index,
-                direction: maker_direction,
-                price: cancelled.price,
-                base_asset_amount: cancelled.base_asset_amount,
-                base_asset_amount_filled: 0,
-                max_ts: 0,
-                slot: ctx.slot,
-                taker_origin: false,
-            },
-            OrderActionExplanation::ClobRemainderCulled,
-            None,
-            None,
-            is_isolated,
-        )?;
-    }
-    Ok(())
-}
-
-/// The prefix of resting orders this leg priced against, once the response
-/// has been checked against it.
-///
-/// `None` when the leg has no ladder to bind against, which is a Custom
-/// quoter or a response that filled nothing.
-fn cross_leg_quoted_prefix(
-    leg: &CrossLeg,
-    executor: &dyn crate::state::prop_amm::ExternalQuoterExecutor,
-    response: &crate::state::prop_amm::ExecuteResponseV0,
-) -> VelocityResult<Option<crate::math::router::QuotedPrefix>> {
-    let (leg_base, leg_quote) = response.changes.iter().try_fold(
-        (0u64, 0u64),
-        |(base, quote), change| -> VelocityResult<(u64, u64)> {
-            // A zero-base change carries no fill; its quote would be summed
-            // here but skipped by the per-change price and subject checks
-            // below. Reject it so a cross leg cannot smuggle quote past them.
-            validate!(
-                change.base_size > 0,
-                ErrorCode::QuoterFillOffQuote,
-                "cross leg quoter {} returned a zero-base balance change carrying {} quote",
-                executor.quoter_key(leg.book_index),
-                change.quote_size
-            )?;
-            Ok((
-                base.safe_add(change.base_size)?,
-                quote.safe_add(change.quote_size)?,
-            ))
-        },
-    )?;
-    // These are real orders rather than a quoted ladder, so they price at
-    // their own size with no step quantization.
-    let quoted = match leg.resting {
-        Some(levels) if leg_base > 0 => {
-            Some(crate::math::router::quoted_prefix(levels, 1, leg_base)?)
-        }
-        _ => None,
-    };
-    if let Some(quoted) = quoted.as_ref() {
-        validate!(
-            crate::math::router::validate_executed_notional(quoted, leg_quote)?,
-            ErrorCode::QuoterFillOffQuote,
-            "quoter {} filled {}/{} outside the book it swept ({}..{})",
-            executor.quoter_key(leg.book_index),
-            leg_quote,
-            leg_base,
-            quoted.best_price,
-            quoted.worst_price
-        )?;
-    }
-    Ok(quoted)
-}
-
-/// The base both legs matched, and the quote the protocol kept for it.
-struct CrossSurplus {
-    base_matched: u64,
-    surplus: i64,
-}
-
-/// Check that the two legs balanced and that the protocol gained on the
-/// cross.
-///
-/// The legs must match the same base, and the taker's base must return to
-/// where it started. The taker's quote delta is the crossed spread net of
-/// both legs' taker fees. It must be positive and at or above the market's
-/// floor, so the protocol never runs a losing cross.
-fn validate_cross_surplus(
-    taker: &User,
-    taker_position_index: usize,
-    base_before: i64,
-    quote_before: i64,
-    leg_totals: &[CrossLegFill; 2],
-    min_surplus: u64,
-) -> VelocityResult<CrossSurplus> {
-    let base_matched = leg_totals[0].base_filled;
-    validate!(
-        leg_totals[1].base_filled == base_matched,
-        ErrorCode::CrossMatchImbalanced,
-        "cross legs imbalanced: bought {} sold {}",
-        base_matched,
-        leg_totals[1].base_filled
-    )?;
-    validate!(
-        base_matched > 0,
-        ErrorCode::CrossMatchUnprofitable,
-        "nothing crossed"
-    )?;
-    validate!(
-        taker.perp_positions[taker_position_index].base_asset_amount == base_before,
-        ErrorCode::CrossMatchImbalanced,
-        "protocol user base changed: {} -> {}",
-        base_before,
-        taker.perp_positions[taker_position_index].base_asset_amount
-    )?;
-    let surplus = taker.perp_positions[taker_position_index]
-        .quote_asset_amount
-        .safe_sub(quote_before)?;
-    validate!(
-        surplus > 0 && surplus.unsigned_abs() >= min_surplus,
-        ErrorCode::CrossMatchUnprofitable,
-        "cross surplus {} below the market's floor of {} (fees are the gulf)",
-        surplus,
-        min_surplus
-    )?;
-    Ok(CrossSurplus {
-        base_matched,
-        surplus,
-    })
-}
-
-/// The oracle pre-flight and R5 pricing of one taker-origin cross, before any
+/// The oracle pre-flight and the pricing of one taker-origin cross, before any
 /// of it is committed.
 ///
-/// Split from [`settle_taker_origin_cross`] because it must run *before* the
-/// CLOB calls that consume the pair: the cross is refused outright when
-/// crossing would leave the taker worse off than the price it was resting at,
-/// and a refusal has to leave the book untouched. Same oracle gates the fill
-/// path applies (`FillOrderMatch` validity, price band, staleness) — the
-/// reward's size-vs-oracle multiplier is derived from the price, so it is a
-/// value transfer driven by an oracle read and gated like one.
+/// The caller must run this *before* the CLOB calls that consume the pair: the
+/// cross is refused outright when crossing would leave the taker worse off
+/// than the price it was resting at, and a refusal has to leave the book
+/// untouched. Same oracle gates the fill path applies (`FillOrderMatch`
+/// validity, price band, staleness) — the reward's size-vs-oracle multiplier
+/// is derived from the price, so it is a value transfer driven by an oracle
+/// read and gated like one.
 ///
 /// Returns the fee split, the mm-oracle price the settlement values fills
 /// against, whether the oracle is stale for margin, and the market's open
-/// interest before the fill — the last three being what
-/// [`settle_taker_origin_cross`] needs to run the shared post-fill checks.
+/// interest before the fill. The last three are what a caller that settles the
+/// match itself needs for [`fulfill_perp_order_post_checks`].
 ///
 /// `rest_price` is the price the taker-origin order rests at,
 /// `counterparty_price` the price the match will settle at, and `order_slot`
@@ -6338,8 +6133,12 @@ pub fn trigger_order(
         .position(|order| order.order_id == order_id && order.status == OrderStatus::Open)
         .ok_or_else(print_error!(ErrorCode::OrderDoesNotExist))?;
 
-    let (order_status, market_index, market_type) =
-        get_struct_values!(user.orders[order_index], status, market_index, market_type);
+    let Order {
+        status: order_status,
+        market_index,
+        market_type,
+        ..
+    } = user.orders[order_index];
 
     validate!(
         order_status == OrderStatus::Open,
@@ -6669,8 +6468,12 @@ pub fn trigger_and_route_order(
         .position(|order| order.order_id == order_id && order.status == OrderStatus::Open)
         .ok_or_else(print_error!(ErrorCode::OrderDoesNotExist))?;
 
-    let (order_status, market_index, market_type) =
-        get_struct_values!(user.orders[order_index], status, market_index, market_type);
+    let Order {
+        status: order_status,
+        market_index,
+        market_type,
+        ..
+    } = user.orders[order_index];
 
     validate!(
         order_status == OrderStatus::Open,
@@ -7284,7 +7087,7 @@ pub fn expire_orders(
 /// and the order shrinks in place, against the reservation it already holds.
 ///
 /// The order is a limit at the price it rested at. That price is the taker's
-/// own bound, so a router pass can only fill at or better than it, which is
+/// own bound, so a routed fill can only fill at or better than it, which is
 /// what makes the improvement the auction is for reach the taker.
 ///
 /// The CLOB's order id is wider than a velocity one. Narrowing it keeps the

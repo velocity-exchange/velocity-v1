@@ -338,6 +338,7 @@ fn fill_order<'c: 'info, 'info>(
             taker: taker_ref,
             limit_price: quote_limit_price,
             taker_served_window,
+            consume_reservation: false,
         };
     // Before the quote, so a book never publishes depth standing on a maker
     // this fill would refuse to settle against.
@@ -375,10 +376,12 @@ fn fill_order<'c: 'info, 'info>(
         books,
         executor: &mut executor,
         protocol_authority: state.signer,
+        taker_exposure_closed_by_caller: false,
         obligation,
+        worst_fill_price: None,
     };
 
-    let (base_asset_amount_filled, _) = controller::orders::fill_perp_order_with_router(
+    let (base_asset_amount_filled, _) = controller::orders::fill_perp_order(
         controller::orders::FillTarget::Slot(order_id),
         &*accounts.state.load()?,
         accounts.user,
@@ -1028,6 +1031,7 @@ fn fill_signed_msg_taker_order<'c: 'info, 'info>(
             taker: taker_ref,
             limit_price: quote_limit_price,
             taker_served_window,
+            consume_reservation: false,
         };
     // Before the quote, so a book never publishes depth standing on a maker
     // this fill would refuse to settle against.
@@ -1072,10 +1076,12 @@ fn fill_signed_msg_taker_order<'c: 'info, 'info>(
         books,
         executor: &mut executor,
         protocol_authority: state.signer,
+        taker_exposure_closed_by_caller: false,
         obligation,
+        worst_fill_price: None,
     };
 
-    let (base_asset_amount_filled, _) = controller::orders::fill_perp_order_with_router(
+    let (base_asset_amount_filled, _) = controller::orders::fill_perp_order(
         // The taker order is ephemeral: it never reserved, so the fill unwinds
         // no exposure for it.
         controller::orders::FillTarget::Detached {

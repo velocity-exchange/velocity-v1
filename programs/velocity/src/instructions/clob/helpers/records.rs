@@ -18,7 +18,11 @@
 //!   schedule in every path that can consume it. A migrated taker remainder is
 //!   the exception — it is the aggressor in a cross — and so reports false.
 //! - `bit_flags` carries `OrderBitFlag::PlacedOnClob`, which is how a reader
-//!   tells a book order from a DLOB order carrying the same id space.
+//!   tells a book order from a DLOB order carrying the same id space. It also
+//!   carries `OrderBitFlag::IsIsolatedPosition` when the order belongs to an
+//!   isolated position, the same as a DLOB order does, so a reader learns an
+//!   order's margin regime from the record that opens it rather than from the
+//!   one that closes it.
 
 use {
     crate::{
@@ -80,7 +84,11 @@ impl ClobOrderFacts {
         }
     }
 
-    fn to_order(self, status: OrderStatus) -> Order {
+    /// `is_isolated_position` is the owning position's margin regime. It is
+    /// fixed for the order's whole life. A resting order holds `open_orders`
+    /// and `open_bids`/`open_asks` on that position, so nothing recycles the
+    /// slot into a cross position under it.
+    fn to_order(self, status: OrderStatus, is_isolated_position: bool) -> Order {
         Order {
             slot: self.slot,
             price: self.price,
@@ -94,7 +102,11 @@ impl ClobOrderFacts {
             market_type: MarketType::Perp,
             direction: self.direction,
             post_only: !self.taker_origin,
-            bit_flags: OrderBitFlag::PlacedOnClob as u8,
+            bit_flags: set_order_bit_flag(
+                OrderBitFlag::PlacedOnClob as u8,
+                is_isolated_position,
+                OrderBitFlag::IsIsolatedPosition,
+            ),
             ..Order::default()
         }
     }
@@ -110,11 +122,12 @@ pub fn emit_clob_place_record(
     now: i64,
     user_key: &Pubkey,
     facts: ClobOrderFacts,
+    is_isolated_position: bool,
 ) -> VelocityResult {
     emit_stack::<_, { OrderRecord::SIZE }>(OrderRecord {
         ts: now,
         user: *user_key,
-        order: facts.to_order(OrderStatus::Open),
+        order: facts.to_order(OrderStatus::Open, is_isolated_position),
     })
 }
 
@@ -134,7 +147,7 @@ pub fn emit_clob_cancel_record(
     filler_reward: Option<u64>,
     is_isolated_position: bool,
 ) -> VelocityResult {
-    let order = facts.to_order(OrderStatus::Canceled);
+    let order = facts.to_order(OrderStatus::Canceled, is_isolated_position);
     let bit_flags = set_order_bit_flag(0, is_isolated_position, OrderBitFlag::IsIsolatedPosition);
     // A book order is the maker half of the record for the reason it reports
     // `post_only`: it is standing liquidity, and a reader that filed it as a

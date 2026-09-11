@@ -144,12 +144,45 @@ pub struct RouterFillInputs<'a, 'b, 'info> {
     pub books: &'a [QuoterBook<'b>],
     pub executor: &'a mut dyn crate::state::prop_amm::ExternalQuoterExecutor<'info>,
     /// `State::signer` — the authority of the protocol `User`, which no quoter
-    /// may name as a fill subject. Carried here because the router pass works
+    /// may name as a fill subject. Carried here because the fill controller works
     /// over account maps and does not hold `State`.
     pub protocol_authority: Pubkey,
     /// What the fill knows about the party that built the transaction. The
-    /// entrypoint holds the signer and the sysvar; the router pass does not.
+    /// entrypoint holds the signer and the sysvar; the fill controller does not.
     pub obligation: FillerObligation,
+    /// Whether the caller opens and closes the taker's whole exposure inside
+    /// one instruction and asserts the end state itself.
+    ///
+    /// A cross buys and sells the same base for the protocol `User` in one
+    /// call, so the position leg one opens does not survive the transaction.
+    /// An ordinary per-fill check would refuse it anyway: the taker is
+    /// risk-increasing at that point, and the market's open-interest rule and
+    /// margin gate both read a state no slot boundary ever sees. The crank
+    /// asserts what actually matters instead — the taker returns to its
+    /// starting base and its quote strictly grows.
+    ///
+    /// Only the taker's own checks are suppressed. Every maker on either leg
+    /// is a real counterparty and keeps every check.
+    ///
+    /// The flag alone is not enough to earn the exemption. `fulfill_perp_order`
+    /// also requires the taker to be the protocol `User`, measured against
+    /// [`Self::protocol_authority`], so a future path that sets this for an
+    /// ordinary account is refused rather than trusted.
+    pub taker_exposure_closed_by_caller: bool,
+    /// The worst price any source of the fill executed at, written back by the
+    /// pass. `None` when the fill moved no base.
+    ///
+    /// The fill's own return value is the base and the blended quote, and a
+    /// blend hides its own tail: a caller cannot tell a route that filled
+    /// every unit inside a bound from one that averaged past it. A caller
+    /// that has to know whether *every* unit cleared a price reads this
+    /// instead. An ordinary fill ignores it.
+    ///
+    /// The unit of measure is one settled allocation, because that is where
+    /// value moves: a maker order, one external balance change, or the vAMM
+    /// slice. The vAMM slice therefore reports its slice average, which is
+    /// the only price a curve fill has.
+    pub worst_fill_price: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

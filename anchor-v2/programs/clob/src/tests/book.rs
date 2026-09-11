@@ -413,6 +413,7 @@ fn the_price_bound_stops_the_walk_at_the_limit() {
             0,
             None,
             101,
+            false,
             0,
             0,
         )
@@ -429,6 +430,7 @@ fn the_price_bound_stops_the_walk_at_the_limit() {
             0,
             None,
             0,
+            false,
             0,
             0,
         )
@@ -454,6 +456,7 @@ fn the_price_bound_stops_the_walk_at_the_limit() {
             0,
             None,
             102,
+            false,
             0,
             0,
         )
@@ -493,6 +496,7 @@ fn a_user_with_no_room_is_skipped_mid_book() {
             0,
             None,
             0,
+            false,
             0,
             0,
         )
@@ -502,7 +506,7 @@ fn a_user_with_no_room_is_skipped_mid_book() {
     // Capped: the front order is gone and the one behind it survives — not
     // truncated away with it.
     let pointer = book
-        .quote(Direction::Long, 12, &users, &caps, 0, None, 0, 0, 0)
+        .quote(Direction::Long, 12, &users, &caps, 0, None, 0, false, 0, 0)
         .unwrap();
     assert_eq!(
         levels(&mut book, pointer),
@@ -512,7 +516,7 @@ fn a_user_with_no_room_is_skipped_mid_book() {
 
     // And execute spends the same budget, so the fill matches the ladder.
     let outcome = book
-        .execute(Direction::Long, 12, &users, &caps, 0, None, 0, 0)
+        .execute(Direction::Long, 12, &users, &caps, 0, None, false, 0, 0)
         .unwrap();
     let filled: u64 = outcome.fills.iter().map(|fill| fill.base_size).sum();
     assert_eq!(filled, 7);
@@ -557,6 +561,7 @@ fn a_user_with_some_room_is_filled_only_that_far() {
             102,
             None,
             0,
+            false,
             0,
             0,
         )
@@ -567,7 +572,17 @@ fn a_user_with_some_room_is_filled_only_that_far() {
         "capped to what its budget buys, and the rest of the book follows"
     );
     let outcome = book
-        .execute(Direction::Long, 12 * UNIT, &users, &caps, 102, None, 0, 0)
+        .execute(
+            Direction::Long,
+            12 * UNIT,
+            &users,
+            &caps,
+            102,
+            None,
+            false,
+            0,
+            0,
+        )
         .unwrap();
     let filled: u64 = outcome.fills.iter().map(|fill| fill.base_size).sum();
     assert_eq!(filled, 9 * UNIT);
@@ -603,7 +618,17 @@ fn a_reduce_only_order_fills_only_up_to_its_base_cover() {
     };
 
     let outcome = book
-        .execute(Direction::Long, 12 * UNIT, &users, &caps, 100, None, 0, 0)
+        .execute(
+            Direction::Long,
+            12 * UNIT,
+            &users,
+            &caps,
+            100,
+            None,
+            false,
+            0,
+            0,
+        )
         .unwrap();
     let filled: u64 = outcome.fills.iter().map(|fill| fill.base_size).sum();
     // Two units of the reduce-only ask (its cover) plus all seven behind it.
@@ -634,7 +659,17 @@ fn a_reduce_only_order_with_no_cover_does_not_fill() {
     let caps = UserCapsV0::EMPTY;
 
     let outcome = book
-        .execute(Direction::Long, 12 * UNIT, &users, &caps, 100, None, 0, 0)
+        .execute(
+            Direction::Long,
+            12 * UNIT,
+            &users,
+            &caps,
+            100,
+            None,
+            false,
+            0,
+            0,
+        )
         .unwrap();
     let filled: u64 = outcome.fills.iter().map(|fill| fill.base_size).sum();
     assert_eq!(filled, 7 * UNIT, "only the ordinary ask fills");
@@ -683,6 +718,7 @@ fn a_second_capped_maker_ends_the_sweep_rather_than_failing_it() {
             102,
             None,
             0,
+            false,
             0,
             0,
         )
@@ -694,7 +730,17 @@ fn a_second_capped_maker_ends_the_sweep_rather_than_failing_it() {
     );
 
     let outcome = book
-        .execute(Direction::Long, 12 * UNIT, &users, &caps, 102, None, 0, 0)
+        .execute(
+            Direction::Long,
+            12 * UNIT,
+            &users,
+            &caps,
+            102,
+            None,
+            false,
+            0,
+            0,
+        )
         .unwrap();
     let filled: u64 = outcome.fills.iter().map(|fill| fill.base_size).sum();
     assert_eq!(filled, 2 * UNIT);
@@ -723,7 +769,17 @@ fn a_fill_that_pays_the_maker_spends_no_budget() {
 
     // Selling at 100 against a reference of 98 is a gain, not a loss.
     let outcome = book
-        .execute(Direction::Long, 5 * UNIT, &users, &caps, 98, None, 0, 0)
+        .execute(
+            Direction::Long,
+            5 * UNIT,
+            &users,
+            &caps,
+            98,
+            None,
+            false,
+            0,
+            0,
+        )
         .unwrap();
     let filled: u64 = outcome.fills.iter().map(|fill| fill.base_size).sum();
     assert_eq!(filled, 5 * UNIT);
@@ -767,6 +823,7 @@ fn a_set_wider_than_the_user_cap_still_quotes() {
             0,
             None,
             0,
+            false,
             0,
             0,
         )
@@ -786,6 +843,7 @@ fn a_set_wider_than_the_user_cap_still_quotes() {
             &UserCapsV0::EMPTY,
             0,
             None,
+            false,
             0,
             0,
         )
@@ -823,13 +881,24 @@ fn a_link_out_of_the_arena_fails_every_walk() {
                 0,
                 None,
                 0,
+                false,
                 0,
                 0,
             ),
             ClobError::NodeIndexOutOfRange,
         );
         assert_err(
-            book.execute(Direction::Long, 10, &[], &UserCapsV0::EMPTY, 0, None, 0, 0),
+            book.execute(
+                Direction::Long,
+                10,
+                &[],
+                &UserCapsV0::EMPTY,
+                0,
+                None,
+                false,
+                0,
+                0,
+            ),
             ClobError::NodeIndexOutOfRange,
         );
         // The placement scan walks the same list.
@@ -859,6 +928,7 @@ fn a_cycled_link_cannot_spin_the_walk() {
             0,
             None,
             0,
+            false,
             0,
             0,
         ),

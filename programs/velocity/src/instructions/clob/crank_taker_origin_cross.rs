@@ -51,7 +51,7 @@ use {
             self,
             position::{get_position_index, PositionDirection},
         },
-        error::ErrorCode,
+        error::{ErrorCode, VelocityResult},
         instructions::{
             constraints::*,
             optional_accounts::{load_maps, AccountMaps},
@@ -86,8 +86,11 @@ use {
     },
     anchor_lang::prelude::*,
     solana_program::sysvar::instructions::ID as IX_ID,
-    std::ops::DerefMut,
+    std::{collections::BTreeMap, ops::DerefMut},
 };
+
+#[cfg(test)]
+mod tests;
 
 #[derive(Clone, AnchorSerialize, AnchorDeserialize)]
 pub struct CrankTakerOriginCrossArgs {
@@ -336,14 +339,11 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
         .safe_mul(crate::math::constants::BASE_PRECISION_U64.cast()?)?
         .safe_div(base_filled.cast()?)?
         .cast::<u64>()?;
-    let (fee, crank_reward) = pay_crank_reward(
-        &cx,
-        &subject_order,
-        fill_price,
-        base_filled,
-        quote_filled,
-        &mut maps,
-    )?;
+    // The router fill applies the oracle gates and the shared post-fill checks
+    // itself, so this branch only prices the cross. The price it is measured
+    // against is the one the fill reached, which is knowable only after it.
+    let (fee, _, _) = price_cross(&cx, &subject_order, fill_price, base_filled, &mut maps)?;
+    let crank_reward = pay_crank_reward(&cx, &fee, quote_filled, &mut maps)?;
 
     let remainder_base_asset_amount = report_fill_to_book(&cx, &subject_order, base_filled)?;
 
@@ -440,6 +440,7 @@ fn resolve_subject_cross<'info>(
             ctx.accounts.clob_program.to_account_info(),
         ],
         cpi_scratch,
+        true,
     )?
     .ok_or(ErrorCode::NoTakerOriginCross)?;
     // Price priority decides which crank owns the front of a book, and this
@@ -579,6 +580,7 @@ fn route_and_fill_remainder<'info>(
             subject_order.placed_slot,
             cx.clock.slot,
         ),
+        consume_reservation: true,
     };
     let inputs = crate::instructions::QuoteInputs {
         caps: crate::instructions::build_user_caps(
@@ -608,6 +610,7 @@ fn route_and_fill_remainder<'info>(
         books,
         executor: &mut executor,
         protocol_authority: cx.state.signer,
+        taker_exposure_closed_by_caller: false,
         obligation: crate::math::router::FillerObligation {
             // The taker is not here to choose the account list, so the cranker
             // answers for what it left out, as a keeper fill does.
@@ -619,12 +622,13 @@ fn route_and_fill_remainder<'info>(
             ),
             unrouted_quoters: route.unrouted_quoters(route_claim.quoters, route_claim.digest),
         },
+        worst_fill_price: None,
     };
 
     // The taker stands as its own filler, so no reward is carved out of the
     // taker fee. The cranker is paid below, out of the improvement it actually
     // delivered — a crank that improves nothing is worth nothing.
-    let (base_filled, quote_filled) = controller::orders::fill_perp_order_with_router(
+    let (base_filled, quote_filled) = controller::orders::fill_perp_order(
         // The remainder rested on the book first, so it holds an
         // `open_bids`/`open_asks` reservation this fill unwinds.
         controller::orders::FillTarget::Detached {
@@ -656,22 +660,27 @@ fn route_and_fill_remainder<'info>(
     Ok((base_filled, quote_filled))
 }
 
-/// What the taker gained, and the cranker's cut of it.
+/// The oracle pre-flight, and what the taker gained.
 ///
-/// The reward is paid in full or not at all, and only out of the improvement,
-/// so a crank that improves nothing is worth nothing. The rule holds against
-/// the price the fill reached, not against one counterparty's quote.
-#[allow(clippy::too_many_arguments)]
-fn pay_crank_reward<'info>(
+/// A caller that settles the match itself must run this before it touches the
+/// book: the pre-flight refuses a market in settlement, paused fills, an
+/// invalid oracle, and a price outside the band, and a refusal has to leave the
+/// book as it was.
+///
+/// Returns the fee split, whether the oracle is stale for margin, and the
+/// market's open interest before the fill. The last two are inputs to the
+/// post-fill checks. The pre-flight's own mm-oracle price is dropped. The match
+/// and the maker band use the plain oracle price, which is what the router pass
+/// does.
+fn price_cross<'info>(
     cx: &TakerOriginContext<'_, 'info>,
     rested: &RestingOrder,
     fill_price: u64,
     base_filled: u64,
-    quote_filled: u64,
     maps: &mut AccountMaps,
-) -> Result<(crate::math::fees::TakerOriginCrossFee, u64)> {
-    let (fee, _, _, _) = {
-        let taker_stats = load!(cx.accounts.taker_stats)?;
+) -> Result<(crate::math::fees::TakerOriginCrossFee, bool, u128)> {
+    let taker_stats = load!(cx.accounts.taker_stats)?;
+    let (fee, _, oracle_stale_for_margin, perp_market_oi_before) =
         controller::orders::price_taker_origin_cross(
             cx.state,
             cx.market_index,
@@ -684,19 +693,31 @@ fn pay_crank_reward<'info>(
             &maps.perp_market_map,
             &mut maps.oracle_map,
             cx.clock,
-        )?
-    };
-    let crank_reward = controller::orders::pay_taker_origin_crank_reward(
+        )?;
+    Ok((fee, oracle_stale_for_margin, perp_market_oi_before))
+}
+
+/// The cranker's cut of what the taker gained.
+///
+/// The reward is paid in full or not at all, and only out of the improvement,
+/// so a crank that improves nothing is worth nothing. The rule holds against
+/// the price the fill reached, not against one counterparty's quote.
+fn pay_crank_reward<'info>(
+    cx: &TakerOriginContext<'_, 'info>,
+    fee: &crate::math::fees::TakerOriginCrossFee,
+    quote_filled: u64,
+    maps: &mut AccountMaps,
+) -> Result<u64> {
+    Ok(controller::orders::pay_taker_origin_crank_reward(
         cx.market_index,
-        &fee,
+        fee,
         quote_filled,
         &cx.accounts.taker,
         &cx.accounts.filler,
         &cx.accounts.filler_stats,
         maps,
         cx.clock,
-    )?;
-    Ok((fee, crank_reward))
+    )?)
 }
 
 /// Tell the book what the fill took. The order shrinks in place, so it
@@ -906,6 +927,12 @@ fn settle_taker_origin_pair<'c: 'info, 'info>(
         price,
         oracle_price
     )?;
+    // The pre-flight comes first, because a refusal must leave the book as it
+    // was, and the two flags it reports are inputs to the post-fill checks
+    // below.
+    let (fee, oracle_stale_for_margin, perp_market_oi_before) =
+        price_cross(cx, aggressor, price, base_filled, maps)?;
+
     bind_aggressor_size(
         &cx.accounts.taker,
         cx.market_index,
@@ -915,21 +942,35 @@ fn settle_taker_origin_pair<'c: 'info, 'info>(
     )?;
     bind_counterparty_size(cx, &pair)?;
 
+    // The margin type the post-fill checks apply depends on the position the
+    // aggressor held before the match, so those two facts are read here.
+    let facts = {
+        let taker = load!(cx.accounts.taker)?;
+        PairFillFacts {
+            aggressor_order_decreasing:
+                controller::orders::determine_if_user_order_is_position_decreasing(
+                    &taker,
+                    cx.market_index,
+                    &order,
+                )?,
+            aggressor_is_isolated: taker
+                .get_perp_position(cx.market_index)
+                .map(|position| position.is_isolated())
+                .unwrap_or(false),
+            perp_market_oi_before,
+            oracle_stale_for_margin,
+        }
+    };
+
     settle_pair_funding(cx, &pair, &maps.perp_market_map)?;
 
-    settle_pair_match(
-        cx,
-        &pair,
-        &mut order,
-        oracle_price,
-        &maps.perp_market_map,
-        &mut maps.oracle_map,
-    )?;
+    // The settlement returns evidence that the shared post-fill checks ran on
+    // both legs. Nothing outside `post_checks` can build it.
+    let _checked = settle_pair_match(cx, &pair, &mut order, oracle_price, &facts, maps)?;
 
     report_pair_fill_to_book(cx, &pair)?;
 
-    let (_, crank_reward) =
-        pay_crank_reward(cx, aggressor, price, base_filled, quote_filled, maps)?;
+    let crank_reward = pay_crank_reward(cx, &fee, quote_filled, maps)?;
 
     pay_crank_lamports(cx)?;
     emit_taker_origin_record(
@@ -1046,10 +1087,17 @@ fn settle_pair_match<'info>(
     pair: &RemainderPair<'_>,
     order: &mut crate::state::user::Order,
     oracle_price: i64,
-    perp_market_map: &PerpMarketMap<'info>,
-    oracle_map: &mut OracleMap<'info>,
-) -> Result<()> {
+    facts: &PairFillFacts,
+    maps: &mut AccountMaps<'info>,
+) -> Result<post_checks::PairChecked> {
     let taker_direction = cx.taker_direction;
+    // Disjoint field borrows: the settlement writes the market and the oracle
+    // map, and the check below needs the bundle back.
+    let AccountMaps {
+        perp_market_map,
+        oracle_map,
+        ..
+    } = &mut *maps;
     let mut market = perp_market_map.get_ref_mut(&cx.market_index)?;
     let mut taker = load_mut!(cx.accounts.taker)?;
     let mut taker_stats = load_mut!(cx.accounts.taker_stats)?;
@@ -1111,7 +1159,143 @@ fn settle_pair_match<'info>(
         cx.clock.slot,
         &mut filler_reward_paid,
     )?;
-    Ok(())
+    drop(maker_stats);
+    drop(maker);
+    drop(taker_stats);
+    drop(taker);
+    drop(market);
+
+    // The check belongs to the settlement, not to the caller. This is the one
+    // fill path with no router pass behind it, so nothing else applies the
+    // shared post-fill rules to either leg, and a pair that settled without
+    // them would be a fill the same accounts could not have taken anywhere
+    // else. Keeping the two together is what stops the call being lost.
+    Ok(post_checks::check_pair_fill(
+        &cx.accounts.taker,
+        &cx.accounts.taker_stats,
+        cx.makers_and_referrer,
+        cx.makers_and_referrer_stats,
+        maps,
+        cx.market_index,
+        &PairFill {
+            counterparty_key: pair.maker_key,
+            counterparty_direction: taker_direction.opposite(),
+            base_filled: pair.base_filled,
+            quote_filled: pair.quote_filled,
+        },
+        facts,
+        cx.clock.unix_timestamp,
+    )?)
+}
+
+/// What one settled pair moved, as the post-fill checks read it.
+struct PairFill {
+    /// The counterparty's margin account, as the user map keys it.
+    counterparty_key: Pubkey,
+    /// The side the counterparty took, which is the aggressor's opposite.
+    counterparty_direction: PositionDirection,
+    base_filled: u64,
+    quote_filled: u64,
+}
+
+/// What the post-fill checks need that the settled fill cannot report.
+struct PairFillFacts {
+    /// Whether the aggressor's order reduces the position it held before the
+    /// match. A reducing order is held to maintenance margin, not to fill
+    /// margin, and is exempt from the buffered floor.
+    aggressor_order_decreasing: bool,
+    /// Whether the aggressor's position in this market is isolated, which
+    /// decides the margin scope the check runs under.
+    aggressor_is_isolated: bool,
+    /// The market's open interest before the match.
+    perp_market_oi_before: u128,
+    /// Whether the oracle is too old to price margin.
+    oracle_stale_for_margin: bool,
+}
+
+/// Hold both sides of the settled pair to the shared post-fill checks: fill or
+/// maintenance margin under each side's own margin scope, the equity breaker,
+/// the buffered floor, the spot-borrow oracle and interest rules, and the
+/// stale-oracle open-interest rule.
+///
+/// Every other fill path reaches these through the router pass. This branch
+/// settles the pair itself, so it is the one fill path that must apply them
+/// directly. The reservation each order holds bounds the size of the fill and
+/// nothing else, and what these checks refuse is collateral state the
+/// reservation cannot see: a breaker that tripped, a floor the account no
+/// longer clears, or a spot borrow whose oracle went stale while the order
+/// rested.
+///
+/// The counterparty's margin scope is read off its live position, because
+/// neither book row records whether the position it fills is isolated.
+#[allow(clippy::too_many_arguments)]
+/// The shared post-fill checks, and the evidence that they ran.
+///
+/// A pair settled here has no router pass behind it, so nothing else applies
+/// the post-fill rules to either leg. The only failure mode of a check like
+/// that is absence, and absence is invisible: the fill still balances, the
+/// records still emit, and every test of the check itself still passes. So the
+/// check lives alone in this module and hands back a [`PairChecked`] that
+/// nothing outside can build. A settlement that skips it has nothing to
+/// return, and the crate stops compiling.
+mod post_checks {
+    use super::*;
+
+    /// Evidence that [`check_pair_fill`] ran. The unit field is private to
+    /// this module, which is what makes the evidence unforgeable.
+    pub(super) struct PairChecked(());
+
+    pub(super) fn check_pair_fill<'info>(
+        taker_loader: &AccountLoader<'info, User>,
+        taker_stats_loader: &AccountLoader<'info, UserStats>,
+        makers_and_referrer: &UserMap<'info>,
+        makers_and_referrer_stats: &UserStatsMap<'info>,
+        maps: &mut AccountMaps<'info>,
+        market_index: u16,
+        fill: &PairFill,
+        facts: &PairFillFacts,
+        now: i64,
+    ) -> VelocityResult<PairChecked> {
+        let counterparty_is_isolated = {
+            let counterparty = makers_and_referrer.get_ref(&fill.counterparty_key)?;
+            get_position_index(&counterparty.perp_positions, market_index)
+                .map(|position_index| counterparty.perp_positions[position_index].is_isolated())
+                .unwrap_or(false)
+        };
+        let mut maker_fills = BTreeMap::new();
+        controller::orders::update_maker_fills_map(
+            &mut maker_fills,
+            &fill.counterparty_key,
+            fill.counterparty_direction,
+            fill.base_filled,
+            counterparty_is_isolated,
+        )?;
+
+        let taker = load!(taker_loader)?;
+        let mut taker_stats = load_mut!(taker_stats_loader)?;
+        controller::orders::fulfill_perp_order_post_checks(
+            &taker,
+            &mut taker_stats,
+            makers_and_referrer,
+            makers_and_referrer_stats,
+            maps,
+            market_index,
+            fill.base_filled,
+            fill.quote_filled,
+            &maker_fills,
+            facts.aggressor_order_decreasing,
+            facts.aggressor_is_isolated,
+            facts.perp_market_oi_before,
+            facts.oracle_stale_for_margin,
+            // A cross of two resting remainders is never a liquidation.
+            false,
+            // Both legs are ordinary users who keep the positions this
+            // settles, so both carry their own risk and both are checked.
+            false,
+            now,
+        )?;
+        Ok(PairChecked(()))
+    }
 }
 
 /// Tell the book what the cross took, and unwind whatever it removed.
@@ -1251,6 +1435,7 @@ pub(super) fn stage_taker_origin_cross(
         MAX_CROSS_ROWS,
         &book_accounts,
         &mut cpi_scratch,
+        true,
     )?
     .ok_or(ErrorCode::NoTakerOriginCross)?;
 

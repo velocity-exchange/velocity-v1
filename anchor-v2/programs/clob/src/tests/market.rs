@@ -4,7 +4,7 @@
 
 use {
     crate::{
-        book::{ClobBook, NodeArena, NIL},
+        book::{BookHeader, ClobBook, NodeArena, NIL},
         error::ClobError,
         state::{
             ClobHeaderV0, ClobMarketV0, ClobSideExt, MarketConfigV0, OrderBitFlag, OrderRefV0,
@@ -203,6 +203,7 @@ pub fn assert_err<T>(result: Result<T>, expected: ClobError) {
 pub fn assert_consistent(book: &ClobMarketV0) {
     let capacity = book.capacity();
     let mut seen = vec![false; capacity];
+    let mut taker_origin = [0usize; 2];
 
     for side in [Side::Bid, Side::Ask] {
         let mut cursor = book.best(side);
@@ -227,6 +228,9 @@ pub fn assert_consistent(book: &ClobMarketV0) {
                 );
             }
             last_price = Some(node.price);
+            if node.is_taker_origin() {
+                taker_origin[side.to_u8() as usize] += 1;
+            }
             prev = cursor;
             cursor = node.next;
             count += 1;
@@ -261,4 +265,57 @@ pub fn assert_consistent(book: &ClobMarketV0) {
     );
 
     book.validate_book().expect("O(1) invariants hold");
+    assert_claimants_listed(book, taker_origin);
+}
+
+/// The exhaustive version of the claimant-list invariant the on-chain
+/// `validate_book` checks the endpoints of.
+///
+/// Every listed node is a live taker-origin order of that side, the links are
+/// mutual, and the ids ascend — the list is in rest order, which is what makes
+/// the oldest remainder the first one paid. `taker_origin` is how many
+/// taker-origin orders the price walk found on each side, so a listed order
+/// that is not on the side, or an unlisted order that is, fails the count.
+#[track_caller]
+fn assert_claimants_listed(book: &ClobMarketV0, taker_origin: [usize; 2]) {
+    for side in [Side::Bid, Side::Ask] {
+        let list = side.to_u8() as usize;
+        let mut cursor = book.first_claimant(side);
+        let mut prev = NIL;
+        let mut count = 0usize;
+        let mut last_id = 0u64;
+        while cursor != NIL {
+            let node = book.read_node(cursor).unwrap();
+            assert!(
+                node.is_bit_flag_set(OrderBitFlag::Open),
+                "freed node {cursor} is on the {side:?} claimant list"
+            );
+            assert!(
+                node.is_taker_origin(),
+                "node {cursor} is listed without the taker-origin flag"
+            );
+            assert_eq!(node.side(), side, "claimant {cursor} is on the wrong side");
+            assert_eq!(node.taker_origin_prev, prev, "claimant {cursor} back-link");
+            assert!(
+                node.order_id > last_id,
+                "the {side:?} claimant list is out of rest order at node {cursor}"
+            );
+            last_id = node.order_id;
+            prev = cursor;
+            cursor = node.taker_origin_next;
+            count += 1;
+            assert!(count <= book.capacity(), "{side:?} claimant list cycles");
+        }
+        assert_eq!(
+            count, taker_origin[list],
+            "{side:?} holds {} taker-origin orders and lists {count}",
+            taker_origin[list]
+        );
+        assert_eq!(
+            count,
+            book.claimant_count(side) as usize,
+            "{side:?} claimant count"
+        );
+        assert_eq!(prev, book.last_claimant(side), "{side:?} claimant tail");
+    }
 }

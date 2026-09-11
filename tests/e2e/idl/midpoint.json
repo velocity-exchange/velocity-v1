@@ -613,6 +613,15 @@
               "must carry the value its quote carried."
             ],
             "type": "bool"
+          },
+          {
+            "name": "consume_reservation",
+            "docs": [
+              "Same contract as [`QuoteArgsV0::consume_reservation`], and the same",
+              "rule: the execute must carry the value its quote carried, or it walks",
+              "a different set of orders than the one it quoted."
+            ],
+            "type": "bool"
           }
         ]
       }
@@ -1011,6 +1020,22 @@
               "authenticates the caller, and the caller is the settlement engine. A",
               "quoter that only serves protected flow (the midpoint's",
               "`require_attested_flow`) refuses when this is false."
+            ],
+            "type": "bool"
+          },
+          {
+            "name": "consume_reservation",
+            "docs": [
+              "Fill the depth a crossing taker remainder claims.",
+              "",
+              "A book withholds the depth an unfilled taker remainder crosses, so the",
+              "improvement over that remainder's resting price reaches the taker",
+              "rather than whoever lands a transaction first. The crank that settles",
+              "the cross is the one caller that must reach it, and it says so here.",
+              "",
+              "The caller asserts it, like `users` and `caps`: the quoter",
+              "authenticates the caller, and the caller is the settlement engine. A",
+              "quoter that reserves nothing ignores it."
             ],
             "type": "bool"
           }

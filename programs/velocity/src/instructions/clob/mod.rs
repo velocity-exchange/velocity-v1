@@ -91,6 +91,19 @@
 //! takes up to 128 orders and a record is 480 bytes, which no transaction's
 //! log budget holds, so its per-order detail rides the book's own compact
 //! cancel record instead.
+//!
+//! **A book order keeps one margin regime for its whole life.** The book
+//! stores no isolated flag, so every fill, cull and cancel reads the regime
+//! off the owner's live [`crate::state::user::PerpPosition`]. That read
+//! cannot change its answer while the order rests. A resting order holds
+//! `open_orders` and `open_bids`/`open_asks` on the position, so nothing
+//! recycles the slot into another market and nothing clears the isolated flag
+//! in place. The other direction is refused as well: a cross position cannot
+//! turn isolated while its orders rest, and the isolated-scope margin gate
+//! keeps the isolated collateral above the worst-case requirement, which
+//! counts resting size even at zero base. An order therefore settles against
+//! the collateral pool it rested under, and no order or book node has to
+//! carry a copy of the flag.
 
 mod admin;
 mod cancel_order_v1;

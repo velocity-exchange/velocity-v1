@@ -1,4 +1,4 @@
-//! Cross-match crank: fill two crossed resting sources against each other.
+//! Cross-match crank: match two crossed resting sources against each other.
 //!
 //! Nothing else matches two *resting* books — router matching only happens
 //! when a taker fills through — so a CLOB bid at/above a CLOB ask, or a
@@ -6,16 +6,32 @@
 //! Trigger placements make the first routine and PropAMM reprices the
 //! second; both strand user orders, which is the UX this crank exists for.
 //!
-//! The protocol `User` is the pass-through taker (the arb bot): buy the
-//! crossed ask, sell into the crossed bid, both legs through the standard
-//! external-match settlement, so every maker experiences an ordinary fill.
-//! The executor is the authoritative predicate — it reverts unless the legs
-//! balance exactly and the spread nets positive after both legs' taker
-//! fees, so a simulation that succeeds implies a profitable cross and books
-//! whose cross is inside the fee gulf simply rest. The surplus lands in the
-//! protocol `User` — the sink the crank incentive loop drains — and the
-//! caller's `authority` is paid reservoir lamports; no signature is
-//! required anywhere (relay turners submit executors unsigned).
+//! The crank is two ordinary router fills. The protocol `User` buys `size`
+//! as a taker, then sells exactly what the buy filled, and each leg routes
+//! across every source the transaction carries. Running the cross this way
+//! is what gives it everything a fill has: the vAMM's last look, a PropAMM
+//! that can cross the book, the pre-execute margin clamp on unreserved
+//! depth, reduce-only trigger cancellation, and the shared post-fill margin,
+//! equity-floor and open-interest checks.
+//!
+//! Three requirements make the pair a cross rather than two sweeps. The legs
+//! must match the same base, so the protocol ends flat. Every unit must have
+//! crossed, which the worst price of each leg states exactly: the highest
+//! price the buy leg paid must be at or under the lowest price the sell leg
+//! received. And the quote the protocol keeps must clear the market's floor,
+//! so a cross the reservoir pays for never nets less than it costs to land.
+//! A cross inside the fee gulf simply rests.
+//!
+//! The surplus lands in the protocol `User` — the sink the crank incentive
+//! loop drains — and the caller's `authority` is paid reservoir lamports; no
+//! signature is required anywhere (relay turners submit executors unsigned).
+//!
+//! A crossing taker remainder needs no guard here. A remainder claims the
+//! depth it crosses, and claimed depth leaves the book's matchable set for
+//! every caller that does not pass `consume_reservation`. This crank passes
+//! `false` at every site, so it cannot reach a remainder's cover at any size
+//! the caller asks for, and `crank_taker_origin_cross` — which owes the taker
+//! that improvement — is the only caller that can.
 
 use {
     super::{
@@ -23,26 +39,40 @@ use {
         crank_taker_origin_cross::stage_taker_origin_cross,
     },
     crate::{
-        controller,
+        controller::{
+            self, funding::settle_funding_payment, orders::crank_oracle_preflight,
+            position::PositionDirection,
+        },
         error::ErrorCode,
         instructions::{
+            build_user_caps,
             constraints::*,
+            optional_accounts::{tx_writable_lock_count, AccountMaps},
             relay_harness::{resolve_into, StagedCall},
-            router::cpi_executor::CpiQuoterExecutor,
+            CapInputs, QuoteInputs, QuotedRoute,
         },
-        load, msg,
+        load, load_mut,
+        math::{
+            casting::Cast, constants::MARGIN_PRECISION_U128, router::FillerObligation,
+            safe_math::SafeMath,
+        },
+        msg,
         state::{
             clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
+            fill_mode::FillMode,
             pdas,
             perp_market_map::MarketSet,
-            prop_amm::{PriceLevel, QuoterSlabExt, QuoterSlabV0, QuoterType},
+            prop_amm::{
+                Direction, PriceLevel, QuoterCpiScratch, QuoterSlabExt, QuoterSlabV0, QuoterType,
+            },
             state::State,
-            user::{User, UserStats},
-            user_map::load_user_maps,
+            user::{MarketType, Order, OrderStatus, OrderType, User, UserStats},
+            user_map::{load_user_maps, UserMap, UserStatsMap},
         },
         validate,
     },
     anchor_lang::prelude::*,
+    solana_program::sysvar::instructions::ID as IX_ID,
 };
 
 #[cfg(test)]
@@ -51,13 +81,10 @@ mod tests;
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
 pub struct CrankCrossMatchArgs {
     pub market_index: u16,
-    /// Base to take from each leg. The executor reverts unless both legs
-    /// balance exactly at this size.
+    /// Base the buy leg takes. The sell leg returns exactly what the buy leg
+    /// filled, and the cross is refused unless every unit of it crossed — so
+    /// a size past the crossing depth fails rather than sweeping through it.
     pub size: u64,
-    /// Legs, as slab slot indexes: the entry whose ask the pass-through
-    /// taker buys, and the one whose bid it sells into. The book is slot 0.
-    pub buy_quoter_index: u8,
-    pub sell_quoter_index: u8,
 }
 
 #[derive(Accounts)]
@@ -65,7 +92,7 @@ pub struct CrankCrossMatchArgs {
 pub struct CrankCrossMatch<'info> {
     pub state: AccountLoader<'info, State>,
     /// CHECK: the lamport payout target — relay's keeper-placeholder slot.
-    /// No signature: the executor's own profitability predicate is the gate.
+    /// No signature: the cross's own profitability rules are the gate.
     #[account(mut)]
     pub authority: UncheckedAccount<'info>,
     /// The protocol-owned pass-through taker. Locked to the protocol `User`
@@ -99,10 +126,15 @@ pub struct CrankCrossMatch<'info> {
         has_one = quoter_slab
     )]
     pub perp_market: AccountLoader<'info, crate::state::perp_market::PerpMarket>,
-    /// The market's approved quoters — both legs' configs, and the identity
-    /// every quoter CPI signs as. Bound by the market's `has_one`, which is a
-    /// memcmp where a seeds constraint pays a PDA derivation.
+    /// The market's approved quoters. Bound by the market's `has_one`, which
+    /// is a memcmp where a seeds constraint pays a PDA derivation. Each leg
+    /// assembles its route off the copy that rides the account tail, as every
+    /// router fill does.
     pub quoter_slab: AccountLoader<'info, QuoterSlabV0>,
+    /// CHECK: address-locked. The filler obligation is measured against how
+    /// many account locks the transaction holds, and this is what counts them.
+    #[account(address = IX_ID)]
+    pub instructions_sysvar: UncheckedAccount<'info>,
 }
 
 #[access_control(
@@ -112,12 +144,7 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
     ctx: Context<'info, CrankCrossMatch<'info>>,
     args: CrankCrossMatchArgs,
 ) -> Result<()> {
-    let CrankCrossMatchArgs {
-        market_index,
-        size,
-        buy_quoter_index,
-        sell_quoter_index,
-    } = args;
+    let CrankCrossMatchArgs { market_index, size } = args;
     let clock = Clock::get()?;
     let state = ctx.accounts.state.load()?;
 
@@ -145,68 +172,78 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
     )?;
     // The perp market arrives named rather than through the maps section, so
     // the bundle is built here instead of by `load_maps`.
-    let mut maps = crate::instructions::optional_accounts::AccountMaps {
+    let mut maps = AccountMaps {
         perp_market_map,
         spot_market_map,
         oracle_map,
     };
     let (makers_and_referrer, makers_and_referrer_stats) =
         load_user_maps(remaining_accounts_iter, true)?;
+    // The protocol taker is loaded by name and mutated for the length of each
+    // leg. Repeating it in the maker section would fail the leg on a borrow
+    // rather than say why.
+    validate!(
+        !makers_and_referrer
+            .0
+            .contains_key(&ctx.accounts.taker.key()),
+        ErrorCode::InvalidMaker,
+        "the maker section must not repeat the protocol taker"
+    )?;
 
-    // The account tail: the union of the consulted quoters' registered CPI
-    // accounts, same shape as the router fill's. This crank never quotes —
-    // the resolver already sized both legs — so it consults slots and takes
-    // no ladders.
-    // Borrow the tail in place: the executor and the guard read it by
-    // reference, so nothing needs an owned clone of every account.
+    // The account tail: the market's slab plus the union of the consulted
+    // quoters' registered accounts, the same shape a router fill carries.
     let tail_from = ctx.remaining_accounts.len() - remaining_accounts_iter.len();
     let tail = &ctx.remaining_accounts[tail_from..];
-    let quoted = ctx.accounts.quoter_slab.consulted_slots(tail)?;
-    let (buy_index, sell_index) = resolve_cross_legs(&quoted, buy_quoter_index, sell_quoter_index)?;
 
-    let taker_ref = {
-        let taker = load!(ctx.accounts.taker)?;
-        taker.clob_user_ref()
+    // Both legs are held to the oracle rules an ordinary fill applies, before
+    // either of them moves a position. The pre-flight refuses a market in
+    // settlement, paused fills, an oracle that may not price a match, and a
+    // mark outside the market's band.
+    let (band_oracle_price, margin_ratio_initial, clob_market) = {
+        let market = &mut maps.perp_market_map.get_ref_mut(&market_index)?;
+        crank_oracle_preflight(market, &state, &mut maps.oracle_map, &clock, "cross match")?;
+        let oracle_id = market.oracle_id();
+        let (margin_ratio_initial, clob_market) = (market.margin_ratio_initial, market.clob_market);
+        (
+            maps.oracle_map.get_price_data(&oracle_id)?.price,
+            margin_ratio_initial,
+            clob_market,
+        )
     };
-    let users = crate::state::prop_amm::quoter_wire_users(
-        makers_and_referrer
-            .user_ref_index()?
-            .into_keys()
-            .map(
-                |(authority, sub_account_id)| crate::state::prop_amm::ClobUserRefV0 {
-                    authority,
-                    sub_account_id,
-                },
-            ),
-    )?;
-    // One set of CPI buffers for the whole crank, as the router fill uses.
-    let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
-    let flow_served = survey_consulted_books(
-        &ctx.accounts.quoter_slab,
-        &quoted,
+
+    let base_before = taker_base(&ctx.accounts.taker, market_index)?;
+
+    // One set of CPI buffers for the whole crank, as a router fill uses. Both
+    // legs refill them in turn; a set per leg would be an allocation per leg,
+    // and the runtime's allocator never gives one back.
+    let mut cpi_scratch = QuoterCpiScratch::new();
+    let legs = CrossLegs {
+        accounts: &ctx.accounts,
         tail,
+        state: &state,
         market_index,
+        band_oracle_price,
+        margin_ratio_initial,
+        clob_market,
+        makers_and_referrer: &makers_and_referrer,
+        makers_and_referrer_stats: &makers_and_referrer_stats,
+        clock: &clock,
+    };
+
+    let buy = run_cross_leg(
+        &legs,
+        PositionDirection::Long,
         size,
-        clock.slot,
+        &mut maps,
         &mut cpi_scratch,
     )?;
-
-    let mut executor = CpiQuoterExecutor {
-        scratch: &mut cpi_scratch,
-        caps: crate::state::prop_amm::QuoterUserCapsV0::EMPTY,
-        reference_price: 0,
-        slab: Some(&ctx.accounts.quoter_slab),
-        slots: &quoted,
-        market_index,
-        accounts: tail,
-        users: &users,
-        taker: taker_ref,
-        // Not by construction: measured rest over the consumable depth,
-        // computed on the guard walk above.
-        taker_served_window: flow_served,
-        slot: clock.slot,
-        now: clock.unix_timestamp,
-    };
+    let sell = run_cross_leg(
+        &legs,
+        PositionDirection::Short,
+        buy.base_filled,
+        &mut maps,
+        &mut cpi_scratch,
+    )?;
 
     let cross_floor = cross_surplus_floor(
         &ctx.accounts.crank_conditions,
@@ -214,20 +251,13 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
         &maps.spot_market_map,
         &mut maps.oracle_map,
     )?;
-
-    let (base_matched, surplus) = controller::orders::cross_match(
-        &state,
-        market_index,
-        size,
-        buy_index,
-        sell_index,
-        &ctx.accounts.taker,
-        &ctx.accounts.taker_stats,
-        &makers_and_referrer,
-        &makers_and_referrer_stats,
-        &mut executor,
-        &mut maps,
-        &clock,
+    let CrossSurplus {
+        base_matched,
+        surplus,
+    } = validate_cross_legs(
+        &buy,
+        &sell,
+        (base_before, taker_base(&ctx.accounts.taker, market_index)?),
         cross_floor,
     )?;
 
@@ -242,115 +272,399 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
     Ok(())
 }
 
-/// The consulted-entry indexes of the two legs.
-///
-/// Legs are named by slab slot index — stable whatever else rides the
-/// tail — and resolved to consulted entries here.
-fn resolve_cross_legs(
-    quoted: &[usize],
-    buy_quoter_index: u8,
-    sell_quoter_index: u8,
-) -> Result<(usize, usize)> {
-    let leg = |slot: u8| -> Result<usize> {
-        quoted
-            .iter()
-            .position(|&consulted| consulted == slot as usize)
-            .ok_or_else(|| {
-                msg!(
-                    "cross leg names slab slot {}, which the tail does not consult",
-                    slot
-                );
-                error!(ErrorCode::DefaultError)
-            })
-    };
-    Ok((leg(buy_quoter_index)?, leg(sell_quoter_index)?))
+/// What both legs of a cross read and neither of them changes.
+struct CrossLegs<'a, 'info> {
+    accounts: &'a CrankCrossMatch<'info>,
+    tail: &'info [AccountInfo<'info>],
+    state: &'a State,
+    market_index: u16,
+    /// The oracle price the fill's own maker band measures against. Each leg
+    /// bounds itself at the edge of that band.
+    band_oracle_price: i64,
+    /// The market's own band, in MARGIN_PRECISION units.
+    margin_ratio_initial: u32,
+    /// The book the market names. Every router fill must consult it.
+    clob_market: Pubkey,
+    makers_and_referrer: &'a UserMap<'info>,
+    makers_and_referrer_stats: &'a UserStatsMap<'info>,
+    clock: &'a Clock,
 }
 
-/// Read every consulted book's resting orders once. The walk refuses a cross
-/// that a taker remainder owns, and measures how long the flow has rested.
+/// What one leg of a cross filled.
+struct CrossLegFilled {
+    base_filled: u64,
+    /// What the leg did to the protocol `User`'s quote, net of the taker fee
+    /// it paid. Read on both sides of the fill with funding already settled,
+    /// so a funding payment cannot read as cross surplus.
+    quote_delta: i64,
+    /// The worst price any single source of this leg executed at. Zero when
+    /// the leg filled nothing.
+    worst_price: u64,
+}
+
+/// The protocol taker's base in this market, or zero when it holds no
+/// position there yet.
+fn taker_base(taker: &AccountLoader<User>, market_index: u16) -> Result<i64> {
+    Ok(load!(taker)?
+        .get_perp_position(market_index)
+        .map(|position| position.base_asset_amount)
+        .unwrap_or(0))
+}
+
+/// Run one leg of a cross as an ordinary router fill.
 ///
-/// A crossed taker remainder is not this crank's to touch. The book's own
-/// gate cannot stop it: the first leg can consume the whole opposite side,
-/// after which nothing crosses the remainder any more and taking it becomes
-/// legitimate as far as the CLOB can tell — so the second leg fills it at
-/// its own resting price and the improvement lands with the protocol, which
-/// is exactly the outcome the taker-origin path exists to prevent. Relay
-/// never stages that (its resolver picks the taker-origin crank when the
-/// top pair is a remainder), but this instruction is permissionless, so a
-/// hand-built one has to be refused here.
+/// The leg's order is a local. It belongs to no `orders` slot and never
+/// rested, so the fill takes it directly and unwinds no reservation for it.
+/// Whatever the fill leaves unfilled is simply dropped, and the two legs then
+/// fail to balance, which is how a leg that came up short refuses the cross.
 ///
-/// The read is the same L3 walk the crank itself runs, not the two heads.
-/// A remainder one level down is still a remainder the taker-origin crank
-/// owns, and it is invisible to a read that reports only the best order on
-/// each side.
+/// The protocol `User` stands as its own filler, so no reward is carved out
+/// of the taker fee it pays, and there is no builder escrow to accrue
+/// against.
+fn run_cross_leg<'info>(
+    legs: &CrossLegs<'_, 'info>,
+    taker_direction: PositionDirection,
+    size: u64,
+    maps: &mut AccountMaps<'info>,
+    cpi_scratch: &mut QuoterCpiScratch<'info>,
+) -> Result<CrossLegFilled> {
+    if size == 0 {
+        return Ok(CrossLegFilled {
+            base_filled: 0,
+            quote_delta: 0,
+            worst_price: 0,
+        });
+    }
+    let direction = match taker_direction {
+        PositionDirection::Long => Direction::Long,
+        PositionDirection::Short => Direction::Short,
+    };
+    let limit_price = leg_limit_price(
+        taker_direction,
+        legs.band_oracle_price,
+        legs.margin_ratio_initial,
+    )?;
+
+    // Funding is settled here, before the quote is read. The fill settles it
+    // too, so by the time the fill runs there is nothing left to charge, and
+    // the quote the leg is measured on moves for the fill alone. Without
+    // this, a funding payment would read as cross surplus — including the
+    // one the first leg's own funding update creates for the second.
+    let (order_id, taker_ref, quote_before) = {
+        let mut market = maps.perp_market_map.get_ref_mut(&legs.market_index)?;
+        let mut taker = load_mut!(legs.accounts.taker)?;
+        settle_funding_payment(
+            &mut taker,
+            &legs.accounts.taker.key(),
+            &mut market,
+            legs.clock.unix_timestamp,
+        )?;
+        let order_id = taker.next_order_id;
+        taker.next_order_id = taker.next_order_id.wrapping_add(1).max(1);
+        let quote_before = taker
+            .get_perp_position(legs.market_index)
+            .map(|position| position.quote_asset_amount)
+            .unwrap_or(0);
+        (order_id, taker.clob_user_ref(), quote_before)
+    };
+    // A limit order at the edge of the market's maker band. The band is what
+    // the fill refuses a maker price past anyway, so bounding the leg there
+    // discards no depth the fill could have taken, and it keeps every
+    // quoter's walk off levels the fill would drop.
+    let mut order = Order {
+        slot: legs.clock.slot,
+        order_id,
+        market_index: legs.market_index,
+        status: OrderStatus::Open,
+        order_type: OrderType::Limit,
+        market_type: MarketType::Perp,
+        direction: taker_direction,
+        base_asset_amount: size,
+        price: limit_price,
+        existing_position_direction: taker_direction,
+        ..Order::default()
+    };
+
+    let users = crate::state::prop_amm::quoter_wire_users(
+        legs.makers_and_referrer.user_ref_index()?.into_keys().map(
+            |(authority, sub_account_id)| crate::state::prop_amm::ClobUserRefV0 {
+                authority,
+                sub_account_id,
+            },
+        ),
+    )?;
+    // A cross is one event on two sides, so one verdict covers both legs. A
+    // leg that read only the side it sweeps would call the flow protected
+    // whenever the fresh order sat on the other side, and the cross would
+    // then reach liquidity that serves protected flow only — laundering an
+    // order that never rested through the leg that does not settle it. Both
+    // directions are read, bounded by the size this cross takes, so depth the
+    // cross never touches still does not count against it.
+    let taker_served_window = [Direction::Long, Direction::Short]
+        .iter()
+        .copied()
+        .try_fold(true, |served, side| -> Result<bool> {
+            Ok(served
+                && leg_served_window(
+                    &legs.accounts.quoter_slab,
+                    legs.tail,
+                    legs.market_index,
+                    side,
+                    size,
+                    legs.clock.slot,
+                    cpi_scratch,
+                )?)
+        })?;
+    let inputs = QuoteInputs {
+        caps: crate::state::prop_amm::QuoterUserCapsV0::EMPTY,
+        market_index: legs.market_index,
+        direction,
+        size,
+        users: &users,
+        reference_price: legs.band_oracle_price,
+        taker: taker_ref,
+        limit_price,
+        taker_served_window,
+        // The depth a crossing remainder claims is that taker's improvement,
+        // not arbitrage for the protocol to middle. Reading the book without
+        // it is what makes this crank unable to reach a remainder's cover.
+        consume_reservation: false,
+    };
+    let inputs = QuoteInputs {
+        caps: build_user_caps(
+            legs.tail,
+            &inputs,
+            &mut CapInputs {
+                makers_and_referrer: legs.makers_and_referrer,
+                makers_and_referrer_stats: legs.makers_and_referrer_stats,
+                maps,
+                slot: legs.clock.slot,
+                now: legs.clock.unix_timestamp,
+            },
+        )?,
+        ..inputs
+    };
+
+    let route = QuotedRoute::assemble(legs.tail, &inputs, cpi_scratch)?;
+    route.require_baseline(legs.clob_market)?;
+    let mut book_storage =
+        [crate::math::router::QuoterBook::default(); crate::state::prop_amm::MAX_ROUTE_QUOTERS];
+    let books = route.books(&mut book_storage)?;
+    let mut executor = route.executor(
+        &inputs,
+        legs.clock.slot,
+        legs.clock.unix_timestamp,
+        cpi_scratch,
+    );
+    let mut router_inputs = crate::math::router::RouterFillInputs {
+        books,
+        executor: &mut executor,
+        protocol_authority: legs.state.signer,
+        taker_exposure_closed_by_caller: true,
+        obligation: FillerObligation {
+            // The taker is the protocol, not a user trusting a cranker with
+            // its order, so nobody is owed a maker here. A book that stops at
+            // an owner the transaction does not carry only makes the cross
+            // smaller, and the surplus floor decides whether the smaller
+            // cross is worth landing.
+            taker_signed: false,
+            tx_accounts: Some(tx_writable_lock_count(
+                &legs.accounts.instructions_sysvar.to_account_info(),
+            )?),
+            unrouted_quoters: 0,
+        },
+        worst_fill_price: None,
+    };
+
+    let (base_filled, _) = controller::orders::fill_perp_order(
+        controller::orders::FillTarget::Detached {
+            order: &mut order,
+            reserved: false,
+        },
+        legs.state,
+        &legs.accounts.taker,
+        &legs.accounts.taker_stats,
+        maps,
+        &legs.accounts.taker,
+        &legs.accounts.taker_stats,
+        legs.makers_and_referrer,
+        legs.makers_and_referrer_stats,
+        legs.clock,
+        FillMode::Fill,
+        &mut router_inputs,
+        &mut None,
+        false,
+    )?;
+    // Read straight after the fill, with no second settle: the fill's own
+    // funding update belongs to whoever holds the position next, and the next
+    // leg settles it before it starts measuring.
+    let quote_after = load!(legs.accounts.taker)?
+        .get_perp_position(legs.market_index)
+        .map(|position| position.quote_asset_amount)
+        .unwrap_or(0);
+    Ok(CrossLegFilled {
+        base_filled,
+        quote_delta: quote_after.safe_sub(quote_before)?,
+        worst_price: router_inputs.worst_fill_price.unwrap_or(0),
+    })
+}
+
+/// The edge of the market's maker oracle band, on the side the leg buys or
+/// sells at.
 ///
-/// Runs before the executor takes the CPI buffers, so it reads through the
-/// one set the crank already built. A set per book would be an allocation
-/// per book, and the runtime's allocator never gives one back.
+/// A cross leg has no price of its own to bring: the crossed prices are what
+/// it exists to reach, and they are not known until both sides are read. The
+/// band is the widest price the fill itself will settle a maker at, so it is
+/// the widest bound that discards nothing. It still bounds the leg, which is
+/// what keeps a quoter's walk and the vAMM ladder off levels the fill would
+/// refuse.
+fn leg_limit_price(
+    taker_direction: PositionDirection,
+    oracle_price: i64,
+    margin_ratio_initial: u32,
+) -> Result<u64> {
+    let oracle_price = oracle_price.unsigned_abs();
+    let band = oracle_price
+        .cast::<u128>()?
+        .safe_mul(margin_ratio_initial.cast()?)?
+        .safe_div(MARGIN_PRECISION_U128)?
+        .cast::<u64>()?;
+    Ok(match taker_direction {
+        PositionDirection::Long => oracle_price.saturating_add(band),
+        PositionDirection::Short => oracle_price.saturating_sub(band),
+    })
+}
+
+/// Whether every book order this leg could consume has measurably rested.
 ///
-/// Refusing rather than skipping, because the caller has a correct
-/// instruction to send instead: `crank_taker_origin_cross` resolves this
-/// book and pays the taker the difference.
+/// A crank cannot vouch for that by construction. On a zero-delay book,
+/// place-then-crank is two back-to-back transactions, so fresh informed flow
+/// would wear the protected flag into a quoter that only serves protected
+/// flow. So the crank measures it, over the depth the leg can reach. That
+/// depth is the first `size` base of the side the leg sweeps, so a fresh
+/// order deeper than the leg goes defers nothing.
 ///
-/// Returns whether every book order this cross could consume has measurably
-/// rested (`served_window`). The cranks cannot vouch by construction: on
-/// a zero-delay book, place-then-crank is two back-to-back transactions,
-/// and fresh informed flow would wear the protected flag into a quoter
-/// that only serves protected flow. Measured over the consumable depth —
-/// the first `size` base of each side — on the same L3 walk the guard
-/// below already runs, so a fresh order beyond what the cross could
-/// touch defers nothing.
-fn survey_consulted_books<'info>(
+/// One side per leg. Each leg is its own fill and transmits only the flow it
+/// sweeps, so a fresh order on the other side of the book has no bearing on
+/// it.
+fn leg_served_window<'info>(
     quoter_slab: &AccountLoader<'info, QuoterSlabV0>,
-    quoted: &[usize],
-    tail: &[AccountInfo<'info>],
+    tail: &'info [AccountInfo<'info>],
     market_index: u16,
+    direction: Direction,
     size: u64,
     slot: u64,
-    cpi_scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
+    cpi_scratch: &mut QuoterCpiScratch<'info>,
 ) -> Result<bool> {
-    let mut flow_served = true;
-    for &slot_index in quoted {
-        // Copy the config out so no slab borrow lives across the book CPI.
-        let config = quoter_slab.slots()?[slot_index].config;
-        if config.quoter_type != QuoterType::Clob {
-            continue;
-        }
-        let find = |key: &Pubkey| {
-            crate::state::prop_amm::find_account(tail, key)
-                .ok_or_else(|| error!(ErrorCode::DefaultError))
-        };
-        let sides = [
-            find(&config.response_account)?.clone(),
-            find(&config.program_id)?.clone(),
-        ];
-        let (bids, asks) = super::helpers::crank_common::book_l3_sides(
-            &config,
-            quoter_slab,
-            market_index,
-            CROSS_ROWS_PER_SIDE,
-            &sides,
-            cpi_scratch,
-        )?
-        .unwrap_or_default();
-        for side in [&bids, &asks] {
-            let mut depth = 0u64;
-            for order in side {
-                if depth >= size {
-                    break;
-                }
-                depth = depth.saturating_add(order.base_asset_amount);
-                flow_served =
-                    flow_served && crate::math::crosses::served_window(order.placed_slot, slot);
+    let consulted = quoter_slab.consulted_slots(tail)?;
+    consulted
+        .iter()
+        .try_fold(true, |served, &slot_index| -> Result<bool> {
+            // Copy the config out so no slab borrow lives across the book CPI.
+            let config = quoter_slab.slots()?[slot_index].config;
+            if config.quoter_type != QuoterType::Clob {
+                return Ok(served);
             }
-        }
-        validate!(
-            !strips_taker_origin_gate(&bids, &asks, size),
-            ErrorCode::CrossedTakerRemainderPending,
-            "a crossed taker remainder must be resolved by crank_taker_origin_cross"
-        )?;
-    }
-    Ok(flow_served)
+            let rows = super::helpers::crank_common::book_l3_side(
+                &config,
+                quoter_slab,
+                market_index,
+                direction,
+                CROSS_ROWS_PER_SIDE,
+                tail,
+                cpi_scratch,
+                false,
+                |row| (row.size, row.placed_slot),
+            )?
+            .unwrap_or_default();
+            let (_, rested) =
+                rows.iter()
+                    .fold((0u64, true), |(depth, rested), (row_size, placed_slot)| {
+                        if depth >= size {
+                            return (depth, rested);
+                        }
+                        (
+                            depth.saturating_add(*row_size),
+                            rested && crate::math::crosses::served_window(*placed_slot, slot),
+                        )
+                    });
+            Ok(served && rested)
+        })
+}
+
+/// The base both legs matched, and the quote the protocol kept for it.
+#[derive(Debug)]
+struct CrossSurplus {
+    base_matched: u64,
+    surplus: i64,
+}
+
+/// The three rules that make a pair of fills a cross.
+///
+/// The legs must match the same base and the taker's base must return to
+/// where it started, so the protocol ends flat and carries no position out of
+/// the crank.
+///
+/// Every unit must have crossed. The worst price of each leg states that
+/// exactly. The highest price the buy leg paid must be at or under the lowest
+/// price the sell leg received. This is what a size past the crossing depth
+/// fails on. Without the rule, a caller sizes past that depth and takes the
+/// loss-making tail through its own resting orders at intermediate prices,
+/// and the totals still clear the floor. The rule is therefore stronger than
+/// the floor rather than a restatement of it. Both prices are floored the
+/// same way, so a cross whose edge is inside one unit of quote is refused.
+/// That cross is worth refusing, because the floor already asks for more.
+///
+/// The two legs' quote deltas add up to the crossed spread net of both legs'
+/// taker fees. It must be positive and at or above the market's floor, so the
+/// protocol never runs a losing cross and never pays reservoir lamports for
+/// one worth less than the payment.
+fn validate_cross_legs(
+    buy: &CrossLegFilled,
+    sell: &CrossLegFilled,
+    base: (i64, i64),
+    min_surplus: u64,
+) -> Result<CrossSurplus> {
+    let (base_before, base_after) = base;
+    let base_matched = buy.base_filled;
+    validate!(
+        sell.base_filled == base_matched,
+        ErrorCode::CrossMatchImbalanced,
+        "cross legs imbalanced: bought {} sold {}",
+        base_matched,
+        sell.base_filled
+    )?;
+    validate!(
+        base_matched > 0,
+        ErrorCode::CrossMatchUnprofitable,
+        "nothing crossed"
+    )?;
+    validate!(
+        base_after == base_before,
+        ErrorCode::CrossMatchImbalanced,
+        "protocol user base changed: {} -> {}",
+        base_before,
+        base_after
+    )?;
+    validate!(
+        buy.worst_price <= sell.worst_price,
+        ErrorCode::CrossMatchLegsDoNotCross,
+        "cross paid up to {} and sold down to {}, so part of it did not cross",
+        buy.worst_price,
+        sell.worst_price
+    )?;
+    let surplus = buy.quote_delta.safe_add(sell.quote_delta)?;
+    validate!(
+        surplus > 0 && surplus.unsigned_abs() >= min_surplus,
+        ErrorCode::CrossMatchUnprofitable,
+        "cross surplus {} below the market's floor of {} (fees are the gulf)",
+        surplus,
+        min_surplus
+    )?;
+    Ok(CrossSurplus {
+        base_matched,
+        surplus,
+    })
 }
 
 /// The quote surplus a cross has to clear.
@@ -479,8 +793,7 @@ pub(super) fn stage_cross(ctx: &Context<ResolveClobCrank>) -> Result<Option<Stag
 
     // Named accounts through the executor's own client struct (compile-time
     // shape check), then the remaining sections: maps, maker
-    // `(User, UserStats)` pairs, the quoter section. Both legs are the CLOB:
-    // entry index 0.
+    // `(User, UserStats)` pairs, the quoter section.
     let call = crate::staged_call!(CrankCrossMatch {
         state: ctx.accounts.state.key(),
         authority: pdas::keeper_placeholder(),
@@ -489,18 +802,20 @@ pub(super) fn stage_cross(ctx: &Context<ResolveClobCrank>) -> Result<Option<Stag
         crank_conditions: ctx.accounts.crank_conditions.key(),
         perp_market: pdas::perp_market(market_index),
         quoter_slab: ctx.accounts.quoter_slab.key(),
+        instructions_sysvar: IX_ID,
     })
     .map_section_named_perp(oracle, quote_spot_market_index)
     .maker_refs(cross.makers.iter().copied());
     Ok(Some(
-        call.account(ctx.accounts.clob_market.key(), true)
+        // The slab rides the tail as well as being named: each leg assembles
+        // its route from the tail, as every router fill does, and a route
+        // without the slab consults nothing external.
+        call.account(ctx.accounts.quoter_slab.key(), false)
+            .account(ctx.accounts.clob_market.key(), true)
             .account(crate::ids::clob_program::id(), false)
-            // Both legs are the book's slot.
             .arg(CrankCrossMatchArgs {
                 market_index,
                 size: cross.size,
-                buy_quoter_index: 0,
-                sell_quoter_index: 0,
             })?,
     ))
 }
@@ -522,41 +837,6 @@ struct ClobCross {
 /// next wake continues.
 const CROSS_ROWS_PER_SIDE: u16 = 32;
 
-/// Whether this cross would take a taker-origin remainder's protection away
-/// part-way through the instruction.
-///
-/// The book withholds a remainder for as long as a live counterparty crosses
-/// it, and that gate is the only thing keeping this crank's legs off it. The
-/// legs consume `size` from each side. A remainder whose whole crossing depth
-/// the cross takes stops being crossed before the second leg runs; the gate
-/// then goes quiet and that leg fills the remainder at its own resting price,
-/// which is the outcome the taker-origin path exists to prevent.
-///
-/// Depth counts only the rows the legs can actually consume. A remainder on
-/// the far side is withheld too, so it stays and keeps the gate firing.
-///
-/// A remainder nothing crosses has no gate to lose. It is an ordinary resting
-/// order at its own price, which is what an unmatched remainder is for.
-fn strips_taker_origin_gate(
-    bids: &[crate::math::crosses::RestingOrder],
-    asks: &[crate::math::crosses::RestingOrder],
-    size: u64,
-) -> bool {
-    let exposed = |rows: &[crate::math::crosses::RestingOrder],
-                   opposite: &[crate::math::crosses::RestingOrder],
-                   crosses: fn(u64, u64) -> bool| {
-        rows.iter().filter(|row| row.taker_origin).any(|row| {
-            let depth: u64 = opposite
-                .iter()
-                .filter(|other| !other.taker_origin && crosses(row.price, other.price))
-                .map(|other| other.base_asset_amount)
-                .sum();
-            depth > 0 && size >= depth
-        })
-    };
-    exposed(bids, asks, |bid, ask| bid >= ask) || exposed(asks, bids, |ask, bid| bid >= ask)
-}
-
 /// The crossing prefix of a book against itself: total matchable size, the
 /// gross quote of each leg, and the (deduped, capped) makers it touches.
 ///
@@ -565,17 +845,11 @@ fn strips_taker_origin_gate(
 /// `quote_l3_v0`, which has already applied its rules about which of its
 /// orders are matchable right now, so nothing here reads the market account.
 ///
-/// Taker-origin rows are dropped rather than stopping the walk, and admitting
-/// one is wrong in two separate ways. Usually the book withholds it from
-/// `execute_v0`, so a leg sized to include its base comes back short, the two
-/// legs imbalance, and the ordinary cross resting in *front* of the remainder
-/// cannot clear either for as long as it is there. And admitting it also
-/// stages its owner's `(User, UserStats)` pair, which is what would let the
-/// book hand the remainder over at its own resting price: once the first leg
-/// has consumed the whole opposite side nothing crosses the remainder any
-/// more, so the gate protecting it stops firing, and the improvement lands in
-/// the protocol `User` instead of the taker's. Leaving its owner unloaded
-/// means the book passes over the order as unsettleable even then.
+/// Taker-origin rows are dropped rather than stopping the walk. A remainder
+/// is withheld from the crank's own legs, so a leg sized to include its base
+/// comes back short and the two legs imbalance. That would leave the ordinary
+/// cross resting in *front* of the remainder unable to clear for as long as
+/// the remainder is there.
 ///
 /// A crossed remainder is [`stage_taker_origin_cross`]'s to resolve, at the
 /// counterparty's price. Whatever rests behind it is an ordinary cross and
@@ -677,6 +951,7 @@ fn find_clob_cross(ctx: &Context<ResolveClobCrank>) -> Result<ClobCross> {
         CROSS_ROWS_PER_SIDE,
         &accounts,
         &mut cpi_scratch,
+        false,
         |row| *row,
     )?
     .unwrap_or_default();
@@ -688,6 +963,7 @@ fn find_clob_cross(ctx: &Context<ResolveClobCrank>) -> Result<ClobCross> {
         CROSS_ROWS_PER_SIDE,
         &accounts,
         &mut cpi_scratch,
+        false,
         |row| *row,
     )?
     .unwrap_or_default();
@@ -792,6 +1068,7 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
                 CROSS_ROWS_PER_SIDE,
                 &clob_accounts,
                 &mut cpi_scratch,
+                false,
                 |row| *row,
             )?
             .unwrap_or_default())
@@ -808,15 +1085,14 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
             &quoter_bids,
             false,
         )?;
-        // (cross, buy_index, sell_index): legs are slab slot indexes — the
-        // book at slot 0, the entry at its own slot.
-        let quoter_leg = quoter_slot_index as u8;
-        let (cross, buy_index, sell_index) =
-            if a.surplus(&ctx.accounts.state)? >= b.surplus(&ctx.accounts.state)? {
-                (a, quoter_leg, 0u8)
-            } else {
-                (b, 0u8, quoter_leg)
-            };
+        // Whichever direction pays better. The crank names no legs: each of
+        // its two fills routes across every source the tail carries, so the
+        // direction only decides how big a cross the resolver claims.
+        let cross = if a.surplus(&ctx.accounts.state)? >= b.surplus(&ctx.accounts.state)? {
+            a
+        } else {
+            b
+        };
         if cross.size == 0 || cross.surplus(&ctx.accounts.state)? == 0 {
             return Ok(None);
         }
@@ -827,8 +1103,6 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
             &cross,
             maker_ref,
             market_index,
-            buy_index,
-            sell_index,
         )?))
     })
 }
@@ -894,6 +1168,10 @@ fn quote_entry_sides<'info>(
                     // A crank's discovery read: what it stages settles only
                     // orders that rested through placement.
                     taker_served_window: true,
+                    // The depth a taker remainder claims is that taker's
+                    // improvement, not arbitrage for the protocol to middle,
+                    // so this crank reads the book without it.
+                    consume_reservation: false,
                 },
                 quoter_slab,
                 accounts,
@@ -917,8 +1195,6 @@ fn stage_quoter_cross<'info>(
     cross: &QuoterCross,
     maker_ref: crate::state::prop_amm::ClobUserRefV0,
     market_index: u16,
-    buy_quoter_index: u8,
-    sell_quoter_index: u8,
 ) -> Result<StagedCall> {
     let (oracle, quote_spot_market_index, clob_program) = {
         let conditions = ctx.accounts.cross_conditions.load()?;
@@ -938,6 +1214,7 @@ fn stage_quoter_cross<'info>(
         crank_conditions: pdas::clob_crank_conditions(market_index),
         perp_market: pdas::perp_market(market_index),
         quoter_slab: ctx.accounts.quoter_slab.key(),
+        instructions_sysvar: IX_ID,
     })
     .map_section_named_perp(oracle, quote_spot_market_index);
     // Maker pairs: the quoter's user first, then the CLOB-side makers.
@@ -947,12 +1224,13 @@ fn stage_quoter_cross<'info>(
             staged.push(*maker);
         }
     }
-    // The union of both execute surfaces: the CLOB's book plus everything
-    // the quoter registered, programs included. Both legs sign as the
-    // slab, which is staged as a named account.
-    let slab_key = ctx.accounts.quoter_slab.key();
+    // The union of every source's surfaces: the market's slab, the CLOB's
+    // book, and everything the quoter registered, programs included. Each
+    // leg assembles its route from this tail, so the slab rides it as well
+    // as being named — a route without the slab consults nothing external.
     let mut call = call.maker_refs(staged.iter().copied());
     let mut union: std::collections::BTreeMap<Pubkey, bool> = Default::default();
+    union.entry(ctx.accounts.quoter_slab.key()).or_default();
     *union.entry(ctx.accounts.clob_market.key()).or_default() |= true;
     union.entry(clob_program).or_default();
     for meta in quoter.leg_metas(quoter.execute_leg_indexes())? {
@@ -960,14 +1238,12 @@ fn stage_quoter_cross<'info>(
     }
     *union.entry(quoter.response_account).or_default() |= true;
     union.entry(quoter.program_id).or_default();
-    for (key, writable) in union.iter().filter(|(key, _)| **key != slab_key) {
+    for (key, writable) in union.iter() {
         call = call.account(*key, *writable);
     }
     call.arg(CrankCrossMatchArgs {
         market_index,
         size: cross.size,
-        buy_quoter_index,
-        sell_quoter_index,
     })
 }
 

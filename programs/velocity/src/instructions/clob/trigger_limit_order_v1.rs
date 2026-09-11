@@ -206,7 +206,7 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
 
     // ---- Gate, reserve, reward — everything that can decide NOT to place,
     // while the user is borrowed. ----
-    let (side, price, base_asset_amount, max_ts, reduce_only, user_ref) = {
+    let (side, price, base_asset_amount, max_ts, reduce_only, user_ref, is_isolated_position) = {
         let user = &mut load_mut!(ctx.accounts.user)?;
         let user_stats = load!(ctx.accounts.user_stats)?;
 
@@ -278,6 +278,10 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
             user.orders[order_index].max_ts,
             reserved.reduce_only,
             user.clob_user_ref(),
+            // The reservation above holds `open_orders` on the position, so
+            // the order's margin regime is fixed from here on and the place
+            // record can state it.
+            user.get_perp_position(market_index)?.is_isolated(),
         )
     };
 
@@ -336,6 +340,7 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
             slot,
             taker_origin: true,
         },
+        is_isolated_position,
     )?;
 
     super::helpers::crank_common::finish_trigger_crank(

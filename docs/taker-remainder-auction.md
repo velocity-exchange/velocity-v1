@@ -1,13 +1,13 @@
 # Taker remainders on the CLOB, and the activation-slot auction
 
 Status: **built.** R1–R8 are live: the CLOB carries the marker, reports it on the removal wire and
-protects a crossed remainder; velocity migrates restable remainders (`fill_legacy_dlob_order`,
-`place_and_take_v1`, `place_and_make_v1`) and resolves the cross with `crank_taker_origin_cross` —
-against an ordinary maker, and between two remainders (R3's price-time rule) — and relay turners
-discover the crank through the market's existing cross conditions (R8). Signed-message orders and
-fired triggers both rest here too, so the auction covers every order that comes to trade and does
-not fill. Design source of truth for the surrounding work is the Notion
-PropAMM doc; this is a focused proposal for one hole in it.
+lets a crossed remainder claim the depth it crosses; velocity migrates restable remainders
+(`fill_legacy_dlob_order`, `place_and_take_v1`, `place_and_make_v1`) and resolves the cross with
+`crank_taker_origin_cross` — against an ordinary maker, and between two remainders (R3's
+price-time rule) — and relay turners discover the crank through the market's existing cross
+conditions (R8). Signed-message orders and fired triggers both rest here too, so the auction
+covers every order that comes to trade and does not fill. Design source of truth for the
+surrounding work is the Notion PropAMM doc; this is a focused proposal for one hole in it.
 
 ## The hole
 
@@ -106,32 +106,74 @@ For a taker-origin leg there is no surplus to hand anywhere — it belongs to th
 cross is also simpler than today's crank: an ordinary two-user match at one price, needing none of
 `cross_match`'s ephemeral protocol-taker machinery.
 
-**R4 — A crossed taker remainder cannot be taken.** This is load-bearing, not an optimisation.
-Without it, an outsider who lands a transaction at the activation slot takes the taker-origin order
-at its limit and pockets the improvement — and the landing race is back, with an extra step.
+**R4 — A crossed taker remainder cannot be taken, and neither can the depth it crosses.** This is
+load-bearing, not an optimisation. Without the first half, an outsider who lands a transaction at
+the activation slot takes the taker-origin order at its limit and pockets the improvement. Without
+the second half, the outsider takes the counterparty instead and rests a worse one in its place.
+Either way the landing race is back, with an extra step.
 
-Enforced in the CLOB's own `quote_v0` and `execute_v0`, which **skip** the order: while a
-counterparty crosses it, a crossed taker remainder is simply not in the book's matchable set, exactly
-as an expired or not-yet-activated order is not. A taker sweeping the side passes over it and fills
-whatever is behind it instead.
+**Holding the remainder back is not enough. The remainder claims the depth it crosses.** The first
+shape of this rule withheld only the remainder, and left the counterparty an ordinary maker anyone
+could take. That reopened the landing race one step further out. With asks at 100 and 101 and a
+taker-origin bid at 102, an outsider takes the 100 ask and rests a new ask at 101; the remainder
+then crosses 101, and the outsider keeps the difference. The remainder must therefore claim its
+counterparty, not merely be withheld from it.
 
-Narrowed twice, both times to exactly the harm:
+A taker-origin order claims the base it crosses, best price first. Claimed base is withheld from
+`quote_v0`, `quote_l3_v0`, `execute_v0` and `next_cross_v0` — the whole matchable set, for every
+caller except the crank that owes the taker its improvement, which asks for it with
+`consume_reservation`. A taker sweeping the side sees the unclaimed remainder of each order and
+fills that.
 
-- Only a **taker-origin** order is held back. An ordinary maker×maker cross is unclaimed arbitrage,
-  not somebody's improvement, and holding either side back over it would cost takers depth for
-  nothing.
-- Only the order being traded is tested, against the best price on the other side that could match
-  this slot. The counterparty itself is never skipped — it is an ordinary maker, and consuming it is
-  the fill velocity's cross resolution runs: take the counterparty's side with `execute_v0` (an
-  ordinary fill at its own price), settle the pair internally at the counterparty's price, and
-  report the settled base back with `fill_v0` so the remainder shrinks in place.
+Reservations are ordered, and the order is exact. Every taker-origin order on a side is threaded
+onto its own list, in rest order, and reservations are allocated down that list: the remainder
+that rested first takes the best depth. The book stores no reservation state — it is computed in
+the same walk the quote or the fill already does, from the list and the two prices. So a
+reservation cannot disagree with the book, a cancelled counterparty simply stops being claimed,
+and depth nobody crosses is never held.
+
+Narrowed to exactly the harm, in three ways:
+
+- Only a **taker-origin** order claims. An ordinary maker×maker cross is unclaimed arbitrage, not
+  somebody's improvement, and a reservation over it would cost takers depth for nothing.
+- A reservation reaches only depth the claimant's own price crosses. A remainder that crosses
+  nothing claims nothing and is ordinary depth, quotable and takeable at its own price — that is
+  the fallback when no maker lines up during the window, and how the remainder eventually fills
+  if none ever does.
+- A reservation lapses `reservation_grace_slots` after the claimant activates, 32 on a fresh
+  market and settable by `update_market_v0` up to 150. Past that the depth is ordinary again. A
+  reservation is what makes the auction deterministic, and a crank has to run to collect it, so a
+  crank that never runs must not hold the top of the book forever.
 
 An order still inside its activation delay — or already expired — is not a counterparty: nothing can
-match it, so no improvement is within reach, and holding the remainder back then would cost the book
-that depth for its whole auction window, which is exactly when it is resting there. A remainder that
-nothing crosses is likewise ordinary depth, quotable and takeable at its own price — that is the
-fallback when no maker lines up during the window, and how the remainder eventually fills if none
-ever does.
+match it, so no improvement is within reach, and claiming it would cost the book that depth for its
+whole auction window, which is exactly when it is resting there.
+
+The counterparty is never skipped, only claimed. Consuming it is the fill velocity's cross
+resolution runs: take the counterparty's side with `execute_v0` under `consume_reservation` (an
+ordinary fill at its own price), settle the pair internally at the counterparty's price, and
+report the settled base back with `fill_v0` so the remainder shrinks in place.
+
+**A reservation outranks price, including a better-priced order on the claimant's own side.** A
+remainder bidding 101 claims the 99 ask it crosses, and a maker that then bids 102 takes nothing
+from that ask while the claim stands, though its price is better. The claim is not a quote
+competing on price; it is depth already spoken for by an order that came to trade and rested
+first.
+
+The cost is a real one and is stated rather than hidden. With a maker bid in front of it, the top
+of the book is maker against maker, so the taker-origin crank refuses it — neither head is
+taker-origin — while the arb crank cannot reach the claimed ask. Both cranks go quiet and the
+book rests crossed. This is bounded, not a deadlock: the claim lapses `reservation_grace_slots`
+after the remainder activates, and the arb crank clears the front then. A market that finds the
+wait too long lowers the grace window through `update_market_v0`.
+
+**Attested flow reaches unclaimed depth only.** Attestation buys a synchronous fill against the
+book; it does not buy claimed depth. An attested taker lifting the cover a remainder crosses is
+exactly the frontrun the claim exists to stop — it takes the makes at the maker's price and
+leaves the remainder to cross worse — so the claim holds against it like any other taker. The
+consequence for a market operator: a resting remainder can shut attested takers out of the depth
+it claims until a crank resolves the cross or the claim lapses, and an attested take that reaches
+nothing rests as a remainder of its own.
 
 **A remainder cannot be cancelled inside its window.** Binding the taker is what makes the auction
 an auction: an order its owner can pull the moment a maker lines up offers nothing to line up
@@ -141,13 +183,16 @@ lives in the CLOB because that is where the flag and the slot are. Liquidation f
 order's life. The cost is real and worth stating: a taker who signed a market order cannot pull it
 for the window, and neither can a delegate.
 
-**Quote and execute skip via one predicate, and that is the point.** A router allocates from the
-quote and velocity binds the execute to it, so depth one of them offers and the other withholds is a
-reverted transaction for a taker that did nothing wrong — velocity cannot route around a shortfall
-after the fact. Both read `book::TakerOriginGate`, so a future change to what the gate withholds
-lands on both at once instead of on whichever one someone remembered.
+**Every reader withholds through one function, and that is the point.** A router allocates from
+the quote and velocity binds the execute to it, so depth one of them offers and the other
+withholds is a reverted transaction for a taker that did nothing wrong — velocity cannot route
+around a shortfall after the fact. The ladder, the L3 rows, the fill and the cross report all
+compute the reservation with the same walk over the same list, so they cannot disagree.
+`quote_l3_v0` used to be the exception: it reported every matchable row and left the reader to
+act on `L3_ROW_FLAG_TAKER_ORIGIN`. It now withholds claimed base like the rest and flags the row
+it trimmed.
 
-### Why skip rather than fail the call
+### Why withhold rather than fail the call
 
 Three shapes were on the table. **Uncross inside `execute_v0`** is unavailable: it would return fills
 outside the prefix the router quoted, which velocity's quote↔execute binding refuses. **Fail the
@@ -157,11 +202,16 @@ order shadow every level behind it on its side: quote could only publish the pre
 taker remainder rests at a slippage bound, so it normally sits at or near the front. A single crossed
 remainder took its whole side dark until the crank resolved the cross.
 
-**Skip** keeps the protection and drops the cliff. The remainder still cannot be taken at its limit;
-the depth behind it stays both quotable and fillable, because execute really can deliver it; and
-consistency between the two gets easier rather than harder, since they now skip the same order for
-the same reason. A taker just finds less depth than it hoped for, which is ordinary book behaviour —
-depth vanishes between quote and fill all the time.
+**Withholding the claimed base** keeps the protection and drops the cliff. Neither the remainder
+nor the depth it claims can be taken; everything else on both sides stays quotable and fillable,
+because execute really can deliver it; and consistency between the two is structural rather than
+maintained, since every reader computes the reservation the same way. A taker just finds less
+depth than it hoped for, which is ordinary book behaviour — depth vanishes between quote and fill
+all the time.
+
+Withholding is also what a partial reservation needs. A remainder smaller than its counterparty
+claims only part of it, and the rest of that order stays takeable. Failing the call, or skipping the
+whole order, would have had to round one way or the other.
 
 The one casualty is `ClobError::TakerOriginCrossPending`, which nothing emits any more. It is
 deprecated in place rather than removed: the numeric code is the on-chain identity of every variant
@@ -214,9 +264,13 @@ bound matters most — it is the one the taker cannot otherwise complete.
 **R7 — Activation delay.** The market's `default_activation_delay_slots`, as with any placement.
 
 A market at 0 is a supported setting, not a broken one. The delay is not what protects the
-improvement — R4's gate is, and it keys on whether a live counterparty crosses the order rather than
-on the clock. At 0 a remainder is takeable at its own price only while nothing crosses it, which is
-exactly when there is no improvement to take.
+improvement — R4's reservation is, and it keys on whether a live counterparty crosses the order
+rather than on the clock. At 0 a remainder claims its counterparty the moment it rests, so a
+remainder is takeable at its own price only while nothing crosses it, which is exactly when there
+is no improvement to take.
+
+The delay does set the clock a reservation expires on. It lapses `reservation_grace_slots` after
+the claimant activates, so at 0 the window is the grace alone.
 
 A nonzero delay buys one thing: a pre-window in which the order is not matchable at all, so makers
 can line up before anyone trades with it. It costs one thing: the owner cannot cancel until the
@@ -283,10 +337,14 @@ entirely for an unattested transaction and rest the whole order. The keeper fill
 vAMM and the DLOB makers only and the restable remainder migrates into the auction. A
 `place_and_take` shape that demands a synchronous outcome an unattested transaction cannot have —
 an IOC, or a success condition — is refused with `UnattestedSynchronousTake` rather than silently
-rested. The protocol cranks (`crank_cross_match`, `crank_taker_origin_cross`) are exempt: a
-crank's counterparties all rested through placement, so there is no quote to snipe. Liquidation
-fills need no exemption — they route the vAMM and the passed DLOB makers only and never execute
-the book.
+rested. The protocol cranks (`crank_cross_match`, `crank_taker_origin_cross`) do not vouch for
+flow by construction: a crank measures it. `crank_taker_origin_cross` reads the rest time of the
+remainder it settles, and `crank_cross_match` reads both sides it sweeps and takes the worse
+answer, bounded by the size the cross takes. One verdict covers both of its legs, because a cross
+is one event on two sides: a leg that judged only the side it sweeps would call the flow
+protected whenever the fresh order sat on the other side, and the cross would then reach
+liquidity that serves protected flow only. Liquidation fills need no verdict — they route the
+vAMM and the passed DLOB makers only and never execute the book.
 
 Velocity verifies the attestation once, at its own boundary, and forwards the verdict to every
 quoter on the wire: `QuoteArgsV0.taker_served_window` says the taker's flow served a protection
@@ -323,41 +381,54 @@ landing-race outcome R4 exists to prevent, arrived at from the other direction. 
 restores the composition: the arb crank clears the front of the book, and the remainder's own cross
 is what the resolver answers with next.
 
-**A hand-built `crank_cross_match` is held to the same rule.** The instruction is permissionless, so
-the walk stepping over a remainder is not enough on its own — the caller controls the account list,
-not the walk. `strips_taker_origin_gate` states the exact condition: the book withholds a remainder
-only while a live counterparty crosses it, so the cross is unsafe precisely when it consumes that
-remainder's entire crossing depth, counting only the rows the legs can actually take. A remainder
-nothing crosses has no gate to lose, and cover that is itself a remainder is cover the legs cannot
-remove. That narrowness matters — refusing on the mere presence of a crossed remainder would
-deadlock the book, because the arb cross in front of a remainder is what clears the way to it.
+**A hand-built `crank_cross_match` needs no rule of its own.** The instruction is permissionless,
+so the resolver's walk stepping over a remainder is not enough on its own — the caller controls
+the account list, not the walk. A velocity-side predicate used to carry that load, and it could
+only approximate the harm: it refused a cross that consumed a remainder's *entire* crossing depth,
+while a smaller cross still ate the best of that depth and left the remainder crossing the worse
+rest, since both walks go best price first. The claim removes the need for the predicate. Claimed
+base is not in the arb crank's matchable set at all, so the cross cannot reach it whatever size
+the caller asks for, and the remainder keeps the whole improvement rather than the part nobody
+took first.
 
 ## Changes required
 
 **CLOB (`anchor-v2/programs/clob`)** — built.
 - `OrderBitFlag::TakerOrigin` (bit 4) plus `PlaceOrderArgsV0::taker_origin` to set it.
-- `RemovedOrderV0::taker_origin`, so `cancel_order_v0`/`evict_worst_v0`/`remove_expired_v0` report
-  the flag. That is the only place the CLOB reports it, and it is enough: R4 keeps a taker-origin
-  cross out of `execute_v0` entirely, so both sides of a cross velocity settles leave the book
-  through a removal. The shared quoter-interface types (`UserBalanceChangeV0`,
+- `RemovedOrderV0::taker_origin`, so `cancel_order_v0`/`evict_worst_v0`/`remove_expired_v0`
+  report the flag. That is the only place the CLOB reports it, and it is enough: R4 keeps a
+  taker-origin cross out of `execute_v0` entirely, so both sides of a cross velocity settles
+  leave the book through a removal. The shared quoter-interface types (`UserBalanceChangeV0`,
   `CancelledRemainderV0`) are untouched — every quoter emits those, and only the CLOB can ever
   have an order to mark.
-- R4's gate as `book::TakerOriginGate`, read by both `quote_v0` and `execute_v0`, which skip a
-  crossed taker remainder the way they skip an expired one — so quote never publishes depth the fill
-  will not deliver, and the rest of the side stays tradeable.
-- `ClobError::TakerOriginCrossPending`, deprecated in place: the gate's first shape failed the call
-  instead of skipping, and the numeric code cannot be reused.
+- R4's claim. `OrderNodeV0` carries `taker_origin_prev` / `taker_origin_next` and the header
+  carries a head, tail and count per side, so every taker-origin order on a side is one list in
+  rest order. One function walks that list against the cover side and reports the claimed base
+  per order; `quote_v0`, `quote_l3_v0`, `execute_v0` and `next_cross_v0` all withhold it, so
+  quote never publishes depth the fill will not deliver, the rest of the side stays tradeable,
+  and the four readers cannot disagree. `ClobHeaderV0::reservation_grace_slots` is when a
+  reservation lapses. `book::TakerOriginGate` is gone — asking whether a remainder is crossed and
+  asking whether cover is claimed are the same computation, so there is one function rather than
+  a gate beside a reservation.
+- `QuoteArgsV0::consume_reservation` / `ExecuteArgsV0::consume_reservation`, which
+  `crank_taker_origin_cross` sets to reach claimed depth. The book trusts the flag the way it
+  trusts `users`, `caps` and `taker_served_window`: velocity signs the CPI and settles the fills.
+- No stored reservation. The claim is a function of the list and the two prices, recomputed by
+  each reader, so a cancelled counterparty stops being claimed with no bookkeeping, and depth no
+  claimant crosses is never withheld.
+- `ClobError::TakerOriginCrossPending`, deprecated in place: the gate's first shape failed the
+  call instead of skipping, and the numeric code cannot be reused.
 - `fill_v0`: velocity reports base it settled against a resting order and the order shrinks in
   place, keeping its id and its queue position. This is what lets a cross resolve without
   cancel-and-replace. It emits the existing `ExecuteRecordV0` — it is a fill, and a consumer that
   already decodes fills needs nothing new.
 - `force` on `CancelOrderArgsV0` / `CancelAllArgsV0`, and a `slot` for the window check, so
   liquidation force-cancel can reach a bound remainder and an ordinary cancel cannot.
-- `L3RowV0` carries `node_index` and `placed_slot`, because a cross resolved off the L3 read needs
-  a handle to the order and its rest time. The row is 72 bytes rather than 64. This is shared wire:
-  `quoter-spec` is compiled into velocity, the CLOB and the midpoint quoter, so all three `.so`
-  fixtures must be rebuilt together. A one-sided rebuild does not fail as a decode error — it
-  presents as broad, unrelated-looking breakage.
+- `L3RowV0` carries `node_index` and `placed_slot`, because a cross resolved off the L3 read
+  needs a handle to the order and its rest time. The row is 72 bytes rather than 64. This is
+  shared wire: `quoter-spec` is compiled into velocity, the CLOB and the midpoint quoter, so all
+  three `.so` fixtures must be rebuilt together. A one-sided rebuild does not fail as a decode
+  error — it presents as broad, unrelated-looking breakage.
 - No cross matching and no pricing: R3 lives in velocity.
 
 **velocity (`programs/velocity`)** — built.
@@ -442,17 +513,29 @@ remainder whose fate depends on which route reached it is a bug.
 
 **D. Minimum viable window — settled: no floor, and zero is a sensible setting.** R7 defers to
 per-market config, and zero is the expected default rather than a misconfiguration, because the
-delay is not what protects the improvement. R4's gate is: a remainder is withheld from the book's
-matchable set for as long as a live counterparty crosses it, whatever the delay. So at zero a
-remainder is takeable at its own price only while nothing crosses it — which is the case where
-there is no improvement to take — and the moment a counterparty arrives, the gate closes and the
-cross settles at the counterparty's price.
+delay is not what protects the improvement. R4's reservation is: a remainder claims the depth it
+crosses
+whatever the delay, and claimed depth leaves the book's matchable set for every caller but the
+crank. So at zero a remainder is takeable at its own price only while nothing crosses it — which
+is the case where there is no improvement to take — and the moment a counterparty arrives it is
+claimed and the cross settles at the counterparty's price.
 
 What a nonzero delay adds is a pre-window in which the order is not matchable at all, so makers can
 line up before anyone can trade with it. It also binds the taker: the cancel refusal keys on the
 same activation slot, so at zero there is nothing to bind and the owner may pull the order at once.
 A market that wants makers to compete before the first fill sets a delay; a market that wants
 immediacy sets zero. Both are supported and both are tested.
+
+**E. What bounds a reservation if the crank never runs? — settled: it lapses.** A reservation
+holds depth that only `crank_taker_origin_cross` can consume, so a turner that never fires would
+hold the top of the book until the remainder's `max_ts`. `ClobHeaderV0::reservation_grace_slots`
+bounds it instead: a reservation stops being honoured that many slots after its claimant
+activates, and the depth is ordinary again. A fresh market starts at 32 slots and
+`update_market_v0` retunes it, up to a 150-slot ceiling: the window only has to cover the crank
+transaction, and a transaction cannot outlive its blockhash. The lapse is read per claimant in the
+walk, so one remainder's reservation expiring leaves every other remainder's reservation intact.
+Makers keep their own release valve either way — a cover order can always be cancelled, and the
+reservation recomputes without it.
 
 ## Sequencing
 

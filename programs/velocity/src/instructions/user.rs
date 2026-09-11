@@ -3177,7 +3177,8 @@ pub fn place_and_take_perp_order_legacy<'c: 'info, 'info>(
 
     let is_immediate_or_cancel = params.is_immediate_or_cancel();
 
-    // No `update_amm` here: `fill_perp_order` (called below) snaps the AMM
+    // No `update_amm` here: `fill_perp_order_without_external_books` (called
+    // below) snaps the AMM
     // and refreshes PerpMarket-level oracle stats internally before
     // reading peg / reserves.
 
@@ -3234,7 +3235,7 @@ pub fn place_and_take_perp_order_legacy<'c: 'info, 'info>(
         is_immediate_or_cancel || optional_params.is_some(),
         auction_duration_percentage,
     );
-    let (base_asset_amount_filled, _) = controller::orders::fill_perp_order(
+    let (base_asset_amount_filled, _) = controller::orders::fill_perp_order_without_external_books(
         order_id,
         &state,
         user_loader,
@@ -3476,6 +3477,7 @@ pub fn place_and_take_perp_order_v1<'c: 'info, 'info>(
             taker: taker_ref,
             limit_price: quote_limit_price,
             taker_served_window,
+            consume_reservation: false,
         };
         // Before the quote: see `build_user_caps`.
         let inputs = crate::instructions::QuoteInputs {
@@ -3512,6 +3514,7 @@ pub fn place_and_take_perp_order_v1<'c: 'info, 'info>(
             books: book_refs,
             executor: &mut executor,
             protocol_authority: state.signer,
+            taker_exposure_closed_by_caller: false,
             // The taker signs a place-and-take, so the taker chose the
             // account list and no filler obligation applies.
             obligation: crate::math::router::FillerObligation {
@@ -3519,8 +3522,9 @@ pub fn place_and_take_perp_order_v1<'c: 'info, 'info>(
                 tx_accounts: None,
                 unrouted_quoters: 0,
             },
+            worst_fill_price: None,
         };
-        controller::orders::fill_perp_order_with_router(
+        controller::orders::fill_perp_order(
             // Ephemeral taker: it never reserved, so the fill unwinds nothing.
             controller::orders::FillTarget::Detached {
                 order,

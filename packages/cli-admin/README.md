@@ -94,6 +94,7 @@ velocity-admin quoter attach-cross <quoter> [--fallback-slots <n>]           # p
 
 velocity-admin clob-market init <market> --clob-program <pk> [--capacity <n>] [--crank-cu <n>] [--crank-cu-<crank> <n>] [--relay-program <pk>|none] [book config flags]  # one-shot bring-up: book create+init, quoter slab when missing, quoter register+approve into the slab, canonical attach (creates crank conditions), relay watches (both blocks); warm/cold admin, direct-send only
 velocity-admin clob-market register-watch <market> [--relay-program <pk>]  # register a relay WatchV0 over BOTH of an existing market's condition blocks (velocity's conditions account and the book's own); permissionless, direct-send only
+velocity-admin clob-market update-config <market> [--tick-size <n>] [--step-size <n>] [--min-order-size <n>] [--blocking-min-size <n>] [--default-activation-delay <slots>] [--max-activation-delay <slots>] [--unknown-user-grace-slots <n>] [--evict-threshold <n>] [--max-quote-levels <n>] [--max-execute-fills <n>] [--max-execute-users <n>] [--reservation-grace-slots <n>]  # retune a live book through the CLOB's update_market_v0; only the flags passed are written. --reservation-grace-slots is how long a taker remainder's claim on the depth it crosses is honoured, so it is what bounds a cross crank that never lands (0..150). The book's authority signs
 
 > **Turner scoping.** A market's conditions live on two accounts: velocity's
 > crank-conditions PDA (the cross fallback poll) and the CLOB market itself

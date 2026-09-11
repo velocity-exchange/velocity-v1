@@ -163,6 +163,7 @@ macro_rules! no_router {
             books: &[],
             executor: &mut no_externals,
             protocol_authority: Pubkey::default(),
+            taker_exposure_closed_by_caller: false,
             // Test fixtures stand in for a taker-signed fill: no filler
             // obligation, so a withheld book does not end the pass.
             obligation: crate::math::router::FillerObligation {
@@ -170,6 +171,7 @@ macro_rules! no_router {
                 tx_accounts: None,
                 unrouted_quoters: 0,
             },
+            worst_fill_price: None,
         };
     };
 }
@@ -3158,8 +3160,8 @@ pub mod fulfill_order {
         crate::{
             controller::{
                 orders::{
-                    fill_perp_order, fulfill_perp_order, validate_market_within_price_band,
-                    FillerSide,
+                    fill_perp_order_without_external_books, fulfill_perp_order,
+                    validate_market_within_price_band, FillerSide,
                 },
                 position::PositionDirection,
             },
@@ -5923,7 +5925,7 @@ pub mod fulfill_order {
             ..State::default()
         };
 
-        let (base_asset_amount, _) = fill_perp_order(
+        let (base_asset_amount, _) = fill_perp_order_without_external_books(
             1,
             &state,
             &user_account_loader,
@@ -5948,7 +5950,7 @@ pub mod fulfill_order {
         let perp_market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
         maps.perp_market_map = perp_market_map;
 
-        let (base_asset_amount, quote_asset_amount) = fill_perp_order(
+        let (base_asset_amount, quote_asset_amount) = fill_perp_order_without_external_books(
             1,
             &state,
             &user_account_loader,
@@ -7075,7 +7077,9 @@ pub mod fill_order {
     use {
         super::*,
         crate::{
-            controller::{orders::fill_perp_order, position::PositionDirection},
+            controller::{
+                orders::fill_perp_order_without_external_books, position::PositionDirection,
+            },
             create_anchor_account_info,
             error::ErrorCode,
             instructions::optional_accounts::AccountMaps,
@@ -7290,7 +7294,7 @@ pub mod fill_order {
             ..State::default()
         };
 
-        let (base_asset_amount, _) = fill_perp_order(
+        let (base_asset_amount, _) = fill_perp_order_without_external_books(
             1,
             &state,
             &user_account_loader,
@@ -7501,7 +7505,7 @@ pub mod fill_order {
             ..State::default()
         };
 
-        let (base_asset_amount, _) = fill_perp_order(
+        let (base_asset_amount, _) = fill_perp_order_without_external_books(
             1,
             &state,
             &user_account_loader,
@@ -7629,7 +7633,7 @@ pub mod fill_order {
             unix_timestamp: 11,
         };
 
-        let (base_asset_amount, _) = fill_perp_order(
+        let (base_asset_amount, _) = fill_perp_order_without_external_books(
             1,
             &state,
             &user_account_loader,
@@ -7800,7 +7804,7 @@ pub mod fill_order {
             ..State::default()
         };
 
-        let err = fill_perp_order(
+        let err = fill_perp_order_without_external_books(
             1,
             &state,
             &user_account_loader,
@@ -10837,6 +10841,7 @@ pub mod builder_fee_margin_gate {
             books: &[],
             executor: &mut no_externals,
             protocol_authority: Pubkey::default(),
+            taker_exposure_closed_by_caller: false,
             // Test fixtures stand in for a taker-signed fill: no filler
             // obligation, so a withheld book does not end the pass.
             obligation: crate::math::router::FillerObligation {
@@ -10844,6 +10849,7 @@ pub mod builder_fee_margin_gate {
                 tx_accounts: None,
                 unrouted_quoters: 0,
             },
+            worst_fill_price: None,
         };
         let mut order = taker.orders[order_index];
         let (base_filled, _) = fulfill_perp_order(
@@ -11522,6 +11528,7 @@ mod fill_gates_apply_to_a_reducing_fill {
             books: &[],
             executor: &mut no_externals,
             protocol_authority: Pubkey::default(),
+            taker_exposure_closed_by_caller: false,
             // Test fixtures stand in for a taker-signed fill: no filler
             // obligation, so a withheld book does not end the pass.
             obligation: crate::math::router::FillerObligation {
@@ -11529,6 +11536,7 @@ mod fill_gates_apply_to_a_reducing_fill {
                 tx_accounts: None,
                 unrouted_quoters: 0,
             },
+            worst_fill_price: None,
         };
         let mut order = taker.orders[0];
         fulfill_perp_order(
@@ -11652,31 +11660,4 @@ mod keeper_reward {
             "and the user keeps the quote it would have paid"
         );
     }
-}
-
-#[test]
-fn crossing_prefix_size_stops_at_the_cross() {
-    use crate::state::prop_amm::PriceLevel;
-    let pl = |price: u64, size: u64| PriceLevel { price, size };
-
-    // asks ascending, bids descending. The first 5 units cross (100 <= 101),
-    // the next do not (102 > 99), so the prefix is 5.
-    assert_eq!(
-        super::crossing_prefix_size(&[pl(100, 5), pl(102, 5)], &[pl(101, 5), pl(99, 5)]),
-        5
-    );
-    // Fully crossing, bounded by the shallower side.
-    assert_eq!(
-        super::crossing_prefix_size(&[pl(100, 3)], &[pl(105, 10)]),
-        3
-    );
-    // Never crossing.
-    assert_eq!(super::crossing_prefix_size(&[pl(105, 5)], &[pl(100, 5)]), 0);
-    // Partial cross inside a level: only the 4 bid units at 101 cross the ask.
-    assert_eq!(
-        super::crossing_prefix_size(&[pl(100, 10)], &[pl(101, 4), pl(99, 10)]),
-        4
-    );
-    // Equal prices cross (at or below).
-    assert_eq!(super::crossing_prefix_size(&[pl(100, 5)], &[pl(100, 5)]), 5);
 }

@@ -54,7 +54,7 @@ liquidations all land with nobody submitting them: `ClobCrankConditionsV0` per m
 simulation-only resolvers staging each executor. `getUserConditionsPublicKey`,
 `getClobCrankConditionsPublicKey` and `getRelayScratchPublicKey` replace the per-flow condition PDAs.
 
-**Every user gets a `UserConditionsV0`.** `initializeUser` now *requires* the `userConditions`
+**Every user gets a `UserConditionsV0`.** `initializeUser` now _requires_ the `userConditions`
 account rather than accepting `None`, and the payer funds its rent with the account. Relay can
 only watch an account that exists, and the moment coverage matters is the moment somebody else's
 transaction gave the user a position — a resting maker order filled by a keeper, or a
@@ -76,7 +76,7 @@ Spot-only distress stays a keeper-bot path: `liquidate_spot` settles by handing 
 borrow and the collateral behind it, so a protocol keeper would take on inventory it has no venue
 to unwind.
 Cross cranks are permissionless and revert unless the spread clears both takers' fees and the
-market's `min_cross_surplus` floor. Each crank's keeper payment is *derived*, not set:
+market's `min_cross_surplus` floor. Each crank's keeper payment is _derived_, not set:
 `StateAccount.transactionFeeRails` says what one transaction costs to land — an inclusion fee, a
 per-signature fee and a rate on the cost units a transaction requests — and a market's attach prices
 every crank from it and the cost units the admin measured for that crank. A book removal and a
@@ -99,7 +99,7 @@ from it through the permissionless `refillCrankReservoir` crank, and a user's li
 conditions resync is paid from it too, so no per-market or per-user balance is watched or
 topped up by hand. A reservoir mirrors its spendable lamports into its own account data
 (`ClobCrankConditionsV0.spendableMirror`) because a relay watch reads data and a lamport
-balance is metadata; a condition on that value wakes the refill. Cranks are still *paid* by
+balance is metadata; a condition on that value wakes the refill. Cranks are still _paid_ by
 the market reservoir they crank rather than from the treasury directly — a crank writes
 whatever pays it, and a writable account has a fixed compute budget per block, so one payer
 for every crank would serialize the protocol's cranks into that budget exactly when a
@@ -118,7 +118,7 @@ market-wide move is when cranks fire fastest and the network is slowest to land 
 target is read at refill time and reaches every market at once; the watermark is resolved to
 lamports at attach and stored on the market (`ClobCrankConditionsV0.refillWatermarkLamports`),
 because it is the threshold that market's wake condition carries, so it reaches a market on
-its next attach. What a refill *pays* is priced from the rails like every other crank and
+its next attach. What a refill _pays_ is priced from the rails like every other crank and
 stored on the market it fills (`CrankPaymentsV0.refill`, `--crank-cu-refill`), because a
 condition has to advertise a floor a turner can filter on.
 
@@ -137,7 +137,7 @@ clamps the simulated figure and the fallback when simulation fails, and
 saved. `txParams.loadedAccountsDataSize` is new and defaults to
 `LOADED_ACCOUNTS_DATA_SIZE_DEFAULT` (12 MiB), emitted as a `SetLoadedAccountsDataSizeLimit`
 instruction; 0 omits it and takes the network's 64 MiB default. Both limits are billed on what a
-transaction *requests*, so asking for nothing in particular pays for room it never uses — and the
+transaction _requests_, so asking for nothing in particular pays for room it never uses — and the
 velocity program and its program data count toward the loaded-accounts limit, because the
 transaction names the program. Raise it for a transaction that genuinely loads more. The
 instruction is **appended**, and a client adding its own must append too: the runtime finds
@@ -153,7 +153,9 @@ passes.
 
 **Also:** velocity's own events are versioned (`ProtocolUserWithdrawRecordV0`) with reserved tail
 space on the new accounts, and the admin CLI gains the `quoter` and `clob-market` command groups
-plus `fees withdraw-protocol-user`. `getRouteDigest(route)` mirrors the program's route digest —
+plus `fees withdraw-protocol-user`. `clob-market update-config` retunes a live book's mutable
+config, including `--reservation-grace-slots`, which bounds how long a taker remainder's claim on
+the depth it crosses is honoured. `getRouteDigest(route)` mirrors the program's route digest —
 eight bytes on `SignedMsgUserOrders` — which a filler needs because the program rejects a fill
 whose claimed route does not digest to what the order carries.
 
@@ -164,7 +166,7 @@ the 64 a transaction can name. The slab holds every approved config in one accou
 costs two unshared locks (its program and its response account) plus the one slab every quoter
 shares.
 
-**The registry is now two halves.** `QuoterV0` is the *staging* entry: the maker's proposal, and
+**The registry is now two halves.** `QuoterV0` is the _staging_ entry: the maker's proposal, and
 the quoter's identity (signed routes, `PerpMarket.clobQuoter` and relay conditions still name the
 entry pubkey). Nothing fills from it. `updateQuoterApproved` copies the staged config into a slab
 slot, and fills read only that copy — so a staging edit stays inert until the admin copies again,
@@ -216,7 +218,7 @@ deployed at in the new `QuoterV0.approvedProgramSlot`. An upgrade moves that slo
 see the code changed instead of inferring it from behaviour. Nothing on chain checks the slot during
 a fill, because that would cost an account lock per quoter.
 
-Approval deliberately does *not* require or impose a frozen program. A maker may upgrade. A `Custom`
+Approval deliberately does _not_ require or impose a frozen program. A maker may upgrade. A `Custom`
 entry can move only its own registered user, at a price held to its own quote and the taker's limit,
 sized inside its own margin — so an upgrade can lose the maker's money and cannot take anyone
 else's.
@@ -350,6 +352,23 @@ remainder rests under, and widens from five bytes to eight. `getRouteDigest` mir
 A fired trigger rests taker-origin too. It came to trade, so a cross settles at the counterparty's
 price rather than picking it off at its own. Its owner cannot cancel it inside the activation
 window; liquidation force-cancel stays exempt and `max_ts` still bounds its life.
+
+A resting remainder claims the depth it crosses, and claimed depth is withheld from every book
+read — `quote_v0`, `quote_l3_v0`, `execute_v0` and `next_cross_v0` — so a client sees less depth
+than the orders on the book suggest, and a take can fill less than a raw order listing implies.
+The claim is what stops the remainder being frontrun: without it a taker buys the ask the
+remainder crosses and reposts it worse, and the remainder pays the worse price.
+
+Two consequences to design around. A claim outranks price, so an ordinary order priced better on
+the claimant's own side still takes nothing from claimed depth, and with a maker resting in front
+of a remainder both cross cranks go quiet until the claim lapses — bounded by
+`reservation_grace_slots`, which an admin retunes. And attestation buys a synchronous fill
+against unclaimed depth only: an attested take that reaches nothing rests as a remainder of its
+own rather than lifting the cover another remainder is waiting on.
+
+`crank_cross_match` now takes `{ market_index, size }` and runs as two ordinary router fills, so
+it costs about 328,000 compute units rather than 75,000 — past one instruction's 200,000 default,
+so a keeper must request a budget for it.
 
 A partly filled remainder keeps its order id and its queue position. The book gained `fill_v0`, so
 velocity reports the base it settled and the order shrinks in place rather than being cancelled and

@@ -264,6 +264,7 @@ fn quote_one_slot<'info>(
                 // which needs the depth a bound would cut.
                 limit_price: 0,
                 taker_served_window: args.taker_served_window,
+                consume_reservation: false,
             },
             slab_loader,
             accounts,
@@ -563,6 +564,7 @@ fn quoter_rows<'info>(
                 direction,
                 size: admitted,
                 max_rows: rows_wanted.min(u16::MAX as usize) as u16,
+                consume_reservation: false,
             },
             slab_loader,
             accounts,

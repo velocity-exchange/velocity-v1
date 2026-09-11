@@ -1140,6 +1140,7 @@ dependencies = [
  "relay-chain-source",
  "serde",
  "serde_json",
+ "solana-compute-budget-interface",
  "solana-rent 3.1.0",
  "solana-sdk",
  "tokio",

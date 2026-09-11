@@ -1,6 +1,7 @@
 import { Connection, Keypair, PublicKey } from '@solana/web3.js';
 import { CustomizedCadenceBulkAccountLoader } from '../../src/accounts/customizedCadenceBulkAccountLoader';
 import { expect } from 'chai';
+import { stubRpcClient } from '../util/stubRpcClient';
 
 describe('CustomizedCadenceBulkAccountLoader', () => {
 	let connection: Connection;
@@ -8,33 +9,21 @@ describe('CustomizedCadenceBulkAccountLoader', () => {
 	const defaultPollingFrequency = 1000;
 
 	beforeEach(() => {
-		connection = {
-			// Return one response per batched getMultipleAccounts request, each with a
-			// `value` entry for every pubkey actually requested (not a hard-coded 10), so
-			// all registered accounts get data. Fresh random buffers per call ensure each
-			// poll differs, so repeat polls re-fire callbacks (the loader skips unchanged
-			// buffers).
-			_rpcBatchRequest: async (
-				requests: Array<{ methodName: string; args: any[] }>
-			) => {
-				return Promise.resolve(
-					requests.map((request) => {
-						const pubkeys: string[] = request.args?.[0] ?? [];
-						return {
-							result: {
-								context: { slot: 1 },
-								value: pubkeys.map(() => ({
-									data: [
-										Buffer.from(Math.random().toString()).toString('base64'),
-										'base64',
-									],
-								})),
-							},
-						};
-					})
-				);
+		connection = stubRpcClient(([pubkeys]: any[]) => ({
+			// A `value` entry for every pubkey actually requested (not a hard-coded
+			// 10), so all registered accounts get data. Fresh random buffers per call
+			// ensure each poll differs, so repeat polls re-fire callbacks (the loader
+			// skips unchanged buffers).
+			result: {
+				context: { slot: 1 },
+				value: pubkeys.map(() => ({
+					data: [
+						Buffer.from(Math.random().toString()).toString('base64'),
+						'base64',
+					],
+				})),
 			},
-		} as unknown as Connection;
+		}));
 		loader = new CustomizedCadenceBulkAccountLoader(
 			connection,
 			'processed',

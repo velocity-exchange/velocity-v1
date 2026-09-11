@@ -2,6 +2,7 @@ import { expect } from 'chai';
 import { Connection, PublicKey } from '@solana/web3.js';
 import { EventSubscriber } from '../../src/events/eventSubscriber';
 import { Program } from '../../src/isomorphic/anchor';
+import { stubRpcClient } from '../util/stubRpcClient';
 
 const PAGE_SIZE = 3;
 
@@ -37,29 +38,27 @@ function stubConnection(
 				.slice()
 				.reverse();
 		},
-		_rpcBatchRequest: async (requests: { args: any[] }[]) =>
-			requests.map(({ args }) => {
-				const signature = args[0] as string;
-				if (
-					failAlways.includes(signature) ||
-					(signature === failOnce && !failed)
-				) {
-					failed = failed || signature === failOnce;
-					return {
-						error: {
-							code: -32015,
-							message: 'Transaction version (1) is not supported',
-						},
-					};
-				}
+		...stubRpcClient(([signature]: any[]) => {
+			if (
+				failAlways.includes(signature) ||
+				(signature === failOnce && !failed)
+			) {
+				failed = failed || signature === failOnce;
 				return {
-					result: {
-						slot: HISTORY.find((entry) => entry.signature === signature)?.slot,
-						transaction: { signatures: [signature] },
-						meta: { logMessages: [] },
+					error: {
+						code: -32015,
+						message: 'Transaction version (1) is not supported',
 					},
 				};
-			}),
+			}
+			return {
+				result: {
+					slot: HISTORY.find((entry) => entry.signature === signature)?.slot,
+					transaction: { signatures: [signature] },
+					meta: { logMessages: [] },
+				},
+			};
+		}),
 	} as unknown as Connection;
 }
 

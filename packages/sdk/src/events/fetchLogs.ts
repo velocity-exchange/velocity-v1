@@ -14,6 +14,7 @@ import {
 } from './types';
 import { promiseTimeout } from '../util/promiseTimeout';
 import { parseLogs } from './parse';
+import { rpcBatchRequest } from '../util/rpcBatchRequest';
 
 /**
  * Case-insensitive lookup from decoded (camelCase) IDL event names to
@@ -186,9 +187,11 @@ export async function fetchTransactionLogs(
 		});
 	}
 
+	// Responses come back aligned to `requests`, so `signatures[index]` is the
+	// signature this response answers. Reading the raw `_rpcBatchRequest` array
+	// by position would not be: JSON-RPC lets a server reorder a batch.
 	const rpcResponses: any | null = await promiseTimeout(
-		// @ts-ignore
-		connection._rpcBatchRequest(requests),
+		rpcBatchRequest(connection, requests),
 		10 * 1000 // 10 second timeout
 	);
 
@@ -199,9 +202,9 @@ export async function fetchTransactionLogs(
 	const logs = new Array<Log>();
 	for (let index = 0; index < rpcResponses.length; index++) {
 		const rpcResponse = rpcResponses[index];
-		if (rpcResponse.result) {
+		if (rpcResponse?.result) {
 			logs.push(mapTransactionResponseToLog(rpcResponse.result));
-		} else if (rpcResponse.error) {
+		} else if (rpcResponse?.error) {
 			// One unreadable entry must not sink the whole batch, so log and carry on.
 			const signature = signatures[index];
 			console.error(

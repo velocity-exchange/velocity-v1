@@ -46,15 +46,24 @@ export async function rpcBatchRequest(
 		// A batch the server rejects outright comes back as a lone error object,
 		// and an empty body comes back as undefined.
 		throw new Error(
-			`rpcBatchRequest: expected a batch array, got ${JSON.stringify(responses)}`
+			`rpcBatchRequest: expected a batch array, got ${JSON.stringify(
+				responses
+			)}`
 		);
 	}
 
 	// Ids are matched as strings because echoing `"0"` back for `0` is legal.
 	// Missing that would silently look like every request in the batch failing.
-	const responsesById = new Map<string, any>(
-		responses.map((response: any) => [String(response?.id), response])
-	);
+	const responsesById = new Map<string, any>();
+	for (const response of responses) {
+		const id = String(response?.id);
+		if (responsesById.has(id)) {
+			// A Map built via new Map(...) would silently keep the last one, and
+			// every expected id would still be present, so this must be loud too.
+			throw new Error(`rpcBatchRequest: duplicate response id ${id}`);
+		}
+		responsesById.set(id, response);
+	}
 
 	return batch.map((request) => {
 		const response = responsesById.get(String(request.id));

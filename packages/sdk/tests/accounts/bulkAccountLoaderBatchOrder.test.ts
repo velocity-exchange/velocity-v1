@@ -120,6 +120,24 @@ describe('BulkAccountLoader batch response correlation', () => {
 		expect((failed as Error).message).to.match(/no response matching id/);
 	});
 
+	it('raises an error rather than silently keeping the last response when ids collide', async () => {
+		// Two responses sharing an id would otherwise sit in the same Map slot, so
+		// every expected id is still present and the missing-id check never fires,
+		// leaving a caller reading the wrong request's data.
+		const received = new Map<string, string>();
+		const failed = await loadWith(
+			stubRpcClient(
+				([pubkeys]: any[]) => resultFor(pubkeys),
+				(responses) => responses.map((response) => ({ ...response, id: 0 }))
+			),
+			[chunkFor(received, KEY_A), chunkFor(received, KEY_B)]
+		).catch((error: Error) => error);
+
+		expect(received.size).to.equal(0);
+		expect(failed).to.be.instanceOf(Error);
+		expect((failed as Error).message).to.match(/duplicate response id/);
+	});
+
 	it('reads results back against the accounts it actually requested', async () => {
 		// Accounts with no callbacks are filtered out of the request, so indexing
 		// the response against the original chunk shifts every later account onto

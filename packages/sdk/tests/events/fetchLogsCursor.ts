@@ -135,7 +135,11 @@ describe('fetchLogs cursor', () => {
 			),
 		} as unknown as Connection;
 
-		const response = await fetchLogs(connection, PublicKey.default, 'confirmed');
+		const response = await fetchLogs(
+			connection,
+			PublicKey.default,
+			'confirmed'
+		);
 
 		// sigB is the one that failed. Reading the error by position blames sigC
 		// instead and hands back sigB as the forward cursor, dropping sigB for good.
@@ -156,7 +160,11 @@ describe('fetchLogs cursor', () => {
 			...stubRpcClient(() => ({ result: null })),
 		} as unknown as Connection;
 
-		const response = await fetchLogs(connection, PublicKey.default, 'confirmed');
+		const response = await fetchLogs(
+			connection,
+			PublicKey.default,
+			'confirmed'
+		);
 
 		expect(response).to.equal(undefined);
 	});
@@ -186,7 +194,11 @@ describe('fetchLogs cursor', () => {
 			),
 		} as unknown as Connection;
 
-		const response = await fetchLogs(connection, PublicKey.default, 'confirmed');
+		const response = await fetchLogs(
+			connection,
+			PublicKey.default,
+			'confirmed'
+		);
 
 		expect(response?.earliestTx).to.equal('sigA');
 		expect(response?.mostRecentTx).to.equal('sigD');

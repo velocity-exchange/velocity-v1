@@ -4,6 +4,7 @@ import { BufferAndSlot } from './types';
 import { promiseTimeout } from '../util/promiseTimeout';
 import { Connection } from '../bankrun/bankrunConnection';
 import { GET_MULTIPLE_ACCOUNTS_CHUNK_SIZE } from '../constants/numericConstants';
+import { rpcBatchRequest } from '../util/rpcBatchRequest';
 
 /** An account registered with a `BulkAccountLoader`, along with every callback subscribed to its updates (keyed by callback id). */
 export type AccountToLoad = {
@@ -12,56 +13,6 @@ export type AccountToLoad = {
 };
 
 const oneMinute = 60 * 1000;
-
-/**
- * Sends `requests` as one JSON-RPC batch and returns the responses aligned to
- * the request array, with `undefined` wherever the server answered nothing.
- *
- * `connection._rpcBatchRequest` can't be used for this: it generates the
- * request ids internally and hands back the raw response array, which JSON-RPC
- * explicitly lets a server return in any order. `getMultipleAccounts` results
- * carry no pubkeys, so a reordered batch would write account data under the
- * wrong keys with nothing to catch it. Owning the ids is what makes the
- * positional read in `loadChunk` safe.
- */
-function batchRequestAlignedToRequests(
-	connection: Connection,
-	requests: { methodName: string; args: any }[]
-): Promise<any[]> {
-	if (requests.length === 0) {
-		return Promise.resolve([]);
-	}
-
-	const batch = requests.map((request, index) => ({
-		jsonrpc: '2.0',
-		id: index,
-		method: request.methodName,
-		params: request.args,
-	}));
-
-	return new Promise((resolve, reject) => {
-		// @ts-ignore
-		connection._rpcClient.request(batch, (error: any, responses: any) => {
-			if (error) {
-				reject(error);
-				return;
-			}
-
-			if (!Array.isArray(responses)) {
-				// A batch the server rejected outright comes back as a lone error object.
-				reject(
-					new Error(`malformed batch response: ${JSON.stringify(responses)}`)
-				);
-				return;
-			}
-
-			const responsesById = new Map<number, any>(
-				responses.map((response: any) => [response?.id, response])
-			);
-			resolve(batch.map((request) => responsesById.get(request.id)));
-		});
-	});
-}
 
 /**
  * Batches many accounts behind a single periodic `getMultipleAccounts` RPC poll instead of one
@@ -258,26 +209,28 @@ export class BulkAccountLoader {
 			return;
 		}
 
-		const requests = new Array<{ methodName: string; args: any }>();
-		for (const accountsToLoadChunk of accountsToLoadChunks) {
-			const args = [
-				accountsToLoadChunk
-					.filter((accountToLoad) => accountToLoad.callbacks.size > 0)
-					.map((accountToLoad) => {
-						return accountToLoad.publicKey.toBase58();
-					}),
-				{ commitment: this.commitment },
-			];
+		// Only accounts with a live callback are requested, so the response has to
+		// be read back against this filtered list. Indexing the original chunk
+		// would shift every account after a dropped one onto the wrong data.
+		const requestedChunks = accountsToLoadChunks.map((accountsToLoadChunk) =>
+			accountsToLoadChunk.filter(
+				(accountToLoad) => accountToLoad.callbacks.size > 0
+			)
+		);
 
-			requests.push({
-				methodName: 'getMultipleAccounts',
-				args,
-			});
-		}
+		const requests = requestedChunks.map((accountsToLoadChunk) => ({
+			methodName: 'getMultipleAccounts',
+			args: [
+				accountsToLoadChunk.map((accountToLoad) =>
+					accountToLoad.publicKey.toBase58()
+				),
+				{ commitment: this.commitment },
+			],
+		}));
 
 		const rpcResponses: any | null = await promiseTimeout(
-			batchRequestAlignedToRequests(this.connection, requests),
-			10 * 1000 // 30 second timeout
+			rpcBatchRequest(this.connection, requests),
+			10 * 1000 // 10 second timeout
 		);
 
 		if (rpcResponses === null) {
@@ -297,7 +250,7 @@ export class BulkAccountLoader {
 				this.mostRecentSlot = newSlot;
 			}
 
-			const accountsToLoad = accountsToLoadChunks[i];
+			const accountsToLoad = requestedChunks[i];
 			accountsToLoad.forEach((accountToLoad, j) => {
 				if (accountToLoad.callbacks.size === 0) {
 					return;

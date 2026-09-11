@@ -1,6 +1,7 @@
 import { expect } from 'chai';
 import { Connection, PublicKey } from '@solana/web3.js';
 import { fetchLogs } from '../../src/events/fetchLogs';
+import { stubRpcClient } from '../util/stubRpcClient';
 
 // Oldest-first; `fetchLogs` sorts by slot so the slots here fix the order.
 const SIGNATURES = ['sigA', 'sigB', 'sigC', 'sigD'];
@@ -19,25 +20,22 @@ function stubConnection(erroredSignatures: string[]): Connection {
 				memo: null,
 				blockTime: 1_700_000_000 + index,
 			})),
-		_rpcBatchRequest: async (requests: { args: any[] }[]) =>
-			requests.map(({ args }) => {
-				const signature = args[0] as string;
-				if (erroredSignatures.includes(signature)) {
-					return {
+		...stubRpcClient(([signature]: any[]) =>
+			erroredSignatures.includes(signature)
+				? {
 						error: {
 							code: -32015,
 							message: 'Transaction version (1) is not supported',
 						},
-					};
-				}
-				return {
-					result: {
-						slot: 100 + SIGNATURES.indexOf(signature),
-						transaction: { signatures: [signature] },
-						meta: { logMessages: [] },
-					},
-				};
-			}),
+				  }
+				: {
+						result: {
+							slot: 100 + SIGNATURES.indexOf(signature),
+							transaction: { signatures: [signature] },
+							meta: { logMessages: [] },
+						},
+				  }
+		),
 	} as unknown as Connection;
 }
 
@@ -122,24 +120,19 @@ describe('fetchLogs cursor', () => {
 					memo: null,
 					blockTime: 1_700_000_000 + index,
 				})),
-			_rpcBatchRequest: async (requests: { args: any[] }[]) =>
-				requests
-					.map(({ args }) => {
-						const signature = args[0] as string;
-						if (signature === 'sigB') {
-							return {
-								error: { code: -32015, message: 'not supported' },
-							};
-						}
-						return {
-							result: {
-								slot: 100 + SIGNATURES.indexOf(signature),
-								transaction: { signatures: [signature] },
-								meta: { logMessages: [] },
-							},
-						};
-					})
-					.reverse(),
+			...stubRpcClient(
+				([signature]: any[]) =>
+					signature === 'sigB'
+						? { error: { code: -32015, message: 'not supported' } }
+						: {
+								result: {
+									slot: 100 + SIGNATURES.indexOf(signature),
+									transaction: { signatures: [signature] },
+									meta: { logMessages: [] },
+								},
+						  },
+				(responses) => responses.reverse()
+			),
 		} as unknown as Connection;
 
 		const response = await fetchLogs(connection, PublicKey.default, 'confirmed');
@@ -160,7 +153,7 @@ describe('fetchLogs cursor', () => {
 	it('returns undefined when there is nothing in range', async () => {
 		const connection = {
 			getSignaturesForAddress: async () => [],
-			_rpcBatchRequest: async () => [],
+			...stubRpcClient(() => ({ result: null })),
 		} as unknown as Connection;
 
 		const response = await fetchLogs(connection, PublicKey.default, 'confirmed');
@@ -180,18 +173,17 @@ describe('fetchLogs cursor', () => {
 					memo: null,
 					blockTime: 1_700_000_000 + index,
 				})),
-			_rpcBatchRequest: async (requests: { args: any[] }[]) =>
-				requests.map(({ args }) =>
-					args[0] === 'sigC'
-						? { result: null }
-						: {
-								result: {
-									slot: 100 + SIGNATURES.indexOf(args[0] as string),
-									transaction: { signatures: [args[0]] },
-									meta: { logMessages: [] },
-								},
-						  }
-				),
+			...stubRpcClient(([signature]: any[]) =>
+				signature === 'sigC'
+					? { result: null }
+					: {
+							result: {
+								slot: 100 + SIGNATURES.indexOf(signature),
+								transaction: { signatures: [signature] },
+								meta: { logMessages: [] },
+							},
+					  }
+			),
 		} as unknown as Connection;
 
 		const response = await fetchLogs(connection, PublicKey.default, 'confirmed');

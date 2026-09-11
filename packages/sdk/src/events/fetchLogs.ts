@@ -14,6 +14,7 @@ import {
 } from './types';
 import { promiseTimeout } from '../util/promiseTimeout';
 import { parseLogs } from './parse';
+import { rpcBatchRequest } from '../util/rpcBatchRequest';
 
 /**
  * Case-insensitive lookup from decoded (camelCase) IDL event names to
@@ -163,7 +164,7 @@ export async function fetchLogs(
  * @param connection RPC connection.
  * @param signatures Signatures to fetch (fetched as `maxSupportedTransactionVersion: 1`).
  * @param finality Commitment to fetch each transaction at.
- * @param erroredSignatures Optional set, populated with the signatures this batch could not resolve when any response was a JSON-RPC error, so the caller can avoid advancing a cursor past them.
+ * @param erroredSignatures Optional set, populated with each signature whose `getTransaction` returned a JSON-RPC error so the caller can avoid advancing a cursor past it.
  * @returns One `Log` per signature that returned a result (signatures the RPC couldn't resolve are dropped, not padded with placeholders; errored ones are logged).
  * @throws (rejects) if the batch RPC call doesn't complete within 10 seconds.
  */
@@ -186,9 +187,11 @@ export async function fetchTransactionLogs(
 		});
 	}
 
+	// Responses come back aligned to `requests`, so `signatures[index]` is the
+	// signature this response answers. Reading the raw `_rpcBatchRequest` array
+	// by position would not be: JSON-RPC lets a server reorder a batch.
 	const rpcResponses: any | null = await promiseTimeout(
-		// @ts-ignore
-		connection._rpcBatchRequest(requests),
+		rpcBatchRequest(connection, requests),
 		10 * 1000 // 10 second timeout
 	);
 
@@ -196,45 +199,22 @@ export async function fetchTransactionLogs(
 		return Promise.reject('RPC request timed out fetching transactions');
 	}
 
-	// JSON-RPC lets a server return batch responses in any order, and
-	// `_rpcBatchRequest` hands them back uncorrelated (it generates the ids
-	// internally and never exposes them), so position cannot be trusted. A
-	// result is still safe to read by value because the transaction carries its
-	// own signature; an error object carries nothing to identify it.
-	const logsBySignature = new Map<TransactionSignature, Log>();
-	let erroredCount = 0;
-	for (const rpcResponse of rpcResponses) {
-		if (rpcResponse.result) {
-			const log = mapTransactionResponseToLog(rpcResponse.result);
-			logsBySignature.set(log.txSig, log);
-		} else if (rpcResponse.error) {
+	const logs = new Array<Log>();
+	for (let index = 0; index < rpcResponses.length; index++) {
+		const rpcResponse = rpcResponses[index];
+		if (rpcResponse?.result) {
+			logs.push(mapTransactionResponseToLog(rpcResponse.result));
+		} else if (rpcResponse?.error) {
 			// One unreadable entry must not sink the whole batch, so log and carry on.
-			erroredCount++;
+			const signature = signatures[index];
 			console.error(
-				`fetchTransactionLogs: getTransaction failed in batch ${signatures[0]}..${
-					signatures[signatures.length - 1]
-				}: ${rpcResponse.error.code} ${rpcResponse.error.message}`
+				`fetchTransactionLogs: getTransaction failed for ${signature}: ${rpcResponse.error.code} ${rpcResponse.error.message}`
 			);
+			erroredSignatures?.add(signature);
 		}
 	}
 
-	// So errors are attributed by elimination rather than by position: whatever
-	// the batch didn't return a result for is what failed. Exact whenever no
-	// `getTransaction` answered null; when one did, that not-found signature is
-	// fenced too, costing a re-fetch rather than a dropped event.
-	if (erroredCount > 0 && erroredSignatures) {
-		for (const signature of signatures) {
-			if (!logsBySignature.has(signature)) {
-				erroredSignatures.add(signature);
-			}
-		}
-	}
-
-	// Requested order, not response order, so callers still deliver events
-	// oldest-first even if the server answered out of order.
-	return signatures
-		.map((signature) => logsBySignature.get(signature))
-		.filter((log): log is Log => log !== undefined);
+	return logs;
 }
 
 function chunk<T>(array: readonly T[], size: number): T[][] {

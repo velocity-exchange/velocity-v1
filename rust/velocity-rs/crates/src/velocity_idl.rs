@@ -444,6 +444,16 @@ pub mod instructions {
     #[automatically_derived]
     impl anchor_lang::InstructionData for ForceDeleteUser {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct ForceWipeAccountsDevnet {
+        pub velocity_signer_nonce: u8,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for ForceWipeAccountsDevnet {
+        const DISCRIMINATOR: &[u8] = &[105, 74, 87, 6, 166, 227, 138, 215];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for ForceWipeAccountsDevnet {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct ForfeitRevenueShareOrder {
         pub args: ForfeitRevenueShareOrderArgs,
     }
@@ -12803,6 +12813,82 @@ pub mod accounts {
     }
     #[automatically_derived]
     impl anchor_lang::AccountDeserialize for ForceDeleteUser {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct ForceWipeAccountsDevnet {
+        pub admin: Pubkey,
+        pub state: Pubkey,
+        pub velocity_signer: Pubkey,
+        pub token_program: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for ForceWipeAccountsDevnet {
+        const DISCRIMINATOR: &[u8] = &[234, 197, 1, 120, 136, 150, 192, 196];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for ForceWipeAccountsDevnet {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for ForceWipeAccountsDevnet {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for ForceWipeAccountsDevnet {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for ForceWipeAccountsDevnet {}
+    #[automatically_derived]
+    impl ToAccountMetas for ForceWipeAccountsDevnet {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.admin,
+                    is_signer: true,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.velocity_signer,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.token_program,
+                    is_signer: false,
+                    is_writable: false,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for ForceWipeAccountsDevnet {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for ForceWipeAccountsDevnet {
         fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
             let given_disc = &buf[..8];
             if Self::DISCRIMINATOR != given_disc {

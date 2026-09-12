@@ -99,7 +99,10 @@
 use {
     crate::{
         controller::position::{add_new_position, get_position_index, PositionDirection},
-        instructions::{optional_accounts::AccountMaps, router::quoted_route::QuoteInputs},
+        instructions::{
+            optional_accounts::AccountMaps,
+            router::quoted_route::{route_slab, QuoteInputs},
+        },
         math::{
             casting::Cast,
             constants::BASE_PRECISION_U64,
@@ -120,7 +123,7 @@ use {
             user_map::{UserMap, UserStatsMap},
         },
     },
-    anchor_lang::{prelude::*, Discriminator},
+    anchor_lang::prelude::*,
 };
 
 /// Fraction of a budget held back, in bps, for the costs it does not model:
@@ -339,31 +342,6 @@ pub fn build_quoter_rooms<'info>(
             rooms.push(index, room);
             Ok(rooms)
         })
-}
-
-/// The market's slab, when the transaction carries one.
-///
-/// Reads the market's slab, which velocity owns, and never the book arenas
-/// its slots point at.
-fn route_slab<'info>(
-    tail: &'info [AccountInfo<'info>],
-    market_index: u16,
-) -> Result<Option<AccountLoader<'info, QuoterSlabV0>>> {
-    for info in tail {
-        let is_slab = info.owner == &crate::ID
-            && info
-                .try_borrow_data()
-                .is_ok_and(|data| data.get(..8) == Some(QuoterSlabV0::DISCRIMINATOR));
-        if !is_slab {
-            continue;
-        }
-        let loader = AccountLoader::<QuoterSlabV0>::try_from(info)?;
-        if loader.load()?.market != market_index {
-            continue;
-        }
-        return Ok(Some(loader));
-    }
-    Ok(None)
 }
 
 /// How many of the route's consulted quoters are CLOB books on this market.

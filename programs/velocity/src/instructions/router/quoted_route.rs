@@ -117,6 +117,37 @@ fn trim_to_quoter_room(
     Ok(start..kept)
 }
 
+/// The market's slab, found on the account tail.
+///
+/// `None` when the tail carries none, which is a fill that consults nothing
+/// external. A slab for another market is refused rather than passed over:
+/// the caller named it, so it meant to route on it.
+///
+/// One finder, because the sizing that runs before a quote and the route
+/// that takes the quote must agree on which account they mean. Two rules
+/// would let a tail size one slab and quote another.
+pub fn route_slab<'info>(
+    tail: &'info [AccountInfo<'info>],
+    market_index: u16,
+) -> Result<Option<AccountLoader<'info, QuoterSlabV0>>> {
+    for info in tail {
+        if !is_quoter_slab(info) {
+            continue;
+        }
+        let loader = AccountLoader::<QuoterSlabV0>::try_from(info)?;
+        validate!(
+            loader.load()?.market == market_index,
+            ErrorCode::DefaultError,
+            "quoter slab {} is for market {}, fill is for market {}",
+            loader.key(),
+            loader.load()?.market,
+            market_index
+        )?;
+        return Ok(Some(loader));
+    }
+    Ok(None)
+}
+
 /// What one slot answered, before the route keeps any of it.
 struct SlotQuote {
     /// The levels, as a run in the route's own level pool.
@@ -315,32 +346,14 @@ impl<'info> QuotedRoute<'info> {
     }
 
     /// The market's slab, taken from the account tail and kept on the route.
-    ///
-    /// `None` when the tail carries none, which is a fill that consults
-    /// nothing external. A slab for another market is refused rather than
-    /// passed over: the caller named it, so it meant to route on it.
     fn bind_slab(
         &mut self,
         tail: &'info [AccountInfo<'info>],
         market_index: u16,
     ) -> Result<Option<AccountLoader<'info, QuoterSlabV0>>> {
-        for info in tail {
-            if !is_quoter_slab(info) {
-                continue;
-            }
-            let loader = AccountLoader::<QuoterSlabV0>::try_from(info)?;
-            validate!(
-                loader.load()?.market == market_index,
-                ErrorCode::DefaultError,
-                "quoter slab {} is for market {}, fill is for market {}",
-                loader.key(),
-                loader.load()?.market,
-                market_index
-            )?;
-            self.slab = Some(loader.clone());
-            return Ok(Some(loader));
-        }
-        Ok(None)
+        let slab = route_slab(tail, market_index)?;
+        self.slab = slab.clone();
+        Ok(slab)
     }
 
     /// Quote one consulted slot and record what it answered.

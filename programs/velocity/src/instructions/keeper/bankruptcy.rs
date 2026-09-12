@@ -376,12 +376,10 @@ pub fn handle_resolve_perp_bankruptcy<'c: 'info, 'info>(
     let fund_balance_before = vaults.insurance_fund_vault.amount;
     let pay_from_insurance = controller::liquidation::resolve_perp_bankruptcy(
         market_index,
-        &mut LiquidationParties {
-            user,
-            user_key: &user_key,
-            liquidator,
-            liquidator_key: &liquidator_key,
-        },
+        user,
+        &user_key,
+        liquidator,
+        &liquidator_key,
         &mut maps,
         now,
         fund_balance_before,
@@ -451,12 +449,10 @@ pub fn handle_resolve_spot_bankruptcy<'c: 'info, 'info>(
     let fund_balance_before = vaults.insurance_fund_vault.amount;
     let pay_from_insurance = controller::liquidation::resolve_spot_bankruptcy(
         market_index,
-        &mut LiquidationParties {
-            user,
-            user_key: &user_key,
-            liquidator,
-            liquidator_key: &liquidator_key,
-        },
+        user,
+        &user_key,
+        liquidator,
+        &liquidator_key,
         &mut maps,
         now,
         fund_balance_before,

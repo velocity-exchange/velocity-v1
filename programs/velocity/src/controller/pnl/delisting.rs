@@ -27,8 +27,6 @@ pub mod delisting_test {
             controller::{
                 liquidation::{
                     liquidate_perp, liquidate_perp_pnl_for_deposit, resolve_perp_bankruptcy,
-                    LiquidatePerpPnlForDepositRequest, LiquidatePerpRequest, LiquidationParties,
-                    LiquidationTerms, PerpLiquidationParties,
                 },
                 orders::cancel_order,
                 pnl::settle_expired_position,
@@ -2399,23 +2397,18 @@ pub mod delisting_test {
                 ..Default::default()
             };
             liquidate_perp(
-                LiquidatePerpRequest {
-                    market_index: 0,
-                    liquidator_max_base_asset_amount: shorter.perp_positions[0]
-                        .base_asset_amount
-                        .unsigned_abs(),
-                    limit_price: None,
-                },
-                &mut PerpLiquidationParties {
-                    user: &mut shorter,
-                    user_key: &maker_key,
-                    user_stats: &mut shorter_user_stats,
-                    liquidator: &mut liquidator,
-                    liquidator_key: &liq_key,
-                    liquidator_stats: &mut liq_user_stats,
-                },
+                0,
+                shorter.perp_positions[0].base_asset_amount.unsigned_abs(),
+                None,
+                &mut shorter,
+                &maker_key,
+                &mut shorter_user_stats,
+                &mut liquidator,
+                &liq_key,
+                &mut liq_user_stats,
                 &mut maps,
-                &LiquidationTerms::from_state(&state, clock.unix_timestamp, clock.slot),
+                clock.slot,
+                clock.unix_timestamp,
                 &state,
             )
             .unwrap();
@@ -2483,26 +2476,20 @@ pub mod delisting_test {
             }
 
             liquidate_perp_pnl_for_deposit(
-                LiquidatePerpPnlForDepositRequest {
-                    perp_market_index: 0,
-                    asset_market_index: 0,
-                    liquidator_max_pnl_transfer: QUOTE_PRECISION_I128 as u128,
-                    limit_price: None,
-                },
-                &mut LiquidationParties {
-                    user: &mut shorter,
-                    user_key: &maker_key,
-                    liquidator: &mut liquidator,
-                    liquidator_key: &liq_key,
-                },
+                0,
+                0,
+                QUOTE_PRECISION_I128 as u128,
+                None,
+                &mut shorter,
+                &maker_key,
+                &mut liquidator,
+                &liq_key,
                 &mut maps,
-                &LiquidationTerms {
-                    now: clock.unix_timestamp,
-                    slot: clock.slot,
-                    margin_buffer_ratio: 10,
-                    initial_pct_to_liquidate: PERCENTAGE_PRECISION,
-                    duration: Millis::from_stored_units(150),
-                },
+                clock.unix_timestamp,
+                clock.slot,
+                10,
+                PERCENTAGE_PRECISION,
+                Millis::from_stored_units(150),
                 false,
             )
             .unwrap();
@@ -2579,22 +2566,20 @@ pub mod delisting_test {
             }
 
             liquidate_perp_pnl_for_deposit(
-                LiquidatePerpPnlForDepositRequest { perp_market_index: 0, asset_market_index: 0, liquidator_max_pnl_transfer: (QUOTE_PRECISION_I128 * 1000000000) as u128, limit_price: // give all
-                None },
-                &mut LiquidationParties {
-                    user: &mut shorter,
-                    user_key: &maker_key,
-                    liquidator: &mut liquidator,
-                    liquidator_key: &liq_key,
-                },
+                0,
+                0,
+                (QUOTE_PRECISION_I128 * 1000000000) as u128, // give all
+                None,
+                &mut shorter,
+                &maker_key,
+                &mut liquidator,
+                &liq_key,
                 &mut maps,
-                &LiquidationTerms {
-                    now: clock.unix_timestamp,
-                    slot: clock.slot,
-                    margin_buffer_ratio: 10,
-                    initial_pct_to_liquidate: PERCENTAGE_PRECISION,
-                    duration: Millis::from_stored_units(150),
-                },
+                clock.unix_timestamp,
+                clock.slot,
+                10,
+                PERCENTAGE_PRECISION,
+                Millis::from_stored_units(150),
                 false,
             )
             .unwrap();
@@ -2704,12 +2689,10 @@ pub mod delisting_test {
 
             resolve_perp_bankruptcy(
                 0,
-                &mut LiquidationParties {
-                    user: &mut shorter,
-                    user_key: &maker_key,
-                    liquidator: &mut liquidator,
-                    liquidator_key: &liq_key,
-                },
+                &mut shorter,
+                &maker_key,
+                &mut liquidator,
+                &liq_key,
                 &mut maps,
                 clock.unix_timestamp,
                 0,

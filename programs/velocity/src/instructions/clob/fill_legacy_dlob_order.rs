@@ -162,12 +162,6 @@ pub fn handle_fill_legacy_dlob_order<'c: 'info, 'info>(
     };
 
     let user_key = &ctx.accounts.user.key();
-    // A keeper fill is never attested flow: the attestation transports are
-    // the flow authority signing a swift-built transaction, or a detached
-    // attestation bound to a signed-message order — a legacy slot order has
-    // neither. On a bumped book the route quotes the book as empty and the
-    // restable remainder migrates into the auction.
-    let taker_served_window = false;
     crate::instructions::keeper::fill_legacy_dlob_order_entry(
         FillAccounts {
             state: &ctx.accounts.state,
@@ -177,16 +171,24 @@ pub fn handle_fill_legacy_dlob_order<'c: 'info, 'info>(
             user_stats: &ctx.accounts.user_stats,
         },
         ctx.remaining_accounts,
-        order_id,
-        market_index,
-        signed_route,
-        obligation,
-        taker_served_window,
-        Some(ClobRemainderRoute {
-            quoter_slab: &ctx.accounts.quoter_slab,
-            clob_market: &ctx.accounts.clob_market,
-            clob_program: &ctx.accounts.clob_program,
-        }),
+        crate::instructions::keeper::RouterFillRequest {
+            order_id,
+            market_index,
+            signed_route,
+            obligation,
+            // A keeper fill is never attested flow: the attestation transports
+            // are the flow authority signing a swift-built transaction, or a
+            // detached attestation bound to a signed-message order — a legacy
+            // slot order has neither. On a bumped book the route quotes the
+            // book as empty and the restable remainder migrates into the
+            // auction.
+            taker_served_window: false,
+            clob: Some(ClobRemainderRoute {
+                quoter_slab: &ctx.accounts.quoter_slab,
+                clob_market: &ctx.accounts.clob_market,
+                clob_program: &ctx.accounts.clob_program,
+            }),
+        },
     )
     .inspect_err(|_e| {
         msg!(

@@ -17,7 +17,10 @@
 
 use {
     crate::{
-        instructions::{constraints::*, place_and_take_perp_order_v1, ClobRemainderRoute},
+        instructions::{
+            constraints::*, place_and_take_perp_order_v1, ClobRemainderRoute, PlaceAndTakeAccounts,
+            PlaceAndTakeRequest,
+        },
         state::{
             order_params::OrderParams,
             prop_amm::QuoterSlabV0,
@@ -101,18 +104,22 @@ pub fn handle_place_and_take_perp_order_v1<'c: 'info, 'info>(
         (attested, synchronous)
     };
     place_and_take_perp_order_v1(
-        &ctx.accounts.state,
-        &ctx.accounts.user,
-        &ctx.accounts.user_stats,
-        ctx.remaining_accounts,
-        params,
-        optional_params,
+        PlaceAndTakeAccounts {
+            state: &ctx.accounts.state,
+            user: &ctx.accounts.user,
+            user_stats: &ctx.accounts.user_stats,
+            remaining_accounts: ctx.remaining_accounts,
+        },
+        PlaceAndTakeRequest {
+            params,
+            optional_params,
+            taker_served_window,
+            synchronous_take,
+        },
         ClobRemainderRoute {
             quoter_slab: &ctx.accounts.quoter_slab,
             clob_market: &ctx.accounts.clob_market,
             clob_program: &ctx.accounts.clob_program,
         },
-        taker_served_window,
-        synchronous_take,
     )
 }

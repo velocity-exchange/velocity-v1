@@ -305,34 +305,40 @@ pub fn build_quoter_rooms<'info>(
     let Some(slab) = slab else {
         return Ok(QuoterRooms::NONE);
     };
-    // The slab's own market, which `route_slab` already held equal to the
-    // one the route is for.
-    let market_index = slab.load()?.market;
-    let consulted = slab.consulted_slots(tail)?;
-    let mut rooms = QuoterRooms::NONE;
-    for index in consulted {
-        let (quoter_type, quoter_user) = {
-            let slots = slab.slots()?;
-            let slot = &slots[index];
-            if !slot.quotes() {
-                continue;
-            }
-            (slot.config.quoter_type, slot.config.user)
-        };
-        if quoter_type != QuoterType::Custom {
-            continue;
-        }
-        // A quoter quoting for the taker themselves is a self-trade, so it
-        // has no room at all. Said here rather than trimmed later, so the
-        // quoter can decline before it spends a walk of its own.
-        let room = if quoter_user == *taker_key {
-            0
-        } else {
-            ctx.quoter_base_room(&quoter_user, market_index, maker_direction)?
-        };
-        rooms.push(index, room);
-    }
-    Ok(rooms)
+    // Which slots need a walk, read in one borrow of the slab. Only a custom
+    // quoter does: a book's makers are sized by `build_user_caps`, and the
+    // route consults a slot only when its response account rides the tail.
+    // A market whose slab holds no live custom quoter — the common one —
+    // never scans the tail at all.
+    let (market_index, sized) = {
+        let market_index = slab.load()?.market;
+        let slots = slab.slots()?;
+        let sized: Vec<(usize, Pubkey)> = crate::state::prop_amm::occupied_slots(&slots)
+            .filter(|(_, slot)| {
+                slot.config.quoter_type == QuoterType::Custom
+                    && slot.quotes()
+                    && find_account(tail, &slot.config.response_account).is_some()
+            })
+            .map(|(index, slot)| (index, slot.config.user))
+            .take(MAX_ROUTE_QUOTERS)
+            .collect();
+        (market_index, sized)
+    };
+
+    sized
+        .into_iter()
+        .try_fold(QuoterRooms::NONE, |mut rooms, (index, quoter_user)| {
+            // A quoter quoting for the taker themselves is a self-trade, so
+            // it has no room at all. Said here rather than trimmed later, so
+            // the quoter can decline before it spends a walk of its own.
+            let room = if quoter_user == *taker_key {
+                0
+            } else {
+                ctx.quoter_base_room(&quoter_user, market_index, maker_direction)?
+            };
+            rooms.push(index, room);
+            Ok(rooms)
+        })
 }
 
 /// The market's slab, when the transaction carries one.

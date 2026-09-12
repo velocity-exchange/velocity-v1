@@ -926,6 +926,20 @@ accounts/events with the previous TS shapes should note:
   branches (an oracle-offset limit, an oracle-offset auction) pass zero rather than a guess,
   so the bound is either exactly the fill's own or absent. Discovery callers
   (`quote_router`, the cross-match resolvers) pass zero. No account layout change.
+- **Per-quoter base room (feat/propamm)**: `QuoteArgsV0` and `ExecuteArgsV0` both gained a
+  trailing `self_base_room: u64` — the most base the quoter's own settlement user may take
+  on, bounded by that user's own margin, with **`u64::MAX` meaning unbounded**. Both
+  argument types are therefore **8 bytes longer**, and a quoter that decodes them
+  positionally must read the field. A book ignores it: its makers rest depth that was
+  margin-reserved at placement, and each is sized separately in `UserCapsV0`. It exists
+  because `UserCapV0::budget` cannot express this bound — a budget prices the gap between a
+  reserved order's limit and the mark, and is unbounded at a price in the owner's favour,
+  while a quoter filling from one account reserves nothing and pays initial margin on the
+  base it takes. Honouring it is **advisory**, like the caps: velocity trims the returned
+  ladder to the same number, so a quoter that ignores it publishes depth the caller then
+  cuts. A quoter quoting for the taker itself is sent zero. Discovery callers
+  (`quote_router`, the cross-match resolvers) send `u64::MAX`. The execute leg must carry
+  the value its quote carried. No account layout change.
 - **Transaction fee rails (feat/propamm)**: `State` gained
   `transaction_fee_rails: TransactionFeeRails` — `{ inclusion_lamports: u32,
   signature_lamports: u32, resource_fee_numerator: u32, resource_fee_denominator: u32 }`, 16

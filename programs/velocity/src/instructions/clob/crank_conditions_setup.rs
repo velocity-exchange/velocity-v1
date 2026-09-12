@@ -193,12 +193,14 @@ impl ClobCrankConditionsV0 {
         self.set_condition(
             CLOB_CRANK_REFILL,
             &ConditionV0::on_value_cross(
-                keys.crank_conditions.to_bytes(),
-                <u32 as core::convert::TryFrom<usize>>::try_from(
-                    crate::state::clob_crank::CLOB_CRANK_SPENDABLE_MIRROR_OFFSET,
-                )
-                .map_err(|_| error!(ErrorCode::DefaultError))?,
-                8,
+                relay_spec::WatchedRegion::new(
+                    keys.crank_conditions.to_bytes(),
+                    <u32 as core::convert::TryFrom<usize>>::try_from(
+                        crate::state::clob_crank::CLOB_CRANK_SPENDABLE_MIRROR_OFFSET,
+                    )
+                    .map_err(|_| error!(ErrorCode::DefaultError))?,
+                    8,
+                ),
                 relay_spec::WatchValue::Unsigned(refill_watermark_lamports),
                 // Due when the mirrored balance is at or below the watermark.
                 1,

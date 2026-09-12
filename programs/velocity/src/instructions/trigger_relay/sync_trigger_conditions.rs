@@ -138,9 +138,11 @@ pub fn rewrite_trigger_conditions<'info>(
         conditions.set_condition(
             TRIGGER_SLOT_BASE + slot_index,
             &ConditionV0::on_value_cross(
-                trigger.oracle.to_bytes(),
-                trigger.watch.price_offset,
-                trigger.watch.price_len,
+                relay_spec::WatchedRegion::new(
+                    trigger.oracle.to_bytes(),
+                    trigger.watch.price_offset,
+                    trigger.watch.price_len,
+                ),
                 // Signed: every registered watch layout stores its price
                 // as i64.
                 relay_spec::WatchValue::Signed(trigger.threshold),

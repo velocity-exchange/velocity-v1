@@ -77,9 +77,7 @@ pub fn handle_set_crank_conditions_v0(
     };
     let self_watch = |offset: usize, len: usize, resolver: &CrankResolverV0| {
         ConditionV0::on_account_change(
-            watched,
-            offset as u32,
-            len as u32,
+            relay_spec::WatchedRegion::new(watched, offset as u32, len as u32),
             spec(resolver),
             resolvers,
         )

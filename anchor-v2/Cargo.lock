@@ -2121,7 +2121,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 [[package]]
 name = "relay-spec"
 version = "0.1.0"
-source = "git+https://github.com/velocity-exchange/relay?rev=7ccfaa8e99235862d814b2d299e0526ea0aca8b8#7ccfaa8e99235862d814b2d299e0526ea0aca8b8"
+source = "git+https://github.com/velocity-exchange/relay?rev=ee69eb7#ee69eb77c4658684e1dcdcfb7b5e870fa5071e18"
 dependencies = [
  "anchor-lang",
  "bytemuck",

@@ -512,9 +512,7 @@ fn arm_self_maintenance(
         conditions.set_condition(
             LIQ_SYNC_WATCH,
             &ConditionV0::on_account_change(
-                user_key.to_bytes(),
-                watch_offset,
-                watch_len,
+                relay_spec::WatchedRegion::new(user_key.to_bytes(), watch_offset, watch_len),
                 sync_spec,
                 resolvers,
             ),

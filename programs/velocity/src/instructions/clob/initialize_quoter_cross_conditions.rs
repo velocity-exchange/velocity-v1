@@ -196,9 +196,11 @@ pub fn handle_initialize_quoter_cross_conditions(
         conditions.set_condition(
             QUOTER_CROSS_WATCH,
             &(ConditionV0::on_account_change(
-                quoter.watch_account.to_bytes(),
-                quoter.watch_offset,
-                quoter.watch_len,
+                relay_spec::WatchedRegion::new(
+                    quoter.watch_account.to_bytes(),
+                    quoter.watch_offset,
+                    quoter.watch_len,
+                ),
                 spec,
                 resolvers,
             )),
@@ -214,9 +216,11 @@ pub fn handle_initialize_quoter_cross_conditions(
         // The book's own top-of-book region — a crossing order is always a
         // new best, so a change there is every cross this entry could take.
         &(ConditionV0::on_account_change(
-            clob_market.to_bytes(),
-            top_of_book_offset,
-            top_of_book_len,
+            relay_spec::WatchedRegion::new(
+                clob_market.to_bytes(),
+                top_of_book_offset,
+                top_of_book_len,
+            ),
             spec,
             resolvers,
         )),

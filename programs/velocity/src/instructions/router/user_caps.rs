@@ -98,7 +98,7 @@
 
 use {
     crate::{
-        controller::position::PositionDirection,
+        controller::position::{add_new_position, get_position_index, PositionDirection},
         instructions::{optional_accounts::AccountMaps, router::quoted_route::QuoteInputs},
         math::{
             casting::Cast,
@@ -112,9 +112,9 @@ use {
         state::{
             margin_calculation::{MarginContext, MarginTypeConfig},
             prop_amm::{
-                clob_slot_index, find_account, ClobSide, QuoterSlabExt, QuoterSlabV0,
+                clob_slot_index, find_account, ClobSide, QuoterSlabExt, QuoterSlabV0, QuoterType,
                 QuoterUserCapV0, QuoterUserCapsV0,
-                MAX_CONSTRAINED_WIRE_USERS as USER_CAPS_CAPACITY,
+                MAX_CONSTRAINED_WIRE_USERS as USER_CAPS_CAPACITY, MAX_ROUTE_QUOTERS,
             },
             user::{MarketType, OrderStatus},
             user_map::{UserMap, UserStatsMap},
@@ -209,12 +209,133 @@ pub fn build_user_caps<'info>(
     Ok(QuoterUserCapsV0::from_caps(caps))
 }
 
-/// How many of the route's consulted quoters are CLOB books on this market.
+/// The base room of every custom quoter the route consults, by slab slot.
+///
+/// Small and copied rather than borrowed: a route consults at most
+/// [`MAX_ROUTE_QUOTERS`] slots, and the quote step wants this after the
+/// account maps it was built from are no longer in scope.
+#[derive(Clone, Copy, Debug)]
+pub struct QuoterRooms {
+    entries: [(u16, u64); MAX_ROUTE_QUOTERS],
+    len: u8,
+}
+
+impl Default for QuoterRooms {
+    fn default() -> Self {
+        Self::NONE
+    }
+}
+
+impl QuoterRooms {
+    /// No quoter is bounded. What a route with no custom quoter carries, and
+    /// what a caller that does not size them passes.
+    pub const NONE: Self = Self {
+        entries: [(0, u64::MAX); MAX_ROUTE_QUOTERS],
+        len: 0,
+    };
+
+    /// The base `slot_index`'s quoter may take on. `u64::MAX` when this route
+    /// did not size it, which is every book and every unsized call.
+    pub fn room(&self, slot_index: usize) -> u64 {
+        self.entries[..self.len as usize]
+            .iter()
+            .find(|(index, _)| *index as usize == slot_index)
+            .map(|(_, room)| *room)
+            .unwrap_or(u64::MAX)
+    }
+
+    fn push(&mut self, slot_index: usize, room: u64) {
+        if (self.len as usize) < MAX_ROUTE_QUOTERS {
+            self.entries[self.len as usize] = (slot_index as u16, room);
+            self.len += 1;
+        }
+    }
+}
+
+/// Size every counterparty this quote may stand on, both kinds.
+///
+/// A book is told each loaded maker's quote budget; a custom quoter is told
+/// the base its own account carries. Both are priced here, before the quote,
+/// so a quoter never publishes depth this fill would refuse to settle
+/// against — and both come from the same pass over the same state, so the
+/// two venue kinds cannot be sized against different facts.
+pub fn with_counterparty_room<'a, 'info>(
+    tail: &'info [AccountInfo<'info>],
+    taker_key: &Pubkey,
+    inputs: QuoteInputs<'a>,
+    ctx: &mut CapInputs<'_, 'info>,
+) -> Result<QuoteInputs<'a>> {
+    let caps = build_user_caps(tail, &inputs, ctx)?;
+    let rooms = build_quoter_rooms(
+        tail,
+        inputs.market_index,
+        inputs.maker_direction(),
+        taker_key,
+        ctx,
+    )?;
+    Ok(QuoteInputs {
+        caps,
+        rooms,
+        ..inputs
+    })
+}
+
+/// The base each custom quoter in the route may take on, from its own margin.
+///
+/// A book needs none of this. Its makers rest depth that was margin-reserved
+/// at placement, so what a fill costs them is the price gap, which
+/// [`build_user_caps`] prices per user. A custom quoter reserves nothing: the
+/// fill creates the position from scratch, so what bounds it is initial
+/// margin on the base it takes, and that is what this measures.
+///
+/// Runs beside the caps and before the quote, so the number velocity trims
+/// the returned ladder to is the same number the quoter was told to size
+/// itself against.
+pub fn build_quoter_rooms<'info>(
+    tail: &'info [AccountInfo<'info>],
+    market_index: u16,
+    maker_direction: PositionDirection,
+    taker_key: &Pubkey,
+    ctx: &mut CapInputs<'_, 'info>,
+) -> Result<QuoterRooms> {
+    let Some(slab) = route_slab(tail, market_index)? else {
+        return Ok(QuoterRooms::NONE);
+    };
+    let consulted = slab.consulted_slots(tail)?;
+    let mut rooms = QuoterRooms::NONE;
+    for index in consulted {
+        let (quoter_type, quoter_user) = {
+            let slots = slab.slots()?;
+            let slot = &slots[index];
+            if !slot.quotes() {
+                continue;
+            }
+            (slot.config.quoter_type, slot.config.user)
+        };
+        if quoter_type != QuoterType::Custom {
+            continue;
+        }
+        // A quoter quoting for the taker themselves is a self-trade, so it
+        // has no room at all. Said here rather than trimmed later, so the
+        // quoter can decline before it spends a walk of its own.
+        let room = if quoter_user == *taker_key {
+            0
+        } else {
+            ctx.quoter_base_room(&quoter_user, market_index, maker_direction)?
+        };
+        rooms.push(index, room);
+    }
+    Ok(rooms)
+}
+
+/// The market's slab, when the transaction carries one.
 ///
 /// Reads the market's slab, which velocity owns, and never the book arenas
-/// its slots point at. A slot is consulted when its response account rides
-/// the tail — the same rule the route uses.
-fn clob_books_in_route<'info>(tail: &'info [AccountInfo<'info>], market_index: u16) -> Result<u32> {
+/// its slots point at.
+fn route_slab<'info>(
+    tail: &'info [AccountInfo<'info>],
+    market_index: u16,
+) -> Result<Option<AccountLoader<'info, QuoterSlabV0>>> {
     for info in tail {
         let is_slab = info.owner == &crate::ID
             && info
@@ -227,13 +348,26 @@ fn clob_books_in_route<'info>(tail: &'info [AccountInfo<'info>], market_index: u
         if loader.load()?.market != market_index {
             continue;
         }
+        return Ok(Some(loader));
+    }
+    Ok(None)
+}
+
+/// How many of the route's consulted quoters are CLOB books on this market.
+///
+/// A slot is consulted when its response account rides the tail — the same
+/// rule the route uses.
+fn clob_books_in_route<'info>(tail: &'info [AccountInfo<'info>], market_index: u16) -> Result<u32> {
+    let Some(loader) = route_slab(tail, market_index)? else {
+        return Ok(0);
+    };
+    {
         let slots = loader.slots()?;
         let consulted_book = clob_slot_index(&slots).is_some_and(|index| {
             find_account(tail, &slots[index].config.response_account).is_some()
         });
-        return Ok(consulted_book as u32);
+        Ok(consulted_book as u32)
     }
-    Ok(0)
 }
 
 impl CapInputs<'_, '_> {
@@ -342,6 +476,33 @@ impl CapInputs<'_, '_> {
             return Ok(u64::MAX);
         }
         Ok(budget.cast()?)
+    }
+
+    /// The most base a custom quoter's own maker can take on.
+    ///
+    /// A custom quoter's depth is never margin-reserved, so the bound is what
+    /// the account supports right now. The position the fill lands in is
+    /// created first, because the margin walk sizes the order against the
+    /// position it will settle into.
+    fn quoter_base_room(
+        &mut self,
+        quoter_user_key: &Pubkey,
+        market_index: u16,
+        maker_direction: PositionDirection,
+    ) -> Result<u64> {
+        let position_index = {
+            let mut maker = self.makers_and_referrer.get_ref_mut(quoter_user_key)?;
+            get_position_index(&maker.perp_positions, market_index)
+                .or_else(|_| add_new_position(&mut maker.perp_positions, market_index))?
+        };
+        let maker = self.makers_and_referrer.get_ref(quoter_user_key)?;
+        Ok(crate::math::orders::calculate_max_perp_order_size(
+            &maker,
+            position_index,
+            market_index,
+            maker_direction,
+            self.maps,
+        )?)
     }
 
     /// The most base the book may fill against this user's reduce-only orders on

@@ -269,6 +269,7 @@ fn the_user_set_encodes_to_what_it_carries() {
         reference_price: 0,
         taker: None,
         limit_price: 0,
+        self_base_room: u64::MAX,
     };
     let mut bytes = Vec::new();
     quoter_spec::write_args(&mut bytes, &args).unwrap();
@@ -404,6 +405,7 @@ fn the_cpi_buffer_holds_exactly_what_the_args_serialize_to() {
         reference_price: i64::MAX,
         taker: Some(user_ref(0xFF, 0)),
         limit_price: u64::MAX,
+        self_base_room: u64::MAX,
     };
     let execute = ExecuteArgsV0 {
         taker_served_window: true,
@@ -414,6 +416,7 @@ fn the_cpi_buffer_holds_exactly_what_the_args_serialize_to() {
         caps: QuoterUserCapsV0::EMPTY,
         reference_price: i64::MAX,
         taker: Some(user_ref(0xFF, 0)),
+        self_base_room: u64::MAX,
     };
     // Eight for the anchor discriminator the caller writes ahead of the args.
     // The quote is the wider leg, by the price bound execute does not carry.

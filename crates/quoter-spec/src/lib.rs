@@ -987,6 +987,23 @@ pub struct QuoteArgsV0<'a> {
     /// authenticates the caller, and the caller is the settlement engine. A
     /// quoter that reserves nothing ignores it.
     pub consume_reservation: bool,
+    /// The most base the quoter's own settlement user may take on, bounded
+    /// by that user's own margin. `u64::MAX` means unbounded.
+    ///
+    /// A quoter that fills from one account is not margin-reserved the way a
+    /// resting maker is: nothing was set aside at placement, so the fill
+    /// grows the account's worst case and pays initial margin for it. That is
+    /// a base bound, and [`UserCapV0::budget`] cannot express it — a budget
+    /// prices the gap between a reserved order's limit and the mark, and goes
+    /// to infinity at a price in the owner's favour.
+    ///
+    /// A book ignores it. Its makers rest reserved depth and are sized one
+    /// per user in [`Self::caps`].
+    ///
+    /// **Not a trust boundary**, like the caps. The caller trims the returned
+    /// ladder to this itself. Honouring it is what lets a quoter size its own
+    /// depth instead of publishing depth the caller then cuts.
+    pub self_base_room: u64,
 }
 
 /// Arguments to `execute_v0`: commit a fill.
@@ -1017,6 +1034,23 @@ pub struct ExecuteArgsV0<'a> {
     /// rule: the execute must carry the value its quote carried, or it walks
     /// a different set of orders than the one it quoted.
     pub consume_reservation: bool,
+    /// The most base the quoter's own settlement user may take on, bounded
+    /// by that user's own margin. `u64::MAX` means unbounded.
+    ///
+    /// A quoter that fills from one account is not margin-reserved the way a
+    /// resting maker is: nothing was set aside at placement, so the fill
+    /// grows the account's worst case and pays initial margin for it. That is
+    /// a base bound, and [`UserCapV0::budget`] cannot express it — a budget
+    /// prices the gap between a reserved order's limit and the mark, and goes
+    /// to infinity at a price in the owner's favour.
+    ///
+    /// A book ignores it. Its makers rest reserved depth and are sized one
+    /// per user in [`Self::caps`].
+    ///
+    /// **Not a trust boundary**, like the caps. The execute must carry the value
+    /// its quote carried. Honouring it is what lets a quoter size its own
+    /// depth instead of publishing depth the caller then cuts.
+    pub self_base_room: u64,
 }
 
 /// The framing of the request half.
@@ -1400,6 +1434,7 @@ mod tests {
             limit_price: 0,
             taker_served_window: true,
             consume_reservation: false,
+            self_base_room: u64::MAX,
         };
         let bytes = wincode::config::serialize(&args, ARGS_CONFIG).unwrap();
 
@@ -1415,7 +1450,7 @@ mod tests {
         assert_eq!(bytes.len(), args_size(&args).unwrap());
         assert_eq!(
             bytes.len(),
-            after_set + 1 + 8 + USER_CAPS_BYTES + 8 + 1 + UserRefV0::SIZE + 8 + 1 + 1
+            after_set + 1 + 8 + USER_CAPS_BYTES + 8 + 1 + UserRefV0::SIZE + 8 + 1 + 1 + 8
         );
 
         // And it reads back as a slice into those bytes, not a copy of them.
@@ -1437,10 +1472,11 @@ mod tests {
             taker: None,
             taker_served_window: false,
             consume_reservation: false,
+            self_base_room: u64::MAX,
         };
         let bytes = wincode::config::serialize(&args, ARGS_CONFIG).unwrap();
         assert_eq!(&bytes[..4], &0u32.to_le_bytes());
-        assert_eq!(bytes.len(), 4 + 1 + 8 + USER_CAPS_BYTES + 8 + 1 + 1 + 1);
+        assert_eq!(bytes.len(), 4 + 1 + 8 + USER_CAPS_BYTES + 8 + 1 + 1 + 1 + 8);
         assert_eq!(bytes.len(), args_size(&args).unwrap());
 
         let read: ExecuteArgsV0 = wincode::config::deserialize(&bytes, ARGS_CONFIG).unwrap();

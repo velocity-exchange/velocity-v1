@@ -172,169 +172,6 @@ fn market_order_limit(
     )
 }
 
-/// Cut each external book's ladder to depth the fill can settle.
-///
-/// Both clamps answer one problem: size the split routes to a book that the
-/// post-fill checks then refuse fails the whole fill, and takes the taker and
-/// every other maker in the transaction with it. Both cut a prefix off the
-/// book's own quoted ladder, so what survives is still depth that quoter
-/// promised and the `ext_base == allocation.base` bound still holds.
-///
-/// Custom: a PropAMM's depth is never margin-reserved, so the cap is what the
-/// quoted user's account supports right now. Its declared oracle band, if it
-/// has one, cuts the same ladder: levels outside the band are dropped before
-/// the split reaches them, so a maker's own ceiling costs it allocation
-/// instead of failing a fill that carries other makers. The response is still
-/// held to the band afterwards. The trim is what keeps an honest quoter
-/// inside it, and the check is what catches one that is not.
-///
-/// The band always cuts the taker-favourable end of the ladder, because that
-/// is the end that prices against the maker.
-///
-/// A CLOB needs no clamp. Its makers are sized before the books are quoted,
-/// and the book passes over anyone out of room mid-book, so the depth behind
-/// them is still quoted and still fillable (`build_user_caps`). Truncating in
-/// front of them, which is all a clamp out here can do, would cost every
-/// order behind.
-///
-/// Runs before this market's `RefMut` is taken, because the margin walk
-/// values every market the quoted user touches.
-fn clamp_external_depth(
-    maps: &mut AccountMaps,
-    makers_and_referrer: &UserMap,
-    router: &RouterFillInputs,
-    market_index: u16,
-    taker_key: &Pubkey,
-    maker_direction: PositionDirection,
-) -> VelocityResult<Vec<Option<Vec<PriceLevel>>>> {
-    let external_books = router.books;
-    let (band_oracle_price, market_margin_ratio_initial) = {
-        let market = maps.perp_market_map.get_ref(&market_index)?;
-        let oracle_id = market.oracle_id();
-        let margin_ratio_initial = market.margin_ratio_initial;
-        drop(market);
-        (
-            maps.oracle_map.get_price_data(&oracle_id)?.price,
-            margin_ratio_initial,
-        )
-    };
-    (0..external_books.len())
-        .map(|i| -> VelocityResult<Option<Vec<PriceLevel>>> {
-            if !matches!(router.executor.quoter_type(i), QuoterType::Custom) {
-                return Ok(None);
-            }
-
-            let quoter_user_key = router.executor.quoter_user(i);
-            // A quoter quoting for the taker themselves is a self-trade.
-            if quoter_user_key == *taker_key {
-                return Ok(Some(vec![]));
-            }
-            let cap = custom_quoter_depth_cap(
-                maps,
-                makers_and_referrer,
-                &quoter_user_key,
-                market_index,
-                maker_direction,
-            )?;
-
-            let levels = &external_books[i].levels;
-            let banded = levels_within_oracle_band(
-                levels,
-                maker_direction,
-                band_oracle_price,
-                router.executor.oracle_band(i, market_margin_ratio_initial),
-            )?;
-            let banded_out = banded.len() != levels.len();
-
-            Ok(levels_within_cap(banded, cap, banded_out))
-        })
-        .collect()
-}
-
-/// The most base a custom quoter's own maker can take on.
-///
-/// The position the fill lands in is created first, because the margin walk
-/// sizes the order against the position it will settle into.
-fn custom_quoter_depth_cap(
-    maps: &mut AccountMaps,
-    makers_and_referrer: &UserMap,
-    quoter_user_key: &Pubkey,
-    market_index: u16,
-    maker_direction: PositionDirection,
-) -> VelocityResult<u64> {
-    let position_index = {
-        let mut maker = makers_and_referrer.get_ref_mut(quoter_user_key)?;
-        get_position_index(&maker.perp_positions, market_index)
-            .or_else(|_| add_new_position(&mut maker.perp_positions, market_index))?
-    };
-    let maker = makers_and_referrer.get_ref(quoter_user_key)?;
-    crate::math::orders::calculate_max_perp_order_size(
-        &maker,
-        position_index,
-        market_index,
-        maker_direction,
-        maps,
-    )
-}
-
-/// The levels that price inside the maker's own oracle band.
-fn levels_within_oracle_band(
-    levels: &[PriceLevel],
-    maker_direction: PositionDirection,
-    band_oracle_price: i64,
-    band: u32,
-) -> VelocityResult<Vec<PriceLevel>> {
-    levels.iter().try_fold(
-        Vec::new(),
-        |mut kept, level| -> VelocityResult<Vec<PriceLevel>> {
-            if !crate::math::orders::limit_price_breaches_maker_oracle_price_bands(
-                level.price,
-                maker_direction,
-                band_oracle_price,
-                band,
-            )? {
-                kept.push(*level);
-            }
-            Ok(kept)
-        },
-    )
-}
-
-/// The banded levels truncated to the depth the quoter's maker can carry.
-///
-/// `None` leaves the book as the quoter published it, which is the common
-/// case: nothing was banded out and the whole ladder fits under the cap.
-fn levels_within_cap(
-    banded: Vec<PriceLevel>,
-    cap: u64,
-    banded_out: bool,
-) -> Option<Vec<PriceLevel>> {
-    let depth = banded
-        .iter()
-        .fold(0u64, |total, level| total.saturating_add(level.size));
-    if depth <= cap {
-        return banded_out.then_some(banded);
-    }
-
-    let mut remaining = cap;
-    Some(
-        banded
-            .iter()
-            .map_while(|level| {
-                if remaining == 0 {
-                    return None;
-                }
-                let size = level.size.min(remaining);
-                remaining -= size;
-                Some(PriceLevel {
-                    price: level.price,
-                    size,
-                })
-            })
-            .collect(),
-    )
-}
-
 /// One perp fill in progress: what every step of the route reads, built once
 /// by [`PerpFill::new`]. A step takes this and its own arguments.
 ///
@@ -654,7 +491,6 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         &mut self,
         venue: &ExternalVenue,
         amm_quoter: &mut AmmQuoter,
-        clamped_books: &[Option<Vec<PriceLevel>>],
         dlob_makers: &[MakerOrderInfo],
         target_size: u64,
     ) -> VelocityResult<RoutedFill> {
@@ -668,7 +504,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
                 }]
             })
             .collect();
-        let rivals = self.rival_books(venue, clamped_books, &maker_levels);
+        let rivals = self.rival_books(venue, &maker_levels);
         let amm_levels = self.quote_vamm(amm_quoter, &rivals, target_size)?;
 
         // The vAMM book is NOT re-truncated: `vamm_quote_levels` already
@@ -741,35 +577,31 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
     fn rival_books<'l, 'r: 'l, 'b: 'l>(
         &self,
         venue: &ExternalVenue<'_, 'r, 'b, '_>,
-        clamped_books: &'l [Option<Vec<PriceLevel>>],
         maker_levels: &'l [[PriceLevel; 1]],
     ) -> Vec<QuoterBook<'l>> {
-        let mut books = self.external_rival_books(venue, clamped_books);
+        let mut books = self.external_rival_books(venue);
         books.extend(self.maker_rival_books(maker_levels));
         books
     }
 
-    /// The external quoter books alone, each cut to the depth the clamp left
-    /// it and then to the taker's limit.
+    /// The external quoter books alone, each cut to the taker's limit.
     ///
-    /// The settle pass rebuilds these from the same clamp the split was cut
-    /// from, so the two see one ladder.
+    /// The ladders are already the depth this fill may settle: a custom
+    /// quoter's is trimmed to its own band and its own account's room when
+    /// the route is assembled, and a book sizes its makers as it walks them.
+    /// So the split and the settle pass read the same levels by
+    /// construction, rather than by rebuilding a clamp the same way twice.
     fn external_rival_books<'l, 'r: 'l, 'b: 'l>(
         &self,
         venue: &ExternalVenue<'_, 'r, 'b, '_>,
-        clamped_books: &'l [Option<Vec<PriceLevel>>],
     ) -> Vec<QuoterBook<'l>> {
         venue
             .books
             .iter()
-            .enumerate()
-            .map(|(i, book)| {
-                let levels: &'l [PriceLevel] = clamped_books[i].as_deref().unwrap_or(book.levels);
-                QuoterBook {
-                    priority: book.priority,
-                    levels: &levels[..self.within_limit(levels)],
-                    withheld: book.withheld,
-                }
+            .map(|book| QuoterBook {
+                priority: book.priority,
+                levels: &book.levels[..self.within_limit(book.levels)],
+                withheld: book.withheld,
             })
             .collect()
     }
@@ -916,14 +748,13 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
     /// Settle each source's allocation into the accounts it moved.
     ///
     /// The DLOB legs go first, then the vAMM, then the external books. The
-    /// external ladders are rebuilt from the same clamp the split was cut
-    /// from, so a balance change is held to the levels it was allocated at.
+    /// external ladders are rebuilt from the levels the split was cut from,
+    /// so a balance change is held to the prices it was allocated at.
     fn settle_routed_fill(
         &mut self,
         market: &mut PerpMarket,
         filler: &mut FillerSide,
         venue: &mut ExternalVenue,
-        clamped_books: &[Option<Vec<PriceLevel>>],
         routed: &RoutedFill,
     ) -> VelocityResult {
         self.settle_dlob_allocations(
@@ -935,7 +766,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         if let Some(amm_fill) = routed.amm_fill.as_ref() {
             self.settle_vamm_allocation(market, filler, amm_fill, routed.amm_allocation())?;
         }
-        let ladders = self.external_rival_books(venue, clamped_books);
+        let ladders = self.external_rival_books(venue);
         self.settle_external_allocations(
             market,
             filler,
@@ -1790,17 +1621,6 @@ pub(super) fn fill_from_liquidity_sources(
     if target_size == 0 {
         return Ok((0, 0, MakerFills::new()));
     }
-    // Clamped before this market's `RefMut` is taken: the margin walk values
-    // every market the quoted user touches.
-    let clamped_books = clamp_external_depth(
-        parties.maps,
-        parties.makers_and_referrer,
-        liquidity.router,
-        market_index,
-        &taker.key,
-        taker.direction.opposite(),
-    )?;
-
     // ---- The market snapshot every source quotes against. ----
     let AccountMaps {
         perp_market_map,
@@ -1826,23 +1646,12 @@ pub(super) fn fill_from_liquidity_sources(
     )?;
 
     // ---- Quote, split, and take the vAMM's share while the curve is held. ----
-    let routed = fill.route_across_sources(
-        &venue,
-        &mut amm_quoter,
-        &clamped_books,
-        liquidity.dlob_makers,
-        target_size,
-    )?;
+    let routed =
+        fill.route_across_sources(&venue, &mut amm_quoter, liquidity.dlob_makers, target_size)?;
 
     // ---- Release `market.amm`, then settle each source. ----
     drop(amm_quoter);
-    fill.settle_routed_fill(
-        market.deref_mut(),
-        filler,
-        &mut venue,
-        &clamped_books,
-        &routed,
-    )?;
+    fill.settle_routed_fill(market.deref_mut(), filler, &mut venue, &routed)?;
 
     let filled = fill.close_out(market.deref_mut(), &mut venue, &filler.key)?;
     Ok((filled.base, filled.quote, fill.tally.maker_fills))

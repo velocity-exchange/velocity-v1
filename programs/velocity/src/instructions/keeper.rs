@@ -225,29 +225,29 @@ impl<'info> FillSections<'info> {
         )?)
     }
 
-    /// Price the per-user room of a quote.
+    /// Price the room of every counterparty the quote may stand on.
     ///
-    /// This runs before the quote, so a book never publishes depth standing on
-    /// a maker this fill would refuse to settle against.
-    fn with_user_caps<'a>(
+    /// This runs before the quote, so a quoter never publishes depth this
+    /// fill would refuse to settle against: a book is told each maker's
+    /// budget, and a custom quoter is told the base its own account carries.
+    fn with_counterparty_room<'a>(
         &mut self,
         inputs: crate::instructions::QuoteInputs<'a>,
+        taker_key: &Pubkey,
         clock: &Clock,
     ) -> Result<crate::instructions::QuoteInputs<'a>> {
-        Ok(crate::instructions::QuoteInputs {
-            caps: crate::instructions::build_user_caps(
-                self.tail,
-                &inputs,
-                &mut crate::instructions::CapInputs {
-                    makers_and_referrer: &self.makers_and_referrer,
-                    makers_and_referrer_stats: &self.makers_and_referrer_stats,
-                    maps: &mut self.maps,
-                    slot: clock.slot,
-                    now: clock.unix_timestamp,
-                },
-            )?,
-            ..inputs
-        })
+        crate::instructions::with_counterparty_room(
+            self.tail,
+            taker_key,
+            inputs,
+            &mut crate::instructions::CapInputs {
+                makers_and_referrer: &self.makers_and_referrer,
+                makers_and_referrer_stats: &self.makers_and_referrer_stats,
+                maps: &mut self.maps,
+                slot: clock.slot,
+                now: clock.unix_timestamp,
+            },
+        )
     }
 
     /// Hand an assembled route to the perp fill, and report the base it moved.
@@ -298,6 +298,9 @@ struct RoutedOrder {
     limit_price: u64,
     /// The mark a quoter prices a capped maker's loss against.
     reference_price: i64,
+    /// The market's initial margin ratio, which a quoter's oracle band
+    /// defaults to.
+    margin_ratio_initial: u32,
 }
 
 impl RouteContext<'_, '_> {
@@ -315,9 +318,13 @@ impl RouteContext<'_, '_> {
             .get_perp_position(self.market_index)
             .map(|position| position.base_asset_amount)
             .ok();
-        let (tick_size, oracle_id) = {
+        let (tick_size, oracle_id, margin_ratio_initial) = {
             let market = self.maps.perp_market_map.get_ref(&self.market_index)?;
-            (market.order_tick_size, market.oracle_id())
+            (
+                market.order_tick_size,
+                market.oracle_id(),
+                market.margin_ratio_initial,
+            )
         };
         Ok(RoutedOrder {
             direction: match order.direction {
@@ -333,6 +340,7 @@ impl RouteContext<'_, '_> {
                 self.state.slot_clock(),
             ),
             reference_price: self.maps.oracle_map.get_price_data(&oracle_id)?.price,
+            margin_ratio_initial,
         })
     }
 }
@@ -347,10 +355,12 @@ impl RoutedOrder {
         taker_served_window: bool,
     ) -> crate::instructions::QuoteInputs<'a> {
         crate::instructions::QuoteInputs {
-            // Filled in by `with_user_caps`: sizing the makers needs the
-            // inputs, and the quote needs the sizes.
+            // Both filled in by `with_counterparty_room`: sizing a
+            // counterparty needs the inputs, and the quote needs the sizes.
             caps: crate::state::prop_amm::QuoterUserCapsV0::EMPTY,
+            rooms: crate::instructions::router::user_caps::QuoterRooms::NONE,
             market_index,
+            margin_ratio_initial: self.margin_ratio_initial,
             direction: self.direction,
             size: self.unfilled,
             users,

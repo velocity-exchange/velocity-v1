@@ -614,6 +614,7 @@ fn the_args_round_trip_with_caps_between_the_set_and_the_taker() {
         reference_price: 0,
         taker: Some(taker),
         limit_price: 0,
+        self_base_room: u64::MAX,
     };
     let bytes = encode(&args);
     let decoded: QuoteArgsV0 =
@@ -666,6 +667,7 @@ fn the_user_set_is_read_in_place_and_costs_only_what_it_carries() {
         reference_price: 0,
         taker: None,
         limit_price: 0,
+        self_base_room: u64::MAX,
     };
     let bytes = encode(&args);
 
@@ -674,11 +676,11 @@ fn the_user_set_is_read_in_place_and_costs_only_what_it_carries() {
     assert_eq!(bytes[..4], 2u32.to_le_bytes());
     assert_eq!(bytes[4..4 + USER_REF_BYTES], encode(&user(0xA))[..]);
     // The trailing bytes: direction, size, caps, reference price, the absent
-    // taker's option tag, the price bound, the served-window flag and the
-    // consume-reservation flag.
+    // taker's option tag, the price bound, the served-window flag, the
+    // consume-reservation flag and the quoter's own base room.
     assert_eq!(
         bytes.len(),
-        4 + 2 * USER_REF_BYTES + 1 + 8 + USER_CAPS_BYTES + 8 + 1 + 8 + 1 + 1
+        4 + 2 * USER_REF_BYTES + 1 + 8 + USER_CAPS_BYTES + 8 + 1 + 8 + 1 + 1 + 8
     );
 
     let decoded: QuoteArgsV0 =

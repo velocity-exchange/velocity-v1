@@ -288,15 +288,15 @@ pub use quoter_spec::{
 };
 
 /// Bytes an execute CPI's instruction data takes: discriminator, direction,
-/// size, the user set, the caps, the reference price, and the taker behind
-/// its option tag.
+/// size, the user set, the caps, the reference price, the taker behind its
+/// option tag, and the quoter's own base room.
 ///
 /// A size rather than a constant, because the user set is length-prefixed.
 /// The caller reserves exactly this much in one shot. Every field the args
 /// serializer writes has to be counted here: one byte short and the `Vec`
 /// doubles, which on this heap means the fill runs out of memory rather than
-/// slowing down. The two trailing bytes are `taker_served_window` and
-/// `consume_reservation`.
+/// slowing down. The two single bytes are `taker_served_window` and
+/// `consume_reservation`; the last eight are `self_base_room`.
 pub const fn quoter_cpi_data_len(users: usize, taker: bool) -> usize {
     8 + 1
         + 8
@@ -306,6 +306,7 @@ pub const fn quoter_cpi_data_len(users: usize, taker: bool) -> usize {
         + 1
         + if taker { CLOB_USER_REF_BYTES } else { 0 }
         + 2
+        + 8
 }
 
 /// The same for a quote, which also carries the caller's worst acceptable

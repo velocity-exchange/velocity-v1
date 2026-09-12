@@ -23,6 +23,7 @@
 use {
     super::cpi_executor::CpiQuoterExecutor,
     crate::{
+        controller::position::PositionDirection,
         error::ErrorCode,
         math::router::QuoterBook,
         state::{
@@ -61,6 +62,59 @@ fn quoter_reads_a_rival(slot: &QuoterSlotV0, rivals: &[Pubkey]) -> bool {
         .registered_accounts()
         .iter()
         .any(|meta| !own.contains(&meta.pubkey) && rivals.contains(&meta.pubkey))
+}
+
+/// Cut a custom quoter's ladder to the depth this fill will settle against.
+///
+/// Two bounds, both the quoter's own. Its declared oracle band drops the
+/// levels that price outside it, and the base its account can carry
+/// truncates what is left. The band always cuts the taker-favourable end of
+/// the ladder, because that is the end that prices against the maker.
+///
+/// A book is never trimmed here. Its makers rest depth that was
+/// margin-reserved at placement and are sized one per user in the caps the
+/// call carries, and the book passes over an owner out of room mid-walk. So
+/// the depth behind that owner stays quoted and stays fillable, where a trim
+/// out here would cut every order behind them.
+///
+/// The run is the tail of `levels`, because a quote appends its ladder there.
+/// Compacted in place for that reason: the kept levels move down over the
+/// dropped ones and the vector shortens, so no second list exists to
+/// disagree with this one.
+fn trim_to_quoter_room(
+    levels: &mut Vec<PriceLevel>,
+    run: std::ops::Range<usize>,
+    maker_direction: PositionDirection,
+    band_oracle_price: i64,
+    oracle_band: u32,
+    room: u64,
+) -> Result<std::ops::Range<usize>> {
+    let start = run.start;
+    let mut kept = start;
+    let mut remaining = room;
+    for source in run {
+        if remaining == 0 {
+            break;
+        }
+        let level = levels[source];
+        if crate::math::orders::limit_price_breaches_maker_oracle_price_bands(
+            level.price,
+            maker_direction,
+            band_oracle_price,
+            oracle_band,
+        )? {
+            continue;
+        }
+        let size = level.size.min(remaining);
+        remaining -= size;
+        levels[kept] = PriceLevel {
+            price: level.price,
+            size,
+        };
+        kept += 1;
+    }
+    levels.truncate(kept);
+    Ok(start..kept)
 }
 
 pub struct QuotedRoute<'info> {
@@ -121,6 +175,15 @@ pub struct QuoteInputs<'a> {
     /// skip in [`QuotedRoute::assemble`]: a book with a nonzero default
     /// activation delay quotes no depth when this is false.
     pub taker_served_window: bool,
+    /// The market's initial margin ratio, which a quoter's declared oracle
+    /// band defaults to when it sets none.
+    pub margin_ratio_initial: u32,
+    /// The base each custom quoter may take on, from its own margin.
+    ///
+    /// Told to the quoter so it can size its own depth, and used here to trim
+    /// what it returns. Both from one number, so a quoter that honours it
+    /// publishes exactly the ladder velocity keeps.
+    pub rooms: crate::instructions::router::user_caps::QuoterRooms,
     /// Whether this fill settles a crossing taker remainder itself, and so
     /// reads a book with every crossing reservation ignored.
     ///
@@ -130,6 +193,16 @@ pub struct QuoteInputs<'a> {
     /// route must pass `false`, or a caller could fill the cover a remainder is
     /// waiting on and take the improvement itself.
     pub consume_reservation: bool,
+}
+
+impl QuoteInputs<'_> {
+    /// The side the quoters rest on: the opposite of the taker's.
+    pub fn maker_direction(&self) -> PositionDirection {
+        match self.direction {
+            Direction::Long => PositionDirection::Short,
+            Direction::Short => PositionDirection::Long,
+        }
+    }
 }
 
 impl<'info> QuotedRoute<'info> {
@@ -199,8 +272,10 @@ impl<'info> QuotedRoute<'info> {
             }
         }
 
+        // The side a band cuts and a room is measured for.
+        let maker_direction = inputs.maker_direction();
         for index in consulted {
-            let (ladder, quoter_type) = {
+            let (ladder, quoter_type, oracle_band) = {
                 let slots = slab_loader.slots()?;
                 let slot = &slots[index];
                 if !slot.quotes() {
@@ -258,13 +333,37 @@ impl<'info> QuotedRoute<'info> {
                         limit_price: inputs.limit_price,
                         taker_served_window: inputs.taker_served_window,
                         consume_reservation: inputs.consume_reservation,
+                        self_base_room: inputs.rooms.room(index),
                     },
                     &slab_loader,
                     route.accounts,
                     scratch,
                     &mut route.levels,
                 )?;
-                (levels, slot.config.quoter_type)
+                (
+                    levels,
+                    slot.config.quoter_type,
+                    slot.config.oracle_band(inputs.margin_ratio_initial),
+                )
+            };
+            // A custom quoter's ladder is cut to what this fill will settle
+            // against before anything else reads it. One trim, one ladder:
+            // the split allocates and the settle checks against the same
+            // levels, which two lists cannot promise.
+            let ladder = if quoter_type == QuoterType::Custom {
+                crate::state::prop_amm::QuotedLadderV0 {
+                    levels: trim_to_quoter_room(
+                        &mut route.levels,
+                        ladder.levels,
+                        maker_direction,
+                        inputs.reference_price,
+                        oracle_band,
+                        inputs.rooms.room(index),
+                    )?,
+                    ..ladder
+                }
+            } else {
+                ladder
             };
             // Only a book can withhold. A book walks the orders of many
             // owners and stops at one this transaction cannot settle for.
@@ -447,8 +546,132 @@ impl<'info> QuotedRoute<'info> {
             taker: inputs.taker,
             taker_served_window: inputs.taker_served_window,
             consume_reservation: inputs.consume_reservation,
+            rooms: inputs.rooms,
             slot,
             now,
         }
+    }
+}
+
+/// What the trim leaves of a custom quoter's ladder.
+///
+/// The run is always the tail of the level pool, because a quote appends its
+/// ladder there. A leading run stands in these cases for the earlier quoter's
+/// levels, and every case asserts it survives untouched.
+#[cfg(test)]
+mod trim_tests {
+    use super::*;
+
+    const PRICE: u64 = crate::math::constants::PRICE_PRECISION_U64;
+    const BASE: u64 = crate::math::constants::BASE_PRECISION_U64;
+    /// Wide enough that no level in these cases breaches it, which is what
+    /// isolates the cases that are about the room. A zero band admits
+    /// nothing, and production never passes one: a quoter that declares no
+    /// band falls back to the market's initial margin ratio.
+    const WIDE: u32 = crate::math::constants::MARGIN_PRECISION / 10;
+
+    /// One level of an earlier quoter, which no trim may reach.
+    fn pool(ladder: &[(u64, u64)]) -> (Vec<PriceLevel>, std::ops::Range<usize>) {
+        let mut levels = vec![PriceLevel { price: 1, size: 1 }];
+        let start = levels.len();
+        levels.extend(ladder.iter().map(|(price, size)| PriceLevel {
+            price: price * PRICE,
+            size: size * BASE,
+        }));
+        let run = start..levels.len();
+        (levels, run)
+    }
+
+    fn trim(
+        ladder: &[(u64, u64)],
+        maker_direction: PositionDirection,
+        band: u32,
+        room: u64,
+    ) -> Vec<(u64, u64)> {
+        let (mut levels, run) = pool(ladder);
+        let kept = trim_to_quoter_room(
+            &mut levels,
+            run,
+            maker_direction,
+            (100 * PRICE) as i64,
+            band,
+            room,
+        )
+        .unwrap();
+        assert_eq!(levels[0], PriceLevel { price: 1, size: 1 });
+        assert_eq!(kept.end, levels.len(), "the run is the tail of the pool");
+        levels[kept]
+            .iter()
+            .map(|level| (level.price / PRICE, level.size / BASE))
+            .collect()
+    }
+
+    #[test]
+    fn an_unbounded_room_leaves_the_ladder_alone() {
+        assert_eq!(
+            trim(
+                &[(99, 2), (98, 3)],
+                PositionDirection::Short,
+                WIDE,
+                u64::MAX
+            ),
+            [(99, 2), (98, 3)]
+        );
+    }
+
+    #[test]
+    fn the_room_truncates_the_far_end() {
+        // Four base quoted, three afforded: the best level survives whole and
+        // the next is cut to what is left. A prefix, so what the quoter keeps
+        // is its own best depth.
+        assert_eq!(
+            trim(
+                &[(99, 2), (98, 2)],
+                PositionDirection::Short,
+                WIDE,
+                3 * BASE
+            ),
+            [(99, 2), (98, 1)]
+        );
+    }
+
+    #[test]
+    fn no_room_leaves_nothing() {
+        // What a quoter quoting for the taker itself is given, so the
+        // self-trade never reaches the split.
+        assert!(trim(&[(99, 2)], PositionDirection::Short, WIDE, 0).is_empty());
+    }
+
+    #[test]
+    fn the_band_cuts_the_end_that_prices_against_the_maker() {
+        // A maker selling at 100 with a 5% band may not sell below 95. The
+        // cheap ask is the taker-favourable one, and it is the one dropped;
+        // the levels behind it keep their sizes and their order.
+        let band = crate::math::constants::MARGIN_PRECISION / 20;
+        assert_eq!(
+            trim(
+                &[(99, 1), (90, 1), (98, 1)],
+                PositionDirection::Short,
+                band,
+                u64::MAX
+            ),
+            [(99, 1), (98, 1)]
+        );
+    }
+
+    #[test]
+    fn a_banded_out_level_does_not_spend_the_room() {
+        // The band runs first, so a level the fill would refuse anyway costs
+        // the quoter no allocation.
+        let band = crate::math::constants::MARGIN_PRECISION / 20;
+        assert_eq!(
+            trim(
+                &[(90, 5), (99, 2)],
+                PositionDirection::Short,
+                band,
+                2 * BASE
+            ),
+            [(99, 2)]
+        );
     }
 }

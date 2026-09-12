@@ -340,9 +340,15 @@ fn route_fill_fired_order<'info>(
         return Ok(());
     }
 
-    let route_reference_price = {
-        let oracle_id = maps.perp_market_map.get_ref(&market_index)?.oracle_id();
-        maps.oracle_map.get_price_data(&oracle_id)?.price
+    let (route_reference_price, route_margin_ratio_initial) = {
+        let market = maps.perp_market_map.get_ref(&market_index)?;
+        let oracle_id = market.oracle_id();
+        let margin_ratio_initial = market.margin_ratio_initial;
+        drop(market);
+        (
+            maps.oracle_map.get_price_data(&oracle_id)?.price,
+            margin_ratio_initial,
+        )
     };
     let inputs = crate::instructions::QuoteInputs {
         caps: crate::state::prop_amm::QuoterUserCapsV0::EMPTY,
@@ -362,21 +368,22 @@ fn route_fill_fired_order<'info>(
         limit_price: route_inputs.limit_price,
         taker_served_window,
         consume_reservation: false,
+        // Both filled in below, once every counterparty is sized.
+        rooms: crate::instructions::router::user_caps::QuoterRooms::NONE,
+        margin_ratio_initial: route_margin_ratio_initial,
     };
-    let inputs = crate::instructions::QuoteInputs {
-        caps: crate::instructions::build_user_caps(
-            tail.accounts,
-            &inputs,
-            &mut crate::instructions::CapInputs {
-                makers_and_referrer: &tail.makers_and_referrer,
-                makers_and_referrer_stats: &tail.makers_and_referrer_stats,
-                maps,
-                slot: clock.slot,
-                now: clock.unix_timestamp,
-            },
-        )?,
-        ..inputs
-    };
+    let inputs = crate::instructions::with_counterparty_room(
+        tail.accounts,
+        &ctx.accounts.user.key(),
+        inputs,
+        &mut crate::instructions::CapInputs {
+            makers_and_referrer: &tail.makers_and_referrer,
+            makers_and_referrer_stats: &tail.makers_and_referrer_stats,
+            maps,
+            slot: clock.slot,
+            now: clock.unix_timestamp,
+        },
+    )?;
 
     let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
     let route =

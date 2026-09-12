@@ -1800,6 +1800,28 @@
               "a different set of orders than the one it quoted."
             ],
             "type": "bool"
+          },
+          {
+            "name": "self_base_room",
+            "docs": [
+              "The most base the quoter's own settlement user may take on, bounded",
+              "by that user's own margin. `u64::MAX` means unbounded.",
+              "",
+              "A quoter that fills from one account is not margin-reserved the way a",
+              "resting maker is: nothing was set aside at placement, so the fill",
+              "grows the account's worst case and pays initial margin for it. That is",
+              "a base bound, and [`UserCapV0::budget`] cannot express it — a budget",
+              "prices the gap between a reserved order's limit and the mark, and goes",
+              "to infinity at a price in the owner's favour.",
+              "",
+              "A book ignores it. Its makers rest reserved depth and are sized one",
+              "per user in [`Self::caps`].",
+              "",
+              "**Not a trust boundary**, like the caps. The execute must carry the value",
+              "its quote carried. Honouring it is what lets a quoter size its own",
+              "depth instead of publishing depth the caller then cuts."
+            ],
+            "type": "u64"
           }
         ]
       }
@@ -2924,6 +2946,28 @@
               "quoter that reserves nothing ignores it."
             ],
             "type": "bool"
+          },
+          {
+            "name": "self_base_room",
+            "docs": [
+              "The most base the quoter's own settlement user may take on, bounded",
+              "by that user's own margin. `u64::MAX` means unbounded.",
+              "",
+              "A quoter that fills from one account is not margin-reserved the way a",
+              "resting maker is: nothing was set aside at placement, so the fill",
+              "grows the account's worst case and pays initial margin for it. That is",
+              "a base bound, and [`UserCapV0::budget`] cannot express it — a budget",
+              "prices the gap between a reserved order's limit and the mark, and goes",
+              "to infinity at a price in the owner's favour.",
+              "",
+              "A book ignores it. Its makers rest reserved depth and are sized one",
+              "per user in [`Self::caps`].",
+              "",
+              "**Not a trust boundary**, like the caps. The caller trims the returned",
+              "ladder to this itself. Honouring it is what lets a quoter size its own",
+              "depth instead of publishing depth the caller then cuts."
+            ],
+            "type": "u64"
           }
         ]
       }

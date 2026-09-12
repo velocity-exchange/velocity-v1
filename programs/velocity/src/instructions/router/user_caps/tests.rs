@@ -87,7 +87,26 @@ fn thin_maker() -> Case {
 /// Reading the oracle far past the slot it was posted at is what makes a
 /// floored maker unverifiable; reading it at its own slot leaves the floor
 /// readable.
+/// Which of the two numbers a case is measured for.
+enum Measure {
+    /// The quote a resting maker may lose: [`CapInputs::maker_budget`].
+    Budget,
+    /// The base an unreserved quoter may take on:
+    /// [`CapInputs::quoter_base_room`].
+    QuoterRoom,
+}
+
+/// The quote a resting maker may lose on the swept side.
 fn budget(case: Case) -> u64 {
+    measure(case, Measure::Budget)
+}
+
+/// The base a custom quoter's own account can carry on the swept side.
+fn quoter_room(case: Case) -> u64 {
+    measure(case, Measure::QuoterRoom)
+}
+
+fn measure(case: Case, measure: Measure) -> u64 {
     let Case {
         deposit,
         floor,
@@ -209,15 +228,22 @@ fn budget(case: Case) -> u64 {
     create_anchor_account_info!(stats, UserStats, stats_info);
     let stats_map = crate::state::user_map::UserStatsMap::load_one(&stats_info).unwrap();
 
-    CapInputs {
+    let mut inputs = CapInputs {
         makers_and_referrer: &makers,
         makers_and_referrer_stats: &stats_map,
         maps: &mut maps,
         slot,
         now: 0,
+    };
+    match measure {
+        Measure::Budget => inputs
+            .maker_budget(&maker_key, 0, ClobSide::Bid, taker_size, ORACLE, books)
+            .unwrap(),
+        // A taker sweeping the bid side leaves the quoter long.
+        Measure::QuoterRoom => inputs
+            .quoter_base_room(&maker_key, 0, PositionDirection::Long)
+            .unwrap(),
     }
-    .maker_budget(&maker_key, 0, ClobSide::Bid, taker_size, ORACLE, books)
-    .unwrap()
 }
 
 #[test]
@@ -412,4 +438,68 @@ fn an_isolated_maker_is_budgeted_from_its_isolated_collateral() {
         }) > 0,
         "an isolated position funded for the fill is budgeted for it"
     );
+}
+
+/// The second number, for the other kind of counterparty.
+///
+/// A custom quoter reserves nothing at placement, so what a fill costs it is
+/// initial margin on the base it takes, not the gap between a resting limit
+/// and the mark. The two are measured apart for that reason.
+mod quoter_base_room {
+    use super::*;
+
+    #[test]
+    fn a_thin_account_carries_less_base_than_a_deep_one() {
+        // Ten percent initial margin at a 100 oracle, so a dollar of free
+        // collateral backs a tenth of a base unit. The point is the ordering
+        // and that both bind, not the exact figure.
+        let thin = quoter_room(Case {
+            deposit: 1_000,
+            ..Case::default()
+        });
+        let deep = quoter_room(Case {
+            deposit: 100_000,
+            ..Case::default()
+        });
+        assert!(thin > 0, "a solvent account carries some base");
+        assert!(
+            deep > thin,
+            "more collateral carries more base: {} {}",
+            thin,
+            deep
+        );
+    }
+
+    #[test]
+    fn an_account_with_no_collateral_carries_nothing() {
+        assert_eq!(
+            quoter_room(Case {
+                deposit: 0,
+                ..Case::default()
+            }),
+            0
+        );
+    }
+
+    #[test]
+    fn a_position_already_held_costs_room() {
+        // The walk sizes the order against the position it settles into, so
+        // base held the same way the fill would add it leaves less room.
+        let flat = quoter_room(Case {
+            deposit: 10_000,
+            position_base: 0,
+            ..Case::default()
+        });
+        let long = quoter_room(Case {
+            deposit: 10_000,
+            position_base: 50 * BASE_PRECISION_I64,
+            ..Case::default()
+        });
+        assert!(
+            long < flat,
+            "an open long leaves less room: {} {}",
+            long,
+            flat
+        );
+    }
 }

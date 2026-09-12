@@ -185,7 +185,7 @@ fn route_and_fill<'info>(
 
     let users = sections.wire_users()?;
     let inputs = order.quote_inputs(market_index, &users, request.taker_served_window);
-    let inputs = sections.with_user_caps(inputs, clock)?;
+    let inputs = sections.with_counterparty_room(inputs, &accounts.user.key(), clock)?;
 
     // One set of CPI buffers for the fill: the quote legs below and the
     // execute legs the router runs later all refill the same allocation,

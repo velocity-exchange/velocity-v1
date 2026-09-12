@@ -424,39 +424,47 @@ fn build_take_quote_inputs<'a>(
     take: &mut EphemeralTake<'_, '_>,
     users: &'a [crate::state::prop_amm::ClobUserRefV0],
     shape: &TakeShape,
-    reference_price: i64,
+    mark: &RouteMark,
     taker_served_window: bool,
     clock: &Clock,
 ) -> Result<crate::instructions::QuoteInputs<'a>> {
+    let taker_key = take.accounts.user.key();
     let inputs = crate::instructions::QuoteInputs {
-        // Filled in below, once the makers on the books are sized.
+        // Both filled in below, once every counterparty is sized.
         caps: crate::state::prop_amm::QuoterUserCapsV0::EMPTY,
+        rooms: crate::instructions::router::user_caps::QuoterRooms::NONE,
         market_index: take.market_index,
         direction: shape.direction,
         size: shape.unfilled,
         users,
-        reference_price,
+        reference_price: mark.reference_price,
+        margin_ratio_initial: mark.margin_ratio_initial,
         taker: shape.taker,
         limit_price: shape.limit_price,
         taker_served_window,
         consume_reservation: false,
     };
 
-    // Before the quote: see `build_user_caps`.
-    Ok(crate::instructions::QuoteInputs {
-        caps: crate::instructions::build_user_caps(
-            take.tail,
-            &inputs,
-            &mut crate::instructions::CapInputs {
-                makers_and_referrer: take.makers,
-                makers_and_referrer_stats: take.maker_stats,
-                maps: take.maps,
-                slot: clock.slot,
-                now: clock.unix_timestamp,
-            },
-        )?,
-        ..inputs
-    })
+    // Before the quote: see `with_counterparty_room`.
+    crate::instructions::with_counterparty_room(
+        take.tail,
+        &taker_key,
+        inputs,
+        &mut crate::instructions::CapInputs {
+            makers_and_referrer: take.makers,
+            makers_and_referrer_stats: take.maker_stats,
+            maps: take.maps,
+            slot: clock.slot,
+            now: clock.unix_timestamp,
+        },
+    )
+}
+
+/// The market facts a route is priced against: the mark a capped maker's
+/// loss is measured from, and the band a quoter's levels default to.
+struct RouteMark {
+    reference_price: i64,
+    margin_ratio_initial: u32,
 }
 
 /// Fill the ephemeral order against the route the router just priced.
@@ -523,13 +531,15 @@ fn fill_ephemeral_take(
         state,
     )?;
 
-    let route_reference_price = {
-        let oracle_id = take
-            .maps
-            .perp_market_map
-            .get_ref(&market_index)?
-            .oracle_id();
-        take.maps.oracle_map.get_price_data(&oracle_id)?.price
+    let mark = {
+        let market = take.maps.perp_market_map.get_ref(&market_index)?;
+        let oracle_id = market.oracle_id();
+        let margin_ratio_initial = market.margin_ratio_initial;
+        drop(market);
+        RouteMark {
+            reference_price: take.maps.oracle_map.get_price_data(&oracle_id)?.price,
+            margin_ratio_initial,
+        }
     };
 
     let users =
@@ -540,14 +550,7 @@ fn fill_ephemeral_take(
             },
         ))?;
 
-    let inputs = build_take_quote_inputs(
-        take,
-        &users,
-        &shape,
-        route_reference_price,
-        taker_served_window,
-        clock,
-    )?;
+    let inputs = build_take_quote_inputs(take, &users, &shape, &mark, taker_served_window, clock)?;
 
     // One set of CPI buffers for the fill: the quote legs below and the
     // execute legs the router runs later all refill the same allocation,

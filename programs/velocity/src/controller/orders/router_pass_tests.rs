@@ -1491,12 +1491,18 @@ pub mod amm_jit {
         );
     }
 
-    /// A Custom PropAMM's depth is never margin-reserved, so the router pass
-    /// clamps its book to what the quoted user's account supports before the
-    /// split — a thin maker fills what its margin covers instead of failing
-    /// the whole fill at the post-check; the vAMM covers the residual.
+    /// The pass routes a Custom book at exactly the depth it was handed, and
+    /// settles the quoted user for it.
+    ///
+    /// A Custom PropAMM's depth is never margin-reserved, so a ladder deeper
+    /// than the quoted user's account supports would fail the post-check and
+    /// take the whole fill with it. The ladder reaches the pass already cut
+    /// to that account's room, because `QuotedRoute::assemble` trims it while
+    /// the route is built. This is the other half of that: handed a ladder
+    /// inside the room, the pass fills it, settles the maker for the whole of
+    /// it, and the vAMM covers the taker's residual.
     #[test]
-    fn router_pass_clamps_custom_book_to_the_quoter_users_margin() {
+    fn router_pass_settles_a_custom_book_at_the_depth_it_was_quoted() {
         use crate::state::prop_amm::{
             Direction, ExternalQuoterExecutor, PriceLevel, QuoterType, UserBalanceChangeV0,
         };
@@ -1642,8 +1648,9 @@ pub mod amm_jit {
             ..User::default()
         };
 
-        // The PropAMM's user: quotes 0.5 but only 3 USDC of collateral —
-        // at 10% initial margin and ~$99 that supports well under 0.5.
+        // The PropAMM's user: 3 USDC of collateral, which at 10% initial
+        // margin and ~$99 carries about 0.3 base. The ladder below offers
+        // 0.25, which is what the trim would have left of a deeper quote.
         let custom_maker_key =
             Pubkey::from_str("CLoB111111111111111111111111111111111111111").unwrap();
         let custom_maker_authority =
@@ -1675,7 +1682,7 @@ pub mod amm_jit {
 
         let external_levels = [PriceLevel {
             price: 99 * PRICE_PRECISION_U64,
-            size: BASE_PRECISION_U64 / 2,
+            size: BASE_PRECISION_U64 / 4,
         }];
         let external_books = [crate::math::router::QuoterBook {
             priority: QuoterType::Custom.default_priority(),
@@ -1744,15 +1751,14 @@ pub mod amm_jit {
         .unwrap();
         taker.orders[0] = order;
 
-        // The book was clamped before the split: the executor was asked for
-        // less than the quoted 0.5, the thin maker's position matches what
-        // its margin supports, and the vAMM covered the taker's remainder.
+        // The whole quoted ladder was routed and settled: the executor was
+        // asked for the 0.25 it offered, the thin maker holds exactly that,
+        // and the vAMM covered the taker's remainder.
         let requested = executor.requested;
-        assert!(requested > 0, "clamp zeroed the book entirely");
-        assert!(
-            requested < BASE_PRECISION_U64 / 2,
-            "clamp did not bite: {}",
-            requested
+        assert_eq!(
+            requested,
+            BASE_PRECISION_U64 / 4,
+            "the pass routes the ladder it was handed"
         );
         assert_eq!(base_asset_amount, BASE_PRECISION_U64);
         assert_eq!(

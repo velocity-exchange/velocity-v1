@@ -547,9 +547,15 @@ fn route_and_fill_remainder<'info>(
     let mut order =
         controller::orders::taker_origin_order(cx.market_index, cx.taker_direction, subject_order);
 
-    let route_reference_price = {
-        let oracle_id = maps.perp_market_map.get_ref(&cx.market_index)?.oracle_id();
-        maps.oracle_map.get_price_data(&oracle_id)?.price
+    let (route_reference_price, route_margin_ratio_initial) = {
+        let market = maps.perp_market_map.get_ref(&cx.market_index)?;
+        let oracle_id = market.oracle_id();
+        let margin_ratio_initial = market.margin_ratio_initial;
+        drop(market);
+        (
+            maps.oracle_map.get_price_data(&oracle_id)?.price,
+            margin_ratio_initial,
+        )
     };
     let direction = match cx.taker_direction {
         PositionDirection::Long => Direction::Long,
@@ -580,21 +586,22 @@ fn route_and_fill_remainder<'info>(
             cx.clock.slot,
         ),
         consume_reservation: true,
+        // Both filled in below, once every counterparty is sized.
+        rooms: crate::instructions::router::user_caps::QuoterRooms::NONE,
+        margin_ratio_initial: route_margin_ratio_initial,
     };
-    let inputs = crate::instructions::QuoteInputs {
-        caps: crate::instructions::build_user_caps(
-            tail,
-            &inputs,
-            &mut crate::instructions::CapInputs {
-                makers_and_referrer: cx.makers_and_referrer,
-                makers_and_referrer_stats: cx.makers_and_referrer_stats,
-                maps,
-                slot: cx.clock.slot,
-                now: cx.clock.unix_timestamp,
-            },
-        )?,
-        ..inputs
-    };
+    let inputs = crate::instructions::with_counterparty_room(
+        tail,
+        &cx.accounts.taker.key(),
+        inputs,
+        &mut crate::instructions::CapInputs {
+            makers_and_referrer: cx.makers_and_referrer,
+            makers_and_referrer_stats: cx.makers_and_referrer_stats,
+            maps,
+            slot: cx.clock.slot,
+            now: cx.clock.unix_timestamp,
+        },
+    )?;
 
     // Reuse the CPI scratch the book read filled: its buffers clear and refill
     // per leg, so one fill pays for one set of buffers.

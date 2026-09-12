@@ -45,11 +45,10 @@ use {
         },
         error::ErrorCode,
         instructions::{
-            build_user_caps,
             constraints::*,
             optional_accounts::{tx_writable_lock_count, AccountMaps},
             relay_harness::{resolve_into, StagedCall},
-            CapInputs, QuoteInputs, QuotedRoute,
+            with_counterparty_room, CapInputs, QuoteInputs, QuotedRoute,
         },
         load, load_mut,
         math::{
@@ -429,21 +428,22 @@ fn run_cross_leg<'info>(
         // not arbitrage for the protocol to middle. Reading the book without
         // it is what makes this crank unable to reach a remainder's cover.
         consume_reservation: false,
+        // Both filled in below, once every counterparty is sized.
+        rooms: crate::instructions::router::user_caps::QuoterRooms::NONE,
+        margin_ratio_initial: legs.margin_ratio_initial,
     };
-    let inputs = QuoteInputs {
-        caps: build_user_caps(
-            legs.tail,
-            &inputs,
-            &mut CapInputs {
-                makers_and_referrer: legs.makers_and_referrer,
-                makers_and_referrer_stats: legs.makers_and_referrer_stats,
-                maps,
-                slot: legs.clock.slot,
-                now: legs.clock.unix_timestamp,
-            },
-        )?,
-        ..inputs
-    };
+    let inputs = with_counterparty_room(
+        legs.tail,
+        &legs.accounts.taker.key(),
+        inputs,
+        &mut CapInputs {
+            makers_and_referrer: legs.makers_and_referrer,
+            makers_and_referrer_stats: legs.makers_and_referrer_stats,
+            maps,
+            slot: legs.clock.slot,
+            now: legs.clock.unix_timestamp,
+        },
+    )?;
 
     let route = QuotedRoute::assemble(legs.tail, &inputs, cpi_scratch)?;
     route.require_baseline(legs.clob_market)?;
@@ -1178,6 +1178,7 @@ fn quote_entry_sides<'info>(
                     // improvement, not arbitrage for the protocol to middle,
                     // so this crank reads the book without it.
                     consume_reservation: false,
+                    self_base_room: u64::MAX,
                 },
                 quoter_slab,
                 accounts,

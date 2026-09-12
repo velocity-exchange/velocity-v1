@@ -220,70 +220,119 @@ fn clamp_external_depth(
     };
     (0..external_books.len())
         .map(|i| -> VelocityResult<Option<Vec<PriceLevel>>> {
-            let cap = match router.executor.quoter_type(i) {
-                QuoterType::Custom => {
-                    let quoter_user_key = router.executor.quoter_user(i);
-                    // A quoter quoting for the taker themselves is a self-trade.
-                    if quoter_user_key == *taker_key {
-                        return Ok(Some(vec![]));
-                    }
-                    let position_index = {
-                        let mut maker = makers_and_referrer.get_ref_mut(&quoter_user_key)?;
-                        get_position_index(&maker.perp_positions, market_index).or_else(|_| {
-                            add_new_position(&mut maker.perp_positions, market_index)
-                        })?
-                    };
-                    let maker = makers_and_referrer.get_ref(&quoter_user_key)?;
-                    crate::math::orders::calculate_max_perp_order_size(
-                        &maker,
-                        position_index,
-                        market_index,
-                        maker_direction,
-                        maps,
-                    )?
-                }
-                QuoterType::Clob | QuoterType::Vamm => return Ok(None),
-            };
-            let band = router.executor.oracle_band(i, market_margin_ratio_initial);
-            let banded = external_books[i].levels.iter().try_fold(
-                Vec::new(),
-                |mut kept, level| -> VelocityResult<Vec<PriceLevel>> {
-                    if !crate::math::orders::limit_price_breaches_maker_oracle_price_bands(
-                        level.price,
-                        maker_direction,
-                        band_oracle_price,
-                        band,
-                    )? {
-                        kept.push(*level);
-                    }
-                    Ok(kept)
-                },
-            )?;
-            let banded_out = banded.len() != external_books[i].levels.len();
-            let depth = banded
-                .iter()
-                .fold(0u64, |total, level| total.saturating_add(level.size));
-            if depth <= cap {
-                return Ok(banded_out.then_some(banded));
+            if !matches!(router.executor.quoter_type(i), QuoterType::Custom) {
+                return Ok(None);
             }
-            let mut remaining = cap;
-            let levels = banded
-                .iter()
-                .map_while(|level| {
-                    if remaining == 0 {
-                        return None;
-                    }
-                    let size = level.size.min(remaining);
-                    remaining -= size;
-                    Some(PriceLevel {
-                        price: level.price,
-                        size,
-                    })
-                })
-                .collect();
-            Ok(Some(levels))
+
+            let quoter_user_key = router.executor.quoter_user(i);
+            // A quoter quoting for the taker themselves is a self-trade.
+            if quoter_user_key == *taker_key {
+                return Ok(Some(vec![]));
+            }
+            let cap = custom_quoter_depth_cap(
+                maps,
+                makers_and_referrer,
+                &quoter_user_key,
+                market_index,
+                maker_direction,
+            )?;
+
+            let levels = &external_books[i].levels;
+            let banded = levels_within_oracle_band(
+                levels,
+                maker_direction,
+                band_oracle_price,
+                router.executor.oracle_band(i, market_margin_ratio_initial),
+            )?;
+            let banded_out = banded.len() != levels.len();
+
+            Ok(levels_within_cap(banded, cap, banded_out))
         })
         .collect()
+}
+
+/// The most base a custom quoter's own maker can take on.
+///
+/// The position the fill lands in is created first, because the margin walk
+/// sizes the order against the position it will settle into.
+fn custom_quoter_depth_cap(
+    maps: &mut AccountMaps,
+    makers_and_referrer: &UserMap,
+    quoter_user_key: &Pubkey,
+    market_index: u16,
+    maker_direction: PositionDirection,
+) -> VelocityResult<u64> {
+    let position_index = {
+        let mut maker = makers_and_referrer.get_ref_mut(quoter_user_key)?;
+        get_position_index(&maker.perp_positions, market_index)
+            .or_else(|_| add_new_position(&mut maker.perp_positions, market_index))?
+    };
+    let maker = makers_and_referrer.get_ref(quoter_user_key)?;
+    crate::math::orders::calculate_max_perp_order_size(
+        &maker,
+        position_index,
+        market_index,
+        maker_direction,
+        maps,
+    )
+}
+
+/// The levels that price inside the maker's own oracle band.
+fn levels_within_oracle_band(
+    levels: &[PriceLevel],
+    maker_direction: PositionDirection,
+    band_oracle_price: i64,
+    band: u32,
+) -> VelocityResult<Vec<PriceLevel>> {
+    levels.iter().try_fold(
+        Vec::new(),
+        |mut kept, level| -> VelocityResult<Vec<PriceLevel>> {
+            if !crate::math::orders::limit_price_breaches_maker_oracle_price_bands(
+                level.price,
+                maker_direction,
+                band_oracle_price,
+                band,
+            )? {
+                kept.push(*level);
+            }
+            Ok(kept)
+        },
+    )
+}
+
+/// The banded levels truncated to the depth the quoter's maker can carry.
+///
+/// `None` leaves the book as the quoter published it, which is the common
+/// case: nothing was banded out and the whole ladder fits under the cap.
+fn levels_within_cap(
+    banded: Vec<PriceLevel>,
+    cap: u64,
+    banded_out: bool,
+) -> Option<Vec<PriceLevel>> {
+    let depth = banded
+        .iter()
+        .fold(0u64, |total, level| total.saturating_add(level.size));
+    if depth <= cap {
+        return banded_out.then_some(banded);
+    }
+
+    let mut remaining = cap;
+    Some(
+        banded
+            .iter()
+            .map_while(|level| {
+                if remaining == 0 {
+                    return None;
+                }
+                let size = level.size.min(remaining);
+                remaining -= size;
+                Some(PriceLevel {
+                    price: level.price,
+                    size,
+                })
+            })
+            .collect(),
+    )
 }
 
 /// One perp fill in progress: what every step of the route reads, built once

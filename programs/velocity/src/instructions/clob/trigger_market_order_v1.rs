@@ -161,10 +161,12 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
     let Some(mut fired) = controller::orders::trigger_and_route_order(
         order_id,
         &state,
-        &ctx.accounts.user,
-        &ctx.accounts.user_stats,
+        &controller::orders::TriggerAccounts {
+            user: &ctx.accounts.user,
+            user_stats: &ctx.accounts.user_stats,
+            filler: &ctx.accounts.filler,
+        },
         &mut maps,
-        &ctx.accounts.filler,
         clock,
     )?
     else {

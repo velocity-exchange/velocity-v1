@@ -526,10 +526,12 @@ pub fn handle_legacy_trigger_order<'c: 'info, 'info>(
     let triggered = controller::orders::trigger_order(
         order_id,
         &state,
-        &ctx.accounts.user,
-        &ctx.accounts.user_stats,
+        &controller::orders::TriggerAccounts {
+            user: &ctx.accounts.user,
+            user_stats: &ctx.accounts.user_stats,
+            filler: &ctx.accounts.filler,
+        },
         &mut maps,
-        &ctx.accounts.filler,
         &Clock::get()?,
     )?;
 

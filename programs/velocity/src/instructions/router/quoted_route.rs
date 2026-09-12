@@ -117,6 +117,60 @@ fn trim_to_quoter_room(
     Ok(start..kept)
 }
 
+/// What one slot answered, before the route keeps any of it.
+struct SlotQuote {
+    /// The levels, as a run in the route's own level pool.
+    ladder: crate::state::prop_amm::QuotedLadderV0,
+    quoter_type: QuoterType,
+    /// The band this quoter declared, or the market's initial margin ratio
+    /// when it declared none.
+    oracle_band: u32,
+}
+
+/// Why this slot offers no depth to this fill, or `None` when it quotes.
+///
+/// An empty reason is a slot that is simply not quoting — revoked,
+/// suspended, deactivated — which needs no log line. A route signed before
+/// an admin pulled a quoter must not brick the fill, so these are all
+/// skips.
+fn slot_offers_nothing(
+    slot: &QuoterSlotV0,
+    rivals: &[Pubkey],
+    taker_served_window: bool,
+) -> Option<&'static str> {
+    if !slot.quotes() {
+        return Some("");
+    }
+    // A quoter never sees another quoter in this transaction.
+    //
+    // Quote order is slab order, so a slot placed later could otherwise read
+    // a rival's response account — already written, holding the ladder that
+    // rival is about to be held to — and quote one tick better. That is an
+    // unbounded last look. Velocity holds its own vAMM's last look to a band
+    // for the same reason (`LAST_LOOK_BAND`), and a third party must not get
+    // a wider one.
+    //
+    // Skipped, not filtered: a quoter reads its accounts by position, so
+    // removing one shifts every account after it and the quoter answers
+    // about the wrong thing. Skipping costs only this slot's turn, and it is
+    // the slot that asked for the account.
+    if quoter_reads_a_rival(slot, rivals) {
+        return Some("names another consulted quoter in its accounts; skipped");
+    }
+    // Maker priority: a book with a speed bump quotes no depth to an
+    // unattested taker. The slot stays consulted — the baseline is presence,
+    // and the rest leg still uses it — but it offers nothing to execute, so
+    // unattested aggression rests through the activation window, where a
+    // maker can reprice or cross it first.
+    if slot.config.quoter_type == QuoterType::Clob
+        && !taker_served_window
+        && slot.config.book_default_activation_delay_slots > 0
+    {
+        return Some("runs a speed bump; no depth for an unattested taker");
+    }
+    None
+}
+
 pub struct QuotedRoute<'info> {
     /// The account tail, borrowed straight from the instruction's remaining
     /// accounts. A quoter's registered account list is resolved against this by
@@ -228,35 +282,17 @@ impl<'info> QuotedRoute<'info> {
             carried: [Pubkey::default(); MAX_ROUTE_QUOTERS],
             carried_len: 0,
         };
-
-        // The market's slab. A tail without one consults nothing external.
-        for info in tail {
-            if !is_quoter_slab(info) {
-                continue;
-            }
-            let loader = AccountLoader::<QuoterSlabV0>::try_from(info)?;
-            validate!(
-                loader.load()?.market == inputs.market_index,
-                ErrorCode::DefaultError,
-                "quoter slab {} is for market {}, fill is for market {}",
-                loader.key(),
-                loader.load()?.market,
-                inputs.market_index
-            )?;
-            route.slab = Some(loader);
-            break;
-        }
-        let Some(slab_loader) = route.slab.clone() else {
+        let Some(slab) = route.bind_slab(tail, inputs.market_index)? else {
             return Ok(route);
         };
 
         // Collected before any quoting, so the rival check below can see
         // slots that come later in the slab.
-        let consulted = slab_loader.consulted_slots(tail)?;
+        let consulted = slab.consulted_slots(tail)?;
         let mut rivals = [Pubkey::default(); MAX_ROUTE_QUOTERS * 3];
         let mut rival_len = 0usize;
         {
-            let slots = slab_loader.slots()?;
+            let slots = slab.slots()?;
             for &index in &consulted {
                 let slot = &slots[index];
                 route.carried[route.carried_len] = slot.entry;
@@ -272,122 +308,156 @@ impl<'info> QuotedRoute<'info> {
             }
         }
 
-        // The side a band cuts and a room is measured for.
-        let maker_direction = inputs.maker_direction();
         for index in consulted {
-            let (ladder, quoter_type, oracle_band) = {
-                let slots = slab_loader.slots()?;
-                let slot = &slots[index];
-                if !slot.quotes() {
-                    continue;
-                }
-                let entry_key = slot.entry;
-                // A quoter never sees another quoter in this transaction.
-                //
-                // Quote order is slab order, so a slot placed later could
-                // otherwise read a rival's response account — already
-                // written, holding the ladder that rival is about to be held
-                // to — and quote one tick better. That is an unbounded last
-                // look. Velocity holds its own vAMM's last look to a band for
-                // the same reason (`LAST_LOOK_BAND`), and a third party must
-                // not get a wider one.
-                //
-                // Skipped, not filtered: a quoter reads its accounts by
-                // position, so removing one shifts every account after it and
-                // the quoter answers about the wrong thing. Skipping costs
-                // only this slot's turn, and it is the slot that asked for
-                // the account.
-                if quoter_reads_a_rival(slot, &rivals[..rival_len]) {
-                    msg!(
-                        "quoter {} names another consulted quoter in its accounts; skipped",
-                        entry_key
-                    );
-                    continue;
-                }
-                // Maker priority: a book with a speed bump quotes no depth
-                // to an unattested taker. The slot stays consulted — the
-                // baseline is presence, and the rest leg still uses it — but
-                // it offers nothing to execute, so unattested aggression
-                // rests through the activation window, where a maker can
-                // reprice or cross it first. Skipped like a dead slot
-                // rather than failing, so the fill's other sources stand.
-                if slot.config.quoter_type == QuoterType::Clob
-                    && !inputs.taker_served_window
-                    && slot.config.book_default_activation_delay_slots > 0
-                {
-                    msg!(
-                        "book {} runs a speed bump; no depth for an unattested taker",
-                        entry_key
-                    );
-                    continue;
-                }
-                let levels = slot.config.quote(
-                    inputs.market_index,
-                    QuoteArgsV0 {
-                        caps: inputs.caps,
-                        reference_price: inputs.reference_price,
-                        direction: inputs.direction,
-                        size: inputs.size,
-                        users: inputs.users,
-                        taker: Some(inputs.taker),
-                        limit_price: inputs.limit_price,
-                        taker_served_window: inputs.taker_served_window,
-                        consume_reservation: inputs.consume_reservation,
-                        self_base_room: inputs.rooms.room(index),
-                    },
-                    &slab_loader,
-                    route.accounts,
-                    scratch,
-                    &mut route.levels,
-                )?;
-                (
-                    levels,
-                    slot.config.quoter_type,
-                    slot.config.oracle_band(inputs.margin_ratio_initial),
-                )
-            };
-            // A custom quoter's ladder is cut to what this fill will settle
-            // against before anything else reads it. One trim, one ladder:
-            // the split allocates and the settle checks against the same
-            // levels, which two lists cannot promise.
-            let ladder = if quoter_type == QuoterType::Custom {
-                crate::state::prop_amm::QuotedLadderV0 {
-                    levels: trim_to_quoter_room(
-                        &mut route.levels,
-                        ladder.levels,
-                        maker_direction,
-                        inputs.reference_price,
-                        oracle_band,
-                        inputs.rooms.room(index),
-                    )?,
-                    ..ladder
-                }
-            } else {
-                ladder
-            };
-            // Only a book can withhold. A book walks the orders of many
-            // owners and stops at one this transaction cannot settle for.
-            // Every other quoter fills from the single `user` in its own
-            // registry slot, which a fill either carries or does not quote
-            // at all, so there is no owner for it to stop at.
-            //
-            // Dropped here rather than trusted and checked later: the report
-            // arms the filler obligation, so a quoter that set it would fail
-            // fills that carried it and the error would name the filler.
-            // Zeroing it at the source leaves nothing to report and no
-            // consumer to remember the rule.
-            let withheld = if quoter_type == QuoterType::Clob {
-                ladder.withheld
-            } else {
-                PriceLevel::default()
-            };
-            route.ladders.push(crate::state::prop_amm::QuotedLadderV0 {
-                levels: ladder.levels,
-                withheld,
-            });
-            route.quoted_slots.push(index);
+            route.quote_slot(&slab, index, inputs, &rivals[..rival_len], scratch)?;
         }
         Ok(route)
+    }
+
+    /// The market's slab, taken from the account tail and kept on the route.
+    ///
+    /// `None` when the tail carries none, which is a fill that consults
+    /// nothing external. A slab for another market is refused rather than
+    /// passed over: the caller named it, so it meant to route on it.
+    fn bind_slab(
+        &mut self,
+        tail: &'info [AccountInfo<'info>],
+        market_index: u16,
+    ) -> Result<Option<AccountLoader<'info, QuoterSlabV0>>> {
+        for info in tail {
+            if !is_quoter_slab(info) {
+                continue;
+            }
+            let loader = AccountLoader::<QuoterSlabV0>::try_from(info)?;
+            validate!(
+                loader.load()?.market == market_index,
+                ErrorCode::DefaultError,
+                "quoter slab {} is for market {}, fill is for market {}",
+                loader.key(),
+                loader.load()?.market,
+                market_index
+            )?;
+            self.slab = Some(loader.clone());
+            return Ok(Some(loader));
+        }
+        Ok(None)
+    }
+
+    /// Quote one consulted slot and record what it answered.
+    ///
+    /// A slot that offers nothing is passed over, not refused: the route
+    /// still counts it as consulted, so the baseline and the signed-route
+    /// rules see it, and the fill's other sources stand.
+    fn quote_slot(
+        &mut self,
+        slab: &AccountLoader<'info, QuoterSlabV0>,
+        index: usize,
+        inputs: &QuoteInputs<'_>,
+        rivals: &[Pubkey],
+        scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
+    ) -> Result<()> {
+        let Some(quoted) = self.take_quote(slab, index, inputs, rivals, scratch)? else {
+            return Ok(());
+        };
+        self.record_quote(index, inputs, quoted)
+    }
+
+    /// CPI the slot's quoter, or `None` when the slot offers nothing.
+    ///
+    /// The levels land in [`Self::levels`], as the run `SlotQuote::ladder`
+    /// names. Nothing else is written until [`Self::record_quote`] accepts
+    /// them, so a slot that errors leaves the route as it found it.
+    fn take_quote(
+        &mut self,
+        slab: &AccountLoader<'info, QuoterSlabV0>,
+        index: usize,
+        inputs: &QuoteInputs<'_>,
+        rivals: &[Pubkey],
+        scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
+    ) -> Result<Option<SlotQuote>> {
+        let slots = slab.slots()?;
+        let slot = &slots[index];
+        if let Some(reason) = slot_offers_nothing(slot, rivals, inputs.taker_served_window) {
+            if !reason.is_empty() {
+                msg!("quoter {}: {}", slot.entry, reason);
+            }
+            return Ok(None);
+        }
+        let ladder = slot.config.quote(
+            inputs.market_index,
+            QuoteArgsV0 {
+                caps: inputs.caps,
+                reference_price: inputs.reference_price,
+                direction: inputs.direction,
+                size: inputs.size,
+                users: inputs.users,
+                taker: Some(inputs.taker),
+                limit_price: inputs.limit_price,
+                taker_served_window: inputs.taker_served_window,
+                consume_reservation: inputs.consume_reservation,
+                self_base_room: inputs.rooms.room(index),
+            },
+            slab,
+            self.accounts,
+            scratch,
+            &mut self.levels,
+        )?;
+        Ok(Some(SlotQuote {
+            ladder,
+            quoter_type: slot.config.quoter_type,
+            oracle_band: slot.config.oracle_band(inputs.margin_ratio_initial),
+        }))
+    }
+
+    /// Keep what one slot quoted, cut to what this fill will settle.
+    fn record_quote(
+        &mut self,
+        index: usize,
+        inputs: &QuoteInputs<'_>,
+        quoted: SlotQuote,
+    ) -> Result<()> {
+        let SlotQuote {
+            ladder,
+            quoter_type,
+            oracle_band,
+        } = quoted;
+
+        // A custom quoter's ladder is cut before anything else reads it. One
+        // trim, one ladder: the split allocates and the settle checks
+        // against the same levels, which two lists cannot promise.
+        let levels = if quoter_type == QuoterType::Custom {
+            trim_to_quoter_room(
+                &mut self.levels,
+                ladder.levels,
+                inputs.maker_direction(),
+                inputs.reference_price,
+                oracle_band,
+                inputs.rooms.room(index),
+            )?
+        } else {
+            ladder.levels
+        };
+
+        // Only a book can withhold. A book walks the orders of many owners
+        // and stops at one this transaction cannot settle for. Every other
+        // quoter fills from the single `user` in its own registry slot,
+        // which a fill either carries or does not quote at all, so there is
+        // no owner for it to stop at.
+        //
+        // Dropped here rather than trusted and checked later: the report
+        // arms the filler obligation, so a quoter that set it would fail
+        // fills that carried it and the error would name the filler. Zeroing
+        // it at the source leaves nothing to report and no consumer to
+        // remember the rule.
+        let withheld = if quoter_type == QuoterType::Clob {
+            ladder.withheld
+        } else {
+            PriceLevel::default()
+        };
+        self.ladders
+            .push(crate::state::prop_amm::QuotedLadderV0 { levels, withheld });
+        self.quoted_slots.push(index);
+        Ok(())
     }
 
     /// The quoters this transaction consulted, by entry address.

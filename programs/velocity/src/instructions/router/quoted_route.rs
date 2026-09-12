@@ -77,10 +77,10 @@ fn quoter_reads_a_rival(slot: &QuoterSlotV0, rivals: &[Pubkey]) -> bool {
 /// the depth behind that owner stays quoted and stays fillable, where a trim
 /// out here would cut every order behind them.
 ///
-/// The run is the tail of `levels`, because a quote appends its ladder there.
-/// Compacted in place for that reason: the kept levels move down over the
-/// dropped ones and the vector shortens, so no second list exists to
-/// disagree with this one.
+/// Compacted in place, which the pool's own layout allows: the run is its
+/// tail, so the kept levels move down over the dropped ones and the pool
+/// shortens. No second list exists to disagree with this one, and no earlier
+/// quoter's run moves.
 fn trim_to_quoter_room(
     levels: &mut Vec<PriceLevel>,
     run: std::ops::Range<usize>,
@@ -214,7 +214,29 @@ pub struct QuotedRoute<'info> {
     /// slot's run in `levels`, and the depth it withheld.
     ladders: Vec<crate::state::prop_amm::QuotedLadderV0>,
     /// Every slot's quoted levels, one run after another; each ladder's
-    /// range indexes into this.
+    /// range indexes into this. A run is always the tail of the pool at the
+    /// moment its quote returns, because a quote appends.
+    ///
+    /// One pool, not one list per book. The ladders have to outlive the
+    /// borrow each quoter wrote them in — the split reads every book at once
+    /// and the execute leg then writes the very accounts the levels sit in —
+    /// and velocity's heap is 32 KB and never reclaims, so a list per book
+    /// is an allocation per book for the rest of the instruction. A fixed
+    /// array is not an option either: the ceiling is
+    /// `MAX_ROUTE_QUOTERS * MAX_LEVELS_PER_BOOK` levels, 16 KB, and the
+    /// stack frame is 4 KB.
+    ///
+    /// Grown rather than reserved, which is deliberate and was measured. A
+    /// reservation would have to be the ceiling, because nothing says how
+    /// deep a quoter will answer until its CPI returns, and 16 KB reserved
+    /// costs more than doubling on every route that is not at the ceiling:
+    /// a book quoting 128 levels ahead of seven four-rung quoters holds
+    /// 2,496 bytes and doubling allocates 6,144 against the ceiling's
+    /// 16,384. Sizing the pool from the first ladder instead is worse again
+    /// on that shape, which is the common one. What doubling costs is the
+    /// ceiling itself: eight books at 128 levels allocate 30,720 bytes to
+    /// hold 16,384, and the 14,336 left behind are not given back. Reserve
+    /// the ceiling only if that shape becomes reachable in practice.
     levels: Vec<PriceLevel>,
     /// The market's slab, when the transaction carried one. The mandatory
     /// baseline and the signed route are answered from it: whether an absent

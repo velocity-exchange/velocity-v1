@@ -141,6 +141,7 @@ pub struct CapInputs<'a, 'info> {
 
 /// Budgets for every named maker this fill could put out of margin.
 pub fn build_user_caps<'info>(
+    slab: Option<&AccountLoader<'info, QuoterSlabV0>>,
     tail: &'info [AccountInfo<'info>],
     inputs: &QuoteInputs<'_>,
     ctx: &mut CapInputs<'_, 'info>,
@@ -158,7 +159,7 @@ pub fn build_user_caps<'info>(
     // no reason to price one. This is not only a saving: a margin walk leaves
     // allocations on a heap that never reclaims, and there are enough named
     // users on a busy fill to exhaust it.
-    let books = clob_books_in_route(tail, inputs.market_index)?;
+    let books = clob_books_in_route(slab, tail)?;
     if books == 0 {
         return Ok(QuoterUserCapsV0::EMPTY);
     }
@@ -265,10 +266,13 @@ pub fn with_counterparty_room<'a, 'info>(
     inputs: QuoteInputs<'a>,
     ctx: &mut CapInputs<'_, 'info>,
 ) -> Result<QuoteInputs<'a>> {
-    let caps = build_user_caps(tail, &inputs, ctx)?;
+    // Found once. Both halves read the same slab, and locating it means a
+    // scan of the tail that borrows every account on it.
+    let slab = route_slab(tail, inputs.market_index)?;
+    let caps = build_user_caps(slab.as_ref(), tail, &inputs, ctx)?;
     let rooms = build_quoter_rooms(
+        slab.as_ref(),
         tail,
-        inputs.market_index,
         inputs.maker_direction(),
         taker_key,
         ctx,
@@ -292,15 +296,18 @@ pub fn with_counterparty_room<'a, 'info>(
 /// the returned ladder to is the same number the quoter was told to size
 /// itself against.
 pub fn build_quoter_rooms<'info>(
+    slab: Option<&AccountLoader<'info, QuoterSlabV0>>,
     tail: &'info [AccountInfo<'info>],
-    market_index: u16,
     maker_direction: PositionDirection,
     taker_key: &Pubkey,
     ctx: &mut CapInputs<'_, 'info>,
 ) -> Result<QuoterRooms> {
-    let Some(slab) = route_slab(tail, market_index)? else {
+    let Some(slab) = slab else {
         return Ok(QuoterRooms::NONE);
     };
+    // The slab's own market, which `route_slab` already held equal to the
+    // one the route is for.
+    let market_index = slab.load()?.market;
     let consulted = slab.consulted_slots(tail)?;
     let mut rooms = QuoterRooms::NONE;
     for index in consulted {
@@ -357,8 +364,11 @@ fn route_slab<'info>(
 ///
 /// A slot is consulted when its response account rides the tail — the same
 /// rule the route uses.
-fn clob_books_in_route<'info>(tail: &'info [AccountInfo<'info>], market_index: u16) -> Result<u32> {
-    let Some(loader) = route_slab(tail, market_index)? else {
+fn clob_books_in_route<'info>(
+    slab: Option<&AccountLoader<'info, QuoterSlabV0>>,
+    tail: &'info [AccountInfo<'info>],
+) -> Result<u32> {
+    let Some(loader) = slab else {
         return Ok(0);
     };
     {

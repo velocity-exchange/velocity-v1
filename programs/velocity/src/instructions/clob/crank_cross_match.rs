@@ -1153,41 +1153,43 @@ fn quote_entry_sides<'info>(
     cpi_scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
 ) -> Result<(Vec<PriceLevel>, Vec<PriceLevel>)> {
     let mut quote = |direction: crate::state::prop_amm::Direction| -> Result<Vec<PriceLevel>> {
-        let mut levels = Vec::new();
-        quoter
-            .quote(
-                market_index,
-                crate::state::prop_amm::QuoteArgsV0 {
-                    // The crank's taker is the protocol User and the legs it
-                    // matches are the book's own; it constrains no one.
-                    caps: crate::state::prop_amm::QuoterUserCapsV0::EMPTY,
-                    // No budgets to price, so nothing reads this.
-                    reference_price: 0,
-                    direction,
-                    size: u64::MAX / 2,
-                    users: &[],
-                    taker: None,
-                    // A cross is found by comparing the two sides, so
-                    // neither side has a price to stop at until the other
-                    // has been read.
-                    limit_price: 0,
-                    // A crank's discovery read: what it stages settles only
-                    // orders that rested through placement.
-                    taker_served_window: true,
-                    // The depth a taker remainder claims is that taker's
-                    // improvement, not arbitrage for the protocol to middle,
-                    // so this crank reads the book without it.
-                    consume_reservation: false,
-                    self_base_room: u64::MAX,
-                },
-                quoter_slab,
-                accounts,
-                cpi_scratch,
-                &mut levels,
-            )
-            // The crank routes the book against itself; there is no
-            // caller-supplied user set for it to fall short of.
-            .map(|_| levels)
+        let located = quoter.quote_in_place(
+            market_index,
+            crate::state::prop_amm::QuoteArgsV0 {
+                // The crank's taker is the protocol User and the legs it
+                // matches are the book's own; it constrains no one.
+                caps: crate::state::prop_amm::QuoterUserCapsV0::EMPTY,
+                // No budgets to price, so nothing reads this.
+                reference_price: 0,
+                direction,
+                size: u64::MAX / 2,
+                users: &[],
+                taker: None,
+                // A cross is found by comparing the two sides, so
+                // neither side has a price to stop at until the other
+                // has been read.
+                limit_price: 0,
+                // A crank's discovery read: what it stages settles only
+                // orders that rested through placement.
+                taker_served_window: true,
+                // The depth a taker remainder claims is that taker's
+                // improvement, not arbitrage for the protocol to middle,
+                // so this crank reads the book without it.
+                consume_reservation: false,
+                self_base_room: u64::MAX,
+            },
+            quoter_slab,
+            accounts,
+            cpi_scratch,
+        )?;
+        // Read where the quoter wrote it and copied once, into this side's
+        // own list. There is only one ladder alive at a time here, so this
+        // read needs none of the pooling a route's quote does. The crank
+        // routes the book against itself, so the response can never fall
+        // short of a caller-supplied user set.
+        let data = located.borrow()?;
+        let response = located.checked_quote_response(&data, direction)?;
+        Ok(crate::state::prop_amm::usable_levels(response.levels).to_vec())
     };
     let quoter_asks = sanitize_levels(quote(crate::state::prop_amm::Direction::Long)?, true);
     let quoter_bids = sanitize_levels(quote(crate::state::prop_amm::Direction::Short)?, false);

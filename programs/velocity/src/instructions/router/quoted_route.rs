@@ -29,8 +29,8 @@ use {
         state::{
             order_params::{RouteDigest, NO_ROUTE_DIGEST},
             prop_amm::{
-                slot_for_entry, ClobUserRefV0, Direction, PriceLevel, QuoteArgsV0, QuoterSlabExt,
-                QuoterSlabV0, QuoterSlotV0, QuoterType, MAX_ROUTE_QUOTERS,
+                slot_for_entry, usable_levels, ClobUserRefV0, Direction, PriceLevel, QuoteArgsV0,
+                QuoterSlabExt, QuoterSlabV0, QuoterSlotV0, QuoterType, MAX_ROUTE_QUOTERS,
             },
         },
         validate,
@@ -418,7 +418,7 @@ impl<'info> QuotedRoute<'info> {
             }
             return Ok(None);
         }
-        let ladder = slot.config.quote(
+        let located = slot.config.quote_in_place(
             inputs.market_index,
             QuoteArgsV0 {
                 caps: inputs.caps,
@@ -435,13 +435,58 @@ impl<'info> QuotedRoute<'info> {
             slab,
             self.accounts,
             scratch,
-            &mut self.levels,
         )?;
+        let quoter_type = slot.config.quoter_type;
+        let oracle_band = slot.config.oracle_band(inputs.margin_ratio_initial);
+        drop(slots);
+
+        // The copy this fill earns, made where the pool lives. The split
+        // reads every book at once and the execute leg then writes the very
+        // account these levels sit in, so the ladder cannot stay where the
+        // quoter wrote it.
+        let data = located.borrow()?;
+        let response = located.checked_quote_response(&data, inputs.direction)?;
+        let ladder = self.append_ladder(usable_levels(response.levels), response.withheld);
         Ok(Some(SlotQuote {
             ladder,
-            quoter_type: slot.config.quoter_type,
-            oracle_band: slot.config.oracle_band(inputs.margin_ratio_initial),
+            quoter_type,
+            oracle_band,
         }))
+    }
+
+    /// Cut one custom quoter's run down to what this fill will settle.
+    ///
+    /// The rule is [`trim_to_quoter_room`], which stays a free function so it
+    /// can be tested without a route; this binds it to the pool it rewrites.
+    fn trim_ladder(
+        &mut self,
+        run: std::ops::Range<usize>,
+        inputs: &QuoteInputs<'_>,
+        oracle_band: u32,
+        index: usize,
+    ) -> Result<std::ops::Range<usize>> {
+        trim_to_quoter_room(
+            &mut self.levels,
+            run,
+            inputs.maker_direction(),
+            inputs.reference_price,
+            oracle_band,
+            inputs.rooms.room(index),
+        )
+    }
+
+    /// Put one quoter's levels in the pool and describe where they landed.
+    fn append_ladder(
+        &mut self,
+        levels: &[PriceLevel],
+        withheld: PriceLevel,
+    ) -> crate::state::prop_amm::QuotedLadderV0 {
+        let start = self.levels.len();
+        self.levels.extend_from_slice(levels);
+        crate::state::prop_amm::QuotedLadderV0 {
+            levels: start..self.levels.len(),
+            withheld,
+        }
     }
 
     /// Keep what one slot quoted, cut to what this fill will settle.
@@ -461,14 +506,7 @@ impl<'info> QuotedRoute<'info> {
         // trim, one ladder: the split allocates and the settle checks
         // against the same levels, which two lists cannot promise.
         let levels = if quoter_type == QuoterType::Custom {
-            trim_to_quoter_room(
-                &mut self.levels,
-                ladder.levels,
-                inputs.maker_direction(),
-                inputs.reference_price,
-                oracle_band,
-                inputs.rooms.room(index),
-            )?
+            self.trim_ladder(ladder.levels, inputs, oracle_band, index)?
         } else {
             ladder.levels
         };

@@ -605,6 +605,16 @@ impl<'info> ResponseLocationV0<'info> {
     }
 }
 
+/// The part of a quoted ladder a reader can use.
+///
+/// The router's cursor and its level validation both stop at
+/// [`crate::math::router::MAX_LEVELS_PER_BOOK`], so a deeper ladder would be
+/// read and then never looked at — and a market may set `max_quote_levels`
+/// high enough that the discarded tail is kilobytes per book.
+pub fn usable_levels(levels: &[PriceLevel]) -> &[PriceLevel] {
+    &levels[..levels.len().min(crate::math::router::MAX_LEVELS_PER_BOOK)]
+}
+
 pub trait ExternalQuoterExecutor<'info> {
     /// Registry type of quoter `index` — decides whether its fills carry
     /// velocity-side resting-order aggregates to unwind (CLOB orders are
@@ -728,51 +738,6 @@ impl QuoterConfigV0 {
             market_index
         )?;
         Ok(())
-    }
-
-    /// CPI `quote_v0` on the quoter program and return its price levels,
-    /// checked against the level contract before any of it is routed.
-    ///
-    /// `account_map` is the caller's remaining-accounts index (pubkey →
-    /// AccountInfo); every registered quote account must be present or the
-    /// call errors — silently dropping one would misalign the CPI account
-    /// list against the quoter's expectations.
-    pub fn quote<'info>(
-        &self,
-        market_index: u16,
-        args: QuoteArgsV0<'_>,
-        slab: &AccountLoader<'info, QuoterSlabV0>,
-        accounts: &[AccountInfo<'info>],
-        scratch: &mut QuoterCpiScratch<'info>,
-        // Where the quoted levels are appended. See `QuotedLadderV0::levels`.
-        out: &mut Vec<PriceLevel>,
-    ) -> Result<QuotedLadderV0> {
-        let located = self.quote_in_place(market_index, args, slab, accounts, scratch)?;
-        let data = located.borrow()?;
-        let response = located.checked_quote_response(&data, args.direction)?;
-        // The copy a fill earns: the split reads every book at once, and the
-        // execute leg then writes the very accounts these levels sit in, so
-        // the ladder has to outlive this borrow.
-        //
-        // Copied into the caller's pool rather than into a list of its own. A
-        // route quotes up to `MAX_ROUTE_QUOTERS` books and reads them all
-        // together, so one pool holds every ladder for one allocation instead
-        // of one per book, on a heap that never reclaims.
-        //
-        // Truncated at what a reader can use. The router's cursor and its level
-        // validation both stop at `MAX_LEVELS_PER_BOOK`, so a deeper ladder is
-        // copied and then never read — and a market may set `max_quote_levels`
-        // high enough that the discarded tail is kilobytes per book.
-        let usable = response
-            .levels
-            .len()
-            .min(crate::math::router::MAX_LEVELS_PER_BOOK);
-        let start = out.len();
-        out.extend_from_slice(&response.levels[..usable]);
-        Ok(QuotedLadderV0 {
-            levels: start..out.len(),
-            withheld: response.withheld,
-        })
     }
 
     /// CPI `quote_v0` and leave the ladder where the quoter wrote it.

@@ -78,16 +78,19 @@ pub fn handle_liquidate_spot_with_swap_begin<'c: 'info, 'info>(
     validate_swap_request(&legs)?;
 
     liquidate_spot_with_swap_begin(
-        asset_market_index,
-        liability_market_index,
-        swap_amount,
-        user,
-        &user_key,
-        liquidator,
-        &liquidator_key,
+        LiquidateSpotSwapBeginRequest {
+            asset_market_index,
+            liability_market_index,
+            swap_amount_in: swap_amount,
+        },
+        &mut LiquidationParties {
+            user,
+            user_key: &user_key,
+            liquidator,
+            liquidator_key: &liquidator_key,
+        },
         &mut maps,
-        now,
-        clock.slot,
+        &LiquidationTerms::from_state(&state, now, clock.slot),
         &state,
     )?;
 
@@ -446,17 +449,17 @@ pub fn handle_liquidate_spot_with_swap_end<'c: 'info, 'info>(
     let state = ctx.accounts.state.load()?;
     let mut user = load_mut!(&ctx.accounts.user)?;
     liquidate_spot_with_swap_end(
-        asset_market_index,
-        liability_market_index,
+        LiquidateSpotSwapEndRequest {
+            asset_market_index,
+            liability_market_index,
+            asset_transfer: amount_in.cast()?,
+            liability_transfer: amount_out.cast()?,
+        },
         &mut user,
         &user_key,
         &liquidator_key,
         &mut maps,
-        now,
-        clock.slot,
-        &state,
-        amount_in.cast()?,
-        amount_out.cast()?,
+        &LiquidationTerms::from_state(&state, now, clock.slot),
     )?;
 
     validate_swap_closed(

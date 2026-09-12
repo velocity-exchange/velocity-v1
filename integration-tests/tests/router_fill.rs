@@ -9035,8 +9035,15 @@ fn two_crossed_remainders_settle_at_the_one_that_rested_first() {
     .unwrap();
     // Two cancels, the settlement and the re-placement — no `execute_v0`, which
     // is why this is cheaper than the maker path rather than more expensive.
+    //
+    // The bound is loose on purpose. The cost moves by a couple of thousand
+    // units with the account keys, because `find_program_address` searches for
+    // a bump and the number of seeds it tries depends on the key. The fixture
+    // draws its authorities at random, so a tight bound fails about one run in
+    // five. What this asserts is the gap to the maker path, which is about
+    // 190,000 units.
     assert!(
-        meta.compute_units_consumed < 70_000,
+        meta.compute_units_consumed < 90_000,
         "crank cost {} CU",
         meta.compute_units_consumed
     );

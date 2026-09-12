@@ -2,7 +2,12 @@ use crate::instructions::optional_accounts::AccountMaps;
 pub mod liquidate_perp {
     use {
         crate::{
-            controller::{liquidation::liquidate_perp, position::PositionDirection},
+            controller::{
+                liquidation::{
+                    liquidate_perp, LiquidatePerpRequest, LiquidationTerms, PerpLiquidationParties,
+                },
+                position::PositionDirection,
+            },
             create_account_info, create_anchor_account_info,
             error::ErrorCode,
             instructions::optional_accounts::AccountMaps,
@@ -143,18 +148,21 @@ pub mod liquidate_perp {
         };
         assert!(user.is_cross_margin_being_liquidated());
         liquidate_perp(
-            0,
-            BASE_PRECISION_U64,
-            None,
-            &mut user,
-            &user_key,
-            &mut user_stats,
-            &mut liquidator,
-            &liquidator_key,
-            &mut liquidator_stats,
+            LiquidatePerpRequest {
+                market_index: 0,
+                liquidator_max_base_asset_amount: BASE_PRECISION_U64,
+                limit_price: None,
+            },
+            &mut PerpLiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                user_stats: &mut user_stats,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+                liquidator_stats: &mut liquidator_stats,
+            },
             &mut maps,
-            slot,
-            now,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         )
         .unwrap();
@@ -272,18 +280,21 @@ pub mod liquidate_perp {
             ..Default::default()
         };
         liquidate_perp(
-            0,
-            BASE_PRECISION_U64,
-            None,
-            &mut user,
-            &user_key,
-            &mut user_stats,
-            &mut liquidator,
-            &liquidator_key,
-            &mut liquidator_stats,
+            LiquidatePerpRequest {
+                market_index: 0,
+                liquidator_max_base_asset_amount: BASE_PRECISION_U64,
+                limit_price: None,
+            },
+            &mut PerpLiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                user_stats: &mut user_stats,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+                liquidator_stats: &mut liquidator_stats,
+            },
             &mut maps,
-            slot,
-            now,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         )
         .unwrap();
@@ -429,18 +440,21 @@ pub mod liquidate_perp {
             ..Default::default()
         };
         let result = liquidate_perp(
-            0,
-            BASE_PRECISION_U64,
-            None,
-            &mut user,
-            &user_key,
-            &mut user_stats,
-            &mut liquidator,
-            &liquidator_key,
-            &mut liquidator_stats,
+            LiquidatePerpRequest {
+                market_index: 0,
+                liquidator_max_base_asset_amount: BASE_PRECISION_U64,
+                limit_price: None,
+            },
+            &mut PerpLiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                user_stats: &mut user_stats,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+                liquidator_stats: &mut liquidator_stats,
+            },
             &mut maps,
-            slot,
-            now,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         );
 
@@ -563,18 +577,21 @@ pub mod liquidate_perp {
             ..Default::default()
         };
         liquidate_perp(
-            0,
-            BASE_PRECISION_U64,
-            None,
-            &mut user,
-            &user_key,
-            &mut user_stats,
-            &mut liquidator,
-            &liquidator_key,
-            &mut liquidator_stats,
+            LiquidatePerpRequest {
+                market_index: 0,
+                liquidator_max_base_asset_amount: BASE_PRECISION_U64,
+                limit_price: None,
+            },
+            &mut PerpLiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                user_stats: &mut user_stats,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+                liquidator_stats: &mut liquidator_stats,
+            },
             &mut maps,
-            slot,
-            now,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         )
         .unwrap();
@@ -713,18 +730,21 @@ pub mod liquidate_perp {
         };
 
         liquidate_perp(
-            0,
-            BASE_PRECISION_U64,
-            None,
-            &mut user,
-            &user_key,
-            &mut user_stats,
-            &mut liquidator,
-            &liquidator_key,
-            &mut liquidator_stats,
+            LiquidatePerpRequest {
+                market_index: 0,
+                liquidator_max_base_asset_amount: BASE_PRECISION_U64,
+                limit_price: None,
+            },
+            &mut PerpLiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                user_stats: &mut user_stats,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+                liquidator_stats: &mut liquidator_stats,
+            },
             &mut maps,
-            slot,
-            now,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         )
         .unwrap();
@@ -851,18 +871,21 @@ pub mod liquidate_perp {
             ..Default::default()
         };
         liquidate_perp(
-            0,
-            BASE_PRECISION_U64,
-            None,
-            &mut user,
-            &user_key,
-            &mut user_stats,
-            &mut liquidator,
-            &liquidator_key,
-            &mut liquidator_stats,
+            LiquidatePerpRequest {
+                market_index: 0,
+                liquidator_max_base_asset_amount: BASE_PRECISION_U64,
+                limit_price: None,
+            },
+            &mut PerpLiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                user_stats: &mut user_stats,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+                liquidator_stats: &mut liquidator_stats,
+            },
             &mut maps,
-            slot,
-            now,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         )
         .unwrap();
@@ -998,18 +1021,21 @@ pub mod liquidate_perp {
             ..Default::default()
         };
         liquidate_perp(
-            0,
-            BASE_PRECISION_U64,
-            None,
-            &mut user,
-            &user_key,
-            &mut user_stats,
-            &mut liquidator,
-            &liquidator_key,
-            &mut liquidator_stats,
+            LiquidatePerpRequest {
+                market_index: 0,
+                liquidator_max_base_asset_amount: BASE_PRECISION_U64,
+                limit_price: None,
+            },
+            &mut PerpLiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                user_stats: &mut user_stats,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+                liquidator_stats: &mut liquidator_stats,
+            },
             &mut maps,
-            slot,
-            now,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         )
         .unwrap();
@@ -1133,18 +1159,21 @@ pub mod liquidate_perp {
             ..Default::default()
         };
         liquidate_perp(
-            0,
-            BASE_PRECISION_U64 / 2,
-            None,
-            &mut user,
-            &user_key,
-            &mut user_stats,
-            &mut liquidator,
-            &liquidator_key,
-            &mut liquidator_stats,
+            LiquidatePerpRequest {
+                market_index: 0,
+                liquidator_max_base_asset_amount: BASE_PRECISION_U64 / 2,
+                limit_price: None,
+            },
+            &mut PerpLiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                user_stats: &mut user_stats,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+                liquidator_stats: &mut liquidator_stats,
+            },
             &mut maps,
-            slot,
-            now,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         )
         .unwrap();
@@ -1283,18 +1312,21 @@ pub mod liquidate_perp {
             ..Default::default()
         };
         liquidate_perp(
-            0,
-            10 * BASE_PRECISION_U64,
-            None,
-            &mut user,
-            &user_key,
-            &mut user_stats,
-            &mut liquidator,
-            &liquidator_key,
-            &mut liquidator_stats,
+            LiquidatePerpRequest {
+                market_index: 0,
+                liquidator_max_base_asset_amount: 10 * BASE_PRECISION_U64,
+                limit_price: None,
+            },
+            &mut PerpLiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                user_stats: &mut user_stats,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+                liquidator_stats: &mut liquidator_stats,
+            },
             &mut maps,
-            slot,
-            now,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         )
         .unwrap();
@@ -1497,18 +1529,21 @@ pub mod liquidate_perp {
             ..Default::default()
         };
         liquidate_perp(
-            0,
-            BASE_PRECISION_U64,
-            None,
-            &mut user,
-            &user_key,
-            &mut user_stats,
-            &mut liquidator,
-            &liquidator_key,
-            &mut liquidator_stats,
+            LiquidatePerpRequest {
+                market_index: 0,
+                liquidator_max_base_asset_amount: BASE_PRECISION_U64,
+                limit_price: None,
+            },
+            &mut PerpLiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                user_stats: &mut user_stats,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+                liquidator_stats: &mut liquidator_stats,
+            },
             &mut maps,
-            slot,
-            now,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         )
         .unwrap();
@@ -1657,18 +1692,21 @@ pub mod liquidate_perp {
         };
 
         let result = liquidate_perp(
-            0,
-            BASE_PRECISION_U64,
-            Some(50 * PRICE_PRECISION_U64),
-            &mut user,
-            &user_key,
-            &mut user_stats,
-            &mut liquidator,
-            &liquidator_key,
-            &mut liquidator_stats,
+            LiquidatePerpRequest {
+                market_index: 0,
+                liquidator_max_base_asset_amount: BASE_PRECISION_U64,
+                limit_price: Some(50 * PRICE_PRECISION_U64),
+            },
+            &mut PerpLiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                user_stats: &mut user_stats,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+                liquidator_stats: &mut liquidator_stats,
+            },
             &mut maps,
-            slot,
-            now,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         );
 
@@ -1788,18 +1826,21 @@ pub mod liquidate_perp {
         };
 
         let result = liquidate_perp(
-            0,
-            BASE_PRECISION_U64,
-            Some(150 * PRICE_PRECISION_U64),
-            &mut user,
-            &user_key,
-            &mut user_stats,
-            &mut liquidator,
-            &liquidator_key,
-            &mut liquidator_stats,
+            LiquidatePerpRequest {
+                market_index: 0,
+                liquidator_max_base_asset_amount: BASE_PRECISION_U64,
+                limit_price: Some(150 * PRICE_PRECISION_U64),
+            },
+            &mut PerpLiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                user_stats: &mut user_stats,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+                liquidator_stats: &mut liquidator_stats,
+            },
             &mut maps,
-            slot,
-            now,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         );
 
@@ -1911,18 +1952,21 @@ pub mod liquidate_perp {
             ..Default::default()
         };
         liquidate_perp(
-            0,
-            BASE_PRECISION_U64 / 100,
-            None,
-            &mut user,
-            &user_key,
-            &mut user_stats,
-            &mut liquidator,
-            &liquidator_key,
-            &mut liquidator_stats,
+            LiquidatePerpRequest {
+                market_index: 0,
+                liquidator_max_base_asset_amount: BASE_PRECISION_U64 / 100,
+                limit_price: None,
+            },
+            &mut PerpLiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                user_stats: &mut user_stats,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+                liquidator_stats: &mut liquidator_stats,
+            },
             &mut maps,
-            slot,
-            now,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         )
         .unwrap();
@@ -2065,18 +2109,21 @@ pub mod liquidate_perp {
             ..Default::default()
         };
         liquidate_perp(
-            0,
-            10 * BASE_PRECISION_U64,
-            None,
-            &mut user,
-            &user_key,
-            &mut user_stats,
-            &mut liquidator,
-            &liquidator_key,
-            &mut liquidator_stats,
+            LiquidatePerpRequest {
+                market_index: 0,
+                liquidator_max_base_asset_amount: 10 * BASE_PRECISION_U64,
+                limit_price: None,
+            },
+            &mut PerpLiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                user_stats: &mut user_stats,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+                liquidator_stats: &mut liquidator_stats,
+            },
             &mut maps,
-            slot,
-            now,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         )
         .unwrap();
@@ -2088,18 +2135,21 @@ pub mod liquidate_perp {
         // ~60% of liquidation finished
         let slot = 76_u64;
         liquidate_perp(
-            0,
-            10 * BASE_PRECISION_U64,
-            None,
-            &mut user,
-            &user_key,
-            &mut user_stats,
-            &mut liquidator,
-            &liquidator_key,
-            &mut liquidator_stats,
+            LiquidatePerpRequest {
+                market_index: 0,
+                liquidator_max_base_asset_amount: 10 * BASE_PRECISION_U64,
+                limit_price: None,
+            },
+            &mut PerpLiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                user_stats: &mut user_stats,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+                liquidator_stats: &mut liquidator_stats,
+            },
             &mut maps,
-            slot,
-            now,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         )
         .unwrap();
@@ -2129,18 +2179,21 @@ pub mod liquidate_perp {
         // dont change slot, still ~60% done
         let slot = 76_u64;
         liquidate_perp(
-            0,
-            100 * BASE_PRECISION_U64,
-            None,
-            &mut user,
-            &user_key,
-            &mut user_stats,
-            &mut liquidator,
-            &liquidator_key,
-            &mut liquidator_stats,
+            LiquidatePerpRequest {
+                market_index: 0,
+                liquidator_max_base_asset_amount: 100 * BASE_PRECISION_U64,
+                limit_price: None,
+            },
+            &mut PerpLiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                user_stats: &mut user_stats,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+                liquidator_stats: &mut liquidator_stats,
+            },
             &mut maps,
-            slot,
-            now,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         )
         .unwrap();
@@ -2152,18 +2205,21 @@ pub mod liquidate_perp {
         // ~76% of liquidation finished
         let slot = 101_u64;
         liquidate_perp(
-            0,
-            100 * BASE_PRECISION_U64,
-            None,
-            &mut user,
-            &user_key,
-            &mut user_stats,
-            &mut liquidator,
-            &liquidator_key,
-            &mut liquidator_stats,
+            LiquidatePerpRequest {
+                market_index: 0,
+                liquidator_max_base_asset_amount: 100 * BASE_PRECISION_U64,
+                limit_price: None,
+            },
+            &mut PerpLiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                user_stats: &mut user_stats,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+                liquidator_stats: &mut liquidator_stats,
+            },
             &mut maps,
-            slot,
-            now,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         )
         .unwrap();
@@ -2193,18 +2249,21 @@ pub mod liquidate_perp {
         // ~100% of liquidation finished
         let slot = 136_u64;
         liquidate_perp(
-            0,
-            100 * BASE_PRECISION_U64,
-            None,
-            &mut user,
-            &user_key,
-            &mut user_stats,
-            &mut liquidator,
-            &liquidator_key,
-            &mut liquidator_stats,
+            LiquidatePerpRequest {
+                market_index: 0,
+                liquidator_max_base_asset_amount: 100 * BASE_PRECISION_U64,
+                limit_price: None,
+            },
+            &mut PerpLiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                user_stats: &mut user_stats,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+                liquidator_stats: &mut liquidator_stats,
+            },
             &mut maps,
-            slot,
-            now,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         )
         .unwrap();
@@ -2329,18 +2388,21 @@ pub mod liquidate_perp {
             ..Default::default()
         };
         liquidate_perp(
-            0,
-            10 * BASE_PRECISION_U64,
-            None,
-            &mut user,
-            &user_key,
-            &mut user_stats,
-            &mut liquidator,
-            &liquidator_key,
-            &mut liquidator_stats,
+            LiquidatePerpRequest {
+                market_index: 0,
+                liquidator_max_base_asset_amount: 10 * BASE_PRECISION_U64,
+                limit_price: None,
+            },
+            &mut PerpLiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                user_stats: &mut user_stats,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+                liquidator_stats: &mut liquidator_stats,
+            },
             &mut maps,
-            slot,
-            now,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         )
         .unwrap();
@@ -2453,18 +2515,21 @@ pub mod liquidate_perp {
             ..Default::default()
         };
         liquidate_perp(
-            0,
-            10 * BASE_PRECISION_U64,
-            None,
-            &mut user,
-            &user_key,
-            &mut user_stats,
-            &mut liquidator,
-            &liquidator_key,
-            &mut liquidator_stats,
+            LiquidatePerpRequest {
+                market_index: 0,
+                liquidator_max_base_asset_amount: 10 * BASE_PRECISION_U64,
+                limit_price: None,
+            },
+            &mut PerpLiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                user_stats: &mut user_stats,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+                liquidator_stats: &mut liquidator_stats,
+            },
             &mut maps,
-            slot,
-            now,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         )
         .unwrap();
@@ -2580,18 +2645,21 @@ pub mod liquidate_perp {
             ..Default::default()
         };
         liquidate_perp(
-            0,
-            BASE_PRECISION_U64,
-            None,
-            &mut user,
-            &user_key,
-            &mut user_stats,
-            &mut liquidator,
-            &liquidator_key,
-            &mut liquidator_stats,
+            LiquidatePerpRequest {
+                market_index: 0,
+                liquidator_max_base_asset_amount: BASE_PRECISION_U64,
+                limit_price: None,
+            },
+            &mut PerpLiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                user_stats: &mut user_stats,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+                liquidator_stats: &mut liquidator_stats,
+            },
             &mut maps,
-            slot,
-            now,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         )
         .unwrap();
@@ -2707,18 +2775,21 @@ pub mod liquidate_perp {
             ..Default::default()
         };
         liquidate_perp(
-            0,
-            300 * BASE_PRECISION_U64,
-            None,
-            &mut user,
-            &user_key,
-            &mut user_stats,
-            &mut liquidator,
-            &liquidator_key,
-            &mut liquidator_stats,
+            LiquidatePerpRequest {
+                market_index: 0,
+                liquidator_max_base_asset_amount: 300 * BASE_PRECISION_U64,
+                limit_price: None,
+            },
+            &mut PerpLiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                user_stats: &mut user_stats,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+                liquidator_stats: &mut liquidator_stats,
+            },
             &mut maps,
-            slot,
-            now,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         )
         .unwrap();
@@ -2876,36 +2947,42 @@ pub mod liquidate_perp {
         let isolated_position_before = user.perp_positions[1];
 
         let result = liquidate_perp(
-            1,
-            BASE_PRECISION_U64,
-            None,
-            &mut user,
-            &user_key,
-            &mut user_stats,
-            &mut liquidator,
-            &liquidator_key,
-            &mut liquidator_stats,
+            LiquidatePerpRequest {
+                market_index: 1,
+                liquidator_max_base_asset_amount: BASE_PRECISION_U64,
+                limit_price: None,
+            },
+            &mut PerpLiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                user_stats: &mut user_stats,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+                liquidator_stats: &mut liquidator_stats,
+            },
             &mut maps,
-            slot,
-            now,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         );
 
         assert_eq!(result, Err(ErrorCode::SufficientCollateral));
 
         liquidate_perp(
-            0,
-            BASE_PRECISION_U64,
-            None,
-            &mut user,
-            &user_key,
-            &mut user_stats,
-            &mut liquidator,
-            &liquidator_key,
-            &mut liquidator_stats,
+            LiquidatePerpRequest {
+                market_index: 0,
+                liquidator_max_base_asset_amount: BASE_PRECISION_U64,
+                limit_price: None,
+            },
+            &mut PerpLiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                user_stats: &mut user_stats,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+                liquidator_stats: &mut liquidator_stats,
+            },
             &mut maps,
-            slot,
-            now,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         )
         .unwrap();
@@ -2919,7 +2996,10 @@ pub mod liquidate_perp {
 pub mod liquidate_perp_with_fill {
     use {
         crate::{
-            controller::{liquidation::liquidate_perp_with_fill, position::PositionDirection},
+            controller::{
+                liquidation::{liquidate_perp_with_fill, PerpFillLiquidationAccounts},
+                position::PositionDirection,
+            },
             create_anchor_account_info,
             instructions::optional_accounts::AccountMaps,
             math::{
@@ -3131,14 +3211,16 @@ pub mod liquidate_perp_with_fill {
 
         liquidate_perp_with_fill(
             0,
-            &user_account_loader,
-            &user_key,
-            &user_stats_account_loader,
-            &liquidator_account_loader,
-            &liquidator_key,
-            &liquidator_stats_account_loader,
-            &makers_and_referrers,
-            &maker_and_referrer_stats,
+            &PerpFillLiquidationAccounts {
+                user: &user_account_loader,
+                user_key: &user_key,
+                user_stats: &user_stats_account_loader,
+                liquidator: &liquidator_account_loader,
+                liquidator_key: &liquidator_key,
+                liquidator_stats: &liquidator_stats_account_loader,
+                makers_and_referrer: &makers_and_referrers,
+                makers_and_referrer_stats: &maker_and_referrer_stats,
+            },
             &mut maps,
             &clock,
             &state,
@@ -3350,14 +3432,16 @@ pub mod liquidate_perp_with_fill {
 
         liquidate_perp_with_fill(
             0,
-            &user_account_loader,
-            &user_key,
-            &user_stats_account_loader,
-            &liquidator_account_loader,
-            &liquidator_key,
-            &liquidator_stats_account_loader,
-            &makers_and_referrers,
-            &maker_and_referrer_stats,
+            &PerpFillLiquidationAccounts {
+                user: &user_account_loader,
+                user_key: &user_key,
+                user_stats: &user_stats_account_loader,
+                liquidator: &liquidator_account_loader,
+                liquidator_key: &liquidator_key,
+                liquidator_stats: &liquidator_stats_account_loader,
+                makers_and_referrer: &makers_and_referrers,
+                makers_and_referrer_stats: &maker_and_referrer_stats,
+            },
             &mut maps,
             &clock,
             &state,
@@ -3523,14 +3607,16 @@ pub mod liquidate_perp_with_fill {
 
         liquidate_perp_with_fill(
             0,
-            &user_account_loader,
-            &user_key,
-            &user_stats_account_loader,
-            &liquidator_account_loader,
-            &liquidator_key,
-            &liquidator_stats_account_loader,
-            &UserMap::empty(),
-            &UserStatsMap::empty(),
+            &PerpFillLiquidationAccounts {
+                user: &user_account_loader,
+                user_key: &user_key,
+                user_stats: &user_stats_account_loader,
+                liquidator: &liquidator_account_loader,
+                liquidator_key: &liquidator_key,
+                liquidator_stats: &liquidator_stats_account_loader,
+                makers_and_referrer: &UserMap::empty(),
+                makers_and_referrer_stats: &UserStatsMap::empty(),
+            },
             &mut maps,
             &clock,
             &state,
@@ -3692,14 +3778,16 @@ pub mod liquidate_perp_with_fill {
 
         liquidate_perp_with_fill(
             0,
-            &user_account_loader,
-            &user_key,
-            &user_stats_account_loader,
-            &liquidator_account_loader,
-            &liquidator_key,
-            &liquidator_stats_account_loader,
-            &UserMap::empty(),
-            &UserStatsMap::empty(),
+            &PerpFillLiquidationAccounts {
+                user: &user_account_loader,
+                user_key: &user_key,
+                user_stats: &user_stats_account_loader,
+                liquidator: &liquidator_account_loader,
+                liquidator_key: &liquidator_key,
+                liquidator_stats: &liquidator_stats_account_loader,
+                makers_and_referrer: &UserMap::empty(),
+                makers_and_referrer_stats: &UserStatsMap::empty(),
+            },
             &mut maps,
             &clock,
             &state,
@@ -3724,7 +3812,9 @@ pub mod liquidate_perp_with_fill {
 pub mod liquidate_spot {
     use {
         crate::{
-            controller::liquidation::liquidate_spot,
+            controller::liquidation::{
+                liquidate_spot, LiquidateSpotRequest, LiquidationParties, LiquidationTerms,
+            },
             create_anchor_account_info,
             error::ErrorCode,
             instructions::optional_accounts::AccountMaps,
@@ -3865,17 +3955,20 @@ pub mod liquidate_spot {
         };
 
         liquidate_spot(
-            0,
-            1,
-            10_u128.pow(6),
-            None,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidateSpotRequest {
+                asset_market_index: 0,
+                liability_market_index: 1,
+                liquidator_max_liability_transfer: 10_u128.pow(6),
+                limit_price: None,
+            },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         )
         .unwrap();
@@ -4011,17 +4104,20 @@ pub mod liquidate_spot {
         };
 
         liquidate_spot(
-            1,
-            0,
-            10000 * 10_u128.pow(6),
-            None,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidateSpotRequest {
+                asset_market_index: 1,
+                liability_market_index: 0,
+                liquidator_max_liability_transfer: 10000 * 10_u128.pow(6),
+                limit_price: None,
+            },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         )
         .unwrap();
@@ -4155,17 +4251,20 @@ pub mod liquidate_spot {
         };
 
         liquidate_spot(
-            1,
-            0,
-            10000 * 10_u128.pow(6),
-            None,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidateSpotRequest {
+                asset_market_index: 1,
+                liability_market_index: 0,
+                liquidator_max_liability_transfer: 10000 * 10_u128.pow(6),
+                limit_price: None,
+            },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         )
         .unwrap();
@@ -4297,17 +4396,20 @@ pub mod liquidate_spot {
         };
 
         liquidate_spot(
-            0,
-            1,
-            100 * 10_u128.pow(6),
-            None,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidateSpotRequest {
+                asset_market_index: 0,
+                liability_market_index: 1,
+                liquidator_max_liability_transfer: 100 * 10_u128.pow(6),
+                limit_price: None,
+            },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         )
         .unwrap();
@@ -4445,17 +4547,20 @@ pub mod liquidate_spot {
         };
 
         let res = liquidate_spot(
-            0,
-            1,
-            100 * 10_u128.pow(6),
-            None,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidateSpotRequest {
+                asset_market_index: 0,
+                liability_market_index: 1,
+                liquidator_max_liability_transfer: 100 * 10_u128.pow(6),
+                limit_price: None,
+            },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         );
 
@@ -4605,17 +4710,20 @@ pub mod liquidate_spot {
         };
 
         liquidate_spot(
-            1,
-            0,
-            10000 * 10_u128.pow(6),
-            None,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidateSpotRequest {
+                asset_market_index: 1,
+                liability_market_index: 0,
+                liquidator_max_liability_transfer: 10000 * 10_u128.pow(6),
+                limit_price: None,
+            },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         )
         .unwrap();
@@ -4733,18 +4841,21 @@ pub mod liquidate_spot {
         };
         // oracle twap too volatile to liq rn
         assert!(liquidate_spot(
-            0,
-            1,
-            10_u128.pow(6) / 10,
-            None,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidateSpotRequest {
+                asset_market_index: 0,
+                liability_market_index: 1,
+                liquidator_max_liability_transfer: 10_u128.pow(6) / 10,
+                limit_price: None
+            },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key
+            },
             &mut maps,
-            now,
-            slot,
-            &state,
+            &LiquidationTerms::from_state(&state, now, slot),
+            &state
         )
         .is_err());
 
@@ -4758,17 +4869,20 @@ pub mod liquidate_spot {
         drop(market1);
 
         liquidate_spot(
-            0,
-            1,
-            10_u128.pow(6) / 10,
-            None,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidateSpotRequest {
+                asset_market_index: 0,
+                liability_market_index: 1,
+                liquidator_max_liability_transfer: 10_u128.pow(6) / 10,
+                limit_price: None,
+            },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         )
         .unwrap();
@@ -4895,17 +5009,20 @@ pub mod liquidate_spot {
             ..Default::default()
         };
         liquidate_spot(
-            0,
-            1,
-            10_u128.pow(6),
-            None,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidateSpotRequest {
+                asset_market_index: 0,
+                liability_market_index: 1,
+                liquidator_max_liability_transfer: 10_u128.pow(6),
+                limit_price: None,
+            },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         )
         .unwrap();
@@ -5110,17 +5227,20 @@ pub mod liquidate_spot {
         };
         let limit_price = (100000000 * PRICE_PRECISION_U64 / 999000) + 1;
         let result = liquidate_spot(
-            0,
-            1,
-            10_u128.pow(6),
-            Some(limit_price),
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidateSpotRequest {
+                asset_market_index: 0,
+                liability_market_index: 1,
+                liquidator_max_liability_transfer: 10_u128.pow(6),
+                limit_price: Some(limit_price),
+            },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         );
 
@@ -5232,17 +5352,20 @@ pub mod liquidate_spot {
         };
         let limit_price = (100000000 * PRICE_PRECISION_U64 / 999000) - 1;
         let result = liquidate_spot(
-            0,
-            1,
-            10_u128.pow(6),
-            Some(limit_price),
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidateSpotRequest {
+                asset_market_index: 0,
+                liability_market_index: 1,
+                liquidator_max_liability_transfer: 10_u128.pow(6),
+                limit_price: Some(limit_price),
+            },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         );
 
@@ -5355,17 +5478,20 @@ pub mod liquidate_spot {
             ..Default::default()
         };
         liquidate_spot(
-            0,
-            1,
-            10_u128.pow(6),
-            None,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidateSpotRequest {
+                asset_market_index: 0,
+                liability_market_index: 1,
+                liquidator_max_liability_transfer: 10_u128.pow(6),
+                limit_price: None,
+            },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         )
         .unwrap();
@@ -5486,17 +5612,20 @@ pub mod liquidate_spot {
         let liquidation_buffer = state.liquidation_margin_buffer_ratio;
 
         liquidate_spot(
-            0,
-            1,
-            10 * 10_u128.pow(6),
-            None,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidateSpotRequest {
+                asset_market_index: 0,
+                liability_market_index: 1,
+                liquidator_max_liability_transfer: 10 * 10_u128.pow(6),
+                limit_price: None,
+            },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         )
         .unwrap();
@@ -5527,17 +5656,20 @@ pub mod liquidate_spot {
 
         let slot = 51_u64;
         liquidate_spot(
-            0,
-            1,
-            10 * 10_u128.pow(6),
-            None,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidateSpotRequest {
+                asset_market_index: 0,
+                liability_market_index: 1,
+                liquidator_max_liability_transfer: 10 * 10_u128.pow(6),
+                limit_price: None,
+            },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         )
         .unwrap();
@@ -5568,17 +5700,20 @@ pub mod liquidate_spot {
 
         let slot = 136_u64;
         liquidate_spot(
-            0,
-            1,
-            10 * 10_u128.pow(6),
-            None,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidateSpotRequest {
+                asset_market_index: 0,
+                liability_market_index: 1,
+                liquidator_max_liability_transfer: 10 * 10_u128.pow(6),
+                limit_price: None,
+            },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         )
         .unwrap();
@@ -5717,17 +5852,20 @@ pub mod liquidate_spot {
         };
 
         liquidate_spot(
-            2,
-            1,
-            10_u128.pow(9),
-            None,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidateSpotRequest {
+                asset_market_index: 2,
+                liability_market_index: 1,
+                liquidator_max_liability_transfer: 10_u128.pow(9),
+                limit_price: None,
+            },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         )
         .unwrap();
@@ -5758,7 +5896,10 @@ pub mod liquidate_spot {
 pub mod liquidate_borrow_for_perp_pnl {
     use {
         crate::{
-            controller::liquidation::liquidate_borrow_for_perp_pnl,
+            controller::liquidation::{
+                liquidate_borrow_for_perp_pnl, LiquidateBorrowForPerpPnlRequest,
+                LiquidationParties, LiquidationTerms,
+            },
             create_anchor_account_info,
             error::ErrorCode,
             instructions::optional_accounts::AccountMaps,
@@ -5916,20 +6057,22 @@ pub mod liquidate_borrow_for_perp_pnl {
         let liquidator_key = Pubkey::default();
 
         liquidate_borrow_for_perp_pnl(
-            0,
-            1,
-            8 * 10_u128.pow(5), // .8
-            None,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidateBorrowForPerpPnlRequest { perp_market_index: 0, liability_market_index: 1, liquidator_max_liability_transfer: 8 * 10_u128.pow(5), limit_price: // .8
+            None },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
-            10,
-            PERCENTAGE_PRECISION,
-            Millis::from_stored_units(150),
+            &LiquidationTerms {
+                now,
+                slot,
+                margin_buffer_ratio: 10,
+                initial_pct_to_liquidate: PERCENTAGE_PRECISION,
+                duration: Millis::from_stored_units(150),
+            },
             false,
         )
         .unwrap();
@@ -6073,20 +6216,22 @@ pub mod liquidate_borrow_for_perp_pnl {
         let liquidator_key = Pubkey::default();
 
         liquidate_borrow_for_perp_pnl(
-            0,
-            1,
-            8 * 10_u128.pow(5), // .8
-            None,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidateBorrowForPerpPnlRequest { perp_market_index: 0, liability_market_index: 1, liquidator_max_liability_transfer: 8 * 10_u128.pow(5), limit_price: // .8
+            None },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
-            10,
-            PERCENTAGE_PRECISION,
-            Millis::from_stored_units(150),
+            &LiquidationTerms {
+                now,
+                slot,
+                margin_buffer_ratio: 10,
+                initial_pct_to_liquidate: PERCENTAGE_PRECISION,
+                duration: Millis::from_stored_units(150),
+            },
             false,
         )
         .unwrap();
@@ -6236,20 +6381,22 @@ pub mod liquidate_borrow_for_perp_pnl {
         let liquidator_key = Pubkey::default();
 
         liquidate_borrow_for_perp_pnl(
-            0,
-            1,
-            8 * 10_u128.pow(5), // .8
-            None,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidateBorrowForPerpPnlRequest { perp_market_index: 0, liability_market_index: 1, liquidator_max_liability_transfer: 8 * 10_u128.pow(5), limit_price: // .8
+            None },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
-            10,
-            PERCENTAGE_PRECISION,
-            Millis::from_stored_units(150),
+            &LiquidationTerms {
+                now,
+                slot,
+                margin_buffer_ratio: 10,
+                initial_pct_to_liquidate: PERCENTAGE_PRECISION,
+                duration: Millis::from_stored_units(150),
+            },
             false,
         )
         .unwrap();
@@ -6402,20 +6549,26 @@ pub mod liquidate_borrow_for_perp_pnl {
 
         let liquidation_buffer = MARGIN_PRECISION / 50;
         liquidate_borrow_for_perp_pnl(
-            0,
-            1,
-            2 * 10_u128.pow(6),
-            None,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidateBorrowForPerpPnlRequest {
+                perp_market_index: 0,
+                liability_market_index: 1,
+                liquidator_max_liability_transfer: 2 * 10_u128.pow(6),
+                limit_price: None,
+            },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
-            liquidation_buffer,
-            PERCENTAGE_PRECISION,
-            Millis::from_stored_units(150),
+            &LiquidationTerms {
+                now,
+                slot,
+                margin_buffer_ratio: liquidation_buffer,
+                initial_pct_to_liquidate: PERCENTAGE_PRECISION,
+                duration: Millis::from_stored_units(150),
+            },
             false,
         )
         .unwrap();
@@ -6598,20 +6751,26 @@ pub mod liquidate_borrow_for_perp_pnl {
         let liquidator_key = Pubkey::default();
 
         liquidate_borrow_for_perp_pnl(
-            0,
-            1,
-            2 * 10_u128.pow(6),
-            None,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidateBorrowForPerpPnlRequest {
+                perp_market_index: 0,
+                liability_market_index: 1,
+                liquidator_max_liability_transfer: 2 * 10_u128.pow(6),
+                limit_price: None,
+            },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
-            10,
-            PERCENTAGE_PRECISION,
-            Millis::from_stored_units(150),
+            &LiquidationTerms {
+                now,
+                slot,
+                margin_buffer_ratio: 10,
+                initial_pct_to_liquidate: PERCENTAGE_PRECISION,
+                duration: Millis::from_stored_units(150),
+            },
             false,
         )
         .unwrap();
@@ -6751,20 +6910,22 @@ pub mod liquidate_borrow_for_perp_pnl {
 
         let limit_price = (80880880 * PRICE_PRECISION_U64 / 800000) + 1;
         let result = liquidate_borrow_for_perp_pnl(
-            0,
-            1,
-            8 * 10_u128.pow(5), // .8
-            Some(limit_price),
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidateBorrowForPerpPnlRequest { perp_market_index: 0, liability_market_index: 1, liquidator_max_liability_transfer: 8 * 10_u128.pow(5), limit_price: // .8
+            Some(limit_price) },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
-            10,
-            PERCENTAGE_PRECISION,
-            Millis::from_stored_units(150),
+            &LiquidationTerms {
+                now,
+                slot,
+                margin_buffer_ratio: 10,
+                initial_pct_to_liquidate: PERCENTAGE_PRECISION,
+                duration: Millis::from_stored_units(150),
+            },
             false,
         );
 
@@ -6895,20 +7056,22 @@ pub mod liquidate_borrow_for_perp_pnl {
 
         let limit_price = (80880880 * PRICE_PRECISION_U64 / 800000) - 1;
         let result = liquidate_borrow_for_perp_pnl(
-            0,
-            1,
-            8 * 10_u128.pow(5), // .8
-            Some(limit_price),
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidateBorrowForPerpPnlRequest { perp_market_index: 0, liability_market_index: 1, liquidator_max_liability_transfer: 8 * 10_u128.pow(5), limit_price: // .8
+            Some(limit_price) },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
-            10,
-            PERCENTAGE_PRECISION,
-            Millis::from_stored_units(150),
+            &LiquidationTerms {
+                now,
+                slot,
+                margin_buffer_ratio: 10,
+                initial_pct_to_liquidate: PERCENTAGE_PRECISION,
+                duration: Millis::from_stored_units(150),
+            },
             false,
         );
 
@@ -7040,20 +7203,26 @@ pub mod liquidate_borrow_for_perp_pnl {
 
         let liquidation_buffer = MARGIN_PRECISION / 50;
         liquidate_borrow_for_perp_pnl(
-            0,
-            1,
-            2 * 10_u128.pow(6),
-            None,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidateBorrowForPerpPnlRequest {
+                perp_market_index: 0,
+                liability_market_index: 1,
+                liquidator_max_liability_transfer: 2 * 10_u128.pow(6),
+                limit_price: None,
+            },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
-            liquidation_buffer,
-            PERCENTAGE_PRECISION,
-            Millis::from_stored_units(150),
+            &LiquidationTerms {
+                now,
+                slot,
+                margin_buffer_ratio: liquidation_buffer,
+                initial_pct_to_liquidate: PERCENTAGE_PRECISION,
+                duration: Millis::from_stored_units(150),
+            },
             false,
         )
         .unwrap();
@@ -7194,20 +7363,26 @@ pub mod liquidate_borrow_for_perp_pnl {
 
         let liquidation_buffer = MARGIN_PRECISION / 50;
         liquidate_borrow_for_perp_pnl(
-            0,
-            1,
-            10 * 10_u128.pow(6),
-            None,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidateBorrowForPerpPnlRequest {
+                perp_market_index: 0,
+                liability_market_index: 1,
+                liquidator_max_liability_transfer: 10 * 10_u128.pow(6),
+                limit_price: None,
+            },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
-            liquidation_buffer,
-            LIQUIDATION_PCT_PRECISION / 10,
-            Millis::from_stored_units(150),
+            &LiquidationTerms {
+                now,
+                slot,
+                margin_buffer_ratio: liquidation_buffer,
+                initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION / 10,
+                duration: Millis::from_stored_units(150),
+            },
             false,
         )
         .unwrap();
@@ -7237,20 +7412,26 @@ pub mod liquidate_borrow_for_perp_pnl {
 
         let slot = 51_u64;
         liquidate_borrow_for_perp_pnl(
-            0,
-            1,
-            10 * 10_u128.pow(6),
-            None,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidateBorrowForPerpPnlRequest {
+                perp_market_index: 0,
+                liability_market_index: 1,
+                liquidator_max_liability_transfer: 10 * 10_u128.pow(6),
+                limit_price: None,
+            },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
-            liquidation_buffer,
-            LIQUIDATION_PCT_PRECISION / 10,
-            Millis::from_stored_units(150),
+            &LiquidationTerms {
+                now,
+                slot,
+                margin_buffer_ratio: liquidation_buffer,
+                initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION / 10,
+                duration: Millis::from_stored_units(150),
+            },
             false,
         )
         .unwrap();
@@ -7280,20 +7461,26 @@ pub mod liquidate_borrow_for_perp_pnl {
 
         let slot = 136_u64;
         liquidate_borrow_for_perp_pnl(
-            0,
-            1,
-            10 * 10_u128.pow(6),
-            None,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidateBorrowForPerpPnlRequest {
+                perp_market_index: 0,
+                liability_market_index: 1,
+                liquidator_max_liability_transfer: 10 * 10_u128.pow(6),
+                limit_price: None,
+            },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
-            liquidation_buffer,
-            LIQUIDATION_PCT_PRECISION / 10,
-            Millis::from_stored_units(150),
+            &LiquidationTerms {
+                now,
+                slot,
+                margin_buffer_ratio: liquidation_buffer,
+                initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION / 10,
+                duration: Millis::from_stored_units(150),
+            },
             false,
         )
         .unwrap();
@@ -7306,7 +7493,10 @@ pub mod liquidate_borrow_for_perp_pnl {
 pub mod liquidate_perp_pnl_for_deposit {
     use {
         crate::{
-            controller::liquidation::{liquidate_perp_pnl_for_deposit, liquidate_spot},
+            controller::liquidation::{
+                liquidate_perp_pnl_for_deposit, liquidate_spot, LiquidatePerpPnlForDepositRequest,
+                LiquidateSpotRequest, LiquidationParties, LiquidationTerms,
+            },
             create_anchor_account_info,
             error::{ErrorCode, VelocityResult},
             instructions::optional_accounts::AccountMaps,
@@ -7467,20 +7657,21 @@ pub mod liquidate_perp_pnl_for_deposit {
         let liquidator_key = Pubkey::default();
 
         let result = liquidate_perp_pnl_for_deposit(
-            0,
-            1,
-            150 * 10_u128.pow(6),
-            None,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidatePerpPnlForDepositRequest {
+                perp_market_index: 0,
+                asset_market_index: 1,
+                liquidator_max_pnl_transfer: 150 * 10_u128.pow(6),
+                limit_price: None,
+            },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
-            MARGIN_PRECISION / 50, // 2% buffer
-            PERCENTAGE_PRECISION,
-            Millis::from_stored_units(150),
+            &LiquidationTerms { now, slot, margin_buffer_ratio: MARGIN_PRECISION / 50, initial_pct_to_liquidate: // 2% buffer
+            PERCENTAGE_PRECISION, duration: Millis::from_stored_units(150) },
             false,
         );
 
@@ -7647,20 +7838,22 @@ pub mod liquidate_perp_pnl_for_deposit {
         let liquidator_key = Pubkey::default();
 
         liquidate_perp_pnl_for_deposit(
-            0,
-            1,
-            50 * 10_u128.pow(6), // .8
-            None,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidatePerpPnlForDepositRequest { perp_market_index: 0, asset_market_index: 1, liquidator_max_pnl_transfer: 50 * 10_u128.pow(6), limit_price: // .8
+            None },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
-            10,
-            PERCENTAGE_PRECISION,
-            Millis::from_stored_units(150),
+            &LiquidationTerms {
+                now,
+                slot,
+                margin_buffer_ratio: 10,
+                initial_pct_to_liquidate: PERCENTAGE_PRECISION,
+                duration: Millis::from_stored_units(150),
+            },
             false,
         )
         .unwrap();
@@ -7806,20 +7999,26 @@ pub mod liquidate_perp_pnl_for_deposit {
         let liquidator_key = Pubkey::default();
 
         let result = liquidate_perp_pnl_for_deposit(
-            0,
-            1,
-            100 * 10_u128.pow(6),
-            None,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidatePerpPnlForDepositRequest {
+                perp_market_index: 0,
+                asset_market_index: 1,
+                liquidator_max_pnl_transfer: 100 * 10_u128.pow(6),
+                limit_price: None,
+            },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
-            10,
-            PERCENTAGE_PRECISION,
-            Millis::from_stored_units(150),
+            &LiquidationTerms {
+                now,
+                slot,
+                margin_buffer_ratio: 10,
+                initial_pct_to_liquidate: PERCENTAGE_PRECISION,
+                duration: Millis::from_stored_units(150),
+            },
             false,
         );
 
@@ -7930,20 +8129,26 @@ pub mod liquidate_perp_pnl_for_deposit {
         let liquidator_key = Pubkey::default();
 
         let result = liquidate_perp_pnl_for_deposit(
-            0,
-            0,
-            50 * 10_u128.pow(6),
-            None,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidatePerpPnlForDepositRequest {
+                perp_market_index: 0,
+                asset_market_index: 0,
+                liquidator_max_pnl_transfer: 50 * 10_u128.pow(6),
+                limit_price: None,
+            },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
-            10,
-            PERCENTAGE_PRECISION,
-            Millis::from_stored_units(150),
+            &LiquidationTerms {
+                now,
+                slot,
+                margin_buffer_ratio: 10,
+                initial_pct_to_liquidate: PERCENTAGE_PRECISION,
+                duration: Millis::from_stored_units(150),
+            },
             false,
         );
 
@@ -8085,20 +8290,22 @@ pub mod liquidate_perp_pnl_for_deposit {
         let liquidator_key = Pubkey::default();
 
         liquidate_perp_pnl_for_deposit(
-            0,
-            1,
-            200 * 10_u128.pow(6), // .8
-            None,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidatePerpPnlForDepositRequest { perp_market_index: 0, asset_market_index: 1, liquidator_max_pnl_transfer: 200 * 10_u128.pow(6), limit_price: // .8
+            None },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
-            MARGIN_PRECISION / 50,
-            PERCENTAGE_PRECISION,
-            Millis::from_stored_units(150),
+            &LiquidationTerms {
+                now,
+                slot,
+                margin_buffer_ratio: MARGIN_PRECISION / 50,
+                initial_pct_to_liquidate: PERCENTAGE_PRECISION,
+                duration: Millis::from_stored_units(150),
+            },
             false,
         )
         .unwrap();
@@ -8240,20 +8447,22 @@ pub mod liquidate_perp_pnl_for_deposit {
         let liquidator_key = Pubkey::default();
 
         liquidate_perp_pnl_for_deposit(
-            0,
-            1,
-            200 * 10_u128.pow(6), // .8
-            None,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidatePerpPnlForDepositRequest { perp_market_index: 0, asset_market_index: 1, liquidator_max_pnl_transfer: 200 * 10_u128.pow(6), limit_price: // .8
+            None },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
-            10,
-            PERCENTAGE_PRECISION,
-            Millis::from_stored_units(150),
+            &LiquidationTerms {
+                now,
+                slot,
+                margin_buffer_ratio: 10,
+                initial_pct_to_liquidate: PERCENTAGE_PRECISION,
+                duration: Millis::from_stored_units(150),
+            },
             false,
         )
         .unwrap();
@@ -8397,20 +8606,26 @@ pub mod liquidate_perp_pnl_for_deposit {
         let liquidator_key = Pubkey::default();
 
         liquidate_perp_pnl_for_deposit(
-            0,
-            1,
-            200 * 10_u128.pow(6),
-            None,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidatePerpPnlForDepositRequest {
+                perp_market_index: 0,
+                asset_market_index: 1,
+                liquidator_max_pnl_transfer: 200 * 10_u128.pow(6),
+                limit_price: None,
+            },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
-            10,
-            PERCENTAGE_PRECISION,
-            Millis::from_stored_units(150),
+            &LiquidationTerms {
+                now,
+                slot,
+                margin_buffer_ratio: 10,
+                initial_pct_to_liquidate: PERCENTAGE_PRECISION,
+                duration: Millis::from_stored_units(150),
+            },
             false,
         )
         .unwrap();
@@ -8553,20 +8768,22 @@ pub mod liquidate_perp_pnl_for_deposit {
 
         let limit_price = 505555 * PRICE_PRECISION_U64 / 50000000 + 1;
         let result = liquidate_perp_pnl_for_deposit(
-            0,
-            1,
-            50 * 10_u128.pow(6), // .8
-            Some(limit_price),
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidatePerpPnlForDepositRequest { perp_market_index: 0, asset_market_index: 1, liquidator_max_pnl_transfer: 50 * 10_u128.pow(6), limit_price: // .8
+            Some(limit_price) },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
-            10,
-            PERCENTAGE_PRECISION,
-            Millis::from_stored_units(150),
+            &LiquidationTerms {
+                now,
+                slot,
+                margin_buffer_ratio: 10,
+                initial_pct_to_liquidate: PERCENTAGE_PRECISION,
+                duration: Millis::from_stored_units(150),
+            },
             false,
         );
 
@@ -8697,20 +8914,22 @@ pub mod liquidate_perp_pnl_for_deposit {
 
         let limit_price = 505555 * PRICE_PRECISION_U64 / 50000000 - 1;
         let result = liquidate_perp_pnl_for_deposit(
-            0,
-            1,
-            50 * 10_u128.pow(6), // .8
-            Some(limit_price),
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidatePerpPnlForDepositRequest { perp_market_index: 0, asset_market_index: 1, liquidator_max_pnl_transfer: 50 * 10_u128.pow(6), limit_price: // .8
+            Some(limit_price) },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
-            10,
-            PERCENTAGE_PRECISION,
-            Millis::from_stored_units(150),
+            &LiquidationTerms {
+                now,
+                slot,
+                margin_buffer_ratio: 10,
+                initial_pct_to_liquidate: PERCENTAGE_PRECISION,
+                duration: Millis::from_stored_units(150),
+            },
             false,
         );
 
@@ -8841,20 +9060,22 @@ pub mod liquidate_perp_pnl_for_deposit {
         let liquidator_key = Pubkey::default();
 
         liquidate_perp_pnl_for_deposit(
-            0,
-            1,
-            200 * 10_u128.pow(6), // .8
-            None,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidatePerpPnlForDepositRequest { perp_market_index: 0, asset_market_index: 1, liquidator_max_pnl_transfer: 200 * 10_u128.pow(6), limit_price: // .8
+            None },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
-            MARGIN_PRECISION / 50,
-            PERCENTAGE_PRECISION,
-            Millis::from_stored_units(150),
+            &LiquidationTerms {
+                now,
+                slot,
+                margin_buffer_ratio: MARGIN_PRECISION / 50,
+                initial_pct_to_liquidate: PERCENTAGE_PRECISION,
+                duration: Millis::from_stored_units(150),
+            },
             false,
         )
         .unwrap();
@@ -8999,20 +9220,22 @@ pub mod liquidate_perp_pnl_for_deposit {
 
         let liquidation_buffer = MARGIN_PRECISION / 50;
         liquidate_perp_pnl_for_deposit(
-            0,
-            1,
-            200 * 10_u128.pow(6), // .8
-            None,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidatePerpPnlForDepositRequest { perp_market_index: 0, asset_market_index: 1, liquidator_max_pnl_transfer: 200 * 10_u128.pow(6), limit_price: // .8
+            None },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
-            liquidation_buffer,
-            LIQUIDATION_PCT_PRECISION / 10,
-            Millis::from_stored_units(150),
+            &LiquidationTerms {
+                now,
+                slot,
+                margin_buffer_ratio: liquidation_buffer,
+                initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION / 10,
+                duration: Millis::from_stored_units(150),
+            },
             false,
         )
         .unwrap();
@@ -9037,20 +9260,22 @@ pub mod liquidate_perp_pnl_for_deposit {
 
         let slot = 51_u64;
         liquidate_perp_pnl_for_deposit(
-            0,
-            1,
-            200 * 10_u128.pow(6), // .8
-            None,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidatePerpPnlForDepositRequest { perp_market_index: 0, asset_market_index: 1, liquidator_max_pnl_transfer: 200 * 10_u128.pow(6), limit_price: // .8
+            None },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
-            liquidation_buffer,
-            LIQUIDATION_PCT_PRECISION / 10,
-            Millis::from_stored_units(150),
+            &LiquidationTerms {
+                now,
+                slot,
+                margin_buffer_ratio: liquidation_buffer,
+                initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION / 10,
+                duration: Millis::from_stored_units(150),
+            },
             false,
         )
         .unwrap();
@@ -9075,20 +9300,22 @@ pub mod liquidate_perp_pnl_for_deposit {
 
         let slot = 136_u64;
         liquidate_perp_pnl_for_deposit(
-            0,
-            1,
-            2000 * 10_u128.pow(6), // .8
-            None,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidatePerpPnlForDepositRequest { perp_market_index: 0, asset_market_index: 1, liquidator_max_pnl_transfer: 2000 * 10_u128.pow(6), limit_price: // .8
+            None },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
-            liquidation_buffer,
-            LIQUIDATION_PCT_PRECISION / 10,
-            Millis::from_stored_units(150),
+            &LiquidationTerms {
+                now,
+                slot,
+                margin_buffer_ratio: liquidation_buffer,
+                initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION / 10,
+                duration: Millis::from_stored_units(150),
+            },
             false,
         )
         .unwrap();
@@ -9228,26 +9455,11 @@ pub mod liquidate_perp_pnl_for_deposit {
         let user_key = Pubkey::default();
         let liquidator_key = Pubkey::default();
 
-        assert!(liquidate_perp_pnl_for_deposit(
-            0,
-            0,
-            50 * 10_u128.pow(6), // .8
-            None,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
-            &mut maps,
-            now,
-            slot,
-            // 2% liquidation margin buffer: it must stay above the market's 1%
+        assert!(liquidate_perp_pnl_for_deposit(LiquidatePerpPnlForDepositRequest { perp_market_index: 0, asset_market_index: 0, liquidator_max_pnl_transfer: 50 * 10_u128.pow(6), limit_price: // .8
+            None }, &mut LiquidationParties { user: &mut user, user_key: &user_key, liquidator: &mut liquidator, liquidator_key: &liquidator_key }, &mut maps, &LiquidationTerms { now, slot, margin_buffer_ratio: // 2% liquidation margin buffer: it must stay above the market's 1%
             // liquidator fee, or the seizure premium outweighs the pnl relief and
             // the transfer is refused as loss-making
-            200,
-            PERCENTAGE_PRECISION,
-            Millis::from_stored_units(150),
-            false,
-        )
+            200, initial_pct_to_liquidate: PERCENTAGE_PRECISION, duration: Millis::from_stored_units(150) }, false)
         .is_err());
 
         let state = State {
@@ -9258,17 +9470,20 @@ pub mod liquidate_perp_pnl_for_deposit {
         };
 
         liquidate_spot(
-            0,
-            1,
-            10_u128.pow(9),
-            None,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidateSpotRequest {
+                asset_market_index: 0,
+                liability_market_index: 1,
+                liquidator_max_liability_transfer: 10_u128.pow(9),
+                limit_price: None,
+            },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         )
         .unwrap();
@@ -9276,20 +9491,22 @@ pub mod liquidate_perp_pnl_for_deposit {
         assert_eq!(user.spot_positions[1].scaled_balance, 0);
 
         liquidate_perp_pnl_for_deposit(
-            0,
-            0,
-            50 * 10_u128.pow(6), // .8
-            None,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidatePerpPnlForDepositRequest { perp_market_index: 0, asset_market_index: 0, liquidator_max_pnl_transfer: 50 * 10_u128.pow(6), limit_price: // .8
+            None },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
-            200,
-            PERCENTAGE_PRECISION,
-            Millis::from_stored_units(150),
+            &LiquidationTerms {
+                now,
+                slot,
+                margin_buffer_ratio: 200,
+                initial_pct_to_liquidate: PERCENTAGE_PRECISION,
+                duration: Millis::from_stored_units(150),
+            },
             false,
         )
         .unwrap();
@@ -9298,20 +9515,22 @@ pub mod liquidate_perp_pnl_for_deposit {
         assert_eq!(user.status, UserStatus::BeingLiquidated as u8);
 
         liquidate_perp_pnl_for_deposit(
-            0,
-            0,
-            50 * 10_u128.pow(6), // .8
-            None,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidatePerpPnlForDepositRequest { perp_market_index: 0, asset_market_index: 0, liquidator_max_pnl_transfer: 50 * 10_u128.pow(6), limit_price: // .8
+            None },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
-            200,
-            PERCENTAGE_PRECISION,
-            Millis::from_stored_units(150),
+            &LiquidationTerms {
+                now,
+                slot,
+                margin_buffer_ratio: 200,
+                initial_pct_to_liquidate: PERCENTAGE_PRECISION,
+                duration: Millis::from_stored_units(150),
+            },
             false,
         )
         .unwrap();
@@ -9503,64 +9722,57 @@ pub mod liquidate_perp_pnl_for_deposit {
         let user_key = Pubkey::default();
         let liquidator_key = Pubkey::default();
 
-        assert!(liquidate_perp_pnl_for_deposit(
-            1,
-            0,
-            50 * 10_u128.pow(6), // .8
-            None,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
-            &mut maps,
-            now,
-            slot,
-            // 2% liquidation margin buffer: it must stay above the market's 1%
+        assert!(liquidate_perp_pnl_for_deposit(LiquidatePerpPnlForDepositRequest { perp_market_index: 1, asset_market_index: 0, liquidator_max_pnl_transfer: 50 * 10_u128.pow(6), limit_price: // .8
+            None }, &mut LiquidationParties { user: &mut user, user_key: &user_key, liquidator: &mut liquidator, liquidator_key: &liquidator_key }, &mut maps, &LiquidationTerms { now, slot, margin_buffer_ratio: // 2% liquidation margin buffer: it must stay above the market's 1%
             // liquidator fee, or the seizure premium outweighs the pnl relief and
             // the transfer is refused as loss-making
-            200,
-            PERCENTAGE_PRECISION,
-            Millis::from_stored_units(150),
-            false,
-        )
+            200, initial_pct_to_liquidate: PERCENTAGE_PRECISION, duration: Millis::from_stored_units(150) }, false)
         .is_err());
         assert_eq!(user.perp_positions[0].quote_asset_amount, -100000000);
 
         liquidate_perp_pnl_for_deposit(
-            0,
-            0,
-            5000 * 10_u128.pow(6),
-            None,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidatePerpPnlForDepositRequest {
+                perp_market_index: 0,
+                asset_market_index: 0,
+                liquidator_max_pnl_transfer: 5000 * 10_u128.pow(6),
+                limit_price: None,
+            },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
-            200,
-            PERCENTAGE_PRECISION,
-            Millis::from_stored_units(150),
+            &LiquidationTerms {
+                now,
+                slot,
+                margin_buffer_ratio: 200,
+                initial_pct_to_liquidate: PERCENTAGE_PRECISION,
+                duration: Millis::from_stored_units(150),
+            },
             false,
         )
         .unwrap();
         assert_eq!(user.perp_positions[0].quote_asset_amount, 0);
 
         liquidate_perp_pnl_for_deposit(
-            1,
-            0,
-            50 * 10_u128.pow(6), // .8
-            None,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidatePerpPnlForDepositRequest { perp_market_index: 1, asset_market_index: 0, liquidator_max_pnl_transfer: 50 * 10_u128.pow(6), limit_price: // .8
+            None },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
-            200,
-            PERCENTAGE_PRECISION,
-            Millis::from_stored_units(150),
+            &LiquidationTerms {
+                now,
+                slot,
+                margin_buffer_ratio: 200,
+                initial_pct_to_liquidate: PERCENTAGE_PRECISION,
+                duration: Millis::from_stored_units(150),
+            },
             false,
         )
         .unwrap();
@@ -9744,26 +9956,10 @@ pub mod liquidate_perp_pnl_for_deposit {
         let user_key = Pubkey::default();
         let liquidator_key = Pubkey::default();
 
-        liquidate_perp_pnl_for_deposit(
-            1,
-            0,
-            50 * 10_u128.pow(6),
-            None,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
-            &mut maps,
-            now,
-            slot,
-            // 2% liquidation margin buffer: it must stay above the market's 1%
+        liquidate_perp_pnl_for_deposit(LiquidatePerpPnlForDepositRequest { perp_market_index: 1, asset_market_index: 0, liquidator_max_pnl_transfer: 50 * 10_u128.pow(6), limit_price: None }, &mut LiquidationParties { user: &mut user, user_key: &user_key, liquidator: &mut liquidator, liquidator_key: &liquidator_key }, &mut maps, &LiquidationTerms { now, slot, margin_buffer_ratio: // 2% liquidation margin buffer: it must stay above the market's 1%
             // liquidator fee, or the seizure premium outweighs the pnl relief and
             // the transfer is refused as loss-making
-            200,
-            PERCENTAGE_PRECISION,
-            Millis::from_stored_units(150),
-            false,
-        )
+            200, initial_pct_to_liquidate: PERCENTAGE_PRECISION, duration: Millis::from_stored_units(150) }, false)
         .unwrap();
 
         assert_eq!(
@@ -9781,7 +9977,9 @@ pub mod resolve_perp_bankruptcy {
         crate::{
             controller::{
                 funding::settle_funding_payment,
-                liquidation::{flag_perp_bankruptcy_claim, resolve_perp_bankruptcy},
+                liquidation::{
+                    flag_perp_bankruptcy_claim, resolve_perp_bankruptcy, LiquidationParties,
+                },
                 perp_pools::sweep_market_fees,
                 position::{
                     update_position_and_market, update_quote_asset_amount, PositionDelta,
@@ -9959,10 +10157,12 @@ pub mod resolve_perp_bankruptcy {
 
         resolve_perp_bankruptcy(
             0,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
             now,
             0,
@@ -10152,10 +10352,12 @@ pub mod resolve_perp_bankruptcy {
         // No insurance vault balance, so the full $100 is socialized.
         resolve_perp_bankruptcy(
             0,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
             now,
             0,
@@ -10333,10 +10535,12 @@ pub mod resolve_perp_bankruptcy {
 
         resolve_perp_bankruptcy(
             0,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
             now,
             0,
@@ -10453,10 +10657,12 @@ pub mod resolve_perp_bankruptcy {
 
         resolve_perp_bankruptcy(
             0,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
             now,
             0,
@@ -10621,10 +10827,12 @@ pub mod resolve_perp_bankruptcy {
 
         resolve_perp_bankruptcy(
             0,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
             now,
             0,
@@ -10880,10 +11088,12 @@ pub mod resolve_perp_bankruptcy {
 
         resolve_perp_bankruptcy(
             0,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
             now,
             100 * QUOTE_PRECISION_I64 as u64, // IF vault balance (capped by quote_max_insurance)
@@ -11017,10 +11227,12 @@ pub mod resolve_perp_bankruptcy {
 
         resolve_perp_bankruptcy(
             0,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
             now,
             0,
@@ -11176,10 +11388,12 @@ pub mod resolve_perp_bankruptcy {
 
         resolve_perp_bankruptcy(
             0,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
             now,
             0,
@@ -11362,10 +11576,12 @@ pub mod resolve_perp_bankruptcy {
 
         resolve_perp_bankruptcy(
             0,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
             now,
             0,
@@ -11656,10 +11872,12 @@ pub mod resolve_perp_bankruptcy {
 
         resolve_perp_bankruptcy(
             0,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
             now,
             0,
@@ -11818,10 +12036,12 @@ pub mod resolve_perp_bankruptcy {
 
         resolve_perp_bankruptcy(
             0,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
             now,
             0,
@@ -11932,10 +12152,12 @@ pub mod resolve_perp_bankruptcy {
 
         resolve_perp_bankruptcy(
             0,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
             now,
             0,
@@ -12084,10 +12306,12 @@ pub mod resolve_perp_bankruptcy {
 
         let pay_from_insurance = resolve_perp_bankruptcy(
             0,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
             now,
             1_000 * QUOTE_PRECISION_U64,
@@ -12246,10 +12470,12 @@ pub mod resolve_perp_bankruptcy {
 
         let pay_from_insurance = resolve_perp_bankruptcy(
             0,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
             now,
             1_000 * QUOTE_PRECISION_U64,
@@ -12463,10 +12689,12 @@ pub mod resolve_perp_bankruptcy {
 
         let pay_from_insurance = resolve_perp_bankruptcy(
             0,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
             now,
             1_000 * QUOTE_PRECISION_U64,
@@ -12487,7 +12715,10 @@ pub mod resolve_perp_bankruptcy {
 pub mod resolve_spot_bankruptcy {
     use {
         crate::{
-            controller::{liquidation::resolve_spot_bankruptcy, position::PositionDirection},
+            controller::{
+                liquidation::{resolve_spot_bankruptcy, LiquidationParties},
+                position::PositionDirection,
+            },
             create_anchor_account_info,
             error::ErrorCode,
             instructions::optional_accounts::AccountMaps,
@@ -12632,10 +12863,12 @@ pub mod resolve_spot_bankruptcy {
 
         resolve_spot_bankruptcy(
             0,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
             now,
             0,
@@ -12759,10 +12992,12 @@ pub mod resolve_spot_bankruptcy {
 
         let result = resolve_spot_bankruptcy(
             0,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
             now,
             0,
@@ -12890,10 +13125,12 @@ pub mod resolve_spot_bankruptcy {
         // +1 so `insurance_fund_vault_balance - 1` leaves exactly $40 payable
         let if_payment = resolve_spot_bankruptcy(
             0,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
             now,
             (40 * QUOTE_PRECISION + 1) as u64,
@@ -13036,10 +13273,12 @@ pub mod resolve_spot_bankruptcy {
         // empty IF vault: nothing payable, the entire loss is socialized
         let if_payment = resolve_spot_bankruptcy(
             0,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
             now,
             0,
@@ -13185,10 +13424,12 @@ pub mod resolve_spot_bankruptcy {
 
         let if_payment = resolve_spot_bankruptcy(
             0,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
             now,
             0,
@@ -13338,10 +13579,12 @@ pub mod resolve_spot_bankruptcy {
         // +1 so `insurance_fund_vault_balance - 1` leaves exactly $40 payable
         let if_payment = resolve_spot_bankruptcy(
             0,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
             now,
             (40 * QUOTE_PRECISION + 1) as u64,
@@ -13670,6 +13913,8 @@ pub mod liquidate_spot_with_swap {
         crate::{
             controller::liquidation::{
                 liquidate_spot_with_swap_begin, liquidate_spot_with_swap_end,
+                LiquidateSpotSwapBeginRequest, LiquidateSpotSwapEndRequest, LiquidationParties,
+                LiquidationTerms,
             },
             create_anchor_account_info,
             error::ErrorCode,
@@ -13813,49 +14058,55 @@ pub mod liquidate_spot_with_swap {
         // the max-pct-to-liquidate throttle is a hard cap: one unit above the
         // throttled asset transfer is refused, with no headroom on top
         let res = liquidate_spot_with_swap_begin(
-            0,
-            1,
-            asset_transfer + 1,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidateSpotSwapBeginRequest {
+                asset_market_index: 0,
+                liability_market_index: 1,
+                swap_amount_in: asset_transfer + 1,
+            },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         );
 
         assert_eq!(res, Err(ErrorCode::InvalidLiquidation));
 
         let res = liquidate_spot_with_swap_begin(
-            0,
-            1,
-            asset_transfer,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidateSpotSwapBeginRequest {
+                asset_market_index: 0,
+                liability_market_index: 1,
+                swap_amount_in: asset_transfer,
+            },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         );
 
         assert_eq!(res, Ok(()));
 
         liquidate_spot_with_swap_end(
-            0,
-            1,
+            LiquidateSpotSwapEndRequest {
+                asset_market_index: 0,
+                liability_market_index: 1,
+                asset_transfer: asset_transfer as u128,
+                liability_transfer,
+            },
             &mut user,
             &user_key,
             &liquidator_key,
             &mut maps,
-            now,
-            slot,
-            &state,
-            asset_transfer as u128,
-            liability_transfer,
+            &LiquidationTerms::from_state(&state, now, slot),
         )
         .unwrap();
 
@@ -14010,16 +14261,19 @@ pub mod liquidate_spot_with_swap {
         let swap_amount_in = 50_000_000_u64; // 50 sol
 
         liquidate_spot_with_swap_begin(
-            1,
-            0,
-            swap_amount_in,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidateSpotSwapBeginRequest {
+                asset_market_index: 1,
+                liability_market_index: 0,
+                swap_amount_in,
+            },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         )
         .unwrap();
@@ -14027,34 +14281,34 @@ pub mod liquidate_spot_with_swap {
         // a swap executed at the stale $90 (4500 usdc for 50 sol) is below the protective
         // worst-case price of $100 / 1.001 and must be rejected
         let res = liquidate_spot_with_swap_end(
-            1,
-            0,
+            LiquidateSpotSwapEndRequest {
+                asset_market_index: 1,
+                liability_market_index: 0,
+                asset_transfer: swap_amount_in as u128,
+                liability_transfer: 4500 * 1_000_000_u128,
+            },
             &mut user,
             &user_key,
             &liquidator_key,
             &mut maps,
-            now,
-            slot,
-            &state,
-            swap_amount_in as u128,
-            4500 * 1_000_000_u128,
+            &LiquidationTerms::from_state(&state, now, slot),
         );
 
         assert_eq!(res, Err(ErrorCode::InvalidLiquidation));
 
         // a swap at the protective $100 clears the boundary
         liquidate_spot_with_swap_end(
-            1,
-            0,
+            LiquidateSpotSwapEndRequest {
+                asset_market_index: 1,
+                liability_market_index: 0,
+                asset_transfer: swap_amount_in as u128,
+                liability_transfer: 5000 * 1_000_000_u128,
+            },
             &mut user,
             &user_key,
             &liquidator_key,
             &mut maps,
-            now,
-            slot,
-            &state,
-            swap_amount_in as u128,
-            5000 * 1_000_000_u128,
+            &LiquidationTerms::from_state(&state, now, slot),
         )
         .unwrap();
 
@@ -14190,16 +14444,19 @@ pub mod liquidate_spot_with_swap {
         let swap_amount_in = 50_000_000_u64; // 50 sol
 
         liquidate_spot_with_swap_begin(
-            1,
-            0,
-            swap_amount_in,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidateSpotSwapBeginRequest {
+                asset_market_index: 1,
+                liability_market_index: 0,
+                swap_amount_in,
+            },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         )
         .unwrap();
@@ -14217,34 +14474,34 @@ pub mod liquidate_spot_with_swap {
         // a swap executed at the stale $90 (4500 usdc for 50 sol) is below the protective
         // worst-case price of $100 / 1.001 and must be rejected
         let res = liquidate_spot_with_swap_end(
-            1,
-            0,
+            LiquidateSpotSwapEndRequest {
+                asset_market_index: 1,
+                liability_market_index: 0,
+                asset_transfer: swap_amount_in as u128,
+                liability_transfer: 4500 * 1_000_000_u128,
+            },
             &mut user,
             &user_key,
             &liquidator_key,
             &mut maps,
-            now,
-            slot,
-            &state,
-            swap_amount_in as u128,
-            4500 * 1_000_000_u128,
+            &LiquidationTerms::from_state(&state, now, slot),
         );
 
         assert_eq!(res, Err(ErrorCode::InvalidLiquidation));
 
         // a swap at the protective $100 clears the boundary
         liquidate_spot_with_swap_end(
-            1,
-            0,
+            LiquidateSpotSwapEndRequest {
+                asset_market_index: 1,
+                liability_market_index: 0,
+                asset_transfer: swap_amount_in as u128,
+                liability_transfer: 5000 * 1_000_000_u128,
+            },
             &mut user,
             &user_key,
             &liquidator_key,
             &mut maps,
-            now,
-            slot,
-            &state,
-            swap_amount_in as u128,
-            5000 * 1_000_000_u128,
+            &LiquidationTerms::from_state(&state, now, slot),
         )
         .unwrap();
 
@@ -14374,16 +14631,19 @@ pub mod liquidate_spot_with_swap {
         let swap_amount_in = 5_000_000_000_u64; // 5000 usdc
 
         liquidate_spot_with_swap_begin(
-            0,
-            1,
-            swap_amount_in,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidateSpotSwapBeginRequest {
+                asset_market_index: 0,
+                liability_market_index: 1,
+                swap_amount_in,
+            },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         )
         .unwrap();
@@ -14391,34 +14651,34 @@ pub mod liquidate_spot_with_swap {
         // a swap returning sol at the stale $110 (45.454545 sol for 5000 usdc) is below
         // the protective worst-case price and must be rejected
         let res = liquidate_spot_with_swap_end(
-            0,
-            1,
+            LiquidateSpotSwapEndRequest {
+                asset_market_index: 0,
+                liability_market_index: 1,
+                asset_transfer: swap_amount_in as u128,
+                liability_transfer: 45_454_545_u128,
+            },
             &mut user,
             &user_key,
             &liquidator_key,
             &mut maps,
-            now,
-            slot,
-            &state,
-            swap_amount_in as u128,
-            45_454_545_u128,
+            &LiquidationTerms::from_state(&state, now, slot),
         );
 
         assert_eq!(res, Err(ErrorCode::InvalidLiquidation));
 
         // a swap returning sol at the protective $100 (50 sol) clears the boundary
         liquidate_spot_with_swap_end(
-            0,
-            1,
+            LiquidateSpotSwapEndRequest {
+                asset_market_index: 0,
+                liability_market_index: 1,
+                asset_transfer: swap_amount_in as u128,
+                liability_transfer: 50 * 1_000_000_u128,
+            },
             &mut user,
             &user_key,
             &liquidator_key,
             &mut maps,
-            now,
-            slot,
-            &state,
-            swap_amount_in as u128,
-            50 * 1_000_000_u128,
+            &LiquidationTerms::from_state(&state, now, slot),
         )
         .unwrap();
 
@@ -14434,7 +14694,9 @@ pub mod liquidate_spot_with_swap {
 mod liquidate_dust_spot_market {
     use {
         crate::{
-            controller::liquidation::liquidate_spot,
+            controller::liquidation::{
+                liquidate_spot, LiquidateSpotRequest, LiquidationParties, LiquidationTerms,
+            },
             create_anchor_account_info,
             instructions::optional_accounts::AccountMaps,
             math::time::SlotClock,
@@ -14612,17 +14874,20 @@ mod liquidate_dust_spot_market {
             Pubkey::from_str("5smUuFz1ZzW3FVAF2W1GjYWzxsXQaVyPGdFKfvSnPpaL").unwrap();
 
         let result = liquidate_spot(
-            1,
-            3,
-            1,
-            None,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidateSpotRequest {
+                asset_market_index: 1,
+                liability_market_index: 3,
+                liquidator_max_liability_transfer: 1,
+                limit_price: None,
+            },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            clock_slot,
+            &LiquidationTerms::from_state(&state, now, clock_slot),
             &state,
         );
 
@@ -14634,7 +14899,10 @@ pub mod liquidate_isolated_perp {
     use {
         crate::{
             controller::{
-                liquidation::{liquidate_perp, liquidate_spot},
+                liquidation::{
+                    liquidate_perp, liquidate_spot, LiquidatePerpRequest, LiquidateSpotRequest,
+                    LiquidationParties, LiquidationTerms, PerpLiquidationParties,
+                },
                 position::PositionDirection,
             },
             create_anchor_account_info,
@@ -14788,18 +15056,21 @@ pub mod liquidate_isolated_perp {
             ..Default::default()
         };
         liquidate_perp(
-            0,
-            BASE_PRECISION_U64,
-            None,
-            &mut user,
-            &user_key,
-            &mut user_stats,
-            &mut liquidator,
-            &liquidator_key,
-            &mut liquidator_stats,
+            LiquidatePerpRequest {
+                market_index: 0,
+                liquidator_max_base_asset_amount: BASE_PRECISION_U64,
+                limit_price: None,
+            },
+            &mut PerpLiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                user_stats: &mut user_stats,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+                liquidator_stats: &mut liquidator_stats,
+            },
             &mut maps,
-            slot,
-            now,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         )
         .unwrap();
@@ -14938,18 +15209,21 @@ pub mod liquidate_isolated_perp {
             ..Default::default()
         };
         liquidate_perp(
-            0,
-            BASE_PRECISION_U64,
-            None,
-            &mut user,
-            &user_key,
-            &mut user_stats,
-            &mut liquidator,
-            &liquidator_key,
-            &mut liquidator_stats,
+            LiquidatePerpRequest {
+                market_index: 0,
+                liquidator_max_base_asset_amount: BASE_PRECISION_U64,
+                limit_price: None,
+            },
+            &mut PerpLiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                user_stats: &mut user_stats,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+                liquidator_stats: &mut liquidator_stats,
+            },
             &mut maps,
-            slot,
-            now,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         )
         .unwrap();
@@ -15085,18 +15359,21 @@ pub mod liquidate_isolated_perp {
             ..Default::default()
         };
         liquidate_perp(
-            0,
-            10 * BASE_PRECISION_U64,
-            None,
-            &mut user,
-            &user_key,
-            &mut user_stats,
-            &mut liquidator,
-            &liquidator_key,
-            &mut liquidator_stats,
+            LiquidatePerpRequest {
+                market_index: 0,
+                liquidator_max_base_asset_amount: 10 * BASE_PRECISION_U64,
+                limit_price: None,
+            },
+            &mut PerpLiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                user_stats: &mut user_stats,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+                liquidator_stats: &mut liquidator_stats,
+            },
             &mut maps,
-            slot,
-            now,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         )
         .unwrap();
@@ -15264,18 +15541,21 @@ pub mod liquidate_isolated_perp {
             ..Default::default()
         };
         liquidate_perp(
-            0,
-            20 * BASE_PRECISION_U64,
-            None,
-            &mut user,
-            &user_key,
-            &mut user_stats,
-            &mut liquidator,
-            &liquidator_key,
-            &mut liquidator_stats,
+            LiquidatePerpRequest {
+                market_index: 0,
+                liquidator_max_base_asset_amount: 20 * BASE_PRECISION_U64,
+                limit_price: None,
+            },
+            &mut PerpLiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                user_stats: &mut user_stats,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+                liquidator_stats: &mut liquidator_stats,
+            },
             &mut maps,
-            slot,
-            now,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         )
         .unwrap();
@@ -15386,18 +15666,21 @@ pub mod liquidate_isolated_perp {
             ..Default::default()
         };
         liquidate_perp(
-            0,
-            BASE_PRECISION_U64,
-            None,
-            &mut user,
-            &user_key,
-            &mut user_stats,
-            &mut liquidator,
-            &liquidator_key,
-            &mut liquidator_stats,
+            LiquidatePerpRequest {
+                market_index: 0,
+                liquidator_max_base_asset_amount: BASE_PRECISION_U64,
+                limit_price: None,
+            },
+            &mut PerpLiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                user_stats: &mut user_stats,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+                liquidator_stats: &mut liquidator_stats,
+            },
             &mut maps,
-            slot,
-            now,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         )
         .unwrap();
@@ -15509,18 +15792,21 @@ pub mod liquidate_isolated_perp {
             ..Default::default()
         };
         liquidate_perp(
-            0,
-            300 * BASE_PRECISION_U64,
-            None,
-            &mut user,
-            &user_key,
-            &mut user_stats,
-            &mut liquidator,
-            &liquidator_key,
-            &mut liquidator_stats,
+            LiquidatePerpRequest {
+                market_index: 0,
+                liquidator_max_base_asset_amount: 300 * BASE_PRECISION_U64,
+                limit_price: None,
+            },
+            &mut PerpLiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                user_stats: &mut user_stats,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+                liquidator_stats: &mut liquidator_stats,
+            },
             &mut maps,
-            slot,
-            now,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         )
         .unwrap();
@@ -15688,35 +15974,41 @@ pub mod liquidate_isolated_perp {
             ..Default::default()
         };
         let result = liquidate_perp(
-            1,
-            BASE_PRECISION_U64,
-            None,
-            &mut user,
-            &user_key,
-            &mut user_stats,
-            &mut liquidator,
-            &liquidator_key,
-            &mut liquidator_stats,
+            LiquidatePerpRequest {
+                market_index: 1,
+                liquidator_max_base_asset_amount: BASE_PRECISION_U64,
+                limit_price: None,
+            },
+            &mut PerpLiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                user_stats: &mut user_stats,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+                liquidator_stats: &mut liquidator_stats,
+            },
             &mut maps,
-            slot,
-            now,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         );
 
         assert_eq!(result, Err(ErrorCode::SufficientCollateral));
 
         let result = liquidate_spot(
-            0,
-            1,
-            1,
-            None,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidateSpotRequest {
+                asset_market_index: 0,
+                liability_market_index: 1,
+                liquidator_max_liability_transfer: 1,
+                limit_price: None,
+            },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         );
 
@@ -15745,18 +16037,21 @@ pub mod liquidate_isolated_perp {
         let spot_position_two_before = user.spot_positions[1];
         let perp_position_one_before = user.perp_positions[1];
         liquidate_perp(
-            0,
-            BASE_PRECISION_U64,
-            None,
-            &mut user,
-            &user_key,
-            &mut user_stats,
-            &mut liquidator,
-            &liquidator_key,
-            &mut liquidator_stats,
+            LiquidatePerpRequest {
+                market_index: 0,
+                liquidator_max_base_asset_amount: BASE_PRECISION_U64,
+                limit_price: None,
+            },
+            &mut PerpLiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                user_stats: &mut user_stats,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+                liquidator_stats: &mut liquidator_stats,
+            },
             &mut maps,
-            slot,
-            now,
+            &LiquidationTerms::from_state(&state, now, slot),
             &state,
         )
         .unwrap();
@@ -15942,7 +16237,10 @@ pub mod liquidate_isolated_perp {
 pub mod liquidate_isolated_perp_pnl_for_deposit {
     use {
         crate::{
-            controller::liquidation::{liquidate_perp_pnl_for_deposit, resolve_perp_bankruptcy},
+            controller::liquidation::{
+                liquidate_perp_pnl_for_deposit, resolve_perp_bankruptcy,
+                LiquidatePerpPnlForDepositRequest, LiquidationParties, LiquidationTerms,
+            },
             create_anchor_account_info,
             instructions::optional_accounts::AccountMaps,
             math::{
@@ -16091,26 +16389,11 @@ pub mod liquidate_isolated_perp_pnl_for_deposit {
         let user_key = Pubkey::default();
         let liquidator_key = Pubkey::default();
 
-        liquidate_perp_pnl_for_deposit(
-            0,
-            0,
-            50 * 10_u128.pow(6), // .8
-            None,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
-            &mut maps,
-            now,
-            slot,
-            // 2% liquidation margin buffer: it must stay above the market's 1%
+        liquidate_perp_pnl_for_deposit(LiquidatePerpPnlForDepositRequest { perp_market_index: 0, asset_market_index: 0, liquidator_max_pnl_transfer: 50 * 10_u128.pow(6), limit_price: // .8
+            None }, &mut LiquidationParties { user: &mut user, user_key: &user_key, liquidator: &mut liquidator, liquidator_key: &liquidator_key }, &mut maps, &LiquidationTerms { now, slot, margin_buffer_ratio: // 2% liquidation margin buffer: it must stay above the market's 1%
             // liquidator fee, or the seizure premium outweighs the pnl relief and
             // the transfer is refused as loss-making
-            200,
-            PERCENTAGE_PRECISION,
-            Millis::from_stored_units(150),
-            false,
-        )
+            200, initial_pct_to_liquidate: PERCENTAGE_PRECISION, duration: Millis::from_stored_units(150) }, false)
         .unwrap();
 
         assert_eq!(
@@ -16248,20 +16531,22 @@ pub mod liquidate_isolated_perp_pnl_for_deposit {
         let liquidator_key = Pubkey::default();
 
         liquidate_perp_pnl_for_deposit(
-            0,
-            0,
-            200 * 10_u128.pow(6), // .8
-            None,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            LiquidatePerpPnlForDepositRequest { perp_market_index: 0, asset_market_index: 0, liquidator_max_pnl_transfer: 200 * 10_u128.pow(6), limit_price: // .8
+            None },
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
-            now,
-            slot,
-            MARGIN_PRECISION / 50,
-            PERCENTAGE_PRECISION,
-            Millis::from_stored_units(150),
+            &LiquidationTerms {
+                now,
+                slot,
+                margin_buffer_ratio: MARGIN_PRECISION / 50,
+                initial_pct_to_liquidate: PERCENTAGE_PRECISION,
+                duration: Millis::from_stored_units(150),
+            },
             false,
         )
         .unwrap();
@@ -16291,10 +16576,12 @@ pub mod liquidate_isolated_perp_pnl_for_deposit {
 
         resolve_perp_bankruptcy(
             0,
-            &mut user,
-            &user_key,
-            &mut liquidator,
-            &liquidator_key,
+            &mut LiquidationParties {
+                user: &mut user,
+                user_key: &user_key,
+                liquidator: &mut liquidator,
+                liquidator_key: &liquidator_key,
+            },
             &mut maps,
             now,
             0,

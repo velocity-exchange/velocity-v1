@@ -54,18 +54,21 @@ pub fn handle_liquidate_perp<'c: 'info, 'info>(
     )?;
 
     controller::liquidation::liquidate_perp(
-        market_index,
-        liquidator_max_base_asset_amount,
-        limit_price,
-        user,
-        &user_key,
-        user_stats,
-        liquidator,
-        &liquidator_key,
-        liquidator_stats,
+        LiquidatePerpRequest {
+            market_index,
+            liquidator_max_base_asset_amount,
+            limit_price,
+        },
+        &mut PerpLiquidationParties {
+            user,
+            user_key: &user_key,
+            user_stats,
+            liquidator,
+            liquidator_key: &liquidator_key,
+            liquidator_stats,
+        },
         &mut maps,
-        slot,
-        now,
+        &LiquidationTerms::from_state(&state, now, slot),
         &state,
     )?;
 
@@ -106,14 +109,16 @@ pub fn handle_liquidate_perp_with_fill<'c: 'info, 'info>(
 
     let filled_quote = controller::liquidation::liquidate_perp_with_fill(
         market_index,
-        &ctx.accounts.user,
-        &user_key,
-        &ctx.accounts.user_stats,
-        &ctx.accounts.liquidator,
-        &liquidator_key,
-        &ctx.accounts.liquidator_stats,
-        &makers_and_referrer,
-        &makers_and_referrer_stats,
+        &PerpFillLiquidationAccounts {
+            user: &ctx.accounts.user,
+            user_key: &user_key,
+            user_stats: &ctx.accounts.user_stats,
+            liquidator: &ctx.accounts.liquidator,
+            liquidator_key: &liquidator_key,
+            liquidator_stats: &ctx.accounts.liquidator_stats,
+            makers_and_referrer: &makers_and_referrer,
+            makers_and_referrer_stats: &makers_and_referrer_stats,
+        },
         &mut maps,
         &clock,
         &state,
@@ -334,17 +339,20 @@ pub fn handle_liquidate_spot<'c: 'info, 'info>(
     )?;
 
     controller::liquidation::liquidate_spot(
-        asset_market_index,
-        liability_market_index,
-        liquidator_max_liability_transfer,
-        limit_price,
-        user,
-        &user_key,
-        liquidator,
-        &liquidator_key,
+        LiquidateSpotRequest {
+            asset_market_index,
+            liability_market_index,
+            liquidator_max_liability_transfer,
+            limit_price,
+        },
+        &mut LiquidationParties {
+            user,
+            user_key: &user_key,
+            liquidator,
+            liquidator_key: &liquidator_key,
+        },
         &mut maps,
-        now,
-        clock.slot,
+        &LiquidationTerms::from_state(&state, now, clock.slot),
         &state,
     )?;
 
@@ -390,20 +398,20 @@ pub fn handle_liquidate_borrow_for_perp_pnl<'c: 'info, 'info>(
     )?;
 
     controller::liquidation::liquidate_borrow_for_perp_pnl(
-        perp_market_index,
-        spot_market_index,
-        liquidator_max_liability_transfer,
-        limit_price,
-        user,
-        &user_key,
-        liquidator,
-        &liquidator_key,
+        LiquidateBorrowForPerpPnlRequest {
+            perp_market_index,
+            liability_market_index: spot_market_index,
+            liquidator_max_liability_transfer,
+            limit_price,
+        },
+        &mut LiquidationParties {
+            user,
+            user_key: &user_key,
+            liquidator,
+            liquidator_key: &liquidator_key,
+        },
         &mut maps,
-        now,
-        clock.slot,
-        state.liquidation_margin_buffer_ratio,
-        state.initial_pct_to_liquidate as u128,
-        state.liquidation_duration_ms(),
+        &LiquidationTerms::from_state(&state, now, clock.slot),
         state.funding_paused()?,
     )?;
 
@@ -449,20 +457,20 @@ pub fn handle_liquidate_perp_pnl_for_deposit<'c: 'info, 'info>(
     )?;
 
     controller::liquidation::liquidate_perp_pnl_for_deposit(
-        perp_market_index,
-        spot_market_index,
-        liquidator_max_pnl_transfer,
-        limit_price,
-        user,
-        &user_key,
-        liquidator,
-        &liquidator_key,
+        LiquidatePerpPnlForDepositRequest {
+            perp_market_index,
+            asset_market_index: spot_market_index,
+            liquidator_max_pnl_transfer,
+            limit_price,
+        },
+        &mut LiquidationParties {
+            user,
+            user_key: &user_key,
+            liquidator,
+            liquidator_key: &liquidator_key,
+        },
         &mut maps,
-        now,
-        clock.slot,
-        state.liquidation_margin_buffer_ratio,
-        state.initial_pct_to_liquidate as u128,
-        state.liquidation_duration_ms(),
+        &LiquidationTerms::from_state(&state, now, clock.slot),
         state.funding_paused()?,
     )?;
 

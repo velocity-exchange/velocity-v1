@@ -30,11 +30,15 @@
 //!   registration and compares against the stored copy, so a signature from
 //!   another market's slab fails the comparison.
 //!
-//! The exclusion covers every approved slot on the slab, not only the slots
-//! a given transaction consults, so it holds against quoters that are not in
-//! the transaction at all. The skip rule the route applies while quoting
-//! (`reads_a_foreign_response`) sees only the consulted slots, which is a
-//! subset, so it is a backstop and approval is the rule.
+//! Approval is the only place this is enforced, and the only place it needs
+//! to be. A slot's registered list and its response account change nowhere
+//! else: `update_quoter_approved` writes the whole config, and every other
+//! writer sets one scalar (`is_active`, `priority`,
+//! `max_oracle_deviation_bps`, the book's tick and minimum size). The
+//! exclusion also covers every approved slot on the slab, where one fill
+//! sees only the slots it consults — and the attack does not need the
+//! victim in the transaction, so a per-fill re-check could not establish the
+//! property even if the slab were small enough to sweep.
 //!
 //! For the book and the midpoint the second fact is structural rather than
 //! reviewed: each stores its authority **on** its response account — the

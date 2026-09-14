@@ -341,6 +341,26 @@ fn validate_approvable_config(config: &QuoterConfigV0) -> Result<()> {
     validate_quoter_accounts(registered.iter().map(|meta| &meta.pubkey))
 }
 
+/// Whether two approved quoters keep out of each other's response account.
+///
+/// Checked in both directions, so approval order does not decide which of a
+/// pair is refused, and so the rule holds for a quoter approved before the
+/// one being approved now.
+///
+/// This is the whole of the signing model's first fact, and velocity's only
+/// enforcement of it. A fill re-checks nothing: the property is about the
+/// approved roster, which one transaction sees only a part of, and the slab
+/// grows with the roster so a per-fill sweep would cost compute without a
+/// bound. See [`crate::signer`].
+fn response_accounts_stay_apart<'a>(
+    mut left_list: impl Iterator<Item = &'a Pubkey>,
+    left_response: &Pubkey,
+    mut right_list: impl Iterator<Item = &'a Pubkey>,
+    right_response: &Pubkey,
+) -> bool {
+    left_list.all(|key| key != right_response) && right_list.all(|key| key != left_response)
+}
+
 /// The slab slot the entry takes, checked against the slots already approved.
 /// A `Clob` entry always takes slot 0. Any other entry keeps the slot it holds,
 /// or takes the first vacant one, or takes the slot past the tail.
@@ -380,14 +400,15 @@ fn approved_slot_index(
     // on the slab signer also requires its response account.
     validate!(
         occupied_slots(&slots).all(|(_, slot)| slot.entry == *entry_key
-            || (registered
-                .iter()
-                .all(|meta| meta.pubkey != slot.config.response_account)
-                && slot
-                    .config
+            || response_accounts_stay_apart(
+                registered.iter().map(|meta| &meta.pubkey),
+                &config.response_account,
+                slot.config
                     .registered_accounts()
                     .iter()
-                    .all(|meta| meta.pubkey != config.response_account))),
+                    .map(|meta| &meta.pubkey),
+                &slot.config.response_account,
+            )),
         ErrorCode::InvalidQuoterConfig,
         "a registered account list may not name another approved quoter's response account"
     )?;
@@ -441,4 +462,56 @@ fn write_approved_slot(
     slots[index].config = *config;
     slots[index].config.approved_program_slot = approved_program_slot;
     Ok(())
+}
+
+/// The rule the quoter signing model rests on, per direction.
+#[cfg(test)]
+mod response_exclusion_tests {
+    use {super::response_accounts_stay_apart, anchor_lang::prelude::Pubkey};
+
+    fn apart(
+        left: &[Pubkey],
+        left_response: &Pubkey,
+        right: &[Pubkey],
+        right_response: &Pubkey,
+    ) -> bool {
+        response_accounts_stay_apart(left.iter(), left_response, right.iter(), right_response)
+    }
+
+    #[test]
+    fn two_quoters_that_share_nothing_are_apart() {
+        let (a, b, x, y) = (
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+        );
+        assert!(apart(&[a, x], &a, &[b, y], &b));
+    }
+
+    #[test]
+    fn a_list_naming_the_other_response_account_is_refused() {
+        // The quoter being approved reaches the approved one. Without this an
+        // execute leg could forward the market's slab signature into that
+        // quoter, which requires its response account to complete the call.
+        let (a, b) = (Pubkey::new_unique(), Pubkey::new_unique());
+        assert!(!apart(&[a, b], &a, &[b], &b));
+    }
+
+    #[test]
+    fn an_approved_list_naming_the_new_response_account_is_refused() {
+        // The other direction: the quoter already on the slab reaches the one
+        // being approved. Checked too, so approval order does not decide
+        // which of a pair is refused.
+        let (a, b) = (Pubkey::new_unique(), Pubkey::new_unique());
+        assert!(!apart(&[a], &a, &[b, a], &b));
+    }
+
+    #[test]
+    fn naming_ones_own_response_account_is_not_a_breach() {
+        // Approval requires each list to forward its own response account, so
+        // the rule must not read that as a reach into another quoter.
+        let (a, b) = (Pubkey::new_unique(), Pubkey::new_unique());
+        assert!(apart(&[a], &a, &[b], &b));
+    }
 }

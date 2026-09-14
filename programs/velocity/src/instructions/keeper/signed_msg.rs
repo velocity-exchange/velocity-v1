@@ -214,7 +214,7 @@ fn fill_signed_msg_taker_order<'c: 'info, 'info>(
     let digest = placed.route_digest;
     route.require_signed_route(&placed.route, digest)?;
 
-    let obligation = keeper_obligation(ctx, route.unrouted_quoters(&placed.route, digest))?;
+    let obligation = keeper_obligation(ctx, route.unrouted_quoters(&placed.route, digest)?)?;
 
     let mut book_storage =
         [crate::math::router::QuoterBook::default(); crate::state::prop_amm::MAX_ROUTE_QUOTERS];

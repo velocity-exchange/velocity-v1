@@ -209,7 +209,7 @@ fn route_and_fill<'info>(
     route.require_signed_route(&request.signed_route, digest)?;
     // Countable only now: the route is what says which entries arrived, and
     // the obligation is only consulted if a book later withholds.
-    request.obligation.unrouted_quoters = route.unrouted_quoters(&request.signed_route, digest);
+    request.obligation.unrouted_quoters = route.unrouted_quoters(&request.signed_route, digest)?;
 
     let mut book_storage =
         [crate::math::router::QuoterBook::default(); crate::state::prop_amm::MAX_ROUTE_QUOTERS];

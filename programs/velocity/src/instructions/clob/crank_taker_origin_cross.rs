@@ -626,7 +626,7 @@ fn route_and_fill_remainder<'info>(
                     &cx.accounts.instructions_sysvar.to_account_info(),
                 )?,
             ),
-            unrouted_quoters: route.unrouted_quoters(route_claim.quoters, route_claim.digest),
+            unrouted_quoters: route.unrouted_quoters(route_claim.quoters, route_claim.digest)?,
         },
         worst_fill_price: None,
     };

@@ -148,6 +148,27 @@ pub fn route_slab<'info>(
     Ok(None)
 }
 
+/// Whether a claimed route entry is one the fill wrongly left out.
+///
+/// `slot` is what the slab says about the entry: the slot it sits in and
+/// whether that slot can quote, or `None` when the entry was never approved.
+///
+/// Three of the four answers are "no", each for its own reason. An entry the
+/// route consulted was carried. An entry the slab never approved cannot be
+/// consulted and never could have been, so a route signed against a quoter
+/// that was later revoked still fills. An entry whose slot cannot quote
+/// would have offered nothing had it been carried, which is the same reason:
+/// a route signed before an admin pulled a quoter must not brick the fill.
+///
+/// What is left — approved, able to quote, and left out — is the omission
+/// this rule exists to catch.
+fn claimed_entry_is_omitted(slot: Option<(usize, bool)>, consulted: &[usize]) -> bool {
+    match slot {
+        None => false,
+        Some((index, quotes)) => quotes && !consulted.contains(&index),
+    }
+}
+
 /// What one slot answered, before the route keeps any of it.
 struct SlotQuote {
     /// The levels, as a run in the route's own level pool.
@@ -242,12 +263,15 @@ pub struct QuotedRoute<'info> {
     /// baseline and the signed route are answered from it: whether an absent
     /// quoter *could* have quoted is a fact about the approved set.
     slab: Option<AccountLoader<'info, QuoterSlabV0>>,
-    /// Every consulted slot's entry, quoting or not: a carried slot that was
-    /// skipped (dead, rival-reading, speed-bumped) still counts as consulted
-    /// for the signed route and the baseline. A fixed array: bounded by the
-    /// same budget the transaction is, so it needs no allocation.
-    carried: [Pubkey; MAX_ROUTE_QUOTERS],
-    carried_len: usize,
+    /// Every consulted slab slot, quoting or not: a slot that was skipped
+    /// (dead, rival-reading, speed-bumped) still counts as consulted for the
+    /// signed route and the baseline, which is what separates this from
+    /// [`Self::quoted_slots`].
+    ///
+    /// Slot indexes rather than entry keys. `consulted_slots` allocates this
+    /// list to find them, so keeping it costs nothing, where a list of the
+    /// entries behind them is a second copy of what the slab already holds.
+    consulted: Vec<usize>,
 }
 
 /// What quoting needs: the taker's side and size, plus the identities
@@ -332,37 +356,47 @@ impl<'info> QuotedRoute<'info> {
             ladders: Vec::with_capacity(MAX_ROUTE_QUOTERS),
             levels: Vec::new(),
             slab: None,
-            carried: [Pubkey::default(); MAX_ROUTE_QUOTERS],
-            carried_len: 0,
+            consulted: Vec::new(),
         };
         let Some(slab) = route.bind_slab(tail, inputs.market_index)? else {
             return Ok(route);
         };
 
-        // Collected before any quoting, so the rival check below can see
-        // slots that come later in the slab.
-        let consulted = slab.consulted_slots(tail)?;
+        route.consulted = slab.consulted_slots(tail)?;
+
+        // Read before any quoting, so the rival check sees slots that come
+        // later in the slab as well as earlier ones.
+        //
+        // A fixed array rather than a collected list: velocity's heap never
+        // reclaims, so 768 bytes of keys would be held for the rest of the
+        // instruction where the stack gives them back on return. Zipping the
+        // fill into that array is its own bound, and `consulted_slots` caps
+        // its list at `MAX_ROUTE_QUOTERS`, so nothing is cut short.
         let mut rivals = [Pubkey::default(); MAX_ROUTE_QUOTERS * 3];
-        let mut rival_len = 0usize;
         {
             let slots = slab.slots()?;
-            for &index in &consulted {
-                let slot = &slots[index];
-                route.carried[route.carried_len] = slot.entry;
-                route.carried_len += 1;
-                for key in [
-                    slot.entry,
-                    slot.config.program_id,
-                    slot.config.response_account,
-                ] {
-                    rivals[rival_len] = key;
-                    rival_len += 1;
-                }
-            }
+            route
+                .consulted
+                .iter()
+                .flat_map(|&index| {
+                    let slot = &slots[index];
+                    [
+                        slot.entry,
+                        slot.config.program_id,
+                        slot.config.response_account,
+                    ]
+                })
+                .zip(rivals.iter_mut())
+                .for_each(|(key, rival)| *rival = key);
         }
+        let rivals = &rivals[..route.consulted.len() * 3];
 
-        for index in consulted {
-            route.quote_slot(&slab, index, inputs, &rivals[..rival_len], scratch)?;
+        // By position, because `consulted` stays on the route for the
+        // baseline and signed-route rules and cannot be borrowed across a
+        // call that takes the route mutably.
+        for position in 0..route.consulted.len() {
+            let index = route.consulted[position];
+            route.quote_slot(&slab, index, inputs, rivals, scratch)?;
         }
         Ok(route)
     }
@@ -533,11 +567,6 @@ impl<'info> QuotedRoute<'info> {
         Ok(())
     }
 
-    /// The quoters this transaction consulted, by entry address.
-    pub fn carried(&self) -> &[Pubkey] {
-        &self.carried[..self.carried_len]
-    }
-
     /// A route can't exclude the public book: when the market names a
     /// canonical CLOB entry whose slab slot can quote, the transaction must
     /// consult it — which also means carrying the slab at all. A suspended or
@@ -569,11 +598,11 @@ impl<'info> QuotedRoute<'info> {
             .find(|(_, slot)| slot.config.response_account == required_clob);
         // No slot at all is a book that was never approved or was revoked,
         // which is the dead-book case: nothing to consult.
-        let Some((_, slot)) = book else {
+        let Some((index, slot)) = book else {
             return Ok(());
         };
         validate!(
-            !slot.quotes() || self.carried().contains(&slot.entry),
+            !slot.quotes() || self.consulted.contains(&index),
             ErrorCode::DefaultError,
             "router fill must include the market's CLOB quoter {}",
             required_clob
@@ -589,14 +618,23 @@ impl<'info> QuotedRoute<'info> {
     /// own list.
     ///
     /// The count, not a boolean, so the error can say how many.
-    pub fn unrouted_quoters(&self, claimed: &[Pubkey], digest: RouteDigest) -> usize {
+    ///
+    /// The slab resolves each consulted slot to the entry the claim names it
+    /// by. A route with no slab consulted nothing, so it has nothing
+    /// unrouted.
+    pub fn unrouted_quoters(&self, claimed: &[Pubkey], digest: RouteDigest) -> Result<usize> {
         if digest == NO_ROUTE_DIGEST {
-            return 0;
+            return Ok(0);
         }
-        self.carried()
+        let Some(slab) = &self.slab else {
+            return Ok(0);
+        };
+        let slots = slab.slots()?;
+        Ok(self
+            .consulted
             .iter()
-            .filter(|entry| !claimed.contains(entry))
-            .count()
+            .filter(|&&index| !claimed.contains(&slots[index].entry))
+            .count())
     }
 
     /// Hold the transaction to the route the order's signer chose.
@@ -621,13 +659,15 @@ impl<'info> QuotedRoute<'info> {
             "claimed route does not digest to the one the order was signed with"
         )?;
         for entry in claimed {
-            if self.carried().contains(entry) {
-                continue;
-            }
-            let live = match &self.slab {
+            // One lookup answers both halves: whether the route consulted
+            // this entry, and — when it did not — whether the entry could
+            // have quoted at all.
+            let omitted = match &self.slab {
                 Some(slab) => {
                     let slots = slab.slots()?;
-                    slot_for_entry(&slots, entry).is_some_and(|index| slots[index].quotes())
+                    let slot =
+                        slot_for_entry(&slots, entry).map(|index| (index, slots[index].quotes()));
+                    claimed_entry_is_omitted(slot, &self.consulted)
                 }
                 // No slab in the tail: liveness cannot be answered, and a
                 // fill that omits the slab omits every quoter on it — treat
@@ -635,7 +675,7 @@ impl<'info> QuotedRoute<'info> {
                 None => true,
             };
             validate!(
-                !live,
+                !omitted,
                 ErrorCode::SignedRouteEntryMissing,
                 "signed route names quoter {} but the fill does not consult it",
                 entry
@@ -816,5 +856,34 @@ mod trim_tests {
             ),
             [(99, 2)]
         );
+    }
+}
+
+/// The four answers the signed-route rule can give about one claimed entry.
+#[cfg(test)]
+mod claimed_entry_tests {
+    use super::claimed_entry_is_omitted;
+
+    #[test]
+    fn an_entry_the_route_consulted_is_carried() {
+        assert!(!claimed_entry_is_omitted(Some((3, true)), &[1, 3, 5]));
+    }
+
+    #[test]
+    fn an_entry_the_slab_never_approved_is_not_an_omission() {
+        // Signed against a quoter that was later revoked. Refusing here would
+        // brick every fill of that order.
+        assert!(!claimed_entry_is_omitted(None, &[1, 3, 5]));
+    }
+
+    #[test]
+    fn an_entry_whose_slot_cannot_quote_is_not_an_omission() {
+        // Suspended or deactivated: carrying it would have offered nothing.
+        assert!(!claimed_entry_is_omitted(Some((7, false)), &[1, 3, 5]));
+    }
+
+    #[test]
+    fn a_live_approved_entry_left_out_is_the_omission() {
+        assert!(claimed_entry_is_omitted(Some((7, true)), &[1, 3, 5]));
     }
 }

@@ -404,7 +404,7 @@ fn route_fill_fired_order<'info>(
             ),
             None => None,
         },
-        unrouted_quoters: route.unrouted_quoters(signed_route, route_digest),
+        unrouted_quoters: route.unrouted_quoters(signed_route, route_digest)?,
     };
 
     let mut book_storage =

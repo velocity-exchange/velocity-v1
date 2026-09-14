@@ -339,42 +339,30 @@ impl<'info> QuotedRoute<'info> {
             return Ok(route);
         };
 
-        // Both lists are read before any quoting, so the rival check below
-        // sees slots that come later in the slab.
+        // Collected before any quoting, so the rival check below can see
+        // slots that come later in the slab.
         let consulted = slab.consulted_slots(tail)?;
-        // A fixed array rather than a collected `Vec`: velocity's heap never
-        // reclaims, so 768 bytes of rival keys would be held for the rest of
-        // the instruction, where the stack gives them back on return.
-        //
-        // `consulted_slots` caps its list at `MAX_ROUTE_QUOTERS`, so neither
-        // fill can run past the end of the array it zips into, and both
-        // lengths follow from the list rather than being counted.
         let mut rivals = [Pubkey::default(); MAX_ROUTE_QUOTERS * 3];
+        let mut rival_len = 0usize;
         {
             let slots = slab.slots()?;
-            consulted
-                .iter()
-                .map(|&index| slots[index].entry)
-                .zip(route.carried.iter_mut())
-                .for_each(|(entry, carried)| *carried = entry);
-            consulted
-                .iter()
-                .flat_map(|&index| {
-                    let slot = &slots[index];
-                    [
-                        slot.entry,
-                        slot.config.program_id,
-                        slot.config.response_account,
-                    ]
-                })
-                .zip(rivals.iter_mut())
-                .for_each(|(key, rival)| *rival = key);
+            for &index in &consulted {
+                let slot = &slots[index];
+                route.carried[route.carried_len] = slot.entry;
+                route.carried_len += 1;
+                for key in [
+                    slot.entry,
+                    slot.config.program_id,
+                    slot.config.response_account,
+                ] {
+                    rivals[rival_len] = key;
+                    rival_len += 1;
+                }
+            }
         }
-        route.carried_len = consulted.len();
-        let rivals = &rivals[..consulted.len() * 3];
 
         for index in consulted {
-            route.quote_slot(&slab, index, inputs, rivals, scratch)?;
+            route.quote_slot(&slab, index, inputs, &rivals[..rival_len], scratch)?;
         }
         Ok(route)
     }

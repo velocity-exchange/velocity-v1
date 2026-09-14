@@ -17,6 +17,38 @@
 // lands on a value transfer, where a misread `base_size` moves the wrong
 // amount of a user's collateral. The types live here and all three use them.
 //
+// # The signer a quoter is called with is shared
+//
+// Velocity signs `quote_v0` and `execute_v0` as the market's quoter-slab PDA.
+// That key is the same for every quoter approved on the market, and a CPI
+// callee inherits the signer status of what it was handed. So a quoter holds,
+// live inside its own call, the key velocity authenticates with at every
+// other quoter on that market.
+//
+// **The key's presence does not mean velocity is the immediate caller.**
+// Another quoter on the same market may forward it. That is the one place
+// this interface departs from a dedicated authority, where the inference
+// would be sound.
+//
+// What makes the forwarding useless is that velocity refuses to approve a
+// quoter whose registered account list names another approved quoter's
+// response account, in both directions and across the whole market. A
+// forwarded call therefore cannot name the account its callee needs — as long
+// as the callee needs it.
+//
+// So the rule for an implementer: **keep any authority you gate on this key
+// on the account you write your response to.** An instruction cannot then
+// read the authority without taking the response account, and no other quoter
+// on the market can name it. Velocity's own quoters are built this way: the
+// book stores `place_authority` on its market account and the midpoint stores
+// `execute_authority` on its quoter account, and each writes its response
+// there. An implementer who stores the authority elsewhere can gate an
+// instruction on this key without naming the response account, and another
+// quoter on the same market can then complete that call.
+//
+// The key is derived per market, so it authenticates nothing at a quoter
+// registered on a different market.
+//
 // # The responses are read in place
 //
 // A response is plain data sitting in the quoter's account, and velocity reads

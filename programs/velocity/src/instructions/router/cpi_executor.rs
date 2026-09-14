@@ -47,10 +47,6 @@ pub struct CpiQuoterExecutor<'a, 'info> {
     pub users: &'a [ClobUserRefV0],
     /// The same caps the quote was taken with.
     pub caps: crate::state::prop_amm::QuoterUserCapsV0,
-    /// The same base rooms the quote was taken with, by slab slot. An execute
-    /// that named a different number would fill against a ladder the quote
-    /// never published.
-    pub rooms: crate::instructions::router::user_caps::QuoterRooms,
     /// The mark those caps were priced against, and the same one the quote
     /// carried: a quoter that spends budgets skips a different set of orders
     /// under a different mark.
@@ -195,7 +191,6 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
                     taker: Some(self.taker),
                     taker_served_window: self.taker_served_window,
                     consume_reservation: self.consume_reservation,
-                    self_base_room: self.rooms.room(slot),
                 },
                 slab,
                 self.accounts,

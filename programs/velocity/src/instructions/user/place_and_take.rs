@@ -448,9 +448,9 @@ fn build_take_quote_inputs<'a, 'info>(
     // Before the quote: see `with_counterparty_room`.
     crate::instructions::with_counterparty_room(
         take.tail,
-        &taker_key,
         inputs,
         &mut crate::instructions::CapInputs {
+            taker_key: &taker_key,
             makers_and_referrer: take.makers,
             makers_and_referrer_stats: take.maker_stats,
             maps: take.maps,

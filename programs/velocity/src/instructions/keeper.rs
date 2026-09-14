@@ -238,9 +238,9 @@ impl<'info> FillSections<'info> {
     ) -> Result<crate::instructions::SizedQuote<'a, 'info>> {
         crate::instructions::with_counterparty_room(
             self.tail,
-            taker_key,
             inputs,
             &mut crate::instructions::CapInputs {
+                taker_key,
                 makers_and_referrer: &self.makers_and_referrer,
                 makers_and_referrer_stats: &self.makers_and_referrer_stats,
                 maps: &mut self.maps,

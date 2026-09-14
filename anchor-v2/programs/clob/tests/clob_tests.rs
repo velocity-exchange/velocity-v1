@@ -323,7 +323,6 @@ fn quote_meta_limited(
             users: &user_set(users),
             taker: None,
             limit_price,
-            self_base_room: u64::MAX,
         },
     }
     .to_instruction(accounts::QuoteV0 {
@@ -360,7 +359,6 @@ fn quote_consuming(ctx: &mut Ctx, direction: Direction, size: u64) -> Vec<(u64, 
             users: &[],
             taker: None,
             limit_price: 0,
-            self_base_room: u64::MAX,
         },
     }
     .to_instruction(accounts::QuoteV0 {
@@ -386,7 +384,6 @@ fn execute_consuming(
             size,
             users: &[],
             taker: None,
-            self_base_room: u64::MAX,
         },
     }
     .to_instruction(accounts::ExecuteV0 {
@@ -427,7 +424,6 @@ fn execute_meta_users(
             size,
             users: &user_set(users),
             taker: None,
-            self_base_room: u64::MAX,
         },
     }
     .to_instruction(accounts::ExecuteV0 {
@@ -818,7 +814,6 @@ fn execute_rejects_unauthorized_caller() {
         size: 5,
         users: &[],
         taker: None,
-        self_base_room: u64::MAX,
     };
     let execute_ix = |authority: Pubkey| {
         instruction::ExecuteV0 { args: args() }.to_instruction(accounts::ExecuteV0 {
@@ -1789,7 +1784,6 @@ fn cu_benchmarks() {
             users: &[],
             taker: None,
             limit_price: 0,
-            self_base_room: u64::MAX,
         },
     }
     .to_instruction(accounts::QuoteV0 {
@@ -2014,7 +2008,6 @@ fn an_execute_at_the_ceilings_fits_the_response_and_emits_the_record() {
             size: fills as u64,
             users: &[],
             taker: None,
-            self_base_room: u64::MAX,
         },
     }
     .to_instruction(accounts::ExecuteV0 {
@@ -2120,7 +2113,6 @@ fn quote_taker(ctx: &mut Ctx, direction: Direction, size: u64, taker: Address) -
             users: &[],
             taker: Some(uref(taker)),
             limit_price: 0,
-            self_base_room: u64::MAX,
         },
     }
     .to_instruction(accounts::QuoteV0 {
@@ -2146,7 +2138,6 @@ fn execute_taker(
             size,
             users: &[],
             taker: Some(uref(taker)),
-            self_base_room: u64::MAX,
         },
     }
     .to_instruction(accounts::ExecuteV0 {
@@ -2503,7 +2494,6 @@ fn cu_benchmark_quote_with_a_taker_origin_head() {
             users: &[],
             taker: None,
             limit_price: 0,
-            self_base_room: u64::MAX,
         },
     }
     .to_instruction(accounts::QuoteV0 {
@@ -2561,7 +2551,6 @@ fn cu_benchmark_quote_and_execute_with_claimants_resting() {
                 users: &[],
                 taker: None,
                 limit_price: 0,
-                self_base_room: u64::MAX,
             },
         }
         .to_instruction(accounts::QuoteV0 {

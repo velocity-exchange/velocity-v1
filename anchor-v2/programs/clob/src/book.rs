@@ -1943,8 +1943,8 @@ impl UserBudget {
         for cap in caps.as_slice() {
             budget.entries[budget.len] = UserRoom {
                 index: cap.index,
-                budget: cap.budget,
-                cover: cap.base_cover,
+                budget: cap.quote_cap,
+                cover: cap.base_cap,
             };
             budget.len += 1;
         }

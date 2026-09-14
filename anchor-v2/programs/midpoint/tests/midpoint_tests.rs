@@ -303,7 +303,6 @@ fn quote_args<'a>(direction: Direction, size: u64) -> QuoteArgsV0<'a> {
         reference_price: 0,
         taker: None,
         limit_price: 0,
-        self_base_room: u64::MAX,
     }
 }
 
@@ -337,7 +336,6 @@ fn execute_ix_served(
             caps: UserCapsV0::EMPTY,
             reference_price: 0,
             taker: None,
-            self_base_room: u64::MAX,
         },
     }
     .to_instruction(accounts::ExecuteV0 {

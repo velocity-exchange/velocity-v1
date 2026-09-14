@@ -548,8 +548,8 @@ fn a_user_with_some_room_is_filled_only_that_far() {
     caps.len = 1;
     caps.caps[0] = crate::state::UserCapV0 {
         index: 0,
-        budget: 4,
-        base_cover: u64::MAX,
+        quote_cap: 4,
+        base_cap: u64::MAX,
     };
 
     let pointer = book
@@ -613,8 +613,8 @@ fn a_reduce_only_order_fills_only_up_to_its_base_cover() {
     caps.len = 1;
     caps.caps[0] = crate::state::UserCapV0 {
         index: 0,
-        budget: u64::MAX,
-        base_cover: 2 * UNIT,
+        quote_cap: u64::MAX,
+        base_cap: 2 * UNIT,
     };
 
     let outcome = book
@@ -700,13 +700,13 @@ fn a_second_capped_maker_ends_the_sweep_rather_than_failing_it() {
     caps.len = 2;
     caps.caps[0] = crate::state::UserCapV0 {
         index: 0,
-        budget: 4,
-        base_cover: u64::MAX,
+        quote_cap: 4,
+        base_cap: u64::MAX,
     };
     caps.caps[1] = crate::state::UserCapV0 {
         index: 1,
-        budget: 3,
-        base_cover: u64::MAX,
+        quote_cap: 3,
+        base_cap: u64::MAX,
     };
 
     let pointer = book
@@ -763,8 +763,8 @@ fn a_fill_that_pays_the_maker_spends_no_budget() {
     caps.len = 1;
     caps.caps[0] = crate::state::UserCapV0 {
         index: 0,
-        budget: 1,
-        base_cover: u64::MAX,
+        quote_cap: 1,
+        base_cap: u64::MAX,
     };
 
     // Selling at 100 against a reference of 98 is a gain, not a loss.

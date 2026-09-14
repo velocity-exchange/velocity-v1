@@ -491,7 +491,7 @@ pub(crate) fn partial_orders_fit(partial: &[PartiallyFilledOrderV0], changes: us
 /// self-consistent disagreement. A cap misread as a taker, or a side read off
 /// by one, silently turns a skip into a fill.
 ///
-/// Most a call may name. The bound is the account-lock budget of the
+/// Most a call may name. The bound is the account-lock quote_cap of the
 /// transaction that carries the set, and it is also what [`UserCapsV0`] can
 /// address: a cap names a user by its index here, and the exclusion bitmap
 /// holds one bit per slot up to this number.
@@ -591,13 +591,13 @@ pub enum SideV0 {
 }
 
 /// Base units in one whole base asset. The denominator that turns a base
-/// amount and a price difference into a quote amount, and the reason a budget
+/// amount and a price difference into a quote amount, and the reason a quote_cap
 /// can be spent identically by every quoter.
 pub const BASE_PRECISION: u64 = 1_000_000_000;
 
 /// What one named user may still lose on the side this call sweeps, in quote.
 ///
-/// A budget rather than a base amount, because the caller cannot convert the
+/// A quote_cap rather than a base amount, because the caller cannot convert the
 /// one into the other. What a fill costs a maker is collateral, and the
 /// conversion needs the price each order fills at — which the caller does not
 /// have and the quoter does. So the caller sends what it knows and the quoter
@@ -610,7 +610,7 @@ pub const BASE_PRECISION: u64 = 1_000_000_000;
 /// counted only where the fill moves against the owner: an order resting on
 /// the bid side costs its owner when it fills *above* the reference, an ask
 /// when it fills *below*. An order priced in the owner's favour costs nothing
-/// and is filled whole. Once the budget is spent, that user's remaining
+/// and is filled whole. Once the quote_cap is spent, that user's remaining
 /// orders are passed over and the depth behind them is still filled.
 ///
 /// Why this is the cost that matters: a resting order is normally already
@@ -621,7 +621,7 @@ pub const BASE_PRECISION: u64 = 1_000_000_000;
 /// with size.
 ///
 /// One number, not one per side, because a call sweeps one side of the book:
-/// [`QuoteArgsV0::direction`] says which, and the budget is for that side.
+/// [`QuoteArgsV0::direction`] says which, and the quote_cap is for that side.
 ///
 /// `u64::MAX` means unbounded. Zero means the user is excluded outright, and
 /// belongs in the bitmap rather than here.
@@ -633,17 +633,36 @@ pub const BASE_PRECISION: u64 = 1_000_000_000;
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, SchemaRead, SchemaWrite)]
 #[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub struct UserCapV0 {
-    /// Quote this user may lose filling on the swept side.
-    pub budget: u64,
-    /// The most base the book may fill against this user's **reduce-only**
-    /// resting orders on the swept side. `u64::MAX` means no reduce-only cap.
+    /// Quote this user may lose filling on the swept side. `u64::MAX` means
+    /// unbounded.
     ///
-    /// Unlike [`Self::budget`], this **is** a trust boundary. The book is
-    /// position-blind, so a reduce-only order can only be safe if the caller
-    /// bounds its fill to the position it may reduce. The book enforces it at
-    /// match time and never fills a reduce-only order past it. A reduce-only
-    /// order whose owner carries no cap here is not filled at all.
-    pub base_cover: u64,
+    /// The bound for depth that was margin-reserved before the fill, which
+    /// is a book's resting orders. The base behind such an order was priced
+    /// into its owner's worst case at placement, so filling it does not grow
+    /// that worst case — what moves is collateral, by the gap between the
+    /// order's price and the mark. Base cannot express it: at a price in the
+    /// owner's favour the cost per base is zero and any size is affordable.
+    pub quote_cap: u64,
+    /// The most base this user may give up on the swept side. `u64::MAX`
+    /// means unbounded.
+    ///
+    /// One axis, two readers, and the caller sends the tighter of what each
+    /// needs — which in all but one shape is exactly one of them, because the
+    /// other is unbounded:
+    ///
+    /// - A **book** holds its owner's **reduce-only** orders to it. The book
+    ///   is position-blind, so a reduce-only order is safe only if the caller
+    ///   bounds its fill to the position it may reduce. Here that makes this
+    ///   **a trust boundary**, unlike [`Self::quote_cap`]: the book enforces
+    ///   it at match time, and a reduce-only order whose owner carries no cap
+    ///   here is not filled at all.
+    /// - Every **other quoter** holds its own depth to it, reading the entry
+    ///   for the user on its registry slot. That depth was never reserved, so
+    ///   a fill grows its owner's worst case and pays initial margin on the
+    ///   base taken. Quote cannot express that, which is why this figure is
+    ///   in base. Advisory there, like the quote cap: the caller trims the
+    ///   returned ladder to it either way.
+    pub base_cap: u64,
     /// Index into the accompanying user set.
     pub index: u8,
 }
@@ -664,7 +683,7 @@ pub struct UserCapV0 {
 /// exactly where it stands without them — the caller's own post-fill checks
 /// still refuse the fill. What honouring them buys is that the honest case
 /// stops reverting. The exclusions are firmer than the budgets: a caller may
-/// also refuse a response that names an excluded user, while a budget it
+/// also refuse a response that names an excluded user, while a quote_cap it
 /// cannot reprice is left to those post-fill checks.
 #[repr(C)]
 #[cfg_attr(
@@ -699,8 +718,8 @@ impl UserCapsV0 {
         len: 0,
         caps: [UserCapV0 {
             index: 0,
-            budget: 0,
-            base_cover: u64::MAX,
+            quote_cap: 0,
+            base_cap: u64::MAX,
         }; USER_CAPS_CAPACITY],
     };
 
@@ -739,17 +758,18 @@ impl UserCapsV0 {
             [UserCapV0::default(); USER_CAPS_CAPACITY];
         let mut partial_len = 0usize;
         for cap in caps {
-            // An unbounded budget says nothing and an empty one is a bitmap
+            // An unbounded quote_cap says nothing and an empty one is a bitmap
             // bit, so neither is worth a slot.
-            if cap.budget == 0 {
+            if cap.quote_cap == 0 {
                 set.exclude(cap.index as usize);
                 continue;
             }
-            // An unbounded budget alone says nothing, but a finite `base_cover`
-            // still needs a slot: it is the reduce-only clamp the book cannot
-            // reconstruct on its own. A cap unbounded on both is the only one
-            // worth no slot.
-            if cap.budget == u64::MAX && cap.base_cover == u64::MAX {
+            // An unbounded quote_cap alone says nothing, but either of the other
+            // two still needs a slot: `base_cap` is the reduce-only clamp
+            // the book cannot reconstruct, and `base_room` is what an
+            // unreserved quoter sizes its own depth from. A cap unbounded on
+            // all three is the only one worth no slot.
+            if cap.quote_cap == u64::MAX && cap.base_cap == u64::MAX {
                 continue;
             }
             // Insertion sort into a fixed array: the list is eight long and
@@ -757,12 +777,12 @@ impl UserCapsV0 {
             // tightest budgets are the ones worth a slot, so a full array
             // evicts its loosest.
             let mut slot = partial_len;
-            while slot > 0 && partial[slot - 1].budget > cap.budget {
+            while slot > 0 && partial[slot - 1].quote_cap > cap.quote_cap {
                 slot -= 1;
             }
-            // A budget that cannot be carried becomes an exclusion rather
+            // A quote_cap that cannot be carried becomes an exclusion rather
             // than a drop. Dropping it would offer the user its whole resting
-            // depth, which is the reading the budget exists to correct;
+            // depth, which is the reading the quote_cap exists to correct;
             // excluding it offers none, which costs liquidity and nothing
             // else.
             if partial_len < USER_CAPS_CAPACITY {
@@ -886,7 +906,7 @@ pub const L3_ROW_FLAG_TAKER_ORIGIN: u8 = 1;
 pub const L3_ROW_FLAG_BLOCKS_WALK: u8 = 2;
 
 /// The order is reduce-only: it may fill only up to the owner's position in the
-/// reduce direction, and its owner carries an authoritative `base_cover` cap.
+/// reduce direction, and its owner carries an authoritative `base_cap` cap.
 ///
 /// A caller that settles a fill against this row must know it is reduce-only,
 /// both to bind the fill to the cover its own accounting reserved and to stop
@@ -1019,23 +1039,6 @@ pub struct QuoteArgsV0<'a> {
     /// authenticates the caller, and the caller is the settlement engine. A
     /// quoter that reserves nothing ignores it.
     pub consume_reservation: bool,
-    /// The most base the quoter's own settlement user may take on, bounded
-    /// by that user's own margin. `u64::MAX` means unbounded.
-    ///
-    /// A quoter that fills from one account is not margin-reserved the way a
-    /// resting maker is: nothing was set aside at placement, so the fill
-    /// grows the account's worst case and pays initial margin for it. That is
-    /// a base bound, and [`UserCapV0::budget`] cannot express it — a budget
-    /// prices the gap between a reserved order's limit and the mark, and goes
-    /// to infinity at a price in the owner's favour.
-    ///
-    /// A book ignores it. Its makers rest reserved depth and are sized one
-    /// per user in [`Self::caps`].
-    ///
-    /// **Not a trust boundary**, like the caps. The caller trims the returned
-    /// ladder to this itself. Honouring it is what lets a quoter size its own
-    /// depth instead of publishing depth the caller then cuts.
-    pub self_base_room: u64,
 }
 
 /// Arguments to `execute_v0`: commit a fill.
@@ -1066,23 +1069,6 @@ pub struct ExecuteArgsV0<'a> {
     /// rule: the execute must carry the value its quote carried, or it walks
     /// a different set of orders than the one it quoted.
     pub consume_reservation: bool,
-    /// The most base the quoter's own settlement user may take on, bounded
-    /// by that user's own margin. `u64::MAX` means unbounded.
-    ///
-    /// A quoter that fills from one account is not margin-reserved the way a
-    /// resting maker is: nothing was set aside at placement, so the fill
-    /// grows the account's worst case and pays initial margin for it. That is
-    /// a base bound, and [`UserCapV0::budget`] cannot express it — a budget
-    /// prices the gap between a reserved order's limit and the mark, and goes
-    /// to infinity at a price in the owner's favour.
-    ///
-    /// A book ignores it. Its makers rest reserved depth and are sized one
-    /// per user in [`Self::caps`].
-    ///
-    /// **Not a trust boundary**, like the caps. The execute must carry the value
-    /// its quote carried. Honouring it is what lets a quoter size its own
-    /// depth instead of publishing depth the caller then cuts.
-    pub self_base_room: u64,
 }
 
 /// The framing of the request half.
@@ -1466,7 +1452,6 @@ mod tests {
             limit_price: 0,
             taker_served_window: true,
             consume_reservation: false,
-            self_base_room: u64::MAX,
         };
         let bytes = wincode::config::serialize(&args, ARGS_CONFIG).unwrap();
 
@@ -1482,7 +1467,7 @@ mod tests {
         assert_eq!(bytes.len(), args_size(&args).unwrap());
         assert_eq!(
             bytes.len(),
-            after_set + 1 + 8 + USER_CAPS_BYTES + 8 + 1 + UserRefV0::SIZE + 8 + 1 + 1 + 8
+            after_set + 1 + 8 + USER_CAPS_BYTES + 8 + 1 + UserRefV0::SIZE + 8 + 1 + 1
         );
 
         // And it reads back as a slice into those bytes, not a copy of them.
@@ -1504,11 +1489,10 @@ mod tests {
             taker: None,
             taker_served_window: false,
             consume_reservation: false,
-            self_base_room: u64::MAX,
         };
         let bytes = wincode::config::serialize(&args, ARGS_CONFIG).unwrap();
         assert_eq!(&bytes[..4], &0u32.to_le_bytes());
-        assert_eq!(bytes.len(), 4 + 1 + 8 + USER_CAPS_BYTES + 8 + 1 + 1 + 1 + 8);
+        assert_eq!(bytes.len(), 4 + 1 + 8 + USER_CAPS_BYTES + 8 + 1 + 1 + 1);
         assert_eq!(bytes.len(), args_size(&args).unwrap());
 
         let read: ExecuteArgsV0 = wincode::config::deserialize(&bytes, ARGS_CONFIG).unwrap();
@@ -1613,18 +1597,18 @@ mod tests {
     /// Nine constrained users against eight slots. The eight tightest keep
     /// their exact number; the ninth is excluded rather than dropped, because
     /// dropping it would read as "unconstrained" — the opposite of what its
-    /// budget says.
+    /// quote_cap says.
     #[test]
     fn a_budget_that_does_not_fit_becomes_an_exclusion() {
         let caps = (0..9).map(|index| UserCapV0 {
             index,
-            budget: 1_000 - index as u64,
-            base_cover: u64::MAX,
+            quote_cap: 1_000 - index as u64,
+            base_cap: u64::MAX,
         });
         let set = UserCapsV0::from_caps(caps);
 
         assert_eq!(set.len as usize, USER_CAPS_CAPACITY);
-        // Index 0 has the loosest budget of the nine, so it is the one evicted.
+        // Index 0 has the loosest quote_cap of the nine, so it is the one evicted.
         assert!(set.is_excluded(0));
         for index in 1..9 {
             assert!(!set.is_excluded(index), "index {index}");
@@ -1632,7 +1616,7 @@ mod tests {
                 set.as_slice()
                     .iter()
                     .find(|cap| cap.index == index as u8)
-                    .map(|cap| cap.budget),
+                    .map(|cap| cap.quote_cap),
                 Some(1_000 - index as u64)
             );
         }
@@ -1644,8 +1628,8 @@ mod tests {
     fn no_room_costs_no_slot() {
         let set = UserCapsV0::from_caps((0..20).map(|index| UserCapV0 {
             index,
-            budget: 0,
-            base_cover: u64::MAX,
+            quote_cap: 0,
+            base_cap: u64::MAX,
         }));
 
         assert_eq!(set.len, 0);
@@ -1654,14 +1638,14 @@ mod tests {
         }
     }
 
-    /// An unbounded budget is the same as saying nothing, so it costs neither
+    /// An unbounded quote_cap is the same as saying nothing, so it costs neither
     /// a slot nor a bit.
     #[test]
     fn an_unbounded_budget_is_not_carried() {
         let set = UserCapsV0::from_caps((0..20).map(|index| UserCapV0 {
             index,
-            budget: u64::MAX,
-            base_cover: u64::MAX,
+            quote_cap: u64::MAX,
+            base_cap: u64::MAX,
         }));
 
         assert_eq!(set.len, 0);

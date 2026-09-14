@@ -174,6 +174,9 @@ pub struct CapInputs<'a, 'info> {
     pub makers_and_referrer: &'a UserMap<'info>,
     pub makers_and_referrer_stats: &'a UserStatsMap<'info>,
     pub maps: &'a mut AccountMaps<'info>,
+    /// The taker's own `User`. A quoter settling for the taker is a
+    /// self-trade and gets no room at all.
+    pub taker_key: &'a Pubkey,
     pub slot: u64,
     pub now: i64,
 }
@@ -184,9 +187,9 @@ pub fn build_user_caps<'info>(
     tail: &'info [AccountInfo<'info>],
     inputs: &QuoteInputs<'_>,
     ctx: &mut CapInputs<'_, 'info>,
-) -> Result<QuoterUserCapsV0> {
+) -> Result<(QuoterUserCapsV0, QuoterRooms)> {
     // The side a taker of this direction sweeps, which is the only side these
-    // books will be asked for. The other stays unconstrained.
+    // quoters will be asked for. The other stays unconstrained.
     let resting_side = inputs.direction.side();
 
     // One budget goes to every book in the route, so a maker resting on two of
@@ -194,15 +197,17 @@ pub fn build_user_caps<'info>(
     // executes all run after every quote is taken, so a budget cannot be
     // decremented between them without the second book's execute disagreeing
     // with its own quote. Splitting by the count keeps the total inside it.
-    // Nothing else on a route reads a budget, so a route without a book has
-    // no reason to price one. This is not only a saving: a margin walk leaves
-    // allocations on a heap that never reclaims, and there are enough named
-    // users on a busy fill to exhaust it.
+    // Zero books leaves every budget unbounded rather than ending the pass:
+    // the unreserved half of a cap is still owed to whichever quoters are
+    // consulted, and a route may carry those without a book at all.
     let books = clob_books_in_route(slab, tail)?;
-    if books == 0 {
-        return Ok(QuoterUserCapsV0::EMPTY);
-    }
 
+    // Which loaded user each unreserved quoter settles for, and the slot that
+    // has to be told. Read once here so the walk below prices a user's two
+    // bounds together.
+    let sized_quoters = unreserved_quoters(slab, tail)?;
+
+    let mut rooms = QuoterRooms::NONE;
     let mut caps: Vec<QuoterUserCapV0> = Vec::with_capacity(USER_CAPS_CAPACITY);
     for (index, user_ref) in inputs.users.iter().enumerate() {
         if *user_ref == inputs.taker {
@@ -222,31 +227,67 @@ pub fn build_user_caps<'info>(
         else {
             continue;
         };
-        let budget = ctx.maker_budget(
-            &key,
-            inputs.market_index,
-            resting_side,
-            inputs.size,
-            inputs.reference_price,
-            books,
-        )?;
-        // The most base the book may fill against this user's reduce-only
-        // orders on the swept side: the position they may reduce. `0` when they
-        // hold none, which fails a reduce-only order closed rather than letting
-        // it grow a position it should shrink. A reduce-only order rests only
-        // when the owner is capped here, so this is always computed, even for a
-        // maker whose quote budget does not bind.
-        let base_cover = ctx.maker_reduce_cover(&key, inputs.market_index, resting_side)?;
-        if budget == u64::MAX && base_cover == u64::MAX {
+        // The quote cap: what this user may lose to depth a book already
+        // reserved for them. Unbounded when no book is consulted, because
+        // nothing would spend it.
+        let quote_cap = if books == 0 {
+            u64::MAX
+        } else {
+            ctx.maker_budget(
+                &key,
+                inputs.market_index,
+                resting_side,
+                inputs.size,
+                inputs.reference_price,
+                books,
+            )?
+        };
+
+        // The base cap, which two readers share, so it is the tighter of what
+        // each needs. Both measure the same thing — base this user may give
+        // up on the swept side — and in all but one shape only one of them
+        // binds, because the other is unbounded.
+        //
+        // A book holds reduce-only orders to the position they may reduce.
+        // `0` when the owner holds none, which fails such an order closed
+        // rather than letting it grow a position it exists to shrink. A
+        // reduce-only order rests only when its owner is capped here, so this
+        // is always priced, even for a maker whose quote cap does not bind.
+        let reduce_cover = ctx.maker_reduce_cover(&key, inputs.market_index, resting_side)?;
+        // An unreserved quoter holds its own depth to what its account's
+        // margin carries. Priced only for a user some consulted quoter
+        // settles for: nobody else is reachable that way, and the walk is not
+        // free.
+        let quoter_room = match sized_quoters.slot_for(&key) {
+            Some(slot) => {
+                // A quoter quoting for the taker themselves is a self-trade,
+                // so it has no room at all. Said here rather than trimmed
+                // later, so the quoter can decline before it walks.
+                let room = if key == *ctx.taker_key {
+                    0
+                } else {
+                    ctx.quoter_base_room(&key, inputs.market_index, inputs.maker_direction())?
+                };
+                // Kept by slot as well: the quote step trims the ladder to
+                // this and reaches it by slot, having no way to resolve a
+                // user there.
+                rooms.push(slot, room);
+                room
+            }
+            None => u64::MAX,
+        };
+        let base_cap = reduce_cover.min(quoter_room);
+
+        if quote_cap == u64::MAX && base_cap == u64::MAX {
             continue;
         }
         caps.push(QuoterUserCapV0 {
             index: index as u8,
-            budget,
-            base_cover,
+            quote_cap,
+            base_cap,
         });
     }
-    Ok(QuoterUserCapsV0::from_caps(caps))
+    Ok((QuoterUserCapsV0::from_caps(caps), rooms))
 }
 
 /// The base room of every custom quoter the route consults, by slab slot.
@@ -294,14 +335,12 @@ impl QuoterRooms {
 
 /// Size every counterparty this quote may stand on, both kinds.
 ///
-/// A book is told each loaded maker's quote budget; a custom quoter is told
-/// the base its own account carries. Both are priced here, before the quote,
-/// so a quoter never publishes depth this fill would refuse to settle
-/// against — and both come from the same pass over the same state, so the
-/// two venue kinds cannot be sized against different facts.
+/// Every named user gets one cap, carrying both bounds: the quote it may
+/// lose to depth already reserved on a book, and the base it may take on from
+/// depth that never was. Priced before the quote, so a quoter never publishes
+/// depth this fill would refuse to settle against.
 pub fn with_counterparty_room<'a, 'info>(
     tail: &'info [AccountInfo<'info>],
-    taker_key: &Pubkey,
     inputs: QuoteInputs<'a>,
     ctx: &mut CapInputs<'_, 'info>,
 ) -> Result<SizedQuote<'a, 'info>> {
@@ -309,14 +348,7 @@ pub fn with_counterparty_room<'a, 'info>(
     // of the account tail that borrows every account on it, and the quote
     // that follows reads the same one.
     let slab = route_slab(tail, inputs.market_index)?;
-    let caps = build_user_caps(slab.as_ref(), tail, &inputs, ctx)?;
-    let rooms = build_quoter_rooms(
-        slab.as_ref(),
-        tail,
-        inputs.maker_direction(),
-        taker_key,
-        ctx,
-    )?;
+    let (caps, rooms) = build_user_caps(slab.as_ref(), tail, &inputs, ctx)?;
     Ok(SizedQuote {
         inputs: QuoteInputs {
             caps,
@@ -338,61 +370,60 @@ pub struct SizedQuote<'a, 'info> {
     pub slab: Option<AccountLoader<'info, QuoterSlabV0>>,
 }
 
-/// The base each custom quoter in the route may take on, from its own margin.
+/// Which loaded user each unreserved quoter in the route settles for.
 ///
-/// A book needs none of this. Its makers rest depth that was margin-reserved
-/// at placement, so what a fill costs them is the price gap, which
-/// [`build_user_caps`] prices per user. A custom quoter reserves nothing: the
-/// fill creates the position from scratch, so what bounds it is initial
-/// margin on the base it takes, and that is what this measures.
-///
-/// Runs beside the caps and before the quote, so the number velocity trims
-/// the returned ladder to is the same number the quoter was told to size
-/// itself against.
-pub fn build_quoter_rooms<'info>(
+/// Only a quoter whose depth was never margin-reserved needs a base bound —
+/// a book's makers are bounded by their budgets. The route consults a slot
+/// only when its response account rides the tail, so a market whose slab
+/// holds no live unreserved quoter never scans the tail at all.
+fn unreserved_quoters<'info>(
     slab: Option<&AccountLoader<'info, QuoterSlabV0>>,
     tail: &'info [AccountInfo<'info>],
-    maker_direction: PositionDirection,
-    taker_key: &Pubkey,
-    ctx: &mut CapInputs<'_, 'info>,
-) -> Result<QuoterRooms> {
+) -> Result<QuoterUsers> {
     let Some(slab) = slab else {
-        return Ok(QuoterRooms::NONE);
+        return Ok(QuoterUsers::NONE);
     };
-    // Which slots need a walk, read in one borrow of the slab. Only a custom
-    // quoter does: a book's makers are sized by `build_user_caps`, and the
-    // route consults a slot only when its response account rides the tail.
-    // A market whose slab holds no live custom quoter — the common one —
-    // never scans the tail at all.
-    let (market_index, sized) = {
-        let market_index = slab.load()?.market;
-        let slots = slab.slots()?;
-        let sized: Vec<(usize, Pubkey)> = crate::state::prop_amm::occupied_slots(&slots)
-            .filter(|(_, slot)| {
-                !slot.config.quoter_type.depth_is_margin_reserved()
-                    && slot.quotes()
-                    && find_account(tail, &slot.config.response_account).is_some()
-            })
-            .map(|(index, slot)| (index, slot.config.user))
-            .take(MAX_ROUTE_QUOTERS)
-            .collect();
-        (market_index, sized)
+    let slots = slab.slots()?;
+    Ok(crate::state::prop_amm::occupied_slots(&slots)
+        .filter(|(_, slot)| {
+            !slot.config.quoter_type.depth_is_margin_reserved()
+                && slot.quotes()
+                && find_account(tail, &slot.config.response_account).is_some()
+        })
+        .take(MAX_ROUTE_QUOTERS)
+        .fold(QuoterUsers::NONE, |mut found, (index, slot)| {
+            found.push(index, slot.config.user);
+            found
+        }))
+}
+
+/// The settlement user of each unreserved quoter the route consults.
+#[derive(Clone, Copy)]
+struct QuoterUsers {
+    entries: [(u16, Pubkey); MAX_ROUTE_QUOTERS],
+    len: u8,
+}
+
+impl QuoterUsers {
+    const NONE: Self = Self {
+        entries: [(0, Pubkey::new_from_array([0u8; 32])); MAX_ROUTE_QUOTERS],
+        len: 0,
     };
 
-    sized
-        .into_iter()
-        .try_fold(QuoterRooms::NONE, |mut rooms, (index, quoter_user)| {
-            // A quoter quoting for the taker themselves is a self-trade, so
-            // it has no room at all. Said here rather than trimmed later, so
-            // the quoter can decline before it spends a walk of its own.
-            let room = if quoter_user == *taker_key {
-                0
-            } else {
-                ctx.quoter_base_room(&quoter_user, market_index, maker_direction)?
-            };
-            rooms.push(index, room);
-            Ok(rooms)
-        })
+    /// The slab slot this user quotes for, if any consulted quoter does.
+    fn slot_for(&self, key: &Pubkey) -> Option<usize> {
+        self.entries[..self.len as usize]
+            .iter()
+            .find(|(_, user)| user == key)
+            .map(|(slot, _)| *slot as usize)
+    }
+
+    fn push(&mut self, slot: usize, user: Pubkey) {
+        if (self.len as usize) < MAX_ROUTE_QUOTERS {
+            self.entries[self.len as usize] = (slot as u16, user);
+            self.len += 1;
+        }
+    }
 }
 
 /// How many of the route's consulted quoters are CLOB books on this market.

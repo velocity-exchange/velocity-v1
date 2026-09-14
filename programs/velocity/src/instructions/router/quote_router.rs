@@ -265,7 +265,6 @@ fn quote_one_slot<'info>(
                 limit_price: 0,
                 taker_served_window: args.taker_served_window,
                 consume_reservation: false,
-                self_base_room: u64::MAX,
             },
             slab_loader,
             accounts,

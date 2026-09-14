@@ -229,6 +229,7 @@ fn measure(case: Case, measure: Measure) -> u64 {
     let stats_map = crate::state::user_map::UserStatsMap::load_one(&stats_info).unwrap();
 
     let mut inputs = CapInputs {
+        taker_key: &Pubkey::new_unique(),
         makers_and_referrer: &makers,
         makers_and_referrer_stats: &stats_map,
         maps: &mut maps,

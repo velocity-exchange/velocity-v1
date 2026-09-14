@@ -272,11 +272,17 @@ pub struct QuoteInputs<'a> {
     /// The market's initial margin ratio, which a quoter's declared oracle
     /// band defaults to when it sets none.
     pub margin_ratio_initial: u32,
-    /// The base each custom quoter may take on, from its own margin.
+    /// The same `base_cap` the caps carry, indexed by slab slot.
     ///
-    /// Told to the quoter so it can size its own depth, and used here to trim
-    /// what it returns. Both from one number, so a quoter that honours it
-    /// publishes exactly the ladder velocity keeps.
+    /// Not a second number: [`Self::caps`] is what the quoter is told, this
+    /// is the copy the trim below reads, and one pass produces both. It is
+    /// kept apart for two reasons, both about reach rather than meaning. A
+    /// slot names its quoter's user by account address, and resolving that to
+    /// a cap's index into `users` would mean deriving the user PDA per slot,
+    /// which no quote step can afford. And a cap can be evicted from the wire
+    /// list, which costs the quoter a hint it may ignore anyway — while the
+    /// trim is velocity's own bound on unreserved depth and must not go
+    /// missing with it.
     pub rooms: crate::instructions::router::user_caps::QuoterRooms,
     /// Whether this fill settles a crossing taker remainder itself, and so
     /// reads a book with every crossing reservation ignored.
@@ -391,7 +397,6 @@ impl<'info> QuotedRoute<'info> {
                 limit_price: inputs.limit_price,
                 taker_served_window: inputs.taker_served_window,
                 consume_reservation: inputs.consume_reservation,
-                self_base_room: inputs.rooms.room(index),
             },
             slab,
             self.accounts,
@@ -656,7 +661,6 @@ impl<'info> QuotedRoute<'info> {
             taker: inputs.taker,
             taker_served_window: inputs.taker_served_window,
             consume_reservation: inputs.consume_reservation,
-            rooms: inputs.rooms,
             slot,
             now,
         }

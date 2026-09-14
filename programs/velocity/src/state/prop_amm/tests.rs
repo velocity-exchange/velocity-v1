@@ -198,13 +198,13 @@ fn the_cap_list_puts_no_ceiling_on_exclusions() {
     // A user with no room takes a bit, not one of the scarce slots.
     let partial = QuoterUserCapV0 {
         index: 0,
-        budget: 500,
-        base_cover: u64::MAX,
+        quote_cap: 500,
+        base_cap: u64::MAX,
     };
     let excluded = QuoterUserCapV0 {
         index: 1,
-        budget: 0,
-        base_cover: u64::MAX,
+        quote_cap: 0,
+        base_cap: u64::MAX,
     };
     let caps = QuoterUserCapsV0::from_caps(vec![partial, excluded]);
     assert_eq!(caps.len, 1, "only the partial spends a slot");
@@ -218,8 +218,8 @@ fn the_cap_list_puts_no_ceiling_on_exclusions() {
     let all: Vec<QuoterUserCapV0> = (0..MAX_QUOTER_WIRE_USERS as u8)
         .map(|index| QuoterUserCapV0 {
             index,
-            budget: 0,
-            base_cover: u64::MAX,
+            quote_cap: 0,
+            base_cap: u64::MAX,
         })
         .collect();
     let caps = QuoterUserCapsV0::from_caps(all);
@@ -232,13 +232,13 @@ fn the_cap_list_puts_no_ceiling_on_exclusions() {
     let many: Vec<QuoterUserCapV0> = (0..MAX_CONSTRAINED_WIRE_USERS as u8 + 4)
         .map(|index| QuoterUserCapV0 {
             index,
-            budget: 1_000 * (index as u64 + 1),
-            base_cover: u64::MAX,
+            quote_cap: 1_000 * (index as u64 + 1),
+            base_cap: u64::MAX,
         })
         .collect();
     let caps = QuoterUserCapsV0::from_caps(many);
     assert_eq!(caps.len as usize, MAX_CONSTRAINED_WIRE_USERS);
-    assert_eq!(caps.as_slice()[0].budget, 1_000, "the tightest is kept");
+    assert_eq!(caps.as_slice()[0].quote_cap, 1_000, "the tightest is kept");
     assert!(
         caps.is_excluded(MAX_CONSTRAINED_WIRE_USERS + 3),
         "the roomiest is excluded, never left unconstrained"
@@ -269,7 +269,6 @@ fn the_user_set_encodes_to_what_it_carries() {
         reference_price: 0,
         taker: None,
         limit_price: 0,
-        self_base_room: u64::MAX,
     };
     let mut bytes = Vec::new();
     quoter_spec::write_args(&mut bytes, &args).unwrap();
@@ -405,7 +404,6 @@ fn the_cpi_buffer_holds_exactly_what_the_args_serialize_to() {
         reference_price: i64::MAX,
         taker: Some(user_ref(0xFF, 0)),
         limit_price: u64::MAX,
-        self_base_room: u64::MAX,
     };
     let execute = ExecuteArgsV0 {
         taker_served_window: true,
@@ -416,7 +414,6 @@ fn the_cpi_buffer_holds_exactly_what_the_args_serialize_to() {
         caps: QuoterUserCapsV0::EMPTY,
         reference_price: i64::MAX,
         taker: Some(user_ref(0xFF, 0)),
-        self_base_room: u64::MAX,
     };
     // Eight for the anchor discriminator the caller writes ahead of the args.
     // The quote is the wider leg, by the price bound execute does not carry.

@@ -434,9 +434,9 @@ fn run_cross_leg<'info>(
     };
     let sized = with_counterparty_room(
         legs.tail,
-        &legs.accounts.taker.key(),
         inputs,
         &mut CapInputs {
+            taker_key: &legs.accounts.taker.key(),
             makers_and_referrer: legs.makers_and_referrer,
             makers_and_referrer_stats: legs.makers_and_referrer_stats,
             maps,
@@ -1177,7 +1177,6 @@ fn quote_entry_sides<'info>(
                 // improvement, not arbitrage for the protocol to middle,
                 // so this crank reads the book without it.
                 consume_reservation: false,
-                self_base_room: u64::MAX,
             },
             quoter_slab,
             accounts,

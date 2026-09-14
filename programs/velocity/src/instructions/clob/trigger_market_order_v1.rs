@@ -374,9 +374,9 @@ fn route_fill_fired_order<'info>(
     };
     let sized = crate::instructions::with_counterparty_room(
         tail.accounts,
-        &ctx.accounts.user.key(),
         inputs,
         &mut crate::instructions::CapInputs {
+            taker_key: &ctx.accounts.user.key(),
             makers_and_referrer: &tail.makers_and_referrer,
             makers_and_referrer_stats: &tail.makers_and_referrer_stats,
             maps,

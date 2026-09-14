@@ -592,9 +592,9 @@ fn route_and_fill_remainder<'info>(
     };
     let sized = crate::instructions::with_counterparty_room(
         tail,
-        &cx.accounts.taker.key(),
         inputs,
         &mut crate::instructions::CapInputs {
+            taker_key: &cx.accounts.taker.key(),
             makers_and_referrer: cx.makers_and_referrer,
             makers_and_referrer_stats: cx.makers_and_referrer_stats,
             maps,

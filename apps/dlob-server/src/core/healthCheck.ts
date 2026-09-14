@@ -7,6 +7,21 @@ export enum HEALTH_STATUS {
 }
 
 /**
+ * These durations gate the restart safety mechanisms, so a bad override has to
+ * fail closed onto the default rather than through. Plain `Number(x) || fb`
+ * lets a negative or Infinite value past: a negative sample gap resets the
+ * window on every sample and an infinite sustain never latches, either of which
+ * silently disables the kill-switch.
+ */
+function positiveDurationMs(
+	value: string | undefined,
+	fallback: number
+): number {
+	const parsed = Number(value);
+	return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+/**
  * Health check configuration
  */
 const HEALTH_CHECK_CONFIG = {
@@ -18,17 +33,21 @@ const HEALTH_CHECK_CONFIG = {
 	MIN_SLOT_RATE: parseFloat(process.env.MIN_SLOT_RATE || '0.03'),
 	// How long the DLOB slot must stay behind the oracle before the kill-switch
 	// latches. The check samples several times a second, so without a window a
-	// single bad sample would restart the pod. Number() over parseInt(): a
-	// malformed value must not silently disable the kill-switch via NaN.
-	KILL_SWITCH_SUSTAIN_MS: Number(process.env.KILL_SWITCH_SUSTAIN_MS) || 60_000,
+	// single bad sample would restart the pod.
+	KILL_SWITCH_SUSTAIN_MS: positiveDurationMs(
+		process.env.KILL_SWITCH_SUSTAIN_MS,
+		60_000
+	),
 	// If sampling itself stops, elapsed time says nothing about whether the
 	// market was behind the whole while, so a gap this long restarts the window.
-	KILL_SWITCH_SAMPLE_GAP_MS:
-		Number(process.env.KILL_SWITCH_SAMPLE_GAP_MS) || 10_000,
+	KILL_SWITCH_SAMPLE_GAP_MS: positiveDurationMs(
+		process.env.KILL_SWITCH_SAMPLE_GAP_MS,
+		10_000
+	),
 	// How long a process may report no slot at all before it counts as wedged.
 	// Without a bound, a slot source that never delivers stays liveness-healthy
 	// forever, which is worse than the cold-start crash-loop this replaced.
-	STARTUP_GRACE_MS: Number(process.env.STARTUP_GRACE_MS) || 180_000,
+	STARTUP_GRACE_MS: positiveDurationMs(process.env.STARTUP_GRACE_MS, 180_000),
 };
 
 /**

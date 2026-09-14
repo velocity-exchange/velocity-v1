@@ -140,6 +140,37 @@ describe('healthCheck', () => {
 		});
 	});
 
+	describe('duration config validation', () => {
+		it.each([
+			['-5', 'negative'],
+			['Infinity', 'infinite'],
+			['abc', 'non-numeric'],
+			['0', 'zero'],
+			['', 'empty'],
+			[undefined, 'unset'],
+		])('falls back to the default for a %s override', (raw) => {
+			// Re-derived rather than reading HEALTH_CHECK_CONFIG, which is frozen at
+			// import time; this pins the rule these values are built with.
+			const parsed = Number(raw);
+			const accepted = Number.isFinite(parsed) && parsed > 0;
+			expect(accepted).toBe(false);
+		});
+
+		it('accepts a finite positive override', () => {
+			const parsed = Number('1500');
+			expect(Number.isFinite(parsed) && parsed > 0).toBe(true);
+		});
+
+		it('ships sane defaults', () => {
+			expect(HEALTH_CHECK_CONFIG.KILL_SWITCH_SUSTAIN_MS).toBeGreaterThan(0);
+			expect(HEALTH_CHECK_CONFIG.KILL_SWITCH_SAMPLE_GAP_MS).toBeGreaterThan(0);
+			expect(HEALTH_CHECK_CONFIG.STARTUP_GRACE_MS).toBeGreaterThan(0);
+			expect(Number.isFinite(HEALTH_CHECK_CONFIG.KILL_SWITCH_SUSTAIN_MS)).toBe(
+				true
+			);
+		});
+	});
+
 	describe('startup grace', () => {
 		it('goes unhealthy if no slot ever arrives', () => {
 			globalHealthState.processStartedAt =

@@ -1,5 +1,41 @@
-//! Size every maker the caller has loaded before the route's books are
-//! quoted, so a quote never stands on liquidity the fill would refuse.
+//! Size every counterparty a route may settle against, before it is quoted,
+//! so a quote never stands on liquidity the fill would refuse.
+//!
+//! # Two sizings, one question
+//!
+//! This module produces two numbers and they are easy to read as parallel
+//! mechanisms. They are not. They are one question — how much can this fill
+//! cost the account behind the depth — asked of two kinds of depth, and the
+//! kind is decided by [`crate::state::prop_amm::QuoterType::depth_is_margin_reserved`], not by which
+//! program is quoting.
+//!
+//! A book's depth is resting orders. Each was gated at placement and
+//! reserved into its owner's `open_bids`/`open_asks`, so filling one does not
+//! grow that owner's worst case: the base was priced in already. What a fill
+//! costs them is the gap between their limit and the mark, which is a *quote*
+//! figure. A book walks the orders of many owners, so it gets a *list* —
+//! [`build_user_caps`], carried in `UserCapsV0`, spent by the book as it
+//! walks.
+//!
+//! Every other quoter computes its depth when asked, and nothing was set
+//! aside for it. A fill there grows its owner's worst case, so what bounds it
+//! is initial margin on the base taken, which is a *base* figure. Such a
+//! quoter fills from the single `user` on its registry slot, so it gets a
+//! *scalar* — [`build_quoter_rooms`], carried in `QuoteArgsV0::self_base_room`.
+//!
+//! Both ride the wire to every quoter, because the wire is one shape. Each
+//! quoter reads the one that describes its own depth; a book ignores the
+//! scalar and an unreserved quoter ignores the list.
+//!
+//! The two are not independent of each other. A resting order already costs
+//! its owner room in the *base* figure, because
+//! `worst_case_liability_value` prices `base + open_bids` and
+//! `base + open_asks`. The reverse does not hold: a fill a quoter has not
+//! made yet is reserved nowhere, so a quote budget cannot see it. One owner
+//! backing both a book presence and an unreserved quoter can therefore be
+//! offered room twice in one fill, and the post-fill check refuses it. That
+//! is the same shape the book-count divisor below guards against within the
+//! book set, and it is not guarded across the two kinds.
 //!
 //! `fulfill_perp_order_post_checks` refuses a fill that leaves a maker short
 //! of what it owes, and the refusal takes the whole transaction — the taker
@@ -115,7 +151,7 @@ use {
         state::{
             margin_calculation::{MarginContext, MarginTypeConfig},
             prop_amm::{
-                clob_slot_index, find_account, ClobSide, QuoterSlabExt, QuoterSlabV0, QuoterType,
+                clob_slot_index, find_account, ClobSide, QuoterSlabExt, QuoterSlabV0,
                 QuoterUserCapV0, QuoterUserCapsV0,
                 MAX_CONSTRAINED_WIRE_USERS as USER_CAPS_CAPACITY, MAX_ROUTE_QUOTERS,
             },
@@ -333,7 +369,7 @@ pub fn build_quoter_rooms<'info>(
         let slots = slab.slots()?;
         let sized: Vec<(usize, Pubkey)> = crate::state::prop_amm::occupied_slots(&slots)
             .filter(|(_, slot)| {
-                slot.config.quoter_type == QuoterType::Custom
+                !slot.config.quoter_type.depth_is_margin_reserved()
                     && slot.quotes()
                     && find_account(tail, &slot.config.response_account).is_some()
             })

@@ -37,18 +37,44 @@ impl QuoterType {
         }
     }
 
+    /// Whether this quoter's depth was margin-reserved through velocity
+    /// before the fill.
+    ///
+    /// The one fact that separates the two kinds of quoter, and what the
+    /// rules below are consequences of. A book's depth is resting orders,
+    /// each gated at placement and reserved into its owner's
+    /// `open_bids`/`open_asks`. Every other quoter computes its depth when
+    /// asked, so nothing was set aside for it.
+    ///
+    /// It decides how a fill sizes the quoter's counterparties, which is why
+    /// there are two sizings and not one. Reserved depth costs its owner the
+    /// gap between the order's price and the mark, because the base was
+    /// already priced into the owner's worst case — so the bound is a quote
+    /// budget, and there is one per owner, because a book walks the orders of
+    /// many. Depth that was never reserved grows its owner's worst case when
+    /// it fills, so the bound is initial margin on the base taken — one base
+    /// figure, because every such quoter fills from the single `user` on its
+    /// own registry slot.
+    ///
+    /// Only `Clob` is reserved, and only velocity's own book may register as
+    /// one. A `Vamm` never reaches a slab at all: approval refuses it,
+    /// because the vAMM quotes in-program.
+    pub fn depth_is_margin_reserved(self) -> bool {
+        matches!(self, QuoterType::Clob)
+    }
+
     /// Whether a fill unwinds this quoter's makers' open-order aggregates from
     /// its execute response (`completed_orders` and `cancelled`).
     ///
-    /// Only a `Clob` does. Its orders are margin-reserved through velocity at
-    /// placement, so a fill or cull must decrement those reservations. A
-    /// `Custom` quoter's depth is never reserved, so it has nothing to unwind —
-    /// and letting one report completions or culls would let it decrement other
-    /// loaded users' aggregates, release their trigger slots, and free their
-    /// margin. Held as one predicate so the fill path cannot drift from the
-    /// registration rule that only velocity's own CLOB is a `Clob`.
+    /// The same fact as [`Self::depth_is_margin_reserved`], read for its
+    /// other consequence: there is something to unwind exactly when something
+    /// was reserved. Letting an unreserved quoter report completions or culls
+    /// would let it decrement other loaded users' aggregates, release their
+    /// trigger slots, and free their margin. Held as one predicate so the
+    /// fill path cannot drift from the registration rule that only velocity's
+    /// own CLOB is a `Clob`.
     pub fn tracks_maker_aggregates(self) -> bool {
-        matches!(self, QuoterType::Clob)
+        self.depth_is_margin_reserved()
     }
 }
 

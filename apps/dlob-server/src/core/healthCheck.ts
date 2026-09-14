@@ -7,6 +7,21 @@ export enum HEALTH_STATUS {
 }
 
 /**
+ * These durations gate the restart safety mechanisms, so a bad override has to
+ * fail closed onto the default rather than through. Plain `Number(x) || fb`
+ * lets a negative or Infinite value past: a negative sample gap resets the
+ * window on every sample and an infinite sustain never latches, either of which
+ * silently disables the kill-switch.
+ */
+function positiveDurationMs(
+	value: string | undefined,
+	fallback: number
+): number {
+	const parsed = Number(value);
+	return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+/**
  * Health check configuration
  */
 const HEALTH_CHECK_CONFIG = {
@@ -16,6 +31,23 @@ const HEALTH_CHECK_CONFIG = {
 	// Minimum expected slot advancement rate. Sometimes usermap is used for slot source, so the slot rate
 	// may be much lower than 2 per sec. 0.03 is 1 slot per 33s
 	MIN_SLOT_RATE: parseFloat(process.env.MIN_SLOT_RATE || '0.03'),
+	// How long the DLOB slot must stay behind the oracle before the kill-switch
+	// latches. The check samples several times a second, so without a window a
+	// single bad sample would restart the pod.
+	KILL_SWITCH_SUSTAIN_MS: positiveDurationMs(
+		process.env.KILL_SWITCH_SUSTAIN_MS,
+		60_000
+	),
+	// If sampling itself stops, elapsed time says nothing about whether the
+	// market was behind the whole while, so a gap this long restarts the window.
+	KILL_SWITCH_SAMPLE_GAP_MS: positiveDurationMs(
+		process.env.KILL_SWITCH_SAMPLE_GAP_MS,
+		10_000
+	),
+	// How long a process may report no slot at all before it counts as wedged.
+	// Without a bound, a slot source that never delivers stays liveness-healthy
+	// forever, which is worse than the cold-start crash-loop this replaced.
+	STARTUP_GRACE_MS: positiveDurationMs(process.env.STARTUP_GRACE_MS, 180_000),
 };
 
 /**
@@ -24,11 +56,13 @@ const HEALTH_CHECK_CONFIG = {
 type HealthState = {
 	lastSlot: number;
 	lastSlotTimestamp: number;
+	processStartedAt: number;
 };
 
 const globalHealthState: HealthState = {
 	lastSlot: -1,
 	lastSlotTimestamp: Date.now(),
+	processStartedAt: Date.now(),
 };
 
 /**
@@ -40,19 +74,39 @@ function evaluateHealth(currentSlot: number): {
 } {
 	const now = Date.now();
 
+	// Restart is the deliberate kill-switch and stays latched until the pod is
+	// replaced, so it outranks every other branch here: a slot source that dips
+	// to 0 on reconnect must not hand back a healthy verdict and clear it.
+	// Every other status is re-derived from slot progression below, so a
+	// transient stall clears itself instead of pinning the pod unhealthy.
+	if (getHealthStatus() === HEALTH_STATUS.Restart) {
+		return {
+			isHealthy: false,
+			reason: `Unhealthy state: ${HEALTH_STATUS.Restart}`,
+		};
+	}
+
+	// Slot 0 means no poll has returned yet. A publisher starting against an
+	// empty book sits here until its first poll lands, and calling that
+	// unhealthy is what crash-looped cold starts and forced the mainnet
+	// manifests onto TCP probes. Tolerate it only for the startup window: a slot
+	// source that never delivers one slot is wedged, not starting.
+	if (currentSlot === 0) {
+		const sinceStart = now - globalHealthState.processStartedAt;
+		if (sinceStart < HEALTH_CHECK_CONFIG.STARTUP_GRACE_MS) {
+			return { isHealthy: true };
+		}
+		return {
+			isHealthy: false,
+			reason: `No slot after ${sinceStart}ms (startup grace ${HEALTH_CHECK_CONFIG.STARTUP_GRACE_MS}ms)`,
+		};
+	}
+
 	// First health check
 	if (globalHealthState.lastSlot === -1) {
 		globalHealthState.lastSlot = currentSlot;
 		globalHealthState.lastSlotTimestamp = now;
 		return { isHealthy: true };
-	}
-
-	const currentHealthStatus = getHealthStatus();
-	if (currentHealthStatus !== HEALTH_STATUS.Ok) {
-		return {
-			isHealthy: false,
-			reason: `Unhealthy state: ${currentHealthStatus}`,
-		};
 	}
 
 	const timeDelta = now - globalHealthState.lastSlotTimestamp;
@@ -90,6 +144,59 @@ function evaluateHealth(currentSlot: number): {
 	return { isHealthy: true };
 }
 
+/**
+ * Tracks, per market, when the DLOB slot first fell behind the oracle and when
+ * it was last sampled. The kill-switch latches only once a market has been
+ * behind continuously for KILL_SWITCH_SUSTAIN_MS, so a brief oracle or RPC
+ * hiccup cannot restart a pod that is otherwise serving fine.
+ *
+ * lastSeen is what makes "continuously" true. Elapsed time alone would also be
+ * satisfied by one bad sample, a long gap in sampling, then a second bad
+ * sample - and a stalled publisher is exactly the case that samples least
+ * often, so that gap is not hypothetical.
+ *
+ * The window is process-wide: dlob-publisher runs a normal and an indicative
+ * DLOBSubscriberIO over the same markets, and they share one window per market.
+ * They read the same slot source and oracle data, so they agree in practice.
+ */
+type SlotDiffWindow = { since: number; lastSeen: number };
+const slotDiffWindows: Map<string, SlotDiffWindow> = new Map();
+
+function recordSlotDiffHealth(marketName: string, isBehind: boolean): void {
+	if (!isBehind) {
+		slotDiffWindows.delete(marketName);
+		return;
+	}
+
+	const now = Date.now();
+	const window = slotDiffWindows.get(marketName);
+	if (
+		window === undefined ||
+		now - window.lastSeen > HEALTH_CHECK_CONFIG.KILL_SWITCH_SAMPLE_GAP_MS
+	) {
+		slotDiffWindows.set(marketName, { since: now, lastSeen: now });
+		return;
+	}
+
+	window.lastSeen = now;
+	const behindFor = now - window.since;
+	if (behindFor >= HEALTH_CHECK_CONFIG.KILL_SWITCH_SUSTAIN_MS) {
+		console.log(
+			`Kill-switch: ${marketName} has been behind the oracle for ${behindFor}ms, flagging process for restart`
+		);
+		setHealthStatus(HEALTH_STATUS.Restart);
+	}
+}
+
+/** Test seam: clears every piece of module-global health state. */
+function resetHealthState(): void {
+	globalHealthState.lastSlot = -1;
+	globalHealthState.lastSlotTimestamp = Date.now();
+	globalHealthState.processStartedAt = Date.now();
+	slotDiffWindows.clear();
+	setHealthStatus(HEALTH_STATUS.Ok);
+}
+
 let healthStatus: HEALTH_STATUS = HEALTH_STATUS.Ok;
 const setHealthStatus = (status: HEALTH_STATUS): void => {
 	healthStatus = status;
@@ -103,6 +210,9 @@ export {
 	evaluateHealth,
 	globalHealthState,
 	HEALTH_CHECK_CONFIG,
+	recordSlotDiffHealth,
+	resetHealthState,
 	setHealthStatus,
 	getHealthStatus,
+	slotDiffWindows,
 };

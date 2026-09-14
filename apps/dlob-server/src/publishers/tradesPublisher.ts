@@ -1,3 +1,4 @@
+import { installUnhandledRejectionGuard } from '../core/processGuards';
 import { program } from 'commander';
 
 import { Connection, Commitment, PublicKey, Keypair } from '@solana/web3.js';
@@ -377,6 +378,7 @@ async function recursiveTryCatch(f: () => void) {
 	}
 }
 
+installUnhandledRejectionGuard('trades-publisher');
 recursiveTryCatch(() => main());
 
 export {

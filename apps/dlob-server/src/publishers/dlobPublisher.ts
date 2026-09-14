@@ -1,3 +1,4 @@
+import { installUnhandledRejectionGuard } from '../core/processGuards';
 import { Connection, Commitment, PublicKey, Keypair } from '@solana/web3.js';
 
 import {
@@ -1042,6 +1043,7 @@ async function recursiveTryCatch(f: () => void) {
 	}
 }
 
+installUnhandledRejectionGuard('dlob-publisher');
 recursiveTryCatch(() => main());
 
 export {

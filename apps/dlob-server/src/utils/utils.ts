@@ -276,6 +276,38 @@ export function aggregatePrices(entries, side, pricePrecision) {
 	return Array.from(result.values());
 }
 
+const REDIS_WARN_THROTTLE_MS = 5_000;
+const lastRedisWarnAt: Map<string, number> = new Map();
+
+/**
+ * Redis writes in the publish path are fire-and-forget: nothing awaits them and
+ * a rejection would otherwise reach Node's unhandled-rejection handler. A write
+ * that lands mid-reconnect is expected, so log it and keep publishing.
+ *
+ * Scope: this catches the rejection of the RedisClient method itself, which is
+ * where the "Redis client not connected" throw lives. RedisClient.set/setRaw do
+ * not await the underlying ioredis command, so a command-level failure is a
+ * separate floating promise that only the process-level unhandledRejection
+ * guard can see. publish() awaits, so it is fully covered here.
+ *
+ * Logging is throttled per context: these run per market per update, so an
+ * unthrottled warn would turn the outage this handles into a log storm.
+ */
+export function fireAndForgetRedis(
+	write: Promise<unknown>,
+	context: string
+): void {
+	Promise.resolve(write).catch((e) => {
+		const now = Date.now();
+		const last = lastRedisWarnAt.get(context) ?? 0;
+		if (now - last < REDIS_WARN_THROTTLE_MS) {
+			return;
+		}
+		lastRedisWarnAt.set(context, now);
+		logger.warn(`Redis write failed (${context}): ${String(e)}`);
+	});
+}
+
 export function publishGroupings(
 	l2Formatted,
 	marketArgs: wsMarketArgs,
@@ -361,11 +393,14 @@ export function publishGroupings(
 			asks: aggregatedAsks,
 		});
 
-		redisClient.publish(
-			`${clientPrefix}orderbook_${marketType}_${
-				marketArgs.marketIndex
-			}_grouped_${group}${indicativeQuotesRedisClient ? '_indicative' : ''}`,
-			l2Formatted_grouped20
+		fireAndForgetRedis(
+			redisClient.publish(
+				`${clientPrefix}orderbook_${marketType}_${
+					marketArgs.marketIndex
+				}_grouped_${group}${indicativeQuotesRedisClient ? '_indicative' : ''}`,
+				l2Formatted_grouped20
+			),
+			'orderbook grouped publish'
 		);
 	});
 }

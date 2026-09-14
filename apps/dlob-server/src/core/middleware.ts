@@ -5,6 +5,7 @@ import { SlotSource } from '@velocity-exchange/sdk';
 import {
 	evaluateHealth,
 	globalHealthState,
+	getHealthStatus,
 	setHealthStatus,
 	HEALTH_STATUS,
 } from './healthCheck';
@@ -67,7 +68,11 @@ export const handleHealthCheck = (
 					{}
 				);
 			}
-			setHealthStatus(HEALTH_STATUS.UnhealthySlotSubscriber);
+			// Restart is the kill-switch latch and must survive this write, or the
+			// next probe re-derives a healthy verdict and the pod is never replaced.
+			if (getHealthStatus() !== HEALTH_STATUS.Restart) {
+				setHealthStatus(HEALTH_STATUS.UnhealthySlotSubscriber);
+			}
 			res.writeHead(500);
 			res.end('NOK');
 			return;

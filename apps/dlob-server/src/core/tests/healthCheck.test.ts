@@ -1,3 +1,4 @@
+import { describe, expect, it, beforeEach } from '@jest/globals';
 import {
 	evaluateHealth,
 	globalHealthState,
@@ -5,16 +6,16 @@ import {
 	recordSlotDiffHealth,
 	setHealthStatus,
 	getHealthStatus,
-	slotDiffUnhealthySince,
+	resetHealthState,
+	slotDiffWindows,
 	HEALTH_STATUS,
 } from '../healthCheck';
+import { handleHealthCheck } from '../middleware';
+import { SlotSource } from '@velocity-exchange/sdk';
 
 describe('healthCheck', () => {
 	beforeEach(() => {
-		globalHealthState.lastSlot = -1;
-		globalHealthState.lastSlotTimestamp = Date.now();
-		slotDiffUnhealthySince.clear();
-		setHealthStatus(HEALTH_STATUS.Ok);
+		resetHealthState();
 	});
 
 	describe('cold start', () => {
@@ -52,6 +53,40 @@ describe('healthCheck', () => {
 		});
 	});
 
+	describe('latched Restart survives HTTP probes', () => {
+		it('keeps returning 500 across consecutive probes', async () => {
+			let slot = 1000;
+			evaluateHealth(slot);
+			setHealthStatus(HEALTH_STATUS.Restart);
+
+			const codes: number[] = [];
+			const res = { writeHead: (c: number) => codes.push(c), end: () => {} };
+			const handler = handleHealthCheck({
+				getSlot: () => slot,
+			} as unknown as SlotSource);
+
+			await handler({}, res, null);
+			slot += 100;
+			await handler({}, res, null);
+			slot += 100;
+			await handler({}, res, null);
+
+			expect(codes).toEqual([500, 500, 500]);
+		});
+
+		it('is not cleared by a slot source dipping to 0', () => {
+			evaluateHealth(1000);
+			setHealthStatus(HEALTH_STATUS.Restart);
+			expect(evaluateHealth(0).isHealthy).toBe(false);
+			expect(getHealthStatus()).toBe(HEALTH_STATUS.Restart);
+		});
+
+		it('is not cleared before the first sample', () => {
+			setHealthStatus(HEALTH_STATUS.Restart);
+			expect(evaluateHealth(1000).isHealthy).toBe(false);
+		});
+	});
+
 	describe('kill-switch sustain window', () => {
 		it('does not latch on a single bad sample', () => {
 			recordSlotDiffHealth('SOL-PERP', true);
@@ -67,23 +102,56 @@ describe('healthCheck', () => {
 
 		it('latches once the gap persists past the window', () => {
 			recordSlotDiffHealth('SOL-PERP', true);
-			slotDiffUnhealthySince.set(
-				'SOL-PERP',
-				Date.now() - (HEALTH_CHECK_CONFIG.KILL_SWITCH_SUSTAIN_MS + 1)
-			);
+			const now = Date.now();
+			slotDiffWindows.set('SOL-PERP', {
+				since: now - (HEALTH_CHECK_CONFIG.KILL_SWITCH_SUSTAIN_MS + 1),
+				lastSeen: now,
+			});
 			recordSlotDiffHealth('SOL-PERP', true);
 			expect(getHealthStatus()).toBe(HEALTH_STATUS.Restart);
 		});
 
+		it('restarts the window when sampling itself stopped', () => {
+			recordSlotDiffHealth('SOL-PERP', true);
+			const now = Date.now();
+			// Behind long ago, but not sampled since: elapsed time alone must not
+			// count as having been behind the whole while.
+			slotDiffWindows.set('SOL-PERP', {
+				since: now - (HEALTH_CHECK_CONFIG.KILL_SWITCH_SUSTAIN_MS + 1),
+				lastSeen: now - (HEALTH_CHECK_CONFIG.KILL_SWITCH_SAMPLE_GAP_MS + 1),
+			});
+			recordSlotDiffHealth('SOL-PERP', true);
+			expect(getHealthStatus()).toBe(HEALTH_STATUS.Ok);
+			expect(slotDiffWindows.get('SOL-PERP')?.since).toBeGreaterThan(
+				now - HEALTH_CHECK_CONFIG.KILL_SWITCH_SAMPLE_GAP_MS
+			);
+		});
+
 		it('tracks markets independently', () => {
 			recordSlotDiffHealth('SOL-PERP', true);
-			slotDiffUnhealthySince.set(
-				'SOL-PERP',
-				Date.now() - (HEALTH_CHECK_CONFIG.KILL_SWITCH_SUSTAIN_MS + 1)
-			);
+			const now = Date.now();
+			slotDiffWindows.set('SOL-PERP', {
+				since: now - (HEALTH_CHECK_CONFIG.KILL_SWITCH_SUSTAIN_MS + 1),
+				lastSeen: now,
+			});
 			recordSlotDiffHealth('BTC-PERP', true);
-			expect(slotDiffUnhealthySince.has('BTC-PERP')).toBe(true);
+			expect(slotDiffWindows.has('BTC-PERP')).toBe(true);
 			expect(getHealthStatus()).toBe(HEALTH_STATUS.Ok);
+		});
+	});
+
+	describe('startup grace', () => {
+		it('goes unhealthy if no slot ever arrives', () => {
+			globalHealthState.processStartedAt =
+				Date.now() - (HEALTH_CHECK_CONFIG.STARTUP_GRACE_MS + 1000);
+			const { isHealthy, reason } = evaluateHealth(0);
+			expect(isHealthy).toBe(false);
+			expect(reason).toContain('No slot after');
+		});
+
+		it('stays healthy at slot 0 inside the grace window', () => {
+			globalHealthState.processStartedAt = Date.now();
+			expect(evaluateHealth(0).isHealthy).toBe(true);
 		});
 	});
 });

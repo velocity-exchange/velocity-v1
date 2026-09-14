@@ -46,22 +46,34 @@ fn is_quoter_slab(info: &AccountInfo) -> bool {
             .is_ok_and(|data| data.get(..8) == Some(QuoterSlabV0::DISCRIMINATOR))
 }
 
-/// Whether this slot's CPI account list names another consulted quoter in the
-/// transaction.
+/// Whether this slot's CPI account list names another consulted quoter's
+/// response account.
 ///
-/// Its own three keys are not rivals: a slot legitimately carries its own
-/// program and its own response account — that last one is where velocity
-/// reads the answer from, and approval requires it.
-fn quoter_reads_a_rival(slot: &QuoterSlotV0, rivals: &[Pubkey]) -> bool {
-    let own = [
-        slot.entry,
-        slot.config.program_id,
-        slot.config.response_account,
-    ];
-    slot.config
-        .registered_accounts()
-        .iter()
-        .any(|meta| !own.contains(&meta.pubkey) && rivals.contains(&meta.pubkey))
+/// A quoter must not read another quoter's answer in this transaction. Quote
+/// order is slab order, so a slot placed later could otherwise read a
+/// response account already written, holding the ladder that quoter is about
+/// to be held to, and quote one tick better. That is an unbounded last look,
+/// and velocity holds its own vAMM to a band (`LAST_LOOK_BAND`) for the same
+/// reason.
+///
+/// Response accounts and nothing else. A quoter's program and its staging
+/// entry carry no answer, and barring those refuses honest lists: two
+/// quoters may run on one program, and a quoter may legitimately CPI a
+/// program another slot is registered under. Its own response account is not
+/// a foreign one, and approval requires the list to name it.
+///
+/// A backstop, not the rule. `update_quoter_approved` already refuses, in
+/// both directions, a registered list that names another approved slot's
+/// response account, and a consulted slot is an approved one — so this
+/// cannot fire unless that gate regresses. It stays because of what the
+/// exclusion carries: every quoter CPI signs as the market's slab, so a
+/// quoter holds the signature that authenticates velocity at every other
+/// quoter on the market, and what makes a forwarded call useless is that it
+/// cannot name the callee's response account.
+fn reads_a_foreign_response(slot: &QuoterSlotV0, foreign_responses: &[Pubkey]) -> bool {
+    slot.config.registered_accounts().iter().any(|meta| {
+        meta.pubkey != slot.config.response_account && foreign_responses.contains(&meta.pubkey)
+    })
 }
 
 /// Cut a custom quoter's ladder to the depth this fill will settle against.
@@ -187,27 +199,20 @@ struct SlotQuote {
 /// skips.
 fn slot_offers_nothing(
     slot: &QuoterSlotV0,
-    rivals: &[Pubkey],
+    foreign_responses: &[Pubkey],
     taker_served_window: bool,
 ) -> Option<&'static str> {
     if !slot.quotes() {
         return Some("");
     }
-    // A quoter never sees another quoter in this transaction.
-    //
-    // Quote order is slab order, so a slot placed later could otherwise read
-    // a rival's response account — already written, holding the ladder that
-    // rival is about to be held to — and quote one tick better. That is an
-    // unbounded last look. Velocity holds its own vAMM's last look to a band
-    // for the same reason (`LAST_LOOK_BAND`), and a third party must not get
-    // a wider one.
+    // The reason is on `reads_a_foreign_response`.
     //
     // Skipped, not filtered: a quoter reads its accounts by position, so
     // removing one shifts every account after it and the quoter answers
     // about the wrong thing. Skipping costs only this slot's turn, and it is
     // the slot that asked for the account.
-    if quoter_reads_a_rival(slot, rivals) {
-        return Some("names another consulted quoter in its accounts; skipped");
+    if reads_a_foreign_response(slot, foreign_responses) {
+        return Some("names another consulted quoter's response account; skipped");
     }
     // Maker priority: a book with a speed bump quotes no depth to an
     // unattested taker. The slot stays consulted — the baseline is presence,
@@ -264,7 +269,8 @@ pub struct QuotedRoute<'info> {
     /// quoter *could* have quoted is a fact about the approved set.
     slab: Option<AccountLoader<'info, QuoterSlabV0>>,
     /// Every consulted slab slot, quoting or not: a slot that was skipped
-    /// (dead, rival-reading, speed-bumped) still counts as consulted for the
+    /// (dead, reading another's response, speed-bumped) still counts as
+    /// consulted for the
     /// signed route and the baseline, which is what separates this from
     /// [`Self::quoted_slots`].
     ///
@@ -364,39 +370,32 @@ impl<'info> QuotedRoute<'info> {
 
         route.consulted = slab.consulted_slots(tail)?;
 
-        // Read before any quoting, so the rival check sees slots that come
-        // later in the slab as well as earlier ones.
+        // Read before any quoting, so the check sees slots that come later
+        // in the slab as well as earlier ones.
         //
         // A fixed array rather than a collected list: velocity's heap never
-        // reclaims, so 768 bytes of keys would be held for the rest of the
+        // reclaims, so these keys would be held for the rest of the
         // instruction where the stack gives them back on return. Zipping the
         // fill into that array is its own bound, and `consulted_slots` caps
         // its list at `MAX_ROUTE_QUOTERS`, so nothing is cut short.
-        let mut rivals = [Pubkey::default(); MAX_ROUTE_QUOTERS * 3];
+        let mut responses = [Pubkey::default(); MAX_ROUTE_QUOTERS];
         {
             let slots = slab.slots()?;
             route
                 .consulted
                 .iter()
-                .flat_map(|&index| {
-                    let slot = &slots[index];
-                    [
-                        slot.entry,
-                        slot.config.program_id,
-                        slot.config.response_account,
-                    ]
-                })
-                .zip(rivals.iter_mut())
-                .for_each(|(key, rival)| *rival = key);
+                .map(|&index| slots[index].config.response_account)
+                .zip(responses.iter_mut())
+                .for_each(|(key, response)| *response = key);
         }
-        let rivals = &rivals[..route.consulted.len() * 3];
+        let responses = &responses[..route.consulted.len()];
 
         // By position, because `consulted` stays on the route for the
         // baseline and signed-route rules and cannot be borrowed across a
         // call that takes the route mutably.
         for position in 0..route.consulted.len() {
             let index = route.consulted[position];
-            route.quote_slot(&slab, index, inputs, rivals, scratch)?;
+            route.quote_slot(&slab, index, inputs, responses, scratch)?;
         }
         Ok(route)
     }
@@ -422,10 +421,10 @@ impl<'info> QuotedRoute<'info> {
         slab: &AccountLoader<'info, QuoterSlabV0>,
         index: usize,
         inputs: &QuoteInputs<'_>,
-        rivals: &[Pubkey],
+        responses: &[Pubkey],
         scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
     ) -> Result<()> {
-        let Some(quoted) = self.take_quote(slab, index, inputs, rivals, scratch)? else {
+        let Some(quoted) = self.take_quote(slab, index, inputs, responses, scratch)? else {
             return Ok(());
         };
         self.record_quote(index, inputs, quoted)
@@ -441,12 +440,12 @@ impl<'info> QuotedRoute<'info> {
         slab: &AccountLoader<'info, QuoterSlabV0>,
         index: usize,
         inputs: &QuoteInputs<'_>,
-        rivals: &[Pubkey],
+        responses: &[Pubkey],
         scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
     ) -> Result<Option<SlotQuote>> {
         let slots = slab.slots()?;
         let slot = &slots[index];
-        if let Some(reason) = slot_offers_nothing(slot, rivals, inputs.taker_served_window) {
+        if let Some(reason) = slot_offers_nothing(slot, responses, inputs.taker_served_window) {
             if !reason.is_empty() {
                 msg!("quoter {}: {}", slot.entry, reason);
             }

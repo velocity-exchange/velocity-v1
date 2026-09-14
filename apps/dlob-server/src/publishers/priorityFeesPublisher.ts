@@ -1,3 +1,4 @@
+import { installUnhandledRejectionGuard } from '../core/processGuards';
 import { program } from 'commander';
 
 import { Connection, Commitment, Keypair } from '@solana/web3.js';
@@ -16,7 +17,7 @@ import {
 } from '@velocity-exchange/common/clients';
 
 import { logger, setLogLevel } from '../utils/logger';
-import { sleep } from '../utils/utils';
+import { sleep, fireAndForgetRedis } from '../utils/utils';
 import express from 'express';
 import { setGlobalDispatcher, Agent } from 'undici';
 
@@ -122,11 +123,17 @@ class PriorityFeeSubscriber {
 				);
 				return;
 			}
-			this.redisClient.publish(
-				`${redisClientPrefix}priorityFees_${kind}_${marketIndex}`,
-				levels
+			fireAndForgetRedis(
+				this.redisClient.publish(
+					`${redisClientPrefix}priorityFees_${kind}_${marketIndex}`,
+					levels
+				),
+				'priority fees publish'
 			);
-			this.redisClient.set(`priorityFees_${kind}_${marketIndex}`, levels);
+			fireAndForgetRedis(
+				this.redisClient.set(`priorityFees_${kind}_${marketIndex}`, levels),
+				'priority fees set'
+			);
 		};
 
 		await Promise.allSettled([
@@ -219,6 +226,7 @@ async function recursiveTryCatch(f: () => void) {
 	}
 }
 
+installUnhandledRejectionGuard('priority-fees-publisher');
 recursiveTryCatch(() => main());
 
 export {

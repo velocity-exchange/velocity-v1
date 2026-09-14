@@ -276,6 +276,20 @@ export function aggregatePrices(entries, side, pricePrecision) {
 	return Array.from(result.values());
 }
 
+/**
+ * Redis writes in the publish path are fire-and-forget: nothing awaits them and
+ * a rejection would otherwise reach Node's unhandled-rejection handler. A write
+ * that lands mid-reconnect is expected, so log it and keep publishing.
+ */
+export function fireAndForgetRedis(
+	write: Promise<unknown>,
+	context: string
+): void {
+	Promise.resolve(write).catch((e) => {
+		logger.warn(`Redis write failed (${context}): ${String(e)}`);
+	});
+}
+
 export function publishGroupings(
 	l2Formatted,
 	marketArgs: wsMarketArgs,
@@ -361,11 +375,14 @@ export function publishGroupings(
 			asks: aggregatedAsks,
 		});
 
-		redisClient.publish(
-			`${clientPrefix}orderbook_${marketType}_${
-				marketArgs.marketIndex
-			}_grouped_${group}${indicativeQuotesRedisClient ? '_indicative' : ''}`,
-			l2Formatted_grouped20
+		fireAndForgetRedis(
+			redisClient.publish(
+				`${clientPrefix}orderbook_${marketType}_${
+					marketArgs.marketIndex
+				}_grouped_${group}${indicativeQuotesRedisClient ? '_indicative' : ''}`,
+				l2Formatted_grouped20
+			),
+			'orderbook grouped publish'
 		);
 	});
 }

@@ -1,3 +1,4 @@
+import { installUnhandledRejectionGuard } from './core/processGuards';
 import cors from 'cors';
 import express from 'express';
 import * as http from 'http';
@@ -608,4 +609,5 @@ async function recursiveTryCatch(f: () => void) {
 	}
 }
 
+installUnhandledRejectionGuard('ws-connection-manager');
 recursiveTryCatch(() => main());

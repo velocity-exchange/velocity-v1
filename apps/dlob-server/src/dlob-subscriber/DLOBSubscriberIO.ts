@@ -29,9 +29,10 @@ import {
 	l2WithBNToStrings,
 	parsePositiveIntArray,
 	publishGroupings,
+	fireAndForgetRedis,
 } from '../utils/utils';
 import { OffloadQueue } from '../utils/offload';
-import { setHealthStatus, HEALTH_STATUS } from '../core/healthCheck';
+import { recordSlotDiffHealth } from '../core/healthCheck';
 import { CounterValue } from '../core/metricsV2';
 import { calculateSpreadBidAskMark } from '@velocity-exchange/common';
 
@@ -447,28 +448,31 @@ export class DLOBSubscriberIO extends DLOBSubscriber {
 				PERP_MARKETS_TO_SKIP_SLOT_CHECK.includes(marketArgs.marketIndex)) ||
 			(marketType === 'spot' &&
 				SPOT_MARKETS_TO_SKIP_SLOT_CHECK.includes(marketArgs.marketIndex));
-		if (
+		const slotDiffTooLarge =
 			Math.abs(slot - parseInt(l2Formatted['oracleData']['slot'])) >
 				this.killSwitchSlotDiffThreshold &&
 			!skipSlotCheck &&
-			!isPerpMarketAndPrelaunchMarket
-		) {
+			!isPerpMarketAndPrelaunchMarket;
+		if (slotDiffTooLarge) {
 			console.log(
 				`Unhealthy process due to slot diffs for market ${marketName}. dlobProviderSlot: ${slot}, oracleSlot: ${l2Formatted['oracleData']['slot']}`
 			);
-			setHealthStatus(HEALTH_STATUS.Restart);
 		}
+		recordSlotDiffHealth(marketName, slotDiffTooLarge);
 
 		const l2Formatted_depth100 = Object.assign({}, l2Formatted, {
 			bids: l2Formatted.bids.slice(0, 100),
 			asks: l2Formatted.asks.slice(0, 100),
 		});
 
-		this.redisClient.publish(
-			`${clientPrefix}orderbook_${marketType}_${marketArgs.marketIndex}${
-				this.indicativeQuotesRedisClient ? '_indicative' : ''
-			}`,
-			l2Formatted
+		fireAndForgetRedis(
+			this.redisClient.publish(
+				`${clientPrefix}orderbook_${marketType}_${marketArgs.marketIndex}${
+					this.indicativeQuotesRedisClient ? '_indicative' : ''
+				}`,
+				l2Formatted
+			),
+			'orderbook publish'
 		);
 
 		if (this.offloadQueue) {
@@ -485,11 +489,14 @@ export class DLOBSubscriberIO extends DLOBSubscriber {
 			}
 		}
 
-		this.redisClient.set(
-			`last_update_orderbook_${marketType}_${marketArgs.marketIndex}${
-				this.indicativeQuotesRedisClient ? '_indicative' : ''
-			}`,
-			l2Formatted_depth100
+		fireAndForgetRedis(
+			this.redisClient.set(
+				`last_update_orderbook_${marketType}_${marketArgs.marketIndex}${
+					this.indicativeQuotesRedisClient ? '_indicative' : ''
+				}`,
+				l2Formatted_depth100
+			),
+			'orderbook snapshot set'
 		);
 
 		publishGroupings(
@@ -528,9 +535,12 @@ export class DLOBSubscriberIO extends DLOBSubscriber {
 					tickSize: marketArgs.tickSize,
 				})
 				.map((x) => x.toString());
-			this.redisClient.set(
-				`last_update_orderbook_best_makers_${marketType}_${marketArgs.marketIndex}`,
-				{ bids, asks, slot }
+			fireAndForgetRedis(
+				this.redisClient.set(
+					`last_update_orderbook_best_makers_${marketType}_${marketArgs.marketIndex}`,
+					{ bids, asks, slot }
+				),
+				'best makers set'
 			);
 		}
 	}
@@ -589,11 +599,14 @@ export class DLOBSubscriberIO extends DLOBSubscriber {
 			}
 		}
 
-		this.redisClient.set(
-			`last_update_orderbook_l3_${marketType}_${marketArgs.marketIndex}${
-				this.indicativeQuotesRedisClient ? '_indicative' : ''
-			}`,
-			l3
+		fireAndForgetRedis(
+			this.redisClient.set(
+				`last_update_orderbook_l3_${marketType}_${marketArgs.marketIndex}${
+					this.indicativeQuotesRedisClient ? '_indicative' : ''
+				}`,
+				l3
+			),
+			'l3 snapshot set'
 		);
 	}
 }

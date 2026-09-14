@@ -1,3 +1,4 @@
+import { installUnhandledRejectionGuard } from './core/processGuards';
 import { program } from 'commander';
 import compression from 'compression';
 import cors from 'cors';
@@ -223,6 +224,7 @@ async function recursiveTryCatch(f: () => Promise<void>) {
 	}
 }
 
+installUnhandledRejectionGuard('dlob-server-lite');
 recursiveTryCatch(() => main());
 
 export { commitHash, velocityEnv, endpoint, sdkConfig, wsEndpoint };

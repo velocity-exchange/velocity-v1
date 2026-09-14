@@ -24,14 +24,33 @@
 //!   registered list that names any other approved quoter's response account
 //!   (`update_quoter_approved`, both directions). Every authority-trusting
 //!   instruction on the book and on the midpoint requires its response
-//!   account — the book's market account and the midpoint's quoter account
-//!   *are* their response accounts — so the forwarded signature has no
-//!   instruction it can complete. Approving a third-party quoter program
-//!   carries the matching obligation: the admin must check that every
-//!   instruction gated on the slab signer also requires the program's
-//!   response account.
+//!   account, so the forwarded signature has no instruction it can complete.
 //! - The slab is per market, so the signature authenticates nothing on any
-//!   other market's quoters or book.
+//!   other market's quoters or book. A quoter binds the key at its own
+//!   registration and compares against the stored copy, so a signature from
+//!   another market's slab fails the comparison.
+//!
+//! The exclusion covers every approved slot on the slab, not only the slots
+//! a given transaction consults, so it holds against quoters that are not in
+//! the transaction at all. The skip rule the route applies while quoting
+//! (`reads_a_foreign_response`) sees only the consulted slots, which is a
+//! subset, so it is a backstop and approval is the rule.
+//!
+//! For the book and the midpoint the second fact is structural rather than
+//! reviewed: each stores its authority **on** its response account — the
+//! book's `place_authority` on its market account, the midpoint's
+//! `execute_authority` on its quoter account — and both write their responses
+//! there too. An instruction cannot read the authority without taking the
+//! account, so it cannot be gated on the slab signer and skip the response
+//! account.
+//!
+//! That is the rule a third-party quoter program should follow: keep the
+//! execute authority on the account the response is written to. An author who
+//! puts it elsewhere can gate an instruction on the slab signer without
+//! naming the response account, and a quoter on the same market could then
+//! complete that call with a forwarded signature. Approving such a program
+//! carries the matching obligation on the admin: check that every instruction
+//! gated on the slab signer also requires the program's response account.
 //!
 //! The slab must never be made an authority over anything of value — not a
 //! token authority, not a `User` authority. The test below pins it apart from

@@ -432,7 +432,7 @@ fn run_cross_leg<'info>(
         rooms: crate::instructions::router::user_caps::QuoterRooms::NONE,
         margin_ratio_initial: legs.margin_ratio_initial,
     };
-    let inputs = with_counterparty_room(
+    let sized = with_counterparty_room(
         legs.tail,
         &legs.accounts.taker.key(),
         inputs,
@@ -445,7 +445,8 @@ fn run_cross_leg<'info>(
         },
     )?;
 
-    let route = QuotedRoute::assemble(legs.tail, &inputs, cpi_scratch)?;
+    let inputs = sized.inputs;
+    let route = QuotedRoute::assemble(legs.tail, &inputs, sized.slab, cpi_scratch)?;
     route.require_baseline(legs.clob_market)?;
     let mut book_storage =
         [crate::math::router::QuoterBook::default(); crate::state::prop_amm::MAX_ROUTE_QUOTERS];

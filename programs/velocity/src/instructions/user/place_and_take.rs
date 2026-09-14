@@ -420,14 +420,14 @@ fn read_take_shape(
 
 /// Describe the take to the quoters: what it wants, at what bound, and which
 /// loaded users they may fill it against.
-fn build_take_quote_inputs<'a>(
-    take: &mut EphemeralTake<'_, '_>,
+fn build_take_quote_inputs<'a, 'info>(
+    take: &mut EphemeralTake<'_, 'info>,
     users: &'a [crate::state::prop_amm::ClobUserRefV0],
     shape: &TakeShape,
     mark: &RouteMark,
     taker_served_window: bool,
     clock: &Clock,
-) -> Result<crate::instructions::QuoteInputs<'a>> {
+) -> Result<crate::instructions::SizedQuote<'a, 'info>> {
     let taker_key = take.accounts.user.key();
     let inputs = crate::instructions::QuoteInputs {
         // Both filled in below, once every counterparty is sized.
@@ -550,13 +550,19 @@ fn fill_ephemeral_take(
             },
         ))?;
 
-    let inputs = build_take_quote_inputs(take, &users, &shape, &mark, taker_served_window, clock)?;
+    let sized = build_take_quote_inputs(take, &users, &shape, &mark, taker_served_window, clock)?;
 
     // One set of CPI buffers for the fill: the quote legs below and the
     // execute legs the router runs later all refill the same allocation,
     // because velocity's heap never gives a freed one back.
     let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
-    let route = crate::instructions::QuotedRoute::assemble(take.tail, &inputs, &mut cpi_scratch)?;
+    let inputs = sized.inputs;
+    let route = crate::instructions::QuotedRoute::assemble(
+        take.tail,
+        &inputs,
+        sized.slab,
+        &mut cpi_scratch,
+    )?;
     route.require_baseline(
         take.maps
             .perp_market_map

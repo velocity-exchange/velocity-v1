@@ -199,11 +199,16 @@ fn fill_signed_msg_taker_order<'c: 'info, 'info>(
 
     let users = sections.wire_users()?;
     let inputs = order.quote_inputs(market_index, &users, taker_served_window);
-    let inputs = sections.with_counterparty_room(inputs, &ctx.accounts.user.key(), clock)?;
+    let sized = sections.with_counterparty_room(inputs, &ctx.accounts.user.key(), clock)?;
+    let inputs = sized.inputs;
 
     let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
-    let route =
-        crate::instructions::QuotedRoute::assemble(sections.tail, &inputs, &mut cpi_scratch)?;
+    let route = crate::instructions::QuotedRoute::assemble(
+        sections.tail,
+        &inputs,
+        sized.slab,
+        &mut cpi_scratch,
+    )?;
     route.require_baseline(
         sections
             .maps

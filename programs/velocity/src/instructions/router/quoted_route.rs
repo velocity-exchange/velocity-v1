@@ -169,14 +169,14 @@ struct SlotQuote {
 /// skips.
 fn slot_offers_nothing(slot: &QuoterSlotV0, taker_served_window: bool) -> Option<&'static str> {
     if !slot.quotes() {
-        return Some("");
+        return Some("non quoting slot");
     }
     // Maker priority: a book with a speed bump quotes no depth to an
     // unattested taker. The slot stays consulted — the baseline is presence,
     // and the rest leg still uses it — but it offers nothing to execute, so
     // unattested aggression rests through the activation window, where a
     // maker can reprice or cross it first.
-    if slot.config.quoter_type == QuoterType::Clob
+    if matches!(slot.config.quoter_type, QuoterType::Clob)
         && !taker_served_window
         && slot.config.book_default_activation_delay_slots > 0
     {
@@ -308,6 +308,7 @@ impl<'info> QuotedRoute<'info> {
     pub fn assemble(
         tail: &'info [AccountInfo<'info>],
         inputs: &QuoteInputs<'_>,
+        slab: Option<AccountLoader<'info, QuoterSlabV0>>,
         scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
     ) -> Result<QuotedRoute<'info>> {
         let mut route = QuotedRoute {
@@ -321,7 +322,10 @@ impl<'info> QuotedRoute<'info> {
             slab: None,
             consulted: Vec::new(),
         };
-        let Some(slab) = route.bind_slab(tail, inputs.market_index)? else {
+        // Handed in rather than found again: the caller located it to size
+        // this fill's counterparties, and the scan is over the whole tail.
+        route.slab = slab.clone();
+        let Some(slab) = slab else {
             return Ok(route);
         };
 
@@ -335,17 +339,6 @@ impl<'info> QuotedRoute<'info> {
             route.quote_slot(&slab, index, inputs, scratch)?;
         }
         Ok(route)
-    }
-
-    /// The market's slab, taken from the account tail and kept on the route.
-    fn bind_slab(
-        &mut self,
-        tail: &'info [AccountInfo<'info>],
-        market_index: u16,
-    ) -> Result<Option<AccountLoader<'info, QuoterSlabV0>>> {
-        let slab = route_slab(tail, market_index)?;
-        self.slab = slab.clone();
-        Ok(slab)
     }
 
     /// Quote one consulted slot and record what it answered.

@@ -590,7 +590,7 @@ fn route_and_fill_remainder<'info>(
         rooms: crate::instructions::router::user_caps::QuoterRooms::NONE,
         margin_ratio_initial: route_margin_ratio_initial,
     };
-    let inputs = crate::instructions::with_counterparty_room(
+    let sized = crate::instructions::with_counterparty_room(
         tail,
         &cx.accounts.taker.key(),
         inputs,
@@ -605,7 +605,8 @@ fn route_and_fill_remainder<'info>(
 
     // Reuse the CPI scratch the book read filled: its buffers clear and refill
     // per leg, so one fill pays for one set of buffers.
-    let route = crate::instructions::QuotedRoute::assemble(tail, &inputs, cpi_scratch)?;
+    let inputs = sized.inputs;
+    let route = crate::instructions::QuotedRoute::assemble(tail, &inputs, sized.slab, cpi_scratch)?;
     route.require_baseline(maps.perp_market_map.get_ref(&cx.market_index)?.clob_market)?;
     route.require_signed_route(route_claim.quoters, route_claim.digest)?;
     let mut book_storage =

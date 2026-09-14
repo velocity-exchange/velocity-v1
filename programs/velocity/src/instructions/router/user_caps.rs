@@ -268,9 +268,10 @@ pub fn with_counterparty_room<'a, 'info>(
     taker_key: &Pubkey,
     inputs: QuoteInputs<'a>,
     ctx: &mut CapInputs<'_, 'info>,
-) -> Result<QuoteInputs<'a>> {
-    // Found once. Both halves read the same slab, and locating it means a
-    // scan of the tail that borrows every account on it.
+) -> Result<SizedQuote<'a, 'info>> {
+    // Found once for everything that needs it. Locating the slab means a scan
+    // of the account tail that borrows every account on it, and the quote
+    // that follows reads the same one.
     let slab = route_slab(tail, inputs.market_index)?;
     let caps = build_user_caps(slab.as_ref(), tail, &inputs, ctx)?;
     let rooms = build_quoter_rooms(
@@ -280,11 +281,25 @@ pub fn with_counterparty_room<'a, 'info>(
         taker_key,
         ctx,
     )?;
-    Ok(QuoteInputs {
-        caps,
-        rooms,
-        ..inputs
+    Ok(SizedQuote {
+        inputs: QuoteInputs {
+            caps,
+            rooms,
+            ..inputs
+        },
+        slab,
     })
+}
+
+/// A quote whose counterparties are priced, and the slab they were priced
+/// from.
+///
+/// The slab rides along because the quote reads it next: finding it costs a
+/// scan of the account tail, and doing that twice for one fill is the kind of
+/// cost that hides in a helper.
+pub struct SizedQuote<'a, 'info> {
+    pub inputs: QuoteInputs<'a>,
+    pub slab: Option<AccountLoader<'info, QuoterSlabV0>>,
 }
 
 /// The base each custom quoter in the route may take on, from its own margin.

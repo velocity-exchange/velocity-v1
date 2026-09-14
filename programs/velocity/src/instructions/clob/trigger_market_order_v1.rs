@@ -372,7 +372,7 @@ fn route_fill_fired_order<'info>(
         rooms: crate::instructions::router::user_caps::QuoterRooms::NONE,
         margin_ratio_initial: route_margin_ratio_initial,
     };
-    let inputs = crate::instructions::with_counterparty_room(
+    let sized = crate::instructions::with_counterparty_room(
         tail.accounts,
         &ctx.accounts.user.key(),
         inputs,
@@ -385,9 +385,14 @@ fn route_fill_fired_order<'info>(
         },
     )?;
 
+    let inputs = sized.inputs;
     let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
-    let route =
-        crate::instructions::QuotedRoute::assemble(tail.accounts, &inputs, &mut cpi_scratch)?;
+    let route = crate::instructions::QuotedRoute::assemble(
+        tail.accounts,
+        &inputs,
+        sized.slab,
+        &mut cpi_scratch,
+    )?;
     route.require_baseline(maps.perp_market_map.get_ref(&market_index)?.clob_market)?;
     let route_digest = crate::state::order_params::NO_ROUTE_DIGEST;
     route.require_signed_route(signed_route, route_digest)?;

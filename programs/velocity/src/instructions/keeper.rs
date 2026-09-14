@@ -235,7 +235,7 @@ impl<'info> FillSections<'info> {
         inputs: crate::instructions::QuoteInputs<'a>,
         taker_key: &Pubkey,
         clock: &Clock,
-    ) -> Result<crate::instructions::QuoteInputs<'a>> {
+    ) -> Result<crate::instructions::SizedQuote<'a, 'info>> {
         crate::instructions::with_counterparty_room(
             self.tail,
             taker_key,

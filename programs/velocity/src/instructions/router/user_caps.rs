@@ -141,7 +141,7 @@ use {
         },
         math::{
             casting::Cast,
-            constants::BASE_PRECISION_U64,
+            constants::{BASE_PRECISION_U64, MARGIN_PRECISION},
             margin::{
                 calculate_margin_requirement_and_total_collateral_and_liability_info,
                 calculate_net_equity_for_floor, MarginRequirementType,
@@ -268,6 +268,13 @@ pub fn build_user_caps<'info>(
                 } else {
                     ctx.quoter_base_room(&key, inputs.market_index, inputs.maker_direction())?
                 };
+                // The book's claim on this user is taken first, so what the
+                // quoter is offered is what survives it.
+                let room = room.saturating_sub(base_funded_by(
+                    quote_cap,
+                    inputs.reference_price,
+                    inputs.margin_ratio_initial,
+                )?);
                 // Kept by slot as well: the quote step trims the ladder to
                 // this and reaches it by slot, having no way to resolve a
                 // user there.
@@ -368,6 +375,39 @@ pub fn with_counterparty_room<'a, 'info>(
 pub struct SizedQuote<'a, 'info> {
     pub inputs: QuoteInputs<'a>,
     pub slab: Option<AccountLoader<'info, QuoterSlabV0>>,
+}
+
+/// Base that `quote` of collateral funds at a market's initial margin.
+///
+/// How much of an unreserved quoter's room a book's claim on the same user
+/// takes away. The two claims are on one pool of collateral, and the book's
+/// is senior: its depth was margin-reserved when the order was placed, where
+/// the quoter's is computed on demand and reserved nowhere. That ordering is
+/// also the routing tiers' own, where a book fills ahead of a custom quoter.
+///
+/// The conversion is the margin one, not the price-gap one a quote cap is
+/// spent at. Whatever the book takes leaves the user's collateral, and what
+/// leaving collateral costs the quoter is the base that collateral would have
+/// carried.
+///
+/// Conservative twice over. It assumes the book spends the whole cap, which
+/// it may not; and it prices at the market's own margin ratio, which is the
+/// lowest a user can face, so the base it accounts for is the most that
+/// collateral could have carried. `0` when the oracle or the ratio cannot
+/// size it, leaving the room untouched — a fill whose oracle is not positive
+/// has already failed elsewhere.
+fn base_funded_by(quote: u64, oracle_price: i64, margin_ratio_initial: u32) -> Result<u64> {
+    if quote == u64::MAX || oracle_price <= 0 || margin_ratio_initial == 0 {
+        return Ok(0);
+    }
+    Ok(quote
+        .cast::<u128>()?
+        .safe_mul(BASE_PRECISION_U64.cast()?)?
+        .safe_mul(MARGIN_PRECISION.cast()?)?
+        .safe_div(oracle_price.cast::<u128>()?)?
+        .safe_div(margin_ratio_initial.cast()?)?
+        .min(u64::MAX.cast()?)
+        .cast()?)
 }
 
 /// Which loaded user each unreserved quoter in the route settles for.
@@ -659,3 +699,49 @@ fn clob_resting_base(
 
 #[cfg(test)]
 mod tests;
+
+/// What a book's claim takes from an unreserved quoter sharing its user.
+#[cfg(test)]
+mod apportion_tests {
+    use super::base_funded_by;
+
+    const PRICE: i64 = 100 * crate::math::constants::PRICE_PRECISION_I64;
+    /// Ten percent, which is `MARGIN_PRECISION / 10`.
+    const RATIO: u32 = crate::math::constants::MARGIN_PRECISION / 10;
+    const QUOTE: u64 = crate::math::constants::QUOTE_PRECISION_U64;
+    const BASE: u64 = crate::math::constants::BASE_PRECISION_U64;
+
+    #[test]
+    fn collateral_converts_at_the_margin_ratio() {
+        // 100 quote of collateral, a mark of 100, ten percent initial margin:
+        // it carries ten base, so a book promised that much takes ten base
+        // off the quoter sharing the account.
+        assert_eq!(
+            base_funded_by(100 * QUOTE, PRICE, RATIO).unwrap(),
+            10 * BASE
+        );
+    }
+
+    #[test]
+    fn a_tighter_margin_ratio_accounts_for_less_base() {
+        // The same collateral carries less base when each unit costs more
+        // margin, so a book's claim costs the quoter less of its room.
+        let tight = base_funded_by(100 * QUOTE, PRICE, RATIO * 2).unwrap();
+        assert_eq!(tight, 5 * BASE);
+    }
+
+    #[test]
+    fn an_unbounded_book_claim_takes_nothing() {
+        // No book reached this user, so there is no senior claim to yield to.
+        assert_eq!(base_funded_by(u64::MAX, PRICE, RATIO).unwrap(), 0);
+    }
+
+    #[test]
+    fn an_unusable_mark_leaves_the_room_alone() {
+        // A fill whose oracle is not positive has already failed elsewhere;
+        // this must not turn that into a silent zero.
+        assert_eq!(base_funded_by(100 * QUOTE, 0, RATIO).unwrap(), 0);
+        assert_eq!(base_funded_by(100 * QUOTE, -1, RATIO).unwrap(), 0);
+        assert_eq!(base_funded_by(100 * QUOTE, PRICE, 0).unwrap(), 0);
+    }
+}

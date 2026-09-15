@@ -78,6 +78,8 @@ velocity-admin perp-market set-bankruptcy-if-floor <market> <pct>  # PERCENTAGE_
 velocity-admin perp-market set-spread-adjustment <market> <spreadAdjustment> <inventorySpreadAdjustment>  # VammQuoteManagement/warm/cold; both -100..100. Negative values need `--` first: set-spread-adjustment 0 -- -50 -25
 velocity-admin perp-market set-funding-dead-zone <market> <threshold> <slope>
 velocity-admin perp-market set-oracle-slot-delay <market> <slots>
+velocity-admin perp-market deposit-fee-pool <market> <amount> [--source-vault <pk>]  # VaultDeposit hot key (or warm/cold); funds amm.fee_pool + total_fee_minus_distributions, raw quote base units
+velocity-admin perp-market sync-amm-summary-stats <market> [--net-unsettled-funding-pnl <amount>]  # AmmCrank hot key (or warm/cold); recompute total_fee_minus_distributions from live state
 velocity-admin spot-market set-status <market> <status>
 velocity-admin spot-market set-guard-threshold <market> <threshold>
 velocity-admin spot-market set-scale-initial-asset-weight-start <market> <start>  # warm/cold admin; QUOTE_PRECISION (1e6); 0 disables
@@ -165,8 +167,12 @@ account on first use. Not subject to deposit caps.
 `batch` of `updatePerpMarketPnlPool` instructions attributing the amounts per market. Order
 matters: the update instruction validates the vault holds the tokens.
 
-**Fund vAMM fee pools (vAMM capital)**: `depositIntoPerpMarketFeePool` per market via `batch`,
-signed by the VaultDeposit hot role (see `show config`). Reserve resizing is separate:
+**Fund vAMM fee pools (vAMM capital)**: `perp-market deposit-fee-pool <market> <amount>`,
+signed by the VaultDeposit hot role (see `show config`); several markets in one proposal via
+`batch` of `depositIntoPerpMarketFeePool`. This is the cure when a market's
+`total_fee_minus_distributions` has gone negative: the deposit credits it one-for-one. Reach for
+`perp-market sync-amm-summary-stats` first only when you suspect the accounting has drifted from
+the pools' real balances, since it recomputes rather than funds. Reserve resizing is separate:
 `recenterPerpMarketAmm` (peg + sqrt_k in one instruction, warm/cold) with values re-derived at
 the live oracle price — reserves never adjust themselves to new capital.
 

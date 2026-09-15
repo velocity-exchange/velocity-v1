@@ -567,20 +567,37 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         )
     }
 
-    /// Every book but the vAMM's, each cut at the taker's effective limit.
+    /// Every book but the vAMM's, each cut at the taker's effective limit,
+    /// in one allocation with room for the vAMM's own book after it.
     ///
     /// The vAMM shades against this set as its last look, and the split then
     /// runs over the same set with the vAMM appended. The caller hands this
     /// allocation on rather than collecting the same rows a second time: the
     /// runtime's allocator never reclaims, so a second copy is heap the
     /// instruction does not get back.
+    ///
+    /// Sized for the whole set, the vAMM's slot included, for the same
+    /// reason. A `Vec` at capacity doubles when pushed into, and doubling
+    /// abandons a buffer as large as the one it replaces — so the caller's
+    /// one `push` of the vAMM book cost the set's own size a second time,
+    /// which at a full maker ladder is kilobytes the fill never gets back.
     fn rival_books<'l, 'r: 'l, 'b: 'l>(
         &self,
         venue: &ExternalVenue<'_, 'r, 'b, '_>,
         maker_levels: &'l [[PriceLevel; 1]],
     ) -> Vec<QuoterBook<'l>> {
-        let mut books = self.external_rival_books(venue);
-        books.extend(self.maker_rival_books(maker_levels));
+        let clob_tier = QuoterType::Clob.default_priority();
+        let mut books = Vec::with_capacity(venue.books.len() + maker_levels.len() + 1);
+        books.extend(venue.books.iter().map(|book| QuoterBook {
+            priority: book.priority,
+            levels: &book.levels[..self.within_limit(book.levels)],
+            withheld: book.withheld,
+        }));
+        books.extend(maker_levels.iter().map(|levels| QuoterBook {
+            priority: clob_tier,
+            levels: &levels[..self.within_limit(levels.as_slice())],
+            withheld: PriceLevel::default(),
+        }));
         books
     }
 
@@ -602,19 +619,6 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
                 priority: book.priority,
                 levels: &book.levels[..self.within_limit(book.levels)],
                 withheld: book.withheld,
-            })
-            .collect()
-    }
-
-    /// Each quoted DLOB maker as a one-level book at the CLOB priority tier.
-    fn maker_rival_books<'l>(&self, maker_levels: &'l [[PriceLevel; 1]]) -> Vec<QuoterBook<'l>> {
-        let clob_tier = QuoterType::Clob.default_priority();
-        maker_levels
-            .iter()
-            .map(|levels| QuoterBook {
-                priority: clob_tier,
-                levels: &levels[..self.within_limit(levels.as_slice())],
-                withheld: PriceLevel::default(),
             })
             .collect()
     }

@@ -227,16 +227,16 @@ impl<'info> FillSections<'info> {
 
     /// Price the room of every counterparty the quote may stand on.
     ///
-    /// This runs before the quote, so a quoter never publishes depth this
-    /// fill would refuse to settle against: a book is told each maker's
-    /// budget, and a custom quoter is told the base its own account carries.
-    fn with_counterparty_room<'a>(
+    /// Sizing runs before the quote, so a quoter never publishes depth this
+    /// fill would refuse to settle against.
+    fn quote_route<'a>(
         &mut self,
         inputs: crate::instructions::QuoteInputs<'a>,
         taker_key: &Pubkey,
         clock: &Clock,
-    ) -> Result<crate::instructions::SizedQuote<'a, 'info>> {
-        crate::instructions::with_counterparty_room(
+        scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
+    ) -> Result<crate::instructions::QuotedFill<'a, 'info>> {
+        crate::instructions::quote_route(
             self.tail,
             inputs,
             &mut crate::instructions::CapInputs {
@@ -247,6 +247,7 @@ impl<'info> FillSections<'info> {
                 slot: clock.slot,
                 now: clock.unix_timestamp,
             },
+            scratch,
         )
     }
 
@@ -355,10 +356,6 @@ impl RoutedOrder {
         taker_served_window: bool,
     ) -> crate::instructions::QuoteInputs<'a> {
         crate::instructions::QuoteInputs {
-            // Both filled in by `with_counterparty_room`: sizing a
-            // counterparty needs the inputs, and the quote needs the sizes.
-            caps: crate::state::prop_amm::QuoterUserCapsV0::EMPTY,
-            rooms: crate::instructions::router::user_caps::QuoterRooms::NONE,
             market_index,
             margin_ratio_initial: self.margin_ratio_initial,
             direction: self.direction,

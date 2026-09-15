@@ -47,8 +47,9 @@ use {
         instructions::{
             constraints::*,
             optional_accounts::{tx_writable_lock_count, AccountMaps},
+            quote_route,
             relay_harness::{resolve_into, StagedCall},
-            with_counterparty_room, CapInputs, QuoteInputs, QuotedRoute,
+            CapInputs, QuoteInputs,
         },
         load, load_mut,
         math::{
@@ -414,27 +415,24 @@ fn run_cross_leg<'info>(
                     cpi_scratch,
                 )?)
         })?;
-    let inputs = QuoteInputs {
-        caps: crate::state::prop_amm::QuoterUserCapsV0::EMPTY,
-        market_index: legs.market_index,
-        direction,
-        size,
-        users: &users,
-        reference_price: legs.band_oracle_price,
-        taker: taker_ref,
-        limit_price,
-        taker_served_window,
-        // The depth a crossing remainder claims is that taker's improvement,
-        // not arbitrage for the protocol to middle. Reading the book without
-        // it is what makes this crank unable to reach a remainder's cover.
-        consume_reservation: false,
-        // Both filled in below, once every counterparty is sized.
-        rooms: crate::instructions::router::user_caps::QuoterRooms::NONE,
-        margin_ratio_initial: legs.margin_ratio_initial,
-    };
-    let sized = with_counterparty_room(
+    let quoted = quote_route(
         legs.tail,
-        inputs,
+        QuoteInputs {
+            market_index: legs.market_index,
+            direction,
+            size,
+            users: &users,
+            reference_price: legs.band_oracle_price,
+            taker: taker_ref,
+            limit_price,
+            taker_served_window,
+            // The depth a crossing remainder claims is that taker's
+            // improvement, not arbitrage for the protocol to middle. Reading
+            // the book without it is what makes this crank unable to reach a
+            // remainder's cover.
+            consume_reservation: false,
+            margin_ratio_initial: legs.margin_ratio_initial,
+        },
         &mut CapInputs {
             taker_key: &legs.accounts.taker.key(),
             makers_and_referrer: legs.makers_and_referrer,
@@ -443,16 +441,16 @@ fn run_cross_leg<'info>(
             slot: legs.clock.slot,
             now: legs.clock.unix_timestamp,
         },
+        cpi_scratch,
     )?;
-
-    let inputs = sized.inputs;
-    let route = QuotedRoute::assemble(legs.tail, &inputs, sized.slab, cpi_scratch)?;
+    let route = quoted.route;
+    let sized = quoted.sized;
     route.require_baseline(legs.clob_market)?;
     let mut book_storage =
         [crate::math::router::QuoterBook::default(); crate::state::prop_amm::MAX_ROUTE_QUOTERS];
     let books = route.books(&mut book_storage)?;
     let mut executor = route.executor(
-        &inputs,
+        &sized,
         legs.clock.slot,
         legs.clock.unix_timestamp,
         cpi_scratch,

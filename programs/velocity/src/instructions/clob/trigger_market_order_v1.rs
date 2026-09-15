@@ -350,31 +350,29 @@ fn route_fill_fired_order<'info>(
             margin_ratio_initial,
         )
     };
-    let inputs = crate::instructions::QuoteInputs {
-        caps: crate::state::prop_amm::QuoterUserCapsV0::EMPTY,
-        market_index,
-        direction: route_inputs.direction,
-        size: route_inputs.unfilled,
-        users: &crate::state::prop_amm::quoter_wire_users(
-            tail.makers_and_referrer.user_ref_index()?.into_keys().map(
-                |(authority, sub_account_id)| ClobUserRefV0 {
-                    authority,
-                    sub_account_id,
-                },
-            ),
-        )?,
-        reference_price: route_reference_price,
-        taker: route_inputs.taker,
-        limit_price: route_inputs.limit_price,
-        taker_served_window,
-        consume_reservation: false,
-        // Both filled in below, once every counterparty is sized.
-        rooms: crate::instructions::router::user_caps::QuoterRooms::NONE,
-        margin_ratio_initial: route_margin_ratio_initial,
-    };
-    let sized = crate::instructions::with_counterparty_room(
+    let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
+    let users = crate::state::prop_amm::quoter_wire_users(
+        tail.makers_and_referrer.user_ref_index()?.into_keys().map(
+            |(authority, sub_account_id)| ClobUserRefV0 {
+                authority,
+                sub_account_id,
+            },
+        ),
+    )?;
+    let quoted = crate::instructions::quote_route(
         tail.accounts,
-        inputs,
+        crate::instructions::QuoteInputs {
+            market_index,
+            direction: route_inputs.direction,
+            size: route_inputs.unfilled,
+            users: &users,
+            reference_price: route_reference_price,
+            taker: route_inputs.taker,
+            limit_price: route_inputs.limit_price,
+            taker_served_window,
+            consume_reservation: false,
+            margin_ratio_initial: route_margin_ratio_initial,
+        },
         &mut crate::instructions::CapInputs {
             taker_key: &ctx.accounts.user.key(),
             makers_and_referrer: &tail.makers_and_referrer,
@@ -383,16 +381,10 @@ fn route_fill_fired_order<'info>(
             slot: clock.slot,
             now: clock.unix_timestamp,
         },
-    )?;
-
-    let inputs = sized.inputs;
-    let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
-    let route = crate::instructions::QuotedRoute::assemble(
-        tail.accounts,
-        &inputs,
-        sized.slab,
         &mut cpi_scratch,
     )?;
+    let route = quoted.route;
+    let sized = quoted.sized;
     route.require_baseline(maps.perp_market_map.get_ref(&market_index)?.clob_market)?;
     let route_digest = crate::state::order_params::NO_ROUTE_DIGEST;
     route.require_signed_route(signed_route, route_digest)?;
@@ -415,7 +407,7 @@ fn route_fill_fired_order<'info>(
     let mut book_storage =
         [crate::math::router::QuoterBook::default(); crate::state::prop_amm::MAX_ROUTE_QUOTERS];
     let books = route.books(&mut book_storage)?;
-    let mut executor = route.executor(&inputs, clock.slot, clock.unix_timestamp, &mut cpi_scratch);
+    let mut executor = route.executor(&sized, clock.slot, clock.unix_timestamp, &mut cpi_scratch);
     let mut router_inputs = crate::math::router::RouterFillInputs {
         books,
         executor: &mut executor,

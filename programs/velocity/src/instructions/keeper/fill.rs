@@ -185,19 +185,14 @@ fn route_and_fill<'info>(
 
     let users = sections.wire_users()?;
     let inputs = order.quote_inputs(market_index, &users, request.taker_served_window);
-    let sized = sections.with_counterparty_room(inputs, &accounts.user.key(), clock)?;
-    let inputs = sized.inputs;
 
     // One set of CPI buffers for the fill: the quote legs below and the
     // execute legs the router runs later all refill the same allocation,
     // because velocity's heap never gives a freed one back.
     let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
-    let route = crate::instructions::QuotedRoute::assemble(
-        sections.tail,
-        &inputs,
-        sized.slab,
-        &mut cpi_scratch,
-    )?;
+    let quoted = sections.quote_route(inputs, &accounts.user.key(), clock, &mut cpi_scratch)?;
+    let route = quoted.route;
+    let sized = quoted.sized;
     route.require_baseline(
         sections
             .maps
@@ -219,7 +214,7 @@ fn route_and_fill<'info>(
     let mut book_storage =
         [crate::math::router::QuoterBook::default(); crate::state::prop_amm::MAX_ROUTE_QUOTERS];
     let books = route.books(&mut book_storage)?;
-    let mut executor = route.executor(&inputs, clock.slot, clock.unix_timestamp, &mut cpi_scratch);
+    let mut executor = route.executor(&sized, clock.slot, clock.unix_timestamp, &mut cpi_scratch);
     let mut router_inputs = RouterFillInputs {
         books,
         executor: &mut executor,

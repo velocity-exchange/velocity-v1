@@ -418,21 +418,19 @@ fn read_take_shape(
     })
 }
 
-/// Describe the take to the quoters: what it wants, at what bound, and which
-/// loaded users they may fill it against.
-fn build_take_quote_inputs<'a, 'info>(
+/// Describe the take to the quoters — what it wants, at what bound, and
+/// which loaded users they may fill it against — then size and quote it.
+fn quote_take_route<'a, 'info>(
     take: &mut EphemeralTake<'_, 'info>,
     users: &'a [crate::state::prop_amm::ClobUserRefV0],
     shape: &TakeShape,
     mark: &RouteMark,
     taker_served_window: bool,
     clock: &Clock,
-) -> Result<crate::instructions::SizedQuote<'a, 'info>> {
+    scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
+) -> Result<crate::instructions::QuotedFill<'a, 'info>> {
     let taker_key = take.accounts.user.key();
     let inputs = crate::instructions::QuoteInputs {
-        // Both filled in below, once every counterparty is sized.
-        caps: crate::state::prop_amm::QuoterUserCapsV0::EMPTY,
-        rooms: crate::instructions::router::user_caps::QuoterRooms::NONE,
         market_index: take.market_index,
         direction: shape.direction,
         size: shape.unfilled,
@@ -445,8 +443,7 @@ fn build_take_quote_inputs<'a, 'info>(
         consume_reservation: false,
     };
 
-    // Before the quote: see `with_counterparty_room`.
-    crate::instructions::with_counterparty_room(
+    crate::instructions::quote_route(
         take.tail,
         inputs,
         &mut crate::instructions::CapInputs {
@@ -457,6 +454,7 @@ fn build_take_quote_inputs<'a, 'info>(
             slot: clock.slot,
             now: clock.unix_timestamp,
         },
+        scratch,
     )
 }
 
@@ -550,19 +548,21 @@ fn fill_ephemeral_take(
             },
         ))?;
 
-    let sized = build_take_quote_inputs(take, &users, &shape, &mark, taker_served_window, clock)?;
-
     // One set of CPI buffers for the fill: the quote legs below and the
     // execute legs the router runs later all refill the same allocation,
     // because velocity's heap never gives a freed one back.
     let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
-    let inputs = sized.inputs;
-    let route = crate::instructions::QuotedRoute::assemble(
-        take.tail,
-        &inputs,
-        sized.slab,
+    let quoted = quote_take_route(
+        take,
+        &users,
+        &shape,
+        &mark,
+        taker_served_window,
+        clock,
         &mut cpi_scratch,
     )?;
+    let route = quoted.route;
+    let sized = quoted.sized;
     route.require_baseline(
         take.maps
             .perp_market_map
@@ -573,7 +573,7 @@ fn fill_ephemeral_take(
     let mut book_storage =
         [crate::math::router::QuoterBook::default(); crate::state::prop_amm::MAX_ROUTE_QUOTERS];
     let book_refs = route.books(&mut book_storage)?;
-    let mut executor = route.executor(&inputs, clock.slot, clock.unix_timestamp, &mut cpi_scratch);
+    let mut executor = route.executor(&sized, clock.slot, clock.unix_timestamp, &mut cpi_scratch);
     let mut router_inputs = crate::math::router::RouterFillInputs {
         books: book_refs,
         executor: &mut executor,

@@ -21,7 +21,7 @@
 //! and borrows ([`QuotedRoute::books`], [`QuotedRoute::executor`]).
 
 use {
-    super::cpi_executor::CpiQuoterExecutor,
+    super::{cpi_executor::CpiQuoterExecutor, user_caps::SizedQuote},
     crate::{
         controller::position::PositionDirection,
         error::ErrorCode,
@@ -161,6 +161,29 @@ struct SlotQuote {
     oracle_band: u32,
 }
 
+/// A quoted route and the sized inputs it was quoted from.
+pub struct QuotedFill<'a, 'info> {
+    pub route: QuotedRoute<'info>,
+    pub sized: SizedQuote<'a, 'info>,
+}
+
+/// Size every counterparty this fill may settle against, then quote the
+/// route against those numbers.
+///
+/// The only way to a [`QuotedRoute`]. `QuotedRoute::assemble` is private, so
+/// a route cannot be quoted from inputs whose caps were never priced — which
+/// was a rule six call sites each had to remember.
+pub fn quote_route<'a, 'info>(
+    tail: &'info [AccountInfo<'info>],
+    inputs: QuoteInputs<'a>,
+    ctx: &mut super::user_caps::CapInputs<'_, 'info>,
+    scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
+) -> Result<QuotedFill<'a, 'info>> {
+    let sized = super::user_caps::with_counterparty_room(tail, inputs, ctx)?;
+    let route = QuotedRoute::assemble(tail, &sized, scratch)?;
+    Ok(QuotedFill { route, sized })
+}
+
 /// Why this slot offers no depth to this fill, or `None` when it quotes.
 ///
 /// An empty reason is a slot that is simply not quoting — revoked,
@@ -245,10 +268,6 @@ pub struct QuoteInputs<'a> {
     pub size: u64,
     /// The loaded-user set quoters must not fill outside of.
     pub users: &'a [ClobUserRefV0],
-    /// Per-user room, carried here so the quote and the execute that binds to
-    /// it cannot be given different numbers: the executor is built from these
-    /// same inputs, so the two walks skip identically by construction.
-    pub caps: crate::state::prop_amm::QuoterUserCapsV0,
     /// The mark a quoter prices a capped maker's loss against. The quote and
     /// the execute must be handed the same one, or a quoter that spends
     /// budgets passes over a different set of orders than it quoted.
@@ -272,18 +291,6 @@ pub struct QuoteInputs<'a> {
     /// The market's initial margin ratio, which a quoter's declared oracle
     /// band defaults to when it sets none.
     pub margin_ratio_initial: u32,
-    /// The same `base_cap` the caps carry, indexed by slab slot.
-    ///
-    /// Not a second number: [`Self::caps`] is what the quoter is told, this
-    /// is the copy the trim below reads, and one pass produces both. It is
-    /// kept apart for two reasons, both about reach rather than meaning. A
-    /// slot names its quoter's user by account address, and resolving that to
-    /// a cap's index into `users` would mean deriving the user PDA per slot,
-    /// which no quote step can afford. And a cap can be evicted from the wire
-    /// list, which costs the quoter a hint it may ignore anyway — while the
-    /// trim is velocity's own bound on unreserved depth and must not go
-    /// missing with it.
-    pub rooms: crate::instructions::router::user_caps::QuoterRooms,
     /// Whether this fill settles a crossing taker remainder itself, and so
     /// reads a book with every crossing reservation ignored.
     ///
@@ -311,10 +318,9 @@ impl<'info> QuotedRoute<'info> {
     ///
     /// Suspended or deactivated slots are skipped rather than rejected: a
     /// route signed before an admin pulled a quoter must not brick the fill.
-    pub fn assemble(
+    fn assemble(
         tail: &'info [AccountInfo<'info>],
-        inputs: &QuoteInputs<'_>,
-        slab: Option<AccountLoader<'info, QuoterSlabV0>>,
+        sized: &SizedQuote<'_, 'info>,
         scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
     ) -> Result<QuotedRoute<'info>> {
         let mut route = QuotedRoute {
@@ -330,8 +336,8 @@ impl<'info> QuotedRoute<'info> {
         };
         // Handed in rather than found again: the caller located it to size
         // this fill's counterparties, and the scan is over the whole tail.
-        route.slab = slab.clone();
-        let Some(slab) = slab else {
+        route.slab = sized.slab.clone();
+        let Some(slab) = sized.slab.clone() else {
             return Ok(route);
         };
 
@@ -342,7 +348,7 @@ impl<'info> QuotedRoute<'info> {
         // call that takes the route mutably.
         for position in 0..route.consulted.len() {
             let index = route.consulted[position];
-            route.quote_slot(&slab, index, inputs, scratch)?;
+            route.quote_slot(&slab, index, sized, scratch)?;
         }
         Ok(route)
     }
@@ -356,13 +362,13 @@ impl<'info> QuotedRoute<'info> {
         &mut self,
         slab: &AccountLoader<'info, QuoterSlabV0>,
         index: usize,
-        inputs: &QuoteInputs<'_>,
+        sized: &SizedQuote<'_, 'info>,
         scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
     ) -> Result<()> {
-        let Some(quoted) = self.take_quote(slab, index, inputs, scratch)? else {
+        let Some(quoted) = self.take_quote(slab, index, sized, scratch)? else {
             return Ok(());
         };
-        self.record_quote(index, inputs, quoted)
+        self.record_quote(index, sized, quoted)
     }
 
     /// CPI the slot's quoter, or `None` when the slot offers nothing.
@@ -374,9 +380,10 @@ impl<'info> QuotedRoute<'info> {
         &mut self,
         slab: &AccountLoader<'info, QuoterSlabV0>,
         index: usize,
-        inputs: &QuoteInputs<'_>,
+        sized: &SizedQuote<'_, 'info>,
         scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
     ) -> Result<Option<SlotQuote>> {
+        let inputs = &sized.inputs;
         let slots = slab.slots()?;
         let slot = &slots[index];
         if let Some(reason) = slot_offers_nothing(slot, inputs.taker_served_window) {
@@ -388,7 +395,7 @@ impl<'info> QuotedRoute<'info> {
         let located = slot.config.quote_in_place(
             inputs.market_index,
             QuoteArgsV0 {
-                caps: inputs.caps,
+                caps: sized.caps,
                 reference_price: inputs.reference_price,
                 direction: inputs.direction,
                 size: inputs.size,
@@ -427,17 +434,17 @@ impl<'info> QuotedRoute<'info> {
     fn trim_ladder(
         &mut self,
         run: std::ops::Range<usize>,
-        inputs: &QuoteInputs<'_>,
+        sized: &SizedQuote<'_, 'info>,
         oracle_band: u32,
         index: usize,
     ) -> Result<std::ops::Range<usize>> {
         trim_to_quoter_room(
             &mut self.levels,
             run,
-            inputs.maker_direction(),
-            inputs.reference_price,
+            sized.inputs.maker_direction(),
+            sized.inputs.reference_price,
             oracle_band,
-            inputs.rooms.room(index),
+            sized.rooms.room(index),
         )
     }
 
@@ -459,7 +466,7 @@ impl<'info> QuotedRoute<'info> {
     fn record_quote(
         &mut self,
         index: usize,
-        inputs: &QuoteInputs<'_>,
+        sized: &SizedQuote<'_, 'info>,
         quoted: SlotQuote,
     ) -> Result<()> {
         let SlotQuote {
@@ -472,7 +479,7 @@ impl<'info> QuotedRoute<'info> {
         // trim, one ladder: the split allocates and the settle checks
         // against the same levels, which two lists cannot promise.
         let levels = if quoter_type == QuoterType::Custom {
-            self.trim_ladder(ladder.levels, inputs, oracle_band, index)?
+            self.trim_ladder(ladder.levels, sized, oracle_band, index)?
         } else {
             ladder.levels
         };
@@ -644,14 +651,15 @@ impl<'info> QuotedRoute<'info> {
     /// The execute leg, borrowing what quoting already gathered.
     pub fn executor<'a>(
         &'a self,
-        inputs: &'a QuoteInputs<'_>,
+        sized: &'a SizedQuote<'_, 'info>,
         slot: u64,
         now: i64,
         scratch: &'a mut crate::state::prop_amm::QuoterCpiScratch<'info>,
     ) -> CpiQuoterExecutor<'a, 'info> {
+        let inputs = &sized.inputs;
         CpiQuoterExecutor {
             scratch,
-            caps: inputs.caps,
+            caps: sized.caps,
             reference_price: inputs.reference_price,
             slab: self.slab.as_ref(),
             slots: &self.quoted_slots,

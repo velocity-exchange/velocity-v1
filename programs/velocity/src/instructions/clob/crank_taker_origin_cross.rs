@@ -561,38 +561,38 @@ fn route_and_fill_remainder<'info>(
         PositionDirection::Long => Direction::Long,
         PositionDirection::Short => Direction::Short,
     };
-    let inputs = crate::instructions::QuoteInputs {
-        caps: crate::state::prop_amm::QuoterUserCapsV0::EMPTY,
-        market_index: cx.market_index,
-        direction,
-        size: subject_order.base_asset_amount,
-        users: &crate::state::prop_amm::quoter_wire_users(
-            cx.makers_and_referrer.user_ref_index()?.into_keys().map(
-                |(authority, sub_account_id)| ClobUserRefV0 {
-                    authority,
-                    sub_account_id,
-                },
-            ),
-        )?,
-        reference_price: route_reference_price,
-        taker: cx.taker_ref,
-        limit_price: subject_order.price,
-        // The crank vouches for measured rest, not for its own nature: on a
-        // zero-delay book "rested through placement" is a zero-length
-        // window, and a caller could place and crank back-to-back. The
-        // subject is the flow this fill transmits, so its age is the claim.
-        taker_served_window: crate::math::crosses::served_window(
-            subject_order.placed_slot,
-            cx.clock.slot,
-        ),
-        consume_reservation: true,
-        // Both filled in below, once every counterparty is sized.
-        rooms: crate::instructions::router::user_caps::QuoterRooms::NONE,
-        margin_ratio_initial: route_margin_ratio_initial,
-    };
-    let sized = crate::instructions::with_counterparty_room(
+    // Reuse the CPI scratch the book read filled: its buffers clear and refill
+    // per leg, so one fill pays for one set of buffers.
+    let users = crate::state::prop_amm::quoter_wire_users(
+        cx.makers_and_referrer
+            .user_ref_index()?
+            .into_keys()
+            .map(|(authority, sub_account_id)| ClobUserRefV0 {
+                authority,
+                sub_account_id,
+            }),
+    )?;
+    let quoted = crate::instructions::quote_route(
         tail,
-        inputs,
+        crate::instructions::QuoteInputs {
+            market_index: cx.market_index,
+            direction,
+            size: subject_order.base_asset_amount,
+            users: &users,
+            reference_price: route_reference_price,
+            taker: cx.taker_ref,
+            limit_price: subject_order.price,
+            // The crank vouches for measured rest, not for its own nature: on a
+            // zero-delay book "rested through placement" is a zero-length
+            // window, and a caller could place and crank back-to-back. The
+            // subject is the flow this fill transmits, so its age is the claim.
+            taker_served_window: crate::math::crosses::served_window(
+                subject_order.placed_slot,
+                cx.clock.slot,
+            ),
+            consume_reservation: true,
+            margin_ratio_initial: route_margin_ratio_initial,
+        },
         &mut crate::instructions::CapInputs {
             taker_key: &cx.accounts.taker.key(),
             makers_and_referrer: cx.makers_and_referrer,
@@ -601,18 +601,16 @@ fn route_and_fill_remainder<'info>(
             slot: cx.clock.slot,
             now: cx.clock.unix_timestamp,
         },
+        cpi_scratch,
     )?;
-
-    // Reuse the CPI scratch the book read filled: its buffers clear and refill
-    // per leg, so one fill pays for one set of buffers.
-    let inputs = sized.inputs;
-    let route = crate::instructions::QuotedRoute::assemble(tail, &inputs, sized.slab, cpi_scratch)?;
+    let route = quoted.route;
+    let sized = quoted.sized;
     route.require_baseline(maps.perp_market_map.get_ref(&cx.market_index)?.clob_market)?;
     route.require_signed_route(route_claim.quoters, route_claim.digest)?;
     let mut book_storage =
         [crate::math::router::QuoterBook::default(); crate::state::prop_amm::MAX_ROUTE_QUOTERS];
     let books = route.books(&mut book_storage)?;
-    let mut executor = route.executor(&inputs, cx.clock.slot, cx.clock.unix_timestamp, cpi_scratch);
+    let mut executor = route.executor(&sized, cx.clock.slot, cx.clock.unix_timestamp, cpi_scratch);
     let mut router_inputs = crate::math::router::RouterFillInputs {
         books,
         executor: &mut executor,

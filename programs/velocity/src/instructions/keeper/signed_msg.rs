@@ -199,16 +199,11 @@ fn fill_signed_msg_taker_order<'c: 'info, 'info>(
 
     let users = sections.wire_users()?;
     let inputs = order.quote_inputs(market_index, &users, taker_served_window);
-    let sized = sections.with_counterparty_room(inputs, &ctx.accounts.user.key(), clock)?;
-    let inputs = sized.inputs;
 
     let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
-    let route = crate::instructions::QuotedRoute::assemble(
-        sections.tail,
-        &inputs,
-        sized.slab,
-        &mut cpi_scratch,
-    )?;
+    let quoted = sections.quote_route(inputs, &ctx.accounts.user.key(), clock, &mut cpi_scratch)?;
+    let route = quoted.route;
+    let sized = quoted.sized;
     route.require_baseline(
         sections
             .maps
@@ -224,7 +219,7 @@ fn fill_signed_msg_taker_order<'c: 'info, 'info>(
     let mut book_storage =
         [crate::math::router::QuoterBook::default(); crate::state::prop_amm::MAX_ROUTE_QUOTERS];
     let books = route.books(&mut book_storage)?;
-    let mut executor = route.executor(&inputs, clock.slot, clock.unix_timestamp, &mut cpi_scratch);
+    let mut executor = route.executor(&sized, clock.slot, clock.unix_timestamp, &mut cpi_scratch);
     let mut router_inputs = RouterFillInputs {
         books,
         executor: &mut executor,

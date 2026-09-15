@@ -357,11 +357,9 @@ pub fn with_counterparty_room<'a, 'info>(
     let slab = route_slab(tail, inputs.market_index)?;
     let (caps, rooms) = build_user_caps(slab.as_ref(), tail, &inputs, ctx)?;
     Ok(SizedQuote {
-        inputs: QuoteInputs {
-            caps,
-            rooms,
-            ..inputs
-        },
+        inputs,
+        caps,
+        rooms,
         slab,
     })
 }
@@ -374,6 +372,23 @@ pub fn with_counterparty_room<'a, 'info>(
 /// cost that hides in a helper.
 pub struct SizedQuote<'a, 'info> {
     pub inputs: QuoteInputs<'a>,
+    /// What each named user may lose, and to how much base they may give up.
+    /// Carried here rather than on the inputs so the quote and the execute
+    /// that binds to it cannot be given different numbers: both read this
+    /// one value.
+    pub caps: QuoterUserCapsV0,
+    /// The same `base_cap` these caps carry, indexed by slab slot.
+    ///
+    /// Not a second number: [`Self::caps`] is what a quoter is told, this is
+    /// the copy velocity's own ladder trim reads, and one pass produces both.
+    /// It is kept apart for two reasons, both about reach rather than
+    /// meaning. A slot names its quoter's user by account address, and
+    /// resolving that to a cap's index into the user set would mean deriving
+    /// the user PDA per slot, which no quote step can afford. And a cap can
+    /// be evicted from the wire list, which costs a quoter a hint it may
+    /// ignore anyway, where the trim is velocity's own bound on unreserved
+    /// depth and must not go missing with it.
+    pub rooms: QuoterRooms,
     pub slab: Option<AccountLoader<'info, QuoterSlabV0>>,
 }
 

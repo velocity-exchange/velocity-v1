@@ -15,6 +15,8 @@ import {
 	FUNDING_RATE_OFFSET_PERCENTAGE,
 	FUNDING_RATE_OFFSET_DENOMINATOR,
 	TWO,
+	SPREAD_CONF_FULL_WEIGHT_THRESHOLD,
+	SPREAD_CONF_DISCOUNT_DIVISOR,
 } from '../constants/numericConstants';
 import {
 	AMM,
@@ -792,11 +794,18 @@ export function calculateVolSpreadBN(
 		clampMax
 	);
 
-	// only consider confidence interval at full value when above 25 bps
+	// Mirrors the program's `calculate_spread_conf_component`: below the
+	// full-weight threshold the confidence's weight ramps linearly from 1/D at
+	// zero confidence to 1 at the threshold, rather than stepping off a cliff.
 	let confComponent = lastOracleConfPct;
 
-	if (lastOracleConfPct.lte(PRICE_PRECISION.div(new BN(400)))) {
-		confComponent = lastOracleConfPct.div(new BN(20));
+	if (lastOracleConfPct.lt(SPREAD_CONF_FULL_WEIGHT_THRESHOLD)) {
+		const rampWeight = SPREAD_CONF_FULL_WEIGHT_THRESHOLD.add(
+			SPREAD_CONF_DISCOUNT_DIVISOR.sub(ONE).mul(lastOracleConfPct)
+		);
+		confComponent = lastOracleConfPct
+			.mul(rampWeight)
+			.div(SPREAD_CONF_DISCOUNT_DIVISOR.mul(SPREAD_CONF_FULL_WEIGHT_THRESHOLD));
 	}
 
 	const longVolSpread = BN.max(

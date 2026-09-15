@@ -217,10 +217,12 @@ describe('AMM spread parity with update_spreads', () => {
 	});
 });
 
-// Isolates the confidence component of `calculateVolSpreadBN`: with zero std and
-// zero intensity the vol term collapses, so `max(confComponent, volSpread * factor)`
-// returns the confidence component itself. Expected values are the ones asserted by
-// the program's own `confidence_component_ramps_continuously` test.
+// Isolates the confidence component of `calculateVolSpreadBN`: with zero std the vol
+// base is the confidence itself and the intensity factor floors at 0.01, so the term
+// competing with the confidence component is conf/100, which the ramp (>= conf/20)
+// always dominates. `max()` therefore returns the confidence component. Expected
+// values are the ones asserted by the program's own
+// `confidence_component_ramps_continuously` test.
 function confComponent(confidencePct: number): number {
 	const [longVolSpread, shortVolSpread] = calculateVolSpreadBN(
 		new BN(confidencePct),

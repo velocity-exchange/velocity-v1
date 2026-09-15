@@ -579,8 +579,9 @@ describe('AMM Tests', () => {
 		// Verified against the program's own `calculate_spread` test helper with
 		// these inputs. The previous 515 / 5611 predate program commit 440349868,
 		// which ramped the confidence contribution: at conf 1131 the component is
-		// 542, not the 56 the old 1/20 cliff produced. The larger vol spread also
-		// raises the max target spread, which is why the inventory scale moves.
+		// 542, not the 56 the old 1/20 cliff produced. maxTargetSpread is unchanged
+		// at 20000; the inventory scale moves because the pre-scale longSpread fed
+		// into calculateInventoryScale rises from 500 to 542.
 		assert(terms2.effectiveLeverageCapped <= 1.000001);
 		assert(terms2.inventorySpreadScale == 1.028228);
 		assert(terms2.longSpread == 557);
@@ -754,7 +755,7 @@ describe('AMM Tests', () => {
 		assert(termsSuiExample.inventorySpreadScale == 1.00007);
 		// Verified against the program's own `calculate_spread` test helper. The
 		// previous 269813 / 3925 predate the confidence ramp (commit 440349868):
-		// at conf 1359 the component is 675, not the 67 the old 1/20 cliff gave.
+		// at conf 1359 the component is 769, not the 67 the old 1/20 cliff gave.
 		assert(
 			termsSuiExample.longSpread == 269819,
 			`SUI long spread got ${termsSuiExample.longSpread}`

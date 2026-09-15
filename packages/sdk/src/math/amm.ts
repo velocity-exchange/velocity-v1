@@ -753,8 +753,9 @@ export function calculateEffectiveLeverage(
  * Blends the recent mark/oracle standard deviation (`markStd`, `oracleStd`) with oracle
  * confidence, then scales each side independently by that side's recent fill intensity
  * relative to 24h volume (a side that's been trading heavily gets a wider spread on that side).
- * The oracle confidence interval is dampened to 5% of its value below 25bps so tiny confidence
- * noise doesn't dominate a quiet market.
+ * Below the 25bp full-weight threshold the confidence's weight ramps linearly from 1/20 at zero
+ * confidence to 1 at the threshold, so tiny confidence noise is damped without a discontinuity
+ * at the boundary.
  * @param lastOracleConfPct Oracle confidence interval as a fraction of price, PERCENTAGE_PRECISION (1e6).
  * @param reservePrice Current AMM reserve price, PRICE_PRECISION (1e6).
  * @param markStd Recent mark price standard deviation, PRICE_PRECISION (1e6).

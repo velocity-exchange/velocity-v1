@@ -108,7 +108,7 @@ pub fn handle_liquidate_perp_with_fill<'c: 'info, 'info>(
     let tail =
         &ctx.remaining_accounts[ctx.remaining_accounts.len() - remaining_accounts_iter.len()..];
 
-    let mut route = LiquidationBooks {
+    let books = LiquidationBooks {
         state: &state,
         market_index,
         user: &ctx.accounts.user,
@@ -120,20 +120,36 @@ pub fn handle_liquidate_perp_with_fill<'c: 'info, 'info>(
         tail,
         instructions_sysvar: &ctx.accounts.instructions_sysvar,
     };
+    let parties = || controller::liquidation::LiquidationParties {
+        user: &ctx.accounts.user,
+        user_key: &user_key,
+        liquidator: &ctx.accounts.liquidator,
+        liquidator_key: &liquidator_key,
+    };
 
-    let filled_quote = controller::liquidation::liquidate_perp_with_fill(
+    // Three steps, in the order they have to happen: the liquidation sizes
+    // its order and places it, this handler routes the fill against the
+    // accounts only it holds, and the liquidation books the result.
+    let filled_quote = match controller::liquidation::place_liquidation_order(
         market_index,
-        controller::liquidation::LiquidationParties {
-            user: &ctx.accounts.user,
-            user_key: &user_key,
-            liquidator: &ctx.accounts.liquidator,
-            liquidator_key: &liquidator_key,
-        },
+        parties(),
         &mut maps,
         &clock,
         &state,
-        &mut route,
-    )?;
+    )? {
+        controller::liquidation::LiquidationStep::Settled => 0,
+        controller::liquidation::LiquidationStep::Placed(placed) => {
+            let fill = books.route_fill(placed.order_id, &mut maps, &clock)?;
+            controller::liquidation::settle_liquidation_fill(
+                placed,
+                fill,
+                parties(),
+                &mut maps,
+                &clock,
+                &state,
+            )?
+        }
+    };
 
     // Program-keeper mode: the caller's payout account earns reservoir
     // lamports for the crank — the same loop every other relay executor
@@ -179,24 +195,15 @@ struct LiquidationBooks<'a, 'info> {
     instructions_sysvar: &'a Option<UncheckedAccount<'info>>,
 }
 
-impl<'info> controller::liquidation::LiquidationRoute<'info> for LiquidationBooks<'_, 'info> {
-    fn fill(
-        &mut self,
-        order_id: u32,
-        maps: &mut AccountMaps<'info>,
-        clock: &Clock,
-    ) -> Result<(u64, u64)> {
-        self.route_fill(order_id, maps, clock)
-    }
-}
-
 impl<'info> LiquidationBooks<'_, 'info> {
+    /// Fill the order the liquidation placed, through the market's book, its
+    /// quoters and the vAMM.
     fn route_fill(
         &self,
         order_id: u32,
         maps: &mut AccountMaps<'info>,
         clock: &Clock,
-    ) -> Result<(u64, u64)> {
+    ) -> Result<controller::liquidation::PerpFill> {
         let market_index = self.market_index;
         let order = {
             let user = load!(self.user)?;
@@ -288,6 +295,12 @@ impl<'info> LiquidationBooks<'_, 'info> {
                         makers_and_referrer_stats: self.makers_and_referrer_stats,
                     },
                     router,
+                )
+                .map(
+                    |(base_asset_amount, quote_asset_amount)| controller::liquidation::PerpFill {
+                        base_asset_amount,
+                        quote_asset_amount,
+                    },
                 )
                 .map_err(Into::into)
             },

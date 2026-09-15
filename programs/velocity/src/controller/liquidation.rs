@@ -806,26 +806,8 @@ pub fn liquidate_perp(
     Ok(())
 }
 
-/// How a forced liquidation order reaches liquidity.
-///
-/// A liquidation sizes its order from the margin shortage, so the order does
-/// not exist until the liquidation is part way through. Its route cannot be
-/// quoted before that, and quoting reads the transaction's own account tail,
-/// which is the caller's. So the caller is called back here, holding the
-/// market's book, its quoters and whatever makers it carries.
-pub trait LiquidationRoute<'info> {
-    /// Fill the order the liquidation has just placed on the liquidated
-    /// `User`. Reports the base and the quote the fill moved.
-    fn fill(
-        &mut self,
-        order_id: u32,
-        maps: &mut AccountMaps<'info>,
-        clock: &Clock,
-    ) -> Result<(u64, u64)>;
-}
-
 /// The two accounts a liquidation acts on, and the keys they are addressed
-/// by. Everything the *fill* needs beyond them belongs to the route.
+/// by. Everything the *fill* needs beyond them belongs to the caller.
 pub struct LiquidationParties<'a, 'info> {
     pub user: &'a AccountLoader<'info, User>,
     pub user_key: &'a Pubkey,
@@ -833,27 +815,76 @@ pub struct LiquidationParties<'a, 'info> {
     pub liquidator_key: &'a Pubkey,
 }
 
-pub fn liquidate_perp_with_fill<'info>(
+/// The base and the quote a fill moved.
+pub struct PerpFill {
+    pub base_asset_amount: u64,
+    pub quote_asset_amount: u64,
+}
+
+/// What [`place_liquidation_order`] left for the caller to act on.
+///
+/// Not boxed, though `Placed` is 336 bytes against an empty `Settled`.
+/// Boxing trades a stack concern for a heap one, and the heap is the
+/// scarcer resource here: velocity's is 32 KB and its allocator never
+/// reclaims, while 336 bytes is well inside an SBF frame. The value crosses
+/// one call and is destructured on arrival.
+#[allow(clippy::large_enum_variant)]
+pub enum LiquidationStep {
+    /// Nothing to liquidate. The account exited liquidation, holds no
+    /// position, or its shortage allows no transfer yet. All three are
+    /// correct outcomes, and none of them is work.
+    Settled,
+    /// A forced order rests in the liquidated user's own slots. Fill it,
+    /// then hand both back to [`settle_liquidation_fill`].
+    Placed(PlacedLiquidation),
+}
+
+/// The liquidation between its two halves: what the first half decided, and
+/// what settling the fill needs to know.
+///
+/// Wide because the halves are one operation split across a fill, not two
+/// operations. Every field here is read after the fill and computed before
+/// it, so carrying it is what makes the fill the caller's to run.
+pub struct PlacedLiquidation {
+    /// The forced order, in the liquidated user's own `orders`.
+    pub order_id: u32,
+    pub market_index: u16,
+    liquidation_id: u16,
+    liquidation_mode: Box<dyn LiquidatePerpMode>,
+    canceled_order_ids: Vec<u32>,
+    margin_freed: u64,
+    margin_shortage: u128,
+    margin_calculation: MarginCalculation,
+    if_liquidation_fee: u32,
+    protocol_liquidation_fee: u32,
+    oracle_price: i64,
+    fill_record_id: u64,
+    existing_direction: PositionDirection,
+}
+
+/// Size a liquidation, cancel what is in its way, and place the forced order
+/// it fills through.
+///
+/// The order's size follows from the margin shortage, so it does not exist
+/// until this has run — which is why the fill belongs to the caller rather
+/// than to a callback from here. The caller holds the transaction's quoter
+/// accounts and routes the order against them, then returns with the fill.
+pub fn place_liquidation_order<'info>(
     market_index: u16,
     parties: LiquidationParties<'_, 'info>,
     maps: &mut AccountMaps<'info>,
     clock: &Clock,
     state: &State,
-    route: &mut impl LiquidationRoute<'info>,
-    // Anchor's `Result`, not `VelocityResult`: the route runs a whole fill,
-    // including CPIs into quoter programs, and an error code carried out of
-    // one of those cannot be restated as a velocity `ErrorCode`.
-) -> Result<u64> {
+    // Anchor's `Result`, not `VelocityResult`: the caller's fill runs CPIs
+    // into quoter programs, and the settle half returns the same type, so
+    // both halves speak one error type.
+) -> Result<LiquidationStep> {
     let LiquidationParties {
         user: user_loader,
         user_key,
         liquidator: liquidator_loader,
         liquidator_key,
     } = parties;
-    // Returns the quote value the liquidation actually filled, or zero when
-    // nothing was liquidated. The crank prices its keeper payment against it:
-    // a liquidation is worth landing in proportion to what it recovers, and
-    // that is the one figure a caller cannot inflate.
     let slot_clock = maps.oracle_map.slot_clock;
     let now = clock.unix_timestamp;
     let slot = clock.slot;
@@ -973,7 +1004,7 @@ pub fn liquidate_perp_with_fill<'info>(
         && liquidation_mode.can_exit_liquidation(&margin_calculation)?
     {
         liquidation_mode.exit_liquidation(&mut user)?;
-        return Ok(0);
+        return Ok(LiquidationStep::Settled);
     }
 
     user.get_perp_position(market_index).inspect_err(|_e| {
@@ -1078,7 +1109,7 @@ pub fn liquidate_perp_with_fill<'info>(
             });
 
             liquidation_mode.exit_liquidation(&mut user)?;
-            return Ok(0);
+            return Ok(LiquidationStep::Settled);
         }
 
         intermediate_margin_calculation
@@ -1088,7 +1119,7 @@ pub fn liquidate_perp_with_fill<'info>(
 
     if user.perp_positions[position_index].base_asset_amount == 0 {
         msg!("User has no base asset amount");
-        return Ok(0);
+        return Ok(LiquidationStep::Settled);
     }
 
     let oracle_price_too_divergent = is_oracle_too_divergent_with_twap_5min(
@@ -1189,7 +1220,7 @@ pub fn liquidate_perp_with_fill<'info>(
 
     if max_base_asset_amount_allowed_to_be_transferred == 0 {
         msg!("max_base_asset_amount_allowed_to_be_transferred == 0");
-        return Ok(0);
+        return Ok(LiquidationStep::Settled);
     }
 
     let base_asset_value =
@@ -1239,10 +1270,69 @@ pub fn liquidate_perp_with_fill<'info>(
     drop(user);
     drop(liquidator);
 
-    // The book is the liquidity a liquidation is meant to reach, so the
-    // forced order routes like any other taker order rather than matching
-    // only the makers the caller loaded.
-    let (fill_base_asset_amount, fill_quote_asset_amount) = route.fill(order_id, maps, clock)?;
+    // The caller fills from here. It holds the transaction's quoter accounts,
+    // so the forced order routes like any other taker order and reaches the
+    // market's book rather than only the makers the caller loaded.
+    Ok(LiquidationStep::Placed(PlacedLiquidation {
+        order_id,
+        market_index,
+        liquidation_id,
+        liquidation_mode,
+        canceled_order_ids,
+        margin_freed,
+        margin_shortage,
+        margin_calculation,
+        if_liquidation_fee,
+        protocol_liquidation_fee,
+        oracle_price,
+        fill_record_id,
+        existing_direction,
+    }))
+}
+
+/// Book the fill against the liquidation that placed its order, and report
+/// the quote it recovered.
+///
+/// Zero is never returned: a liquidation that placed an order and filled
+/// nothing is [`ErrorCode::LiquidationOrderFailedToFill`]. The caller prices
+/// its keeper payment against what comes back, and a liquidation is worth
+/// landing in proportion to what it recovers — which is the one figure a
+/// caller cannot inflate.
+pub fn settle_liquidation_fill<'info>(
+    placed: PlacedLiquidation,
+    fill: PerpFill,
+    parties: LiquidationParties<'_, 'info>,
+    maps: &mut AccountMaps<'info>,
+    clock: &Clock,
+    state: &State,
+) -> Result<u64> {
+    let LiquidationParties {
+        user: user_loader,
+        user_key,
+        liquidator_key,
+        ..
+    } = parties;
+    let PlacedLiquidation {
+        order_id,
+        market_index,
+        liquidation_id,
+        liquidation_mode,
+        canceled_order_ids,
+        mut margin_freed,
+        margin_shortage,
+        margin_calculation,
+        if_liquidation_fee,
+        protocol_liquidation_fee,
+        oracle_price,
+        fill_record_id,
+        existing_direction,
+    } = placed;
+    let PerpFill {
+        base_asset_amount: fill_base_asset_amount,
+        quote_asset_amount: fill_quote_asset_amount,
+    } = fill;
+    let now = clock.unix_timestamp;
+    let liquidation_margin_buffer_ratio = state.liquidation_margin_buffer_ratio;
 
     let mut user = load_mut!(user_loader)?;
 

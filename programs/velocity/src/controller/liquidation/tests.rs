@@ -2920,7 +2920,10 @@ pub mod liquidate_perp_with_fill {
     use {
         crate::{
             controller::{
-                liquidation::{liquidate_perp_with_fill, LiquidationParties, LiquidationRoute},
+                liquidation::{
+                    place_liquidation_order, settle_liquidation_fill, LiquidationParties,
+                    LiquidationStep, PerpFill,
+                },
                 orders::fill_perp_order_without_external_books,
                 position::PositionDirection,
             },
@@ -2960,42 +2963,66 @@ pub mod liquidate_perp_with_fill {
         std::str::FromStr,
     };
 
-    /// The route these tests fill through: the vAMM and the loaded makers,
-    /// with no external book. It is what the liquidation reached before the
-    /// router carried one, so the numbers below still pin the same fill.
-    struct NoBooks<'a, 'info> {
-        state: &'a State,
-        user: &'a AccountLoader<'info, User>,
-        user_stats: &'a AccountLoader<'info, UserStats>,
-        liquidator: &'a AccountLoader<'info, User>,
-        liquidator_stats: &'a AccountLoader<'info, UserStats>,
-        makers_and_referrer: &'a UserMap<'info>,
-        makers_and_referrer_stats: &'a UserStatsMap<'info>,
-    }
-
-    impl<'info> LiquidationRoute<'info> for NoBooks<'_, 'info> {
-        fn fill(
-            &mut self,
-            order_id: u32,
-            maps: &mut AccountMaps<'info>,
-            clock: &Clock,
-        ) -> anchor_lang::Result<(u64, u64)> {
-            fill_perp_order_without_external_books(
-                order_id,
-                self.state,
-                self.user,
-                self.user_stats,
-                maps,
-                self.liquidator,
-                self.liquidator_stats,
-                self.makers_and_referrer,
-                self.makers_and_referrer_stats,
-                clock,
-                FillMode::Liquidation,
-                &mut None,
-                false,
-            )
-            .map_err(Into::into)
+    /// The three steps a with-fill liquidation takes, as the handler runs
+    /// them: size and place, fill, settle. These tests fill against the vAMM
+    /// and the loaded makers with no external book, which is what the
+    /// liquidation reached before the router carried one — so the numbers
+    /// below still pin the same fill.
+    #[allow(clippy::too_many_arguments)]
+    fn liquidate_perp_with_fill<'info>(
+        market_index: u16,
+        parties: LiquidationParties<'_, 'info>,
+        maps: &mut AccountMaps<'info>,
+        clock: &Clock,
+        state: &State,
+        user_stats: &AccountLoader<'info, UserStats>,
+        liquidator_stats: &AccountLoader<'info, UserStats>,
+        makers_and_referrer: &UserMap<'info>,
+        makers_and_referrer_stats: &UserStatsMap<'info>,
+    ) -> anchor_lang::Result<u64> {
+        let LiquidationParties {
+            user,
+            user_key,
+            liquidator,
+            liquidator_key,
+        } = parties;
+        let refreshed = || LiquidationParties {
+            user,
+            user_key,
+            liquidator,
+            liquidator_key,
+        };
+        match place_liquidation_order(market_index, refreshed(), maps, clock, state)? {
+            LiquidationStep::Settled => Ok(0),
+            LiquidationStep::Placed(placed) => {
+                let (base_asset_amount, quote_asset_amount) =
+                    fill_perp_order_without_external_books(
+                        placed.order_id,
+                        state,
+                        user,
+                        user_stats,
+                        maps,
+                        liquidator,
+                        liquidator_stats,
+                        makers_and_referrer,
+                        makers_and_referrer_stats,
+                        clock,
+                        FillMode::Liquidation,
+                        &mut None,
+                        false,
+                    )?;
+                settle_liquidation_fill(
+                    placed,
+                    PerpFill {
+                        base_asset_amount,
+                        quote_asset_amount,
+                    },
+                    refreshed(),
+                    maps,
+                    clock,
+                    state,
+                )
+            }
         }
     }
 
@@ -3184,15 +3211,10 @@ pub mod liquidate_perp_with_fill {
             &mut maps,
             &clock,
             &state,
-            &mut NoBooks {
-                state: &state,
-                user: &user_account_loader,
-                user_stats: &user_stats_account_loader,
-                liquidator: &liquidator_account_loader,
-                liquidator_stats: &liquidator_stats_account_loader,
-                makers_and_referrer: &makers_and_referrers,
-                makers_and_referrer_stats: &maker_and_referrer_stats,
-            },
+            &user_stats_account_loader,
+            &liquidator_stats_account_loader,
+            &makers_and_referrers,
+            &maker_and_referrer_stats,
         )
         .unwrap();
 
@@ -3410,15 +3432,10 @@ pub mod liquidate_perp_with_fill {
             &mut maps,
             &clock,
             &state,
-            &mut NoBooks {
-                state: &state,
-                user: &user_account_loader,
-                user_stats: &user_stats_account_loader,
-                liquidator: &liquidator_account_loader,
-                liquidator_stats: &liquidator_stats_account_loader,
-                makers_and_referrer: &makers_and_referrers,
-                makers_and_referrer_stats: &maker_and_referrer_stats,
-            },
+            &user_stats_account_loader,
+            &liquidator_stats_account_loader,
+            &makers_and_referrers,
+            &maker_and_referrer_stats,
         )
         .unwrap();
 
@@ -3590,15 +3607,10 @@ pub mod liquidate_perp_with_fill {
             &mut maps,
             &clock,
             &state,
-            &mut NoBooks {
-                state: &state,
-                user: &user_account_loader,
-                user_stats: &user_stats_account_loader,
-                liquidator: &liquidator_account_loader,
-                liquidator_stats: &liquidator_stats_account_loader,
-                makers_and_referrer: &UserMap::empty(),
-                makers_and_referrer_stats: &UserStatsMap::empty(),
-            },
+            &user_stats_account_loader,
+            &liquidator_stats_account_loader,
+            &UserMap::empty(),
+            &UserStatsMap::empty(),
         )
         .unwrap();
 
@@ -3766,15 +3778,10 @@ pub mod liquidate_perp_with_fill {
             &mut maps,
             &clock,
             &state,
-            &mut NoBooks {
-                state: &state,
-                user: &user_account_loader,
-                user_stats: &user_stats_account_loader,
-                liquidator: &liquidator_account_loader,
-                liquidator_stats: &liquidator_stats_account_loader,
-                makers_and_referrer: &UserMap::empty(),
-                makers_and_referrer_stats: &UserStatsMap::empty(),
-            },
+            &user_stats_account_loader,
+            &liquidator_stats_account_loader,
+            &UserMap::empty(),
+            &UserStatsMap::empty(),
         )
         .unwrap();
 

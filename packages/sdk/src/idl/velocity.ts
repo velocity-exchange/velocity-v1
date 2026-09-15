@@ -13583,6 +13583,35 @@ export type Velocity = {
           "relations": [
             "keeperStats"
           ]
+        },
+        {
+          "name": "quoterSlab",
+          "docs": [
+            "The market's approved quoter set, which names the book below.",
+            "",
+            "Optional, for a market that names no book. A market that names one is",
+            "refused without it."
+          ],
+          "optional": true
+        },
+        {
+          "name": "clobMarket",
+          "docs": [
+            "slab cannot be pointed at an arbitrary account.",
+            "",
+            "Writable because `quote_l3_v0` streams its answer into the book's own",
+            "response tail. The crank changes no order."
+          ],
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "clobProgram",
+          "docs": [
+            "registration, which `validate_clob_book` re-checks through the slot."
+          ],
+          "optional": true,
+          "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
         }
       ],
       "args": []

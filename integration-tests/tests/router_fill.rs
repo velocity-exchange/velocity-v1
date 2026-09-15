@@ -6770,12 +6770,20 @@ fn merged_sync_keeps_the_stored_map_section_parseable() {
     // reaches — the quoter must not sit inside the map section.
     let acct: UserConditionsV0 = read_zero_copy(&fixture.svm, &conditions);
     let map = acct.read_sync_accounts();
-    assert_eq!(map.len(), 5, "oracle, spot, perp, conditions, quoter slab");
+    assert_eq!(
+        map.len(),
+        7,
+        "oracle, spot, perp, conditions, quoter slab, book, book program"
+    );
     assert_eq!(map[0].address, fixture.oracle.to_bytes());
     assert_eq!(map[1].address, spot_market_pda(0).to_bytes());
     assert_eq!(map[2].address, perp_market_pda(0).to_bytes());
     assert_eq!(map[3].address, market_conditions.to_bytes());
     assert_eq!(map[4].address, fixture.quoter_slab.to_bytes());
+    // The book rides with the slab, so a liquidation staged off this list
+    // reaches it and the resolver can read it to name the fill's makers.
+    assert_eq!(map[5].address, fixture.clob_market.to_bytes());
+    assert_eq!(map[6].address, clob_id().to_bytes());
 
     // And the proof it parses: the staged executor lands. The stop-market on
     // a book market fires to the book (`trigger_market_order_v1`), so the map section
@@ -6870,6 +6878,10 @@ fn run_liq_resolver(
     accounts.push(AccountMeta::new(spot_market_pda(0), false));
     accounts.push(AccountMeta::new(perp_market_pda(0), false));
     accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
+    // The book and its program, as the sync stores them: the resolver reads
+    // the book to name the makers a liquidation would settle against.
+    accounts.push(AccountMeta::new(fixture.clob_market, false));
+    accounts.push(AccountMeta::new_readonly(clob_id(), false));
     let ix = Instruction {
         program_id: velocity_id(),
         accounts,
@@ -7125,8 +7137,130 @@ fn liq_resolver_stages_the_with_fill_executor_for_the_protocol_user() {
     assert!(accounts
         .iter()
         .any(|k| k.to_bytes() == velocity::relay_spec::KEEPER_PLACEHOLDER));
+    // The quoter section: a liquidation fills through the market's book, and
+    // the market names one, so the fill is refused without it.
+    assert!(
+        accounts.contains(&fixture.quoter_slab),
+        "the staged fill carries the market's slab"
+    );
+    assert!(
+        accounts.contains(&fixture.clob_market),
+        "the staged fill carries the market's book"
+    );
     // Args: the target perp market.
     assert_eq!(resolved.data, 0u16.to_le_bytes().to_vec());
+}
+
+/// A zeroed `State` has no liquidation margin buffer and liquidates zero
+/// percent of a shortage, so `margin_shortage` refuses to price a
+/// liquidation and nothing would transfer. This arms the throttle the way a
+/// configured exchange does.
+fn arm_liquidation_throttle(svm: &mut litesvm::LiteSVM) {
+    let mut state: State = read_zero_copy(svm, &state_pda());
+    state.liquidation_margin_buffer_ratio = 10;
+    state.initial_pct_to_liquidate = velocity::math::constants::LIQUIDATION_PCT_PRECISION as u16;
+    state.liquidation_duration = velocity::math::time::legacy_slot_duration_u8(150);
+    set_zero_copy_account(svm, state_pda(), State::DISCRIMINATOR, &state, State::SIZE);
+}
+
+/// A liquidation reaches the book.
+///
+/// The forced order routes like any other taker order, so what closes the
+/// position is whatever rests on the market's book. The resolver finds those
+/// owners by asking the book — a book order's only record of its owner is the
+/// authority and sub-account on the order itself — and stages their
+/// `(User, UserStats)` pairs, because a quoter fills nobody the caller did
+/// not load.
+#[test]
+fn a_liquidation_fills_through_the_book() {
+    let mut fixture = setup();
+    arm_liquidation_throttle(&mut fixture.svm);
+    let market_conditions = init_crank_conditions(&mut fixture, 10_000);
+    // The relay turner is paid out of the market's reservoir in
+    // program-keeper mode, so it has to hold more than rent.
+    fixture
+        .svm
+        .airdrop(&market_conditions, 1_000_000_000)
+        .unwrap();
+    set_protocol_user(&mut fixture.svm);
+
+    // The book stands ready to buy at the price the position is marked at.
+    place_clob_bid(&mut fixture, 80 * PRICE, 5 * UNIT);
+    let maker_before: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+
+    // Deeply underwater: 10 units long entered at $100, about to be marked
+    // at $80.
+    let authority = Keypair::new();
+    let user = Pubkey::find_program_address(
+        &[
+            b"user",
+            authority.pubkey().as_ref(),
+            0u16.to_le_bytes().as_ref(),
+        ],
+        &velocity_id(),
+    )
+    .0;
+    let mut account = trading_user(&authority.pubkey(), 50 * SPOT_BALANCE_PRECISION_U64, None);
+    account.perp_positions[0].market_index = 0;
+    account.perp_positions[0].base_asset_amount = (10 * UNIT) as i64;
+    account.perp_positions[0].quote_asset_amount = -((1000 * 1_000_000) as i64);
+    set_user_account(&mut fixture.svm, user, &account);
+    let user_stats = Pubkey::find_program_address(
+        &[b"user_stats", authority.pubkey().as_ref()],
+        &velocity_id(),
+    )
+    .0;
+    set_user_stats_account(&mut fixture.svm, user_stats, &authority.pubkey());
+    sync_liq_conditions(&mut fixture, user, market_conditions, 0);
+
+    fixture.svm.warp_to_slot(12);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (80 * PRICE_PRECISION) as i64,
+        12,
+    );
+
+    let resolved =
+        run_liq_resolver(&mut fixture, user).expect("an underwater account stages a liquidation");
+    let accounts: Vec<Pubkey> = resolved
+        .accounts
+        .iter()
+        .map(|a| Pubkey::new_from_array(a.address))
+        .collect();
+    assert!(
+        accounts.contains(&fixture.clob_market),
+        "the fill carries the book it routes through"
+    );
+    assert!(
+        accounts.contains(&fixture.clob_maker_user),
+        "the book's resting owner is loaded, or the book quotes it nothing"
+    );
+    assert!(
+        accounts.contains(&maker_stats_address(&fixture)),
+        "a loaded maker arrives as a (User, UserStats) pair"
+    );
+
+    let payout = Pubkey::new_unique();
+    fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
+    run_staged_executor(
+        &mut fixture,
+        &resolved,
+        velocity::instruction::LiquidatePerpWithFill::DISCRIMINATOR,
+        payout,
+    );
+
+    let after: User = read_zero_copy(&fixture.svm, &user);
+    assert!(
+        after.perp_positions[0].base_asset_amount < (10 * UNIT) as i64,
+        "the liquidation closed part of the position"
+    );
+    let maker_after: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+    assert!(
+        maker_after.perp_positions[0].base_asset_amount
+            > maker_before.perp_positions[0].base_asset_amount,
+        "the book's bid took the other side"
+    );
 }
 
 /// The plain (position-acquiring) liquidation refuses the protocol User:

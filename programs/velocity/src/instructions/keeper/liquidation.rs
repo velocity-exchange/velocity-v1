@@ -103,20 +103,36 @@ pub fn handle_liquidate_perp_with_fill<'c: 'info, 'info>(
 
     let (makers_and_referrer, makers_and_referrer_stats) =
         load_user_maps(remaining_accounts_iter, true)?;
+    // Whatever the map and user sections did not take is the quoter section:
+    // the market's slab plus the consulted quoters' registered CPI accounts.
+    let tail =
+        &ctx.remaining_accounts[ctx.remaining_accounts.len() - remaining_accounts_iter.len()..];
+
+    let mut route = LiquidationBooks {
+        state: &state,
+        market_index,
+        user: &ctx.accounts.user,
+        user_stats: &ctx.accounts.user_stats,
+        liquidator: &ctx.accounts.liquidator,
+        liquidator_stats: &ctx.accounts.liquidator_stats,
+        makers_and_referrer: &makers_and_referrer,
+        makers_and_referrer_stats: &makers_and_referrer_stats,
+        tail,
+        instructions_sysvar: &ctx.accounts.instructions_sysvar,
+    };
 
     let filled_quote = controller::liquidation::liquidate_perp_with_fill(
         market_index,
-        &ctx.accounts.user,
-        &user_key,
-        &ctx.accounts.user_stats,
-        &ctx.accounts.liquidator,
-        &liquidator_key,
-        &ctx.accounts.liquidator_stats,
-        &makers_and_referrer,
-        &makers_and_referrer_stats,
+        controller::liquidation::LiquidationParties {
+            user: &ctx.accounts.user,
+            user_key: &user_key,
+            liquidator: &ctx.accounts.liquidator,
+            liquidator_key: &liquidator_key,
+        },
         &mut maps,
         &clock,
         &state,
+        &mut route,
     )?;
 
     // Program-keeper mode: the caller's payout account earns reservoir
@@ -136,6 +152,178 @@ pub fn handle_liquidate_perp_with_fill<'c: 'info, 'info>(
     }
 
     Ok(())
+}
+
+/// The liquidity a forced liquidation order fills against: the market's book
+/// and its quoters through the router, the vAMM, and any DLOB makers the
+/// caller loaded.
+///
+/// A liquidation is the one taker order velocity writes for somebody else, so
+/// it is also the one route nobody signs for. Everything it needs to answer
+/// for that — who built the transaction, how many locks it holds — is here
+/// rather than on the controller, which knows only the order.
+struct LiquidationBooks<'a, 'info> {
+    state: &'a State,
+    market_index: u16,
+    user: &'a AccountLoader<'info, User>,
+    user_stats: &'a AccountLoader<'info, UserStats>,
+    /// The liquidator, which a with-fill liquidation uses only as the filler:
+    /// it routes the position to the book and acquires no balance.
+    liquidator: &'a AccountLoader<'info, User>,
+    liquidator_stats: &'a AccountLoader<'info, UserStats>,
+    makers_and_referrer: &'a UserMap<'info>,
+    makers_and_referrer_stats: &'a UserStatsMap<'info>,
+    /// The quoter section of the account list: the market's `QuoterSlabV0`
+    /// plus the union of the consulted quoters' registered CPI accounts.
+    tail: &'info [AccountInfo<'info>],
+    instructions_sysvar: &'a Option<UncheckedAccount<'info>>,
+}
+
+impl<'info> controller::liquidation::LiquidationRoute<'info> for LiquidationBooks<'_, 'info> {
+    fn fill(
+        &mut self,
+        order_id: u32,
+        maps: &mut AccountMaps<'info>,
+        clock: &Clock,
+    ) -> Result<(u64, u64)> {
+        self.route_fill(order_id, maps, clock)
+    }
+}
+
+impl<'info> LiquidationBooks<'_, 'info> {
+    fn route_fill(
+        &self,
+        order_id: u32,
+        maps: &mut AccountMaps<'info>,
+        clock: &Clock,
+    ) -> Result<(u64, u64)> {
+        let market_index = self.market_index;
+        let order = {
+            let user = load!(self.user)?;
+            let order = user
+                .get_order(order_id)
+                .ok_or(ErrorCode::OrderDoesNotExist)?;
+            RouteContext {
+                market_index,
+                maps,
+                state: self.state,
+                clock,
+            }
+            .routed_order(&user, order, FillMode::Liquidation)?
+        };
+
+        let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
+        let users = crate::state::prop_amm::quoter_wire_users(
+            self.makers_and_referrer.user_ref_index()?.into_keys().map(
+                |(authority, sub_account_id)| crate::state::prop_amm::ClobUserRefV0 {
+                    authority,
+                    sub_account_id,
+                },
+            ),
+        )?;
+        let inputs = order.quote_inputs(
+            market_index,
+            &users,
+            self.served_window(&order, clock.slot, &mut cpi_scratch)?,
+        );
+        let quoted = crate::instructions::quote_route(
+            self.tail,
+            inputs,
+            // A liquidation order is written by the program, not signed by
+            // its owner, so there is no route for a filler to substitute.
+            None,
+            &mut crate::instructions::CapInputs {
+                taker_key: &self.user.key(),
+                makers_and_referrer: self.makers_and_referrer,
+                makers_and_referrer_stats: self.makers_and_referrer_stats,
+                maps,
+                slot: clock.slot,
+                now: clock.unix_timestamp,
+            },
+            &mut cpi_scratch,
+        )?;
+
+        let obligation = crate::math::router::FillerObligation {
+            // The liquidated account never signs its own liquidation, so the
+            // caller answers for what its account list left out.
+            taker_signed: false,
+            tx_accounts: match self.instructions_sysvar {
+                Some(sysvar) => Some(
+                    crate::instructions::optional_accounts::tx_writable_lock_count(
+                        &sysvar.to_account_info(),
+                    )?,
+                ),
+                None => None,
+            },
+            unrouted_quoters: quoted.unrouted_quoters,
+        };
+
+        let (filled, _) = quoted.route_fill(
+            crate::instructions::RouterTerms {
+                protocol_authority: self.state.signer,
+                taker_exposure_closed_by_caller: false,
+                obligation,
+            },
+            clock,
+            &mut cpi_scratch,
+            |router| {
+                controller::orders::fill_perp_order(
+                    controller::orders::FillRequest {
+                        target: controller::orders::FillTarget::Slot(order_id),
+                        mode: FillMode::Liquidation,
+                        referrer_is_accelerated: false,
+                    },
+                    self.state,
+                    clock,
+                    controller::orders::PerpFillAccounts {
+                        user: self.user,
+                        user_stats: self.user_stats,
+                        filler: self.liquidator,
+                        filler_stats: self.liquidator_stats,
+                        rev_share_escrow: &mut None,
+                    },
+                    &mut controller::orders::FillParties {
+                        maps,
+                        makers_and_referrer: self.makers_and_referrer,
+                        makers_and_referrer_stats: self.makers_and_referrer_stats,
+                    },
+                    router,
+                )
+                .map_err(Into::into)
+            },
+        )?;
+        Ok(filled)
+    }
+
+    /// Whether the depth this liquidation can reach has measurably rested.
+    ///
+    /// A liquidation carries no attestation: its order is written by the
+    /// program in the same transaction that fills it, so nothing about the
+    /// taker vouches for protected flow. What can be vouched for is the other
+    /// half of the same promise — that the book's makers have had time to
+    /// reprice — and it is measured the way the cross cranks measure it,
+    /// over the side this fill sweeps. Without it a book with a speed bump
+    /// quotes a liquidation nothing at all, and the position it must close
+    /// reaches the vAMM alone.
+    fn served_window(
+        &self,
+        order: &RoutedOrder,
+        slot: u64,
+        cpi_scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
+    ) -> Result<bool> {
+        let Some(slab) = crate::instructions::route_slab(self.tail, self.market_index)? else {
+            return Ok(false);
+        };
+        crate::instructions::clob::helpers::crank_common::book_side_rested(
+            &slab,
+            self.tail,
+            self.market_index,
+            order.direction,
+            order.unfilled,
+            slot,
+            cpi_scratch,
+        )
+    }
 }
 
 /// Pay the caller out of the market's reservoir for a liquidation crank.

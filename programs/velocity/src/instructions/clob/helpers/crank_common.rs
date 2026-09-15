@@ -45,7 +45,7 @@ use {
             prop_amm::{
                 ClobEvictWorstArgsV0, ClobMarket, ClobReader, ClobRemoveExpiredArgsV0,
                 ClobRemovedOrderV0, ClobUserRefV0, Direction, L3ArgsV0, L3RowV0, QuoterConfigV0,
-                QuoterCpiScratch, QuoterSlabExt, QuoterSlabV0, WireDirectionExt,
+                QuoterCpiScratch, QuoterSlabExt, QuoterSlabV0, QuoterType, WireDirectionExt,
             },
             state::State,
             user::{User, UserStats},
@@ -533,6 +533,68 @@ pub fn find_fired_trigger(
         }
     }
     Ok(None)
+}
+
+/// Rows read from one side when measuring whether its depth has rested. Deep
+/// enough to cover the size any one crank takes off a side.
+pub(crate) const RESTED_ROWS_PER_SIDE: u16 = 32;
+
+/// Whether every book order a fill could consume has measurably rested.
+///
+/// This is how a crank vouches for protected flow (`taker_served_window`)
+/// when nothing about the taker can. A crank cannot vouch by construction:
+/// on a zero-delay book, place-then-crank is two back-to-back transactions,
+/// so fresh informed flow would wear the protected flag into a quoter that
+/// only serves protected flow. So the crank measures the other half of the
+/// same promise — that the makers have had time to reprice — over the depth
+/// the fill can reach. That depth is the first `size` base of the side the
+/// fill sweeps, so a fresh order deeper than the fill goes defers nothing.
+///
+/// One side per fill. A fill transmits only the flow it sweeps, so a fresh
+/// order on the other side of the book has no bearing on it.
+pub(crate) fn book_side_rested<'info>(
+    quoter_slab: &AccountLoader<'info, QuoterSlabV0>,
+    tail: &'info [AccountInfo<'info>],
+    market_index: u16,
+    direction: Direction,
+    size: u64,
+    slot: u64,
+    cpi_scratch: &mut QuoterCpiScratch<'info>,
+) -> Result<bool> {
+    let consulted = quoter_slab.consulted_slots(tail)?;
+    consulted
+        .iter()
+        .try_fold(true, |served, &slot_index| -> Result<bool> {
+            // Copy the config out so no slab borrow lives across the book CPI.
+            let config = quoter_slab.slots()?[slot_index].config;
+            if config.quoter_type != QuoterType::Clob {
+                return Ok(served);
+            }
+            let rows = book_l3_side(
+                &config,
+                quoter_slab,
+                market_index,
+                direction,
+                RESTED_ROWS_PER_SIDE,
+                tail,
+                cpi_scratch,
+                false,
+                |row| (row.size, row.placed_slot),
+            )?
+            .unwrap_or_default();
+            let (_, rested) =
+                rows.iter()
+                    .fold((0u64, true), |(depth, rested), (row_size, placed_slot)| {
+                        if depth >= size {
+                            return (depth, rested);
+                        }
+                        (
+                            depth.saturating_add(*row_size),
+                            rested && crate::math::crosses::served_window(*placed_slot, slot),
+                        )
+                    });
+            Ok(served && rested)
+        })
 }
 
 /// One side of a book, best price first, through the same `quote_l3_v0`

@@ -826,6 +826,11 @@ fn regr_276_bid_ask_twap(fixture: &mut Fx276Twap, #[range(0..1u8)] _unused: u8) 
                 AccountMeta::new_readonly(fixture.oracle, false),
                 AccountMeta::new_readonly(fixture.keeper_stats_pda, false),
                 AccountMeta::new_readonly(fixture.authority.pubkey(), true),
+                // The book the estimate reads, as anchor's `None`: this market
+                // names no CLOB, and the crank returns before reading one.
+                AccountMeta::new_readonly(fixture.program_id, false),
+                AccountMeta::new_readonly(fixture.program_id, false),
+                AccountMeta::new_readonly(fixture.program_id, false),
             ],
             data: ix_data(D_UPDATE_PERP_BID_ASK_TWAP, &[]),
         })

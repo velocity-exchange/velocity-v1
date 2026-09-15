@@ -20,7 +20,7 @@ use {
     dashmap::DashMap,
     futures_util::FutureExt,
     solana_compute_budget_interface::ComputeBudgetInstruction,
-    solana_sdk::{clock::Slot, signature::Signature},
+    solana_sdk::{clock::Slot, instruction::AccountMeta, signature::Signature},
     std::{
         collections::{BTreeMap, HashMap, HashSet},
         sync::{Arc, RwLock},
@@ -54,7 +54,7 @@ use {
                 },
                 time::{Millis, SlotDuration},
             },
-            state::prop_amm::{ClobOrderRefV0, ClobSide},
+            state::prop_amm::{ClobOrderRefV0, ClobSide, ClobUserRefV0, QuoterConfigV0},
         },
         titan::{self, TitanSwapApi},
         types::{
@@ -63,8 +63,9 @@ use {
             OracleSource, OrderParams, OrderType, PerpPosition, PositionDirection, SpotBalanceType,
             SpotPosition,
         },
+        utils::clob_slot_config,
         ClobFillAccounts, GrpcSubscribeOpts, MarketState, Pubkey, TransactionBuilder,
-        VelocityClient,
+        VelocityClient, Wallet,
     },
 };
 
@@ -83,6 +84,19 @@ const FAILURE_COOLDOWN_BASE_MS: u64 = 5_000;
 
 /// Maximum cooldown in milliseconds (cap for exponential backoff) — 5 minutes
 const FAILURE_COOLDOWN_MAX_MS: u64 = 300_000;
+
+/// Book makers one liquidation carries. Each costs two account locks, beside
+/// the DLOB makers, the margin map and the quoter section.
+const CLOB_LIQUIDATION_MAKERS: usize = 3;
+
+/// What a with-fill liquidation routes through: the counterparties it may
+/// settle against, and the quoter section that lets it reach the book.
+struct LiquidationMatch {
+    makers: Vec<User>,
+    /// The market's slab, its book and the book's program, in the order the
+    /// fill's account tail expects. Empty for a market with no book.
+    quoter_metas: Vec<AccountMeta>,
+}
 
 const TARGET: &str = "liquidator";
 
@@ -2643,26 +2657,31 @@ impl PrimaryLiquidationStrategy {
         makers
     }
 
-    fn find_top_makers(
+    /// The DLOB makers this liquidation can settle against, from the local
+    /// order book. Empty when the snapshot or the oracle is unusable, which
+    /// leaves the book as the only source.
+    fn find_dlob_makers(
         velocity: &VelocityClient,
         dlob: &'static DLOB,
         market_state: Arc<RwLock<MarketState>>,
         market_index: u16,
         base_asset_amount: i64,
         exchange_match_allowed: bool,
-    ) -> Option<Vec<User>> {
-        let l3_book = dlob.get_l3_snapshot_safe(market_index, MarketType::Perp)?;
+    ) -> Vec<User> {
+        let Some(l3_book) = dlob.get_l3_snapshot_safe(market_index, MarketType::Perp) else {
+            return Vec::new();
+        };
 
         let oracle_price = {
             let state = market_state.read().unwrap();
             match state.get_perp_oracle_price(market_index) {
                 Some(data) if data.price > 0 => data.price as u64,
-                _ => return None,
+                _ => return Vec::new(),
             }
         };
 
         // only want maker orders so don't pass vamm or trigger price
-        let makers = if Self::liquidation_makers_are_bids(base_asset_amount) {
+        if Self::liquidation_makers_are_bids(base_asset_amount) {
             Self::collect_top_makers(
                 velocity,
                 l3_book.bids(Some(oracle_price), None, None),
@@ -2674,23 +2693,149 @@ impl PrimaryLiquidationStrategy {
                 l3_book.asks(Some(oracle_price), None, None),
                 exchange_match_allowed,
             )
+        }
+    }
+
+    /// The book makers this liquidation can settle against.
+    ///
+    /// A DLOB maker's order lives in `User.orders`, so finding it is a matter
+    /// of reading loaded accounts. A book order lives on the book, and the
+    /// only record of who owns it is an authority and a sub-account on the
+    /// order — so the book is asked for its own resting owners through the
+    /// `quote_l3_v0` leg, simulated. This keeper never decodes a book, and the
+    /// book may change its data structures without breaking it.
+    ///
+    /// The fill stops at the first owner the transaction did not carry, so
+    /// these come off the side the liquidation sweeps, best price first.
+    async fn find_book_makers(
+        velocity: &VelocityClient,
+        book: &QuoterConfigV0,
+        market_index: u16,
+        base_asset_amount: i64,
+        liquidatee: &User,
+    ) -> Vec<User> {
+        let direction = if Self::liquidation_makers_are_bids(base_asset_amount) {
+            // The liquidation sells the position, and a seller sweeps the bids.
+            velocity_router_sim::Direction::Short
+        } else {
+            velocity_router_sim::Direction::Long
+        };
+        let source = relay_chain_source::RpcSource::new(velocity.rpc().url());
+        let reachable = match velocity_router_sim::l3::resting_makers(
+            &source,
+            book,
+            direction,
+            base_asset_amount.unsigned_abs(),
+            usize::MAX,
+        )
+        .await
+        {
+            Ok(makers) => makers,
+            Err(err) => {
+                log::warn!(target: TARGET, "clob makers for market {market_index}: {err:#}");
+                return Vec::new();
+            }
+        };
+        let liquidatee_ref = ClobUserRefV0 {
+            authority: liquidatee.authority,
+            sub_account_id: liquidatee.sub_account_id,
+        };
+        reachable
+            .into_iter()
+            .filter(|maker| *maker != liquidatee_ref)
+            .take(CLOB_LIQUIDATION_MAKERS)
+            .filter_map(|maker| {
+                let key = Wallet::derive_user_account(&maker.authority, maker.sub_account_id);
+                velocity.try_get_account::<User>(&key).ok()
+            })
+            .collect()
+    }
+
+    /// Everything a with-fill liquidation needs beyond the liquidatee: the
+    /// counterparties it may settle against, and the quoter section that lets
+    /// it reach the book.
+    ///
+    /// `None` when no source can fill it, which sends the account down the
+    /// takeover path instead.
+    async fn find_top_makers(
+        velocity: &VelocityClient,
+        dlob: &'static DLOB,
+        market_state: Arc<RwLock<MarketState>>,
+        market_index: u16,
+        base_asset_amount: i64,
+        exchange_match_allowed: bool,
+        liquidatee: &User,
+    ) -> Option<LiquidationMatch> {
+        let mut makers = Self::find_dlob_makers(
+            velocity,
+            dlob,
+            market_state,
+            market_index,
+            base_asset_amount,
+            exchange_match_allowed,
+        );
+
+        // An unreadable slab abandons the attempt rather than filling without
+        // the book: the market's canonical CLOB is a mandatory baseline, so a
+        // fill that leaves it out is refused on chain, and building one only
+        // spends a transaction to discover that.
+        let slots = match velocity.get_quoter_slab_slots(market_index).await {
+            Ok(slots) => slots,
+            Err(err) => {
+                log::warn!(target: TARGET, "quoter slab for market {market_index} unreadable ({err:?}); no liquidation route");
+                return None;
+            }
+        };
+        let quoter_metas = match clob_slot_config(&slots) {
+            Some(book) => {
+                makers.extend(
+                    Self::find_book_makers(
+                        velocity,
+                        &book,
+                        market_index,
+                        base_asset_amount,
+                        liquidatee,
+                    )
+                    .await,
+                );
+                vec![
+                    AccountMeta::new_readonly(derive_quoter_slab(market_index), false),
+                    AccountMeta::new(book.response_account, false),
+                    AccountMeta::new_readonly(book.program_id, false),
+                ]
+            }
+            None => Vec::new(),
         };
 
-        if makers.is_empty() {
+        // Both sources can name the same account, and a duplicate maker pair
+        // is account locks the fill has no use for.
+        let mut seen = HashSet::new();
+        makers.retain(|maker| {
+            seen.insert(Wallet::derive_user_account(
+                &maker.authority,
+                maker.sub_account_id,
+            ))
+        });
+
+        if makers.is_empty() && quoter_metas.is_empty() {
             log::warn!(target: TARGET, "no eligible makers found. market={}", market_index);
             return None;
         }
 
-        Some(makers)
+        Some(LiquidationMatch {
+            makers,
+            quoter_metas,
+        })
     }
 
-    /// Try to fill liquidation with order match
+    /// Try to fill liquidation through the router
+    #[allow(clippy::too_many_arguments)]
     async fn try_liquidate_with_match(
         velocity: &VelocityClient,
         market_index: u16,
         subaccount: Pubkey,
         liquidatee_subaccount: Pubkey,
-        top_makers: &[User],
+        route: &LiquidationMatch,
         tx_sender: TxSender,
         priority_fee: u64,
         cu_limit: u32,
@@ -2698,7 +2843,8 @@ impl PrimaryLiquidationStrategy {
         pyth_price_update: Option<PythPriceUpdate>,
         dlob_url: &str,
     ) -> LiquidationOutcome {
-        if top_makers.is_empty() {
+        let top_makers = route.makers.as_slice();
+        if top_makers.is_empty() && route.quoter_metas.is_empty() {
             log::debug!(target: TARGET, "skip empty maker cross. market={market_index} user={liquidatee_subaccount}");
             return LiquidationOutcome::Skipped("no_makers");
         }
@@ -2751,6 +2897,19 @@ impl PrimaryLiquidationStrategy {
 
         tx_builder =
             tx_builder.liquidate_perp_with_fill(market_index, &liquidatee_data, top_makers);
+
+        // The quoter section rides the liquidation's remaining accounts: the
+        // program reads everything past the map and user sections as registry
+        // entries plus their CPI accounts. Appended before the CU bump below
+        // so the bump sees the real account count.
+        if !route.quoter_metas.is_empty() {
+            let last = tx_builder.ixs().len() - 1;
+            let mut liquidate_ix = tx_builder.ixs()[last].clone();
+            liquidate_ix
+                .accounts
+                .extend(route.quoter_metas.iter().cloned());
+            tx_builder = tx_builder.set_ix(last, liquidate_ix);
+        }
 
         // Ask for the ceiling here and let the send path size it down. It
         // simulates before it signs, so the limit that gets signed comes from
@@ -2956,7 +3115,9 @@ impl PrimaryLiquidationStrategy {
                 position.market_index,
                 position.base_asset_amount,
                 policy.exchange_match_allowed,
+                user_account,
             )
+            .await
         } else {
             None
         };
@@ -2999,7 +3160,7 @@ impl PrimaryLiquidationStrategy {
                     position.market_index,
                     *match_subaccount,
                     liquidatee,
-                    makers.as_slice(),
+                    &makers,
                     tx_sender,
                     priority_fee,
                     cu_limit,

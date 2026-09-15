@@ -860,6 +860,10 @@ export class MakerBidAskTwapCrank implements Bot {
 					...this.getCombinedList(askMakers),
 				];
 
+				// Only the DLOB half is gathered here. The market's book is read
+				// on chain through its own `quoteL3V0` leg, so the crank carries
+				// the book accounts rather than its depth, and the SDK resolves
+				// those from the market.
 				ixs.push(
 					await this.velocityClient.getUpdatePerpBidAskTwapIx(
 						mi,

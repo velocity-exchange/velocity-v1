@@ -37,6 +37,15 @@ use {
     anchor_lang::prelude::*,
 };
 
+/// Book makers one staged liquidation carries. Each costs two account locks
+/// in the executor, so the cap is what a transaction holds beside the margin
+/// map and the quoter tail.
+const MAX_LIQUIDATION_MAKERS: usize = 4;
+
+/// Rows read off the swept side to find those makers. Deeper than the cap,
+/// because one owner can hold several of the rows in front.
+const BOOK_MAKER_ROWS: u16 = 32;
+
 #[derive(Accounts)]
 pub struct ResolveLiquidatePerpWithFill<'info> {
     /// The shared staging account, index 0 by convention — a resolver's
@@ -66,14 +75,19 @@ pub fn handle_resolve_liquidate_perp_with_fill<'c: 'info, 'info>(
             ErrorCode::DefaultError,
             "resolver needs the stored margin-map accounts"
         )?;
+        let account_iter = &mut ctx.remaining_accounts.iter().peekable();
         let mut maps = load_maps(
-            &mut ctx.remaining_accounts.iter().peekable(),
+            account_iter,
             &MarketSet::new(),
             &MarketSet::new(),
             clock.slot,
             state.slot_clock(),
             Some(state.oracle_guard_rails),
         )?;
+        // Where the stored list stops being the margin map. The liquidation
+        // executor reads its leftover accounts in sections, and the makers it
+        // may settle against belong between the map and the quoter tail.
+        let map_section = ctx.remaining_accounts.len() - account_iter.len();
 
         let cancel_target = find_cancel_target(&ctx.accounts.user, &mut maps)?;
         if let Some(market_index) = cancel_target {
@@ -118,8 +132,10 @@ pub fn handle_resolve_liquidate_perp_with_fill<'c: 'info, 'info>(
         stage_liquidate_perp(
             ctx.accounts.state.key(),
             &ctx.accounts.user,
+            ctx.remaining_accounts,
             market_index,
             stored,
+            map_section,
         )
         .map(Some)
     })
@@ -246,14 +262,22 @@ fn largest_perp_position(user_loader: &AccountLoader<'_, User>) -> Result<Option
 /// `liquidate_perp_with_fill` shares `liquidate_perp`'s account list, so
 /// the two cannot be paired by name: this is the inventory-free flavor,
 /// and staging the plain one would have the protocol acquire the position.
-fn stage_liquidate_perp(
+fn stage_liquidate_perp<'info>(
     state_key: Pubkey,
-    user_loader: &AccountLoader<'_, User>,
+    user_loader: &AccountLoader<'info, User>,
+    remaining_accounts: &'info [AccountInfo<'info>],
     market_index: u16,
     stored: Vec<relay_spec::AccountRefV0>,
+    map_section: usize,
 ) -> Result<crate::instructions::StagedCall> {
     let (protocol_user, protocol_user_stats) = crate::state::pdas::protocol_user_pair();
     let user_stats = crate::state::pdas::user_stats(&crate::load!(user_loader)?.authority);
+    let makers = book_makers(user_loader, remaining_accounts, market_index)?;
+    // The executor parses its leftover accounts in order: the margin map, the
+    // `(User, UserStats)` pairs it may settle against, then the quoter tail.
+    // The stored list holds the first section and the last, so the makers go
+    // between them rather than after.
+    let (map_refs, tail_refs) = stored.split_at(map_section.min(stored.len()));
     crate::instructions::StagedCall::new::<crate::instruction::LiquidatePerpWithFill>(
         crate::accounts::LiquidatePerp {
             state: state_key,
@@ -268,6 +292,102 @@ fn stage_liquidate_perp(
             instructions_sysvar: Some(solana_program::sysvar::instructions::ID),
         },
     )
-    .refs(stored)
+    .refs(map_refs.iter().copied())
+    .maker_refs(makers)
+    .refs(tail_refs.iter().copied())
     .arg(market_index)
+}
+
+/// The book makers a liquidation of `market_index` would settle against.
+///
+/// The liquidation closes the account's position, so it sweeps the side
+/// opposite to that position, and a quoter fills nobody the caller did not
+/// load. Owners come off the book best price first and the walk stops at the
+/// cap, which is what one transaction's account locks hold. A position
+/// deeper than that liquidates a stage at a time: relay's level-triggered
+/// wake brings the account back while it still qualifies.
+///
+/// An empty list is a market with no book, a book that cannot quote, or a
+/// stored list that carries neither. All three leave the fill the vAMM,
+/// which is what it reached before the book existed.
+fn book_makers<'info>(
+    user_loader: &AccountLoader<'info, User>,
+    remaining_accounts: &'info [AccountInfo<'info>],
+    market_index: u16,
+) -> Result<Vec<crate::state::prop_amm::ClobUserRefV0>> {
+    use crate::state::prop_amm::{
+        clob_slot_index, find_account, QuoterCpiScratch, QuoterSlabExt, QuoterSlabV0,
+    };
+
+    let Some(direction) = sweep_direction(user_loader, market_index)? else {
+        return Ok(Vec::new());
+    };
+    let slab_key = crate::state::pdas::quoter_slab(market_index);
+    let Some(slab_info) = find_account(remaining_accounts, &slab_key) else {
+        return Ok(Vec::new());
+    };
+    let slab = AccountLoader::<QuoterSlabV0>::try_from(slab_info)?;
+    // Copied out so no slab borrow lives across the book CPI.
+    let config = {
+        let slots = slab.slots()?;
+        let Some(index) = clob_slot_index(&slots) else {
+            return Ok(Vec::new());
+        };
+        if !slots[index].quotes() {
+            return Ok(Vec::new());
+        }
+        slots[index].config
+    };
+    let (Some(book), Some(program)) = (
+        find_account(remaining_accounts, &config.response_account),
+        find_account(remaining_accounts, &config.program_id),
+    ) else {
+        return Ok(Vec::new());
+    };
+
+    let taker = crate::load!(user_loader)?.clob_user_ref();
+    let accounts = [book.clone(), program.clone()];
+    let mut scratch = QuoterCpiScratch::new();
+    let owners = crate::instructions::clob::helpers::crank_common::book_l3_side(
+        &config,
+        &slab,
+        market_index,
+        direction,
+        BOOK_MAKER_ROWS,
+        &accounts,
+        &mut scratch,
+        // The cover a crossing remainder claims is not depth this fill may
+        // take, so the owners behind it are not owners it has to carry.
+        false,
+        |row| row.user,
+    )?
+    .unwrap_or_default();
+
+    Ok(owners
+        .into_iter()
+        .filter(|owner| *owner != taker)
+        .fold(Vec::new(), |mut makers, owner| {
+            if makers.len() < MAX_LIQUIDATION_MAKERS && !makers.contains(&owner) {
+                makers.push(owner);
+            }
+            makers
+        }))
+}
+
+/// The side a liquidation of `market_index` sweeps, as the taker direction
+/// the book answers on. `None` when the account holds no position there.
+fn sweep_direction(
+    user_loader: &AccountLoader<'_, User>,
+    market_index: u16,
+) -> Result<Option<crate::state::prop_amm::Direction>> {
+    let user = crate::load!(user_loader)?;
+    let Ok(position) = user.get_perp_position(market_index) else {
+        return Ok(None);
+    };
+    Ok(match position.base_asset_amount {
+        0 => None,
+        // A long is closed by selling, and a seller sweeps the bids.
+        base if base > 0 => Some(crate::state::prop_amm::Direction::Short),
+        _ => Some(crate::state::prop_amm::Direction::Long),
+    })
 }

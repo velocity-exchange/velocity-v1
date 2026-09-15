@@ -7,9 +7,7 @@ use {
     crate::{
         controller::{
             funding::settle_funding_payment,
-            orders::{
-                self, cancel_order, fill_perp_order_without_external_books, place_perp_order,
-            },
+            orders::{self, cancel_order, place_perp_order},
             position::{
                 get_position_index, update_position_and_market, update_quote_asset_amount,
                 update_quote_asset_and_break_even_amount, update_settled_pnl, PositionDirection,
@@ -76,7 +74,6 @@ use {
                 OrderAction, OrderActionExplanation, OrderActionRecord, OrderRecord,
                 PerpBankruptcyRecord, SpotBankruptcyRecord,
             },
-            fill_mode::FillMode,
             liquidation_mode::{get_perp_liquidation_mode, LiquidatePerpMode},
             margin_calculation::{MarginCalculation, MarginContext, MarketIdentifier},
             market_status::MarketStatus,
@@ -87,7 +84,6 @@ use {
             spot_market_map::SpotMarketMap,
             state::State,
             user::{MarketType, Order, OrderStatus, OrderType, User, UserStats},
-            user_map::{UserMap, UserStatsMap},
         },
         validate,
         vlp::amm::{controller::get_fee_pool_tokens, refresh::update_amm_and_check_validity},
@@ -810,20 +806,50 @@ pub fn liquidate_perp(
     Ok(())
 }
 
+/// How a forced liquidation order reaches liquidity.
+///
+/// A liquidation sizes its order from the margin shortage, so the order does
+/// not exist until the liquidation is part way through. Its route cannot be
+/// quoted before that, and quoting reads the transaction's own account tail,
+/// which is the caller's. So the caller is called back here, holding the
+/// market's book, its quoters and whatever makers it carries.
+pub trait LiquidationRoute<'info> {
+    /// Fill the order the liquidation has just placed on the liquidated
+    /// `User`. Reports the base and the quote the fill moved.
+    fn fill(
+        &mut self,
+        order_id: u32,
+        maps: &mut AccountMaps<'info>,
+        clock: &Clock,
+    ) -> Result<(u64, u64)>;
+}
+
+/// The two accounts a liquidation acts on, and the keys they are addressed
+/// by. Everything the *fill* needs beyond them belongs to the route.
+pub struct LiquidationParties<'a, 'info> {
+    pub user: &'a AccountLoader<'info, User>,
+    pub user_key: &'a Pubkey,
+    pub liquidator: &'a AccountLoader<'info, User>,
+    pub liquidator_key: &'a Pubkey,
+}
+
 pub fn liquidate_perp_with_fill<'info>(
     market_index: u16,
-    user_loader: &AccountLoader<'info, User>,
-    user_key: &Pubkey,
-    user_stats_loader: &AccountLoader<'info, UserStats>,
-    liquidator_loader: &AccountLoader<'info, User>,
-    liquidator_key: &Pubkey,
-    liquidator_stats_loader: &AccountLoader<'info, UserStats>,
-    makers_and_referrer: &UserMap,
-    makers_and_referrer_stats: &UserStatsMap,
-    maps: &mut AccountMaps,
+    parties: LiquidationParties<'_, 'info>,
+    maps: &mut AccountMaps<'info>,
     clock: &Clock,
     state: &State,
-) -> VelocityResult<u64> {
+    route: &mut impl LiquidationRoute<'info>,
+    // Anchor's `Result`, not `VelocityResult`: the route runs a whole fill,
+    // including CPIs into quoter programs, and an error code carried out of
+    // one of those cannot be restated as a velocity `ErrorCode`.
+) -> Result<u64> {
+    let LiquidationParties {
+        user: user_loader,
+        user_key,
+        liquidator: liquidator_loader,
+        liquidator_key,
+    } = parties;
     // Returns the quote value the liquidation actually filled, or zero when
     // nothing was liquidated. The crank prices its keeper payment against it:
     // a liquidation is worth landing in proportion to what it recovers, and
@@ -935,14 +961,14 @@ pub fn liquidate_perp_with_fill<'info>(
                 "user has resting CLOB orders in market {}; force_cancel_clob_orders must run first",
                 clob_market
             );
-            return Err(ErrorCode::LiquidationConflictsWithClobOrders);
+            return Err(ErrorCode::LiquidationConflictsWithClobOrders.into());
         }
     }
     if !user_is_being_liquidated
         && liquidation_mode.meets_margin_requirements(&margin_calculation)?
     {
         msg!("margin calculation: {:?}", margin_calculation);
-        return Err(ErrorCode::SufficientCollateral);
+        return Err(ErrorCode::SufficientCollateral.into());
     } else if user_is_being_liquidated
         && liquidation_mode.can_exit_liquidation(&margin_calculation)?
     {
@@ -1213,21 +1239,10 @@ pub fn liquidate_perp_with_fill<'info>(
     drop(user);
     drop(liquidator);
 
-    let (fill_base_asset_amount, fill_quote_asset_amount) = fill_perp_order_without_external_books(
-        order_id,
-        state,
-        user_loader,
-        user_stats_loader,
-        maps,
-        liquidator_loader,
-        liquidator_stats_loader,
-        makers_and_referrer,
-        makers_and_referrer_stats,
-        clock,
-        FillMode::Liquidation,
-        &mut None,
-        false,
-    )?;
+    // The book is the liquidity a liquidation is meant to reach, so the
+    // forced order routes like any other taker order rather than matching
+    // only the makers the caller loaded.
+    let (fill_base_asset_amount, fill_quote_asset_amount) = route.fill(order_id, maps, clock)?;
 
     let mut user = load_mut!(user_loader)?;
 
@@ -1248,7 +1263,7 @@ pub fn liquidate_perp_with_fill<'info>(
 
     // no fill
     if fill_base_asset_amount == 0 {
-        return Err(ErrorCode::LiquidationOrderFailedToFill);
+        return Err(ErrorCode::LiquidationOrderFailedToFill.into());
     }
 
     let if_fee = -fill_quote_asset_amount

@@ -11044,16 +11044,25 @@ export class VelocityClient {
 	}
 
 	/**
-	 * Keeper instruction: liquidates a user's perp position in `marketIndex` by filling it directly
-	 * against the supplied `makerInfos` (instead of transferring it to the liquidator's own
-	 * sub-account as `liquidatePerp` does). Reverts if `userAccountPublicKey` equals the liquidator's
-	 * own user account. Permissionless — any signer can act as liquidator/filler.
+	 * Keeper instruction: liquidates a user's perp position in `marketIndex` by filling it through
+	 * the router (instead of transferring it to the liquidator's own sub-account as `liquidatePerp`
+	 * does). The forced order routes across the market's CLOB, its PropAMM quoters, the vAMM and
+	 * any `makerInfos` passed, so the liquidator is only the filler and acquires no position.
+	 * Reverts if `userAccountPublicKey` equals the liquidator's own user account. Permissionless —
+	 * any signer can act as liquidator/filler.
+	 *
+	 * A market that names a book must be liquidated through it: the quoter section is appended to
+	 * the remaining accounts automatically, and the instruction reverts without it. Book depth is
+	 * only reachable for makers the transaction carries, so pass the book's own resting owners in
+	 * `makerInfos`.
 	 * @param userAccountPublicKey - Public key of the user account being liquidated.
 	 * @param userAccount - Decoded user account being liquidated.
 	 * @param marketIndex - Perp market index of the position to liquidate.
-	 * @param makerInfos - Maker(s) to fill the liquidated position against.
+	 * @param makerInfos - Maker(s) the fill may settle against, on the book or the DLOB.
 	 * @param txParams - Optional compute-unit/priority-fee overrides.
 	 * @param liquidatorSubAccountId - Liquidator's sub-account to credit; defaults to the active sub-account.
+	 * @param extraQuoterAccounts - Further quoter entries and their registered CPI accounts, beyond
+	 * the mandatory CLOB + vAMM baseline.
 	 * @returns The transaction signature.
 	 */
 	public async liquidatePerpWithFill(
@@ -11062,7 +11071,8 @@ export class VelocityClient {
 		marketIndex: number,
 		makerInfos: MakerInfo[],
 		txParams?: TxParams,
-		liquidatorSubAccountId?: number
+		liquidatorSubAccountId?: number,
+		extraQuoterAccounts?: AccountMeta[]
 	): Promise<TransactionSignature> {
 		const { txSig, slot } = await this.sendTransaction(
 			await this.buildTransaction(
@@ -11071,7 +11081,8 @@ export class VelocityClient {
 					userAccount,
 					marketIndex,
 					makerInfos,
-					liquidatorSubAccountId
+					liquidatorSubAccountId,
+					extraQuoterAccounts
 				),
 				txParams
 			),
@@ -11087,9 +11098,11 @@ export class VelocityClient {
 	 * @param userAccountPublicKey - Public key of the user account being liquidated.
 	 * @param userAccount - Decoded user account being liquidated.
 	 * @param marketIndex - Perp market index of the position to liquidate.
-	 * @param makerInfos - Maker(s) to fill the liquidated position against; each contributes a
+	 * @param makerInfos - Maker(s) the fill may settle against; each contributes a
 	 * `(maker, makerStats)` pair appended to `remainingAccounts`.
 	 * @param liquidatorSubAccountId - Liquidator's sub-account to credit; defaults to the active sub-account.
+	 * @param extraQuoterAccounts - Further quoter entries and their registered CPI accounts, beyond
+	 * the mandatory CLOB + vAMM baseline.
 	 * @returns The instruction.
 	 */
 	public async getLiquidatePerpWithFillIx(
@@ -11097,7 +11110,8 @@ export class VelocityClient {
 		userAccount: UserAccount,
 		marketIndex: number,
 		makerInfos: MakerInfo[],
-		liquidatorSubAccountId?: number
+		liquidatorSubAccountId?: number,
+		extraQuoterAccounts?: AccountMeta[]
 	): Promise<TransactionInstruction> {
 		const userStatsPublicKey = getUserStatsAccountPublicKey(
 			this.program.programId,
@@ -11128,6 +11142,22 @@ export class VelocityClient {
 				isSigner: false,
 				isWritable: true,
 			});
+		}
+
+		// The quoter section: the market's slab plus the consulted quoters'
+		// registered CPI accounts. The market names its own book, so the caller
+		// does not, and a market that names one cannot be liquidated without it.
+		const perpMarket = this.getPerpMarketAccountOrThrow(marketIndex);
+		if (!perpMarket.clobMarket.equals(PublicKey.default)) {
+			const clob = await this.getClobAccounts(marketIndex);
+			remainingAccounts.push(
+				{ pubkey: clob.quoterSlab, isWritable: false, isSigner: false },
+				{ pubkey: clob.clobMarket, isWritable: true, isSigner: false },
+				{ pubkey: clob.clobProgram, isWritable: false, isSigner: false }
+			);
+			if (extraQuoterAccounts) {
+				remainingAccounts.push(...extraQuoterAccounts);
+			}
 		}
 
 		return await this.program.instruction.liquidatePerpWithFill(marketIndex, {
@@ -12090,20 +12120,25 @@ export class VelocityClient {
 	}
 
 	/**
-	 * Keeper instruction: estimates the market's bid/ask price from the given makers' resting DLOB
-	 * orders (kept only within `±BID_ASK_TWAP_MAX_ORACLE_DIVERGENCE_PERCENT` of the oracle price on
-	 * both sides) and folds the estimate into `lastBidPriceTwap`/`lastAskPriceTwap`. This does NOT
+	 * Keeper instruction: estimates the market's bid/ask price from its resting liquidity (kept
+	 * only within `±BID_ASK_TWAP_MAX_ORACLE_DIVERGENCE_PERCENT` of the oracle price on both sides)
+	 * and folds the estimate into `lastBidPriceTwap`/`lastAskPriceTwap`. This does NOT
 	 * update the funding rate, crank funding separately via `getUpdateFundingRateIx`. Restricted:
 	 * the calling wallet's `UserStats` (which must be the signer's own) must have
 	 * `canUpdateBidAskTwap` set and at least 1000 USDC (`QUOTE_PRECISION`, 1e6) staked in the
 	 * insurance fund (`ifStakedQuoteAssetAmount`), or the instruction reverts.
 	 *
+	 * Two sources, merged per side. The market's CLOB is read on-chain through the book's own
+	 * `quoteL3V0` leg, so the caller supplies no book depth; the `makers` are sampled for whatever
+	 * still rests in `User.orders`. A market that names a book must be cranked with it — the
+	 * instruction is built with the book accounts automatically and reverts without them.
+	 *
 	 * Only orders that have rested on-chain for at least `BID_ASK_TWAP_MIN_QUOTE_REST`
 	 * (24 baseline slots, ~10s, inflated to actual slots at the current slot duration) are sampled — a quote must have been takeable by someone else before it may
-	 * move the TWAP. Orders newer than that are silently skipped, so passing only freshly-placed
-	 * makers yields no DLOB estimate and the crank falls back to the AMM's quote. Note this is
-	 * measured from the order's on-chain post slot, not from `order.slot` (which signed-message
-	 * orders back-date).
+	 * move the TWAP. Orders newer than that are silently skipped on both sources, so a market whose
+	 * depth was all placed this slot yields no estimate and the crank falls back to the AMM's
+	 * quote. Note this is measured from the order's on-chain post slot, not from `order.slot`
+	 * (which signed-message orders back-date).
 	 * @param perpMarketIndex - Perp market index to update.
 	 * @param makers - `(maker, makerStats)` pairs whose resting orders are sampled for the estimate.
 	 * @param txParams - Optional compute-unit/priority-fee overrides.
@@ -12151,6 +12186,13 @@ export class VelocityClient {
 			});
 		}
 
+		// The market names its book, so the caller does not. Absent it, the
+		// three accounts are anchor's `None` (the program id) and the estimate
+		// reads the passed makers alone.
+		const clob = perpMarket.clobMarket.equals(PublicKey.default)
+			? undefined
+			: await this.getClobAccounts(perpMarketIndex);
+
 		return await this.program.instruction.updatePerpBidAskTwap({
 			accounts: {
 				state: await this.getStatePublicKey(),
@@ -12158,6 +12200,9 @@ export class VelocityClient {
 				oracle: perpMarket.oracle,
 				authority: this.wallet.publicKey,
 				keeperStats: this.getUserStatsAccountPublicKey(),
+				quoterSlab: clob?.quoterSlab ?? this.program.programId,
+				clobMarket: clob?.clobMarket ?? this.program.programId,
+				clobProgram: clob?.clobProgram ?? this.program.programId,
 			},
 			remainingAccounts,
 		});

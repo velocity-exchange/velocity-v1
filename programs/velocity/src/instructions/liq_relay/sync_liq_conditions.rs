@@ -49,7 +49,7 @@ use {
             oracle_watch::{oracle_watch, OracleWatchV0},
             pdas,
             perp_market::PerpMarket,
-            prop_amm::QuoterSlabV0,
+            prop_amm::{QuoterSlabExt, QuoterSlabV0},
             spot_market::SpotMarket,
             state::State,
             user::User,
@@ -298,6 +298,21 @@ fn collect_sync_inputs<'info>(
             if let Ok(loader) = AccountLoader::<QuoterSlabV0>::try_from(info) {
                 let _ = loader.load()?;
                 tail_refs.push(AccountRefV0::readonly(info.key.to_bytes()));
+                // The book and its program ride with the slab. A liquidation
+                // fills through the market's book, and the resolver reads that
+                // book to name the makers the fill settles against. Neither
+                // can reach an account the stored list does not carry, and
+                // both are named by the slab rather than by the caller, so a
+                // sync that carries the slab carries the book by construction.
+                let slots = loader.slots()?;
+                if let Some(index) = crate::state::prop_amm::clob_slot_index(&slots) {
+                    tail_refs.push(AccountRefV0::writable(
+                        slots[index].config.response_account.to_bytes(),
+                    ));
+                    tail_refs.push(AccountRefV0::readonly(
+                        slots[index].config.program_id.to_bytes(),
+                    ));
+                }
                 continue;
             }
             // Anything else velocity-owned falls through with the oracle

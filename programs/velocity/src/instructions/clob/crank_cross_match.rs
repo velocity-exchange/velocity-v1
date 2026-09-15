@@ -62,9 +62,7 @@ use {
             fill_mode::FillMode,
             pdas,
             perp_market_map::MarketSet,
-            prop_amm::{
-                Direction, PriceLevel, QuoterCpiScratch, QuoterSlabExt, QuoterSlabV0, QuoterType,
-            },
+            prop_amm::{Direction, PriceLevel, QuoterCpiScratch, QuoterSlabExt, QuoterSlabV0},
             state::State,
             user::{MarketType, Order, OrderStatus, OrderType, User, UserStats},
             user_map::{load_user_maps, UserMap, UserStatsMap},
@@ -402,7 +400,7 @@ fn run_cross_leg<'info>(
         .copied()
         .try_fold(true, |served, side| -> Result<bool> {
             Ok(served
-                && leg_served_window(
+                && super::helpers::crank_common::book_side_rested(
                     &legs.accounts.quoter_slab,
                     legs.tail,
                     legs.market_index,
@@ -527,63 +525,6 @@ fn leg_limit_price(
         PositionDirection::Long => oracle_price.saturating_add(band),
         PositionDirection::Short => oracle_price.saturating_sub(band),
     })
-}
-
-/// Whether every book order this leg could consume has measurably rested.
-///
-/// A crank cannot vouch for that by construction. On a zero-delay book,
-/// place-then-crank is two back-to-back transactions, so fresh informed flow
-/// would wear the protected flag into a quoter that only serves protected
-/// flow. So the crank measures it, over the depth the leg can reach. That
-/// depth is the first `size` base of the side the leg sweeps, so a fresh
-/// order deeper than the leg goes defers nothing.
-///
-/// One side per leg. Each leg is its own fill and transmits only the flow it
-/// sweeps, so a fresh order on the other side of the book has no bearing on
-/// it.
-fn leg_served_window<'info>(
-    quoter_slab: &AccountLoader<'info, QuoterSlabV0>,
-    tail: &'info [AccountInfo<'info>],
-    market_index: u16,
-    direction: Direction,
-    size: u64,
-    slot: u64,
-    cpi_scratch: &mut QuoterCpiScratch<'info>,
-) -> Result<bool> {
-    let consulted = quoter_slab.consulted_slots(tail)?;
-    consulted
-        .iter()
-        .try_fold(true, |served, &slot_index| -> Result<bool> {
-            // Copy the config out so no slab borrow lives across the book CPI.
-            let config = quoter_slab.slots()?[slot_index].config;
-            if config.quoter_type != QuoterType::Clob {
-                return Ok(served);
-            }
-            let rows = super::helpers::crank_common::book_l3_side(
-                &config,
-                quoter_slab,
-                market_index,
-                direction,
-                CROSS_ROWS_PER_SIDE,
-                tail,
-                cpi_scratch,
-                false,
-                |row| (row.size, row.placed_slot),
-            )?
-            .unwrap_or_default();
-            let (_, rested) =
-                rows.iter()
-                    .fold((0u64, true), |(depth, rested), (row_size, placed_slot)| {
-                        if depth >= size {
-                            return (depth, rested);
-                        }
-                        (
-                            depth.saturating_add(*row_size),
-                            rested && crate::math::crosses::served_window(*placed_slot, slot),
-                        )
-                    });
-            Ok(served && rested)
-        })
 }
 
 /// The base both legs matched, and the quote the protocol kept for it.

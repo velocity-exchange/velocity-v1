@@ -408,3 +408,19 @@ The CLOB placement and taker routes drop their optional `crankConditions` accoun
 hosts its own crank wakes, so `placeAndTakePerpOrderV1`, `placeAndMakePerpOrderV1`,
 `cancelOrdersV1`, `fillLegacyDlobOrder` and `placeSignedMsgTakerOrder` never read it; the
 `clobAccounts` parameter shapes lose the field.
+
+Liquidations and the funding mark TWAP read the market's book.
+
+`liquidatePerpWithFill` fills its forced order through the router, so a liquidation reaches the
+market's CLOB and its PropAMM quoters rather than only the makers the caller passes.
+`getLiquidatePerpWithFillIx` appends the market's quoter section to the remaining accounts, and
+takes an `extraQuoterAccounts` argument for further quoters. A market that names a book refuses
+the call without that section, and book depth is reachable only for owners the transaction
+carries, so pass the book's resting owners in `makerInfos`.
+
+`updatePerpBidAskTwap` takes three optional accounts — `quoterSlab`, `clobMarket` and
+`clobProgram` — and estimates each side of the market from the book merged with the `User`
+accounts the caller passes. `getUpdatePerpBidAskTwapIx` resolves those three from the market, so
+a caller supplies only the makers. A market that names a book refuses the crank without them, a
+suspended book moves no mark, and both sources still drop a quote that has not rested for
+`BID_ASK_TWAP_MIN_QUOTE_REST`.

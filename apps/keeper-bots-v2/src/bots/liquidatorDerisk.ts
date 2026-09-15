@@ -455,6 +455,7 @@ export class LiquidatorDerisk {
 				inputMint: inMarket.mint,
 				outputMint: outMarket.mint,
 				amount: amountIn.abs(),
+				userPublicKey: this.velocityClient.provider.wallet.publicKey,
 				slippageBps: slippageBps,
 				maxAccounts: 45,
 				excludeDexes: ['Raydium CLMM'],

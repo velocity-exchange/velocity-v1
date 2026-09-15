@@ -442,7 +442,9 @@ export class JupiterClient implements SwapProvider {
 	 * @param connection - Solana connection
 	 * @param url - Optional custom API URL. Defaults to https://api.jup.ag/swap
 	 * @param apiKey - API key for Jupiter API. Required for api.jup.ag (free tier available at https://portal.jup.ag)
-	 * @param apiVersion - Which Swap API to use. Defaults to 'v1'.
+	 * @param apiVersion - Which Swap API to use. Defaults to 'v2'. Pass 'v1' for
+	 * auto-slippage, `swapMode: 'ExactOut'`, `onlyDirectRoutes`, or a custom `url`
+	 * that only serves v1.
 	 */
 	constructor({
 		connection,
@@ -458,7 +460,7 @@ export class JupiterClient implements SwapProvider {
 		this.connection = connection;
 		this.url = url ?? RECOMMENDED_JUPITER_API;
 		this.apiKey = apiKey;
-		this.apiVersion = apiVersion ?? 'v1';
+		this.apiVersion = apiVersion ?? 'v2';
 	}
 
 	/**

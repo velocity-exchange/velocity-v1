@@ -190,11 +190,15 @@ describe('UnifiedSwapClient Jupiter API version', () => {
 		sinon.restore();
 	});
 
-	it('forwards an explicit version to the Jupiter client', async () => {
+	it('forwards an explicit v2 to the Jupiter client', async () => {
 		expect(await quotedUrl(jupiterClient('v2'))).to.contain('/v2/build');
 	});
 
+	it('forwards an explicit v1 to the Jupiter client', async () => {
+		expect(await quotedUrl(jupiterClient('v1'))).to.contain('/v1/quote');
+	});
+
 	it('leaves the Jupiter client on its own default when unset', async () => {
-		expect(await quotedUrl(jupiterClient())).to.contain('/v1/quote');
+		expect(await quotedUrl(jupiterClient())).to.contain('/v2/build');
 	});
 });

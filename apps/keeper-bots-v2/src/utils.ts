@@ -982,6 +982,7 @@ export async function swapFillerHardEarnedUSDCForSOL(
 			inputMint: usdcMarket.mint,
 			outputMint: solMarket.mint,
 			amount: usdc.sub(new BN(1)),
+			userPublicKey: velocityClient.provider.wallet.publicKey,
 			maxAccounts: 10,
 			slippageBps: JUPITER_SLIPPAGE_BPS,
 			swapMode: 'ExactIn',

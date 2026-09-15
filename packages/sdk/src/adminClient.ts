@@ -7609,7 +7609,9 @@ export class AdminClient extends VelocityClient {
 	 * @param amount - Swap amount, in-market's native decimals (interpreted as exact-in or exact-out per `swapMode`).
 	 * @param slippageBps - Optional slippage tolerance passed to Jupiter, basis points.
 	 * @param swapMode - Optional `'ExactIn'` / `'ExactOut'`; also inferred from `quote.swapMode` if a quote is supplied.
+	 * Jupiter serves `ExactOut` only under `apiVersion: 'v1'` — the default v2 client rejects it.
 	 * @param onlyDirectRoutes - Optional, restricts the Jupiter quote to single-hop routes.
+	 * Jupiter honours this only under `apiVersion: 'v1'` — the default v2 client rejects it.
 	 * @param quote - Optional pre-fetched Jupiter quote; skips the internal fetch if provided.
 	 * @param lpPoolId - LP pool id byte the swap routes through.
 	 * @returns The unsigned instruction sequence (begin-swap, Jupiter swap instructions, end-swap) and any address lookup tables the Jupiter instructions require.

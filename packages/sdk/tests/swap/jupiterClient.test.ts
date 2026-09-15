@@ -72,6 +72,7 @@ describe('JupiterClient.getQuote', () => {
 		connection = sinon.createStubInstance(Connection);
 		client = new JupiterClient({
 			connection: connection as unknown as Connection,
+			apiVersion: 'v1',
 		});
 		fetchStub = sinon.stub(nodeFetch, 'default');
 	});
@@ -268,6 +269,21 @@ describe('JupiterClient v2 (/swap/v2/build)', () => {
 
 	afterEach(() => {
 		sinon.restore();
+	});
+
+	it('is what a client with no apiVersion talks to', async () => {
+		client = new JupiterClient({
+			connection: connection as unknown as Connection,
+		});
+		fetchStub.resolves({
+			ok: true,
+			status: 200,
+			json: async () => ({}),
+		} as unknown as Response);
+
+		await getQuote().catch(() => undefined);
+
+		expect(quoteUrl()).to.contain('/v2/build');
 	});
 
 	it('quotes and builds in one request, bound to the taker', async () => {

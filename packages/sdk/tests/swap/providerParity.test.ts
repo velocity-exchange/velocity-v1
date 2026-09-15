@@ -216,6 +216,7 @@ describe('SwapProvider parity', () => {
 
 		jupiter = new JupiterClient({
 			connection: connection as unknown as Connection,
+			apiVersion: 'v1',
 		});
 		jupiterV2 = new JupiterClient({
 			connection: connection as unknown as Connection,

@@ -148,6 +148,13 @@ export const MARGIN_PRECISION = TEN_THOUSAND;
 export const BPS_PRECISION = TEN_THOUSAND; // 1 unit = 1bp
 /** 1e6; precision for AMM bid/ask spread fields (`baseSpread`, `maxSpread`, `longSpread`, `shortSpread`, `lastOracleReservePriceSpreadPct`). */
 export const BID_ASK_SPREAD_PRECISION = new BN(1000000); // 10^6
+/** `PERCENTAGE_PRECISION / 400` = 2500 ppm (25 bp); oracle confidence at or above this carries full weight in the vol spread. Below it the weight ramps continuously from `1 / SPREAD_CONF_DISCOUNT_DIVISOR` to full. Mirrors the program's `SPREAD_CONF_FULL_WEIGHT_THRESHOLD`. */
+export const SPREAD_CONF_FULL_WEIGHT_THRESHOLD = PERCENTAGE_PRECISION.div(
+	new BN(400)
+);
+/** Denominator (20) of the confidence contribution's starting weight below `SPREAD_CONF_FULL_WEIGHT_THRESHOLD`. Mirrors the program's `SPREAD_CONF_DISCOUNT_DIVISOR`. */
+export const SPREAD_CONF_DISCOUNT_DIVISOR = new BN(20);
+
 /** 1e4; precision for `StateAccount.initialPctToLiquidate`, the fraction of a position liquidated per partial-liquidation pass. */
 export const LIQUIDATION_PCT_PRECISION = TEN_THOUSAND;
 /** Denominator (3333) used to derive `FUNDING_RATE_OFFSET_PERCENTAGE`; yields ~10.95% annualized when applied hourly. */

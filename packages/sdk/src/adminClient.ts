@@ -1626,12 +1626,18 @@ export class AdminClient extends VelocityClient {
 	/**
 	 * Builds the `depositIntoPerpMarketFeePool` instruction without sending it. See
 	 * `depositIntoPerpMarketFeePool`.
+	 * @param admin - Overrides the `admin` signer account. The instruction accepts the
+	 *   `VaultDeposit` hot role as well as warm/cold, so pass the key that will actually
+	 *   sign at execution. Defaults to `state.coldAdmin`.
 	 * @returns The unsigned `depositIntoPerpMarketFeePool` instruction.
 	 */
 	public async getDepositIntoPerpMarketFeePoolIx(
 		perpMarketIndex: number,
 		amount: BN,
-		sourceVault: PublicKey
+		sourceVault: PublicKey,
+		admin = this.isSubscribed
+			? this.getStateAccount().coldAdmin
+			: this.wallet.publicKey
 	): Promise<TransactionInstruction> {
 		const spotMarket = this.getQuoteSpotMarketAccount();
 		const remainingAccounts = [
@@ -1644,9 +1650,7 @@ export class AdminClient extends VelocityClient {
 
 		return await this.program.instruction.depositIntoPerpMarketFeePool(amount, {
 			accounts: {
-				admin: this.isSubscribed
-					? this.getStateAccount().coldAdmin
-					: this.wallet.publicKey,
+				admin,
 				state: await this.getStatePublicKey(),
 				perpMarket: await getPerpMarketPublicKey(
 					this.program.programId,
@@ -1993,12 +1997,18 @@ export class AdminClient extends VelocityClient {
 	 * Builds the `updatePerpMarketAmmSummaryStats` instruction without sending it. See
 	 * `updatePerpMarketAmmSummaryStats`. Throws if `perpMarketIndex` isn't tracked by the
 	 * local account subscriber (needed to resolve the market's oracle account).
+	 * @param admin - Overrides the `admin` signer account. The instruction accepts the
+	 *   `AmmCrank` hot role as well as warm/cold, so pass the key that will actually sign
+	 *   at execution. Defaults to `state.coldAdmin` (or the wallet when `useHotWalletAdmin`).
 	 * @returns The unsigned `updatePerpMarketAmmSummaryStats` instruction.
 	 */
 	public async getUpdatePerpMarketAmmSummaryStatsIx(
 		perpMarketIndex: number,
 		updateAmmSummaryStats?: boolean,
-		netUnsettledFundingPnl?: BN
+		netUnsettledFundingPnl?: BN,
+		admin = this.useHotWalletAdmin
+			? this.wallet.publicKey
+			: this.getStateAccount().coldAdmin
 	): Promise<TransactionInstruction> {
 		const perpMarketAccount = this.getPerpMarketAccountOrThrow(perpMarketIndex);
 		return await this.program.instruction.updatePerpMarketAmmSummaryStats(
@@ -2008,9 +2018,7 @@ export class AdminClient extends VelocityClient {
 			},
 			{
 				accounts: {
-					admin: this.useHotWalletAdmin
-						? this.wallet.publicKey
-						: this.getStateAccount().coldAdmin,
+					admin,
 					state: await this.getStatePublicKey(),
 					perpMarket: await getPerpMarketPublicKey(
 						this.program.programId,

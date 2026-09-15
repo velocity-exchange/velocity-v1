@@ -9,6 +9,7 @@ import {
 	resolveAdminAuthority,
 	sendOrPropose,
 } from '../lib/squads';
+import { deriveAssociatedTokenAccount } from '../lib/userOps';
 
 export function registerPerpMarket(parent: Command): void {
 	const pm = parent
@@ -282,6 +283,106 @@ export function registerPerpMarket(parent: Command): void {
 			);
 			reportDispatch(
 				`perp-market[${marketIndex}] oracle_slot_delay_override = ${value}`,
+				result
+			);
+		} finally {
+			await client.unsubscribe();
+		}
+	});
+
+	withGlobalOptions(
+		pm
+			.command('deposit-fee-pool <market> <amount>')
+			.description(
+				'Top up the vAMM fee pool: transfers <amount> (raw quote base units, QUOTE_PRECISION) from the signer into the quote spot vault and credits amm.fee_pool and amm.total_fee_minus_distributions by the same amount. Use it to bring a market whose total_fee_minus_distributions has gone negative back above water. Requires the VaultDeposit hot key, or warm/cold.'
+			)
+			.option(
+				'--source-vault <pubkey>',
+				"token account to fund from (default: the signer's ATA for the quote mint)"
+			)
+	).action(async (market: string, amount: string, _flags, cmd: Command) => {
+		const marketIndex = parseMarketIndex(market);
+		const amountValue = parseBnArg('amount', amount);
+		const opts = readGlobalOpts(cmd);
+		const local = cmd.opts() as { sourceVault?: string };
+		const provider = buildProvider(opts);
+		const client = await buildAdminClient(opts);
+		try {
+			const multisigPda = opts.multisig
+				? new PublicKey(opts.multisig)
+				: undefined;
+			const admin = resolveAdminAuthority(provider, multisigPda);
+			const quoteSpotMarket = client.getQuoteSpotMarketAccount();
+			const sourceVault = local.sourceVault
+				? new PublicKey(local.sourceVault)
+				: deriveAssociatedTokenAccount(
+						quoteSpotMarket.mint,
+						admin,
+						(client as any).getTokenProgramForSpotMarket(quoteSpotMarket)
+				  );
+			const ix = await client.getDepositIntoPerpMarketFeePoolIx(
+				marketIndex,
+				amountValue,
+				sourceVault,
+				admin
+			);
+			const result = await sendOrPropose(
+				provider,
+				[ix],
+				multisigPda,
+				'velocity-admin perp-market deposit-fee-pool'
+			);
+			reportDispatch(
+				`perp-market[${marketIndex}] fee pool += ${amountValue.toString()} (from ${sourceVault.toBase58()})`,
+				result
+			);
+		} finally {
+			await client.unsubscribe();
+		}
+	});
+
+	withGlobalOptions(
+		pm
+			.command('sync-amm-summary-stats <market>')
+			.description(
+				'Recompute amm.total_fee_minus_distributions from live pool balances, net user pnl and pending fees, and apply the delta to total_fee / total_mm_fee. This reconciles drifted fee accounting against reality; it does not inject capital, so a market that genuinely lost money stays negative. Requires the AmmCrank hot key, or warm/cold.'
+			)
+			.option(
+				'--net-unsettled-funding-pnl <amount>',
+				'also overwrite perp_market.net_unsettled_funding_pnl (signed, QUOTE_PRECISION)'
+			)
+	).action(async (market: string, _flags, cmd: Command) => {
+		const marketIndex = parseMarketIndex(market);
+		const opts = readGlobalOpts(cmd);
+		const local = cmd.opts() as { netUnsettledFundingPnl?: string };
+		const netUnsettledFundingPnl =
+			local.netUnsettledFundingPnl === undefined
+				? undefined
+				: parseBnArg('netUnsettledFundingPnl', local.netUnsettledFundingPnl);
+		const provider = buildProvider(opts);
+		const client = await buildAdminClient(opts);
+		try {
+			const multisigPda = opts.multisig
+				? new PublicKey(opts.multisig)
+				: undefined;
+			const ix = await client.getUpdatePerpMarketAmmSummaryStatsIx(
+				marketIndex,
+				true,
+				netUnsettledFundingPnl,
+				resolveAdminAuthority(provider, multisigPda)
+			);
+			const result = await sendOrPropose(
+				provider,
+				[ix],
+				multisigPda,
+				'velocity-admin perp-market sync-amm-summary-stats'
+			);
+			reportDispatch(
+				`perp-market[${marketIndex}] amm summary stats recomputed${
+					netUnsettledFundingPnl
+						? `, net_unsettled_funding_pnl = ${netUnsettledFundingPnl.toString()}`
+						: ''
+				}`,
 				result
 			);
 		} finally {

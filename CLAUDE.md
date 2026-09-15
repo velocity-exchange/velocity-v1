@@ -72,6 +72,27 @@ edge-case handling (don't approximate), and update/extend the SDK unit tests
 (`cd packages/sdk/ && bun run test:ci`) that pin the behavior. This applies even when the IDL/layout is
 unchanged — pure logic changes still require a matching SDK update.
 
+**Verify the mirror; don't just intend it.** The rule above is not self-enforcing, and a skipped
+mirror stays invisible until someone measures against chain. PRO-77 is the worked example: program
+commit `440349868` changed one AMM spread formula, the SDK was never updated, and for three weeks
+every vAMM quote the SDK produced was up to 16x too narrow. The order book, the trade form's entry
+preview, and any AMM-vs-maker routing all priced off it. Two things let it hide, and both are
+general:
+
+- **A green SDK test proves nothing about parity.** SDK tests pin the SDK's *own* previous output,
+  so when the program moves, a stale expectation still passes. Three spread cases in
+  `packages/sdk/tests/` kept passing throughout. Treat any SDK test asserting a program-derived
+  number as unverified until you re-derive it from the program.
+- **Nothing compares the two implementations.** To check a port, run the program's own Rust test
+  helper on the same inputs and diff it against the SDK. `programs/velocity/src/vlp/amm/math/spread/tests.rs`
+  has a `calculate_spread` helper taking the same flat argument list as the SDK's `calculateSpreadBN`,
+  which makes this a one-function probe. Regenerate every changed expectation that way rather than
+  accepting whatever the SDK now prints.
+
+So: when you change a formula in `programs/velocity/src/`, grep `packages/sdk/src/math/` for the
+function that mirrors it before opening the PR. When you update an SDK expectation because the
+program moved, say in the commit message how you derived the new number.
+
 **Update the admin CLI when admin instructions change:**
 
 `packages/cli-admin/` wraps the admin/keeper surface. Whenever admin instructions are added, removed, renamed, or change signature, update the CLI in the same change: add/remove the dedicated wrapper in `packages/cli-admin/src/commands/` (mirroring the existing command style), update `packages/cli-admin/README.md`'s command list, and verify with `bunx turbo run build --filter=@velocity-exchange/admin-cli && bunx turbo run lint --filter=@velocity-exchange/admin-cli` (CI builds the whole TS workspace on every PR via the `ts-build` job). The generic `call` dispatcher is an escape hatch, not a substitute for wrappers on routinely-used operations.

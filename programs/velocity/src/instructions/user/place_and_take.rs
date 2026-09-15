@@ -441,14 +441,14 @@ fn quote_take_route<'a, 'info>(
         limit_price: shape.limit_price,
         taker_served_window,
         consume_reservation: false,
-        // The taker signed this transaction, so they picked the account list
-        // themselves and no route binds the filler.
-        route_claim: None,
     };
 
     crate::instructions::quote_route(
         take.tail,
         inputs,
+        // The taker signed this transaction, so they picked the account list
+        // themselves and no route binds the filler.
+        None,
         &mut crate::instructions::CapInputs {
             taker_key: &taker_key,
             makers_and_referrer: take.makers,
@@ -564,34 +564,23 @@ fn fill_ephemeral_take(
         clock,
         &mut cpi_scratch,
     )?;
-    let route = quoted.route;
-    let sized = quoted.sized;
-    let mut book_storage =
-        [crate::math::router::QuoterBook::default(); crate::state::prop_amm::MAX_ROUTE_QUOTERS];
-    let book_refs = route.books(&mut book_storage)?;
-    let mut executor = route.executor(&sized, clock.slot, clock.unix_timestamp, &mut cpi_scratch);
-    let mut router_inputs = crate::math::router::RouterFillInputs {
-        books: book_refs,
-        executor: &mut executor,
-        protocol_authority: state.signer,
-        taker_exposure_closed_by_caller: false,
-        // The taker signs a place-and-take, so the taker chose the
-        // account list and no filler obligation applies.
-        obligation: crate::math::router::FillerObligation {
-            taker_signed: true,
-            tx_accounts: None,
-            unrouted_quoters: 0,
+    let (filled, _) = quoted.route_fill(
+        crate::instructions::RouterTerms {
+            protocol_authority: state.signer,
+            taker_exposure_closed_by_caller: false,
+            // The taker signs a place-and-take, so the taker chose the
+            // account list and no filler obligation applies.
+            obligation: crate::math::router::FillerObligation {
+                taker_signed: true,
+                tx_accounts: None,
+                unrouted_quoters: 0,
+            },
         },
-        worst_fill_price: None,
-    };
-
-    fill_against_route(
-        take,
-        &mut router_inputs,
-        state,
-        mode,
-        referrer_is_accelerated,
-    )
+        clock,
+        &mut cpi_scratch,
+        |router| fill_against_route(take, router, state, mode, referrer_is_accelerated),
+    )?;
+    Ok(filled)
 }
 
 /// Rest what the take did not fill, then hold the caller's success condition

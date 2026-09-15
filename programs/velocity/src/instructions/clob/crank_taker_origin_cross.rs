@@ -591,12 +591,12 @@ fn route_and_fill_remainder<'info>(
                 cx.clock.slot,
             ),
             consume_reservation: true,
-            route_claim: Some(crate::instructions::RouteClaim {
-                quoters: route_claim.quoters,
-                digest: route_claim.digest,
-            }),
             margin_ratio_initial: route_margin_ratio_initial,
         },
+        Some(crate::instructions::RouteClaim {
+            quoters: route_claim.quoters,
+            digest: route_claim.digest,
+        }),
         &mut crate::instructions::CapInputs {
             taker_key: &cx.accounts.taker.key(),
             makers_and_referrer: cx.makers_and_referrer,
@@ -607,60 +607,59 @@ fn route_and_fill_remainder<'info>(
         },
         cpi_scratch,
     )?;
-    let route = quoted.route;
-    let sized = quoted.sized;
-    let mut book_storage =
-        [crate::math::router::QuoterBook::default(); crate::state::prop_amm::MAX_ROUTE_QUOTERS];
-    let books = route.books(&mut book_storage)?;
-    let mut executor = route.executor(&sized, cx.clock.slot, cx.clock.unix_timestamp, cpi_scratch);
-    let mut router_inputs = crate::math::router::RouterFillInputs {
-        books,
-        executor: &mut executor,
-        protocol_authority: cx.state.signer,
-        taker_exposure_closed_by_caller: false,
-        obligation: crate::math::router::FillerObligation {
-            // The taker is not here to choose the account list, so the cranker
-            // answers for what it left out, as a keeper fill does.
-            taker_signed: false,
-            tx_accounts: Some(
-                crate::instructions::optional_accounts::tx_writable_lock_count(
-                    &cx.accounts.instructions_sysvar.to_account_info(),
-                )?,
-            ),
-            unrouted_quoters: route.unrouted_quoters(route_claim.quoters, route_claim.digest)?,
-        },
-        worst_fill_price: None,
+    let obligation = crate::math::router::FillerObligation {
+        // The taker is not here to choose the account list, so the cranker
+        // answers for what it left out, as a keeper fill does.
+        taker_signed: false,
+        tx_accounts: Some(
+            crate::instructions::optional_accounts::tx_writable_lock_count(
+                &cx.accounts.instructions_sysvar.to_account_info(),
+            )?,
+        ),
+        unrouted_quoters: quoted.unrouted_quoters,
     };
 
     // The taker stands as its own filler, so no reward is carved out of the
     // taker fee. The cranker is paid below, out of the improvement it actually
     // delivered — a crank that improves nothing is worth nothing.
-    let (base_filled, quote_filled) = controller::orders::fill_perp_order(
-        controller::orders::FillRequest {
-            // The remainder rested on the book first, so it holds an
-            // `open_bids`/`open_asks` reservation this fill unwinds.
-            target: controller::orders::FillTarget::Detached {
-                order: &mut order,
-                reserved: true,
-            },
-            mode: FillMode::Fill,
-            referrer_is_accelerated: false,
+    let ((base_filled, quote_filled), _) = quoted.route_fill(
+        crate::instructions::RouterTerms {
+            protocol_authority: cx.state.signer,
+            taker_exposure_closed_by_caller: false,
+            obligation,
         },
-        cx.state,
         cx.clock,
-        controller::orders::PerpFillAccounts {
-            user: &cx.accounts.taker,
-            user_stats: &cx.accounts.taker_stats,
-            filler: &cx.accounts.taker,
-            filler_stats: &cx.accounts.taker_stats,
-            rev_share_escrow: &mut None,
+        cpi_scratch,
+        |router| {
+            controller::orders::fill_perp_order(
+                controller::orders::FillRequest {
+                    // The remainder rested on the book first, so it holds an
+                    // `open_bids`/`open_asks` reservation this fill unwinds.
+                    target: controller::orders::FillTarget::Detached {
+                        order: &mut order,
+                        reserved: true,
+                    },
+                    mode: FillMode::Fill,
+                    referrer_is_accelerated: false,
+                },
+                cx.state,
+                cx.clock,
+                controller::orders::PerpFillAccounts {
+                    user: &cx.accounts.taker,
+                    user_stats: &cx.accounts.taker_stats,
+                    filler: &cx.accounts.taker,
+                    filler_stats: &cx.accounts.taker_stats,
+                    rev_share_escrow: &mut None,
+                },
+                &mut controller::orders::FillParties {
+                    maps,
+                    makers_and_referrer: cx.makers_and_referrer,
+                    makers_and_referrer_stats: cx.makers_and_referrer_stats,
+                },
+                router,
+            )
+            .map_err(Into::into)
         },
-        &mut controller::orders::FillParties {
-            maps,
-            makers_and_referrer: cx.makers_and_referrer,
-            makers_and_referrer_stats: cx.makers_and_referrer_stats,
-        },
-        &mut router_inputs,
     )?;
     // Nothing beat the resting price. Reverting puts the remainder back where
     // it was — the cancel above is undone with it — so an unprofitable crank

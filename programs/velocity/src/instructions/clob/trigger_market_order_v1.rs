@@ -371,12 +371,12 @@ fn route_fill_fired_order<'info>(
             limit_price: route_inputs.limit_price,
             taker_served_window,
             consume_reservation: false,
-            route_claim: Some(crate::instructions::RouteClaim {
-                quoters: signed_route,
-                digest: crate::state::order_params::NO_ROUTE_DIGEST,
-            }),
             margin_ratio_initial: route_margin_ratio_initial,
         },
+        Some(crate::instructions::RouteClaim {
+            quoters: signed_route,
+            digest: crate::state::order_params::NO_ROUTE_DIGEST,
+        }),
         &mut crate::instructions::CapInputs {
             taker_key: &ctx.accounts.user.key(),
             makers_and_referrer: &tail.makers_and_referrer,
@@ -387,8 +387,6 @@ fn route_fill_fired_order<'info>(
         },
         &mut cpi_scratch,
     )?;
-    let route = quoted.route;
-    let sized = quoted.sized;
 
     let obligation = crate::math::router::FillerObligation {
         // A trigger crank is not a signed transaction: the owner does not
@@ -405,45 +403,44 @@ fn route_fill_fired_order<'info>(
         unrouted_quoters: quoted.unrouted_quoters,
     };
 
-    let mut book_storage =
-        [crate::math::router::QuoterBook::default(); crate::state::prop_amm::MAX_ROUTE_QUOTERS];
-    let books = route.books(&mut book_storage)?;
-    let mut executor = route.executor(&sized, clock.slot, clock.unix_timestamp, &mut cpi_scratch);
-    let mut router_inputs = crate::math::router::RouterFillInputs {
-        books,
-        executor: &mut executor,
-        protocol_authority: state.signer,
-        taker_exposure_closed_by_caller: false,
-        obligation,
-        worst_fill_price: None,
-    };
-
-    controller::orders::fill_perp_order(
-        controller::orders::FillRequest {
-            // The fired order is ephemeral: it never reserved, so the fill
-            // unwinds no exposure for it.
-            target: controller::orders::FillTarget::Detached {
-                order: fired,
-                reserved: false,
-            },
-            mode: FillMode::Fill,
-            referrer_is_accelerated: tail.referrer_is_accelerated,
+    quoted.route_fill(
+        crate::instructions::RouterTerms {
+            protocol_authority: state.signer,
+            taker_exposure_closed_by_caller: false,
+            obligation,
         },
-        state,
         clock,
-        controller::orders::PerpFillAccounts {
-            user: &ctx.accounts.user,
-            user_stats: &ctx.accounts.user_stats,
-            filler: &ctx.accounts.filler,
-            filler_stats: &ctx.accounts.filler_stats,
-            rev_share_escrow: &mut tail.escrow.as_mut(),
+        &mut cpi_scratch,
+        |router| {
+            controller::orders::fill_perp_order(
+                controller::orders::FillRequest {
+                    // The fired order is ephemeral: it never reserved, so the
+                    // fill unwinds no exposure for it.
+                    target: controller::orders::FillTarget::Detached {
+                        order: fired,
+                        reserved: false,
+                    },
+                    mode: FillMode::Fill,
+                    referrer_is_accelerated: tail.referrer_is_accelerated,
+                },
+                state,
+                clock,
+                controller::orders::PerpFillAccounts {
+                    user: &ctx.accounts.user,
+                    user_stats: &ctx.accounts.user_stats,
+                    filler: &ctx.accounts.filler,
+                    filler_stats: &ctx.accounts.filler_stats,
+                    rev_share_escrow: &mut tail.escrow.as_mut(),
+                },
+                &mut controller::orders::FillParties {
+                    maps,
+                    makers_and_referrer: &tail.makers_and_referrer,
+                    makers_and_referrer_stats: &tail.makers_and_referrer_stats,
+                },
+                router,
+            )?;
+            Ok(())
         },
-        &mut controller::orders::FillParties {
-            maps,
-            makers_and_referrer: &tail.makers_and_referrer,
-            makers_and_referrer_stats: &tail.makers_and_referrer_stats,
-        },
-        &mut router_inputs,
     )?;
     Ok(())
 }

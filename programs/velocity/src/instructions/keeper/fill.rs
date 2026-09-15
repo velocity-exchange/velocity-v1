@@ -189,49 +189,47 @@ fn route_and_fill<'info>(
     // CLOB, so what a route binds is the fill of that remainder.
     // `crank_taker_origin_cross` reads it from the taker's signed-message
     // record.
-    let inputs = order.quote_inputs(
-        market_index,
-        &users,
-        request.taker_served_window,
-        Some(crate::instructions::RouteClaim {
-            quoters: &request.signed_route,
-            digest: crate::state::order_params::NO_ROUTE_DIGEST,
-        }),
-    );
+    let inputs = order.quote_inputs(market_index, &users, request.taker_served_window);
 
     // One set of CPI buffers for the fill: the quote legs below and the
     // execute legs the router runs later all refill the same allocation,
     // because velocity's heap never gives a freed one back.
     let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
-    let quoted = sections.quote_route(inputs, &accounts.user.key(), clock, &mut cpi_scratch)?;
-    let route = quoted.route;
-    let sized = quoted.sized;
+    let quoted = sections.quote_route(
+        inputs,
+        Some(crate::instructions::RouteClaim {
+            quoters: &request.signed_route,
+            digest: crate::state::order_params::NO_ROUTE_DIGEST,
+        }),
+        &accounts.user.key(),
+        clock,
+        &mut cpi_scratch,
+    )?;
     // Consulted only if a book later withholds, but counted by the quote.
     request.obligation.unrouted_quoters = quoted.unrouted_quoters;
 
-    let mut book_storage =
-        [crate::math::router::QuoterBook::default(); crate::state::prop_amm::MAX_ROUTE_QUOTERS];
-    let books = route.books(&mut book_storage)?;
-    let mut executor = route.executor(&sized, clock.slot, clock.unix_timestamp, &mut cpi_scratch);
-    let mut router_inputs = RouterFillInputs {
-        books,
-        executor: &mut executor,
-        protocol_authority: state.signer,
-        taker_exposure_closed_by_caller: false,
-        obligation: request.obligation,
-        worst_fill_price: None,
-    };
-
-    sections.run_fill(
-        accounts,
-        controller::orders::FillRequest {
-            target: controller::orders::FillTarget::Slot(request.order_id),
-            mode: FillMode::Fill,
-            referrer_is_accelerated: sections.referrer_is_accelerated,
+    let (filled, _) = quoted.route_fill(
+        crate::instructions::RouterTerms {
+            protocol_authority: state.signer,
+            obligation: request.obligation,
+            taker_exposure_closed_by_caller: false,
         },
-        &mut router_inputs,
         clock,
-    )
+        &mut cpi_scratch,
+        |router| {
+            sections.run_fill(
+                accounts,
+                controller::orders::FillRequest {
+                    target: controller::orders::FillTarget::Slot(request.order_id),
+                    mode: FillMode::Fill,
+                    referrer_is_accelerated: sections.referrer_is_accelerated,
+                },
+                router,
+                clock,
+            )
+        },
+    )?;
+    Ok(filled)
 }
 
 /// Migrate what the route could not fill onto the market's book.

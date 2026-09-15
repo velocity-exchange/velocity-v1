@@ -198,50 +198,48 @@ fn fill_signed_msg_taker_order<'c: 'info, 'info>(
     }
 
     let users = sections.wire_users()?;
-    let inputs = order.quote_inputs(
-        market_index,
-        &users,
-        taker_served_window,
+    let inputs = order.quote_inputs(market_index, &users, taker_served_window);
+
+    let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
+    let quoted = sections.quote_route(
+        inputs,
         Some(crate::instructions::RouteClaim {
             quoters: &placed.route,
             digest: placed.route_digest,
         }),
-    );
-
-    let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
-    let quoted = sections.quote_route(inputs, &ctx.accounts.user.key(), clock, &mut cpi_scratch)?;
-    let route = quoted.route;
-    let sized = quoted.sized;
+        &ctx.accounts.user.key(),
+        clock,
+        &mut cpi_scratch,
+    )?;
     let obligation = keeper_obligation(ctx, quoted.unrouted_quoters)?;
 
-    let mut book_storage =
-        [crate::math::router::QuoterBook::default(); crate::state::prop_amm::MAX_ROUTE_QUOTERS];
-    let books = route.books(&mut book_storage)?;
-    let mut executor = route.executor(&sized, clock.slot, clock.unix_timestamp, &mut cpi_scratch);
-    let mut router_inputs = RouterFillInputs {
-        books,
-        executor: &mut executor,
-        protocol_authority: state.signer,
-        taker_exposure_closed_by_caller: false,
-        obligation,
-        worst_fill_price: None,
-    };
-
-    sections.run_fill(
-        &fill_accounts(ctx),
-        controller::orders::FillRequest {
-            // The taker order is ephemeral: it never reserved, so the fill
-            // unwinds no exposure for it.
-            target: controller::orders::FillTarget::Detached {
-                order: &mut placed.order,
-                reserved: false,
-            },
-            mode,
-            referrer_is_accelerated: sections.referrer_is_accelerated,
+    let (filled, _) = quoted.route_fill(
+        crate::instructions::RouterTerms {
+            protocol_authority: state.signer,
+            obligation,
+            taker_exposure_closed_by_caller: false,
         },
-        &mut router_inputs,
         clock,
-    )
+        &mut cpi_scratch,
+        |router| {
+            sections.run_fill(
+                &fill_accounts(ctx),
+                controller::orders::FillRequest {
+                    // The taker order is ephemeral: it never reserved, so the
+                    // fill unwinds no exposure for it.
+                    target: controller::orders::FillTarget::Detached {
+                        order: &mut placed.order,
+                        reserved: false,
+                    },
+                    mode,
+                    referrer_is_accelerated: sections.referrer_is_accelerated,
+                },
+                router,
+                clock,
+            )
+        },
+    )?;
+    Ok(filled)
 }
 
 /// What the keeper answers for on a signed-message fill.

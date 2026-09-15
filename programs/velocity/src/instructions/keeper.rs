@@ -232,6 +232,7 @@ impl<'info> FillSections<'info> {
     fn quote_route<'a>(
         &mut self,
         inputs: crate::instructions::QuoteInputs<'a>,
+        claim: Option<crate::instructions::RouteClaim<'_>>,
         taker_key: &Pubkey,
         clock: &Clock,
         scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
@@ -239,6 +240,7 @@ impl<'info> FillSections<'info> {
         crate::instructions::quote_route(
             self.tail,
             inputs,
+            claim,
             &mut crate::instructions::CapInputs {
                 taker_key,
                 makers_and_referrer: &self.makers_and_referrer,
@@ -354,11 +356,9 @@ impl RoutedOrder {
         market_index: u16,
         users: &'a [crate::state::prop_amm::ClobUserRefV0],
         taker_served_window: bool,
-        route_claim: Option<crate::instructions::RouteClaim<'a>>,
     ) -> crate::instructions::QuoteInputs<'a> {
         crate::instructions::QuoteInputs {
             market_index,
-            route_claim,
             margin_ratio_initial: self.margin_ratio_initial,
             direction: self.direction,
             size: self.unfilled,

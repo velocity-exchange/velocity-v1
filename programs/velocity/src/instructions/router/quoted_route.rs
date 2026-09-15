@@ -161,6 +161,57 @@ struct SlotQuote {
     oracle_band: u32,
 }
 
+/// What a router fill needs beyond the quoted route itself.
+pub struct RouterTerms {
+    /// `State::signer`, the authority of the protocol `User`, which no quoter
+    /// may name as a fill subject.
+    pub protocol_authority: Pubkey,
+    /// What the fill knows about the party that built the transaction.
+    pub obligation: crate::math::router::FillerObligation,
+    /// Whether the caller opens and closes the taker's whole exposure inside
+    /// one instruction and asserts the end state itself.
+    pub taker_exposure_closed_by_caller: bool,
+}
+
+impl<'info> QuotedFill<'_, 'info> {
+    /// Wire the quoted route into router-fill inputs and run `fill` against
+    /// them.
+    ///
+    /// A closure rather than a returned value, because the inputs borrow two
+    /// things that have to outlive them and cannot leave with them: the book
+    /// list is a reshape written into a caller-owned array, and the executor
+    /// borrows the route and the CPI scratch. Returning them would mean
+    /// returning references to this function's own locals, so the fill comes
+    /// here instead.
+    ///
+    /// Reports the worst price any one source executed at, which is the only
+    /// field a caller reads back.
+    pub fn route_fill<T>(
+        &self,
+        terms: RouterTerms,
+        clock: &Clock,
+        scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
+        fill: impl FnOnce(&mut crate::math::router::RouterFillInputs<'_, '_, 'info>) -> Result<T>,
+    ) -> Result<(T, Option<u64>)> {
+        let mut book_storage =
+            [crate::math::router::QuoterBook::default(); crate::state::prop_amm::MAX_ROUTE_QUOTERS];
+        let books = self.route.books(&mut book_storage)?;
+        let mut executor =
+            self.route
+                .executor(&self.sized, clock.slot, clock.unix_timestamp, scratch);
+        let mut inputs = crate::math::router::RouterFillInputs {
+            books,
+            executor: &mut executor,
+            protocol_authority: terms.protocol_authority,
+            obligation: terms.obligation,
+            taker_exposure_closed_by_caller: terms.taker_exposure_closed_by_caller,
+            worst_fill_price: None,
+        };
+        let out = fill(&mut inputs)?;
+        Ok((out, inputs.worst_fill_price))
+    }
+}
+
 /// The route an order was signed with: the quoters it named, and the digest
 /// the order carries so a filler cannot substitute a different list.
 #[derive(Clone, Copy)]
@@ -182,15 +233,20 @@ pub struct QuotedFill<'a, 'info> {
 /// route against those numbers.
 ///
 /// The only way to a [`QuotedRoute`]. `QuotedRoute::assemble` is private, so
-/// a route cannot be quoted from inputs whose caps were never priced — which
-/// was a rule six call sites each had to remember.
+/// a route cannot be quoted from inputs whose caps were never priced, nor
+/// used without its baseline and its signer's claim checked — rules six call
+/// sites each had to remember.
+///
+/// `claim` is an argument rather than part of the inputs because it is not
+/// something a quoter is told. It is read here and not kept, so a caller can
+/// name the order it came from and still mutate that order during the fill.
 pub fn quote_route<'a, 'info>(
     tail: &'info [AccountInfo<'info>],
     inputs: QuoteInputs<'a>,
+    claim: Option<RouteClaim<'_>>,
     ctx: &mut super::user_caps::CapInputs<'_, 'info>,
     scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
 ) -> Result<QuotedFill<'a, 'info>> {
-    let claim = inputs.route_claim;
     let clob_market = ctx
         .maps
         .perp_market_map
@@ -320,14 +376,6 @@ pub struct QuoteInputs<'a> {
     /// The market's initial margin ratio, which a quoter's declared oracle
     /// band defaults to when it sets none.
     pub margin_ratio_initial: u32,
-    /// The route the order's signer chose, when it chose one.
-    ///
-    /// `Some` binds the fill to it: every quoter it names must be consulted
-    /// unless that quoter cannot quote anyway, and the consulted quoters it
-    /// does not name arm the filler obligation. `None` is an order that named
-    /// no route — a taker who signed the transaction picked the account list
-    /// themselves, and the protocol taker of a cross answers to nobody.
-    pub route_claim: Option<RouteClaim<'a>>,
     /// Whether this fill settles a crossing taker remainder itself, and so
     /// reads a book with every crossing reservation ignored.
     ///

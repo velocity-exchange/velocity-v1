@@ -428,11 +428,9 @@ fn run_cross_leg<'info>(
             // the book without it is what makes this crank unable to reach a
             // remainder's cover.
             consume_reservation: false,
-            // The protocol is the taker and chose its own account list, so
-            // there is no signer's route to honour.
-            route_claim: None,
             margin_ratio_initial: legs.margin_ratio_initial,
         },
+        None,
         &mut CapInputs {
             taker_key: &legs.accounts.taker.key(),
             makers_and_referrer: legs.makers_and_referrer,
@@ -443,61 +441,53 @@ fn run_cross_leg<'info>(
         },
         cpi_scratch,
     )?;
-    let route = quoted.route;
-    let sized = quoted.sized;
-    let mut book_storage =
-        [crate::math::router::QuoterBook::default(); crate::state::prop_amm::MAX_ROUTE_QUOTERS];
-    let books = route.books(&mut book_storage)?;
-    let mut executor = route.executor(
-        &sized,
-        legs.clock.slot,
-        legs.clock.unix_timestamp,
-        cpi_scratch,
-    );
-    let mut router_inputs = crate::math::router::RouterFillInputs {
-        books,
-        executor: &mut executor,
-        protocol_authority: legs.state.signer,
-        taker_exposure_closed_by_caller: true,
-        obligation: FillerObligation {
-            // The taker is the protocol, not a user trusting a cranker with
-            // its order, so nobody is owed a maker here. A book that stops at
-            // an owner the transaction does not carry only makes the cross
-            // smaller, and the surplus floor decides whether the smaller
-            // cross is worth landing.
-            taker_signed: false,
-            tx_accounts: Some(tx_writable_lock_count(
-                &legs.accounts.instructions_sysvar.to_account_info(),
-            )?),
-            unrouted_quoters: 0,
-        },
-        worst_fill_price: None,
-    };
-
-    let (base_filled, _) = controller::orders::fill_perp_order(
-        controller::orders::FillRequest {
-            target: controller::orders::FillTarget::Detached {
-                order: &mut order,
-                reserved: false,
+    let ((base_filled, _), worst_price) = quoted.route_fill(
+        crate::instructions::RouterTerms {
+            protocol_authority: legs.state.signer,
+            taker_exposure_closed_by_caller: true,
+            obligation: FillerObligation {
+                // The taker is the protocol, not a user trusting a cranker
+                // with its order, so nobody is owed a maker here. A book that
+                // stops at an owner the transaction does not carry only makes
+                // the cross smaller, and the surplus floor decides whether
+                // the smaller cross is worth landing.
+                taker_signed: false,
+                tx_accounts: Some(tx_writable_lock_count(
+                    &legs.accounts.instructions_sysvar.to_account_info(),
+                )?),
+                unrouted_quoters: 0,
             },
-            mode: FillMode::Fill,
-            referrer_is_accelerated: false,
         },
-        legs.state,
         legs.clock,
-        controller::orders::PerpFillAccounts {
-            user: &legs.accounts.taker,
-            user_stats: &legs.accounts.taker_stats,
-            filler: &legs.accounts.taker,
-            filler_stats: &legs.accounts.taker_stats,
-            rev_share_escrow: &mut None,
+        cpi_scratch,
+        |router| {
+            controller::orders::fill_perp_order(
+                controller::orders::FillRequest {
+                    target: controller::orders::FillTarget::Detached {
+                        order: &mut order,
+                        reserved: false,
+                    },
+                    mode: FillMode::Fill,
+                    referrer_is_accelerated: false,
+                },
+                legs.state,
+                legs.clock,
+                controller::orders::PerpFillAccounts {
+                    user: &legs.accounts.taker,
+                    user_stats: &legs.accounts.taker_stats,
+                    filler: &legs.accounts.taker,
+                    filler_stats: &legs.accounts.taker_stats,
+                    rev_share_escrow: &mut None,
+                },
+                &mut controller::orders::FillParties {
+                    maps,
+                    makers_and_referrer: legs.makers_and_referrer,
+                    makers_and_referrer_stats: legs.makers_and_referrer_stats,
+                },
+                router,
+            )
+            .map_err(Into::into)
         },
-        &mut controller::orders::FillParties {
-            maps,
-            makers_and_referrer: legs.makers_and_referrer,
-            makers_and_referrer_stats: legs.makers_and_referrer_stats,
-        },
-        &mut router_inputs,
     )?;
     // Read straight after the fill, with no second settle: the fill's own
     // funding update belongs to whoever holds the position next, and the next
@@ -509,7 +499,7 @@ fn run_cross_leg<'info>(
     Ok(CrossLegFilled {
         base_filled,
         quote_delta: quote_after.safe_sub(quote_before)?,
-        worst_price: router_inputs.worst_fill_price.unwrap_or(0),
+        worst_price: worst_price.unwrap_or(0),
     })
 }
 

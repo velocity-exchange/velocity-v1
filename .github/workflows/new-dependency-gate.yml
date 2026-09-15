@@ -5,8 +5,9 @@ name: New dependency gate
 #
 # pull_request_target runs this workflow from the base branch rather than from the
 # pull request. That matters: the collect/comment/enforce logic and the parser live
-# in velocity-exchange/dependency-gate and were already out of a PR's reach, but
-# under `pull_request` this workflow file was still the PR's own copy, so a PR could
+# in velocity-exchange/shared-workflows/dependency-gate and were already out of a
+# PR's reach, but under `pull_request` this workflow file was still the PR's own
+# copy, so a PR could
 # empty the lockfiles input, rename the job or delete the gate in the same diff that
 # added a dependency.
 #
@@ -43,7 +44,7 @@ jobs:
         with:
           fetch-depth: 0 # required: the action diffs against the base commit
 
-      - uses: velocity-exchange/dependency-gate@e039f99f9238eafe289d9879caae848c450a1b8e # v2.0.0
+      - uses: velocity-exchange/shared-workflows/dependency-gate@59625d7f7ee3bd49faa47a0a85978509ec57ab1f # dependency-gate-v2.0.1
         with:
           # The three lockfiles that actually ship: the program (SBF) workspace,
           # the separate rust/ workspace (velocity-rs, keep-rs, swift) and the bun

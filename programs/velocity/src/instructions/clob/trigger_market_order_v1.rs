@@ -371,6 +371,10 @@ fn route_fill_fired_order<'info>(
             limit_price: route_inputs.limit_price,
             taker_served_window,
             consume_reservation: false,
+            route_claim: Some(crate::instructions::RouteClaim {
+                quoters: signed_route,
+                digest: crate::state::order_params::NO_ROUTE_DIGEST,
+            }),
             margin_ratio_initial: route_margin_ratio_initial,
         },
         &mut crate::instructions::CapInputs {
@@ -385,9 +389,6 @@ fn route_fill_fired_order<'info>(
     )?;
     let route = quoted.route;
     let sized = quoted.sized;
-    route.require_baseline(maps.perp_market_map.get_ref(&market_index)?.clob_market)?;
-    let route_digest = crate::state::order_params::NO_ROUTE_DIGEST;
-    route.require_signed_route(signed_route, route_digest)?;
 
     let obligation = crate::math::router::FillerObligation {
         // A trigger crank is not a signed transaction: the owner does not
@@ -401,7 +402,7 @@ fn route_fill_fired_order<'info>(
             ),
             None => None,
         },
-        unrouted_quoters: route.unrouted_quoters(signed_route, route_digest)?,
+        unrouted_quoters: quoted.unrouted_quoters,
     };
 
     let mut book_storage =

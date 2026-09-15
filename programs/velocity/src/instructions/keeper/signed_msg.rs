@@ -198,23 +198,21 @@ fn fill_signed_msg_taker_order<'c: 'info, 'info>(
     }
 
     let users = sections.wire_users()?;
-    let inputs = order.quote_inputs(market_index, &users, taker_served_window);
+    let inputs = order.quote_inputs(
+        market_index,
+        &users,
+        taker_served_window,
+        Some(crate::instructions::RouteClaim {
+            quoters: &placed.route,
+            digest: placed.route_digest,
+        }),
+    );
 
     let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
     let quoted = sections.quote_route(inputs, &ctx.accounts.user.key(), clock, &mut cpi_scratch)?;
     let route = quoted.route;
     let sized = quoted.sized;
-    route.require_baseline(
-        sections
-            .maps
-            .perp_market_map
-            .get_ref(&market_index)?
-            .clob_market,
-    )?;
-    let digest = placed.route_digest;
-    route.require_signed_route(&placed.route, digest)?;
-
-    let obligation = keeper_obligation(ctx, route.unrouted_quoters(&placed.route, digest)?)?;
+    let obligation = keeper_obligation(ctx, quoted.unrouted_quoters)?;
 
     let mut book_storage =
         [crate::math::router::QuoterBook::default(); crate::state::prop_amm::MAX_ROUTE_QUOTERS];

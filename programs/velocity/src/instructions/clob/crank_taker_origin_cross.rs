@@ -591,6 +591,10 @@ fn route_and_fill_remainder<'info>(
                 cx.clock.slot,
             ),
             consume_reservation: true,
+            route_claim: Some(crate::instructions::RouteClaim {
+                quoters: route_claim.quoters,
+                digest: route_claim.digest,
+            }),
             margin_ratio_initial: route_margin_ratio_initial,
         },
         &mut crate::instructions::CapInputs {
@@ -605,8 +609,6 @@ fn route_and_fill_remainder<'info>(
     )?;
     let route = quoted.route;
     let sized = quoted.sized;
-    route.require_baseline(maps.perp_market_map.get_ref(&cx.market_index)?.clob_market)?;
-    route.require_signed_route(route_claim.quoters, route_claim.digest)?;
     let mut book_storage =
         [crate::math::router::QuoterBook::default(); crate::state::prop_amm::MAX_ROUTE_QUOTERS];
     let books = route.books(&mut book_storage)?;

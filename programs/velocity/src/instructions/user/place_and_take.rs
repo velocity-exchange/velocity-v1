@@ -441,6 +441,9 @@ fn quote_take_route<'a, 'info>(
         limit_price: shape.limit_price,
         taker_served_window,
         consume_reservation: false,
+        // The taker signed this transaction, so they picked the account list
+        // themselves and no route binds the filler.
+        route_claim: None,
     };
 
     crate::instructions::quote_route(
@@ -563,13 +566,6 @@ fn fill_ephemeral_take(
     )?;
     let route = quoted.route;
     let sized = quoted.sized;
-    route.require_baseline(
-        take.maps
-            .perp_market_map
-            .get_ref(&market_index)?
-            .clob_market,
-    )?;
-
     let mut book_storage =
         [crate::math::router::QuoterBook::default(); crate::state::prop_amm::MAX_ROUTE_QUOTERS];
     let book_refs = route.books(&mut book_storage)?;

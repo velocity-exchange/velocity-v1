@@ -161,10 +161,21 @@ struct SlotQuote {
     oracle_band: u32,
 }
 
+/// The route an order was signed with: the quoters it named, and the digest
+/// the order carries so a filler cannot substitute a different list.
+#[derive(Clone, Copy)]
+pub struct RouteClaim<'a> {
+    pub quoters: &'a [Pubkey],
+    pub digest: RouteDigest,
+}
+
 /// A quoted route and the sized inputs it was quoted from.
 pub struct QuotedFill<'a, 'info> {
     pub route: QuotedRoute<'info>,
     pub sized: SizedQuote<'a, 'info>,
+    /// Consulted quoters the order's signed route did not name, which arms
+    /// the filler obligation. Zero when the order carries no route.
+    pub unrouted_quoters: usize,
 }
 
 /// Size every counterparty this fill may settle against, then quote the
@@ -179,9 +190,27 @@ pub fn quote_route<'a, 'info>(
     ctx: &mut super::user_caps::CapInputs<'_, 'info>,
     scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
 ) -> Result<QuotedFill<'a, 'info>> {
+    let claim = inputs.route_claim;
+    let clob_market = ctx
+        .maps
+        .perp_market_map
+        .get_ref(&inputs.market_index)?
+        .clob_market;
     let sized = super::user_caps::with_counterparty_room(tail, inputs, ctx)?;
     let route = QuotedRoute::assemble(tail, &sized, scratch)?;
-    Ok(QuotedFill { route, sized })
+    route.require_baseline(clob_market)?;
+    let unrouted_quoters = match claim {
+        Some(claim) => {
+            route.require_signed_route(claim.quoters, claim.digest)?;
+            route.unrouted_quoters(claim.quoters, claim.digest)?
+        }
+        None => 0,
+    };
+    Ok(QuotedFill {
+        route,
+        sized,
+        unrouted_quoters,
+    })
 }
 
 /// Why this slot offers no depth to this fill, or `None` when it quotes.
@@ -291,6 +320,14 @@ pub struct QuoteInputs<'a> {
     /// The market's initial margin ratio, which a quoter's declared oracle
     /// band defaults to when it sets none.
     pub margin_ratio_initial: u32,
+    /// The route the order's signer chose, when it chose one.
+    ///
+    /// `Some` binds the fill to it: every quoter it names must be consulted
+    /// unless that quoter cannot quote anyway, and the consulted quoters it
+    /// does not name arm the filler obligation. `None` is an order that named
+    /// no route — a taker who signed the transaction picked the account list
+    /// themselves, and the protocol taker of a cross answers to nobody.
+    pub route_claim: Option<RouteClaim<'a>>,
     /// Whether this fill settles a crossing taker remainder itself, and so
     /// reads a book with every crossing reservation ignored.
     ///

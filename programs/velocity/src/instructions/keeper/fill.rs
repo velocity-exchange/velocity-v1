@@ -184,7 +184,20 @@ fn route_and_fill<'info>(
     };
 
     let users = sections.wire_users()?;
-    let inputs = order.quote_inputs(market_index, &users, request.taker_served_window);
+    // A DLOB order carries no route. Only a signed message names one, and such
+    // an order routes at placement and rests any remainder on the market's
+    // CLOB, so what a route binds is the fill of that remainder.
+    // `crank_taker_origin_cross` reads it from the taker's signed-message
+    // record.
+    let inputs = order.quote_inputs(
+        market_index,
+        &users,
+        request.taker_served_window,
+        Some(crate::instructions::RouteClaim {
+            quoters: &request.signed_route,
+            digest: crate::state::order_params::NO_ROUTE_DIGEST,
+        }),
+    );
 
     // One set of CPI buffers for the fill: the quote legs below and the
     // execute legs the router runs later all refill the same allocation,
@@ -193,23 +206,8 @@ fn route_and_fill<'info>(
     let quoted = sections.quote_route(inputs, &accounts.user.key(), clock, &mut cpi_scratch)?;
     let route = quoted.route;
     let sized = quoted.sized;
-    route.require_baseline(
-        sections
-            .maps
-            .perp_market_map
-            .get_ref(&market_index)?
-            .clob_market,
-    )?;
-    // A DLOB order carries no route. Only a signed message names one, and such
-    // an order routes at placement and rests any remainder on the market's
-    // CLOB, so what a route binds is the fill of that remainder.
-    // `crank_taker_origin_cross` reads it from the taker's signed-message
-    // record.
-    let digest = crate::state::order_params::NO_ROUTE_DIGEST;
-    route.require_signed_route(&request.signed_route, digest)?;
-    // Countable only now: the route is what says which entries arrived, and
-    // the obligation is only consulted if a book later withholds.
-    request.obligation.unrouted_quoters = route.unrouted_quoters(&request.signed_route, digest)?;
+    // Consulted only if a book later withholds, but counted by the quote.
+    request.obligation.unrouted_quoters = quoted.unrouted_quoters;
 
     let mut book_storage =
         [crate::math::router::QuoterBook::default(); crate::state::prop_amm::MAX_ROUTE_QUOTERS];

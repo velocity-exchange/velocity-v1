@@ -199,15 +199,14 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
     // either of them moves a position. The pre-flight refuses a market in
     // settlement, paused fills, an oracle that may not price a match, and a
     // mark outside the market's band.
-    let (band_oracle_price, margin_ratio_initial, clob_market) = {
+    let (band_oracle_price, margin_ratio_initial) = {
         let market = &mut maps.perp_market_map.get_ref_mut(&market_index)?;
         crank_oracle_preflight(market, &state, &mut maps.oracle_map, &clock, "cross match")?;
         let oracle_id = market.oracle_id();
-        let (margin_ratio_initial, clob_market) = (market.margin_ratio_initial, market.clob_market);
+        let margin_ratio_initial = market.margin_ratio_initial;
         (
             maps.oracle_map.get_price_data(&oracle_id)?.price,
             margin_ratio_initial,
-            clob_market,
         )
     };
 
@@ -224,7 +223,6 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
         market_index,
         band_oracle_price,
         margin_ratio_initial,
-        clob_market,
         makers_and_referrer: &makers_and_referrer,
         makers_and_referrer_stats: &makers_and_referrer_stats,
         clock: &clock,
@@ -284,7 +282,6 @@ struct CrossLegs<'a, 'info> {
     /// The market's own band, in MARGIN_PRECISION units.
     margin_ratio_initial: u32,
     /// The book the market names. Every router fill must consult it.
-    clob_market: Pubkey,
     makers_and_referrer: &'a UserMap<'info>,
     makers_and_referrer_stats: &'a UserStatsMap<'info>,
     clock: &'a Clock,
@@ -431,6 +428,9 @@ fn run_cross_leg<'info>(
             // the book without it is what makes this crank unable to reach a
             // remainder's cover.
             consume_reservation: false,
+            // The protocol is the taker and chose its own account list, so
+            // there is no signer's route to honour.
+            route_claim: None,
             margin_ratio_initial: legs.margin_ratio_initial,
         },
         &mut CapInputs {
@@ -445,7 +445,6 @@ fn run_cross_leg<'info>(
     )?;
     let route = quoted.route;
     let sized = quoted.sized;
-    route.require_baseline(legs.clob_market)?;
     let mut book_storage =
         [crate::math::router::QuoterBook::default(); crate::state::prop_amm::MAX_ROUTE_QUOTERS];
     let books = route.books(&mut book_storage)?;

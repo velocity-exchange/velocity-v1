@@ -354,9 +354,11 @@ impl RoutedOrder {
         market_index: u16,
         users: &'a [crate::state::prop_amm::ClobUserRefV0],
         taker_served_window: bool,
+        route_claim: Option<crate::instructions::RouteClaim<'a>>,
     ) -> crate::instructions::QuoteInputs<'a> {
         crate::instructions::QuoteInputs {
             market_index,
+            route_claim,
             margin_ratio_initial: self.margin_ratio_initial,
             direction: self.direction,
             size: self.unfilled,

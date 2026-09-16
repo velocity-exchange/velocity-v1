@@ -84,6 +84,48 @@ fn registration_rejects_the_vault_authority() {
     assert!(validate_quoter_accounts([vault_authority].iter()).is_err());
 }
 
+/// A quoter's registered list may not name the market's book, and the rule
+/// holds while the book still has no slab slot.
+///
+/// A market designates its book at registration, and the book reaches slot 0
+/// only at its own approval. A sweep of the occupied slots sees nothing in
+/// that window, so approval reads the market's designation instead. Without
+/// this an approved Custom entry could receive the book account and the slab
+/// signature its own `execute_v0` holds, which is everything the book's
+/// place, cancel, evict and fill instructions ask for.
+#[test]
+fn approval_refuses_a_list_naming_the_designated_book() {
+    let book = Pubkey::new_unique();
+    let own_response = Pubkey::new_unique();
+    let unrelated = Pubkey::new_unique();
+
+    assert!(list_stays_off_the_book(
+        [own_response, unrelated].iter(),
+        &book
+    ));
+    assert!(!list_stays_off_the_book([own_response, book].iter(), &book));
+    // The book's own entry is the one entry that may name it. Approval calls
+    // this only for the other types.
+    assert!(!list_stays_off_the_book([book].iter(), &book));
+}
+
+/// The same rule read from the designation side: a market may not name a book
+/// that an approved quoter's list already reaches.
+///
+/// An entry approved before the designation was never held to it, so
+/// registration is where that order of events is refused.
+#[test]
+fn designation_refuses_a_book_an_approved_list_names() {
+    let book = Pubkey::new_unique();
+    let approved_list = [Pubkey::new_unique(), book];
+
+    assert!(!list_stays_off_the_book(approved_list.iter(), &book));
+    assert!(list_stays_off_the_book(
+        approved_list.iter(),
+        &Pubkey::new_unique()
+    ));
+}
+
 fn user_ref(byte: u8, sub_account_id: u16) -> ClobUserRefV0 {
     ClobUserRefV0 {
         authority: Pubkey::new_from_array([byte; 32]),

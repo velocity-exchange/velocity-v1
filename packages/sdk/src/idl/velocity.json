@@ -4917,6 +4917,39 @@
           ]
         },
         {
+          "name": "quoter_slab",
+          "docs": [
+            "The market's approved set. Required to designate a book, because the",
+            "designation is refused when an approved entry already names the book",
+            "account. Absent for every other registration."
+          ],
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  113,
+                  117,
+                  111,
+                  116,
+                  101,
+                  114,
+                  95,
+                  115,
+                  108,
+                  97,
+                  98
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "args.market_index"
+              }
+            ]
+          }
+        },
+        {
           "name": "quoter_program"
         },
         {
@@ -15526,6 +15559,14 @@
         {
           "name": "quoter",
           "writable": true
+        },
+        {
+          "name": "state",
+          "docs": [
+            "Read for the admin check a non-Custom entry needs. Absent for a",
+            "Custom entry, which answers to its own stored authority."
+          ],
+          "optional": true
         }
       ],
       "args": [
@@ -15595,6 +15636,14 @@
               }
             ]
           }
+        },
+        {
+          "name": "state",
+          "docs": [
+            "Read for the admin check a non-Custom entry needs. Absent for a",
+            "Custom entry, which answers to its own stored authority."
+          ],
+          "optional": true
         }
       ],
       "args": [
@@ -15695,6 +15744,14 @@
           "optional": true
         },
         {
+          "name": "clob_market",
+          "docs": [
+            "designation. Required to approve a `Clob` entry, because the handler",
+            "asks it for its own placement rules. Absent for every other entry."
+          ],
+          "optional": true
+        },
+        {
           "name": "system_program",
           "address": "11111111111111111111111111111111"
         }
@@ -15730,6 +15787,14 @@
         {
           "name": "quoter",
           "writable": true
+        },
+        {
+          "name": "state",
+          "docs": [
+            "Read for the admin check a non-Custom entry needs. Absent for a",
+            "Custom entry, which answers to its own stored authority."
+          ],
+          "optional": true
         }
       ],
       "args": [
@@ -15912,6 +15977,14 @@
             "quoter's own state account; not otherwise constrained (the admin",
             "vets it, and a wrong watch only costs the maker latency)."
           ]
+        },
+        {
+          "name": "state",
+          "docs": [
+            "Read for the admin check a non-Custom entry needs. Absent for a",
+            "Custom entry, which answers to its own stored authority."
+          ],
+          "optional": true
         }
       ],
       "args": [
@@ -19398,16 +19471,16 @@
   ],
   "events": [
     {
-      "name": "AcceleratedReferralStatusChangedRecord",
+      "name": "AcceleratedReferralStatusChangedRecordV0",
       "discriminator": [
-        95,
-        227,
-        167,
-        93,
-        152,
-        42,
-        2,
-        91
+        61,
+        226,
+        119,
+        155,
+        0,
+        100,
+        16,
+        4
       ]
     },
     {
@@ -22184,7 +22257,7 @@
       }
     },
     {
-      "name": "AcceleratedReferralStatusChangedRecord",
+      "name": "AcceleratedReferralStatusChangedRecordV0",
       "type": {
         "kind": "struct",
         "fields": [

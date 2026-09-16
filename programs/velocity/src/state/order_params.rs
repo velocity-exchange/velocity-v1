@@ -921,12 +921,11 @@ impl OrderParams {
 /// Network tag on a signed message: which cluster the taker signed for.
 ///
 /// Without it, a message signed for devnet is byte-identical to one signed
-/// for mainnet — the signature covers the order, not the chain it was meant
-/// for — so a devnet order (cheap, farmable) could be replayed against
-/// mainnet state. One byte closes that: `b'm'` / `b'd'`, checked against
-/// the build's own cluster. `None` is the pre-tag encoding and stays
-/// accepted (nothing is deployed to mainnet yet); once producers all emit
-/// it, the check becomes mandatory.
+/// for mainnet. The signature covers the order, not the chain it was meant
+/// for, so a devnet order is cheap to farm and replays against mainnet
+/// state. One byte closes that: `b'm'` / `b'd'`, checked against the build's
+/// own cluster. The tag is required. A message that carries none is refused,
+/// because an absent tag replays exactly like a wrong one.
 pub const SIGNED_MSG_NETWORK_MAINNET: u8 = b'm';
 pub const SIGNED_MSG_NETWORK_DEVNET: u8 = b'd';
 

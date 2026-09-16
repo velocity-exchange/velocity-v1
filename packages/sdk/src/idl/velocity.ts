@@ -4923,6 +4923,39 @@ export type Velocity = {
           ]
         },
         {
+          "name": "quoterSlab",
+          "docs": [
+            "The market's approved set. Required to designate a book, because the",
+            "designation is refused when an approved entry already names the book",
+            "account. Absent for every other registration."
+          ],
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  113,
+                  117,
+                  111,
+                  116,
+                  101,
+                  114,
+                  95,
+                  115,
+                  108,
+                  97,
+                  98
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "args.market_index"
+              }
+            ]
+          }
+        },
+        {
           "name": "quoterProgram"
         },
         {
@@ -15532,6 +15565,14 @@ export type Velocity = {
         {
           "name": "quoter",
           "writable": true
+        },
+        {
+          "name": "state",
+          "docs": [
+            "Read for the admin check a non-Custom entry needs. Absent for a",
+            "Custom entry, which answers to its own stored authority."
+          ],
+          "optional": true
         }
       ],
       "args": [
@@ -15601,6 +15642,14 @@ export type Velocity = {
               }
             ]
           }
+        },
+        {
+          "name": "state",
+          "docs": [
+            "Read for the admin check a non-Custom entry needs. Absent for a",
+            "Custom entry, which answers to its own stored authority."
+          ],
+          "optional": true
         }
       ],
       "args": [
@@ -15701,6 +15750,14 @@ export type Velocity = {
           "optional": true
         },
         {
+          "name": "clobMarket",
+          "docs": [
+            "designation. Required to approve a `Clob` entry, because the handler",
+            "asks it for its own placement rules. Absent for every other entry."
+          ],
+          "optional": true
+        },
+        {
           "name": "systemProgram",
           "address": "11111111111111111111111111111111"
         }
@@ -15736,6 +15793,14 @@ export type Velocity = {
         {
           "name": "quoter",
           "writable": true
+        },
+        {
+          "name": "state",
+          "docs": [
+            "Read for the admin check a non-Custom entry needs. Absent for a",
+            "Custom entry, which answers to its own stored authority."
+          ],
+          "optional": true
         }
       ],
       "args": [
@@ -15918,6 +15983,14 @@ export type Velocity = {
             "quoter's own state account; not otherwise constrained (the admin",
             "vets it, and a wrong watch only costs the maker latency)."
           ]
+        },
+        {
+          "name": "state",
+          "docs": [
+            "Read for the admin check a non-Custom entry needs. Absent for a",
+            "Custom entry, which answers to its own stored authority."
+          ],
+          "optional": true
         }
       ],
       "args": [
@@ -19404,16 +19477,16 @@ export type Velocity = {
   ],
   "events": [
     {
-      "name": "acceleratedReferralStatusChangedRecord",
+      "name": "acceleratedReferralStatusChangedRecordV0",
       "discriminator": [
-        95,
-        227,
-        167,
-        93,
-        152,
-        42,
-        2,
-        91
+        61,
+        226,
+        119,
+        155,
+        0,
+        100,
+        16,
+        4
       ]
     },
     {
@@ -22190,7 +22263,7 @@ export type Velocity = {
       }
     },
     {
-      "name": "acceleratedReferralStatusChangedRecord",
+      "name": "acceleratedReferralStatusChangedRecordV0",
       "type": {
         "kind": "struct",
         "fields": [

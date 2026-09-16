@@ -878,7 +878,7 @@ export class AcceleratedReferralStatusChange {
  * enrollment on an eligible interaction, or an admin grant/revoke. `previousStatus` and
  * `newStatus` are `AcceleratedReferralStatus` bitmasks.
  */
-export type AcceleratedReferralStatusChangedRecord = {
+export type AcceleratedReferralStatusChangedRecordV0 = {
 	ts: BN;
 	authority: PublicKey;
 	previousStatus: number;

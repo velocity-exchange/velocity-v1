@@ -311,6 +311,29 @@ const_assert_eq!(QuoterV0::SIZE, 8 + std::mem::size_of::<QuoterV0>());
 /// PDA: one entry per (perp market, quoter program, quoted user).
 pub const QUOTER_PDA_SEED: &[u8] = b"quoter";
 
+/// Whether a registered CPI account list keeps clear of a market's book.
+///
+/// The market's book is off limits to every entry but the book's own. A book
+/// gates its whole authority surface on the market's slab and requires no
+/// response account, so an entry that receives the book account can place,
+/// cancel, evict and fill on it with the slab signature its own `execute_v0`
+/// holds. See [`crate::signer`].
+///
+/// This is a separate rule from the response-account exclusion because a
+/// market designates its book at registration and the book reaches slot 0
+/// only at its own approval. Nothing on the slab names the book in that
+/// window. Both sides of the window read this predicate: approval checks a
+/// new list against the market's designation, and a designation checks the
+/// account against every approved list.
+///
+/// A market that names no book bars nothing.
+pub fn list_stays_off_the_book<'a>(
+    registered: impl IntoIterator<Item = &'a Pubkey>,
+    book: &Pubkey,
+) -> bool {
+    *book == Pubkey::default() || registered.into_iter().all(|key| key != book)
+}
+
 /// Reject a registered CPI account list that names velocity's vault authority.
 ///
 /// That PDA is the SPL token authority on every `spot_market_vault` and

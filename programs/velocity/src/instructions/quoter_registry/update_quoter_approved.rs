@@ -11,7 +11,10 @@
 //! Approval validates the config is coherent enough to CPI: non-empty index
 //! lists on both legs, each naming the response account (the router reads
 //! responses from it, so it must be forwarded), and no reserved key on the
-//! registered list.
+//! registered list. No entry but the book may name the market's book, which
+//! closes the window between the book's designation and its own approval.
+//! A `Clob` approval also asks the book for its placement rules, so a slot
+//! that would fail every fill is refused instead of approved.
 //!
 //! Approval does not require a frozen program, and does not freeze one. A maker
 //! may upgrade the program behind an approved entry. Three things make that
@@ -49,8 +52,9 @@ use {
         error::ErrorCode,
         state::{
             prop_amm::{
-                occupied_slots, slot_for_entry, vacant_slot_index, validate_quoter_accounts,
-                QuoterConfigV0, QuoterSlabExt, QuoterSlabV0, QuoterType, QuoterV0,
+                list_stays_off_the_book, occupied_slots, slot_for_entry, vacant_slot_index,
+                validate_quoter_accounts, ClobReader, QuoterConfigV0, QuoterSlabExt, QuoterSlabV0,
+                QuoterType, QuoterV0,
             },
             state::State,
         },
@@ -93,6 +97,11 @@ pub struct UpdateQuoterApproved<'info> {
     /// because revoking approval needs none of this, and a program on a loader
     /// that cannot redeploy has no such account.
     pub quoter_program_data: Option<UncheckedAccount<'info>>,
+    /// CHECK: the book the market designated at registration, bound by that
+    /// designation. Required to approve a `Clob` entry, because the handler
+    /// asks it for its own placement rules. Absent for every other entry.
+    #[account(address = perp_market.load()?.clob_market)]
+    pub clob_market: Option<UncheckedAccount<'info>>,
     pub system_program: Program<'info, System>,
 }
 
@@ -246,6 +255,13 @@ pub fn handle_update_quoter_approved(
         config.market,
         MAX_TOTAL_CAPACITY
     )?;
+    if config.quoter_type == QuoterType::Clob {
+        validate_book_identity(
+            ctx.accounts.clob_market.as_ref(),
+            &ctx.accounts.quoter_program,
+            &ctx.accounts.quoter_slab.key(),
+        )?;
+    }
     let approved_program_slot = deployed_slot(
         &ctx.accounts.quoter_program,
         ctx.accounts.quoter_program_data.as_ref(),
@@ -268,6 +284,42 @@ pub fn handle_update_quoter_approved(
         config,
         approved_program_slot,
     )
+}
+
+/// Ask the book the market designated whether it is a book, and whether
+/// velocity may place on it.
+///
+/// A `Clob` slot is every router fill's mandatory baseline. A slot whose
+/// account is not a CLOB market, or whose `place_authority` is not the
+/// market's slab, fails its `execute_v0` on every fill, so the market stops
+/// filling until an admin revokes the slot. The attach
+/// (`update_perp_market_clob_quoter`) runs the same two checks, but it runs
+/// after approval and cannot run before it, so approval asks for itself.
+///
+/// The question is `order_rules_v0`, a read-only CPI that signs nothing. An
+/// account that is not this program's market answers nothing and the
+/// approval fails.
+fn validate_book_identity<'info>(
+    clob_market: Option<&UncheckedAccount<'info>>,
+    clob_program: &UncheckedAccount<'info>,
+    quoter_slab: &Pubkey,
+) -> Result<()> {
+    let market = clob_market.ok_or_else(|| {
+        msg!("approving a book requires the book account");
+        error!(ErrorCode::InvalidQuoterConfig)
+    })?;
+    let rules = ClobReader {
+        market: market.as_ref(),
+        program: clob_program.as_ref(),
+    }
+    .order_rules()?;
+    validate!(
+        rules.place_authority == quoter_slab.to_bytes(),
+        ErrorCode::InvalidQuoterConfig,
+        "book place authority is not the market's quoter slab {}",
+        quoter_slab
+    )?;
+    Ok(())
 }
 
 /// Pull the entry's copy out of the slab, then give the freed tail back. An
@@ -412,6 +464,22 @@ fn approved_slot_index(
         ErrorCode::InvalidQuoterConfig,
         "a registered account list may not name another approved quoter's response account"
     )?;
+    // The market's own book is excluded by name, not only by slot. A market
+    // designates its book at registration (`initialize_quoter`) and the book
+    // reaches slot 0 only at its own approval, so the sweep above sees
+    // nothing while slot 0 is vacant. The book gates every one of its
+    // authority instructions on the market's slab and on no response
+    // account, so a quoter that holds the book account can place, cancel,
+    // evict and fill on it with the signature its own execute receives.
+    if config.quoter_type != QuoterType::Clob {
+        let book = perp_market.load()?.clob_market;
+        validate!(
+            list_stays_off_the_book(registered.iter().map(|meta| &meta.pubkey), &book),
+            ErrorCode::InvalidQuoterConfig,
+            "a registered account list may not name the market's book {}",
+            book
+        )?;
+    }
     // Slot 0 is the book's, by convention, so every book-touching
     // instruction reads it without a scan. One book per market: a second
     // Clob approval must be the same entry re-approved.

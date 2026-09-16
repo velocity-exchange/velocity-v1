@@ -9,7 +9,11 @@
 use {
     crate::{
         error::ErrorCode,
-        state::prop_amm::{QuoterType, QuoterV0},
+        instructions::quoter_registry::check_quoter_config_authority,
+        state::{
+            prop_amm::{QuoterType, QuoterV0},
+            state::State,
+        },
         validate,
     },
     anchor_lang::prelude::*,
@@ -20,15 +24,15 @@ pub struct UpdateQuoterWatch<'info> {
     /// The entry's own authority — the quoted user's wallet for Custom
     /// entries.
     pub authority: Signer<'info>,
-    #[account(
-        mut,
-        constraint = quoter.load()?.config.authority == authority.key() @ ErrorCode::InvalidQuoterAuthority
-    )]
+    #[account(mut)]
     pub quoter: AccountLoader<'info, QuoterV0>,
     /// CHECK: the account whose bytes the watch covers — typically the
     /// quoter's own state account; not otherwise constrained (the admin
     /// vets it, and a wrong watch only costs the maker latency).
     pub watch_account: UncheckedAccount<'info>,
+    /// Read for the admin check a non-Custom entry needs. Absent for a
+    /// Custom entry, which answers to its own stored authority.
+    pub state: Option<AccountLoader<'info, State>>,
 }
 
 #[derive(Clone, AnchorSerialize, AnchorDeserialize)]
@@ -42,6 +46,11 @@ pub fn handle_update_quoter_watch(
     ctx: Context<UpdateQuoterWatch>,
     args: UpdateQuoterWatchArgs,
 ) -> Result<()> {
+    check_quoter_config_authority(
+        &ctx.accounts.quoter.load()?.config,
+        &ctx.accounts.authority.key(),
+        ctx.accounts.state.as_ref(),
+    )?;
     let mut quoter = ctx.accounts.quoter.load_mut()?;
     let config = &mut quoter.config;
     validate!(

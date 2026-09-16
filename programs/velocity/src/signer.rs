@@ -22,23 +22,34 @@
 //! - A CPI can only name accounts the caller received, and a quoter receives
 //!   exactly its registered leg accounts plus the slab. Approval refuses a
 //!   registered list that names any other approved quoter's response account
-//!   (`update_quoter_approved`, both directions). Every authority-trusting
-//!   instruction on the book and on the midpoint requires its response
-//!   account, so the forwarded signature has no instruction it can complete.
+//!   (`update_quoter_approved`, both directions), and it refuses one that
+//!   names the market's book. Every authority-trusting instruction on the
+//!   book and on the midpoint requires its response account, so the
+//!   forwarded signature has no instruction it can complete.
 //! - The slab is per market, so the signature authenticates nothing on any
 //!   other market's quoters or book. A quoter binds the key at its own
 //!   registration and compares against the stored copy, so a signature from
 //!   another market's slab fails the comparison.
 //!
-//! Approval is the only place this is enforced, and the only place it needs
-//! to be. A slot's registered list and its response account change nowhere
+//! Two instructions enforce this, and between them they cover both orders of
+//! events. A slot's registered list and its response account change nowhere
 //! else: `update_quoter_approved` writes the whole config, and every other
 //! writer sets one scalar (`is_active`, `priority`,
-//! `max_oracle_deviation_bps`, the book's tick and minimum size). The
-//! exclusion also covers every approved slot on the slab, where one fill
-//! sees only the slots it consults — and the attack does not need the
-//! victim in the transaction, so a per-fill re-check could not establish the
-//! property even if the slab were small enough to sweep.
+//! `max_oracle_deviation_bps`, the book's tick and minimum size).
+//!
+//! - Approval holds the config it copies in apart from every slot already on
+//!   the slab, and apart from the account the market names as its book. The
+//!   book needs naming separately because a market designates it at
+//!   registration and it reaches slot 0 only at its own approval. A list
+//!   approved during that window would otherwise pass a sweep of the slots.
+//! - Registration holds a book designation apart from every slot already on
+//!   the slab (`initialize_quoter`). That is the same rule read the other way
+//!   round: an entry approved before the designation was never held to it.
+//!
+//! The exclusion covers every approved slot on the slab, where one fill sees
+//! only the slots it consults — and the attack does not need the victim in
+//! the transaction, so a per-fill re-check could not establish the property
+//! even if the slab were small enough to sweep.
 //!
 //! For the book and the midpoint the second fact is structural rather than
 //! reviewed: each stores its authority **on** its response account — the

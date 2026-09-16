@@ -11,6 +11,12 @@
 //! velocity cannot bind it to. A maker that could type its own entry as a
 //! book would be asking for the second rule and getting it, so the type is a
 //! warm-admin decision and it cannot be changed afterwards.
+//!
+//! A `Clob` entry also designates the market's book, once and for good. The
+//! designation is refused when an approved quoter's registered account list
+//! already names that account. Such a quoter would receive the book plus the
+//! slab signature every quoter CPI carries, and the book gates its whole
+//! authority surface on that signature. See [`crate::signer`].
 
 use {
     crate::{
@@ -18,7 +24,10 @@ use {
         error::ErrorCode,
         state::{
             perp_market::PerpMarket,
-            prop_amm::{QuoterType, QuoterV0, QUOTER_PDA_SEED},
+            prop_amm::{
+                list_stays_off_the_book, occupied_slots, QuoterSlabExt, QuoterSlabV0, QuoterType,
+                QuoterV0, QUOTER_PDA_SEED, QUOTER_SLAB_PDA_SEED,
+            },
             state::State,
             traits::Size,
             user::User,
@@ -58,6 +67,14 @@ pub struct InitializeQuoter<'info> {
     pub perp_market: AccountLoader<'info, PerpMarket>,
     /// Read for the admin check a non-Custom type needs.
     pub state: AccountLoader<'info, State>,
+    /// The market's approved set. Required to designate a book, because the
+    /// designation is refused when an approved entry already names the book
+    /// account. Absent for every other registration.
+    #[account(
+        seeds = [QUOTER_SLAB_PDA_SEED, args.market_index.to_le_bytes().as_ref()],
+        bump
+    )]
+    pub quoter_slab: Option<AccountLoader<'info, QuoterSlabV0>>,
     /// CHECK: only constrained to be a program; velocity never trusts it.
     #[account(executable)]
     pub quoter_program: UncheckedAccount<'info>,
@@ -118,6 +135,31 @@ pub fn handle_initialize_quoter(
             crate::ids::clob_program::id(),
             ctx.accounts.quoter_program.key()
         )?;
+        // No approved entry may already reach the account being designated.
+        // A registered list is held apart from the market's book at approval,
+        // and an entry approved before the designation was never held to it.
+        // Such an entry would receive the book plus the slab signature its own
+        // execute holds, and the book gates its whole authority surface on
+        // that signature alone.
+        {
+            let slab = ctx.accounts.quoter_slab.as_ref().ok_or_else(|| {
+                msg!("designating a book requires the market's quoter slab");
+                error!(ErrorCode::InvalidQuoterConfig)
+            })?;
+            let slots = slab.slots()?;
+            validate!(
+                occupied_slots(&slots).all(|(_, slot)| list_stays_off_the_book(
+                    slot.config
+                        .registered_accounts()
+                        .iter()
+                        .map(|meta| &meta.pubkey),
+                    &args.response_account
+                )),
+                ErrorCode::InvalidQuoterConfig,
+                "an approved quoter already names {} on its account list",
+                args.response_account
+            )?;
+        }
         // The market names its book here, and only here: a book settles for
         // whoever rests on it, so a market that could be pointed at a second
         // one later would put every user a fill carries behind whoever holds

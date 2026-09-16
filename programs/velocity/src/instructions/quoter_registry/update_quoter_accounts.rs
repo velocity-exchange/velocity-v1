@@ -2,12 +2,18 @@
 //! index lists that say which of its accounts each leg forwards, in CPI
 //! order. One call replaces all three, so a leg can never point past the
 //! list it was written with. Staging only: the approved copy in the market's
-//! slab keeps serving its vetted config until the admin copies again.
+//! slab keeps serving its vetted config until the admin copies again. A
+//! Custom entry answers to its own stored authority; a book's entry answers
+//! to the State admin roles.
 
 use {
     crate::{
         error::ErrorCode,
-        state::prop_amm::{validate_quoter_accounts, QuoterV0, MAX_QUOTER_ACCOUNTS},
+        instructions::quoter_registry::check_quoter_config_authority,
+        state::{
+            prop_amm::{validate_quoter_accounts, QuoterV0, MAX_QUOTER_ACCOUNTS},
+            state::State,
+        },
         validate,
     },
     anchor_lang::prelude::*,
@@ -16,11 +22,11 @@ use {
 #[derive(Accounts)]
 pub struct UpdateQuoterAccounts<'info> {
     pub authority: Signer<'info>,
-    #[account(
-        mut,
-        constraint = quoter.load()?.config.authority == authority.key() @ ErrorCode::InvalidQuoterAuthority
-    )]
+    #[account(mut)]
     pub quoter: AccountLoader<'info, QuoterV0>,
+    /// Read for the admin check a non-Custom entry needs. Absent for a
+    /// Custom entry, which answers to its own stored authority.
+    pub state: Option<AccountLoader<'info, State>>,
 }
 
 #[derive(Clone, AnchorSerialize, AnchorDeserialize)]
@@ -44,6 +50,11 @@ pub fn handle_update_quoter_accounts(
     ctx: Context<UpdateQuoterAccounts>,
     args: UpdateQuoterAccountsArgs,
 ) -> Result<()> {
+    check_quoter_config_authority(
+        &ctx.accounts.quoter.load()?.config,
+        &ctx.accounts.authority.key(),
+        ctx.accounts.state.as_ref(),
+    )?;
     let mut quoter = ctx.accounts.quoter.load_mut()?;
     let config = &mut quoter.config;
 

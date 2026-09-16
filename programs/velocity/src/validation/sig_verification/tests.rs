@@ -29,12 +29,15 @@ mod sig_verification {
         use ed25519_dalek::{Signer, SigningKey};
 
         // A valid non-delegate order, hex-encoded: the taker signs the hex.
-        let order = with_order_params_builder_none(vec![
-            200, 213, 166, 94, 34, 52, 245, 93, 0, 1, 0, 1, 0, 202, 154, 59, 0, 0, 0, 0, 0, 248,
-            89, 13, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 10, 1, 192, 181, 74, 13, 0, 0, 0, 0,
-            1, 0, 248, 89, 13, 0, 0, 0, 0, 0, 0, 232, 3, 0, 0, 0, 0, 0, 0, 72, 112, 54, 84, 106,
-            83, 48, 107, 0, 0,
-        ]);
+        let order = with_network_tag(
+            with_order_params_builder_none(vec![
+                200, 213, 166, 94, 34, 52, 245, 93, 0, 1, 0, 1, 0, 202, 154, 59, 0, 0, 0, 0, 0,
+                248, 89, 13, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 10, 1, 192, 181, 74, 13, 0,
+                0, 0, 0, 1, 0, 248, 89, 13, 0, 0, 0, 0, 0, 0, 232, 3, 0, 0, 0, 0, 0, 0, 72, 112,
+                54, 84, 106, 83, 48, 107, 0, 0,
+            ]),
+            false,
+        );
         let hex_payload = hex::encode(&order).into_bytes();
 
         let signing = SigningKey::from_bytes(&[7u8; 32]);
@@ -77,6 +80,43 @@ mod sig_verification {
         payload
     }
 
+    /// Re-emit a fixture carrying this build's network tag.
+    ///
+    /// The tag is required, and every fixture here predates it. The bytes are
+    /// decoded the way the verifier decodes them, tagged, and written back,
+    /// so each fixture still states its own layout.
+    fn with_network_tag(payload: Vec<u8>, is_delegate_signer: bool) -> Vec<u8> {
+        use {
+            crate::state::order_params::{
+                expected_signed_msg_network, SignedMsgOrderParamsDelegateMessage,
+                SignedMsgOrderParamsMessage,
+            },
+            anchor_lang::{AnchorDeserialize, AnchorSerialize},
+        };
+
+        let mut owned = payload;
+        let min_len = if is_delegate_signer {
+            std::mem::size_of::<SignedMsgOrderParamsDelegateMessage>()
+        } else {
+            std::mem::size_of::<SignedMsgOrderParamsMessage>()
+        };
+        if owned.len() < min_len {
+            owned.resize(min_len, 0);
+        }
+        let mut tagged = owned[..8].to_vec();
+        if is_delegate_signer {
+            let mut message =
+                SignedMsgOrderParamsDelegateMessage::deserialize(&mut &owned[8..]).unwrap();
+            message.network = Some(expected_signed_msg_network());
+            message.serialize(&mut tagged).unwrap();
+        } else {
+            let mut message = SignedMsgOrderParamsMessage::deserialize(&mut &owned[8..]).unwrap();
+            message.network = Some(expected_signed_msg_network());
+            message.serialize(&mut tagged).unwrap();
+        }
+        tagged
+    }
+
     #[test]
     fn test_deserialize_into_verified_message_non_delegate() {
         let signature = [1u8; 64];
@@ -89,7 +129,7 @@ mod sig_verification {
 
         // Test deserialization with non-delegate signer
         let result = deserialize_into_verified_message(
-            with_order_params_builder_none(payload),
+            with_network_tag(with_order_params_builder_none(payload), false),
             &signature,
             false,
         );
@@ -135,7 +175,7 @@ mod sig_verification {
 
         // Test deserialization with delegate signer
         let result = deserialize_into_verified_message(
-            with_order_params_builder_none(payload),
+            with_network_tag(with_order_params_builder_none(payload), false),
             &signature,
             false,
         );
@@ -189,7 +229,7 @@ mod sig_verification {
 
         // Test deserialization with delegate signer
         let result = deserialize_into_verified_message(
-            with_order_params_builder_none(payload),
+            with_network_tag(with_order_params_builder_none(payload), false),
             &signature,
             false,
         );
@@ -244,7 +284,7 @@ mod sig_verification {
 
         // Test deserialization with delegate signer
         let result = deserialize_into_verified_message(
-            with_order_params_builder_none(payload),
+            with_network_tag(with_order_params_builder_none(payload), false),
             &signature,
             false,
         );
@@ -297,7 +337,7 @@ mod sig_verification {
 
         // Test deserialization with delegate signer
         let result = deserialize_into_verified_message(
-            with_order_params_builder_none(payload),
+            with_network_tag(with_order_params_builder_none(payload), true),
             &signature,
             true,
         );
@@ -348,7 +388,7 @@ mod sig_verification {
 
         // Test deserialization with delegate signer
         let result = deserialize_into_verified_message(
-            with_order_params_builder_none(payload),
+            with_network_tag(with_order_params_builder_none(payload), true),
             &signature,
             true,
         );
@@ -407,7 +447,7 @@ mod sig_verification {
 
         // Test deserialization with delegate signer
         let result = deserialize_into_verified_message(
-            with_order_params_builder_none(payload),
+            with_network_tag(with_order_params_builder_none(payload), true),
             &signature,
             true,
         );
@@ -468,7 +508,7 @@ mod sig_verification {
 
         // Test deserialization with delegate signer
         let result = deserialize_into_verified_message(
-            with_order_params_builder_none(payload),
+            with_network_tag(with_order_params_builder_none(payload), false),
             &signature,
             false,
         );
@@ -521,7 +561,7 @@ mod sig_verification {
 
         // Test deserialization with delegate signer
         let result = deserialize_into_verified_message(
-            with_order_params_builder_none(payload),
+            with_network_tag(with_order_params_builder_none(payload), true),
             &signature,
             true,
         );
@@ -564,11 +604,10 @@ mod sig_verification {
         assert_eq!(order_params.auction_end_price, Some(238000000i64));
     }
 
-    /// The network tag and the signed route: an untagged message (every
-    /// producer before the tag existed) still decodes, a message tagged for
-    /// this build passes with its route intact, and one tagged for the other
-    /// cluster is refused — which is the whole reason the byte exists, since
-    /// the signature covers the order and not the chain.
+    /// The network tag and the signed route: a message tagged for this build
+    /// passes with its route intact, and one tagged for the other cluster or
+    /// tagged for none at all is refused. That is the whole reason the byte
+    /// exists, since the signature covers the order and not the chain.
     #[test]
     fn network_tag_is_enforced_and_the_route_round_trips() {
         use {
@@ -604,10 +643,12 @@ mod sig_verification {
         };
         let signature = [1u8; 64];
 
-        // Untagged: the pre-tag encoding keeps working.
-        let untagged = deserialize_into_verified_message(encode(None, None), &signature, false)
-            .expect("untagged message decodes");
-        assert_eq!(untagged.route, None);
+        // Untagged: refused. An untagged message replays from the other
+        // cluster exactly as a wrongly tagged one does.
+        assert!(
+            deserialize_into_verified_message(encode(None, None), &signature, false).is_err(),
+            "a message that names no cluster must be refused"
+        );
 
         // Tagged for this build, with a route: accepted verbatim. The CLOB
         // and vAMM baseline is implicit, so only the custom quoter is named.

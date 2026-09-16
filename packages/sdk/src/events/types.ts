@@ -1,6 +1,6 @@
 import { Commitment, PublicKey, TransactionSignature } from '@solana/web3.js';
 import {
-	AcceleratedReferralStatusChangedRecord,
+	AcceleratedReferralStatusChangedRecordV0,
 	DepositRecord,
 	FundingPaymentRecord,
 	FundingRateRecord,
@@ -91,7 +91,7 @@ export const DefaultEventSubscriptionOptions: EventSubscriptionOptions = {
 		'TakerOriginCrossRecordV0',
 		'TakerOriginCrossRecordV1',
 		'TransferFeeAndPnlPoolRecord',
-		'AcceleratedReferralStatusChangedRecord',
+		'AcceleratedReferralStatusChangedRecordV0',
 	],
 	maxEventsPerType: 4096,
 	orderBy: 'blockchain',
@@ -191,7 +191,7 @@ export type EventMap = {
 	/** Internal transfer of quote token between a perp market's fee pool and pnl pool. */
 	TransferFeeAndPnlPoolRecord: Event<TransferFeeAndPnlPoolRecord>;
 	/** An authority's Accelerated referral status changed, by automatic enrollment or an admin grant/revoke. */
-	AcceleratedReferralStatusChangedRecord: Event<AcceleratedReferralStatusChangedRecord>;
+	AcceleratedReferralStatusChangedRecordV0: Event<AcceleratedReferralStatusChangedRecordV0>;
 };
 
 /** Union of all decodable event names — the keys of `EventMap`. */
@@ -230,7 +230,7 @@ export type VelocityEvent =
 	| Event<TakerOriginCrossRecordV0>
 	| Event<TakerOriginCrossRecordV1>
 	| Event<TransferFeeAndPnlPoolRecord>
-	| Event<AcceleratedReferralStatusChangedRecord>
+	| Event<AcceleratedReferralStatusChangedRecordV0>
 	| Event<CuUsage>;
 
 /** Events emitted on `EventSubscriber.eventEmitter`. */

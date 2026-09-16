@@ -1,22 +1,25 @@
 //! Update a quoter's scalar CPI config (response account, discriminators).
 //! Staging only: the approved copy in the market's slab keeps serving its
-//! vetted config until the admin copies again. No authority handoff: for
-//! Custom quoters the authority is the quoted user's authority by
-//! construction, which is what guarantees the maker's kill switch.
+//! vetted config until the admin copies again. A Custom entry answers to the
+//! quoted user's authority, with no handoff, which is what guarantees the
+//! maker's kill switch. A book's entry answers to the State admin roles.
 
 use {
-    crate::{error::ErrorCode, state::prop_amm::QuoterV0},
+    crate::{
+        instructions::quoter_registry::check_quoter_config_authority,
+        state::{prop_amm::QuoterV0, state::State},
+    },
     anchor_lang::prelude::*,
 };
 
 #[derive(Accounts)]
 pub struct UpdateQuoterConfig<'info> {
     pub authority: Signer<'info>,
-    #[account(
-        mut,
-        constraint = quoter.load()?.config.authority == authority.key() @ ErrorCode::InvalidQuoterAuthority
-    )]
+    #[account(mut)]
     pub quoter: AccountLoader<'info, QuoterV0>,
+    /// Read for the admin check a non-Custom entry needs. Absent for a
+    /// Custom entry, which answers to its own stored authority.
+    pub state: Option<AccountLoader<'info, State>>,
 }
 
 #[derive(Clone, AnchorSerialize, AnchorDeserialize)]
@@ -32,6 +35,11 @@ pub fn handle_update_quoter_config(
     ctx: Context<UpdateQuoterConfig>,
     args: UpdateQuoterConfigArgs,
 ) -> Result<()> {
+    check_quoter_config_authority(
+        &ctx.accounts.quoter.load()?.config,
+        &ctx.accounts.authority.key(),
+        ctx.accounts.state.as_ref(),
+    )?;
     let mut quoter = ctx.accounts.quoter.load_mut()?;
     let config = &mut quoter.config;
     if let Some(response_account) = args.response_account {

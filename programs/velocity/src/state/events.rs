@@ -43,7 +43,7 @@ pub enum AcceleratedReferralStatusChange {
 }
 
 #[event]
-pub struct AcceleratedReferralStatusChangedRecord {
+pub struct AcceleratedReferralStatusChangedRecordV0 {
     /// unix_timestamp of action
     pub ts: i64,
     pub authority: Pubkey,
@@ -59,7 +59,7 @@ pub fn emit_accelerated_referral_status_changed(
     new_status: u8,
     action: AcceleratedReferralStatusChange,
 ) {
-    emit!(AcceleratedReferralStatusChangedRecord {
+    emit!(AcceleratedReferralStatusChangedRecordV0 {
         ts,
         authority,
         previous_status,

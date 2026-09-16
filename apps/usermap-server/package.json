@@ -8,7 +8,7 @@
 		"@coral-xyz/anchor": "0.29.0",
 		"@grpc/grpc-js": "1.14.4",
 		"@opentelemetry/api": "1.7.0",
-		"@opentelemetry/exporter-prometheus": "0.31.0",
+		"@opentelemetry/exporter-prometheus": "0.217.0",
 		"@opentelemetry/sdk-metrics-base": "0.31.0",
 		"@solana/web3.js": "1.99.0",
 		"@triton-one/yellowstone-grpc": "6.0.0",

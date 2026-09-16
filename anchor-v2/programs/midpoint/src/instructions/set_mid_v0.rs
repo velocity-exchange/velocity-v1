@@ -24,7 +24,8 @@ pub struct SetMidArgsV0 {
     /// PRICE_PRECISION. 0 stops quoting.
     pub mid: u64,
     /// Opt-in monotonic guard for racing writers: nonzero must strictly
-    /// increase; zero skips the check.
+    /// increase; zero skips the check. A mid of 0 is a withdrawal, so it
+    /// skips the guard whatever the sequence says.
     pub sequence: u64,
 }
 

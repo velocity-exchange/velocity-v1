@@ -33,6 +33,15 @@ pub struct UpdateQuoterArgsV0 {
     /// Max mid deviation from velocity's oracle, parts per million. 0 disables
     /// the bound.
     pub max_mid_deviation_ppm: Option<u64>,
+    /// New value for the racing-writer sequence counter. Any value is legal,
+    /// including a lower one.
+    ///
+    /// The counter only ever rises through `set_mid_v0`, so a writer that
+    /// sends `u64::MAX`, by accident or by a bug, makes every later mid write
+    /// fail for the life of the instance. This field is the recovery, and it
+    /// belongs to the config key alone. A reset re-opens the sequences below
+    /// the old value, so the maker must stop the racing writers first.
+    pub mid_sequence: Option<u64>,
 }
 
 pub fn handle_update_quoter_v0(
@@ -68,6 +77,9 @@ pub fn handle_update_quoter_v0(
     }
     if let Some(v) = args.max_mid_deviation_ppm {
         quoter.max_mid_deviation_ppm = v;
+    }
+    if let Some(v) = args.mid_sequence {
+        quoter.mid_sequence = v;
     }
     quoter.validate()
 }

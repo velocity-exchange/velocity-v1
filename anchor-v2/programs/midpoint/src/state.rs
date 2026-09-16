@@ -552,9 +552,15 @@ impl MidpointQuoterV0 {
     /// can't clobber a fresher mid); zero skips the check (single-writer
     /// setups don't pay for coordination they don't need).
     ///
+    /// A mid of zero is a withdrawal, not a price. It routes to
+    /// [`Self::clear_mid`] and never fails on the guard.
+    ///
     /// The post-write assertion is deliberately O(1): this is the CU-pinned
     /// hot path, so it checks only what it just wrote, never the ladders.
     pub fn set_mid(&mut self, mid: u64, sequence: u64, slot: u64) -> Result<()> {
+        if mid == 0 {
+            return self.clear_mid();
+        }
         // Once a writer uses sequences, every later write must carry a higher
         // one. A sequence of 0 skips the monotonic check but still refreshes
         // the slot, so allowing it after a real sequence would let a replayed
@@ -573,6 +579,22 @@ impl MidpointQuoterV0 {
             self.mid_slot == slot && (sequence == 0 || self.mid_sequence == sequence),
             MidpointError::InvariantViolated
         );
+        Ok(())
+    }
+
+    /// Withdraw the mid. The instance stops quoting at once, because
+    /// [`Self::is_quoting`] refuses a zero mid on every side.
+    ///
+    /// This write skips the monotonic guard and leaves `mid_sequence` and
+    /// `mid_slot` alone. The guard exists so a delayed or replayed write
+    /// cannot publish a stale price as fresh. A zero mid publishes no price
+    /// at all, so it cannot do that, and a later real mid must still beat the
+    /// last real sequence. A withdrawal must also never be the write that
+    /// loses a race: it is the maker's panic button, and a maker who fires it
+    /// with a compromised hot key gets the quotes down rather than an error.
+    pub fn clear_mid(&mut self) -> Result<()> {
+        self.mid_price = 0;
+        require!(self.mid_price == 0, MidpointError::InvariantViolated);
         Ok(())
     }
 
@@ -1127,6 +1149,34 @@ mod tests {
             .is_ok());
         assert!(quoter.fill(Direction::Short, UNIT, 0).unwrap().base == 0);
         assert_eq!(quoter.fill(Direction::Long, UNIT, 0).unwrap().base, UNIT);
+    }
+
+    /// The mid withdrawal is the maker's panic button, so it must work on an
+    /// instance that already runs sequences. It also consumes no sequence: a
+    /// later real mid still has to beat the last real one.
+    #[test]
+    fn a_mid_withdrawal_ignores_the_sequence_guard() {
+        let mut quoter = quoter(&[(1_000, UNIT)], &[(1_000, UNIT)]);
+        quoter.set_mid(MID, 5, 10).unwrap();
+        assert_eq!((quoter.mid_sequence, quoter.mid_slot), (5, 10));
+
+        // The withdrawal succeeds although 0 does not beat 5.
+        quoter.clear_mid().unwrap();
+        assert_eq!(quoter.mid_price, 0);
+        assert!(!quoter.is_quoting(10));
+        // The sequence and the slot are the last real write's.
+        assert_eq!((quoter.mid_sequence, quoter.mid_slot), (5, 10));
+        // Routed through set_mid it is the same withdrawal.
+        quoter.set_mid(0, 0, 99).unwrap();
+        assert_eq!((quoter.mid_sequence, quoter.mid_slot), (5, 10));
+
+        // A later real mid still has to beat 5.
+        assert!(quoter.set_mid(MID, 5, 11).is_err());
+        assert!(quoter.set_mid(MID, 4, 11).is_err());
+        assert!(quoter.set_mid(MID, 0, 11).is_err());
+        quoter.set_mid(MID, 6, 11).unwrap();
+        assert_eq!((quoter.mid_price, quoter.mid_sequence), (MID, 6));
+        assert!(quoter.is_quoting(11));
     }
 
     /// Clearing an empty side is a no-op that still leaves a valid ladder, so

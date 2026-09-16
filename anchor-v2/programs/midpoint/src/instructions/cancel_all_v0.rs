@@ -65,10 +65,10 @@ pub fn handle_cancel_all_v0(
     }
 
     if args.clear_mid {
-        // Sequence 0: the guard is for racing *price* writers, and a
-        // withdrawal must never be the write that loses a race.
-        let slot = Clock::get()?.slot;
-        quoter.set_mid(0, 0, slot)?;
+        // The withdrawal carries no sequence and consumes none. The monotonic
+        // guard is for racing *price* writers, and a withdrawal must never be
+        // the write that loses a race.
+        quoter.clear_mid()?;
         outcome.mid_cleared = true;
     }
 

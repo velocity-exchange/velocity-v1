@@ -478,6 +478,77 @@ fn nonzero_mid_sequence_must_increase() {
     assert_eq!(quoter.mid_sequence, 6);
 }
 
+/// The panic button works on an instance that runs sequences. A maker whose
+/// hot key leaks fires `cancel_all_v0` with `clear_mid`, and the whole
+/// instruction has to land: a revert here leaves the mid and both ladders
+/// live. The withdrawal consumes no sequence, so a later real mid still has
+/// to beat the last real one.
+#[test]
+fn the_panic_button_clears_a_mid_that_carries_a_sequence() {
+    let mut ctx = setup();
+    arm(&mut ctx);
+    let ix = set_mid_ix(&ctx, MID, 5);
+    send(&mut ctx, ix).unwrap();
+
+    let ix = cancel_all_ix(&ctx, ctx.authority.pubkey(), CancelSidesV0::Both, true);
+    let meta = send(&mut ctx, ix).unwrap();
+    assert_eq!(parse_cancel_all(&meta.return_data.data), (2, 2, true));
+    let quoter = read_quoter(&ctx);
+    assert_eq!(quoter.mid_price, 0);
+    assert_eq!((quoter.bid_count, quoter.ask_count), (0, 0));
+    // The withdrawal left the sequence where the last real write put it.
+    assert_eq!(quoter.mid_sequence, 5);
+
+    // A real mid still has to beat 5.
+    let ix = set_mid_ix(&ctx, MID, 5);
+    assert!(send(&mut ctx, ix).is_err());
+    let ix = set_mid_ix(&ctx, MID, 6);
+    send(&mut ctx, ix).unwrap();
+    assert_eq!(read_quoter(&ctx).mid_price, MID);
+}
+
+/// A writer that races the sequence to the top would make every later mid
+/// write fail for the life of the instance. The config key resets the
+/// counter, so the maker recovers without a new PDA.
+#[test]
+fn the_config_key_resets_a_runaway_mid_sequence() {
+    let mut ctx = setup();
+    arm(&mut ctx);
+    let ix = set_mid_ix(&ctx, MID, u64::MAX);
+    send(&mut ctx, ix).unwrap();
+    // Nothing can beat u64::MAX.
+    let ix = set_mid_ix(&ctx, MID + 1, u64::MAX);
+    assert!(send(&mut ctx, ix).is_err());
+
+    // The hot key cannot reset it.
+    let mut ix = update_ix(
+        &ctx,
+        UpdateQuoterArgsV0 {
+            mid_sequence: Some(0),
+            ..Default::default()
+        },
+        None,
+    );
+    ix.accounts[1] = AccountMeta::new_readonly(ctx.hot.pubkey(), true);
+    assert!(send(&mut ctx, ix).is_err());
+
+    let ix = update_ix(
+        &ctx,
+        UpdateQuoterArgsV0 {
+            mid_sequence: Some(0),
+            ..Default::default()
+        },
+        None,
+    );
+    send(&mut ctx, ix).unwrap();
+    assert_eq!(read_quoter(&ctx).mid_sequence, 0);
+
+    let ix = set_mid_ix(&ctx, MID + 1, 1);
+    send(&mut ctx, ix).unwrap();
+    let quoter = read_quoter(&ctx);
+    assert_eq!((quoter.mid_price, quoter.mid_sequence), (MID + 1, 1));
+}
+
 #[test]
 fn only_the_hot_authority_writes_mid_and_levels() {
     let mut ctx = setup();

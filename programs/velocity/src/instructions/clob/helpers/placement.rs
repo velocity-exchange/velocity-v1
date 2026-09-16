@@ -237,6 +237,8 @@ pub enum RestRefusal {
     ExpiryPassed,
     /// The requested activation delay is above the book's maximum.
     DelayAboveMaximum,
+    /// The side the remainder would rest on holds every order it can.
+    SideAtCapacity,
 }
 
 /// What the book would do with a remainder at these terms.
@@ -257,12 +259,11 @@ pub enum RestAdmission {
 /// maximum delay afterwards, and a remainder measured against a stale mirror
 /// reverts the fill that carried it.
 ///
-/// Two rejections stay unpredictable and are named here so a reader does not
-/// look for them. `SideAtCapacity` needs the side's node count, which nothing
-/// on velocity's CLOB wire reports. `OrderWouldCross` needs the opposite best
-/// price, which `next_cross_v0` reports and velocity's wire does not call;
-/// only a post-only maker place asks for that rejection, and no fill has
-/// landed on that path for a revert to destroy.
+/// One rejection stays unpredictable and is named here so a reader does not
+/// look for it. `OrderWouldCross` needs the opposite best price, which
+/// `next_cross_v0` reports and velocity's wire does not call; only a post-only
+/// maker place asks for that rejection, and no fill has landed on that path
+/// for a revert to destroy.
 pub fn clob_admits_rest(
     clob: &ClobMarket<'_, '_>,
     direction: PositionDirection,
@@ -316,6 +317,18 @@ pub fn rest_admission(
     }
     if activation_delay_slots.is_some_and(|delay| delay > rules.max_activation_delay_slots) {
         return RestAdmission::Refused(RestRefusal::DelayAboveMaximum);
+    }
+    // The arena is shared, so each side holds at most half of it. A full side
+    // refuses every placement, even a better priced one, until a crank takes
+    // a tail. The counts are a fact about the slot the book answered in, and
+    // nothing else writes the book between that answer and the placement in
+    // the same instruction, so the reading holds until velocity commits.
+    let side = match direction {
+        PositionDirection::Long => 0,
+        PositionDirection::Short => 1,
+    };
+    if rules.side_order_counts[side] >= rules.arena_capacity / 2 {
+        return RestAdmission::Refused(RestRefusal::SideAtCapacity);
     }
     RestAdmission::Admitted { price }
 }
@@ -467,8 +480,8 @@ pub fn try_place_remainder_on_clob<'info>(
     };
     // A failed CPI aborts the transaction, so this call has no error arm to
     // handle: `clob_admits_rest` above is where a rejection is caught. What is
-    // left here is `SideAtCapacity` and, for a post-only maker,
-    // `OrderWouldCross`, both of which take the whole call down.
+    // left here is `OrderWouldCross` for a post-only maker, which takes the
+    // whole call down.
     let order_ref = clob.place(ClobPlaceOrderArgsV0 {
         side,
         price,
@@ -666,6 +679,11 @@ mod rest_admission_tests {
             place_authority: [0; 32],
             tick_size: 1_000,
             step_size: 100,
+            // Room on both sides, so a case that does not name capacity is
+            // measuring one of the other rules.
+            side_order_counts: [0, 0],
+            arena_capacity: 512,
+            evict_threshold_per_side: 200,
         }
     }
 
@@ -814,5 +832,39 @@ mod rest_admission_tests {
             admission,
             RestAdmission::Admitted { price: 104_620_000 }
         ));
+    }
+
+    #[test]
+    fn a_full_side_refuses_the_remainder_before_the_book_does() {
+        let mut rules = rules();
+        // Each side holds half the arena, so this bid side is full.
+        rules.side_order_counts = [256, 0];
+        let admission = rest_admission(
+            &rules,
+            PositionDirection::Long,
+            104_000_000,
+            1_000,
+            0,
+            None,
+            NOW,
+        );
+        assert_eq!(refusal(admission), Some(RestRefusal::SideAtCapacity));
+    }
+
+    #[test]
+    fn a_full_opposite_side_does_not_refuse_the_remainder() {
+        let mut rules = rules();
+        // The ask side is full; a bid still rests.
+        rules.side_order_counts = [0, 256];
+        let admission = rest_admission(
+            &rules,
+            PositionDirection::Long,
+            104_000_000,
+            1_000,
+            0,
+            None,
+            NOW,
+        );
+        assert!(matches!(admission, RestAdmission::Admitted { .. }));
     }
 }

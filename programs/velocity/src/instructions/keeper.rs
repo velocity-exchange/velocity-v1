@@ -73,7 +73,7 @@ use {
                 find_bids_and_asks_from_users, Level,
             },
             position::calculate_base_asset_value_and_pnl_with_oracle_price,
-            router::RouterFillInputs,
+            router::RouterLeg,
             safe_math::SafeMath,
             spot_withdraw::validate_spot_market_vault_amount,
             time::Millis,
@@ -236,7 +236,7 @@ impl<'info> FillSections<'info> {
         taker_key: &Pubkey,
         clock: &Clock,
         scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
-    ) -> Result<crate::instructions::QuotedFill<'a, 'info>> {
+    ) -> Result<crate::instructions::RouteQuote<'a, 'info>> {
         crate::instructions::quote_route(
             self.tail,
             inputs,
@@ -258,10 +258,10 @@ impl<'info> FillSections<'info> {
         &mut self,
         accounts: &FillAccounts<'_, 'info>,
         request: controller::orders::FillRequest<'_>,
-        router_inputs: &mut RouterFillInputs<'_, '_, 'info>,
+        router: &mut RouterLeg<'_, '_, 'info>,
         clock: &Clock,
     ) -> Result<u64> {
-        let (base_asset_amount_filled, _) = controller::orders::fill_perp_order(
+        let filled = controller::orders::fill_perp_order(
             request,
             &*accounts.state.load()?,
             clock,
@@ -277,9 +277,9 @@ impl<'info> FillSections<'info> {
                 makers_and_referrer: &self.makers_and_referrer,
                 makers_and_referrer_stats: &self.makers_and_referrer_stats,
             },
-            router_inputs,
+            router,
         )?;
-        Ok(base_asset_amount_filled)
+        Ok(filled.base)
     }
 }
 

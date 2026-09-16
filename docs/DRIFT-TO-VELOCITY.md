@@ -978,6 +978,20 @@ accounts/events with the previous TS shapes should note:
   fill. Approving a *third party's* book program is what would turn this into an exposure, the
   same way it already would for the removal reports velocity takes on faith. `initialize_quoter`
   gained a `state` account for the admin check.
+- **Protected flow and the cross crank (feat/propamm)**: `QuoteArgsV0.taker_served_window` says
+  the taker's flow served a protection window. Two things read it: a `Clob` entry with a
+  non-zero `book_default_activation_delay_slots` quotes an unprotected taker no depth, and a
+  quoter may gate on it itself (the midpoint's `require_attested_flow`). Swift attestation sets
+  it, and so does a crank that measured how long the book orders it sweeps have rested
+  (`SERVED_WINDOW_MIN_SLOTS`, two slots). **`crank_cross_match` reports `false` whenever the
+  route consults a `Custom` entry that quotes.** A `Custom` quoter prices during the call and
+  keeps no resting order, so the crank has no rest to measure and the crossing side may be a
+  quoter that repriced in the same slot. The consequence for an integrator running a `Custom`
+  quoter: a cross between that quoter and the market's book settles through this crank only
+  when the book runs no speed bump and the quoter does not require attested flow. Otherwise the
+  cross rests until ordinary flow clears it, and reaching a protected source still means going
+  through swift. `crank_taker_origin_cross` is unaffected — it vouches for one named order whose
+  rest it measured — and so is a liquidation.
   Account size (800 bytes) and every other field offset are unchanged — existing accounts
   stay valid (the field reads as 0 until the market settles revenue once; new markets
   initialize to 0), but custom decoders must add the field. It holds the **lowest IF vault

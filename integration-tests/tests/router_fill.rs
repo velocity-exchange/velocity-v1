@@ -4728,6 +4728,115 @@ fn place_and_take_v1_fills_a_retail_taker_off_the_clob() {
     assert_eq!(clob_ask_count(&fixture), 0);
 }
 
+/// A reduce-only ephemeral take on a flat position refuses, and the refusal is
+/// not an error.
+///
+/// The order may reduce nothing, so the fill declines it before it reaches any
+/// liquidity. An ephemeral order rests in no `user.orders` slot, so the decline
+/// cancels nothing and pays nobody. Reading a slot index here instead failed the
+/// whole transaction, which on the trigger route would leave the crank
+/// re-firing the same order.
+#[test]
+fn a_reduce_only_ephemeral_take_that_can_reduce_nothing_is_declined() {
+    use velocity::state::order_params::{OrderParams, PostOnlyParam};
+
+    let mut fixture = setup();
+    let maker_stats = Pubkey::find_program_address(
+        &[
+            b"user_stats",
+            fixture.clob_maker_authority.pubkey().as_ref(),
+        ],
+        &velocity_id(),
+    )
+    .0;
+    set_user_stats_account(
+        &mut fixture.svm,
+        maker_stats,
+        &fixture.clob_maker_authority.pubkey(),
+    );
+    place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 2);
+
+    let taker_authority = Keypair::new();
+    fixture
+        .svm
+        .airdrop(&taker_authority.pubkey(), 10_000_000_000)
+        .unwrap();
+    let taker_user = Pubkey::new_unique();
+    let taker_stats = Pubkey::new_unique();
+    // Flat: the position this reduce-only order could reduce is zero.
+    let mut taker_state = trading_user(
+        &taker_authority.pubkey(),
+        10_000 * SPOT_BALANCE_PRECISION_U64,
+        None,
+    );
+    taker_state.next_order_id = 1;
+    set_user_account(&mut fixture.svm, taker_user, &taker_state);
+    set_user_stats_account(&mut fixture.svm, taker_stats, &taker_authority.pubkey());
+
+    fixture.svm.warp_to_slot(12);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        12,
+    );
+
+    let mut accounts = velocity::accounts::PlaceAndTakeV1 {
+        state: state_pda(),
+        user: taker_user,
+        user_stats: taker_stats,
+        authority: taker_authority.pubkey(),
+        quoter_slab: fixture.quoter_slab,
+        clob_market: fixture.clob_market,
+        clob_program: clob_id(),
+        flow_authority: None,
+    }
+    .to_account_metas(None);
+    accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+    accounts.push(AccountMeta::new(spot_market_pda(0), false));
+    accounts.push(AccountMeta::new(perp_market_pda(0), false));
+    accounts.push(AccountMeta::new(fixture.clob_maker_user, false));
+    accounts.push(AccountMeta::new(maker_stats, false));
+    accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
+    accounts.push(AccountMeta::new(fixture.clob_market, false));
+    accounts.push(AccountMeta::new_readonly(clob_id(), false));
+
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: velocity::instruction::PlaceAndTakePerpOrderV1 {
+            args: PlaceAndTakePerpOrderV1Args {
+                params: OrderParams {
+                    order_type: OrderType::Limit,
+                    market_type: MarketType::Perp,
+                    direction: PositionDirection::Long,
+                    base_asset_amount: UNIT / 2,
+                    price: 99 * PRICE,
+                    market_index: 0,
+                    post_only: PostOnlyParam::None,
+                    reduce_only: true,
+                    ..OrderParams::default()
+                },
+                success_condition: None,
+            },
+        }
+        .data(),
+    };
+    send_with_ixs(
+        &mut fixture.svm,
+        &taker_authority,
+        &[compute_unit_limit_ix(400_000), ix],
+        &[],
+    )
+    .expect("a reduce-only take with nothing to reduce is a refusal, not an error");
+
+    // Nothing moved: the taker is still flat and the book still holds its ask.
+    let taker: User = read_zero_copy(&fixture.svm, &taker_user);
+    assert_eq!(taker.perp_positions[0].base_asset_amount, 0);
+    assert_eq!(taker.perp_positions[0].open_bids, 0);
+    assert_eq!(clob_ask_count(&fixture), 1);
+}
+
 /// Maker priority: on a book with a speed bump, only attested flow fills in
 /// its own transaction. An unattested taker rests whole, taker-origin,
 /// through the default window — a maker can always reprice ahead of it. A
@@ -6093,16 +6202,15 @@ fn generic_quoter_cross_conditions_discover_and_fill_a_midpoint_clob_cross() {
         .airdrop(&market_conditions, 1_000_000_000)
         .unwrap();
 
-    // Midpoint asks 2.0 @ 100.1 (mid 100 + 10bps).
-    // A protected instance: the cross crank is an unsigned relay
-    // transaction, and it must still fill through `require_attested_flow` —
-    // the counterparty it consumes rested through placement, and velocity
-    // says so on the wire (`taker_served_window`).
+    // Midpoint asks 2.0 @ 100.1 (mid 100 + 10bps). An open instance: this
+    // crank never reports protected flow while a `Custom` quoter is in the
+    // route, so an instance that requires it is out of reach here. The
+    // protected case has its own test below.
     let maker = setup_midpoint_maker_with_flow(
         &mut fixture,
         10_000 * SPOT_BALANCE_PRECISION_U64,
         2 * UNIT,
-        true,
+        false,
     );
     declare_midpoint_watch(&mut fixture, &maker);
     let cross_conditions = attach_quoter_cross(&mut fixture, &maker);
@@ -6191,46 +6299,12 @@ fn generic_quoter_cross_conditions_discover_and_fill_a_midpoint_clob_cross() {
         13,
     );
 
-    let resolved = run_quoter_cross_resolver(&mut fixture, &maker, cross_conditions)
-        .expect("crossed books stage a crank");
     let payout = Pubkey::new_unique();
     fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
     let payout_before = fixture.svm.get_balance(&payout).unwrap();
 
-    // The crossed bid is one slot old. A protected instance refuses flow that
-    // has not measurably rested, so the cross fills nothing yet — a fresh
-    // order cannot rest and crank back-to-back into `require_attested_flow`
-    // liquidity.
-    let keeper = fixture.keeper.insecure_clone();
-    let err = send_with_ixs(
-        &mut fixture.svm,
-        &keeper,
-        &[
-            compute_unit_limit_ix(1_400_000),
-            staged_executor_ix(&resolved, payout),
-        ],
-        &[],
-    )
-    .unwrap_err();
-    // The instance quotes nothing, so the buy leg reaches only the vAMM and
-    // the sell leg only the book: the two legs do not cross, which is a more
-    // specific refusal than an unprofitable total.
-    assert!(
-        format!("{:?}", err.err).contains("6406"),
-        "expected the legs not to cross while the flow is fresh, got {:?}",
-        err.err
-    );
-
-    // Two slots rested: the flow has served its window and the cross fills.
-    fixture.svm.warp_to_slot(14);
-    set_oracle(
-        &mut fixture.svm,
-        fixture.oracle,
-        (100 * PRICE_PRECISION) as i64,
-        14,
-    );
     let resolved = run_quoter_cross_resolver(&mut fixture, &maker, cross_conditions)
-        .expect("still crossed, still staged");
+        .expect("crossed books stage a crank");
     run_staged_executor(
         &mut fixture,
         &resolved,
@@ -6252,6 +6326,233 @@ fn generic_quoter_cross_conditions_discover_and_fill_a_midpoint_clob_cross() {
     // The midpoint's rung depleted (standing intent).
     let (_, filled) = midpoint_ask_level(&fixture.svm, &maker.instance, 0);
     assert_eq!(filled, UNIT);
+}
+
+/// A quoter that prices on demand must not reach a speed-bumped book through
+/// the arb crank.
+///
+/// The book's row rested, so the crank can measure it. The quoter that crosses
+/// that row priced during the call and keeps no resting order, so the crank can
+/// measure nothing about it. The crank therefore reports unprotected flow, the
+/// book quotes it no depth, and the legs do not cross. Without this rule an
+/// approved quoter lifts a resting order with no delay at all, where the same
+/// take through swift waits out the hold.
+#[test]
+fn a_custom_quoter_cross_cannot_reach_a_speed_bumped_book() {
+    let mut fixture = setup();
+    const PAYMENT: u64 = 10_000;
+    let conditions = init_crank_conditions(&mut fixture, PAYMENT);
+    let protocol_user = set_protocol_user(&mut fixture.svm);
+    let (signer, _) = velocity_signer_pda();
+    let protocol_stats =
+        Pubkey::find_program_address(&[b"user_stats", signer.as_ref()], &velocity_id()).0;
+    fixture.svm.airdrop(&conditions, 1_000_000_000).unwrap();
+
+    // Open flow, so the instance refuses nothing itself and the book's speed
+    // bump is the only gate under test. It bids 99.9 around its $100 mid.
+    let maker = setup_midpoint_maker_with_flow(
+        &mut fixture,
+        10_000 * SPOT_BALANCE_PRECISION_U64,
+        2 * UNIT,
+        false,
+    );
+    let clob_maker_stats = Pubkey::find_program_address(
+        &[
+            b"user_stats",
+            fixture.clob_maker_authority.pubkey().as_ref(),
+        ],
+        &velocity_id(),
+    )
+    .0;
+    set_user_stats_account(
+        &mut fixture.svm,
+        clob_maker_stats,
+        &fixture.clob_maker_authority.pubkey(),
+    );
+
+    // The book asks 0.5 @ 99, which the midpoint's bid crosses. The order is
+    // placed before the speed bump so it needs no attestation of its own; the
+    // bump under test is the one the route reads off the slab.
+    place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 2);
+    set_clob_default_activation_delay(&mut fixture, 2);
+    // Ten slots of rest, far past the two the crank measures. The book's own
+    // row is not the unmeasured side here.
+    fixture.svm.warp_to_slot(20);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        20,
+    );
+
+    let payout = Pubkey::new_unique();
+    fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
+    let mut accounts = velocity::accounts::CrankCrossMatch {
+        state: state_pda(),
+        authority: payout,
+        taker: protocol_user,
+        taker_stats: protocol_stats,
+        crank_conditions: conditions,
+        perp_market: perp_market_pda(0),
+        quoter_slab: fixture.quoter_slab,
+        instructions_sysvar: instructions_sysvar(),
+    }
+    .to_account_metas(None);
+    accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+    accounts.push(AccountMeta::new(spot_market_pda(0), false));
+    accounts.push(AccountMeta::new(fixture.clob_maker_user, false));
+    accounts.push(AccountMeta::new(clob_maker_stats, false));
+    accounts.push(AccountMeta::new(maker.user, false));
+    accounts.push(AccountMeta::new(maker.stats, false));
+    // The quoter section: the slab, the book, then the midpoint. Carrying a
+    // slot's response account is what consults it.
+    accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
+    accounts.push(AccountMeta::new(fixture.clob_market, false));
+    accounts.push(AccountMeta::new_readonly(clob_id(), false));
+    accounts.push(AccountMeta::new(maker.instance, false));
+    accounts.push(AccountMeta::new_readonly(midpoint_id(), false));
+
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: velocity::instruction::CrankCrossMatch {
+            args: CrankCrossMatchArgs {
+                market_index: 0,
+                size: UNIT / 2,
+            },
+        }
+        .data(),
+    };
+    let keeper = fixture.keeper.insecure_clone();
+    let err = send_with_ixs(
+        &mut fixture.svm,
+        &keeper,
+        &[compute_unit_limit_ix(1_400_000), ix],
+        &[],
+    )
+    .expect_err("a quoter that prices on demand must not lift a bumped book");
+    // The book quotes nothing, so the buy leg reaches only the vAMM while the
+    // sell leg reaches the midpoint: the two legs do not cross.
+    assert!(
+        format!("{:?}", err.err).contains("6406"),
+        "expected the legs not to cross, got {:?}",
+        err.err
+    );
+
+    // The book keeps its ask and the midpoint's user took no position.
+    assert_eq!(clob_ask_count(&fixture), 1);
+    let mm: User = read_zero_copy(&fixture.svm, &maker.user);
+    assert_eq!(mm.perp_positions[0].base_asset_amount, 0);
+}
+
+/// An instance that requires attested flow is out of the arb crank's reach,
+/// and resting does not bring it into reach.
+///
+/// The crank reports protected flow only for sources whose rest it measured.
+/// A `Custom` quoter keeps no resting order, so the crank measures nothing and
+/// reports nothing, whatever the crossing book order's age. Such an instance
+/// takes flow through swift, where the hold is the protection it asked for.
+#[test]
+fn a_protected_instance_is_out_of_the_cross_cranks_reach() {
+    let mut fixture = setup();
+    const PAYMENT: u64 = 10_000;
+    let market_conditions = init_crank_conditions(&mut fixture, PAYMENT);
+    set_protocol_user(&mut fixture.svm);
+    fixture
+        .svm
+        .airdrop(&market_conditions, 1_000_000_000)
+        .unwrap();
+
+    let maker = setup_midpoint_maker_with_flow(
+        &mut fixture,
+        10_000 * SPOT_BALANCE_PRECISION_U64,
+        2 * UNIT,
+        true,
+    );
+    declare_midpoint_watch(&mut fixture, &maker);
+    let cross_conditions = attach_quoter_cross(&mut fixture, &maker);
+
+    fixture.svm.warp_to_slot(12);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        12,
+    );
+
+    // A CLOB bid at 101 crosses the midpoint's 100.1 ask.
+    let ix = place_clob_order_ix(
+        fixture.clob_maker_user,
+        &fixture.clob_maker_authority,
+        fixture.quoter_slab,
+        fixture.clob_market,
+        fixture.oracle,
+        PlaceClobOrderParams {
+            market_index: 0,
+            direction: PositionDirection::Long,
+            price: 101 * PRICE,
+            base_asset_amount: UNIT,
+            max_ts: 0,
+            activation_delay_slots: Some(0),
+            reject_if_crossed: false,
+        },
+    );
+    let clob_maker_authority = fixture.clob_maker_authority.insecure_clone();
+    send(&mut fixture.svm, &clob_maker_authority, ix, &[]).unwrap();
+    let clob_maker_stats = Pubkey::find_program_address(
+        &[
+            b"user_stats",
+            fixture.clob_maker_authority.pubkey().as_ref(),
+        ],
+        &velocity_id(),
+    )
+    .0;
+    set_user_stats_account(
+        &mut fixture.svm,
+        clob_maker_stats,
+        &fixture.clob_maker_authority.pubkey(),
+    );
+
+    let payout = Pubkey::new_unique();
+    fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
+
+    // One slot of rest, then ten. Neither reaches the instance, because the
+    // crank never vouched for the flow in the first place.
+    for slot in [13u64, 23] {
+        fixture.svm.warp_to_slot(slot);
+        set_oracle(
+            &mut fixture.svm,
+            fixture.oracle,
+            (100 * PRICE_PRECISION) as i64,
+            slot,
+        );
+        let resolved = run_quoter_cross_resolver(&mut fixture, &maker, cross_conditions)
+            .expect("still crossed, still staged");
+        let keeper = fixture.keeper.insecure_clone();
+        let err = send_with_ixs(
+            &mut fixture.svm,
+            &keeper,
+            &[
+                compute_unit_limit_ix(1_400_000),
+                staged_executor_ix(&resolved, payout),
+            ],
+            &[],
+        )
+        .expect_err("a protected instance must not fill from a crank");
+        // The instance quotes nothing, so the buy leg reaches only the vAMM
+        // and the sell leg only the book: the two legs do not cross, which is
+        // a more specific refusal than an unprofitable total.
+        assert!(
+            format!("{:?}", err.err).contains("6406"),
+            "expected the legs not to cross at slot {slot}, got {:?}",
+            err.err
+        );
+    }
+
+    // The crossed bid is still on the book and nobody took a position.
+    assert_eq!(clob_bid_count(&fixture), 1);
+    let mm: User = read_zero_copy(&fixture.svm, &maker.user);
+    assert_eq!(mm.perp_positions[0].base_asset_amount, 0);
 }
 
 // ---------------------------------------------------------------------------

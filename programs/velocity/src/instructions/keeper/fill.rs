@@ -208,28 +208,22 @@ fn route_and_fill<'info>(
     // Consulted only if a book later withholds, but counted by the quote.
     request.obligation.unrouted_quoters = quoted.unrouted_quoters;
 
-    let (filled, _) = quoted.route_fill(
-        crate::instructions::RouterTerms {
-            protocol_authority: state.signer,
-            obligation: request.obligation,
-            taker_exposure_closed_by_caller: false,
+    let mut books = quoted.books(clock, &mut cpi_scratch)?;
+    let mut router = books.for_fill(crate::instructions::FillerStanding {
+        protocol_authority: state.signer,
+        obligation: request.obligation,
+        taker_exposure_closed_by_caller: false,
+    });
+    sections.run_fill(
+        accounts,
+        controller::orders::FillRequest {
+            target: controller::orders::FillTarget::Slot(request.order_id),
+            mode: FillMode::Fill,
+            referrer_is_accelerated: sections.referrer_is_accelerated,
         },
+        &mut router,
         clock,
-        &mut cpi_scratch,
-        |router| {
-            sections.run_fill(
-                accounts,
-                controller::orders::FillRequest {
-                    target: controller::orders::FillTarget::Slot(request.order_id),
-                    mode: FillMode::Fill,
-                    referrer_is_accelerated: sections.referrer_is_accelerated,
-                },
-                router,
-                clock,
-            )
-        },
-    )?;
-    Ok(filled)
+    )
 }
 
 /// Migrate what the route could not fill onto the market's book.

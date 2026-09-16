@@ -1,10 +1,13 @@
 //! Cross-match crank: match two crossed resting sources against each other.
 //!
-//! Nothing else matches two *resting* books — router matching only happens
-//! when a taker fills through — so a CLOB bid at/above a CLOB ask, or a
-//! PropAMM quoting through the CLOB's best, would rest crossed forever.
-//! Trigger placements make the first routine and PropAMM reprices the
-//! second; both strand user orders, which is the UX this crank exists for.
+//! Nothing else matches two *resting* sources. Router matching happens only
+//! when a taker fills through. So a CLOB bid at or above a CLOB ask rests
+//! crossed until a taker clears it. A maker place that is not post-only rests
+//! crossed instead of refusing, which makes this case routine, and the orders
+//! it strands are real user orders. That is the work this crank exists for.
+//! A PropAMM quoting through the CLOB's best is the same shape and not the
+//! same duty. A PropAMM keeps no resting order, so it strands nothing of its
+//! own, and the rule below governs when the crank may settle it.
 //!
 //! The crank is two ordinary router fills. The protocol `User` buys `size`
 //! as a taker, then sells exactly what the buy filled, and each leg routes
@@ -32,6 +35,14 @@
 //! `false` at every site, so it cannot reach a remainder's cover at any size
 //! the caller asks for, and `crank_taker_origin_cross` — which owes the taker
 //! that improvement — is the only caller that can.
+//!
+//! The crank reports protected flow (`taker_served_window`) only when it
+//! measured how long every source that can fill has rested. A book records
+//! the slot each order was placed in, so the crank can measure it. A `Custom`
+//! quoter prices during the call and keeps no resting order, so the crank can
+//! measure nothing and reports nothing. `consults_custom_quoter` states the
+//! rule. A book with a speed bump then quotes the cross no depth, so a
+//! PropAMM cross settles only on a book that runs no speed bump.
 
 use {
     super::{
@@ -62,7 +73,9 @@ use {
             fill_mode::FillMode,
             pdas,
             perp_market_map::MarketSet,
-            prop_amm::{Direction, PriceLevel, QuoterCpiScratch, QuoterSlabExt, QuoterSlabV0},
+            prop_amm::{
+                Direction, PriceLevel, QuoterCpiScratch, QuoterSlabExt, QuoterSlabV0, QuoterType,
+            },
             state::State,
             user::{MarketType, Order, OrderStatus, OrderType, User, UserStats},
             user_map::{load_user_maps, UserMap, UserStatsMap},
@@ -214,7 +227,7 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
     // legs refill them in turn; a set per leg would be an allocation per leg,
     // and the runtime's allocator never gives one back.
     let mut cpi_scratch = QuoterCpiScratch::new();
-    let legs = CrossLegs {
+    let cx = CrossMatchContext {
         accounts: &ctx.accounts,
         tail,
         state: &state,
@@ -227,14 +240,14 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
     };
 
     let buy = run_cross_leg(
-        &legs,
+        &cx,
         PositionDirection::Long,
         size,
         &mut maps,
         &mut cpi_scratch,
     )?;
     let sell = run_cross_leg(
-        &legs,
+        &cx,
         PositionDirection::Short,
         buy.base_filled,
         &mut maps,
@@ -269,7 +282,7 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
 }
 
 /// What both legs of a cross read and neither of them changes.
-struct CrossLegs<'a, 'info> {
+struct CrossMatchContext<'a, 'info> {
     accounts: &'a CrankCrossMatch<'info>,
     tail: &'info [AccountInfo<'info>],
     state: &'a State,
@@ -286,7 +299,7 @@ struct CrossLegs<'a, 'info> {
 }
 
 /// What one leg of a cross filled.
-struct CrossLegFilled {
+struct CrossLegFill {
     base_filled: u64,
     /// What the leg did to the protocol `User`'s quote, net of the taker fee
     /// it paid. Read on both sides of the fill with funding already settled,
@@ -306,6 +319,30 @@ fn taker_base(taker: &AccountLoader<User>, market_index: u16) -> Result<i64> {
         .unwrap_or(0))
 }
 
+/// Whether this cross routes to a quoter that prices on demand.
+///
+/// A book records the slot each order was placed in, so a crank can measure
+/// how long the order rested. A `Custom` quoter computes its price during the
+/// call. It keeps no resting order, so it has no rest to measure, and it can
+/// move its price in the slot the crank runs in.
+///
+/// This crank must therefore not report protected flow while such a quoter is
+/// in the route. The crossing side may be that quoter, and a quoter that
+/// repriced in this slot gave the makers no time to answer it. A book with a
+/// speed bump then quotes the cross nothing, which is the same protection an
+/// unattested taker gets. A `Vamm` slot does not count, because it is
+/// velocity's own liquidity and it applies its own last look.
+fn consults_custom_quoter<'info>(
+    quoter_slab: &AccountLoader<'info, QuoterSlabV0>,
+    tail: &'info [AccountInfo<'info>],
+) -> Result<bool> {
+    let consulted = quoter_slab.consulted_slots(tail)?;
+    let slots = quoter_slab.slots()?;
+    Ok(consulted.iter().any(|&index| {
+        slots[index].quotes() && slots[index].config.quoter_type == QuoterType::Custom
+    }))
+}
+
 /// Run one leg of a cross as an ordinary router fill.
 ///
 /// The leg's order is a local. It belongs to no `orders` slot and never
@@ -317,14 +354,14 @@ fn taker_base(taker: &AccountLoader<User>, market_index: u16) -> Result<i64> {
 /// of the taker fee it pays, and there is no builder escrow to accrue
 /// against.
 fn run_cross_leg<'info>(
-    legs: &CrossLegs<'_, 'info>,
+    cx: &CrossMatchContext<'_, 'info>,
     taker_direction: PositionDirection,
     size: u64,
     maps: &mut AccountMaps<'info>,
     cpi_scratch: &mut QuoterCpiScratch<'info>,
-) -> Result<CrossLegFilled> {
+) -> Result<CrossLegFill> {
     if size == 0 {
-        return Ok(CrossLegFilled {
+        return Ok(CrossLegFill {
             base_filled: 0,
             quote_delta: 0,
             worst_price: 0,
@@ -336,8 +373,8 @@ fn run_cross_leg<'info>(
     };
     let limit_price = leg_limit_price(
         taker_direction,
-        legs.band_oracle_price,
-        legs.margin_ratio_initial,
+        cx.band_oracle_price,
+        cx.margin_ratio_initial,
     )?;
 
     // Funding is settled here, before the quote is read. The fill settles it
@@ -346,18 +383,18 @@ fn run_cross_leg<'info>(
     // this, a funding payment would read as cross surplus — including the
     // one the first leg's own funding update creates for the second.
     let (order_id, taker_ref, quote_before) = {
-        let mut market = maps.perp_market_map.get_ref_mut(&legs.market_index)?;
-        let mut taker = load_mut!(legs.accounts.taker)?;
+        let mut market = maps.perp_market_map.get_ref_mut(&cx.market_index)?;
+        let mut taker = load_mut!(cx.accounts.taker)?;
         settle_funding_payment(
             &mut taker,
-            &legs.accounts.taker.key(),
+            &cx.accounts.taker.key(),
             &mut market,
-            legs.clock.unix_timestamp,
+            cx.clock.unix_timestamp,
         )?;
         let order_id = taker.next_order_id;
         taker.next_order_id = taker.next_order_id.wrapping_add(1).max(1);
         let quote_before = taker
-            .get_perp_position(legs.market_index)
+            .get_perp_position(cx.market_index)
             .map(|position| position.quote_asset_amount)
             .unwrap_or(0);
         (order_id, taker.clob_user_ref(), quote_before)
@@ -367,9 +404,9 @@ fn run_cross_leg<'info>(
     // discards no depth the fill could have taken, and it keeps every
     // quoter's walk off levels the fill would drop.
     let mut order = Order {
-        slot: legs.clock.slot,
+        slot: cx.clock.slot,
         order_id,
-        market_index: legs.market_index,
+        market_index: cx.market_index,
         status: OrderStatus::Open,
         order_type: OrderType::Limit,
         market_type: MarketType::Perp,
@@ -380,44 +417,51 @@ fn run_cross_leg<'info>(
         ..Order::default()
     };
 
-    let users = crate::state::prop_amm::quoter_wire_users(
-        legs.makers_and_referrer.user_ref_index()?.into_keys().map(
-            |(authority, sub_account_id)| crate::state::prop_amm::ClobUserRefV0 {
-                authority,
-                sub_account_id,
-            },
-        ),
-    )?;
-    // A cross is one event on two sides, so one verdict covers both legs. A
-    // leg that read only the side it sweeps would call the flow protected
-    // whenever the fresh order sat on the other side, and the cross would
-    // then reach liquidity that serves protected flow only — laundering an
-    // order that never rested through the leg that does not settle it. Both
-    // directions are read, bounded by the size this cross takes, so depth the
-    // cross never touches still does not count against it.
-    let taker_served_window = [Direction::Long, Direction::Short]
-        .iter()
-        .copied()
-        .try_fold(true, |served, side| -> Result<bool> {
-            Ok(served
-                && super::helpers::crank_common::book_side_rested(
-                    &legs.accounts.quoter_slab,
-                    legs.tail,
-                    legs.market_index,
-                    side,
-                    size,
-                    legs.clock.slot,
-                    cpi_scratch,
-                )?)
-        })?;
+    let users =
+        crate::state::prop_amm::quoter_wire_users(
+            cx.makers_and_referrer.user_ref_index()?.into_keys().map(
+                |(authority, sub_account_id)| crate::state::prop_amm::ClobUserRefV0 {
+                    authority,
+                    sub_account_id,
+                },
+            ),
+        )?;
+    // A quoter that prices on demand ends the claim before a book is read.
+    // The book reads below cost a CPI each, so the cheap test runs first.
+    let taker_served_window = if consults_custom_quoter(&cx.accounts.quoter_slab, cx.tail)? {
+        false
+    } else {
+        // A cross is one event on two sides, so one verdict covers both cx. A
+        // leg that read only the side it sweeps would call the flow protected
+        // whenever the fresh order sat on the other side, and the cross would
+        // then reach liquidity that serves protected flow only — laundering an
+        // order that never rested through the leg that does not settle it. Both
+        // directions are read, bounded by the size this cross takes, so depth the
+        // cross never touches still does not count against it.
+        [Direction::Long, Direction::Short]
+            .iter()
+            .copied()
+            .try_fold(true, |served, side| -> Result<bool> {
+                Ok(served
+                    && super::helpers::crank_common::book_side_rested(
+                        &cx.accounts.quoter_slab,
+                        cx.tail,
+                        cx.market_index,
+                        side,
+                        size,
+                        cx.clock.slot,
+                        cpi_scratch,
+                    )?)
+            })?
+    };
     let quoted = quote_route(
-        legs.tail,
+        cx.tail,
         QuoteInputs {
-            market_index: legs.market_index,
+            market_index: cx.market_index,
             direction,
             size,
             users: &users,
-            reference_price: legs.band_oracle_price,
+            reference_price: cx.band_oracle_price,
             taker: taker_ref,
             limit_price,
             taker_served_window,
@@ -426,78 +470,72 @@ fn run_cross_leg<'info>(
             // the book without it is what makes this crank unable to reach a
             // remainder's cover.
             consume_reservation: false,
-            margin_ratio_initial: legs.margin_ratio_initial,
+            margin_ratio_initial: cx.margin_ratio_initial,
         },
         None,
         &mut CapInputs {
-            taker_key: &legs.accounts.taker.key(),
-            makers_and_referrer: legs.makers_and_referrer,
-            makers_and_referrer_stats: legs.makers_and_referrer_stats,
+            taker_key: &cx.accounts.taker.key(),
+            makers_and_referrer: cx.makers_and_referrer,
+            makers_and_referrer_stats: cx.makers_and_referrer_stats,
             maps,
-            slot: legs.clock.slot,
-            now: legs.clock.unix_timestamp,
+            slot: cx.clock.slot,
+            now: cx.clock.unix_timestamp,
         },
         cpi_scratch,
     )?;
-    let ((base_filled, _), worst_price) = quoted.route_fill(
-        crate::instructions::RouterTerms {
-            protocol_authority: legs.state.signer,
-            taker_exposure_closed_by_caller: true,
-            obligation: FillerObligation {
-                // The taker is the protocol, not a user trusting a cranker
-                // with its order, so nobody is owed a maker here. A book that
-                // stops at an owner the transaction does not carry only makes
-                // the cross smaller, and the surplus floor decides whether
-                // the smaller cross is worth landing.
-                taker_signed: false,
-                tx_accounts: Some(tx_writable_lock_count(
-                    &legs.accounts.instructions_sysvar.to_account_info(),
-                )?),
-                unrouted_quoters: 0,
+    let mut books = quoted.books(cx.clock, cpi_scratch)?;
+    let mut router = books.for_fill(crate::instructions::FillerStanding {
+        protocol_authority: cx.state.signer,
+        taker_exposure_closed_by_caller: true,
+        obligation: FillerObligation {
+            // The taker is the protocol, not a user trusting a cranker with
+            // its order, so nobody is owed a maker here. A book that stops at
+            // an owner the transaction does not carry only makes the cross
+            // smaller, and the surplus floor decides whether the smaller
+            // cross is worth landing.
+            taker_signed: false,
+            tx_accounts: Some(tx_writable_lock_count(
+                &cx.accounts.instructions_sysvar.to_account_info(),
+            )?),
+            unrouted_quoters: 0,
+        },
+    });
+    let filled = controller::orders::fill_perp_order(
+        controller::orders::FillRequest {
+            target: controller::orders::FillTarget::Detached {
+                order: &mut order,
+                reserved: false,
             },
+            mode: FillMode::Fill,
+            referrer_is_accelerated: false,
         },
-        legs.clock,
-        cpi_scratch,
-        |router| {
-            controller::orders::fill_perp_order(
-                controller::orders::FillRequest {
-                    target: controller::orders::FillTarget::Detached {
-                        order: &mut order,
-                        reserved: false,
-                    },
-                    mode: FillMode::Fill,
-                    referrer_is_accelerated: false,
-                },
-                legs.state,
-                legs.clock,
-                controller::orders::PerpFillAccounts {
-                    user: &legs.accounts.taker,
-                    user_stats: &legs.accounts.taker_stats,
-                    filler: &legs.accounts.taker,
-                    filler_stats: &legs.accounts.taker_stats,
-                    rev_share_escrow: &mut None,
-                },
-                &mut controller::orders::FillParties {
-                    maps,
-                    makers_and_referrer: legs.makers_and_referrer,
-                    makers_and_referrer_stats: legs.makers_and_referrer_stats,
-                },
-                router,
-            )
-            .map_err(Into::into)
+        cx.state,
+        cx.clock,
+        controller::orders::PerpFillAccounts {
+            user: &cx.accounts.taker,
+            user_stats: &cx.accounts.taker_stats,
+            filler: &cx.accounts.taker,
+            filler_stats: &cx.accounts.taker_stats,
+            rev_share_escrow: &mut None,
         },
+        &mut controller::orders::FillParties {
+            maps,
+            makers_and_referrer: cx.makers_and_referrer,
+            makers_and_referrer_stats: cx.makers_and_referrer_stats,
+        },
+        &mut router,
     )?;
     // Read straight after the fill, with no second settle: the fill's own
     // funding update belongs to whoever holds the position next, and the next
     // leg settles it before it starts measuring.
-    let quote_after = load!(legs.accounts.taker)?
-        .get_perp_position(legs.market_index)
+    let quote_after = load!(cx.accounts.taker)?
+        .get_perp_position(cx.market_index)
         .map(|position| position.quote_asset_amount)
         .unwrap_or(0);
-    Ok(CrossLegFilled {
-        base_filled,
+    Ok(CrossLegFill {
+        base_filled: filled.base,
         quote_delta: quote_after.safe_sub(quote_before)?,
-        worst_price: worst_price.unwrap_or(0),
+        worst_price: router.worst_fill_price.unwrap_or(0),
     })
 }
 
@@ -555,8 +593,8 @@ struct CrossSurplus {
 /// protocol never runs a losing cross and never pays reservoir lamports for
 /// one worth less than the payment.
 fn validate_cross_legs(
-    buy: &CrossLegFilled,
-    sell: &CrossLegFilled,
+    buy: &CrossLegFill,
+    sell: &CrossLegFill,
     base: (i64, i64),
     min_surplus: u64,
 ) -> Result<CrossSurplus> {
@@ -700,7 +738,7 @@ pub(super) fn stage_cross(ctx: &Context<ResolveClobCrank>) -> Result<Option<Stag
         return Ok(None);
     }
 
-    // Conservative estimate: tier-0 taker fee on both legs. The executor
+    // Conservative estimate: tier-0 taker fee on both cx. The executor
     // measures the real thing; this only avoids staging obvious losers.
     let (fee_numerator, fee_denominator) = {
         let state = ctx.accounts.state.load()?;
@@ -994,6 +1032,13 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
             msg!("quoter slab holds no book slot");
             error!(ErrorCode::QuoterNotOnSlab)
         })?;
+        // A `Custom` entry in the route stops the crank reporting protected
+        // flow, so a book with a speed bump quotes that cross no depth and the
+        // legs can never cross. Report no work rather than stage a call that
+        // always fails.
+        if slots[book_slot].config.book_default_activation_delay_slots > 0 {
+            return Ok(None);
+        }
         let mut clob_book = |direction: crate::state::prop_amm::Direction| -> Result<Vec<_>> {
             Ok(super::helpers::crank_common::book_l3_side(
                 &slots[book_slot].config,

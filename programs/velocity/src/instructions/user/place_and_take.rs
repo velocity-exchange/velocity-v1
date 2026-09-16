@@ -250,7 +250,7 @@ pub fn place_and_take_perp_order_legacy<'info>(
         is_immediate_or_cancel || optional_params.is_some(),
         auction_duration_percentage,
     );
-    let (base_asset_amount_filled, _) = controller::orders::fill_perp_order_without_external_books(
+    let filled = controller::orders::fill_perp_order_without_external_books(
         order_id,
         &state,
         accounts.user,
@@ -280,11 +280,7 @@ pub fn place_and_take_perp_order_legacy<'info>(
         )?;
     }
 
-    validate_place_and_take_success_condition(
-        success_condition,
-        base_asset_amount_filled,
-        order_unfilled,
-    )
+    validate_place_and_take_success_condition(success_condition, filled.base, order_unfilled)
 }
 
 /// An unattested taker on a bumped book rests whole and fills through the
@@ -428,7 +424,7 @@ fn quote_take_route<'a, 'info>(
     taker_served_window: bool,
     clock: &Clock,
     scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
-) -> Result<crate::instructions::QuotedFill<'a, 'info>> {
+) -> Result<crate::instructions::RouteQuote<'a, 'info>> {
     let taker_key = take.accounts.user.key();
     let inputs = crate::instructions::QuoteInputs {
         market_index: take.market_index,
@@ -471,12 +467,12 @@ struct RouteMark {
 /// Fill the ephemeral order against the route the router just priced.
 fn fill_against_route(
     take: &mut EphemeralTake<'_, '_>,
-    router_inputs: &mut crate::math::router::RouterFillInputs<'_, '_, '_>,
+    router: &mut crate::math::router::RouterLeg<'_, '_, '_>,
     state: &State,
     mode: FillMode,
     referrer_is_accelerated: bool,
 ) -> Result<u64> {
-    let (base_asset_amount_filled, _) = controller::orders::fill_perp_order(
+    let filled = controller::orders::fill_perp_order(
         controller::orders::FillRequest {
             // Ephemeral taker: it never reserved, so the fill unwinds
             // nothing.
@@ -501,10 +497,10 @@ fn fill_against_route(
             makers_and_referrer: take.makers,
             makers_and_referrer_stats: take.maker_stats,
         },
-        router_inputs,
+        router,
     )?;
 
-    Ok(base_asset_amount_filled)
+    Ok(filled.base)
 }
 
 /// Quote the route the taker named and fill the ephemeral order against it.
@@ -564,23 +560,19 @@ fn fill_ephemeral_take(
         clock,
         &mut cpi_scratch,
     )?;
-    let (filled, _) = quoted.route_fill(
-        crate::instructions::RouterTerms {
-            protocol_authority: state.signer,
-            taker_exposure_closed_by_caller: false,
-            // The taker signs a place-and-take, so the taker chose the
-            // account list and no filler obligation applies.
-            obligation: crate::math::router::FillerObligation {
-                taker_signed: true,
-                tx_accounts: None,
-                unrouted_quoters: 0,
-            },
+    let mut books = quoted.books(clock, &mut cpi_scratch)?;
+    let mut router = books.for_fill(crate::instructions::FillerStanding {
+        protocol_authority: state.signer,
+        taker_exposure_closed_by_caller: false,
+        // The taker signs a place-and-take, so the taker chose the account
+        // list and no filler obligation applies.
+        obligation: crate::math::router::FillerObligation {
+            taker_signed: true,
+            tx_accounts: None,
+            unrouted_quoters: 0,
         },
-        clock,
-        &mut cpi_scratch,
-        |router| fill_against_route(take, router, state, mode, referrer_is_accelerated),
-    )?;
-    Ok(filled)
+    });
+    fill_against_route(take, &mut router, state, mode, referrer_is_accelerated)
 }
 
 /// Rest what the take did not fill, then hold the caller's success condition

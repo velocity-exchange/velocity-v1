@@ -17,7 +17,7 @@ use {
         math::{
             casting::Cast,
             constants::BASE_PRECISION_U64,
-            router::{split_across_quoters, QuoterAllocation, QuoterBook, RouterFillInputs},
+            router::{split_across_quoters, QuoterAllocation, QuoterBook, RouterLeg},
             safe_math::SafeMath,
         },
         state::{
@@ -94,7 +94,7 @@ impl FillMarketSetup {
         amm_quoter: &mut AmmQuoter,
         quote_inputs: QuoteInputs,
         taker: &TakerSide,
-        policy: &FillPolicy,
+        rules: &PricingRules,
         conditions: &FillConditions,
         market_fee_adjustment: i16,
     ) -> VelocityResult<Self> {
@@ -118,13 +118,7 @@ impl FillMarketSetup {
             taker.order,
             taker_limit_price,
             None,
-            &crate::math::fees::determine_user_fee_tier(
-                taker.stats,
-                policy.fee_structure,
-                &MarketType::Perp,
-                now,
-                policy.promo_fee_tier,
-            )?,
+            &rules.user_fee_tier(taker.stats, now)?,
             market_fee_adjustment,
             quote_inputs.tick_size,
         )?;
@@ -243,14 +237,14 @@ impl FillTally {
 /// of the fill that borrows the quoting section and the executor's account
 /// region, so holding it apart keeps three lifetimes off [`PerpFill`].
 struct ExternalVenue<'a, 'r, 'b, 'info> {
-    router: &'a mut RouterFillInputs<'r, 'b, 'info>,
-    /// [`RouterFillInputs::books`], read out once so a step can hold a ladder
+    router: &'a mut RouterLeg<'r, 'b, 'info>,
+    /// [`RouterLeg::books`], read out once so a step can hold a ladder
     /// while the executor runs.
     books: &'r [QuoterBook<'b>],
 }
 
 impl<'a, 'r, 'b, 'info> ExternalVenue<'a, 'r, 'b, 'info> {
-    fn new(router: &'a mut RouterFillInputs<'r, 'b, 'info>) -> Self {
+    fn new(router: &'a mut RouterLeg<'r, 'b, 'info>) -> Self {
         let books = router.books;
         Self { router, books }
     }
@@ -343,7 +337,7 @@ struct PerpFill<'a, 'o, 'm, 's> {
     makers_and_referrer_stats: &'a UserStatsMap<'s>,
     /// What the pass has moved so far.
     tally: FillTally,
-    policy: &'a FillPolicy<'a>,
+    rules: &'a PricingRules<'a>,
     /// How many external books the route carries. It is where the external
     /// allocations end and the DLOB maker allocations begin.
     external_book_count: usize,
@@ -354,12 +348,10 @@ struct PerpFill<'a, 'o, 'm, 's> {
     maker_direction: PositionDirection,
     /// The taker's side, as the router states it.
     route_direction: Direction,
-    now: i64,
-    slot: u64,
-    /// Whether the vAMM may fill this order at all.
-    amm_is_available: bool,
-    vamm_maker_rebate: bool,
-    taker_limit_price: Option<u64>,
+    /// When this fill runs and what the market oracle lets it do. Held whole
+    /// rather than copied field by field, so a reader can see where each of
+    /// these values came from.
+    conditions: FillConditions,
     /// True when a book stopped its walk at an owner this transaction does
     /// not carry. Only then does the fill owe the obligation check, which is
     /// what keeps that cost off every ordinary fill.
@@ -375,7 +367,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
     fn new(
         counterparties: FillCounterparties<'a, 'o, 'm, 's>,
         venue: &ExternalVenue,
-        policy: &'a FillPolicy<'a>,
+        rules: &'a PricingRules<'a>,
         conditions: &FillConditions,
         setup: FillMarketSetup,
         taker: TakerSide<'a>,
@@ -411,14 +403,10 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
             makers_and_referrer,
             makers_and_referrer_stats,
             tally: FillTally::default(),
-            policy,
+            rules,
             taker,
-            taker_limit_price: setup.taker_limit_price,
             setup,
-            amm_is_available: conditions.amm_is_available,
-            vamm_maker_rebate: policy.vamm_maker_rebate,
-            now: conditions.now,
-            slot: conditions.slot,
+            conditions: *conditions,
         })
     }
 
@@ -631,7 +619,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         rivals: &[QuoterBook],
         target_size: u64,
     ) -> VelocityResult<Vec<PriceLevel>> {
-        if !self.amm_is_available {
+        if !self.conditions.amm_is_available {
             return Ok(vec![]);
         }
         vamm_quote_levels(
@@ -659,7 +647,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         }
         let fill = RouterQuoter::execute(
             amm_quoter,
-            &self.setup.quote_inputs.ctx(self.slot),
+            &self.setup.quote_inputs.ctx(self.conditions.slot),
             self.route_direction,
             allocation.base,
         )?;
@@ -711,7 +699,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
             fee_budget: 0,
             tick: self.setup.quote_inputs.tick_size,
             step_size: self.setup.quote_inputs.step_size,
-            slot: self.slot,
+            slot: self.conditions.slot,
             slot_clock: self.oracle_map.slot_clock,
             base_precision: BASE_PRECISION_U64,
             market_status: MarketStatus::default(),
@@ -831,7 +819,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         let matched = DlobMatch {
             order_index: router_maker.order_index,
             maker_price: router_maker.price,
-            taker_limit: taker_limit_for_match,
+            effective_taker_limit: taker_limit_for_match,
             oracle_price: self.setup.quote_inputs.oracle_price,
         };
         let (base_filled, quote_filled, maker_filled) = settle_dlob_match_fill(
@@ -851,10 +839,11 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
             filler,
             &mut SettleContext {
                 market,
-                policy: self.policy,
+                rules: self.rules,
+                mode: self.conditions.mode,
                 oracle_map: self.oracle_map,
-                now: self.now,
-                slot: self.slot,
+                now: self.conditions.now,
+                slot: self.conditions.slot,
                 filler_reward_paid: &mut self.tally.filler_reward_paid,
             },
         )?;
@@ -954,7 +943,6 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
             &mut HouseSide {
                 cranking_maker: &mut cranking_maker_opt,
                 cranking_maker_stats: &mut cranking_maker_stats_opt,
-                pays_maker_rebate: self.vamm_maker_rebate,
             },
             &AmmAllocation {
                 quote: allocation.quote,
@@ -962,15 +950,16 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
                 post_only: order_post_only,
                 order_slot,
                 order_id,
-                taker_limit: self.taker_limit_price,
+                taker_limit_price: self.setup.taker_limit_price,
             },
             filler,
             &mut SettleContext {
                 market,
-                policy: self.policy,
+                rules: self.rules,
+                mode: self.conditions.mode,
                 oracle_map: self.oracle_map,
-                now: self.now,
-                slot: self.slot,
+                now: self.conditions.now,
+                slot: self.conditions.slot,
                 filler_reward_paid: &mut self.tally.filler_reward_paid,
             },
         )?;
@@ -1078,7 +1067,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         let response = located.execute_response(&data)?;
         let leg = ExternalLeg {
             quoter_key: venue.router.executor.quoter_key(index),
-            protocol_authority: venue.router.protocol_authority,
+            protocol_authority: venue.router.standing.protocol_authority,
             subjects,
             quoted,
             oracle_band: venue
@@ -1278,16 +1267,17 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
             &mut self.taker,
             &mut maker_side,
             &ExternalMatch {
-                taker_limit: self.setup.effective_taker_limit,
+                effective_taker_limit: self.setup.effective_taker_limit,
                 oracle_price: self.setup.quote_inputs.oracle_price,
             },
             filler,
             &mut SettleContext {
                 market,
-                policy: self.policy,
+                rules: self.rules,
+                mode: self.conditions.mode,
                 oracle_map: self.oracle_map,
-                now: self.now,
-                slot: self.slot,
+                now: self.conditions.now,
+                slot: self.conditions.slot,
                 filler_reward_paid: &mut self.tally.filler_reward_paid,
             },
         )?;
@@ -1319,7 +1309,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         maker_key: &Pubkey,
         market: &mut PerpMarket,
     ) -> VelocityResult {
-        settle_funding_payment(maker, maker_key, market, self.now)
+        settle_funding_payment(maker, maker_key, market, self.conditions.now)
     }
 
     /// The resting position a DLOB maker order settles into, and what the fill
@@ -1456,7 +1446,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
             // Everything else the fill removed was consumed, and a consumed
             // order is reported by the fill.
             crate::instructions::emit_clob_cancel_record(
-                self.now,
+                self.conditions.now,
                 market.market_stats.historical_oracle_data.last_oracle_price,
                 &maker_key,
                 crate::instructions::ClobOrderFacts {
@@ -1467,7 +1457,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
                     base_asset_amount: cancelled.base_asset_amount,
                     base_asset_amount_filled: 0,
                     max_ts: 0,
-                    slot: self.slot,
+                    slot: self.conditions.slot,
                     taker_origin: false,
                 },
                 OrderActionExplanation::ClobRemainderCulled,
@@ -1492,7 +1482,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
             self.setup.amm_base_spread,
             self.setup.amm_long_spread,
             self.setup.amm_short_spread,
-            self.now,
+            self.conditions.now,
             Some(twap_trade_price),
             Some(self.taker.direction),
             self.setup.quote_inputs.sanitize_clamp_denominator,
@@ -1501,7 +1491,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         market.market_stats.update_volume_24h(
             self.tally.quote_filled,
             self.taker.direction,
-            self.now,
+            self.conditions.now,
         )
     }
 
@@ -1580,7 +1570,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
             self.taker.stats.referrer,
             &*venue.router.executor,
         )?;
-        crate::math::router::withheld_obligation(&venue.router.obligation, idle)
+        crate::math::router::withheld_obligation(&venue.router.standing.obligation, idle)
     }
 }
 
@@ -1603,7 +1593,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
 /// (one effective taker limit bounds every book up front).
 ///
 /// External books are priced into the split; allocations that land on them
-/// execute through `RouterFillInputs::executor` (the CPI leg the fill
+/// execute through `RouterLeg::executor` (the CPI leg the fill
 /// entrypoint supplies) and settle per returned balance change against the
 /// loaded makers. Maker prices are the sanitized frozen prices from
 /// discovery; `DlobOrderQuoter::execute` requotes off the same
@@ -1614,7 +1604,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
 /// what they share.
 pub(super) fn fill_from_liquidity_sources(
     taker: &mut TakerSide,
-    policy: &FillPolicy,
+    rules: &PricingRules,
     conditions: &FillConditions,
     parties: &mut FillParties,
     liquidity: &mut OfferedLiquidity,
@@ -1633,7 +1623,7 @@ pub(super) fn fill_from_liquidity_sources(
     } = &mut *parties.maps;
     let mut market = perp_market_map.get_ref_mut(&market_index)?;
     let (mut amm_quoter, setup) =
-        refresh_and_read_market(market.deref_mut(), oracle_map, taker, policy, conditions)?;
+        refresh_and_read_market(market.deref_mut(), oracle_map, taker, rules, conditions)?;
 
     let mut venue = ExternalVenue::new(liquidity.router);
     let mut fill = PerpFill::new(
@@ -1643,7 +1633,7 @@ pub(super) fn fill_from_liquidity_sources(
             stats: parties.makers_and_referrer_stats,
         },
         &venue,
-        policy,
+        rules,
         conditions,
         setup,
         taker.reborrow(),
@@ -1669,7 +1659,7 @@ fn refresh_and_read_market<'m>(
     market: &'m mut PerpMarket,
     oracle_map: &mut OracleMap,
     taker: &TakerSide,
-    policy: &FillPolicy,
+    rules: &PricingRules,
     conditions: &FillConditions,
 ) -> VelocityResult<(AmmQuoter<'m>, FillMarketSetup)> {
     let oracle_price_data = *oracle_map.get_price_data(&market.oracle_id())?;
@@ -1677,7 +1667,7 @@ fn refresh_and_read_market<'m>(
         market,
         oracle_price_data,
         conditions.slot,
-        policy.validity_guard_rails,
+        rules.validity_guard_rails,
         oracle_map.slot_clock,
     )?;
     let market_fee_adjustment = market.fee_adjustment;
@@ -1686,7 +1676,7 @@ fn refresh_and_read_market<'m>(
         &mut amm_quoter,
         quote_inputs,
         taker,
-        policy,
+        rules,
         conditions,
         market_fee_adjustment,
     )?;

@@ -203,7 +203,7 @@ impl<'info> LiquidationBooks<'_, 'info> {
         order_id: u32,
         maps: &mut AccountMaps<'info>,
         clock: &Clock,
-    ) -> Result<controller::liquidation::PerpFill> {
+    ) -> Result<controller::orders::FillAmounts> {
         let market_index = self.market_index;
         let order = {
             let user = load!(self.user)?;
@@ -265,47 +265,34 @@ impl<'info> LiquidationBooks<'_, 'info> {
             unrouted_quoters: quoted.unrouted_quoters,
         };
 
-        let (filled, _) = quoted.route_fill(
-            crate::instructions::RouterTerms {
-                protocol_authority: self.state.signer,
-                taker_exposure_closed_by_caller: false,
-                obligation,
+        let mut books = quoted.books(clock, &mut cpi_scratch)?;
+        let mut router = books.for_fill(crate::instructions::FillerStanding {
+            protocol_authority: self.state.signer,
+            taker_exposure_closed_by_caller: false,
+            obligation,
+        });
+        Ok(controller::orders::fill_perp_order(
+            controller::orders::FillRequest {
+                target: controller::orders::FillTarget::Slot(order_id),
+                mode: FillMode::Liquidation,
+                referrer_is_accelerated: false,
             },
+            self.state,
             clock,
-            &mut cpi_scratch,
-            |router| {
-                controller::orders::fill_perp_order(
-                    controller::orders::FillRequest {
-                        target: controller::orders::FillTarget::Slot(order_id),
-                        mode: FillMode::Liquidation,
-                        referrer_is_accelerated: false,
-                    },
-                    self.state,
-                    clock,
-                    controller::orders::PerpFillAccounts {
-                        user: self.user,
-                        user_stats: self.user_stats,
-                        filler: self.liquidator,
-                        filler_stats: self.liquidator_stats,
-                        rev_share_escrow: &mut None,
-                    },
-                    &mut controller::orders::FillParties {
-                        maps,
-                        makers_and_referrer: self.makers_and_referrer,
-                        makers_and_referrer_stats: self.makers_and_referrer_stats,
-                    },
-                    router,
-                )
-                .map(
-                    |(base_asset_amount, quote_asset_amount)| controller::liquidation::PerpFill {
-                        base_asset_amount,
-                        quote_asset_amount,
-                    },
-                )
-                .map_err(Into::into)
+            controller::orders::PerpFillAccounts {
+                user: self.user,
+                user_stats: self.user_stats,
+                filler: self.liquidator,
+                filler_stats: self.liquidator_stats,
+                rev_share_escrow: &mut None,
             },
-        )?;
-        Ok(filled)
+            &mut controller::orders::FillParties {
+                maps,
+                makers_and_referrer: self.makers_and_referrer,
+                makers_and_referrer_stats: self.makers_and_referrer_stats,
+            },
+            &mut router,
+        )?)
     }
 
     /// Whether the depth this liquidation can reach has measurably rested.

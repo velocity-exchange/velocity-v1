@@ -130,8 +130,8 @@ fn a_crossed_taker_remainder_is_not_offered_to_the_arb_crank() {
 mod cross_rules {
     use super::{super::*, PRICE, UNIT};
 
-    fn leg(base_filled: u64, worst_price: u64, quote_delta: i64) -> CrossLegFilled {
-        CrossLegFilled {
+    fn leg(base_filled: u64, worst_price: u64, quote_delta: i64) -> CrossLegFill {
+        CrossLegFill {
             base_filled,
             quote_delta,
             worst_price,

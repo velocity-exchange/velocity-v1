@@ -20,7 +20,7 @@ use {
         load_mut,
         math::{
             constants::BASE_PRECISION_U64, liquidation::validate_user_not_being_liquidated,
-            router::RouterFillInputs, safe_unwrap::SafeUnwrap,
+            router::RouterLeg, safe_unwrap::SafeUnwrap,
         },
         print_error,
         state::{
@@ -57,16 +57,18 @@ pub fn fill_perp_order_without_external_books<'info>(
     fill_mode: FillMode,
     rev_share_escrow: &mut Option<&mut RevenueShareEscrowZeroCopyMut<'info>>,
     referrer_is_accelerated: bool,
-) -> VelocityResult<(u64, u64)> {
+) -> VelocityResult<FillAmounts> {
     let mut no_externals = crate::state::prop_amm::NoExternalQuoters;
-    let mut router_inputs = crate::math::router::RouterFillInputs {
+    let mut router_inputs = crate::math::router::RouterLeg {
         books: &[],
         executor: &mut no_externals,
-        protocol_authority: state.signer,
-        taker_exposure_closed_by_caller: false,
-        // This path carries no external book, so nothing can withhold depth
-        // and the obligation is never reached.
-        obligation: crate::math::router::FillerObligation::default(),
+        standing: crate::instructions::FillerStanding {
+            protocol_authority: state.signer,
+            taker_exposure_closed_by_caller: false,
+            // This path carries no external book, so nothing can withhold
+            // depth and the obligation is never reached.
+            obligation: crate::math::router::FillerObligation::default(),
+        },
         worst_fill_price: None,
     };
     fill_perp_order(
@@ -179,12 +181,12 @@ impl<'a> Taker<'a> {
     }
 }
 
-/// The keeper that turns a fill, and what the flat reward is worth.
+/// The filler that turns a fill, and what the flat reward is worth.
 ///
 /// Both accounts are absent when the filler is the taker, one of the makers,
 /// or another subaccount of the taker's authority. Such a filler earns no
 /// reward and is never loaded a second time.
-pub(super) struct KeeperSide<'a> {
+pub(super) struct Filler<'a> {
     pub user: Option<&'a mut User>,
     pub stats: Option<&'a mut UserStats>,
     pub key: Pubkey,
@@ -249,10 +251,10 @@ impl<'a> OrderSlot<'a> {
         })
     }
 
-    /// The slot index. Only a slot order can be cancelled, so only a slot
-    /// order reaches a caller that needs one.
-    fn index(&self) -> VelocityResult<usize> {
-        self.index.safe_unwrap()
+    /// The slot index, when the order lives in one. An ephemeral order lives
+    /// nowhere else, so it has none.
+    fn slot_index(&self) -> Option<usize> {
+        self.index
     }
 
     /// Put the fill's progress back where the order came from, so everything
@@ -282,14 +284,14 @@ pub fn fill_perp_order(
     clock: &Clock,
     accounts: PerpFillAccounts<'_, '_, '_>,
     parties: &mut FillParties,
-    router: &mut RouterFillInputs,
-) -> VelocityResult<(u64, u64)> {
+    router: &mut RouterLeg,
+) -> VelocityResult<FillAmounts> {
     let filler_key = accounts.filler.key();
     let user_key = accounts.user.key();
     let mut user = load_mut!(accounts.user)?;
     let mut user_stats = load_mut!(accounts.user_stats)?;
     let mut taker = Taker::new(&mut user, &mut user_stats, user_key);
-    let terms = FillTerms::of(state, request.referrer_is_accelerated);
+    let rules = PricingRules::of(state, request.referrer_is_accelerated);
 
     let mut order = OrderSlot::resolve(request.target, taker.user)?;
     let market_index = order.order.market_index;
@@ -305,7 +307,7 @@ pub fn fill_perp_order(
         &*rev_share_escrow,
     )? == Admission::Skip
     {
-        return Ok((0, 0));
+        return Ok(FillAmounts::default());
     }
 
     let conditions =
@@ -321,14 +323,14 @@ pub fn fill_perp_order(
     OrderUnderFill {
         order,
         taker,
-        keeper: KeeperSide {
+        filler: Filler {
             user: filler.as_deref_mut(),
             stats: filler_stats.as_deref_mut(),
             key: filler_key,
-            flat_filler_fee: terms.fee_structure.flat_filler_fee,
+            flat_filler_fee: state.perp_fee_structure.flat_filler_fee,
         },
         state,
-        terms,
+        rules,
         conditions,
         market_index,
     }
@@ -496,17 +498,22 @@ fn bind_filler<'f, 'info>(
 /// One perp order, as the fill works on it.
 ///
 /// This is the order layer's own subject: the order and where it goes back to,
-/// the taker that owns it, the keeper that turns the fill, and the rules the
-/// three run under. The accounts arrive per step, because every other layer
-/// takes them the same way and a field would tie this context's life to
-/// theirs. [`Self::run`] names the steps and they run in the order they are
-/// written.
+/// the taker that owns it, the filler that turns the fill, and the rules the
+/// three run under. [`Self::run`] names the steps and they run in the order
+/// they are written.
+///
+/// The account maps, the router leg and the escrow arrive per step instead.
+/// This layer lends all three to the layer below. A market handle taken from
+/// the maps is also rooted outside `self`. A step can therefore hold the
+/// market and still mutate the taker and the filler. A field would root that
+/// handle in `self`, and the two borrows would then collide. `PerpFill` holds
+/// its own maps because it consumes them instead of lending them.
 struct OrderUnderFill<'a> {
     order: OrderSlot<'a>,
     taker: Taker<'a>,
-    keeper: KeeperSide<'a>,
+    filler: Filler<'a>,
     state: &'a State,
-    terms: FillTerms<'a>,
+    rules: PricingRules<'a>,
     conditions: FillConditions,
     market_index: u16,
 }
@@ -516,23 +523,23 @@ impl OrderUnderFill<'_> {
     fn run(
         &mut self,
         parties: &mut FillParties,
-        router: &mut RouterFillInputs,
+        router: &mut RouterLeg,
         rev_share_escrow: &mut Option<&mut RevenueShareEscrowZeroCopyMut>,
-    ) -> VelocityResult<(u64, u64)> {
+    ) -> VelocityResult<FillAmounts> {
         let mut dlob_makers = self.discover_dlob_makers(parties)?;
         self.gate_match_fills(&mut dlob_makers, router);
 
         if self.conditions.oracle_too_divergent_with_twap(self.state)? {
             // update filler last active so tx doesn't revert
-            if let Some(filler) = self.keeper.user.as_deref_mut() {
+            if let Some(filler) = self.filler.user.as_deref_mut() {
                 filler.update_last_active_slot(self.conditions.slot);
             }
-            return Ok((0, 0));
+            return Ok(FillAmounts::default());
         }
 
         self.taker.bind_position(self.market_index)?;
         if self.expire_or_cancel(parties)? == Admission::Skip {
-            return Ok((0, 0));
+            return Ok(FillAmounts::default());
         }
 
         let filled = self.fill(&dlob_makers, parties, router, rev_share_escrow)?;
@@ -542,7 +549,7 @@ impl OrderUnderFill<'_> {
         self.cancel_reduce_only_after_fill(parties)?;
         self.cancel_dangling_trigger_orders(parties)?;
         if filled.base == 0 {
-            return Ok((filled.base, filled.quote));
+            return Ok(filled);
         }
 
         self.enforce_open_interest_cap(parties)?;
@@ -550,7 +557,7 @@ impl OrderUnderFill<'_> {
         self.taker
             .user
             .update_last_active_slot(self.conditions.slot);
-        Ok((filled.base, filled.quote))
+        Ok(filled)
     }
 
     /// Every DLOB maker order this fill may match, best price first.
@@ -561,13 +568,13 @@ impl OrderUnderFill<'_> {
         get_maker_orders_info(
             parties.maps,
             parties.makers_and_referrer,
-            &mut self.keeper.user,
+            &mut self.filler.user,
             &MakerSearch {
                 taker_key: &self.taker.key,
                 taker_order: &self.order.order,
                 maker_direction: self.order.order.direction.opposite(),
-                filler_key: &self.keeper.key,
-                filler_reward: self.keeper.flat_filler_fee,
+                filler_key: &self.filler.key,
+                filler_reward: self.filler.flat_filler_fee,
                 oracle_price: self.conditions.oracle_price,
                 exchange_match_fills_allowed: self.conditions.exchange_match_fills_allowed,
                 now: self.conditions.now,
@@ -586,11 +593,7 @@ impl OrderUnderFill<'_> {
     ///
     /// Runs after maker discovery so its expired-maker-order cleanup still
     /// happens. Only the matching itself is withheld.
-    fn gate_match_fills(
-        &mut self,
-        dlob_makers: &mut Vec<MakerOrderInfo>,
-        router: &mut RouterFillInputs,
-    ) {
+    fn gate_match_fills(&mut self, dlob_makers: &mut Vec<MakerOrderInfo>, router: &mut RouterLeg) {
         let taker_can_match = can_floored_user_match_with_exchange_oracle(
             self.taker.user,
             self.conditions.exchange_match_fills_allowed,
@@ -646,13 +649,19 @@ impl OrderUnderFill<'_> {
 
     /// Pay the keeper the flat reward for the work, then cancel the order.
     ///
-    /// Only a slot order can be reduce-only or expire under a keeper, so only
-    /// a slot order reaches here.
+    /// An ephemeral order rests in no slot. There is no order to cancel and no
+    /// stale order a keeper cleaned up, so the caller's refusal to fill is the
+    /// whole outcome and nobody is paid. A reduce-only order reaches this on an
+    /// ephemeral route whenever the position it may reduce is under one step
+    /// size, which includes a flat position.
     fn cancel_and_reward(
         &mut self,
         explanation: OrderActionExplanation,
         parties: &mut FillParties,
     ) -> VelocityResult {
+        let Some(order_index) = self.order.slot_index() else {
+            return Ok(());
+        };
         let filler_reward = {
             let mut market = parties
                 .maps
@@ -660,21 +669,21 @@ impl OrderUnderFill<'_> {
                 .get_ref_mut(&self.market_index)?;
             pay_keeper_flat_reward_for_perps(
                 self.taker.user,
-                self.keeper.user.as_deref_mut(),
+                self.filler.user.as_deref_mut(),
                 market.deref_mut(),
-                self.keeper.flat_filler_fee,
+                self.filler.flat_filler_fee,
                 self.conditions.slot,
             )?
         };
         cancel_order(
-            self.order.index()?,
+            order_index,
             self.taker.user,
             &self.taker.key,
             parties.maps,
             self.conditions.now,
             self.conditions.slot,
             explanation,
-            Some(&self.keeper.key),
+            Some(&self.filler.key),
             filler_reward,
             false,
         )
@@ -690,7 +699,7 @@ impl OrderUnderFill<'_> {
         &mut self,
         dlob_makers: &[MakerOrderInfo],
         parties: &mut FillParties,
-        router: &mut RouterFillInputs,
+        router: &mut RouterLeg,
         rev_share_escrow: &mut Option<&mut RevenueShareEscrowZeroCopyMut>,
     ) -> VelocityResult<FillAmounts> {
         let mut taker = TakerSide::bind(
@@ -700,9 +709,9 @@ impl OrderUnderFill<'_> {
             &mut self.order.order,
             self.order.reserved,
         )?;
-        let (base, quote) = fill_within_taker_risk_limits(
+        fill_within_taker_risk_limits(
             &mut taker,
-            &self.terms,
+            &self.rules,
             &self.conditions,
             parties,
             &mut OfferedLiquidity {
@@ -710,13 +719,12 @@ impl OrderUnderFill<'_> {
                 router,
             },
             &mut FillerSide {
-                user: &mut self.keeper.user,
-                stats: &mut self.keeper.stats,
-                key: self.keeper.key,
+                user: &mut self.filler.user,
+                stats: &mut self.filler.stats,
+                key: self.filler.key,
                 rev_share_escrow,
             },
-        )?;
-        Ok(FillAmounts { base, quote })
+        )
     }
 
     /// Hold the blended fill price to the market's price band, and record it
@@ -768,7 +776,7 @@ impl OrderUnderFill<'_> {
         cancel_reduce_only_trigger_orders(
             self.taker.user,
             &self.taker.key,
-            Some(&self.keeper.key),
+            Some(&self.filler.key),
             parties.maps,
             self.conditions.now,
             self.conditions.slot,

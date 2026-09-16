@@ -9,7 +9,7 @@
 //! The seat types are the vocabulary of that spine: who takes, who makes, and
 //! who fills.
 
-use super::*;
+use {super::*, crate::state::fill_mode::FillMode};
 
 #[inline(always)]
 fn get_builder_escrow_info(
@@ -381,22 +381,45 @@ pub(crate) struct FillerSide<'a, 'user, 'stats, 'escrow, 'info> {
 }
 
 /// The rules a fill prices and charges under. Fixed for a whole instruction.
-pub(crate) struct FillPolicy<'a> {
-    pub fee_structure: &'a FeeStructure,
+pub(crate) struct PricingRules<'a> {
+    pub(super) fee_structure: &'a FeeStructure,
     /// The oracle tolerances the quote snapshot is read under.
-    pub validity_guard_rails: &'a ValidityGuardRails,
-    pub referrer_is_accelerated: bool,
-    pub is_liquidation: bool,
-    pub promo_fee_tier: u8,
+    pub(super) validity_guard_rails: &'a ValidityGuardRails,
+    pub(super) referrer_is_accelerated: bool,
+    pub(super) promo_fee_tier: u8,
     /// Whether a vAMM fill pays the maker rebate.
-    pub vamm_maker_rebate: bool,
+    pub(super) vamm_maker_rebate: bool,
     /// False when the taker does not meet initial margin. The fill proceeds and
-    /// charges no builder fee. [`FillTerms::policy`] takes the decision and
-    /// [`builder_fee_allowed`] states the rule.
-    pub builder_fee_allowed: bool,
+    /// charges no builder fee. The taker layer takes the decision once it has
+    /// measured margin, and hands it to [`Self::allow_builder_fee`].
+    pub(super) builder_fee_allowed: bool,
 }
 
-impl<'a> FillPolicy<'a> {
+impl<'a> PricingRules<'a> {
+    /// The rules the exchange state sets for one fill.
+    ///
+    /// `builder_fee_allowed` starts false because nothing has measured the
+    /// taker's margin yet. The taker layer decides it and calls
+    /// [`Self::allow_builder_fee`].
+    pub(crate) fn of(state: &'a State, referrer_is_accelerated: bool) -> Self {
+        Self {
+            fee_structure: &state.perp_fee_structure,
+            validity_guard_rails: &state.oracle_guard_rails.validity,
+            referrer_is_accelerated,
+            promo_fee_tier: state.promo_fee_tier,
+            vamm_maker_rebate: state.vamm_maker_rebate_enabled(),
+            builder_fee_allowed: false,
+        }
+    }
+
+    /// The same rules, with the builder-fee decision taken.
+    pub(crate) fn allow_builder_fee(&self, builder_fee_allowed: bool) -> Self {
+        Self {
+            builder_fee_allowed,
+            ..*self
+        }
+    }
+
     /// The rules for a path that only settles an already-matched pair. It
     /// prices nothing, so it routes no external book, charges no builder fee
     /// and pays no referral acceleration.
@@ -405,12 +428,140 @@ impl<'a> FillPolicy<'a> {
             fee_structure: &state.perp_fee_structure,
             validity_guard_rails: &state.oracle_guard_rails.validity,
             referrer_is_accelerated: false,
-            is_liquidation: false,
             promo_fee_tier: state.promo_fee_tier,
             vamm_maker_rebate: false,
             builder_fee_allowed: false,
         }
     }
+
+    /// The fee tier this fill charges `stats`.
+    pub(crate) fn user_fee_tier(&self, stats: &UserStats, now: i64) -> VelocityResult<FeeTier> {
+        crate::math::fees::determine_user_fee_tier(
+            stats,
+            self.fee_structure,
+            &MarketType::Perp,
+            now,
+            self.promo_fee_tier,
+        )
+    }
+
+    /// The builder escrow this fill accrues against.
+    ///
+    /// The gate belongs to the policy. A taker that does not meet initial
+    /// margin still fills, and it charges no builder fee.
+    fn builder_escrow(
+        &self,
+        filler: &mut FillerSide,
+        taker: &TakerSide,
+        market_index: u16,
+        order_id: u32,
+    ) -> BuilderEscrow {
+        BuilderEscrow::read(
+            filler,
+            taker,
+            market_index,
+            order_id,
+            self.builder_fee_allowed,
+        )
+    }
+
+    /// What a vAMM slice costs, on the house schedule.
+    ///
+    /// The schedule below takes its inputs one at a time because it is leaf
+    /// math with no context of its own, and its parameter list is the surface
+    /// its own unit tests pin. This method is where the fill's rules meet it,
+    /// so a caller states the slice and nothing else.
+    fn amm_fill_fees(
+        &self,
+        taker_stats: &UserStats,
+        fill: AmmFeeFill,
+        market: &PerpMarket,
+        clock: FeeClock,
+    ) -> VelocityResult<FillFees> {
+        fees::calculate_fee_for_fulfillment_with_amm(
+            taker_stats,
+            fill.quote,
+            self.fee_structure,
+            fill.order_slot,
+            clock.slot,
+            fill.reward_filler,
+            fill.reward_referrer,
+            self.referrer_is_accelerated,
+            fill.surplus,
+            fill.post_only,
+            market.fee_adjustment,
+            fill.builder_fee_bps,
+            self.vamm_maker_rebate,
+            market.taker_fee_addon_tenth_bps,
+            clock.now,
+            self.promo_fee_tier,
+            clock.slot_clock,
+            clock.filler_reward_paid,
+        )
+    }
+
+    /// What a matched pair costs, on the match schedule. Same division of
+    /// labour as [`Self::amm_fill_fees`].
+    fn matched_fill_fees(
+        &self,
+        taker_stats: &UserStats,
+        maker_stats: &Option<&mut UserStats>,
+        fill: MatchFeeFill,
+        market: &PerpMarket,
+        clock: FeeClock,
+    ) -> VelocityResult<FillFees> {
+        fees::calculate_fee_for_fulfillment_with_match(
+            taker_stats,
+            maker_stats,
+            fill.quote,
+            self.fee_structure,
+            fill.order_slot,
+            clock.slot,
+            fill.filler_multiplier,
+            fill.reward_referrer,
+            self.referrer_is_accelerated,
+            &MarketType::Perp,
+            market.fee_adjustment,
+            fill.builder_fee_bps,
+            market.taker_fee_addon_tenth_bps,
+            clock.now,
+            self.promo_fee_tier,
+            clock.slot_clock,
+            clock.filler_reward_paid,
+        )
+    }
+}
+
+/// The clock a fee schedule reads.
+#[derive(Clone, Copy)]
+struct FeeClock {
+    pub now: i64,
+    pub slot: u64,
+    pub slot_clock: SlotClock,
+    /// Filler reward already paid by earlier legs of this same fill.
+    pub filler_reward_paid: u64,
+}
+
+/// The vAMM slice a house fee schedule prices.
+struct AmmFeeFill {
+    /// What the taker pays for the slice.
+    pub quote: u64,
+    /// What the house keeps as spread.
+    pub surplus: i64,
+    pub order_slot: u64,
+    pub post_only: bool,
+    pub reward_filler: bool,
+    pub reward_referrer: bool,
+    pub builder_fee_bps: Option<u16>,
+}
+
+/// The matched pair a match fee schedule prices.
+struct MatchFeeFill {
+    pub quote: u64,
+    pub order_slot: u64,
+    pub filler_multiplier: u64,
+    pub reward_referrer: bool,
+    pub builder_fee_bps: Option<u16>,
 }
 
 /// The builder order a fill accrues revenue share against, as the taker's
@@ -460,7 +611,10 @@ impl BuilderEscrow {
 pub(crate) struct SettleContext<'a, 'o> {
     /// The market both seats settle into.
     pub market: &'a mut PerpMarket,
-    pub policy: &'a FillPolicy<'a>,
+    pub rules: &'a PricingRules<'a>,
+    /// How this fill was asked to fill. The fee record and the margin gate
+    /// both read it, and a liquidation answers differently.
+    pub mode: FillMode,
     pub oracle_map: &'a mut OracleMap<'o>,
     pub now: i64,
     pub slot: u64,
@@ -468,6 +622,18 @@ pub(crate) struct SettleContext<'a, 'o> {
     /// time-based component of the reward is size-independent, so it is a
     /// per-fill allowance the legs draw down rather than one each.
     pub filler_reward_paid: &'a mut u64,
+}
+
+impl SettleContext<'_, '_> {
+    /// The clock and the filler allowance, as a fee schedule reads them.
+    fn fee_clock(&self) -> FeeClock {
+        FeeClock {
+            now: self.now,
+            slot: self.slot,
+            slot_clock: self.oracle_map.slot_clock,
+            filler_reward_paid: *self.filler_reward_paid,
+        }
+    }
 }
 
 /// The fee split one settled allocation produced, and what it accrues against.
@@ -755,7 +921,8 @@ pub(super) struct AmmAllocation {
     pub post_only: bool,
     pub order_slot: u64,
     pub order_id: u32,
-    pub taker_limit: Option<u64>,
+    /// The taker's own limit price, which the AMM schedule holds the slice to.
+    pub taker_limit_price: Option<u64>,
 }
 
 /// The vAMM's seat in a house fill.
@@ -765,8 +932,6 @@ pub(super) struct AmmAllocation {
 pub(super) struct HouseSide<'a, 'user, 'stats> {
     pub cranking_maker: &'a mut Option<&'user mut User>,
     pub cranking_maker_stats: &'a mut Option<&'stats mut UserStats>,
-    /// Whether the house pays a maker rebate for making the fill.
-    pub pays_maker_rebate: bool,
 }
 
 /// What the taker pays for a vAMM slice, and what the house keeps as spread.
@@ -780,7 +945,7 @@ fn amm_house_taker_quote(
     taker: &TakerSide,
     allocation: &AmmAllocation,
 ) -> VelocityResult<(u64, i64)> {
-    match (allocation.post_only, allocation.taker_limit) {
+    match (allocation.post_only, allocation.taker_limit_price) {
         (true, Some(limit)) => crate::controller::position::calculate_quote_asset_amount_surplus(
             taker.direction,
             fill.quote_filled,
@@ -790,7 +955,7 @@ fn amm_house_taker_quote(
         _ => settle_amm_house_normal_quote(
             fill,
             taker.direction,
-            allocation.taker_limit,
+            allocation.taker_limit_price,
             allocation.quote,
             allocation.base,
         ),
@@ -864,32 +1029,23 @@ fn price_amm_house_fill(
         can_reward_user_with_referral_reward(market_index, filler.rev_share_escrow);
     let reward_filler = can_reward_user_with_perp_pnl(filler.user, market_index)
         || can_reward_user_with_perp_pnl(house.cranking_maker, market_index);
-    let escrow = BuilderEscrow::read(
-        filler,
-        taker,
-        market_index,
-        allocation.order_id,
-        cx.policy.builder_fee_allowed,
-    );
-    let fees = fees::calculate_fee_for_fulfillment_with_amm(
+    let escrow = cx
+        .rules
+        .builder_escrow(filler, taker, market_index, allocation.order_id);
+    let clock = cx.fee_clock();
+    let fees = cx.rules.amm_fill_fees(
         taker.stats,
-        taker_quote,
-        cx.policy.fee_structure,
-        allocation.order_slot,
-        cx.slot,
-        reward_filler,
-        reward_referrer,
-        cx.policy.referrer_is_accelerated,
-        taker_surplus,
-        allocation.post_only,
-        cx.market.fee_adjustment,
-        escrow.fee_tenth_bps,
-        house.pays_maker_rebate,
-        cx.market.taker_fee_addon_tenth_bps,
-        cx.now,
-        cx.policy.promo_fee_tier,
-        cx.oracle_map.slot_clock,
-        *cx.filler_reward_paid,
+        AmmFeeFill {
+            quote: taker_quote,
+            surplus: taker_surplus,
+            order_slot: allocation.order_slot,
+            post_only: allocation.post_only,
+            reward_filler,
+            reward_referrer,
+            builder_fee_bps: escrow.fee_tenth_bps,
+        },
+        cx.market,
+        clock,
     )?;
     Ok((
         taker_quote,
@@ -947,7 +1103,7 @@ fn emit_amm_house_record(
 ) -> VelocityResult {
     let (taker_record_key, taker_record_order, maker_record_key, maker_record_order) =
         get_taker_and_maker_for_order_record(&taker.key, taker.order);
-    let explanation = if cx.policy.is_liquidation {
+    let explanation = if cx.mode.is_liquidation() {
         OrderActionExplanation::Liquidation
     } else {
         OrderActionExplanation::OrderFilledWithAMM
@@ -1005,7 +1161,7 @@ pub(crate) struct DlobMatch {
     /// The sanitized price discovery froze the maker order at.
     pub maker_price: u64,
     /// The taker's effective limit. Its side of the fill must clear it.
-    pub taker_limit: u64,
+    pub effective_taker_limit: u64,
     /// The oracle price the filler-reward tier is measured against.
     pub oracle_price: i64,
 }
@@ -1016,7 +1172,7 @@ pub(crate) struct DlobMatch {
 /// per unit against its own quoted levels, which is the maker-side contract.
 pub(crate) struct ExternalMatch {
     /// The taker's effective limit, when the order carries one.
-    pub taker_limit: Option<u64>,
+    pub effective_taker_limit: Option<u64>,
     /// The oracle price the filler-reward tier is measured against.
     pub oracle_price: i64,
 }
@@ -1051,13 +1207,9 @@ fn price_matched_fill(
     // order names *itself*, so this stays false and no reward is charged.
     let maker_is_filler = filler.key == maker.key;
     let reward_filler = can_reward_user_with_perp_pnl(filler.user, market_index) || maker_is_filler;
-    let escrow = BuilderEscrow::read(
-        filler,
-        taker,
-        market_index,
-        taker.order.order_id,
-        cx.policy.builder_fee_allowed,
-    );
+    let escrow = cx
+        .rules
+        .builder_escrow(filler, taker, market_index, taker.order.order_id);
     let filler_multiplier = if reward_filler {
         calculate_filler_multiplier_for_matched_orders(
             tier.maker_price,
@@ -1067,24 +1219,19 @@ fn price_matched_fill(
     } else {
         0
     };
-    let fees = fees::calculate_fee_for_fulfillment_with_match(
+    let clock = cx.fee_clock();
+    let fees = cx.rules.matched_fill_fees(
         taker.stats,
         &maker.stats,
-        filled.quote,
-        cx.policy.fee_structure,
-        taker.order.slot,
-        cx.slot,
-        filler_multiplier,
-        reward_referrer,
-        cx.policy.referrer_is_accelerated,
-        &MarketType::Perp,
-        cx.market.fee_adjustment,
-        escrow.fee_tenth_bps,
-        cx.market.taker_fee_addon_tenth_bps,
-        cx.now,
-        cx.policy.promo_fee_tier,
-        cx.oracle_map.slot_clock,
-        *cx.filler_reward_paid,
+        MatchFeeFill {
+            quote: filled.quote,
+            order_slot: taker.order.slot,
+            filler_multiplier,
+            reward_referrer,
+            builder_fee_bps: escrow.fee_tenth_bps,
+        },
+        cx.market,
+        clock,
     )?;
     Ok(SettledFees::take(fees, escrow, cx))
 }
@@ -1162,7 +1309,7 @@ pub(crate) fn settle_dlob_match_fill(
         filled.base,
         BASE_PRECISION_U64,
         taker.direction,
-        matched.taker_limit,
+        matched.effective_taker_limit,
         true,
     )?;
     validate_fill_price(
@@ -1244,7 +1391,7 @@ pub(crate) fn settle_external_match_fill(
     filler: &mut FillerSide,
     cx: &mut SettleContext,
 ) -> VelocityResult<(u64, u64)> {
-    if let Some(limit) = prices.taker_limit {
+    if let Some(limit) = prices.effective_taker_limit {
         validate_fill_price(
             filled.quote,
             filled.base,
@@ -1340,7 +1487,7 @@ fn emit_matched_record(
     record: MatchedRecord,
     cx: &mut SettleContext,
 ) -> VelocityResult {
-    let explanation = if cx.policy.is_liquidation {
+    let explanation = if cx.mode.is_liquidation() {
         OrderActionExplanation::Liquidation
     } else {
         record.explanation

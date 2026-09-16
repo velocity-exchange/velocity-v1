@@ -46,6 +46,8 @@ pub(crate) struct MakerSearch<'a> {
     pub maker_direction: PositionDirection,
     /// The keeper that earns the flat reward for each stale order it cleans up.
     pub filler_key: &'a Pubkey,
+    /// `FeeStructure::flat_filler_fee`, which the schedule charges as a fee and
+    /// `pay_keeper_flat_reward_for_perps` pays out as a reward.
     pub filler_reward: u64,
     pub oracle_price: i64,
     /// Whether the raw exchange oracle admits a match fill at all.
@@ -66,8 +68,8 @@ struct LoadedMaker<'a, 'info> {
 /// The market facts discovery reads once per maker.
 #[derive(Clone, Copy)]
 struct MakerMarketFacts {
-    initial_margin_ratio: u32,
-    step_size: u64,
+    margin_ratio_initial: u32,
+    order_step_size: u64,
     /// A `ReduceOnly` market forces resting maker orders risk-reducing too,
     /// regardless of the flag they were placed with. Stamped onto each maker
     /// order so the reduce-only cancel check and the position-capped fill size
@@ -247,8 +249,8 @@ fn open_maker_orders(
     maker.update_last_active_slot(search.slot);
     settle_funding_payment(maker, maker_key, &mut market, search.now)?;
     let facts = MakerMarketFacts {
-        initial_margin_ratio: market.margin_ratio_initial,
-        step_size: market.order_step_size,
+        margin_ratio_initial: market.margin_ratio_initial,
+        order_step_size: market.order_step_size,
         reduce_only: market.is_reduce_only()?,
     };
     Ok(Some((candidates, facts)))
@@ -277,7 +279,7 @@ fn admit_maker_order(
         candidate.price,
         order.direction,
         search.oracle_price,
-        facts.initial_margin_ratio,
+        facts.margin_ratio_initial,
     )?;
     if facts.reduce_only {
         maker.orders[candidate.index].reduce_only = true;
@@ -289,7 +291,7 @@ fn admit_maker_order(
     let increases_position = should_cancel_reduce_only_order(
         &maker.orders[candidate.index],
         existing_base_asset_amount,
-        facts.step_size,
+        facts.order_step_size,
     )?;
 
     if breaches_oracle_price_limits || expired || increases_position {

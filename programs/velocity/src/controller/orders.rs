@@ -101,7 +101,7 @@ mod settle;
 mod trigger;
 
 #[cfg(test)]
-pub(crate) use perp_fill::{FillConditions, FillTerms, OfferedLiquidity};
+pub(crate) use perp_fill::{FillConditions, OfferedLiquidity};
 pub use {
     amend::*,
     cross::*,
@@ -282,6 +282,16 @@ fn cancel_reduce_only_trigger_orders(
         }
 
         if !user.orders[order_index].reduce_only {
+            continue;
+        }
+
+        // A placed trigger's slot is a shadow whose live order rests on the
+        // CLOB. `cancel_order` refuses one, because cancelling the shadow
+        // strands the CLOB order and double-unwinds its accounting. Such an
+        // order also holds an `open_bids`/`open_asks` reservation, so the flat
+        // position this sweep runs under keeps it out of reach today. Skip it
+        // here too, so the sweep does not depend on that.
+        if user.orders[order_index].is_placed_on_clob() {
             continue;
         }
 

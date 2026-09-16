@@ -815,12 +815,6 @@ pub struct LiquidationParties<'a, 'info> {
     pub liquidator_key: &'a Pubkey,
 }
 
-/// The base and the quote a fill moved.
-pub struct PerpFill {
-    pub base_asset_amount: u64,
-    pub quote_asset_amount: u64,
-}
-
 /// What [`place_liquidation_order`] left for the caller to act on.
 ///
 /// Not boxed, though `Placed` is 336 bytes against an empty `Settled`.
@@ -1300,7 +1294,7 @@ pub fn place_liquidation_order<'info>(
 /// caller cannot inflate.
 pub fn settle_liquidation_fill<'info>(
     placed: PlacedLiquidation,
-    fill: PerpFill,
+    fill: orders::FillAmounts,
     parties: LiquidationParties<'_, 'info>,
     maps: &mut AccountMaps<'info>,
     clock: &Clock,
@@ -1327,9 +1321,9 @@ pub fn settle_liquidation_fill<'info>(
         fill_record_id,
         existing_direction,
     } = placed;
-    let PerpFill {
-        base_asset_amount: fill_base_asset_amount,
-        quote_asset_amount: fill_quote_asset_amount,
+    let orders::FillAmounts {
+        base: fill_base_asset_amount,
+        quote: fill_quote_asset_amount,
     } = fill;
     let now = clock.unix_timestamp;
     let liquidation_margin_buffer_ratio = state.liquidation_margin_buffer_ratio;

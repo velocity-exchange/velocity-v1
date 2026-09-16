@@ -17,15 +17,15 @@
 //! The result is owned because the fill borrows from it: the executor holds
 //! the quoted slots and the account tail, and the router's books point at the
 //! levels each quote returned. A function that built the executor itself would
-//! be returning references to its own locals, so the caller keeps this alive
-//! and borrows ([`QuotedRoute::books`], [`QuotedRoute::executor`]).
+//! be returning references to its own locals, so the caller keeps the route
+//! alive and takes the fill's books from it ([`RouteQuote::books`]).
 
 use {
     super::{cpi_executor::CpiQuoterExecutor, user_caps::SizedQuote},
     crate::{
         controller::position::PositionDirection,
         error::ErrorCode,
-        math::router::QuoterBook,
+        math::router::{QuoterBook, RouterLeg},
         state::{
             order_params::{RouteDigest, NO_ROUTE_DIGEST},
             prop_amm::{
@@ -162,7 +162,7 @@ struct SlotQuote {
 }
 
 /// What a router fill needs beyond the quoted route itself.
-pub struct RouterTerms {
+pub struct FillerStanding {
     /// `State::signer`, the authority of the protocol `User`, which no quoter
     /// may name as a fill subject.
     pub protocol_authority: Pubkey,
@@ -173,42 +173,62 @@ pub struct RouterTerms {
     pub taker_exposure_closed_by_caller: bool,
 }
 
-impl<'info> QuotedFill<'_, 'info> {
-    /// Wire the quoted route into router-fill inputs and run `fill` against
-    /// them.
+impl<'info> RouteQuote<'_, 'info> {
+    /// The books this route quoted, in the form the fill reads them, with the
+    /// leg that executes what lands on them.
     ///
-    /// A closure rather than a returned value, because the inputs borrow two
-    /// things that have to outlive them and cannot leave with them: the book
-    /// list is a reshape written into a caller-owned array, and the executor
-    /// borrows the route and the CPI scratch. Returning them would mean
-    /// returning references to this function's own locals, so the fill comes
-    /// here instead.
-    ///
-    /// Reports the worst price any one source executed at, which is the only
-    /// field a caller reads back.
-    pub fn route_fill<T>(
-        &self,
-        terms: RouterTerms,
+    /// A second step rather than part of [`quote_route`], because this
+    /// borrows what quoting returned: the books point at the route's level
+    /// pool, and the executor borrows the route and the CPI scratch. One
+    /// function cannot return both the route and a value that points into it,
+    /// so the caller holds the route and takes the books from it.
+    pub fn books<'a>(
+        &'a self,
         clock: &Clock,
-        scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
-        fill: impl FnOnce(&mut crate::math::router::RouterFillInputs<'_, '_, 'info>) -> Result<T>,
-    ) -> Result<(T, Option<u64>)> {
-        let mut book_storage =
+        scratch: &'a mut crate::state::prop_amm::QuoterCpiScratch<'info>,
+    ) -> Result<QuotedBooks<'a, 'info>> {
+        let mut books =
             [crate::math::router::QuoterBook::default(); crate::state::prop_amm::MAX_ROUTE_QUOTERS];
-        let books = self.route.books(&mut book_storage)?;
-        let mut executor =
-            self.route
-                .executor(&self.sized, clock.slot, clock.unix_timestamp, scratch);
-        let mut inputs = crate::math::router::RouterFillInputs {
+        let written = self.route.write_books(&mut books)?;
+        Ok(QuotedBooks {
             books,
-            executor: &mut executor,
-            protocol_authority: terms.protocol_authority,
-            obligation: terms.obligation,
-            taker_exposure_closed_by_caller: terms.taker_exposure_closed_by_caller,
+            written,
+            executor: self
+                .route
+                .executor(&self.sized, clock.slot, clock.unix_timestamp, scratch),
+        })
+    }
+}
+
+/// What a router fill executes against: the route's books, reshaped into the
+/// router's own list, and the execute leg for the allocations that land on
+/// them. Books and executor share indexing, so they are one value.
+///
+/// The caller holds it for the length of the fill, because the fill's inputs
+/// borrow it ([`Self::for_fill`]).
+pub struct QuotedBooks<'a, 'info> {
+    books: [QuoterBook<'a>; MAX_ROUTE_QUOTERS],
+    /// Books the route wrote. The rest of the array is the default book,
+    /// which quotes nothing.
+    written: usize,
+    executor: CpiQuoterExecutor<'a, 'info>,
+}
+
+impl<'a, 'info> QuotedBooks<'a, 'info> {
+    /// The router leg the fill runs: these books and their execute leg, plus
+    /// what the fill needs beyond the route itself.
+    ///
+    /// The leg borrows the books rather than taking them, because it points
+    /// into them. They outlive it, and the caller reads
+    /// [`crate::math::router::RouterLeg::worst_fill_price`] back off the leg
+    /// once the fill returns.
+    pub fn for_fill<'b>(&'b mut self, standing: FillerStanding) -> RouterLeg<'b, 'a, 'info> {
+        RouterLeg {
+            books: &self.books[..self.written],
+            executor: &mut self.executor,
+            standing,
             worst_fill_price: None,
-        };
-        let out = fill(&mut inputs)?;
-        Ok((out, inputs.worst_fill_price))
+        }
     }
 }
 
@@ -220,8 +240,9 @@ pub struct RouteClaim<'a> {
     pub digest: RouteDigest,
 }
 
-/// A quoted route and the sized inputs it was quoted from.
-pub struct QuotedFill<'a, 'info> {
+/// What the route quoted for one fill, and the sized inputs it was quoted
+/// from.
+pub struct RouteQuote<'a, 'info> {
     pub route: QuotedRoute<'info>,
     pub sized: SizedQuote<'a, 'info>,
     /// Consulted quoters the order's signed route did not name, which arms
@@ -246,7 +267,7 @@ pub fn quote_route<'a, 'info>(
     claim: Option<RouteClaim<'_>>,
     ctx: &mut super::user_caps::CapInputs<'_, 'info>,
     scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
-) -> Result<QuotedFill<'a, 'info>> {
+) -> Result<RouteQuote<'a, 'info>> {
     let clob_market = ctx
         .maps
         .perp_market_map
@@ -262,7 +283,7 @@ pub fn quote_route<'a, 'info>(
         }
         None => 0,
     };
-    Ok(QuotedFill {
+    Ok(RouteQuote {
         route,
         sized,
         unrouted_quoters,
@@ -709,14 +730,16 @@ impl<'info> QuotedRoute<'info> {
     }
 
     /// The router's view of what quoted, written into storage the caller owns.
+    /// Reports how many books it wrote, which is the length of the prefix the
+    /// fill reads.
     ///
     /// Takes a buffer rather than returning one: the books are a reshape of
     /// what this struct already holds, and allocating a second list to say the
     /// same thing is the kind of cost that only looks free.
-    pub fn books<'a>(
+    pub fn write_books<'a>(
         &'a self,
-        into: &'a mut [QuoterBook<'a>; MAX_ROUTE_QUOTERS],
-    ) -> Result<&'a [QuoterBook<'a>]> {
+        into: &mut [QuoterBook<'a>; MAX_ROUTE_QUOTERS],
+    ) -> Result<usize> {
         if let Some(slab) = &self.slab {
             let slots = slab.slots()?;
             for (book, (&index, ladder)) in into
@@ -730,7 +753,7 @@ impl<'info> QuotedRoute<'info> {
                 };
             }
         }
-        Ok(&into[..self.quoted_slots.len()])
+        Ok(self.quoted_slots.len())
     }
 
     /// The execute leg, borrowing what quoting already gathered.

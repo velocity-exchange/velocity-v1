@@ -4,17 +4,15 @@
 //! under, and what the market oracle says the fill may do.
 
 use {
-    super::super::{FillPolicy, MakerOrderInfo},
+    super::super::MakerOrderInfo,
     crate::{
         error::VelocityResult,
         instructions::optional_accounts::AccountMaps,
-        math::{
-            casting::Cast, orders::is_oracle_too_divergent_with_twap_5min, router::RouterFillInputs,
-        },
+        math::{casting::Cast, orders::is_oracle_too_divergent_with_twap_5min, router::RouterLeg},
         state::{
             fill_mode::FillMode,
             oracle_map::OracleMap,
-            state::{FeeStructure, State, ValidityGuardRails},
+            state::State,
             user::{User, UserStats},
             user_map::{UserMap, UserStatsMap},
         },
@@ -33,47 +31,12 @@ pub enum Admission {
     Skip,
 }
 
-/// The exchange rules one fill runs under. Fixed for the whole instruction.
-pub struct FillTerms<'a> {
-    pub fee_structure: &'a FeeStructure,
-    pub validity_guard_rails: &'a ValidityGuardRails,
-    pub promo_fee_tier: u8,
-    pub referrer_is_accelerated: bool,
-    pub vamm_maker_rebate: bool,
-}
-
-impl<'a> FillTerms<'a> {
-    /// The terms the exchange state sets.
-    pub fn of(state: &'a State, referrer_is_accelerated: bool) -> Self {
-        Self {
-            fee_structure: &state.perp_fee_structure,
-            validity_guard_rails: &state.oracle_guard_rails.validity,
-            promo_fee_tier: state.promo_fee_tier,
-            referrer_is_accelerated,
-            vamm_maker_rebate: state.vamm_maker_rebate_enabled(),
-        }
-    }
-
-    /// The pricing rules for one fill, once the mode and the builder-fee
-    /// decision are known.
-    pub fn policy(&self, mode: FillMode, builder_fee_allowed: bool) -> FillPolicy<'a> {
-        FillPolicy {
-            fee_structure: self.fee_structure,
-            validity_guard_rails: self.validity_guard_rails,
-            referrer_is_accelerated: self.referrer_is_accelerated,
-            is_liquidation: mode.is_liquidation(),
-            promo_fee_tier: self.promo_fee_tier,
-            vamm_maker_rebate: self.vamm_maker_rebate,
-            builder_fee_allowed,
-        }
-    }
-}
-
 /// The conditions one fill runs under: when it runs, how it was asked to fill,
 /// and what the market oracle lets it do.
 ///
 /// The order layer reads this off the market once, and the two layers below it
 /// are told rather than asked to look again.
+#[derive(Clone, Copy)]
 pub struct FillConditions {
     pub mode: FillMode,
     pub now: i64,
@@ -149,7 +112,7 @@ pub struct FillParties<'a, 'm, 's, 'info> {
 /// and the external quoter books with the leg that executes on them.
 pub struct OfferedLiquidity<'a, 'r, 'b, 'info> {
     pub dlob_makers: &'a [MakerOrderInfo],
-    pub router: &'a mut RouterFillInputs<'r, 'b, 'info>,
+    pub router: &'a mut RouterLeg<'r, 'b, 'info>,
 }
 
 /// The loaded counterparties the liquidity pass settles against, and the
@@ -167,7 +130,7 @@ pub struct TakerRefs<'a> {
 }
 
 /// What one fill moved.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FillAmounts {
     pub base: u64,
     pub quote: u64,

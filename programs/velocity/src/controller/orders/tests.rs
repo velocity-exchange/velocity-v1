@@ -155,21 +155,23 @@ pub fn get_amm_is_available(
 
 /// Router inputs with no external quoters — the fill routes across the vAMM
 /// and whatever DLOB makers were passed. Two locals rather than a helper
-/// because `RouterFillInputs` borrows its executor.
+/// because `RouterLeg` borrows its executor.
 macro_rules! no_router {
     ($name:ident) => {
         let mut no_externals = crate::state::prop_amm::NoExternalQuoters;
-        let mut $name = crate::math::router::RouterFillInputs {
+        let mut $name = crate::math::router::RouterLeg {
             books: &[],
             executor: &mut no_externals,
-            protocol_authority: Pubkey::default(),
-            taker_exposure_closed_by_caller: false,
-            // Test fixtures stand in for a taker-signed fill: no filler
-            // obligation, so a withheld book does not end the pass.
-            obligation: crate::math::router::FillerObligation {
-                taker_signed: true,
-                tx_accounts: None,
-                unrouted_quoters: 0,
+            standing: crate::instructions::FillerStanding {
+                protocol_authority: Pubkey::default(),
+                taker_exposure_closed_by_caller: false,
+                // Test fixtures stand in for a taker-signed fill: no filler
+                // obligation, so a withheld book does not end the pass.
+                obligation: crate::math::router::FillerObligation {
+                    taker_signed: true,
+                    tx_accounts: None,
+                    unrouted_quoters: 0,
+                },
             },
             worst_fill_price: None,
         };
@@ -371,11 +373,10 @@ pub mod fulfill_order_with_maker_order {
         let mut taker_order = taker.orders[taker_order_index];
         // Single-leg shim: no earlier leg has drawn on the allowance.
         let mut filler_reward_paid = 0;
-        let policy = super::super::FillPolicy {
+        let rules = super::super::PricingRules {
             fee_structure,
             validity_guard_rails: &ValidityGuardRails::default(),
             referrer_is_accelerated: false,
-            is_liquidation,
             promo_fee_tier: 0,
             vamm_maker_rebate: false,
             // The step-level harness has no margin context. Allow the builder
@@ -408,7 +409,7 @@ pub mod fulfill_order_with_maker_order {
             &super::super::DlobMatch {
                 order_index: maker_order_index,
                 maker_price,
-                taker_limit: effective_taker_limit.unwrap(),
+                effective_taker_limit: effective_taker_limit.unwrap(),
                 oracle_price,
             },
             &mut super::super::FillerSide {
@@ -419,7 +420,12 @@ pub mod fulfill_order_with_maker_order {
             },
             &mut super::super::SettleContext {
                 market,
-                policy: &policy,
+                rules: &rules,
+                mode: if is_liquidation {
+                    crate::state::fill_mode::FillMode::Liquidation
+                } else {
+                    crate::state::fill_mode::FillMode::Fill
+                },
                 oracle_map,
                 now,
                 slot,
@@ -3176,8 +3182,8 @@ pub mod fulfill_order {
             controller::{
                 orders::{
                     fill_perp_order_without_external_books, fill_within_taker_risk_limits,
-                    validate_market_within_price_band, FillConditions, FillParties, FillTerms,
-                    FillerSide, OfferedLiquidity, TakerSide,
+                    validate_market_within_price_band, FillAmounts, FillConditions, FillParties,
+                    FillerSide, OfferedLiquidity, PricingRules, TakerSide,
                 },
                 position::PositionDirection,
             },
@@ -3517,15 +3523,20 @@ pub mod fulfill_order {
 
         no_router!(router);
         let mut order = taker.orders[order_index];
-        let (base_asset_amount, _) = fill_within_taker_risk_limits(
+        let FillAmounts {
+            base: base_asset_amount,
+            ..
+        } = fill_within_taker_risk_limits(
             &mut TakerSide::bind(&mut taker, &mut taker_stats, taker_key, &mut order, true)
                 .unwrap(),
-            &FillTerms {
+            &PricingRules {
                 fee_structure: &fee_structure,
                 validity_guard_rails: &crate::state::state::ValidityGuardRails::default(),
                 promo_fee_tier: 0,
                 referrer_is_accelerated: false,
                 vamm_maker_rebate: false,
+                // The taker layer takes this decision itself and overrides it.
+                builder_fee_allowed: false,
             },
             &FillConditions::for_layer_test(
                 FillMode::Fill,
@@ -3747,15 +3758,20 @@ pub mod fulfill_order {
         no_router!(router);
         no_router!(router);
         let mut order = taker.orders[order_index];
-        let (base_asset_amount, quote_asset_amount) = fill_within_taker_risk_limits(
+        let FillAmounts {
+            base: base_asset_amount,
+            quote: quote_asset_amount,
+        } = fill_within_taker_risk_limits(
             &mut TakerSide::bind(&mut taker, &mut taker_stats, taker_key, &mut order, true)
                 .unwrap(),
-            &FillTerms {
+            &PricingRules {
                 fee_structure: &fee_structure,
                 validity_guard_rails: &crate::state::state::OracleGuardRails::default().validity,
                 promo_fee_tier: 0,
                 referrer_is_accelerated: false,
                 vamm_maker_rebate: false,
+                // The taker layer takes this decision itself and overrides it.
+                builder_fee_allowed: false,
             },
             &FillConditions::for_layer_test(
                 FillMode::Fill,
@@ -3923,15 +3939,20 @@ pub mod fulfill_order {
 
         no_router!(router);
         let mut order = taker.orders[order_index];
-        let (base_asset_amount, quote_asset_amount) = fill_within_taker_risk_limits(
+        let FillAmounts {
+            base: base_asset_amount,
+            quote: quote_asset_amount,
+        } = fill_within_taker_risk_limits(
             &mut TakerSide::bind(&mut taker, &mut taker_stats, taker_key, &mut order, true)
                 .unwrap(),
-            &FillTerms {
+            &PricingRules {
                 fee_structure: &fee_structure,
                 validity_guard_rails: &crate::state::state::OracleGuardRails::default().validity,
                 promo_fee_tier: 0,
                 referrer_is_accelerated: false,
                 vamm_maker_rebate: false,
+                // The taker layer takes this decision itself and overrides it.
+                builder_fee_allowed: false,
             },
             &FillConditions::for_layer_test(
                 FillMode::Fill,
@@ -4094,15 +4115,20 @@ pub mod fulfill_order {
 
         no_router!(router);
         let mut order = taker.orders[order_index];
-        let (base_asset_amount, quote_asset_amount) = fill_within_taker_risk_limits(
+        let FillAmounts {
+            base: base_asset_amount,
+            quote: quote_asset_amount,
+        } = fill_within_taker_risk_limits(
             &mut TakerSide::bind(&mut taker, &mut taker_stats, taker_key, &mut order, true)
                 .unwrap(),
-            &FillTerms {
+            &PricingRules {
                 fee_structure: &fee_structure,
                 validity_guard_rails: &crate::state::state::OracleGuardRails::default().validity,
                 promo_fee_tier: 0,
                 referrer_is_accelerated: false,
                 vamm_maker_rebate: false,
+                // The taker layer takes this decision itself and overrides it.
+                builder_fee_allowed: false,
             },
             &FillConditions::for_layer_test(
                 FillMode::Fill,
@@ -4317,15 +4343,20 @@ pub mod fulfill_order {
 
         no_router!(router);
         let mut order = taker.orders[order_index];
-        let (base_asset_amount, _) = fill_within_taker_risk_limits(
+        let FillAmounts {
+            base: base_asset_amount,
+            ..
+        } = fill_within_taker_risk_limits(
             &mut TakerSide::bind(&mut taker, &mut taker_stats, taker_key, &mut order, true)
                 .unwrap(),
-            &FillTerms {
+            &PricingRules {
                 fee_structure: &fee_structure,
                 validity_guard_rails: &crate::state::state::ValidityGuardRails::default(),
                 promo_fee_tier: 0,
                 referrer_is_accelerated: false,
                 vamm_maker_rebate: false,
+                // The taker layer takes this decision itself and overrides it.
+                builder_fee_allowed: false,
             },
             &FillConditions::for_layer_test(
                 FillMode::Fill,
@@ -4547,15 +4578,20 @@ pub mod fulfill_order {
 
         no_router!(router);
         let mut order = taker.orders[order_index];
-        let (base_asset_amount, _) = fill_within_taker_risk_limits(
+        let FillAmounts {
+            base: base_asset_amount,
+            ..
+        } = fill_within_taker_risk_limits(
             &mut TakerSide::bind(&mut taker, &mut taker_stats, taker_key, &mut order, true)
                 .unwrap(),
-            &FillTerms {
+            &PricingRules {
                 fee_structure: &fee_structure,
                 validity_guard_rails: &crate::state::state::ValidityGuardRails::default(),
                 promo_fee_tier: 0,
                 referrer_is_accelerated: false,
                 vamm_maker_rebate: false,
+                // The taker layer takes this decision itself and overrides it.
+                builder_fee_allowed: false,
             },
             &FillConditions::for_layer_test(
                 FillMode::Fill,
@@ -4783,15 +4819,20 @@ pub mod fulfill_order {
 
         no_router!(router);
         let mut order = taker.orders[order_index];
-        let (base_asset_amount, _) = fill_within_taker_risk_limits(
+        let FillAmounts {
+            base: base_asset_amount,
+            ..
+        } = fill_within_taker_risk_limits(
             &mut TakerSide::bind(&mut taker, &mut taker_stats, taker_key, &mut order, true)
                 .unwrap(),
-            &FillTerms {
+            &PricingRules {
                 fee_structure: &fee_structure,
                 validity_guard_rails: &crate::state::state::ValidityGuardRails::default(),
                 promo_fee_tier: 0,
                 referrer_is_accelerated: false,
                 vamm_maker_rebate: false,
+                // The taker layer takes this decision itself and overrides it.
+                builder_fee_allowed: false,
             },
             &FillConditions::for_layer_test(
                 FillMode::Fill,
@@ -4984,15 +5025,20 @@ pub mod fulfill_order {
 
         no_router!(router);
         let mut order = taker.orders[order_index];
-        let (base_asset_amount, _) = fill_within_taker_risk_limits(
+        let FillAmounts {
+            base: base_asset_amount,
+            ..
+        } = fill_within_taker_risk_limits(
             &mut TakerSide::bind(&mut taker, &mut taker_stats, taker_key, &mut order, true)
                 .unwrap(),
-            &FillTerms {
+            &PricingRules {
                 fee_structure: &fee_structure,
                 validity_guard_rails: &crate::state::state::ValidityGuardRails::default(),
                 promo_fee_tier: 0,
                 referrer_is_accelerated: false,
                 vamm_maker_rebate: false,
+                // The taker layer takes this decision itself and overrides it.
+                builder_fee_allowed: false,
             },
             &FillConditions::for_layer_test(
                 FillMode::Fill,
@@ -5215,12 +5261,14 @@ pub mod fulfill_order {
         let result = fill_within_taker_risk_limits(
             &mut TakerSide::bind(&mut taker, &mut taker_stats, taker_key, &mut order, true)
                 .unwrap(),
-            &FillTerms {
+            &PricingRules {
                 fee_structure: &fee_structure,
                 validity_guard_rails: &crate::state::state::ValidityGuardRails::default(),
                 promo_fee_tier: 0,
                 referrer_is_accelerated: false,
                 vamm_maker_rebate: false,
+                // The taker layer takes this decision itself and overrides it.
+                builder_fee_allowed: false,
             },
             &FillConditions::for_layer_test(
                 FillMode::Fill,
@@ -5434,12 +5482,14 @@ pub mod fulfill_order {
         let result = fill_within_taker_risk_limits(
             &mut TakerSide::bind(&mut taker, &mut taker_stats, taker_key, &mut order, true)
                 .unwrap(),
-            &FillTerms {
+            &PricingRules {
                 fee_structure: &fee_structure,
                 validity_guard_rails: &crate::state::state::ValidityGuardRails::default(),
                 promo_fee_tier: 0,
                 referrer_is_accelerated: false,
                 vamm_maker_rebate: false,
+                // The taker layer takes this decision itself and overrides it.
+                builder_fee_allowed: false,
             },
             &FillConditions::for_layer_test(
                 FillMode::Fill,
@@ -5605,15 +5655,20 @@ pub mod fulfill_order {
 
         no_router!(router);
         let mut order = taker.orders[order_index];
-        let (base_asset_amount, _) = fill_within_taker_risk_limits(
+        let FillAmounts {
+            base: base_asset_amount,
+            ..
+        } = fill_within_taker_risk_limits(
             &mut TakerSide::bind(&mut taker, &mut taker_stats, taker_key, &mut order, true)
                 .unwrap(),
-            &FillTerms {
+            &PricingRules {
                 fee_structure: &fee_structure,
                 validity_guard_rails: &crate::state::state::ValidityGuardRails::default(),
                 promo_fee_tier: 0,
                 referrer_is_accelerated: false,
                 vamm_maker_rebate: false,
+                // The taker layer takes this decision itself and overrides it.
+                builder_fee_allowed: false,
             },
             &FillConditions::for_layer_test(
                 FillMode::Fill,
@@ -5802,15 +5857,20 @@ pub mod fulfill_order {
 
         no_router!(router);
         let mut order = taker.orders[order_index];
-        let (base_asset_amount, _) = fill_within_taker_risk_limits(
+        let FillAmounts {
+            base: base_asset_amount,
+            ..
+        } = fill_within_taker_risk_limits(
             &mut TakerSide::bind(&mut taker, &mut taker_stats, taker_key, &mut order, true)
                 .unwrap(),
-            &FillTerms {
+            &PricingRules {
                 fee_structure: &fee_structure,
                 validity_guard_rails: &crate::state::state::ValidityGuardRails::default(),
                 promo_fee_tier: 0,
                 referrer_is_accelerated: false,
                 vamm_maker_rebate: false,
+                // The taker layer takes this decision itself and overrides it.
+                builder_fee_allowed: false,
             },
             &FillConditions::for_layer_test(
                 FillMode::Fill,
@@ -6001,7 +6061,7 @@ pub mod fulfill_order {
             ..State::default()
         };
 
-        let (base_asset_amount, _) = fill_perp_order_without_external_books(
+        let filled = fill_perp_order_without_external_books(
             1,
             &state,
             &user_account_loader,
@@ -6018,7 +6078,7 @@ pub mod fulfill_order {
         )
         .unwrap();
 
-        assert_eq!(base_asset_amount, 0);
+        assert_eq!(filled.base, 0);
 
         // Will fill if MM oracle price is not too volatile at mm oracle price
         market.market_stats.mm_oracle_price = 101 * PRICE_PRECISION_I64;
@@ -6026,7 +6086,7 @@ pub mod fulfill_order {
         let perp_market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
         maps.perp_market_map = perp_market_map;
 
-        let (base_asset_amount, quote_asset_amount) = fill_perp_order_without_external_books(
+        let filled = fill_perp_order_without_external_books(
             1,
             &state,
             &user_account_loader,
@@ -6043,8 +6103,8 @@ pub mod fulfill_order {
         )
         .unwrap();
 
-        assert_eq!(base_asset_amount, BASE_PRECISION_U64);
-        assert_eq!(quote_asset_amount, 101010102);
+        assert_eq!(filled.base, BASE_PRECISION_U64);
+        assert_eq!(filled.quote, 101010102);
     }
 
     // Add back if we check free collateral in fill again
@@ -6416,15 +6476,20 @@ pub mod fulfill_order {
 
         no_router!(router);
         let mut order = taker.orders[order_index];
-        let (base_asset_amount, _) = fill_within_taker_risk_limits(
+        let FillAmounts {
+            base: base_asset_amount,
+            ..
+        } = fill_within_taker_risk_limits(
             &mut TakerSide::bind(&mut taker, &mut taker_stats, taker_key, &mut order, true)
                 .unwrap(),
-            &FillTerms {
+            &PricingRules {
                 fee_structure: &fee_structure,
                 validity_guard_rails: &crate::state::state::ValidityGuardRails::default(),
                 promo_fee_tier: 0,
                 referrer_is_accelerated: false,
                 vamm_maker_rebate: false,
+                // The taker layer takes this decision itself and overrides it.
+                builder_fee_allowed: false,
             },
             &FillConditions::for_layer_test(
                 FillMode::Fill,
@@ -6695,15 +6760,20 @@ pub mod fulfill_order {
 
         no_router!(router);
         let mut order = taker.orders[order_index];
-        let (base_asset_amount, _) = fill_within_taker_risk_limits(
+        let FillAmounts {
+            base: base_asset_amount,
+            ..
+        } = fill_within_taker_risk_limits(
             &mut TakerSide::bind(&mut taker, &mut taker_stats, taker_key, &mut order, true)
                 .unwrap(),
-            &FillTerms {
+            &PricingRules {
                 fee_structure: &fee_structure,
                 validity_guard_rails: &crate::state::state::ValidityGuardRails::default(),
                 promo_fee_tier: 0,
                 referrer_is_accelerated: false,
                 vamm_maker_rebate: false,
+                // The taker layer takes this decision itself and overrides it.
+                builder_fee_allowed: false,
             },
             &FillConditions::for_layer_test(
                 FillMode::Fill,
@@ -6930,15 +7000,20 @@ pub mod fulfill_order {
         no_router!(router);
 
         let mut order = taker.orders[order_index];
-        let (base_asset_amount, _) = fill_within_taker_risk_limits(
+        let FillAmounts {
+            base: base_asset_amount,
+            ..
+        } = fill_within_taker_risk_limits(
             &mut TakerSide::bind(&mut taker, &mut taker_stats, taker_key, &mut order, true)
                 .unwrap(),
-            &FillTerms {
+            &PricingRules {
                 fee_structure: &fee_structure,
                 validity_guard_rails: &crate::state::state::ValidityGuardRails::default(),
                 promo_fee_tier: 0,
                 referrer_is_accelerated: false,
                 vamm_maker_rebate: false,
+                // The taker layer takes this decision itself and overrides it.
+                builder_fee_allowed: false,
             },
             &FillConditions::for_layer_test(
                 FillMode::Fill,
@@ -7124,15 +7199,20 @@ pub mod fulfill_order {
 
         no_router!(router);
         let mut order = taker.orders[order_index];
-        let (base_asset_amount, _) = fill_within_taker_risk_limits(
+        let FillAmounts {
+            base: base_asset_amount,
+            ..
+        } = fill_within_taker_risk_limits(
             &mut TakerSide::bind(&mut taker, &mut taker_stats, taker_key, &mut order, true)
                 .unwrap(),
-            &FillTerms {
+            &PricingRules {
                 fee_structure: &fee_structure,
                 validity_guard_rails: &crate::state::state::ValidityGuardRails::default(),
                 promo_fee_tier: 0,
                 referrer_is_accelerated: false,
                 vamm_maker_rebate: false,
+                // The taker layer takes this decision itself and overrides it.
+                builder_fee_allowed: false,
             },
             &FillConditions::for_layer_test(
                 FillMode::Fill,
@@ -7390,7 +7470,7 @@ pub mod fill_order {
             ..State::default()
         };
 
-        let (base_asset_amount, _) = fill_perp_order_without_external_books(
+        let filled = fill_perp_order_without_external_books(
             1,
             &state,
             &user_account_loader,
@@ -7407,7 +7487,7 @@ pub mod fill_order {
         )
         .unwrap();
 
-        assert_eq!(base_asset_amount, 0);
+        assert_eq!(filled.base, 0);
 
         // order canceled
         let maker = makers_and_referrers.get_ref_mut(&maker_key).unwrap();
@@ -7601,7 +7681,7 @@ pub mod fill_order {
             ..State::default()
         };
 
-        let (base_asset_amount, _) = fill_perp_order_without_external_books(
+        let filled = fill_perp_order_without_external_books(
             1,
             &state,
             &user_account_loader,
@@ -7618,7 +7698,7 @@ pub mod fill_order {
         )
         .unwrap();
 
-        assert_eq!(base_asset_amount, 1000000000);
+        assert_eq!(filled.base, 1000000000);
     }
 
     #[test]
@@ -7729,7 +7809,7 @@ pub mod fill_order {
             unix_timestamp: 11,
         };
 
-        let (base_asset_amount, _) = fill_perp_order_without_external_books(
+        let filled = fill_perp_order_without_external_books(
             1,
             &state,
             &user_account_loader,
@@ -7747,7 +7827,7 @@ pub mod fill_order {
         .unwrap();
 
         let user_after = user_account_loader.load().unwrap();
-        assert_eq!(base_asset_amount, 0);
+        assert_eq!(filled.base, 0);
         assert_eq!(user_after.perp_positions[0].open_orders, 0);
         assert_eq!(user_after.perp_positions[0].open_bids, 0);
         assert_eq!(user_after.perp_positions[0].quote_asset_amount, -10000);
@@ -10584,8 +10664,8 @@ pub mod builder_fee_margin_gate {
         crate::{
             controller::{
                 orders::{
-                    fill_within_taker_risk_limits, FillConditions, FillParties, FillTerms,
-                    FillerSide, OfferedLiquidity, TakerSide,
+                    fill_within_taker_risk_limits, FillAmounts, FillConditions, FillParties,
+                    FillerSide, OfferedLiquidity, PricingRules, TakerSide,
                 },
                 position::PositionDirection,
             },
@@ -10954,30 +11034,36 @@ pub mod builder_fee_margin_gate {
 
         // Router mode with no external quoters: vAMM + the passed makers.
         let mut no_externals = crate::state::prop_amm::NoExternalQuoters;
-        let mut router_inputs = crate::math::router::RouterFillInputs {
+        let mut router_inputs = crate::math::router::RouterLeg {
             books: &[],
             executor: &mut no_externals,
-            protocol_authority: Pubkey::default(),
-            taker_exposure_closed_by_caller: false,
-            // Test fixtures stand in for a taker-signed fill: no filler
-            // obligation, so a withheld book does not end the pass.
-            obligation: crate::math::router::FillerObligation {
-                taker_signed: true,
-                tx_accounts: None,
-                unrouted_quoters: 0,
+            standing: crate::instructions::FillerStanding {
+                protocol_authority: Pubkey::default(),
+                taker_exposure_closed_by_caller: false,
+                // Test fixtures stand in for a taker-signed fill: no filler
+                // obligation, so a withheld book does not end the pass.
+                obligation: crate::math::router::FillerObligation {
+                    taker_signed: true,
+                    tx_accounts: None,
+                    unrouted_quoters: 0,
+                },
             },
             worst_fill_price: None,
         };
         let mut order = taker.orders[order_index];
-        let (base_filled, _) = fill_within_taker_risk_limits(
+        let FillAmounts {
+            base: base_filled, ..
+        } = fill_within_taker_risk_limits(
             &mut TakerSide::bind(&mut taker, &mut taker_stats, taker_key, &mut order, true)
                 .unwrap(),
-            &FillTerms {
+            &PricingRules {
                 fee_structure: &fee_structure,
                 validity_guard_rails: &ValidityGuardRails::default(),
                 promo_fee_tier: 0,
                 referrer_is_accelerated: false,
                 vamm_maker_rebate: false,
+                // The taker layer takes this decision itself and overrides it.
+                builder_fee_allowed: false,
             },
             &FillConditions::for_layer_test(
                 FillMode::Fill,
@@ -11077,8 +11163,8 @@ mod taker_floor_unverifiable_withholds_fill {
         crate::{
             controller::{
                 orders::{
-                    fill_within_taker_risk_limits, FillConditions, FillParties, FillTerms,
-                    FillerSide, OfferedLiquidity, TakerSide,
+                    fill_within_taker_risk_limits, FillAmounts, FillConditions, FillParties,
+                    FillerSide, OfferedLiquidity, PricingRules, TakerSide,
                 },
                 position::PositionDirection,
             },
@@ -11302,15 +11388,19 @@ mod taker_floor_unverifiable_withholds_fill {
 
         no_router!(router_inputs);
         let mut order = taker.orders[order_index];
-        let (base_filled, _) = fill_within_taker_risk_limits(
+        let FillAmounts {
+            base: base_filled, ..
+        } = fill_within_taker_risk_limits(
             &mut TakerSide::bind(&mut taker, &mut taker_stats, taker_key, &mut order, true)
                 .unwrap(),
-            &FillTerms {
+            &PricingRules {
                 fee_structure: &fee_structure,
                 validity_guard_rails: &ValidityGuardRails::default(),
                 promo_fee_tier: 0,
                 referrer_is_accelerated: false,
                 vamm_maker_rebate: false,
+                // The taker layer takes this decision itself and overrides it.
+                builder_fee_allowed: false,
             },
             &FillConditions::for_layer_test(
                 FillMode::Fill,
@@ -11395,8 +11485,8 @@ mod fill_gates_apply_to_a_reducing_fill {
         crate::{
             controller::{
                 orders::{
-                    fill_within_taker_risk_limits, FillConditions, FillParties, FillTerms,
-                    FillerSide, OfferedLiquidity, TakerSide,
+                    fill_within_taker_risk_limits, FillConditions, FillParties, FillerSide,
+                    OfferedLiquidity, PricingRules, TakerSide,
                 },
                 position::PositionDirection,
             },
@@ -11657,17 +11747,19 @@ mod fill_gates_apply_to_a_reducing_fill {
 
         // Router mode with no external quoters: vAMM + the passed makers.
         let mut no_externals = crate::state::prop_amm::NoExternalQuoters;
-        let mut router_inputs = crate::math::router::RouterFillInputs {
+        let mut router_inputs = crate::math::router::RouterLeg {
             books: &[],
             executor: &mut no_externals,
-            protocol_authority: Pubkey::default(),
-            taker_exposure_closed_by_caller: false,
-            // Test fixtures stand in for a taker-signed fill: no filler
-            // obligation, so a withheld book does not end the pass.
-            obligation: crate::math::router::FillerObligation {
-                taker_signed: true,
-                tx_accounts: None,
-                unrouted_quoters: 0,
+            standing: crate::instructions::FillerStanding {
+                protocol_authority: Pubkey::default(),
+                taker_exposure_closed_by_caller: false,
+                // Test fixtures stand in for a taker-signed fill: no filler
+                // obligation, so a withheld book does not end the pass.
+                obligation: crate::math::router::FillerObligation {
+                    taker_signed: true,
+                    tx_accounts: None,
+                    unrouted_quoters: 0,
+                },
             },
             worst_fill_price: None,
         };
@@ -11675,12 +11767,14 @@ mod fill_gates_apply_to_a_reducing_fill {
         fill_within_taker_risk_limits(
             &mut TakerSide::bind(&mut taker, &mut taker_stats, taker_key, &mut order, true)
                 .unwrap(),
-            &FillTerms {
+            &PricingRules {
                 fee_structure: &super::get_fee_structure(),
                 validity_guard_rails: &ValidityGuardRails::default(),
                 promo_fee_tier: 0,
                 referrer_is_accelerated: false,
                 vamm_maker_rebate: false,
+                // The taker layer takes this decision itself and overrides it.
+                builder_fee_allowed: false,
             },
             &FillConditions::for_layer_test(
                 FillMode::Fill,

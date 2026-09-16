@@ -21,7 +21,7 @@ mod taker_risk;
 /// The layer-test seam: a test that drives the taker layer directly builds
 /// these itself.
 #[cfg(test)]
-pub use context::{FillConditions, FillTerms, OfferedLiquidity};
+pub use context::{FillConditions, OfferedLiquidity};
 pub use {
     context::{FillAmounts, FillParties, TakerRefs},
     order::{

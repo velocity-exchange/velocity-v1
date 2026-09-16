@@ -213,33 +213,27 @@ fn fill_signed_msg_taker_order<'c: 'info, 'info>(
     )?;
     let obligation = keeper_obligation(ctx, quoted.unrouted_quoters)?;
 
-    let (filled, _) = quoted.route_fill(
-        crate::instructions::RouterTerms {
-            protocol_authority: state.signer,
-            obligation,
-            taker_exposure_closed_by_caller: false,
+    let mut books = quoted.books(clock, &mut cpi_scratch)?;
+    let mut router = books.for_fill(crate::instructions::FillerStanding {
+        protocol_authority: state.signer,
+        obligation,
+        taker_exposure_closed_by_caller: false,
+    });
+    sections.run_fill(
+        &fill_accounts(ctx),
+        controller::orders::FillRequest {
+            // The taker order is ephemeral: it never reserved, so the fill
+            // unwinds no exposure for it.
+            target: controller::orders::FillTarget::Detached {
+                order: &mut placed.order,
+                reserved: false,
+            },
+            mode,
+            referrer_is_accelerated: sections.referrer_is_accelerated,
         },
+        &mut router,
         clock,
-        &mut cpi_scratch,
-        |router| {
-            sections.run_fill(
-                &fill_accounts(ctx),
-                controller::orders::FillRequest {
-                    // The taker order is ephemeral: it never reserved, so the
-                    // fill unwinds no exposure for it.
-                    target: controller::orders::FillTarget::Detached {
-                        order: &mut placed.order,
-                        reserved: false,
-                    },
-                    mode,
-                    referrer_is_accelerated: sections.referrer_is_accelerated,
-                },
-                router,
-                clock,
-            )
-        },
-    )?;
-    Ok(filled)
+    )
 }
 
 /// What the keeper answers for on a signed-message fill.

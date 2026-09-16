@@ -403,44 +403,38 @@ fn route_fill_fired_order<'info>(
         unrouted_quoters: quoted.unrouted_quoters,
     };
 
-    quoted.route_fill(
-        crate::instructions::RouterTerms {
-            protocol_authority: state.signer,
-            taker_exposure_closed_by_caller: false,
-            obligation,
+    let mut books = quoted.books(clock, &mut cpi_scratch)?;
+    let mut router = books.for_fill(crate::instructions::FillerStanding {
+        protocol_authority: state.signer,
+        taker_exposure_closed_by_caller: false,
+        obligation,
+    });
+    controller::orders::fill_perp_order(
+        controller::orders::FillRequest {
+            // The fired order is ephemeral: it never reserved, so the
+            // fill unwinds no exposure for it.
+            target: controller::orders::FillTarget::Detached {
+                order: fired,
+                reserved: false,
+            },
+            mode: FillMode::Fill,
+            referrer_is_accelerated: tail.referrer_is_accelerated,
         },
+        state,
         clock,
-        &mut cpi_scratch,
-        |router| {
-            controller::orders::fill_perp_order(
-                controller::orders::FillRequest {
-                    // The fired order is ephemeral: it never reserved, so the
-                    // fill unwinds no exposure for it.
-                    target: controller::orders::FillTarget::Detached {
-                        order: fired,
-                        reserved: false,
-                    },
-                    mode: FillMode::Fill,
-                    referrer_is_accelerated: tail.referrer_is_accelerated,
-                },
-                state,
-                clock,
-                controller::orders::PerpFillAccounts {
-                    user: &ctx.accounts.user,
-                    user_stats: &ctx.accounts.user_stats,
-                    filler: &ctx.accounts.filler,
-                    filler_stats: &ctx.accounts.filler_stats,
-                    rev_share_escrow: &mut tail.escrow.as_mut(),
-                },
-                &mut controller::orders::FillParties {
-                    maps,
-                    makers_and_referrer: &tail.makers_and_referrer,
-                    makers_and_referrer_stats: &tail.makers_and_referrer_stats,
-                },
-                router,
-            )?;
-            Ok(())
+        controller::orders::PerpFillAccounts {
+            user: &ctx.accounts.user,
+            user_stats: &ctx.accounts.user_stats,
+            filler: &ctx.accounts.filler,
+            filler_stats: &ctx.accounts.filler_stats,
+            rev_share_escrow: &mut tail.escrow.as_mut(),
         },
+        &mut controller::orders::FillParties {
+            maps,
+            makers_and_referrer: &tail.makers_and_referrer,
+            makers_and_referrer_stats: &tail.makers_and_referrer_stats,
+        },
+        &mut router,
     )?;
     Ok(())
 }

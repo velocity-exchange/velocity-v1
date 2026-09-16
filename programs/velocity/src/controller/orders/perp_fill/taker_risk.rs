@@ -19,9 +19,10 @@ use {
                 calculate_net_equity_for_floor, MarginRequirementType,
             },
             orders::select_margin_type_for_perp_maker,
-            router::RouterFillInputs,
+            router::RouterLeg,
         },
         state::{
+            fill_mode::FillMode,
             margin_calculation::{MarginCalculation, MarginContext, MarginTypeConfig},
             user::User,
         },
@@ -47,10 +48,10 @@ pub struct TakerRiskLimits {
     pub is_isolated: bool,
     /// Whether the oracle is too old to price margin.
     pub oracle_stale_for_margin: bool,
-    pub is_liquidation: bool,
-    /// See [`RouterFillInputs::taker_exposure_closed_by_caller`]. It suppresses
+    pub mode: FillMode,
+    /// See [`RouterLeg::taker_exposure_closed_by_caller`]. It suppresses
     /// the taker's own checks only. Every maker keeps all of theirs.
-    pub exposure_closed_by_caller: bool,
+    pub taker_exposure_closed_by_caller: bool,
     /// The market's open interest before the fill.
     pub perp_market_oi_before: u128,
 }
@@ -64,28 +65,29 @@ pub struct TakerRiskLimits {
 /// [`fill_from_liquidity_sources`] draws the liquidity in between.
 pub fn fill_within_taker_risk_limits(
     taker: &mut TakerSide,
-    terms: &FillTerms,
+    rules: &PricingRules,
     conditions: &FillConditions,
     parties: &mut FillParties,
     liquidity: &mut OfferedLiquidity,
     filler: &mut FillerSide,
-) -> VelocityResult<(u64, u64)> {
+) -> VelocityResult<FillAmounts> {
     validate_taker_exposure_exemption(taker, liquidity.router)?;
 
     let limits = TakerRiskLimits::measure(taker, conditions, liquidity.router, parties)?;
 
     if withhold_unverifiable_floor(taker, &limits, conditions, parties, filler)? == Admission::Skip
     {
-        return Ok((0, 0));
+        return Ok(FillAmounts::default());
     }
 
-    let policy = terms.policy(
-        conditions.mode,
-        builder_fee_allowed(taker, &limits, parties, filler)?,
-    );
+    let rules = rules.allow_builder_fee(builder_fee_allowed(taker, &limits, parties, filler)?);
 
     let (base_asset_amount, quote_asset_amount, maker_fills) =
-        fill_from_liquidity_sources(taker, &policy, conditions, parties, liquidity, filler)?;
+        fill_from_liquidity_sources(taker, &rules, conditions, parties, liquidity, filler)?;
+    let filled = FillAmounts {
+        base: base_asset_amount,
+        quote: quote_asset_amount,
+    };
 
     limits.check_after_fill(
         &mut TakerRefs {
@@ -93,15 +95,12 @@ pub fn fill_within_taker_risk_limits(
             stats: taker.stats,
         },
         parties,
-        FillAmounts {
-            base: base_asset_amount,
-            quote: quote_asset_amount,
-        },
+        filled,
         &maker_fills,
         conditions.now,
     )?;
 
-    Ok((base_asset_amount, quote_asset_amount))
+    Ok(filled)
 }
 
 /// Refuse a caller that claims the taker-exposure exemption for an account
@@ -112,15 +111,13 @@ pub fn fill_within_taker_risk_limits(
 /// instruction, and `protocol_authority` is `State::signer`, written by the
 /// entrypoint from the account the runtime verified. A path that sets the flag
 /// for any other account is refused here rather than trusted.
-fn validate_taker_exposure_exemption(
-    taker: &TakerSide,
-    router: &RouterFillInputs,
-) -> VelocityResult {
-    if !router.taker_exposure_closed_by_caller {
+fn validate_taker_exposure_exemption(taker: &TakerSide, router: &RouterLeg) -> VelocityResult {
+    if !router.standing.taker_exposure_closed_by_caller {
         return Ok(());
     }
     validate!(
-        taker.user.sub_account_id == 0 && taker.user.authority == router.protocol_authority,
+        taker.user.sub_account_id == 0
+            && taker.user.authority == router.standing.protocol_authority,
         ErrorCode::TakerExposureNotProtocolOwned,
         "only the protocol user may settle a fill whose taker checks the caller closes"
     )?;
@@ -149,7 +146,7 @@ fn withhold_unverifiable_floor(
     parties: &mut FillParties,
     filler: &mut FillerSide,
 ) -> VelocityResult<Admission> {
-    if taker.user.equity_floor == 0 || limits.is_liquidation || limits.order_decreasing {
+    if taker.user.equity_floor == 0 || limits.mode.is_liquidation() || limits.order_decreasing {
         return Ok(Admission::Proceed);
     }
     let floor_unverifiable = match calculate_net_equity_for_floor(taker.user, parties.maps)? {
@@ -202,7 +199,10 @@ fn builder_fee_allowed(
     parties: &mut FillParties,
     filler: &FillerSide,
 ) -> VelocityResult<bool> {
-    if limits.is_liquidation || !taker.order.is_has_builder() || filler.rev_share_escrow.is_none() {
+    if limits.mode.is_liquidation()
+        || !taker.order.is_has_builder()
+        || filler.rev_share_escrow.is_none()
+    {
         return Ok(false);
     }
     let context = MarginContext::standard_with_config(
@@ -227,7 +227,7 @@ impl TakerRiskLimits {
     pub fn measure(
         taker: &TakerSide,
         conditions: &FillConditions,
-        router: &RouterFillInputs,
+        router: &RouterLeg,
         parties: &mut FillParties,
     ) -> VelocityResult<Self> {
         let market_index = taker.order.market_index;
@@ -246,8 +246,8 @@ impl TakerRiskLimits {
                 .map(|position| position.is_isolated())
                 .unwrap_or(false),
             oracle_stale_for_margin: conditions.oracle_stale_for_margin,
-            is_liquidation: conditions.mode.is_liquidation(),
-            exposure_closed_by_caller: router.taker_exposure_closed_by_caller,
+            mode: conditions.mode,
+            taker_exposure_closed_by_caller: router.standing.taker_exposure_closed_by_caller,
             perp_market_oi_before: parties
                 .maps
                 .perp_market_map
@@ -312,7 +312,7 @@ impl TakerRiskLimits {
         }
         // On a liquidation fill the taker seat is the liquidatee, who did not
         // place the fill, so it does not enroll. The maker seat is unaffected.
-        if filled.base != 0 && !self.is_liquidation {
+        if filled.base != 0 && !self.mode.is_liquidation() {
             taker
                 .stats
                 .try_auto_enroll_accelerated_referral_and_emit(now);
@@ -330,7 +330,7 @@ impl TakerRiskLimits {
         parties: &mut FillParties,
         now: i64,
     ) -> VelocityResult {
-        if self.is_liquidation || self.exposure_closed_by_caller {
+        if self.mode.is_liquidation() || self.taker_exposure_closed_by_caller {
             return Ok(());
         }
         self.check_taker_margin(taker.user, parties, now)?;
@@ -437,7 +437,7 @@ impl TakerRiskLimits {
         // as well. This runs for liquidation fills too, so an unqualified
         // reject would let one maker's stale spot oracle, or one maker's
         // un-cranked borrow market, block the liquidation of another account.
-        if !self.is_liquidation {
+        if !self.mode.is_liquidation() {
             validate_borrow_rules(&maker, &calculation, parties, now)?;
         }
 

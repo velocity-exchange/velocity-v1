@@ -324,7 +324,10 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
 
     let tail_from = ctx.remaining_accounts.len() - remaining_accounts_iter.len();
     let tail = &ctx.remaining_accounts[tail_from..];
-    let (base_filled, quote_filled) = route_and_fill_remainder(
+    let controller::orders::FillAmounts {
+        base: base_filled,
+        quote: quote_filled,
+    } = route_and_fill_remainder(
         &cx,
         tail,
         &subject_order,
@@ -540,7 +543,7 @@ fn route_and_fill_remainder<'info>(
     route_claim: &SignedRouteClaim<'_>,
     maps: &mut AccountMaps<'info>,
     cpi_scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
-) -> Result<(u64, u64)> {
+) -> Result<controller::orders::FillAmounts> {
     // The order is a local. It came off a book and belongs to no `orders`
     // slot, so the fill takes it directly and the taker never needs a spare
     // one — its reservation is still on it from when the remainder rested.
@@ -622,54 +625,48 @@ fn route_and_fill_remainder<'info>(
     // The taker stands as its own filler, so no reward is carved out of the
     // taker fee. The cranker is paid below, out of the improvement it actually
     // delivered — a crank that improves nothing is worth nothing.
-    let ((base_filled, quote_filled), _) = quoted.route_fill(
-        crate::instructions::RouterTerms {
-            protocol_authority: cx.state.signer,
-            taker_exposure_closed_by_caller: false,
-            obligation,
+    let mut books = quoted.books(cx.clock, cpi_scratch)?;
+    let mut router = books.for_fill(crate::instructions::FillerStanding {
+        protocol_authority: cx.state.signer,
+        taker_exposure_closed_by_caller: false,
+        obligation,
+    });
+    let filled = controller::orders::fill_perp_order(
+        controller::orders::FillRequest {
+            // The remainder rested on the book first, so it holds an
+            // `open_bids`/`open_asks` reservation this fill unwinds.
+            target: controller::orders::FillTarget::Detached {
+                order: &mut order,
+                reserved: true,
+            },
+            mode: FillMode::Fill,
+            referrer_is_accelerated: false,
         },
+        cx.state,
         cx.clock,
-        cpi_scratch,
-        |router| {
-            controller::orders::fill_perp_order(
-                controller::orders::FillRequest {
-                    // The remainder rested on the book first, so it holds an
-                    // `open_bids`/`open_asks` reservation this fill unwinds.
-                    target: controller::orders::FillTarget::Detached {
-                        order: &mut order,
-                        reserved: true,
-                    },
-                    mode: FillMode::Fill,
-                    referrer_is_accelerated: false,
-                },
-                cx.state,
-                cx.clock,
-                controller::orders::PerpFillAccounts {
-                    user: &cx.accounts.taker,
-                    user_stats: &cx.accounts.taker_stats,
-                    filler: &cx.accounts.taker,
-                    filler_stats: &cx.accounts.taker_stats,
-                    rev_share_escrow: &mut None,
-                },
-                &mut controller::orders::FillParties {
-                    maps,
-                    makers_and_referrer: cx.makers_and_referrer,
-                    makers_and_referrer_stats: cx.makers_and_referrer_stats,
-                },
-                router,
-            )
-            .map_err(Into::into)
+        controller::orders::PerpFillAccounts {
+            user: &cx.accounts.taker,
+            user_stats: &cx.accounts.taker_stats,
+            filler: &cx.accounts.taker,
+            filler_stats: &cx.accounts.taker_stats,
+            rev_share_escrow: &mut None,
         },
+        &mut controller::orders::FillParties {
+            maps,
+            makers_and_referrer: cx.makers_and_referrer,
+            makers_and_referrer_stats: cx.makers_and_referrer_stats,
+        },
+        &mut router,
     )?;
     // Nothing beat the resting price. Reverting puts the remainder back where
     // it was — the cancel above is undone with it — so an unprofitable crank
     // costs the taker nothing and pays the cranker nothing.
     validate!(
-        base_filled > 0,
+        filled.base > 0,
         ErrorCode::NoTakerOriginCross,
         "no source beat the remainder's resting price"
     )?;
-    Ok((base_filled, quote_filled))
+    Ok(filled)
 }
 
 /// The oracle pre-flight, and what the taker gained.
@@ -1153,7 +1150,7 @@ fn settle_pair_match<'info>(
         },
         &mut maker_side,
         &controller::orders::ExternalMatch {
-            taker_limit: Some(pair.aggressor.price),
+            effective_taker_limit: Some(pair.aggressor.price),
             oracle_price,
         },
         &mut controller::orders::FillerSide {
@@ -1164,7 +1161,9 @@ fn settle_pair_match<'info>(
         },
         &mut controller::orders::SettleContext {
             market: market.deref_mut(),
-            policy: &controller::orders::FillPolicy::for_settlement(cx.state),
+            rules: &controller::orders::PricingRules::for_settlement(cx.state),
+            // This crank settles a cross, never a liquidation.
+            mode: crate::state::fill_mode::FillMode::Fill,
             oracle_map,
             now: cx.clock.unix_timestamp,
             slot: cx.clock.slot,
@@ -1289,10 +1288,10 @@ mod post_checks {
             is_isolated: facts.aggressor_is_isolated,
             oracle_stale_for_margin: facts.oracle_stale_for_margin,
             // A cross of two resting remainders is never a liquidation.
-            is_liquidation: false,
+            mode: crate::state::fill_mode::FillMode::Fill,
             // Both legs are ordinary users who keep the positions this
             // settles, so both carry their own risk and both are checked.
-            exposure_closed_by_caller: false,
+            taker_exposure_closed_by_caller: false,
             perp_market_oi_before: facts.perp_market_oi_before,
         };
         let taker = load!(taker_loader)?;

@@ -503,7 +503,7 @@ impl QuoterSubjects {
 /// fill entrypoint — the controller works over account maps and can't CPI
 /// itself, so the entrypoint (which holds the `AccountInfo`s) supplies this.
 /// `index` addresses the same book order the caller quoted into
-/// `RouterFillInputs::books`.
+/// `RouterLeg::books`.
 /// Find one of the fill's tail accounts by key.
 ///
 /// A scan, not a map: the tail is a couple of dozen accounts and one fill looks

@@ -2922,7 +2922,7 @@ pub mod liquidate_perp_with_fill {
             controller::{
                 liquidation::{
                     place_liquidation_order, settle_liquidation_fill, LiquidationParties,
-                    LiquidationStep, PerpFill,
+                    LiquidationStep,
                 },
                 orders::fill_perp_order_without_external_books,
                 position::PositionDirection,
@@ -2995,33 +2995,22 @@ pub mod liquidate_perp_with_fill {
         match place_liquidation_order(market_index, refreshed(), maps, clock, state)? {
             LiquidationStep::Settled => Ok(0),
             LiquidationStep::Placed(placed) => {
-                let (base_asset_amount, quote_asset_amount) =
-                    fill_perp_order_without_external_books(
-                        placed.order_id,
-                        state,
-                        user,
-                        user_stats,
-                        maps,
-                        liquidator,
-                        liquidator_stats,
-                        makers_and_referrer,
-                        makers_and_referrer_stats,
-                        clock,
-                        FillMode::Liquidation,
-                        &mut None,
-                        false,
-                    )?;
-                settle_liquidation_fill(
-                    placed,
-                    PerpFill {
-                        base_asset_amount,
-                        quote_asset_amount,
-                    },
-                    refreshed(),
-                    maps,
-                    clock,
+                let filled = fill_perp_order_without_external_books(
+                    placed.order_id,
                     state,
-                )
+                    user,
+                    user_stats,
+                    maps,
+                    liquidator,
+                    liquidator_stats,
+                    makers_and_referrer,
+                    makers_and_referrer_stats,
+                    clock,
+                    FillMode::Liquidation,
+                    &mut None,
+                    false,
+                )?;
+                settle_liquidation_fill(placed, filled, refreshed(), maps, clock, state)
             }
         }
     }

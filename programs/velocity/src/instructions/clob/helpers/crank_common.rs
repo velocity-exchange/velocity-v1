@@ -552,6 +552,15 @@ pub(crate) const RESTED_ROWS_PER_SIDE: u16 = 32;
 ///
 /// One side per fill. A fill transmits only the flow it sweeps, so a fresh
 /// order on the other side of the book has no bearing on it.
+///
+/// This measures book slots and nothing else. A `Custom` quoter prices during
+/// the call and keeps no resting order, so it has no rest to measure and this
+/// passes over it. A caller whose crossing side can be such a quoter must test
+/// for that itself. Without the test it reports protected flow for a quoter
+/// that repriced in the same slot, and a book with a speed bump then serves a
+/// cross that gave its makers no time to answer.
+/// `crank_cross_match::consults_custom_quoter` is that test. A liquidation
+/// needs no test, because its own order is the crossing side.
 pub(crate) fn book_side_rested<'info>(
     quoter_slab: &AccountLoader<'info, QuoterSlabV0>,
     tail: &'info [AccountInfo<'info>],

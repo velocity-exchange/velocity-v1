@@ -343,17 +343,6 @@ fn pay_liquidation_crank<'info>(
                 ErrorCode::DefaultError.into()
             })?;
 
-    // The priority fee and the fixed part of the flat payment are both
-    // whole-transaction costs, so both are shared between the liquidations
-    // batched into one transaction. Count the peers once here.
-    let claimants = match &ctx.accounts.instructions_sysvar {
-        Some(sysvar) => crate::instructions::optional_accounts::tx_reimbursement_claimants(
-            sysvar,
-            crate::instruction::LiquidatePerpWithFill::DISCRIMINATOR,
-        )?,
-        None => 1,
-    };
-
     let payment = {
         let conditions = reservoir.load()?;
         validate!(
@@ -371,12 +360,14 @@ fn pay_liquidation_crank<'info>(
         } else {
             0
         };
-        // The flat payment prices one transaction's fixed cost once. A
-        // batch shares that cost, so give back the part a lone crank would
-        // over-claim across the peers that share the transaction.
-        let fixed = state.transaction_fee_rails.fixed_cost();
-        let over_claimed = fixed.saturating_sub(fixed / u64::from(claimants));
-        let flat = flat.saturating_sub(over_claimed);
+        // The flat payment is not shared between the liquidations batched
+        // into one transaction. A relay crank carries its own payment guard,
+        // which measures what this one instruction paid, so a figure that
+        // fell with the size of the batch would fail the guard and revert a
+        // liquidation that already ran. The condition that arms the crank
+        // also has to name the payment before the batch exists. The priority
+        // fee is a real whole-transaction cost and is still shared, inside
+        // the reimbursement below.
         flat.saturating_add(liquidation_reimbursement(
             &ctx.accounts.instructions_sysvar,
             state,

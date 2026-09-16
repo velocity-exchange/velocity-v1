@@ -29,6 +29,7 @@ use {
             calculate_net_equity_for_floor, MarginRequirementType,
         },
         state::{
+            clob_crank::LIQUIDATION_FLAT_PAYMENT_MIN_FILLED_QUOTE,
             margin_calculation::MarginContext, perp_market_map::MarketSet, prop_amm::QuoterSlabExt,
             state::State, user::User, user_conditions::UserConditionsV0,
         },
@@ -128,6 +129,10 @@ pub fn handle_resolve_liquidate_perp_with_fill<'c: 'info, 'info>(
             // by design rather than by omission.
             return Ok(None);
         };
+
+        if !position_can_pay_the_crank(&ctx.accounts.user, &mut maps, market_index)? {
+            return Ok(None);
+        }
 
         stage_liquidate_perp(
             ctx.accounts.state.key(),
@@ -255,6 +260,31 @@ fn largest_perp_position(user_loader: &AccountLoader<'_, User>) -> Result<Option
         .filter(|p| p.base_asset_amount != 0)
         .max_by_key(|p| (p.base_asset_amount as i128).abs())
         .map(|p| p.market_index))
+}
+
+/// Whether a liquidation of this position can pay the crank that runs it.
+///
+/// A fill below [`LIQUIDATION_FLAT_PAYMENT_MIN_FILLED_QUOTE`] earns no flat
+/// payment, and a relay crank that pays nothing fails its own payment guard
+/// after the liquidation has already run. The whole position priced at the
+/// oracle is the most any fill of it can settle, so a position below the
+/// floor can never pay and is not staged. Such an account stays with the
+/// keeper bots, which carry a balance sheet and do not need the reservoir.
+fn position_can_pay_the_crank(
+    user_loader: &AccountLoader<'_, User>,
+    maps: &mut AccountMaps,
+    market_index: u16,
+) -> Result<bool> {
+    let base = {
+        let user = crate::load!(user_loader)?;
+        (user.get_perp_position(market_index)?.base_asset_amount as i128).unsigned_abs()
+    };
+    let oracle_id = maps.perp_market_map.get_ref(&market_index)?.oracle_id();
+    let price = maps.oracle_map.get_price_data(&oracle_id)?.price.max(0) as u128;
+    let notional = base
+        .saturating_mul(price)
+        .saturating_div(crate::math::constants::BASE_PRECISION);
+    Ok(notional >= u128::from(LIQUIDATION_FLAT_PAYMENT_MIN_FILLED_QUOTE))
 }
 
 /// Stage the liquidation of `market_index`.

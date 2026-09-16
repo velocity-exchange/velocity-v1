@@ -2,6 +2,7 @@
 name = "swift-server"
 version = "0.1.3"
 edition = "2021"
+license = "Apache-2.0"
 
 [features]
 # Live tests that need RPC-backed external state. Off by default so the offline

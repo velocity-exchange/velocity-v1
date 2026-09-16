@@ -368,7 +368,11 @@ fn clob_best_bid_price(fixture: &Fixture) -> Option<u64> {
 /// Init a CLOB book with `place_authority` = the market's quoter slab, so
 /// every placement must come through velocity.
 fn init_clob_book(svm: &mut litesvm::LiteSVM, clob_admin: &Keypair) -> Pubkey {
-    let market = Pubkey::new_unique();
+    // The book signs its own creation, so the account cannot be initialized by
+    // whoever sees it created. The harness holds the keypair only long enough
+    // to sign; the book is named by its address everywhere after that.
+    let market_kp = Keypair::new();
+    let market = market_kp.pubkey();
     svm.set_account(
         market,
         Account {
@@ -386,10 +390,10 @@ fn init_clob_book(svm: &mut litesvm::LiteSVM, clob_admin: &Keypair) -> Pubkey {
         vec![
             AccountMeta::new_readonly(clob_admin.pubkey(), true),
             AccountMeta::new_readonly(quoter_slab_pda(0), false),
-            AccountMeta::new(market, false),
+            AccountMeta::new(market, true),
         ],
     );
-    send(svm, clob_admin, ix, &[]).unwrap();
+    send(svm, clob_admin, ix, &[&market_kp]).unwrap();
     market
 }
 

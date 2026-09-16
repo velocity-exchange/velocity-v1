@@ -5937,10 +5937,12 @@ export type Velocity = {
           "name": "userConditions",
           "docs": [
             "Relay liquidation coverage, created alongside the account it",
-            "watches. Optional so raw-instruction integrators aren't broken and",
-            "so a caller can decline the rent; the SDK passes it by default, and",
-            "`deploy-scripts/migrate.ts` backfills whatever was declined. Coming",
-            "up empty is fine — the first sync writes the thresholds."
+            "watches. Required: relay can only watch an account that exists, and",
+            "the moment coverage matters is the moment somebody else's transaction",
+            "gave the user a position, where the user signs nothing and no rent can",
+            "be charged to them. `deploy-scripts/migrate.ts` backfills the accounts",
+            "that predate the field. Coming up empty is fine — the first sync",
+            "writes the thresholds."
           ],
           "writable": true,
           "pda": {

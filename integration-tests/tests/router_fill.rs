@@ -19,6 +19,7 @@ use {
     solana_signer::Signer,
     velocity::{
         controller::position::PositionDirection,
+        error::ErrorCode,
         instructions::{
             CancelOrderV1Params, CancelOrdersV1Params, CrankClobEvictArgs,
             CrankClobRemoveExpiredArgs, CrankCrossMatchArgs, CrankTakerOriginCrossArgs,
@@ -849,11 +850,7 @@ fn fast_activation_requires_the_flow_authority_attestation() {
     // Below the default with no flow authority named: refused.
     let no_flow_ix = place(&fixture, Some(0), None);
     let err = send(&mut fixture.svm, &keeper, no_flow_ix, &[]).unwrap_err();
-    assert!(
-        format!("{:?}", err.err).contains("6381"),
-        "expected UnattestedFastActivation, got {:?}",
-        err.err
-    );
+    assert_velocity_error(&err, ErrorCode::UnattestedFastActivation);
 
     // A signer that is not the configured flow authority fails the account
     // constraint — and with no flow authority configured, the zero key on
@@ -862,7 +859,7 @@ fn fast_activation_requires_the_flow_authority_attestation() {
     fixture.svm.airdrop(&flow.pubkey(), 1_000_000_000).unwrap();
     let impostor_ix = place(&fixture, Some(0), Some(flow.pubkey()));
     let err = send(&mut fixture.svm, &keeper, impostor_ix, &[&flow]).unwrap_err();
-    assert!(format!("{:?}", err.err).contains("6381"));
+    assert_velocity_error(&err, ErrorCode::UnattestedFastActivation);
 
     // Configure the flow authority; the same signer now attests the fast
     // placement and it lands.
@@ -1007,11 +1004,7 @@ fn a_fill_that_leaves_out_a_reachable_book_maker_is_refused() {
         .data(),
     };
     let err = send(&mut fixture.svm, &fixture.keeper, ix, &[]).unwrap_err();
-    assert!(
-        format!("{:?}", err.err).contains("6395"),
-        "expected FillerOmittedReachableMaker, got {:?}",
-        err.err
-    );
+    assert_velocity_error(&err, ErrorCode::FillerOmittedReachableMaker);
 
     // Nothing moved, and the book still holds what it was holding.
     let dlob_maker: User = read_zero_copy(&fixture.svm, &dlob_maker_user);
@@ -1411,11 +1404,7 @@ fn a_padded_account_list_does_not_excuse_the_missing_maker() {
     // count first. The padding rule is what catches the same list once the cap
     // is reached, and `math::router` pins that arm directly.
     let err = send(&mut fixture.svm, &fixture.keeper, ix, &[]).unwrap_err();
-    assert!(
-        format!("{:?}", err.err).contains("6395"),
-        "expected FillerOmittedReachableMaker, got {:?}",
-        err.err
-    );
+    assert_velocity_error(&err, ErrorCode::FillerOmittedReachableMaker);
     let idle: User = read_zero_copy(&fixture.svm, &idle_user);
     assert_eq!(idle.perp_positions[0].base_asset_amount, 0);
 }
@@ -4951,11 +4940,7 @@ fn an_unattested_taker_on_a_bumped_book_rests_instead_of_filling() {
             &[],
         )
         .unwrap_err();
-        assert!(
-            format!("{:?}", err.err).contains("6403"),
-            "expected UnattestedSynchronousTake, got {:?}",
-            err.err
-        );
+        assert_velocity_error(&err, ErrorCode::UnattestedSynchronousTake);
     }
 
     // Unattested: no fill. The order rests whole as a taker-origin bid and
@@ -6433,11 +6418,7 @@ fn a_custom_quoter_cross_cannot_reach_a_speed_bumped_book() {
     .expect_err("a quoter that prices on demand must not lift a bumped book");
     // The book quotes nothing, so the buy leg reaches only the vAMM while the
     // sell leg reaches the midpoint: the two legs do not cross.
-    assert!(
-        format!("{:?}", err.err).contains("6406"),
-        "expected the legs not to cross, got {:?}",
-        err.err
-    );
+    assert_velocity_error(&err, ErrorCode::CrossMatchLegsDoNotCross);
 
     // The book keeps its ask and the midpoint's user took no position.
     assert_eq!(clob_ask_count(&fixture), 1);
@@ -6542,11 +6523,7 @@ fn a_protected_instance_is_out_of_the_cross_cranks_reach() {
         // The instance quotes nothing, so the buy leg reaches only the vAMM
         // and the sell leg only the book: the two legs do not cross, which is
         // a more specific refusal than an unprofitable total.
-        assert!(
-            format!("{:?}", err.err).contains("6406"),
-            "expected the legs not to cross at slot {slot}, got {:?}",
-            err.err
-        );
+        assert_velocity_error(&err, ErrorCode::CrossMatchLegsDoNotCross);
     }
 
     // The crossed bid is still on the book and nobody took a position.

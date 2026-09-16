@@ -471,3 +471,21 @@ fn base64_decode(input: &str) -> Option<Vec<u8>> {
     }
     Some(out)
 }
+
+/// Assert a failed send reported `expected`.
+///
+/// The number a variant reports is its position in `ErrorCode`, so a variant
+/// added above it renumbers every variant below. Deriving the number from the
+/// enum keeps an assertion pointed at the error it names instead of at a
+/// literal that the next insertion silently reassigns to a different error.
+pub fn assert_velocity_error(
+    err: &FailedTransactionMetadata,
+    expected: velocity::error::ErrorCode,
+) {
+    let code = u32::from(expected);
+    let text = format!("{:?}", err.err);
+    assert!(
+        text.contains(&code.to_string()),
+        "expected {expected:?} ({code}), got {text}"
+    );
+}

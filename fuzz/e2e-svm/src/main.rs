@@ -1240,6 +1240,10 @@ impl Fixture {
                 Pubkey::find_program_address(&[b"user_stats", kp.pubkey().as_ref()], &program_id);
             let (user_pda, _) =
                 Pubkey::find_program_address(&[b"user", kp.pubkey().as_ref(), &sub0], &program_id);
+            // `initialize_user` creates the relay liquidation-coverage account
+            // alongside the user, so its list carries the PDA.
+            let (user_conditions_pda, _) =
+                Pubkey::find_program_address(&[b"user_conditions", user_pda.as_ref()], &program_id);
 
             // initialize_user_stats
             let _ = ctx
@@ -1267,6 +1271,7 @@ impl Fixture {
                     program_id,
                     accounts: vec![
                         AccountMeta::new(user_pda, false),
+                        AccountMeta::new(user_conditions_pda, false),
                         AccountMeta::new(stats_pda, false),
                         AccountMeta::new(state_pda, false),
                         AccountMeta::new_readonly(kp.pubkey(), false), // authority
@@ -3438,6 +3443,8 @@ impl Fixture {
             ],
             &self.program_id,
         );
+        let (sub_conditions_pda, _) =
+            Pubkey::find_program_address(&[b"user_conditions", sub_pda.as_ref()], &self.program_id);
         let mut args = sub_account_id.to_le_bytes().to_vec();
         args.extend_from_slice(&[0u8; 32]);
         self.ctx
@@ -3445,6 +3452,7 @@ impl Fixture {
                 program_id: self.program_id,
                 accounts: vec![
                     AccountMeta::new(sub_pda, false),
+                    AccountMeta::new(sub_conditions_pda, false),
                     AccountMeta::new(user.stats_pda, false),
                     AccountMeta::new(self.state_pda(), false),
                     AccountMeta::new_readonly(user.keypair.pubkey(), false),
@@ -3550,6 +3558,10 @@ impl Fixture {
             &[b"user", kp.pubkey().as_ref(), &sub_account_id.to_le_bytes()],
             &self.program_id,
         );
+        let (user_conditions_pda, _) = Pubkey::find_program_address(
+            &[b"user_conditions", user_pda.as_ref()],
+            &self.program_id,
+        );
         let mut args = sub_account_id.to_le_bytes().to_vec();
         args.extend_from_slice(&[0u8; 32]);
         self.ctx
@@ -3557,6 +3569,7 @@ impl Fixture {
                 program_id: self.program_id,
                 accounts: vec![
                     AccountMeta::new(user_pda, false),
+                    AccountMeta::new(user_conditions_pda, false),
                     AccountMeta::new(stats_pda, false),
                     AccountMeta::new(self.state_pda(), false),
                     AccountMeta::new_readonly(kp.pubkey(), false),

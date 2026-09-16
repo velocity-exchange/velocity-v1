@@ -104,8 +104,8 @@ fn is_compute_exhausted(line: &str) -> bool {
 
 /// Pull the code out of either anchor rendering of an error.
 ///
-/// `Debug` writes `error_code_number: 6384`; the prose form written by
-/// `AnchorError::log` writes `Error Number: 6384`. Both appear in logs, from
+/// `Debug` writes `error_code_number: 6385`; the prose form written by
+/// `AnchorError::log` writes `Error Number: 6385`. Both appear in logs, from
 /// different call sites, so both are read.
 fn anchor_error_number(text: &str) -> Option<u32> {
     let rest = text
@@ -135,8 +135,8 @@ fn custom_program_error(text: &str) -> Option<u32> {
 /// The reason a named line reports, from the error text that follows the key.
 ///
 /// Anchor renders an `Error` through `Debug`, not through the prose form its
-/// `log()` method writes, so the text carries `error_code_number: 6384` and
-/// `error_name: "QuoterFillOffQuote"` rather than `Error Number: 6384`. A
+/// `log()` method writes, so the text carries `error_code_number: 6385` and
+/// `error_name: "QuoterFillOffQuote"` rather than `Error Number: 6385`. A
 /// failed CPI arrives as a plain `ProgramError`, which renders as
 /// `Custom program error: 0x18f0`. All three shapes are read here.
 fn reason_from_text(text: &str) -> FailReason {
@@ -306,7 +306,7 @@ mod tests {
         let quoter = key(9);
         let logs = vec![format!(
             "Program log: quoter {quoter} execute failed: AnchorError occurred. \
-             Error Code: QuoterFillOffQuote. Error Number: 6384. Error Message: x."
+             Error Code: QuoterFillOffQuote. Error Number: 6385. Error Message: x."
         )];
         let verdict = attribute(&logs, None, route(&[]));
         assert_eq!(verdict.charges[0].reason, FailReason::OffQuote);
@@ -427,7 +427,7 @@ mod tests {
                 .to_string(),
             format!("Program log: quoter {quoter} filled 100/5 off its quote of 400"),
         ];
-        let verdict = attribute(&logs, Some("InstructionError(0, Custom(6384))"), route(&[]));
+        let verdict = attribute(&logs, Some("InstructionError(0, Custom(6385))"), route(&[]));
         assert_eq!(
             verdict.charges,
             vec![Charge {
@@ -445,7 +445,7 @@ mod tests {
             "Program log: quoter {quoter} may not act against user {}",
             key(13)
         )];
-        let verdict = attribute(&logs, Some("InstructionError(0, Custom(6385))"), route(&[]));
+        let verdict = attribute(&logs, Some("InstructionError(0, Custom(6386))"), route(&[]));
         assert_eq!(verdict.charges[0].reason, FailReason::SubjectNotPermitted);
         assert!(verdict.charges[0].reason.is_contract_violation());
     }
@@ -457,7 +457,7 @@ mod tests {
         let quoter = key(14);
         let logs = vec![format!(
             "Program log: quoter {quoter} execute failed: AnchorError {{ \
-             error_name: \"QuoterOverfilled\", error_code_number: 6383, \
+             error_name: \"QuoterOverfilled\", error_code_number: 6384, \
              error_msg: \"...\", error_origin: None, compared_values: None }}"
         )];
         let verdict = attribute(&logs, None, route(&[]));
@@ -480,9 +480,9 @@ mod tests {
     #[test]
     fn a_quoters_own_hex_error_maps_when_it_is_one_velocity_knows() {
         let quoter = key(16);
-        // 0x18ef == 6383, QuoterOverfilled.
+        // 0x18f0 == 6384, QuoterOverfilled.
         let logs = vec![format!(
-            "Program log: quoter {quoter} execute failed: Custom program error: 0x18ef"
+            "Program log: quoter {quoter} execute failed: Custom program error: 0x18f0"
         )];
         let verdict = attribute(&logs, None, route(&[]));
         assert_eq!(verdict.charges[0].reason, FailReason::Overfilled);

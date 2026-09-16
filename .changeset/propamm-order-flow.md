@@ -204,7 +204,7 @@ slot 0), and `crankCrossMatch` names the perp market and the slab in its account
 Every endpoint this branch added takes a single args struct
 (`PlaceAndTakePerpOrderV1Args`, `TriggerMarketOrderV1Args`, `UpdateQuoterApprovedArgs`, …);
 `fillLegacyDlobOrder` moves `marketIndex` first and drops the dead `makerOrderId`. Errors
-`QuoterSlabFull` (6404) and `QuoterNotOnSlab` (6405) are appended.
+`QuoterSlabFull` (6405) and `QuoterNotOnSlab` (6406) are appended.
 
 **Stored bindings.** `PerpMarketAccount.clobQuoter` is replaced by `clobMarket` — the market
 stores its book account directly (designated once at registration) — and gains `quoterSlab`;
@@ -241,8 +241,8 @@ What replaces it is an obligation on whoever built the transaction. When a book
 withholds depth and the taker did not sign, `fill_perp_order` and
 `fill_legacy_dlob_order` require that the transaction was full and that every loaded
 user did something. Three new errors say which rule failed:
-`FillerOmittedReachableMaker` (6395), `FillerPaddedTheUserSet` (6396), and
-`FillerObligationUncountable` (6397).
+`FillerOmittedReachableMaker` (6396), `FillerPaddedTheUserSet` (6397), and
+`FillerObligationUncountable` (6398).
 
 Both fill instructions gain an optional `instructions_sysvar` account. A fill
 needs it only to be counted, so a taker filling its own order can omit it — but
@@ -252,13 +252,13 @@ a filler that omits it is refused whenever a book withholds. The SDK and
 **A quoter must deliver every unit it won.** A quoter that returned nothing for an
 allocation it won was skipped, so the size went nowhere and a source that would
 have filled it never saw it. Returning less than the allocation already failed;
-returning nothing now fails the same way, with `QuoterFilledShort` (6398).
+returning nothing now fails the same way, with `QuoterFilledShort` (6399).
 
 **A book's report is held to what velocity reserved.** Every CLOB order reserves `openBids` /
 `openAsks` and an open-order slot on its owner's `PerpPosition` at placement, under that owner's
 signature. Nothing outside velocity can write those, so they are now the bound on every response a
 quoter returns: fills, sub-min culls, retired-order counts, the evict / expire removal cranks, and
-both cross cranks fail with `QuoterReportExceedsReservation` (6402) when the report exceeds the
+both cross cranks fail with `QuoterReportExceedsReservation` (6403) when the report exceeds the
 reservation, instead of saturating at zero.
 
 The ceiling on what a compromised book can open for a user the transaction carries drops from that
@@ -310,7 +310,7 @@ With a nonzero `default_activation_delay_slots`, a transaction not co-signed by 
 authority cannot fill against the book in the same transaction. `placeAndTakePerpOrder` (v1)
 and signed-message orders rest the whole order taker-origin through the default window instead,
 and the cross cranks fill it; an IOC or a success condition on such a take is refused with
-`UnattestedSynchronousTake` (6403). Keeper fills still run but the book quotes them no depth, so
+`UnattestedSynchronousTake` (6404). Keeper fills still run but the book quotes them no depth, so
 they reach the vAMM and DLOB makers only. Cancels are never delayed, so a maker can always
 reprice ahead of unattested aggression. Books with a zero default delay are unaffected.
 

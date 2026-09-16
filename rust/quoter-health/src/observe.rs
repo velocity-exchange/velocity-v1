@@ -17,21 +17,26 @@ use {
 /// contract violations: the quoter answered, and the answer broke a rule the
 /// router checks. `Cpi` and `ComputeExhausted` mean the quoter never returned
 /// a usable answer at all.
+///
+/// A variant's number is its position in that enum, so a variant added above
+/// one of these renumbers it. This crate takes no velocity dependency, so the
+/// numbers below are a copy: re-read them from `error.rs` whenever the enum
+/// gains a variant anywhere but the end.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum FailReason {
     /// The quoter's CPI returned an error.
     Cpi,
     /// The quoter consumed the transaction's remaining compute budget.
     ComputeExhausted,
-    /// 6383. The quoter filled more base than the router allocated to it.
+    /// 6384. The quoter filled more base than the router allocated to it.
     Overfilled,
-    /// 6384. The quoter filled at a price its own quote does not support.
+    /// 6385. The quoter filled at a price its own quote does not support.
     OffQuote,
-    /// 6385. The quoter moved a user it may not act against.
+    /// 6386. The quoter moved a user it may not act against.
     SubjectNotPermitted,
-    /// 6382. The quoter's response did not decode.
+    /// 6383. The quoter's response did not decode.
     InvalidResponse,
-    /// 6374 or 6375. The registry entry itself is wrong.
+    /// 6375 or 6376. The registry entry itself is wrong.
     Config,
     /// The failure is a quoter's, but the code is not one this crate knows.
     Unknown,
@@ -45,11 +50,11 @@ impl FailReason {
     /// quoter.
     pub fn from_velocity_code(code: u32) -> Option<Self> {
         match code {
-            6374 | 6375 => Some(Self::Config),
-            6382 => Some(Self::InvalidResponse),
-            6383 => Some(Self::Overfilled),
-            6384 => Some(Self::OffQuote),
-            6385 => Some(Self::SubjectNotPermitted),
+            6375 | 6376 => Some(Self::Config),
+            6383 => Some(Self::InvalidResponse),
+            6384 => Some(Self::Overfilled),
+            6385 => Some(Self::OffQuote),
+            6386 => Some(Self::SubjectNotPermitted),
             _ => None,
         }
     }

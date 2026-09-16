@@ -9,6 +9,7 @@ use {
     solana_pubkey::Pubkey,
     solana_signer::Signer,
     velocity::{
+        error::ErrorCode,
         instructions::{
             InitializeQuoterArgs, InitializeQuoterSlabArgs, QuoterAccountMetaArg,
             UpdateQuoterAccountsArgs, UpdateQuoterActiveArgs, UpdateQuoterApprovedArgs,
@@ -669,9 +670,5 @@ fn a_full_slab_refuses_another_approval() {
         &[],
     )
     .unwrap_err();
-    assert!(
-        format!("{:?}", err.err).contains("6404"),
-        "expected QuoterSlabFull, got {:?}",
-        err.err
-    );
+    assert_velocity_error(&err, ErrorCode::QuoterSlabFull);
 }

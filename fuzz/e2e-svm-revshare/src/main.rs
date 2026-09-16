@@ -677,6 +677,12 @@ mod regr_256 {
                 &[b"user", trader_kp.pubkey().as_ref(), &mi0],
                 &program_id,
             );
+            // `initialize_user` creates the relay liquidation-coverage account
+            // alongside the user, so its list carries the PDA.
+            let (trader_pda_conditions, _) = Pubkey::find_program_address(
+                &[b"user_conditions", trader_pda.as_ref()],
+                &program_id,
+            );
 
             let _ = ctx
                 .raw_call(Instruction {
@@ -702,6 +708,7 @@ mod regr_256 {
                     program_id,
                     accounts: vec![
                         AccountMeta::new(trader_pda, false),
+                        AccountMeta::new(trader_pda_conditions, false),
                         AccountMeta::new(trader_stats_pda, false),
                         AccountMeta::new(state_pda, false),
                         AccountMeta::new_readonly(trader_kp.pubkey(), false),

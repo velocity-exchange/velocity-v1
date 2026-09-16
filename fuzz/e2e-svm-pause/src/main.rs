@@ -609,6 +609,10 @@ mod regr_276_interest {
                 &[b"user", authority.pubkey().as_ref(), &sub0],
                 &program_id,
             );
+            // `initialize_user` creates the relay liquidation-coverage account
+            // alongside the user, so its list carries the PDA.
+            let (user_pda_conditions, _) =
+                Pubkey::find_program_address(&[b"user_conditions", user_pda.as_ref()], &program_id);
 
             // initialize_user_stats
             let _ = ctx
@@ -636,6 +640,7 @@ mod regr_276_interest {
                     program_id,
                     accounts: vec![
                         AccountMeta::new(user_pda, false),
+                        AccountMeta::new(user_pda_conditions, false),
                         AccountMeta::new(stats_pda, false),
                         AccountMeta::new(state_pda, false),
                         AccountMeta::new_readonly(authority.pubkey(), false),

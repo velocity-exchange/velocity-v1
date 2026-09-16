@@ -1,152 +1,174 @@
 <div align="center">
-  <img height="120x" src="https://uploads-ssl.webflow.com/611580035ad59b20437eb024/616f97a42f5637c4517d0193_Logo%20(1)%20(1).png" />
+  <img height="120" src="https://docs.velocity.exchange/assets/velocity.svg" />
 
-  <h1 style="margin-top:20px;">Keeper Bots for Drift Protocol v2</h1>
+  <h1>Keeper bots</h1>
 
   <p>
     <a href="https://docs.velocity.exchange/developers/trading-automation/keeper-bots"><img alt="Docs" src="https://img.shields.io/badge/docs-developers-blueviolet" /></a>
     <a href="https://discord.com/invite/95kByNnDy5"><img alt="Discord Chat" src="https://img.shields.io/discord/849494028176588802?color=blueviolet" /></a>
-    <a href="https://opensource.org/licenses/Apache-2.0"><img alt="License" src="https://img.shields.io/github/license/project-serum/anchor?color=blueviolet" /></a>
+    <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blueviolet" /></a>
   </p>
 </div>
 
+A single process that loads one or more keeper bots against Velocity Protocol: fillers, the
+liquidator, a JIT auction maker, settlers, and cranks. You pick which bots to run in a config file,
+and every bot in the process shares one `VelocityClient` and one wallet.
+
+The repo has two long-lived branches. `master` is the bleeding edge and may be unstable.
+`mainnet-beta` is the stable branch.
+
 # Setting up
 
+## Config file
 
-This repo has two main branches:
+Bots are configured with a `.yaml` file. `example.config.yaml` is a commented reference for the
+global options and the common bot configs. `jitMaker.config.yaml` and `lite.config.yaml` are
+smaller starting points.
 
-* `master`: bleeding edge, may be unstable, currently running on the `devnet` cluster
-* `mainnet-beta`: stable, currently running on the `mainnet-beta` cluster
-
-## Setup Environment
-
-### yaml Config file:
-
-A `.yaml` file can be used to configure the bot setup now. See `example.config.yaml` for a commented example.
-
-Then you can run the bot by loading the config file:
-```shell
-yarn run dev --config-file=example.config.yaml
-```
-
-Here is a table defining the various fields and their usage/defaults:
-
-| Field             | Type   | Description | Default |
-| ----------------- | ------ | --- | --- |
-| global            | object | global configs to apply to all running bots | - |
-| global.endpoint   | string | RPC endpoint to use | - |
-| global.wsEndpoint | string | (optional) Websocket endpoint to use | derived from `global.endpoint` |
-| global.keeperPrivateKey  | string | (optional) The private key to use to pay/sign transactions | `KEEPER_PRIVATE_KEY` environment variable |
-| global.initUser   | bool   | Set `true` to init a fresh userAccount | `false` |
-| global.websocket  | bool   | Set `true` to run the selected bots in websocket mode if compatible| `false` |
-| global.runOnce    | bool   | Set `true` to run only one iteration of the selected bots | `false` |
-| global.debug      | bool   | Set `true` to enable debug logging | `false` |
-| global.subaccounts | list  | (optional) Which subaccount IDs to load | `0` |
-| enabledBots       | list   | list of bots to enable, matching key must be present under `botConfigs` | - |
-| botConfigs        | object | configs for associated bots | - |
-| botConfigs.<bot_type> | object | config for a specific <bot_type> | - |
-
-
-### Install dependencies
-
-Run from repo root to install all npm dependencies:
-```shell
-yarn install
-yarn build
-```
-
-
-## Initialize User
-
-A `ClearingHouseUser` must be created before interacting with the `ClearingHouse` program.
+Load a config file with `--config-file`:
 
 ```shell
-yarn run dev --init-user
+bun run dev --config-file=example.config.yaml
 ```
 
-Alternatively, you can put the private key into a browser wallet and use the UI at https://app.velocity.exchange to initialize the user.
+Without `--config-file`, the process builds its config from command-line flags instead. Run
+`bun run dev --help` for the full flag list.
+
+The top-level fields:
+
+| Field                 | Type   | Description                                                             | Default                                 |
+| --------------------- | ------ | ----------------------------------------------------------------------- | --------------------------------------- |
+| global                | object | Global config applied to every bot in the process                       | -                                       |
+| global.velocityEnv    | string | Cluster to connect to, `devnet` or `mainnet-beta`                       | `ENV` environment variable, or `devnet` |
+| global.endpoint       | string | RPC endpoint to use                                                     | `ENDPOINT` environment variable         |
+| global.wsEndpoint     | string | Websocket endpoint to use                                               | derived from `global.endpoint`          |
+| global.keeperPrivateKey | string | Private key used to pay for and sign transactions                     | `KEEPER_PRIVATE_KEY` environment variable |
+| global.initUser       | bool   | Set `true` to create the user account when it does not exist            | `false`                                 |
+| global.forceDeposit   | number | Deposit this many USDC, then exit                                       | unset                                   |
+| global.websocket      | bool   | Set `true` to run the selected bots in websocket mode where supported   | `false`                                 |
+| global.runOnce        | bool   | Set `true` to run one iteration of the selected bots and exit           | `false`                                 |
+| global.debug          | bool   | Set `true` to enable debug logging                                      | `false`                                 |
+| global.subaccounts    | list   | Subaccount IDs to load                                                  | `[0]`                                   |
+| global.metricsPort    | number | Port for the Prometheus exporter                                        | `9464`                                  |
+| enabledBots           | list   | Bots to enable. Each entry needs a matching key under `botConfigs`      | `[]`                                    |
+| botConfigs            | object | Per-bot config, keyed by bot type                                       | `{}`                                    |
+
+Unknown keys in the file are carried through without being read, so a typo fails silently. Check
+the field against `src/config.ts` if a setting appears to have no effect.
+
+## Install dependencies
+
+Install once at the repo root, then build this app:
+
+```shell
+bun install
+bunx turbo run build --filter=@velocity-exchange/keeper-bots-v2
+```
+
+The `bun run` commands in this file run from `apps/keeper-bots-v2`.
+
+## Initialize the user
+
+Bots that hold positions or collateral, such as the liquidator and the JIT maker, need a Velocity
+user account for the signing wallet. The process throws at startup if the account is missing, so
+create it first:
+
+```shell
+bun run dev --init-user
+```
+
+This calls `VelocityClient.initializeUserAccount()` for the active subaccount. You can instead load
+the private key into a browser wallet and initialize the account through the UI at
+https://app.velocity.exchange.
 
 ## Collateral
 
-Some bots (i.e. trading, liquidator and JIT makers) require collateral in order to keep positions open, a helper function is included to help with depositing collateral.
-A user must be initialized first before collateral may be deposited.
+The same bots need collateral to keep positions open. A user account must exist before you can
+deposit.
 
 ```shell
 # deposit 10,000 USDC
-yarn run dev --force-deposit 10000
+bun run dev --force-deposit 10000
 ```
 
-Alternatively, you can put the private key into a browser wallet and use the UI at https://app.velocity.exchange to deposit collateral.
+The deposit goes to spot market index 0 (USDC). On devnet the process mints the amount from the
+token faucet first. It exits once the deposit transaction is sent, so run it again without the flag
+to start the bot. You can also deposit through the UI at https://app.velocity.exchange.
 
-Free collateral is what is determines the size of borrows and perp positions that an account can have. Free collateral = total collateral - initial margin requirement. Total collateral is the value of the spot assets in your account + unrealized perp pnl. The initial margin requirement is the total weighted value of the perp positions and spot liabilities in your account. The initial margin requirement weights are determined in the [margin documentation](https://docs.velocity.exchange/protocol/trading/margin). In simple terms, free collateral is essentially the amount of total collateral that is not being used up by borrows and existing perp positions and open orders.
+Free collateral determines the size of the borrows and perp positions an account can carry. It is
+total collateral minus the initial margin requirement. Total collateral is the value of the spot
+assets in the account plus unrealized perp PnL. The initial margin requirement is the total
+weighted value of the perp positions and spot liabilities in the account, weighted as described in
+the [margin documentation](https://docs.velocity.exchange/protocol/trading/margin).
 
+# Run bots
 
-# Run Bots
+With a config file in place:
 
-After creating your `config.yaml` file as above, run with:
-  
 ```shell
-yarn run dev --config-file=config.yaml
+bun run dev --config-file=config.yaml
 ```
 
-By default, some [Prometheus](https://prometheus.io/) metrics are exposed on `localhost:9464/metrics`.
+[Prometheus](https://prometheus.io/) metrics are exposed on `localhost:9464/metrics` by default.
+Override the port with `global.metricsPort`, or turn metrics off with `global.disableMetrics`.
 
 # Notes on some bots
 
-## Filler Bot
+## Filler bot
 
-Include `filler` and/or `spotFiller` under `.enabledBots` in `config.yaml`. For a lightweight version
-of a filler bot for perp markets, include `fillerLite` rather than `filler` in `config.yaml`. The lighter 
-version of the filler can be run on public RPCs for testing, but is not as stable.
+Fillers match crossing orders on the exchange for a cut of the taker fee. They keep a copy of the
+DLOB, look for orders that cross, and also execute triggerable orders. Background is in the
+[orderbook and keepers docs](https://docs.velocity.exchange/protocol/how-it-works/orderbook-and-keepers).
 
-Read the docs: https://docs.velocity.exchange/protocol/how-it-works/orderbook-and-keepers
-
-Fills (matches) crossing orders on the exchange for a small cut of the taker fees. Fillers maintain a copy of the DLOB to look
-for orders that cross. Fillers will also attempt to execute triggerable orders. 
+Include `filler` and `spotFiller` under `enabledBots`. For a lighter perp filler, include
+`fillerLite` instead of `filler`. `fillerLite` sources orders from the SDK `OrderSubscriber` rather
+than a full user map, so it runs on a public RPC for testing, at the cost of stability.
 
 ### Common errors
 
-When running the filler bots, you might see the following error codes in the transaction logs on a failed in pre-flight simulation:
+You may see these in the transaction logs when a fill fails preflight simulation.
 
-#### For perps
+#### Perps
 
-| Error             | Description |   
-| ----------------- | ------ |
-| OrderDoesNotExist | Outcompeted: Order was already filled by someone else|
-| OrderNotTriggerable | Outcompeted: order was already triggered by someone else |
-| RevertFill |  Outcompeted: order was already filled by someone else|
-
+| Error               | Description                                          |
+| ------------------- | ---------------------------------------------------- |
+| OrderDoesNotExist   | Outcompeted, the order was already filled            |
+| OrderNotTriggerable | Outcompeted, the order was already triggered         |
+| RevertFill          | Outcompeted, the order was already filled            |
 
 #### Other messages
 
-| Message | Description |
-| --------|--------------|
-| filler last active slot != current slot | You might see this when outcompeted on a fill. The *filler last active slot* was the last slot that the filler had a successful fill in, so it may diverge *current slot* if the filler has not placed a successful order.
+| Message                                 | Description                                                                                                                      |
+| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| filler last active slot != current slot | Usually means you were outcompeted. The filler's last active slot is the slot of its last successful fill, so it falls behind the current slot while the filler is not landing fills. |
 
+## Liquidator bot
 
-## Liquidator Bot
+The liquidator watches spot and perp markets for accounts whose collateral has fallen below their
+maintenance margin requirement, and takes over their positions following the protocol's
+[liquidation process](https://docs.velocity.exchange/protocol/trading/liquidations). It also
+resolves bankruptcy on accounts that are past that point. Taking over a position transfers that
+position's risk to the liquidator's own account.
 
-The liquidator bot monitors spot and perp markets for bankrupt accounts, and attempts to liquidate positions according to the protocol's [liquidation process](https://docs.velocity.exchange/protocol/trading/liquidations).
+### Derisking
 
-### Notes on derisking
-You may also set `disableAutoDerisking` to `true`, to disable the derisking loop. You may want to do this as part of a larger strategy
-where you are ok with taking on risk at a favorable to market price (liquidation fee applied).
+The liquidator closes inherited positions by default. Set `disableAutoDerisking` to `true` to turn
+that loop off, for example if you want to hold the inherited risk and unwind it yourself at a price
+you choose. It will also route spot assets through Jupiter to derisk them into USDC.
 
-### Notes on configuring subaccount
+### Configuring subaccounts
 
-By default the liquidator will attempt to liqudate (inherit the risk of)
-endangered positions in all markets. Set `botConfigs.liquidator.perpMarketIndicies` and/or `botConfigs.liquidator.spotMarketIndicies`
-in the config file to restrict which markets you want to liquidate. The
-account specified in `global.subaccounts` will be used as the active
-account.
+By default the liquidator tries to liquidate endangered positions in every market. Use
+`botConfigs.liquidator.perpSubAccountConfig` and `spotSubAccountConfig` to restrict it, mapping
+each subaccount ID to the market indexes it should liquidate.
 
-`perpSubaccountConfig` and `spotSubaccountConfig` can be used instead
-of `perpMarketIndicies` and `spotMarketIndicies` to specify a mapping
-from subaccount to list of market indicies. The value of these 2 fields
-are json strings:
+The flat `perpMarketIndicies` and `spotMarketIndicies` fields do the same job for a single
+subaccount, the one named in `global.subaccounts`. Both are deprecated in favor of the
+per-subaccount maps.
 
 ### An example `config.yaml`
-```
+
+```yaml
 botConfigs:
   ...
   liquidator:
@@ -173,9 +195,12 @@ botConfigs:
         - 1
         - 2
 ```
-Means the liquidator will liquidate perp markets 0-2 using subaccount 0, perp markets 3-12 using subaccount 1, and spot markets 0-2 using subaccount 0. It will also use jupiter to derisk spot assets into USDC. Make sure that for all subaccounts specified in the botConfigs, that they are also listed in the global configs. So for the above example config:
 
-```
+That liquidates perp markets 0 to 2 on subaccount 0, perp markets 3 to 12 on subaccount 1, and
+spot markets 0 to 2 on subaccount 0. Every subaccount named in `botConfigs` must also be listed in
+`global.subaccounts`, because subaccounts are loaded before the bots are constructed:
+
+```yaml
 global:
   ...
   subaccounts: [0, 1]
@@ -183,58 +208,70 @@ global:
 
 ### Common errors
 
-When running the liquidator, you might see the following error codes in the transaction logs on a failed in pre-flight simulation:
+| Error                | Description                                                             |
+| -------------------- | ----------------------------------------------------------------------- |
+| SufficientCollateral | The account is above the liquidation threshold and cannot be liquidated |
+| InvalidSpotPosition  | Outcompeted, the account's spot position was already liquidated         |
+| InvalidPerpPosition  | Outcompeted, the account's perp position was already liquidated         |
 
-| Error             | Description |   
-| ----------------- | ------ |
-| SufficientCollateral | The account you're trying to liquidate has sufficient collateral and can't be liquidated |
-| InvalidSpotPosition | Outcompeted: the liqudated account's spot position was already liquidated. |
-| InvalidPerpPosition | Outcompeted: the liqudated account's perp position was already liquidated. |
+## JIT maker
 
-## Jit Maker
+The JIT maker supplies liquidity by participating in JIT auctions. Read the
+[JIT auction docs](https://docs.velocity.exchange/developers/market-makers/jit-auctions) before
+running it. The client it builds on is `@velocity-exchange/jit-proxy`, whose source lives in
+`packages/jit-proxy` of this repo and whose API is documented in the
+[jit-proxy SDK readme](https://github.com/velocity-exchange/jit-proxy/blob/master/ts/sdk/Readme.md).
 
-The jit maker bot supplies liquidity to the protocol by participating in jit acutions for perp markets. Before running a jit maker bot, be sure to read the documentation below:
+Running a JIT maker means holding positional risk. The bot fills taker orders and keeps whatever
+inventory that leaves it with.
 
-Read the docs on jit auctions: https://docs.velocity.exchange/developers/market-makers/jit-auctions
+### Implementation
 
-Read the docs on the jit proxy client: https://github.com/velocity-exchange/jit-proxy/blob/master/ts/sdk/Readme.md
+The bot calls `updatePerpParams` and `updateSpotParams` on the jit-proxy client for each configured
+market, setting its bid and ask to the current top of book in the DLOB and capping its maximum
+position size to stay within `targetLeverage`, which defaults to 1 and is divided across the
+markets a subaccount makes. It then fills taker orders whose auctions cross those params. If the
+auction price does not cross, the transaction fails in preflight simulation, because the jit-proxy
+program treats the params as the maker's worst acceptable execution price. Orders are sent through
+`JitterSniper`, one of the jitter implementations described in the jit-proxy documentation.
 
-Be aware that running a jit maker means taking on positional risk, so be sure to manage your risk properly!
-
-### Implementation 
-
-This sample jit maker uses the jit proxy client, and updates ```JitParams``` for the markets specified in the config. The bot will update its bid and ask to match the current top level market in the DLOB, and specifies its maximum position size to keep leverage at 1. The jit maker will attempt to fill taker orders that cross its market that's specified in the ```JitParams```. If the current auction price does not cross the bid/ask the transaction will fail during pre-flight simulation, because for the purposes of the jit proxy program, the market is considered the market maker's worst acceptable price of execution. For order execution, the jit maker currently uses the ```JitterSniper``` -- read more on the jitters and different options in the jit proxy client documentation (link above). 
-
-This bot is meant to serve as a starting off point for participating in jit auctions. To increase strategy complexity, consider different strategies for updating your markets. To change the amount of leverage, change the constant ```TARGET_LEVERAGE_PER_ACCOUNT``` before running.
+`src/bots/jitMaker.ts` is a starting point rather than a strategy. To change leverage, set
+`targetLeverage` in the bot config. To go further, change how the bot picks its quotes, or narrow
+which counterparties it fills using the jitter's user filter.
 
 ### Common errors
 
-| Error             | Description |   
-| ----------------- | ------ |
-| BidNotCrossed/AskNotCrossed | The jit proxy program simulation fails if the auction price is not lower than the jit param bid or higher than jit param ask. Bot's market, oracle price, or auction price changed during execution. Can be a latency issue, either slow order submission or slow websocket/polling connection. |
-| OrderNotFound | Outcompeted: the taker order was already filled. |
+| Error                       | Description                                                                                                                                                                                                        |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| BidNotCrossed/AskNotCrossed | The jit-proxy simulation fails when the auction price is not below the params bid or above the params ask. The bot's quotes, the oracle price, or the auction price moved during execution. Often a latency problem: slow order submission, or a slow websocket or polling connection. |
+| TakerOrderNotFound          | Outcompeted, the taker order was already filled                                                                                                                                                                    |
 
-### Running the bot and notes on configs
+### Running the bot
 
-```jitMaker.config.yaml``` is supplied as an example, and a jit maker can be run with ```yarn run dev --config-file=jitMaker.config.yaml```. Jit maker bots require colleteral, so make sure to specify depositing collateral in the config file using ```forceDeposit```, or deposit collateral using the app or SDK before running the bot. 
+`jitMaker.config.yaml` is a working example:
 
-To avoid errors being thrown during initialization, remember to enumerate in the global configs the subaccounts being used in the bot configs. An example below in a config.yaml file:
-
+```shell
+bun run dev --config-file=jitMaker.config.yaml
 ```
+
+JIT makers need collateral, so either set `forceDeposit` in the config file or deposit through the
+app or SDK before starting the bot.
+
+Enumerate the subaccounts the bot uses in the global config as well, or initialization throws:
+
+```yaml
 global:
   ...
-  subaccounts: [0, 1] <----- bot configs specify subaccounts of [0, 1, 1], so make sure we load in [0, 1] in global configs to properly initialize driftClient!
-
+  # the bot config below uses subaccounts 0 and 1, so both must be loaded here
+  subaccounts: [0, 1]
 
 botConfigs:
   jitMaker:
-    botId: "jitMaker"
+    botId: 'jitMaker'
     dryRun: false
-    # below, ordering is important: match the subaccountIds to perpMarketindices.
-    # e.g. to MM perp markets 0, 1 both on subaccount 0, then subaccounts=[0,0], perpMarketIndicies=[0,1]
-    #      to MM perp market 0 on subaccount 0 and perp market 1 on subaccount 1, then subaccounts=[0, 1], perpMarketIndicies=[0, 1]
-    # also, make sure all subaccounts are loaded in the global config subaccounts above to avoid errors
-    subaccounts: [0, 1, 1] <--------------- the subaccount set should be specified above too!
+    # ordering matters: subaccounts and perpMarketIndicies are matched position by position.
+    # to make perp markets 0 and 1 both on subaccount 0: subaccounts=[0,0], perpMarketIndicies=[0,1]
+    # to make perp market 0 on subaccount 0 and perp market 1 on subaccount 1: subaccounts=[0,1], perpMarketIndicies=[0,1]
+    subaccounts: [0, 1, 1]
     perpMarketIndicies: [0, 1, 2]
-
 ```

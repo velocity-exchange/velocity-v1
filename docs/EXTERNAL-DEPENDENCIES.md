@@ -14,11 +14,11 @@ Two questions this doc is meant to answer directly:
 including every program they call, every account owner they deserialize, and their full resolved
 crate graph.
 
-**Not covered:** the off-chain services and clients, which live in sibling repos and are not part
-of the on-chain trust surface. §5 lists the off-chain components Velocity depends on for
-*liveness* and points at where they live, but does not enumerate their dependencies. The
-TypeScript SDK's npm tree is likewise out of scope; it is a client library, and a compromise
-there does not move funds on its own.
+**Not covered:** the off-chain services and clients, which live in sibling repos and cannot move
+funds without a signed instruction the program validates. §5 lists the off-chain components
+Velocity depends on for *liveness* and points at where they live, but does not enumerate their
+dependencies. The TypeScript SDK's npm tree is likewise out of scope; it is a client library, and
+a compromise there does not move funds on its own.
 
 Program IDs below are mainnet unless noted. Every ID was read from source, not from memory;
 see §7 for how to re-verify.
@@ -44,8 +44,8 @@ trust.
 
 ### Token-2022 extensions
 
-Token-2022 is a single program ID hiding a variable feature set, so it deserves its own note.
-Two extensions change what a transfer means:
+Token-2022 is a single program ID hiding a variable feature set. Two of its extensions change
+what a transfer means:
 
 - **Transfer fee.** The recipient receives less than the amount sent, which would silently
   under-credit a deposit. Guarded by `validate_mint_fee` (`controller/token.rs:219`).
@@ -72,7 +72,7 @@ funding decision, which makes this the highest-consequence dependency in the sys
 |---|---|
 | Trusted signer storage | `3rdJbqfnagQ4yx9HXJViD4zc4xpiSqmFsKpPuSCQVyQL` (address-locked in `instructions/pyth_lazer_oracle.rs`) |
 | Reference program ID | `pytd2yyk641x7ak7mkaasSJVXh6YYZnC7wTmtgAyxPt` (`ids.rs::pyth_lazer_program`) |
-| Path | Off-chain signed message → Ed25519 sigverify instruction → `update_pyth_lazer_oracle` → Velocity-owned `PythLazerOracle` PDA |
+| Path | An off-chain signed message, then an Ed25519 sigverify instruction, then `update_pyth_lazer_oracle`, which writes a Velocity-owned `PythLazerOracle` PDA |
 
 Prices arrive as messages signed off-chain by Pyth's signer set. `handle_update_pyth_lazer_oracle`
 verifies the signature by introspecting the preceding Ed25519 instruction through the instructions
@@ -99,7 +99,7 @@ keeper to land the update transaction.
 (devnet).
 
 The **only** external program allowed to own an oracle account: `EXTERNAL_ORACLE_PROGRAM_IDS` in
-`state/oracle_map.rs:47` is a one-element list. Read by direct deserialization.
+`state/oracle_map.rs:48` is a one-element list. Read by direct deserialization.
 
 **Trust assumption:** Pyth's on-chain program and its publisher set.
 **Failure modes:** stale price, wide confidence, or a divergent aggregate. All three are handled by
@@ -153,7 +153,7 @@ configuration.
 
 ---
 
-## 4. Solana runtime surface
+## 4. Solana runtime dependencies
 
 | Dependency | Used for |
 |---|---|
@@ -212,7 +212,7 @@ Deployment and monitoring for these live in `infrastructure-v3`.
 | `static_assertions` | 1.1.0 | Compile-time layout guards |
 | `solana-security-txt` | 1.1.2 | On-chain contact metadata |
 
-The `fuzz-fixtures` feature additionally pulls in `bytes` and the local `pyth` crate. It is off in
+The `fuzz-fixtures` feature also pulls in `bytes` and the local `pyth` crate. It is off in
 every SBF, devnet, and mainnet build invocation, so it never reaches a deployed artifact.
 
 ### 6.2 Transitive closure
@@ -223,9 +223,9 @@ every SBF, devnet, and mainnet build invocation, so it never reaches a deployed 
 | `vaults` | 246 (adds `mpl-token-metadata` and its dependencies, plus the local `velocity-macros`) |
 
 The graph is dominated by three roots: `anchor-lang`, `anchor-spl`, and `solana-program`. Nearly
-every `solana-*` and `spl-*` entry in Appendix A arrives through one of them. The non-Solana,
-non-Anchor crates that are genuinely third-party surface are the direct dependencies in §6.1 plus
-their small tails (`serde`, `thiserror`, `bytemuck`, the `digest`/`sha2` hashing stack, and the
+every `solana-*` and `spl-*` entry in Appendix A arrives through one of them. The genuinely
+third-party code, outside Solana and Anchor, is the set of direct dependencies in §6.1 plus their
+small tails (`serde`, `thiserror`, `bytemuck`, the `digest`/`sha2` hashing stack, and the
 `curve25519-dalek` / `k256` / `zeroize` cryptography stack that `solana-program` brings in).
 
 23 crates are proc macros. They execute at compile time and do not ship in the `.so`, but they do

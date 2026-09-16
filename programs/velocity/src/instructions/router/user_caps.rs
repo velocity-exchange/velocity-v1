@@ -20,12 +20,18 @@
 //! Every other quoter computes its depth when asked, and nothing was set
 //! aside for it. A fill there grows its owner's worst case, so what bounds it
 //! is initial margin on the base taken, which is a *base* figure. Such a
-//! quoter fills from the single `user` on its registry slot, so it gets a
-//! *scalar* — [`build_quoter_rooms`], carried in `QuoteArgsV0::self_base_room`.
+//! quoter fills from the single `user` on its registry slot, so that user's
+//! row carries the figure as [`QuoterUserCapV0::base_cap`].
 //!
-//! Both ride the wire to every quoter, because the wire is one shape. Each
-//! quoter reads the one that describes its own depth; a book ignores the
-//! scalar and an unreserved quoter ignores the list.
+//! One walk prices both figures, because one user may back both kinds of
+//! depth. [`build_user_caps`] writes them onto the same cap row and returns
+//! the base one a second time as [`QuoterRooms`], keyed by slab slot. That
+//! copy is what velocity's own ladder trim reads, and it survives a row being
+//! evicted from the wire list.
+//!
+//! The whole list rides the wire to every quoter, because the wire is one
+//! shape. Each quoter reads the figure that describes its own depth; a book
+//! reads `quote_cap` and an unreserved quoter reads `base_cap`.
 //!
 //! The two are not independent of each other. A resting order already costs
 //! its owner room in the *base* figure, because
@@ -211,6 +217,16 @@ pub fn build_user_caps<'info>(
     let mut caps: Vec<QuoterUserCapV0> = Vec::with_capacity(USER_CAPS_CAPACITY);
     for (index, user_ref) in inputs.users.iter().enumerate() {
         if *user_ref == inputs.taker {
+            // A quoter that settles for the taker itself is a self trade, so
+            // it gets no room at all. Recorded here because the taker takes
+            // no cap of its own: without a room entry the slot reads as
+            // unsized, the ladder is never trimmed, and the split allocates
+            // depth the subject check then refuses. That refusal takes the
+            // whole fill, where a zero room skips the quoter and fills the
+            // rest.
+            if let Some(slot) = sized_quoters.slot_for(ctx.taker_key) {
+                rooms.push(slot, 0);
+            }
             continue;
         }
         let Some(key) = ctx
@@ -260,14 +276,11 @@ pub fn build_user_caps<'info>(
         // free.
         let quoter_room = match sized_quoters.slot_for(&key) {
             Some(slot) => {
-                // A quoter quoting for the taker themselves is a self-trade,
-                // so it has no room at all. Said here rather than trimmed
-                // later, so the quoter can decline before it walks.
-                let room = if key == *ctx.taker_key {
-                    0
-                } else {
-                    ctx.quoter_base_room(&key, inputs.market_index, inputs.maker_direction())?
-                };
+                // The taker's own quoter slot is zeroed above, where the
+                // taker is skipped. A user that reaches here is some other
+                // account, so it is sized on its own margin.
+                let room =
+                    ctx.quoter_base_room(&key, inputs.market_index, inputs.maker_direction())?;
                 // The book's claim on this user is taken first, so what the
                 // quoter is offered is what survives it.
                 let room = room.saturating_sub(base_funded_by(

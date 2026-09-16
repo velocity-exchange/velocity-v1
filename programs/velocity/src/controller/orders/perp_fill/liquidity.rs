@@ -528,6 +528,14 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         })
     }
 
+    /// Size every candidate maker order for the split.
+    ///
+    /// Every order reads the position as it stands before the fill, so two
+    /// reduce-only orders of one maker are each quoted against the whole
+    /// position. That is an upper bound and the split may allocate more than
+    /// the maker can give. `execute_dlob_order` caps each leg against the
+    /// live position, so the later leg fills short instead of flipping the
+    /// maker.
     fn quote_dlob_makers(
         &self,
         maker_orders_info: &[MakerOrderInfo],
@@ -805,7 +813,9 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
             .effective_taker_limit
             .ok_or_else(print_error!(ErrorCode::DefaultError))?;
 
-        let Some(fill) = self.execute_dlob_order(&mut maker, router_maker, allocation)? else {
+        let Some(fill) =
+            self.execute_dlob_order(&mut maker, router_maker, maker_position_index, allocation)?
+        else {
             return Ok(());
         };
 
@@ -859,19 +869,29 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
     ///
     /// `None` when the order had nothing left to give, which is not an error:
     /// the split allocated off a frozen price, and the order may have moved.
+    ///
+    /// The cap comes from the position as it stands now, not from the one the
+    /// split quoted. A reduce-only order may only take the base its owner
+    /// holds on the other side, and an earlier leg of this same fill may have
+    /// already taken part of it. A cap read once before any leg lets two
+    /// reduce-only orders of one maker add up past the position and flip it.
     fn execute_dlob_order(
         &mut self,
         maker: &mut User,
         router_maker: &RouterMaker,
+        position_index: usize,
         allocation: &QuoterAllocation,
     ) -> VelocityResult<Option<QuoterFill>> {
+        let live_position = maker.perp_positions[position_index].base_asset_amount;
+        let max_fill = router_maker.unfilled.min(
+            maker.orders[router_maker.order_index]
+                .get_base_asset_amount_unfilled(Some(live_position))?,
+        );
         let discovery_oracle = self.discovery_oracle();
         let fill = {
             let ctx = self.dlob_quote_context(&discovery_oracle);
-            let mut dlob = DlobOrderQuoter::new(
-                &mut maker.orders[router_maker.order_index],
-                router_maker.unfilled,
-            );
+            let mut dlob =
+                DlobOrderQuoter::new(&mut maker.orders[router_maker.order_index], max_fill);
             RouterQuoter::execute(&mut dlob, &ctx, self.route_direction, allocation.base)?
         };
         if fill.base_filled == 0 {
@@ -1204,6 +1224,15 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         // passes. That is value moved onto that maker at a price the average
         // hides. Bound each maker's fill price the way the DLOB match path
         // bounds a resting maker order.
+        //
+        // The band is one-sided because it is the only bound the maker side
+        // has. The taker side already carries a per-change bound of its own:
+        // `validate_change_notional` holds every change inside the quoted
+        // prefix, and that prefix is cut from levels `within_limit` already
+        // trimmed to the taker's effective limit. So no single change can
+        // price a unit past the taker's own limit, whatever the blend says. A
+        // second oracle band on the taker side would refuse fills inside that
+        // limit, which is the price the taker asked for.
         let change_price = (change.quote_size as u128)
             .safe_mul(BASE_PRECISION_U64.cast()?)?
             .safe_div(change.base_size.cast()?)?
@@ -1570,7 +1599,62 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
             self.taker.stats.referrer,
             &*venue.router.executor,
         )?;
-        crate::math::router::withheld_obligation(&venue.router.standing.obligation, idle)
+        crate::math::router::withheld_obligation(
+            &venue.router.standing.obligation,
+            idle,
+            self.attributable_writable_locks(venue, filler_key),
+        )
+    }
+
+    /// Writable locks this transaction spends on work velocity can name.
+    ///
+    /// The transaction's own lock count states what the caller claims. Every
+    /// account counted here was loaded as the type velocity expected, so a
+    /// key that names nothing adds nothing, and a caller cannot raise this
+    /// number by naming more keys.
+    ///
+    /// Undercounts on purpose. It counts the accounts this fill holds and
+    /// leaves out everything else the transaction may carry, such as the
+    /// accounts of a force-cancel that runs ahead of the fill. A prefix of
+    /// that kind names the same taker, market and makers as the fill, so it
+    /// adds few locks of its own. Counting low refuses a withhold rather than
+    /// excusing one, which is the direction the taker is safe in.
+    fn attributable_writable_locks(&self, venue: &ExternalVenue, filler_key: &Pubkey) -> usize {
+        let loaded_users = self
+            .makers_and_referrer
+            .0
+            .keys()
+            .filter(|key| **key != self.taker.key)
+            .count();
+        let loaded_stats = self
+            .makers_and_referrer_stats
+            .0
+            .keys()
+            .filter(|authority| **authority != self.taker.user.authority)
+            .count();
+        // A filler that is not a loaded maker holds its own `User` and
+        // `UserStats`. A maker that cranked its own fill is already counted
+        // above, and a fill with no filler names no key at all.
+        let filler_locks = if *filler_key != Pubkey::default()
+            && *filler_key != self.taker.key
+            && !self.makers_and_referrer.0.contains_key(filler_key)
+        {
+            crate::math::router::MAKER_ACCOUNT_COST
+        } else {
+            0
+        };
+        // One writable account per consulted quoter: the account it writes
+        // its response into. Its registry slab is shared by the whole route
+        // and the `User` it settles for is a loaded user, so both are counted
+        // elsewhere or not at all.
+        let quoter_locks = (0..crate::state::prop_amm::MAX_ROUTE_QUOTERS)
+            .filter(|index| venue.router.executor.quoter_key(*index) != Pubkey::default())
+            .count();
+        crate::math::router::FILL_FIXED_WRITABLE_LOCKS
+            .saturating_add(loaded_users)
+            .saturating_add(loaded_stats)
+            .saturating_add(filler_locks)
+            .saturating_add(quoter_locks)
     }
 }
 

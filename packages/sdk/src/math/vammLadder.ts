@@ -15,7 +15,9 @@
  *  - Rival prices within {@link LAST_LOOK_BAND} of the vAMM's top become rungs
  *    (last look): the slice of curve cheaper than a rival is quoted AT the
  *    rival's price and the vAMM wins the tie on tier priority. So a client that
- *    ignores rival books will under-estimate what the taker pays.
+ *    ignores rival books will under-estimate what the taker pays. A rung
+ *    reprices no more base than the rivals at that price offer, so rival size
+ *    matters as much as rival price.
  *
  * Divergence from `router_adapter.rs` is a bug. Change both together.
  */
@@ -171,37 +173,69 @@ export function vammQuoteLevels(
 			? BN.min(bandEdge, takerLimit)
 			: BN.max(bandEdge, takerLimit)
 		: bandEdge;
-	const rivalRungs = Array.from(
-		new Set(
-			rivalBooks
-				.flatMap((book) => book.levels.map((level) => level.price.toString()))
-				.map((s) => s)
-		)
-	)
-		.map((s) => new BN(s))
-		.filter((price) =>
-			isLong
-				? price.gt(top) && price.lte(rungEdge)
-				: price.lt(top) && price.gte(rungEdge) && price.gt(ZERO)
-		)
-		.sort((a, b) => (isLong ? (a.lt(b) ? -1 : 1) : a.gt(b) ? -1 : 1))
-		.slice(0, VAMM_QUOTE_CHECKPOINTS);
+	// The best VAMM_QUOTE_CHECKPOINTS rungs, best first, each carrying the
+	// depth the rivals offer at its price. The Rust insert-sorts into a fixed
+	// array of that length, so a price that never reaches the array loses its
+	// depth as well; the walk below reproduces that bound exactly.
+	const rivalRungs: RouterPriceLevel[] = [];
+	const ranksBefore = (a: BN, b: BN) => (isLong ? a.lt(b) : a.gt(b));
+	for (const book of rivalBooks) {
+		for (const level of book.levels) {
+			const inBand = isLong
+				? level.price.gt(top) && level.price.lte(rungEdge)
+				: level.price.lt(top) &&
+				  level.price.gte(rungEdge) &&
+				  level.price.gt(ZERO);
+			if (!inBand || level.size.lte(ZERO)) {
+				continue;
+			}
+			let at = 0;
+			while (
+				at < rivalRungs.length &&
+				ranksBefore(rivalRungs[at].price, level.price)
+			) {
+				at++;
+			}
+			if (at < rivalRungs.length && rivalRungs[at].price.eq(level.price)) {
+				// Two rivals at one price offer that price for both their sizes.
+				rivalRungs[at] = {
+					price: rivalRungs[at].price,
+					size: rivalRungs[at].size.add(level.size),
+				};
+				continue;
+			}
+			if (at >= VAMM_QUOTE_CHECKPOINTS) {
+				continue;
+			}
+			rivalRungs.splice(at, 0, { price: level.price, size: level.size });
+			if (rivalRungs.length > VAMM_QUOTE_CHECKPOINTS) {
+				rivalRungs.length = VAMM_QUOTE_CHECKPOINTS;
+			}
+		}
+	}
 
 	// Checkpoints: [cumulative base, shading price if this is a rival rung].
+	//
+	// A rung shades only as far as the rivals at that price or better can
+	// supply. `rivalDepth` is that running total. Past it the taker's
+	// alternative is not this rung but a worse one, so the curve is priced
+	// honestly there and a later rung shades it if one carries the depth.
 	const checkpoints: [BN, BN | undefined][] = [];
-	for (const price of rivalRungs) {
+	let rivalDepth = ZERO;
+	for (const rung of rivalRungs) {
+		rivalDepth = rivalDepth.add(rung.size);
 		const [cumulative, tradeDirection] = calculateMaxBaseAssetAmountToTrade(
 			amm,
 			marketStats,
-			price,
+			rung.price,
 			direction,
 			mmOraclePriceData
 		);
 		if (!isVariant(tradeDirection, isLong ? 'long' : 'short')) {
 			continue;
 		}
-		const capped = BN.min(cumulative, total);
-		checkpoints.push([capped, price]);
+		const capped = BN.min(BN.min(cumulative, total), rivalDepth);
+		checkpoints.push([capped, rung.price]);
 		if (capped.eq(total)) {
 			break;
 		}

@@ -7,6 +7,13 @@
 //! tier priority and captures the difference for the LPs instead of
 //! donating it as taker price improvement.
 //!
+//! A rung shades no more base than the rivals at that price actually offer.
+//! The price a taker pays without the vAMM is the rival price only for the
+//! size the rival holds, and the rest of the demand falls back to the curve.
+//! An unbounded rung would let one dust order reprice the whole slice, and
+//! resting that order costs nothing because the vAMM wins the tie and the
+//! order never trades.
+//!
 //! Every checkpoint's price comes from the swap math the execute leg will
 //! run (`calculate_base_swap_output`, spread reserves and all): a rung's
 //! price is the exact per-unit cost of its own slice, rounded against the
@@ -53,7 +60,8 @@ pub const VAMM_QUOTE_CHECKPOINTS: usize = 8;
 pub const LAST_LOOK_BAND: u64 = PERCENTAGE_PRECISION_U64 / 20;
 
 /// Quote the vAMM: best-first ladder levels covering `min(size, available)`,
-/// shaded toward `rival_books` within the last-look band.
+/// shaded toward `rival_books` within the last-look band and only for the
+/// depth those books offer.
 ///
 /// `taker_limit` bounds the ladder honestly: the curve inversion finds the
 /// cumulative where the marginal price reaches the limit and the total is
@@ -124,7 +132,8 @@ pub fn vamm_quote_levels(
     // taker's limit) become shading rungs, best-first. Always on — the vAMM
     // was winning this flow at its honest price anyway (price priority), so
     // filling at the rival's price instead is strictly LP surplus with no
-    // cost to any maker. A rung past the taker's limit would price its whole
+    // cost to any maker. What each rung may reprice is bounded by the depth
+    // behind it, below. A rung past the taker's limit would price its whole
     // slice unfillable, so those are dropped here rather than truncated
     // downstream.
     let rung_edge = match (taker_limit, direction) {
@@ -132,7 +141,8 @@ pub fn vamm_quote_levels(
         (Some(limit), Direction::Short) => band_edge.max(limit),
         (None, _) => band_edge,
     };
-    // The best [`VAMM_QUOTE_CHECKPOINTS`] rival rungs, best first and deduped.
+    // The best [`VAMM_QUOTE_CHECKPOINTS`] rival rungs, best first and deduped,
+    // each carrying the depth the rivals offer at its price.
     //
     // Held in a fixed array and insert-sorted rather than collected and then
     // truncated. Only this many are ever read, and the collected form grows by
@@ -140,28 +150,28 @@ pub fn vamm_quote_levels(
     // makers abandons a buffer per doubling, on an allocator that never
     // reclaims. Insert-sorting into the array is also the cheaper walk: it is
     // linear in the rungs kept rather than sorting the whole set.
-    let mut rival_rungs = [0u64; VAMM_QUOTE_CHECKPOINTS];
+    let mut rival_rungs = [PriceLevel::default(); VAMM_QUOTE_CHECKPOINTS];
     let mut rung_count = 0usize;
     let ranks_before = |a: u64, b: u64| match direction {
         Direction::Long => a < b,
         Direction::Short => a > b,
     };
-    for price in rival_books
-        .iter()
-        .flat_map(|book| book.levels.iter().map(|level| level.price))
-    {
+    for level in rival_books.iter().flat_map(|book| book.levels.iter()) {
+        let price = level.price;
         let in_band = match direction {
             Direction::Long => price > top && price <= rung_edge,
             Direction::Short => price < top && price >= rung_edge && price > 0,
         };
-        if !in_band {
+        if !in_band || level.size == 0 {
             continue;
         }
         let mut at = 0usize;
-        while at < rung_count && ranks_before(rival_rungs[at], price) {
+        while at < rung_count && ranks_before(rival_rungs[at].price, price) {
             at += 1;
         }
-        if at < rung_count && rival_rungs[at] == price {
+        if at < rung_count && rival_rungs[at].price == price {
+            // Two rivals at one price offer that price for both their sizes.
+            rival_rungs[at].size = rival_rungs[at].size.saturating_add(level.size);
             continue;
         }
         if at >= VAMM_QUOTE_CHECKPOINTS {
@@ -176,20 +186,31 @@ pub fn vamm_quote_levels(
         if at < end {
             rival_rungs.copy_within(at..end, at + 1);
         }
-        rival_rungs[at] = price;
+        rival_rungs[at] = PriceLevel {
+            price,
+            size: level.size,
+        };
         rung_count = (rung_count + 1).min(VAMM_QUOTE_CHECKPOINTS);
     }
 
     // Checkpoints: (cumulative base, shading price if this is a rival rung).
+    //
+    // A rung shades only as far as the rivals at that price or better can
+    // supply. `rival_depth` is that running total. Past it the taker's
+    // alternative is not this rung but a worse one, so the curve is priced
+    // honestly there and a later rung shades it if one carries the depth.
+    // Both totals only grow down the ladder, so the checkpoints stay ordered.
     let mut checkpoints: Vec<(u64, Option<u64>)> = Vec::with_capacity(VAMM_QUOTE_CHECKPOINTS + 1);
-    for price in rival_rungs[..rung_count].iter().copied() {
+    let mut rival_depth = 0u64;
+    for rung in rival_rungs[..rung_count].iter() {
+        rival_depth = rival_depth.saturating_add(rung.size);
         let (cumulative, trade_direction) =
-            calculate_base_asset_amount_to_trade_to_price(amm, price, position_direction)?;
+            calculate_base_asset_amount_to_trade_to_price(amm, rung.price, position_direction)?;
         if trade_direction != position_direction {
             continue;
         }
-        let cumulative = cumulative.min(total);
-        checkpoints.push((cumulative, Some(price)));
+        let cumulative = cumulative.min(total).min(rival_depth);
+        checkpoints.push((cumulative, Some(rung.price)));
         if cumulative == total {
             break;
         }
@@ -414,6 +435,44 @@ mod tests {
             .unwrap()
             .quote_asset_amount;
         assert!(split_notional(&levels) >= exact);
+    }
+
+    /// A rival that offers one step of depth reprices one step of curve. The
+    /// rest of the ladder is the honest curve, so resting a dust order in the
+    /// band cannot make the taker pay the rival price for the whole slice.
+    #[test]
+    fn last_look_shades_only_the_depth_a_rival_offers() {
+        let amm = amm_fixture();
+        let size = 10 * BASE_PRECISION_U64;
+        let rival_price = TOP + TOP / 100; // +1%, inside the 5% band
+        let dust = [PriceLevel {
+            price: rival_price,
+            size: BASE_PRECISION_U64 / 1000,
+        }];
+        let deep = [PriceLevel {
+            price: rival_price,
+            size,
+        }];
+        let shaded_by_dust =
+            vamm_quote_levels(&amm, Direction::Long, size, 1, &rival_book(&dust), None).unwrap();
+        let shaded_by_depth =
+            vamm_quote_levels(&amm, Direction::Long, size, 1, &rival_book(&deep), None).unwrap();
+        let honest = vamm_quote_levels(&amm, Direction::Long, size, 1, &[], None).unwrap();
+
+        assert_eq!(shaded_by_dust[0].price, rival_price);
+        assert_eq!(shaded_by_dust[0].size, dust[0].size);
+        assert!(shaded_by_depth[0].size > shaded_by_dust[0].size);
+
+        // The dust order moves the taker's bill by no more than the rung it
+        // paid for, where real depth at the same price reprices far more.
+        let dust_cost = split_notional(&shaded_by_dust) - split_notional(&honest);
+        let depth_cost = split_notional(&shaded_by_depth) - split_notional(&honest);
+        assert!(
+            depth_cost > dust_cost * 100,
+            "{} vs {}",
+            depth_cost,
+            dust_cost
+        );
     }
 
     #[test]

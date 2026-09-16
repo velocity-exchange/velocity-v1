@@ -637,7 +637,15 @@ pub fn tx_reimbursement_claimants(
 /// The runtime caps a transaction at 64 account locks, and that cap is the
 /// scarce resource on a router fill: a CLOB maker costs two accounts and a
 /// custom quoter costs five. A caller that omits a maker therefore has to be
-/// held to whether it had room for one, and this is the count that answers it.
+/// held to whether it had room for one, and this is one of the two counts that
+/// answer it.
+///
+/// This count is an upper bound and nothing more. A writable meta may name any
+/// pubkey, including one that holds no account at all, so a caller can raise
+/// this number at the price of 32 bytes of transaction per key. The other
+/// count is the one a caller cannot inflate: the locks velocity itself
+/// verified, which `withheld_obligation` takes alongside this one and tests
+/// the smaller of the two.
 ///
 /// The count is over the whole transaction rather than one instruction. A fill
 /// often travels with a force-cancel ahead of it, and those accounts hold locks
@@ -652,11 +660,10 @@ pub fn tx_writable_lock_count(instructions_sysvar: &AccountInfo) -> VelocityResu
     let mut count = 0usize;
     let mut index = 0usize;
     // Count only writable and signer accounts. A read-only lock is shared, so
-    // a filler can append read-only junk keys for free to inflate a total
-    // count and excuse itself from carrying a maker it omitted. A writable or
-    // signer lock is contended: it names a real account the transaction acts
-    // on, so it cannot be padded. Program ids are read-only, so they do not
-    // count either.
+    // read-only keys are free to append. A writable lock is contended, but
+    // only against other users of the same account, so a key nobody else
+    // touches is nearly free as well. Program ids are read-only, so they do
+    // not count either.
     while let Ok(instruction) = load_instruction_at_checked(index, instructions_sysvar) {
         index += 1;
         for meta in instruction.accounts.iter() {

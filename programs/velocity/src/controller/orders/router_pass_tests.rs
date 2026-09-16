@@ -487,6 +487,250 @@ pub mod amm_jit {
         );
     }
 
+    /// Two reduce-only orders of one maker, one fill. The maker is long 1 and
+    /// rests two reduce-only asks of 0.75. The split allocates both, so the
+    /// second leg is allocated more than the position left to reduce. It must
+    /// fill only what reduces, and the maker must not end up short.
+    #[test]
+    fn router_pass_holds_layered_reduce_only_orders_to_the_live_position() {
+        let now = 0_i64;
+        let slot = 0_u64;
+
+        let mut oracle_price = get_pyth_price(100, 6);
+        let oracle_price_key =
+            Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+        create_anchor_account_info!(
+            oracle_price,
+            &oracle_price_key,
+            PythLazerOracle,
+            oracle_account_info
+        );
+        let oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
+
+        let mut market = PerpMarket {
+            amm: AMM {
+                base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                sqrt_k: 100 * AMM_RESERVE_PRECISION,
+                peg_multiplier: 100 * PEG_PRECISION,
+                max_slippage_ratio: 50,
+                max_fill_reserve_fraction: 100,
+                base_spread: 20000,
+                ..AMM::default()
+            },
+            order_step_size: 1000,
+            order_tick_size: 1,
+            oracle: oracle_price_key,
+            oracle_source: crate::state::oracle::OracleSource::PythLazer,
+            market_stats: MarketStats {
+                historical_oracle_data: HistoricalOracleData {
+                    last_oracle_price: (100 * PRICE_PRECISION) as i64,
+                    last_oracle_price_twap: (100 * PRICE_PRECISION) as i64,
+                    last_oracle_price_twap_5min: (100 * PRICE_PRECISION) as i64,
+                    ..HistoricalOracleData::default()
+                },
+                ..MarketStats::default()
+            },
+            margin_ratio_initial: 1000,
+            margin_ratio_maintenance: 500,
+            status: MarketStatus::Initialized,
+            ..PerpMarket::default_test()
+        };
+        market.amm.max_base_asset_reserve = u64::MAX as u128;
+        market.amm.min_base_asset_reserve = 0;
+
+        create_anchor_account_info!(market, PerpMarket, market_account_info);
+        let market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
+
+        let mut spot_market = SpotMarket {
+            market_index: 0,
+            oracle_source: OracleSource::QuoteAsset,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 6,
+            initial_asset_weight: SPOT_WEIGHT_PRECISION,
+            maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
+            historical_oracle_data: HistoricalOracleData::default_price(QUOTE_PRECISION_I64),
+            ..SpotMarket::default()
+        };
+        create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
+        let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
+
+        let three_quarters = 3 * BASE_PRECISION_U64 / 4;
+        let mut taker = User {
+            orders: get_orders(Order {
+                market_index: 0,
+                status: OrderStatus::Open,
+                order_type: OrderType::Market,
+                direction: PositionDirection::Long,
+                base_asset_amount: 3 * BASE_PRECISION_U64 / 2,
+                slot: 0,
+                auction_start_price: 0,
+                auction_end_price: 105 * PRICE_PRECISION_I64,
+                price: 105 * PRICE_PRECISION_U64,
+                auction_duration: 0,
+                ..Order::default()
+            }),
+            perp_positions: get_positions(PerpPosition {
+                market_index: 0,
+                open_orders: 1,
+                open_bids: 3 * BASE_PRECISION_I64 / 2,
+                ..PerpPosition::default()
+            }),
+            spot_positions: get_spot_positions(SpotPosition {
+                market_index: 0,
+                balance_type: SpotBalanceType::Deposit,
+                scaled_balance: 1000 * SPOT_BALANCE_PRECISION_U64,
+                ..SpotPosition::default()
+            }),
+            ..User::default()
+        };
+
+        let maker_key = Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
+        let maker_authority =
+            Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+        let reduce_only_ask = |price: u64| Order {
+            market_index: 0,
+            status: OrderStatus::Open,
+            post_only: true,
+            reduce_only: true,
+            order_type: OrderType::Limit,
+            direction: PositionDirection::Short,
+            base_asset_amount: three_quarters,
+            price,
+            ..Order::default()
+        };
+        let mut maker = User {
+            authority: maker_authority,
+            orders: crate::get_orders!(
+                reduce_only_ask(100 * PRICE_PRECISION_U64),
+                reduce_only_ask(101 * PRICE_PRECISION_U64)
+            ),
+            perp_positions: get_positions(PerpPosition {
+                market_index: 0,
+                base_asset_amount: BASE_PRECISION_I64,
+                quote_asset_amount: -(100 * QUOTE_PRECISION_I64),
+                open_orders: 2,
+                open_asks: -3 * BASE_PRECISION_I64 / 2,
+                ..PerpPosition::default()
+            }),
+            spot_positions: get_spot_positions(SpotPosition {
+                market_index: 0,
+                balance_type: SpotBalanceType::Deposit,
+                scaled_balance: 1000 * SPOT_BALANCE_PRECISION_U64,
+                ..SpotPosition::default()
+            }),
+            ..User::default()
+        };
+        create_anchor_account_info!(maker, &maker_key, User, maker_account_info);
+        let makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
+
+        let mut filler = User::default();
+        let fee_structure = get_fee_structure();
+        let (taker_key, _, filler_key) = get_user_keys();
+        let mut taker_stats = UserStats::default();
+        let mut maker_stats = UserStats {
+            authority: maker_authority,
+            ..UserStats::default()
+        };
+        create_anchor_account_info!(maker_stats, UserStats, maker_stats_account_info);
+        let maker_and_referrer_stats = UserStatsMap::load_one(&maker_stats_account_info).unwrap();
+        let mut filler_stats = UserStats::default();
+
+        let mut no_externals = crate::state::prop_amm::NoExternalQuoters;
+        let mut router_inputs = crate::math::router::RouterLeg {
+            books: &[],
+            executor: &mut no_externals,
+            standing: crate::instructions::FillerStanding {
+                protocol_authority: Pubkey::default(),
+                taker_exposure_closed_by_caller: false,
+                obligation: crate::math::router::FillerObligation {
+                    taker_signed: true,
+                    tx_accounts: None,
+                    unrouted_quoters: 0,
+                },
+            },
+            worst_fill_price: None,
+        };
+        let mut order = taker.orders[0];
+        let FillAmounts {
+            base: base_asset_amount,
+            ..
+        } = fill_within_taker_risk_limits(
+            &mut TakerSide::bind(&mut taker, &mut taker_stats, taker_key, &mut order, true)
+                .unwrap(),
+            &PricingRules {
+                fee_structure: &fee_structure,
+                validity_guard_rails: &crate::state::state::ValidityGuardRails::default(),
+                promo_fee_tier: 0,
+                referrer_is_accelerated: false,
+                vamm_maker_rebate: false,
+                builder_fee_allowed: false,
+            },
+            &FillConditions::for_layer_test(
+                FillMode::Fill,
+                now,
+                slot,
+                Some(market.market_stats.historical_oracle_data.last_oracle_price),
+                // The vAMM stays out, so the maker's two orders are the whole
+                // book and the assertions read only their legs.
+                false,
+                false,
+            ),
+            &mut FillParties {
+                maps: &mut maps,
+                makers_and_referrer: &makers_and_referrers,
+                makers_and_referrer_stats: &maker_and_referrer_stats,
+            },
+            &mut OfferedLiquidity {
+                dlob_makers: &[
+                    maker_row(
+                        &makers_and_referrers,
+                        &maker_key,
+                        0,
+                        100 * PRICE_PRECISION_U64,
+                    ),
+                    maker_row(
+                        &makers_and_referrers,
+                        &maker_key,
+                        1,
+                        101 * PRICE_PRECISION_U64,
+                    ),
+                ],
+                router: &mut router_inputs,
+            },
+            &mut FillerSide {
+                user: &mut Some(&mut filler),
+                stats: &mut Some(&mut filler_stats),
+                key: filler_key,
+                rev_share_escrow: &mut None,
+            },
+        )
+        .unwrap();
+        taker.orders[0] = order;
+
+        // The maker closes and stops. A reduce-only order may not open the
+        // other side, however many of one maker's orders a fill touches.
+        let maker_after = makers_and_referrers.get_ref(&maker_key).unwrap();
+        assert_eq!(maker_after.perp_positions[0].base_asset_amount, 0);
+        assert_eq!(
+            maker_after.orders[0].base_asset_amount_filled,
+            three_quarters
+        );
+        assert_eq!(
+            maker_after.orders[1].base_asset_amount_filled,
+            BASE_PRECISION_U64 / 4
+        );
+
+        // The taker takes the base the maker could give and no more.
+        assert_eq!(base_asset_amount, BASE_PRECISION_U64);
+        assert_eq!(
+            taker.perp_positions[0].base_asset_amount,
+            BASE_PRECISION_I64
+        );
+    }
+
     /// The router pass with an external CPI book: a mock executor stands in
     /// for the CLOB's `execute_v0`, filling against a loaded maker that has
     /// no velocity order — just the open-order aggregates a velocity-mediated

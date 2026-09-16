@@ -53,6 +53,9 @@ pub struct QuoterBook<'a> {
 pub const TX_WRITABLE_LOCK_BUDGET: usize = 40;
 /// Writable locks one more CLOB maker costs: its `User` and its `UserStats`.
 pub const MAKER_ACCOUNT_COST: usize = 2;
+/// Writable and signer locks every perp fill holds, whatever it routes to:
+/// the signer, the taker's `User` and `UserStats`, and the perp market.
+pub const FILL_FIXED_WRITABLE_LOCKS: usize = 4;
 
 /// What the fill knows about the party that built the transaction.
 ///
@@ -81,7 +84,7 @@ pub struct FillerObligation {
 
 /// Whether a filler that left a book short of an owner met its obligation.
 ///
-/// Three outcomes, and only the last one is a fill:
+/// Four outcomes, and only the last one is a fill:
 ///
 /// - The transaction had room for another maker. The filler owed that maker.
 /// - The transaction is full, but it carries a loaded user that filled nothing
@@ -94,9 +97,16 @@ pub struct FillerObligation {
 ///   statement of which entries it wanted.
 /// - The transaction is full and every loaded user did something. The filler
 ///   could not carry the maker, so the walk stops and the fill is short.
+///
+/// `attributable_locks` is how much of the transaction velocity can point at
+/// work of its own. A writable meta may name any pubkey, including one that
+/// holds no account, so the transaction's own count states what a filler
+/// claims rather than what it spent. The room test runs on the smaller of the
+/// two figures, which a filler cannot raise by naming more keys.
 pub fn withheld_obligation(
     obligation: &FillerObligation,
     idle_loaded_users: usize,
+    attributable_locks: usize,
 ) -> VelocityResult<()> {
     if obligation.taker_signed {
         return Ok(());
@@ -105,11 +115,12 @@ pub fn withheld_obligation(
         msg!("a fill that withholds depth must pass the instructions sysvar");
         return Err(ErrorCode::FillerObligationUncountable);
     };
+    let room_spent = accounts.min(attributable_locks);
     validate!(
-        accounts > TX_WRITABLE_LOCK_BUDGET.saturating_sub(MAKER_ACCOUNT_COST),
+        room_spent > TX_WRITABLE_LOCK_BUDGET.saturating_sub(MAKER_ACCOUNT_COST),
         ErrorCode::FillerOmittedReachableMaker,
-        "transaction holds {} of {} writable locks, so it had room for a maker the book wanted",
-        accounts,
+        "transaction spends {} of {} writable locks on this fill, so it had room for a maker the book wanted",
+        room_spent,
         TX_WRITABLE_LOCK_BUDGET
     )?;
     validate!(
@@ -711,7 +722,7 @@ mod tests {
             tx_accounts: None,
             unrouted_quoters: 0,
         };
-        assert!(withheld_obligation(&signed, 7).is_ok());
+        assert!(withheld_obligation(&signed, 7, 0).is_ok());
     }
 
     /// A fill that withholds and cannot count the transaction fails closed.
@@ -724,7 +735,7 @@ mod tests {
             unrouted_quoters: 0,
         };
         assert_eq!(
-            withheld_obligation(&blind, 0),
+            withheld_obligation(&blind, 0, TX_WRITABLE_LOCK_BUDGET),
             Err(ErrorCode::FillerObligationUncountable)
         );
     }
@@ -740,7 +751,7 @@ mod tests {
                 unrouted_quoters: 0,
             };
             assert_eq!(
-                withheld_obligation(&roomy, 0),
+                withheld_obligation(&roomy, 0, accounts),
                 Err(ErrorCode::FillerOmittedReachableMaker),
                 "{accounts} accounts leaves room for a maker"
             );
@@ -757,7 +768,7 @@ mod tests {
             unrouted_quoters: 1,
         };
         assert_eq!(
-            withheld_obligation(&full, 0),
+            withheld_obligation(&full, 0, TX_WRITABLE_LOCK_BUDGET),
             Err(ErrorCode::FillerCarriedUnroutedQuoter)
         );
     }
@@ -771,7 +782,7 @@ mod tests {
             tx_accounts: Some(TX_WRITABLE_LOCK_BUDGET),
             unrouted_quoters: 0,
         };
-        assert!(withheld_obligation(&honest, 0).is_ok());
+        assert!(withheld_obligation(&honest, 0, TX_WRITABLE_LOCK_BUDGET).is_ok());
     }
 
     /// A full transaction still fails when it carries a user that did nothing:
@@ -784,12 +795,34 @@ mod tests {
             unrouted_quoters: 0,
         };
         assert_eq!(
-            withheld_obligation(&full, 1),
+            withheld_obligation(&full, 1, TX_WRITABLE_LOCK_BUDGET),
             Err(ErrorCode::FillerPaddedTheUserSet)
         );
         assert!(
-            withheld_obligation(&full, 0).is_ok(),
+            withheld_obligation(&full, 0, TX_WRITABLE_LOCK_BUDGET).is_ok(),
             "a full transaction whose every user filled has met the obligation"
+        );
+    }
+
+    /// A writable meta may name any pubkey, so a shallow fill can claim a
+    /// full transaction. The room test reads the locks velocity attributes to
+    /// this fill, which padding does not raise.
+    #[test]
+    fn a_padded_account_list_is_refused() {
+        let padded = FillerObligation {
+            taker_signed: false,
+            tx_accounts: Some(TX_WRITABLE_LOCK_BUDGET * 2),
+            unrouted_quoters: 0,
+        };
+        let shallow = FILL_FIXED_WRITABLE_LOCKS + MAKER_ACCOUNT_COST;
+        assert_eq!(
+            withheld_obligation(&padded, 0, shallow),
+            Err(ErrorCode::FillerOmittedReachableMaker),
+            "a fill of {shallow} attributable locks had room for the maker it omitted"
+        );
+        assert!(
+            withheld_obligation(&padded, 0, TX_WRITABLE_LOCK_BUDGET).is_ok(),
+            "the same transaction fills once its locks are work velocity can name"
         );
     }
 

@@ -70,6 +70,16 @@ pub fn handle_resync_liq_conditions<'c: 'info, 'info>(
         false,
     )?;
 
+    // Terms that break the interval floor pay nothing, whatever the block
+    // holds. A payment with an interval below the floor is a paid loop: the
+    // treasury funds one crank per slot for an account anyone may opt in. The
+    // rewrite above already stored the zero and silenced the conditions that
+    // advertised it, so this covers a block armed before the floor existed.
+    let payment = args.payable_lamports();
+    if payment == 0 {
+        return Ok(());
+    }
+
     // Paid at most once per fallback interval. The instruction succeeds
     // whether or not anything moved, opting in is permissionless, and the
     // payer is the protocol treasury rather than the account being watched —
@@ -102,7 +112,7 @@ pub fn handle_resync_liq_conditions<'c: 'info, 'info>(
     let paid = CrankTreasuryV0::pay_out(
         &treasury,
         &ctx.accounts.keeper.to_account_info(),
-        args.sync_payment_lamports.min(available),
+        payment.min(available),
         rent_minimum,
     )?;
     let mut treasury_state = ctx.accounts.treasury.load_mut()?;

@@ -209,6 +209,10 @@ pub struct UserConditionsV0 {
     /// [`LIQ_SYNC_MAX_COST_UNITS`] when it is priced, because opting in is
     /// permissionless and the payer is protocol funds rather than the account
     /// itself. [`Self::last_paid_sync_slot`] bounds how often it can be drawn.
+    ///
+    /// A payment above zero is only sound beside an interval of at least
+    /// [`LIQ_SYNC_MIN_FALLBACK_SLOTS`], because the interval is that bound.
+    /// A block holding a shorter interval pays nothing.
     pub sync_payment_lamports: u64,
     /// The fallback poll interval.
     pub sync_fallback_slots: u64,
@@ -465,20 +469,75 @@ mod merged_size_tests {
     /// The interval is also the rate limit on what the treasury pays for one
     /// account, so a paid sync cannot name one short enough to be paid every
     /// slot. An unpaid sync is free to poll as it likes.
+    ///
+    /// The rule is stated over the terms a block ends up holding, so a change
+    /// to the pricing cannot move a paid block past it.
     #[test]
     fn a_paid_self_sync_cannot_ask_to_be_paid_every_slot() {
-        use crate::instructions::{validate_sync_args, SyncLiqConditionsArgs};
-        let paid = |slots: u64| SyncLiqConditionsArgs {
-            sync_cost_units: 1_000,
-            sync_fallback_slots: slots,
-        };
-        assert!(validate_sync_args(&paid(LIQ_SYNC_MIN_FALLBACK_SLOTS)).is_ok());
-        assert!(validate_sync_args(&paid(LIQ_SYNC_MIN_FALLBACK_SLOTS - 1)).is_err());
-        assert!(validate_sync_args(&paid(1)).is_err());
-        assert!(validate_sync_args(&SyncLiqConditionsArgs {
-            sync_cost_units: 0,
+        let paid = |slots: u64| terms(1_000, slots);
+        assert!(paid(LIQ_SYNC_MIN_FALLBACK_SLOTS).is_ok());
+        assert!(paid(LIQ_SYNC_MIN_FALLBACK_SLOTS - 1).is_err());
+        assert!(paid(1).is_err());
+        assert!(paid(0).is_err());
+        assert!(terms(0, 1).is_ok());
+    }
+
+    /// Zero cost units is an unpaid opt-in and has to store a zero payment.
+    ///
+    /// The fee rails charge a signature for a transaction of any shape, so
+    /// pricing zero units through them stores the signature fee. The fallback
+    /// poll would then pay that fee every interval, out of the protocol
+    /// treasury, for an account that named no work.
+    #[test]
+    fn a_zero_cost_sync_stores_no_payment() {
+        let unpaid = terms(0, LIQ_SYNC_MIN_FALLBACK_SLOTS).unwrap();
+        assert_eq!(unpaid.sync_payment_lamports, 0);
+        assert_eq!(unpaid.payable_lamports(), 0);
+
+        let priced = terms(1_000, LIQ_SYNC_MIN_FALLBACK_SLOTS).unwrap();
+        assert!(priced.sync_payment_lamports > 0);
+    }
+
+    /// An unpaid opt-in may name any interval, including one slot, because
+    /// nothing is drawn from the treasury for it.
+    #[test]
+    fn an_unpaid_sync_may_poll_every_slot() {
+        let unpaid = terms(0, 1).unwrap();
+        assert!(unpaid.interval_is_sound());
+        assert_eq!(unpaid.payable_lamports(), 0);
+    }
+
+    /// A block holding a payment with an interval below the floor pays
+    /// nothing. Blocks armed before the floor existed cannot be cranked for
+    /// lamports, whatever their stored terms say.
+    #[test]
+    fn a_block_below_the_interval_floor_pays_nothing() {
+        use crate::instructions::SyncLiqConditionsTerms;
+        let armed = SyncLiqConditionsTerms {
+            sync_payment_lamports: 5_000,
             sync_fallback_slots: 1,
-        })
-        .is_ok());
+        };
+        assert!(!armed.interval_is_sound());
+        assert_eq!(armed.payable_lamports(), 0);
+
+        let sound = SyncLiqConditionsTerms {
+            sync_payment_lamports: 5_000,
+            sync_fallback_slots: LIQ_SYNC_MIN_FALLBACK_SLOTS,
+        };
+        assert_eq!(sound.payable_lamports(), 5_000);
+    }
+
+    /// Price one sync's terms through the network's flat fee model.
+    fn terms(
+        cost_units: u32,
+        fallback_slots: u64,
+    ) -> anchor_lang::Result<crate::instructions::SyncLiqConditionsTerms> {
+        crate::instructions::price_sync_terms(
+            &crate::state::state::TransactionFeeRails::FLAT_PER_SIGNATURE,
+            &crate::instructions::SyncLiqConditionsArgs {
+                sync_cost_units: cost_units,
+                sync_fallback_slots: fallback_slots,
+            },
+        )
     }
 }

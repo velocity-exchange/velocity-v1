@@ -25,10 +25,18 @@
 //! `getRemainingAccounts` already computes). The margin maps are captured
 //! onto the account for the staged executors; they go stale when positions
 //! change and a re-sync repairs them.
+//!
+//! The margin-map section is required, not optional. The captured list is the
+//! one list every liquidation condition on the account also reads, and this
+//! instruction is permissionless. A caller that passed less than the user is
+//! exposed in would replace that account's liquidation coverage with a list
+//! that fails to load maps. So this pass refuses the same short call the
+//! liquidation pass refuses, and it stores the list in the same shape.
 
 use {
     crate::{
         error::ErrorCode,
+        instructions::{validate_market_coverage, MarketCoverage},
         state::{
             clob_crank::ClobCrankConditionsV0,
             oracle::OracleSource,
@@ -70,6 +78,9 @@ pub struct SyncTriggerConditions<'info> {
 struct MarketInputs {
     oracle: Option<Pubkey>,
     oracle_source: Option<OracleSource>,
+    /// True when the market has a CLOB attached, which is also when it has a
+    /// crank conditions account.
+    has_clob: bool,
     /// Where a raw-price watch reads this market's oracle, when its source
     /// has a registered layout. `None` leaves the order keeper-only.
     watch: Option<OracleWatchV0>,
@@ -94,6 +105,13 @@ pub fn handle_sync_trigger_conditions<'c: 'info, 'info>(
 /// `write_shared_list` is false when the liquidation pass in the same
 /// instruction already wrote the resolver list — it is the same list, and
 /// writing it twice is just CU.
+///
+/// The list is the whole of the account's liquidation coverage: every
+/// liquidation condition and every staged executor reads it, and a write
+/// replaces it. This pass is permissionless, so writing it has the same
+/// precondition the liquidation pass carries. A caller that passes fewer
+/// accounts than the user is exposed in is refused rather than allowed to
+/// leave a list that fails to load maps.
 pub fn rewrite_trigger_conditions<'info>(
     trigger_conditions: &AccountLoader<'info, UserConditionsV0>,
     user_loader: &AccountLoader<'info, User>,
@@ -101,6 +119,9 @@ pub fn rewrite_trigger_conditions<'info>(
     write_shared_list: bool,
 ) -> Result<()> {
     let mut inputs = collect_trigger_inputs(remaining_accounts)?;
+    if write_shared_list {
+        validate_market_coverage(user_loader, &inputs.coverage())?;
+    }
     let oracle_refs = resolve_oracle_watches(&mut inputs);
 
     let user_key = user_loader.key();
@@ -111,8 +132,14 @@ pub fn rewrite_trigger_conditions<'info>(
         .or_else(|_| trigger_conditions.load_mut())?;
     conditions.user = user_key;
     conditions.init_block()?;
-    let stored = build_sync_accounts(conditions_key, user_key, oracle_refs, inputs.market_refs);
     if write_shared_list {
+        let stored = build_sync_accounts(
+            conditions_key,
+            user_key,
+            oracle_refs,
+            inputs.market_refs,
+            inputs.tail_refs,
+        );
         conditions.write_sync_accounts(&stored)?;
     }
 
@@ -163,8 +190,40 @@ pub fn rewrite_trigger_conditions<'info>(
 struct TriggerInputs<'info> {
     markets: BTreeMap<u16, MarketInputs>,
     market_oracles: BTreeMap<Pubkey, u16>,
+    /// Oracle each given spot market names. Read by the coverage rule only.
+    spot_oracles: BTreeMap<u16, Pubkey>,
     market_refs: Vec<AccountRefV0>,
+    /// The crank accounts the stored list carries after the margin map, in the
+    /// same order and shape the liquidation pass stores them.
+    tail_refs: Vec<AccountRefV0>,
     oracle_infos: BTreeMap<Pubkey, &'info AccountInfo<'info>>,
+}
+
+impl TriggerInputs<'_> {
+    /// The view the shared coverage rule answers over.
+    fn coverage(&self) -> MarketCoverage {
+        MarketCoverage {
+            perp_oracles: self
+                .markets
+                .iter()
+                .filter_map(|(index, inputs)| Some((*index, inputs.oracle?)))
+                .collect(),
+            spot_oracles: self.spot_oracles.clone(),
+            perp_books: self
+                .markets
+                .iter()
+                .filter(|(_, inputs)| inputs.has_clob)
+                .map(|(index, _)| *index)
+                .collect(),
+            perp_cranks: self
+                .markets
+                .iter()
+                .filter(|(_, inputs)| inputs.keeper_payment_lamports.is_some())
+                .map(|(index, _)| *index)
+                .collect(),
+            oracles: self.oracle_infos.keys().copied().collect(),
+        }
+    }
 }
 
 /// Classify the remaining accounts by discriminator; oracles are matched
@@ -174,7 +233,9 @@ fn collect_trigger_inputs<'info>(
 ) -> Result<TriggerInputs<'info>> {
     let mut markets: BTreeMap<u16, MarketInputs> = BTreeMap::new();
     let mut market_oracles: BTreeMap<Pubkey, u16> = BTreeMap::new();
+    let mut spot_oracles: BTreeMap<u16, Pubkey> = BTreeMap::new();
     let mut market_refs: Vec<AccountRefV0> = Vec::new();
+    let mut tail_refs: Vec<AccountRefV0> = Vec::new();
     let mut oracle_infos: BTreeMap<Pubkey, &AccountInfo<'info>> = BTreeMap::new();
 
     for info in remaining_accounts {
@@ -184,12 +245,14 @@ fn collect_trigger_inputs<'info>(
                 let inputs = markets.entry(market.market_index).or_default();
                 inputs.oracle = Some(market.oracle);
                 inputs.oracle_source = Some(market.oracle_source);
+                inputs.has_clob = market.clob_market != Pubkey::default();
                 market_oracles.insert(market.oracle, market.market_index);
                 market_refs.push(AccountRefV0::writable(info.key.to_bytes()));
                 continue;
             }
             if let Ok(loader) = AccountLoader::<SpotMarket>::try_from(info) {
-                let _ = loader.load()?;
+                let market = loader.load()?;
+                spot_oracles.insert(market.market_index, market.oracle);
                 market_refs.push(AccountRefV0::writable(info.key.to_bytes()));
                 continue;
             }
@@ -199,12 +262,24 @@ fn collect_trigger_inputs<'info>(
                     .entry(conditions.market_index)
                     .or_default()
                     .keeper_payment_lamports = Some(u64::from(conditions.crank_payments.trigger));
+                tail_refs.push(AccountRefV0::readonly(info.key.to_bytes()));
                 continue;
             }
             if let Ok(loader) = AccountLoader::<QuoterSlabV0>::try_from(info) {
                 let market = loader.load()?.market;
                 let slots = loader.slots()?;
+                // Stored after the markets, where the map parser never
+                // reaches. The liquidation pass stores the slab, its book and
+                // the book's program in this order, and both passes write the
+                // same list, so this pass carries them the same way.
+                tail_refs.push(AccountRefV0::readonly(info.key.to_bytes()));
                 if let Some(index) = clob_slot_index(&slots) {
+                    tail_refs.push(AccountRefV0::writable(
+                        slots[index].config.response_account.to_bytes(),
+                    ));
+                    tail_refs.push(AccountRefV0::readonly(
+                        slots[index].config.program_id.to_bytes(),
+                    ));
                     if slots[index].quotes() {
                         markets.entry(market).or_default().clob = Some((
                             *info.key,
@@ -226,7 +301,9 @@ fn collect_trigger_inputs<'info>(
     Ok(TriggerInputs {
         markets,
         market_oracles,
+        spot_oracles,
         market_refs,
+        tail_refs,
         oracle_infos,
     })
 }
@@ -254,12 +331,15 @@ fn resolve_oracle_watches(inputs: &mut TriggerInputs<'_>) -> Vec<AccountRefV0> {
 /// it is enough, and neither has to carry its own copy.
 ///
 /// The map section follows load_maps order: oracles (readonly) first, then
-/// the spot/perp markets (writable).
+/// the spot/perp markets (writable), then the crank tail the map parser never
+/// reaches. Both passes build the list the same way from the same accounts,
+/// so neither can write a weaker one than the other.
 fn build_sync_accounts(
     conditions_key: Pubkey,
     user_key: Pubkey,
     oracle_refs: Vec<AccountRefV0>,
     market_refs: Vec<AccountRefV0>,
+    tail_refs: Vec<AccountRefV0>,
 ) -> Vec<AccountRefV0> {
     let mut stored = vec![
         AccountRefV0::writable(crate::state::pdas::relay_scratch().to_bytes()),
@@ -269,6 +349,7 @@ fn build_sync_accounts(
     ];
     stored.extend(oracle_refs);
     stored.extend(market_refs);
+    stored.extend(tail_refs);
     stored
 }
 

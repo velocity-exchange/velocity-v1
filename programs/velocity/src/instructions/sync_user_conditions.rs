@@ -13,8 +13,8 @@
 use {
     crate::{
         instructions::{
-            rewrite_liq_conditions, rewrite_trigger_conditions, SyncLiqConditionsArgs,
-            SyncLiqConditionsTerms,
+            price_sync_terms, rewrite_liq_conditions, rewrite_trigger_conditions,
+            SyncLiqConditionsArgs,
         },
         state::{
             state::State,
@@ -48,15 +48,10 @@ pub fn handle_sync_user_conditions<'c: 'info, 'info>(
     ctx: Context<'info, SyncUserConditions<'info>>,
     args: SyncLiqConditionsArgs,
 ) -> Result<()> {
-    let terms = SyncLiqConditionsTerms {
-        sync_payment_lamports: ctx
-            .accounts
-            .state
-            .load()?
-            .transaction_fee_rails
-            .transaction_cost(u64::from(args.sync_cost_units), 1)?,
-        sync_fallback_slots: args.sync_fallback_slots,
-    };
+    // Priced through the one shared helper, so this entry point and the
+    // liquidation-only one cannot disagree about what a sync costs.
+    let state_rails = ctx.accounts.state.load()?.transaction_fee_rails;
+    let terms = price_sync_terms(&state_rails, &args)?;
     // Liquidation first: it is the pass that stores the shared resolver
     // account list, so the trigger pass can skip writing it.
     rewrite_liq_conditions(

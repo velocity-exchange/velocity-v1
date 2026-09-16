@@ -1,10 +1,13 @@
 //! Registry lifecycle smoke test against the real velocity.so, with clob.so
-//! standing in as the (executable) quoter program. Requires both fixtures:
+//! standing in as the (executable) quoter program. The book tests also drive
+//! it as a real book, because a `Clob` approval asks the designated account
+//! for its own placement rules. Requires both fixtures:
 //! `bun run program:build` and `bun run program:build:clob`.
 
 use {
     anchor_lang::{InstructionData, ToAccountMetas},
-    solana_instruction::Instruction,
+    solana_account::Account,
+    solana_instruction::{AccountMeta, Instruction},
     solana_keypair::Keypair,
     solana_pubkey::Pubkey,
     solana_signer::Signer,
@@ -45,6 +48,10 @@ fn init_quoter_ix(
             authority,
             quoter,
             perp_market: perp_market_pda(0),
+            // Designating the book is refused when an approved quoter's
+            // account list already names it, so a book registration reads the
+            // slab. No other type does.
+            quoter_slab: matches!(quoter_type, QuoterType::Clob).then(|| quoter_slab_pda(0)),
             quoter_program: clob_id(),
             user,
             rent: rent_sysvar(),
@@ -68,8 +75,14 @@ fn init_quoter_ix(
 fn set_accounts_ix(authority: Pubkey, quoter: Pubkey, response_account: Pubkey) -> Instruction {
     Instruction {
         program_id: velocity_id(),
-        accounts: velocity::accounts::UpdateQuoterAccounts { authority, quoter }
-            .to_account_metas(None),
+        accounts: velocity::accounts::UpdateQuoterAccounts {
+            authority,
+            quoter,
+            // A book's entry answers to the State admin roles. A Custom entry
+            // answers to its own stored authority and ignores this.
+            state: Some(state_pda()),
+        }
+        .to_account_metas(None),
         data: velocity::instruction::UpdateQuoterAccounts {
             args: UpdateQuoterAccountsArgs {
                 metas: vec![QuoterAccountMetaArg {
@@ -84,7 +97,16 @@ fn set_accounts_ix(authority: Pubkey, quoter: Pubkey, response_account: Pubkey) 
     }
 }
 
-fn approve_ix(as_admin: Pubkey, quoter: Pubkey, approved: bool) -> Instruction {
+/// `clob_market` is the book the market designated, and only a `Clob`
+/// approval takes one: approval asks that account for its own placement rules
+/// before it becomes a fill baseline. Every other call passes `None`, which
+/// includes a revocation, because a revocation reads no book.
+fn approve_ix(
+    as_admin: Pubkey,
+    quoter: Pubkey,
+    approved: bool,
+    clob_market: Option<Pubkey>,
+) -> Instruction {
     Instruction {
         program_id: velocity_id(),
         accounts: velocity::accounts::UpdateQuoterApproved {
@@ -95,6 +117,7 @@ fn approve_ix(as_admin: Pubkey, quoter: Pubkey, approved: bool) -> Instruction {
             quoter_slab: quoter_slab_pda(0),
             quoter_program: clob_id(),
             quoter_program_data: Some(program_data_pda(&clob_id())),
+            clob_market,
             system_program: system_program(),
         }
         .to_account_metas(None),
@@ -121,6 +144,54 @@ fn slab_ix(payer: Pubkey) -> Instruction {
         }
         .data(),
     }
+}
+
+/// A real CLOB book on market 0, with the market's quoter slab as its
+/// `place_authority`.
+///
+/// A book approval asks the account the market designated for its own
+/// placement rules, so a `Clob` entry cannot be approved against an arbitrary
+/// pubkey. The config below is the smallest coherent one; approval reads only
+/// the place authority off it.
+fn init_clob_book(svm: &mut litesvm::LiteSVM, admin: &Keypair) -> Pubkey {
+    let book = Pubkey::new_unique();
+    svm.set_account(
+        book,
+        Account {
+            lamports: 10_000_000_000,
+            data: vec![0u8; 32 * 1024 + 64 * 128],
+            owner: clob_id(),
+            executable: false,
+            rent_epoch: 0,
+        },
+    )
+    .unwrap();
+    // Borsh `MarketConfigV0`.
+    let mut data = ix_discriminator("initialize_market_v0").to_vec();
+    data.extend_from_slice(&0u16.to_le_bytes()); // market_index
+    data.extend_from_slice(&1_000_000_000u64.to_le_bytes()); // base_precision
+    data.extend_from_slice(&1u64.to_le_bytes()); // order_tick_size
+    data.extend_from_slice(&1_000u64.to_le_bytes()); // order_step_size
+    data.extend_from_slice(&1u64.to_le_bytes()); // min_order_size
+    data.extend_from_slice(&0u64.to_le_bytes()); // blocking_min_size
+    data.extend_from_slice(&0u32.to_le_bytes()); // default_activation_delay_slots
+    data.extend_from_slice(&20u32.to_le_bytes()); // max_activation_delay_slots
+    data.extend_from_slice(&2u32.to_le_bytes()); // unknown_user_grace_slots
+    data.extend_from_slice(&1u32.to_le_bytes()); // evict_threshold_per_side
+    data.extend_from_slice(&128u16.to_le_bytes()); // max_quote_levels
+    data.extend_from_slice(&64u16.to_le_bytes()); // max_execute_fills
+    data.extend_from_slice(&32u16.to_le_bytes()); // max_execute_users
+    let ix = Instruction {
+        program_id: clob_id(),
+        accounts: vec![
+            AccountMeta::new_readonly(admin.pubkey(), true),
+            AccountMeta::new_readonly(quoter_slab_pda(0), false),
+            AccountMeta::new(book, false),
+        ],
+        data,
+    };
+    send(svm, admin, ix, &[]).unwrap();
+    book
 }
 
 fn slab_capacity(svm: &litesvm::LiteSVM) -> u16 {
@@ -168,7 +239,7 @@ fn quoter_registry_lifecycle() {
     assert!(send(
         &mut svm,
         &admin,
-        approve_ix(admin.pubkey(), quoter, true),
+        approve_ix(admin.pubkey(), quoter, true, None),
         &[]
     )
     .is_err());
@@ -183,7 +254,7 @@ fn quoter_registry_lifecycle() {
     assert!(send(
         &mut svm,
         &admin,
-        approve_ix(admin.pubkey(), quoter, true),
+        approve_ix(admin.pubkey(), quoter, true, None),
         &[]
     )
     .is_err());
@@ -211,14 +282,14 @@ fn quoter_registry_lifecycle() {
     assert!(send(
         &mut svm,
         &maker,
-        approve_ix(maker.pubkey(), quoter, true),
+        approve_ix(maker.pubkey(), quoter, true, None),
         &[]
     )
     .is_err());
     send(
         &mut svm,
         &admin,
-        approve_ix(admin.pubkey(), quoter, true),
+        approve_ix(admin.pubkey(), quoter, true, None),
         &[],
     )
     .unwrap();
@@ -245,6 +316,8 @@ fn quoter_registry_lifecycle() {
             authority,
             quoter,
             quoter_slab: slab,
+            // A Custom entry answers to its own stored authority.
+            state: None,
         }
         .to_account_metas(None),
         data: velocity::instruction::UpdateQuoterActive {
@@ -300,6 +373,7 @@ fn quoter_registry_lifecycle() {
         accounts: velocity::accounts::UpdateQuoterConfig {
             authority: maker.pubkey(),
             quoter,
+            state: None,
         }
         .to_account_metas(None),
         data: velocity::instruction::UpdateQuoterConfig {
@@ -331,7 +405,7 @@ fn quoter_registry_lifecycle() {
     assert!(send(
         &mut svm,
         &admin,
-        approve_ix(admin.pubkey(), quoter, true),
+        approve_ix(admin.pubkey(), quoter, true, None),
         &[]
     )
     .is_err());
@@ -345,7 +419,7 @@ fn quoter_registry_lifecycle() {
     send(
         &mut svm,
         &admin,
-        approve_ix(admin.pubkey(), quoter, true),
+        approve_ix(admin.pubkey(), quoter, true, None),
         &[],
     )
     .unwrap();
@@ -363,7 +437,7 @@ fn quoter_registry_lifecycle() {
     send(
         &mut svm,
         &admin,
-        approve_ix(admin.pubkey(), quoter, false),
+        approve_ix(admin.pubkey(), quoter, false, None),
         &[],
     )
     .unwrap();
@@ -388,7 +462,9 @@ fn revoking_the_book_suspends_its_slot() {
     set_user(&mut svm, user, &admin.pubkey());
 
     let quoter = quoter_pda(0, &clob_id(), &user);
-    let book = Pubkey::new_unique();
+    // The slab leads: a book designation reads it, and approval writes it.
+    create_quoter_slab(&mut svm, &admin, 0);
+    let book = init_clob_book(&mut svm, &admin);
     send(
         &mut svm,
         &admin,
@@ -396,7 +472,6 @@ fn revoking_the_book_suspends_its_slot() {
         &[],
     )
     .unwrap();
-    create_quoter_slab(&mut svm, &admin, 0);
     send(
         &mut svm,
         &admin,
@@ -407,7 +482,7 @@ fn revoking_the_book_suspends_its_slot() {
     send(
         &mut svm,
         &admin,
-        approve_ix(admin.pubkey(), quoter, true),
+        approve_ix(admin.pubkey(), quoter, true, Some(book)),
         &[],
     )
     .unwrap();
@@ -419,7 +494,7 @@ fn revoking_the_book_suspends_its_slot() {
     send(
         &mut svm,
         &admin,
-        approve_ix(admin.pubkey(), quoter, false),
+        approve_ix(admin.pubkey(), quoter, false, None),
         &[],
     )
     .unwrap();
@@ -437,7 +512,7 @@ fn revoking_the_book_suspends_its_slot() {
     send(
         &mut svm,
         &admin,
-        approve_ix(admin.pubkey(), quoter, true),
+        approve_ix(admin.pubkey(), quoter, true, Some(book)),
         &[],
     )
     .unwrap();
@@ -463,6 +538,9 @@ fn only_the_admin_may_register_a_book() {
     set_user(&mut svm, user, &maker.pubkey());
 
     let quoter = quoter_pda(0, &clob_id(), &user);
+    // A book designation reads the slab, so the slab exists first. The book
+    // account itself is never read at registration, only recorded.
+    create_quoter_slab(&mut svm, &admin, 0);
     let book = Pubkey::new_unique();
     let init = |authority: Pubkey| init_quoter_ix(authority, quoter, user, QuoterType::Clob, book);
 
@@ -545,7 +623,7 @@ fn approval_grows_the_slab_and_revocation_shrinks_it() {
     send(
         &mut svm,
         &admin,
-        approve_ix(admin.pubkey(), first, true),
+        approve_ix(admin.pubkey(), first, true, None),
         &[],
     )
     .unwrap();
@@ -555,7 +633,7 @@ fn approval_grows_the_slab_and_revocation_shrinks_it() {
     send(
         &mut svm,
         &admin,
-        approve_ix(admin.pubkey(), second, true),
+        approve_ix(admin.pubkey(), second, true, None),
         &[],
     )
     .unwrap();
@@ -573,7 +651,7 @@ fn approval_grows_the_slab_and_revocation_shrinks_it() {
     send(
         &mut svm,
         &admin,
-        approve_ix(admin.pubkey(), first, false),
+        approve_ix(admin.pubkey(), first, false, None),
         &[],
     )
     .unwrap();
@@ -584,7 +662,7 @@ fn approval_grows_the_slab_and_revocation_shrinks_it() {
     send(
         &mut svm,
         &admin,
-        approve_ix(admin.pubkey(), first, true),
+        approve_ix(admin.pubkey(), first, true, None),
         &[],
     )
     .unwrap();
@@ -596,7 +674,7 @@ fn approval_grows_the_slab_and_revocation_shrinks_it() {
     send(
         &mut svm,
         &admin,
-        approve_ix(admin.pubkey(), first, false),
+        approve_ix(admin.pubkey(), first, false, None),
         &[],
     )
     .unwrap();
@@ -608,7 +686,7 @@ fn approval_grows_the_slab_and_revocation_shrinks_it() {
     send(
         &mut svm,
         &admin,
-        approve_ix(admin.pubkey(), second, false),
+        approve_ix(admin.pubkey(), second, false, None),
         &[],
     )
     .unwrap();
@@ -666,7 +744,7 @@ fn a_full_slab_refuses_another_approval() {
     let err = send(
         &mut svm,
         &admin,
-        approve_ix(admin.pubkey(), quoter, true),
+        approve_ix(admin.pubkey(), quoter, true, None),
         &[],
     )
     .unwrap_err();

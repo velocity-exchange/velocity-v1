@@ -90,6 +90,43 @@
       }
     },
     {
+      "name": "close_market_v0",
+      "docs": [
+        "Close an empty market and return its rent to `rent_recipient`."
+      ],
+      "discriminator": [
+        201,
+        122,
+        60,
+        249,
+        205,
+        162,
+        134,
+        110
+      ],
+      "accounts": [
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true,
+          "relations": [
+            "market"
+          ]
+        },
+        {
+          "name": "rent_recipient",
+          "docs": [
+            "Receives the market's rent."
+          ],
+          "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "evict_worst_v0",
       "discriminator": [
         106,
@@ -241,9 +278,18 @@
           "docs": [
             "Pre-created zeroed account of [`ClobMarketV0::space_for`] the wanted",
             "capacity (~98KB — larger than CPI alloc limits, so the client creates",
-            "it). [`crate::instructions::resize_market_v0`] grows it later."
+            "it). [`crate::instructions::resize_market_v0`] grows it later.",
+            "",
+            "It signs, which is what binds initialization to the account's creator.",
+            "The client creates the account with a keypair, and the System program",
+            "already requires that keypair to sign the allocation, so the signature",
+            "costs an honest caller nothing. Without it, creation and initialization",
+            "may land in different transactions and anyone may initialize the",
+            "account first and name themselves `authority`. The operator's own call",
+            "then fails and the rent is stranded."
           ],
-          "writable": true
+          "writable": true,
+          "signer": true
         }
       ],
       "args": [
@@ -910,6 +956,16 @@
       "code": 6027,
       "name": "FillExceedsOrder",
       "msg": "Fill is larger than the order has left"
+    },
+    {
+      "code": 6028,
+      "name": "MaxTsBeforeActivation",
+      "msg": "max_ts falls inside the order's own activation delay"
+    },
+    {
+      "code": 6029,
+      "name": "MarketNotEmpty",
+      "msg": "Market still holds orders and cannot be closed"
     }
   ],
   "types": [
@@ -1800,28 +1856,6 @@
               "a different set of orders than the one it quoted."
             ],
             "type": "bool"
-          },
-          {
-            "name": "self_base_room",
-            "docs": [
-              "The most base the quoter's own settlement user may take on, bounded",
-              "by that user's own margin. `u64::MAX` means unbounded.",
-              "",
-              "A quoter that fills from one account is not margin-reserved the way a",
-              "resting maker is: nothing was set aside at placement, so the fill",
-              "grows the account's worst case and pays initial margin for it. That is",
-              "a base bound, and [`UserCapV0::budget`] cannot express it — a budget",
-              "prices the gap between a reserved order's limit and the mark, and goes",
-              "to infinity at a price in the owner's favour.",
-              "",
-              "A book ignores it. Its makers rest reserved depth and are sized one",
-              "per user in [`Self::caps`].",
-              "",
-              "**Not a trust boundary**, like the caps. The execute must carry the value",
-              "its quote carried. Honouring it is what lets a quoter size its own",
-              "depth instead of publishing depth the caller then cuts."
-            ],
-            "type": "u64"
           }
         ]
       }
@@ -2494,6 +2528,44 @@
           {
             "name": "step_size",
             "type": "u64"
+          },
+          {
+            "name": "side_order_counts",
+            "docs": [
+              "Resting orders on each side right now, bids first.",
+              "",
+              "A side is full at `arena_capacity / 2`, and a placement onto a full",
+              "side is refused. A caller that rests a taker's remainder has to know",
+              "that before it commits the fill the remainder came out of, because the",
+              "refusal takes the whole fill with it. With these two numbers the caller",
+              "predicts the refusal and fills without resting instead.",
+              "",
+              "The counts move with every placement and removal, so they are a fact",
+              "about the slot this call ran in, not a rule. They are reported here",
+              "because this is the call a caller already makes before it rests."
+            ],
+            "type": {
+              "array": [
+                "u32",
+                2
+              ]
+            }
+          },
+          {
+            "name": "arena_capacity",
+            "docs": [
+              "Order slots the whole arena holds. Half of it is the per-side cap."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "evict_threshold_per_side",
+            "docs": [
+              "Count at which the eviction crank may take a side's tail. A side",
+              "between this and its cap still accepts placements, and the crank works",
+              "it back down."
+            ],
+            "type": "u32"
           }
         ]
       }
@@ -2946,28 +3018,6 @@
               "quoter that reserves nothing ignores it."
             ],
             "type": "bool"
-          },
-          {
-            "name": "self_base_room",
-            "docs": [
-              "The most base the quoter's own settlement user may take on, bounded",
-              "by that user's own margin. `u64::MAX` means unbounded.",
-              "",
-              "A quoter that fills from one account is not margin-reserved the way a",
-              "resting maker is: nothing was set aside at placement, so the fill",
-              "grows the account's worst case and pays initial margin for it. That is",
-              "a base bound, and [`UserCapV0::budget`] cannot express it — a budget",
-              "prices the gap between a reserved order's limit and the mark, and goes",
-              "to infinity at a price in the owner's favour.",
-              "",
-              "A book ignores it. Its makers rest reserved depth and are sized one",
-              "per user in [`Self::caps`].",
-              "",
-              "**Not a trust boundary**, like the caps. The caller trims the returned",
-              "ladder to this itself. Honouring it is what lets a quoter size its own",
-              "depth instead of publishing depth the caller then cuts."
-            ],
-            "type": "u64"
           }
         ]
       }
@@ -3221,7 +3271,7 @@
       "docs": [
         "What one named user may still lose on the side this call sweeps, in quote.",
         "",
-        "A budget rather than a base amount, because the caller cannot convert the",
+        "A quote_cap rather than a base amount, because the caller cannot convert the",
         "one into the other. What a fill costs a maker is collateral, and the",
         "conversion needs the price each order fills at — which the caller does not",
         "have and the quoter does. So the caller sends what it knows and the quoter",
@@ -3234,7 +3284,7 @@
         "counted only where the fill moves against the owner: an order resting on",
         "the bid side costs its owner when it fills *above* the reference, an ask",
         "when it fills *below*. An order priced in the owner's favour costs nothing",
-        "and is filled whole. Once the budget is spent, that user's remaining",
+        "and is filled whole. Once the quote_cap is spent, that user's remaining",
         "orders are passed over and the depth behind them is still filled.",
         "",
         "Why this is the cost that matters: a resting order is normally already",
@@ -3245,7 +3295,7 @@
         "with size.",
         "",
         "One number, not one per side, because a call sweeps one side of the book:",
-        "[`QuoteArgsV0::direction`] says which, and the budget is for that side.",
+        "[`QuoteArgsV0::direction`] says which, and the quote_cap is for that side.",
         "",
         "`u64::MAX` means unbounded. Zero means the user is excluded outright, and",
         "belongs in the bitmap rather than here."
@@ -3254,23 +3304,42 @@
         "kind": "struct",
         "fields": [
           {
-            "name": "budget",
+            "name": "quote_cap",
             "docs": [
-              "Quote this user may lose filling on the swept side."
+              "Quote this user may lose filling on the swept side. `u64::MAX` means",
+              "unbounded.",
+              "",
+              "The bound for depth that was margin-reserved before the fill, which",
+              "is a book's resting orders. The base behind such an order was priced",
+              "into its owner's worst case at placement, so filling it does not grow",
+              "that worst case — what moves is collateral, by the gap between the",
+              "order's price and the mark. Base cannot express it: at a price in the",
+              "owner's favour the cost per base is zero and any size is affordable."
             ],
             "type": "u64"
           },
           {
-            "name": "base_cover",
+            "name": "base_cap",
             "docs": [
-              "The most base the book may fill against this user's **reduce-only**",
-              "resting orders on the swept side. `u64::MAX` means no reduce-only cap.",
+              "The most base this user may give up on the swept side. `u64::MAX`",
+              "means unbounded.",
               "",
-              "Unlike [`Self::budget`], this **is** a trust boundary. The book is",
-              "position-blind, so a reduce-only order can only be safe if the caller",
-              "bounds its fill to the position it may reduce. The book enforces it at",
-              "match time and never fills a reduce-only order past it. A reduce-only",
-              "order whose owner carries no cap here is not filled at all."
+              "One axis, two readers, and the caller sends the tighter of what each",
+              "needs — which in all but one shape is exactly one of them, because the",
+              "other is unbounded:",
+              "",
+              "- A **book** holds its owner's **reduce-only** orders to it. The book",
+              "  is position-blind, so a reduce-only order is safe only if the caller",
+              "  bounds its fill to the position it may reduce. Here that makes this",
+              "  **a trust boundary**, unlike [`Self::quote_cap`]: the book enforces",
+              "  it at match time, and a reduce-only order whose owner carries no cap",
+              "  here is not filled at all.",
+              "- Every **other quoter** holds its own depth to it, reading the entry",
+              "  for the user on its registry slot. That depth was never reserved, so",
+              "  a fill grows its owner's worst case and pays initial margin on the",
+              "  base taken. Quote cannot express that, which is why this figure is",
+              "  in base. Advisory there, like the quote cap: the caller trims the",
+              "  returned ladder to it either way."
             ],
             "type": "u64"
           },
@@ -3303,7 +3372,7 @@
         "exactly where it stands without them — the caller's own post-fill checks",
         "still refuse the fill. What honouring them buys is that the honest case",
         "stops reverting. The exclusions are firmer than the budgets: a caller may",
-        "also refuse a response that names an excluded user, while a budget it",
+        "also refuse a response that names an excluded user, while a quote_cap it",
         "cannot reprice is left to those post-fill checks."
       ],
       "type": {

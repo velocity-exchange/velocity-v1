@@ -24,7 +24,6 @@ use {
         CancelAllArgsV0, ExecuteArgsV0, QuoteArgsV0, SetLevelsArgsV0, SetMidArgsV0,
         UpdateQuoterArgsV0,
     },
-    solana_account::Account,
     solana_clock::Clock,
     solana_pubkey::Pubkey,
 };
@@ -39,17 +38,8 @@ const MID: u64 = 100_000_000;
 const BASE_PRECISION: u64 = 1_000_000_000;
 const UNIT: u64 = BASE_PRECISION;
 
-/// `State::SIZE` on velocity's side (8-byte discriminator + 1744-byte struct).
-const VELOCITY_STATE_SIZE: usize = 1752;
-
 fn program_id() -> Pubkey {
     "eb3Kwmht4evPGGonNHCQs1h7ng63ZUwZ9TyV1qPo23D"
-        .parse()
-        .unwrap()
-}
-
-fn velocity_program_id() -> Pubkey {
-    "vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P"
         .parse()
         .unwrap()
 }
@@ -97,6 +87,8 @@ fn config() -> QuoterConfigV0 {
         size_step: 1_000,
         min_quote_size: 10_000,
         require_attested_flow: false,
+        // A one percent band around velocity's oracle.
+        max_mid_deviation_ppm: 10_000,
     }
 }
 
@@ -188,10 +180,6 @@ fn send_signed_by(
 
 fn parse_u32(b: &[u8]) -> u32 {
     u32::from_le_bytes(b[..4].try_into().unwrap())
-}
-
-fn parse_u64(b: &[u8]) -> u64 {
-    u64::from_le_bytes(b[..8].try_into().unwrap())
 }
 
 fn read_response(ctx: &Ctx, meta: &TransactionMetadata) -> Vec<u8> {
@@ -1297,4 +1285,125 @@ fn cancel_all_cu_beats_the_set_levels_it_replaces() {
         "withdrawal cost must scale with the rungs pulled, got {empty} (none), \
          {shallow} (2 rungs), {deep} (64 rungs)"
     );
+}
+
+/// Creation refuses a config a fill could never settle, and one that would
+/// leave the maker unprotected.
+///
+/// A base denominator other than the constant prices the instance's quotes on
+/// one scale while velocity settles them on another, so every routed fill
+/// reverts. A zero deviation band lets a compromised hot key fill the maker at
+/// any mid it likes, and an instance must not run that way before a separate
+/// call arrives.
+#[test]
+fn creation_refuses_a_foreign_denominator_and_a_missing_deviation_band() {
+    let mut ctx = setup();
+    let create = |ctx: &mut Ctx, wallet: &Keypair, config: QuoterConfigV0| {
+        let quoter = quoter_pda(config.market_index, &wallet.pubkey(), 0);
+        let ix = instruction::InitializeQuoterV0 { config }.to_instruction(
+            accounts::InitializeQuoterV0 {
+                payer: addr(ctx.payer.pubkey()),
+                authority: addr(ctx.authority.pubkey()),
+                user_authority: addr(wallet.pubkey()),
+                execute_authority: addr(ctx.execute_auth.pubkey()),
+                hot_authority: addr(ctx.hot.pubkey()),
+                quoter: addr(quoter),
+                system_program: addr(system_program()),
+            },
+        );
+        send_signed_by(ctx, ix, Some(wallet))
+    };
+
+    let wallet = Keypair::new();
+    assert!(create(
+        &mut ctx,
+        &wallet,
+        QuoterConfigV0 {
+            market_index: 1,
+            base_precision: 1_000_000,
+            ..config()
+        }
+    )
+    .is_err());
+    assert!(create(
+        &mut ctx,
+        &wallet,
+        QuoterConfigV0 {
+            market_index: 2,
+            base_precision: 0,
+            ..config()
+        }
+    )
+    .is_err());
+    assert!(create(
+        &mut ctx,
+        &wallet,
+        QuoterConfigV0 {
+            market_index: 3,
+            max_mid_deviation_ppm: 0,
+            ..config()
+        }
+    )
+    .is_err());
+    create(
+        &mut ctx,
+        &wallet,
+        QuoterConfigV0 {
+            market_index: 4,
+            ..config()
+        },
+    )
+    .expect("the constant and a real band are accepted");
+}
+
+/// The band is live the moment the instance exists, with no update call. A
+/// mid a long way off the caller's reference quotes and fills nothing.
+#[test]
+fn a_fresh_instance_already_refuses_an_off_market_mid() {
+    let mut ctx = setup();
+    arm(&mut ctx);
+    assert_eq!(read_quoter(&ctx).max_mid_deviation_ppm, 10_000);
+
+    // A reference within the one percent band quotes normally.
+    let ix = quote_ix_with(
+        &ctx,
+        QuoteArgsV0 {
+            reference_price: MID as i64,
+            ..quote_args(Direction::Long, UNIT)
+        },
+    );
+    let meta = send(&mut ctx, ix).unwrap();
+    assert_eq!(parse_levels(&read_response(&ctx, &meta)).len(), 1);
+
+    // A reference two percent away quotes nothing.
+    let off = (MID + MID / 50) as i64;
+    let ix = quote_ix_with(
+        &ctx,
+        QuoteArgsV0 {
+            reference_price: off,
+            ..quote_args(Direction::Long, UNIT)
+        },
+    );
+    let meta = send(&mut ctx, ix).unwrap();
+    assert!(parse_levels(&read_response(&ctx, &meta)).is_empty());
+
+    // And fills nothing.
+    let ix = instruction::ExecuteV0 {
+        args: ExecuteArgsV0 {
+            taker_served_window: true,
+            consume_reservation: false,
+            direction: Direction::Long,
+            size: UNIT,
+            users: &[],
+            caps: UserCapsV0::EMPTY,
+            reference_price: off,
+            taker: None,
+        },
+    }
+    .to_instruction(accounts::ExecuteV0 {
+        quoter: addr(ctx.quoter),
+        execute_authority: addr(ctx.execute_auth.pubkey()),
+    });
+    let meta = send(&mut ctx, ix).unwrap();
+    assert!(parse_execute(&read_response(&ctx, &meta)).is_empty());
 }

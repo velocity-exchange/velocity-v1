@@ -404,12 +404,12 @@
     {
       "code": 6008,
       "name": "InvalidInstructionsSysvar",
-      "msg": "Instructions sysvar account is not the sysvar"
+      "msg": "Deprecated: the protected-flow claim rides the wire, not a sysvar"
     },
     {
       "code": 6009,
       "name": "InvalidVelocityState",
-      "msg": "Velocity state account is not velocity's initialized State"
+      "msg": "Deprecated: this program reads no velocity account"
     },
     {
       "code": 6010,
@@ -622,28 +622,6 @@
               "a different set of orders than the one it quoted."
             ],
             "type": "bool"
-          },
-          {
-            "name": "self_base_room",
-            "docs": [
-              "The most base the quoter's own settlement user may take on, bounded",
-              "by that user's own margin. `u64::MAX` means unbounded.",
-              "",
-              "A quoter that fills from one account is not margin-reserved the way a",
-              "resting maker is: nothing was set aside at placement, so the fill",
-              "grows the account's worst case and pays initial margin for it. That is",
-              "a base bound, and [`UserCapV0::budget`] cannot express it — a budget",
-              "prices the gap between a reserved order's limit and the mark, and goes",
-              "to infinity at a price in the owner's favour.",
-              "",
-              "A book ignores it. Its makers rest reserved depth and are sized one",
-              "per user in [`Self::caps`].",
-              "",
-              "**Not a trust boundary**, like the caps. The execute must carry the value",
-              "its quote carried. Honouring it is what lets a quoter size its own",
-              "depth instead of publishing depth the caller then cuts."
-            ],
-            "type": "u64"
           }
         ]
       }
@@ -687,7 +665,18 @@
             "type": "u64"
           },
           {
-            "name": "market_index",
+            "name": "configured_market_index",
+            "docs": [
+              "The market index this instance was created for. It rides the PDA",
+              "seeds, so it is fixed and it is a fact about the instance.",
+              "",
+              "It is not proof of where the fill settled. Velocity's registry decides",
+              "which market an instance quotes, and it can hold an entry whose market",
+              "differs from this one. A reader that needs the settled market takes it",
+              "from velocity's own fill record, which is the account that knows. No",
+              "value turns on it either way: velocity matches the balance-change user",
+              "against its registry before it settles anything."
+            ],
             "type": "u16"
           },
           {
@@ -821,7 +810,8 @@
           {
             "name": "base_precision",
             "docs": [
-              "Base units per whole unit (velocity perps: 1e9)."
+              "Base units per whole unit. Always [`BASE_PRECISION`]; see there for why",
+              "an instance cannot choose another one."
             ],
             "type": "u64"
           },
@@ -1060,28 +1050,6 @@
               "quoter that reserves nothing ignores it."
             ],
             "type": "bool"
-          },
-          {
-            "name": "self_base_room",
-            "docs": [
-              "The most base the quoter's own settlement user may take on, bounded",
-              "by that user's own margin. `u64::MAX` means unbounded.",
-              "",
-              "A quoter that fills from one account is not margin-reserved the way a",
-              "resting maker is: nothing was set aside at placement, so the fill",
-              "grows the account's worst case and pays initial margin for it. That is",
-              "a base bound, and [`UserCapV0::budget`] cannot express it — a budget",
-              "prices the gap between a reserved order's limit and the mark, and goes",
-              "to infinity at a price in the owner's favour.",
-              "",
-              "A book ignores it. Its makers rest reserved depth and are sized one",
-              "per user in [`Self::caps`].",
-              "",
-              "**Not a trust boundary**, like the caps. The caller trims the returned",
-              "ladder to this itself. Honouring it is what lets a quoter size its own",
-              "depth instead of publishing depth the caller then cuts."
-            ],
-            "type": "u64"
           }
         ]
       }
@@ -1126,6 +1094,20 @@
           {
             "name": "require_attested_flow",
             "type": "bool"
+          },
+          {
+            "name": "max_mid_deviation_ppm",
+            "docs": [
+              "Max `|mid - reference_price| / reference_price` the instance fills at,",
+              "parts per million. Must be nonzero at creation.",
+              "",
+              "This band is what stops a compromised hot key from filling the maker",
+              "at an off-market mid, so an instance must not start without one. The",
+              "config key can set it to zero later through `update_quoter_v0`, which",
+              "is a maker deciding to run unbounded rather than a maker who never",
+              "learned the field exists."
+            ],
+            "type": "u64"
           }
         ]
       }
@@ -1223,7 +1205,8 @@
             "name": "sequence",
             "docs": [
               "Opt-in monotonic guard for racing writers: nonzero must strictly",
-              "increase; zero skips the check."
+              "increase; zero skips the check. A mid of 0 is a withdrawal, so it",
+              "skips the guard whatever the sequence says."
             ],
             "type": "u64"
           }
@@ -1316,9 +1299,10 @@
           {
             "name": "require_attested_flow",
             "docs": [
-              "Attested flow is gated on velocity's live `State.hot_flow_authority`,",
-              "so turning it on takes no local key — and an unassigned role on",
-              "velocity's side silences the book rather than opening it."
+              "Quote only flow that served a protection window. The claim rides the",
+              "wire as `taker_served_window`, and this program trusts its caller for",
+              "it the way it trusts `users` and `caps`. Turning it on takes no local",
+              "key and reads no velocity account."
             ],
             "type": {
               "option": "bool"
@@ -1334,7 +1318,24 @@
             "name": "max_mid_deviation_ppm",
             "docs": [
               "Max mid deviation from velocity's oracle, parts per million. 0 disables",
-              "the bound."
+              "the bound, which only the config key can choose. Creation refuses zero,",
+              "so an instance never starts without the band."
+            ],
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "name": "mid_sequence",
+            "docs": [
+              "New value for the racing-writer sequence counter. Any value is legal,",
+              "including a lower one.",
+              "",
+              "The counter only ever rises through `set_mid_v0`, so a writer that",
+              "sends `u64::MAX`, by accident or by a bug, makes every later mid write",
+              "fail for the life of the instance. This field is the recovery, and it",
+              "belongs to the config key alone. A reset re-opens the sequences below",
+              "the old value, so the maker must stop the racing writers first."
             ],
             "type": {
               "option": "u64"
@@ -1348,7 +1349,7 @@
       "docs": [
         "What one named user may still lose on the side this call sweeps, in quote.",
         "",
-        "A budget rather than a base amount, because the caller cannot convert the",
+        "A quote_cap rather than a base amount, because the caller cannot convert the",
         "one into the other. What a fill costs a maker is collateral, and the",
         "conversion needs the price each order fills at — which the caller does not",
         "have and the quoter does. So the caller sends what it knows and the quoter",
@@ -1361,7 +1362,7 @@
         "counted only where the fill moves against the owner: an order resting on",
         "the bid side costs its owner when it fills *above* the reference, an ask",
         "when it fills *below*. An order priced in the owner's favour costs nothing",
-        "and is filled whole. Once the budget is spent, that user's remaining",
+        "and is filled whole. Once the quote_cap is spent, that user's remaining",
         "orders are passed over and the depth behind them is still filled.",
         "",
         "Why this is the cost that matters: a resting order is normally already",
@@ -1372,7 +1373,7 @@
         "with size.",
         "",
         "One number, not one per side, because a call sweeps one side of the book:",
-        "[`QuoteArgsV0::direction`] says which, and the budget is for that side.",
+        "[`QuoteArgsV0::direction`] says which, and the quote_cap is for that side.",
         "",
         "`u64::MAX` means unbounded. Zero means the user is excluded outright, and",
         "belongs in the bitmap rather than here."
@@ -1381,23 +1382,42 @@
         "kind": "struct",
         "fields": [
           {
-            "name": "budget",
+            "name": "quote_cap",
             "docs": [
-              "Quote this user may lose filling on the swept side."
+              "Quote this user may lose filling on the swept side. `u64::MAX` means",
+              "unbounded.",
+              "",
+              "The bound for depth that was margin-reserved before the fill, which",
+              "is a book's resting orders. The base behind such an order was priced",
+              "into its owner's worst case at placement, so filling it does not grow",
+              "that worst case — what moves is collateral, by the gap between the",
+              "order's price and the mark. Base cannot express it: at a price in the",
+              "owner's favour the cost per base is zero and any size is affordable."
             ],
             "type": "u64"
           },
           {
-            "name": "base_cover",
+            "name": "base_cap",
             "docs": [
-              "The most base the book may fill against this user's **reduce-only**",
-              "resting orders on the swept side. `u64::MAX` means no reduce-only cap.",
+              "The most base this user may give up on the swept side. `u64::MAX`",
+              "means unbounded.",
               "",
-              "Unlike [`Self::budget`], this **is** a trust boundary. The book is",
-              "position-blind, so a reduce-only order can only be safe if the caller",
-              "bounds its fill to the position it may reduce. The book enforces it at",
-              "match time and never fills a reduce-only order past it. A reduce-only",
-              "order whose owner carries no cap here is not filled at all."
+              "One axis, two readers, and the caller sends the tighter of what each",
+              "needs — which in all but one shape is exactly one of them, because the",
+              "other is unbounded:",
+              "",
+              "- A **book** holds its owner's **reduce-only** orders to it. The book",
+              "  is position-blind, so a reduce-only order is safe only if the caller",
+              "  bounds its fill to the position it may reduce. Here that makes this",
+              "  **a trust boundary**, unlike [`Self::quote_cap`]: the book enforces",
+              "  it at match time, and a reduce-only order whose owner carries no cap",
+              "  here is not filled at all.",
+              "- Every **other quoter** holds its own depth to it, reading the entry",
+              "  for the user on its registry slot. That depth was never reserved, so",
+              "  a fill grows its owner's worst case and pays initial margin on the",
+              "  base taken. Quote cannot express that, which is why this figure is",
+              "  in base. Advisory there, like the quote cap: the caller trims the",
+              "  returned ladder to it either way."
             ],
             "type": "u64"
           },
@@ -1430,7 +1450,7 @@
         "exactly where it stands without them — the caller's own post-fill checks",
         "still refuse the fill. What honouring them buys is that the honest case",
         "stops reverting. The exclusions are firmer than the budgets: a caller may",
-        "also refuse a response that names an excluded user, while a budget it",
+        "also refuse a response that names an excluded user, while a quote_cap it",
         "cannot reprice is left to those post-fill checks."
       ],
       "type": {

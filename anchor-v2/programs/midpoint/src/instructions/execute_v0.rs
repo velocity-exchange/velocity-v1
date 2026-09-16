@@ -59,7 +59,7 @@ pub fn handle_execute_v0(
                 mid_price: quoter.mid_price,
                 base_size: fill.base,
                 quote_size: fill.quote,
-                market_index: quoter.market_index,
+                configured_market_index: quoter.market_index,
                 sub_account_id: quoter.user_sub_account_id,
                 direction: match args.direction {
                     Direction::Long => 0,

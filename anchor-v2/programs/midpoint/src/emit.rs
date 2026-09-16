@@ -80,7 +80,7 @@ mod tests {
             mid_price: 100_000_000,
             base_size: 11,
             quote_size: 13,
-            market_index: 17,
+            configured_market_index: 17,
             sub_account_id: 19,
             direction: 1,
             version: MIDPOINT_EVENT_VERSION,

@@ -1645,8 +1645,6 @@ dependencies = [
  "bytemuck",
  "litesvm",
  "quoter-spec-v2",
- "serde_json",
- "solana-account",
  "solana-clock",
  "solana-pubkey 3.0.0",
  "static_assertions",

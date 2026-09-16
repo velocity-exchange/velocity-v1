@@ -25,13 +25,15 @@ pub struct UpdateQuoterArgsV0 {
     pub price_tick_size: Option<u64>,
     pub size_step: Option<u64>,
     pub min_quote_size: Option<u64>,
-    /// Attested flow is gated on velocity's live `State.hot_flow_authority`,
-    /// so turning it on takes no local key — and an unassigned role on
-    /// velocity's side silences the book rather than opening it.
+    /// Quote only flow that served a protection window. The claim rides the
+    /// wire as `taker_served_window`, and this program trusts its caller for
+    /// it the way it trusts `users` and `caps`. Turning it on takes no local
+    /// key and reads no velocity account.
     pub require_attested_flow: Option<bool>,
     pub is_paused: Option<bool>,
     /// Max mid deviation from velocity's oracle, parts per million. 0 disables
-    /// the bound.
+    /// the bound, which only the config key can choose. Creation refuses zero,
+    /// so an instance never starts without the band.
     pub max_mid_deviation_ppm: Option<u64>,
     /// New value for the racing-writer sequence counter. Any value is legal,
     /// including a lower one.

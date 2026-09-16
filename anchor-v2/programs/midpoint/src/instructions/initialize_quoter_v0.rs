@@ -51,7 +51,18 @@ pub fn handle_initialize_quoter_v0(
     ctx: &mut Context<InitializeQuoterV0>,
     config: QuoterConfigV0,
 ) -> Result<()> {
-    require!(config.base_precision != 0, MidpointError::InvalidConfig);
+    require!(
+        config.base_precision == crate::state::BASE_PRECISION,
+        MidpointError::InvalidConfig
+    );
+    // A fresh instance must never quote without the oracle-deviation band.
+    // The band is what keeps a compromised hot key from filling the maker at
+    // an off-market mid, and an instance that starts at zero runs unprotected
+    // until a separate call arrives.
+    require!(
+        config.max_mid_deviation_ppm != 0,
+        MidpointError::InvalidConfig
+    );
 
     let quoter = &mut ctx.accounts.quoter;
     quoter.authority = *ctx.accounts.authority.address();
@@ -66,6 +77,7 @@ pub fn handle_initialize_quoter_v0(
     quoter.user_sub_account_id = config.user_sub_account_id;
     quoter.market_index = config.market_index;
     quoter.require_attested_flow = config.require_attested_flow as u8;
+    quoter.max_mid_deviation_ppm = config.max_mid_deviation_ppm;
     // mid/levels start unset: the quoter is live but quotes nothing until
     // the hot key writes a mid and at least one side.
     quoter.validate()

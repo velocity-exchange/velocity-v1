@@ -18,11 +18,22 @@ pub enum MidpointError {
     MathError,
     #[msg("Response exceeds the response buffer")]
     ResponseTooLarge,
-    #[msg("Instructions sysvar account is not the sysvar")]
+    /// @deprecated Nothing raises this any more, and the numeric code stays so
+    /// nothing else claims it.
+    ///
+    /// The protected-flow gate used to read a co-signature off the
+    /// instructions sysvar. It now reads `taker_served_window` off the wire,
+    /// which the caller asserts, so this program takes no sysvar account.
+    #[msg("Deprecated: the protected-flow claim rides the wire, not a sysvar")]
     InvalidInstructionsSysvar,
     // New variants go at the bottom: on-chain clients match error codes by
     // number.
-    #[msg("Velocity state account is not velocity's initialized State")]
+    /// @deprecated Nothing raises this any more, and the numeric code stays so
+    /// nothing else claims it.
+    ///
+    /// The protected-flow gate used to read velocity's `State` account to find
+    /// the flow authority. It reads nothing of velocity's now.
+    #[msg("Deprecated: this program reads no velocity account")]
     InvalidVelocityState,
     #[msg("Post-operation invariant check failed")]
     InvariantViolated,

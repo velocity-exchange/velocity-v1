@@ -26,6 +26,12 @@
 //! account data) and return a [`ResponsePointerV0`] to it. No intermediate
 //! `Vec` is built and no bytes are copied twice.
 
+/// Base units in one whole base asset. Declared by `quoter-spec`, which owns
+/// every shape and scale on this wire, and fixed rather than per instance:
+/// the caller's exact-notional check on a routed fill divides by this
+/// constant, so an instance on any other denominator prices its quotes on one
+/// scale and is settled on another.
+pub use quoter_spec::BASE_PRECISION;
 use {
     crate::error::MidpointError,
     anchor_lang::prelude::*,
@@ -190,7 +196,8 @@ pub struct MidpointQuoterV0 {
     /// Level remainders below this are not quoted. Base precision — a floor
     /// on the *base* size of a rung, despite the name.
     pub min_quote_size: u64,
-    /// Base units per whole unit (velocity perps: 1e9).
+    /// Base units per whole unit. Always [`BASE_PRECISION`]; see there for why
+    /// an instance cannot choose another one.
     pub base_precision: u64,
     /// Sub-account half of the quoted user's identity (`user_authority`
     /// above is the wallet half).
@@ -251,6 +258,15 @@ pub struct QuoterConfigV0 {
     pub size_step: u64,
     pub min_quote_size: u64,
     pub require_attested_flow: bool,
+    /// Max `|mid - reference_price| / reference_price` the instance fills at,
+    /// parts per million. Must be nonzero at creation.
+    ///
+    /// This band is what stops a compromised hot key from filling the maker
+    /// at an off-market mid, so an instance must not start without one. The
+    /// config key can set it to zero later through `update_quoter_v0`, which
+    /// is a maker deciding to run unbounded rather than a maker who never
+    /// learned the field exists.
+    pub max_mid_deviation_ppm: u64,
 }
 
 /// The consumed prefix of one side of the spline for a taker of `size`:
@@ -374,7 +390,7 @@ impl MidpointQuoterV0 {
 
     /// Whether this quoter quotes at all right now — pause, unset mid, and
     /// the staleness gate. Attestation and self-trade gating live with the
-    /// callers (they need the sysvar/taker inputs).
+    /// callers, which read `taker_served_window` and `taker` off the wire.
     pub fn is_quoting(&self, slot: u64) -> bool {
         self.is_paused == 0
             && self.mid_price != 0
@@ -610,7 +626,10 @@ impl MidpointQuoterV0 {
     /// deliberately *not* called from `set_mid_v0`, which is compute-pinned
     /// and cannot touch a rung.
     pub fn validate(&self) -> Result<()> {
-        require!(self.base_precision != 0, MidpointError::InvalidConfig);
+        require!(
+            self.base_precision == BASE_PRECISION,
+            MidpointError::InvalidConfig
+        );
         require!(
             self.is_paused <= 1 && self.require_attested_flow <= 1,
             MidpointError::InvariantViolated

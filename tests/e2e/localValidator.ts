@@ -646,6 +646,11 @@ describe('e2e localnet: programs + publisher + redis', function () {
 							authority: args.authority,
 							quoter,
 							perpMarket,
+							// Designating the book is refused when an approved
+							// quoter's account list already names it, so a book
+							// registration reads the slab. No other type does.
+							quoterSlab:
+								args.quoterType === QuoterType.CLOB ? quoterSlab : null,
 							quoterProgram: args.quoterProgram,
 							user: args.user,
 							rent: SYSVAR_RENT_PUBKEY,
@@ -659,7 +664,16 @@ describe('e2e localnet: programs + publisher + redis', function () {
 						quoteIndexes: Buffer.from(args.quoteIndexes),
 						executeIndexes: Buffer.from(args.executeIndexes),
 					},
-					{ accounts: { authority: args.authority, quoter } }
+					{
+						accounts: {
+							authority: args.authority,
+							quoter,
+							// A book's entry answers to the State admin roles; a
+							// Custom entry answers to its own stored authority and
+							// ignores this.
+							state: statePdaCache,
+						},
+					}
 				),
 				program.instruction.updateQuoterApproved(
 					{ approved: true },
@@ -681,6 +695,13 @@ describe('e2e localnet: programs + publisher + redis', function () {
 								[args.quoterProgram.toBuffer()],
 								BPF_LOADER_UPGRADEABLE_ID
 							)[0],
+							// A book approval asks the book for its own placement
+							// rules, so a slot that would fail every fill is
+							// refused here. No other type reads a book.
+							clobMarket:
+								args.quoterType === QuoterType.CLOB
+									? args.responseAccount
+									: null,
 							systemProgram: SystemProgram.programId,
 						},
 					}
@@ -746,9 +767,9 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		});
 		clobEntry = registration.quoter;
 		await send([
-			// Approval needs the market's slab, and this is the market's first
-			// registration, so create it here. Slot 0 is the book's; the Custom
-			// quoters land on slots 1+.
+			// Registration reads the market's slab and approval writes it, and
+			// this is the market's first registration, so create it here. Slot 0
+			// is the book's; the Custom quoters land on slots 1+.
 			admin.program.instruction.initializeQuoterSlab(
 				{ marketIndex: 0 },
 				{

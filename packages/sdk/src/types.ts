@@ -2402,11 +2402,17 @@ export type SignedMsgOrderParamsMessage = {
 	builderFeeTenthBps?: number | null;
 	/** if set, deposits this amount (spot market token-mint precision) into a new isolated-margin position when placing the order */
 	isolatedPositionDeposit?: BN | null;
-	/** which cluster this message is for — `SignedMsgNetwork.MAINNET`/`DEVNET`. The signature covers the order, not the chain, so without it a devnet order replays verbatim on mainnet; the program rejects a mismatch. Omitted = the pre-tag encoding (still accepted). */
-	network?: number | null;
+	/** which cluster this message is for — `SignedMsgNetwork.MAINNET`/`DEVNET`. Required: the signature covers the order, not the chain, so an untagged message replays verbatim from one cluster to the other. The program refuses a message that carries no tag as well as one that names the other cluster. `VelocityClient` fills it from its own `env`. */
+	network: number;
 	/** the route the taker signs for: `QuoterV0` entry keys of the **custom** quoters (PropAMMs) to use. The CLOB and vAMM are every router fill's mandatory baseline, so they are implicit and never listed. Advisory on-chain; swift forwards it to keepers. */
 	route?: PublicKey[] | null;
 };
+
+/** A `SignedMsgOrderParamsMessage` as a caller hands it to `VelocityClient`: the network tag may be left out, and the client stamps its own cluster on it. */
+export type SignedMsgOrderParamsMessageInput = Omit<
+	SignedMsgOrderParamsMessage,
+	'network'
+> & { network?: number };
 
 /** Network tag on a signed-msg order (`SignedMsgOrderParamsMessage.network`). */
 export const SignedMsgNetwork = {
@@ -2429,10 +2435,16 @@ export type SignedMsgOrderParamsDelegateMessage = {
 	builderFeeTenthBps?: number | null;
 	isolatedPositionDeposit?: BN | null;
 	/** see `SignedMsgOrderParamsMessage.network` */
-	network?: number | null;
+	network: number;
 	/** see `SignedMsgOrderParamsMessage.route` */
 	route?: PublicKey[] | null;
 };
+
+/** A `SignedMsgOrderParamsDelegateMessage` as a caller hands it to `VelocityClient`; see `SignedMsgOrderParamsMessageInput`. */
+export type SignedMsgOrderParamsDelegateMessageInput = Omit<
+	SignedMsgOrderParamsDelegateMessage,
+	'network'
+> & { network?: number };
 
 /** A bracket take-profit/stop-loss order attached to a signed-msg order message. */
 export type SignedMsgTriggerOrderParams = {

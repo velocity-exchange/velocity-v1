@@ -23,6 +23,7 @@ import {
 	getLimitOrderParams,
 	OracleSource,
 	BulkAccountLoader,
+	SignedMsgNetwork,
 	SignedMsgOrderParamsMessage,
 	loadKeypair,
 	getMarketOrderParams,
@@ -216,6 +217,7 @@ describe('place and make signedMsg order', () => {
 		});
 		const uuid = Uint8Array.from(Buffer.from(nanoid(8)));
 		const takerOrderParamsMessage: SignedMsgOrderParamsMessage = {
+			network: SignedMsgNetwork.DEVNET,
 			signedMsgOrderParams: takerOrderParams,
 			subAccountId: 0,
 			slot: new BN(await connection.getSlot()),
@@ -339,6 +341,7 @@ describe('place and make signedMsg order', () => {
 		});
 		const uuid = Uint8Array.from(Buffer.from(nanoid(8)));
 		const takerOrderParamsMessage: SignedMsgOrderParamsMessage = {
+			network: SignedMsgNetwork.DEVNET,
 			signedMsgOrderParams: takerOrderParams,
 			subAccountId: 0,
 			slot: new BN(await connection.getSlot()),
@@ -472,6 +475,7 @@ describe('place and make signedMsg order', () => {
 		});
 		const uuid = Uint8Array.from(Buffer.from(nanoid(8)));
 		const takerOrderParamsMessage: SignedMsgOrderParamsMessage = {
+			network: SignedMsgNetwork.DEVNET,
 			signedMsgOrderParams: takerOrderParams,
 			subAccountId: 0,
 			slot: new BN(await connection.getSlot()),
@@ -599,6 +603,7 @@ describe('place and make signedMsg order', () => {
 		});
 		const uuid = Uint8Array.from(Buffer.from(nanoid(8)));
 		const takerOrderParamsMessage: SignedMsgOrderParamsMessage = {
+			network: SignedMsgNetwork.DEVNET,
 			signedMsgOrderParams: takerOrderParams,
 			subAccountId: 0,
 			slot: new BN((await connection.getSlot()) + 2),
@@ -729,6 +734,7 @@ describe('place and make signedMsg order', () => {
 		});
 		const uuid = Uint8Array.from(Buffer.from(nanoid(8)));
 		const takerOrderParamsMessage: SignedMsgOrderParamsMessage = {
+			network: SignedMsgNetwork.DEVNET,
 			signedMsgOrderParams: takerOrderParams,
 			subAccountId: 0,
 			slot: new BN((await connection.getSlot()) - 1),

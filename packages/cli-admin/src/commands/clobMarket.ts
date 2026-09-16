@@ -501,6 +501,10 @@ export function registerClobMarket(parent: Command): void {
 							authority: wallet,
 							quoter: quoterPda,
 							perpMarket,
+							// Designating the book is refused when an approved quoter's
+							// account list already names it, so registration reads the
+							// slab as well.
+							quoterSlab,
 							quoterProgram: clobProgram,
 							user: quoterUser,
 							rent: SYSVAR_RENT_PUBKEY,
@@ -521,11 +525,20 @@ export function registerClobMarket(parent: Command): void {
 							quoteIndexes: Buffer.from([0]),
 							executeIndexes: Buffer.from([0, 1]),
 						},
-						{ accounts: { authority: wallet, quoter: quoterPda } }
+						{
+							accounts: {
+								authority: wallet,
+								quoter: quoterPda,
+								// A book's entry answers to the State admin roles, not to
+								// the key that registered it.
+								state: await client.getStatePublicKey(),
+							},
+						}
 					);
-				// Approval copies the staging config into the market's slab, so
-				// the slab has to exist first. It is permissionless and shared by
-				// every quoter on the market, so create it only when missing.
+				// Registration reads the slab and approval writes it, so the slab
+				// has to exist before either. It is permissionless and shared by
+				// every quoter on the market, so create it only when missing. The
+				// creation leads the transaction below.
 				const slabIxs = (await provider.connection.getAccountInfo(quoterSlab))
 					? []
 					: [
@@ -561,6 +574,9 @@ export function registerClobMarket(parent: Command): void {
 							quoterSlab,
 							quoterProgram: clobProgram,
 							quoterProgramData: clobProgramData,
+							// Approval asks the book for its own placement rules, so a
+							// slot that would fail every fill is refused here.
+							clobMarket: book.publicKey,
 							// Approval right-sizes the slab account.
 							systemProgram: SystemProgram.programId,
 						},

@@ -3310,7 +3310,7 @@ pub mod types {
         Debug,
         PartialEq,
     )]
-    pub struct AcceleratedReferralStatusChangedRecord {
+    pub struct AcceleratedReferralStatusChangedRecordV0 {
         pub ts: i64,
         pub authority: Pubkey,
         pub previous_status: u8,
@@ -13855,6 +13855,7 @@ pub mod accounts {
         pub quoter: Pubkey,
         pub perp_market: Pubkey,
         pub state: Pubkey,
+        pub quoter_slab: Pubkey,
         pub quoter_program: Pubkey,
         pub user: Pubkey,
         pub rent: Pubkey,
@@ -13898,6 +13899,11 @@ pub mod accounts {
                 },
                 AccountMeta {
                     pubkey: self.state,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.quoter_slab,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -27510,6 +27516,7 @@ pub mod accounts {
     pub struct UpdateQuoterAccounts {
         pub authority: Pubkey,
         pub quoter: Pubkey,
+        pub state: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for UpdateQuoterAccounts {
@@ -27536,6 +27543,11 @@ pub mod accounts {
                     pubkey: self.quoter,
                     is_signer: false,
                     is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
+                    is_writable: false,
                 },
             ]
         }
@@ -27575,6 +27587,7 @@ pub mod accounts {
         pub authority: Pubkey,
         pub quoter: Pubkey,
         pub quoter_slab: Pubkey,
+        pub state: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for UpdateQuoterActive {
@@ -27606,6 +27619,11 @@ pub mod accounts {
                     pubkey: self.quoter_slab,
                     is_signer: false,
                     is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
+                    is_writable: false,
                 },
             ]
         }
@@ -27649,6 +27667,7 @@ pub mod accounts {
         pub quoter_slab: Pubkey,
         pub quoter_program: Pubkey,
         pub quoter_program_data: Pubkey,
+        pub clob_market: Pubkey,
         pub system_program: Pubkey,
     }
     #[automatically_derived]
@@ -27703,6 +27722,11 @@ pub mod accounts {
                     is_writable: false,
                 },
                 AccountMeta {
+                    pubkey: self.clob_market,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
                     pubkey: self.system_program,
                     is_signer: false,
                     is_writable: false,
@@ -27744,6 +27768,7 @@ pub mod accounts {
     pub struct UpdateQuoterConfig {
         pub authority: Pubkey,
         pub quoter: Pubkey,
+        pub state: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for UpdateQuoterConfig {
@@ -27770,6 +27795,11 @@ pub mod accounts {
                     pubkey: self.quoter,
                     is_signer: false,
                     is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
+                    is_writable: false,
                 },
             ]
         }
@@ -27955,6 +27985,7 @@ pub mod accounts {
         pub authority: Pubkey,
         pub quoter: Pubkey,
         pub watch_account: Pubkey,
+        pub state: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for UpdateQuoterWatch {
@@ -27984,6 +28015,11 @@ pub mod accounts {
                 },
                 AccountMeta {
                     pubkey: self.watch_account,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.state,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -33248,7 +33284,7 @@ pub mod events {
     use super::{types::*, *};
     #[derive(Clone, Debug, PartialEq, Default)]
     #[event]
-    pub struct AcceleratedReferralStatusChangedRecord {
+    pub struct AcceleratedReferralStatusChangedRecordV0 {
         pub ts: i64,
         pub authority: Pubkey,
         pub previous_status: u8,

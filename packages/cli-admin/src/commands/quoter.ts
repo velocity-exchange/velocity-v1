@@ -48,6 +48,13 @@ function parseQuoterType(value: string): QuoterType {
 	}
 }
 
+/** Whether a fetched entry (or a parsed `--type`) is the market's book. */
+function isClobEntry(quoterType: unknown): boolean {
+	return Boolean(
+		quoterType && 'clob' in (quoterType as Record<string, unknown>)
+	);
+}
+
 /** Parse a comma-separated list of indexes into the unified account list. */
 function parseIndexList(value: string): number[] {
 	if (value.trim() === '') return [];
@@ -175,10 +182,11 @@ export function registerQuoter(parent: Command): void {
 					quoterProgram,
 					user
 				);
+				const quoterType = parseQuoterType(flags.type);
 				const ix = client.program.instruction.initializeQuoter(
 					{
 						marketIndex,
-						quoterType: parseQuoterType(flags.type),
+						quoterType,
 						responseAccount: new PublicKey(responseAccountArg),
 						quoteV0Discriminator: parseDiscriminator(quoteDisc),
 						quoteL3V0Discriminator: flags.l3Disc
@@ -196,6 +204,12 @@ export function registerQuoter(parent: Command): void {
 								client.program.programId,
 								marketIndex
 							),
+							// Designating the book is refused when an approved quoter's
+							// account list already names it, so a book registration
+							// reads the slab. No other type does.
+							quoterSlab: isClobEntry(quoterType)
+								? getQuoterSlabPublicKey(client.program.programId, marketIndex)
+								: null,
 							quoterProgram,
 							user,
 							rent: SYSVAR_RENT_PUBKEY,
@@ -312,6 +326,10 @@ export function registerQuoter(parent: Command): void {
 								? new PublicKey(flags.authority)
 								: provider.wallet.publicKey,
 							quoter: new PublicKey(quoterArg),
+							// A book's entry answers to the State admin roles rather
+							// than to the key that registered it. A Custom entry
+							// answers to its own stored authority and ignores this.
+							state: await client.getStatePublicKey(),
 						},
 					}
 				);
@@ -400,6 +418,10 @@ export function registerQuoter(parent: Command): void {
 								? new PublicKey(flags.authority)
 								: provider.wallet.publicKey,
 							quoter: new PublicKey(quoterArg),
+							// A book's entry answers to the State admin roles rather
+							// than to the key that registered it. A Custom entry
+							// answers to its own stored authority and ignores this.
+							state: await client.getStatePublicKey(),
 						},
 					}
 				);
@@ -457,6 +479,10 @@ export function registerQuoter(parent: Command): void {
 								provider.connection,
 								quoterKey
 							),
+							// A book's entry answers to the State admin roles rather
+							// than to the key that registered it. A Custom entry
+							// answers to its own stored authority and ignores this.
+							state: await client.getStatePublicKey(),
 						},
 					}
 				);
@@ -532,6 +558,13 @@ export function registerQuoter(parent: Command): void {
 							),
 							quoterProgram,
 							quoterProgramData: on ? programData : null,
+							// A book approval asks the book for its own placement
+							// rules, so a slot that would fail every fill is refused
+							// rather than approved. No other type reads a book.
+							clobMarket:
+								on && isClobEntry(entry.config.quoterType)
+									? new PublicKey(entry.config.responseAccount)
+									: null,
 							// Approval right-sizes the slab account.
 							systemProgram: SystemProgram.programId,
 						},
@@ -771,6 +804,10 @@ export function registerQuoter(parent: Command): void {
 							watchAccount: flags.watchAccount
 								? new PublicKey(flags.watchAccount)
 								: PublicKey.default,
+							// A book's entry answers to the State admin roles rather
+							// than to the key that registered it. A Custom entry
+							// answers to its own stored authority and ignores this.
+							state: await client.getStatePublicKey(),
 						},
 					}
 				);

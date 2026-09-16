@@ -2031,6 +2031,7 @@ mod tests {
         std::collections::HashMap,
         velocity_rs::{
             program::math::time::SlotDuration,
+            swift_order_subscriber::expected_network_tag,
             types::{
                 accounts::User, SignedMsgOrderParamsDelegateMessage, SignedMsgOrderParamsMessage,
                 SignedMsgTriggerOrderParams,
@@ -2295,7 +2296,7 @@ mod tests {
             builder_fee_tenth_bps: None,
             builder_idx: None,
             isolated_position_deposit: None,
-            network: None,
+            network: Some(expected_network_tag()),
             route: None,
         });
         let msg = IncomingSignedMessage {
@@ -2335,7 +2336,7 @@ mod tests {
             builder_fee_tenth_bps: None,
             builder_idx: None,
             isolated_position_deposit: None,
-            network: None,
+            network: Some(expected_network_tag()),
             route: None,
         });
         let msg = IncomingSignedMessage {
@@ -2373,7 +2374,7 @@ mod tests {
             builder_fee_tenth_bps: None,
             builder_idx: None,
             isolated_position_deposit: None,
-            network: None,
+            network: Some(expected_network_tag()),
             route: None,
         });
 
@@ -2412,7 +2413,7 @@ mod tests {
             builder_fee_tenth_bps: None,
             builder_idx: None,
             isolated_position_deposit: None,
-            network: None,
+            network: Some(expected_network_tag()),
             route: None,
         });
 
@@ -2455,7 +2456,7 @@ mod tests {
             builder_fee_tenth_bps: None,
             builder_idx: None,
             isolated_position_deposit: None,
-            network: None,
+            network: Some(expected_network_tag()),
             route: None,
         });
 
@@ -2496,7 +2497,7 @@ mod tests {
             builder_fee_tenth_bps: None,
             builder_idx: None,
             isolated_position_deposit: None,
-            network: None,
+            network: Some(expected_network_tag()),
             route: None,
         });
 
@@ -2538,7 +2539,7 @@ mod tests {
             builder_fee_tenth_bps: None,
             builder_idx: None,
             isolated_position_deposit: None,
-            network: None,
+            network: Some(expected_network_tag()),
             route: None,
         });
 
@@ -2583,7 +2584,7 @@ mod tests {
             builder_fee_tenth_bps: None,
             builder_idx: None,
             isolated_position_deposit: None,
-            network: None,
+            network: Some(expected_network_tag()),
             route: None,
         });
         assert!(!is_isolated_deposit(&delegated_msg));
@@ -2615,7 +2616,7 @@ mod tests {
             builder_fee_tenth_bps: None,
             builder_idx: None,
             isolated_position_deposit: Some(0),
-            network: None,
+            network: Some(expected_network_tag()),
             route: None,
         });
         assert!(!is_isolated_deposit(&delegated_msg));
@@ -2650,7 +2651,7 @@ mod tests {
             builder_fee_tenth_bps: None,
             builder_idx: None,
             isolated_position_deposit: Some(100_000_000), // 0.1 SOL
-            network: None,
+            network: Some(expected_network_tag()),
             route: None,
         });
         assert!(is_isolated_deposit(&delegated_msg));
@@ -2682,7 +2683,7 @@ mod tests {
             builder_fee_tenth_bps: None,
             builder_idx: None,
             isolated_position_deposit: None,
-            network: None,
+            network: Some(expected_network_tag()),
             route: None,
         });
         assert!(!is_isolated_deposit(&authority_msg));
@@ -2714,7 +2715,7 @@ mod tests {
             builder_fee_tenth_bps: None,
             builder_idx: None,
             isolated_position_deposit: Some(50_000_000), // 0.05 SOL
-            network: None,
+            network: Some(expected_network_tag()),
             route: None,
         });
         assert!(is_isolated_deposit(&authority_msg));

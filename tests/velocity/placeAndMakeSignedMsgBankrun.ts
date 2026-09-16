@@ -25,6 +25,7 @@ import {
 	getLimitOrderParams,
 	OracleSource,
 	OrderTriggerCondition,
+	SignedMsgNetwork,
 	SignedMsgOrderParamsMessage,
 	MarketType,
 	getMarketOrderParams,
@@ -263,6 +264,7 @@ describe.skip('place and make signedMsg order', () => {
 
 		// Should fail if we try first without encoding properly
 		const takerOrderParamsMessage: SignedMsgOrderParamsDelegateMessage = {
+			network: SignedMsgNetwork.DEVNET,
 			signedMsgOrderParams: takerOrderParams,
 			takerPubkey: await takerVelocityClient.getUserAccountPublicKey(),
 			slot,
@@ -395,6 +397,7 @@ describe.skip('place and make signedMsg order', () => {
 		const uuid = nanoid(8);
 		const signedMsgSlot = slot.subn(15);
 		const takerOrderParamsMessage: SignedMsgOrderParamsMessage = {
+			network: SignedMsgNetwork.DEVNET,
 			signedMsgOrderParams: takerOrderParams,
 			subAccountId: 0,
 			uuid: Uint8Array.from(Buffer.from(uuid)),
@@ -591,6 +594,7 @@ describe.skip('place and make signedMsg order', () => {
 		const uuid = nanoid(8);
 		const signedMsgSlot = slot.subn(50);
 		const takerOrderParamsMessage: SignedMsgOrderParamsMessage = {
+			network: SignedMsgNetwork.DEVNET,
 			signedMsgOrderParams: takerOrderParams,
 			subAccountId: 0,
 			uuid: Uint8Array.from(Buffer.from(uuid)),
@@ -731,6 +735,7 @@ describe.skip('place and make signedMsg order', () => {
 
 		const uuid = Uint8Array.from(Buffer.from(nanoid(8)));
 		const takerOrderParamsMessage: SignedMsgOrderParamsMessage = {
+			network: SignedMsgNetwork.DEVNET,
 			signedMsgOrderParams: takerOrderParams,
 			subAccountId: 0,
 			slot,
@@ -806,6 +811,7 @@ describe.skip('place and make signedMsg order', () => {
 		const signedMsgSlot = slot.addn(35);
 		const uuid = Uint8Array.from(Buffer.from(nanoid(8)));
 		const takerOrderParamsMessage: SignedMsgOrderParamsMessage = {
+			network: SignedMsgNetwork.DEVNET,
 			signedMsgOrderParams: takerOrderParams,
 			subAccountId: 0,
 			slot: signedMsgSlot,
@@ -873,6 +879,7 @@ describe.skip('place and make signedMsg order', () => {
 		// 100 baseline slots = 40s, past the program's 30s lead bound for a resting limit.
 		const uuid = Uint8Array.from(Buffer.from(nanoid(8)));
 		const takerOrderParamsMessage: SignedMsgOrderParamsMessage = {
+			network: SignedMsgNetwork.DEVNET,
 			signedMsgOrderParams: takerOrderParams,
 			subAccountId: 0,
 			slot: slot.addn(100),
@@ -951,6 +958,7 @@ describe.skip('place and make signedMsg order', () => {
 		// message slot, so the program still refuses to place it before then.
 		const uuid = Uint8Array.from(Buffer.from(nanoid(8)));
 		const takerOrderParamsMessage: SignedMsgOrderParamsMessage = {
+			network: SignedMsgNetwork.DEVNET,
 			signedMsgOrderParams: takerOrderParams,
 			subAccountId: 0,
 			slot: slot.addn(7),
@@ -1027,6 +1035,7 @@ describe.skip('place and make signedMsg order', () => {
 		const signedMsgSlot = slot.subn(5);
 		const uuid = Uint8Array.from(Buffer.from(nanoid(8)));
 		const takerOrderParamsMessage: SignedMsgOrderParamsMessage = {
+			network: SignedMsgNetwork.DEVNET,
 			signedMsgOrderParams: takerOrderParams,
 			subAccountId: 0,
 			slot: signedMsgSlot,
@@ -1119,6 +1128,7 @@ describe.skip('place and make signedMsg order', () => {
 		const signedMsgSlot = slot.subn(5);
 		const uuid = Uint8Array.from(Buffer.from(nanoid(8)));
 		const takerOrderParamsMessage: SignedMsgOrderParamsMessage = {
+			network: SignedMsgNetwork.DEVNET,
 			signedMsgOrderParams: takerOrderParams,
 			subAccountId: 0,
 			slot: signedMsgSlot,
@@ -1177,6 +1187,7 @@ describe.skip('place and make signedMsg order', () => {
 			marketType: MarketType.PERP,
 		}) as OrderParams;
 		const takerOrderParamsMessage: SignedMsgOrderParamsMessage = {
+			network: SignedMsgNetwork.DEVNET,
 			signedMsgOrderParams: takerOrderParams,
 			subAccountId: 0,
 			slot,
@@ -1243,6 +1254,7 @@ describe.skip('place and make signedMsg order', () => {
 			marketType: MarketType.PERP,
 		}) as OrderParams;
 		const takerOrderParamsMessage: SignedMsgOrderParamsMessage = {
+			network: SignedMsgNetwork.DEVNET,
 			signedMsgOrderParams: takerOrderParams,
 			subAccountId: 0,
 			slot,
@@ -1332,6 +1344,7 @@ describe.skip('place and make signedMsg order', () => {
 			marketType: MarketType.PERP,
 		}) as OrderParams;
 		const takerOrderParamsMessage: SignedMsgOrderParamsMessage = {
+			network: SignedMsgNetwork.DEVNET,
 			signedMsgOrderParams: takerOrderParams,
 			subAccountId: 0,
 			slot,
@@ -1410,6 +1423,7 @@ describe.skip('place and make signedMsg order', () => {
 
 		// Should fail if we try first without encoding properly
 		const takerOrderParamsMessage: SignedMsgOrderParamsDelegateMessage = {
+			network: SignedMsgNetwork.DEVNET,
 			signedMsgOrderParams: takerOrderParams,
 			takerPubkey: await takerVelocityClient.getUserAccountPublicKey(),
 			slot,

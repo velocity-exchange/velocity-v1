@@ -3,6 +3,7 @@ import {
 	isVariant,
 	OracleSource,
 	PerpMarketAccount,
+	SignedMsgNetwork,
 	SpotMarketAccount,
 } from './types';
 import {
@@ -30,6 +31,18 @@ export type VelocityEnv = 'devnet' | 'mainnet-beta';
 
 /** Widened env type accepted by `initialize()`; `'master'` is a legacy alias for `'devnet'`. */
 export type LegacyVelocityEnv = VelocityEnv | 'master';
+
+/**
+ * The network tag a signed-msg order must carry for `env` (`SignedMsgOrderParamsMessage.network`).
+ * The program compares it against the cluster its own build targets, and refuses a message that
+ * names the other cluster as well as one that names none. The tag is therefore a fact about the
+ * deployment rather than about the order, which is why `VelocityClient` fills it in from `env`.
+ */
+export function signedMsgNetworkForEnv(env: VelocityEnv): number {
+	return env === 'mainnet-beta'
+		? SignedMsgNetwork.MAINNET
+		: SignedMsgNetwork.DEVNET;
+}
 
 /** Per-environment addresses, program ids, and default market lists returned by `getConfig()`/`initialize()`. */
 export interface VelocityConfig {

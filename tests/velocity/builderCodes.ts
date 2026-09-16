@@ -37,6 +37,7 @@ import {
 	getTokenAmount,
 	RevenueShareSettleRecord,
 	getLimitOrderParams,
+	SignedMsgNetwork,
 	SignedMsgOrderParamsMessage,
 	QUOTE_PRECISION,
 	SettlePnlMode,
@@ -102,6 +103,7 @@ function buildMsg(
 		builderFeeTenthBps: feeBps,
 		takeProfitOrderParams: null,
 		stopLossOrderParams: null,
+		network: SignedMsgNetwork.DEVNET,
 	} as SignedMsgOrderParamsMessage;
 }
 
@@ -624,6 +626,7 @@ describe('builder codes', () => {
 		assert(userOrders.length === 0);
 
 		const takerOrderParamsMessage: SignedMsgOrderParamsMessage = {
+			network: SignedMsgNetwork.DEVNET,
 			signedMsgOrderParams: takerOrderParams,
 			subAccountId: 0,
 			slot,
@@ -789,6 +792,7 @@ describe('builder codes', () => {
 
 		const builderFeeBps = 7 * 10;
 		const takerOrderParamsMessage: SignedMsgOrderParamsMessage = {
+			network: SignedMsgNetwork.DEVNET,
 			signedMsgOrderParams: takerOrderParams,
 			subAccountId: 0,
 			slot,
@@ -1093,6 +1097,7 @@ describe('builder codes', () => {
 		const uuid = Uint8Array.from(Buffer.from(nanoid(8)));
 		const builderFeeBps = 5;
 		const msg: SignedMsgOrderParamsMessage = {
+			network: SignedMsgNetwork.DEVNET,
 			signedMsgOrderParams: orderParams,
 			subAccountId: 0,
 			slot,

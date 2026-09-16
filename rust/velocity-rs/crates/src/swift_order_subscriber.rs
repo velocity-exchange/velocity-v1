@@ -23,6 +23,17 @@ use crate::{
     VelocityClient, Wallet,
 };
 
+/// The network tag every signed order must carry, for the program build this
+/// crate links against (`SignedMsgOrderParamsMessage::network`).
+///
+/// A signature covers the order and not the chain it was meant for. The
+/// program therefore refuses an order that names the other cluster, and one
+/// that names no cluster at all, because an untagged order replays either
+/// way. Every producer stamps this value.
+pub const fn expected_network_tag() -> u8 {
+    program::state::order_params::expected_signed_msg_network()
+}
+
 /// Swift message discriminator (Anchor)
 ///
 /// sha256("global:SignedMsgOrderParamsMessage")[..8]
@@ -86,8 +97,10 @@ impl SignedOrderType {
     pub fn is_delegated(&self) -> bool {
         matches!(self, Self::Delegated { .. })
     }
-    /// Cluster the taker signed for (`b'm'`/`b'd'`), if tagged. The program
-    /// rejects a mismatch — see `SignedMsgOrderParamsMessage::network`.
+    /// Cluster the taker signed for (`b'm'`/`b'd'`). The program refuses an
+    /// order that names the other cluster, and one that names none. `None`
+    /// therefore describes a message the program will reject. See
+    /// [`expected_network_tag`].
     pub fn network(&self) -> Option<u8> {
         match self {
             Self::Authority { inner, .. } => inner.network,
@@ -736,7 +749,7 @@ mod tests {
             builder_idx: None,
             builder_fee_tenth_bps: None,
             isolated_position_deposit: None,
-            network: None,
+            network: Some(expected_network_tag()),
             route: None,
         }
     }
@@ -927,7 +940,7 @@ mod tests {
             builder_idx: None,
             builder_fee_tenth_bps: None,
             isolated_position_deposit: None,
-            network: None,
+            network: Some(expected_network_tag()),
             route: None,
         };
         let order_message_raw =

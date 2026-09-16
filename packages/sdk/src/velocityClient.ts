@@ -66,6 +66,7 @@ import {
 	StateAccount,
 	SwapReduceOnly,
 	SignedMsgOrderParamsMessage,
+	SignedMsgOrderParamsMessageInput,
 	TxParams,
 	UserAccount,
 	ForceCancelClobRefV0,
@@ -76,6 +77,7 @@ import {
 	CancelOrdersV1Params,
 	UserStatsAccount,
 	SignedMsgOrderParamsDelegateMessage,
+	SignedMsgOrderParamsDelegateMessageInput,
 	TokenProgramFlag,
 	PostOnlyParams,
 	LPPoolAccount,
@@ -259,6 +261,7 @@ import { UserSubscriptionConfig } from './userConfig';
 import {
 	configs,
 	DEFAULT_CONFIRMATION_OPTS,
+	signedMsgNetworkForEnv,
 	VelocityEnv,
 	VelocityProgram,
 	PYTH_LAZER_STORAGE_ACCOUNT_KEY,
@@ -9617,8 +9620,8 @@ export class VelocityClient {
 	 */
 	public signSignedMsgOrderParamsMessage(
 		orderParamsMessage:
-			| SignedMsgOrderParamsMessage
-			| SignedMsgOrderParamsDelegateMessage,
+			| SignedMsgOrderParamsMessageInput
+			| SignedMsgOrderParamsDelegateMessageInput,
 		delegateSigner?: boolean
 	): SignedMsgOrderParams {
 		const borshBuf = this.encodeSignedMsgOrderParamsMessage(
@@ -9644,8 +9647,8 @@ export class VelocityClient {
 	public buildDepositAndPlaceSignedMsgOrderRequest(
 		depositTx: VersionedTransaction,
 		orderParamsMessage:
-			| SignedMsgOrderParamsMessage
-			| SignedMsgOrderParamsDelegateMessage,
+			| SignedMsgOrderParamsMessageInput
+			| SignedMsgOrderParamsDelegateMessageInput,
 		delegateSigner?: boolean
 	): {
 		deposit_tx: Buffer;
@@ -9678,15 +9681,34 @@ export class VelocityClient {
 	 */
 	public encodeSignedMsgOrderParamsMessage(
 		orderParamsMessage:
-			| SignedMsgOrderParamsMessage
-			| SignedMsgOrderParamsDelegateMessage,
+			| SignedMsgOrderParamsMessageInput
+			| SignedMsgOrderParamsDelegateMessageInput,
 		delegateSigner?: boolean
 	): Buffer {
 		return VelocityCore.signedMsg.encodeSignedMsgOrderParamsMessage({
 			coderTypes: this.program.coder.types as any,
-			orderParamsMessage,
+			orderParamsMessage: this.withSignedMsgNetwork(orderParamsMessage),
 			delegateSigner,
 		});
+	}
+
+	/**
+	 * Stamps this client's own cluster on a signed-msg message that does not name one.
+	 * The program refuses an untagged message, because a signature covers the order and not
+	 * the chain, so an untagged order replays from one cluster to the other. A message that
+	 * already names a cluster is left alone.
+	 * @param orderParamsMessage - The message to tag.
+	 * @returns The same message with `network` set.
+	 */
+	private withSignedMsgNetwork(
+		orderParamsMessage:
+			| SignedMsgOrderParamsMessageInput
+			| SignedMsgOrderParamsDelegateMessageInput
+	): SignedMsgOrderParamsMessage | SignedMsgOrderParamsDelegateMessage {
+		return {
+			...orderParamsMessage,
+			network: orderParamsMessage.network ?? signedMsgNetworkForEnv(this.env),
+		} as SignedMsgOrderParamsMessage | SignedMsgOrderParamsDelegateMessage;
 	}
 
 	/**

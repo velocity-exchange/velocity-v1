@@ -401,6 +401,10 @@ fn register_clob_quoter(
     market: Pubkey,
 ) -> Pubkey {
     let quoter = quoter_pda(0, &clob_id(), &user);
+    // Registration reads the market's slab and approval writes it, so the slab
+    // comes first. Born at one slot; approval grows it by exactly the slot each
+    // quoter needs.
+    create_quoter_slab(svm, admin, 0);
     let ix = Instruction {
         program_id: velocity_id(),
         accounts: velocity::accounts::InitializeQuoter {
@@ -409,6 +413,9 @@ fn register_clob_quoter(
             authority: admin.pubkey(),
             quoter,
             perp_market: perp_market_pda(0),
+            // A book designation is refused when an approved quoter's account
+            // list already names the book, so registration reads the slab.
+            quoter_slab: Some(quoter_slab_pda(0)),
             quoter_program: clob_id(),
             user,
             rent: "SysvarRent111111111111111111111111111111111"
@@ -437,6 +444,8 @@ fn register_clob_quoter(
         accounts: velocity::accounts::UpdateQuoterAccounts {
             authority: admin.pubkey(),
             quoter,
+            // A book's entry answers to the State admin roles.
+            state: Some(state_pda()),
         }
         .to_account_metas(None),
         data: velocity::instruction::UpdateQuoterAccounts {
@@ -458,10 +467,8 @@ fn register_clob_quoter(
         .data(),
     };
     send(svm, admin, ix, &[]).unwrap();
-    // Approval copies the staged config into the market's slab, which fills
-    // read; the slab must exist first. Born at one slot; approval grows it by
-    // exactly the slot each quoter needs.
-    create_quoter_slab(svm, admin, 0);
+    // Approval copies the staged config into the market's slab, which is the
+    // copy fills read.
     let ix = Instruction {
         program_id: velocity_id(),
         accounts: velocity::accounts::UpdateQuoterApproved {
@@ -472,6 +479,8 @@ fn register_clob_quoter(
             quoter_slab: quoter_slab_pda(0),
             quoter_program: clob_id(),
             quoter_program_data: Some(program_data_pda(&clob_id())),
+            // A book approval asks the book for its own placement rules.
+            clob_market: Some(market),
             system_program: "11111111111111111111111111111111".parse().unwrap(),
         }
         .to_account_metas(None),
@@ -1902,6 +1911,8 @@ fn a_maker_cancels_off_a_suspended_book() {
             quoter_slab: fixture.quoter_slab,
             quoter_program: clob_id(),
             quoter_program_data: Some(program_data_pda(&clob_id())),
+            // A revocation reads no book.
+            clob_market: None,
             system_program: "11111111111111111111111111111111".parse().unwrap(),
         }
         .to_account_metas(None),
@@ -5645,6 +5656,7 @@ fn setup_midpoint_maker_with_flow(
             authority: authority.pubkey(),
             quoter: entry,
             perp_market: perp_market_pda(0),
+            quoter_slab: None,
             quoter_program: midpoint_id(),
             user,
             rent: "SysvarRent111111111111111111111111111111111"
@@ -5676,6 +5688,8 @@ fn setup_midpoint_maker_with_flow(
         accounts: velocity::accounts::UpdateQuoterAccounts {
             authority: authority.pubkey(),
             quoter: entry,
+            // A Custom entry answers to its own stored authority.
+            state: None,
         }
         .to_account_metas(None),
         data: velocity::instruction::UpdateQuoterAccounts {
@@ -5707,6 +5721,7 @@ fn setup_midpoint_maker_with_flow(
             quoter_slab: fixture.quoter_slab,
             quoter_program: midpoint_id(),
             quoter_program_data: Some(program_data_pda(&midpoint_id())),
+            clob_market: None,
             system_program: "11111111111111111111111111111111".parse().unwrap(),
         }
         .to_account_metas(None),
@@ -6036,6 +6051,7 @@ fn declare_midpoint_watch(fixture: &mut Fixture, maker: &MidpointMaker) {
             authority: maker.authority.pubkey(),
             quoter: maker.entry,
             watch_account: maker.instance,
+            state: None,
         }
         .to_account_metas(None),
         data: velocity::instruction::UpdateQuoterWatch {
@@ -6072,6 +6088,7 @@ fn declare_midpoint_watch(fixture: &mut Fixture, maker: &MidpointMaker) {
             quoter_slab: fixture.quoter_slab,
             quoter_program: midpoint_id(),
             quoter_program_data: Some(program_data_pda(&midpoint_id())),
+            clob_market: None,
             system_program: "11111111111111111111111111111111".parse().unwrap(),
         }
         .to_account_metas(None),

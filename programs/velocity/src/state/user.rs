@@ -630,17 +630,25 @@ impl User {
         }
     }
 
-    /// How many of this market's open perp orders live on a CLOB instead of
-    /// in [`Self::orders`].
+    /// How many of this market's open perp orders rest on a CLOB instead of
+    /// on the DLOB.
     ///
-    /// A plain CLOB placement reserves the position's `open_orders` slot and
-    /// writes no `Order` row — only a *triggered* order keeps a shadow row
-    /// (see [`OrderBitFlag::PlacedOnClob`]), and that row is counted once, by
-    /// the row itself. So the position's count minus its listed open rows is
-    /// exactly the book-resident count. This is the only record velocity
-    /// keeps of a plain CLOB order: the order ids themselves live on the book
-    /// (u64 there, u32 here), so anything that must not mistake a resting
-    /// book order for a gone one asks this instead of scanning `orders`.
+    /// Two kinds of order rest on a book. A plain CLOB placement reserves the
+    /// position's `open_orders` slot and writes no `Order` row. A fired
+    /// trigger order keeps its `Order` row `Open` and marks it with
+    /// [`OrderBitFlag::PlacedOnClob`], and its book reservation reuses the
+    /// `open_orders` slot that row already holds. Both kinds reserve book
+    /// depth that only the CLOB can release, so both count here and neither
+    /// leaves a row that counts as listed.
+    ///
+    /// This count is the only record velocity keeps of a plain CLOB order.
+    /// The order ids themselves live on the book. A caller that must not
+    /// mistake a resting book order for a gone one asks this instead of a
+    /// scan of `orders`.
+    ///
+    /// A consumer that also counts `Order` rows must skip the rows that
+    /// [`Order::is_placed_on_clob`] reports, or it counts a fired trigger
+    /// order twice.
     pub fn clob_resident_open_orders(&self, market_index: u16) -> u8 {
         let listed = self
             .orders
@@ -649,6 +657,7 @@ impl User {
                 order.status == OrderStatus::Open
                     && order.market_type == MarketType::Perp
                     && order.market_index == market_index
+                    && !order.is_placed_on_clob()
             })
             .count()
             .min(u8::MAX as usize) as u8;
@@ -658,12 +667,13 @@ impl User {
             .saturating_sub(listed)
     }
 
-    /// The first perp market where the user has an order resting on the CLOB,
-    /// if any. A CLOB-resident order reserves `open_bids`/`open_asks`, which
-    /// inflate the worst-case margin a liquidation reads — but the DLOB cancel
-    /// a liquidation runs cannot remove it, so the liquidation would proceed on
-    /// the inflated figure. A keeper reclaims these with
-    /// `force_cancel_clob_orders` before liquidating.
+    /// The first perp market where the user has an order resting on a CLOB.
+    ///
+    /// A book-resident order reserves `open_bids` and `open_asks`. The
+    /// reservation inflates the worst-case margin a liquidation reads. The
+    /// DLOB cancel that a liquidation runs cannot remove a book order, so the
+    /// liquidation proceeds on the inflated figure. A keeper reclaims these
+    /// orders with `force_cancel_clob_orders` before it liquidates.
     pub fn first_market_with_clob_resident_orders(&self) -> Option<u16> {
         self.perp_positions
             .iter()
@@ -2864,5 +2874,76 @@ mod equity_floor_buffer_tests {
         assert!(user.is_below_buffered_equity_floor((u64::MAX as i128) * 2 - 1));
         assert!(!user.is_below_buffered_equity_floor((u64::MAX as i128) * 2));
         assert!(!user.is_below_buffered_equity_floor(i128::MAX));
+    }
+}
+
+#[cfg(test)]
+mod clob_resident_open_orders_tests {
+    use super::*;
+
+    const MARKET: u16 = 3;
+
+    fn dlob_row() -> Order {
+        Order {
+            status: OrderStatus::Open,
+            market_type: MarketType::Perp,
+            market_index: MARKET,
+            ..Order::default()
+        }
+    }
+
+    fn placed_trigger_shadow() -> Order {
+        let mut order = dlob_row();
+        order.add_bit_flag(OrderBitFlag::PlacedOnClob);
+        order
+    }
+
+    fn user_with(reserved_open_orders: u8, rows: Vec<Order>) -> User {
+        let mut user = User::default();
+        user.perp_positions[0] = PerpPosition {
+            market_index: MARKET,
+            open_orders: reserved_open_orders,
+            open_bids: 1,
+            ..PerpPosition::default()
+        };
+        for (index, row) in rows.into_iter().enumerate() {
+            user.orders[index] = row;
+        }
+        user
+    }
+
+    /// A fired trigger order rests on the book and reuses the row's
+    /// `open_orders` slot. The liquidation guard must still see it, because
+    /// its reserved base inflates the worst-case margin and no DLOB cancel
+    /// can release it.
+    #[test]
+    fn placed_trigger_shadow_is_book_resident() {
+        let user = user_with(1, vec![placed_trigger_shadow()]);
+        assert_eq!(user.clob_resident_open_orders(MARKET), 1);
+        assert_eq!(user.first_market_with_clob_resident_orders(), Some(MARKET));
+    }
+
+    #[test]
+    fn dlob_row_is_not_book_resident() {
+        let user = user_with(1, vec![dlob_row()]);
+        assert_eq!(user.clob_resident_open_orders(MARKET), 0);
+        assert_eq!(user.first_market_with_clob_resident_orders(), None);
+    }
+
+    /// A plain CLOB order writes no row, so the reservation alone reports it.
+    #[test]
+    fn plain_clob_order_is_book_resident() {
+        let user = user_with(1, vec![]);
+        assert_eq!(user.clob_resident_open_orders(MARKET), 1);
+        assert_eq!(user.first_market_with_clob_resident_orders(), Some(MARKET));
+    }
+
+    /// Three reservations against one DLOB row and one shadow leave one plain
+    /// CLOB order. The shadow and the plain order are both book resident.
+    #[test]
+    fn mixed_orders_report_both_book_residents() {
+        let user = user_with(3, vec![dlob_row(), placed_trigger_shadow()]);
+        assert_eq!(user.clob_resident_open_orders(MARKET), 2);
+        assert_eq!(user.first_market_with_clob_resident_orders(), Some(MARKET));
     }
 }

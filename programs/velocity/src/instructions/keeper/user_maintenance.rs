@@ -240,25 +240,52 @@ pub fn handle_update_user_stats_referrer_info<'c: 'info, 'info>(
 pub fn handle_update_user_open_orders_count<'info>(ctx: Context<UpdateUserIdle>) -> Result<()> {
     let mut user = load_mut!(ctx.accounts.user)?;
 
+    let counts = count_user_open_orders(&user);
+
+    user.open_orders = counts.open_orders;
+    user.has_open_order = counts.open_orders > 0;
+    user.open_auctions = counts.open_auctions;
+    user.has_open_auction = counts.open_auctions > 0;
+
+    Ok(())
+}
+
+/// The counters that `update_user_open_orders_count` writes back.
+pub struct UserOpenOrderCounts {
+    pub open_orders: u8,
+    pub open_auctions: u8,
+}
+
+/// Recount an account's open orders and open auctions from its own state.
+///
+/// An order rests in one of two places, and the count must cover both.
+/// A DLOB order holds an `Order` row. A plain CLOB order holds no row at
+/// all, and only the position's `open_orders` reservation records it. A
+/// count of rows alone therefore wipes the count for every order that rests
+/// on a book, and it desyncs the count from the per-position reservations
+/// that this instruction does not touch.
+///
+/// A fired trigger order is the one order that appears in both places. It
+/// keeps its `Order` row `Open` with `PlacedOnClob` set, and its book
+/// reservation reuses the `open_orders` slot that row already holds. The row
+/// pass skips it because `clob_resident_open_orders` counts it, so it counts
+/// exactly once.
+pub fn count_user_open_orders(user: &User) -> UserOpenOrderCounts {
     let mut open_orders = 0_u8;
     let mut open_auctions = 0_u8;
 
     for order in user.orders.iter() {
-        if order.status == OrderStatus::Open {
-            open_orders += 1;
+        let book_resident = order.market_type == MarketType::Perp && order.is_placed_on_clob();
+        if order.status == OrderStatus::Open && !book_resident {
+            open_orders = open_orders.saturating_add(1);
         }
 
         if order.has_auction() {
-            open_auctions += 1;
+            open_auctions = open_auctions.saturating_add(1);
         }
     }
 
-    // A CLOB-resident order occupies no `orders` slot — only the position's
-    // `open_orders` reservation records it — so counting rows alone would
-    // wipe the count for every order resting on a book, desyncing it from
-    // the per-position reservations this instruction does not touch. Add
-    // them back per market.
-    open_orders = user
+    let open_orders = user
         .perp_positions
         .iter()
         .map(|position| position.market_index)
@@ -268,12 +295,10 @@ pub fn handle_update_user_open_orders_count<'info>(ctx: Context<UpdateUserIdle>)
             total.saturating_add(user.clob_resident_open_orders(market_index))
         });
 
-    user.open_orders = open_orders;
-    user.has_open_order = open_orders > 0;
-    user.open_auctions = open_auctions;
-    user.has_open_auction = open_auctions > 0;
-
-    Ok(())
+    UserOpenOrderCounts {
+        open_orders,
+        open_auctions,
+    }
 }
 
 #[derive(Accounts)]
@@ -329,4 +354,81 @@ pub struct UpdateUserStatsReferrerInfo<'info> {
     pub authority: Signer<'info>,
     #[account(mut)]
     pub user_stats: AccountLoader<'info, UserStats>,
+}
+
+#[cfg(test)]
+mod open_order_count_tests {
+    use {
+        super::count_user_open_orders,
+        crate::state::user::{MarketType, Order, OrderBitFlag, OrderStatus, PerpPosition, User},
+    };
+
+    const MARKET: u16 = 4;
+
+    fn dlob_row() -> Order {
+        Order {
+            status: OrderStatus::Open,
+            market_type: MarketType::Perp,
+            market_index: MARKET,
+            ..Order::default()
+        }
+    }
+
+    fn placed_trigger_shadow() -> Order {
+        let mut order = dlob_row();
+        order.add_bit_flag(OrderBitFlag::PlacedOnClob);
+        order
+    }
+
+    fn user_with(reserved_open_orders: u8, rows: Vec<Order>) -> User {
+        let mut user = User::default();
+        user.perp_positions[0] = PerpPosition {
+            market_index: MARKET,
+            open_orders: reserved_open_orders,
+            open_bids: 1,
+            ..PerpPosition::default()
+        };
+        for (index, row) in rows.into_iter().enumerate() {
+            user.orders[index] = row;
+        }
+        user
+    }
+
+    /// A fired trigger order holds one reservation and one row. The recount
+    /// must return one, not two.
+    #[test]
+    fn placed_trigger_shadow_counts_once() {
+        let user = user_with(1, vec![placed_trigger_shadow()]);
+        assert_eq!(count_user_open_orders(&user).open_orders, 1);
+    }
+
+    #[test]
+    fn dlob_row_counts_once() {
+        let user = user_with(1, vec![dlob_row()]);
+        assert_eq!(count_user_open_orders(&user).open_orders, 1);
+    }
+
+    /// A plain CLOB order has no row, so only the reservation reports it.
+    #[test]
+    fn plain_clob_order_counts_once() {
+        let user = user_with(1, vec![]);
+        assert_eq!(count_user_open_orders(&user).open_orders, 1);
+    }
+
+    /// One order of each kind reserves three slots and writes two rows.
+    #[test]
+    fn mixed_orders_count_once_each() {
+        let user = user_with(3, vec![dlob_row(), placed_trigger_shadow()]);
+        assert_eq!(count_user_open_orders(&user).open_orders, 3);
+    }
+
+    /// A spot row has no perp reservation, so it counts by its row alone.
+    #[test]
+    fn spot_row_counts_once() {
+        let mut spot_row = dlob_row();
+        spot_row.market_type = MarketType::Spot;
+        spot_row.market_index = 0;
+        let user = user_with(1, vec![dlob_row(), spot_row]);
+        assert_eq!(count_user_open_orders(&user).open_orders, 2);
+    }
 }

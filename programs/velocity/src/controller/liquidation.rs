@@ -95,6 +95,40 @@ use {
 #[cfg(test)]
 mod tests;
 
+/// Refuse a fresh liquidation while the user holds orders on a CLOB.
+///
+/// A book-resident order reserves `open_bids` and `open_asks`. The
+/// reservation inflates the worst-case margin that a liquidation entry
+/// reads. The DLOB cancel that a liquidation runs cannot remove a book
+/// order, so the entry acts on the inflated figure and the book order keeps
+/// resting through the liquidation. `force_cancel_clob_orders` reclaims the
+/// order and releases the reservation, so a keeper runs it first.
+///
+/// Every entry that can start a liquidation calls this, including
+/// `set_user_status_to_being_liquidated`. A user that a liquidation latch
+/// already covers is therefore exempt, because the guarded entry that set
+/// the latch already ran this check, and a latched user cannot place a new
+/// order.
+///
+/// The exemption is also what keeps a distressed account liquidatable.
+/// `force_cancel_clob_orders` refuses a latched user, so a refusal here
+/// would leave no way to clear the book orders and no way to liquidate.
+fn validate_no_clob_resident_orders(user: &User) -> VelocityResult {
+    if user.is_being_liquidated() {
+        return Ok(());
+    }
+
+    if let Some(clob_market) = user.first_market_with_clob_resident_orders() {
+        msg!(
+            "user has resting CLOB orders in market {}; force_cancel_clob_orders must run first",
+            clob_market
+        );
+        return Err(ErrorCode::LiquidationConflictsWithClobOrders);
+    }
+
+    Ok(())
+}
+
 pub fn liquidate_perp(
     market_index: u16,
     liquidator_max_base_asset_amount: u64,
@@ -201,22 +235,7 @@ pub fn liquidate_perp(
     )?;
 
     let user_is_being_liquidated = liquidation_mode.user_is_being_liquidated(user)?;
-    // A CLOB-resident order reserves open_bids/open_asks that inflate the
-    // worst-case margin above, but the DLOB cancel below cannot remove it, so
-    // the intermediate re-check never runs and a solvent position is
-    // liquidated on the inflated figure. Refuse a fresh liquidation until the
-    // book orders are reclaimed (force_cancel_clob_orders un-reserves them). An
-    // account already in liquidation is not blocked — the entry that inflation
-    // could have caused already happened.
-    if !user_is_being_liquidated {
-        if let Some(clob_market) = user.first_market_with_clob_resident_orders() {
-            msg!(
-                "user has resting CLOB orders in market {}; force_cancel_clob_orders must run first",
-                clob_market
-            );
-            return Err(ErrorCode::LiquidationConflictsWithClobOrders);
-        }
-    }
+    validate_no_clob_resident_orders(user)?;
     if !user_is_being_liquidated
         && liquidation_mode.meets_margin_requirements(&margin_calculation)?
     {
@@ -976,19 +995,7 @@ pub fn place_liquidation_order<'info>(
     )?;
 
     let user_is_being_liquidated = liquidation_mode.user_is_being_liquidated(&user)?;
-    // Same CLOB-inflation guard as plain liquidate_perp: a resting book order
-    // inflates the worst-case margin the entry check reads, and the DLOB
-    // cancel cannot remove it. The relay resolver reclaims these first; this
-    // refuses a manual caller that skips that step.
-    if !user_is_being_liquidated {
-        if let Some(clob_market) = user.first_market_with_clob_resident_orders() {
-            msg!(
-                "user has resting CLOB orders in market {}; force_cancel_clob_orders must run first",
-                clob_market
-            );
-            return Err(ErrorCode::LiquidationConflictsWithClobOrders.into());
-        }
-    }
+    validate_no_clob_resident_orders(&user)?;
     if !user_is_being_liquidated
         && liquidation_mode.meets_margin_requirements(&margin_calculation)?
     {
@@ -1700,6 +1707,8 @@ pub fn liquidate_spot(
         margin_context,
     )?;
 
+    validate_no_clob_resident_orders(user)?;
+
     if !user.is_cross_margin_being_liquidated()
         && margin_calculation.meets_cross_margin_requirement()
     {
@@ -2295,6 +2304,8 @@ pub fn liquidate_spot_with_swap_begin(
         maps,
         margin_context,
     )?;
+
+    validate_no_clob_resident_orders(user)?;
 
     if !user.is_cross_margin_being_liquidated()
         && margin_calculation.meets_cross_margin_requirement()
@@ -3016,6 +3027,8 @@ pub fn liquidate_borrow_for_perp_pnl(
         MarginContext::liquidation(liquidation_margin_buffer_ratio),
     )?;
 
+    validate_no_clob_resident_orders(user)?;
+
     if !user.is_cross_margin_being_liquidated()
         && margin_calculation.meets_cross_margin_requirement()
     {
@@ -3515,6 +3528,7 @@ pub fn liquidate_perp_pnl_for_deposit(
     )?;
 
     let user_is_being_liquidated = liquidation_mode.user_is_being_liquidated(user)?;
+    validate_no_clob_resident_orders(user)?;
     if !user_is_being_liquidated
         && liquidation_mode.meets_margin_requirements(&margin_calculation)?
     {
@@ -5051,6 +5065,8 @@ pub fn set_user_status_to_being_liquidated(
         "user is already being liquidated",
     )?;
 
+    validate_no_clob_resident_orders(user)?;
+
     let liquidation_margin_buffer_ratio = state.liquidation_margin_buffer_ratio;
     let margin_calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
         user,
@@ -5082,4 +5098,59 @@ pub fn set_user_status_to_being_liquidated(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod clob_guard_tests {
+    use {
+        super::{validate_no_clob_resident_orders, ErrorCode},
+        crate::state::user::{
+            MarketType, Order, OrderBitFlag, OrderStatus, PerpPosition, User, UserStatus,
+        },
+    };
+
+    const MARKET: u16 = 7;
+
+    fn user_with_shadow() -> User {
+        let mut user = User::default();
+        user.perp_positions[0] = PerpPosition {
+            market_index: MARKET,
+            open_orders: 1,
+            open_bids: 1,
+            ..PerpPosition::default()
+        };
+        user.orders[0] = Order {
+            status: OrderStatus::Open,
+            market_type: MarketType::Perp,
+            market_index: MARKET,
+            ..Order::default()
+        };
+        user.orders[0].add_bit_flag(OrderBitFlag::PlacedOnClob);
+        user
+    }
+
+    #[test]
+    fn a_placed_trigger_shadow_refuses_a_fresh_liquidation() {
+        let user = user_with_shadow();
+        assert_eq!(
+            validate_no_clob_resident_orders(&user),
+            Err(ErrorCode::LiquidationConflictsWithClobOrders)
+        );
+    }
+
+    #[test]
+    fn a_dlob_order_alone_allows_a_fresh_liquidation() {
+        let mut user = user_with_shadow();
+        user.orders[0].remove_bit_flag(OrderBitFlag::PlacedOnClob);
+        assert_eq!(validate_no_clob_resident_orders(&user), Ok(()));
+    }
+
+    /// `force_cancel_clob_orders` refuses a latched account, so the guard must
+    /// exempt one. A refusal here would leave the account unliquidatable.
+    #[test]
+    fn a_latched_account_stays_liquidatable() {
+        let mut user = user_with_shadow();
+        user.add_user_status(UserStatus::BeingLiquidated);
+        assert_eq!(validate_no_clob_resident_orders(&user), Ok(()));
+    }
 }

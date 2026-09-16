@@ -44,16 +44,20 @@ rand = "0.8"
 redis = { version = "0.29.1", features = ["tokio-comp", "tokio-native-tls-comp"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.127"
-solana-account-decoder-client-types = "3"
-solana-rpc-client-api = "3"
-solana-pubkey = { version = "3", features = ["std"] }
+# The crate is `#![cfg(feature = "agave-unstable-api")]` and gates Base64Zstd
+# decoding behind `zstd`; both arrive only via solana-rpc-client today. Declared
+# here so losing that edge is a resolution error, not accounts silently
+# decoding to `None`.
+solana-account-decoder-client-types = { version = "4.2.2", features = ["agave-unstable-api", "zstd"] }
+solana-rpc-client-api = "4.2.2"
+solana-pubkey = { version = "4.2", features = ["std"] }
 solana-signature = { version = "3", features = ["rand"] }
 solana-keypair = "3"
 solana-signer = "3"
-solana-hash = "3"
+solana-hash = "4.4"
 solana-instruction = "3"
-solana-message = "3"
-solana-transaction = { version = "3", features = ["verify"] }
+solana-message = "4.2.3"
+solana-transaction = { version = "4.1.4", features = ["verify"] }
 solana-native-token = "3"
 solana-system-interface = "3"
 tokio = { version = "1.0", features = ["full"] }

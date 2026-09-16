@@ -181,6 +181,7 @@ pub const MARK_TWAP_RESEED_FUNDING_PERIODS: i64 = 3;
 pub const TRIGGER_PRICE_LAST_FILL_MAX_AGE: i64 = FIVE_MINUTE as i64;
 
 // QUOTE AMOUNTS
+pub const TWO_HUNDRED_MILLION_QUOTE: u64 = 200_000_000_u64 * QUOTE_PRECISION_U64;
 pub const ONE_HUNDRED_MILLION_QUOTE: u64 = 100_000_000_u64 * QUOTE_PRECISION_U64;
 pub const FIFTY_MILLION_QUOTE: u64 = 50_000_000_u64 * QUOTE_PRECISION_U64;
 pub const TEN_MILLION_QUOTE: u64 = 10_000_000_u64 * QUOTE_PRECISION_U64;
@@ -236,7 +237,7 @@ pub const MAX_TAKER_FEE_ADDON_TENTH_BPS: u16 = 100;
 /// clamps its result to this, and `update_promo_fee_tier` validates against
 /// it so a promo floor can never validate and then silently mean a lower
 /// tier. Move together with the schedule in `FeeStructure::perps_default`.
-pub const PERP_FEE_TIER_MAX_INDEX: usize = 2;
+pub const PERP_FEE_TIER_MAX_INDEX: usize = 3;
 pub const OPEN_ORDER_MARGIN_REQUIREMENT: u128 = QUOTE_PRECISION / 100;
 /// Max oracle-value loss a strictly reducing `end_swap` may realize while the
 /// account is under equity-floor protection (floor set or breaker tripped):
@@ -246,14 +247,6 @@ pub const OPEN_ORDER_MARGIN_REQUIREMENT: u128 = QUOTE_PRECISION / 100;
 /// "reducing" swap can leak through a bad route while the account is frozen.
 /// 100 = 1%. TUNABLE.
 pub const EQUITY_FLOOR_SWAP_MAX_VALUE_LOSS_BPS: u128 = 100;
-/// Most favorable value the breaker-trip proof concedes to a position whose
-/// oracle is invalid: an asset worth no more than this at its own last twap
-/// counts as exactly this much, a liability counts as zero, and a larger
-/// invalid position keeps the trip blocked. Bounds how much equity dust in
-/// dead-oracle markets can add to the trip's upper bound (allowance times
-/// the account's position slots), so dust cannot veto a material breach.
-/// $100. TUNABLE.
-pub const EQUITY_FLOOR_TRIP_DUST_ALLOWANCE: i128 = 100 * QUOTE_PRECISION_I128;
 pub const FEE_ADJUSTMENT_MAX: u64 = 100;
 pub const FEE_ADJUSTMENT_MAX_I16: i16 = FEE_ADJUSTMENT_MAX as i16;
 

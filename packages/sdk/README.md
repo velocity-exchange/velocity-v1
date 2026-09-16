@@ -1,274 +1,229 @@
 <div align="center">
-  <img height="120" src="https://raw.githubusercontent.com/velocity-exchange/velocity-v1/master/assets/velocity-logo.svg" />
+  <img width="180" height="180" src="https://docs.velocity.exchange/assets/velocity.svg" />
 
   <h1 style="margin-top:20px;">Velocity Exchange</h1>
 
   <p>
     <a href="https://www.npmjs.com/package/@velocity-exchange/sdk"><img alt="SDK npm package" src="https://img.shields.io/npm/v/@velocity-exchange/sdk" /></a>
-    <a href="https://velocity-exchange.github.io/protocol-v2/sdk/"><img alt="Docs" src="https://img.shields.io/badge/docs-tutorials-blueviolet" /></a>
-    <a href="https://discord.com/channels/849494028176588802/878700556904980500"><img alt="Discord Chat" src="https://img.shields.io/discord/889577356681945098?color=blueviolet" /></a>
-    <a href="https://opensource.org/licenses/Apache-2.0"><img alt="License" src="https://img.shields.io/github/license/project-serum/anchor?color=blueviolet" /></a>
+    <a href="https://docs.velocity.exchange/developers"><img alt="Docs" src="https://img.shields.io/badge/docs-developers-blueviolet" /></a>
+    <a href="https://discord.com/invite/95kByNnDy5"><img alt="Discord Chat" src="https://img.shields.io/discord/849494028176588802?color=blueviolet" /></a>
+    <a href="https://opensource.org/licenses/Apache-2.0"><img alt="License" src="https://img.shields.io/github/license/velocity-exchange/velocity-v1?color=blueviolet" /></a>
   </p>
 </div>
 
-## Installation
+TypeScript client for [Velocity Protocol](https://docs.velocity.exchange), a perpetuals
+and spot exchange on Solana. Read market state, place and manage orders, track positions
+and margin, and run keeper or market-making infrastructure.
 
-```
+## Install
+
+```bash
 npm i @velocity-exchange/sdk
 ```
 
-## Getting Started
+### Requirements
 
-_Start here if you're integrating with Velocity!_
+- **Node ≥ 20.**
+- **CommonJS only.** The package ships a `module` field, but it points at a
+  browser-shimmed CommonJS build, not ESM. Import it with `require`, or from
+  TypeScript/bundlers configured for interop.
+- **Anchor and web3.js are bundled, not peer dependencies.** The SDK depends on pinned
+  versions directly (`@coral-xyz/anchor` aliased to `@anchor-lang/core@1.0.1`, a second
+  `@coral-xyz/anchor-29` for legacy paths, and `@solana/web3.js@1.98.4`). If your app
+  installs its own copy of either, expect two copies in the tree and structurally
+  identical types that TypeScript treats as distinct.
 
-- [Velocity v2-teacher + API Docs](https://velocity-exchange.github.io/v2-teacher/)
-  - Docs and examples for using the SDK in Typescript and Python
-  - Useful concepts and examples when integrating Velocity
-  - Docs for Velocity's "Data API"
-- [Typescript API docs](https://velocity-exchange.github.io/protocol-v2/sdk/)
-  - JSDoc automated documentation for the Velocity v1 Typescript SDK
-- [Velocity docs](https://docs.drift.trade/)
-  - Comprehensive universal docs for Velocity
+## Quickstart
 
----
-
-The below is a light overview of using Solana and Velocity's typescript sdk. If you want comprehensive docs with examples of how to integrate with Velocity you should use the [v2-teacher docs](https://velocity-exchange.github.io/v2-teacher/).
-
-### Setting up a wallet for your program
-
-```bash
-# Generate a keypair
-solana-keygen new
-
-# Get the pubkey for the new wallet (You will need to send the quote asset to this address to Deposit into Velocity (only on mainnet - devnet has a faucet for the quote asset))
-solana address
-
-# Put the private key into your .env to be used by your bot
-cd {projectLocation}
-echo BOT_PRIVATE_KEY=`cat ~/.config/solana/id.json` >> .env
-```
-
-## Concepts
-
-### BN / Precision
-
-The Velocity SDK uses BigNum (BN), using [this package](https://github.com/indutny/bn.js/), to represent numerical values. This is because Solana tokens tend to use levels of precision which are too precise for standard Javascript floating point numbers to handle. All numbers in BN are represented as integers, and we will often denote the `precision` of the number so that it can be converted back down to a regular number.
-
-```bash
-Example:
-a BigNum: 10,500,000, with precision 10^6, is equal to 10.5 because 10,500,000 / 10^6 = 10.5.
-```
-
-The Velocity SDK uses some common precisions, which are available as constants to import from the SDK.
-
-| Precision Name        | Value |
-| --------------------- | ----- |
-| FUNDING_RATE_BUFFER   | 10^3  |
-| QUOTE_PRECISION       | 10^6  |
-| PEG_PRECISION         | 10^6  |
-| PRICE_PRECISION       | 10^6  |
-| AMM_RESERVE_PRECISION | 10^9  |
-| BASE_PRECISION        | 10^9  |
-
-**Important Note for BigNum division**
-
-Because BN only supports integers, you need to be conscious of the numbers you are using when dividing. BN will return the floor when using the regular division function; if you want to get the exact division, you need to add the modulus of the two numbers as well. There is a helper function `convertToNumber` in the SDK which will do this for you.
+Print the SOL-PERP vAMM bid/ask and oracle price. Needs no funds and signs nothing.
+Full file: [`examples/read-market.ts`](./examples/read-market.ts).
 
 ```typescript
-import { convertToNumber } from '@velocity-exchange/sdk';
-
-// Gets the floor value
-new BN(10500).div(new BN(1000)).toNumber(); // = 10
-
-// Gets the exact value
-new BN(10500).div(new BN(1000)).toNumber() + BN(10500).mod(new BN(1000)).toNumber(); // = 10.5
-
-// Also gets the exact value
-convertToNumber(new BN(10500), new BN(1000)); // = 10.5
-```
-
-## Examples
-
-### Setting up an account and making a trade
-
-```typescript
-import * as anchor from '@coral-xyz/anchor';
-import { AnchorProvider } from '@coral-xyz/anchor';
-import { getAssociatedTokenAddress, TOKEN_PROGRAM_ID } from '@solana/spl-token';
-
-import { Connection, Keypair, PublicKey } from '@solana/web3.js';
+import { Connection, Keypair } from '@solana/web3.js';
 import {
-	calculateReservePrice,
-	VelocityClient,
-	User,
-	initialize,
-	PositionDirection,
-	convertToNumber,
-	calculateTradeSlippage,
-	PRICE_PRECISION,
-	QUOTE_PRECISION,
-	Wallet,
-	PerpMarkets,
-	BASE_PRECISION,
-	getMarketOrderParams,
-	BulkAccountLoader,
 	BN,
+	BulkAccountLoader,
+	PerpMarkets,
+	PRICE_PRECISION,
+	VelocityClient,
+	VelocityEnv,
+	Wallet,
 	calculateBidAskPrice,
-	getMarketsAndOraclesForSubscription,
-	calculateEstimatedPerpEntryPrice,
-} from '../sdk';
+	convertToNumber,
+} from '@velocity-exchange/sdk';
 
-export const getTokenAddress = (
-	mintAddress: string,
-	userPubKey: string
-): Promise<PublicKey> => {
-	return getAssociatedTokenAddress(
-		new PublicKey(mintAddress),
-		new PublicKey(userPubKey)
-	);
-};
+const env: VelocityEnv = 'mainnet-beta';
 
-const main = async () => {
-	const env = 'devnet';
-	// const env = 'mainnet-beta';
+const connection = new Connection(
+	process.env.RPC_URL ?? 'https://api.mainnet-beta.solana.com',
+	'confirmed'
+);
 
-	// Initialize Velocity SDK
-	const sdkConfig = initialize({ env });
+// VelocityClient always requires a wallet, even on a read-only path. This
+// throwaway keypair is never used to sign.
+const wallet = new Wallet(Keypair.generate());
 
-	// Set up the Wallet and Provider
-	if (!process.env.ANCHOR_WALLET) {
-		throw new Error('ANCHOR_WALLET env var must be set.');
-	}
+const client = new VelocityClient({
+	connection,
+	wallet,
+	env,
+	accountSubscription: {
+		type: 'polling',
+		accountLoader: new BulkAccountLoader(connection, 'confirmed', 1000),
+	},
+});
+// subscribe() resolves false rather than throwing when a subscription fails.
+if (!(await client.subscribe())) {
+	throw new Error('failed to subscribe to Velocity accounts');
+}
 
-	if (!process.env.ANCHOR_PROVIDER_URL) {
-		throw new Error('ANCHOR_PROVIDER_URL env var must be set.');
-	}
+const solMarket = PerpMarkets[env].find((m) => m.baseAssetSymbol === 'SOL');
+if (!solMarket) {
+	throw new Error('SOL-PERP not listed on this deployment');
+}
+const marketIndex = solMarket.marketIndex;
 
-	const provider = anchor.AnchorProvider.local(
-		process.env.ANCHOR_PROVIDER_URL,
-		{
-			preflightCommitment: 'confirmed',
-			skipPreflight: false,
-			commitment: 'confirmed',
-		}
-	);
-	// Check SOL Balance
-	const lamportsBalance = await provider.connection.getBalance(
-		provider.wallet.publicKey
-	);
-	console.log(
-		provider.wallet.publicKey.toString(),
-		env,
-		'SOL balance:',
-		lamportsBalance / 10 ** 9
-	);
+const perpMarket = client.getPerpMarketAccountOrThrow(marketIndex);
+const slot = await connection.getSlot();
+const mmOracle = client.getMMOracleDataForPerpMarket(marketIndex, slot);
 
-	// Misc. other things to set up
-	const quoteTokenAddress = await getTokenAddress(
-		sdkConfig.QUOTE_MINT_ADDRESS,
-		provider.wallet.publicKey.toString()
-	);
+const [bid, ask] = calculateBidAskPrice(
+	perpMarket.amm,
+	perpMarket.marketStats,
+	mmOracle,
+	true,
+	new BN(slot),
+	client.getStateAccount()
+);
 
-	// Set up the Velocity Client
-	const velocityPublicKey = new PublicKey(sdkConfig.VELOCITY_PROGRAM_ID);
-	const bulkAccountLoader = new BulkAccountLoader(
-		provider.connection,
-		'confirmed',
-		1000
-	);
-	const velocityClient = new VelocityClient({
-		connection: provider.connection,
-		wallet: provider.wallet,
-		programID: velocityPublicKey,
-		accountSubscription: {
-			type: 'polling',
-			accountLoader: bulkAccountLoader,
-		},
-	});
-	await velocityClient.subscribe();
-
-	console.log('subscribed to velocityClient');
-
-	// Set up user client
-	const user = new User({
-		velocityClient: velocityClient,
-		userAccountPublicKey: await velocityClient.getUserAccountPublicKey(),
-		accountSubscription: {
-			type: 'polling',
-			accountLoader: bulkAccountLoader,
-		},
-	});
-
-	//// Check if user account exists for the current wallet
-	const userAccountExists = await user.exists();
-
-	if (!userAccountExists) {
-		console.log(
-			'initializing to',
-			env,
-			' velocity account for',
-			provider.wallet.publicKey.toString()
-		);
-
-		//// Create a Velocity V1 account by Depositing some quote asset ($10,000 in this case)
-		const depositAmount = new BN(10000).mul(QUOTE_PRECISION);
-		await velocityClient.initializeUserAccountAndDepositCollateral(
-			depositAmount,
-			await getTokenAddress(
-				quoteTokenAddress.toString(),
-				provider.wallet.publicKey.toString()
-			)
-		);
-	}
-
-	await user.subscribe();
-
-	// Get current price
-	const solMarketInfo = PerpMarkets[env].find(
-		(market) => market.baseAssetSymbol === 'SOL'
-	);
-
-	const marketIndex = solMarketInfo.marketIndex;
-
-	// Get vAMM bid and ask price
-	const [bid, ask] = calculateBidAskPrice(
-		velocityClient.getPerpMarketAccount(marketIndex).amm,
-		velocityClient.getOracleDataForPerpMarket(marketIndex)
-	);
-
-	const formattedBidPrice = convertToNumber(bid, PRICE_PRECISION);
-	const formattedAskPrice = convertToNumber(ask, PRICE_PRECISION);
-
-	console.log(
-		env,
-		`vAMM bid: $${formattedBidPrice} and ask: $${formattedAskPrice}`
-	);
-
-	const solMarketAccount = velocityClient.getPerpMarketAccount(
-		solMarketInfo.marketIndex
-	);
-	console.log(env, `Placing a 1 SOL-PERP LONG order`);
-
-	const txSig = await velocityClient.placePerpOrder(
-		getMarketOrderParams({
-			baseAssetAmount: new BN(1).mul(BASE_PRECISION),
-			direction: PositionDirection.LONG,
-			marketIndex: solMarketAccount.marketIndex,
-		})
-	);
-	console.log(
-		env,
-		`Placed a 1 SOL-PERP LONG order. Tranaction signature: ${txSig}`
-	);
-};
-
-main();
+console.log(`vAMM bid: $${convertToNumber(bid, PRICE_PRECISION)}`);
+console.log(`vAMM ask: $${convertToNumber(ask, PRICE_PRECISION)}`);
 ```
+
+### Placing an order
+
+Continuing from the `client` and `marketIndex` above, but on devnet and with a
+wallet that already has an initialized Velocity account with collateral. Full
+runnable file: [`examples/place-order.ts`](./examples/place-order.ts).
+
+```typescript
+import {
+	BASE_PRECISION,
+	BN,
+	PositionDirection,
+	getMarketOrderParams,
+} from '@velocity-exchange/sdk';
+
+const txSig = await client.placePerpOrder(
+	getMarketOrderParams({
+		marketIndex,
+		direction: PositionDirection.LONG,
+		baseAssetAmount: new BN(1).mul(BASE_PRECISION),
+	})
+);
+```
+
+Both examples are typechecked in CI, so they stay in step with the API.
+
+## What's inside
+
+| Export | Reach for it when |
+| --- | --- |
+| `VelocityClient` | Anything that touches the exchange: reading markets, placing and cancelling orders, deposits and withdrawals. The entry point. |
+| `User` | You need one account's positions, orders, collateral, health, or liquidation price. |
+| `accountSubscription` modes | Choosing how state reaches you: see below. |
+| `dlob/` | You want the order book itself: resting orders, crossing logic, book levels, `DLOBSubscriber`. |
+| `math/` | You need to predict an on-chain result off-chain: margin, funding, fees, AMM pricing, auctions, liquidation. |
+| `events/` | You want to stream or backfill fills, funding payments, liquidations, and other program events. |
+| `swift/` | You are placing signed-message orders rather than sending transactions yourself. |
+| `tx/`, `priorityFee/` | You need control over transaction sending: retry strategy, priority fees, compute budget. |
+
+### Subscription modes
+
+`accountSubscription` accepts three types, and this choice sets both your latency and
+your RPC bill.
+
+- **`polling`** — a `BulkAccountLoader` batches `getMultipleAccounts` on an interval.
+  Works against any plain RPC with no extra infrastructure. Start here.
+- **`websocket`** — account subscriptions pushed by the RPC. Lower latency than polling,
+  at the cost of resubscription handling on flaky connections.
+- **`grpc`** — a Yellowstone gRPC stream. Lowest latency, and what keepers and market
+  makers run, but it needs a gRPC endpoint that most public RPCs do not offer.
+
+### Signed-message (Swift) orders
+
+Beyond `placePerpOrder`, which builds and sends a transaction, the SDK can place orders
+by signing an off-chain message that a keeper then lands on chain. You give up direct
+control of the transaction and gain a faster path into the auction without paying for
+your own blockspace, which matters most for takers competing on fill quality. See the
+[Swift docs](https://docs.velocity.exchange/developers/velocity-sdk/swift).
+
+## BN and precision
+
+Solana token amounts and prices need more precision than a JavaScript float can hold, so
+every numeric value in this SDK is a [BN](https://github.com/indutny/bn.js) integer
+scaled by a fixed precision.
+
+A BN of `10,500,000` at precision `10^6` means `10.5`, because `10,500,000 / 10^6 = 10.5`.
+
+| Precision constant | Value |
+| --- | --- |
+| `FUNDING_RATE_BUFFER_PRECISION` | 10^3 |
+| `QUOTE_PRECISION` | 10^6 |
+| `PEG_PRECISION` | 10^6 |
+| `PRICE_PRECISION` | 10^6 |
+| `AMM_RESERVE_PRECISION` | 10^9 |
+| `BASE_PRECISION` | 10^9 |
+
+BN division truncates, so converting back to a JavaScript number by dividing will
+silently lose the fractional part. Always use `convertToNumber`:
+
+```typescript
+import { BN, convertToNumber } from '@velocity-exchange/sdk';
+
+new BN(10500).div(new BN(1000)).toNumber(); // 10  — wrong
+convertToNumber(new BN(10500), new BN(1000)); // 10.5
+```
+
+Keep values as BN for as long as possible and convert only for display. See
+[precision and types](https://docs.velocity.exchange/developers/velocity-sdk/precision-and-types).
+
+## Relationship to the on-chain program
+
+This SDK is a hand-maintained mirror of the Velocity program: the account layouts in
+`types.ts` track the program's structs, and `math/` re-implements the program's pricing,
+margin, funding, and fee logic in TypeScript so you can predict on-chain results before
+sending a transaction.
+
+That mirroring is why the SDK version matters. Running an SDK older than the deployed
+program can leave you with stale layouts or stale math, and the symptom is not an error
+but a wrong answer: mispredicted fills, margin, liquidation prices, or funding. Track
+the current release.
+
+## Links
+
+- [Developer docs](https://docs.velocity.exchange/developers) — guides, API reference, and the Data API
+- [Migrating from Drift](https://docs.velocity.exchange/developers/migrate-from-drift)
+- [Discord](https://discord.com/invite/95kByNnDy5) — `#research-and-dev-chat`
+- Working in Rust instead? See [`velocity-rs`](https://docs.velocity.exchange/developers/velocity-rs).
+
+## Working in this repo
+
+```bash
+bun install                                          # once, at the repo root
+bunx turbo run build --filter=@velocity-exchange/sdk
+cd packages/sdk && bun run test:ci
+```
+
+See the root [`CLAUDE.md`](../../CLAUDE.md) and [`ARCHITECTURE.md`](../../ARCHITECTURE.md)
+for the build, IDL, and SDK-mirror rules.
 
 ## License
 
-Velocity Protocol v1 is licensed under [Apache 2.0](./LICENSE).
+Velocity Protocol v1 is licensed under [Apache 2.0](../../LICENSE).
 
 Unless you explicitly state otherwise, any contribution intentionally submitted
 for inclusion in Velocity SDK by you, as defined in the Apache-2.0 license, shall be
 licensed as above, without any additional terms or conditions.
+
+Release history: [CHANGELOG.md](./CHANGELOG.md).

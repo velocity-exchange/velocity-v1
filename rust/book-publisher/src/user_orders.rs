@@ -274,6 +274,8 @@ mod tests {
             placed_slot: 0,
             prev: NIL,
             next: NIL,
+            taker_origin_prev: NIL,
+            taker_origin_next: NIL,
             bit_flags: OrderBitFlag::Open as u8,
             padding0: 0,
             sub_account_id: 0,

@@ -110,8 +110,14 @@ pub mod write;
 pub use write::{ExecuteWriter, L3Writer, QuoteWriter};
 use {
     bytemuck::{Pod, Zeroable},
+    core::mem::MaybeUninit,
     solana_address::Address as Pubkey,
-    wincode::{SchemaRead, SchemaWrite},
+    wincode::{
+        config::{ConfigCore, ZeroCopy},
+        error::{ReadResult, WriteResult},
+        io::{Reader, Writer},
+        SchemaRead, SchemaWrite, TypeMeta,
+    },
 };
 
 /// A velocity user in derivable form: the wallet and sub-account index that
@@ -128,13 +134,96 @@ use {
     feature = "anchor-derive",
     derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
 )]
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Pod, Zeroable, SchemaRead, SchemaWrite)]
-#[wincode(assert_zero_copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Pod, Zeroable)]
 #[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub struct UserRefV0 {
     pub authority: Pubkey,
     pub sub_account_id: u16,
 }
+
+// The wincode schema below is written out rather than derived. The derive needs
+// `Address` to carry wincode's own traits, which it does only from
+// solana-address 2.7; litesvm and the agave RPC crates both hold this crate's
+// trees to 2.6. The key is 32 opaque bytes on the wire either way, so the
+// schema delegates to `[u8; 32]` and `u16` and produces the same bytes the
+// derive would. `the_user_ref_schema_matches_its_byte_form` pins that.
+
+/// `Address` is a newtype over `[u8; 32]`, so the key's schema is the array's.
+type AuthoritySchema = [u8; 32];
+
+/// The shape the derive computes for a `#[repr(C)]` struct: the fields' sizes
+/// summed, zero-copy when every field is zero-copy and the sum leaves no
+/// padding. `u16` is dynamic under a varint integer encoding, and this follows
+/// it there.
+const fn user_ref_type_meta(fields: [TypeMeta; 2]) -> TypeMeta {
+    match TypeMeta::join_types(fields) {
+        TypeMeta::Static {
+            size, zero_copy, ..
+        } => TypeMeta::Static {
+            size,
+            zero_copy: zero_copy && size == core::mem::size_of::<UserRefV0>(),
+        },
+        TypeMeta::Dynamic => TypeMeta::Dynamic,
+    }
+}
+
+// SAFETY: `write` emits the key's 32 bytes then the sub-account index, which is
+// exactly what `TYPE_META` sizes, and `TYPE_META` claims zero-copy only when
+// both fields are zero-copy and their sizes sum to `size_of::<UserRefV0>()` —
+// the derive's own test for padding.
+unsafe impl<C: ConfigCore> SchemaWrite<C> for UserRefV0 {
+    type Src = Self;
+
+    const TYPE_META: TypeMeta = user_ref_type_meta([
+        <AuthoritySchema as SchemaWrite<C>>::TYPE_META,
+        <u16 as SchemaWrite<C>>::TYPE_META,
+    ]);
+
+    fn size_of(src: &Self::Src) -> WriteResult<usize> {
+        if let TypeMeta::Static { size, .. } = <Self as SchemaWrite<C>>::TYPE_META {
+            return Ok(size);
+        }
+        Ok(
+            <AuthoritySchema as SchemaWrite<C>>::size_of(src.authority.as_array())?
+                + <u16 as SchemaWrite<C>>::size_of(&src.sub_account_id)?,
+        )
+    }
+
+    fn write(mut writer: impl Writer, src: &Self::Src) -> WriteResult<()> {
+        <AuthoritySchema as SchemaWrite<C>>::write(
+            Writer::by_ref(&mut writer),
+            src.authority.as_array(),
+        )?;
+        <u16 as SchemaWrite<C>>::write(writer, &src.sub_account_id)
+    }
+}
+
+// SAFETY: `read` consumes the same two fields `write` emits, in the same order,
+// and initializes `dst` only on success.
+unsafe impl<'de, C: ConfigCore> SchemaRead<'de, C> for UserRefV0 {
+    type Dst = Self;
+
+    const TYPE_META: TypeMeta = user_ref_type_meta([
+        <AuthoritySchema as SchemaRead<'de, C>>::TYPE_META,
+        <u16 as SchemaRead<'de, C>>::TYPE_META,
+    ]);
+
+    fn read(mut reader: impl Reader<'de>, dst: &mut MaybeUninit<Self::Dst>) -> ReadResult<()> {
+        let authority = <AuthoritySchema as SchemaRead<'de, C>>::get(Reader::by_ref(&mut reader))?;
+        let sub_account_id = <u16 as SchemaRead<'de, C>>::get(reader)?;
+        dst.write(Self {
+            authority: Pubkey::new_from_array(authority),
+            sub_account_id,
+        });
+        Ok(())
+    }
+}
+
+// SAFETY: the struct is `Pod`, so it has no invalid bit patterns, and its two
+// fields are themselves zero-copy under any configuration that makes the
+// integer encoding zero-copy. This is the same impl the derive emits for a
+// `#[repr(C)]` struct whose fields are all zero-copy.
+unsafe impl<C: ConfigCore> ZeroCopy<C> for UserRefV0 where u16: ZeroCopy<C> {}
 
 impl UserRefV0 {
     pub const SIZE: usize = 34;
@@ -1562,6 +1651,33 @@ mod tests {
     fn the_l3_row_is_the_width_the_region_is_sized_from() {
         assert_eq!(L3_ROW_BYTES, 72);
         assert_eq!(L3_ROW_BYTES, 3 * 8 + 4 + UserRefV0::SIZE + 1 + 1 + 8);
+    }
+
+    #[test]
+    fn the_user_ref_schema_matches_its_byte_form() {
+        // `UserRefV0` writes its wincode schema by hand. The two ways this
+        // crate states the same 34 bytes must agree, or a quoter's response and
+        // velocity's reader disagree on where every field after the ref starts.
+        let subject = user(0xAB, 0x0102);
+        let encoded = wincode::serialize(&subject).unwrap();
+
+        assert_eq!(encoded.len(), UserRefV0::SIZE);
+        assert_eq!(encoded.as_slice(), subject.to_bytes().as_slice());
+        assert_eq!(&encoded[..32], subject.authority.as_array());
+        assert_eq!(&encoded[32..], &0x0102u16.to_le_bytes());
+
+        let decoded: UserRefV0 = wincode::deserialize(&encoded).unwrap();
+        assert_eq!(decoded, subject);
+
+        // The schema reports itself zero-copy and unpadded, which is what lets
+        // the records embedding it stay `#[wincode(assert_zero_copy)]`.
+        assert_eq!(
+            <UserRefV0 as SchemaWrite<wincode::config::DefaultConfig>>::TYPE_META,
+            TypeMeta::Static {
+                size: UserRefV0::SIZE,
+                zero_copy: true,
+            }
+        );
     }
 
     #[test]

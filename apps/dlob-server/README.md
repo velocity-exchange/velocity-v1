@@ -4,15 +4,15 @@
   <h1 style="margin-top:20px;">DLOB Server for Drift Protocol v2</h1>
 
   <p>
-    <a href="https://docs.drift.trade/tutorial-keeper-bots"><img alt="Docs" src="https://img.shields.io/badge/docs-tutorials-blueviolet" /></a>
-    <a href="https://discord.com/channels/849494028176588802/878700556904980500"><img alt="Discord Chat" src="https://img.shields.io/discord/889577356681945098?color=blueviolet" /></a>
+    <a href="https://docs.velocity.exchange/developers/trading-automation/keeper-bots"><img alt="Docs" src="https://img.shields.io/badge/docs-developers-blueviolet" /></a>
+    <a href="https://discord.com/invite/95kByNnDy5"><img alt="Discord Chat" src="https://img.shields.io/discord/849494028176588802?color=blueviolet" /></a>
     <a href="https://opensource.org/licenses/Apache-2.0"><img alt="License" src="https://img.shields.io/github/license/project-serum/anchor?color=blueviolet" /></a>
   </p>
 </div>
 
 # DLOB Server
 
-This is the backend server that provides a REST API for the drift [DLOB](https://docs.drift.trade/about-v2/decentralized-orderbook).
+This is the backend server that provides a REST API for the drift [DLOB](https://docs.velocity.exchange/protocol/how-it-works/orderbook-and-keepers).
 
 ## Features
 
@@ -88,7 +88,7 @@ Note: multiple Redis hosts can be provided by providing a comma separated string
 
 ## HTTP mode
 
-The HTTP server as documented [here](https://velocity-exchange.github.io/v2-teacher/?python#orderbook-trades-dlob-server) can be run with, and by default accessible on `http://127.0.0.1:6969`:
+The HTTP server as documented in the [orderbook and websocket docs](https://docs.velocity.exchange/developers/ecosystem-builders/orderbook-and-ws) can be run with, and by default accessible on `http://127.0.0.1:6969`:
 
 ```
 yarn run dev
@@ -133,7 +133,7 @@ bash redisCluster.sh stop
 
 # Run the example client
 
-Documentation for connecting to the dlob server are available [here](https://velocity-exchange.github.io/v2-teacher/?python#orderbook-trades-dlob-server)
+Documentation for connecting to the dlob server is available in the [orderbook and websocket docs](https://docs.velocity.exchange/developers/ecosystem-builders/orderbook-and-ws)
 
 TODO: complete client examples.
 

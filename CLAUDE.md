@@ -72,6 +72,27 @@ edge-case handling (don't approximate), and update/extend the SDK unit tests
 (`cd packages/sdk/ && bun run test:ci`) that pin the behavior. This applies even when the IDL/layout is
 unchanged — pure logic changes still require a matching SDK update.
 
+**Verify the mirror; don't just intend it.** The rule above is not self-enforcing, and a skipped
+mirror stays invisible until someone measures against chain. PRO-77 is the worked example: program
+commit `440349868` changed one AMM spread formula, the SDK was never updated, and for three weeks
+every vAMM quote the SDK produced was up to 16x too narrow. The order book, the trade form's entry
+preview, and any AMM-vs-maker routing all priced off it. Two things let it hide, and both are
+general:
+
+- **A green SDK test proves nothing about parity.** SDK tests pin the SDK's *own* previous output,
+  so when the program moves, a stale expectation still passes. Three spread cases in
+  `packages/sdk/tests/` kept passing throughout. Treat any SDK test asserting a program-derived
+  number as unverified until you re-derive it from the program.
+- **Nothing compares the two implementations.** To check a port, run the program's own Rust test
+  helper on the same inputs and diff it against the SDK. `programs/velocity/src/vlp/amm/math/spread/tests.rs`
+  has a `calculate_spread` helper taking the same flat argument list as the SDK's `calculateSpreadBN`,
+  which makes this a one-function probe. Regenerate every changed expectation that way rather than
+  accepting whatever the SDK now prints.
+
+So: when you change a formula in `programs/velocity/src/`, grep `packages/sdk/src/math/` for the
+function that mirrors it before opening the PR. When you update an SDK expectation because the
+program moved, say in the commit message how you derived the new number.
+
 **Update the admin CLI when admin instructions change:**
 
 `packages/cli-admin/` wraps the admin/keeper surface. Whenever admin instructions are added, removed, renamed, or change signature, update the CLI in the same change: add/remove the dedicated wrapper in `packages/cli-admin/src/commands/` (mirroring the existing command style), update `packages/cli-admin/README.md`'s command list, and verify with `bunx turbo run build --filter=@velocity-exchange/admin-cli && bunx turbo run lint --filter=@velocity-exchange/admin-cli` (CI builds the whole TS workspace on every PR via the `ts-build` job). The generic `call` dispatcher is an escape hatch, not a substitute for wrappers on routinely-used operations.
@@ -243,7 +264,7 @@ two `cargo +nightly fmt` invocations above don't reach: each `fuzz/<crate>/` is 
 `rust/` is a **second Cargo workspace** holding the imported Rust crates: `velocity-rs` (Rust SDK),
 `keep-rs` (keeper bots, binary `keeprs`), and `swift` (tx server, binary `swift-server`). It is
 deliberately separate from the program workspace (root `Cargo.toml` has `exclude = ["rust"]`) so its
-solana-sdk 3.x dependency tree never unifies with the program's SBF build. It has its own
+split solana 4.2 crate tree never unifies with the program's SBF build. It has its own
 `rust/Cargo.lock` and builds into `rust/target/` (via `rust/.cargo/config.toml`), never clobbering
 `./target`. Build/check it with `cargo check --manifest-path rust/Cargo.toml` (or `bun run rust:build`).
 
@@ -284,6 +305,8 @@ The tag version must match the `package.json` version set by the "Version Packag
 is idempotent — it skips publish if that version is already on the registry. `npm` (not `bun`) is used
 for publishing because bun does not implement npm's OIDC trusted-publishing flow; workspace dep ranges
 are rewritten to concrete versions by `.github/scripts/rewrite-workspace-deps.mjs` before publish.
+
+**Release CLI:** `bun run release <status|bump|devnet|npm|docker|infra|mainnet>` (`deploy-scripts/release.sh`) drives the tag pushes, workflow dispatches and infra pin updates above, in release order; it is read-only until `--execute` is passed. See the "Release CLI" section of [`deploy-scripts/README.md`](./deploy-scripts/README.md). When a tag convention, workflow name or publish path changes in `.github/workflows/`, update the script in the same change.
 
 **PRs that change user-facing behavior in a publishable package should include a changeset.** This includes new features, bug fixes, and API changes — but not chores, CI config, or internal refactors that don't affect consumers. To add one: run `bun run changeset` at the repo root, select the affected package(s), choose the bump type (patch/minor/major), and write a short description. Commit the generated `.changeset/*.md` file with your changes. Do not manually edit `package.json` versions — changesets and the "Version Packages" bot own those fields.
 
@@ -333,7 +356,6 @@ This is **Velocity Protocol v1** — a Solana perpetuals and spot trading protoc
 - **`vaults/`** — Velocity vaults program (Anchor 1.0; program id `vAuLTsyrv…`). Depends on the `velocity` program as a host/CPI path-dep, referenced by its real crate name `velocity` (not the `program` alias velocity-rs uses — anchor's IDL build resolves dependency programs by name, so `velocity` maps to `programs/velocity`). Its TS client is `packages/vaults-sdk` (`@velocity-exchange/vaults-sdk`). Regenerate the SDK's IDL + types from the program with `bun run program:idl:vaults` (writes `packages/vaults-sdk/src/idl/vaults.json` + `src/types/vaults.ts`) — never hand-edit them.
 - **`pyth-lazer/`** — Pyth Lazer message/payload/signature/storage types, linked into `velocity` as a real library dependency and used by `instructions/pyth_lazer_oracle.rs` (not a CPI target).
 - **`pyth/`** — Pyth V1 account layout types, an optional dependency of `velocity` pulled in only by the `fuzz-fixtures` feature (plus a dev-dependency for tests).
-- **`jit-proxy/`** — Just-in-time fill/arb proxy program; CPIs into `velocity` (depends on it with the `cpi` feature).
 - **`token_faucet/`** — Devnet/test token minting utility.
 
 Switchboard oracle support and external spot-fulfillment venues (Serum, Phoenix, OpenBook) were removed from the protocol; there is no `programs/switchboard*` or `programs/openbook_v2`. The `OracleSource` enum keeps `DeprecatedSwitchboard`/`DeprecatedSwitchboardOnDemand` variants only to preserve ABI discriminants — both error out in `get_oracle_price`.

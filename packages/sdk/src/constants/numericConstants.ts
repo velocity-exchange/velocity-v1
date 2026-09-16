@@ -148,6 +148,13 @@ export const MARGIN_PRECISION = TEN_THOUSAND;
 export const BPS_PRECISION = TEN_THOUSAND; // 1 unit = 1bp
 /** 1e6; precision for AMM bid/ask spread fields (`baseSpread`, `maxSpread`, `longSpread`, `shortSpread`, `lastOracleReservePriceSpreadPct`). */
 export const BID_ASK_SPREAD_PRECISION = new BN(1000000); // 10^6
+/** `PERCENTAGE_PRECISION / 400` = 2500 ppm (25 bp); oracle confidence at or above this carries full weight in the vol spread. Below it the weight ramps continuously from `1 / SPREAD_CONF_DISCOUNT_DIVISOR` to full. Mirrors the program's `SPREAD_CONF_FULL_WEIGHT_THRESHOLD`. */
+export const SPREAD_CONF_FULL_WEIGHT_THRESHOLD = PERCENTAGE_PRECISION.div(
+	new BN(400)
+);
+/** Denominator (20) of the confidence contribution's starting weight below `SPREAD_CONF_FULL_WEIGHT_THRESHOLD`. Mirrors the program's `SPREAD_CONF_DISCOUNT_DIVISOR`. */
+export const SPREAD_CONF_DISCOUNT_DIVISOR = new BN(20);
+
 /** 1e4; precision for `StateAccount.initialPctToLiquidate`, the fraction of a position liquidated per partial-liquidation pass. */
 export const LIQUIDATION_PCT_PRECISION = TEN_THOUSAND;
 /** Denominator (3333) used to derive `FUNDING_RATE_OFFSET_PERCENTAGE`; yields ~10.95% annualized when applied hourly. */
@@ -219,11 +226,6 @@ export const LAMPORTS_EXP = new BN(Math.log10(LAMPORTS_PER_SOL));
 
 /** `QUOTE_PRECISION / 100` = $0.01; per-open-order margin requirement reserved against free collateral. */
 export const OPEN_ORDER_MARGIN_REQUIREMENT = QUOTE_PRECISION.div(new BN(100));
-
-/** $100 (`QUOTE_PRECISION`); most favorable value the breaker-trip proof concedes to a position whose oracle is invalid. A liability or short base leg counts as zero at any size, an asset or long base leg worth no more than this at its own last twap counts as exactly this much, and a larger asset or long (or one whose twap is not positive) keeps the trip blocked. Mirrors the program's `EQUITY_FLOOR_TRIP_DUST_ALLOWANCE`. */
-export const EQUITY_FLOOR_TRIP_DUST_ALLOWANCE = new BN(100).mul(
-	QUOTE_PRECISION
-);
 
 /** -$25 (`QUOTE_PRECISION`); default floor for `AMM.netRevenueSinceLastFunding` below which the funding-rate spread retreats, damping the AMM from over-widening its spread after a large one-off loss. */
 export const DEFAULT_REVENUE_SINCE_LAST_FUNDING_SPREAD_RETREAT = new BN(
@@ -300,5 +302,12 @@ export const VIP_FEE_TIER_ONE_VOLUME_QUOTE = new BN(5_000_000).mul(
  * Fee tier VIP 2 volume threshold
  */
 export const VIP_FEE_TIER_TWO_VOLUME_QUOTE = new BN(80_000_000).mul(
+	QUOTE_PRECISION
+);
+
+/**
+ * Fee tier VIP 3 volume threshold
+ */
+export const VIP_FEE_TIER_THREE_VOLUME_QUOTE = new BN(200_000_000).mul(
 	QUOTE_PRECISION
 );

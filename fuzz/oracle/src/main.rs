@@ -36,7 +36,7 @@ use {
                 AMM_RESERVE_PRECISION, PEG_PRECISION, PRICE_PRECISION_I64, PRICE_PRECISION_U64,
             },
             oracle::{is_oracle_valid_for_action, OracleValidity, VelocityAction},
-            time::legacy_slot_duration_i64,
+            time::{legacy_slot_duration_i64, SlotClock},
         },
         state::{
             oracle::{get_prelaunch_price, HistoricalOracleData, OraclePriceData, PrelaunchOracle},
@@ -264,8 +264,9 @@ fn inv_confidence_floor(
         too_volatile_ratio: 5,
     };
 
+    // The 400ms baseline clock: this fixture sets no IBRL transition.
     let mm = market
-        .get_mm_oracle_price_data(exchange, clock_slot, &guard)
+        .get_mm_oracle_price_data(exchange, clock_slot, &guard, SlotClock::default())
         .unwrap();
 
     fuzz_assert!(mm.get_confidence() >= exchange.confidence);

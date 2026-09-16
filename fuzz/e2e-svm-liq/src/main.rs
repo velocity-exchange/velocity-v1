@@ -79,6 +79,16 @@ const VELOCITY_SO: &str = "../../target/deploy/velocity.so";
 const NUM_USERS: usize = 3;
 const VICTIM_IDX: usize = 2;
 const LIQUIDATOR_IDX: usize = 0;
+/// A second victim: LEVERED but NOT bankrupt (user index 1 was unused).
+///
+/// The fixture's original victim is injected already `Bankrupt`, and every
+/// ordinary liquidation handler refuses a bankrupt user
+/// (`ErrorCode::UserBankrupt`, e.g. controller/liquidation.rs:116). So the
+/// harness could only ever reach `resolve_*_bankruptcy` — the entire
+/// liquidation pipeline that PRODUCES a bankruptcy was unreachable. This user
+/// starts solvent but thinly collateralised, so compounding sub-1% oracle moves
+/// can walk them under maintenance the way the market really does it.
+const LEVERED_IDX: usize = 1;
 
 const INITIAL_USDC: u64 = 1_000_000 * QUOTE_PRECISION as u64; // 1,000,000 USDC
 
@@ -94,9 +104,21 @@ const BANKRUPTCY_IF_FLOOR_PCT: u32 = 300_000;
 /// injected open interest: 10 base units long, matched short.
 const OI_BASE: i128 = 10 * BASE_PRECISION as i128;
 
-/// the victim's spot borrow (1 USDC) and negative perp pnl (-1 USDC).
+/// the victim's spot borrow (1 USDC) and negative perp pnl (-750 USDC).
 const VICTIM_BORROW_TOKENS: u64 = QUOTE_PRECISION as u64;
-const VICTIM_PERP_QUOTE: i64 = -(QUOTE_PRECISION as i64);
+/// The perp debt must EXCEED `PENDING_IF_FEE` (500 USDC), or the first
+/// bankruptcy tranche — `min(|loss|, pending_if_fee)`, controller/
+/// liquidation.rs:4356-4370, with no floor cap — absorbs the whole loss,
+/// `loss_after_pending` is 0, and tranches 2/3/4 stay dead no matter what
+/// `quote_max_insurance` says. It was -1 USDC, which is why the entire IF
+/// waterfall below tranche 1 was unreachable.
+///
+/// 750 USDC leaves a 250 USDC residual: tranche 2 draws it from the IF vault,
+/// and if the vault is already drawn down, tranche 3 (the AMM clawback, capped
+/// at `amm_protocol_fees_received` = 0 here) falls through to tranche 4
+/// socialization. The dedicated `regr_306` harness makes the same move by hand
+/// for exactly this reason.
+const VICTIM_PERP_QUOTE: i64 = -(750 * QUOTE_PRECISION as i64);
 /// IF vault seed funding.
 const IF_VAULT_FUNDING: u64 = 1_000 * QUOTE_PRECISION as u64;
 
@@ -108,6 +130,7 @@ const D_SET_USER_STATUS_BEING_LIQUIDATED: [u8; 8] = [106, 133, 160, 206, 193, 17
 const D_LIQUIDATE_PERP: [u8; 8] = [75, 35, 119, 247, 191, 18, 139, 2];
 const D_LIQUIDATE_SPOT: [u8; 8] = [107, 0, 128, 41, 35, 229, 251, 18];
 const D_LIQUIDATE_PERP_PNL_FOR_DEPOSIT: [u8; 8] = [237, 75, 198, 235, 233, 186, 75, 35];
+const D_LIQUIDATE_PERP_WITH_FILL: [u8; 8] = [95, 111, 124, 105, 86, 169, 187, 34];
 const D_RESOLVE_PERP_BANKRUPTCY: [u8; 8] = [224, 16, 176, 214, 162, 213, 183, 222];
 const D_RESOLVE_SPOT_BANKRUPTCY: [u8; 8] = [124, 194, 240, 254, 198, 213, 52, 122];
 const D_RESOLVE_PERP_PNL_DEFICIT: [u8; 8] = [168, 204, 68, 150, 159, 126, 95, 148];
@@ -188,13 +211,43 @@ struct Fixture {
     spot_vault_pda: Pubkey,
     if_vault_pda: Pubkey,
     perp_market_pda: Pubkey,
+    /// The perp market's oracle: a velocity-owned `PythLazerOracle` account.
+    ///
+    /// This harness previously used `oracle == Pubkey::default()` +
+    /// `OracleSource::QuoteAsset` — the hard-coded $1 path — and reached
+    /// liquidations only by INJECTING already-liquidatable state. With a real,
+    /// movable oracle the fuzzer can drive an account underwater the way the
+    /// market actually does it, which is the difference between exercising the
+    /// liquidation handlers and exercising the conditions that lead to them.
+    perp_oracle_pda: Pubkey,
     users: Vec<UserAcct>,
     if_stake_pda: Pubkey,
+    /// Monotonic publish_time for injected oracle updates.
+    oracle_seq: u64,
 }
 
 // ---------------------------------------------------------------------------
 // Injected-state builders
 // ---------------------------------------------------------------------------
+
+/// A `PythLazerOracle` at `price` with exponent -6 (so the raw field IS the
+/// PRICE_PRECISION-scaled price). `posted_slot` is the only staleness source the
+/// program reads: `oracle_delay = clock_slot - posted_slot`.
+fn build_pyth_lazer_oracle(
+    price: i64,
+    conf: u64,
+    posted_slot: u64,
+    publish_time: u64,
+) -> velocity::state::pyth_lazer_oracle::PythLazerOracle {
+    velocity::state::pyth_lazer_oracle::PythLazerOracle {
+        price,
+        publish_time,
+        posted_slot,
+        exponent: -6,
+        _padding: [0u8; 4],
+        conf,
+    }
+}
 
 fn build_state(signer: Pubkey, signer_nonce: u8) -> State {
     let mut s = State::default();
@@ -205,7 +258,18 @@ fn build_state(signer: Pubkey, signer_nonce: u8) -> State {
     s.number_of_markets = 1;
     // Liquidation config used by liquidate_perp_pnl_for_deposit.
     s.liquidation_margin_buffer_ratio = 50; // 0.5%
-    s.initial_pct_to_liquidate = 10_000; // 10% (PERCENTAGE-ish)
+                                            // 10% of LIQUIDATION_PCT_PRECISION (= 10_000, math/constants.rs:46).
+                                            //
+                                            // WAS `10_000` with the comment "10% (PERCENTAGE-ish)" — that is 100%, not
+                                            // 10%. `calculate_max_pct_to_liquidate` (math/liquidation.rs:453-489) then
+                                            // pinned `pct_freeable` at 10_000 via the `.min()` on the next line and the
+                                            // `liquidation_margin_freed` ramp could never bind, so every liquidation was
+                                            // one full-size step and the partial path was dead.
+                                            //
+                                            // Note this only bites when `margin_shortage >= 50 * QUOTE_PRECISION`:
+                                            // liquidation.rs:461-463 short-circuits smaller shortages to full precision,
+                                            // so both the ramped and the accelerated branch stay reachable.
+    s.initial_pct_to_liquidate = 1_000;
     s.liquidation_duration = legacy_slot_duration_u8(150);
     s
 }
@@ -244,11 +308,11 @@ fn build_spot_market_usdc(f: &Fixture) -> SpotMarket {
 fn build_perp_market(f: &Fixture) -> PerpMarket {
     let mut m = PerpMarket::default();
     m.pubkey = anchor_pk(f.perp_market_pda);
-    m.oracle = anchor_pk(Pubkey::new_from_array([0u8; 32])); // $1 quote path
+    m.oracle = anchor_pk(f.perp_oracle_pda);
     m.market_index = 0;
     m.quote_spot_market_index = 0;
     m.status = MarketStatus::Active;
-    m.oracle_source = OracleSource::QuoteAsset;
+    m.oracle_source = OracleSource::PythLazer;
     m.margin_ratio_initial = 1_000; // 10%
     m.margin_ratio_maintenance = 500; // 5%
     m.order_step_size = 1_000_000;
@@ -261,6 +325,18 @@ fn build_perp_market(f: &Fixture) -> PerpMarket {
     m.amm.base_asset_reserve = 10_000 * BASE_PRECISION;
     m.amm.quote_asset_reserve = 10_000 * BASE_PRECISION;
     m.amm.sqrt_k = 10_000 * BASE_PRECISION;
+    // Must match quote_asset_reserve for a balanced AMM (net position 0), or the
+    // program's own AMM validation rejects the market with InvalidAmmDetected
+    // ("terminal_quote_asset_reserve out of wack 0 != ...") and every
+    // AMM-validating instruction fails before reaching its logic.
+    m.amm.terminal_quote_asset_reserve = 10_000 * BASE_PRECISION;
+    // Reserve bounds. `validate_for_fill` checks base_asset_reserve against
+    // these per direction, and the defaults (both 0) fail every short-side fill
+    // with InvalidAmmForFillDetected.
+    m.amm.min_base_asset_reserve = 0;
+    m.amm.max_base_asset_reserve = u64::MAX as u128;
+    m.amm.concentration_coef = velocity::math::constants::MAX_CONCENTRATION_COEFFICIENT;
+    m.amm.max_fill_reserve_fraction = 100;
     m.amm.peg_multiplier = PEG_PRECISION;
     m.amm.base_asset_amount_with_amm = 0;
     m.amm.curve_update_intensity = 0;
@@ -272,11 +348,57 @@ fn build_perp_market(f: &Fixture) -> PerpMarket {
     m.fee_ledger.amm_protocol_fees_received = 0;
     m.bankruptcy_if_floor_pct = BANKRUPTCY_IF_FLOOR_PCT;
 
+    // INSURANCE CLAIM. `PerpMarket::default()` zeroes all of these
+    // (state/perp_market.rs:1591-1608, all QUOTE_PRECISION), which made the
+    // ENTIRE second bankruptcy tranche dead: `if_payment` is
+    // `min(loss_after_pending, if_vault_balance - 1, quote_max_insurance -
+    // quote_settled_insurance)` (controller/liquidation.rs:4374-4386) and the
+    // last term was always 0, so the shared IF vault was never drawn on — which
+    // is the family this harness exists for.
+    //
+    // 2000 USDC is deliberately ABOVE the IF vault seed (IF_VAULT_FUNDING =
+    // 1000 USDC): that makes `insurance_fund_vault_balance - 1` the BINDING
+    // term, which is the guard `check_if_vault_not_overspent` exists to test. A
+    // value below the vault would leave that invariant vacuous, because the
+    // lifetime cap rather than the vault would always be the min.
+    m.insurance_claim.quote_max_insurance = 2_000 * QUOTE_PRECISION as u64;
+    m.insurance_claim.quote_settled_insurance = 0;
+    // Per-period revenue cap for `resolve_perp_pnl_deficit`
+    // (controller/insurance.rs:839-854). 250 USDC is deliberately SMALL relative
+    // to `quote_max_insurance`, so a second draw in the same period hits
+    // `MaxRevenueWithdrawPerPeriodReached` and warping past
+    // `insurance_fund.revenue_settle_period` exercises the period reset. Eight
+    // successful draws then exhaust the 2000 lifetime cap and cover
+    // `MaxIFWithdrawReached` (insurance.rs:861-867). Both sides of both caps.
+    m.insurance_claim.max_revenue_withdraw_per_period = 250 * QUOTE_PRECISION as u64;
+
     // Open interest so get_bankruptcy_if_floor() > 0 (OI conserved: long+short = 0).
     m.base_asset_amount_long = OI_BASE;
     m.base_asset_amount_short = -OI_BASE;
-    m.quote_asset_amount = 0;
     m.net_unsettled_funding_pnl = 0;
+
+    // `resolve_perp_pnl_deficit` (controller/insurance.rs:759-930) was 100%
+    // dead, and NOT for the reason the field name suggests. Its gate chain, in
+    // the order the handler evaluates it:
+    //   1. `amm.is_underwater()` -> total_fee_minus_distributions < 0  (:768-773)
+    //   2. pnl_pool_token_amount < net_user_pnl                        (:799-804)
+    //   3. unrealized_pnl_max_imbalance > 0 && excess > 0              (:808-825)
+    //   4. max_revenue_withdraw_per_period > 0                         (:849-854)
+    //   5. quote_max_insurance - quote_settled_insurance > 0           (:861-867)
+    // 4 and 5 are set above; without 1-3 the handler never reaches them, so
+    // setting the insurance_claim fields alone would have changed nothing.
+    //
+    // `net_user_pnl` is `base_asset_amount_with_amm * price + quote_asset_amount
+    // + net_unsettled_funding_pnl`. The AMM is net flat here (OI conservation
+    // above), so `quote_asset_amount` IS the whole figure: 3000 USDC of user
+    // claims against a 1000 USDC pnl pool is a genuine 2000 USDC deficit — the
+    // exact state this instruction exists to resolve.
+    //
+    // `curve_update_intensity = 0` above additionally keeps `is_curve_update_enabled()`
+    // false, so the handler skips the oracle-freshness block — one fewer blocker.
+    m.amm.total_fee_minus_distributions = -(1_000 * QUOTE_PRECISION as i128);
+    m.quote_asset_amount = 3_000 * QUOTE_PRECISION as i128;
+    m.unrealized_pnl_max_imbalance = 1_000 * QUOTE_PRECISION as u64;
 
     // pnl-pool backing that the floored tranche relies on.
     m.pnl_pool.scaled_balance = tokens_to_scaled(PNL_POOL_TOKENS as u128);
@@ -293,6 +415,35 @@ fn build_perp_market(f: &Fixture) -> PerpMarket {
     m.market_stats.last_mark_price_twap = PRICE_PRECISION as u64;
     m.market_stats.last_mark_price_twap_5min = PRICE_PRECISION as u64;
     m
+}
+
+/// Craft the levered-but-solvent victim: a real long perp position with base
+/// exposure, collateralised just above maintenance margin.
+///
+/// Maintenance is 5% of notional (`margin_ratio_maintenance = 500`). With 10
+/// units of base at $1 the requirement is ~$0.50, so ~$0.62 of collateral sits
+/// just above the line and a modest adverse move breaches it.
+fn build_levered_user(authority: Pubkey, base_seed: &User) -> User {
+    let mut u = *base_seed;
+    u.authority = anchor_pk(authority);
+    u.sub_account_id = 0;
+    u.status = 0; // solvent, not flagged
+    u.next_liquidation_id = 1;
+
+    // Long 10 base opened at ~$1 (quote paid out, hence negative).
+    u.perp_positions[0].market_index = 0;
+    u.perp_positions[0].base_asset_amount = (10 * BASE_PRECISION) as i64;
+    u.perp_positions[0].quote_asset_amount = -(10 * QUOTE_PRECISION as i64);
+    u.perp_positions[0].open_orders = 0;
+    u.perp_positions[0].open_bids = 0;
+    u.perp_positions[0].open_asks = 0;
+
+    // Thin collateral: enough to clear maintenance at $1, not much more.
+    u.spot_positions[0].market_index = 0;
+    u.spot_positions[0].balance_type = SpotBalanceType::Deposit;
+    u.spot_positions[0].scaled_balance = tokens_to_scaled(620_000u128) as u64; // $0.62
+    u.spot_positions[0].open_orders = 0;
+    u
 }
 
 /// Craft the injected victim: cross-margin bankrupt, a negative-quote perp
@@ -382,6 +533,19 @@ impl Fixture {
             .create()
             .unwrap();
 
+        // Perp oracle: injected before the markets so `build_perp_market` can
+        // point at it. `posted_slot` must track the clock or every read is stale.
+        let (perp_oracle_pda, _) = Pubkey::find_program_address(
+            &[
+                velocity::state::pyth_lazer_oracle::PYTH_LAZER_ORACLE_SEED,
+                &mi0,
+            ],
+            &program_id,
+        );
+        let slot0 = ctx.slot();
+        let mut oracle = build_pyth_lazer_oracle(PRICE_PRECISION as i64, 0, slot0, 1);
+        inject(&mut ctx, perp_oracle_pda, &mut oracle);
+
         // A partially-initialized fixture so builders can read the PDAs.
         let mut f = Fixture {
             ctx,
@@ -392,8 +556,10 @@ impl Fixture {
             spot_vault_pda,
             if_vault_pda,
             perp_market_pda,
+            perp_oracle_pda,
             users: Vec::new(),
             if_stake_pda: Pubkey::default(),
+            oracle_seq: 2,
         };
 
         let mut spot_market = build_spot_market_usdc(&f);
@@ -485,6 +651,13 @@ impl Fixture {
         f.ctx
             .write_zero_copy_account(&victim.user_pda, &crafted)
             .expect("overwrite victim user");
+
+        // The levered-but-solvent second victim (see LEVERED_IDX).
+        let levered = f.users[LEVERED_IDX].clone();
+        let levered_state = build_levered_user(levered.keypair.pubkey(), &User::default());
+        f.ctx
+            .write_zero_copy_account(&levered.user_pda, &levered_state)
+            .expect("overwrite levered user");
 
         // Initialize an IF-stake account for the liquidator so IF stake actions
         // are reachable.
@@ -580,7 +753,8 @@ impl Fixture {
                     AccountMeta::new_readonly(self.state_pda(), false),
                     AccountMeta::new(user.user_pda, false),
                     AccountMeta::new_readonly(liquidator.keypair.pubkey(), true),
-                    // remaining: spot market (r) + perp market (r)
+                    // remaining: perp oracle + spot market (r) + perp market (r)
+                    AccountMeta::new(self.perp_oracle_pda, false),
                     AccountMeta::new_readonly(self.spot_market_pda, false),
                     AccountMeta::new_readonly(self.perp_market_pda, false),
                 ],
@@ -599,9 +773,34 @@ impl Fixture {
         )
     }
 
+    /// Liquidator plus a fuzzer-chosen victim.
+    ///
+    /// The liquidator can never be its own victim, and targeting either the
+    /// injected-bankrupt user or the levered-but-solvent one matters: the
+    /// bankrupt user only admits `resolve_*`, the levered one only admits the
+    /// ordinary liquidation handlers.
+    fn liquidator_meta_for(&self, victim_idx: usize) -> (UserAcct, UserAcct) {
+        // Map the liquidator's own index onto the LEVERED user, not the
+        // bankrupt one. Every ordinary liquidation handler refuses a bankrupt
+        // user, so with the old mapping 2 of the 3 selectable targets were
+        // guaranteed failures and the fuzzer burned most of its liquidation
+        // budget on `UserBankrupt`. Index VICTIM_IDX still reaches the bankrupt
+        // user, which keeps that rejection branch covered.
+        let v = if victim_idx == LIQUIDATOR_IDX {
+            LEVERED_IDX
+        } else {
+            victim_idx
+        };
+        (self.users[LIQUIDATOR_IDX].clone(), self.users[v].clone())
+    }
+
     /// liquidate_perp against the victim.
-    pub fn action_liquidate_perp(&mut self, #[range(1..1_000_000_000u64)] max_base: u64) -> bool {
-        let (liq, victim) = self.liquidator_meta();
+    pub fn action_liquidate_perp(
+        &mut self,
+        #[range(1..1_000_000_000u64)] max_base: u64,
+        #[range(0..NUM_USERS)] victim_idx: usize,
+    ) -> bool {
+        let (liq, victim) = self.liquidator_meta_for(victim_idx);
         let mut args = Vec::new();
         args.extend_from_slice(&0u16.to_le_bytes()); // market_index
         args.extend_from_slice(&max_base.to_le_bytes());
@@ -616,7 +815,8 @@ impl Fixture {
                     AccountMeta::new(liq.stats_pda, false),
                     AccountMeta::new(victim.user_pda, false),
                     AccountMeta::new(victim.stats_pda, false),
-                    // remaining: spot market (r) + perp market (w)
+                    // remaining: perp oracle + spot market (r) + perp market (w)
+                    AccountMeta::new(self.perp_oracle_pda, false),
                     AccountMeta::new_readonly(self.spot_market_pda, false),
                     AccountMeta::new(self.perp_market_pda, false),
                 ],
@@ -628,11 +828,30 @@ impl Fixture {
             .unwrap_or(false)
     }
 
-    /// liquidate_spot (asset market 0, liability market 0 — a self-market call
-    /// that the program rejects; kept for coverage of the reject path since the
-    /// harness only injects a single spot market).
-    pub fn action_liquidate_spot(&mut self, #[range(1..1_000_000u64)] max_liab: u64) -> bool {
-        let (liq, victim) = self.liquidator_meta();
+    /// `liquidate_spot` (asset market 0, liability market 0).
+    ///
+    /// PRE-EXISTING BUG, now fixed: this account list omitted `liquidator_stats`
+    /// (`LiquidateSpot` is `[state, authority, liquidator, liquidator_stats,
+    /// user]`, instructions/keeper.rs:4089-4103). Every meta after `liquidator`
+    /// shifted up one, so `victim.user_pda` landed in the `liquidator_stats`
+    /// slot and Anchor failed to deserialize a `User` as `AccountLoader<UserStats>`.
+    /// The handler was never entered AT ALL — the old comment's claim that this
+    /// covered "the self-market reject path" was wrong; the reject path it
+    /// actually covered was Anchor's. `fuzz/e2e-svm/src/main.rs` builds the same
+    /// call with the correct list.
+    ///
+    /// With a single spot market this still cannot SUCCEED (a `SpotPosition`
+    /// holds one balance type, so asset == liability == 0 always hits
+    /// `WrongSpotBalanceType` at controller/liquidation.rs:2062-2066, or
+    /// `UserBankrupt` for the seed victim). But the handler prologue now runs:
+    /// account loading, both `SpotOperation::Liquidation` pause checks, the
+    /// pool-id check, `check_spot_oracle_validity`, and the asset-side validates.
+    pub fn action_liquidate_spot(
+        &mut self,
+        #[range(1..1_000_000u64)] max_liab: u64,
+        #[range(0..NUM_USERS)] victim_idx: usize,
+    ) -> bool {
+        let (liq, victim) = self.liquidator_meta_for(victim_idx);
         let mut args = Vec::new();
         args.extend_from_slice(&0u16.to_le_bytes()); // asset market
         args.extend_from_slice(&0u16.to_le_bytes()); // liability market
@@ -645,7 +864,11 @@ impl Fixture {
                     AccountMeta::new_readonly(self.state_pda(), false),
                     AccountMeta::new_readonly(liq.keypair.pubkey(), true),
                     AccountMeta::new(liq.user_pda, false),
+                    // `liquidator_stats` — readonly here (unlike
+                    // `LiquidateBorrowForPerpPnl`, which marks it `mut`).
+                    AccountMeta::new_readonly(liq.stats_pda, false),
                     AccountMeta::new(victim.user_pda, false),
+                    AccountMeta::new(self.perp_oracle_pda, false),
                     AccountMeta::new(self.spot_market_pda, false),
                     AccountMeta::new(self.perp_market_pda, false),
                 ],
@@ -661,8 +884,9 @@ impl Fixture {
     pub fn action_liquidate_pnl_for_deposit(
         &mut self,
         #[range(1..1_000_000u64)] max_pnl: u64,
+        #[range(0..NUM_USERS)] victim_idx: usize,
     ) -> bool {
-        let (liq, victim) = self.liquidator_meta();
+        let (liq, victim) = self.liquidator_meta_for(victim_idx);
         let mut args = Vec::new();
         args.extend_from_slice(&0u16.to_le_bytes()); // perp market
         args.extend_from_slice(&0u16.to_le_bytes()); // spot market
@@ -678,7 +902,8 @@ impl Fixture {
                     AccountMeta::new(liq.stats_pda, false),
                     AccountMeta::new(victim.user_pda, false),
                     AccountMeta::new(victim.stats_pda, false),
-                    // remaining: spot market (w) + perp market (r)
+                    // remaining: perp oracle + spot market (w) + perp market (r)
+                    AccountMeta::new(self.perp_oracle_pda, false),
                     AccountMeta::new(self.spot_market_pda, false),
                     AccountMeta::new_readonly(self.perp_market_pda, false),
                 ],
@@ -691,6 +916,38 @@ impl Fixture {
     }
 
     /// resolve_perp_bankruptcy against the victim.
+    /// `liquidate_perp_with_fill(market_index)` — close a liquidatable perp
+    /// position by filling it against the book rather than transferring it to
+    /// the liquidator. Same account shape as `liquidate_perp` plus the maker
+    /// side in remaining_accounts.
+    pub fn action_liquidate_perp_with_fill(
+        &mut self,
+        #[range(0..NUM_USERS)] victim_idx: usize,
+    ) -> bool {
+        let (liq, victim) = self.liquidator_meta_for(victim_idx);
+        let mut accounts = vec![
+            AccountMeta::new_readonly(self.state_pda(), false),
+            AccountMeta::new_readonly(liq.keypair.pubkey(), true),
+            AccountMeta::new(liq.user_pda, false),
+            AccountMeta::new(liq.stats_pda, false),
+            AccountMeta::new(victim.user_pda, false),
+            AccountMeta::new(victim.stats_pda, false),
+        ];
+        accounts.push(AccountMeta::new(self.perp_oracle_pda, false));
+        accounts.push(AccountMeta::new(self.spot_market_pda, false));
+        accounts.push(AccountMeta::new(self.perp_market_pda, false));
+        self.ctx
+            .raw_call(Instruction {
+                program_id: self.program_id,
+                accounts,
+                data: ix_data(D_LIQUIDATE_PERP_WITH_FILL, &0u16.to_le_bytes()),
+            })
+            .signers(&[&liq.keypair])
+            .send()
+            .map(|o| o.is_success())
+            .unwrap_or(false)
+    }
+
     pub fn action_resolve_perp_bankruptcy(&mut self) -> bool {
         let (liq, victim) = self.liquidator_meta();
         let mut args = Vec::new();
@@ -740,7 +997,8 @@ impl Fixture {
                     AccountMeta::new(self.if_vault_pda, false),
                     AccountMeta::new_readonly(self.velocity_signer(), false),
                     AccountMeta::new_readonly(token_program_id(), false),
-                    // remaining: perp market (w) + spot market (w) + mint
+                    // remaining: perp oracle + perp market (w) + spot market (w) + mint
+                    AccountMeta::new(self.perp_oracle_pda, false),
                     AccountMeta::new(self.perp_market_pda, false),
                     AccountMeta::new(self.spot_market_pda, false),
                     AccountMeta::new_readonly(self.usdc_mint, false),
@@ -768,7 +1026,8 @@ impl Fixture {
             AccountMeta::new(self.if_vault_pda, false),
             AccountMeta::new_readonly(self.velocity_signer(), false),
             AccountMeta::new_readonly(token_program_id(), false),
-            // remaining accounts
+            // remaining accounts (perp oracle must lead)
+            AccountMeta::new(self.perp_oracle_pda, false),
             AccountMeta::new(self.spot_market_pda, false),
             AccountMeta::new(self.perp_market_pda, false),
             AccountMeta::new_readonly(self.usdc_mint, false),
@@ -821,12 +1080,23 @@ impl Fixture {
         self.ctx
             .raw_call(Instruction {
                 program_id: self.program_id,
+                // PRE-EXISTING BUG: this list omitted `state`, `spot_market_vault`,
+                // `velocity_signer` and `token_program`, so anchor read
+                // `spot_market` into the `state` slot and every call died with
+                // AccountDiscriminatorMismatch. The action could never succeed.
+                // Order per the IDL: state, spot_market, insurance_fund_stake,
+                // user_stats, authority, spot_market_vault, insurance_fund_vault,
+                // velocity_signer, token_program.
                 accounts: vec![
+                    AccountMeta::new_readonly(self.state_pda(), false),
                     AccountMeta::new(self.spot_market_pda, false),
                     AccountMeta::new(self.if_stake_pda, false),
                     AccountMeta::new(staker.stats_pda, false),
                     AccountMeta::new_readonly(staker.keypair.pubkey(), true),
+                    AccountMeta::new(self.spot_vault_pda, false),
                     AccountMeta::new(self.if_vault_pda, false),
+                    AccountMeta::new_readonly(self.velocity_signer(), false),
+                    AccountMeta::new_readonly(token_program_id(), false),
                 ],
                 data: ix_data(D_REQUEST_REMOVE_IF_STAKE, &args),
             })
@@ -862,9 +1132,93 @@ impl Fixture {
     }
 
     /// Advance the clock (past the IF unstaking period etc.).
-    pub fn action_warp(&mut self, #[range(1..500_000u64)] slots: u64) -> bool {
+    pub fn action_warp(
+        &mut self,
+        #[range(1..500_000u64)] slots: u64,
+        #[range(0..4u8)] repost: u8,
+    ) -> bool {
         let target = self.ctx.slot() + slots;
         self.ctx.warp_to_slot(target);
+
+        // ADVANCE WALL-CLOCK TIME.
+        //
+        // `LiteSVM::warp_to_slot` sets `clock.slot` and nothing else, so
+        // `unix_timestamp` never moves. Every time-gated path reads the
+        // timestamp, not the slot: the IF unstaking cooldown that
+        // `action_remove_if_stake` waits on, interest accrual, the funding
+        // cadence, and the revenue settle period. Warping slots alone left all
+        // of them permanently un-triggerable while appearing to advance time.
+        // ~400ms per slot keeps slot-based staleness and time-based cadences
+        // coherent with each other.
+        {
+            use anchor_lang::prelude::Clock;
+            let mut clock: Clock = self.ctx.svm.get_sysvar();
+            clock.slot = target;
+            clock.unix_timestamp = clock
+                .unix_timestamp
+                .saturating_add((slots as i64).saturating_mul(400) / 1000);
+            self.ctx.svm.set_sysvar(&clock);
+        }
+
+        // Repost the oracle at the new slot, else the warp leaves it stale by
+        // exactly the warp distance and every later margin/liquidation read
+        // bails out before reaching the logic under test. `repost == 0` (1 in 4)
+        // deliberately leaves it stale so those branches stay reachable.
+        if repost != 0 {
+            let price = self
+                .read_zc::<velocity::state::pyth_lazer_oracle::PythLazerOracle>(
+                    &self.perp_oracle_pda,
+                )
+                .map(|o| o.price)
+                .unwrap_or(PRICE_PRECISION as i64);
+            let seq = self.oracle_seq;
+            self.oracle_seq += 1;
+            let mut o = build_pyth_lazer_oracle(price, 0, target, seq);
+            let pda = self.perp_oracle_pda;
+            inject(&mut self.ctx, pda, &mut o);
+        }
+        true
+    }
+
+    /// Move the perp oracle by a bounded RELATIVE step (<1% per call).
+    ///
+    /// Capped at 99bps and applied to the current price rather than as an
+    /// absolute jump: a large jump mostly trips the oracle guard rails
+    /// (`is_oracle_valid_for_action`) and buys a rejection branch instead of
+    /// coverage, and real insolvency comes from a levered account meeting a
+    /// small move. Compounding steps still walk the price anywhere the fuzzer
+    /// needs while every intermediate state stays one the protocol could
+    /// actually be in — which matters here, because this harness's whole job is
+    /// deciding whether a liquidation was legitimate.
+    pub fn action_move_oracle_price(
+        &mut self,
+        #[range(0..2u8)] up: u8,
+        #[range(0..100u64)] bps: u64,
+        #[range(0..1_000_000u64)] conf: u64,
+        #[range(0..40u64)] slot_lag: u64,
+    ) -> bool {
+        let current = match self
+            .read_zc::<velocity::state::pyth_lazer_oracle::PythLazerOracle>(&self.perp_oracle_pda)
+        {
+            Some(o) => o.price.max(1),
+            None => return false,
+        };
+        let delta = (current as i128 * bps as i128 / 10_000).max(if bps > 0 { 1 } else { 0 });
+        let next = if up == 1 {
+            (current as i128).saturating_add(delta)
+        } else {
+            (current as i128).saturating_sub(delta).max(1)
+        };
+        let slot = self.ctx.slot();
+        let mut o = build_pyth_lazer_oracle(
+            next.clamp(1, i64::MAX as i128) as i64,
+            conf,
+            slot.saturating_sub(slot_lag),
+            self.oracle_seq,
+        );
+        self.oracle_seq += 1;
+        let pda = self.perp_oracle_pda;
+        inject(&mut self.ctx, pda, &mut o);
         true
     }
 
@@ -1225,7 +1579,7 @@ fn regr_275_equity_floor_liq(fixture: &mut Fixture) {
             .expect("overwrite liquidator stats");
     }
 
-    let succeeded = fixture.action_liquidate_perp(1_000_000);
+    let succeeded = fixture.action_liquidate_perp(1_000_000, VICTIM_IDX);
     fuzz_assert!(
         !succeeded,
         "regr #275: liquidate_perp succeeded while the liquidator's authority-wide \
@@ -1314,6 +1668,117 @@ fn regr_306_amm_phantom_funding(fixture: &mut Fixture) {
 #[cfg(test)]
 mod smoke {
     use super::*;
+
+    /// ACTION CENSUS — every action must be able to succeed at least once.
+    ///
+    /// A single-core probe reported `discovered: 6/13 actions`, which says how
+    /// many fire but never WHICH. An action that can never succeed is worse than
+    /// no action: the fuzzer still spends mutation budget picking it, and the
+    /// failure is invisible because every action returns a bare bool. This drives
+    /// each one and prints a table, so a silently-dead action fails the build.
+    ///
+    /// Actions that legitimately cannot succeed from this fixture's state are
+    /// listed in EXPECTED_CONDITIONAL with the reason.
+    #[test]
+    fn action_census() {
+        let mut f = Fixture::setup();
+        let mut results: Vec<(&str, bool)> = Vec::new();
+        macro_rules! run {
+            ($n:expr, $e:expr) => {
+                results.push(($n, $e));
+            };
+        }
+
+        run!("deposit", f.action_deposit(LIQUIDATOR_IDX, 100_000_000_000));
+        run!("move_oracle_price", f.action_move_oracle_price(1, 50, 0, 0));
+        run!("warp", f.action_warp(1_000, 1));
+        // Walk the price DOWN in sub-1% steps until the levered long is under
+        // maintenance; this is the pipeline the injected-bankrupt victim skips.
+        // The levered long is under maintenance at roughly -1.3% (10 base at
+        // $1, $0.62 collateral, 5% maintenance). Four sub-1% steps is enough.
+        // Walking much further would decouple the oracle from the AMM's mark
+        // and trip the price bands instead, which blocks the fill-based
+        // liquidation for an unrelated reason.
+        for _ in 0..4 {
+            let _ = f.action_move_oracle_price(0, 99, 0, 0);
+        }
+        run!(
+            "set_being_liquidated",
+            f.action_set_being_liquidated(LEVERED_IDX)
+        );
+        run!(
+            "liquidate_perp",
+            f.action_liquidate_perp(1_000_000, LEVERED_IDX)
+        );
+        run!(
+            "liquidate_perp_with_fill",
+            f.action_liquidate_perp_with_fill(LEVERED_IDX)
+        );
+        run!("liquidate_spot", f.action_liquidate_spot(1_000, VICTIM_IDX));
+        run!(
+            "liquidate_pnl_for_deposit",
+            f.action_liquidate_pnl_for_deposit(1_000, VICTIM_IDX)
+        );
+        run!(
+            "resolve_perp_bankruptcy",
+            f.action_resolve_perp_bankruptcy()
+        );
+        run!(
+            "resolve_spot_bankruptcy",
+            f.action_resolve_spot_bankruptcy()
+        );
+        run!(
+            "resolve_perp_pnl_deficit",
+            f.action_resolve_perp_pnl_deficit()
+        );
+        run!("add_if_stake", f.action_add_if_stake(10_000_000));
+        run!(
+            "request_remove_if_stake",
+            f.action_request_remove_if_stake(1_000_000)
+        );
+        run!("warp(cooldown)", f.action_warp(400_000, 1));
+        run!("remove_if_stake", f.action_remove_if_stake());
+
+        println!("\n==== e2e-svm-liq ACTION CENSUS ====");
+        let mut failed = Vec::new();
+        for (n, ok) in &results {
+            println!("  {:<30} {}", n, if *ok { "ok" } else { "FAIL" });
+            if !*ok {
+                failed.push(*n);
+            }
+        }
+        println!(
+            "  {}/{} succeeded",
+            results.len() - failed.len(),
+            results.len()
+        );
+
+        const EXPECTED_CONDITIONAL: &[&str] = &[
+            // Ordering: the victim is already flagged by the fixture, and each
+            // resolve/liquidate consumes the state the next one needs.
+            //
+            // `liquidate_spot` now REACHES the handler (the account list was
+            // missing `liquidator_stats`, so it used to die in Anchor), but it
+            // still cannot succeed with one spot market: asset == liability == 0
+            // and a `SpotPosition` holds a single balance type, so it lands on
+            // `WrongSpotBalanceType` (controller/liquidation.rs:2062-2066).
+            "liquidate_spot",
+            "liquidate_pnl_for_deposit",
+            "resolve_spot_bankruptcy",
+            "resolve_perp_pnl_deficit",
+            // Needs a settled stake and the escrow period to have elapsed.
+            "remove_if_stake",
+        ];
+        let unexpected: Vec<_> = failed
+            .iter()
+            .filter(|n| !EXPECTED_CONDITIONAL.contains(n))
+            .collect();
+        assert!(
+            unexpected.is_empty(),
+            "actions that should succeed but did not: {:?}",
+            unexpected
+        );
+    }
 
     #[test]
     fn setup_is_coherent() {

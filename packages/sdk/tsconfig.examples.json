@@ -1,0 +1,13 @@
+{
+	"extends": "./tsconfig.json",
+	"compilerOptions": {
+		"noEmit": true,
+		// Examples import by the published specifier so they stay copy-pasteable,
+		// but resolve to src here — typechecking must not require a build first.
+		"paths": {
+			"@solana/web3.js": ["../../node_modules/@solana/web3.js"],
+			"@velocity-exchange/sdk": ["./src/index.ts"]
+		}
+	},
+	"include": ["examples"]
+}

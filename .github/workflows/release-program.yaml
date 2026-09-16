@@ -69,7 +69,7 @@ jobs:
           program-id: ${{ steps.tag.outputs.program-id }}
           rpc-url: ${{ secrets.MAINNET_RPC_ENDPOINT }}
           keypair: ${{ secrets.MAINNET_DEPLOYER_KEYPAIR }}
-          buffer-authority: ${{ secrets.MAINNET_MULTISIG_VAULT }}
+          buffer-authority: ${{ vars.MAINNET_MULTISIG_VAULT }}
           # Record an on-chain solana-verify PDA (source proof) in the proposal.
           # DISABLED until this repo is public: `solana-verify export-pda-tx` does an
           # anonymous `git clone` of repo-url on the runner, which fails for a private
@@ -88,7 +88,7 @@ jobs:
         with:
           rpc: ${{ secrets.MAINNET_RPC_ENDPOINT }}
           program: ${{ steps.tag.outputs.program-id }}
-          multisig: ${{ secrets.MAINNET_MULTISIG }}
+          multisig: ${{ vars.MAINNET_MULTISIG }}
           vault-index: "0"
           buffer: ${{ steps.buffer-deploy.outputs.buffer }}
           metadata-buffer: ${{ steps.buffer-deploy.outputs.metadata-buffer }}

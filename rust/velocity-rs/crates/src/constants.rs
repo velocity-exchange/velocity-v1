@@ -521,6 +521,8 @@ generate_pyth_lazer_mappings! {
     const PYTH_LAZER_FEED_ID_TO_SPOT_MARKET_MAINNET: [
         (8, 0), // USDT
         (6, 1), // SOL
+        (1, 2), // wBTC, shares the BTC perp feed
+        (2, 3), // wETH, shares the ETH perp feed
     ];
     fn pyth_lazer_feed_id_to_spot_market_index;
     fn spot_market_index_to_pyth_lazer_feed_id;

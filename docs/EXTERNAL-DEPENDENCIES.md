@@ -10,7 +10,7 @@ Two questions this doc is meant to answer directly:
 
 ## Scope
 
-**Covered:** the three programs deployed from this repo (`velocity`, `vaults`, and `jit-proxy`),
+**Covered:** the two programs deployed from this repo (`velocity` and `vaults`),
 including every program they call, every account owner they deserialize, and their full resolved
 crate graph.
 
@@ -38,9 +38,8 @@ Solana or SPL infrastructure.
 | Associated Token Account | `ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL` | `velocity` | Protocol-fee withdrawal accounts; also whitelisted inside swap flows | Standard derivation | Withdrawal instructions fail; no fund risk |
 | Metaplex Token Metadata | `metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s` | `vaults` only | `create_metadata_accounts_v3` in `initialize_tokenized_vault_depositor` | Metaplex upgrade authority | Tokenized vault depositors cannot be created. Existing vault funds and the entire perps program are unaffected |
 
-`velocity` is a CPI *target* of `vaults` and `jit-proxy` (`J1TPRoXCtGuMcWiWFE6RB9eZU8U35PBMETCwNQLCNPhQ`),
-both of which depend on it with the `cpi` feature. That direction is inbound and adds no external
-trust.
+`velocity` is a CPI *target* of `vaults`, which depends on it with the `cpi` feature. That
+direction is inbound and adds no external trust.
 
 ### Token-2022 extensions
 

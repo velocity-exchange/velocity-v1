@@ -1,5 +1,73 @@
 # @velocity-exchange/dlob-server
 
+## 0.1.38
+
+### Patch Changes
+
+- [#510](https://github.com/velocity-exchange/velocity-v1/pull/510) [`af1792c`](https://github.com/velocity-exchange/velocity-v1/commit/af1792c65a9c0a6557bc709f53f5a7741c53beae) Thanks [@ChesterSim](https://github.com/ChesterSim)! - Stop a Redis blip from killing the publisher, and make the slot-diff kill-switch usable with HTTP health probes.
+
+  Redis writes on the publish path were fire-and-forget. When the client reconnected, `assertConnected` rejected a promise nobody handled and Node 24 terminated the process. Those writes now log and carry on, and every entrypoint installs an `unhandledRejection` guard so a future un-awaited call degrades the service instead of killing it.
+
+  The health check also changes in two ways so `httpGet /health` can replace the `tcpSocket` probes the mainnet publishers run today:
+
+  - A slot of 0 means no poll has returned yet, and is reported as healthy for the first `STARTUP_GRACE_MS` (default 180s) so a publisher starting against an empty book no longer crash-loops. Past that window a process still reporting no slot is treated as wedged rather than starting, and `/health` returns unhealthy.
+  - The slot-diff kill-switch latches only after a market stays behind the oracle continuously for `KILL_SWITCH_SUSTAIN_MS` (default 60s) instead of on a single sample. A gap in sampling longer than `KILL_SWITCH_SAMPLE_GAP_MS` (default 10s) restarts the window, so elapsed time across a stalled publish loop cannot latch it on its own.
+  - A transient stall clears itself rather than pinning the pod unhealthy forever. Only `Restart` stays latched, and it now survives the status write that `/health` performs on every probe.
+
+  All three durations fall back to their defaults if the environment override is not a finite positive number.
+
+- Updated dependencies [[`60a173f`](https://github.com/velocity-exchange/velocity-v1/commit/60a173fd58e70d68e7d670523129621df267e2c8), [`ab33ee9`](https://github.com/velocity-exchange/velocity-v1/commit/ab33ee907bd02907266853856718f8715a570f97)]:
+  - @velocity-exchange/sdk@0.24.0
+
+## 0.1.37
+
+### Patch Changes
+
+- Updated dependencies [[`a655327`](https://github.com/velocity-exchange/velocity-v1/commit/a655327291a5ef9238bae929f19d06158db512a4)]:
+  - @velocity-exchange/sdk@0.23.1
+
+## 0.1.36
+
+### Patch Changes
+
+- Updated dependencies [[`0afc72e`](https://github.com/velocity-exchange/velocity-v1/commit/0afc72e8c1506ce834c1f57b764a5b1a6cce6713)]:
+  - @velocity-exchange/sdk@0.23.0
+
+## 0.1.35
+
+### Patch Changes
+
+- Updated dependencies [[`d2ea4ff`](https://github.com/velocity-exchange/velocity-v1/commit/d2ea4ffd940d4498bb4d11a7983de650f0f4d886)]:
+  - @velocity-exchange/sdk@0.22.0
+
+## 0.1.34
+
+### Patch Changes
+
+- Updated dependencies [[`eaa0664`](https://github.com/velocity-exchange/velocity-v1/commit/eaa06645a8ae137ce4e8ca606b2a65d3a24980cd), [`033237b`](https://github.com/velocity-exchange/velocity-v1/commit/033237bb975692bcce5bd540b3b015aba29463f3), [`e2b86d3`](https://github.com/velocity-exchange/velocity-v1/commit/e2b86d3ddba2c3e903ce70da835314a16ebed8e3)]:
+  - @velocity-exchange/sdk@0.21.0
+
+## 0.1.33
+
+### Patch Changes
+
+- Updated dependencies [[`6c183e7`](https://github.com/velocity-exchange/velocity-v1/commit/6c183e7a9d45f4987055032efcd8267651a231a4)]:
+  - @velocity-exchange/sdk@0.20.0
+
+## 0.1.32
+
+### Patch Changes
+
+- Updated dependencies [[`a720d5b`](https://github.com/velocity-exchange/velocity-v1/commit/a720d5b5abdc6258fd6a171282c7e46c5378be4e), [`7e8ff7c`](https://github.com/velocity-exchange/velocity-v1/commit/7e8ff7ca876aad9e985d6fa0a1fd060614df4b8d), [`106aaeb`](https://github.com/velocity-exchange/velocity-v1/commit/106aaeb44eb4a3d0a6f1ad5f0c767b6f1e5adebe), [`be89e60`](https://github.com/velocity-exchange/velocity-v1/commit/be89e60ce61d33653817e35bcd2c640fc9204c6f)]:
+  - @velocity-exchange/sdk@0.19.0
+
+## 0.1.31
+
+### Patch Changes
+
+- Updated dependencies [[`4b55e4e`](https://github.com/velocity-exchange/velocity-v1/commit/4b55e4e6c7ae161b42d86f12a61da9d2c1003141), [`560a198`](https://github.com/velocity-exchange/velocity-v1/commit/560a198fa8a0f22ba7f3dc7f926164f8ca91dff5), [`48b8529`](https://github.com/velocity-exchange/velocity-v1/commit/48b85296c60250316ae30e3f980237af97591ec4)]:
+  - @velocity-exchange/sdk@0.18.0
+
 ## 0.1.30
 
 ### Patch Changes

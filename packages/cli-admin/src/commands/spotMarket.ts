@@ -206,6 +206,39 @@ export function registerSpotMarket(parent: Command): void {
 
 	withGlobalOptions(
 		sm
+			.command('set-max-token-deposits <market> <amount>')
+			.description(
+				'Hard deposit cap for a spot market. <amount> is raw u64 token base units ' +
+					'(mint decimals); 0 = uncapped. Deposits that would push total market ' +
+					'deposits above it are rejected. Warm/cold admin. Mirror the change in ' +
+					'deploy-scripts/params/relaunch-spot-markets.json (max_token_deposits).'
+			)
+	).action(async (market: string, amount: string, _flags, cmd: Command) => {
+		const opts = readGlobalOpts(cmd);
+		const provider = buildProvider(opts);
+		const client = await buildAdminClient(opts);
+		try {
+			const ix = await client.getUpdateSpotMarketMaxTokenDepositsIx(
+				Number.parseInt(market, 10),
+				new BN(amount)
+			);
+			const result = await sendOrPropose(
+				provider,
+				[ix],
+				opts.multisig ? new PublicKey(opts.multisig) : undefined,
+				'velocity-admin spot-market set-max-token-deposits'
+			);
+			reportDispatch(
+				`spot-market[${market}] max_token_deposits = ${amount}`,
+				result
+			);
+		} finally {
+			await client.unsubscribe();
+		}
+	});
+
+	withGlobalOptions(
+		sm
 			.command('set-deposit-cap <market> <threshold> <pctPerDay>')
 			.description(
 				'Per-market daily deposit cap. threshold (raw u64, token base units): ' +

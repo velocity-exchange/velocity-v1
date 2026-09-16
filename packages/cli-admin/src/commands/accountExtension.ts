@@ -7,6 +7,7 @@ import {
 import { utils } from '@coral-xyz/anchor';
 import { readGlobalOpts, withGlobalOptions } from '../lib/options';
 import { buildAdminClient, buildProvider } from '../lib/provider';
+import { confirmMainnetDirect } from '../lib/context';
 
 /**
  * CLI type flag → IDL account name for every zero-copy account the program's
@@ -14,19 +15,22 @@ import { buildAdminClient, buildProvider } from '../lib/provider';
  * purpose (their migrations are per-type deserialization changes, not
  * trailing-bytes growth).
  */
+// Values are the account names as the program coder knows them: anchor's
+// Program converts the IDL to camelCase at construction, so lookups against
+// `program.coder.accounts` must use camelCase, not the Rust struct names.
 const EXTENDABLE_ACCOUNT_TYPES: Record<string, string> = {
-	user: 'User',
-	'user-stats': 'UserStats',
-	'referrer-name': 'ReferrerName',
-	'perp-market': 'PerpMarket',
-	'spot-market': 'SpotMarket',
-	state: 'State',
-	'insurance-fund-stake': 'InsuranceFundStake',
-	'prelaunch-oracle': 'PrelaunchOracle',
-	'pyth-lazer-oracle': 'PythLazerOracle',
-	'revenue-share': 'RevenueShare',
-	'lp-pool': 'LPPool',
-	constituent: 'Constituent',
+	user: 'user',
+	'user-stats': 'userStats',
+	'referrer-name': 'referrerName',
+	'perp-market': 'perpMarket',
+	'spot-market': 'spotMarket',
+	state: 'state',
+	'insurance-fund-stake': 'insuranceFundStake',
+	'prelaunch-oracle': 'prelaunchOracle',
+	'pyth-lazer-oracle': 'pythLazerOracle',
+	'revenue-share': 'revenueShare',
+	'lp-pool': 'lpPool',
+	constituent: 'constituent',
 };
 
 export function registerAccountExtension(parent: Command): void {
@@ -173,6 +177,9 @@ export function registerAccountExtension(parent: Command): void {
 				return;
 			}
 
+			await confirmMainnetDirect(
+				`extend ${candidates.length} account(s) to ${targetLen} bytes`
+			);
 			let extended = 0;
 			for (let i = 0; i < candidates.length; i += batchSize) {
 				const chunk = candidates.slice(i, i + batchSize);

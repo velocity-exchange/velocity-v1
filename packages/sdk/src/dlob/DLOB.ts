@@ -16,7 +16,6 @@ import {
 	SlotDurationState,
 	elapsedMillis,
 	millisFromStoredUnits,
-	slotAtOrAfterDuration,
 } from '../math/time';
 import {
 	BASE_PRECISION,
@@ -35,6 +34,7 @@ import {
 	isRestingLimitOrder,
 	isTriggered,
 	mustBeTriggered,
+	signedMsgOrderMaxSlot,
 } from '../math/orders';
 import {
 	getVariant,
@@ -63,6 +63,7 @@ import {
 	mergeL2LevelGenerators,
 } from './orderBookLevels';
 import { isFallbackAvailableLiquiditySource } from '../math/auction';
+import { getPerpFeeTierIndex } from '../math/fees';
 import { convertToNumber } from '../math/conversion';
 
 /** An on-chain order paired with the pubkey of its owning `User` account. */
@@ -357,6 +358,12 @@ export class DLOB {
 	 * Inserts an off-chain signed-message order (not yet landed on-chain) into the market's
 	 * `signedMsg` bid/ask list, unconditionally (no status/order-type filtering, unlike
 	 * `insertOrder`). Lazily creates the market's `MarketNodeLists` on first insert.
+	 *
+	 * No slot gating: the program rejects a place of an auction order while
+	 * `order.slot > clock.slot` (a resting limit, with no auction, may be placed ahead of its
+	 * slot within a bounded lead), so callers that act on inserted signed-msg orders (e.g.
+	 * fillers) should hold an order back until `signedMsgOrderPlaceable(state, order,
+	 * currentSlot)` (from `math/orders`) is true.
 	 *
 	 * @param order the signed-message order to insert
 	 * @param userAccount base58 pubkey string of the order's owner
@@ -722,7 +729,7 @@ export class DLOB {
 	}
 
 	/**
-	 * Reads the tier-0 maker rebate fraction (`makerRebateNumerator / makerRebateDenominator`)
+	 * Reads the entry-tier maker rebate fraction (`makerRebateNumerator / makerRebateDenominator`)
 	 * for a market from `stateAccount`'s perp/spot fee structure, then scales the numerator up by
 	 * the market's `feeAdjustment` percentage if one is set. Used by `findRestingLimitOrderNodesToFill`
 	 * to size the buffer added to fallback prices so fallback fills aren't triggered by rebate-sized
@@ -741,10 +748,15 @@ export class DLOB {
 		let makerRebateNumerator: number;
 		let makerRebateDenominator: number;
 		if (isVariant(marketType, 'perp')) {
-			makerRebateNumerator =
-				stateAccount.perpFeeStructure.feeTiers[0].makerRebateNumerator;
-			makerRebateDenominator =
-				stateAccount.perpFeeStructure.feeTiers[0].makerRebateDenominator;
+			// The DLOB does not know a given maker's volume, so the buffer is
+			// sized on the lowest rebate any maker earns. A `promoFeeTier` floor
+			// raises that lower bound for everyone, so it belongs here too.
+			const feeTier =
+				stateAccount.perpFeeStructure.feeTiers[
+					getPerpFeeTierIndex(undefined, stateAccount)
+				];
+			makerRebateNumerator = feeTier.makerRebateNumerator;
+			makerRebateDenominator = feeTier.makerRebateDenominator;
 		} else {
 			makerRebateNumerator =
 				stateAccount.spotFeeStructure.feeTiers[0].makerRebateNumerator;
@@ -1327,17 +1339,12 @@ export class DLOB {
 	 * @returns `NodeToFill`s (with empty `makerNodes`) for orders ready to expire
 	 * @throws if a signed-message order is present and `slot` was not provided
 	 */
-	/**
-	 * The last slot a signed message order can still be placed on-chain,
-	 * mirroring the program's `max_slot`: placement slot plus the auction
-	 * duration converted from 400ms units to actual slots (ceil) at the live
-	 * slot duration.
-	 */
+	/** The order's placement window, resolved against this DLOB's slot clock. */
 	private signedMsgMaxSlot(order: Order): BN {
-		return slotAtOrAfterDuration(
+		return signedMsgOrderMaxSlot(
 			this.slotDurationState,
 			order.slot,
-			millisFromStoredUnits(order.auctionDuration)
+			order.auctionDuration
 		);
 	}
 

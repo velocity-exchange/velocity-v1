@@ -10,6 +10,9 @@
 # known correctness bugs). `bun install` resolves the whole workspace once; turbo
 # builds only the requested package + its workspace deps. The runner copies just the
 # app's emitted output and installs the native deps esbuild marks external.
+#
+# Layer order is deliberate: apt, then manifests + install, then sources. A
+# source-only change re-runs `turbo build` alone; apt and `bun install` stay cached.
 
 ARG APP_PATH
 ARG APP_SCOPE
@@ -21,21 +24,33 @@ WORKDIR /app
 # Disable Turborepo anonymous telemetry for the image build.
 ENV TURBO_TELEMETRY_DISABLED=1 \
     DO_NOT_TRACK=1
-# bunfig.toml carries the supply-chain install policy (exact pins,
-# minimumReleaseAge) — copy it so the image build is governed by it too.
-COPY package.json bun.lock bunfig.toml turbo.json ./
-COPY packages/ ./packages/
-COPY apps/ ./apps/
 # node-hid (via @ledgerhq/hw-transport-node-hid) falls back to a source build
 # when its prebuilt-binary download fails (flaky on CI); the oven/bun image has
 # no toolchain for that. Install what the fallback needs so a failed fetch
 # cannot fail the image build.
+# Kept above every COPY so a source-only change never re-runs apt.
 RUN apt-get update -qq \
     && apt-get install -y -qq --no-install-recommends \
     python3 make g++ pkg-config libusb-1.0-0-dev libudev-dev \
     && rm -rf /var/lib/apt/lists/*
+# Manifests only, so `bun install` re-runs on dependency changes rather than on
+# every source edit. Each workspace member is listed explicitly: a wildcard
+# (`packages/*/package.json`) flattens onto one destination path, and adding a
+# member without adding it here fails loudly at --frozen-lockfile.
+# bunfig.toml carries the supply-chain install policy (exact pins,
+# minimumReleaseAge) — copy it so the image build is governed by it too.
+COPY package.json bun.lock bunfig.toml turbo.json ./
+COPY apps/dlob-server/package.json      ./apps/dlob-server/
+COPY apps/keeper-bots-v2/package.json   ./apps/keeper-bots-v2/
+COPY apps/usermap-server/package.json   ./apps/usermap-server/
+COPY packages/cli-admin/package.json    ./packages/cli-admin/
+COPY packages/jit-proxy/package.json    ./packages/jit-proxy/
+COPY packages/sdk/package.json          ./packages/sdk/
+COPY packages/vaults-sdk/package.json   ./packages/vaults-sdk/
 # Frozen: install exactly what the committed lockfile pins, never re-resolve.
 RUN bun install --frozen-lockfile
+COPY packages/ ./packages/
+COPY apps/ ./apps/
 ARG APP_SCOPE
 RUN bunx turbo run build --filter="${APP_SCOPE}"
 
@@ -49,8 +64,8 @@ WORKDIR /app
 RUN apk add --no-cache --virtual .build python3 make g++ \
  && npm install --no-save --no-audit --no-fund \
       bigint-buffer@1.1.5 \
-      @triton-one/yellowstone-grpc@5.0.5 \
-      helius-laserstream@0.1.8 \
+      @triton-one/yellowstone-grpc@6.0.0 \
+      helius-laserstream@0.8.5 \
       rpc-websockets@7.5.1 \
  && apk del .build
 COPY --from=builder /app/${APP_PATH}/${APP_OUT} ./${APP_OUT}

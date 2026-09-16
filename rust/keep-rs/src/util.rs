@@ -10,7 +10,7 @@ use {
         },
         subscription::{Response, SubscribeRequest, SubscriptionId},
     },
-    solana_sdk::signature::Signature,
+    solana_signature::Signature,
     std::{
         collections::HashSet,
         time::{Duration, SystemTime, UNIX_EPOCH},
@@ -23,7 +23,7 @@ use {
         dlob::{L3Order, MakerCrosses},
         math::constants::PRICE_PRECISION,
         program::math::time::{Millis, SlotClock, SlotDuration},
-        types::{MarketId, MarketType, OraclePriceData, OracleSource},
+        types::{MarketId, MarketType, OraclePriceData, OracleSource, OrderParams, OrderType},
         Pubkey,
     },
 };
@@ -470,8 +470,105 @@ impl<const N: usize> PendingTxs<N> {
 /// (programs/velocity/src/instructions/keeper.rs).
 pub const SWIFT_SIGNED_MSG_MAX_AGE: Millis = Millis::from_secs(200);
 
-/// Returns true if a swift (signed-message) order can no longer be usefully *placed* on-chain,
-/// so the bot shouldn't spend a tx trying.
+/// Max lead of a resting swift limit's message slot over the current slot before the
+/// program refuses to place it early (~30s; the UI stamps ~14s ahead).
+///
+/// Mirrors `max_resting_limit_lead` in `place_signed_msg_taker_order`.
+pub const SWIFT_RESTING_LIMIT_MAX_LEAD: Millis = Millis::from_secs(30);
+
+/// How to treat a swift order whose signed message may be stamped ahead of the chain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SwiftSlotWait {
+    /// The message slot has arrived: the order can be filled or placed now.
+    Ready,
+    /// Stamped ahead of the chain, within a credible signing buffer: hold the order and
+    /// re-evaluate once its slot arrives.
+    Wait,
+    /// Stamped so far ahead it cannot be a signing buffer: don't hold it.
+    TooFarAhead,
+}
+
+/// True if a swift order is a limit order with no auction. It rests from placement, so the
+/// program treats its message slot as a placement deadline rather than an auction start
+/// and accepts it ahead of that slot (see [`swift_slot_wait`]).
+pub fn is_resting_swift_limit(order_params: &OrderParams) -> bool {
+    order_params.order_type == OrderType::Limit && order_params.auction_duration.unwrap_or(0) == 0
+}
+
+/// Classify a swift order's signed-message slot against the current slot.
+///
+/// For an auction order `place_signed_msg_taker_order` rejects `order_slot > clock.slot`
+/// (`InvalidSignedMsgOrderParam`), so one stamped ahead of the chain can be neither
+/// filled nor placed yet. Signers add a buffer so the message stays valid while it travels
+/// (the UI stamps a few slots ahead), which makes this a normal arrival state rather than a
+/// bad order: the swift feed delivers each order exactly once, so the only way not to lose
+/// it is to hold it until its slot arrives. `max_wait` bounds how far ahead a stamp is
+/// still credible as a signing buffer.
+///
+/// A resting limit (`resting_limit`, see [`is_resting_swift_limit`]) has no auction to
+/// start: its message slot is the placement deadline (`max_slot`), stamped a whole signing
+/// budget ahead, and the program places it before that slot as long as the stamp is within
+/// [`SWIFT_RESTING_LIMIT_MAX_LEAD`]. Waiting would leave a single slot to land the tx, so it
+/// is ready on arrival.
+pub fn swift_slot_wait(
+    order_slot: u64,
+    current_slot: u64,
+    max_wait: Millis,
+    resting_limit: bool,
+    slot_clock: SlotClock,
+) -> SwiftSlotWait {
+    if order_slot <= current_slot {
+        return SwiftSlotWait::Ready;
+    }
+    let lead = slot_clock.elapsed(current_slot, order_slot);
+    if resting_limit {
+        return if lead > SWIFT_RESTING_LIMIT_MAX_LEAD {
+            SwiftSlotWait::TooFarAhead
+        } else {
+            SwiftSlotWait::Ready
+        };
+    }
+    if lead > max_wait {
+        return SwiftSlotWait::TooFarAhead;
+    }
+    SwiftSlotWait::Wait
+}
+
+/// Classify a Swift order only once the chain slot is known. Startup RPC failure
+/// is not evidence that a production-scale order slot is implausibly far ahead,
+/// so the safe state is to hold the order until the slot feed produces a value.
+pub fn swift_slot_wait_if_known(
+    order_slot: u64,
+    current_slot: Option<u64>,
+    max_wait: Millis,
+    resting_limit: bool,
+    slot_clock: SlotClock,
+) -> SwiftSlotWait {
+    match current_slot {
+        Some(current_slot) => swift_slot_wait(
+            order_slot,
+            current_slot,
+            max_wait,
+            resting_limit,
+            slot_clock,
+        ),
+        None => SwiftSlotWait::Wait,
+    }
+}
+
+/// Whether the biased filler select should poll Swift this iteration. When both
+/// streams stay ready, `prefer_slot` alternates after each successful slot/Swift
+/// poll so neither a slot backlog nor a busy Swift feed can starve the other.
+pub fn should_poll_swift(
+    swift_feed_live: bool,
+    slot_update_pending: bool,
+    prefer_slot: bool,
+) -> bool {
+    swift_feed_live && !(slot_update_pending && prefer_slot)
+}
+
+/// Returns true if a swift (signed-message) order is too old to be usefully filled or placed
+/// on-chain, so the bot shouldn't spend a tx on it.
 ///
 /// The two slot gates mirror `place_signed_msg_taker_order` exactly:
 /// - **signed message staleness**: the program rejects once the order's
@@ -484,7 +581,11 @@ pub const SWIFT_SIGNED_MSG_MAX_AGE: Millis = Millis::from_secs(200);
 /// on `max_ts`): an order whose `max_ts` has passed is already dead, so placing it would waste a
 /// tx. Note `auction_duration` is a `u8` (≤ 255 units ≈ 102s), so the placement deadline always
 /// binds before the ~200s staleness window; both are checked for completeness/robustness.
-pub fn swift_placement_expired(
+///
+/// The opposite end of the window, an order stamped *ahead* of the chain, is
+/// [`swift_slot_wait`]'s job: that order is not dead but early, and is held rather than dropped.
+/// This function reports "not expired" for one, so callers must run the wait gate first.
+pub fn swift_order_expired(
     order_slot: u64,
     auction_duration: u8,
     max_ts: i64,
@@ -492,9 +593,6 @@ pub fn swift_placement_expired(
     now_ts: i64,
     slot_clock: SlotClock,
 ) -> bool {
-    if order_slot > current_slot {
-        return true;
-    }
     // signed message too old for the program to accept
     if slot_clock.elapsed(order_slot, current_slot) > SWIFT_SIGNED_MSG_MAX_AGE {
         return true;
@@ -954,18 +1052,20 @@ pub fn subscribe_price_feeds(
 mod tests {
     use {
         super::{
-            preview_pyth_lazer_oracle, pyth_update_is_fresh, swift_placement_expired,
-            OrderSlotLimiter, PendingTxMeta, PendingTxs, Pubkey, PythPriceUpdate, TxIntent,
+            is_resting_swift_limit, preview_pyth_lazer_oracle, pyth_update_is_fresh,
+            should_poll_swift, swift_order_expired, swift_slot_wait, swift_slot_wait_if_known,
+            OrderParams, OrderSlotLimiter, OrderType, PendingTxMeta, PendingTxs, Pubkey,
+            PythPriceUpdate, SwiftSlotWait, TxIntent,
         },
         pyth_lazer_protocol::{
             message::SolanaMessage,
             payload::{PayloadData, PayloadFeedData, PayloadPropertyValue},
             router::{ChannelId, Price, PriceFeedId, TimestampUs},
         },
-        solana_sdk::signature::Signature,
+        solana_signature::Signature,
         std::num::NonZeroI64,
         velocity_rs::{
-            program::math::time::SlotClock,
+            program::math::time::{Millis, SlotClock},
             types::{MarketType, OracleSource},
         },
     };
@@ -1093,11 +1193,145 @@ mod tests {
     }
 
     #[test]
+    fn swift_slot_wait_holds_a_signing_buffer() {
+        // The UI's buffer: a few slots ahead of the chain, the normal arrival state.
+        assert_eq!(
+            swift_slot_wait(
+                107,
+                100,
+                Millis::from_secs(10),
+                false,
+                SlotClock::baseline()
+            ),
+            SwiftSlotWait::Wait
+        );
+        // Arrived: the program accepts the order from its own slot onward.
+        assert_eq!(
+            swift_slot_wait(
+                100,
+                100,
+                Millis::from_secs(10),
+                false,
+                SlotClock::baseline()
+            ),
+            SwiftSlotWait::Ready
+        );
+        assert_eq!(
+            swift_slot_wait(95, 100, Millis::from_secs(10), false, SlotClock::baseline()),
+            SwiftSlotWait::Ready
+        );
+        // 25 baseline slots = 10s, exactly the bound; one more is not a signing buffer.
+        assert_eq!(
+            swift_slot_wait(
+                125,
+                100,
+                Millis::from_secs(10),
+                false,
+                SlotClock::baseline()
+            ),
+            SwiftSlotWait::Wait
+        );
+        assert_eq!(
+            swift_slot_wait(
+                126,
+                100,
+                Millis::from_secs(10),
+                false,
+                SlotClock::baseline()
+            ),
+            SwiftSlotWait::TooFarAhead
+        );
+    }
+
+    #[test]
+    fn swift_slot_wait_places_a_resting_limit_ahead_of_its_slot() {
+        // A no-auction limit's stamp is its placement deadline, set a whole signing budget
+        // (~14s, 35 baseline slots) ahead: past the deferral bound, yet ready now.
+        assert_eq!(
+            swift_slot_wait(135, 100, Millis::from_secs(10), true, SlotClock::baseline()),
+            SwiftSlotWait::Ready
+        );
+        // The program's 30s lead bound (75 baseline slots) still bounds the stamp.
+        assert_eq!(
+            swift_slot_wait(175, 100, Millis::from_secs(10), true, SlotClock::baseline()),
+            SwiftSlotWait::Ready
+        );
+        assert_eq!(
+            swift_slot_wait(176, 100, Millis::from_secs(10), true, SlotClock::baseline()),
+            SwiftSlotWait::TooFarAhead
+        );
+        // A stamp at or behind the chain is ready either way.
+        assert_eq!(
+            swift_slot_wait(100, 100, Millis::from_secs(10), true, SlotClock::baseline()),
+            SwiftSlotWait::Ready
+        );
+    }
+
+    #[test]
+    fn resting_swift_limit_is_a_limit_with_no_auction() {
+        let mut params = OrderParams {
+            order_type: OrderType::Limit,
+            auction_duration: None,
+            ..Default::default()
+        };
+        assert!(is_resting_swift_limit(&params));
+        params.auction_duration = Some(0);
+        assert!(is_resting_swift_limit(&params));
+        params.auction_duration = Some(10);
+        assert!(!is_resting_swift_limit(&params));
+        params.order_type = OrderType::Market;
+        params.auction_duration = None;
+        assert!(!is_resting_swift_limit(&params));
+    }
+
+    #[test]
+    fn swift_slot_wait_defers_until_the_chain_slot_is_known() {
+        assert_eq!(
+            swift_slot_wait_if_known(
+                443_184_701,
+                None,
+                Millis::from_secs(10),
+                false,
+                SlotClock::baseline(),
+            ),
+            SwiftSlotWait::Wait
+        );
+        assert_eq!(
+            swift_slot_wait_if_known(
+                443_184_701,
+                Some(443_184_694),
+                Millis::from_secs(10),
+                false,
+                SlotClock::baseline(),
+            ),
+            SwiftSlotWait::Wait
+        );
+        assert_eq!(
+            swift_slot_wait_if_known(
+                443_184_720,
+                Some(443_184_694),
+                Millis::from_secs(10),
+                false,
+                SlotClock::baseline(),
+            ),
+            SwiftSlotWait::TooFarAhead
+        );
+    }
+
+    #[test]
+    fn swift_and_buffered_slots_take_bounded_turns() {
+        assert!(!should_poll_swift(true, true, true));
+        assert!(should_poll_swift(true, true, false));
+        assert!(should_poll_swift(true, false, true));
+        assert!(!should_poll_swift(false, false, false));
+    }
+
+    #[test]
     fn swift_expiry_placement_deadline_binds_before_staleness() {
         // `auction_duration` is a u8 (<=255), so the placement deadline
         // (order_slot + auction_duration) always binds before the 500-slot signed-message
         // window. The order is unplaceable one slot past the deadline, well before slot 500.
-        assert!(!swift_placement_expired(
+        assert!(!swift_order_expired(
             0,
             255,
             0,
@@ -1105,7 +1339,7 @@ mod tests {
             0,
             SlotClock::baseline()
         ));
-        assert!(swift_placement_expired(
+        assert!(swift_order_expired(
             0,
             255,
             0,
@@ -1118,7 +1352,7 @@ mod tests {
     #[test]
     fn swift_expiry_placement_deadline() {
         // max_slot = order_slot + auction_duration = 130. Program rejects once max_slot < slot.
-        assert!(!swift_placement_expired(
+        assert!(!swift_order_expired(
             100,
             30,
             0,
@@ -1126,7 +1360,7 @@ mod tests {
             0,
             SlotClock::baseline()
         )); // exactly at deadline: still placeable
-        assert!(swift_placement_expired(
+        assert!(swift_order_expired(
             100,
             30,
             0,
@@ -1135,7 +1369,7 @@ mod tests {
             SlotClock::baseline()
         )); // one past: gone
             // Zero auction duration (limit order default): only placeable in the signing slot.
-        assert!(!swift_placement_expired(
+        assert!(!swift_order_expired(
             100,
             0,
             0,
@@ -1143,7 +1377,7 @@ mod tests {
             0,
             SlotClock::baseline()
         ));
-        assert!(swift_placement_expired(
+        assert!(swift_order_expired(
             100,
             0,
             0,
@@ -1156,7 +1390,7 @@ mod tests {
     #[test]
     fn swift_expiry_max_ts() {
         // max_ts == 0 disables the ts check.
-        assert!(!swift_placement_expired(
+        assert!(!swift_order_expired(
             100,
             200,
             0,
@@ -1165,7 +1399,7 @@ mod tests {
             SlotClock::baseline()
         ));
         // now == max_ts is still valid; now > max_ts expires.
-        assert!(!swift_placement_expired(
+        assert!(!swift_order_expired(
             100,
             200,
             5_000,
@@ -1173,7 +1407,7 @@ mod tests {
             5_000,
             SlotClock::baseline()
         ));
-        assert!(swift_placement_expired(
+        assert!(swift_order_expired(
             100,
             200,
             5_000,

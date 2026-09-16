@@ -63,8 +63,91 @@ jobs:
       anchor: ${{ steps.filter.outputs.anchor }}
       docker_ts: ${{ steps.filter.outputs.docker_ts }}
       docker_rust: ${{ steps.filter.outputs.docker_rust }}
+      # True when the PR changes nothing but package versions. See the step.
+      version_only: ${{ steps.version_only.outputs.value }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      # The changesets bot's "Version Packages" PR (changesets.yml) only rewrites
+      # package.json `version` fields, CHANGELOGs, and .changeset/*, but those
+      # live under packages/** and apps/**, so the `anchor` and `docker_ts`
+      # filters below match it every single time. It therefore paid for two
+      # 60-minute suites and two image builds that cannot say anything about a
+      # version string.
+      #
+      # This is deliberately decided from the DIFF CONTENT, not from the branch
+      # name or the PR author. `changeset-release/master` is an ordinary
+      # unprotected branch and `github-actions[bot]` is reachable by anyone who
+      # can add a workflow, so gating on either would let a push-access user
+      # disarm a required status check (a skipped job satisfies one) by pushing
+      # code to a suggestively named branch. Content cannot be spoofed that way:
+      # a PR that touches program or SDK source never qualifies, whoever opens
+      # it and wherever from.
+      #
+      # Every unexpected condition (a fetch failure, an added or deleted
+      # package.json, an unreadable blob, a path outside the allowlist) leaves
+      # the verdict false and runs the heavy jobs. The failure direction is
+      # always "test more", never "test less".
+      - name: Detect a version-bump-only PR
+        id: version_only
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # errexit must be OFF: the runner invokes this step as
+          # `bash -e -o pipefail`, and `set -u`/`set -o pipefail` do not clear
+          # that. Under -e a missing blob (an added or deleted package.json) or
+          # unparseable JSON aborts the step, failing the whole `changes` job
+          # and every job that needs it. Those cases must fall through to
+          # verdict=false and let the heavy jobs run instead.
+          set +e
+          set -uo pipefail
+          verdict=false
+          # checkout is depth-1 on the merge ref, so fetch both endpoints. A
+          # depth-1 fetch of a commit still carries its complete tree, which is
+          # all `git show <sha>:<path>` needs.
+          #
+          # The file list is captured up front rather than piped into the loop:
+          # a `git diff` that failed inside a process substitution would run the
+          # loop zero times and leave an affirmative verdict standing.
+          #
+          # `--no-renames` is load-bearing. Rename detection is on by default and
+          # reports a rename as the destination path ALONE, so renaming a source
+          # or test file to something like tests/x/CHANGELOG.md would show the
+          # allowlisted destination and hide the deletion, dropping a test while
+          # skipping the suite that would have noticed. Disabling it splits every
+          # rename into its delete and add halves so both paths get checked.
+          if git fetch --no-tags --depth=1 origin "$BASE_SHA" "$HEAD_SHA" 2>&1 \
+            && files=$(git diff --no-renames --name-only "$BASE_SHA" "$HEAD_SHA") \
+            && [ -n "$files" ]; then
+            verdict=true
+            while IFS= read -r f; do
+              case "$f" in
+                .changeset/*) continue ;;
+                CHANGELOG.md | */CHANGELOG.md) continue ;;
+                package.json | */package.json)
+                  # Identical once `version` is dropped => a pure version bump.
+                  # Anything else in there (a dependency, a script, a turbo or
+                  # workspace field) is a real build input and must not skip the
+                  # image builds. Both sides must be non-empty: a missing blob
+                  # (added/deleted file) or unparseable JSON yields "" on both
+                  # sides, and "" = "" must not read as "no change".
+                  before=$(git show "$BASE_SHA:$f" 2>/dev/null | jq -S 'del(.version)' 2>/dev/null)
+                  after=$(git show "$HEAD_SHA:$f" 2>/dev/null | jq -S 'del(.version)' 2>/dev/null)
+                  if [ -n "$before" ] && [ -n "$after" ] && [ "$before" = "$after" ]; then
+                    continue
+                  fi
+                  ;;
+              esac
+              echo "not version-only, because of: $f"
+              verdict=false
+              break
+            done <<< "$files"
+          else
+            echo "no readable diff for this PR; treating it as a normal one"
+          fi
+          echo "version-bump-only PR: $verdict"
+          echo "value=$verdict" >> "$GITHUB_OUTPUT"
       - uses: dorny/paths-filter@4512585405083f25c027a35db413c2b3b9006d50 # v2
         id: filter
         with:
@@ -114,8 +197,11 @@ jobs:
               - 'packages/**'
               - 'package.json'
               - 'bun.lock'
+              - 'bunfig.toml'
               - 'turbo.json'
               - 'docker/ts-app.Dockerfile'
+              - 'docker/ts-app.Dockerfile.dockerignore'
+              - '.dockerignore'
               - 'docker-info.json'
             # rust app docker images (keep-rs/swift) build the rust workspace, which
             # consumes the velocity program as a host path-dep.
@@ -124,7 +210,12 @@ jobs:
               - 'programs/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
+              # velocity-rs's build.rs regenerates velocity_idl.rs from this IDL,
+              # so an IDL-only change does change the built binaries.
+              - 'packages/sdk/src/idl/velocity.json'
               - 'docker/rust-app.Dockerfile'
+              - 'docker/rust-app.Dockerfile.dockerignore'
+              - '.dockerignore'
               - 'docker-info.json'
   fmt-clippy:
     name: fmt & clippy
@@ -257,10 +348,51 @@ jobs:
     runs-on: ubicloud
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - name: Cache cargo-deny version
+      - name: Cache cargo-deny/cargo-audit versions
         uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
+      # Pinned: the DB hand-off below depends on both tools' exact on-disk
+      # layout and hashing behaviour (see the "Expose the database" step).
       - name: Install cargo-deny
-        run: cargo install cargo-deny --locked
+        run: cargo install cargo-deny --version 0.20.2 --locked
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --version 0.22.2 --locked
+      # cargo-deny 0.20.x fetches the RustSec advisory DB by shelling out to
+      # the git CLI (its CHANGELOG PR#830 dropped the previous gix-library
+      # path, and there is no config switch back). GitHub rejects that
+      # unauthenticated git-CLI clone from this runner, and we do not want to
+      # hand the job a GITHUB_TOKEN. cargo-audit fetches the same DB with the
+      # `rustsec` crate's gix-library path, which GitHub does accept, so use
+      # cargo-audit purely as the fetch mechanism and point cargo-deny at its
+      # clone (offline, below). The audit *result* is gated by the separate
+      # Cargo audit job above; here only the clone matters.
+      - name: Fetch advisory database
+        run: |
+          ADVISORY_DB="$RUNNER_TEMP/advisory-db"
+          cargo audit --db "$ADVISORY_DB" >/dev/null 2>&1 || true
+          test -d "$ADVISORY_DB/.git" || { echo "::error::advisory database was not fetched"; exit 1; }
+      # cargo-deny stores its DB at <db-path>/<last URL path segment>-<xxhash64
+      # of the lowercased URL, seed 0xca80de71> (cargo-deny's url_to_db_path,
+      # src/advisories/helpers/db.rs). For the default RustSec URL that is
+      # `advisory-db-3157b0e258782691` -- pinned to cargo-deny 0.20.2, hence
+      # the version pin above. Symlink cargo-audit's clone in under that name
+      # so cargo-deny's offline open finds it, and point deny.toml's
+      # `db-path` (via CARGO_DENY_DB_PATH) at the scratch dir holding it.
+      - name: Expose the database to cargo-deny
+        run: |
+          DENY_DBS="$RUNNER_TEMP/advisory-dbs"
+          mkdir -p "$DENY_DBS"
+          LINK="$DENY_DBS/advisory-db-3157b0e258782691"
+          rm -rf "$LINK"
+          ln -s "$RUNNER_TEMP/advisory-db" "$LINK"
+          test -L "$LINK" && test "$(readlink "$LINK")" = "$RUNNER_TEMP/advisory-db"
+          echo "CARGO_DENY_DB_PATH=$DENY_DBS" >> "$GITHUB_ENV"
+      # `--offline` below also makes cargo-deny's own `cargo metadata`
+      # resolution offline, so prefetch both workspaces' crates.io deps first
+      # (that part of the fetch is plain HTTPS and works fine on the runner).
+      - name: Prefetch crates
+        run: |
+          cargo fetch --locked --manifest-path Cargo.toml
+          cargo fetch --locked --manifest-path rust/Cargo.toml
       # `sources` is the reason this job exists: a dependency may only come from
       # crates.io or from a git remote explicitly allowlisted in deny.toml, so a
       # new git dependency cannot land unreviewed. `licenses` and `bans` ride
@@ -271,10 +403,13 @@ jobs:
       # `cargo metadata`, which will happily re-resolve from the manifests when a
       # lockfile is out of sync. That would check a graph nobody committed, and the
       # new-dependency gate (which diffs lockfiles) would never see it either.
+      # `--offline` skips cargo-deny's own (git-CLI) advisory-DB fetch and reads
+      # the clone staged above instead; it enforces `maximum-db-staleness`
+      # against that clone's local git metadata, no network needed.
       - name: Run cargo-deny (program workspace) # Using args from deny.toml
-        run: cargo deny --locked --manifest-path Cargo.toml --config deny.toml check
+        run: cargo deny --offline --locked --manifest-path Cargo.toml --config deny.toml check
       - name: Run cargo-deny (rust workspace) # Using args from deny.toml
-        run: cargo deny --locked --manifest-path rust/Cargo.toml --config deny.toml check
+        run: cargo deny --offline --locked --manifest-path rust/Cargo.toml --config deny.toml check
   prettier:
     runs-on: ubicloud
     steps:
@@ -660,7 +795,7 @@ jobs:
   anchor-tests:
     name: Anchor tests
     needs: changes
-    if: ${{ needs.changes.outputs.anchor == 'true' }}
+    if: ${{ needs.changes.outputs.anchor == 'true' && needs.changes.outputs.version_only != 'true' }}
     runs-on: ubicloud
     timeout-minutes: 60
     steps:
@@ -813,7 +948,7 @@ jobs:
   vault-tests:
     name: Vault tests
     needs: changes
-    if: ${{ needs.changes.outputs.anchor == 'true' }}
+    if: ${{ needs.changes.outputs.anchor == 'true' && needs.changes.outputs.version_only != 'true' }}
     runs-on: ubicloud
     timeout-minutes: 60
     steps:
@@ -995,10 +1130,12 @@ jobs:
   # docker-info.json), but with push: false — just prove they build clean.
   # Path-gated: TS images only when TS/workspace changes, rust images only when
   # the rust workspace / program changes. type=gha layer cache keeps reruns cheap.
+  # TS images additionally skip a version-bump-only PR (see `version_only` in
+  # the changes job). A bumped `version` field cannot change what an image builds.
   docker-images-ts:
     name: Docker build (ts)
     needs: changes
-    if: ${{ needs.changes.outputs.docker_ts == 'true' }}
+    if: ${{ needs.changes.outputs.docker_ts == 'true' && needs.changes.outputs.version_only != 'true' }}
     runs-on: ubicloud
     strategy:
       fail-fast: false
@@ -1084,6 +1221,8 @@ jobs:
       - verified-build
       - docker-images-ts
       - docker-images-rust
+      - cargo-audit
+      - cargo-deny
     runs-on: ubicloud
     steps:
       - name: Require upstream jobs to have succeeded or been skipped

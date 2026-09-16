@@ -60,8 +60,12 @@ async function feePoolInjection(fees, marketIndex, velocityClient) {
 		);
 		console.log(
 			'tx logs',
-			(await connection.getTransaction(tx, { commitment: 'confirmed' })).meta
-				.logMessages
+			(
+				await connection.getTransaction(tx, {
+					commitment: 'confirmed',
+					maxSupportedTransactionVersion: 1,
+				})
+			).meta.logMessages
 		);
 
 		// try to cancel remaining order
@@ -284,8 +288,12 @@ describe('update amm', () => {
 		console.log('compute units', computeUnits);
 		console.log(
 			'tx logs',
-			(await connection.getTransaction(txSig, { commitment: 'confirmed' })).meta
-				.logMessages
+			(
+				await connection.getTransaction(txSig, {
+					commitment: 'confirmed',
+					maxSupportedTransactionVersion: 1,
+				})
+			).meta.logMessages
 		);
 		const market = velocityClient.getPerpMarketAccount(0);
 		const [bid1, ask1] = calculateBidAskPrice(market.amm, oraclePriceData);
@@ -390,8 +398,12 @@ describe('update amm', () => {
 		console.log('compute units', computeUnits);
 		console.log(
 			'tx logs',
-			(await connection.getTransaction(txSig, { commitment: 'confirmed' })).meta
-				.logMessages
+			(
+				await connection.getTransaction(txSig, {
+					commitment: 'confirmed',
+					maxSupportedTransactionVersion: 1,
+				})
+			).meta.logMessages
 		);
 		const market = velocityClient.getPerpMarketAccount(1);
 		const [bid1, ask1] = calculateBidAskPrice(market.amm, oraclePriceData);
@@ -490,8 +502,12 @@ describe('update amm', () => {
 
 		console.log(
 			'tx logs',
-			(await connection.getTransaction(txSig, { commitment: 'confirmed' })).meta
-				.logMessages
+			(
+				await connection.getTransaction(txSig, {
+					commitment: 'confirmed',
+					maxSupportedTransactionVersion: 1,
+				})
+			).meta.logMessages
 		);
 
 		await setFeedPrice(anchor.workspace.Pyth, 1.9378, mockOracles[marketIndex]);
@@ -585,8 +601,12 @@ describe('update amm', () => {
 			console.log('compute units', computeUnits);
 			console.log(
 				'tx logs',
-				(await connection.getTransaction(txSig, { commitment: 'confirmed' }))
-					.meta.logMessages
+				(
+					await connection.getTransaction(txSig, {
+						commitment: 'confirmed',
+						maxSupportedTransactionVersion: 1,
+					})
+				).meta.logMessages
 			);
 
 			const market = velocityClient.getPerpMarketAccount(i);
@@ -678,8 +698,12 @@ describe('update amm', () => {
 
 		console.log(
 			'tx logs',
-			(await connection.getTransaction(txSig3, { commitment: 'confirmed' }))
-				.meta.logMessages
+			(
+				await connection.getTransaction(txSig3, {
+					commitment: 'confirmed',
+					maxSupportedTransactionVersion: 1,
+				})
+			).meta.logMessages
 		);
 
 		// check if markets were updated as expected

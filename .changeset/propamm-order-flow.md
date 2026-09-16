@@ -424,3 +424,10 @@ accounts the caller passes. `getUpdatePerpBidAskTwapIx` resolves those three fro
 a caller supplies only the makers. A market that names a book refuses the crank without them, a
 suspended book moves no mark, and both sources still drop a quote that has not rested for
 `BID_ASK_TWAP_MIN_QUOTE_REST`.
+
+The generated IDL no longer names generic arguments on a reference to a type that declares no
+generic parameters. Anchor builds such a reference from the tokens a field is written with while
+naming the type from `IdlBuild`, so a host that monomorphizes its own name — `RelayBlock2x8`,
+`RelayBlock3x48`, `RelayBlock11x48` — emitted `"generics"` a consumer could not compile against.
+A tool that generates code from `velocity.json` now sees a plain reference; a reader that ignored
+the field sees no change.

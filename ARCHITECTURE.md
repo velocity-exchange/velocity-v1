@@ -152,7 +152,6 @@ These are stubs/wrappers used by Velocity for oracle integrations, JIT fills, an
 |---|---|
 | `programs/pyth-lazer/` | Pyth Lazer type definitions, linked into `velocity` as a real library dependency (not a CPI target) |
 | `programs/pyth/` | Pyth V1 oracle account layout definitions; optional dependency, only pulled in by `velocity`'s `fuzz-fixtures` feature and tests |
-| `programs/jit-proxy/` | Just-in-time fill/arb proxy; CPIs into `velocity` |
 | `programs/token_faucet/` | Devnet/test token minting utility (not on mainnet) |
 
 Switchboard oracle support and external spot-fulfillment venues (Serum, Phoenix, OpenBook) have been removed; there is no `programs/switchboard*` or `programs/openbook_v2`. `OracleSource` keeps `DeprecatedSwitchboard`/`DeprecatedSwitchboardOnDemand` variants only to preserve ABI discriminants.

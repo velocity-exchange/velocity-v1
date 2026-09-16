@@ -1,9 +1,12 @@
 #!/usr/bin/env node
 import { Command } from 'commander';
+import { withGlobalOptions } from './lib/options';
 import { registerAccountExtension } from './commands/accountExtension';
 import { registerAuth } from './commands/auth';
 import { registerCall } from './commands/call';
 import { registerClobMarket } from './commands/clobMarket';
+import { registerConfig } from './commands/config';
+import { registerWhoami } from './commands/whoami';
 import { registerExchange } from './commands/exchange';
 import { registerFeatureFlags } from './commands/featureFlags';
 import { registerFees } from './commands/fees';
@@ -15,6 +18,8 @@ import { registerQuoter } from './commands/quoter';
 import { registerShow } from './commands/show';
 import { registerSpotMarket } from './commands/spotMarket';
 import { registerUser } from './commands/user';
+import { registerLut } from './commands/lut';
+import { registerWallet } from './commands/wallet';
 
 const program = new Command();
 
@@ -29,12 +34,25 @@ program
 			'vault transaction + proposal. Tier (cold / warm / hot) is enforced on-chain;',
 			'whatever signs is what gets checked, so you choose the tier by choosing the',
 			'key (or multisig) you pass — not by which command you run.',
+			'',
+			'Connection settings can come from a named profile instead of flags: set up',
+			'profiles with `velocity-admin config init`, select one with -p/--profile',
+			'(or VELOCITY_ADMIN_PROFILE, or the configured default). Explicit flags',
+			'always override the profile. `whoami` reports which on-chain authorities',
+			'the configured signer holds.',
 		].join('\n')
 	)
 	.version('0.1.0')
 	.showHelpAfterError()
 	.showSuggestionAfterError();
 
+// Global connection options are declared on every leaf (see options.ts), but
+// also on the root so `velocity-admin -p <profile> <command...>` works;
+// users reasonably put the profile first. `optsWithGlobals` merges both.
+withGlobalOptions(program);
+
+registerConfig(program);
+registerWhoami(program);
 registerShow(program);
 registerAuth(program);
 registerPerpMarket(program);
@@ -46,6 +64,8 @@ registerMultisig(program);
 registerUser(program);
 registerQuoter(program);
 registerClobMarket(program);
+registerLut(program);
+registerWallet(program);
 registerInsuranceFund(program);
 registerProgram(program);
 registerAccountExtension(program);

@@ -1,3 +1,7 @@
 [install]
 exact = true
 minimumReleaseAge = 604800 # 7 days
+# Temporary carve-outs. Remove each entry once its version clears the window:
+#   @velocity-exchange/common 0.10.1 published 2026-09-10, clears 2026-09-17
+#   @solana/web3.js 1.99.0 published 2026-09-08, clears 2026-09-15
+minimumReleaseAgeExcludes = ["@velocity-exchange/common", "@solana/web3.js"]

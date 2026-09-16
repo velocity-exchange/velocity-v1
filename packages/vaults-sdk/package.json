@@ -1,6 +1,6 @@
 {
 	"name": "@velocity-exchange/vaults-sdk",
-	"version": "0.1.23",
+	"version": "0.1.31",
 	"description": "TypeScript SDK for the Velocity vaults program.",
 	"repository": {
 		"type": "git",
@@ -38,7 +38,7 @@
 	},
 	"peerDependencies": {
 		"@coral-xyz/anchor": "npm:@anchor-lang/core@1.0.1",
-		"@solana/web3.js": "1.98.0"
+		"@solana/web3.js": "1.99.0"
 	},
 	"optionalDependencies": {
 		"@ledgerhq/hw-app-solana": "7.2.4",

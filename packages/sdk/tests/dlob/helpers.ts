@@ -589,6 +589,7 @@ export const mockStateAccount: StateAccount = {
 	hotAmmSpreadAdjust: PublicKey.default,
 	hotFeeWithdraw: PublicKey.default,
 	hotAccountExtension: PublicKey.default,
+	hotVammQuoteManagement: PublicKey.default,
 	hotFlowAuthority: PublicKey.default,
 	protocolFeeRecipientPerp: PublicKey.default,
 	protocolFeeRecipientSpot: PublicKey.default,

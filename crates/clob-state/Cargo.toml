@@ -13,7 +13,7 @@ quoter-spec = { path = "../quoter-spec" }
 bytemuck = { version = "1.14", features = ["derive"] }
 # Spelled `Address` here and `Pubkey` in velocity; one type either way. See
 # `quoter-spec`'s note on the two names.
-solana-address = { version = "~2.7", features = ["bytemuck", "copy"] }
+solana-address = { version = "2.6", features = ["bytemuck", "copy"] }
 
 [features]
 default = []

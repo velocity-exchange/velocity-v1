@@ -8,6 +8,12 @@ import {
 	UserStatsAccount,
 	SPOT_MARKET_BALANCE_PRECISION,
 	QUOTE_PRECISION,
+	getMarketFeesForFeeTier,
+	PerpMarketAccount,
+	PERP_FEE_TIER_MAX_INDEX,
+	PERP_FEE_TIER_VOLUME_THRESHOLDS,
+	VIP_FEE_TIER_THREE_VOLUME_QUOTE,
+	VIP_FEE_TIER_TWO_VOLUME_QUOTE,
 } from '../../src';
 import { assert } from '../../src/assert/assert';
 import { mockPerpMarkets, mockSpotMarkets } from '../dlob/helpers';
@@ -239,6 +245,366 @@ describe('User fee calculation', () => {
 			fee.eq(new BN(1100)),
 			`expected market-index fee incl. builder 1100, got ${fee.toString()}`
 		);
+	});
+});
+
+// The promo fee tier (`State.promoFeeTier`) floors every account's perp tier at
+// the configured index while it is set. These tiers differ per index so the
+// selected index is observable in the returned rates.
+const tieredFeeStructure = {
+	...mockFeeStructure,
+	feeTiers: [
+		{ ...mockFeeTier, feeNumerator: 30, makerRebateNumerator: 1 },
+		{ ...mockFeeTier, feeNumerator: 20, makerRebateNumerator: 2 },
+		{ ...mockFeeTier, feeNumerator: 10, makerRebateNumerator: 3 },
+		{ ...mockFeeTier, feeNumerator: 5, makerRebateNumerator: 4 },
+		// Spare slots the program never selects, left with the zeroed
+		// denominators an unwritten slot really carries.
+		...Array.from({ length: 2 }, () => ({
+			...mockFeeTier,
+			feeNumerator: 0,
+			feeDenominator: 0,
+			makerRebateDenominator: 0,
+		})),
+	],
+};
+
+async function makePromoMockUser(
+	promoFeeTier: number,
+	takerVolume30D: BN = ZERO,
+	now: BN = new BN(Math.floor(Date.now() / 1000))
+): Promise<User> {
+	const user = await makeMockUser(
+		_.cloneDeep(mockPerpMarkets),
+		_.cloneDeep(mockSpotMarkets),
+		_.cloneDeep(baseMockUserAccount),
+		[1, 1, 1, 1, 1, 1, 1, 1],
+		[1, 1, 1, 1, 1, 1, 1, 1]
+	);
+
+	user.velocityClient.getStateAccount = () =>
+		({
+			perpFeeStructure: tieredFeeStructure,
+			spotFeeStructure: tieredFeeStructure,
+			promoFeeTier,
+		}) as any;
+
+	const userStatsAccount = {
+		..._.cloneDeep(mockUserStatsAccount),
+		takerVolume30D,
+		// The rolling estimate decays from the last update, so stamp it now to
+		// keep the full volume inside the window.
+		lastTakerVolume30DTs: now,
+	};
+	user.velocityClient.getUserStatsOrThrow = () =>
+		({
+			getAccountOrThrow: () => userStatsAccount,
+		}) as any;
+	user.velocityClient.getUserStats = () =>
+		({
+			getAccount: () => userStatsAccount,
+		}) as any;
+	user.velocityClient.getPerpMarketAccountOrThrow = () =>
+		({
+			marketIndex: 0,
+			feeAdjustment: 0,
+			takerFeeAddonTenthBps: 0,
+		}) as any;
+
+	return user;
+}
+
+describe('Perp fee tier ladder', () => {
+	// The breakpoints are hardcoded on chain and cannot be read back, so
+	// nothing else guards them against drifting from `determine_perp_fee_tier`.
+	it('pins the volume thresholds to $5M / $80M / $200M', () => {
+		const dollars = PERP_FEE_TIER_VOLUME_THRESHOLDS.map((t) =>
+			t.div(QUOTE_PRECISION).toNumber()
+		);
+		assert(
+			JSON.stringify(dollars) ===
+				JSON.stringify([5_000_000, 80_000_000, 200_000_000]),
+			`thresholds drifted from the program: ${dollars.join(', ')}`
+		);
+		assert(PERP_FEE_TIER_MAX_INDEX === 3);
+	});
+
+	it('selects the tier at each breakpoint', async () => {
+		// Read at the stamp time so a sub-second decay cannot push a volume
+		// sitting exactly on a breakpoint below it.
+		const now = new BN(Math.floor(Date.now() / 1000));
+		const cases: [BN, number][] = [
+			[ZERO, 0],
+			[PERP_FEE_TIER_VOLUME_THRESHOLDS[0].subn(1), 0],
+			[PERP_FEE_TIER_VOLUME_THRESHOLDS[0], 1],
+			[PERP_FEE_TIER_VOLUME_THRESHOLDS[1].subn(1), 1],
+			[PERP_FEE_TIER_VOLUME_THRESHOLDS[1], 2],
+			[PERP_FEE_TIER_VOLUME_THRESHOLDS[2].subn(1), 2],
+			[PERP_FEE_TIER_VOLUME_THRESHOLDS[2], 3],
+			[PERP_FEE_TIER_VOLUME_THRESHOLDS[2].muln(10), 3],
+		];
+		for (const [volume, expected] of cases) {
+			const user = await makePromoMockUser(0, volume, now);
+			assert(
+				user.getUserPerpFeeTierIndex(now) === expected,
+				`volume ${volume.toString()} expected tier ${expected}, got ${user.getUserPerpFeeTierIndex(
+					now
+				)}`
+			);
+		}
+	});
+});
+
+describe('Promo fee tier floor', () => {
+	it('lifts a zero-volume user to the promo tier', async () => {
+		const user = await makePromoMockUser(2);
+
+		const feeTier = user.getUserFeeTier(MarketType.PERP);
+		assert(
+			feeTier.feeNumerator === 10,
+			`expected the promo tier's fee, got ${feeTier.feeNumerator}`
+		);
+		assert(user.getUserPerpFeeTierIndex() === 2);
+	});
+
+	it('does not downgrade a user whose volume already earns a better tier', async () => {
+		const user = await makePromoMockUser(
+			1,
+			VIP_FEE_TIER_TWO_VOLUME_QUOTE.muln(2)
+		);
+
+		assert(
+			user.getUserPerpFeeTierIndex() === 2,
+			'the volume tier must win over a lower promo floor'
+		);
+
+		const whale = await makePromoMockUser(
+			2,
+			VIP_FEE_TIER_THREE_VOLUME_QUOTE.muln(2)
+		);
+		assert(
+			whale.getUserPerpFeeTierIndex() === 3,
+			'a top-tier account must keep its tier under a lower promo floor'
+		);
+	});
+
+	it('is a no-op when disabled', async () => {
+		const user = await makePromoMockUser(0);
+
+		assert(user.getUserPerpFeeTierIndex() === 0);
+	});
+
+	it('puts everyone on the top tier when the promo points at it', async () => {
+		const user = await makePromoMockUser(PERP_FEE_TIER_MAX_INDEX);
+
+		assert(user.getUserPerpFeeTierIndex() === 3);
+		assert(user.getUserFeeTier(MarketType.PERP).feeNumerator === 5);
+	});
+
+	it('clamps a promo above the live tiers to the top live tier', async () => {
+		const user = await makePromoMockUser(5);
+
+		// Slots past the ladder have zeroed denominators; selecting one would
+		// divide to NaN rather than charge a fee.
+		assert(user.getUserPerpFeeTierIndex() === 3);
+		assert(user.getUserFeeTier(MarketType.PERP).feeDenominator === 1000);
+	});
+
+	// The regression: getMarketFees with no user quoted the entry tier during a
+	// promo, disagreeing with the same call made with a user.
+	it('applies to getMarketFees when no user is passed', async () => {
+		const user = await makePromoMockUser(2);
+
+		const { takerFee: genericTakerFee, makerFee: genericMakerFee } =
+			user.velocityClient.getMarketFees(MarketType.PERP, 0);
+		const { takerFee: userTakerFee } = user.velocityClient.getMarketFees(
+			MarketType.PERP,
+			0,
+			user
+		);
+
+		assert(
+			Math.abs(genericTakerFee - 0.01) < 1e-12,
+			`expected the promo tier's taker fee 0.01, got ${genericTakerFee}`
+		);
+		assert(
+			Math.abs(genericMakerFee - 0.003) < 1e-12,
+			`expected the promo tier's maker rebate 0.003, got ${genericMakerFee}`
+		);
+		assert(
+			Math.abs(genericTakerFee - userTakerFee) < 1e-12,
+			'the generic schedule must agree with a zero-volume user under a promo'
+		);
+	});
+
+	it('leaves spot fees on the entry tier', async () => {
+		const user = await makePromoMockUser(2);
+
+		const { takerFee } = user.velocityClient.getMarketFees(MarketType.SPOT);
+		assert(
+			Math.abs(takerFee - 0.03) < 1e-12,
+			`expected the spot entry-tier fee 0.03, got ${takerFee}`
+		);
+	});
+});
+
+// A tier whose four modifiers are all visible in the result: 10bps taker,
+// 1bp maker rebate, 25% referee discount.
+const modifierTestFeeTier = {
+	...mockFeeTier,
+	feeNumerator: 10,
+	feeDenominator: 10_000,
+	makerRebateNumerator: 1,
+	makerRebateDenominator: 10_000,
+	refereeFeeNumerator: 25,
+	refereeFeeDenominator: 100,
+};
+
+const makeMarket = (
+	takerFeeAddonTenthBps = 0,
+	feeAdjustment = 0
+): PerpMarketAccount =>
+	({
+		marketIndex: 0,
+		takerFeeAddonTenthBps,
+		feeAdjustment,
+	}) as PerpMarketAccount;
+
+const closeTo = (actual: number, expected: number, what: string) =>
+	assert(
+		Math.abs(actual - expected) < 1e-12,
+		`expected ${what} ${expected}, got ${actual}`
+	);
+
+describe('getMarketFeesForFeeTier', () => {
+	it('returns the tier rates untouched without a market', () => {
+		const { takerFee, makerFee } = getMarketFeesForFeeTier(
+			modifierTestFeeTier,
+			MarketType.PERP
+		);
+
+		closeTo(takerFee, 0.001, 'taker fee');
+		closeTo(makerFee, 0.0001, 'maker rebate');
+	});
+
+	it('adds the market surcharge to the taker leg only', () => {
+		const { takerFee, makerFee } = getMarketFeesForFeeTier(
+			modifierTestFeeTier,
+			MarketType.PERP,
+			makeMarket(10)
+		);
+
+		// 10bps + 1bp surcharge
+		closeTo(takerFee, 0.0011, 'taker fee');
+		closeTo(makerFee, 0.0001, 'maker rebate');
+	});
+
+	it('leaves the surcharge out of spot fees', () => {
+		const { takerFee } = getMarketFeesForFeeTier(
+			modifierTestFeeTier,
+			MarketType.SPOT,
+			makeMarket(10)
+		);
+
+		closeTo(takerFee, 0.001, 'taker fee');
+	});
+
+	it('scales both legs by feeAdjustment, after the surcharge', () => {
+		const { takerFee, makerFee } = getMarketFeesForFeeTier(
+			modifierTestFeeTier,
+			MarketType.PERP,
+			makeMarket(10, 50)
+		);
+
+		// (10bps + 1bp) * 1.5, not 10bps * 1.5 + 1bp
+		closeTo(takerFee, 0.00165, 'taker fee');
+		closeTo(makerFee, 0.00015, 'maker rebate');
+	});
+
+	it('discounts a referee after feeAdjustment, taker leg only', () => {
+		const { takerFee, makerFee } = getMarketFeesForFeeTier(
+			modifierTestFeeTier,
+			MarketType.PERP,
+			makeMarket(10, 50),
+			{ isReferee: true }
+		);
+
+		// 0.00165 * 0.75
+		closeTo(takerFee, 0.0012375, 'taker fee');
+		closeTo(makerFee, 0.00015, 'maker rebate');
+	});
+
+	it('adds the builder fee last, unscaled', () => {
+		const { takerFee } = getMarketFeesForFeeTier(
+			modifierTestFeeTier,
+			MarketType.PERP,
+			makeMarket(10, 50),
+			{ isReferee: true, builderFeeTenthBps: 10 }
+		);
+
+		// 0.0012375 + 1bp flat: the builder fee is not scaled or discounted
+		closeTo(takerFee, 0.0013375, 'taker fee');
+	});
+});
+
+describe('getMarketFees fee-tier override', () => {
+	// Pricing a tier the account is not on is what lets a UI show the fee a
+	// promotion is saving someone against their own volume tier.
+	it('prices the override instead of the account tier', async () => {
+		const user = await makeFeeMockUser(0);
+		const doubleFeeTier = { ...mockFeeTier, feeNumerator: 2 };
+
+		const { takerFee: ownTakerFee } = user.velocityClient.getMarketFees(
+			MarketType.PERP,
+			0,
+			user
+		);
+		const { takerFee: overriddenTakerFee } = user.velocityClient.getMarketFees(
+			MarketType.PERP,
+			0,
+			user,
+			undefined,
+			doubleFeeTier
+		);
+
+		closeTo(ownTakerFee, 0.001, 'account tier taker fee');
+		closeTo(overriddenTakerFee, 0.002, 'overridden taker fee');
+	});
+
+	it('keeps every other modifier the account carries', async () => {
+		const referred = await makeFeeMockUser(ReferrerStatus.IsReferred);
+		const doubleFeeTier = { ...mockFeeTier, feeNumerator: 2 };
+
+		const { takerFee } = referred.velocityClient.getMarketFees(
+			MarketType.PERP,
+			0,
+			referred,
+			undefined,
+			doubleFeeTier
+		);
+
+		// 0.002 less the override tier's own 25% referee discount
+		closeTo(takerFee, 0.0015, 'overridden taker fee');
+	});
+
+	it('agrees with the unoverridden call when handed the account tier', async () => {
+		const user = await makeFeeMockUser(ReferrerStatus.IsReferred);
+		const ownFeeTier = user.getUserFeeTier(MarketType.PERP);
+
+		const { takerFee: withoutOverride } = user.velocityClient.getMarketFees(
+			MarketType.PERP,
+			0,
+			user
+		);
+		const { takerFee: withOverride } = user.velocityClient.getMarketFees(
+			MarketType.PERP,
+			0,
+			user,
+			undefined,
+			ownFeeTier
+		);
+
+		closeTo(withOverride, withoutOverride, 'overridden taker fee');
 	});
 });
 

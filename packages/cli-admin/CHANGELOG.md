@@ -1,5 +1,124 @@
 # @velocity-exchange/admin-cli
 
+## 0.15.3
+
+### Patch Changes
+
+- [#511](https://github.com/velocity-exchange/velocity-v1/pull/511) [`60a173f`](https://github.com/velocity-exchange/velocity-v1/commit/60a173fd58e70d68e7d670523129621df267e2c8) Thanks [@0xahzam](https://github.com/0xahzam)! - Add `perp-market deposit-fee-pool` and `perp-market sync-amm-summary-stats` to the admin CLI, for
+  recovering a market whose `total_fee_minus_distributions` has gone negative. Both SDK instruction
+  builders (`getDepositIntoPerpMarketFeePoolIx`, `getUpdatePerpMarketAmmSummaryStatsIx`) now take an
+  optional `admin` override so the hot role that actually signs can be passed, as the other hot-role
+  builders already allow.
+- Updated dependencies [[`60a173f`](https://github.com/velocity-exchange/velocity-v1/commit/60a173fd58e70d68e7d670523129621df267e2c8), [`ab33ee9`](https://github.com/velocity-exchange/velocity-v1/commit/ab33ee907bd02907266853856718f8715a570f97)]:
+  - @velocity-exchange/sdk@0.24.0
+
+## 0.15.2
+
+### Patch Changes
+
+- Updated dependencies [[`a655327`](https://github.com/velocity-exchange/velocity-v1/commit/a655327291a5ef9238bae929f19d06158db512a4)]:
+  - @velocity-exchange/sdk@0.23.1
+
+## 0.15.1
+
+### Patch Changes
+
+- [#499](https://github.com/velocity-exchange/velocity-v1/pull/499) [`0afc72e`](https://github.com/velocity-exchange/velocity-v1/commit/0afc72e8c1506ce834c1f57b764a5b1a6cce6713) Thanks [@ChesterSim](https://github.com/ChesterSim)! - Read Agave 4.2 / SIMD-0385 transaction v1 on `getTransaction` paths.
+
+  Bump `@solana/web3.js` to 1.99.0 (read-only v1), `@triton-one/yellowstone-grpc` to 6.0.0, and `helius-laserstream` to 0.8.5. SDK `engines.node` is now `>=20.18.0`. For the packages in this release the change is limited to `maxSupportedTransactionVersion: 1` on RPC reads. The `solana-*` 4.2 crate bump (Rust wire decode / send) is a follow-up; until it lands the Rust event poller walks a transaction's logs when `decode()` cannot read the v1 wire format, and decodes payloads only while the Velocity program is the executing program.
+
+  `fetchLogs` now logs `getTransaction` batch errors instead of discarding them, and holds its `earliestTx`/`mostRecentTx` resume cursors behind any signature it failed to fetch so those transactions are retried rather than skipped. It returns `undefined` when no signature in the batch is safe to resume from, so keep the current cursor and retry in that case. `EventSubscriber.fetchPreviousTx` counts only transactions it has not already decoded toward `maxTx`, so the page re-read after a failed fetch no longer shortens a backfill.
+
+- Updated dependencies [[`0afc72e`](https://github.com/velocity-exchange/velocity-v1/commit/0afc72e8c1506ce834c1f57b764a5b1a6cce6713)]:
+  - @velocity-exchange/sdk@0.23.0
+
+## 0.15.0
+
+### Minor Changes
+
+- [#491](https://github.com/velocity-exchange/velocity-v1/pull/491) [`d2ea4ff`](https://github.com/velocity-exchange/velocity-v1/commit/d2ea4ffd940d4498bb4d11a7983de650f0f4d886) Thanks [@0xahzam](https://github.com/0xahzam)! - Add the fourth perp fee tier, VIP 3, at $200M trailing-30d volume.
+
+  The program's tier ladder is now Regular / VIP 1 / VIP 2 / VIP 3 (indices 0-3, breakpoints $5M / $80M / $200M). The SDK exports the new breakpoint as `VIP_FEE_TIER_THREE_VOLUME_QUOTE` and includes it in `PERP_FEE_TIER_VOLUME_THRESHOLDS`, so `getPerpFeeTierIndex`, `User.getUserFeeTier` and `VelocityClient.getMarketFees` select tier 3 above $200M and `PERP_FEE_TIER_MAX_INDEX` is 3. A `promoFeeTier` of 3 puts every account on the top tier.
+
+  Admin CLI: `fees set-schedule` takes four tier fees (`<t0bp> <t1bp> <t2bp> <t3bp>`; tiers 4-9 mirror tier 3), `fees set-promo-tier` accepts 3, and `show fees` prints the VIP 3 row.
+
+### Patch Changes
+
+- Updated dependencies [[`d2ea4ff`](https://github.com/velocity-exchange/velocity-v1/commit/d2ea4ffd940d4498bb4d11a7983de650f0f4d886)]:
+  - @velocity-exchange/sdk@0.22.0
+
+## 0.14.2
+
+### Patch Changes
+
+- [#482](https://github.com/velocity-exchange/velocity-v1/pull/482) [`a7fecad`](https://github.com/velocity-exchange/velocity-v1/commit/a7fecadb09b37c0fd247eba376d11e705429db3e) Thanks [@0xahzam](https://github.com/0xahzam)! - Add `velocity-admin show state`: dumps every field of the singleton State account, with the `exchangeStatus`, `featureBitFlags`, `lpPoolFeatureBitFlags` and `solvencyStatus` bitmasks decoded to their bit names. The `feature-flags` subcommands only write bits; there was no way to read the current ones back.
+
+- Updated dependencies [[`eaa0664`](https://github.com/velocity-exchange/velocity-v1/commit/eaa06645a8ae137ce4e8ca606b2a65d3a24980cd), [`033237b`](https://github.com/velocity-exchange/velocity-v1/commit/033237bb975692bcce5bd540b3b015aba29463f3), [`e2b86d3`](https://github.com/velocity-exchange/velocity-v1/commit/e2b86d3ddba2c3e903ce70da835314a16ebed8e3)]:
+  - @velocity-exchange/sdk@0.21.0
+
+## 0.14.1
+
+### Patch Changes
+
+- Updated dependencies [[`6c183e7`](https://github.com/velocity-exchange/velocity-v1/commit/6c183e7a9d45f4987055032efcd8267651a231a4)]:
+  - @velocity-exchange/sdk@0.20.0
+
+## 0.14.0
+
+### Minor Changes
+
+- [#465](https://github.com/velocity-exchange/velocity-v1/pull/465) [`6f4deee`](https://github.com/velocity-exchange/velocity-v1/commit/6f4deeec6997c868403bb7138dd847ead6176b11) Thanks [@0xahzam](https://github.com/0xahzam)! - Add `lut show` and `lut extend`: inspect and extend the market address lookup table. The market account set is derived from `State`'s spot and perp market counts rather than a hardcoded list, so it cannot go stale when a market is added, and addresses already present are skipped. Defaults to the environment's configured table, refuses a frozen table, and checks the resulting size against the 256 entry limit.
+
+### Patch Changes
+
+- [#467](https://github.com/velocity-exchange/velocity-v1/pull/467) [`be89e60`](https://github.com/velocity-exchange/velocity-v1/commit/be89e60ce61d33653817e35bcd2c640fc9204c6f) Thanks [@0xahzam](https://github.com/0xahzam)! - Authorize the `VammQuoteManagement` hot role for scoped vAMM quoting setters, enforce protocol wide safety bounds for every hot role value, and keep oracle, MM reset, and formulaic k controls on warm/cold admin. Adds a direct `perp-market set-spread-adjustment` admin CLI command, tightens every `perp-market` positional to a strict decimal-integer parse (previously `Number('')`/`parseInt('0x10', 10)` silently resolved to market 0, and `new BN(' ')` hung the process), and lets `getUpdatePerpMarketAmmSpreadAdjustmentIx` / `getUpdatePerpMarketFundingBiasSensitivityIx` take an explicit `admin` authority so the CLI can route these setters through the hot role Squads vault instead of defaulting to cold admin.
+
+- Updated dependencies [[`a720d5b`](https://github.com/velocity-exchange/velocity-v1/commit/a720d5b5abdc6258fd6a171282c7e46c5378be4e), [`7e8ff7c`](https://github.com/velocity-exchange/velocity-v1/commit/7e8ff7ca876aad9e985d6fa0a1fd060614df4b8d), [`106aaeb`](https://github.com/velocity-exchange/velocity-v1/commit/106aaeb44eb4a3d0a6f1ad5f0c767b6f1e5adebe), [`be89e60`](https://github.com/velocity-exchange/velocity-v1/commit/be89e60ce61d33653817e35bcd2c640fc9204c6f)]:
+  - @velocity-exchange/sdk@0.19.0
+
+## 0.13.0
+
+### Minor Changes
+
+- [#463](https://github.com/velocity-exchange/velocity-v1/pull/463) [`c982bc8`](https://github.com/velocity-exchange/velocity-v1/commit/c982bc8749ee54d0b8abc80aa927589a56f6836a) Thanks [@0xahzam](https://github.com/0xahzam)! - Add `batch` command: build several IDL-driven instructions from one payload file ({ instructions: [{ ix, args, accounts }, ...] }, each entry the `call` payload shape plus the instruction name) and dispatch them as a single transaction or vault proposal, so related admin changes share one approval round and one timelock.
+
+- [#458](https://github.com/velocity-exchange/velocity-v1/pull/458) [`76e8a12`](https://github.com/velocity-exchange/velocity-v1/commit/76e8a12ccec2a508bbefd469c864604939cc6f83) Thanks [@0xahzam](https://github.com/0xahzam)! - Connection profiles and authority introspection. `config init` builds named profiles (keypair, env, optional multisig, optional own RPC) interactively and verifies every ingredient against the live cluster before saving: RPC classified by genesis hash, keypair loaded, multisig matched against the onchain State admins. RPC URLs are shared per cluster (`config set-rpc`); profiles without their own url inherit the shared one for their env. Select a profile with `-p/--profile`, `VELOCITY_ADMIN_PROFILE`, or the configured default, with explicit flags always overriding. Every chain-touching command prints a context header (cluster by genesis hash, profile, signer, dispatch mode) and dies on a declared env that contradicts the RPC's actual cluster; when env is not declared it is adopted from the chain. Mainnet direct sends ask for interactive confirmation (`--yes` skips, non-TTY implies it). New `whoami` reports which State admin tiers and hot roles the signer holds plus multisig membership, and `multisig proposals` lists recent proposals with status, approval counts, and timelock ETAs.
+
+- [#463](https://github.com/velocity-exchange/velocity-v1/pull/463) [`8663104`](https://github.com/velocity-exchange/velocity-v1/commit/866310405ee3cc99ea37dde1a3e81a482d115c3b) Thanks [@0xahzam](https://github.com/0xahzam)! - Add `fees set-schedule` command: rewrite the perp fee schedule in one instruction — taker fee in bps for the three live tiers (unused tiers mirror tier 2), with options to set the maker rebate, referrer/referee percentages, and the amm/if fee split in the same update. Fetches the current structure and patches only what is passed.
+
+- [#463](https://github.com/velocity-exchange/velocity-v1/pull/463) [`eed4c36`](https://github.com/velocity-exchange/velocity-v1/commit/eed4c36c102d9c5e9643e038498c9c8fb4c9e92b) Thanks [@0xahzam](https://github.com/0xahzam)! - Add `multisig close-accounts` command: reclaim rent by closing the VaultTransaction + Proposal accounts of settled proposals (Executed/Rejected/Cancelled, plus stale non-approved ones; approved-but-unexecuted proposals are never touched). Requires the multisig's rent collector to be configured — rent is paid to it.
+
+- [#463](https://github.com/velocity-exchange/velocity-v1/pull/463) [`3996355`](https://github.com/velocity-exchange/velocity-v1/commit/39963555a36bf4076003d07f57bd5311f0f77b8e) Thanks [@0xahzam](https://github.com/0xahzam)! - Add `multisig execute` command: execute an approved vault transaction as a member with an explicit compute-unit limit (default 1.4M) and optional priority fee. The Squads UI executes at the 200k CU default, which CPI-heavy inner transactions such as Jupiter swaps exceed.
+
+- [#463](https://github.com/velocity-exchange/velocity-v1/pull/463) [`eed4c36`](https://github.com/velocity-exchange/velocity-v1/commit/eed4c36c102d9c5e9643e038498c9c8fb4c9e92b) Thanks [@0xahzam](https://github.com/0xahzam)! - Add `multisig inspect` command: decode a vault transaction's inner instructions with account keys resolved through its lookup tables, and simulate its execution with a full compute budget, reporting the error or the compute units consumed. Before approval the simulation reports InvalidProposalStatus, which is the proposal gate rather than a broken transaction.
+
+- [#463](https://github.com/velocity-exchange/velocity-v1/pull/463) [`8d55b02`](https://github.com/velocity-exchange/velocity-v1/commit/8d55b027cd327ad51e52bc764a7528a3ee957d28) Thanks [@0xahzam](https://github.com/0xahzam)! - Add `multisig set-rent-collector` command: propose a Squads config transaction setting the multisig's rent collector, the prerequisite for `close-accounts` rent reclamation. Refuses multisigs governed by a config authority, and warns that executing a config transaction marks still-Active vault proposals stale.
+
+- [#463](https://github.com/velocity-exchange/velocity-v1/pull/463) [`b18a559`](https://github.com/velocity-exchange/velocity-v1/commit/b18a559f9f6efb997a689c65ead6259364e9220e) Thanks [@0xahzam](https://github.com/0xahzam)! - Add `show perp-markets` and `show spot-markets` read-only inspectors (per-market risk, quoting, and lending params, deposit-cap headroom, fee/pnl pool and insurance vault balances), and a `--to-token-account` flag on `wallet transfer` for sending directly to a program vault token account instead of a derived ATA.
+
+- [#463](https://github.com/velocity-exchange/velocity-v1/pull/463) [`c982bc8`](https://github.com/velocity-exchange/velocity-v1/commit/c982bc8749ee54d0b8abc80aa927589a56f6836a) Thanks [@0xahzam](https://github.com/0xahzam)! - Add `spot-market set-max-token-deposits` command: update a spot market's hard deposit cap (raw token base units, 0 = uncapped) as warm/cold admin, with the usual multisig proposal routing.
+
+- [#463](https://github.com/velocity-exchange/velocity-v1/pull/463) [`3996355`](https://github.com/velocity-exchange/velocity-v1/commit/39963555a36bf4076003d07f57bd5311f0f77b8e) Thanks [@0xahzam](https://github.com/0xahzam)! - Add `wallet balances` command: read-only view of an owner wallet (signer, `--authority`, or a Squads vault PDA at `--vault-index`) showing native SOL, SPL token balances (spot-market mints labeled by market name), Velocity spot deposits/borrows per sub-account, and insurance-fund stakes with share counts.
+
+- [#463](https://github.com/velocity-exchange/velocity-v1/pull/463) [`1faec62`](https://github.com/velocity-exchange/velocity-v1/commit/1faec62b049ebf44a41d6e26db19a43357c71522) Thanks [@0xahzam](https://github.com/0xahzam)! - Add `wallet swap` command: Jupiter swap from the signer wallet or a Squads vault PDA at any `--vault-index`, with `--slippage-bps`, `--only-direct-routes`, and `--dry-run`. Compute-budget instructions are stripped from the inner message (not CPI-able from the vault executor) and lookup tables are carried through proposal creation; direct sends with lookup tables go out as v0 transactions.
+
+- [#463](https://github.com/velocity-exchange/velocity-v1/pull/463) [`8663104`](https://github.com/velocity-exchange/velocity-v1/commit/866310405ee3cc99ea37dde1a3e81a482d115c3b) Thanks [@0xahzam](https://github.com/0xahzam)! - Add `wallet transfer` command: SPL token transfer from the signer wallet or a Squads vault PDA to a recipient's associated token account (created idempotently), using transferChecked against the mint decimals read on chain, with a source-balance preflight and the usual multisig proposal routing.
+
+- [#463](https://github.com/velocity-exchange/velocity-v1/pull/463) [`1773e6c`](https://github.com/velocity-exchange/velocity-v1/commit/1773e6c7ed3ce7ec7324176d2544372bcf513517) Thanks [@0xahzam](https://github.com/0xahzam)! - Add `wallet wrap-sol` command: wraps native SOL from the signer wallet or a Squads vault PDA into its wSOL ATA (ATA created idempotently, syncNative in the same transaction), with the usual `--multisig` proposal routing, `--dry-run`, and a `--min-remaining` guard so the wallet keeps SOL for rent and fees.
+
+### Patch Changes
+
+- [#463](https://github.com/velocity-exchange/velocity-v1/pull/463) [`810440c`](https://github.com/velocity-exchange/velocity-v1/commit/810440c3c08d7793c954012f183d8d5d4543b550) Thanks [@0xahzam](https://github.com/0xahzam)! - `--dry-run` now reports the size of the proposal transaction against the 1232-byte limit, and says how far over it is when a batch will not fit. Previously an oversized batch compiled and dry-ran cleanly, then failed only at propose time with `Transaction too large`. The estimate builds the same instructions and memo the real dispatch uses, since the memo is stored inline and affects the size.
+
+- [#463](https://github.com/velocity-exchange/velocity-v1/pull/463) [`f105cdd`](https://github.com/velocity-exchange/velocity-v1/commit/f105cdd424cd3b2a6a7e1e7a324d4ef2c3cd52dc) Thanks [@0xahzam](https://github.com/0xahzam)! - Harden `wallet swap` against a compromised swap API: every instruction returned by the swap-instructions endpoint is validated against a program allowlist (Jupiter v6, SPL Token, Token-2022, Associated Token Program, System Program) and rejected if it requires a signature from any account other than the owner. The instruction program list is printed before signing or proposing so reviewers see what is actually being signed.
+
+- [#452](https://github.com/velocity-exchange/velocity-v1/pull/452) [`1baadf0`](https://github.com/velocity-exchange/velocity-v1/commit/1baadf0b90f744098d758d88267455068e049f3f) Thanks [@0xahzam](https://github.com/0xahzam)! - Fix the account-extension migration path against a live cluster: `auth set-hot-admin` no longer subscribes the client (it only needs the state PDA and the signer, and must work while zero-copy accounts are pre-extension size), and `extend-account` looks up coder account names in camelCase, matching anchor's Program-converted IDL (`perpMarket`, not `PerpMarket`).
+
+- [#455](https://github.com/velocity-exchange/velocity-v1/pull/455) [`48b8529`](https://github.com/velocity-exchange/velocity-v1/commit/48b85296c60250316ae30e3f980237af97591ec4) Thanks [@0xahzam](https://github.com/0xahzam)! - `getUpdateHotAdminIx` accepts an optional `admin` authority override, and `auth set-hot-admin` passes the Squads vault PDA through it when `--multisig` is set. Previously the instruction always listed the local wallet as the admin signer, so proposing the rotation through a multisig failed (the vault was not a required signer of any instruction).
+
+- Updated dependencies [[`4b55e4e`](https://github.com/velocity-exchange/velocity-v1/commit/4b55e4e6c7ae161b42d86f12a61da9d2c1003141), [`560a198`](https://github.com/velocity-exchange/velocity-v1/commit/560a198fa8a0f22ba7f3dc7f926164f8ca91dff5), [`48b8529`](https://github.com/velocity-exchange/velocity-v1/commit/48b85296c60250316ae30e3f980237af97591ec4)]:
+  - @velocity-exchange/sdk@0.18.0
+
 ## 0.12.1
 
 ### Patch Changes

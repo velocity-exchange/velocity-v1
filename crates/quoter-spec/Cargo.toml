@@ -14,14 +14,14 @@ repository = "https://github.com/velocity-exchange/velocity-v1/crates/quoter-spe
 # below can be the declaration both sides use rather than a shape they restate.
 # `copy` is not optional: these are small value types that every caller moves
 # by copy, and `Address` gates its `Copy` impl behind that feature.
-# Held to 2.6, not just `2`: the records below derive wincode against
-# `Address`'s own impls, and which wincode those target moves with this minor —
-# 2.6 targets 0.5, 2.7 targets 0.6. A workspace that resolved 2.7 while this
-# crate is on 0.5 gets two unrelated `SchemaRead` traits and a wall of
-# unsatisfied bounds; integration-tests hit exactly that. anchor-lang-v2 is
-# pinned to a rev on 0.5, so 2.6 is what all three workspaces can agree on.
-# Move this and the wincode dependency together, or neither.
-solana-address = { version = "~2.7", features = ["bytemuck", "copy", "wincode"] }
+# The `wincode` feature is deliberately off. It would make `Address` carry
+# wincode's traits, but which wincode those target moves with this crate's
+# minor: 2.6 targets 0.5 and 2.7 targets 0.6. A tree that resolved one while
+# this crate derives against the other gets two unrelated `SchemaRead` traits
+# and a wall of unsatisfied bounds. litesvm and the agave RPC crates hold this
+# crate's trees to 2.6, so `UserRefV0` writes its own wincode schema against
+# `[u8; 32]` instead and the version requirement stays open.
+solana-address = { version = "2.6", features = ["bytemuck", "copy"] }
 
 # Serialization is per-consumer, because the two halves of the wire do not agree
 # on a framework: both ends read the responses with wincode, but velocity also

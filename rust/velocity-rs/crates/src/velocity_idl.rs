@@ -13,7 +13,7 @@ use anchor_lang::{
 use serde::{Deserialize, Serialize};
 use solana_instruction::AccountMeta;
 use solana_pubkey::Pubkey;
-pub const IDL_VERSION: &str = "2.165.0";
+pub const IDL_VERSION: &str = "2.168.0";
 use self::traits::ToAccountMetas;
 pub mod traits {
     use crate::solana_sdk::instruction::AccountMeta;
@@ -4278,6 +4278,7 @@ pub mod types {
         AmmSpreadAdjust,
         FeeWithdraw,
         AccountExtension,
+        VammQuoteManagement,
         FlowAuthority,
     }
     #[repr(C)]
@@ -6640,6 +6641,7 @@ pub mod types {
         pub slot_duration_pad: [u8; 2],
         pub slot_duration_effective_slot: u64,
         pub slot_duration_transition_slots: [u64; 4],
+        pub hot_vamm_quote_management: Pubkey,
         pub hot_flow_authority: Pubkey,
         pub transaction_fee_rails: TransactionFeeRails,
         pub liquidation_crank_reimbursement_bps: u16,
@@ -6647,7 +6649,7 @@ pub mod types {
         #[serde(skip)]
         pub padding_0: Padding<2>,
         #[serde(skip)]
-        pub padding: Padding<142>,
+        pub padding: Padding<110>,
     }
     #[repr(C)]
     #[derive(
@@ -8803,6 +8805,7 @@ pub mod accounts {
         pub slot_duration_pad: [u8; 2],
         pub slot_duration_effective_slot: u64,
         pub slot_duration_transition_slots: [u64; 4],
+        pub hot_vamm_quote_management: Pubkey,
         pub hot_flow_authority: Pubkey,
         pub transaction_fee_rails: TransactionFeeRails,
         pub liquidation_crank_reimbursement_bps: u16,
@@ -8810,7 +8813,7 @@ pub mod accounts {
         #[serde(skip)]
         pub padding_0: Padding<2>,
         #[serde(skip)]
-        pub padding: Padding<142>,
+        pub padding: Padding<110>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for State {
@@ -33164,6 +33167,8 @@ pub mod errors {
         UnsettledRevenueShareOnDelist,
         #[msg("Revenue share order can still be paid; settle it instead of forfeiting")]
         RevenueShareOrderNotForfeitable,
+        #[msg("vAMM quote management value is outside the hot role bounds")]
+        VammQuoteManagementValueOutOfBounds,
         #[msg("Quoter registry entry config is invalid")]
         InvalidQuoterConfig,
         #[msg("Signer does not control this quoter registry entry")]

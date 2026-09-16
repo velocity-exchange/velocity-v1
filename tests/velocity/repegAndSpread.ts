@@ -118,6 +118,7 @@ async function iterClosePosition(
 			(
 				await velocityClient.connection.getTransaction(txClose, {
 					commitment: 'confirmed',
+					maxSupportedTransactionVersion: 1,
 				})
 			).meta.logMessages
 		);
@@ -311,8 +312,12 @@ describe('repeg and spread amm', () => {
 
 		console.log(
 			'tx logs',
-			(await connection.getTransaction(txSig0, { commitment: 'confirmed' }))
-				.meta.logMessages
+			(
+				await connection.getTransaction(txSig0, {
+					commitment: 'confirmed',
+					maxSupportedTransactionVersion: 1,
+				})
+			).meta.logMessages
 		);
 		await depositToFeePoolFromIF(50, velocityClient, userUSDCAccount);
 
@@ -518,8 +523,12 @@ describe('repeg and spread amm', () => {
 			const txSig = await velocityClient.updateAMMs([marketIndex]);
 			console.log(
 				'tx logs',
-				(await connection.getTransaction(txSig, { commitment: 'confirmed' }))
-					.meta.logMessages
+				(
+					await connection.getTransaction(txSig, {
+						commitment: 'confirmed',
+						maxSupportedTransactionVersion: 1,
+					})
+				).meta.logMessages
 			);
 		} catch (e) {
 			console.error(e);
@@ -628,8 +637,12 @@ describe('repeg and spread amm', () => {
 			);
 			console.log(
 				'tx logs',
-				(await connection.getTransaction(txClose, { commitment: 'confirmed' }))
-					.meta.logMessages
+				(
+					await connection.getTransaction(txClose, {
+						commitment: 'confirmed',
+						maxSupportedTransactionVersion: 1,
+					})
+				).meta.logMessages
 			);
 			await velocityClient.fetchAccounts();
 			userPosition = velocityClient.getUser().getPerpPosition(marketIndex);

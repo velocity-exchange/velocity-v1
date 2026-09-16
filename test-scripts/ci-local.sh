@@ -227,13 +227,37 @@ else
 fi
 
 # Optional. CI: cargo-deny. Both workspaces, one shared deny.toml.
-if command -v cargo-deny >/dev/null 2>&1; then
-  run_check "cargo deny (program workspace)" \
-    cargo deny --manifest-path Cargo.toml --config deny.toml check
-  run_check "cargo deny (rust workspace)" \
-    cargo deny --manifest-path rust/Cargo.toml --config deny.toml check
+#
+# CI runs cargo-deny offline against a DB fetched by cargo-audit (its git-CLI
+# fetch is rejected unauthenticated by GitHub from the runner); mirror that
+# hand-off here so a local run matches what CI actually checks. Unlike CI,
+# use a mktemp scratch dir cleaned up by a trap, and never touch the
+# developer's own ~/.cargo/advisory-db*.
+if command -v cargo-deny >/dev/null 2>&1 && command -v cargo-audit >/dev/null 2>&1; then
+  DENY_SCRATCH=$(mktemp -d)
+  trap 'rm -rf "$DENY_SCRATCH"' EXIT
+
+  ADVISORY_DB="$DENY_SCRATCH/advisory-db"
+  cargo audit --db "$ADVISORY_DB" >/dev/null 2>&1 || true
+
+  if [ -d "$ADVISORY_DB/.git" ]; then
+    DENY_DBS="$DENY_SCRATCH/advisory-dbs"
+    mkdir -p "$DENY_DBS"
+    ln -s "$ADVISORY_DB" "$DENY_DBS/advisory-db-3157b0e258782691"
+    export CARGO_DENY_DB_PATH="$DENY_DBS"
+
+    cargo fetch --locked --manifest-path Cargo.toml
+    cargo fetch --locked --manifest-path rust/Cargo.toml
+
+    run_check "cargo deny (program workspace)" \
+      cargo deny --offline --locked --manifest-path Cargo.toml --config deny.toml check
+    run_check "cargo deny (rust workspace)" \
+      cargo deny --offline --locked --manifest-path rust/Cargo.toml --config deny.toml check
+  else
+    skip_check "cargo deny" "offline handoff needs cargo-audit to fetch the advisory database first, and that fetch failed"
+  fi
 else
-  skip_check "cargo deny" "cargo-deny not installed"
+  skip_check "cargo deny" "needs both cargo-deny and cargo-audit installed (offline handoff)"
 fi
 
 skip_check "verify-sdk-configs" "needs live RPC endpoints"

@@ -3,8 +3,9 @@ use {
     crate::{
         http::{FeedHealth, Metrics},
         util::{
-            pyth_update_is_fresh, swift_placement_expired, OrderSlotLimiter, PendingTxMeta,
-            PendingTxs, PerpFillFallback, PythPriceUpdate, TxIntent,
+            is_resting_swift_limit, pyth_update_is_fresh, should_poll_swift, swift_order_expired,
+            swift_slot_wait_if_known, OrderSlotLimiter, PendingTxMeta, PendingTxs,
+            PerpFillFallback, PythPriceUpdate, SwiftSlotWait, TxIntent,
         },
         Config, UseMarkets,
     },
@@ -14,15 +15,13 @@ use {
     pyth_lazer_protocol::router::TimestampUs,
     solana_account_decoder_client_types::UiAccountEncoding,
     solana_compute_budget_interface::{id as compute_budget_id, ComputeBudgetInstruction},
+    solana_instruction::{error::InstructionError, AccountMeta},
     solana_rpc_client_api::{
         config::{RpcAccountInfoConfig, RpcProgramAccountsConfig, RpcTransactionConfig},
         response::RpcSimulateTransactionResult,
     },
-    solana_sdk::{
-        instruction::{AccountMeta, InstructionError},
-        signature::Signature,
-        transaction::TransactionError,
-    },
+    solana_signature::Signature,
+    solana_transaction::TransactionError,
     solana_transaction_status_client_types::{UiTransactionEncoding, UiTransactionError},
     std::{
         collections::{BTreeMap, HashSet},
@@ -41,7 +40,7 @@ use {
             CrossesAndTopMakers, CrossingRegion, DLOBNotifier, L3Order, MakerCrosses, OrderKind,
             TakerOrder, DLOB,
         },
-        event_subscriber::VelocityEvent,
+        event_subscriber::{parse_velocity_logs, VelocityEvent},
         grpc::{
             grpc_subscriber::{AccountFilter, GrpcConnectionOpts},
             AccountUpdate, TransactionUpdate,
@@ -56,6 +55,7 @@ use {
             state::prop_amm::{ClobUserRefV0, QuoterConfigV0, QuoterSlotV0},
             FlowAttestationV0,
         },
+        slot_clock_from_state,
         swift_order_subscriber::{SignedOrderInfo, SwiftOrderStream},
         types::{
             accounts::{PerpMarket, User, UserStats},
@@ -227,7 +227,6 @@ impl FillerBot {
         let feed_health = Arc::clone(&self.feed_health);
         // reused per-slot scratch buffer for triggerable order ids (avoids per-slot allocation)
         let mut triggerable_buf: Vec<(Pubkey, u32)> = Vec::new();
-        let mut slot = 0;
         // refresh state config on elapsed slots, not `slot % N == 0`: a skipped
         // exact multiple would otherwise stall the refresh for another window.
         const CONFIG_REFRESH_SLOTS: u64 = 300;
@@ -238,14 +237,15 @@ impl FillerBot {
             .unwrap_or(false);
         // seed with the real chain slot so a bot started after a gate switch
         // reflects it immediately, not only after the first config refresh
-        let startup_slot = velocity.get_slot().await.unwrap_or(0);
-        let mut slot_duration = crate::util::client_slot_duration(velocity, startup_slot);
+        let startup_slot = velocity.get_slot().await;
+        let mut slot = startup_slot.unwrap_or(0);
+        let mut slot_is_known = startup_slot.is_some();
         let mut slot_clock = velocity.slot_clock();
         dlob.update_slot_clock(slot_clock);
-        // effective (actual-slot) staleness threshold: the onchain value is in
-        // 400ms baseline units and inflated by slot_duration, mirroring
-        // `oracle_validity`
-        let mut slots_before_stale_for_amm = velocity
+        // AMM staleness window as wall clock: the onchain value is in 400ms
+        // baseline units; oracle age is integrated across slot duration
+        // regimes at the comparison sites, mirroring `oracle_validity`
+        let mut stale_for_amm_threshold = velocity
             .state_account()
             .map(|s| {
                 Millis::from_stored_units(
@@ -254,9 +254,8 @@ impl FillerBot {
                         .slots_before_stale_for_amm
                         .max(0) as u64,
                 )
-                .to_slots(slot_duration) as i64
             })
-            .unwrap_or(10);
+            .unwrap_or(Millis::from_stored_units(10));
         let mut pyth_oracle_prices = BTreeMap::<u16, PythPriceUpdate>::new();
         // per-market consecutive perp-market/oracle cache-miss counters (see slot loop)
         let mut cache_misses = BTreeMap::<u16, u32>::new();
@@ -282,6 +281,12 @@ impl FillerBot {
 
         // Swift reconnect backoff state (reset on successful resubscribe / first order)
         let mut retries = 0u32;
+        // A disconnected stream stays immediately ready forever and this select is
+        // `biased`, so polling it would starve every arm below it, slots included, for
+        // as long as the feed stayed down. Gate the arm on liveness instead and drive
+        // the retry from its own timer.
+        let mut swift_feed_live = true;
+        let mut swift_reconnect_at = tokio::time::Instant::now();
 
         // Swift-feed liveness. A half-open ws never yields an error or `None` — the
         // stream just goes quiet, which on the order channel is indistinguishable from
@@ -301,126 +306,101 @@ impl FillerBot {
         let mut slot_watchdog = tokio::time::interval(Duration::from_secs(15));
         slot_watchdog.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut last_slot_update = std::time::Instant::now();
+        // Swift orders whose stamped message slot has not arrived yet, held until it
+        // does. The feed delivers each order exactly once, so an order the program
+        // cannot accept yet has to be kept somewhere or it is lost.
+        let mut deferred_swift_orders: Vec<SignedOrderInfo> = Vec::new();
+        // Cap so a stuck slot feed cannot grow the queue without bound.
+        const MAX_DEFERRED_SWIFT_ORDERS: usize = 1_024;
+        // An auction order stamped further ahead than this is not a signing buffer (the
+        // UI's is a few slots); refuse to hold it rather than trust an unbounded future
+        // slot. A resting limit is never held: see `swift_slot_wait`.
+        const MAX_SWIFT_ORDER_DEFERRAL: Millis = Millis::from_secs(10);
+        // Swift orders to run the arrival path on: whatever the feed delivered, plus any
+        // deferral whose slot has arrived. Outlives the iteration, so an arm that
+        // short-circuits before the processing pass cannot lose an order.
+        let mut swift_orders: Vec<SignedOrderInfo> = Vec::new();
+        // On contention between an already-buffered slot and an already-ready Swift
+        // order, alternate which stream the biased select lets win. Without this,
+        // either a busy Swift feed or a permanent slot backlog can starve the other.
+        let mut prefer_slot_on_contention = true;
         loop {
+            // Non-blocking because consuming here would skip the per-slot fill work in
+            // the select arm below.
+            let slot_update_pending = !slot_rx.is_empty();
+            let poll_swift = should_poll_swift(
+                swift_feed_live,
+                slot_update_pending,
+                prefer_slot_on_contention,
+            );
+            // Matured deferrals rejoin the arrival path. At the top of the iteration so
+            // no select arm can skip it.
+            if !deferred_swift_orders.is_empty() {
+                let mut waiting = Vec::with_capacity(deferred_swift_orders.len());
+                for order in deferred_swift_orders.drain(..) {
+                    match swift_slot_wait_if_known(
+                        order.slot(),
+                        slot_is_known.then_some(slot),
+                        MAX_SWIFT_ORDER_DEFERRAL,
+                        is_resting_swift_limit(&order.order_params()),
+                        slot_clock,
+                    ) {
+                        SwiftSlotWait::Ready => swift_orders.push(order),
+                        SwiftSlotWait::Wait => waiting.push(order),
+                        SwiftSlotWait::TooFarAhead => {
+                            log::warn!(target: TARGET, "deferred swift order is too far ahead of slot {slot}, dropping. uuid={}", order.order_uuid_str());
+                            metrics.swift_place_skipped.inc();
+                        }
+                    }
+                }
+                deferred_swift_orders = waiting;
+            }
             tokio::select! {
                 biased;
-                swift_order = swift_order_stream.next() => {
+                swift_order = swift_order_stream.next(), if poll_swift => {
+                    prefer_slot_on_contention = true;
                     match swift_order {
                         Some(signed_order) => {
                             // reset
                             retries = 0;
                             last_swift_msg = std::time::Instant::now();
-
-                            let order_params = signed_order.order_params();
-                            let market_index = order_params.market_index;
-                            log::info!(target: TARGET, "new swift order. uuid={}, market={}", signed_order.order_uuid_str(), market_index);
-                            log::debug!(target: TARGET, "details: {signed_order:?}");
-                            // transient cache misses must not kill the fill loop; drop this
-                            // order (the swift feed keeps flowing) rather than panic
-                            let Ok(perp_market) = velocity.try_get_perp_market_account(market_index) else {
-                                log::warn!(target: TARGET, "no perp market {market_index} for swift order, skipping. uuid={}", signed_order.order_uuid_str());
-                                continue;
-                            };
-                            // a fill tx sent now lands ~1 slot ahead (per tx_event
-                            // latency_slots telemetry); evaluate fillability at landing, on the
-                            // state the program will actually see. Overestimating here assumes a
-                            // higher auction price than the program will compute and sends fill
-                            // legs that no-op on-chain, so stay at the observed latency.
-                            let landing_slot = slot + 1;
-                            let Ok(oracle_price_data) = velocity.try_get_mmoracle_for_perp_market(market_index, landing_slot) else {
-                                log::warn!(target: TARGET, "no oracle price for market {market_index}, skipping swift order. uuid={}", signed_order.order_uuid_str());
-                                continue;
-                            };
-                            // Project the AMM to the state the program quotes at fill time
-                            // (`AmmQuoter::setup`: curve snap + spread refresh). No oracle
-                            // override: swift fill txs don't post the pyth price, so the
-                            // program sees the chain oracle as-is.
-                            let perp_market = velocity
-                                .try_get_projected_perp_market(market_index, landing_slot, None)
-                                .unwrap_or(perp_market);
-
-                            // try an immediate fill against resting liquidity
-                            match evaluate_swift_crosses(dlob, &signed_order, &perp_market, oracle_price_data.price, oracle_price_data.delay, landing_slot, slots_before_stale_for_amm, slot_clock) {
-                                SwiftEval::Fillable(crosses) => {
-                                    log::info!(target: TARGET, "found resting cross. market={market_index} oracle={} delay={} crosses={crosses:?}", oracle_price_data.price, oracle_price_data.delay);
-                                    let pf = priority_fee_subscriber.priority_fee_nth(0.6);
-                                    try_swift_fill(
-                                        velocity,
-                                        pf,
-                                        config.swift_cu_limit,
-                                        filler_subaccount,
-                                        signed_order,
-                                        crosses,
-                                        perp_market.clob_market,
-                                        tx_worker_ref.clone(),
-                                        attest,
-                                        Arc::clone(&metrics),
-                                    ).await;
-                                }
-                                SwiftEval::NotFillable(reason) => {
-                                    // Well-formed but not marketable against the crosses this bot
-                                    // found. Place it anyway: the placement routes the order
-                                    // itself, and whatever it cannot fill rests on the market's
-                                    // book as a taker-origin remainder, where the activation-slot
-                                    // auction reaches it. Skip if it can no longer be placed (the
-                                    // program would reject/no-op it) to avoid wasting gas.
-                                    let now_ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
-                                    let order_slot = signed_order.slot();
-                                    let auction_duration = order_params.auction_duration.unwrap_or(0);
-                                    let max_ts = order_params.max_ts.unwrap_or(0);
-                                    if swift_placement_expired(order_slot, auction_duration, max_ts, slot, now_ts, slot_clock) {
-                                        log::debug!(target: TARGET, "swift order past placement window, not placing. uuid={}", signed_order.order_uuid_str());
-                                        metrics.swift_place_skipped.inc();
-                                    } else {
-                                        log::info!(target: TARGET, "swift order not fillable yet ({reason}), placing on-chain. uuid={}", signed_order.order_uuid_str());
-                                        let pf = priority_fee_subscriber.priority_fee_nth(0.6);
-                                        try_swift_place(
-                                            velocity,
-                                            pf,
-                                            config.swift_cu_limit,
-                                            filler_subaccount,
-                                            signed_order,
-                                            slot,
-                                            tx_worker_ref.clone(),
-                                            attest,
-                                        ).await;
-                                        metrics.swift_placed.inc();
-                                    }
-                                }
-                                SwiftEval::Drop => {
-                                    // malformed / unsupported; already logged in evaluate_swift_crosses
-                                }
-                            }
+                            // handled after the select, together with matured deferrals
+                            swift_orders.push(signed_order);
                         }
                         None => {
                             // Reconnect forever with capped backoff. Giving up after N
                             // retries left the bot permanently deaf to swift flow while
-                            // reporting healthy — a swift-server outage longer than the
+                            // reporting healthy: a swift-server outage longer than the
                             // retry budget must not require a manual restart.
                             feed_health.set_swift_connected(false);
+                            swift_feed_live = false;
                             retries += 1;
                             let backoff = 2u64.saturating_pow(retries.min(5)).min(30);
                             log::warn!(target: "swift", "feed disconnected, retry {retries} in {backoff}s");
-                            tokio::time::sleep(Duration::from_secs(backoff)).await;
-
-                            // keep the same ws url override as the initial subscription,
-                            // otherwise a reconnect silently switches to the default host
-                            match velocity
-                                .subscribe_swift_orders(&market_ids, Some(true), None, std::env::var("SWIFT_WS_URL").ok())
-                                .await
-                            {
-                                Ok(stream) => {
-                                    log::info!(target: "swift", "feed resubscribed after {retries} attempt(s)");
-                                    swift_order_stream = stream;
-                                    retries = 0;
-                                    last_swift_msg = std::time::Instant::now();
-                                    feed_health.set_swift_connected(true);
-                                }
-                                Err(e) => {
-                                    log::error!(target: "swift", "resubscribe failed: {e:?}");
-                                    continue;
-                                }
-                            }
+                            swift_reconnect_at = tokio::time::Instant::now() + Duration::from_secs(backoff);
+                        }
+                    }
+                }
+                _ = tokio::time::sleep_until(swift_reconnect_at), if !swift_feed_live => {
+                    // keep the same ws url override as the initial subscription,
+                    // otherwise a reconnect silently switches to the default host
+                    match velocity
+                        .subscribe_swift_orders(&market_ids, Some(true), None, std::env::var("SWIFT_WS_URL").ok())
+                        .await
+                    {
+                        Ok(stream) => {
+                            log::info!(target: "swift", "feed resubscribed after {retries} attempt(s)");
+                            swift_order_stream = stream;
+                            retries = 0;
+                            last_swift_msg = std::time::Instant::now();
+                            swift_feed_live = true;
+                            feed_health.set_swift_connected(true);
+                        }
+                        Err(e) => {
+                            retries += 1;
+                            let backoff = 2u64.saturating_pow(retries.min(5)).min(30);
+                            log::error!(target: "swift", "resubscribe failed: {e:?}, retry {retries} in {backoff}s");
+                            swift_reconnect_at = tokio::time::Instant::now() + Duration::from_secs(backoff);
                         }
                     }
                 }
@@ -430,6 +410,8 @@ impl FillerBot {
                         break;
                     }
                     slot = new_slot.expect("got slot update");
+                    slot_is_known = true;
+                    prefer_slot_on_contention = false;
                     last_slot_update = std::time::Instant::now();
                     feed_health.touch_slot();
                     log::trace!(target: TARGET, "got slot update: {slot}");
@@ -437,6 +419,36 @@ impl FillerBot {
                     let priority_fee = priority_fee_subscriber.priority_fee_nth(0.5) + slot % 2; // add entropy to produce unique tx hash on conseuctive tx resubmission
                     let t0 = std::time::SystemTime::now();
                     let unix_now = t0.duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_secs() as i64;
+
+                    // check state config every ~1-2 minutes depending on the slot
+                    // duration (elapsed-slot based), before any
+                    // market decision this tick so one refresh cannot split a slot's
+                    // fill decisions across two clocks or thresholds
+                    if slot.saturating_sub(last_config_refresh_slot) >= CONFIG_REFRESH_SLOTS {
+                        last_config_refresh_slot = slot;
+                        // state_account() is a full Borsh parse of State, so refresh the
+                        // clock here rather than per slot: the cached clock already
+                        // integrates every scheduled transition by slot, and only a newly
+                        // staged transition needs the re-read. On a transient cache miss
+                        // keep the previous clock; slot_clock() would substitute the
+                        // 400ms baseline until the next refresh
+                        if let Ok(state) = velocity.state_account() {
+                            slot_clock = slot_clock_from_state(&state);
+                            dlob.update_slot_clock(slot_clock);
+                        }
+                        use_median_trigger_price = velocity
+                            .state_account()
+                            .map(|s| s.has_median_trigger_price_feature())
+                            .unwrap_or(false);
+                        stale_for_amm_threshold = velocity
+                            .state_account()
+                            .map(|s| {
+                                Millis::from_stored_units(
+                                    s.oracle_guard_rails.validity.slots_before_stale_for_amm.max(0) as u64,
+                                )
+                            })
+                            .unwrap_or(Millis::from_stored_units(10));
+                    }
 
                     // check for auction and limit crosses in all markets
                     for market in &market_ids {
@@ -468,7 +480,9 @@ impl FillerBot {
                                 continue;
                             }
                         };
-                        let oracle_stale_for_amm = chain_oracle_data.delay > slots_before_stale_for_amm;
+                        let oracle_stale_for_amm = slot_clock
+                            .elapsed_slot_delta(chain_oracle_data.delay.max(0) as u64, slot)
+                            > stale_for_amm_threshold;
                         // Log staleness only on transition; the per-slot price/staleness dump
                         // was pure spam. The oracle price at the moment of an actual decision
                         // is carried on the fill/uncross events below instead.
@@ -651,26 +665,6 @@ impl FillerBot {
                             ).await;
                         }
 
-                        // check state config ~every minute (elapsed-slot based)
-                        if slot.saturating_sub(last_config_refresh_slot) >= CONFIG_REFRESH_SLOTS {
-                            last_config_refresh_slot = slot;
-                            use_median_trigger_price = velocity
-                                .state_account()
-                                .map(|s| s.has_median_trigger_price_feature())
-                                .unwrap_or(false);
-                            slot_duration = crate::util::client_slot_duration(velocity, slot);
-                            slot_clock = velocity.slot_clock();
-                            dlob.update_slot_clock(slot_clock);
-                            slots_before_stale_for_amm = velocity
-                                .state_account()
-                                .map(|s| {
-                                    Millis::from_stored_units(
-                                        s.oracle_guard_rails.validity.slots_before_stale_for_amm.max(0) as u64,
-                                    )
-                                    .to_slots(slot_duration) as i64
-                                })
-                                .unwrap_or(10);
-                        }
                     }
                     let duration = std::time::SystemTime::now().duration_since(t0).unwrap().as_millis();
                     log::trace!(target: TARGET, "⏱️ checked fills at {slot}: {:?}ms", duration);
@@ -721,6 +715,139 @@ impl FillerBot {
                         // reset either way so a failed attempt retries after a full
                         // stale window instead of every 15s tick
                         last_swift_msg = std::time::Instant::now();
+                    }
+                }
+            }
+
+            for signed_order in std::mem::take(&mut swift_orders) {
+                // Until the stamped message slot arrives the program accepts neither a
+                // fill nor a bare placement of an auction order, so acting now burns a tx
+                // and, for a fill, the order's one place+fill attempt. A resting limit is
+                // the exception: its stamp is a deadline, and it is placed right away.
+                let order_slot = signed_order.slot();
+                match swift_slot_wait_if_known(
+                    order_slot,
+                    slot_is_known.then_some(slot),
+                    MAX_SWIFT_ORDER_DEFERRAL,
+                    is_resting_swift_limit(&signed_order.order_params()),
+                    slot_clock,
+                ) {
+                    SwiftSlotWait::Ready => {}
+                    SwiftSlotWait::TooFarAhead => {
+                        log::warn!(target: TARGET, "swift order stamped {} slots ahead of slot {slot}, dropping. uuid={}", order_slot.saturating_sub(slot), signed_order.order_uuid_str());
+                        continue;
+                    }
+                    SwiftSlotWait::Wait => {
+                        if deferred_swift_orders.len() >= MAX_DEFERRED_SWIFT_ORDERS {
+                            log::warn!(target: TARGET, "deferred swift orders at capacity ({MAX_DEFERRED_SWIFT_ORDERS}), dropping. uuid={}", signed_order.order_uuid_str());
+                        } else {
+                            log::info!(target: TARGET, "swift order slot {order_slot} not reached (slot {slot}), deferring. uuid={}", signed_order.order_uuid_str());
+                            deferred_swift_orders.push(signed_order);
+                        }
+                        continue;
+                    }
+                }
+                let order_params = signed_order.order_params();
+                // A held order can age out while the slot feed stalls, and a fresh
+                // feed order can already be late on arrival. Check after the select so
+                // it uses the newest slot handled this iteration, before either the fill
+                // or placement path can spend a transaction.
+                let now_ts = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs() as i64;
+                if swift_order_expired(
+                    order_slot,
+                    order_params.auction_duration.unwrap_or(0),
+                    order_params.max_ts.unwrap_or(0),
+                    slot,
+                    now_ts,
+                    slot_clock,
+                ) {
+                    log::info!(target: TARGET, "swift order expired before processing, dropping. uuid={}", signed_order.order_uuid_str());
+                    metrics.swift_place_skipped.inc();
+                    continue;
+                }
+                let market_index = order_params.market_index;
+                log::info!(target: TARGET, "new swift order. uuid={}, market={}", signed_order.order_uuid_str(), market_index);
+                log::debug!(target: TARGET, "details: {signed_order:?}");
+                // transient cache misses must not kill the fill loop; drop this
+                // order (the swift feed keeps flowing) rather than panic
+                let Ok(perp_market) = velocity.try_get_perp_market_account(market_index) else {
+                    log::warn!(target: TARGET, "no perp market {market_index} for swift order, skipping. uuid={}", signed_order.order_uuid_str());
+                    continue;
+                };
+                // a fill tx sent now lands ~1 slot ahead (per tx_event
+                // latency_slots telemetry); evaluate fillability at landing, on the
+                // state the program will actually see. Overestimating here assumes a
+                // higher auction price than the program will compute and sends fill
+                // legs that no-op on-chain, so stay at the observed latency.
+                let landing_slot = slot + 1;
+                let Ok(oracle_price_data) =
+                    velocity.try_get_mmoracle_for_perp_market(market_index, landing_slot)
+                else {
+                    log::warn!(target: TARGET, "no oracle price for market {market_index}, skipping swift order. uuid={}", signed_order.order_uuid_str());
+                    continue;
+                };
+                // Project the AMM to the state the program quotes at fill time
+                // (`AmmQuoter::setup`: curve snap + spread refresh). No oracle
+                // override: swift fill txs don't post the pyth price, so the
+                // program sees the chain oracle as-is.
+                let perp_market = velocity
+                    .try_get_projected_perp_market(market_index, landing_slot, None)
+                    .unwrap_or(perp_market);
+
+                // try an immediate fill against resting liquidity
+                match evaluate_swift_crosses(
+                    dlob,
+                    &signed_order,
+                    &perp_market,
+                    oracle_price_data.price,
+                    oracle_price_data.delay,
+                    landing_slot,
+                    stale_for_amm_threshold,
+                    slot_clock,
+                ) {
+                    SwiftEval::Fillable(crosses) => {
+                        log::info!(target: TARGET, "found resting cross. market={market_index} oracle={} delay={} crosses={crosses:?}", oracle_price_data.price, oracle_price_data.delay);
+                        let pf = priority_fee_subscriber.priority_fee_nth(0.6);
+                        try_swift_fill(
+                            velocity,
+                            pf,
+                            config.swift_cu_limit,
+                            filler_subaccount,
+                            signed_order,
+                            crosses,
+                            perp_market.clob_market,
+                            tx_worker_ref.clone(),
+                            attest,
+                            Arc::clone(&metrics),
+                        )
+                        .await;
+                    }
+                    SwiftEval::NotFillable(reason) => {
+                        // Well-formed but not marketable against the crosses this bot
+                        // found. Place it anyway: the placement routes the order
+                        // itself, and whatever it cannot fill rests on the market's
+                        // book as a taker-origin remainder, where the activation-slot
+                        // auction reaches it.
+                        log::info!(target: TARGET, "swift order not fillable yet ({reason}), placing on-chain. uuid={}", signed_order.order_uuid_str());
+                        let pf = priority_fee_subscriber.priority_fee_nth(0.6);
+                        try_swift_place(
+                            velocity,
+                            pf,
+                            config.swift_cu_limit,
+                            filler_subaccount,
+                            signed_order,
+                            slot,
+                            tx_worker_ref.clone(),
+                            attest,
+                        )
+                        .await;
+                        metrics.swift_placed.inc();
+                    }
+                    SwiftEval::Drop => {
+                        // malformed / unsupported; already logged in evaluate_swift_crosses
                     }
                 }
             }
@@ -866,7 +993,7 @@ fn evaluate_swift_crosses(
     oracle_price: i64,
     oracle_delay: i64,
     landing_slot: u64,
-    slots_before_stale_for_amm: i64,
+    stale_for_amm_threshold: Millis,
     slot_clock: SlotClock,
 ) -> SwiftEval {
     let mut order_params = signed_order.order_params();
@@ -884,9 +1011,11 @@ fn evaluate_swift_crosses(
         order_params.auction_end_price.unwrap_or_default(),
         order_params.auction_duration.unwrap_or_default(),
     );
-    // On-chain the auction clock starts at the signed message slot, not when the order is
-    // placed. `min` guards `calculate_auction_price`'s elapsed-slot underflow when the
-    // taker's slot is ahead of our slot subscriber.
+    // On-chain the order slot is `min(clock.slot, message slot)` (`get_order_slot`), so
+    // the auction clock starts at the message slot, never before. Callers defer an auction
+    // order whose message slot has not arrived (`swift_slot_wait`), but a resting limit is
+    // forwarded early, so `min` mirrors that clamp as well as guarding
+    // `calculate_auction_price`'s elapsed-slot underflow.
     let order_slot = signed_order.slot().min(landing_slot);
     let order = Order {
         slot: order_slot,
@@ -997,7 +1126,8 @@ fn evaluate_swift_crosses(
     // still well-formed, so let the caller place it (it may fill once the oracle refreshes).
     if crosses.orders.is_empty()
         && crosses.has_vamm_cross
-        && oracle_delay > slots_before_stale_for_amm
+        && slot_clock.elapsed_slot_delta(oracle_delay.max(0) as u64, landing_slot)
+            > stale_for_amm_threshold
     {
         return SwiftEval::NotFillable(format!(
             "vAMM-only cross but oracle stale for AMM (delay={oracle_delay} oracle={oracle_price})"
@@ -2533,20 +2663,18 @@ pub async fn setup_grpc(
 pub async fn sync_stats_accounts(
     velocity: &VelocityClient,
 ) -> Result<(), solana_rpc_client_api::client_error::Error> {
-    let stats_sync_result = velocity
-        .rpc()
-        .get_program_accounts_with_config(
-            &PROGRAM_ID,
-            RpcProgramAccountsConfig {
-                filters: Some(vec![velocity_rs::memcmp::get_user_stats_filter()]),
-                account_config: RpcAccountInfoConfig {
-                    encoding: Some(UiAccountEncoding::Base64Zstd),
-                    ..Default::default()
-                },
+    let stats_sync_result = get_program_accounts_decoded(
+        velocity,
+        RpcProgramAccountsConfig {
+            filters: Some(vec![velocity_rs::memcmp::get_user_stats_filter()]),
+            account_config: RpcAccountInfoConfig {
+                encoding: Some(UiAccountEncoding::Base64Zstd),
                 ..Default::default()
             },
-        )
-        .await;
+            ..Default::default()
+        },
+    )
+    .await;
 
     match stats_sync_result {
         Ok(accounts) => {
@@ -2576,23 +2704,21 @@ pub async fn sync_user_accounts(
     velocity: &VelocityClient,
     dlob_notifier: &DLOBNotifier,
 ) -> Result<(), solana_rpc_client_api::client_error::Error> {
-    let sync_result = velocity
-        .rpc()
-        .get_program_accounts_with_config(
-            &PROGRAM_ID,
-            RpcProgramAccountsConfig {
-                filters: Some(vec![
-                    velocity_rs::memcmp::get_non_idle_user_filter(),
-                    velocity_rs::memcmp::get_user_filter(),
-                ]),
-                account_config: RpcAccountInfoConfig {
-                    encoding: Some(UiAccountEncoding::Base64Zstd),
-                    ..Default::default()
-                },
+    let sync_result = get_program_accounts_decoded(
+        velocity,
+        RpcProgramAccountsConfig {
+            filters: Some(vec![
+                velocity_rs::memcmp::get_non_idle_user_filter(),
+                velocity_rs::memcmp::get_user_filter(),
+            ]),
+            account_config: RpcAccountInfoConfig {
+                encoding: Some(UiAccountEncoding::Base64Zstd),
                 ..Default::default()
             },
-        )
-        .await;
+            ..Default::default()
+        },
+    )
+    .await;
 
     match sync_result {
         Ok(accounts) => {
@@ -2618,6 +2744,37 @@ pub async fn sync_user_accounts(
             Err(err)
         }
     }
+}
+
+/// `RpcClient::get_program_accounts_with_config` was removed in solana-rpc-client 4.2.
+/// Decode `UiAccount`s from the replacement so callers still see binary `Account` data.
+///
+/// Anza's own helper panics on an account it cannot decode. This one runs on the
+/// filler and liquidator startup path, where an RPC that ignores the requested
+/// `Base64Zstd` encoding should degrade like any other sync failure, so skip those
+/// accounts and report how many were lost.
+async fn get_program_accounts_decoded(
+    velocity: &VelocityClient,
+    config: RpcProgramAccountsConfig,
+) -> Result<Vec<(Pubkey, solana_account::Account)>, solana_rpc_client_api::client_error::Error> {
+    let ui_accounts = velocity
+        .rpc()
+        .get_program_ui_accounts_with_config(&PROGRAM_ID, config)
+        .await?;
+    let returned = ui_accounts.len();
+    let accounts: Vec<(Pubkey, solana_account::Account)> = ui_accounts
+        .into_iter()
+        .filter_map(|(pubkey, ui)| ui.to_account().map(|account| (pubkey, account)))
+        .collect();
+    if accounts.len() < returned {
+        log::warn!(
+            target: "dlob",
+            "skipped {} of {returned} program accounts: not returned in a binary encoding",
+            returned - accounts.len()
+        );
+    }
+
+    Ok(accounts)
 }
 
 async fn subscribe_grpc(
@@ -3013,7 +3170,7 @@ impl TxWorker {
                     RpcTransactionConfig {
                         encoding: Some(UiTransactionEncoding::Base64),
                         commitment: Some(CommitmentConfig::confirmed()),
-                        max_supported_transaction_version: Some(0),
+                        max_supported_transaction_version: Some(1),
                     },
                 )
                 .await
@@ -3028,27 +3185,15 @@ impl TxWorker {
                                 let tx_confirmed_slot = tx_log.slot;
                                 let mut actual_fills = 0;
                                 let mut triggered = false;
-                                for (tx_idx, log) in logs.iter().enumerate() {
-                                    if let Some(event) = velocity_rs::event_subscriber::try_parse_log(
-                                        log.as_str(),
-                                        &sig,
-                                        tx_idx,
-                                    ) {
-                                        if let VelocityEvent::OrderFill { ..} = event
-                                        {
-                                            actual_fills += 1;
-                                        } else if let VelocityEvent::OrderTrigger { .. } = event {
-                                            triggered = true;
-                                            metrics.trigger_actual.inc();
-                                        } else if log.as_str().contains("exceeded CUs meter") {
-                                            metrics
-                                            .tx_failed
-                                            .with_label_values(&[
-                                                intent_label,
-                                                "insufficient_cus",
-                                            ])
-                                            .inc();
-                                        }
+                                for event in parse_velocity_logs(
+                                    logs.iter().map(String::as_str),
+                                    &sig,
+                                ) {
+                                    if let VelocityEvent::OrderFill { .. } = event {
+                                        actual_fills += 1;
+                                    } else if let VelocityEvent::OrderTrigger { .. } = event {
+                                        triggered = true;
+                                        metrics.trigger_actual.inc();
                                     }
                                 }
                                 let confirmation_slots = tx_confirmed_slot - sent_slot;
@@ -3171,24 +3316,31 @@ impl TxWorker {
                                     "tx failed: {err:?}, intent: {intent_label}, liquidatee: {:?}, sig: {signature}",
                                     intent.liquidatee()
                                 );
+                                let logs: Option<Vec<String>> = meta.log_messages.clone().into();
                                 // Log program logs from failed liquidation txs
                                 if intent.is_liquidation() {
-                                    let logs: Option<Vec<String>> = meta.log_messages.clone().into();
-                                    if let Some(logs) = logs {
-                                        for log_line in &logs {
+                                    if let Some(logs) = logs.as_ref() {
+                                        for log_line in logs {
                                             if log_line.contains("Error") || log_line.contains("error") || log_line.contains("failed") || log_line.contains("Program log:") {
                                                 log::warn!(target: TARGET, "  tx log: {}", log_line);
                                             }
                                         }
                                     }
                                 }
-                                // tx failed with error
+                                // tx failed with error. CU exhaustion lands here: the VM
+                                // reports it as ProgramFailedToComplete, which it shares with
+                                // other faults, so the log line is what identifies it.
+                                let reason = if logs
+                                    .as_ref()
+                                    .is_some_and(|logs| logs.iter().any(|l| l.contains("exceeded CUs meter")))
+                                {
+                                    "insufficient_cus".to_string()
+                                } else {
+                                    format!("{err:?}")
+                                };
                                 metrics
                                     .tx_failed
-                                    .with_label_values(&[
-                                        intent_label,
-                                        &format!("{:?}", err),
-                                    ])
+                                    .with_label_values(&[intent_label, &reason])
                                     .inc();
                                 emit_tx_event(
                                     &intent,
@@ -3526,10 +3678,12 @@ fn is_expected_fill_event(event: &VelocityEvent, intent: &TxIntent) -> bool {
 }
 
 fn simulation_has_expected_fill(logs: Option<&[String]>, intent: &TxIntent) -> bool {
-    logs.into_iter().flatten().enumerate().any(|(tx_idx, log)| {
-        velocity_rs::event_subscriber::try_parse_log(log, "simulation", tx_idx)
-            .is_some_and(|event| is_expected_fill_event(&event, intent))
+    logs.map(|logs| {
+        parse_velocity_logs(logs.iter().map(String::as_str), "simulation")
+            .into_iter()
+            .any(|event| is_expected_fill_event(&event, intent))
     })
+    .unwrap_or(false)
 }
 
 #[derive(Clone)]
@@ -3668,6 +3822,7 @@ fn set_compute_unit_limit(message: &mut VersionedMessage, units: u32) {
     let instructions = match message {
         VersionedMessage::Legacy(legacy) => &mut legacy.instructions,
         VersionedMessage::V0(v0) => &mut v0.instructions,
+        VersionedMessage::V1(v1) => &mut v1.instructions,
     };
     for ix in instructions.iter_mut() {
         let is_compute_budget = keys
@@ -3689,7 +3844,8 @@ mod tests {
             mm_oracle_stale_for_amm_immediate, order_dedup_key, record_perp_fill_fallback,
             vamm_can_fill_taker, CrossAction, Pubkey, TxIntent, VelocityEvent,
         },
-        solana_sdk::{instruction::InstructionError, transaction::TransactionError},
+        solana_instruction::error::InstructionError,
+        solana_transaction::TransactionError,
         std::borrow::Cow,
         velocity_rs::{
             constants::ProgramData,

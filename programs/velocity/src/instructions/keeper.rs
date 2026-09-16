@@ -75,6 +75,7 @@ use {
             position::calculate_base_asset_value_and_pnl_with_oracle_price,
             router::RouterLeg,
             safe_math::SafeMath,
+            safe_unwrap::SafeUnwrap,
             spot_withdraw::validate_spot_market_vault_amount,
             time::Millis,
         },

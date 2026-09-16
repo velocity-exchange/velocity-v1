@@ -55,6 +55,7 @@ pub struct State {
     pub hot_user_flag: Pubkey,
     pub hot_vault_deposit: Pubkey,
     pub hot_mm_oracle_crank: Pubkey,
+    /// Bot authority for the low-CU native AMM spread-adjustment crank.
     pub hot_amm_spread_adjust: Pubkey,
 
     pub whitelist_mint: Pubkey,
@@ -146,6 +147,11 @@ pub struct State {
     /// interval piecewise instead of multiplying its whole slot delta by the
     /// duration at one endpoint.
     pub slot_duration_transition_slots: [u64; 4],
+    /// Active-management authority for scoped vAMM quoting controls carried by
+    /// `HotAdminUpdatePerpMarket`. This may be a multisig PDA; timelock policy
+    /// lives in that multisig. Added from former padding so existing fields,
+    /// including `hot_amm_spread_adjust`, retain their offsets.
+    pub hot_vamm_quote_management: Pubkey,
     /// The retail-flow attestation key (swift's). Not a signer of any admin
     /// instruction. It attests flow through two transports. On a
     /// swift-built transaction it signs as a named `flow_authority`
@@ -169,7 +175,7 @@ pub struct State {
     /// prices it now. Every relay crank payment is derived from this, so a
     /// change to the network's fee model is one write here instead of a
     /// re-price of every market. Holds `u32`s, so it lands 4-aligned right
-    /// after `hot_flow_authority` (offset 1576) with no alignment slack ahead.
+    /// after `hot_flow_authority` (offset 1608) with no alignment slack ahead.
     pub transaction_fee_rails: TransactionFeeRails,
     /// Most of a liquidation's filled quote value the protocol will spend
     /// reimbursing whoever cranked it, in basis points.
@@ -196,14 +202,15 @@ pub struct State {
     /// reimbursement as surely as a zero share does: market zero is the quote
     /// market, which prices nothing useful here.
     pub sol_spot_market_index: u16,
-    /// Trailing filler after the branch's fee-rails fields. Vestigial: the
-    /// rails already sit 4-aligned behind `hot_flow_authority`, so no slack is
-    /// needed ahead of them.
+    /// Trailing filler after the fee-rails fields. Vestigial: the rails already
+    /// sit 4-aligned behind `hot_flow_authority`, so no slack is needed ahead
+    /// of them.
     pub padding_0: [u8; 2],
-    /// Former padding, now sized so the branch's fee-rails fields and master's
-    /// slot-duration archive both fit while `size_of::<State>()` stays 1744 on
-    /// x86_64 (u128 align 16) and SBF (u128 align 8). The offsets below pin it.
-    pub padding: [u8; 142],
+    /// Former padding, now sized so the quote-management key, the slot-duration
+    /// archive and the fee-rails fields all fit while `size_of::<State>()` stays
+    /// 1744 on x86_64 (u128 align 16) and SBF (u128 align 8). The offsets below
+    /// pin it.
+    pub padding: [u8; 110],
 }
 
 /// Purpose-specific hot role keys held on `State`. Each variant maps to one of the
@@ -222,6 +229,9 @@ pub enum HotRole {
     AmmSpreadAdjust,
     FeeWithdraw,
     AccountExtension,
+    /// vAMM active management (spread/JIT/curve and related quoting controls).
+    /// Appended to preserve every existing role's serialized ordinal.
+    VammQuoteManagement,
     FlowAuthority,
 }
 
@@ -312,12 +322,13 @@ impl Default for State {
             slot_duration_pad: [0; 2],
             slot_duration_effective_slot: 0,
             slot_duration_transition_slots: [0; 4],
+            hot_vamm_quote_management: Pubkey::default(),
             hot_flow_authority: Pubkey::default(),
             transaction_fee_rails: TransactionFeeRails::default(),
             liquidation_crank_reimbursement_bps: 0,
             sol_spot_market_index: 0,
             padding_0: [0; 2],
-            padding: [0; 142],
+            padding: [0; 110],
         }
     }
 }
@@ -563,6 +574,7 @@ impl State {
             HotRole::AmmSpreadAdjust => self.hot_amm_spread_adjust,
             HotRole::FeeWithdraw => self.hot_fee_withdraw,
             HotRole::AccountExtension => self.hot_account_extension,
+            HotRole::VammQuoteManagement => self.hot_vamm_quote_management,
             HotRole::FlowAuthority => self.hot_flow_authority,
         }
     }
@@ -581,6 +593,7 @@ impl State {
             HotRole::AmmSpreadAdjust => self.hot_amm_spread_adjust = key,
             HotRole::FeeWithdraw => self.hot_fee_withdraw = key,
             HotRole::AccountExtension => self.hot_account_extension = key,
+            HotRole::VammQuoteManagement => self.hot_vamm_quote_management = key,
             HotRole::FlowAuthority => self.hot_flow_authority = key,
         }
     }
@@ -667,10 +680,11 @@ impl Size for State {
     // + protocol_fee_recipient_perp/_spot + hot_fee_withdraw + hot_account_extension, 256 B)
     // + 2*FeeStructure + OracleGuardRails + scalars + solvency_status[1] + promo_fee_tier[1]
     // + slot_duration_ms[2] + pending_slot_duration_ms[2] + slot_duration_pad[2]
-    // + slot_duration_effective_slot[8] + transition slots[32] (master's slot-duration
-    // archive, offsets 1498..1544) + hot_flow_authority[32] + transaction_fee_rails[16]
+    // + slot_duration_effective_slot[8] + transition slots[32] (the slot-duration
+    // archive, offsets 1498..1544) + hot_vamm_quote_management[32]
+    // + hot_flow_authority[32] + transaction_fee_rails[20]
     // + liquidation_crank_reimbursement_bps[2] + sol_spot_market_index[2] + padding_0[2]
-    // (the branch's fee-rails fields, offsets 1544..1598) + padding[142] = 1752 B.
+    // (offsets 1544..1634) + padding[110] = 1752 B.
     // hot_if_rebalance was removed with the if-rebalance machinery (its 32 B went into
     // the padding); protocol_fee_recipient_spot later took 32 B back out; solvency_status
     // took 1 B out of the padding; hot_account_extension took another 32 B out;
@@ -678,11 +692,11 @@ impl Size for State {
     // offset, so the u16 starts at the even byte right after it — no implicit padding,
     // pinned below); the staging fields (pending_slot_duration_ms[2] + slot_duration_pad[2]
     // + slot_duration_effective_slot[8] + transition slots[32]) took 44 B; then
-    // hot_flow_authority[32] + transaction_fee_rails[20] (4-aligned, no slack ahead;
-    // grew 4 B for the priority-fee ceiling, taken from the padding, 146 -> 142) +
-    // liquidation_crank_reimbursement_bps[2] + sol_spot_market_index[2] + padding_0[2]
-    // took 58 B. The padding absorbs the 8 formerly-implicit trailing bytes (State
-    // contains a u128, align 16 on the host but 8 on SBF) so sizeof is target-independent.
+    // hot_vamm_quote_management[32] + hot_flow_authority[32] + transaction_fee_rails[20]
+    // (4-aligned, no slack ahead) + liquidation_crank_reimbursement_bps[2]
+    // + sol_spot_market_index[2] + padding_0[2] took 90 B. The padding absorbs the 8
+    // formerly-implicit trailing bytes (State contains a u128, align 16 on the host but
+    // 8 on SBF) so sizeof is target-independent.
     // SIZE stays constant and (SIZE - 8) % 16 == 0 holds (1744).
     const SIZE: usize = 1752;
 }
@@ -781,12 +795,14 @@ static_assertions::const_assert_eq!(
     1512
 );
 static_assertions::const_assert_eq!(std::mem::size_of::<State>(), 1744);
-// The branch's fee-rails fields follow master's slot-duration archive in the
-// former padding. `hot_flow_authority` starts where the archive ends (1544);
-// `transaction_fee_rails` holds `u32`s, so it lands 4-aligned at 1576 with no
+// The quote-management key and the fee-rails fields follow the slot-duration
+// archive in the former padding. `hot_vamm_quote_management` starts where the
+// archive ends (1544), `hot_flow_authority` follows it, and
+// `transaction_fee_rails` holds `u32`s, so it lands 4-aligned at 1608 with no
 // slack ahead of it. A shift here means the SDK mirror in `types.ts` is stale.
-static_assertions::const_assert_eq!(std::mem::offset_of!(State, hot_flow_authority), 1544);
-static_assertions::const_assert_eq!(std::mem::offset_of!(State, transaction_fee_rails), 1576);
+static_assertions::const_assert_eq!(std::mem::offset_of!(State, hot_vamm_quote_management), 1544);
+static_assertions::const_assert_eq!(std::mem::offset_of!(State, hot_flow_authority), 1576);
+static_assertions::const_assert_eq!(std::mem::offset_of!(State, transaction_fee_rails), 1608);
 
 #[derive(Copy, AnchorSerialize, AnchorDeserialize, Clone, Debug)]
 #[repr(C)]
@@ -925,8 +941,10 @@ pub struct OrderFillerRewardStructure {
 }
 
 impl FeeStructure {
-    /// Three volume tiers (see `determine_perp_fee_tier` for the 30d-volume
-    /// thresholds): 4bps / 3bps / 2bps taker, flat -0.25bp maker rebate.
+    /// Four volume tiers (see `determine_perp_fee_tier` for the 30d-volume
+    /// thresholds): 4bps / 3bps / 2bps / 1.5bps taker, flat -0.25bp maker
+    /// rebate. Live rates are admin params (`update_perp_fee_structure`);
+    /// these only seed fresh state.
     /// Per-market absolute surcharges/discounts (e.g. volatile-alt add-ons)
     /// live on `PerpMarket.taker_fee_addon_tenth_bps`, not in the tiers.
     pub fn perps_default() -> Self {
@@ -954,6 +972,16 @@ impl FeeStructure {
         fee_tiers[2] = FeeTier {
             fee_numerator: 20,
             fee_denominator: FEE_DENOMINATOR, // 2 bps
+            maker_rebate_numerator: 25,
+            maker_rebate_denominator: 10 * FEE_DENOMINATOR, // 0.25bp
+            referrer_reward_numerator: 10,
+            referrer_reward_denominator: FEE_PERCENTAGE_DENOMINATOR, // 10% of taker fee
+            referee_fee_numerator: 5,
+            referee_fee_denominator: FEE_PERCENTAGE_DENOMINATOR, // 5%
+        };
+        fee_tiers[3] = FeeTier {
+            fee_numerator: 15,
+            fee_denominator: FEE_DENOMINATOR, // 1.5 bps
             maker_rebate_numerator: 25,
             maker_rebate_denominator: 10 * FEE_DENOMINATOR, // 0.25bp
             referrer_reward_numerator: 10,

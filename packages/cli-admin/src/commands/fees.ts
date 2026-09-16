@@ -13,10 +13,13 @@ import {
 	TransferFeeAndPnlPoolDirection,
 	ACCELERATED_REFERRER_REWARD_PERCENT,
 } from '@velocity-exchange/sdk';
+import pc from 'picocolors';
 import { readGlobalOpts, withGlobalOptions } from '../lib/options';
 import { buildAdminClient, buildProvider } from '../lib/provider';
+import * as ui from '../lib/ui';
 import {
 	reportDispatch,
+	reportDryRun,
 	resolveAdminAuthority,
 	sendOrPropose,
 } from '../lib/squads';
@@ -613,6 +616,179 @@ export function registerFees(parent: Command): void {
 
 	withGlobalOptions(
 		fees
+			.command('set-schedule <tier0bp> <tier1bp> <tier2bp> <tier3bp>')
+			.description(
+				'Rewrite the perp fee schedule in one instruction: taker fee (bps, decimals ok) for ' +
+					'the four live tiers (Regular / VIP 1 / VIP 2 / VIP 3; the $5M/$80M/$200M 30d-volume ' +
+					'thresholds are program constants). Unused tiers 4-9 mirror tier 3. Fetches the current fee ' +
+					'structure and patches only what is passed; maker rebate, referral fields, and the ' +
+					'amm/if split stay unchanged unless the matching option is given. Warm/cold admin.'
+			)
+			.option(
+				'--maker-rebate-bp <bp>',
+				'maker rebate in bps on all tiers (e.g. 0.25)'
+			)
+			.option(
+				'--referrer <pct>',
+				'referrer reward, percent of the taker fee (tiers 0-5)'
+			)
+			.option(
+				'--referee <pct>',
+				'referee discount, percent of the taker fee (tiers 0-5)'
+			)
+			.option('--amm-split <pct>', 'amm share of the fee remainder, percent')
+			.option(
+				'--if-split <pct>',
+				'insurance fund share of the fee remainder, percent'
+			)
+			.option(
+				'--dry-run',
+				'print the resulting structure and expected proposal rent/fees, send nothing',
+				false
+			)
+	).action(
+		async (
+			tier0bp: string,
+			tier1bp: string,
+			tier2bp: string,
+			tier3bp: string,
+			_flags,
+			cmd: Command
+		) => {
+			const opts = readGlobalOpts(cmd);
+			const local = cmd.opts() as {
+				makerRebateBp?: string;
+				referrer?: string;
+				referee?: string;
+				ammSplit?: string;
+				ifSplit?: string;
+				dryRun: boolean;
+			};
+			const provider = buildProvider(opts);
+			const client = await buildAdminClient(opts);
+			try {
+				const current = client.getStateAccount().perpFeeStructure;
+				const feeStructure = {
+					...current,
+					feeTiers: current.feeTiers.map((tier) => ({ ...tier })),
+				};
+				const tiers = feeStructure.feeTiers;
+				const bpToNumerator = (bp: string, denominator: number): number => {
+					const value = Number(bp);
+					if (!Number.isFinite(value) || value < 0) {
+						throw new Error(`bad bps value "${bp}"`);
+					}
+					const numerator = (value * denominator) / 10000;
+					if (!Number.isInteger(numerator)) {
+						throw new Error(
+							`${bp} bps does not land on an integer numerator over ${denominator}`
+						);
+					}
+					return numerator;
+				};
+				const tierBps = [tier0bp, tier1bp, tier2bp, tier3bp];
+				for (let i = 0; i < tiers.length; i++) {
+					const bp = tierBps[Math.min(i, tierBps.length - 1)];
+					tiers[i].feeNumerator = bpToNumerator(bp, tiers[i].feeDenominator);
+					if (local.makerRebateBp !== undefined) {
+						tiers[i].makerRebateNumerator = bpToNumerator(
+							local.makerRebateBp,
+							tiers[i].makerRebateDenominator
+						);
+					}
+					// Referral fields are populated on tiers 0-5 only; leave the
+					// zeroed tail alone.
+					if (
+						local.referrer !== undefined &&
+						tiers[i].referrerRewardNumerator > 0
+					) {
+						tiers[i].referrerRewardNumerator = Number.parseInt(
+							local.referrer,
+							10
+						);
+					}
+					if (local.referee !== undefined && tiers[i].refereeFeeNumerator > 0) {
+						tiers[i].refereeFeeNumerator = Number.parseInt(local.referee, 10);
+					}
+				}
+				if (local.ammSplit !== undefined) {
+					feeStructure.ammFeeNumerator = Number.parseInt(local.ammSplit, 10);
+				}
+				if (local.ifSplit !== undefined) {
+					feeStructure.ifFeeNumerator = Number.parseInt(local.ifSplit, 10);
+				}
+
+				const label =
+					`fee schedule: tiers ${tier0bp}/${tier1bp}/${tier2bp}/${tier3bp}bp` +
+					(local.makerRebateBp ? ` makerRebate=${local.makerRebateBp}bp` : '') +
+					(local.referrer ? ` referrer=${local.referrer}%` : '') +
+					(local.referee ? ` referee=${local.referee}%` : '') +
+					(local.ammSplit ? ` amm=${local.ammSplit}%` : '') +
+					(local.ifSplit ? ` if=${local.ifSplit}%` : '');
+				const multisigPda = opts.multisig
+					? new PublicKey(opts.multisig)
+					: undefined;
+				const ix = await client.getUpdatePerpFeeStructureIx(
+					feeStructure,
+					resolveAdminAuthority(provider, multisigPda)
+				);
+				if (local.dryRun) {
+					const bps = (numerator: number, denominator: number) =>
+						`${+((numerator / denominator) * 10_000).toFixed(4)} bps`;
+					ui.header('perp fee schedule', pc.dim('proposed'));
+					ui.table(
+						tierBps.map((_, i) => {
+							const live = current.feeTiers[i];
+							const next = tiers[i];
+							const from = bps(live.feeNumerator, live.feeDenominator);
+							const to = bps(next.feeNumerator, next.feeDenominator);
+							return [
+								pc.dim(`tier ${i}`),
+								from === to
+									? `taker ${pc.dim(to)}`
+									: `taker ${ui.change(from, to)}`,
+								pc.dim(
+									`maker ${bps(
+										next.makerRebateNumerator,
+										next.makerRebateDenominator
+									)} rebate`
+								),
+								pc.dim(
+									`referrer ${next.referrerRewardNumerator}%, referee ${next.refereeFeeNumerator}%`
+								),
+								from === to ? pc.dim('unchanged') : '',
+							];
+						})
+					);
+					ui.kv(
+						'split',
+						pc.dim(
+							`amm ${feeStructure.ammFeeNumerator}%, if ${feeStructure.ifFeeNumerator}%, protocol residual`
+						)
+					);
+					ui.note('tiers 4-9 mirror the last tier');
+					await reportDryRun(
+						provider,
+						[ix],
+						opts.multisig ? new PublicKey(opts.multisig) : undefined
+					);
+					return;
+				}
+				const result = await sendOrPropose(
+					provider,
+					[ix],
+					opts.multisig ? new PublicKey(opts.multisig) : undefined,
+					'velocity-admin fees set-schedule'
+				);
+				reportDispatch(label, result);
+			} finally {
+				await client.unsubscribe();
+			}
+		}
+	);
+
+	withGlobalOptions(
+		fees
 			.command('set-split <ammFeeNumerator> <ifFeeNumerator>')
 			.description(
 				'Set the global trade-fee remainder split (percent, 0-100 each; protocol receives the residual). Fetches the current perp fee structure and updates only the two numerators.'
@@ -682,7 +858,7 @@ export function registerFees(parent: Command): void {
 		fees
 			.command('set-promo-tier <tier>')
 			.description(
-				'Set the promotional fee-tier floor: every account gets at least this perp fee tier while set (1 = VIP 1, 2 = VIP 2; accounts already above keep their tier). 0 disables; accounts revert to volume tiers on their next fill. Warm admin.'
+				'Set the promotional fee-tier floor: every account gets at least this perp fee tier while set (1 = VIP 1, 2 = VIP 2, 3 = VIP 3; accounts already above keep their tier). 0 disables; accounts revert to volume tiers on their next fill. Warm admin.'
 			)
 	).action(async (tier: string, _flags, cmd: Command) => {
 		const opts = readGlobalOpts(cmd);

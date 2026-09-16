@@ -1,3 +1,4 @@
+import { installUnhandledRejectionGuard } from './core/processGuards';
 import { program } from 'commander';
 import compression from 'compression';
 import cors from 'cors';
@@ -53,7 +54,7 @@ import {
 import FEATURE_FLAGS from './utils/featureFlags';
 import { getDLOBProviderFromOrderSubscriber } from './dlobProvider';
 import { setGlobalDispatcher, Agent } from 'undici';
-import { COMMON_UI_UTILS, ENUM_UTILS } from '@velocity-exchange/common';
+import { deriveMarketOrderParams, ENUM_UTILS } from '@velocity-exchange/common';
 import { AuctionParamArgs } from './utils/types';
 import { TakerFillVsOracleBpsRedisResult } from './athena/repositories/fillQualityAnalytics';
 
@@ -1089,7 +1090,7 @@ const main = async (): Promise<void> => {
 				return;
 			}
 
-			const auctionParams = COMMON_UI_UTILS.deriveMarketOrderParams(
+			const auctionParams = deriveMarketOrderParams(
 				result.data.marketOrderParams
 			);
 
@@ -1152,6 +1153,7 @@ async function recursiveTryCatch(f: () => Promise<void>) {
 	}
 }
 
+installUnhandledRejectionGuard('dlob-server');
 recursiveTryCatch(() => main());
 
 export {

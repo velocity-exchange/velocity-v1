@@ -801,6 +801,8 @@ pub enum ErrorCode {
     UnsettledRevenueShareOnDelist,
     #[msg("Revenue share order can still be paid; settle it instead of forfeiting")]
     RevenueShareOrderNotForfeitable,
+    #[msg("vAMM quote management value is outside the hot role bounds")]
+    VammQuoteManagementValueOutOfBounds,
     #[msg("Quoter registry entry config is invalid")]
     InvalidQuoterConfig,
     #[msg("Signer does not control this quoter registry entry")]

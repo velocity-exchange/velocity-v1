@@ -772,6 +772,320 @@ describe.skip('place and make signedMsg order', () => {
 		await takerVelocityClient.unsubscribe();
 	});
 
+	it('places a resting limit order (no auction) stamped ahead of the current slot', async () => {
+		slot = new BN(
+			await bankrunContextWrapper.connection.toConnection().getSlot()
+		);
+		const [takerVelocityClient, takerVelocityClientUser] =
+			await initializeNewTakerClientAndUser(
+				bankrunContextWrapper,
+				chProgram,
+				usdcMint,
+				usdcAmount,
+				marketIndexes,
+				spotMarketIndexes,
+				oracleInfos,
+				bulkAccountLoader
+			);
+		await takerVelocityClientUser.fetchAccounts();
+
+		const marketIndex = 0;
+		const baseAssetAmount = BASE_PRECISION;
+		// A bid well under the 84 oracle with no auction: it rests from placement.
+		const takerOrderParams = getLimitOrderParams({
+			marketIndex,
+			direction: PositionDirection.LONG,
+			baseAssetAmount,
+			price: new BN(60).mul(PRICE_PRECISION),
+			userOrderId: 1,
+			postOnly: PostOnlyParams.NONE,
+		}) as OrderParams;
+
+		// The client stamps a resting limit its whole signing budget (~14s) ahead;
+		// that slot is the placement deadline, and the program places before it.
+		const signedMsgSlot = slot.addn(35);
+		const uuid = Uint8Array.from(Buffer.from(nanoid(8)));
+		const takerOrderParamsMessage: SignedMsgOrderParamsMessage = {
+			signedMsgOrderParams: takerOrderParams,
+			subAccountId: 0,
+			slot: signedMsgSlot,
+			uuid,
+			takeProfitOrderParams: null,
+			stopLossOrderParams: null,
+		};
+		const signedOrderParams =
+			takerVelocityClient.signSignedMsgOrderParamsMessage(
+				takerOrderParamsMessage
+			);
+
+		await makerVelocityClient.placeSignedMsgTakerOrder(
+			signedOrderParams,
+			marketIndex,
+			{
+				taker: await takerVelocityClient.getUserAccountPublicKey(),
+				takerUserAccount: takerVelocityClient.getUserAccount(),
+				takerStats: takerVelocityClient.getUserStatsAccountPublicKey(),
+				signingAuthority: takerVelocityClient.wallet.publicKey,
+			},
+			undefined,
+			2
+		);
+
+		await takerVelocityClientUser.fetchAccounts();
+		const openOrders = takerVelocityClient.getUser().getOpenOrders();
+		assert(openOrders.length == 1);
+		assert(convertToNumber(openOrders[0].price) == 60);
+		assert(openOrders[0].auctionDuration == 0);
+		// The stored order slot is the chain slot at placement, not the future stamp.
+		assert(openOrders[0].slot.lt(signedMsgSlot));
+
+		await takerVelocityClientUser.unsubscribe();
+		await takerVelocityClient.unsubscribe();
+	});
+
+	it('rejects a resting limit order stamped too far ahead of the current slot', async () => {
+		slot = new BN(
+			await bankrunContextWrapper.connection.toConnection().getSlot()
+		);
+		const [takerVelocityClient, takerVelocityClientUser] =
+			await initializeNewTakerClientAndUser(
+				bankrunContextWrapper,
+				chProgram,
+				usdcMint,
+				usdcAmount,
+				marketIndexes,
+				spotMarketIndexes,
+				oracleInfos,
+				bulkAccountLoader
+			);
+		await takerVelocityClientUser.fetchAccounts();
+
+		const marketIndex = 0;
+		const takerOrderParams = getLimitOrderParams({
+			marketIndex,
+			direction: PositionDirection.LONG,
+			baseAssetAmount: BASE_PRECISION,
+			price: new BN(60).mul(PRICE_PRECISION),
+			userOrderId: 1,
+			postOnly: PostOnlyParams.NONE,
+		}) as OrderParams;
+
+		// 100 baseline slots = 40s, past the program's 30s lead bound for a resting limit.
+		const uuid = Uint8Array.from(Buffer.from(nanoid(8)));
+		const takerOrderParamsMessage: SignedMsgOrderParamsMessage = {
+			signedMsgOrderParams: takerOrderParams,
+			subAccountId: 0,
+			slot: slot.addn(100),
+			uuid,
+			takeProfitOrderParams: null,
+			stopLossOrderParams: null,
+		};
+		const signedOrderParams =
+			takerVelocityClient.signSignedMsgOrderParamsMessage(
+				takerOrderParamsMessage
+			);
+
+		let rejected = false;
+		try {
+			await makerVelocityClient.placeSignedMsgTakerOrder(
+				signedOrderParams,
+				marketIndex,
+				{
+					taker: await takerVelocityClient.getUserAccountPublicKey(),
+					takerUserAccount: takerVelocityClient.getUserAccount(),
+					takerStats: takerVelocityClient.getUserStatsAccountPublicKey(),
+					signingAuthority: takerVelocityClient.wallet.publicKey,
+				},
+				undefined,
+				2
+			);
+		} catch (e) {
+			rejected = true;
+			// InvalidSignedMsgOrderParam
+			assert(
+				e.toString().includes('6288') || e.toString().includes('0x1890'),
+				e.toString()
+			);
+		}
+		assert(rejected);
+
+		await takerVelocityClientUser.fetchAccounts();
+		assert(takerVelocityClient.getUser().getOpenOrders().length == 0);
+
+		await takerVelocityClientUser.unsubscribe();
+		await takerVelocityClient.unsubscribe();
+	});
+
+	it('still rejects an auction order stamped ahead of the current slot', async () => {
+		slot = new BN(
+			await bankrunContextWrapper.connection.toConnection().getSlot()
+		);
+		const [takerVelocityClient, takerVelocityClientUser] =
+			await initializeNewTakerClientAndUser(
+				bankrunContextWrapper,
+				chProgram,
+				usdcMint,
+				usdcAmount,
+				marketIndexes,
+				spotMarketIndexes,
+				oracleInfos,
+				bulkAccountLoader
+			);
+		await takerVelocityClientUser.fetchAccounts();
+
+		const marketIndex = 0;
+		const takerOrderParams = getMarketOrderParams({
+			marketIndex,
+			direction: PositionDirection.LONG,
+			baseAssetAmount: BASE_PRECISION,
+			price: new BN(84).mul(PRICE_PRECISION),
+			auctionStartPrice: new BN(83).mul(PRICE_PRECISION),
+			auctionEndPrice: new BN(84).mul(PRICE_PRECISION),
+			auctionDuration: 10,
+			userOrderId: 1,
+			postOnly: PostOnlyParams.NONE,
+			marketType: MarketType.PERP,
+		}) as OrderParams;
+
+		// The UI's signing buffer: a few slots ahead. An auction starts at its
+		// message slot, so the program still refuses to place it before then.
+		const uuid = Uint8Array.from(Buffer.from(nanoid(8)));
+		const takerOrderParamsMessage: SignedMsgOrderParamsMessage = {
+			signedMsgOrderParams: takerOrderParams,
+			subAccountId: 0,
+			slot: slot.addn(7),
+			uuid,
+			takeProfitOrderParams: null,
+			stopLossOrderParams: null,
+		};
+		const signedOrderParams =
+			takerVelocityClient.signSignedMsgOrderParamsMessage(
+				takerOrderParamsMessage
+			);
+
+		let rejected = false;
+		try {
+			await makerVelocityClient.placeSignedMsgTakerOrder(
+				signedOrderParams,
+				marketIndex,
+				{
+					taker: await takerVelocityClient.getUserAccountPublicKey(),
+					takerUserAccount: takerVelocityClient.getUserAccount(),
+					takerStats: takerVelocityClient.getUserStatsAccountPublicKey(),
+					signingAuthority: takerVelocityClient.wallet.publicKey,
+				},
+				undefined,
+				2
+			);
+		} catch (e) {
+			rejected = true;
+			// InvalidSignedMsgOrderParam
+			assert(
+				e.toString().includes('6288') || e.toString().includes('0x1890'),
+				e.toString()
+			);
+		}
+		assert(rejected);
+
+		await takerVelocityClientUser.fetchAccounts();
+		assert(takerVelocityClient.getUser().getOpenOrders().length == 0);
+
+		await takerVelocityClientUser.unsubscribe();
+		await takerVelocityClient.unsubscribe();
+	});
+
+	it('should work with off-chain auctions', async () => {
+		const slot = new BN(
+			await bankrunContextWrapper.connection.toConnection().getSlot()
+		);
+
+		const [takerVelocityClient, takerVelocityClientUser] =
+			await initializeNewTakerClientAndUser(
+				bankrunContextWrapper,
+				chProgram,
+				usdcMint,
+				usdcAmount,
+				marketIndexes,
+				spotMarketIndexes,
+				oracleInfos,
+				bulkAccountLoader
+			);
+		await takerVelocityClientUser.fetchAccounts();
+
+		const marketIndex = 0;
+		const baseAssetAmount = BASE_PRECISION;
+		const takerOrderParams = getMarketOrderParams({
+			marketIndex,
+			direction: PositionDirection.LONG,
+			baseAssetAmount,
+			auctionStartPrice: new BN(83).mul(PRICE_PRECISION),
+			auctionEndPrice: new BN(87).mul(PRICE_PRECISION),
+			auctionDuration: 10,
+			userOrderId: 1,
+			postOnly: PostOnlyParams.NONE,
+		}) as OrderParams;
+		const signedMsgSlot = slot.subn(5);
+		const uuid = Uint8Array.from(Buffer.from(nanoid(8)));
+		const takerOrderParamsMessage: SignedMsgOrderParamsMessage = {
+			signedMsgOrderParams: takerOrderParams,
+			subAccountId: 0,
+			slot: signedMsgSlot,
+			uuid,
+			takeProfitOrderParams: null,
+			stopLossOrderParams: null,
+		};
+		const signedOrderParams =
+			takerVelocityClient.signSignedMsgOrderParamsMessage(
+				takerOrderParamsMessage
+			);
+
+		await makerVelocityClient.placeSignedMsgTakerOrder(
+			signedOrderParams,
+			takerOrderParams.marketIndex,
+			{
+				taker: await takerVelocityClient.getUserAccountPublicKey(),
+				takerUserAccount: takerVelocityClient.getUserAccount(),
+				takerStats: takerVelocityClient.getUserStatsAccountPublicKey(),
+				signingAuthority: takerVelocityClient.wallet.publicKey,
+			},
+			undefined,
+			2
+		);
+
+		assert(takerVelocityClient.getOrderByUserId(1) !== undefined);
+		assert(takerVelocityClient.getOrderByUserId(1).slot.eq(slot.subn(5)));
+
+		const makerOrderParams = getLimitOrderParams({
+			marketIndex,
+			direction: PositionDirection.SHORT,
+			baseAssetAmount,
+			price: new BN(85).mul(PRICE_PRECISION),
+			postOnly: PostOnlyParams.MUST_POST_ONLY,
+			bitFlags: 1,
+		});
+		await makerVelocityClient.placeAndMakeSignedMsgPerpOrder(
+			signedOrderParams,
+			uuid,
+			{
+				taker: await takerVelocityClient.getUserAccountPublicKey(),
+				takerUserAccount: takerVelocityClient.getUserAccount(),
+				takerStats: takerVelocityClient.getUserStatsAccountPublicKey(),
+				signingAuthority: takerVelocityClient.wallet.publicKey,
+			},
+			makerOrderParams,
+			undefined,
+			undefined,
+			undefined,
+			2
+		);
+
+		const takerPosition = takerVelocityClient.getUser().getPerpPosition(0);
+		assert(takerPosition.baseAssetAmount.eq(baseAssetAmount));
+
+		await takerVelocityClientUser.unsubscribe();
+		await takerVelocityClient.unsubscribe();
+	});
+
 	it('should place with high-leverage mode update', async () => {
 		const slot = new BN(
 			await bankrunContextWrapper.connection.toConnection().getSlot()

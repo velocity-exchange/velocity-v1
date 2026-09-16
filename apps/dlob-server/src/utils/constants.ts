@@ -36,10 +36,17 @@ export const DEFAULT_AUCTION_PARAMS: Partial<AuctionParamArgs> = {
 	auctionEndPriceOffsetFrom: DEFAULT_AUCTION_END_PRICE_FROM,
 };
 
-export const MAJOR_MARKETS = [0, 1, 2, 3]; // SOL, BTC, ETH, HYPE
-// Intentionally empty: these were hardcoded numeric indices that went stale after
-// on-chain market renumbering (e.g. it listed HYPE as 59, but HYPE is now index 3),
-// silently mis-bucketing whatever market currently occupies each index. Everything
-// outside MAJOR_MARKETS now takes the non-major default. Re-add by index only if the
-// mapping is re-verified against on-chain market indices.
-export const MID_MAJOR_MARKETS: number[] = [];
+// Perp indices taking the mid-major slippage tier (base 0.25%, multiplier 1.25x)
+// instead of the non-major defaults. Index 3 is HYPE-PERP on mainnet; devnet has
+// no market at index 3.
+//
+// These are raw indices, so they do NOT survive on-chain market renumbering: an
+// earlier version listed HYPE as 59 and silently mis-bucketed whatever market
+// later occupied that index. The MID_MAJOR_MARKETS test pins each entry to its
+// expected symbol in MainnetPerpMarkets; update both together.
+export const MID_MAJOR_MARKETS: number[] = [3];
+
+/** Symbol each MID_MAJOR_MARKETS index is expected to resolve to on mainnet. */
+export const MID_MAJOR_MARKET_SYMBOLS: Record<number, string> = {
+	3: 'HYPE-PERP',
+};

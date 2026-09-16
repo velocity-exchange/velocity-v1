@@ -395,12 +395,27 @@ export class EventSubscriber {
 				break;
 			}
 
-			txFetched += response.transactionLogs.length;
-			beforeTx = response.earliestTx;
-
 			for (const { txSig, slot, logs } of response.transactionLogs) {
+				// `earliestTx` is held back behind a failed `getTransaction` (see
+				// `fetchLogs`), so the next page overlaps this one. Only transactions
+				// we have not already decoded count toward `maxTx`, otherwise the
+				// retried window eats the backfill budget.
+				if (!this.txEventCache.has(txSig)) {
+					txFetched++;
+				}
 				this.handleTxLogs(txSig, slot, logs, response.mostRecentBlockTime);
 			}
+
+			if (response.earliestTx === undefined) {
+				// No signature in the page is safe to page back from, so `beforeTx`
+				// cannot move. The logs above are already delivered; the break is
+				// required, not optional, because looping with an unchanged `beforeTx`
+				// would re-fetch this same page until `maxTx` or forever. A one-shot
+				// backfill has no later pass, so it stops here.
+				break;
+			}
+
+			beforeTx = response.earliestTx;
 		}
 	}
 

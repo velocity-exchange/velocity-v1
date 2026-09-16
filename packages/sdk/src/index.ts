@@ -99,6 +99,7 @@ export * from './math/spotPosition';
 export * from './math/state';
 export * from './math/time';
 export * from './math/tiers';
+export * from './math/fees';
 export * from './marinade';
 export * from './orderParams';
 export * from './slot/SlotSubscriber';

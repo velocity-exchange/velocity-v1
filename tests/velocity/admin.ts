@@ -5,6 +5,7 @@ import { startAnchor } from 'solana-bankrun';
 import {
 	BN,
 	ExchangeStatus,
+	HotRole,
 	getPythLazerOraclePublicKey,
 	getTokenAmount,
 	loadKeypair,
@@ -26,7 +27,7 @@ import {
 	mockUSDCMint,
 	mockUserUSDCAccount,
 } from './testHelpers';
-import { PublicKey } from '@solana/web3.js';
+import { Keypair, PublicKey } from '@solana/web3.js';
 import {
 	BankrunContextWrapper,
 	Connection,
@@ -157,6 +158,183 @@ describe('admin', () => {
 				velocityClient.getPerpMarketAccount(0).amm.ammJitIntensity
 			} \n expected: 50`
 		);
+	});
+
+	it('allows the vAMM active-management role without granting broad admin', async () => {
+		const activeManagementKey = Keypair.generate();
+		await bankrunContextWrapper.fundKeypair(activeManagementKey, 10 ** 9);
+
+		const activeManagementClient = new TestClient({
+			connection: bankrunContextWrapper.connection.toConnection(),
+			wallet: new Wallet(activeManagementKey),
+			programID: chProgram.programId,
+			opts: { commitment: 'confirmed' },
+			activeSubAccountId: 0,
+			perpMarketIndexes: [0],
+			spotMarketIndexes: [0],
+			subAccountIds: [],
+			useHotWalletAdmin: true,
+			accountSubscription: {
+				type: 'polling',
+				accountLoader: bulkAccountLoader,
+			},
+		});
+		await activeManagementClient.subscribe();
+
+		try {
+			const expectRejected = async (call: () => Promise<unknown>) => {
+				let rejected = false;
+				try {
+					await call();
+				} catch (_) {
+					rejected = true;
+				}
+				expect(rejected).to.equal(true);
+			};
+
+			let rejectedWhileUnassigned = false;
+			try {
+				await activeManagementClient.updatePerpMarketCurveUpdateIntensity(
+					0,
+					42
+				);
+			} catch (_) {
+				rejectedWhileUnassigned = true;
+			}
+			expect(rejectedWhileUnassigned).to.equal(true);
+
+			// The existing native-spread bot role is separate and must not gain
+			// access to quote management setters.
+			await velocityClient.updateHotAdmin(
+				HotRole.AmmSpreadAdjust,
+				activeManagementKey.publicKey
+			);
+			await velocityClient.fetchAccounts();
+			expect(
+				velocityClient
+					.getStateAccount()
+					.hotAmmSpreadAdjust.equals(activeManagementKey.publicKey)
+			).to.equal(true);
+			let spreadBotRejected = false;
+			try {
+				await activeManagementClient.updatePerpMarketCurveUpdateIntensity(
+					0,
+					42
+				);
+			} catch (_) {
+				spreadBotRejected = true;
+			}
+			expect(spreadBotRejected).to.equal(true);
+
+			await velocityClient.updateHotAdmin(
+				HotRole.VammQuoteManagement,
+				activeManagementKey.publicKey
+			);
+			await velocityClient.fetchAccounts();
+			expect(
+				velocityClient
+					.getStateAccount()
+					.hotVammQuoteManagement.equals(activeManagementKey.publicKey)
+			).to.equal(true);
+
+			await activeManagementClient.updatePerpMarketCurveUpdateIntensity(0, 120);
+			await activeManagementClient.updatePerpMarketReferencePriceOffsetDeadbandPct(
+				0,
+				7
+			);
+			await activeManagementClient.updateAmmJitIntensity(0, 20);
+			await activeManagementClient.updatePerpMarketMaxSpread(0, 10_000);
+			// Both spread adjustment levers expose their full meaningful band.
+			await activeManagementClient.updatePerpMarketAmmSpreadAdjustment(
+				0,
+				-100,
+				100,
+				0
+			);
+			await activeManagementClient.updatePerpMarketAmmSpreadAdjustment(
+				0,
+				-5,
+				12,
+				0
+			);
+			await activeManagementClient.updatePerpMarketFundingBiasSensitivity(
+				0,
+				25
+			);
+			await velocityClient.fetchAccounts();
+			const updatedAmm = velocityClient.getPerpMarketAccount(0).amm;
+			expect(updatedAmm.curveUpdateIntensity).to.equal(120);
+			expect(updatedAmm.referencePriceOffsetDeadbandPct).to.equal(7);
+			expect(updatedAmm.ammJitIntensity).to.equal(20);
+			expect(updatedAmm.maxSpread).to.equal(10_000);
+			expect(updatedAmm.ammSpreadAdjustment).to.equal(-5);
+			expect(updatedAmm.ammInventorySpreadAdjustment).to.equal(12);
+			expect(updatedAmm.fundingBiasSensitivity).to.equal(25);
+
+			await expectRejected(() =>
+				activeManagementClient.updatePerpMarketCurveUpdateIntensity(0, 99)
+			);
+			await expectRejected(() =>
+				activeManagementClient.updatePerpMarketReferencePriceOffsetDeadbandPct(
+					0,
+					26
+				)
+			);
+			await expectRejected(() =>
+				activeManagementClient.updateAmmJitIntensity(0, 26)
+			);
+			await expectRejected(() =>
+				activeManagementClient.updatePerpMarketMaxSpread(0, 20_001)
+			);
+			await expectRejected(() =>
+				activeManagementClient.updatePerpMarketAmmSpreadAdjustment(0, 101, 0, 0)
+			);
+			await expectRejected(() =>
+				activeManagementClient.updatePerpMarketAmmSpreadAdjustment(0, 0, 101, 0)
+			);
+			await expectRejected(() =>
+				activeManagementClient.updatePerpMarketFundingBiasSensitivity(0, 101)
+			);
+			await velocityClient.fetchAccounts();
+			expect(
+				velocityClient.getPerpMarketAccount(0).amm.ammSpreadAdjustment
+			).to.equal(-5);
+			expect(
+				velocityClient.getPerpMarketAccount(0).amm.ammInventorySpreadAdjustment
+			).to.equal(12);
+
+			// Warm/cold governance is intentionally not trapped by the hot role
+			// bounds and can still apply the setter's wider semantic range.
+			await velocityClient.updatePerpMarketCurveUpdateIntensity(0, 100);
+			await velocityClient.fetchAccounts();
+			expect(
+				velocityClient.getPerpMarketAccount(0).amm.curveUpdateIntensity
+			).to.equal(100);
+
+			// A broad warm-admin instruction remains unavailable to this role.
+			let broadAdminRejected = false;
+			try {
+				const ix =
+					await activeManagementClient.program.instruction.updatePerpMarketBaseSpread(
+						velocityClient.getPerpMarketAccountOrThrow(0).amm.baseSpread,
+						{
+							accounts: {
+								admin: activeManagementKey.publicKey,
+								state: await activeManagementClient.getStatePublicKey(),
+								perpMarket:
+									velocityClient.getPerpMarketAccountOrThrow(0).pubkey,
+							},
+						}
+					);
+				const tx = await activeManagementClient.buildTransaction(ix);
+				await activeManagementClient.sendTransaction(tx, []);
+			} catch (_) {
+				broadAdminRejected = true;
+			}
+			expect(broadAdminRejected).to.equal(true);
+		} finally {
+			await activeManagementClient.unsubscribe();
+		}
 	});
 
 	it('Update Margin Ratio', async () => {

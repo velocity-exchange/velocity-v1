@@ -24,6 +24,7 @@ use {
                 standardize_base_asset_amount_with_remainder_i128, standardize_price,
                 validate_fill_price,
             },
+            time::SlotClock,
         },
         state::user::{Order, OrderType},
     },
@@ -181,8 +182,10 @@ fn prop_auction_price(
         ..Order::default()
     };
 
-    let p0 = calculate_auction_price(&order, slot, tick, None).unwrap();
-    let p1 = calculate_auction_price(&order, slot + 1, tick, None).unwrap();
+    // The 400ms baseline clock: this fixture sets no IBRL transition.
+    let clock = SlotClock::default();
+    let p0 = calculate_auction_price(&order, slot, tick, None, clock).unwrap();
+    let p1 = calculate_auction_price(&order, slot + 1, tick, None, clock).unwrap();
 
     // Always within the [lo, hi] band.
     fuzz_assert_le!(lo as u64, p0);
@@ -197,7 +200,7 @@ fn prop_auction_price(
 
     // Auction completeness: complete iff slots_elapsed > duration; once
     // complete the price equals the end price.
-    let complete = is_auction_complete(0, duration, slot).unwrap();
+    let complete = is_auction_complete(0, duration, slot, clock).unwrap();
     fuzz_assert_eq!(complete, slot > duration as u64);
     if slot >= duration as u64 {
         fuzz_assert_eq!(p0, end as u64);

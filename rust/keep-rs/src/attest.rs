@@ -20,7 +20,7 @@
 use {
     base64::Engine,
     serde::Deserialize,
-    solana_sdk::pubkey::Pubkey,
+    solana_pubkey::Pubkey,
     std::{str::FromStr, time::Duration},
     velocity_rs::program::FlowAttestationV0,
 };

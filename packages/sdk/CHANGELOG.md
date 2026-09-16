@@ -1,5 +1,109 @@
 # @velocity-exchange/sdk
 
+## 0.24.0
+
+### Minor Changes
+
+- [#506](https://github.com/velocity-exchange/velocity-v1/pull/506) [`ab33ee9`](https://github.com/velocity-exchange/velocity-v1/commit/ab33ee907bd02907266853856718f8715a570f97) Thanks [@ChesterSim](https://github.com/ChesterSim)! - Stop trusting JSON-RPC batch response order in `fetchLogs` and `BulkAccountLoader`.
+
+  JSON-RPC lets a server return batch responses in any order and requires matching them by `id`. `connection._rpcBatchRequest` generates the ids internally and hands them back uncorrelated, so reading the array by position can attribute a response to the wrong request. Both batch call sites now go through a new `rpcBatchRequest` helper that sends the batch with ids it owns and returns the responses aligned to the requests, rejecting if any request goes unanswered.
+
+  `fetchTransactionLogs` blamed the wrong signature for a failed `getTransaction` and let the resume cursor advance past the one that actually failed, dropping its events for good. `BulkAccountLoader.loadChunk` matched each `getMultipleAccounts` response to a chunk by position; those results carry no pubkeys, so a reordered batch wrote account data under the wrong keys silently. `loadChunk` also read results back against the unfiltered chunk while requesting only accounts with live callbacks, shifting every account after an unsubscribed one onto the wrong data.
+
+  This is a minor rather than a patch because the batch transport moved from `Connection._rpcBatchRequest` to `Connection._rpcClient`: any test double or connection proxy that implements only the former needs updating.
+
+### Patch Changes
+
+- [#511](https://github.com/velocity-exchange/velocity-v1/pull/511) [`60a173f`](https://github.com/velocity-exchange/velocity-v1/commit/60a173fd58e70d68e7d670523129621df267e2c8) Thanks [@0xahzam](https://github.com/0xahzam)! - Add `perp-market deposit-fee-pool` and `perp-market sync-amm-summary-stats` to the admin CLI, for
+  recovering a market whose `total_fee_minus_distributions` has gone negative. Both SDK instruction
+  builders (`getDepositIntoPerpMarketFeePoolIx`, `getUpdatePerpMarketAmmSummaryStatsIx`) now take an
+  optional `admin` override so the hot role that actually signs can be passed, as the other hot-role
+  builders already allow.
+
+## 0.23.1
+
+### Patch Changes
+
+- [#502](https://github.com/velocity-exchange/velocity-v1/pull/502) [`a655327`](https://github.com/velocity-exchange/velocity-v1/commit/a655327291a5ef9238bae929f19d06158db512a4) Thanks [@ChesterSim](https://github.com/ChesterSim)! - Stop `EventSubscriber.fetchPreviousTx` from dropping logs it already fetched.
+
+  `fetchLogs` held its `earliestTx`/`mostRecentTx` resume cursors behind a failed `getTransaction` and returned `undefined` when neither end of the page was safe to resume from, which the backfill could not tell apart from "nothing to fetch". It now returns the fetched logs with only the unsafe cursor field left `undefined`, so `fetchPreviousTx` delivers that page's events before it stops and `PollingLogProvider` still skips the tick and retries with the cursor it already has.
+
+## 0.23.0
+
+### Minor Changes
+
+- [#499](https://github.com/velocity-exchange/velocity-v1/pull/499) [`0afc72e`](https://github.com/velocity-exchange/velocity-v1/commit/0afc72e8c1506ce834c1f57b764a5b1a6cce6713) Thanks [@ChesterSim](https://github.com/ChesterSim)! - Read Agave 4.2 / SIMD-0385 transaction v1 on `getTransaction` paths.
+
+  Bump `@solana/web3.js` to 1.99.0 (read-only v1), `@triton-one/yellowstone-grpc` to 6.0.0, and `helius-laserstream` to 0.8.5. SDK `engines.node` is now `>=20.18.0`. For the packages in this release the change is limited to `maxSupportedTransactionVersion: 1` on RPC reads. The `solana-*` 4.2 crate bump (Rust wire decode / send) is a follow-up; until it lands the Rust event poller walks a transaction's logs when `decode()` cannot read the v1 wire format, and decodes payloads only while the Velocity program is the executing program.
+
+  `fetchLogs` now logs `getTransaction` batch errors instead of discarding them, and holds its `earliestTx`/`mostRecentTx` resume cursors behind any signature it failed to fetch so those transactions are retried rather than skipped. It returns `undefined` when no signature in the batch is safe to resume from, so keep the current cursor and retry in that case. `EventSubscriber.fetchPreviousTx` counts only transactions it has not already decoded toward `maxTx`, so the page re-read after a failed fetch no longer shortens a backfill.
+
+## 0.22.0
+
+### Minor Changes
+
+- [#491](https://github.com/velocity-exchange/velocity-v1/pull/491) [`d2ea4ff`](https://github.com/velocity-exchange/velocity-v1/commit/d2ea4ffd940d4498bb4d11a7983de650f0f4d886) Thanks [@0xahzam](https://github.com/0xahzam)! - Add the fourth perp fee tier, VIP 3, at $200M trailing-30d volume.
+
+  The program's tier ladder is now Regular / VIP 1 / VIP 2 / VIP 3 (indices 0-3, breakpoints $5M / $80M / $200M). The SDK exports the new breakpoint as `VIP_FEE_TIER_THREE_VOLUME_QUOTE` and includes it in `PERP_FEE_TIER_VOLUME_THRESHOLDS`, so `getPerpFeeTierIndex`, `User.getUserFeeTier` and `VelocityClient.getMarketFees` select tier 3 above $200M and `PERP_FEE_TIER_MAX_INDEX` is 3. A `promoFeeTier` of 3 puts every account on the top tier.
+
+  Admin CLI: `fees set-schedule` takes four tier fees (`<t0bp> <t1bp> <t2bp> <t3bp>`; tiers 4-9 mirror tier 3), `fees set-promo-tier` accepts 3, and `show fees` prints the VIP 3 row.
+
+## 0.21.0
+
+### Minor Changes
+
+- [#481](https://github.com/velocity-exchange/velocity-v1/pull/481) [`033237b`](https://github.com/velocity-exchange/velocity-v1/commit/033237bb975692bcce5bd540b3b015aba29463f3) Thanks [@ChesterSim](https://github.com/ChesterSim)! - Add `getMarketFeesForFeeTier` and a fee-tier override on `VelocityClient.getMarketFees`, so a caller can price a market at a tier the account is not on.
+
+  `getMarketFees` computed the fee for whichever tier the account was on and applied the market surcharge, `feeAdjustment`, referee discount and builder fee on the way. There was no way to ask what the same market would charge at a different tier, which is what a UI needs to show the saving a fee promotion is making against someone's own volume tier. Deriving the second figure from the raw tier rate instead gives two numbers computed by different formulas, so the difference between them is not the saving.
+
+  The modifier pipeline is now the exported `getMarketFeesForFeeTier(feeTier, marketType, marketAccount?, { isReferee, builderFeeTenthBps })`, and `getMarketFees` resolves the tier and the account-derived inputs and delegates to it. Passing `feeTierOverride` (the new fifth argument) prices that tier with everything else unchanged; the referee discount comes from the tier being priced, as it does on chain. No behaviour change for existing calls.
+
+### Patch Changes
+
+- [#482](https://github.com/velocity-exchange/velocity-v1/pull/482) [`eaa0664`](https://github.com/velocity-exchange/velocity-v1/commit/eaa06645a8ae137ce4e8ca606b2a65d3a24980cd) Thanks [@0xahzam](https://github.com/0xahzam)! - Export `LpPoolFeatureBitFlags`, the missing mirror of the onchain `State.lpPoolFeatureBitFlags` bits (`SETTLE_LP_POOL`, `SWAP_LP_POOL`, `MINT_REDEEM_LP_POOL`), alongside the existing `FeatureBitFlags`.
+
+- [#484](https://github.com/velocity-exchange/velocity-v1/pull/484) [`e2b86d3`](https://github.com/velocity-exchange/velocity-v1/commit/e2b86d3ddba2c3e903ce70da835314a16ebed8e3) Thanks [@ChesterSim](https://github.com/ChesterSim)! - Add `signedMsgOrderPlaceable` and `isRestingSignedMsgLimitOrder` (with `SIGNED_MSG_RESTING_LIMIT_MAX_LEAD_MS`), mirroring the program's `place_signed_msg_taker_order` slot gates: a limit order with no auction may now be placed ahead of its message slot, which is its placement deadline, within a 30s lead bound; auction orders still wait for their message slot (`signedMsgOrderSlotReached`).
+
+## 0.20.0
+
+### Minor Changes
+
+- [#477](https://github.com/velocity-exchange/velocity-v1/pull/477) [`6c183e7`](https://github.com/velocity-exchange/velocity-v1/commit/6c183e7a9d45f4987055032efcd8267651a231a4) Thanks [@ChesterSim](https://github.com/ChesterSim)! - Apply the `State.promoFeeTier` floor everywhere the SDK selects a perp fee tier, and export the selection rule.
+
+  `VelocityClient.getMarketFees` read `feeTiers[0]` unconditionally when called without a `user`, so while a promo is active the generic schedule quoted the undiscounted entry tier and disagreed with the same call made with a user. Consumers that price a market before a wallet connects (a trade form's fee row, a market list) were showing a fee no account actually pays. `DLOB.getMakerRebate` had the same gap: it sizes its fallback-fill buffer on the lowest rebate any maker earns, which a promo floor raises.
+
+  The volume ladder and the promo floor now have one definition, `getPerpFeeTierIndex` (`math/fees`), which `User.getUserFeeTier`, `getMarketFees` and `DLOB.getMakerRebate` all select through. `PERP_FEE_TIER_VOLUME_THRESHOLDS`, `PERP_FEE_TIER_MAX_INDEX` and `User.getUserPerpFeeTierIndex` are exported alongside it, so surfaces that rank the tier itself (highlighting the active row of a fee schedule, progress toward the next tier) can stop mirroring the program's ladder by hand.
+
+## 0.19.0
+
+### Minor Changes
+
+- [#473](https://github.com/velocity-exchange/velocity-v1/pull/473) [`106aaeb`](https://github.com/velocity-exchange/velocity-v1/commit/106aaeb44eb4a3d0a6f1ad5f0c767b6f1e5adebe) Thanks [@ChesterSim](https://github.com/ChesterSim)! - Retune the vAMM top-of-book quote breakpoints to $250/$750/$2000/$5000 on both the default and majors ladders, and add `isMajorPerpMarket` / `MAJOR_PERP_MARKET_INDEXES` as one definition of major-market tiering for SDK consumers.
+
+  Consumers that read `DEFAULT_TOP_OF_BOOK_QUOTE_AMOUNTS` or `MAJORS_TOP_OF_BOOK_QUOTE_AMOUNTS` will see the retuned values on upgrade, which shifts near-touch level sizing on any locally derived vAMM book. `DLOBSubscriber.getL2` now selects between the two via `isMajorPerpMarket` instead of a `marketIndex < 3` literal, so market index 3 (HYPE) is no longer treated as a major.
+
+### Patch Changes
+
+- [#470](https://github.com/velocity-exchange/velocity-v1/pull/470) [`a720d5b`](https://github.com/velocity-exchange/velocity-v1/commit/a720d5b5abdc6258fd6a171282c7e46c5378be4e) Thanks [@ChesterSim](https://github.com/ChesterSim)! - Expose the signed-message placement deadline helper so fillers and DLOB expiry use the same slot-duration-aware validity window.
+
+- [#472](https://github.com/velocity-exchange/velocity-v1/pull/472) [`7e8ff7c`](https://github.com/velocity-exchange/velocity-v1/commit/7e8ff7ca876aad9e985d6fa0a1fd060614df4b8d) Thanks [@ChesterSim](https://github.com/ChesterSim)! - Expose signedMsgOrderSlotReached, the placement-readiness half of the signed-message slot window, so every consumer gates place attempts with the same predicate the program enforces.
+
+- [#467](https://github.com/velocity-exchange/velocity-v1/pull/467) [`be89e60`](https://github.com/velocity-exchange/velocity-v1/commit/be89e60ce61d33653817e35bcd2c640fc9204c6f) Thanks [@0xahzam](https://github.com/0xahzam)! - Authorize the `VammQuoteManagement` hot role for scoped vAMM quoting setters, enforce protocol wide safety bounds for every hot role value, and keep oracle, MM reset, and formulaic k controls on warm/cold admin. Adds a direct `perp-market set-spread-adjustment` admin CLI command, tightens every `perp-market` positional to a strict decimal-integer parse (previously `Number('')`/`parseInt('0x10', 10)` silently resolved to market 0, and `new BN(' ')` hung the process), and lets `getUpdatePerpMarketAmmSpreadAdjustmentIx` / `getUpdatePerpMarketFundingBiasSensitivityIx` take an explicit `admin` authority so the CLI can route these setters through the hot role Squads vault instead of defaulting to cold admin.
+
+## 0.18.0
+
+### Minor Changes
+
+- [#461](https://github.com/velocity-exchange/velocity-v1/pull/461) [`4b55e4e`](https://github.com/velocity-exchange/velocity-v1/commit/4b55e4e6c7ae161b42d86f12a61da9d2c1003141) Thanks [@0xahzam](https://github.com/0xahzam)! - Remove the equity-floor breaker's `$100` invalid-oracle dust concession. Invalid-oracle assets and perp longs now make a trip unprovable at every size; liabilities and shorts retain their sound zero upper bound. The program and SDK now derive observed equity, strict oracle validity, and the trip upper bound from one shared position walk. This removes the exported `EQUITY_FLOOR_TRIP_DUST_ALLOWANCE` constant without changing instructions, accounts, IDL, error codes, or strict floor gates.
+
+- [#463](https://github.com/velocity-exchange/velocity-v1/pull/463) [`560a198`](https://github.com/velocity-exchange/velocity-v1/commit/560a198fa8a0f22ba7f3dc7f926164f8ca91dff5) Thanks [@0xahzam](https://github.com/0xahzam)! - Add wBTC (spot market index 2) and wETH (index 3) to `MainnetSpotMarkets`. Both reuse the Pyth Lazer oracle accounts their perp counterparts already use (feed ids 1 and 2).
+
+  Do not publish this version until the two markets are initialized on chain. `findAllMarketAndOracles` derives `spotMarketIndexes` and oracle subscriptions from this registry when a client passes no explicit market list, so a client on a version that lists markets the chain does not have will try to subscribe to accounts that do not exist.
+
+### Patch Changes
+
+- [#455](https://github.com/velocity-exchange/velocity-v1/pull/455) [`48b8529`](https://github.com/velocity-exchange/velocity-v1/commit/48b85296c60250316ae30e3f980237af97591ec4) Thanks [@0xahzam](https://github.com/0xahzam)! - `getUpdateHotAdminIx` accepts an optional `admin` authority override, and `auth set-hot-admin` passes the Squads vault PDA through it when `--multisig` is set. Previously the instruction always listed the local wallet as the admin signer, so proposing the rotation through a multisig failed (the vault was not a required signer of any instruction).
+
 ## 0.17.0
 
 ### Minor Changes

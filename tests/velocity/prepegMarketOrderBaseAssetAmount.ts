@@ -263,8 +263,12 @@ describe('prepeg', () => {
 		console.log('compute units', computeUnits);
 		console.log(
 			'tx logs',
-			(await connection.getTransaction(txSig, { commitment: 'confirmed' })).meta
-				.logMessages
+			(
+				await connection.getTransaction(txSig, {
+					commitment: 'confirmed',
+					maxSupportedTransactionVersion: 1,
+				})
+			).meta.logMessages
 		);
 		const market = velocityClient.getPerpMarketAccount(0);
 
@@ -466,8 +470,12 @@ describe('prepeg', () => {
 		console.log('compute units', computeUnits);
 		console.log(
 			'tx logs',
-			(await connection.getTransaction(txSig, { commitment: 'confirmed' })).meta
-				.logMessages
+			(
+				await connection.getTransaction(txSig, {
+					commitment: 'confirmed',
+					maxSupportedTransactionVersion: 1,
+				})
+			).meta.logMessages
 		);
 		await sleep(2000);
 		await velocityClient.fetchAccounts();
@@ -656,8 +664,12 @@ describe('prepeg', () => {
 		console.log('compute units', computeUnits);
 		console.log(
 			'tx logs',
-			(await connection.getTransaction(txSig, { commitment: 'confirmed' })).meta
-				.logMessages
+			(
+				await connection.getTransaction(txSig, {
+					commitment: 'confirmed',
+					maxSupportedTransactionVersion: 1,
+				})
+			).meta.logMessages
 		);
 
 		const market = velocityClient.getPerpMarketAccount(0);
@@ -734,8 +746,12 @@ describe('prepeg', () => {
 				console.log('compute units', computeUnits);
 				console.log(
 					'tx logs',
-					(await connection.getTransaction(txSig, { commitment: 'confirmed' }))
-						.meta.logMessages
+					(
+						await connection.getTransaction(txSig, {
+							commitment: 'confirmed',
+							maxSupportedTransactionVersion: 1,
+						})
+					).meta.logMessages
 				);
 			} catch (e) {
 				console.error(e);
@@ -793,8 +809,12 @@ describe('prepeg', () => {
 		console.log('compute units', computeUnits);
 		console.log(
 			'tx logs',
-			(await connection.getTransaction(txSig, { commitment: 'confirmed' })).meta
-				.logMessages
+			(
+				await connection.getTransaction(txSig, {
+					commitment: 'confirmed',
+					maxSupportedTransactionVersion: 1,
+				})
+			).meta.logMessages
 		);
 	});
 });

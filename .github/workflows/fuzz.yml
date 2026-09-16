@@ -11,6 +11,11 @@
 # Non-gating job (`fuzz-smoke`, workflow_dispatch only): installs the pinned
 # crucible CLI and runs short host-tier invariant smokes. It never runs on PRs,
 # so it cannot affect the required status.
+#
+# Toolchain-free job (`bundle-manifest`): asserts fuzz/manifest.fc.json is still
+# in sync with fuzz/bundle/targets.txt, and that the bundle, the nightly and the
+# devnet script all build the same program flavor. Seconds, no Rust. It is not a
+# required check until someone adds it in repo Settings.
 name: fuzz
 
 on:
@@ -65,6 +70,53 @@ defaults:
     shell: bash
 
 jobs:
+  # Cheap repo-global contract: fuzz/manifest.fc.json is GENERATED from
+  # fuzz/bundle/targets.txt and must not drift (targets.txt states this).
+  #
+  # `--check` regenerates the manifest with the placeholder commit and diffs it.
+  # It runs the pure-python gen_manifest heredoc and exits before the
+  # `git rev-parse` and every docker/cargo path, so it needs python3 and nothing
+  # else -- no Rust, no Solana, no .so.
+  #
+  # Deliberately NOT a step inside `fuzz-build`: that is a 13-way matrix and this
+  # would run 13 times for one repo-global invariant.
+  #
+  # Why here and not only in fuzz-deploy.yml (which also runs --check): that
+  # workflow is schedule + workflow_dispatch only, never pull_request. Drift
+  # introduced by a PR would be invisible until the nightly deploy, where it
+  # fails at the FIRST step -- so the bundle silently stops shipping until
+  # someone notices. This surfaces it on the PR that causes it.
+  bundle-manifest:
+    name: bundle manifest in sync
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+
+      - name: Verify manifest in sync with targets.txt
+        run: bash fuzz/build-bundle.sh --check
+
+      # The nightly SVM job and the deployed bundle must build the SAME program
+      # flavor, or a finding from one does not reproduce in the other. They
+      # silently diverged once already (the nightly was on `anchor-test` +
+      # default features while the bundle was on the devnet flavor), so pin them
+      # together mechanically rather than by comment.
+      - name: Program build flavor is consistent (bundle vs nightly vs devnet)
+        run: |
+          set -euo pipefail
+          want='--no-default-features --features no-entrypoint,isolated-position,vlp-hedge'
+          for f in fuzz/build-bundle.sh .github/workflows/fuzz-nightly.yml \
+                   deploy-scripts/build-devnet.sh; do
+            grep -qF -- "$want" "$f" || {
+              echo "FAIL: $f no longer builds velocity with:" >&2
+              echo "        $want" >&2
+              echo "      All velocity SBF builds outside the mainnet path must agree." >&2
+              exit 1; }
+          done
+          echo "OK: bundle / nightly / devnet build the same velocity flavor"
+
   fuzz-build:
     name: build ${{ matrix.crate }}
     runs-on: ubicloud

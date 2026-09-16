@@ -53,34 +53,26 @@ reset, cure transfers, and floor-moving transfers all reject with `InvalidOracle
 relevant oracle is invalid, and resume when the feed recovers. A market in settlement is valued
 at its expiry price, so its oracle is exempt from all of these validity requirements.
 
-The breaker trip is the one exception, because for the trip an all-or-nothing validity requirement
-fails open: a worthless position in a market whose oracle happens to be invalid would veto the
-only authority-wide safety transition, however deep and however provable the breach on the rest of
-the portfolio. The trip therefore uses its own walk. Positions with valid oracles are valued at
-live prices exactly as everywhere else. A position with an invalid oracle is never priced; it is
-conceded the most favorable value the trip is willing to grant. A spot liability or a short perp
-base leg counts as zero at any size, because it can only lower equity at any price. An asset or
-long base leg worth no more than the dust allowance ($100,
-`EQUITY_FLOOR_TRIP_DUST_ALLOWANCE`) at its own last twap counts as exactly the allowance; a
-larger asset or long, or one whose twap is not positive and so cannot size it, keeps the trip
-blocked with `InvalidOracle`, exactly as before. The zero concessions are sound at any price. The
-allowance concession is sound as far as the twap sizes the position honestly: a live price far
-above a stalled twap can let a leg worth more than the allowance pass as dust, and that
-understatement is bounded by the allowance's scale, not by the bad print. The concessions can add
-at most the allowance per position slot, so dust parked in dead-oracle markets cannot keep a
-material breach untrippable. The residual untrippable region is a breach smaller than the total
-conceded allowance, which the buffer absorbs by design. Deposits that create new positions are
-deliberately not gated by this: the concession makes the trip indifferent to how a dust position
-got there, so restricting deposits (a rescue path for a breached account) would buy nothing.
+The breaker trip uses a user-favorable upper bound rather than trusting an invalid price.
+Positions with valid oracles are valued at live prices exactly as everywhere else. For an invalid
+oracle, a spot liability or short perp base leg counts as zero at any size, because this is its
+sound maximum at a non-negative true price; stored perp quote and funding legs still count
+exactly. An asset or long base leg has no finite upper bound and keeps the trip blocked with
+`InvalidOracle`, regardless of size. The quote oracle also stays strict because it converts every
+perp pnl leg. No stored twap is used to bound an invalid oracle: the two sources can be stale or
+wrong together, so a twap-derived allowance could understate a healthy account and falsely arm
+the authority-wide breaker.
 
 The lazy breaker trip decides with the same predicate as the permissionless trip, and because it
 must not fail its host instruction it silently skips where the trip rejects. During an oracle
-outage a subaccount whose breach is unprovable (a material asset or long with an invalid oracle)
+outage a subaccount whose breach is unprovable (any asset or long with an invalid oracle)
 stays untripped until the feed recovers, at which point the next touch (or the permissionless
 trip) arms the breaker. The exposure in that window is limited: the fail-closed gates reject
 everything risk-increasing while any oracle is invalid, and DLOB match fills carry their own
 oracle-validity rule (`FillOrderMatch`), so an oracle the program cannot do margin with blocks
-match execution the same way the AMM's fill gates block AMM execution.
+match execution the same way the AMM's fill gates block AMM execution. Sibling subaccounts are not
+temporarily authority-frozen during that window; this is accepted operational risk for the
+manually enrolled and monitored set, not an additional onchain state machine.
 
 ## What it enforces day to day
 
@@ -117,8 +109,8 @@ losses; the breaker covers that case.
 The breaker arms in two ways, both against the same proof: a net-equity upper bound showing the
 subaccount's equity is below its raw floor (not the buffered line: the buffer gates actions, the
 floor arms the breaker). Positions with valid oracles are valued at live prices; invalid-oracle
-positions are conceded their most favorable value rather than blocking the proof, and a material
-invalid-oracle asset or long blocks it (see the oracle-validity section above), so an
+liabilities and shorts receive their sound zero upper bound rather than blocking the proof, and
+any invalid-oracle asset or long blocks it (see the oracle-validity section above), so an
 authority-wide freeze can never be armed off a stale or degraded price.
 
 1. **Lazily, on touch.** The actions that are allowed to run while a subaccount sits below its raw
@@ -129,8 +121,8 @@ authority-wide freeze can never be armed off a stale or degraded price.
    the losing position freezes the authority in that same transaction. The check costs nothing on
    subaccounts without a floor and is skipped once the breaker is set.
 2. **By the permissionless `tripEquityFloorBreaker` instruction.** Any keeper can call it against a
-   subaccount (it rejects with `InvalidOracle` when an invalid-oracle asset or long past the dust
-   allowance makes the breach unprovable, and with `SufficientCollateral` when the equity upper
+   subaccount (it rejects with `InvalidOracle` when an invalid-oracle asset or long makes the
+   breach unprovable, and with `SufficientCollateral` when the equity upper
    bound is not below the floor). Velocity runs a guard bot
    that watches every floored account and sends this trip; under normal operation expect it to
    land within seconds of a breach, subject to RPC health and transaction inclusion. Because the
@@ -183,10 +175,10 @@ passed twice) together with their markets and oracles, and it reverts with
 `floor + buffer` with all oracles valid at execution time. An approval that has gone stale, because
 a subaccount drifted back into breach after it was reviewed, fails instead of unfreezing a breached
 authority; the trip and the reset both prove their condition onchain. The reset's validity
-requirement stays all-or-nothing and does not share the trip's dust concession: the reset proves
+requirement stays all-or-nothing and does not share the trip's liability/short upper bound: the reset proves
 equity above the line, the direction in which conceding value to an unpriceable position would be
-unsound, so a dead oracle on even a dust position blocks the reset until the feed recovers. When
-resumption is the business decision even though equity does not clear the floors, or a dead dust
+unsound, so a dead oracle on any position blocks the reset until the feed recovers. When
+resumption is the business decision even though equity does not clear the floors, or a dead
 oracle is blocking the reset, the admin lowers the floors first (`updateUserEquityFloor`),
 explicitly and auditably, and then resets.
 
@@ -500,7 +492,7 @@ same metric the program uses:
 | ----------------------------------------- | ------------------------------------------------------------------------------ |
 | `user.getNetUsdValue()`                   | Net equity: the value every floor check compares against                       |
 | `user.isBelowEquityFloor()`               | `true` when net equity is below the floor (point value)                        |
-| `user.provesEquityFloorBreach(slot)`      | `true` when the onchain trip would fire (concession walk, `getTripNetEquity`) |
+| `user.provesEquityFloorBreach(slot)`      | `true` when the onchain trip would fire (upper-bound verdict, `getTripNetEquity`) |
 | `user.isBelowBufferedEquityFloor()`       | `true` when net equity is below floor + buffer (actions rejecting)             |
 | `user.getBufferedEquityFloor()`           | `floor + buffer`: the line risk-increasing actions must clear                  |
 | `user.getEquityAboveFloor()`              | Headroom above the trip threshold; `null` when no floor is set                 |
@@ -514,7 +506,7 @@ can fire at any moment. The breaker is permissionless, so Velocity's guard bot i
 party that can call it. The guard bot attempts the trip on either signal, the point-value
 `breached` level or `provesEquityFloorBreach`: the point value prices every position at the live
 oracle with no validity check, so an invalid oracle printing high can hide a breach the
-concession walk still proves. A keeper of its own should do the same.
+upper-bound verdict still proves. A keeper of its own should do the same.
 
 ## Using from Rust
 

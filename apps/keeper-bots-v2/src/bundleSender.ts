@@ -464,7 +464,7 @@ export class BundleSender {
 			} else {
 				const resps = await this.connection.getTransactions(txs, {
 					commitment: 'confirmed',
-					maxSupportedTransactionVersion: 0,
+					maxSupportedTransactionVersion: 1,
 				});
 				const droppedTxs = resps.filter((tx) => tx === null);
 				const landedTxs = resps.filter((tx) => tx !== null);

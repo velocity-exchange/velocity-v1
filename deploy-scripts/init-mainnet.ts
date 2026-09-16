@@ -36,7 +36,7 @@
  * Optional env:
  *   QUOTE_MINT            quote SPL mint (default: mainnet USDT)
  *   QUOTE_SYMBOL          spot market 0 name (default USDT)
- *   HOT_MM_ORACLE_CRANK, HOT_AMM_SPREAD_ADJUST, HOT_LP_SWAP, HOT_LP_CACHE,
+ *   HOT_MM_ORACLE_CRANK, HOT_VAMM_QUOTE_MANAGEMENT, HOT_LP_SWAP, HOT_LP_CACHE,
  *   HOT_LP_SETTLE, HOT_AMM_CRANK, HOT_FEATURE_FLAG, HOT_FUEL, HOT_USER_FLAG,
  *   HOT_VAULT_DEPOSIT, HOT_FEE_WITHDRAW
  *                         hot-role authorities (default: admin pubkey; set
@@ -267,6 +267,7 @@ async function main() {
 	}> = [
 		{ role: HotRole.MmOracleCrank, field: 'hotMmOracleCrank', pubkey: new PublicKey(process.env.HOT_MM_ORACLE_CRANK ?? MM_ORACLE_CRANKER_BOT_WALLET) },
 		{ role: HotRole.AmmSpreadAdjust, field: 'hotAmmSpreadAdjust', pubkey: new PublicKey(process.env.HOT_AMM_SPREAD_ADJUST ?? VAMM_CRANKER_BOT_WALLET) },
+		{ role: HotRole.VammQuoteManagement, field: 'hotVammQuoteManagement', pubkey: process.env.HOT_VAMM_QUOTE_MANAGEMENT ? new PublicKey(process.env.HOT_VAMM_QUOTE_MANAGEMENT) : PublicKey.default },
 		{ role: HotRole.LpSwap, field: 'hotLpSwap', pubkey: new PublicKey(process.env.HOT_LP_SWAP ?? DLP_TAKER_WATCHER_BOT_WALLET) },
 		{ role: HotRole.LpCache, field: 'hotLpCache', pubkey: process.env.HOT_LP_CACHE ? new PublicKey(process.env.HOT_LP_CACHE) : hotDefault },
 		{ role: HotRole.LpSettle, field: 'hotLpSettle', pubkey: process.env.HOT_LP_SETTLE ? new PublicKey(process.env.HOT_LP_SETTLE) : hotDefault },

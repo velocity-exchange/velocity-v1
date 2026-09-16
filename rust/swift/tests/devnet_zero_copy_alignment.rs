@@ -33,13 +33,21 @@
 //!
 //! These tests pin: (1) `AlignedAccountData` actually 16-aligns the body, (2) an
 //! `OwnedAccount` built that way round-trips through the program's by-reference
-//! `AccountLoader` for both market structs, and (3) the hazard is real — anchor's
-//! by-reference cast still panics on a deliberately 8-mod-16 buffer.
+//! `AccountLoader` for both market structs, and (3) the hazard is real: the
+//! `bytemuck::from_bytes` cast inside `AccountLoader::load` still panics on a
+//! deliberately 8-mod-16 buffer.
+//!
+//! Note that `try_deserialize` is no longer that cast. anchor 1.2 generates
+//! `pod_read_unaligned` for `#[account(zero_copy)]`, which copies the body out
+//! and so tolerates any alignment; anchor 1.0 used `from_bytes` and then copied,
+//! making the alignment requirement gratuitous. `AccountLoader::load` is
+//! unchanged and still hands back a `Ref` into the buffer, so it is the path
+//! that needs `AlignedAccountData`.
 //!
 //! Run: `cargo test -p swift-server --test devnet_zero_copy_alignment`
 
 use {
-    anchor_lang::{AccountDeserialize, Discriminator},
+    anchor_lang::{__private::bytemuck, AccountDeserialize, Discriminator},
     std::{
         mem::{align_of, size_of},
         panic::{self, AssertUnwindSafe},
@@ -192,14 +200,22 @@ fn state_by_reference_cast_panics_on_misaligned_buffer() {
     );
     buf[..8].copy_from_slice(State::DISCRIMINATOR);
 
+    // `AccountLoader::load` casts by reference with exactly this call, and still
+    // faults on a body at `8 mod 16`.
     let result = capture_panic(|| {
-        let _ = State::try_deserialize(&mut buf.as_slice());
+        let _ = bytemuck::from_bytes::<State>(&buf[8..8 + size_of::<State>()]);
     });
-    let msg = result.expect_err("anchor try_deserialize must panic on the misaligned buffer");
+    let msg = result.expect_err("the by-reference cast must panic on the misaligned buffer");
     assert!(
         msg.contains("TargetAlignmentGreaterAndInputNotAligned"),
         "expected the production alignment panic, got: {msg:?}"
     );
+
+    // anchor 1.2 switched the generated `try_deserialize` from a by-reference
+    // cast to `pod_read_unaligned`, so it copies the body out instead of
+    // faulting. It no longer guards alignment; the cast above still does.
+    State::try_deserialize(&mut buf.as_slice())
+        .expect("try_deserialize reads the misaligned body unaligned");
 }
 
 #[test]
@@ -219,13 +235,24 @@ fn anchor_by_reference_cast_still_panics_on_misaligned_buffer() {
         "buffer base must be 16-aligned"
     );
     buf[..8].copy_from_slice(PerpMarket::DISCRIMINATOR);
+    let index_offset = PerpMarket::MARKET_INDEX_OFFSET;
+    buf[index_offset..index_offset + 2].copy_from_slice(&7u16.to_le_bytes());
 
+    // `AccountLoader::load`/`get_ref` casts by reference with exactly this call,
+    // and still faults on a body at `8 mod 16`: the production failure mode.
     let result = capture_panic(|| {
-        let _ = PerpMarket::try_deserialize(&mut buf.as_slice());
+        let _ = bytemuck::from_bytes::<PerpMarket>(&buf[8..8 + size_of::<PerpMarket>()]);
     });
-    let msg = result.expect_err("anchor try_deserialize must panic on the misaligned buffer");
+    let msg = result.expect_err("the by-reference cast must panic on the misaligned buffer");
     assert!(
         msg.contains("TargetAlignmentGreaterAndInputNotAligned"),
         "expected the production alignment panic, got: {msg:?}"
     );
+
+    // anchor 1.2 switched the generated `try_deserialize` from a by-reference
+    // cast to `pod_read_unaligned`, so it copies the body out correctly instead
+    // of faulting. It no longer guards alignment; the cast above still does.
+    let market = PerpMarket::try_deserialize(&mut buf.as_slice())
+        .expect("try_deserialize reads the misaligned body unaligned");
+    assert_eq!(market.market_index, 7);
 }

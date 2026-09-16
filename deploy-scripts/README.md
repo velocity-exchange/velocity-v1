@@ -4,6 +4,66 @@ Devnet deployment scripts for the velocity program. The devnet quote token is **
 
 The devnet program id is read from `[programs.devnet].velocity` in `Anchor.toml` — that and the `declare_id!` in `programs/velocity/src/lib.rs` (Anchor enforces they match) are the source of truth. Override with `VELOCITY_DEVNET_PROGRAM_ID=…` only for one-off testing.
 
+## Release CLI (`bun run release`)
+
+[`release.sh`](./release.sh) is one verb per release step, in release order. It reads the files CI reads (`programs/*/Cargo.toml`, `packages/*/package.json`, `docker-info.json`, the workflows' tag conventions, the infra gitops manifests) and fires exactly one thing per verb: a git push, a `gh workflow run`, an infra `yarn deploy`. It then hands you the URL. It does not wait on CI, verify buffers, approve Squads or merge PRs; GitHub, `verify-buffer.sh`, Squads and ArgoCD do those, and `status` shows where each one stands.
+
+Every verb is **read-only by default** and prints what `--execute` would do. Zero dependencies beyond `git`, `gh`, `jq`.
+
+```bash
+bun run release                       # status: programs, npm, docker, gitops pins, and the one command to run next
+bun run release bump    [prog] [ver]  # release/<prog>-<ver> branch: Cargo.toml + lockfiles + IDLs, commit (your key), push, PR link
+bun run release devnet  [prog]        # gh workflow run manual-devnet-deploy.yaml            [--branch <ref>]
+bun run release npm     [pkg...]      # push npm-<pkg>-v<version> for every untagged package version, one push per tag
+bun run release docker  [app...]      # push docker-<app>-v<next patch> for images with commits since their tag, one push per tag
+bun run release infra   <stage...>    # infra-v3 `yarn deploy a,b,c <stage>` for every image whose pin is behind: one PR
+bun run release mainnet [prog]        # push program-<prog>-v<Cargo version> at origin/master
+```
+
+Flags: `--execute`, `--infra <path>` (or `VELOCITY_INFRA_DIR`), `--branch <ref>` (devnet), `--no-fetch`, `--no-color`. Programs default to `velocity`; (devnet only) `token_faucet` is the other choice.
+
+`status` also warns about things a human forgets: a Cargo version that is not ahead of the last `program-*` tag while the program has new commits (the tag would collide); velocity diffs since the last tag that touch the fee schedule (run `fees set-schedule` before the upgrade, see below), the error enum, or the IDL; an open changesets "Version Packages" PR; gitops pins older than the latest image. `devnet` and `mainnet` print the same warnings before firing. Docker versions come from the tag history, not from `apps/*/package.json`. The bump commit runs in your terminal with your git identity (a `gpg --clearsign` first, so the passphrase prompt is not buried under other output).
+
+### Release order
+
+Devnet must run the exact bytes mainnet will get, so the version bump comes first and both clusters deploy the same sha.
+
+```bash
+export VELOCITY_INFRA_DIR=~/work/velocity/infrastructure-v3
+aws sso login --sso-session velocity           # the infra step resolves ECR digests
+
+bun run release                                # where are we; the last line is the next command
+
+# 1. version bump PR
+bun run release bump --execute                 # release/velocity-X.Y.0 branch, PR link; merge it
+
+# 2. program to devnet (that sha)
+bun run release devnet --execute               # dispatches CI; ~15 min
+bun run verify-buffer velocity --devnet        # when the run is green: hashes must match
+#    approve + execute the proposal in the devnet Squads
+
+# 3. packages and images (after the changesets "Version Packages" PR is merged)
+bun run release npm --execute                  # npm-sdk-vX.Y.Z etc.
+bun run release docker --execute               # docker-<app>-v<next> for every image with changes
+
+# 4. devnet bots
+bun run release infra master --execute         # one infra-v3 PR; merge it, ArgoCD rolls
+#    soak on devnet
+
+# 5. program to mainnet (same sha)
+bun run release mainnet --execute              # pushes program-velocity-vX.Y.0
+bun run verify-buffer velocity                 # when the run is green
+#    approve + execute the proposal in the mainnet Squads
+
+# 6. prod bots
+bun run release infra mainnet-beta --execute   # one infra-v3 PR; merge it
+#    then the infra-v3 master → mainnet-beta release PR (prod ArgoCD tracks that branch)
+
+bun run release                                # everything green: "nothing to release"
+```
+
+Steps 2 and 3 are independent and can run in parallel. Any admin instruction the upgrade needs (a fee schedule change, for example) goes before the Squads execution on each cluster; `status` flags the known cases.
+
 ## Program upgrades via CI (preferred)
 
 Program upgrades to **mainnet** and **devnet** are gated through a Squads multisig and proposed by GitHub Actions; the scripts in this directory remain for emergency / direct deploys against the devnet upgrade keypair.
@@ -104,7 +164,11 @@ actually what the source compiles to — don't trust the hash CI printed. The CI
 `verify-buffer.sh` reproduces the hash from source and compares:
 
 ```bash
-# Build velocity (devnet flavor) and check it against the buffer the run logged:
+# Usual case: find the newest deploy run for this program yourself, build the
+# devnet flavor, and compare against the buffer that run staged:
+deploy-scripts/verify-buffer.sh velocity --devnet --rpc "$SOLANA_RPC"
+
+# Or point it at a specific run:
 deploy-scripts/verify-buffer.sh velocity \
   https://github.com/velocity-exchange/velocity-v1/actions/runs/<id>/job/<id> \
   --devnet --rpc "$SOLANA_RPC"
@@ -113,8 +177,19 @@ deploy-scripts/verify-buffer.sh velocity \
 deploy-scripts/verify-buffer.sh velocity --buffer <bufferPubkey> --rpc "$SOLANA_RPC" --skip-build
 ```
 
+With neither a run URL nor `--buffer` it scans the newest successful runs of
+`release-program.yaml` (or `manual-devnet-deploy.yaml` with `--devnet`) and
+takes the first one whose deploy summary staged `<program>`, so there is no
+buffer address to copy by hand. The run it picked is printed in the result
+block.
+
 It exits non-zero on a mismatch. Needs `solana-verify`, `gh` (authenticated),
 and the solana CLI on `PATH`. Drop `--devnet` for a mainnet build.
+
+The docker build output is kept out of the terminal: each step prints one
+progress line, and a failing step prints the last 30 lines of what it
+produced. Add `--verbose` to stream the build inline, `--no-color` (or
+`NO_COLOR=1`) for plain output, and `-h` for the full flag list.
 
 ---
 

@@ -1,11 +1,16 @@
 import { AnchorProvider } from '@coral-xyz/anchor';
 import {
+	AddressLookupTableAccount,
 	PublicKey,
 	Transaction,
 	TransactionInstruction,
 	TransactionMessage,
+	VersionedTransaction,
 } from '@solana/web3.js';
 import * as multisig from '@sqds/multisig';
+import pc from 'picocolors';
+import { confirmMainnetDirect } from './context';
+import * as ui from './ui';
 
 /**
  * The authority that will actually sign a dispatched instruction: the Squads
@@ -57,7 +62,8 @@ export async function sendOrPropose(
 	instructions: TransactionInstruction[],
 	multisigPda: PublicKey | undefined,
 	memo: string,
-	vaultIndex = 0
+	vaultIndex = 0,
+	altAccounts: AddressLookupTableAccount[] = []
 ): Promise<DispatchResult> {
 	if (multisigPda) {
 		const [vaultPda] = multisig.getVaultPda({ multisigPda, index: vaultIndex });
@@ -74,6 +80,20 @@ export async function sendOrPropose(
 	}
 
 	if (!multisigPda) {
+		await confirmMainnetDirect(memo);
+		if (altAccounts.length > 0) {
+			// Lookup tables require a v0 message; legacy Transaction can't carry them.
+			const { blockhash } = await provider.connection.getLatestBlockhash();
+			const message = new TransactionMessage({
+				payerKey: provider.wallet.publicKey,
+				recentBlockhash: blockhash,
+				instructions,
+			}).compileToV0Message(altAccounts);
+			const signature = await provider.sendAndConfirm(
+				new VersionedTransaction(message)
+			);
+			return { kind: 'sent', signature };
+		}
 		const tx = new Transaction().add(...instructions);
 		const signature = await provider.sendAndConfirm(tx);
 		return { kind: 'sent', signature };
@@ -104,6 +124,7 @@ export async function sendOrPropose(
 		vaultIndex,
 		ephemeralSigners: 0,
 		transactionMessage,
+		addressLookupTableAccounts: altAccounts,
 		memo,
 	});
 
@@ -137,20 +158,25 @@ export async function reportDryRun(
 	provider: AnchorProvider,
 	instructions: TransactionInstruction[],
 	multisigPda: PublicKey | undefined,
-	vaultIndex = 0
+	vaultIndex = 0,
+	altAccounts: AddressLookupTableAccount[] = [],
+	/** The memo the real `sendOrPropose` will use. It is stored inline in the
+	 * proposal transaction, so the size estimate is only accurate with it. */
+	memo = ''
 ): Promise<void> {
-	console.log('dry run, nothing sent');
-	instructions.forEach((ix, i) => {
-		console.log(
-			`  ix[${i}] program=${ix.programId.toBase58()} accounts=${
-				ix.keys.length
-			} data=${ix.data.length}B`
-		);
-	});
+	ui.header('dry run', pc.dim('nothing sent'));
+	ui.table(
+		instructions.map((ix, i) => [
+			pc.dim(`${i + 1}.`),
+			pc.dim(ix.programId.toBase58()),
+			pc.dim(`${ix.keys.length} accounts`),
+			pc.dim(`${ix.data.length}B`),
+		])
+	);
 
 	if (!multisigPda) {
-		console.log('  dispatch: direct send (1 tx, 1 signature)');
-		console.log('  network fee: ~5000 lamports');
+		ui.kv('dispatch', 'direct send');
+		ui.kv('network fee', pc.dim('~5000 lamports'));
 		return;
 	}
 
@@ -163,13 +189,16 @@ export async function reportDryRun(
 	const members = info.members.length;
 
 	const { blockhash } = await provider.connection.getLatestBlockhash();
-	const messageBytes = new TransactionMessage({
+	const message = new TransactionMessage({
 		payerKey: vaultPda,
 		recentBlockhash: blockhash,
 		instructions,
-	})
-		.compileToLegacyMessage()
-		.serialize().length;
+	});
+	const messageBytes = (
+		altAccounts.length > 0
+			? message.compileToV0Message(altAccounts)
+			: message.compileToLegacyMessage()
+	).serialize().length;
 
 	// VaultTransaction: discriminator + multisig/creator pubkeys + index +
 	// bumps/flags + the serialized inner message; Proposal: fixed fields plus
@@ -180,32 +209,66 @@ export async function reportDryRun(
 		(await provider.connection.getMinimumBalanceForRentExemption(vaultTxSize)) +
 		(await provider.connection.getMinimumBalanceForRentExemption(proposalSize));
 
-	console.log(
-		`  dispatch: proposal to multisig ${multisigPda.toBase58()}, vault ${vaultIndex} (${vaultPda.toBase58()}), next tx index ${transactionIndex}`
+	// The proposal-create transaction carries the whole inner message inline,
+	// so a batch that compiles fine can still exceed the 1232-byte transaction
+	// limit at propose time. Size it here rather than letting the send fail.
+	const createIx = multisig.instructions.vaultTransactionCreate({
+		multisigPda,
+		transactionIndex,
+		creator: provider.wallet.publicKey,
+		vaultIndex,
+		ephemeralSigners: 0,
+		transactionMessage: message,
+		addressLookupTableAccounts: altAccounts,
+		memo,
+	});
+	const proposeIx = multisig.instructions.proposalCreate({
+		multisigPda,
+		transactionIndex,
+		creator: provider.wallet.publicKey,
+	});
+	const outer = new Transaction().add(createIx, proposeIx);
+	outer.recentBlockhash = blockhash;
+	outer.feePayer = provider.wallet.publicKey;
+	// serialized message + compact-u16 signature count + one 64-byte signature
+	const outerSize = outer.serializeMessage().length + 1 + 64;
+	const TX_LIMIT = 1232;
+
+	ui.kv(
+		'dispatch',
+		`proposal, next index ${pc.bold(String(transactionIndex))}`
 	);
-	console.log(
-		`  proposer rent: ~${rent} lamports (~${(rent / 1e9).toFixed(
-			4
-		)} SOL) for VaultTransaction + Proposal accounts, reclaimable after execution`
+	ui.kv('multisig', pc.dim(multisigPda.toBase58()));
+	ui.kv('vault', `${pc.dim(vaultPda.toBase58())} ${pc.dim(`(${vaultIndex})`)}`);
+	ui.kv(
+		'size',
+		outerSize > TX_LIMIT
+			? pc.red(
+					`${outerSize} bytes, ${
+						outerSize - TX_LIMIT
+					} over the ${TX_LIMIT} limit: this will fail to propose, split the batch`
+			  )
+			: `${ui.count(outerSize)} of ${ui.count(TX_LIMIT)} bytes ${pc.dim(
+					`(${TX_LIMIT - outerSize} spare)`
+			  )}`
 	);
-	console.log('  network fee: ~5000 lamports');
-	console.log(
-		'  (members must still approve + execute via Squads UI / CLI before it lands)'
+	ui.kv(
+		'proposer rent',
+		`~${(rent / 1e9).toFixed(4)} SOL ${pc.dim('reclaimable')}`
 	);
+	ui.kv('network fee', pc.dim('~5000 lamports'));
+	ui.note('needs approval and execution');
 }
 
 export function reportDispatch(label: string, result: DispatchResult): void {
 	if (result.kind === 'sent') {
-		console.log(`✓ ${label}`);
-		console.log(`  signature: ${result.signature}`);
-	} else {
-		console.log(
-			`✓ ${label} proposed to multisig ${result.multisig.toBase58()}`
-		);
-		console.log(`  transactionIndex: ${result.transactionIndex.toString()}`);
-		console.log(`  signature: ${result.signature}`);
-		console.log(
-			`  (members must approve + execute via Squads UI / CLI before it lands)`
-		);
+		ui.header(label, ui.ok('sent'));
+		ui.kv('signature', pc.dim(result.signature));
+		return;
 	}
+	ui.header(label, ui.ok('proposed'));
+	ui.kv('proposal', pc.bold(`#${result.transactionIndex.toString()}`));
+	ui.kv('multisig', pc.dim(result.multisig.toBase58()));
+	ui.kv('signature', pc.dim(result.signature));
+	ui.note(`velocity-admin multisig inspect ${result.transactionIndex}`);
 }

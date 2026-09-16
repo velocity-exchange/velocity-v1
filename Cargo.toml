@@ -14,7 +14,7 @@ members = [
   "crates/clob-state-v2",
 ]
 # The `rust/` directory is a SEPARATE Cargo workspace (velocity-rs/keep-rs/swift).
-# It is excluded here so its solana-sdk 3.x dependency tree never unifies with
+# It is excluded here so its split solana 4.2 crate tree never unifies with
 # the program (SBF) build, and so the two workspaces don't collide as nested
 # workspace roots. See rust/Cargo.toml.
 # `fuzz/` is likewise excluded for the same reasons (Crucible/LibAFL/LiteSVM host

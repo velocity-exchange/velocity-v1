@@ -1,0 +1,63 @@
+{
+  "Version": 3,
+  "Revision": {
+    "Commit": "0000000",
+    "Checkouts": {}
+  },
+  "Lineages": [
+    {
+      "Name": "e2e-svm__invariant_solvency_c2",
+      "Env": {},
+      "Confs": [
+        {
+          "Name": "explore",
+          "Driver": {
+            "Type": "crucible",
+            "Params": {
+              "BinaryPathInBundle": "bin/e2e-svm/invariant_solvency",
+              "HarnessRunDirInBundle": "bin/e2e-svm",
+              "SourcesPathInBundle": "srcs",
+              "SourcesOriginalPath": "/src",
+              "SymbolsPathInBundle": "symbols/velocity.debug.so"
+            }
+          },
+          "Architecture": {
+            "Name": "amd64",
+            "Extensions": []
+          },
+          "MemoryKiB": 4194304,
+          "Cores": 8,
+          "StallTimeMinutes": 0,
+          "YieldTimeMinutes": 120
+        }
+      ]
+    },
+    {
+      "Name": "e2e-svm-liq__invariant_liq_c2",
+      "Env": {},
+      "Confs": [
+        {
+          "Name": "explore",
+          "Driver": {
+            "Type": "crucible",
+            "Params": {
+              "BinaryPathInBundle": "bin/e2e-svm-liq/invariant_liq",
+              "HarnessRunDirInBundle": "bin/e2e-svm-liq",
+              "SourcesPathInBundle": "srcs",
+              "SourcesOriginalPath": "/src",
+              "SymbolsPathInBundle": "symbols/velocity.debug.so"
+            }
+          },
+          "Architecture": {
+            "Name": "amd64",
+            "Extensions": []
+          },
+          "MemoryKiB": 4194304,
+          "Cores": 8,
+          "StallTimeMinutes": 0,
+          "YieldTimeMinutes": 120
+        }
+      ]
+    }
+  ]
+}

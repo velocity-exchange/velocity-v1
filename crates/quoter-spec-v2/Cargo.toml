@@ -4,7 +4,7 @@ description = "quoter-spec wire types compiled against the velocity anchor v2 fo
 version = "0.1.0"
 edition = "2021"
 [dependencies]
-solana-address = { version = "~2.7", features = ["bytemuck", "copy", "wincode"] }
+solana-address = { version = "2.6", features = ["bytemuck", "copy"] }
 wincode = { version = "0.6", features = ["derive"] }
 bytemuck = { version = "1", features = ["derive"] }
 anchor-lang-v2 = { package = "anchor-lang", git = "https://github.com/velocity-exchange/anchor.git", rev = "444c6205fd3aa54006cf9d0c232d43471b74b071", optional = true }

@@ -32,7 +32,7 @@ import {
 import { sleep } from './utils/utils';
 import { setupEndpoints } from './endpoints';
 import { ZSTDDecoder } from 'zstddec';
-import { COMMON_UI_UTILS } from '@velocity-exchange/common';
+import { chunks } from '@velocity-exchange/common';
 import {
 	RedisClient,
 	RedisClientPrefix,
@@ -281,14 +281,14 @@ export class WebsocketCacheProgramAccountSubscriber {
 		const keysToAdd = newKeys.filter((key) => !currentKeys.includes(key));
 		const keysToRemove = currentKeys.filter((key) => !newKeys.includes(key));
 
-		const removalBatches = COMMON_UI_UTILS.chunks(keysToRemove, 100);
+		const removalBatches = chunks(keysToRemove, 100);
 		for (const batch of removalBatches) {
 			await Promise.all(
 				batch.map((key) => this.redisClient.lRem('user_pubkeys', 0, key))
 			);
 		}
 
-		const additionBatches = COMMON_UI_UTILS.chunks(keysToAdd, 100);
+		const additionBatches = chunks(keysToAdd, 100);
 		for (const batch of additionBatches) {
 			await this.redisClient.rPush('user_pubkeys', ...batch);
 		}

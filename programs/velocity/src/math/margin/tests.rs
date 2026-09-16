@@ -4547,10 +4547,10 @@ mod trip_net_equity {
             instructions::optional_accounts::AccountMaps,
             math::{
                 constants::{
-                    AMM_RESERVE_PRECISION, BASE_PRECISION_I64, EQUITY_FLOOR_TRIP_DUST_ALLOWANCE,
-                    PEG_PRECISION, PRICE_PRECISION, QUOTE_PRECISION_I64, QUOTE_PRECISION_U64,
-                    SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64,
-                    SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+                    AMM_RESERVE_PRECISION, BASE_PRECISION_I64, PEG_PRECISION, PRICE_PRECISION,
+                    QUOTE_PRECISION_I64, QUOTE_PRECISION_U64, SPOT_BALANCE_PRECISION,
+                    SPOT_BALANCE_PRECISION_U64, SPOT_CUMULATIVE_INTEREST_PRECISION,
+                    SPOT_WEIGHT_PRECISION,
                 },
                 margin::{calculate_user_equity, calculate_user_equity_for_trip, TripNetEquity},
                 time::SlotClock,
@@ -4770,7 +4770,7 @@ mod trip_net_equity {
 
     #[test]
     fn valid_oracles_match_the_trusted_walk() {
-        // 10,000 USDC - 90 SOL at 100 = 1,000 USDC, no concession needed
+        // 10,000 USDC - 90 SOL at 100 = 1,000 USDC.
         let (trip_equity, _, live_equity, live_valid) = run_spot_scenario(
             SpotBalanceType::Borrow,
             90 * SPOT_BALANCE_PRECISION_U64,
@@ -4786,9 +4786,9 @@ mod trip_net_equity {
     }
 
     #[test]
-    fn stale_dust_asset_is_conceded_the_allowance() {
-        // 0.5 SOL is worth 50 at its twap, within the allowance, so the
-        // asset counts as the full allowance instead of blocking the proof
+    fn stale_asset_is_unprovable_even_when_small_at_twap() {
+        // A stale twap cannot place a sound upper bound on an asset. Even
+        // this 0.5 SOL position therefore blocks the breaker proof.
         let (trip_equity, _, _, live_valid) = run_spot_scenario(
             SpotBalanceType::Deposit,
             SPOT_BALANCE_PRECISION_U64 / 2,
@@ -4798,11 +4798,7 @@ mod trip_net_equity {
         );
 
         assert!(!live_valid);
-        assert!(trip_equity.provable);
-        assert_eq!(
-            trip_equity.equity_upper_bound,
-            10_000 * QUOTE_PRECISION_I64 as i128 + EQUITY_FLOOR_TRIP_DUST_ALLOWANCE
-        );
+        assert!(!trip_equity.provable);
     }
 
     #[test]
@@ -4865,9 +4861,8 @@ mod trip_net_equity {
 
     #[test]
     fn non_positive_twap_asset_keeps_the_breach_unprovable() {
-        // a zero twap sizes every balance at zero, so the dust test cannot
-        // bound the asset; conceding the allowance to an unsizeable asset
-        // could understate equity and trip a solvent account
+        // A zero twap cannot make an invalid-oracle asset provable. The trip
+        // does not use this correlated source at all.
         let (trip_equity, user, _, _) = run_spot_scenario(
             SpotBalanceType::Deposit,
             SPOT_BALANCE_PRECISION_U64 / 2,
@@ -4881,10 +4876,9 @@ mod trip_net_equity {
     }
 
     #[test]
-    fn dust_cannot_veto_a_material_breach() {
-        // 10,000 USDC of valid equity against an 11,000 floor is a real
-        // breach; the stale dust position is conceded the allowance and the
-        // trip still proves it
+    fn stale_asset_blocks_trip_until_its_oracle_recovers() {
+        // The valid positions appear below floor, but the stale asset has no
+        // finite upper bound. The trip must wait for a valid price.
         let (trip_equity, user, _, _) = run_spot_scenario(
             SpotBalanceType::Deposit,
             SPOT_BALANCE_PRECISION_U64 / 2,
@@ -4893,14 +4887,13 @@ mod trip_net_equity {
             11_000 * QUOTE_PRECISION_U64,
         );
 
-        assert!(trip_equity.proves_breach(&user));
+        assert!(!trip_equity.provable);
+        assert!(!trip_equity.proves_breach(&user));
     }
 
     #[test]
-    fn the_concession_covers_a_breach_smaller_than_the_allowance() {
-        // valid equity 10,000 against a 10,050 floor: the dust's allowance
-        // lifts the upper bound to 10,100, so the breach is not provable at
-        // every true dust price and the trip must not fire
+    fn stale_asset_does_not_use_twap_to_bound_a_narrow_breach() {
+        // A stale twap cannot prove even a narrow breach safely.
         let (trip_equity, user, _, _) = run_spot_scenario(
             SpotBalanceType::Deposit,
             SPOT_BALANCE_PRECISION_U64 / 2,
@@ -4909,14 +4902,14 @@ mod trip_net_equity {
             10_050 * QUOTE_PRECISION_U64,
         );
 
-        assert!(trip_equity.provable);
+        assert!(!trip_equity.provable);
         assert!(!trip_equity.proves_breach(&user));
     }
 
     #[test]
-    fn stale_long_dust_perp_bounds_the_base_leg_at_the_allowance() {
-        // long 0.5 base entered at -45 quote: entry quote counts exactly,
-        // the base leg is conceded the allowance. 10 + (-45 + 100) = 65
+    fn stale_long_perp_is_unprovable_even_when_small_at_twap() {
+        // The stale long base leg has no finite upper bound. Stored quote
+        // and funding legs cannot make the whole position provable.
         let (trip_equity, _) = run_perp_scenario(
             BASE_PRECISION_I64 / 2,
             -45 * QUOTE_PRECISION_I64,
@@ -4925,12 +4918,7 @@ mod trip_net_equity {
             QUOTE_PRECISION_U64,
         );
 
-        assert!(trip_equity.provable);
-        assert_eq!(
-            trip_equity.equity_upper_bound,
-            10 * QUOTE_PRECISION_I64 as i128 - 45 * QUOTE_PRECISION_I64 as i128
-                + EQUITY_FLOOR_TRIP_DUST_ALLOWANCE
-        );
+        assert!(!trip_equity.provable);
     }
 
     #[test]
@@ -5031,8 +5019,8 @@ mod trip_net_equity {
     }
 
     #[test]
-    fn non_positive_twap_short_perp_is_still_conceded_zero() {
-        // the short's zero concession does not depend on the twap at all,
+    fn non_positive_twap_short_perp_is_still_bounded_at_zero() {
+        // the short's zero upper bound does not depend on the twap at all,
         // so a broken twap does not block the proof. 10 + 180 = 190.
         let (trip_equity, _) = run_perp_scenario(
             -2 * BASE_PRECISION_I64,

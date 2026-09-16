@@ -23,7 +23,8 @@ use solana_rpc_client_api::{
     response::RpcLogsResponse,
 };
 use solana_transaction_status::{
-    option_serializer::OptionSerializer, EncodedTransactionWithStatusMeta, UiTransactionEncoding,
+    option_serializer::OptionSerializer, EncodedTransaction, EncodedTransactionWithStatusMeta,
+    UiTransactionEncoding,
 };
 use tokio::{
     sync::{
@@ -61,7 +62,7 @@ impl EventRpcProvider for RpcClient {
                     &signature,
                     RpcTransactionConfig {
                         encoding: Some(UiTransactionEncoding::Base64),
-                        max_supported_transaction_version: Some(0),
+                        max_supported_transaction_version: Some(1),
                         ..Default::default()
                     },
                 )
@@ -217,14 +218,11 @@ impl LogEventStream {
             target: LOG_TARGET,
             "log extracting events, slot: {slot}, tx: {signature:?}"
         );
-        for (tx_idx, log) in response.logs.iter().enumerate() {
-            // a velocity sub-account should not interact with any other program by definition
-            if let Some(event) = try_parse_log(log.as_str(), &signature, tx_idx) {
-                // unrelated events from same tx should not be emitted e.g. a filler tx which produces other fill events
-                if event.pertains_to(self.sub_account) && self.event_tx.send(event).await.is_err() {
-                    warn!("event receiver closed");
-                    return;
-                }
+        for event in parse_velocity_logs(response.logs.iter().map(String::as_str), &signature) {
+            // unrelated events from same tx should not be emitted e.g. a filler tx which produces other fill events
+            if event.pertains_to(self.sub_account) && self.event_tx.send(event).await.is_err() {
+                warn!("event receiver closed");
+                return;
             }
         }
     }
@@ -302,13 +300,11 @@ impl GrpcLogEventStream {
             "log extracting events, slot: {}, tx: {}", event.slot, signature
         );
         let logs = &event.meta.log_messages;
-        for (tx_idx, log) in logs.iter().enumerate() {
-            if let Some(event) = try_parse_log(log.as_str(), &signature.to_string(), tx_idx) {
-                // unrelated events from same tx should not be emitted e.g. a filler tx which produces other fill events
-                if event.pertains_to(self.sub_account) && self.event_tx.send(event).await.is_err() {
-                    warn!("event receiver closed");
-                    return;
-                }
+        for event in parse_velocity_logs(logs.iter().map(String::as_str), &signature.to_string()) {
+            // unrelated events from same tx should not be emitted e.g. a filler tx which produces other fill events
+            if event.pertains_to(self.sub_account) && self.event_tx.send(event).await.is_err() {
+                warn!("event receiver closed");
+                return;
             }
         }
     }
@@ -387,12 +383,44 @@ async fn grpc_log_stream(
     })
 }
 
+/// Whether a polled tx should have its logs walked for Velocity events.
+///
+/// Prefer the decoded message's static account keys as a cheap skip when
+/// `PROGRAM_ID` is absent. A payload these crates cannot deserialize at all
+/// (`decode()` is `None`: corrupt, or a wire version newer than this crate
+/// stack) still has its logs walked, so Velocity events are not dropped.
+/// Walking is not enough on its own: `parse_velocity_logs` only decodes
+/// payloads while `PROGRAM_ID` is the executing program in the invocation
+/// stack.
+fn poll_should_parse_velocity_logs(transaction: &EncodedTransaction, signature: &str) -> bool {
+    match transaction.decode() {
+        Some(VersionedTransaction { message, .. }) => message
+            .static_account_keys()
+            .iter()
+            .any(|k| k == &PROGRAM_ID),
+        None => {
+            // A corrupt payload, or a wire version newer than these crates. Keep it at
+            // debug like the other per-tx poll messages.
+            debug!(
+                target: LOG_TARGET,
+                "poll undecodable tx, walking logs without account-keys check: {signature}"
+            );
+            true
+        }
+    }
+}
+
 pub struct PolledEventStream<T: EventRpcProvider> {
     cache: Arc<RwLock<TxSignatureCache>>,
     event_tx: Sender<VelocityEvent>,
     provider: T,
     sub_account: Pubkey,
 }
+
+/// How often the poller re-reads signatures. A flat throttle to avoid spamming the
+/// RPC, not a slot count: mainnet slot time keeps falling and this poll does not
+/// track it, so each tick just returns more signatures.
+const POLL_INTERVAL: Duration = Duration::from_millis(400);
 
 impl<T: EventRpcProvider> PolledEventStream<T> {
     async fn stream_fn(self) {
@@ -409,8 +437,7 @@ impl<T: EventRpcProvider> PolledEventStream<T> {
         let mut last_seen_tx = res.expect("fetched tx").first().cloned();
         let provider_ref = &self.provider;
         'outer: loop {
-            // don't needlessly spam the RPC or hog the executor
-            tokio::time::sleep(Duration::from_millis(400)).await;
+            tokio::time::sleep(POLL_INTERVAL).await;
 
             debug!(target: LOG_TARGET, "poll txs for events");
             let signatures = provider_ref
@@ -481,15 +508,12 @@ impl<T: EventRpcProvider> PolledEventStream<T> {
                 }
                 let meta = meta.unwrap();
 
-                if let Some(VersionedTransaction { message, .. }) = transaction.decode() {
-                    // only txs interacting with velocity program
-                    if !message
-                        .static_account_keys()
-                        .iter()
-                        .any(|k| k == &constants::PROGRAM_ID)
-                    {
-                        continue;
-                    }
+                // Prefer the account-keys cheap-skip. A payload that does not
+                // deserialize (corrupt, or a wire version newer than these
+                // crates) still has its logs walked rather than dropping
+                // Velocity events. Parsing itself is invocation-gated.
+                if !poll_should_parse_velocity_logs(&transaction, signature.as_str()) {
+                    continue;
                 }
                 // ignore failed txs
                 if meta.err.is_some() {
@@ -497,11 +521,14 @@ impl<T: EventRpcProvider> PolledEventStream<T> {
                 }
 
                 if let OptionSerializer::Some(logs) = meta.log_messages {
-                    for (tx_idx, log) in logs.iter().enumerate() {
-                        if let Some(event) = try_parse_log(log.as_str(), signature.as_str(), tx_idx)
-                        {
-                            if event.pertains_to(self.sub_account) {
-                                self.event_tx.try_send(event).expect("sent");
+                    for event in
+                        parse_velocity_logs(logs.iter().map(String::as_str), signature.as_str())
+                    {
+                        if event.pertains_to(self.sub_account) {
+                            // A full channel or a closed receiver must not take the
+                            // poll task down with it.
+                            if let Err(err) = self.event_tx.try_send(event) {
+                                warn!(target: LOG_TARGET, "poll dropping event: {err}");
                             }
                         }
                     }
@@ -545,9 +572,82 @@ impl Stream for VelocityEventStream {
 const PROGRAM_LOG: &str = "Program log: ";
 const PROGRAM_DATA: &str = "Program data: ";
 
+/// CPI invocation stack while walking a transaction's log lines.
+/// `true` frames are `PROGRAM_ID`; `false` frames are any other program.
+#[derive(Default)]
+pub struct ProgramInvocationStack {
+    stack: Vec<bool>,
+}
+
+impl ProgramInvocationStack {
+    fn observe(&mut self, raw: &str) {
+        let log_start = raw.split_once(':').map(|(head, _)| head).unwrap_or(raw);
+        if log_start.starts_with("Program ")
+            && (log_start.ends_with(" success") || log_start.ends_with(" failed"))
+        {
+            self.stack.pop();
+        } else if log_start.starts_with(velocity_program_invoke_prefix()) {
+            self.stack.push(true);
+        } else if log_start.contains(" invoke") {
+            self.stack.push(false);
+        }
+    }
+
+    fn is_velocity_executing(&self) -> bool {
+        self.stack.last() == Some(&true)
+    }
+}
+
+fn velocity_program_invoke_prefix() -> &'static str {
+    static PREFIX: OnceLock<String> = OnceLock::new();
+    PREFIX.get_or_init(|| format!("Program {PROGRAM_ID} invoke"))
+}
+
+/// Parse Velocity events from a transaction's logs.
+///
+/// Only `Program log:` / `Program data:` lines emitted while `PROGRAM_ID` is
+/// the currently executing program (including nested CPI) are decoded. This
+/// keeps unrelated programs' matching discriminators away from
+/// [`VelocityEvent::from_discriminant`].
+pub fn parse_velocity_logs<'a>(
+    logs: impl IntoIterator<Item = &'a str>,
+    signature: &str,
+) -> Vec<VelocityEvent> {
+    let mut invocation = ProgramInvocationStack::default();
+    let mut events = Vec::new();
+    for (tx_idx, log) in logs.into_iter().enumerate() {
+        if log.starts_with("Log truncated") {
+            break;
+        }
+        if let Some(event) = try_parse_log(&mut invocation, log, signature, tx_idx) {
+            events.push(event);
+        }
+    }
+    events
+}
+
 /// Try deserialize a velocity event type from raw log string
 /// https://github.com/coral-xyz/anchor/blob/9d947cb26b693e85e1fd26072bb046ff8f95bdcf/client/src/lib.rs#L552
-pub fn try_parse_log(raw: &str, signature: &str, tx_idx: usize) -> Option<VelocityEvent> {
+///
+/// Updates `invocation` from invoke/success/failed lines and only decodes a
+/// payload while `PROGRAM_ID` is executing. Callers walking a full tx log
+/// should reuse the same stack across lines (see [`parse_velocity_logs`]).
+pub fn try_parse_log(
+    invocation: &mut ProgramInvocationStack,
+    raw: &str,
+    signature: &str,
+    tx_idx: usize,
+) -> Option<VelocityEvent> {
+    invocation.observe(raw);
+    if !invocation.is_velocity_executing() {
+        return None;
+    }
+    try_parse_program_log(raw, signature, tx_idx)
+}
+
+/// Decode a single `Program log:` / `Program data:` payload with no CPI-stack
+/// check. Prefer [`try_parse_log`] / [`parse_velocity_logs`] on real tx logs.
+fn try_parse_program_log(raw: &str, signature: &str, tx_idx: usize) -> Option<VelocityEvent> {
     // Log emitted from the current program.
     if let Some(log) = raw
         .strip_prefix(PROGRAM_LOG)
@@ -974,11 +1074,7 @@ mod test {
             "Program vAuLTsyrvSfZRuRB3XgvkPwNGgYSs9YRYymVebLKoxR success".to_string(),
         ];
 
-        let events: Vec<VelocityEvent> = cpi_logs
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, log)| try_parse_log(log, "sig", idx))
-            .collect();
+        let events = parse_velocity_logs(cpi_logs.iter().map(String::as_str), "sig");
 
         assert!(
             events.iter().any(
@@ -1113,8 +1209,10 @@ mod test {
                     sub_account,
                     Signature::from_str(s).unwrap(),
                     Some(vec![
+                        format!("Program {PROGRAM_ID} invoke [1]"),
                         format!("{PROGRAM_LOG}{}", serialize_event(oar)),
-                        format!("{PROGRAM_LOG}{}", serialize_event(or),),
+                        format!("{PROGRAM_LOG}{}", serialize_event(or)),
+                        format!("Program {PROGRAM_ID} success"),
                     ]),
                 ),
             );
@@ -1191,19 +1289,15 @@ mod test {
         };
 
         let logs = [
-            "Program dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH invoke [1]".to_string(),
+            format!("Program {PROGRAM_ID} invoke [1]"),
             "Program log: Instruction: BeginSwap".to_string(),
             "Program log: Instruction: EndSwap".to_string(),
             format!("{PROGRAM_DATA}{}", serialize_event(swap)),
-            "Program dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH success".to_string(),
+            format!("Program {PROGRAM_ID} success"),
         ];
 
         let sig = "2M1e4UJ1x6rwvjFR6kh5CDCWZg8NcGeqzT2GbDRGaC2TmZDgNTNbKSn4Y4pu11apErVycpk5p3Hq6Tg2nrFdGimm";
-        let res: Vec<VelocityEvent> = logs
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, log)| try_parse_log(log, sig, idx))
-            .collect();
+        let res = parse_velocity_logs(logs.iter().map(String::as_str), sig);
         assert_eq!(
             res[0],
             VelocityEvent::Swap {
@@ -1217,6 +1311,188 @@ mod test {
                 signature: sig.try_into().unwrap(),
                 tx_idx: 3,
             }
+        );
+    }
+
+    fn undecodable_tx() -> EncodedTransaction {
+        EncodedTransaction::Binary(
+            "not-valid-base64!!!".into(),
+            solana_transaction_status::TransactionBinaryEncoding::Base64,
+        )
+    }
+
+    #[test]
+    fn poll_parses_undecodable_tx_instead_of_dropping() {
+        assert!(poll_should_parse_velocity_logs(&undecodable_tx(), "sig"));
+    }
+
+    /// A transaction v1 wire payload (SIMD-0385), laid out byte by byte: the
+    /// `0x81` version byte, then the message whose compute budget lives in a
+    /// config mask instead of instructions, then the signatures at the END with
+    /// no length prefix. Assembled byte by byte rather than through the crate API
+    /// so the test pins the wire layout, not whatever the crates round-trip.
+    fn v1_wire_transaction(signature: &Signature, payer: &Pubkey) -> EncodedTransaction {
+        let mut bytes = vec![0x81];
+        // header: 1 required signature, 0 readonly signed, 1 readonly unsigned
+        bytes.extend_from_slice(&[1, 0, 1]);
+        // config mask: bit 2 set, so a compute unit limit follows the addresses
+        bytes.extend_from_slice(&0b100u32.to_le_bytes());
+        // lifetime specifier (recent blockhash)
+        bytes.extend_from_slice(Hash::new_unique().as_ref());
+        bytes.push(1); // one instruction
+        bytes.push(2); // two addresses
+        bytes.extend_from_slice(payer.as_ref());
+        bytes.extend_from_slice(PROGRAM_ID.as_ref());
+        // the compute unit limit named by the mask
+        bytes.extend_from_slice(&300_000u32.to_le_bytes());
+        // instruction header: program at address index 1, no accounts, no data
+        bytes.extend_from_slice(&[1, 0, 0, 0]);
+        bytes.extend_from_slice(signature.as_ref());
+
+        EncodedTransaction::Binary(
+            base64::engine::general_purpose::STANDARD.encode(&bytes),
+            solana_transaction_status::TransactionBinaryEncoding::Base64,
+        )
+    }
+
+    #[tokio::test]
+    async fn polled_event_stream_parses_v1_wire_format_tx() {
+        let _ = env_logger::try_init();
+
+        struct OneTxProvider {
+            signature: String,
+            tx: EncodedTransactionWithStatusMeta,
+        }
+
+        impl EventRpcProvider for Arc<OneTxProvider> {
+            fn get_tx(
+                &self,
+                _signature: Signature,
+            ) -> BoxFuture<SdkResult<EncodedTransactionWithStatusMeta>> {
+                ready(Ok(self.tx.clone())).boxed()
+            }
+            fn get_tx_signatures(
+                &self,
+                _account: Pubkey,
+                _after: Option<Signature>,
+                limit: Option<usize>,
+            ) -> BoxFuture<SdkResult<Vec<String>>> {
+                // the limited call is the initial cursor fetch; serve the tx to the
+                // poll loop only, so it is processed exactly once
+                let signatures = if limit.is_some() {
+                    Vec::new()
+                } else {
+                    vec![self.signature.clone()]
+                };
+                ready(Ok(signatures)).boxed()
+            }
+        }
+
+        let sub_account = Pubkey::new_unique();
+        let signature = Signature::new_unique();
+        let mut tx = make_transaction(
+            sub_account,
+            signature,
+            Some(vec![
+                format!("Program {PROGRAM_ID} invoke [1]"),
+                format!(
+                    "{PROGRAM_LOG}{}",
+                    serialize_event(OrderRecord {
+                        ts: 1_700_000_000,
+                        user: sub_account,
+                        order: Order {
+                            order_id: 9,
+                            ..Default::default()
+                        },
+                    })
+                ),
+                format!("Program {PROGRAM_ID} success"),
+            ]),
+        );
+        // the only difference from a v0 poll: the RPC hands back a v1 payload.
+        tx.transaction = v1_wire_transaction(&signature, &sub_account);
+        // Assert the decode itself, not just the outcome: the log-walk fallback in
+        // `poll_should_parse_velocity_logs` returns true for an UNDECODABLE tx too, so
+        // without this the test passes on a crate stack that cannot read v1 at all.
+        assert!(
+            matches!(
+                tx.transaction.decode().map(|t| t.message),
+                Some(VersionedMessage::V1(_))
+            ),
+            "v1 wire payload must deserialize as V1, got: {:?}",
+            tx.transaction.decode().map(|t| t.message)
+        );
+        assert!(poll_should_parse_velocity_logs(&tx.transaction, "sig"));
+
+        let (event_tx, mut event_rx) = channel(16);
+        tokio::spawn(
+            PolledEventStream {
+                cache: Arc::new(RwLock::new(TxSignatureCache::new(16))),
+                provider: Arc::new(OneTxProvider {
+                    signature: signature.to_string(),
+                    tx,
+                }),
+                sub_account,
+                event_tx,
+            }
+            .stream_fn(),
+        );
+
+        let event = tokio::time::timeout(Duration::from_secs(5), event_rx.recv())
+            .await
+            .expect("event before timeout")
+            .expect("event");
+        assert!(
+            matches!(&event, VelocityEvent::OrderCreate { order, .. } if order.order_id == 9),
+            "expected the v1 tx's OrderCreate, got: {event:?}"
+        );
+    }
+
+    #[test]
+    fn ignores_malformed_payload_emitted_outside_program_id() {
+        let _ = env_logger::try_init();
+
+        let mut malformed = OrderActionRecord::DISCRIMINATOR.to_vec();
+        malformed.extend_from_slice(&[0xff; 4]);
+        let malformed_b64 = base64::engine::general_purpose::STANDARD.encode(&malformed);
+
+        let user = Pubkey::new_unique();
+        let swap = SwapRecord {
+            ts: 1_700_000_000,
+            user,
+            amount_out: 2,
+            amount_in: 1,
+            out_market_index: 1,
+            in_market_index: 0,
+            out_oracle_price: 0,
+            in_oracle_price: 0,
+            fee: 0,
+        };
+
+        let other = Pubkey::new_unique();
+        let logs = [
+            format!("Program {other} invoke [1]"),
+            format!("{PROGRAM_DATA}{malformed_b64}"),
+            format!("Program {other} success"),
+            format!("Program {PROGRAM_ID} invoke [1]"),
+            format!("{PROGRAM_DATA}{}", serialize_event(swap)),
+            format!("Program {PROGRAM_ID} success"),
+        ];
+
+        let events = parse_velocity_logs(logs.iter().map(String::as_str), "sig");
+        assert_eq!(
+            events,
+            vec![VelocityEvent::Swap {
+                user,
+                amount_in: 1,
+                amount_out: 2,
+                market_in: 0,
+                market_out: 1,
+                fee: 0,
+                ts: 1_700_000_000,
+                signature: "sig".into(),
+                tx_idx: 4,
+            }]
         );
     }
 
@@ -1247,7 +1523,7 @@ mod test {
             },
             meta,
         }
-        .encode(UiTransactionEncoding::Base64, Some(0), false)
+        .encode(UiTransactionEncoding::Base64, Some(1), false)
         .unwrap()
     }
 

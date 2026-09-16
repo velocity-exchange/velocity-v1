@@ -31,8 +31,9 @@ import {
 	PerpMarketAccount,
 	SpotMarketAccount,
 	elapsedMillis,
-	millisFromStoredUnits,
-	slotAtOrAfterDuration,
+	currentSlotDuration,
+	signedMsgOrderMaxSlot,
+	signedMsgOrderPlaceable,
 } from '@velocity-exchange/sdk';
 import { Connection, PublicKey } from '@solana/web3.js';
 import dotenv from 'dotenv';
@@ -90,7 +91,11 @@ class DLOBBuilder {
 		marketIndexes: number[]
 	) {
 		this.dlob = new DLOB();
-		this.slotSubscriber = new SlotSubscriber(velocityClient.connection);
+		// Same reason as the ClockSubscriber below: a frozen websocket would freeze
+		// this slot, which now decides when a signed-msg order enters the book.
+		this.slotSubscriber = new SlotSubscriber(velocityClient.connection, {
+			resubTimeoutMs: 10_000,
+		});
 		this.marketType = marketType;
 		this.marketTypeString = marketTypeString;
 		this.marketIndexes = marketIndexes;
@@ -139,6 +144,7 @@ class DLOBBuilder {
 		} catch {
 			// not subscribed yet: keep the baseline
 		}
+		const slot = this.slotSubscriber.getSlot();
 		let counter = 0;
 		this.userAccountData.forEach((userAccount, pubkey) => {
 			userAccount.orders.forEach((order) => {
@@ -148,16 +154,27 @@ class DLOBBuilder {
 				) {
 					return;
 				}
-				dlob.insertOrder(
-					order,
-					pubkey,
-					this.slotSubscriber.getSlot(),
-					order.baseAssetAmount
-				);
+				dlob.insertOrder(order, pubkey, slot, order.baseAssetAmount);
 				counter++;
 			});
 		});
 		for (const signedMsgNode of this.signedMsgOrders.values()) {
+			// Hold back an auction order whose signed message slot has not arrived: the
+			// program starts its auction there and rejects a place before it, so it
+			// cannot fill yet. Inserting it early lets the taking pass match it against
+			// resting liquidity and mark that liquidity filled in this snapshot, hiding
+			// a fill that could have happened. It stays cached and is inserted once its
+			// slot lands. A resting limit (no auction) may be placed ahead of its slot,
+			// though this builder never caches one (insertSignedMsgOrder skips it).
+			if (
+				!signedMsgOrderPlaceable(
+					dlob.slotDurationState,
+					signedMsgNode.order,
+					slot
+				)
+			) {
+				continue;
+			}
 			dlob.insertSignedMsgOrder(signedMsgNode.order, signedMsgNode.userAccount);
 			counter++;
 		}
@@ -236,11 +253,10 @@ class DLOBBuilder {
 		);
 
 		const slotDurationState = this.velocityClient.getStateAccount();
-		// Mirrors the program's max_slot across every known future boundary.
-		const maxSlot = slotAtOrAfterDuration(
+		const maxSlot = signedMsgOrderMaxSlot(
 			slotDurationState,
 			signedMessage.slot,
-			millisFromStoredUnits(signedMsgOrderParams.auctionDuration ?? 0)
+			signedMsgOrderParams.auctionDuration ?? 0
 		);
 		if (maxSlot.toNumber() < this.slotSubscriber.getSlot()) {
 			logger.warn(
@@ -249,16 +265,18 @@ class DLOBBuilder {
 			return;
 		}
 
-		const orderSlot = Math.min(
-			signedMessage.slot.toNumber(),
-			this.slotSubscriber.getSlot()
-		);
-
 		const signedMsgOrder: Order = {
 			status: OrderStatus.OPEN,
 			orderType: signedMsgOrderParams.orderType,
 			orderId: uuid,
-			slot: new BN(orderSlot),
+			// The true message slot, which the UI stamps a few slots ahead of signing
+			// (a signing buffer). It must not be clamped to the current slot: the
+			// program starts the auction at it and rejects a place while
+			// `order_slot > clock.slot`, so a clamped slot made a not-yet-valid order
+			// look immediately fillable and burned the filler's single place+fill
+			// attempt. Auction math reads a future slot as 0% progress, and the DLOB
+			// derives its own max-slot eviction from it, so both need the real value.
+			slot: signedMessage.slot,
 			marketIndex: signedMsgOrderParams.marketIndex,
 			marketType: MarketType.PERP,
 			baseAssetAmount: signedMsgOrderParams.baseAssetAmount,
@@ -294,12 +312,19 @@ class DLOBBuilder {
 		);
 
 		// Cache TTL uses the same piecewise interval, with the historical 25% pad.
-		const ttl = Math.ceil(
-			elapsedMillis(
-				slotDurationState,
-				new BN(this.slotSubscriber.getSlot()),
-				maxSlot
-			).toNumber() * 1.25
+		// Floored at one slot: the admission check above accepts an order whose max
+		// slot is the current slot, whose remaining interval is 0, and lru-cache reads
+		// a ttl of 0 as "never expires" - so a dying order would be emitted until
+		// capacity eviction.
+		const ttl = Math.max(
+			Math.ceil(
+				elapsedMillis(
+					slotDurationState,
+					new BN(this.slotSubscriber.getSlot()),
+					maxSlot
+				).toNumber() * 1.25
+			),
+			currentSlotDuration(this.velocityClient, this.slotSubscriber.getSlot())
 		);
 		this.signedMsgOrders.set(uuid, signedMsgOrderNode, {
 			ttl,

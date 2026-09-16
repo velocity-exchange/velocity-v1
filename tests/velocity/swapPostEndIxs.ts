@@ -243,7 +243,7 @@ describe('swap post-end instructions', () => {
 
 		const txLogs = await bankrunContextWrapper.connection.getTransaction(
 			txSig,
-			{ commitment: 'confirmed' }
+			{ commitment: 'confirmed', maxSupportedTransactionVersion: 1 }
 		);
 		// A loop that fails to advance past the close ix exhausts the bump heap
 		// instead of finishing introspection.

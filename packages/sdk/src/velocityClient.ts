@@ -33,6 +33,7 @@ import {
 	resolveExtraAccountMeta,
 } from '@solana/spl-token';
 import {
+	FeeTier,
 	VelocityClientMetricsEvents,
 	isVariant,
 	IWallet,
@@ -294,6 +295,7 @@ import { TakerInfo } from './types';
 import { getOracleConfidenceFromMMOracleData } from './oracles/utils';
 import { ConstituentMap } from './constituentMap/constituentMap';
 import { hasBuilder } from './math/orders';
+import { getMarketFeesForFeeTier, getPerpFeeTierIndex } from './math/fees';
 import { RevenueShareEscrowMap } from './userMap/revenueShareEscrowMap';
 import {
 	isBuilderOrderReferral,
@@ -13663,83 +13665,66 @@ export class VelocityClient {
 	 * @param positionMarketIndex
 	 * @param user
 	 * @param orderParams When it carries a builder code, the builder fee (quoteAssetAmount * builderFeeTenthBps / 100_000) is added to takerFee. A `user` that is below initial margin pays no builder fee (see `User.isBuilderFeeCharged`), so none is added.
+	 * @param feeTierOverride Prices this tier instead of the one the account is on, with every other modifier (surcharge, feeAdjustment, referee discount, builder fee) unchanged. For showing what a fee promotion saves an account against its own volume tier: both figures then come out of this one pipeline and differ only by the tier. Note the referee discount comes from the tier being priced.
 	 * @returns : {takerFee: number, makerFee: number} Precision None
 	 */
 	public getMarketFees(
 		marketType: MarketType,
 		marketIndex?: number,
 		user?: User,
-		orderParams?: Pick<OrderParams, 'builderIdx' | 'builderFeeTenthBps'>
+		orderParams?: Pick<OrderParams, 'builderIdx' | 'builderFeeTenthBps'>,
+		feeTierOverride?: FeeTier
 	) {
 		let feeTier;
-		if (user) {
+		if (feeTierOverride) {
+			feeTier = feeTierOverride;
+		} else if (user) {
 			feeTier = user.getUserFeeTier(marketType);
 		} else {
+			// No account to rank on, so perps quote the entry tier. The
+			// `promoFeeTier` floor applies to every account while it is set, so
+			// it is part of the generic schedule too: reading tier 0 here
+			// unconditionally quoted the undiscounted fee during a promo,
+			// disagreeing with the `user` branch above for the same market.
 			const state = this.getStateAccount();
 			feeTier = isVariant(marketType, 'perp')
-				? state.perpFeeStructure.feeTiers[0]
+				? state.perpFeeStructure.feeTiers[getPerpFeeTierIndex(undefined, state)]
 				: state.spotFeeStructure.feeTiers[0];
 		}
 
-		let takerFee = feeTier.feeNumerator / feeTier.feeDenominator;
-		let makerFee =
-			feeTier.makerRebateNumerator / feeTier.makerRebateDenominator;
-
+		let marketAccount: PerpMarketAccount | SpotMarketAccount | undefined;
 		if (marketIndex !== undefined) {
-			let marketAccount: PerpMarketAccount | SpotMarketAccount;
-			if (isVariant(marketType, 'perp')) {
-				marketAccount = this.getPerpMarketAccountOrThrow(marketIndex);
-			} else {
-				marketAccount = this.getSpotMarketAccountOrThrow(marketIndex);
-			}
-
-			// per-market additive taker-fee surcharge (tenth-bps, unsigned),
-			// applied to the tier fee BEFORE feeAdjustment scales the sum,
-			// mirroring `calculate_taker_fee` (`math/fees.rs`). Taker only;
-			// the maker rebate sees feeAdjustment alone.
-			if (isVariant(marketType, 'perp')) {
-				takerFee +=
-					(marketAccount as PerpMarketAccount).takerFeeAddonTenthBps / 100_000;
-			}
-			takerFee += (takerFee * marketAccount.feeAdjustment) / 100;
-			makerFee += (makerFee * marketAccount.feeAdjustment) / 100;
+			marketAccount = isVariant(marketType, 'perp')
+				? this.getPerpMarketAccountOrThrow(marketIndex)
+				: this.getSpotMarketAccountOrThrow(marketIndex);
 		}
 
-		// Referee discount (M11): mirrors `calculate_referee_fee_and_referrer_reward`
-		// (`math/fees.rs`), which reduces the taker fee by
-		// `referee_fee_numerator/referee_fee_denominator` when the taker is a referee
-		// (`reward_referrer`). Applied after `feeAdjustment` and only to the taker fee —
-		// maker rebates are untouched — matching the program's ordering. Referee status is
-		// read from the client's `UserStats.referrerStatus` (`IsReferred` bit); if stats are
-		// unavailable, no discount is applied (parity with a non-referred taker).
-		if (user && feeTier.refereeFeeDenominator > 0) {
-			const referrerStatus = this.getUserStats()?.getAccount()?.referrerStatus;
-			const isReferee =
-				referrerStatus !== undefined &&
-				(referrerStatus & ReferrerStatus.IsReferred) > 0;
-			if (isReferee) {
-				takerFee -=
-					(takerFee * feeTier.refereeFeeNumerator) /
-					feeTier.refereeFeeDenominator;
-			}
-		}
+		// Referee status (M11) is read from the client's `UserStats.referrerStatus`
+		// (`IsReferred` bit); if stats are unavailable, no discount is applied
+		// (parity with a non-referred taker). Only a call that names a `user`
+		// prices an account, so the generic schedule never takes the discount.
+		const referrerStatus = user
+			? this.getUserStats()?.getAccount()?.referrerStatus
+			: undefined;
+		const isReferee =
+			referrerStatus !== undefined &&
+			(referrerStatus & ReferrerStatus.IsReferred) > 0;
 
 		// The program waives the builder fee when the taker is below initial
 		// margin, because the fee is a transfer out of the taker's account. See
 		// `User.isBuilderFeeCharged`. Without a `user` there is no margin state
 		// to read, so the fee is included.
-		if (
+		const builderFeeTenthBps =
 			orderParams &&
 			hasBuilderParams(orderParams) &&
 			(!user || user.isBuilderFeeCharged())
-		) {
-			takerFee += (orderParams.builderFeeTenthBps ?? 0) / 100_000;
-		}
+				? orderParams.builderFeeTenthBps ?? 0
+				: undefined;
 
-		return {
-			takerFee,
-			makerFee,
-		};
+		return getMarketFeesForFeeTier(feeTier, marketType, marketAccount, {
+			isReferee,
+			builderFeeTenthBps,
+		});
 	}
 
 	/**

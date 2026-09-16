@@ -50,9 +50,6 @@ allow-git = [
 	# fork we control rather than the pre-rename drift-labs one (#414); pinning it
 	# to a rev is still worth doing.
 	"https://github.com/velocity-exchange/tungstenite-rs",
-
-	# Yellowstone gRPC client/proto, pinned to a rev in rust/velocity-rs/Cargo.toml.
-	"https://github.com/rpcpool/yellowstone-grpc",
 ]
 
 # ---------------------------------------------------------------------------
@@ -61,6 +58,11 @@ allow-git = [
 # an ignore here, add it there too (and vice versa), with the same rationale.
 # ---------------------------------------------------------------------------
 [advisories]
+# CI and ci-local point this at a scratch directory holding a symlink to
+# cargo-audit's clone, because cargo-deny's own fetch shells out to the git
+# CLI, which the CI runner cannot use unauthenticated. Unset (the local dev
+# default), this is the tool's own default path.
+db-path = "${CARGO_DENY_DB_PATH:-$CARGO_HOME/advisory-dbs}"
 ignore = [
 	"RUSTSEC-2022-0093", # Double Public Key Signing Function Oracle Attack on `ed25519-dalek`.
 	# Matches only the rust/ workspace: the root lockfile has no ed25519-dalek at all.
@@ -179,11 +181,6 @@ license-files = []
 
 [[licenses.clarify]]
 name = "vaults"
-expression = "Apache-2.0"
-license-files = []
-
-[[licenses.clarify]]
-name = "jit-proxy"
 expression = "Apache-2.0"
 license-files = []
 

@@ -8,7 +8,7 @@ export type Velocity = {
   "address": "vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P",
   "metadata": {
     "name": "velocity",
-    "version": "2.165.0",
+    "version": "2.168.0",
     "spec": "0.1.0",
     "description": "Created with Anchor"
   },
@@ -21652,171 +21652,176 @@ export type Velocity = {
     },
     {
       "code": 6374,
+      "name": "vammQuoteManagementValueOutOfBounds",
+      "msg": "vAMM quote management value is outside the hot role bounds"
+    },
+    {
+      "code": 6375,
       "name": "invalidQuoterConfig",
       "msg": "Quoter registry entry config is invalid"
     },
     {
-      "code": 6375,
+      "code": 6376,
       "name": "invalidQuoterAuthority",
       "msg": "Signer does not control this quoter registry entry"
     },
     {
-      "code": 6376,
+      "code": 6377,
       "name": "insufficientCrankReservoir",
       "msg": "CLOB crank condition account cannot cover the keeper payment"
     },
     {
-      "code": 6377,
+      "code": 6378,
       "name": "orderPlacedOnClob",
       "msg": "Order is placed on the CLOB; cancel it there (cancel_order_v1)"
     },
     {
-      "code": 6378,
+      "code": 6379,
       "name": "orderAwaitingTriggerRecross",
       "msg": "Trigger is awaiting a price recross after eviction"
     },
     {
-      "code": 6379,
+      "code": 6380,
       "name": "crossMatchImbalanced",
       "msg": "Cross match legs are imbalanced"
     },
     {
-      "code": 6380,
+      "code": 6381,
       "name": "crossMatchUnprofitable",
       "msg": "Cross match is not profitable after fees"
     },
     {
-      "code": 6381,
+      "code": 6382,
       "name": "unattestedFastActivation",
       "msg": "Faster-than-default activation requires the flow-authority attestation"
     },
     {
-      "code": 6382,
+      "code": 6383,
       "name": "invalidQuoterResponse",
       "msg": "Quoter returned a malformed quote/execute response"
     },
     {
-      "code": 6383,
+      "code": 6384,
       "name": "quoterOverfilled",
       "msg": "Quoter filled more base than the router allocated to it"
     },
     {
-      "code": 6384,
+      "code": 6385,
       "name": "quoterFillOffQuote",
       "msg": "Quoter filled at a price its quote does not support"
     },
     {
-      "code": 6385,
+      "code": 6386,
       "name": "quoterSubjectNotPermitted",
       "msg": "Quoter returned a balance change for a user it may not act against"
     },
     {
-      "code": 6386,
+      "code": 6387,
       "name": "tooManyQuoterWireUsers",
       "msg": "More loaded users than the quoter wire can carry"
     },
     {
-      "code": 6387,
+      "code": 6388,
       "name": "signedRouteMismatch",
       "msg": "Claimed route does not match the one the order was signed with"
     },
     {
-      "code": 6388,
+      "code": 6389,
       "name": "signedRouteEntryMissing",
       "msg": "A quoter the order's signed route names is absent from the fill"
     },
     {
-      "code": 6389,
+      "code": 6390,
       "name": "crossedTakerRemainderPending",
       "msg": "A crossed taker remainder must be resolved by crank_taker_origin_cross"
     },
     {
-      "code": 6390,
+      "code": 6391,
       "name": "noTakerOriginCross",
       "msg": "No resolvable taker-origin cross on this book"
     },
     {
-      "code": 6391,
+      "code": 6392,
       "name": "takerOriginCrossWorseForTaker",
       "msg": "Crossing would leave the taker worse off than its resting price"
     },
     {
-      "code": 6392,
+      "code": 6393,
       "name": "insufficientCrankTreasury",
       "msg": "Crank treasury has too few lamports for this payout"
     },
     {
-      "code": 6393,
+      "code": 6394,
       "name": "crankReservoirNotLow",
       "msg": "Crank reservoir is above its refill watermark"
     },
     {
-      "code": 6394,
+      "code": 6395,
       "name": "invalidUserConditionsSync",
       "msg": "User conditions sync does not cover every market the user is exposed in"
     },
     {
-      "code": 6395,
+      "code": 6396,
       "name": "fillerOmittedReachableMaker",
       "msg": "A book withheld depth and the transaction had room to carry its owner"
     },
     {
-      "code": 6396,
+      "code": 6397,
       "name": "fillerPaddedTheUserSet",
       "msg": "A book withheld depth and the transaction carries a loaded user that filled nothing"
     },
     {
-      "code": 6397,
+      "code": 6398,
       "name": "fillerObligationUncountable",
       "msg": "A book withheld depth and the fill cannot count the transaction's accounts"
     },
     {
-      "code": 6398,
+      "code": 6399,
       "name": "quoterFilledShort",
       "msg": "A quoter filled less base than the allocation it won from its own quote"
     },
     {
-      "code": 6399,
+      "code": 6400,
       "name": "fillerCarriedUnroutedQuoter",
       "msg": "A book withheld depth and the transaction carries a quoter outside the signed route"
     },
     {
-      "code": 6400,
+      "code": 6401,
       "name": "reduceOnlyOrderCannotRestOnClob",
       "msg": "A reduce-only order cannot rest on the CLOB; the book cannot clamp its fill to the position"
     },
     {
-      "code": 6401,
+      "code": 6402,
       "name": "liquidationConflictsWithClobOrders",
       "msg": "User has orders resting on the CLOB; force_cancel_clob_orders must run before liquidation"
     },
     {
-      "code": 6402,
+      "code": 6403,
       "name": "quoterReportExceedsReservation",
       "msg": "A quoter reported more base or more retired orders than velocity reserved for that user"
     },
     {
-      "code": 6403,
+      "code": 6404,
       "name": "unattestedSynchronousTake",
       "msg": "The book runs an activation speed bump; an unattested taker rests on the book instead of filling synchronously"
     },
     {
-      "code": 6404,
+      "code": 6405,
       "name": "quoterSlabFull",
       "msg": "The market's quoter slab has no vacant slot"
     },
     {
-      "code": 6405,
+      "code": 6406,
       "name": "quoterNotOnSlab",
       "msg": "The market's quoter slab holds no approved copy of this entry"
     },
     {
-      "code": 6406,
+      "code": 6407,
       "name": "crossMatchLegsDoNotCross",
       "msg": "Cross match sold below the price its buy leg paid"
     },
     {
-      "code": 6407,
+      "code": 6408,
       "name": "takerExposureNotProtocolOwned",
       "msg": "Only the protocol user may skip the taker checks of a fill"
     }
@@ -22703,17 +22708,7 @@ export type Velocity = {
             ],
             "type": {
               "defined": {
-                "name": "relayBlock2x8",
-                "generics": [
-                  {
-                    "kind": "const",
-                    "value": "2"
-                  },
-                  {
-                    "kind": "const",
-                    "value": "8"
-                  }
-                ]
+                "name": "relayBlock2x8"
               }
             }
           },
@@ -24573,6 +24568,9 @@ export type Velocity = {
           },
           {
             "name": "accountExtension"
+          },
+          {
+            "name": "vammQuoteManagement"
           },
           {
             "name": "flowAuthority"
@@ -29285,17 +29283,7 @@ export type Velocity = {
             ],
             "type": {
               "defined": {
-                "name": "relayBlock3x48",
-                "generics": [
-                  {
-                    "kind": "const",
-                    "value": "3"
-                  },
-                  {
-                    "kind": "const",
-                    "value": "48"
-                  }
-                ]
+                "name": "relayBlock3x48"
               }
             }
           },
@@ -31586,6 +31574,9 @@ export type Velocity = {
           },
           {
             "name": "hotAmmSpreadAdjust",
+            "docs": [
+              "Bot authority for the low-CU native AMM spread-adjustment crank."
+            ],
             "type": "pubkey"
           },
           {
@@ -31835,6 +31826,16 @@ export type Velocity = {
             }
           },
           {
+            "name": "hotVammQuoteManagement",
+            "docs": [
+              "Active-management authority for scoped vAMM quoting controls carried by",
+              "`HotAdminUpdatePerpMarket`. This may be a multisig PDA; timelock policy",
+              "lives in that multisig. Added from former padding so existing fields,",
+              "including `hot_amm_spread_adjust`, retain their offsets."
+            ],
+            "type": "pubkey"
+          },
+          {
             "name": "hotFlowAuthority",
             "docs": [
               "The retail-flow attestation key (swift's). Not a signer of any admin",
@@ -31865,7 +31866,7 @@ export type Velocity = {
               "prices it now. Every relay crank payment is derived from this, so a",
               "change to the network's fee model is one write here instead of a",
               "re-price of every market. Holds `u32`s, so it lands 4-aligned right",
-              "after `hot_flow_authority` (offset 1576) with no alignment slack ahead."
+              "after `hot_flow_authority` (offset 1608) with no alignment slack ahead."
             ],
             "type": {
               "defined": {
@@ -31911,9 +31912,9 @@ export type Velocity = {
           {
             "name": "padding0",
             "docs": [
-              "Trailing filler after the branch's fee-rails fields. Vestigial: the",
-              "rails already sit 4-aligned behind `hot_flow_authority`, so no slack is",
-              "needed ahead of them."
+              "Trailing filler after the fee-rails fields. Vestigial: the rails already",
+              "sit 4-aligned behind `hot_flow_authority`, so no slack is needed ahead",
+              "of them."
             ],
             "type": {
               "array": [
@@ -31925,14 +31926,15 @@ export type Velocity = {
           {
             "name": "padding",
             "docs": [
-              "Former padding, now sized so the branch's fee-rails fields and master's",
-              "slot-duration archive both fit while `size_of::<State>()` stays 1744 on",
-              "x86_64 (u128 align 16) and SBF (u128 align 8). The offsets below pin it."
+              "Former padding, now sized so the quote-management key, the slot-duration",
+              "archive and the fee-rails fields all fit while `size_of::<State>()` stays",
+              "1744 on x86_64 (u128 align 16) and SBF (u128 align 8). The offsets below",
+              "pin it."
             ],
             "type": {
               "array": [
                 "u8",
-                142
+                110
               ]
             }
           }
@@ -33133,17 +33135,7 @@ export type Velocity = {
             ],
             "type": {
               "defined": {
-                "name": "relayBlock11x48",
-                "generics": [
-                  {
-                    "kind": "const",
-                    "value": "11"
-                  },
-                  {
-                    "kind": "const",
-                    "value": "48"
-                  }
-                ]
+                "name": "relayBlock11x48"
               }
             }
           },

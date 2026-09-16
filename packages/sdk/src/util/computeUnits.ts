@@ -25,7 +25,10 @@ export async function findComputeUnitConsumption(
 	txSignature: string,
 	commitment: Finality = 'confirmed'
 ): Promise<string[]> {
-	const tx = await connection.getTransaction(txSignature, { commitment });
+	const tx = await connection.getTransaction(txSignature, {
+		commitment,
+		maxSupportedTransactionVersion: 1,
+	});
 	const computeUnits: string[] = [];
 	const logMessages = tx?.meta?.logMessages;
 	if (!logMessages) {

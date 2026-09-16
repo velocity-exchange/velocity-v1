@@ -583,6 +583,7 @@ export async function printTxLogs(
 ): Promise<string[]> {
 	const tx = await connection.getTransaction(txSig, {
 		commitment: 'confirmed',
+		maxSupportedTransactionVersion: 1,
 	});
 	return tx.meta.logMessages;
 }

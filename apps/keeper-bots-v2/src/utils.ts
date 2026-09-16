@@ -1372,36 +1372,32 @@ export function getMarketsAndOracleInfosToLoad(
 	perpMarketIndicies: number[] | undefined,
 	spotMarketIndicies: number[] | undefined
 ): {
-	oracleInfos: OracleInfo[];
+	oracleInfos: OracleInfo[] | undefined;
 	perpMarketIndicies: number[] | undefined;
 	spotMarketIndicies: number[] | undefined;
 } {
+	// When neither markets list is specified, leave everything undefined so
+	// VelocityClient falls back to findAllMarketAndOracles and discovers every
+	// market and oracle from on-chain state. Building the lists from the SDK's
+	// static registry here would pin the bots to the registry compiled into the
+	// installed SDK version, making them blind to markets listed after that
+	// release until a new SDK + image ships.
+	if (!perpMarketIndicies && !spotMarketIndicies) {
+		logger.info(
+			'No perp/spot markets specified; discovering all markets and oracles from on-chain state'
+		);
+		return {
+			oracleInfos: undefined,
+			perpMarketIndicies: undefined,
+			spotMarketIndicies: undefined,
+		};
+	}
+
 	const oracleInfos: OracleInfo[] = [];
 	const oraclesTracked = new Set();
 
-	// only watch all markets if neither env vars are specified
-	const noMarketsSpecified = !perpMarketIndicies && !spotMarketIndicies;
-
-	let perpIndexes = perpMarketIndicies;
-	if (!perpIndexes) {
-		if (noMarketsSpecified) {
-			perpIndexes = sdkConfig.PERP_MARKETS.map(
-				(m: PerpMarketConfig) => m.marketIndex
-			);
-		} else {
-			perpIndexes = [];
-		}
-	}
-	let spotIndexes = spotMarketIndicies;
-	if (!spotIndexes) {
-		if (noMarketsSpecified) {
-			spotIndexes = sdkConfig.SPOT_MARKETS.map(
-				(m: SpotMarketConfig) => m.marketIndex
-			);
-		} else {
-			spotIndexes = [];
-		}
-	}
+	const perpIndexes = perpMarketIndicies ?? [];
+	const spotIndexes = spotMarketIndicies ?? [];
 
 	if (perpIndexes && perpIndexes.length > 0) {
 		for (const idx of perpIndexes) {

@@ -6,8 +6,8 @@ use {
         math::{
             casting::Cast,
             constants::{
-                EQUITY_FLOOR_TRIP_DUST_ALLOWANCE, MARGIN_PRECISION_U128,
-                MAX_POSITIVE_UPNL_FOR_INITIAL_MARGIN, MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN,
+                MARGIN_PRECISION_U128, MAX_POSITIVE_UPNL_FOR_INITIAL_MARGIN,
+                MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN,
                 MAX_SPOT_INTEREST_UNDERSTATEMENT_FOR_MARGIN, ONE_YEAR, PRICE_PRECISION,
                 PRICE_PRECISION_I128, PRICE_PRECISION_I64, SPOT_IMF_PRECISION_U128,
                 SPOT_WEIGHT_PRECISION, SPOT_WEIGHT_PRECISION_U128,
@@ -17,7 +17,6 @@ use {
             position::{
                 calculate_base_asset_value_and_pnl_with_expiry_price,
                 calculate_base_asset_value_and_pnl_with_oracle_price,
-                calculate_base_asset_value_with_oracle_price,
             },
             safe_math::SafeMath,
             spot_balance::{
@@ -1024,16 +1023,59 @@ pub fn validate_spot_margin_trading(user: &User, maps: &mut AccountMaps) -> Velo
     Ok(())
 }
 
+/// The most favorable equity value the breaker can prove from the positions
+/// whose raw exchange oracles are valid. `Unprovable` means at least one
+/// invalid-oracle asset or long has no finite upper bound, or a quote oracle
+/// needed to convert perp pnl is invalid.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TripUpperBound {
+    Finite(i128),
+    Unprovable,
+}
+
+impl TripUpperBound {
+    fn add_exact(&mut self, value: i128) -> VelocityResult {
+        if let Self::Finite(current) = self {
+            *current = current.safe_add(value)?;
+        }
+        Ok(())
+    }
+
+    fn mark_unprovable(&mut self) {
+        *self = Self::Unprovable;
+    }
+}
+
+/// One position walk feeds every equity-floor consumer. `observed_value` is
+/// the legacy live-oracle point value used by strict gates and diagnostics;
+/// `all_oracles_valid` says whether that point is trusted for `MarginCalc`;
+/// `trip_upper_bound` is the separate, user-favorable proof used only to arm
+/// the breaker.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct UserEquityCalculation {
+    observed_value: i128,
+    all_oracles_valid: bool,
+    trip_upper_bound: TripUpperBound,
+}
+
 /// Net equity at live oracle prices (unweighted assets and funding-inclusive
-/// perp pnl minus unweighted spot liabilities), paired with whether every
-/// oracle the walk read is valid for `MarginCalc`. Spot balances and funding
-/// are valued as of their markets' last accrual; interest or funding accrued
-/// since then is not applied here. That staleness is shared with the margin
-/// engine, always overstates equity by the unaccrued borrow cost, and is
-/// bounded by the permissionless interest and funding cranks.
-pub fn calculate_user_equity(user: &User, maps: &mut AccountMaps) -> VelocityResult<(i128, bool)> {
+/// perp pnl minus unweighted spot liabilities), its strict oracle-validity
+/// verdict, and the breaker-trip upper bound, all from one position walk.
+/// Spot balances and funding are valued as of their markets' last accrual;
+/// interest or funding accrued since then is not applied here. That staleness
+/// is shared with the margin engine, always overstates equity by the
+/// unaccrued borrow cost, and is bounded by the permissionless interest and
+/// funding cranks.
+fn calculate_user_equity_calculation<
+    const INCLUDE_OBSERVED_VALUE: bool,
+    const INCLUDE_TRIP_UPPER_BOUND: bool,
+>(
+    user: &User,
+    maps: &mut AccountMaps,
+) -> VelocityResult<UserEquityCalculation> {
     let mut net_usd_value: i128 = 0;
     let mut all_oracles_valid = true;
+    let mut trip_upper_bound = TripUpperBound::Finite(0);
 
     for spot_position in user.spot_positions.iter() {
         if spot_position.is_available() {
@@ -1051,14 +1093,26 @@ pub fn calculate_user_equity(user: &User, maps: &mut AccountMaps) -> VelocityRes
             0,
             Some(LogMode::Margin),
         )?;
-        all_oracles_valid &=
+        let oracle_valid =
             is_oracle_valid_for_action(oracle_validity, Some(VelocityAction::MarginCalc))?;
+        all_oracles_valid &= oracle_valid;
 
         let token_amount = spot_position.get_signed_token_amount(&spot_market)?;
         let oracle_price = oracle_price_data.price;
-        let token_value = get_token_value(token_amount, spot_market.decimals, oracle_price)?;
-
-        net_usd_value = net_usd_value.safe_add(token_value)?;
+        if INCLUDE_OBSERVED_VALUE || (INCLUDE_TRIP_UPPER_BOUND && oracle_valid) {
+            let token_value = get_token_value(token_amount, spot_market.decimals, oracle_price)?;
+            if INCLUDE_OBSERVED_VALUE {
+                net_usd_value = net_usd_value.safe_add(token_value)?;
+            }
+            if INCLUDE_TRIP_UPPER_BOUND && oracle_valid {
+                trip_upper_bound.add_exact(token_value)?;
+            }
+        } else if INCLUDE_TRIP_UPPER_BOUND && token_amount > 0 {
+            // A positive asset has no finite upper bound when its oracle is
+            // invalid. A liability's most favorable value is zero, so it
+            // adds nothing to the breaker upper bound.
+            trip_upper_bound.mark_unprovable();
+        }
     }
 
     for market_position in user.perp_positions.iter() {
@@ -1070,7 +1124,7 @@ pub fn calculate_user_equity(user: &User, maps: &mut AccountMaps) -> VelocityRes
             .perp_market_map
             .get_ref(&market_position.market_index)?;
 
-        let quote_oracle_price = {
+        let (quote_oracle_price, quote_oracle_valid) = {
             let quote_spot_market = maps
                 .spot_market_map
                 .get_ref(&market.quote_spot_market_index)?;
@@ -1088,25 +1142,39 @@ pub fn calculate_user_equity(user: &User, maps: &mut AccountMaps) -> VelocityRes
                     Some(LogMode::Margin),
                 )?;
 
-            all_oracles_valid &= is_oracle_valid_for_action(
+            let quote_oracle_valid = is_oracle_valid_for_action(
                 quote_oracle_validity,
                 Some(VelocityAction::MarginCalc),
             )?;
+            all_oracles_valid &= quote_oracle_valid;
+
+            if INCLUDE_TRIP_UPPER_BOUND && !quote_oracle_valid {
+                // This oracle converts the whole perp pnl into the account's
+                // equity denomination, so neither the base leg nor the fixed
+                // quote/funding leg can provide a finite trip upper bound.
+                trip_upper_bound.mark_unprovable();
+            }
 
             if market_position.is_isolated() {
                 let quote_token_amount =
                     market_position.get_isolated_token_amount(&quote_spot_market)?;
 
-                let token_value = get_token_value(
-                    quote_token_amount.cast()?,
-                    quote_spot_market.decimals,
-                    quote_oracle_price_data.price,
-                )?;
-
-                net_usd_value = net_usd_value.safe_add(token_value)?;
+                if INCLUDE_OBSERVED_VALUE || (INCLUDE_TRIP_UPPER_BOUND && quote_oracle_valid) {
+                    let token_value = get_token_value(
+                        quote_token_amount.cast()?,
+                        quote_spot_market.decimals,
+                        quote_oracle_price_data.price,
+                    )?;
+                    if INCLUDE_OBSERVED_VALUE {
+                        net_usd_value = net_usd_value.safe_add(token_value)?;
+                    }
+                    if INCLUDE_TRIP_UPPER_BOUND && quote_oracle_valid {
+                        trip_upper_bound.add_exact(token_value)?;
+                    }
+                }
             }
 
-            quote_oracle_price_data.price
+            (quote_oracle_price_data.price, quote_oracle_valid)
         };
 
         let (oracle_price_data, oracle_validity) = maps.oracle_map.get_price_data_and_validity(
@@ -1130,10 +1198,9 @@ pub fn calculate_user_equity(user: &User, maps: &mut AccountMaps) -> VelocityRes
         // dead oracle on a settled market would otherwise permanently block
         // every consumer that requires validity: the floor gates, the breaker
         // trip, the reset, and cure transfers.
-        if !settled {
-            all_oracles_valid &=
-                is_oracle_valid_for_action(oracle_validity, Some(VelocityAction::MarginCalc))?;
-        }
+        let perp_oracle_valid = settled
+            || is_oracle_valid_for_action(oracle_validity, Some(VelocityAction::MarginCalc))?;
+        all_oracles_valid &= perp_oracle_valid;
 
         let valuation_price = if settled {
             market.expiry_price
@@ -1150,23 +1217,67 @@ pub fn calculate_user_equity(user: &User, maps: &mut AccountMaps) -> VelocityRes
             market_position,
         )?;
 
-        // #133: same as above — Settlement values against a possibly-negative expiry price.
-        let (_, unrealized_pnl) = if market.status == MarketStatus::Settlement {
-            calculate_base_asset_value_and_pnl_with_expiry_price(market_position, valuation_price)?
+        let exact_pnl_value = if INCLUDE_OBSERVED_VALUE
+            || (INCLUDE_TRIP_UPPER_BOUND && quote_oracle_valid && perp_oracle_valid)
+        {
+            // #133: Settlement values against a possibly-negative expiry price.
+            let (_, unrealized_pnl) = if market.status == MarketStatus::Settlement {
+                calculate_base_asset_value_and_pnl_with_expiry_price(
+                    market_position,
+                    valuation_price,
+                )?
+            } else {
+                calculate_base_asset_value_and_pnl_with_oracle_price(
+                    market_position,
+                    valuation_price,
+                )?
+            };
+            let pnl = unrealized_pnl.safe_add(unrealized_funding.cast()?)?;
+            Some(
+                pnl.safe_mul(quote_oracle_price.cast()?)?
+                    .safe_div(PRICE_PRECISION_I128)?,
+            )
         } else {
-            calculate_base_asset_value_and_pnl_with_oracle_price(market_position, valuation_price)?
+            None
         };
 
-        let pnl = unrealized_pnl.safe_add(unrealized_funding.cast()?)?;
+        if INCLUDE_OBSERVED_VALUE {
+            net_usd_value = net_usd_value.safe_add(exact_pnl_value.ok_or(ErrorCode::MathError)?)?;
+        }
 
-        let pnl_value = pnl
-            .safe_mul(quote_oracle_price.cast()?)?
-            .safe_div(PRICE_PRECISION_I128)?;
-
-        net_usd_value = net_usd_value.safe_add(pnl_value)?;
+        if INCLUDE_TRIP_UPPER_BOUND && quote_oracle_valid {
+            if perp_oracle_valid {
+                trip_upper_bound.add_exact(exact_pnl_value.ok_or(ErrorCode::MathError)?)?;
+            } else if market_position.base_asset_amount > 0 {
+                // The invalid-oracle long base leg has no finite upper bound.
+                trip_upper_bound.mark_unprovable();
+            } else {
+                // Entry quote and funding are stored values. A short base leg
+                // can only reduce equity at a non-negative true price, so its
+                // most favorable value is zero; a zero-base position is exact.
+                let fixed_pnl = market_position
+                    .quote_asset_amount
+                    .cast::<i128>()?
+                    .safe_add(unrealized_funding.cast()?)?;
+                let fixed_pnl_value = fixed_pnl
+                    .safe_mul(quote_oracle_price.cast()?)?
+                    .safe_div(PRICE_PRECISION_I128)?;
+                trip_upper_bound.add_exact(fixed_pnl_value)?;
+            }
+        }
     }
 
-    Ok((net_usd_value, all_oracles_valid))
+    Ok(UserEquityCalculation {
+        observed_value: net_usd_value,
+        all_oracles_valid,
+        trip_upper_bound,
+    })
+}
+
+/// Compatibility wrapper for non-floor consumers and strict floor gates.
+pub fn calculate_user_equity(user: &User, maps: &mut AccountMaps) -> VelocityResult<(i128, bool)> {
+    let calculation = calculate_user_equity_calculation::<true, false>(user, maps)?;
+    Ok((calculation.observed_value, calculation.all_oracles_valid))
 }
 
 /// Net equity paired with the oracle-validity verdict of the walk that
@@ -1257,273 +1368,45 @@ pub fn calculate_net_equity_for_floor(
 
 /// Net-equity upper bound for the breaker trip. Positions with valid oracles
 /// are valued at live prices, exactly as [`calculate_user_equity`] values
-/// them. A position with an invalid oracle is never priced; it is conceded
-/// the most favorable value the trip is willing to grant: a spot liability
-/// or a short base leg counts as zero at any size (it can only lower equity,
-/// at any price), an asset or long base leg worth no more than
-/// [`EQUITY_FLOOR_TRIP_DUST_ALLOWANCE`] at its own last twap counts as
-/// exactly the allowance, and a larger asset or long, or one whose twap is
-/// not positive and so cannot size it, makes the breach unprovable
-/// (`provable` false), which keeps the rule that a freeze never arms over
-/// real exposure the program cannot value.
-///
-/// Two properties follow, and both trip paths depend on them. The zero
-/// concessions are sound unconditionally. The allowance concession is sound
-/// as far as the twap sizes the position honestly: the dust test reads
-/// `last_oracle_price_twap`, so a live price far above a stalled twap can
-/// let a leg worth more than the allowance pass as dust, and that
-/// understatement scales with the allowance (which is tunable), not with
-/// the bad print. And the concessions can add at most the allowance per
-/// position slot, so dust parked in dead-oracle markets cannot veto a
-/// material breach; suppressing the trip requires holding an asset or long
-/// worth more than the allowance in a market whose oracle is invalid, and
-/// refusing to freeze over that is intended.
+/// them. For an invalid oracle, a liability or short base leg counts as zero
+/// because it can only lower equity at a non-negative true price. An asset or
+/// long has no finite upper bound and makes the breach unprovable. The quote
+/// oracle stays strict because it converts the whole perp pnl.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TripNetEquity {
     /// Upper bound of net equity: trusted values exact, conceded values at
     /// their ceiling. Meaningless when `provable` is false.
     pub equity_upper_bound: i128,
-    /// False when an invalid-oracle asset or long base leg exceeds the dust
-    /// allowance at its own last twap (or that twap is not positive), or
-    /// the quote oracle is invalid.
+    /// False when any invalid-oracle asset/long has no finite upper bound, or
+    /// when a quote oracle required to convert perp pnl is invalid.
     pub provable: bool,
 }
 
 impl TripNetEquity {
-    /// True when the subaccount is provably below its raw floor at any true
-    /// price of the invalid-oracle dust. The single trip predicate: the
-    /// permissionless trip and the lazy trip both decide with this, so the
-    /// two paths cannot drift.
+    /// True when the subaccount is provably below its raw floor at every
+    /// non-negative true price of the invalid-oracle liabilities/shorts. The
+    /// permissionless trip and lazy trip both decide with this predicate.
     pub fn proves_breach(&self, user: &User) -> bool {
         self.provable && user.is_below_equity_floor(self.equity_upper_bound)
     }
 }
 
-/// The breaker-trip walk: [`calculate_user_equity`] with the all-or-nothing
-/// validity verdict replaced by the per-position concession described on
-/// [`TripNetEquity`]. Used only by the two trip paths. The floor gates, the
-/// reset and cure transfers keep the strict verdict: the gates fail closed
-/// so an invalid oracle already denies them, and the reset proves the
-/// opposite direction (equity above the line), where conceding dust upward
-/// would be unsound. The reset therefore stays blocked while any oracle is
-/// invalid; the admin route around a dead dust oracle is lowering the floor
-/// first, which is explicit and auditable.
+/// Breaker-trip view of the shared equity walk. Floor gates, reset and cure
+/// transfers keep the strict all-or-nothing validity verdict; only the two
+/// trip paths consume this user-favorable upper bound.
 pub fn calculate_user_equity_for_trip(
     user: &User,
     maps: &mut AccountMaps,
 ) -> VelocityResult<TripNetEquity> {
-    let unprovable = TripNetEquity {
-        equity_upper_bound: 0,
-        provable: false,
-    };
-
-    let mut equity_upper_bound: i128 = 0;
-
-    for spot_position in user.spot_positions.iter() {
-        if spot_position.is_available() {
-            continue;
-        }
-
-        let spot_market = maps.spot_market_map.get_ref(&spot_position.market_index)?;
-        let (oracle_price_data, oracle_validity) = maps.oracle_map.get_price_data_and_validity(
-            MarketType::Spot,
-            spot_market.market_index,
-            &spot_market.oracle_id(),
-            spot_market.historical_oracle_data.last_oracle_price_twap,
-            spot_market.get_max_confidence_interval_multiplier()?,
-            -1,
-            0,
-            Some(LogMode::Margin),
-        )?;
-
-        let token_amount = spot_position.get_signed_token_amount(&spot_market)?;
-
-        if is_oracle_valid_for_action(oracle_validity, Some(VelocityAction::MarginCalc))? {
-            let token_value =
-                get_token_value(token_amount, spot_market.decimals, oracle_price_data.price)?;
-            equity_upper_bound = equity_upper_bound.safe_add(token_value)?;
-            continue;
-        }
-
-        // A liability can only lower equity at any price, so its most
-        // favorable value is zero at any size and it adds nothing.
-        if token_amount <= 0 {
-            continue;
-        }
-
-        // The twap is not trusted as a price here; it only sizes the asset
-        // for the dust test, and the concession below overvalues whatever
-        // passes it. A non-positive twap cannot size anything, so the asset
-        // keeps the breach unprovable at any balance.
-        if spot_market.historical_oracle_data.last_oracle_price_twap <= 0 {
-            return Ok(unprovable);
-        }
-
-        let twap_value = get_token_value(
-            token_amount,
-            spot_market.decimals,
-            spot_market.historical_oracle_data.last_oracle_price_twap,
-        )?;
-        if twap_value > EQUITY_FLOOR_TRIP_DUST_ALLOWANCE {
-            return Ok(unprovable);
-        }
-
-        // An asset under the dust test is worth at most the allowance.
-        equity_upper_bound = equity_upper_bound.safe_add(EQUITY_FLOOR_TRIP_DUST_ALLOWANCE)?;
-    }
-
-    for market_position in user.perp_positions.iter() {
-        if market_position.is_available() {
-            continue;
-        }
-
-        let market = &maps
-            .perp_market_map
-            .get_ref(&market_position.market_index)?;
-
-        // The quote leg stays strict. The quote oracle prices every pnl
-        // conversion, so its verdict is not attributable to one dust
-        // position and cannot be conceded away.
-        let quote_oracle_price = {
-            let quote_spot_market = maps
-                .spot_market_map
-                .get_ref(&market.quote_spot_market_index)?;
-            let (quote_oracle_price_data, quote_oracle_validity) =
-                maps.oracle_map.get_price_data_and_validity(
-                    MarketType::Spot,
-                    quote_spot_market.market_index,
-                    &quote_spot_market.oracle_id(),
-                    quote_spot_market
-                        .historical_oracle_data
-                        .last_oracle_price_twap,
-                    quote_spot_market.get_max_confidence_interval_multiplier()?,
-                    -1,
-                    0,
-                    Some(LogMode::Margin),
-                )?;
-
-            if !is_oracle_valid_for_action(quote_oracle_validity, Some(VelocityAction::MarginCalc))?
-            {
-                return Ok(unprovable);
-            }
-
-            if market_position.is_isolated() {
-                let quote_token_amount =
-                    market_position.get_isolated_token_amount(&quote_spot_market)?;
-
-                let token_value = get_token_value(
-                    quote_token_amount.cast()?,
-                    quote_spot_market.decimals,
-                    quote_oracle_price_data.price,
-                )?;
-
-                equity_upper_bound = equity_upper_bound.safe_add(token_value)?;
-            }
-
-            quote_oracle_price_data.price
-        };
-
-        let (oracle_price_data, oracle_validity) = maps.oracle_map.get_price_data_and_validity(
-            MarketType::Perp,
-            market.market_index,
-            &market.oracle_id(),
-            market
-                .market_stats
-                .historical_oracle_data
-                .last_oracle_price_twap,
-            market.get_max_confidence_interval_multiplier()?,
-            market.oracle_slot_delay_override,
-            market.oracle_low_risk_slot_delay_override,
-            Some(LogMode::Margin),
-        )?;
-
-        let settled = market.status == MarketStatus::Settlement;
-
-        let unrealized_funding = calculate_funding_payment(
-            if market_position.base_asset_amount > 0 {
-                market.cumulative_funding_rate_long
-            } else {
-                market.cumulative_funding_rate_short
-            },
-            market_position,
-        )?;
-
-        // A settled market is valued at its expiry price and needs no oracle,
-        // same as the trusted walk.
-        let perp_oracle_valid = settled
-            || is_oracle_valid_for_action(oracle_validity, Some(VelocityAction::MarginCalc))?;
-
-        let pnl = if perp_oracle_valid {
-            let valuation_price = if settled {
-                market.expiry_price
-            } else {
-                oracle_price_data.price
-            };
-
-            let (_, unrealized_pnl) = if settled {
-                calculate_base_asset_value_and_pnl_with_expiry_price(
-                    market_position,
-                    valuation_price,
-                )?
-            } else {
-                calculate_base_asset_value_and_pnl_with_oracle_price(
-                    market_position,
-                    valuation_price,
-                )?
-            };
-
-            unrealized_pnl.safe_add(unrealized_funding.cast()?)?
-        } else {
-            // Only the base leg depends on the invalid oracle. Entry quote
-            // and funding come from stored numbers and count exactly; a
-            // position with zero base is fully priced with no concession at
-            // all. A short's base leg only subtracts at any price, so its
-            // most favorable value is zero at any size. A long's base leg
-            // under the dust test is worth at most the allowance; a larger
-            // long, or a non-positive twap that cannot size it, keeps the
-            // breach unprovable.
-            let base_leg_upper_bound = if market_position.base_asset_amount > 0 {
-                if market
-                    .market_stats
-                    .historical_oracle_data
-                    .last_oracle_price_twap
-                    <= 0
-                {
-                    return Ok(unprovable);
-                }
-
-                let twap_notional = calculate_base_asset_value_with_oracle_price(
-                    market_position.base_asset_amount.cast()?,
-                    market
-                        .market_stats
-                        .historical_oracle_data
-                        .last_oracle_price_twap,
-                )?;
-                if twap_notional > EQUITY_FLOOR_TRIP_DUST_ALLOWANCE.unsigned_abs() {
-                    return Ok(unprovable);
-                }
-
-                EQUITY_FLOOR_TRIP_DUST_ALLOWANCE
-            } else {
-                0
-            };
-
-            market_position
-                .quote_asset_amount
-                .cast::<i128>()?
-                .safe_add(unrealized_funding.cast()?)?
-                .safe_add(base_leg_upper_bound)?
-        };
-
-        let pnl_value = pnl
-            .safe_mul(quote_oracle_price.cast()?)?
-            .safe_div(PRICE_PRECISION_I128)?;
-
-        equity_upper_bound = equity_upper_bound.safe_add(pnl_value)?;
-    }
-
-    Ok(TripNetEquity {
-        equity_upper_bound,
-        provable: true,
+    let calculation = calculate_user_equity_calculation::<false, true>(user, maps)?;
+    Ok(match calculation.trip_upper_bound {
+        TripUpperBound::Finite(equity_upper_bound) => TripNetEquity {
+            equity_upper_bound,
+            provable: true,
+        },
+        TripUpperBound::Unprovable => TripNetEquity {
+            equity_upper_bound: 0,
+            provable: false,
+        },
     })
 }

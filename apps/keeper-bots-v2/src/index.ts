@@ -437,7 +437,8 @@ const runBot = async () => {
 		userStats: true,
 		perpMarketIndexes: marketsAndOracleInfos.perpMarketIndicies,
 		spotMarketIndexes: marketsAndOracleInfos.spotMarketIndicies,
-		oracleInfos: oracleInfos.length > 0 ? oracleInfos : undefined,
+		oracleInfos:
+			oracleInfos && oracleInfos.length > 0 ? oracleInfos : undefined,
 		activeSubAccountId: config.global.subaccounts![0],
 		subAccountIds: config.global.subaccounts ?? [0],
 		txVersion: 0 as TransactionVersion,
@@ -468,7 +469,12 @@ const runBot = async () => {
 		);
 	}
 
-	const slotSubscriber = new SlotSubscriber(connection, {});
+	// Self-heal a websocket that stops delivering slots. Every signed-msg fill is
+	// gated on this slot being current, so a silently frozen subscription would
+	// stall those fills indefinitely rather than degrade.
+	const slotSubscriber = new SlotSubscriber(connection, {
+		resubTimeoutMs: 10_000,
+	});
 	await slotSubscriber.subscribe();
 
 	const startupTime = Date.now();

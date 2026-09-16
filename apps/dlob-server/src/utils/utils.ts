@@ -22,6 +22,7 @@ import {
 	MainnetSpotMarkets,
 	DevnetSpotMarkets,
 	PERCENTAGE_PRECISION_EXP,
+	isMajorPerpMarket,
 } from '@velocity-exchange/sdk';
 import { RedisClient } from '@velocity-exchange/common/clients';
 import { TradeOffsetPrice } from '@velocity-exchange/common';
@@ -35,11 +36,13 @@ import {
 	DEFAULT_MARKET_AUCTION_DURATION_MS,
 	FAST_FILL_AUCTION_DURATION_MS,
 	FAST_FILL_AUCTION_START_PRICE_OFFSET,
-	MAJOR_MARKETS,
 	MID_MAJOR_MARKETS,
 } from './constants';
 import { AuctionParamArgs } from './types';
-import { COMMON_MATH, ENUM_UTILS } from '@velocity-exchange/common';
+import {
+	calculateSpreadBidAskMark,
+	ENUM_UTILS,
+} from '@velocity-exchange/common';
 import { TakerFillVsOracleBpsRedisResult } from '../athena/repositories/fillQualityAnalytics';
 
 const MAX_FILL_QUALITY_AGE_MS = 10 * 60 * 1000; // 10 minutes
@@ -273,6 +276,38 @@ export function aggregatePrices(entries, side, pricePrecision) {
 	return Array.from(result.values());
 }
 
+const REDIS_WARN_THROTTLE_MS = 5_000;
+const lastRedisWarnAt: Map<string, number> = new Map();
+
+/**
+ * Redis writes in the publish path are fire-and-forget: nothing awaits them and
+ * a rejection would otherwise reach Node's unhandled-rejection handler. A write
+ * that lands mid-reconnect is expected, so log it and keep publishing.
+ *
+ * Scope: this catches the rejection of the RedisClient method itself, which is
+ * where the "Redis client not connected" throw lives. RedisClient.set/setRaw do
+ * not await the underlying ioredis command, so a command-level failure is a
+ * separate floating promise that only the process-level unhandledRejection
+ * guard can see. publish() awaits, so it is fully covered here.
+ *
+ * Logging is throttled per context: these run per market per update, so an
+ * unthrottled warn would turn the outage this handles into a log storm.
+ */
+export function fireAndForgetRedis(
+	write: Promise<unknown>,
+	context: string
+): void {
+	Promise.resolve(write).catch((e) => {
+		const now = Date.now();
+		const last = lastRedisWarnAt.get(context) ?? 0;
+		if (now - last < REDIS_WARN_THROTTLE_MS) {
+			return;
+		}
+		lastRedisWarnAt.set(context, now);
+		logger.warn(`Redis write failed (${context}): ${String(e)}`);
+	});
+}
+
 export function publishGroupings(
 	l2Formatted,
 	marketArgs: wsMarketArgs,
@@ -358,11 +393,14 @@ export function publishGroupings(
 			asks: aggregatedAsks,
 		});
 
-		redisClient.publish(
-			`${clientPrefix}orderbook_${marketType}_${
-				marketArgs.marketIndex
-			}_grouped_${group}${indicativeQuotesRedisClient ? '_indicative' : ''}`,
-			l2Formatted_grouped20
+		fireAndForgetRedis(
+			redisClient.publish(
+				`${clientPrefix}orderbook_${marketType}_${
+					marketArgs.marketIndex
+				}_grouped_${group}${indicativeQuotesRedisClient ? '_indicative' : ''}`,
+				l2Formatted_grouped20
+			),
+			'orderbook grouped publish'
 		);
 	});
 }
@@ -652,15 +690,26 @@ export const selectMostRecentBySlot = (
 	}, null);
 };
 
+/**
+ * Resolves `'marketBased'` (and undefined) auction fields into concrete values, keyed off the
+ * market's tier and the requested params version. Majors start the auction at mark with no
+ * offset; everything else starts at the best offer, stepped 0.1 inside it. Version 3+ ignores
+ * tier entirely and takes the fast-fill path on all markets.
+ *
+ * @param args caller-supplied auction params; `'marketBased'` fields are the ones resolved here
+ * @param overrideDefaults values that win over the market-specific defaults, but not over explicit `args`
+ * @param version auction params version; 3+ selects fast-fill behavior
+ * @returns the params with every `'marketBased'` field resolved to a concrete value
+ */
 export function createMarketBasedAuctionParams(
 	args: AuctionParamArgs,
 	overrideDefaults?: Partial<AuctionParamArgs>,
 	version: number = 1
 ): AuctionParamArgs {
-	// Determine if this is a major market (PERP: SOL, BTC, ETH, HYPE)
+	// Determine if this is a major market (PERP: SOL, BTC, ETH)
 	const isMajorMarket =
 		args.marketType?.toLowerCase() === 'perp' &&
-		MAJOR_MARKETS.includes(args.marketIndex);
+		isMajorPerpMarket(args.marketIndex);
 
 	// Version 3+ weights toward fast fills: start just inside the touch on all
 	// markets and run a short auction, rather than fishing for price improvement
@@ -866,10 +915,7 @@ export const getEstimatedPrices = async (
 	// Get oracle price
 	const oraclePrice = new BN(oracleData?.price || 0).mul(PRICE_PRECISION);
 
-	const spreadInfo = COMMON_MATH.calculateSpreadBidAskMark(
-		l2Formatted,
-		oraclePrice
-	);
+	const spreadInfo = calculateSpreadBidAskMark(l2Formatted, oraclePrice);
 
 	const markPrice = spreadInfo?.markPrice ?? oraclePrice;
 
@@ -1034,10 +1080,7 @@ export const mapToMarketOrderParams = async (
 				const oraclePrice = oracleData.price ?? ZERO;
 
 				// Detect if orderbook is crossed
-				const spreadInfo = COMMON_MATH.calculateSpreadBidAskMark(
-					l2Formatted,
-					oraclePrice
-				);
+				const spreadInfo = calculateSpreadBidAskMark(l2Formatted, oraclePrice);
 
 				// TODO - apply this to all apiVersions once testing is complete.
 				conditionalParams = {
@@ -1524,6 +1567,22 @@ export const getVammSideQuoteWithMargin = (
 	}
 };
 
+/**
+ * Suggests a slippage tolerance for a quote, as a percentage. Sums a tier-based floor with the
+ * book's observed spread, widens to cover the distance to the worst fill price when order size
+ * is known, scales by a tier multiplier, then clamps to the configured min/max. Every tier
+ * constant is env-tunable (`DYNAMIC_BASE_SLIPPAGE_*`, `DYNAMIC_SLIPPAGE_MULTIPLIER_*`,
+ * `DYNAMIC_SLIPPAGE_MIN`/`_MAX`).
+ *
+ * @param marketIndex market being quoted; tiered via `isMajorPerpMarket` for perps
+ * @param marketType `'perp'` or `'spot'`; only perps are tiered
+ * @param velocityClient client used to read oracle price data
+ * @param l2Formatted the L2 book the spread component is measured from
+ * @param startPrice best available price for the order
+ * @param worstPrice worst price the order would reach, used for the size-adjusted component
+ * @param apiVersion when >= 2, scales the result by a further 1.2x, applied after the clamp
+ * @returns slippage tolerance as a percentage
+ */
 export const calculateDynamicSlippage = (
 	marketIndex: number,
 	marketType: string,
@@ -1533,9 +1592,9 @@ export const calculateDynamicSlippage = (
 	worstPrice: BN,
 	apiVersion?: number
 ): number => {
-	// Determine if this is a major market (PERP: SOL, BTC, ETH, HYPE)
+	// Determine if this is a major market (PERP: SOL, BTC, ETH)
 	const isPerp = marketType.toLowerCase() === 'perp';
-	const isMajor = isPerp && MAJOR_MARKETS.includes(marketIndex);
+	const isMajor = isPerp && isMajorPerpMarket(marketIndex);
 	const isMidMajor = isPerp && MID_MAJOR_MARKETS.includes(marketIndex);
 
 	const baseSlippage = isMajor
@@ -1556,10 +1615,7 @@ export const calculateDynamicSlippage = (
 		const oraclePrice = new BN(oracleData?.price || 0).mul(PRICE_PRECISION);
 
 		// Calculate actual spread
-		const spreadInfo = COMMON_MATH.calculateSpreadBidAskMark(
-			l2Formatted,
-			oraclePrice
-		);
+		const spreadInfo = calculateSpreadBidAskMark(l2Formatted, oraclePrice);
 
 		const spreadPctNum = BigNum.from(
 			spreadInfo.spreadPct,
@@ -1692,10 +1748,7 @@ export const getEstimatedPricesWithL2 = async (
 	// Get oracle price
 	const oraclePrice = oracleData.price ?? ZERO;
 
-	const spreadInfo = COMMON_MATH.calculateSpreadBidAskMark(
-		l2Formatted,
-		oraclePrice
-	);
+	const spreadInfo = calculateSpreadBidAskMark(l2Formatted, oraclePrice);
 
 	const markPrice = spreadInfo?.markPrice ?? oraclePrice;
 

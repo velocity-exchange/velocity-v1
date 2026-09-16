@@ -11,5 +11,15 @@ corpus/
 .fuzz-cache/
 */.fuzz-cache/
 
+# Coverage profiles from `crucible run --coverage`. Regenerable.
+coverage/
+*/coverage/
+*.lcov
+
+# Bundle build output — staged bundle dir + zip produced by build-bundle.sh.
+# Regenerable from bundle/targets.txt + the harness sources; never commit.
+dist/
+
 # Committed on purpose (do NOT ignore): src/, Cargo.toml, Cargo.lock,
-# idls/ (needed by declare_fuzz_program!), rust-toolchain.toml.
+# idls/ (needed by declare_fuzz_program!), rust-toolchain.toml,
+# bundle/targets.txt, build-bundle.sh, manifest.fc.json.

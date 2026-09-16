@@ -154,7 +154,10 @@ fn slab_ix(payer: Pubkey) -> Instruction {
 /// pubkey. The config below is the smallest coherent one; approval reads only
 /// the place authority off it.
 fn init_clob_book(svm: &mut litesvm::LiteSVM, admin: &Keypair) -> Pubkey {
-    let book = Pubkey::new_unique();
+    // The book signs its own creation, so the account cannot be initialized by
+    // whoever sees it created.
+    let book_kp = Keypair::new();
+    let book = book_kp.pubkey();
     svm.set_account(
         book,
         Account {
@@ -186,11 +189,11 @@ fn init_clob_book(svm: &mut litesvm::LiteSVM, admin: &Keypair) -> Pubkey {
         accounts: vec![
             AccountMeta::new_readonly(admin.pubkey(), true),
             AccountMeta::new_readonly(quoter_slab_pda(0), false),
-            AccountMeta::new(book, false),
+            AccountMeta::new(book, true),
         ],
         data,
     };
-    send(svm, admin, ix, &[]).unwrap();
+    send(svm, admin, ix, &[&book_kp]).unwrap();
     book
 }
 

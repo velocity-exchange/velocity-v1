@@ -5603,7 +5603,8 @@ fn setup_midpoint_maker_with_flow(
     set_user_stats_account(&mut fixture.svm, stats, &authority.pubkey());
 
     // Create the instance. Config borsh: market u16, sub u16, base_precision
-    // u64, staleness u64, tick u64, step u64, min u64, attested bool.
+    // u64, staleness u64, tick u64, step u64, min u64, attested bool,
+    // deviation ppm u64.
     let instance = midpoint_instance_pda(&authority.pubkey());
     let mut data = ix_discriminator("initialize_quoter_v0").to_vec();
     data.extend_from_slice(&0u16.to_le_bytes());
@@ -5614,6 +5615,9 @@ fn setup_midpoint_maker_with_flow(
     data.extend_from_slice(&1u64.to_le_bytes());
     data.extend_from_slice(&1u64.to_le_bytes());
     data.push(require_attested_flow as u8);
+    // An instance must name a deviation band at creation. Wide enough that
+    // these fixtures price off the mid they set rather than off the band.
+    data.extend_from_slice(&500_000u64.to_le_bytes());
     let ix = Instruction {
         program_id: midpoint_id(),
         accounts: vec![
@@ -6726,8 +6730,10 @@ fn trigger_relay_conditions_fire_an_armed_trigger_unsigned() {
     assert!(!trig[1].is_active(), "one armed trigger, one live slot");
     assert_eq!(acct.trigger_slots[0].order_id, 7);
     // The shared list: the resolver's four named accounts (scratch first),
-    // then the map.
-    assert_eq!(acct.relay.resolver_refs().len(), 4 + 3);
+    // then the map, then the tail. Both syncs write the same shape, because
+    // the list is the account's whole liquidation coverage and a trigger sync
+    // that dropped the tail would leave the liquidation resolver short.
+    assert_eq!(acct.relay.resolver_refs().len(), 4 + 3 + 1);
 
     // Below the trigger: the resolver reports no work.
     fixture.svm.warp_to_slot(12);
@@ -8260,7 +8266,9 @@ fn signed_msg_taker_signature_is_verified_in_program() {
         builder_idx: None,
         builder_fee_tenth_bps: None,
         isolated_position_deposit: None,
-        network: None,
+        // The anchor-test build carries no mainnet feature, so it names
+        // the devnet cluster and refuses a message that names none.
+        network: Some(velocity::state::order_params::expected_signed_msg_network()),
         route: None,
     };
     // manual 8-byte discriminator (unread) + borsh body, hex-encoded: the taker
@@ -8424,7 +8432,9 @@ fn a_swift_fill_takes_a_bumped_book_only_with_the_attestation() {
             builder_idx: None,
             builder_fee_tenth_bps: None,
             isolated_position_deposit: None,
-            network: None,
+            // The anchor-test build carries no mainnet feature, so it names
+            // the devnet cluster and refuses a message that names none.
+            network: Some(velocity::state::order_params::expected_signed_msg_network()),
             route: None,
         };
         let mut borsh_body = vec![0u8; 8];

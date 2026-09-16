@@ -4900,7 +4900,7 @@ dependencies = [
 [[package]]
 name = "relay-chain-source"
 version = "0.1.0"
-source = "git+https://github.com/velocity-exchange/relay?rev=88419fd1de3ee189e44ef591d9e8f5c558d58a9d#88419fd1de3ee189e44ef591d9e8f5c558d58a9d"
+source = "git+https://github.com/velocity-exchange/relay?rev=ee69eb7#ee69eb77c4658684e1dcdcfb7b5e870fa5071e18"
 dependencies = [
  "anyhow",
  "async-trait",

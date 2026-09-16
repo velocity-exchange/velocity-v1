@@ -9,7 +9,7 @@ solana-compute-budget-interface = "3"
 # Quote-view assembly + decoding over a chain source.
 velocity-router-sim = { path = "../router-sim" }
 velocity-quoter-health = { path = "../quoter-health" }
-relay-chain-source = { git = "https://github.com/velocity-exchange/relay", rev = "88419fd1de3ee189e44ef591d9e8f5c558d58a9d" }
+relay-chain-source = { git = "https://github.com/velocity-exchange/relay", rev = "ee69eb7" }
 program = { package = "velocity", path = "../../programs/velocity", default-features = false, features = [
   "velocity-rs",
   "mainnet-beta",

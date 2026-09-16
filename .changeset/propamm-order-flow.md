@@ -431,3 +431,31 @@ naming the type from `IdlBuild`, so a host that monomorphizes its own name — `
 `RelayBlock3x48`, `RelayBlock11x48` — emitted `"generics"` a consumer could not compile against.
 A tool that generates code from `velocity.json` now sees a plain reference; a reader that ignored
 the field sees no change.
+
+The quoter registry, the book and the signed-message envelope are tightened, and several
+instructions take an account they did not before.
+
+`initializeQuoter` takes a quoter slab, required when the entry is a book, so a market's slab must
+exist before its book is registered. `updateQuoterApproved` takes the book the market designated,
+required when the entry is a book. `updateQuoterActive`, `updateQuoterConfig`,
+`updateQuoterAccounts` and `updateQuoterWatch` take the state account: a book entry now answers to
+the protocol's warm admin instead of the individual key that registered it. A quoter a maker owns
+is unchanged and still answers only to the key that created it. A registered account list may no
+longer name the market's designated book.
+
+The signed-message network tag is required. A message that names no cluster is refused the same way
+a message naming the wrong cluster is, because both replay the same way. `network` is therefore a
+required field on both message types, `signedMsgNetworkForEnv` is exported, and the client stamps
+the tag from its configured `env`, so a caller that signs through the client states nothing.
+`SignedMsgOrderParamsMessageInput` and `SignedMsgOrderParamsDelegateMessageInput` keep the field
+optional at that edge. `VelocityClient.env` defaults to `mainnet-beta`, so an integrator that runs
+on devnet without setting `env` now signs a tag devnet refuses.
+
+`AcceleratedReferralStatusChangedRecord` becomes `AcceleratedReferralStatusChangedRecordV0` and
+carries a new discriminator. `ClobRestUnavailable` is a new error.
+
+`vammQuoteLevels` shades the vAMM's ladder only for the depth a rival book actually offers, so a
+client that prices a fill against rival books gets a different answer than it did.
+
+The admin CLI passes the new accounts on register, approve, set-active, set-config, set-accounts
+and set-watch, and creates a market's slab before it registers that market's book.

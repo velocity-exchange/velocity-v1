@@ -30,9 +30,12 @@
 
 use {
     crate::{
-        controller::position::{
-            add_new_position, decrease_open_bids_and_asks, get_position_index,
-            increase_open_bids_and_asks, PositionDirection,
+        controller::{
+            self,
+            position::{
+                add_new_position, decrease_open_bids_and_asks, get_position_index,
+                increase_open_bids_and_asks, PositionDirection,
+            },
         },
         error::ErrorCode,
         instructions::{
@@ -40,7 +43,10 @@ use {
             optional_accounts::{load_maps, AccountMaps},
         },
         load_mut,
-        math::{margin::meets_place_order_margin_requirement, orders::is_order_position_reducing},
+        math::{
+            liquidation::validate_user_not_being_liquidated,
+            margin::meets_place_order_margin_requirement, orders::is_order_position_reducing,
+        },
         msg,
         state::{
             market_status::MarketStatus,
@@ -120,7 +126,7 @@ pub struct ModifyOrderV1Params {
 }
 
 #[access_control(
-    exchange_not_paused(&ctx.accounts.state)
+    fill_not_paused(&ctx.accounts.state)
 )]
 pub fn handle_modify_order_v1<'c: 'info, 'info>(
     ctx: Context<'info, ModifyOrderV1<'info>>,
@@ -157,7 +163,18 @@ pub fn handle_modify_order_v1<'c: 'info, 'info>(
     )?;
 
     let user_ref = {
-        let user = crate::load!(ctx.accounts.user)?;
+        let user = &mut load_mut!(ctx.accounts.user)?;
+        validate_replacement_preconditions(&state, user, &mut maps)?;
+        // Expired slot orders release their reservations, and that release can
+        // be what lets the replacement pass the margin gate below. The same
+        // sweep the ephemeral placement path runs before it builds an order.
+        controller::orders::expire_orders(
+            user,
+            &ctx.accounts.user.key(),
+            &mut maps,
+            clock.unix_timestamp,
+            clock.slot,
+        )?;
         user.clob_user_ref()
     };
 
@@ -176,6 +193,17 @@ pub fn handle_modify_order_v1<'c: 'info, 'info>(
     )?;
 
     let terms = resolve_replacement_terms(&params, &removed)?;
+
+    // The replacement is a placement, so a reduce-only account may only carry
+    // a reduce-only one. The removed order's flag is the replacement's, so
+    // this is knowable only once the cancel has reported it.
+    if crate::load!(ctx.accounts.user)?.is_reduce_only() {
+        validate!(
+            removed.reduce_only,
+            ErrorCode::UserReduceOnly,
+            "order must be reduce only"
+        )?;
+    }
 
     let is_isolated_position = reserve_replacement_margin(
         &ctx.accounts.user,
@@ -244,6 +272,32 @@ pub fn handle_modify_order_v1<'c: 'info, 'info>(
         order_ref.node_index,
         ctx.accounts.user.key()
     );
+    Ok(())
+}
+
+/// The account gates every placement passes before its order is built.
+///
+/// A modify builds no `Order`, so it never reaches
+/// `create_ephemeral_perp_order`'s copy of these. Without them an account
+/// flagged as being liquidated could reprice or upsize a resting book order
+/// while a liquidator works on it.
+fn validate_replacement_preconditions(
+    state: &State,
+    user: &mut User,
+    maps: &mut AccountMaps,
+) -> Result<()> {
+    validate_user_not_being_liquidated(user, maps, state.liquidation_margin_buffer_ratio)?;
+    validate!(
+        !user.is_bankrupt(),
+        ErrorCode::UserBankrupt,
+        "user bankrupt"
+    )?;
+    validate!(
+        user.pool_id == 0,
+        ErrorCode::InvalidPoolId,
+        "user pool id ({}) != 0",
+        user.pool_id
+    )?;
     Ok(())
 }
 

@@ -175,15 +175,24 @@ pub fn crank_clob_removal(
         )?;
     }
 
-    // Expiry charges the maker the flat removal reward first (the same one
-    // DLOB order expiry pays; in program-keeper mode the filler is the
-    // protocol User), THEN unwinds — unwinding an otherwise-empty position
-    // frees its slot, and the reward needs to resolve it. Eviction charges the
-    // maker nothing: the book removed the order because it ran out of room, not
-    // for anything the maker did. Charging the evictee would let dust orders
-    // priced just inside honest depth push honest makers to the tail and bill
-    // them one reward per eviction. In program-keeper mode the keeper is still
-    // paid from the reservoir below, so eviction stays worth cranking.
+    // Both removals charge the maker the flat removal reward first (the same
+    // one DLOB order expiry pays; in program-keeper mode the filler is the
+    // protocol User), THEN unwind — unwinding an otherwise-empty position
+    // frees its slot, and the reward needs to resolve it.
+    //
+    // An eviction charges the same fee as an expiry because a free eviction is
+    // work a caller can manufacture. In program-keeper mode the crank pays the
+    // caller reservoir lamports and needs no signature, so a caller that fills
+    // a side to its threshold with its own dust and then evicts its own tail
+    // draws lamports for nothing. The fee prices that loop: every iteration now
+    // costs the evictee one flat reward, and the evictee in that loop is the
+    // caller. A free eviction also left an honest signed keeper with no reason
+    // to clear a full side at all.
+    //
+    // The order the book evicts is the worst-priced order on its side, so the
+    // fee falls on a quote that no longer competes and that the book needs the
+    // slot back from. Pushing an honest maker to that tail costs an attacker a
+    // full side of better-priced, takeable quotes, each holding real margin.
     {
         let mut user = load_mut!(ctx.accounts.user)?;
         let mut market = load_mut!(ctx.accounts.perp_market)?;
@@ -194,21 +203,20 @@ pub fn crank_clob_removal(
             market.market_index,
             market_index
         )?;
-        let removal_fee = if is_evict {
-            0
-        } else {
-            state.perp_fee_structure.flat_filler_fee
-        };
-        if !is_evict {
-            let mut filler = load_mut!(ctx.accounts.filler)?;
-            pay_keeper_flat_reward_for_perps(
-                &mut user,
-                Some(&mut filler),
-                &mut market,
-                removal_fee,
-                clock.slot,
-            )?;
-        }
+        // A keeper that removes its own order is already loaded as the maker
+        // and cannot be loaded a second time as the filler. It pays itself
+        // nothing.
+        let mut filler = (ctx.accounts.filler.key() != ctx.accounts.user.key())
+            .then(|| load_mut!(ctx.accounts.filler))
+            .transpose()?;
+        let removal_fee = pay_keeper_flat_reward_for_perps(
+            &mut user,
+            filler.as_deref_mut(),
+            &mut market,
+            state.perp_fee_structure.flat_filler_fee,
+            clock.slot,
+        )?;
+        drop(filler);
 
         // The removal report is the book's, so its size and its slot are held
         // to what velocity reserved for this user rather than clamped to it.
@@ -450,8 +458,11 @@ pub fn finish_trigger_crank<'info>(
 }
 
 /// Discovery shared by the trigger resolvers: the first armed trigger order
-/// on `market` whose condition the oracle satisfies right now and whose
-/// synced slot matches the resolver's executor path (`want_clob_path`).
+/// on `market` whose crank can land right now and whose synced slot matches
+/// the resolver's executor path (`want_clob_path`). An ordinary order is due
+/// when the oracle satisfies its condition. An order re-armed after an
+/// eviction is due when the oracle does *not* satisfy it, because the crank
+/// that clears its edge gate is the one that observes the recross.
 /// Everything is re-verified — a stale sync or moved price just returns
 /// `None` and the turner backs off.
 /// Which resolver a fired trigger slot belongs to.
@@ -472,6 +483,23 @@ pub enum TriggerResolverKind {
     ClobRest,
     /// `trigger_market_order_v1` — fire the trigger and fill it against the book.
     ClobFill,
+}
+
+/// Whether a trigger crank on `order` can land at this oracle price.
+///
+/// An evicted trigger comes back armed behind an edge gate
+/// ([`crate::state::user::OrderBitFlag::AwaitingTriggerRecross`]): the crank
+/// that clears the flag is the one that observes the price back off the
+/// trigger side, and a crank that observes it still through the trigger fails
+/// with `OrderAwaitingTriggerRecross`. So a re-armed order is due while its
+/// condition is *not* satisfied, and an ordinary order is due while its
+/// condition is satisfied. Staging the other half lands nothing and starves
+/// genuinely fired triggers behind it.
+pub fn trigger_crank_is_due(order: &crate::state::user::Order, oracle_price: u64) -> Result<bool> {
+    let satisfied = crate::math::orders::order_satisfies_trigger_condition(order, oracle_price)?;
+    let awaiting_recross =
+        order.is_bit_flag_set(crate::state::user::OrderBitFlag::AwaitingTriggerRecross);
+    Ok(satisfied != awaiting_recross)
 }
 
 pub fn find_fired_trigger(
@@ -510,7 +538,7 @@ pub fn find_fired_trigger(
         {
             continue;
         }
-        if !crate::math::orders::order_satisfies_trigger_condition(order, oracle_price)? {
+        if !trigger_crank_is_due(order, oracle_price)? {
             continue;
         }
         let Some(meta) = conditions
@@ -536,7 +564,9 @@ pub fn find_fired_trigger(
 }
 
 /// Rows read from one side when measuring whether its depth has rested. Deep
-/// enough to cover the size any one crank takes off a side.
+/// enough to cover the size any one crank takes off a side. A crossing size
+/// that needs more rows than this reports unrested, because the rows past the
+/// window were never measured.
 pub(crate) const RESTED_ROWS_PER_SIDE: u16 = 32;
 
 /// Whether every book order a fill could consume has measurably rested.
@@ -591,19 +621,31 @@ pub(crate) fn book_side_rested<'info>(
                 |row| (row.size, row.placed_slot),
             )?
             .unwrap_or_default();
-            let (_, rested) =
-                rows.iter()
-                    .fold((0u64, true), |(depth, rested), (row_size, placed_slot)| {
-                        if depth >= size {
-                            return (depth, rested);
-                        }
-                        (
-                            depth.saturating_add(*row_size),
-                            rested && crate::math::crosses::served_window(*placed_slot, slot),
-                        )
-                    });
-            Ok(served && rested)
+            Ok(served && rows_rested(&rows, size, slot))
         })
+}
+
+/// Whether the first `size` base of one side has measurably rested, over the
+/// `(size, placed_slot)` rows the read returned.
+///
+/// Unmeasured depth is unproven depth. The read stops at
+/// [`RESTED_ROWS_PER_SIDE`], so a side whose read filled the window without
+/// reaching `size` hides rows the fill can still sweep, and those rows may be
+/// fresh. A read that came back short of the window is the whole side, and
+/// depth below `size` there is depth that does not exist.
+pub(crate) fn rows_rested(rows: &[(u64, u64)], size: u64, slot: u64) -> bool {
+    let (depth, rested) =
+        rows.iter()
+            .fold((0u64, true), |(depth, rested), (row_size, placed_slot)| {
+                if depth >= size {
+                    return (depth, rested);
+                }
+                (
+                    depth.saturating_add(*row_size),
+                    rested && crate::math::crosses::served_window(*placed_slot, slot),
+                )
+            });
+    rested && (depth >= size || rows.len() < RESTED_ROWS_PER_SIDE as usize)
 }
 
 /// One side of a book, best price first, through the same `quote_l3_v0`
@@ -703,4 +745,91 @@ pub(crate) fn book_l3_sides<'info>(
         return Ok(None);
     };
     Ok(Some((bids, asks)))
+}
+
+#[cfg(test)]
+mod rows_rested_tests {
+    use super::{rows_rested, RESTED_ROWS_PER_SIDE};
+
+    /// A row rests once `SERVED_WINDOW_MIN_SLOTS` have passed since it was
+    /// placed. Slot 100 against slot 0 is rested; against slot 100 it is not.
+    const NOW: u64 = 100;
+
+    #[test]
+    fn measured_depth_that_covers_the_size_and_rested_reports_rested() {
+        let rows = vec![(50u64, 0u64), (50, 0)];
+        assert!(rows_rested(&rows, 100, NOW));
+    }
+
+    #[test]
+    fn a_fresh_row_inside_the_size_reports_unrested() {
+        let rows = vec![(50u64, 0u64), (50, NOW)];
+        assert!(!rows_rested(&rows, 100, NOW));
+    }
+
+    #[test]
+    fn a_fresh_row_past_the_size_is_not_measured() {
+        // The fill stops at 50 base, so the fresh row behind it is depth the
+        // fill never reaches.
+        let rows = vec![(50u64, 0u64), (50, NOW)];
+        assert!(rows_rested(&rows, 50, NOW));
+    }
+
+    #[test]
+    fn a_full_read_window_short_of_the_size_reports_unrested() {
+        // The read filled its window without reaching the size, so rows past
+        // it were never measured. Unmeasured depth is unproven depth.
+        let rows = vec![(1u64, 0u64); RESTED_ROWS_PER_SIDE as usize];
+        assert!(!rows_rested(&rows, 1_000, NOW));
+    }
+
+    #[test]
+    fn a_short_read_short_of_the_size_is_the_whole_side() {
+        // The read came back under its window, so the side holds nothing more.
+        let rows = vec![(1u64, 0u64); RESTED_ROWS_PER_SIDE as usize - 1];
+        assert!(rows_rested(&rows, 1_000, NOW));
+    }
+
+    #[test]
+    fn an_empty_side_rests() {
+        assert!(rows_rested(&[], 1_000, NOW));
+    }
+}
+
+#[cfg(test)]
+mod trigger_crank_is_due_tests {
+    use {
+        super::trigger_crank_is_due,
+        crate::state::user::{Order, OrderBitFlag, OrderTriggerCondition},
+    };
+
+    fn stop_below(trigger_price: u64, awaiting_recross: bool) -> Order {
+        Order {
+            trigger_condition: OrderTriggerCondition::Below,
+            trigger_price,
+            bit_flags: if awaiting_recross {
+                OrderBitFlag::AwaitingTriggerRecross as u8
+            } else {
+                0
+            },
+            ..Order::default()
+        }
+    }
+
+    #[test]
+    fn an_ordinary_trigger_is_due_when_the_price_satisfies_it() {
+        let order = stop_below(100, false);
+        assert!(trigger_crank_is_due(&order, 99).unwrap());
+        assert!(!trigger_crank_is_due(&order, 101).unwrap());
+    }
+
+    #[test]
+    fn a_re_armed_trigger_is_due_only_when_the_price_crossed_back() {
+        // The crank that clears the edge gate is the one that observes the
+        // price off the trigger side. While the price stays through the
+        // trigger the crank cannot land, so it is not work.
+        let order = stop_below(100, true);
+        assert!(!trigger_crank_is_due(&order, 99).unwrap());
+        assert!(trigger_crank_is_due(&order, 101).unwrap());
+    }
 }

@@ -263,6 +263,16 @@ fn find_triggerable_order(user: &User, order_id: u32) -> VelocityResult<Option<u
         ErrorCode::OrderPlacedOnClob,
         "Order is placed on the CLOB"
     )?;
+    // An evicted trigger comes back armed behind an edge gate: it fires again
+    // only after a crank observes the price back off the trigger side. This
+    // path has no such observation, so it would flip a re-armed order live at
+    // the price that already evicted it. The gate belongs to the book crank
+    // that set it, and only that crank clears it.
+    validate!(
+        !order.is_bit_flag_set(OrderBitFlag::AwaitingTriggerRecross),
+        ErrorCode::OrderAwaitingTriggerRecross,
+        "Order waits for the trigger price to cross back after an eviction"
+    )?;
 
     if order.triggered() {
         msg!("Order is already triggered");

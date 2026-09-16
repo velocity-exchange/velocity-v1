@@ -177,7 +177,10 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
         &get_writable_spot_market_set(QUOTE_SPOT_MARKET_INDEX),
         clock.slot,
         state.slot_clock(),
-        None,
+        // The State's rails, like the DLOB force-cancel: the oracle decides
+        // whether this account is failing, so it answers to the configured
+        // staleness and confidence bounds rather than to the defaults.
+        Some(state.oracle_guard_rails),
     )?;
 
     let clob = ClobMarket::from_slab(

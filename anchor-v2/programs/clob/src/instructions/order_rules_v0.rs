@@ -8,6 +8,11 @@
 //!
 //! Read-only, and cheap enough to sit inside a landed transaction: these are
 //! header scalars, not a walk.
+//!
+//! The response also carries the live side counts and the arena capacity. A
+//! side at its cap refuses a placement, and a caller resting a taker's
+//! remainder loses the whole fill to that refusal. The counts are the only
+//! way it can see the refusal coming.
 
 /// Declared by `clob-wire`.
 pub use clob_wire::OrderRulesV0;
@@ -28,5 +33,8 @@ pub fn handle_order_rules_v0(ctx: &mut Context<OrderRulesV0Accounts>) -> Result<
         place_authority: market.place_authority.to_bytes(),
         tick_size: market.order_tick_size,
         step_size: market.order_step_size,
+        side_order_counts: [market.bid_count, market.ask_count],
+        arena_capacity: market.capacity() as u32,
+        evict_threshold_per_side: market.evict_threshold_per_side,
     })
 }

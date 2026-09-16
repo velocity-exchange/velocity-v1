@@ -15,7 +15,15 @@ pub struct InitializeMarketV0 {
     /// Pre-created zeroed account of [`ClobMarketV0::space_for`] the wanted
     /// capacity (~98KB — larger than CPI alloc limits, so the client creates
     /// it). [`crate::instructions::resize_market_v0`] grows it later.
-    #[account(zeroed)]
+    ///
+    /// It signs, which is what binds initialization to the account's creator.
+    /// The client creates the account with a keypair, and the System program
+    /// already requires that keypair to sign the allocation, so the signature
+    /// costs an honest caller nothing. Without it, creation and initialization
+    /// may land in different transactions and anyone may initialize the
+    /// account first and name themselves `authority`. The operator's own call
+    /// then fails and the rent is stranded.
+    #[account(zeroed, signer)]
     pub market: ClobMarketV0,
 }
 

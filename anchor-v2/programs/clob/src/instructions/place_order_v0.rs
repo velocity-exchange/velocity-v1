@@ -22,6 +22,15 @@ pub struct PlaceOrderV0 {
 /// [`crate::state::OrderBitFlag::TakerOrigin`].
 pub use clob_wire::PlaceOrderArgsV0;
 
+/// Lower bound on a slot's wall-clock length, in milliseconds.
+///
+/// The cluster targets 400ms per slot and does not hold a faster rate. The
+/// only use of this number is to refuse an order that cannot outlive its own
+/// activation delay, so the bound must be a floor: a slower cluster makes the
+/// refusal catch more orders, and a bound above the real rate would refuse an
+/// order that could still activate.
+const MIN_SLOT_MILLIS: u64 = 400;
+
 /// Place a resting order. Returns the new order's [`OrderRefV0`] (as return
 /// data) so the CPI caller can persist the hint.
 pub fn handle_place_order_v0(
@@ -51,6 +60,17 @@ pub fn handle_place_order_v0(
         }
     };
 
+    // An order whose `max_ts` falls inside its own activation delay expires
+    // before anything can match it. It still takes an arena slot, and it
+    // still sits at the head of its side until the expiry crank reclaims it.
+    if args.max_ts != 0 && delay != 0 {
+        let earliest_activation = (delay as u64 * MIN_SLOT_MILLIS / 1_000) as i64;
+        require!(
+            args.max_ts.saturating_sub(clock.unix_timestamp) > earliest_activation,
+            ClobError::MaxTsBeforeActivation
+        );
+    }
+
     let activation_slot = clock.slot + delay as u64;
     let order_ref = market.place(PlaceOrderParams {
         side: args.side,
@@ -60,6 +80,7 @@ pub fn handle_place_order_v0(
         activation_slot,
         placed_slot: clock.slot,
         max_ts: args.max_ts,
+        now: clock.unix_timestamp,
         taker_origin: args.taker_origin,
         client_order_id: args.client_order_id,
         reject_if_crossed: args.reject_if_crossed,

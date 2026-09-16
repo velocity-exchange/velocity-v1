@@ -30,6 +30,14 @@ use {
     },
 };
 
+/// One whole base unit, which is the denominator every market carries.
+/// Sizes here are written in it wherever a test reads a quote amount back.
+const UNIT: u64 = crate::state::BASE_PRECISION;
+
+/// A tenth of a base unit, for the cases that need a fill whose notional is
+/// not a whole quote unit.
+const TENTH: u64 = UNIT / 10;
+
 pub(super) fn encode<T>(value: &T) -> Vec<u8>
 where
     T: wincode::SchemaWrite<anchor_lang::BorshConfig, Src = T> + ?Sized,
@@ -237,17 +245,17 @@ fn execute_streams_balance_changes_merged_by_user() {
     let market = TestMarket::new(16);
     let mut book = market.book();
     let (maker_a, maker_b) = (user(0xA), user(0xB));
-    let first = place(&mut book, Side::Ask, 100, 5, maker_a);
-    let middle = place(&mut book, Side::Ask, 101, 5, maker_b);
+    let first = place(&mut book, Side::Ask, 100, 5 * UNIT, maker_a);
+    let middle = place(&mut book, Side::Ask, 101, 5 * UNIT, maker_b);
     // A's second fill completes after B's record is already written. The id
     // names A's change and rides the trailing section, so nothing between them
     // moves.
-    let last = place(&mut book, Side::Ask, 102, 5, maker_a);
+    let last = place(&mut book, Side::Ask, 102, 5 * UNIT, maker_a);
 
     let outcome = book
         .execute(
             Direction::Long,
-            15,
+            15 * UNIT,
             &[],
             &UserCapsV0::EMPTY,
             0,
@@ -261,8 +269,8 @@ fn execute_streams_balance_changes_merged_by_user() {
         streamed(&book, outcome.response),
         encode_execute(
             &[
-                change(maker_a, 10, 100 * 5 + 102 * 5),
-                change(maker_b, 5, 101 * 5),
+                change(maker_a, 10 * UNIT, 100 * 5 + 102 * 5),
+                change(maker_b, 5 * UNIT, 101 * 5),
             ],
             &[],
             // Fill order, each naming the change it belongs to.
@@ -282,9 +290,9 @@ fn execute_streams_balance_changes_merged_by_user() {
             .map(|fill| (fill.order_id, fill.base_size))
             .collect::<Vec<_>>(),
         vec![
-            (first.order_id, 5),
-            (middle.order_id, 5),
-            (last.order_id, 5)
+            (first.order_id, 5 * UNIT),
+            (middle.order_id, 5 * UNIT),
+            (last.order_id, 5 * UNIT)
         ]
     );
     assert_eq!(outcome.cancelled_client_order_id, None);
@@ -293,20 +301,20 @@ fn execute_streams_balance_changes_merged_by_user() {
 #[test]
 fn execute_streams_a_sub_min_cull_alongside_the_fill() {
     let config = crate::state::MarketConfigV0 {
-        min_order_size: 10,
+        min_order_size: 10 * UNIT,
         ..test_config()
     };
     let market = TestMarket::new_with(16, config);
     let mut book = market.book();
     let maker = user(0xA);
-    let order = place(&mut book, Side::Ask, 100, 20, maker);
+    let order = place(&mut book, Side::Ask, 100, 20 * UNIT, maker);
 
     // 15 of 20 fills; the 5 left is below min_order_size, so the order is
     // culled with the fill instead of resting as dust.
     let outcome = book
         .execute(
             Direction::Long,
-            15,
+            15 * UNIT,
             &[],
             &UserCapsV0::EMPTY,
             0,
@@ -319,8 +327,8 @@ fn execute_streams_a_sub_min_cull_alongside_the_fill() {
     assert_eq!(
         streamed(&book, outcome.response),
         encode_execute(
-            &[change(maker, 15, 1500)],
-            &[cull(maker, order.order_id, 5, 100)],
+            &[change(maker, 15 * UNIT, 1500)],
+            &[cull(maker, order.order_id, 5 * UNIT, 100)],
             &[],
             &[],
         )
@@ -341,14 +349,14 @@ fn execute_streams_the_one_order_it_left_resting_smaller() {
     let market = TestMarket::new(16);
     let mut book = market.book();
     let maker = user(0xA);
-    let first = place(&mut book, Side::Ask, 100, 5, maker);
-    let second = place(&mut book, Side::Ask, 101, 20, maker);
+    let first = place(&mut book, Side::Ask, 100, 5 * UNIT, maker);
+    let second = place(&mut book, Side::Ask, 101, 20 * UNIT, maker);
 
     // The first order goes whole; the second gives 10 of its 20 and stays.
     let outcome = book
         .execute(
             Direction::Long,
-            15,
+            15 * UNIT,
             &[],
             &UserCapsV0::EMPTY,
             0,
@@ -361,10 +369,10 @@ fn execute_streams_the_one_order_it_left_resting_smaller() {
     assert_eq!(
         streamed(&book, outcome.response),
         encode_execute(
-            &[change(maker, 15, 100 * 5 + 101 * 10)],
+            &[change(maker, 15 * UNIT, 100 * 5 + 101 * 10)],
             &[],
             &[done(0, first.order_id)],
-            &[part(0, second.order_id, 10)],
+            &[part(0, second.order_id, 10 * UNIT)],
         )
     );
     assert_eq!(book.node_count(Side::Ask), 1);
@@ -422,13 +430,13 @@ fn execute_stops_at_the_user_cap() {
     let market = TestMarket::new_with(16, config);
     let mut book = market.book();
     let (maker_a, maker_b) = (user(0xA), user(0xB));
-    let first = place(&mut book, Side::Ask, 100, 5, maker_a);
-    place(&mut book, Side::Ask, 101, 5, maker_b);
+    let first = place(&mut book, Side::Ask, 100, 5 * UNIT, maker_a);
+    place(&mut book, Side::Ask, 101, 5 * UNIT, maker_b);
 
     let outcome = book
         .execute(
             Direction::Long,
-            10,
+            10 * UNIT,
             &[],
             &UserCapsV0::EMPTY,
             0,
@@ -441,7 +449,7 @@ fn execute_stops_at_the_user_cap() {
     assert_eq!(
         streamed(&book, outcome.response),
         encode_execute(
-            &[change(maker_a, 5, 500)],
+            &[change(maker_a, 5 * UNIT, 500)],
             &[],
             &[done(0, first.order_id)],
             &[]
@@ -523,30 +531,26 @@ fn wire_widths_match_the_response_types() {
 /// truncating per fill would put an honest fill outside its own quote — and
 /// the lost dust would come out of the makers.
 ///
-/// First case: three fills of `3 × 4 / 10 = 1.2` quote units, where the
-/// per-fill remainders never accumulate past a whole unit — per-fill floors
-/// and the true total `36 / 10 = 3.6` agree at 3. Second: two fills of
-/// `7 × 4 / 10 = 2.8`, where they don't — per-fill floors give 4, the true
-/// total `56 / 10 = 5.6` gives 5, and that whole unit is one the makers would
-/// otherwise have lost.
+/// Each order is four tenths of a base unit, so a fill's notional carries a
+/// fraction of a quote unit.
+///
+/// First case: three fills of `3 × 0.4 = 1.2` quote units, where the per-fill
+/// remainders never accumulate past a whole unit — per-fill floors and the
+/// true total 3.6 agree at 3. Second: two fills of `7 × 0.4 = 2.8`, where they
+/// don't — per-fill floors give 4, the true total 5.6 gives 5, and that whole
+/// unit is one the makers would otherwise have lost.
 #[test]
 fn execute_totals_the_floor_of_the_whole_sweeps_notional() {
-    let market = TestMarket::new_with(
-        16,
-        MarketConfigV0 {
-            base_precision: 10,
-            ..test_config()
-        },
-    );
+    let market = TestMarket::new(16);
     let mut book = market.book();
     let maker = user(0xA);
     for _ in 0..3 {
-        place(&mut book, Side::Ask, 3, 4, maker);
+        place(&mut book, Side::Ask, 3, 4 * TENTH, maker);
     }
     let outcome = book
         .execute(
             Direction::Long,
-            12,
+            12 * TENTH,
             &[],
             &UserCapsV0::EMPTY,
             0,
@@ -559,28 +563,22 @@ fn execute_totals_the_floor_of_the_whole_sweeps_notional() {
     assert_eq!(
         streamed(&book, outcome.response),
         encode_execute(
-            &[change(maker, 12, 3)],
+            &[change(maker, 12 * TENTH, 3)],
             &[],
             &[done(0, 1), done(0, 2), done(0, 3)],
             &[],
         )
     );
 
-    let market = TestMarket::new_with(
-        16,
-        MarketConfigV0 {
-            base_precision: 10,
-            ..test_config()
-        },
-    );
+    let market = TestMarket::new(16);
     let mut book = market.book();
     for _ in 0..2 {
-        place(&mut book, Side::Ask, 7, 4, maker);
+        place(&mut book, Side::Ask, 7, 4 * TENTH, maker);
     }
     let outcome = book
         .execute(
             Direction::Long,
-            8,
+            8 * TENTH,
             &[],
             &UserCapsV0::EMPTY,
             0,
@@ -592,7 +590,12 @@ fn execute_totals_the_floor_of_the_whole_sweeps_notional() {
         .unwrap();
     assert_eq!(
         streamed(&book, outcome.response),
-        encode_execute(&[change(maker, 8, 5)], &[], &[done(0, 1), done(0, 2)], &[])
+        encode_execute(
+            &[change(maker, 8 * TENTH, 5)],
+            &[],
+            &[done(0, 1), done(0, 2)],
+            &[]
+        )
     );
 }
 
@@ -739,13 +742,13 @@ fn a_market_at_the_execute_ceilings_streams_a_full_width_response() {
     let orders: Vec<_> = makers
         .iter()
         .enumerate()
-        .map(|(i, maker)| place(&mut book, Side::Ask, 100 + i as u64, 1, *maker))
+        .map(|(i, maker)| place(&mut book, Side::Ask, 100 + i as u64, UNIT, *maker))
         .collect();
 
     let outcome = book
         .execute(
             Direction::Long,
-            fills as u64,
+            fills as u64 * UNIT,
             &[],
             &UserCapsV0::EMPTY,
             0,
@@ -758,7 +761,7 @@ fn a_market_at_the_execute_ceilings_streams_a_full_width_response() {
     let changes: Vec<_> = makers
         .iter()
         .enumerate()
-        .map(|(i, maker)| change(*maker, 1, 100 + i as u64))
+        .map(|(i, maker)| change(*maker, UNIT, 100 + i as u64))
         .collect();
     let completed: Vec<_> = orders
         .iter()

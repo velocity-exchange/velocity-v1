@@ -39,7 +39,10 @@ const BUFFER_BYTES: usize = MIN_ACCOUNT_BUF + ClobMarketV0::space_for(MAX_CAPACI
 pub fn test_config() -> MarketConfigV0 {
     MarketConfigV0 {
         market_index: 0,
-        base_precision: 1,
+        // The only denominator a market may carry. Sizes here are therefore
+        // whole base units where a test reads a quote amount back, and plain
+        // counts where it does not.
+        base_precision: crate::state::BASE_PRECISION,
         order_tick_size: 1,
         order_step_size: 1,
         min_order_size: 1,
@@ -178,6 +181,7 @@ pub fn params(side: Side, price: u64, size: u64, user: UserRefV0) -> PlaceOrderP
         activation_slot: 0,
         placed_slot: 0,
         max_ts: 0,
+        now: 0,
         taker_origin: false,
         client_order_id: 0,
         reject_if_crossed: false,

@@ -48,6 +48,11 @@ pub mod clob {
         instructions::initialize_market_v0::handle_initialize_market_v0(ctx, config)
     }
 
+    /// Close an empty market and return its rent to `rent_recipient`.
+    pub fn close_market_v0(ctx: &mut Context<CloseMarketV0>) -> Result<()> {
+        instructions::close_market_v0::handle_close_market_v0(ctx)
+    }
+
     pub fn update_market_v0(
         ctx: &mut Context<UpdateMarketV0>,
         args: UpdateMarketArgsV0,

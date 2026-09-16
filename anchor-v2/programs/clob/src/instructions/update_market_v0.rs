@@ -66,6 +66,7 @@ pub fn handle_update_market_v0(
         market.unknown_user_grace_slots = v;
     }
     if let Some(v) = args.evict_threshold_per_side {
+        crate::book::validate_evict_threshold(v, market.capacity() as u32)?;
         market.evict_threshold_per_side = v;
     }
     if let Some(v) = args.max_quote_levels {

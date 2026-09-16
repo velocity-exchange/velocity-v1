@@ -445,6 +445,24 @@ pub struct OrderRulesV0 {
     /// off-step (which would revert the whole fill that carried it).
     pub tick_size: u64,
     pub step_size: u64,
+    /// Resting orders on each side right now, bids first.
+    ///
+    /// A side is full at `arena_capacity / 2`, and a placement onto a full
+    /// side is refused. A caller that rests a taker's remainder has to know
+    /// that before it commits the fill the remainder came out of, because the
+    /// refusal takes the whole fill with it. With these two numbers the caller
+    /// predicts the refusal and fills without resting instead.
+    ///
+    /// The counts move with every placement and removal, so they are a fact
+    /// about the slot this call ran in, not a rule. They are reported here
+    /// because this is the call a caller already makes before it rests.
+    pub side_order_counts: [u32; 2],
+    /// Order slots the whole arena holds. Half of it is the per-side cap.
+    pub arena_capacity: u32,
+    /// Count at which the eviction crank may take a side's tail. A side
+    /// between this and its cap still accepts placements, and the crank works
+    /// it back down.
+    pub evict_threshold_per_side: u32,
 }
 
 /// One order, as the book describes it to a caller.

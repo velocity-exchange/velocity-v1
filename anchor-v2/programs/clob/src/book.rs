@@ -491,6 +491,24 @@ impl NodeArena for ClobMarketV0 {
     }
 }
 
+/// Bounds the eviction threshold against the arena a market holds.
+///
+/// A side owns half the arena, and the threshold is the count at which the
+/// crank may take that side's tail. Zero makes every non-empty side
+/// evictable, so the crank could take a maker's only order at will. A
+/// threshold at or above the per-side capacity unlocks eviction only once
+/// placements are already refused, which makes the hard cap the normal
+/// operating state instead of an ops failure. The legal range is what leaves
+/// a buffer the crank can work down.
+pub(crate) fn validate_evict_threshold(threshold: u32, capacity: u32) -> Result<()> {
+    let per_side = capacity / 2;
+    require!(
+        threshold != 0 && threshold < per_side,
+        ClobError::InvalidConfig
+    );
+    Ok(())
+}
+
 /// Whether a book walk continues past the node just visited.
 pub(crate) enum Walk {
     Continue,
@@ -537,7 +555,17 @@ impl ClobBook for ClobMarketV0 {
     ) -> Result<()> {
         let cap = self.capacity() as u32;
         require!(cap >= 2, ClobError::InvalidCapacity);
-        require!(config.base_precision != 0, ClobError::InvalidConfig);
+        // The caps budget divides by `quoter_spec::BASE_PRECISION` and so does
+        // velocity's exact-notional check on the fill this book returns. A
+        // market on any other denominator prices its own execute response on
+        // one scale and is settled on another, so every fill fails. The field
+        // stays in the header because resting sizes are denominated in it and
+        // readers of the account expect to find it.
+        require!(
+            config.base_precision == BASE_PRECISION,
+            ClobError::InvalidConfig
+        );
+        validate_evict_threshold(config.evict_threshold_per_side, cap)?;
         require!(
             config.default_activation_delay_slots <= config.max_activation_delay_slots,
             ClobError::InvalidConfig
@@ -662,6 +690,7 @@ impl ClobBook for ClobMarketV0 {
             activation_slot,
             placed_slot,
             max_ts,
+            now,
             taker_origin,
             client_order_id,
             reject_if_crossed,
@@ -689,19 +718,31 @@ impl ClobBook for ClobMarketV0 {
         );
 
         // A maker that quotes through the other side has mispriced, and would
-        // rather place nothing than rest crossed. Measured against the
-        // opposite best whatever its state: an order still inside its
-        // activation delay is resting liquidity a moment from now, and a
-        // caller asking not to cross does not want to cross that either.
+        // rather place nothing than rest crossed.
+        //
+        // Measured against the best opposite order that anybody could still
+        // take. An order inside its activation delay counts: it is resting
+        // liquidity a moment from now, and a caller asking not to cross does
+        // not want to cross that either. An expired order does not count.
+        // Quote and execute walk past it and the expiry crank reclaims it
+        // later, so until then it sits at the head and matches nothing. A
+        // rejection against it would refuse every post-only placement on the
+        // other side for the price of one cheap order.
+        //
+        // The scan stops at the first order that is not expired. Prices grow
+        // worse away from the best, so no order behind that one can cross a
+        // price this one does not. It is also the same walk the insertion
+        // point below runs, so it adds no new order of work.
         if reject_if_crossed {
-            let opposite = self.best(side.opposite());
-            if opposite != NIL {
-                let resting = self.read_node(opposite)?;
-                require!(
-                    !side.is_crossed_by(price, resting.price),
-                    ClobError::OrderWouldCross
-                );
-            }
+            let mut crossed = false;
+            walk_side(self, side.opposite(), |_, _, node| {
+                if node.is_expired(now) {
+                    return Ok(Walk::Continue);
+                }
+                crossed = side.is_crossed_by(price, node.price);
+                Ok(Walk::Stop)
+            })?;
+            require!(!crossed, ClobError::OrderWouldCross);
         }
 
         let per_side = (self.capacity() / 2) as u32;

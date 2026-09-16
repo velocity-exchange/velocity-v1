@@ -747,6 +747,9 @@ pub struct PlaceOrderParams {
     pub activation_slot: u64,
     pub placed_slot: u64,
     pub max_ts: i64,
+    /// Current unix timestamp. Read only by the `reject_if_crossed` check,
+    /// which must tell an expired opposite head from a live one.
+    pub now: i64,
     /// Marks the order [`OrderBitFlag::TakerOrigin`].
     pub taker_origin: bool,
     /// Stored on the node and reported back, never read. See

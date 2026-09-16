@@ -86,6 +86,10 @@ pub enum ClobError {
     OrderNotTakerOrigin,
     #[msg("Fill is larger than the order has left")]
     FillExceedsOrder,
+    #[msg("max_ts falls inside the order's own activation delay")]
+    MaxTsBeforeActivation,
+    #[msg("Market still holds orders and cannot be closed")]
+    MarketNotEmpty,
 }
 
 impl From<quoter_spec::SpecError> for ClobError {

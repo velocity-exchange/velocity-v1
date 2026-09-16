@@ -14,7 +14,7 @@ use {
         book::{walk_side, BookHeader, ClobBook, NodeArena, Walk, NIL},
         error::ClobError,
         state::{
-            CancelAllOutcome, CancelSidesV0, ClobMarketV0, Direction, OrderBitFlag,
+            CancelAllOutcome, CancelSidesV0, ClobMarketV0, Direction, MarketConfigV0, OrderBitFlag,
             PlaceOrderParams, Side, UserCapsV0, UserRefV0, BASE_PRECISION,
             CANCEL_ALL_ORDERS_CEILING,
         },
@@ -166,6 +166,84 @@ fn a_placement_can_refuse_to_rest_crossed() {
     book.place(refusing(Side::Bid, 90))
         .expect("resting behind one's own side is not crossing");
     assert_consistent(&book);
+}
+
+/// An expired order at the opposite head refuses nothing.
+///
+/// Quote and execute walk past an expired order, and the expiry crank
+/// reclaims it later, so it matches nothing while it sits there. Measuring a
+/// cross against it would let one cheap order refuse every post-only
+/// placement on the other side until the crank lands.
+#[test]
+fn an_expired_opposite_head_does_not_refuse_a_placement() {
+    let market = TestMarket::new(16);
+    let mut book = market.book();
+    let (maker, taker) = (user(0xA), user(0xB));
+    // A bid at 100 that died a second ago, and a live bid at 90 behind it.
+    book.place(PlaceOrderParams {
+        max_ts: 500,
+        ..params(Side::Bid, 100, 5, maker)
+    })
+    .expect("placement succeeds");
+    book.place(params(Side::Bid, 90, 5, maker))
+        .expect("placement succeeds");
+
+    let refusing = |price| PlaceOrderParams {
+        reject_if_crossed: true,
+        now: 900,
+        ..params(Side::Ask, price, 5, taker)
+    };
+
+    // 95 crosses the dead bid at 100 and not the live one at 90.
+    book.place(refusing(95))
+        .expect("an expired head crosses nothing");
+    // The live bid behind it is still measured.
+    assert_err(book.place(refusing(90)), ClobError::OrderWouldCross);
+    assert_consistent(&book);
+}
+
+/// An opposite side of nothing but expired orders refuses nothing either.
+#[test]
+fn a_wholly_expired_opposite_side_refuses_nothing() {
+    let market = TestMarket::new(16);
+    let mut book = market.book();
+    let (maker, taker) = (user(0xA), user(0xB));
+    for price in [100, 99, 98] {
+        book.place(PlaceOrderParams {
+            max_ts: 500,
+            ..params(Side::Bid, price, 5, maker)
+        })
+        .expect("placement succeeds");
+    }
+    book.place(PlaceOrderParams {
+        reject_if_crossed: true,
+        now: 900,
+        ..params(Side::Ask, 50, 5, taker)
+    })
+    .expect("nothing live to cross");
+    assert_consistent(&book);
+}
+
+/// An order inside its activation delay still refuses a cross. It is resting
+/// liquidity a moment from now, and a caller asking not to cross does not
+/// want to cross that either.
+#[test]
+fn an_unactivated_opposite_head_still_refuses_a_placement() {
+    let market = TestMarket::new(16);
+    let mut book = market.book();
+    let (maker, taker) = (user(0xA), user(0xB));
+    book.place(PlaceOrderParams {
+        activation_slot: 500,
+        ..params(Side::Bid, 100, 5, maker)
+    })
+    .expect("placement succeeds");
+    assert_err(
+        book.place(PlaceOrderParams {
+            reject_if_crossed: true,
+            ..params(Side::Ask, 100, 5, taker)
+        }),
+        ClobError::OrderWouldCross,
+    );
 }
 
 /// Nothing to cross means nothing to refuse.
@@ -1286,4 +1364,71 @@ fn initialize_threads_the_whole_arena() {
         ),
         ClobError::InvalidCapacity,
     );
+}
+
+/// Initialization with the given config, for the config checks below.
+fn init_with(capacity: u32, config: MarketConfigV0) -> Result<()> {
+    let market = TestMarket::uninitialized(capacity);
+    market.book().initialize(
+        Address::new_from_array([1u8; 32]),
+        Address::new_from_array([2u8; 32]),
+        config,
+    )
+}
+
+/// The base denominator is fixed, not per market.
+///
+/// A fill's quote amount is computed with it here, while the per-user budget
+/// and the caller's own exact-notional check both use the constant. A market
+/// on any other denominator prices its response on one scale and is settled
+/// on another, so every fill it produces is refused.
+#[test]
+fn initialize_refuses_any_base_precision_but_the_constant() {
+    assert_err(
+        init_with(
+            16,
+            MarketConfigV0 {
+                base_precision: 0,
+                ..test_config()
+            },
+        ),
+        ClobError::InvalidConfig,
+    );
+    assert_err(
+        init_with(
+            16,
+            MarketConfigV0 {
+                base_precision: 1_000_000,
+                ..test_config()
+            },
+        ),
+        ClobError::InvalidConfig,
+    );
+    init_with(16, test_config()).expect("the constant is accepted");
+}
+
+/// The eviction threshold has to leave a buffer between it and the per-side
+/// cap. Zero makes every non-empty side evictable; the cap itself unlocks
+/// eviction only once placements are already refused.
+#[test]
+fn the_eviction_threshold_is_bounded_by_the_per_side_cap() {
+    // Sixteen slots is eight per side.
+    let threshold = |v| MarketConfigV0 {
+        evict_threshold_per_side: v,
+        ..test_config()
+    };
+    assert_err(init_with(16, threshold(0)), ClobError::InvalidConfig);
+    assert_err(init_with(16, threshold(8)), ClobError::InvalidConfig);
+    assert_err(init_with(16, threshold(9)), ClobError::InvalidConfig);
+    init_with(16, threshold(1)).expect("one is the lowest legal threshold");
+    init_with(16, threshold(7)).expect("one below the cap still leaves a buffer");
+
+    // The same bound is applied when the threshold is updated.
+    let market = TestMarket::new(16);
+    assert!(
+        crate::book::validate_evict_threshold(8, market.book().capacity() as u32).is_err(),
+        "an update to the cap is refused too"
+    );
+    crate::book::validate_evict_threshold(7, market.book().capacity() as u32)
+        .expect("an update below the cap is accepted");
 }

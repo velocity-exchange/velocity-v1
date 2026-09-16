@@ -15,9 +15,9 @@ use {
         state::{
             CancelSidesV0, ClobDirectionExt, ClobHeaderV0, ClobMarketV0, ClobSideExt, Direction,
             MarketConfigV0, OrderBitFlag, OrderNodeV0, OrderRefV0, Side, UserCapsV0, UserRefV0,
-            CANCEL_ALL_ORDERS_CEILING, CRANK_ACTIVATION, CRANK_BLOCK_OFFSET, CRANK_CAPACITY,
-            CRANK_CONDITIONS, CRANK_CROSS, CRANK_EXPIRY, EXECUTE_FILLS_CEILING, ORDERS_OFFSET,
-            REMOVED_ORDER_BYTES, RESERVATION_GRACE_SLOTS_CEILING,
+            BASE_PRECISION, CANCEL_ALL_ORDERS_CEILING, CRANK_ACTIVATION, CRANK_BLOCK_OFFSET,
+            CRANK_CAPACITY, CRANK_CONDITIONS, CRANK_CROSS, CRANK_EXPIRY, EXECUTE_FILLS_CEILING,
+            ORDERS_OFFSET, REMOVED_ORDER_BYTES, RESERVATION_GRACE_SLOTS_CEILING,
         },
         CancelAllArgsV0, CancelOrderArgsV0, ClobRemovalKindV0, CrankAccountV0,
         CrankConditionsArgsV0, CrankResolverV0, EvictWorstArgsV0, ExecuteArgsV0, NextRemovalArgsV0,
@@ -30,6 +30,14 @@ use {
 };
 
 const SO_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/deploy/clob.so");
+
+/// Whole base units per order, the denominator every market carries.
+///
+/// The harness speaks whole units: a size a test writes is multiplied by this
+/// on the way into the program, and a size the program reports is divided by
+/// it on the way back. Quote amounts are therefore `price x size` exactly as
+/// they read, and the tests stay about the book rather than about scaling.
+const UNIT: u64 = BASE_PRECISION;
 
 /// Arena capacity for test markets (chosen per market at creation).
 const CAPACITY: usize = 1024;
@@ -54,6 +62,9 @@ struct Ctx {
     payer: Keypair,
     admin: Keypair,
     place_auth: Keypair,
+    /// The market keypair. It signs initialization, which is what binds the
+    /// market to whoever created the account.
+    market_kp: Keypair,
     market: Pubkey,
 }
 
@@ -75,7 +86,8 @@ fn setup_with_capacity(capacity: usize) -> Ctx {
     // (larger than CPI alloc limits, so real deploys create it the same
     // way). `zeroed` verifies the discriminator bytes are zero and stamps
     // them; the slab derives capacity from the data length.
-    let market = Pubkey::new_unique();
+    let market_kp = Keypair::new();
+    let market = market_kp.pubkey();
     let space = ClobMarketV0::space_for(capacity as u32);
     let rent = svm.minimum_balance_for_rent_exemption(space);
     svm.set_account(
@@ -92,7 +104,7 @@ fn setup_with_capacity(capacity: usize) -> Ctx {
     let ix = instruction::InitializeMarketV0 {
         config: MarketConfigV0 {
             market_index: 0,
-            base_precision: 1,
+            base_precision: BASE_PRECISION,
             order_tick_size: 1,
             order_step_size: 1,
             min_order_size: 1,
@@ -118,6 +130,7 @@ fn setup_with_capacity(capacity: usize) -> Ctx {
         payer,
         admin,
         place_auth,
+        market_kp,
         market,
     };
     send(&mut ctx, ix).unwrap();
@@ -169,7 +182,7 @@ fn send_with_budget(
         .collect();
     let msg = Message::new_with_blockhash(&ixs, Some(&ctx.payer.pubkey()), &blockhash);
     let mut signers: Vec<&dyn anchor_v2_testing::Signer> = vec![&ctx.payer];
-    for kp in [&ctx.admin, &ctx.place_auth] {
+    for kp in [&ctx.admin, &ctx.place_auth, &ctx.market_kp] {
         let needed = ix
             .accounts
             .iter()
@@ -202,7 +215,7 @@ fn place_args(side: Side, price: u64, size: u64) -> PlaceOrderArgsV0 {
     PlaceOrderArgsV0 {
         side,
         price,
-        base_asset_amount: size,
+        base_asset_amount: size * UNIT,
         activation_delay_slots: None,
         max_ts: 0,
         user: uref(addr(Pubkey::default())),
@@ -255,7 +268,7 @@ fn parse_levels(b: &[u8]) -> Vec<(u64, u64)> {
         .expect("quote response")
         .levels
         .iter()
-        .map(|level| (level.price, level.size))
+        .map(|level| (level.price, level.size / UNIT))
         .collect()
 }
 
@@ -272,7 +285,7 @@ fn parse_balance_changes(b: &[u8]) -> Vec<([u8; 32], u64, u64, Vec<u64>)> {
             assert_eq!(change.user.sub_account_id, 0);
             (
                 *change.user.authority.as_array(),
-                change.base_size,
+                change.base_size / UNIT,
                 change.quote_size,
                 response.completed_for(i).collect(),
             )
@@ -319,7 +332,7 @@ fn quote_meta_limited(
             caps: UserCapsV0::EMPTY,
             reference_price: 0,
             direction,
-            size,
+            size: size.saturating_mul(UNIT),
             users: &user_set(users),
             taker: None,
             limit_price,
@@ -355,7 +368,7 @@ fn quote_consuming(ctx: &mut Ctx, direction: Direction, size: u64) -> Vec<(u64, 
             caps: UserCapsV0::EMPTY,
             reference_price: 0,
             direction,
-            size,
+            size: size.saturating_mul(UNIT),
             users: &[],
             taker: None,
             limit_price: 0,
@@ -381,7 +394,7 @@ fn execute_consuming(
             caps: UserCapsV0::EMPTY,
             reference_price: 0,
             direction,
-            size,
+            size: size.saturating_mul(UNIT),
             users: &[],
             taker: None,
         },
@@ -405,7 +418,8 @@ fn quote_withheld(
     let meta = quote_meta_users(ctx, direction, size, users).unwrap();
     let bytes = read_response(ctx, &meta);
     let response = clob::state::QuoteResponseV0::parse(&bytes).expect("quote response");
-    (response.withheld.price != 0).then_some((response.withheld.price, response.withheld.size))
+    (response.withheld.price != 0)
+        .then_some((response.withheld.price, response.withheld.size / UNIT))
 }
 
 fn execute_meta_users(
@@ -421,7 +435,7 @@ fn execute_meta_users(
             caps: UserCapsV0::EMPTY,
             reference_price: 0,
             direction,
-            size,
+            size: size.saturating_mul(UNIT),
             users: &user_set(users),
             taker: None,
         },
@@ -507,7 +521,7 @@ fn parse_removed(b: &[u8]) -> ([u8; 32], u64, u32, u64, u64, u8, bool) {
         parse_u64(&b[34..]),
         parse_u32(&b[42..]),
         parse_u64(&b[46..]),
-        parse_u64(&b[54..]),
+        parse_u64(&b[54..]) / UNIT,
         b[62],
         match b[63] {
             0 => false,
@@ -527,7 +541,7 @@ fn parse_cancelled(b: &[u8]) -> Vec<([u8; 32], u64, u64)> {
             (
                 *cull.user.authority.as_array(),
                 cull.order_id,
-                cull.base_asset_amount,
+                cull.base_asset_amount / UNIT,
             )
         })
         .collect()
@@ -742,8 +756,8 @@ fn place_rejects_off_grid_undersized_and_bad_authority() {
     let ix = instruction::UpdateMarketV0 {
         args: UpdateMarketArgsV0 {
             order_tick_size: Some(10),
-            order_step_size: Some(5),
-            min_order_size: Some(10),
+            order_step_size: Some(5 * UNIT),
+            min_order_size: Some(10 * UNIT),
             ..Default::default()
         },
     }
@@ -1274,7 +1288,7 @@ fn the_book_describes_the_orders_a_caller_holds_refs_for() {
     assert_eq!(views[0].user.authority, user);
     assert_eq!(views[0].side, Side::Bid);
     assert_eq!(views[0].price, 100);
-    assert_eq!(views[0].base_asset_amount, 7);
+    assert_eq!(views[0].base_asset_amount, 7 * UNIT);
     assert_eq!(views[0].max_ts, 1_500);
     assert!(!views[0].taker_origin);
 
@@ -1462,7 +1476,7 @@ fn a_short_user_set_trades_less_of_the_book_not_a_worse_part() {
 fn set_blocking_min_size(ctx: &mut Ctx, size: u64) {
     let ix = instruction::UpdateMarketV0 {
         args: UpdateMarketArgsV0 {
-            blocking_min_size: Some(size),
+            blocking_min_size: Some(size * UNIT),
             ..Default::default()
         },
     }
@@ -1633,7 +1647,7 @@ fn partial_fill_remainder_below_min_order_size_is_culled() {
 
     let ix = instruction::UpdateMarketV0 {
         args: UpdateMarketArgsV0 {
-            min_order_size: Some(10),
+            min_order_size: Some(10 * UNIT),
             ..Default::default()
         },
     }
@@ -1721,8 +1735,8 @@ fn cancel_all_logs_every_removed_order_id_at_the_ceiling() {
         parse_cancel_all(&meta.return_data.data);
     assert_eq!(bid_orders as u64, per_side);
     assert_eq!(ask_orders as u64, per_side);
-    assert_eq!(bid_base, per_side * 10);
-    assert_eq!(ask_base, per_side * 10);
+    assert_eq!(bid_base, per_side * 10 * UNIT);
+    assert_eq!(ask_base, per_side * 10 * UNIT);
     assert!(exhaustive);
 
     // The record carries every id, bids first, in book order.
@@ -2005,7 +2019,7 @@ fn an_execute_at_the_ceilings_fits_the_response_and_emits_the_record() {
             caps: UserCapsV0::EMPTY,
             reference_price: 0,
             direction: Direction::Long,
-            size: fills as u64,
+            size: (fills as u64).saturating_mul(UNIT),
             users: &[],
             taker: None,
         },
@@ -2031,7 +2045,7 @@ fn an_execute_at_the_ceilings_fits_the_response_and_emits_the_record() {
             .enumerate()
             .map(|(i, order)| FillSlimV0 {
                 order_id: order.order_id,
-                base_size: 1,
+                base_size: UNIT,
                 client_order_id: 1_000 + i as u32,
             })
             .collect(),
@@ -2109,7 +2123,7 @@ fn quote_taker(ctx: &mut Ctx, direction: Direction, size: u64, taker: Address) -
             caps: UserCapsV0::EMPTY,
             reference_price: 0,
             direction,
-            size,
+            size: size.saturating_mul(UNIT),
             users: &[],
             taker: Some(uref(taker)),
             limit_price: 0,
@@ -2135,7 +2149,7 @@ fn execute_taker(
             caps: UserCapsV0::EMPTY,
             reference_price: 0,
             direction,
-            size,
+            size: size.saturating_mul(UNIT),
             users: &[],
             taker: Some(uref(taker)),
         },
@@ -2599,7 +2613,7 @@ fn quote_l3_reports_the_orders_behind_the_ladder() {
         let ix = instruction::QuoteL3V0 {
             args: L3ArgsV0 {
                 direction: Direction::Long,
-                size,
+                size: size.saturating_mul(UNIT),
                 max_rows,
                 consume_reservation: false,
             },
@@ -2614,7 +2628,7 @@ fn quote_l3_reports_the_orders_behind_the_ladder() {
             response
                 .rows
                 .iter()
-                .map(|row| (row.price, row.size, row.user.authority.to_bytes()))
+                .map(|row| (row.price, row.size / UNIT, row.user.authority.to_bytes()))
                 .collect::<Vec<_>>(),
             response.more == 1,
         )
@@ -2759,5 +2773,219 @@ fn an_order_waking_from_its_speed_bump_gets_the_grace_window() {
         quote_withheld(&mut ctx, Direction::Long, 12, Some(vec![user_b])),
         Some((100, 5)),
         "awake and unclaimed for longer than the window: the walk stops here"
+    );
+}
+
+/// The market account signs its own initialization.
+///
+/// The client creates the roughly 98KB account with a keypair, because it is
+/// larger than a CPI can allocate. Creation and initialization may land in
+/// different transactions, so without the signature anyone could initialize
+/// the account first, name themselves authority, and strand the rent.
+#[test]
+fn initializing_a_market_needs_the_accounts_own_keypair() {
+    let mut svm = anchor_v2_testing::svm();
+    svm.add_program_from_file(program_id(), SO_PATH)
+        .expect("clob.so missing — run `bun run program:build:clob` first");
+    let payer = Keypair::new();
+    let admin = Keypair::new();
+    let place_auth = Keypair::new();
+    let squatter = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 100_000_000_000).unwrap();
+
+    let market_kp = Keypair::new();
+    let space = ClobMarketV0::space_for(16);
+    let rent = svm.minimum_balance_for_rent_exemption(space);
+    svm.set_account(
+        market_kp.pubkey(),
+        solana_account::Account {
+            lamports: rent,
+            data: vec![0u8; space],
+            owner: program_id(),
+            executable: false,
+            rent_epoch: 0,
+        },
+    )
+    .unwrap();
+
+    let config = MarketConfigV0 {
+        market_index: 0,
+        base_precision: BASE_PRECISION,
+        order_tick_size: 1,
+        order_step_size: 1,
+        min_order_size: 1,
+        blocking_min_size: 0,
+        default_activation_delay_slots: 1,
+        max_activation_delay_slots: 20,
+        unknown_user_grace_slots: 2,
+        evict_threshold_per_side: 6,
+        max_quote_levels: 128,
+        max_execute_fills: 64,
+        max_execute_users: 32,
+    };
+    let ix =
+        instruction::InitializeMarketV0 { config }.to_instruction(accounts::InitializeMarketV0 {
+            authority: addr(admin.pubkey()),
+            place_authority: addr(place_auth.pubkey()),
+            market: addr(market_kp.pubkey()),
+        });
+
+    // A squatter holding the config keys but not the market keypair is
+    // refused.
+    let blockhash = svm.latest_blockhash();
+    let msg = Message::new_with_blockhash(
+        core::slice::from_ref(&ix),
+        Some(&payer.pubkey()),
+        &blockhash,
+    );
+    let signers: Vec<&dyn anchor_v2_testing::Signer> = vec![&payer, &admin, &squatter];
+    assert!(
+        VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &signers).is_err(),
+        "the market's signature cannot be produced without its keypair"
+    );
+
+    // The creator holds it and initializes.
+    svm.expire_blockhash();
+    let blockhash = svm.latest_blockhash();
+    let msg = Message::new_with_blockhash(&[ix], Some(&payer.pubkey()), &blockhash);
+    let signers: Vec<&dyn anchor_v2_testing::Signer> = vec![&payer, &admin, &market_kp];
+    let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &signers).unwrap();
+    svm.send_transaction(tx).expect("the creator initializes");
+}
+
+fn close_market_ix(ctx: &Ctx, authority: Pubkey, recipient: Pubkey) -> Instruction {
+    instruction::CloseMarketV0 {}.to_instruction(accounts::CloseMarketV0 {
+        market: addr(ctx.market),
+        authority: addr(authority),
+        rent_recipient: addr(recipient),
+    })
+}
+
+/// A market account holds the whole arena, so its rent is worth recovering.
+/// Only the market authority closes it, and only while it is empty: every
+/// resting order is also an open order in the caller's margin aggregates, and
+/// a close reports no removal for them.
+#[test]
+fn only_the_authority_closes_an_empty_market_and_takes_the_rent() {
+    let mut ctx = setup_with_capacity(16);
+    let user = addr(Pubkey::new_unique());
+    let order = place(&mut ctx, place_args(Side::Ask, 100, 5), user);
+
+    let recipient = Pubkey::new_unique();
+    // A book with an order in it does not close.
+    assert_clob_err(
+        {
+            let ix = close_market_ix(&ctx, ctx.admin.pubkey(), recipient);
+            send(&mut ctx, ix)
+        },
+        err_code(clob::error::ClobError::MarketNotEmpty),
+    );
+
+    cancel(&mut ctx, order, user).unwrap();
+
+    // The place authority is not the config authority.
+    assert_clob_err(
+        {
+            let ix = close_market_ix(&ctx, ctx.place_auth.pubkey(), recipient);
+            send(&mut ctx, ix)
+        },
+        err_code(clob::error::ClobError::InvalidAuthority),
+    );
+
+    let rent = ctx.svm.get_account(&ctx.market).unwrap().lamports;
+    assert!(rent > 0);
+    let ix = close_market_ix(&ctx, ctx.admin.pubkey(), recipient);
+    send(&mut ctx, ix).expect("an empty market closes");
+    assert_eq!(ctx.svm.get_account(&recipient).unwrap().lamports, rent);
+}
+
+/// An order whose `max_ts` falls inside its own activation delay expires
+/// before anything can match it. It would still take an arena slot and still
+/// sit at the head of its side until the expiry crank reclaims it.
+#[test]
+fn an_order_that_cannot_outlive_its_activation_delay_is_refused() {
+    let mut ctx = setup();
+    let user = addr(Pubkey::new_unique());
+    set_unix_timestamp(&mut ctx, 1_000);
+
+    // Twenty slots of delay is at least eight seconds.
+    let delayed = |max_ts: i64| PlaceOrderArgsV0 {
+        activation_delay_slots: Some(20),
+        max_ts,
+        ..place_args(Side::Ask, 100, 5)
+    };
+    assert_clob_err(
+        {
+            let ix = place_ix(&ctx, delayed(1_005), user);
+            send(&mut ctx, ix)
+        },
+        err_code(clob::error::ClobError::MaxTsBeforeActivation),
+    );
+    // A lifetime that reaches past the activation is accepted, and so is a
+    // good-till-cancelled order.
+    let ix = place_ix(&ctx, delayed(1_100), user);
+    send(&mut ctx, ix).expect("a lifetime past the activation rests");
+    let ix = place_ix(&ctx, delayed(0), user);
+    send(&mut ctx, ix).expect("good-till-cancelled rests");
+
+    // With no delay the order only has to outlive the placement itself.
+    let ix = place_ix(
+        &ctx,
+        PlaceOrderArgsV0 {
+            activation_delay_slots: Some(0),
+            max_ts: 1_001,
+            ..place_args(Side::Ask, 100, 5)
+        },
+        user,
+    );
+    send(&mut ctx, ix).expect("no delay to outlive");
+}
+
+/// `order_rules_v0` reports the live side counts and the arena, so a caller
+/// that rests a taker's remainder can see a full side coming. A placement
+/// onto a full side is refused, and the refusal takes the whole fill the
+/// remainder came out of with it.
+#[test]
+fn the_order_rules_report_what_the_sides_hold() {
+    let mut ctx = setup_with_capacity(16);
+    let user = addr(Pubkey::new_unique());
+
+    let rules = |ctx: &mut Ctx| {
+        let ix = instruction::OrderRulesV0 {}.to_instruction(accounts::OrderRulesV0Accounts {
+            market: addr(ctx.market),
+        });
+        let meta = send(ctx, ix).unwrap();
+        let rules: clob::OrderRulesV0 = anchor_lang::wincode::config::deserialize(
+            &meta.return_data.data,
+            anchor_lang::BORSH_CONFIG,
+        )
+        .expect("decodes as OrderRulesV0");
+        rules
+    };
+
+    let before = rules(&mut ctx);
+    assert_eq!(before.side_order_counts, [0, 0]);
+    assert_eq!(before.arena_capacity, 16);
+    assert_eq!(before.evict_threshold_per_side, 6);
+    assert_eq!(before.min_order_size, 1);
+    assert_eq!(before.step_size, 1);
+    assert_eq!(before.place_authority, ctx.place_auth.pubkey().to_bytes());
+
+    place(&mut ctx, place_args(Side::Ask, 100, 5), user);
+    place(&mut ctx, place_args(Side::Bid, 90, 5), user);
+    place(&mut ctx, place_args(Side::Bid, 89, 5), user);
+    let after = rules(&mut ctx);
+    assert_eq!(after.side_order_counts, [2, 1]);
+
+    // Fill the ask side to its cap and watch the count reach it.
+    for i in 0..7 {
+        place(&mut ctx, place_args(Side::Ask, 101 + i, 5), user);
+    }
+    let full = rules(&mut ctx);
+    assert_eq!(full.side_order_counts[1], full.arena_capacity / 2);
+    let ix = place_ix(&ctx, place_args(Side::Ask, 200, 5), user);
+    assert_clob_err(
+        send(&mut ctx, ix),
+        err_code(clob::error::ClobError::SideAtCapacity),
     );
 }

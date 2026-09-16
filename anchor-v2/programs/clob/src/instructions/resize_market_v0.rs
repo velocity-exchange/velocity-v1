@@ -36,5 +36,8 @@ pub fn handle_resize_market_v0(
     );
     market.resize_to_capacity(args.new_capacity)?;
     market.top_up(ctx.accounts.payer.as_ref())?;
-    market.grow_free_list()
+    market.grow_free_list()?;
+    // The eviction threshold is bounded by the per-side capacity, and this is
+    // the other instruction that moves that bound.
+    crate::book::validate_evict_threshold(market.evict_threshold_per_side, market.capacity() as u32)
 }

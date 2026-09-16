@@ -1,13 +1,22 @@
-# drfit-idl-gen
+# velocity-idl-gen
 
-⚠️ for velocity-rs there's no need to run this manually. The `build.rs` script will trigger it.
+Generates Rust anchor structs from IDL json.
 
-Generates rust anchor structs from IDL json
-This is implemented rather than another project for a couple reasons:
+There is no need to run this manually for velocity-rs. Its `build.rs` calls
+`generate_rust_types` on the canonical program IDL and writes
+`crates/src/velocity_idl.rs`.
 
-1) `#[repr(C)]` other IDL generation tools do not provide the ability to market structs with `repr(C)` which is necessary for ffi functionality throught the velocity-rs project.
-2) does not rely on anchor vendored solana crates. anchor is pinned to older versions of the solana crates. velocity-rs seeks to be readily upgradable to use lastest solana crates.
+This exists here rather than as another project for two reasons:
 
-## Dev Note ⚠️
-- An important assumption in this code is that the underlying types (serialization and deserialization) does not change among solana crate versions i.e `solana_sdk_1.16::Pubkey == solana_sdk_2.x::Pubkey == anchor_lang::solana_sdk::Pubkey`
-this allows the generated IDL code to ignore the anchor version of crates.
+1. It marks the generated structs `#[repr(C)]`. Other IDL generation tools do not offer
+   that, and the accounts velocity-rs reads are zero-copy, so their field layout has to
+   match the program's C representation byte for byte.
+2. It does not rely on anchor's vendored solana crates. Anchor pins older versions of
+   them, and velocity-rs upgrades to the latest solana crates on its own schedule.
+
+## Dev note
+
+The code assumes the underlying types serialize and deserialize identically across solana
+crate versions, so that `solana_sdk_1.16::Pubkey == solana_sdk_2.x::Pubkey ==
+anchor_lang::solana_sdk::Pubkey`. That is what lets the generated IDL code ignore which
+version of those crates anchor brings in.

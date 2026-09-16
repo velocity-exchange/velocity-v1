@@ -1,36 +1,47 @@
-### Quick Start
+# Quick start
 
-Velocity Jit Market Making, offer fee rebates for providing liquidity.
+A JIT market maker on Velocity fills taker orders during JIT auctions and earns the maker rebate on
+the fills it wins. This is the shortest path from a clean checkout to a running `jitMaker` bot.
 
-1. create and fund an account on Velocity
+## 1. Create and fund an account on Velocity
 
-- can experiment using devnet, for mainnet make sure you understand the risks
-- see [keeper-bots-v2 readme](https://github.com/velocity-exchange/keeper-bots-v2#initialize-user)
-- or see https://docs.velocity.exchange/developers
+Start on devnet while you are still changing the strategy. On mainnet the bot trades real
+collateral and holds whatever inventory its fills leave it with.
 
-2. get a private RPC endpoint
+- [Initialize the user](./README.md#initialize-the-user) and deposit collateral
+- Background reading: https://docs.velocity.exchange/developers
 
-- RPC is node to method to send tx to solana validators
-- _Recommended_: [Helius Free Tier](https://dev.helius.xyz/dashboard/app)
-- more RPC colocation/resources can benefit competitiveness
+## 2. Get a private RPC endpoint
 
-3. examine `src/bots/jitMaker.ts`
+The bot has to submit transactions to Solana validators through an RPC node, and public nodes rate
+limit hard enough to cost you auctions. [Helius](https://dashboard.helius.dev/) has a free tier
+that is enough to start. Closer colocation and a higher rate limit both help you win more fills.
 
-- see/modify the strategy for providing jit liquidity
-- default tries to intelligently provide within max leverage of 1x
-- optionally can hedge perpetual with spot if available
-- optionally set decision criteria on a per user basis
+## 3. Read `src/bots/jitMaker.ts`
 
-4. update parameters in `jitMaker.config.yaml`
+This is the strategy, and it is meant to be edited.
 
-- set the markets willing to provide jit liquidity
+- It quotes at the current top of book in the DLOB and sizes its maximum position to stay within
+  `targetLeverage`, which defaults to 1 and is divided across the markets a subaccount makes
+- It can make perp or spot markets, selected by the `marketType` field in the bot config
+- It can skip specific counterparties through the jitter's user filter
 
-5. run strategy
+## 4. Set your parameters in `jitMaker.config.yaml`
 
-- `yarn run dev --config-file=jitMaker.config.yaml`
-- track and monitor to make improvements
+Choose which markets to quote, and which subaccount quotes each one. `subaccounts` and
+`perpMarketIndicies` are matched position by position, and every subaccount used by the bot must
+also be listed under `global.subaccounts`.
 
-6. join discord / open PR
+## 5. Run it
 
-- Velocity promotes a open and helpful development community
-- get technical help, discuss ideas, and make internet friends :D
+```shell
+bun run dev --config-file=jitMaker.config.yaml
+```
+
+Prometheus metrics are on `localhost:9464/metrics`. Watch fill rate and inventory there before you
+change anything.
+
+## 6. Ask questions or send a patch
+
+Join the [Discord](https://discord.com/invite/95kByNnDy5) for technical help, or open a pull
+request against this repo.

@@ -1,56 +1,53 @@
-# VelocityClient Callback Subscriptions Example
+# VelocityClient callback subscriptions example
 
-This example demonstrates how to subscribe to the VelocityClient with callbacks and process market updates in real-time.
-
-## Overview
-
-This example shows how to:
-
-- Subscribe to Velocity market updates using the callback system
-- Deserialize market account data
-- Access AMM fields like `base_asset_amount_with_amm`
-- Handle market updates efficiently
+Subscribes to every perp market with a callback and prints each market's
+`base_asset_amount_with_amm` as updates arrive. It covers deserializing market account
+data, reading AMM fields, and where the callback API bites.
 
 ## Usage
 
-### Quick Start (Mainnet)
+Mainnet, with the default RPC:
 
 ```bash
 cd examples/velocity-client-callbacks
 cargo run
 ```
 
-### With Custom RPC Endpoint
+With a custom RPC endpoint:
 
 ```bash
 RPC_URL=https://your-rpc-endpoint.com cargo run
 ```
 
-### Configuration Options
+Other options:
 
 ```bash
-# Run for 60 seconds
+# Run for 60 seconds (default 30)
 cargo run -- --duration 60
 
-RPC_URL=https://your-rpc-endpoint.com cargo run
+# Devnet instead of mainnet
+cargo run -- --devnet
 
 # Debug logging
 RUST_LOG=debug cargo run
 ```
 
-## Callback Implementation
+`--rpc-url` sets the endpoint too, and `RPC_URL` overrides it when both are present. The
+client converts the http url to a websocket one for the subscriptions.
 
-### Subscribing to Market Updates
+## Callback implementation
+
+Subscribing to market updates:
 
 ```rust
 // Subscribe to perp markets with a callback
-client.subscribe_markets_with_callback(&markets, Some(|update| {
+client.subscribe_markets_with_callback(&markets, |update| {
     // Process market update
     process_market_update(update);
-})).await?;
+}).await?;
 ```
 
-### Processing Market Data
+Processing market data:
 
 ```rust
 // Callback to process market updates
@@ -71,34 +68,27 @@ let callback = move |update: &AccountUpdate| {
 };
 ```
 
-## Important Gotchas and Considerations
+## Gotchas
 
-### 1. **Account Data Deserialization**
+**Account data deserialization.** Decode zero-copy accounts (`PerpMarket`, `SpotMarket`,
+`User`, …) with the SDK's alignment-safe readers:
+`velocity_rs::utils::try_deser_zero_copy::<T>(data)` (or `deser_zero_copy`), or
+`client.get_account::<T>(..)` and the account-map getters. Do **not** call anchor's
+`T::try_deserialize` on raw account bytes. For 16-byte-aligned accounts, meaning those with
+`u128`/`i128` fields such as `PerpMarket` and `SpotMarket`, it casts by reference and panics
+on the byte-aligned `Vec<u8>` an update carries (`from_bytes` gives
+`TargetAlignmentGreaterAndInputNotAligned`). Handle decode errors instead of unwrapping;
+not every update is a valid account.
 
-- Decode zero-copy accounts (`PerpMarket`, `SpotMarket`, `User`, …) with the
-  SDK's alignment-safe readers — `velocity_rs::utils::try_deser_zero_copy::<T>(data)`
-  (or `deser_zero_copy`), or `client.get_account::<T>(..)` / the account-map
-  getters. Do **not** use anchor's `T::try_deserialize` on raw account bytes:
-  for 16-byte-aligned accounts (those with `u128`/`i128` fields, e.g.
-  `PerpMarket`/`SpotMarket`) it casts by reference and panics on the
-  byte-aligned `Vec<u8>` an update carries
-  (`from_bytes` → `TargetAlignmentGreaterAndInputNotAligned`).
-- Handle deserialization errors gracefully — not all updates may be valid
+**Callback lifetime and state.** The callback must be `Fn + Send + Sync + Clone + 'static`,
+so it captures state by value. Share mutable state through `Arc<Mutex<..>>`.
 
-### 2. **Callback Lifetime and State**
+**Subscription management.** One callback is registered per market: subscribing to a market
+the client already holds a subscription for skips it, so the second callback never fires.
+These methods also return `AlreadySubscribed` once the client is subscribed over gRPC.
+Subscriptions reconnect and replay themselves after a network drop. Call
+`client.unsubscribe()` when you are done to release the subscriptions.
 
-- Callbacks capture state by value or reference
-- Use `Arc<Mutex<>>` for shared mutable state across callbacks
-- Callbacks run on the subscription thread - avoid blocking operations
-
-### 3. **Subscription Management**
-
-- Always call `unsubscribe()` when done to clean up resources
-- Subscriptions auto-reconnect on network issues
-- Multiple callbacks can subscribe to the same market
-
-### 4. **Performance Considerations**
-
-- Callbacks execute synchronously - keep them fast
-- Heavy computation should be offloaded to separate tasks
-- Consider batching updates if processing is expensive
+**Performance.** Callbacks run on the subscription task and block it while they run, so keep
+them short, push heavy computation onto another task, and batch updates when processing is
+expensive.

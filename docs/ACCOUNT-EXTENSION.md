@@ -65,9 +65,9 @@ every deployed struct) before a real extension exists. Compiled out of productio
 (`mainnet-beta` without `anchor-test`); test builds keep it so the integration suite can exercise
 the flow.
 
-Because `extend_account` ships **before** any real extension, it is already deployed and dormant
-by the time it is needed. The upgrade that finally eats the padding needs no new tooling; the
-instruction resolves its targets from whatever binary is live.
+Because `extend_account` ships before any real extension, it is already deployed and dormant by
+the time it is needed. It resolves its targets from whatever binary is live, so the upgrade that
+consumes the last of a struct's padding needs no new instruction.
 
 ## The migration runbook
 
@@ -146,5 +146,5 @@ expected buffer length. Concretely:
 - **Reordering, inserting, or widening existing fields.** That is a layout break, not an
   extension; existing bytes would be reinterpreted wrongly. The only safe growth is claiming
   trailing padding and appending past the old end.
-- **Shrinking.** Never supported; it truncates live data, and the rent refund would make any
-  shrink path a drain vector if its key were ever compromised.
+- **Shrinking.** Never supported; it truncates live data, and the rent refund would let a
+  compromised signer drain lamports out of live accounts.

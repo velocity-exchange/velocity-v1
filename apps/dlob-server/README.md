@@ -1,167 +1,228 @@
 <div align="center">
-  <img height="120x" src="https://uploads-ssl.webflow.com/611580035ad59b20437eb024/616f97a42f5637c4517d0193_Logo%20(1)%20(1).png" />
+  <img height="120" src="https://docs.velocity.exchange/assets/velocity.svg" />
 
-  <h1 style="margin-top:20px;">DLOB Server for Drift Protocol v2</h1>
+  <h1>DLOB server</h1>
 
   <p>
-    <a href="https://docs.velocity.exchange/developers/trading-automation/keeper-bots"><img alt="Docs" src="https://img.shields.io/badge/docs-developers-blueviolet" /></a>
+    <a href="https://docs.velocity.exchange/developers/ecosystem-builders/orderbook-and-ws"><img alt="Docs" src="https://img.shields.io/badge/docs-developers-blueviolet" /></a>
     <a href="https://discord.com/invite/95kByNnDy5"><img alt="Discord Chat" src="https://img.shields.io/discord/849494028176588802?color=blueviolet" /></a>
-    <a href="https://opensource.org/licenses/Apache-2.0"><img alt="License" src="https://img.shields.io/github/license/project-serum/anchor?color=blueviolet" /></a>
+    <a href="https://opensource.org/licenses/Apache-2.0"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blueviolet" /></a>
   </p>
 </div>
 
-# DLOB Server
+This service reads the Velocity [DLOB](https://docs.velocity.exchange/protocol/how-it-works/orderbook-and-keepers)
+from a Solana RPC node and serves it to clients. It runs in two modes that share the same codebase.
 
-This is the backend server that provides a REST API for the drift [DLOB](https://docs.velocity.exchange/protocol/how-it-works/orderbook-and-keepers).
+In HTTP mode, `src/index.ts` keeps a `VelocityClient` subscribed to perp and spot markets, builds
+L2 and L3 order books from a DLOB source (websocket account subscriptions, gRPC, or the SDK's
+`OrderSubscriber`), and answers REST requests. Most responses are read from Redis when a warm entry
+exists and are rebuilt from the in-memory DLOB when it does not.
 
-## Features
-
-- Real-time DLOB data publishing
-- Support for both perp and spot markets
-- Multiple subscription methods (WebSocket, gRPC, polling)
-- Health checks and metrics
-- **TOB (Top of Book) monitoring for stuck orders** (see [TOB Monitoring Configuration](#tob-monitoring-configuration))
+In websocket mode, `src/publishers/dlobPublisher.ts` snapshots the DLOB on an interval and writes
+each snapshot to Redis, and `src/wsConnectionManager.ts` accepts client connections and relays the
+latest snapshot for the channels a client subscribed to. The two processes talk only through Redis
+pub/sub, so you can scale them independently.
 
 # Run the server
 
 ## Setup
 
-Install dependencies and build:
+Install dependencies once at the repo root, then build this app:
 
-```
-yarn install
-yarn build
+```bash
+bun install
+bunx turbo run build --filter=@velocity-exchange/dlob-server
 ```
 
-Set the necessary environment variables:
+Copy the example environment file and fill it in. Every command below this point runs from
+`apps/dlob-server`:
 
-```
+```bash
 cp .env.example .env
 ```
 
-## Security
+## Environment variables
 
-### Pre-commit Hook
+| Variable                              | Description                                                                     | Default            |
+| ------------------------------------- | ------------------------------------------------------------------------------- | ------------------ |
+| `ENDPOINT`                            | Solana RPC HTTP endpoint.                                                        | none, required     |
+| `WS_ENDPOINT`                         | Solana RPC websocket endpoint.                                                   | derived by web3.js |
+| `ENV`                                 | Network to connect to, `devnet` or `mainnet-beta`.                               | `devnet`           |
+| `PORT`                                | Port the HTTP server listens on.                                                 | `6969`             |
+| `METRICS_PORT`                        | Port the Prometheus exporter listens on.                                         | `9464`             |
+| `USE_WEBSOCKET`                       | Set `true` to source the DLOB from websocket account subscriptions.              | `false`            |
+| `USE_GRPC`                            | Set `true` to source the DLOB from a Yellowstone gRPC stream.                    | `false`            |
+| `GRPC_ENDPOINT`                       | gRPC endpoint, used when `USE_GRPC` is set.                                      | `ENDPOINT/$TOKEN`  |
+| `TOKEN`                               | gRPC auth token appended to `ENDPOINT` when `GRPC_ENDPOINT` is unset.            | none               |
+| `USE_ORDER_SUBSCRIBER`                | Set `true` to source the DLOB from the SDK `OrderSubscriber`.                    | `false`            |
+| `DISABLE_GPA_REFRESH`                 | Set `true` to stop periodically refreshing user accounts via `getProgramAccounts`. | `false`          |
+| `ORDERBOOK_UPDATE_INTERVAL`           | Milliseconds between DLOB snapshots in the publisher.                            | `400`              |
+| `PERP_MARKETS_TO_LOAD`                | Comma separated perp market indexes to load. Omit to load all.                   | all                |
+| `SPOT_MARKETS_TO_LOAD`                | Comma separated spot market indexes to load. Omit to load all.                   | all                |
+| `ELASTICACHE_HOST`                    | Redis host. In cluster mode this is the seed node and the rest are discovered.   | `localhost`        |
+| `ELASTICACHE_PORT`                    | Redis port.                                                                      | `6379`             |
+| `REDIS_CLIENT`                        | Comma separated key prefixes to use, from `DLOB` and `DLOB_HELIUS`.              | see below          |
+| `LOCAL_CACHE`                         | Set `true` alongside `RUNNING_LOCAL` to talk to a local Redis cluster.           | unset              |
+| `RUNNING_LOCAL`                       | Set `true` when Redis runs on the same machine.                                  | unset              |
+| `WS_PORT`                             | Port the websocket connection manager listens on.                                | `3000`             |
 
-This repository uses [Husky](https://typicode.github.io/husky/) to manage Git hooks. A pre-commit hook automatically checks for potential secrets before each commit. The hook will:
-
-- Scan for RPC URLs, API keys, tokens, and other potential secrets
-- Prevent commits that contain suspicious patterns
-- Provide helpful guidance if false positives are detected
-
-The hook is automatically installed when you run `npm install` (via the `prepare` script). If you need to bypass it for a specific commit, use:
-
-```bash
-git commit --no-verify
-```
-
-### Scripts
-
-The `scripts/` directory contains utility scripts:
-
-- `check-secrets.sh` - Secret detection script used by the pre-commit hook
-
-## Environment Variables
-
-To properly configure the DLOB server, set the following environment variables in your `.env` file:
-
-| Variable                      | Description                                                     | Example Value                       |
-| ----------------------------- | --------------------------------------------------------------- | ----------------------------------- |
-| `ENDPOINT`                    | The Solana RPC node http endpoint.                              | `https://your-private-rpc-node.com` |
-| `WS_ENDPOINT`                 | The Solana RPC node websocket endpoint.                         | `wss://your-private-rpc-node.com`   |
-| `USE_WEBSOCKET`               | Flag to enable WebSocket connection.                            | `true`                              |
-| `USE_ORDER_SUBSCRIBER`        | Flag to enable order subscriber DLOB source.                    | `true`                              |
-| `DISABLE_GPA_REFRESH`         | Flag to disable periodic refresh using `getProgramAccounts`.    | `true`                              |
-| `ENV`                         | The network environment the server is connecting to.            | `mainnet-beta`                      |
-| `PORT`                        | The port number the HTTP server listens on.                     | `6969`                              |
-| `METRICS_PORT`                | The port number for Prometheus metrics.                         | `9465`                              |
-| `PRIVATE_KEY`                 | Path to the Solana private key file.                            | `/path/to/keypair.json`             |
-| `RATE_LIMIT_CALLS_PER_SECOND` | Maximum number of API calls per second.                         | `100`                               |
-| `PERP_MARKETS_TO_LOAD`        | Number of perpetual markets to load at startup.                 | `0`                                 |
-| `SPOT_MARKETS_TO_LOAD`        | Number of spot markets to load at startup.                      | `5`                                 |
-| `ELASTICACHE_HOST`            | (for websocket server) Redis host endpoint.                     | `localhost`                         |
-| `ELASTICACHE_PORT`            | (for websocket server) Redis port.                              | `6379`                              |
-| `REDIS_CLIENT`                | (for websocket server) Redis client type (DLOB/DLOB_HELIUS).    | `DLOB`                              |
-| `WS_PORT`                     | (for websocket server) The port to run the websocket server on. | `3000`                              |
-
-Note: multiple Redis hosts can be provided by providing a comma separated string.
+When `REDIS_CLIENT` is unset the HTTP server and the connection manager open clients for both
+`DLOB` and `DLOB_HELIUS`, while the publisher falls back to `DLOB` alone.
 
 ## HTTP mode
 
-The HTTP server as documented in the [orderbook and websocket docs](https://docs.velocity.exchange/developers/ecosystem-builders/orderbook-and-ws) can be run with, and by default accessible on `http://127.0.0.1:6969`:
+Start the HTTP server. It listens on `http://127.0.0.1:6969` unless you set `PORT`.
 
+```bash
+bun run dev
 ```
-yarn run dev
-```
+
+The endpoints and their response shapes are documented in the
+[orderbook and websocket docs](https://docs.velocity.exchange/developers/ecosystem-builders/orderbook-and-ws).
+
+`src/serverLite.ts` is a trimmed variant that serves only `/health`, `/startup`, `/` and `/l3`
+straight out of Redis, without subscribing to markets. Run it with `bun run server-lite`.
 
 ## Websocket mode
 
-The websocket server has 2 components, the `dlob-publisher` that takes frequent snapshots of the DLOB and publishes them to Redis, and `ws-manager` listens for new connections and sends the latest DLOB to ws clients, the two components communicate through Redis pub-sub.
+Websocket mode needs a Redis instance. Point `ELASTICACHE_HOST` and `ELASTICACHE_PORT` at it, and
+set `RUNNING_LOCAL=true` plus `LOCAL_CACHE=true` when that Redis is a local cluster.
 
-To run the websocket server, a Redis cache is required, and the following environment variables must be set:
+In the first terminal, start the Redis cluster:
 
-- `REDIS_HOSTS`
-- `REDIS_PASSWORDS`
-- `REDIS_PORTS`
-
-In the first terminal, start the redis cluster:
-
-```
+```bash
 bash redisCluster.sh start
 bash redisCluster.sh create
 ```
 
-In second terminal, run:
+In the second terminal, run the publisher:
 
-```
-yarn run dlob-publish
-```
-
-In a third terminal, run:
-
-```
-yarn run ws-manager
+```bash
+bun run dlob-publish
 ```
 
-Then connect to the ws server at ws://127.0.0.1:3000
+In a third terminal, run the connection manager:
 
-When you're done, stop the redis cluster:
-
+```bash
+bun run ws-manager
 ```
+
+Clients then connect to `ws://127.0.0.1:3000/ws`.
+
+When you are done, stop the cluster:
+
+```bash
 bash redisCluster.sh stop
 ```
 
-# Run the example client
+# Client examples
 
-Documentation for connecting to the dlob server is available in the [orderbook and websocket docs](https://docs.velocity.exchange/developers/ecosystem-builders/orderbook-and-ws)
+## HTTP
 
-TODO: complete client examples.
+Every order book route identifies a market either by `marketName`, or by `marketIndex` and
+`marketType` together. `marketType` is `perp` or `spot`. Supplying neither returns 400.
 
-## TOB (Top of Book) Monitoring [#tob-monitoring]
+Check liveness. This returns unhealthy when the slot source stops advancing, and `/startup` reports
+whether the initial subscription finished:
 
-The server includes a TOB monitoring feature that detects when order books become stuck due to ghost/stuck orders. This is particularly useful for gRPC connections that may miss updates.
+```bash
+curl 'http://127.0.0.1:6969/health'
+```
 
-### Configuration
+Fetch an aggregated L2 book. `depth` is clamped to 100 and defaults to 100. Set
+`includeIndicative=true` to include indicative orders:
 
-Set the following environment variables to enable and configure TOB monitoring:
+```bash
+curl 'http://127.0.0.1:6969/l2?marketName=SOL-PERP&depth=10'
+curl 'http://127.0.0.1:6969/l2?marketType=perp&marketIndex=0&depth=10&includeIndicative=true'
+```
 
-- `ENABLE_TOB_MONITORING=true` - Enable TOB monitoring (default: false)
-- `TOB_CHECK_INTERVAL=60000` - How often to check TOB (default: 60 seconds)
-- `TOB_STUCK_THRESHOLD=60000` - How long TOB can be stuck before resubscribing (default: 60 seconds)
-- `TOP_MONITORING_ENABLED_PERP_MARKETS=0,1,2` - Comma-separated list of perp market indexes to monitor for TOB (default: 0,1,2 for SOL-PERP, BTC-PERP, ETH-PERP)
+Fetch several L2 books in one request. Each query parameter is a comma separated list, and all
+lists must be the same length:
 
-### How it works
+```bash
+curl 'http://127.0.0.1:6969/batchL2?marketName=SOL-PERP,BTC-PERP&depth=5,5'
+```
 
-1. Checks if the current node is configured to handle any TOB monitoring markets
-2. Only enables monitoring if the node has TOB monitoring markets configured
-3. Monitors the top bid/ask prices for TOB monitoring perp markets on this node
-4. If TOB hasn't changed for the configured threshold time, triggers a resubscribe
-5. Performs unsubscribe → subscribe → fetch sequence on the OrderSubscriber instance
-6. Logs warnings and updates metrics for monitoring
+Fetch the order-level L3 book. This route is served only from Redis and returns 500 when no
+snapshot has been published yet:
 
-### Metrics
+```bash
+curl 'http://127.0.0.1:6969/l3?marketName=SOL-PERP'
+```
 
-The following metrics are available for TOB monitoring:
+Find the makers sitting at the top of one side of the book. `side` must be `bid` or `ask`:
 
-- `tob_resubscribe` - Counter for resubscribe attempts (with success/failure labels)
-- `tob_stuck_duration` - Gauge showing how long TOB has been stuck for each market
+```bash
+curl 'http://127.0.0.1:6969/topMakers?marketName=SOL-PERP&side=bid&limit=5'
+```
+
+Other routes are `/priorityFees` and `/batchPriorityFees` (both keyed by `marketType` and
+`marketIndex`, served from the `DLOB_HELIUS` Redis prefix), `/unsettledPnlUsers`, `/pythLazer`,
+and `/auctionParams`, which requires `marketIndex`, `marketType`, `direction`, `amount` and
+`assetType`.
+
+## Websocket
+
+Subscribe by sending a JSON message per channel after the socket opens. `channel` is `orderbook`
+or `trades`, and `market` is the market name:
+
+```json
+{ "type": "subscribe", "marketType": "perp", "channel": "orderbook", "market": "SOL-PERP" }
+{ "type": "subscribe", "marketType": "spot", "channel": "trades", "market": "SOL" }
+```
+
+Send the same object with `"type": "unsubscribe"` to stop a stream. `example/wsClient.ts` is a
+working client you can run directly with `ts-node`.
+
+`example/client.ts` and `example/clientWithSlot.ts` (the `example` and `exampleWithSlot` scripts)
+fetch `/orders/idl`, an endpoint this server no longer exposes, so they do not run against the
+current build.
+
+# TOB monitoring
+
+The publisher watches the top of book for a set of perp markets and forces the `OrderSubscriber` to
+resubscribe when the book goes stale. Ghost orders that linger at the top of book are usually a
+symptom of dropped account updates, which gRPC streams are prone to.
+
+Monitoring is active only when all three of these hold: `ENABLE_TOB_MONITORING` is on,
+`USE_ORDER_SUBSCRIBER` is on, and at least one monitored market index is loaded by this node.
+
+## Configuration
+
+- `ENABLE_TOB_MONITORING=false` turns monitoring off. It is on by default, including when the
+  variable is unset.
+- `TOB_CHECK_INTERVAL=60000` sets how often the check runs, in milliseconds. Default 60 seconds.
+- `TOB_STUCK_THRESHOLD=60000` sets how long the top of book may sit unchanged before the publisher
+  resubscribes, in milliseconds. Default 60 seconds.
+- `TOB_MONITORING_ENABLED_PERP_MARKETS=0,1,2` lists the perp market indexes to watch. Default
+  `0,1,2`.
+
+## How it works
+
+On each interval the publisher reads the L3 book for every monitored market that this node loaded,
+standardized to the market's `orderTickSize`. It identifies the best bid and best ask by maker
+pubkey and order id, tracking each side independently so an empty side still counts as a state. If
+either identifier changes, it records the time and moves on. If neither has changed for longer than
+`TOB_STUCK_THRESHOLD`, it logs a warning, records the stall duration, and runs unsubscribe,
+subscribe, then fetch on the `OrderSubscriber` to clear the stale state.
+
+## Metrics
+
+- `tob_resubscribe` counts resubscribe attempts, labeled by market index and by whether the
+  attempt succeeded.
+- `tob_stuck_duration` records how many seconds the top of book had been unchanged when a
+  resubscribe fired.
+
+# Scripts
+
+`scripts/check-secrets.sh` scans staged files for RPC URLs, API keys, private keys and similar
+patterns, and exits non-zero on a match. The repo's [Husky](https://typicode.github.io/husky/)
+`pre-commit` hook is installed by `bun install` at the repo root through the `prepare` script, but
+it currently returns early and does not run this scan, so run it yourself before committing:
+
+```bash
+bash scripts/check-secrets.sh
+```
+
+Pass `--no-verify` to `git commit` to skip Husky hooks entirely.

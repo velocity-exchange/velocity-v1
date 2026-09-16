@@ -7889,6 +7889,7 @@ export class VelocityClient {
 	 * @param slippageBps - Max slippage in basis points passed to the swap provider's routing API.
 	 * @param swapMode - `ExactIn` (default) or `ExactOut`. Ignored when `quote` is passed — the
 	 * quote's own mode wins.
+	 * Jupiter serves `ExactOut` only under `apiVersion: 'v1'` — the default v2 client rejects it.
 	 * @param reduceOnly - Whether the in/out token's position on the velocity account must reduce
 	 * (not flip sign); enforced by `endSwap` after the swap completes.
 	 * @param quote - Pre-fetched quote (skips an extra round-trip to the swap provider). Must be
@@ -8054,7 +8055,9 @@ export class VelocityClient {
 	 * @param slippageBps - Max slippage in basis points; only used when a quote has to be fetched.
 	 * @param swapMode - `ExactIn` (default) or `ExactOut`. The mode a quote is fetched at; the
 	 * resulting quote's own mode is what sizes the swap, so it is ignored when `quote` is passed.
+	 * Jupiter serves `ExactOut` only under `apiVersion: 'v1'` — the default v2 client rejects it.
 	 * @param onlyDirectRoutes - Restricts a fetched quote to single-hop routes.
+	 * Jupiter honours this only under `apiVersion: 'v1'` — the default v2 client rejects it.
 	 * @param maxAccounts - Account budget for a fetched route.
 	 * @param reduceOnly - Which side must not increase in magnitude; enforced by `endSwap`.
 	 * @param quote - Pre-fetched quote. Authoritative when passed: its `swapMode` is the effective
@@ -11134,7 +11137,9 @@ export class VelocityClient {
 	 * client's associated token account for `liabilityMarketIndex`, created if missing.
 	 * @param slippageBps - Max slippage in basis points passed to Jupiter.
 	 * @param swapMode - Jupiter swap mode (`ExactIn`/`ExactOut`).
+	 * Jupiter serves `ExactOut` only under `apiVersion: 'v1'` — the default v2 client rejects it.
 	 * @param onlyDirectRoutes - Restrict Jupiter to single-hop routes.
+	 * Jupiter honours this only under `apiVersion: 'v1'` — the default v2 client rejects it.
 	 * @param quote - Pre-fetched Jupiter quote (skips an extra round-trip).
 	 * @param userAccount - Decoded user account being liquidated.
 	 * @param userAccountPublicKey - Public key of the user account being liquidated.

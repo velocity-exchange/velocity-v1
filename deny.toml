@@ -160,57 +160,15 @@ confidence-threshold = 0.9
 private = { ignore = true }
 
 # --- Clarifications: crates whose manifest carries no `license` field. ---
+#
+# First-party crates declare `license` in their own `[package]` table, so none
+# of them needs an entry here.
 
 [[licenses.clarify]]
 # mpl-token-metadata ships no `license` field in its manifest. Metaplex licenses
 # the token-metadata program under Apache-2.0
 # (https://github.com/metaplex-foundation/mpl-token-metadata/blob/main/LICENSE).
 name = "mpl-token-metadata"
-expression = "Apache-2.0"
-license-files = []
-
-# First-party crates. Every one of them is governed by the repository's root
-# ./LICENSE (Apache-2.0) but omits `license` from its own `[package]` table.
-# Adding `license = "Apache-2.0"` to those six manifests would make these
-# clarifications unnecessary; that is a manifest change, not a CI change, so it
-# is left for a separate PR.
-[[licenses.clarify]]
-name = "velocity"
-expression = "Apache-2.0"
-license-files = []
-
-[[licenses.clarify]]
-name = "vaults"
-expression = "Apache-2.0"
-license-files = []
-
-[[licenses.clarify]]
-name = "jit-proxy"
-expression = "Apache-2.0"
-license-files = []
-
-[[licenses.clarify]]
-name = "pyth"
-expression = "Apache-2.0"
-license-files = []
-
-[[licenses.clarify]]
-name = "pyth_lazer"
-expression = "Apache-2.0"
-license-files = []
-
-[[licenses.clarify]]
-name = "token-faucet"
-expression = "Apache-2.0"
-license-files = []
-
-[[licenses.clarify]]
-name = "swift-server"
-expression = "Apache-2.0"
-license-files = []
-
-[[licenses.clarify]]
-name = "dlob-builder"
 expression = "Apache-2.0"
 license-files = []
 

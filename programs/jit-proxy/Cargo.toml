@@ -3,6 +3,7 @@ name = "jit-proxy"
 version = "0.22.0"
 description = "Created with Anchor"
 edition = "2021"
+license = "Apache-2.0"
 
 [lib]
 crate-type = ["cdylib", "lib"]

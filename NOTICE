@@ -1,0 +1,20 @@
+Velocity Protocol v1
+Copyright 2026 Velocity Labs
+
+This product includes software developed by Drift Labs.
+Copyright 2021 Drift Labs
+
+Velocity Protocol v1 is a fork of Drift Protocol v2
+(https://github.com/drift-labs/protocol-v2) at commit 0ae3e3b1d, taken on
+April 1, 2026. Velocity modified the forked code and added new code to it.
+docs/DRIFT-TO-VELOCITY.md records what changed.
+
+Three directories carry their own LICENSE file. That file governs the
+directory in place of the root LICENSE:
+
+  apps/keeper-bots-v2     Apache-2.0, Copyright 2021 Drift Labs
+  rust/velocity-rs        Apache-2.0, Copyright 2021 Drift Labs
+  rust/keep-rs            MIT, Copyright (c) 2024 keep-rs
+
+rust/keep-rs/vendor holds a vendored copy of the third-party crate
+pyth-lazer-protocol. Its Cargo.toml declares Apache-2.0.

@@ -2353,7 +2353,12 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		// user cannot leave its own thresholds stale.
 		const victimUser = userOf(victimKp.publicKey);
 		const userConditions = getUserConditionsPublicKey(VELOCITY_ID, victimUser);
-		await syncUserConditions(victimUser);
+		// With the slab: the sync stores it, the book and the book's program in
+		// the shared account list, and the liquidation's staged executor fills
+		// through the router. A market that names a book refuses a fill that
+		// carries no slab, so a sync without it writes conditions that detect
+		// the liquidation and can never land it.
+		await syncUserConditions(victimUser, [ro(quoterSlab)]);
 		await registerWatch(userConditions);
 
 		// Standing bid for the liquidation's fill leg to route into, close

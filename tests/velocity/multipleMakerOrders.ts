@@ -518,8 +518,12 @@ describe('multiple maker orders', () => {
 		// charges the taker and books to the AMM; it is confined to that leg,
 		// so the size, the record count and the maker fills stand on the
 		// ladder prices alone.
+		//
+		// The shade reaches only the depth a rival actually offers, so the
+		// curve prices the rest of its slice honestly and the taker receives
+		// less than it would if one rival's price repriced the whole slice.
 		assert(takerPosition.baseAssetAmount.eq(new BN('-412388600000')));
-		assert(takerPosition.quoteAssetAmount.eq(new BN('280229030')));
+		assert(takerPosition.quoteAssetAmount.eq(new BN('279599614')));
 
 		const makerPosition = makerVelocityClient.getUser().getPerpPosition(1);
 		console.log(
@@ -620,8 +624,12 @@ describe('multiple maker orders', () => {
 			'dogMarketAfter.amm.baseAssetAmountWithAmm=',
 			dogMarketAfter.amm.baseAssetAmountWithAmm.toString()
 		);
+		// The close routes by price. The curve competes for it only as far as
+		// the rival depth its shade may reach, so the makers take more of the
+		// close and the curve is left holding more than an unbounded shade
+		// would have left it.
 		assert(
-			dogMarketAfter.amm.baseAssetAmountWithAmm.eq(new BN('-66660700000'))
+			dogMarketAfter.amm.baseAssetAmountWithAmm.eq(new BN('-86000000000'))
 		);
 
 		bankrunContextWrapper.printTxLogs(txSig2);

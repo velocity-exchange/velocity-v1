@@ -708,53 +708,6 @@ fn get_max_fill_amounts_for_market(
     get_max_withdraw_for_market_with_token_amount(market, token_amount, is_leaving_velocity)
 }
 
-pub fn find_maker_orders(
-    user: &User,
-    direction: &PositionDirection,
-    market_type: &MarketType,
-    market_index: u16,
-    valid_oracle_price: Option<i64>,
-    slot: u64,
-    tick_size: u64,
-    slot_clock: SlotClock,
-) -> VelocityResult<Vec<(usize, u64)>> {
-    let mut orders: Vec<(usize, u64)> = Vec::with_capacity(32);
-
-    for (order_index, order) in user.orders.iter().enumerate() {
-        if order.status != OrderStatus::Open {
-            continue;
-        }
-        // A slot shadowing a CLOB order carries no open_bids or open_asks
-        // reservation, so matching it here would fill size the book still
-        // holds. The trigger filter below also excludes these today, because
-        // a placed trigger stays untriggered. This check does not rely on
-        // that.
-        if order.is_placed_on_clob() {
-            continue;
-        }
-
-        // if order direction is not same or market type is not same or market index is the same, skip
-        if order.direction != *direction
-            || order.market_type != *market_type
-            || order.market_index != market_index
-        {
-            continue;
-        }
-
-        // if order is not limit order or must be triggered and not triggered, skip
-        if !order.is_limit_order() || (order.must_be_triggered() && !order.triggered()) {
-            continue;
-        }
-
-        let limit_price =
-            order.force_get_limit_price(valid_oracle_price, None, slot, tick_size, slot_clock)?;
-
-        orders.push((order_index, limit_price));
-    }
-
-    Ok(orders)
-}
-
 pub fn calculate_max_perp_order_size(
     user: &User,
     position_index: usize,

@@ -529,8 +529,7 @@ impl OrderUnderFill<'_> {
         router: &mut RouterLeg,
         rev_share_escrow: &mut Option<&mut RevenueShareEscrowZeroCopyMut>,
     ) -> VelocityResult<FillAmounts> {
-        let mut dlob_makers = self.discover_dlob_makers(parties)?;
-        self.gate_match_fills(&mut dlob_makers, router);
+        self.gate_match_fills(router);
 
         if self.conditions.oracle_too_divergent_with_twap(self.state)? {
             // update filler last active so tx doesn't revert
@@ -545,7 +544,7 @@ impl OrderUnderFill<'_> {
             return Ok(FillAmounts::default());
         }
 
-        let filled = self.fill(&dlob_makers, parties, router, rev_share_escrow)?;
+        let filled = self.fill(parties, router, rev_share_escrow)?;
         self.order.write_back(self.taker.user);
 
         self.record_fill_price(filled, parties)?;
@@ -563,57 +562,38 @@ impl OrderUnderFill<'_> {
         Ok(filled)
     }
 
-    /// Every DLOB maker order this fill may match, best price first.
-    fn discover_dlob_makers(
-        &mut self,
-        parties: &mut FillParties,
-    ) -> VelocityResult<Vec<MakerOrderInfo>> {
-        get_maker_orders_info(
-            parties.maps,
-            parties.makers_and_referrer,
-            &mut self.filler.user,
-            &MakerSearch {
-                taker_key: &self.taker.key,
-                taker_order: &self.order.order,
-                maker_direction: self.order.order.direction.opposite(),
-                filler_key: &self.filler.key,
-                filler_reward: self.filler.flat_filler_fee,
-                oracle_price: self.conditions.oracle_price,
-                exchange_match_fills_allowed: self.conditions.exchange_match_fills_allowed,
-                now: self.conditions.now,
-                slot: self.conditions.slot,
-            },
-        )
-    }
-
     /// Withhold every maker-priced source the oracle does not admit.
     ///
-    /// A DLOB match and an external quoter book both execute at their maker's
-    /// price with no auction protection, so a NonPositive, TooVolatile or
-    /// TooUncertain oracle blocks them the way the AMM's own gates block an
-    /// AMM fill. `OracleOrderPrice` is weaker and only decides whether an
-    /// oracle-relative limit resolves. The vAMM keeps its own inclusion gate.
-    ///
-    /// Runs after maker discovery so its expired-maker-order cleanup still
-    /// happens. Only the matching itself is withheld.
-    fn gate_match_fills(&mut self, dlob_makers: &mut Vec<MakerOrderInfo>, router: &mut RouterLeg) {
-        let taker_can_match = can_floored_user_match_with_exchange_oracle(
-            self.taker.user,
-            self.conditions.exchange_match_fills_allowed,
-        );
+    /// An external quoter book executes at its maker's price with no auction
+    /// protection, so a NonPositive, TooVolatile or TooUncertain oracle blocks
+    /// it the way the AMM's own gates block an AMM fill. `OracleOrderPrice` is
+    /// weaker and only decides whether an oracle-relative limit resolves. The
+    /// vAMM keeps its own inclusion gate.
+    fn gate_match_fills(&mut self, router: &mut RouterLeg) {
+        let taker_can_match = self.taker_admits_match();
         if self.conditions.safe_match_fills_allowed && taker_can_match {
             return;
         }
-        if !dlob_makers.is_empty() {
+        if !router.books.is_empty() {
             msg!(
                 "Perp market = {} oracle not valid for match fills (safe={}, taker_exchange={})",
                 self.market_index,
                 self.conditions.safe_match_fills_allowed,
                 taker_can_match,
             );
-            dlob_makers.clear();
         }
         router.books = &[];
+    }
+
+    /// Whether a floored taker may take part in a match fill.
+    ///
+    /// The exchange oracle is the valuation source for the equity floor. An MM
+    /// oracle may still quote the AMM, but it cannot authorize a floored user
+    /// to match against a book while the exchange oracle is invalid for the
+    /// match and margin policy. The rule applies to match fills only, not to
+    /// AMM fills.
+    fn taker_admits_match(&self) -> bool {
+        self.taker.user.equity_floor == 0 || self.conditions.exchange_match_fills_allowed
     }
 
     /// Expire or cancel the order instead of filling it.
@@ -699,7 +679,6 @@ impl OrderUnderFill<'_> {
     /// in no slot fills through the same path.
     fn fill(
         &mut self,
-        dlob_makers: &[MakerOrderInfo],
         parties: &mut FillParties,
         router: &mut RouterLeg,
         rev_share_escrow: &mut Option<&mut RevenueShareEscrowZeroCopyMut>,
@@ -716,10 +695,7 @@ impl OrderUnderFill<'_> {
             &self.rules,
             &self.conditions,
             parties,
-            &mut OfferedLiquidity {
-                dlob_makers,
-                router,
-            },
+            &mut OfferedLiquidity { router },
             &mut FillerSide {
                 user: &mut self.filler.user,
                 stats: &mut self.filler.stats,

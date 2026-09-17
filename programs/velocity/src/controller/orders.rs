@@ -9,7 +9,6 @@
 //! * [`trigger`] fires a dormant trigger order into a live market order.
 //! * [`perp_fill`] fills one perp order in three layers: the order, the
 //!   taker's risk limits, and liquidity.
-//! * [`maker_search`] finds the DLOB maker orders a fill may match.
 //! * [`settle`] settles one filled allocation against the vAMM, a DLOB maker,
 //!   or an external quoter.
 //! * [`cross`] prices a crank that crosses two resting sources.
@@ -23,7 +22,6 @@ use {
     crate::{
         controller::{
             self,
-            funding::settle_funding_payment,
             position::{
                 self, add_new_position, decrease_open_bids_and_asks, get_position_index,
                 increase_open_bids_and_asks, update_position_and_market, PositionDirection,
@@ -42,10 +40,7 @@ use {
             fees::{self, FillFees},
             liquidation::validate_user_not_being_liquidated,
             margin::*,
-            matching::{
-                are_orders_same_market_but_different_sides,
-                calculate_filler_multiplier_for_matched_orders, is_maker_for_taker,
-            },
+            matching::calculate_filler_multiplier_for_matched_orders,
             oracle::{
                 self, is_oracle_valid_for_action, oracle_validity, OracleValidity, VelocityAction,
             },
@@ -79,7 +74,6 @@ use {
                 MarketType, Order, OrderBitFlag, OrderStatus, OrderTriggerCondition, OrderType,
                 User, UserStats,
             },
-            user_map::UserMap,
         },
         validate,
         validation::{
@@ -94,7 +88,6 @@ use {
 mod amend;
 mod cross;
 mod keeper;
-mod maker_search;
 mod perp_fill;
 mod placement;
 mod settle;
@@ -106,7 +99,6 @@ pub use {
     amend::*,
     cross::*,
     keeper::*,
-    maker_search::*,
     perp_fill::{
         fill_perp_order, fill_perp_order_without_external_books, FillParties, FillRequest,
         FillTarget, PerpFillAccounts,

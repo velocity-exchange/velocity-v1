@@ -22,14 +22,10 @@ use {
         },
         state::{
             events::OrderActionExplanation,
-            oracle::OraclePriceData,
             oracle_map::OracleMap,
             perp_market::PerpMarket,
             prop_amm::{ClobUserRefV0, Direction, PriceLevel, QuoterType},
-            quoter::{
-                DlobOrderQuoter, MarketQuoteInputs as QuoteInputs, QuoteContext, QuoterFill,
-                RouterQuoter,
-            },
+            quoter::{MarketQuoteInputs as QuoteInputs, QuoterFill, RouterQuoter},
             user::{OrderStatus, User, UserStats},
             user_map::{UserMap, UserStatsMap},
         },
@@ -42,16 +38,6 @@ use {
     anchor_lang::prelude::{msg, Pubkey},
     std::{cell::RefMut, collections::BTreeMap},
 };
-
-/// One maker order the fill may match, as the single price level the split
-/// sees. The price is the sanitized one discovery froze the order at.
-struct RouterMaker {
-    key: Pubkey,
-    order_index: usize,
-    price: u64,
-    unfilled: u64,
-    is_isolated: bool,
-}
 
 /// What the fill prices against, read once before any allocation executes:
 /// the market snapshot every quoter quotes from, the vAMM state the deferred
@@ -273,22 +259,19 @@ struct ExternalLeg {
     maker_aggregates_tracked: bool,
 }
 
-/// One quote-and-split pass: what the DLOB makers offered, what the split gave
-/// every source, and what the vAMM leg already executed.
+/// One quote-and-split pass: what the split gave every source, and what the
+/// vAMM leg already executed.
 ///
-/// The allocations are in book order: the external books first, then the DLOB
-/// makers, then the vAMM. The two boundaries say where each run ends.
+/// The allocations are in book order, the external books first and then the
+/// vAMM. `externals_end` says where the external run ends, so it is also the
+/// vAMM's own index.
 struct RoutedFill {
-    /// The DLOB maker orders the pass quoted, in book order.
-    router_makers: Vec<RouterMaker>,
     /// One allocation per book.
     allocations: Vec<QuoterAllocation>,
     /// What the vAMM leg executed, when it won an allocation.
     amm_fill: Option<QuoterFill>,
     /// Where the external allocations end.
     externals_end: usize,
-    /// Where the DLOB maker allocations end.
-    makers_end: usize,
 }
 
 impl RoutedFill {
@@ -297,14 +280,9 @@ impl RoutedFill {
         &self.allocations[..self.externals_end]
     }
 
-    /// What the split gave the DLOB makers.
-    fn maker_allocations(&self) -> &[QuoterAllocation] {
-        &self.allocations[self.externals_end..self.makers_end]
-    }
-
     /// What the split gave the vAMM.
     fn amm_allocation(&self) -> &QuoterAllocation {
-        &self.allocations[self.makers_end]
+        &self.allocations[self.externals_end]
     }
 }
 
@@ -469,20 +447,9 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         &mut self,
         venue: &ExternalVenue,
         amm_quoter: &mut AmmQuoter,
-        dlob_makers: &[MakerOrderInfo],
         target_size: u64,
     ) -> VelocityResult<RoutedFill> {
-        let router_makers = self.quote_dlob_makers(dlob_makers)?;
-        let maker_levels: Vec<[PriceLevel; 1]> = router_makers
-            .iter()
-            .map(|maker| {
-                [PriceLevel {
-                    price: maker.price,
-                    size: maker.unfilled,
-                }]
-            })
-            .collect();
-        let rivals = self.rival_books(venue, &maker_levels);
+        let rivals = self.rival_books(venue);
         let amm_levels = self.quote_vamm(amm_quoter, &rivals, target_size)?;
 
         // The vAMM book is not truncated again. `vamm_quote_levels` already
@@ -506,58 +473,23 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
             self.setup.quote_inputs.step_size,
         )?;
         let externals_end = self.external_book_count;
-        let makers_end = externals_end + maker_levels.len();
-        let amm_fill = self.execute_vamm(amm_quoter, &allocations[makers_end])?;
+        let amm_fill = self.execute_vamm(amm_quoter, &allocations[externals_end])?;
 
         Ok(RoutedFill {
-            router_makers,
             allocations,
             amm_fill,
             externals_end,
-            makers_end,
         })
     }
 
-    /// Size every candidate maker order for the split.
+    /// Every external quoter book, each cut at the taker's effective limit, in
+    /// one allocation with room for the vAMM's own book after it.
     ///
-    /// A maker order with nothing left to fill is dropped here, so the split
-    /// never allocates to it.
-    ///
-    /// Every order reads the position as it stands before the fill, so two
-    /// reduce-only orders of one maker are each quoted against the whole
-    /// position. That is an upper bound and the split may allocate more than
-    /// the maker can give. `execute_dlob_order` caps each leg against the
-    /// live position, so the later leg fills short instead of flipping the
-    /// maker.
-    fn quote_dlob_makers(
-        &self,
-        maker_orders_info: &[MakerOrderInfo],
-    ) -> VelocityResult<Vec<RouterMaker>> {
-        maker_orders_info.iter().try_fold(
-            Vec::with_capacity(maker_orders_info.len()),
-            |mut makers, info| -> VelocityResult<Vec<RouterMaker>> {
-                let key = info.key(self.makers_and_referrer)?;
-                let order_index = info.slot();
-                let maker = self.makers_and_referrer.get_ref(&key)?;
-                let position = maker.get_perp_position(self.market_index)?;
-                let unfilled = maker.orders[order_index]
-                    .get_base_asset_amount_unfilled(Some(position.base_asset_amount))?;
-                if unfilled > 0 {
-                    makers.push(RouterMaker {
-                        key,
-                        order_index,
-                        price: info.price,
-                        unfilled,
-                        is_isolated: position.is_isolated(),
-                    });
-                }
-                Ok(makers)
-            },
-        )
-    }
-
-    /// Every book but the vAMM's, each cut at the taker's effective limit,
-    /// in one allocation with room for the vAMM's own book after it.
+    /// The ladders are already the depth this fill may settle. A custom
+    /// quoter's ladder is trimmed to its own band and its own account's room
+    /// when the route is assembled, and a book sizes its makers as it walks
+    /// them. The split and the settle pass therefore read the same levels,
+    /// rather than each rebuilding the same clamp.
     ///
     /// The vAMM shades against this set as its last look, and the split then
     /// runs over the same set with the vAMM appended. The caller passes this
@@ -565,51 +497,21 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
     /// runtime's allocator never reclaims, so a second copy is heap the
     /// instruction does not get back.
     ///
-    /// The allocation is sized for the whole set, including the vAMM's slot,
-    /// for the same reason. A `Vec` at capacity doubles when pushed into, and
-    /// doubling abandons a buffer as large as the one it replaces. The
-    /// caller's one `push` of the vAMM book would cost the set's own size a
-    /// second time, which at a full maker ladder is kilobytes.
+    /// The allocation holds one spare slot for the same reason. A `Vec` at
+    /// capacity doubles when pushed into, and doubling abandons a buffer as
+    /// large as the one it replaces. The caller's one `push` of the vAMM book
+    /// would otherwise cost the set's own size a second time.
     fn rival_books<'l, 'r: 'l, 'b: 'l>(
         &self,
         venue: &ExternalVenue<'_, 'r, 'b, '_>,
-        maker_levels: &'l [[PriceLevel; 1]],
     ) -> Vec<QuoterBook<'l>> {
-        let clob_tier = QuoterType::Clob.default_priority();
-        let mut books = Vec::with_capacity(venue.books.len() + maker_levels.len() + 1);
+        let mut books = Vec::with_capacity(venue.books.len() + 1);
         books.extend(venue.books.iter().map(|book| QuoterBook {
             priority: book.priority,
             levels: &book.levels[..self.within_limit(book.levels)],
             withheld: book.withheld,
         }));
-        books.extend(maker_levels.iter().map(|levels| QuoterBook {
-            priority: clob_tier,
-            levels: &levels[..self.within_limit(levels.as_slice())],
-            withheld: PriceLevel::default(),
-        }));
         books
-    }
-
-    /// The external quoter books alone, each cut to the taker's limit.
-    ///
-    /// The ladders are already the depth this fill may settle. A custom
-    /// quoter's ladder is trimmed to its own band and its own account's room
-    /// when the route is assembled, and a book sizes its makers as it walks
-    /// them. The split and the settle pass therefore read the same levels,
-    /// rather than each rebuilding the same clamp.
-    fn external_rival_books<'l, 'r: 'l, 'b: 'l>(
-        &self,
-        venue: &ExternalVenue<'_, 'r, 'b, '_>,
-    ) -> Vec<QuoterBook<'l>> {
-        venue
-            .books
-            .iter()
-            .map(|book| QuoterBook {
-                priority: book.priority,
-                levels: &book.levels[..self.within_limit(book.levels)],
-                withheld: book.withheld,
-            })
-            .collect()
     }
 
     /// The vAMM ladder. The vAMM quotes last, so every other book is its last
@@ -676,72 +578,11 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         Ok((fill.base_filled > 0).then_some(fill))
     }
 
-    /// The oracle a DLOB maker is re-quoted against.
-    ///
-    /// This is the price discovery froze the book at, which is the MM price
-    /// and not the confidence-bounded safe price. An oracle-offset maker
-    /// prices off `ctx.oracle`. A different price here re-quotes that maker
-    /// away from its quoted level and trips the at-or-better check, which
-    /// fails the whole fill instead of filling it.
-    fn discovery_oracle(&self) -> OraclePriceData {
-        OraclePriceData {
-            price: self.setup.quote_inputs.mm_oracle.get_price(),
-            ..self.setup.quote_inputs.safe_oracle
-        }
-    }
-
-    /// The context one DLOB maker's order re-quotes through.
-    fn dlob_quote_context<'q>(&'q self, oracle: &'q OraclePriceData) -> QuoteContext<'q> {
-        QuoteContext {
-            stats: &self.setup.quote_inputs.stats,
-            oracle,
-            mm_oracle: None,
-            oracle_validity: None,
-            fee_budget: 0,
-            tick: self.setup.quote_inputs.tick_size,
-            step_size: self.setup.quote_inputs.step_size,
-            slot: self.conditions.slot,
-            slot_clock: self.oracle_map.slot_clock,
-            base_precision: BASE_PRECISION_U64,
-            market_status: MarketStatus::default(),
-            market_config: 0,
-        }
-    }
-
-    /// Hold one maker's fill to the allocation it answers.
-    fn check_dlob_fill(
-        &self,
-        maker_key: &Pubkey,
-        fill: &QuoterFill,
-        allocation: &QuoterAllocation,
-    ) -> VelocityResult {
-        validate!(
-            fill.base_filled <= allocation.base,
-            ErrorCode::DefaultError,
-            "router maker {} overfilled: {} > {}",
-            maker_key,
-            fill.base_filled,
-            allocation.base
-        )?;
-        validate!(
-            crate::controller::matching::fill_at_or_better(
-                self.taker.direction,
-                fill,
-                allocation,
-                BASE_PRECISION_U64
-            )?,
-            ErrorCode::DefaultError,
-            "router maker {} filled worse than quoted",
-            maker_key
-        )?;
-        Ok(())
-    }
-
     /// Settle each source's allocation into the accounts it moved.
     ///
-    /// The DLOB legs go first, then the vAMM, then the external books. The
-    /// external ladders are rebuilt from the levels the split was cut from,
-    /// so a balance change is held to the prices it was allocated at.
+    /// The vAMM goes first, then the external books. The external ladders are
+    /// rebuilt from the levels the split was cut from, so a balance change is
+    /// held to the prices it was allocated at.
     fn settle_routed_fill(
         &mut self,
         market: &mut PerpMarket,
@@ -749,16 +590,10 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         venue: &mut ExternalVenue,
         routed: &RoutedFill,
     ) -> VelocityResult {
-        self.settle_dlob_allocations(
-            market,
-            filler,
-            &routed.router_makers,
-            routed.maker_allocations(),
-        )?;
         if let Some(amm_fill) = routed.amm_fill.as_ref() {
             self.settle_vamm_allocation(market, filler, amm_fill, routed.amm_allocation())?;
         }
-        let ladders = self.external_rival_books(venue);
+        let ladders = self.rival_books(venue);
         self.settle_external_allocations(
             market,
             filler,
@@ -766,148 +601,6 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
             &ladders,
             routed.external_allocations(),
         )
-    }
-
-    /// Execute and settle every DLOB maker's allocation.
-    fn settle_dlob_allocations(
-        &mut self,
-        market: &mut PerpMarket,
-        filler: &mut FillerSide,
-        makers: &[RouterMaker],
-        allocations: &[QuoterAllocation],
-    ) -> VelocityResult {
-        makers
-            .iter()
-            .zip(allocations)
-            .try_for_each(|(maker, allocation)| {
-                self.settle_dlob_allocation(market, filler, maker, allocation)
-            })
-    }
-
-    /// Execute one maker's allocation off their resting order, then settle it.
-    fn settle_dlob_allocation(
-        &mut self,
-        market: &mut PerpMarket,
-        filler: &mut FillerSide,
-        router_maker: &RouterMaker,
-        allocation: &QuoterAllocation,
-    ) -> VelocityResult {
-        if allocation.base == 0 {
-            return Ok(());
-        }
-        let mut maker = self.makers_and_referrer.get_ref_mut(&router_maker.key)?;
-        self.settle_maker_funding(&mut maker, &router_maker.key, market)?;
-        let (maker_position_index, maker_existing_position_params) =
-            self.resting_maker_position(&maker)?;
-        // A `DlobMatch` only lands from a step that set an effective taker
-        // limit, so the match is always price-bounded on the taker side.
-        let taker_limit_for_match = self
-            .setup
-            .effective_taker_limit
-            .ok_or_else(print_error!(ErrorCode::DefaultError))?;
-
-        let Some(fill) =
-            self.execute_dlob_order(&mut maker, router_maker, maker_position_index, allocation)?
-        else {
-            return Ok(());
-        };
-
-        let mut maker_stats = maker_stats_for(
-            self.makers_and_referrer_stats,
-            self.taker.user.authority,
-            &maker,
-        )?;
-        // A resting DLOB order reserved its worst case at placement, so this
-        // fill unwinds that reservation.
-        let matched = DlobMatch {
-            order_index: router_maker.order_index,
-            maker_price: router_maker.price,
-            effective_taker_limit: taker_limit_for_match,
-            oracle_price: self.setup.quote_inputs.oracle_price,
-        };
-        let (base_filled, quote_filled, maker_filled) = settle_dlob_match_fill(
-            &fill,
-            &mut self.taker,
-            &mut MakerSide {
-                user: &mut maker,
-                stats: maker_stats.as_deref_mut(),
-                key: router_maker.key,
-                direction: self.maker_direction,
-                position_index: maker_position_index,
-                existing_position_params: maker_existing_position_params,
-                reserved: true,
-                order_id: None,
-            },
-            &matched,
-            filler,
-            &mut SettleContext {
-                market,
-                rules: self.rules,
-                mode: self.conditions.mode,
-                oracle_map: self.oracle_map,
-                now: self.conditions.now,
-                slot: self.conditions.slot,
-                filler_reward_paid: &mut self.tally.filler_reward_paid,
-            },
-        )?;
-        self.note_fill(base_filled, quote_filled)?;
-        if maker_filled != 0 {
-            self.note_maker_fill(&router_maker.key, maker_filled, router_maker.is_isolated)?;
-        }
-        self.release_filled_maker_order(&mut maker, router_maker.order_index)
-    }
-
-    /// Quote the maker's resting order against this allocation and take what
-    /// it fills.
-    ///
-    /// `None` when the order had nothing left to give, which is not an error.
-    /// The split allocated off a frozen price, and the order may have moved.
-    ///
-    /// The cap comes from the position as it stands now, not from the one the
-    /// split quoted. A reduce-only order may only take the base its owner
-    /// holds on the other side, and an earlier leg of this same fill may have
-    /// already taken part of it. A cap read once before any leg lets two
-    /// reduce-only orders of one maker add up past the position and flip it.
-    fn execute_dlob_order(
-        &mut self,
-        maker: &mut User,
-        router_maker: &RouterMaker,
-        position_index: usize,
-        allocation: &QuoterAllocation,
-    ) -> VelocityResult<Option<QuoterFill>> {
-        let live_position = maker.perp_positions[position_index].base_asset_amount;
-        let max_fill = router_maker.unfilled.min(
-            maker.orders[router_maker.order_index]
-                .get_base_asset_amount_unfilled(Some(live_position))?,
-        );
-        let discovery_oracle = self.discovery_oracle();
-        let fill = {
-            let ctx = self.dlob_quote_context(&discovery_oracle);
-            let mut dlob =
-                DlobOrderQuoter::new(&mut maker.orders[router_maker.order_index], max_fill);
-            RouterQuoter::execute(&mut dlob, &ctx, self.route_direction, allocation.base)?
-        };
-        if fill.base_filled == 0 {
-            return Ok(None);
-        }
-        self.mark_settled(&router_maker.key);
-        self.check_dlob_fill(&router_maker.key, &fill, allocation)?;
-        Ok(Some(fill))
-    }
-
-    /// Release the open-orders counter a fully-filled maker order held.
-    ///
-    /// The settle leg already released the order's open base. This is the
-    /// once-per-order half, which only the order's last fill owes.
-    fn release_filled_maker_order(&self, maker: &mut User, order_index: usize) -> VelocityResult {
-        if maker.orders[order_index].get_base_asset_amount_unfilled(None)? != 0 {
-            return Ok(());
-        }
-        let position_index = get_position_index(&maker.perp_positions, self.market_index)?;
-        let has_auction = maker.orders[order_index].has_auction();
-        maker.decrement_open_orders(has_auction);
-        maker.perp_positions[position_index].open_orders -= 1;
-        Ok(())
     }
 
     /// Settle the vAMM's fill against the house.
@@ -1331,18 +1024,6 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         settle_funding_payment(maker, maker_key, market, self.conditions.now)
     }
 
-    /// The resting position a DLOB maker order settles into, and what the fill
-    /// record needs to know about it before it moves.
-    ///
-    /// A resting order holds `open_orders` on its owner's position, so that
-    /// position always exists.
-    fn resting_maker_position(&self, maker: &User) -> VelocityResult<(usize, Option<(u64, u64)>)> {
-        let position_index = get_position_index(&maker.perp_positions, self.market_index)?;
-        let existing = maker.perp_positions[position_index]
-            .get_existing_position_params_for_order_action(self.maker_direction);
-        Ok((position_index, existing))
-    }
-
     /// Record what one maker filled, for the post-fill checks to read.
     fn note_maker_fill(
         &mut self,
@@ -1714,8 +1395,7 @@ pub(super) fn fill_from_liquidity_sources(
     )?;
 
     // ---- Quote, split, and take the vAMM's share while the curve is held. ----
-    let routed =
-        fill.route_across_sources(&venue, &mut amm_quoter, liquidity.dlob_makers, target_size)?;
+    let routed = fill.route_across_sources(&venue, &mut amm_quoter, target_size)?;
 
     // ---- Release `market.amm`, then settle each source. ----
     drop(amm_quoter);

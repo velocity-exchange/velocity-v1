@@ -48,8 +48,8 @@ use {
         state::{
             perp_market_map::{get_writable_perp_market_set, MarketSet},
             prop_amm::{
-                find_account, occupied_slots, ClobUserRefV0, Direction, L3ArgsV0, PriceLevel,
-                QuoteArgsV0, QuoterSlabExt, QuoterSlabV0, QuoterType, WireDirectionExt,
+                find_account, occupied_slots, ClobUserRefV0, Direction, L3ArgsV0, QuoteArgsV0,
+                QuoterSlabExt, QuoterSlabV0, QuoterType, WireDirectionExt,
             },
             quoter::MarketQuoteInputs,
             router_quote::{QuotedRowV0, QuotedSourceKind, RouterQuoteBufferV0},
@@ -144,16 +144,6 @@ pub fn handle_quote_router<'c: 'info, 'info>(
         let oracle_pd = *maps.oracle_map.get_price_data(&market.oracle_id())?;
         (oracle_pd, market.amm)
     };
-    quote_dlob_makers(
-        &args,
-        &makers,
-        &maps.perp_market_map,
-        &state,
-        oracle_price,
-        clock.slot,
-        &mut buffer,
-    )?;
-
     quote_vamm(
         &args,
         &maps.perp_market_map,
@@ -403,68 +393,6 @@ fn quote_externals<'info>(
             if !described {
                 attribute_to_user(makers, &quoter_user, admitted, buffer)?;
             }
-        }
-    }
-    Ok(())
-}
-
-/// Quote the DLOB makers this call carries, with one level for every resting
-/// order that crosses.
-///
-/// The fill path's own discovery predicate finds them, so a book never
-/// advertises an order the fill would skip. The predicate refuses a wrong
-/// side, a wrong type, an untriggered order, and an order that is not open.
-fn quote_dlob_makers(
-    args: &QuoteRouterArgs,
-    makers: &crate::state::user_map::UserMap,
-    perp_market_map: &crate::state::perp_market_map::PerpMarketMap,
-    state: &State,
-    oracle_price: crate::state::oracle::OraclePriceData,
-    slot: u64,
-    buffer: &mut RouterQuoteBufferV0,
-) -> Result<()> {
-    let market_index = args.market_index;
-    let clob_tier = QuoterType::Clob.default_priority();
-    let order_tick_size = perp_market_map.get_ref(&market_index)?.order_tick_size;
-    let taker_direction = args.direction.to_position_direction();
-    let maker_direction = taker_direction.opposite();
-    for (maker_key, _) in makers.0.iter() {
-        let maker = makers.get_ref(maker_key)?;
-        let position_base = maker
-            .get_perp_position(market_index)
-            .map(|p| p.base_asset_amount)
-            .unwrap_or(0);
-        let found = crate::math::orders::find_maker_orders(
-            &maker,
-            &maker_direction,
-            &crate::state::user::MarketType::Perp,
-            market_index,
-            Some(oracle_price.price),
-            slot,
-            order_tick_size,
-            state.slot_clock(),
-        )?;
-        for (order_index, price) in found {
-            let size =
-                maker.orders[order_index].get_base_asset_amount_unfilled(Some(position_base))?;
-            if size == 0 {
-                continue;
-            }
-            let levels = [PriceLevel { price, size }];
-            buffer.push(QuotedSourceKind::DlobOrder, *maker_key, clob_tier, &levels)?;
-            buffer.push_row(QuotedRowV0 {
-                price,
-                size,
-                order_id: maker.orders[order_index].order_id.into(),
-                // A DLOB order lives in the owner's own array, not in an
-                // arena.
-                node_index: 0,
-                authority: maker.authority,
-                sub_account_id: maker.sub_account_id,
-                flags: 0,
-                padding: [0; 1],
-                placed_slot: maker.orders[order_index].slot,
-            })?;
         }
     }
     Ok(())

@@ -4,7 +4,6 @@
 //! under, and what the market oracle says the fill may do.
 
 use {
-    super::super::MakerOrderInfo,
     crate::{
         error::VelocityResult,
         instructions::optional_accounts::AccountMaps,
@@ -108,10 +107,9 @@ pub struct FillParties<'a, 'm, 's, 'info> {
     pub makers_and_referrer_stats: &'a UserStatsMap<'s>,
 }
 
-/// The liquidity one fill may draw on: the DLOB maker orders discovery found,
-/// and the external quoter books with the leg that executes on them.
+/// The liquidity one fill may draw on: the external quoter books, with the leg
+/// that executes on them.
 pub struct OfferedLiquidity<'a, 'r, 'b, 'info> {
-    pub dlob_makers: &'a [MakerOrderInfo],
     pub router: &'a mut RouterLeg<'r, 'b, 'info>,
 }
 

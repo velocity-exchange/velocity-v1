@@ -1156,19 +1156,6 @@ fn emit_amm_house_record(
     )
 }
 
-/// The resting maker order a DLOB match filled against, and the prices the
-/// match is held to.
-pub(crate) struct DlobMatch {
-    /// The maker order's slot in its owner's `orders` array.
-    pub order_index: usize,
-    /// The sanitized price discovery froze the maker order at.
-    pub maker_price: u64,
-    /// The taker's effective limit. Its side of the fill must clear it.
-    pub effective_taker_limit: u64,
-    /// The oracle price the filler-reward tier is measured against.
-    pub oracle_price: i64,
-}
-
 /// The prices an external match is held to.
 ///
 /// There is no maker price here. The route already bound the quoter's response
@@ -1291,97 +1278,12 @@ fn pay_matched_keeper(
     )
 }
 
-/// Settle one DLOB match: the taker against one resting velocity order.
-///
-/// The maker's liquidity is a velocity `Order`, so this leg is the one that
-/// advances that order and flips it to `Filled`, and the one whose fill record
-/// carries a maker order.
-pub(crate) fn settle_dlob_match_fill(
-    fill: &QuoterFill,
-    taker: &mut TakerSide,
-    maker: &mut MakerSide,
-    matched: &DlobMatch,
-    filler: &mut FillerSide,
-    cx: &mut SettleContext,
-) -> VelocityResult<(u64, u64, u64)> {
-    let filled = FillAmounts {
-        base: fill.base_filled,
-        quote: fill.quote_filled,
-    };
-    validate_fill_price(
-        filled.quote,
-        filled.base,
-        BASE_PRECISION_U64,
-        taker.direction,
-        matched.effective_taker_limit,
-        true,
-    )?;
-    validate_fill_price(
-        filled.quote,
-        filled.base,
-        BASE_PRECISION_U64,
-        maker.direction,
-        matched.maker_price,
-        false,
-    )?;
-
-    move_maker_position(maker, taker, filled, cx)?;
-    move_taker_position(taker, filled, cx)?;
-    taker.stats.update_taker_volume_30d(filled.quote, cx.now)?;
-
-    let tier = RewardTier {
-        maker_price: matched.maker_price,
-        oracle_price: matched.oracle_price,
-    };
-    let settled = price_matched_fill(taker, maker, filled, tier, filler, cx)?;
-    settle_matched_fill(taker, maker, &settled, filled, filler, cx)?;
-    unwind_matched_maker_order(maker, matched.order_index, filled.base)?;
-
-    emit_matched_record(
-        taker,
-        maker,
-        &settled,
-        filled,
-        MatchedRecord {
-            explanation: OrderActionExplanation::OrderFilledWithMatch,
-            maker_order: Some(maker.user.orders[matched.order_index]),
-            filler_key: filler.key,
-        },
-        cx,
-    )?;
-    Ok((filled.base, filled.quote, filled.base))
-}
-
-/// Unwind the reservation the filled maker order held, and retire it once it
-/// has nothing left.
-///
-/// The quoter already advanced the order's own filled counters, so only the
-/// open-bids/asks aggregate and the status remain.
-fn unwind_matched_maker_order(
-    maker: &mut MakerSide,
-    order_index: usize,
-    base_filled: u64,
-) -> VelocityResult {
-    let updates_open_bids_and_asks = maker.user.orders[order_index].update_open_bids_and_asks();
-    decrease_open_bids_and_asks(
-        &mut maker.user.perp_positions[maker.position_index],
-        &maker.direction,
-        base_filled,
-        updates_open_bids_and_asks,
-    )?;
-    if maker.user.orders[order_index].get_base_asset_amount_unfilled(None)? == 0 {
-        maker.user.orders[order_index].status = OrderStatus::Filled;
-    }
-    Ok(())
-}
-
 /// Settle one external-quoter balance change.
 ///
 /// The maker is a loaded `User` whose resting liquidity lives outside
 /// velocity, in a CLOB order or a PropAMM quote. There is no velocity `Order`
 /// to advance, because the external program already committed its own book
-/// state. [`settle_dlob_match_fill`] advances one. Everything
-/// protocol-level is the same match spine.
+/// state.
 ///
 /// The maker side runs no `validate_fill_price`. The route already held the
 /// response per unit to this quoter's own quoted levels, which is the

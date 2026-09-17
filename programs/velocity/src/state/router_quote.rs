@@ -58,6 +58,8 @@ pub enum QuotedSourceKind {
     #[default]
     Vamm,
     /// A resting `User` order from the DLOB, bridged as a single level.
+    /// @deprecated No source publishes this. The discriminant stays so the
+    /// wire layout of `QuotedSourceV0.kind` does not shift.
     DlobOrder,
     /// A registered external quoter: the CLOB or a PropAMM.
     Quoter,

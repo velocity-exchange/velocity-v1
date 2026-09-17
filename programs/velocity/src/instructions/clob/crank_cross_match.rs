@@ -499,10 +499,8 @@ fn run_cross_leg<'info>(
     });
     let filled = controller::orders::fill_perp_order(
         controller::orders::FillRequest {
-            target: controller::orders::FillTarget::Detached {
-                order: &mut order,
-                reserved: false,
-            },
+            order: &mut order,
+            reserved: false,
             mode: FillMode::Fill,
             referrer_is_accelerated: false,
         },

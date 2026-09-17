@@ -303,21 +303,8 @@ pub mod velocity {
         handle_modify_order_by_user_order_id(ctx, user_order_id, modify_order_params)
     }
 
-    /// @deprecated Legacy DLOB path, kept for ABI compatibility. New
-    /// integrations use `place_and_take_perp_order_v1`, which routes through the
-    /// CLOB and rests any restable remainder on the book instead of the DLOB.
-    pub fn place_and_take_perp_order<'c: 'info, 'info>(
-        ctx: Context<'info, PlaceAndTake<'info>>,
-        params: OrderParams,
-        success_condition: Option<u32>,
-    ) -> Result<()> {
-        handle_legacy_place_and_take_perp_order(ctx, params, success_condition)
-    }
-
-    /// `place_and_take_perp_order` with the market's CLOB accounts required.
-    /// An unfilled restable limit remainder rests on the book instead of the
-    /// DLOB. v0's account list is frozen for ABI compatibility, so the CLOB
-    /// route is a separate endpoint rather than optional accounts on v0.
+    /// Place a taker order and fill it in one instruction. Whatever the route
+    /// leaves unfilled rests on the market's book when the order can rest.
     pub fn place_and_take_perp_order_v1<'c: 'info, 'info>(
         ctx: Context<'info, PlaceAndTakeV1<'info>>,
         args: PlaceAndTakePerpOrderV1Args,
@@ -503,60 +490,9 @@ pub mod velocity {
 
     // Keeper Instructions
 
-    /// @deprecated Legacy fill, kept for ABI compatibility. It routes the fill
-    /// through the vAMM and the DLOB makers but carries no CLOB books, and a
-    /// restable remainder stays on the DLOB. `fill_legacy_dlob_order` carries
-    /// the market's CLOB and migrates the remainder to the book.
-    ///
-    /// `signed_route` is the route the order's signer chose, as the filler
-    /// read it off their signed message. It is checked against the digest the
-    /// order carries, so a filler cannot misreport it. Every entry in it must
-    /// appear in this transaction, because the taker picks who competes for
-    /// their flow. Empty for an order with no signed route.
-    pub fn fill_perp_order<'c: 'info, 'info>(
-        ctx: Context<'info, FillOrder<'info>>,
-        order_id: Option<u32>,
-        _maker_order_id: Option<u32>,
-        signed_route: Vec<Pubkey>,
-    ) -> Result<()> {
-        handle_legacy_fill_perp_order(ctx, order_id, signed_route)
-    }
-
-    /// `fill_perp_order` with the market's CLOB accounts required. A restable
-    /// remainder of the filled order migrates to the book instead of resting
-    /// in `User.orders`. v0's account list is frozen, so this is a separate
-    /// endpoint. Only the legacy placement and trigger endpoints create live
-    /// orders in `User.orders`, so this endpoint fills legacy orders only. It
-    /// is deleted together with that legacy surface. `market_index` is an
-    /// argument because the crank-conditions PDA seed needs it before any
-    /// account is loaded. The program checks it against the order's own
-    /// market.
-    pub fn fill_legacy_dlob_order<'c: 'info, 'info>(
-        ctx: Context<'info, FillLegacyDlobOrder<'info>>,
-        args: FillLegacyDlobOrderArgs,
-    ) -> Result<()> {
-        handle_fill_legacy_dlob_order(ctx, args)
-    }
-
-    pub fn revert_fill(ctx: Context<RevertFill>) -> Result<()> {
-        handle_revert_fill(ctx)
-    }
-
-    /// @deprecated Legacy trigger, kept for ABI compatibility. It flips the
-    /// fired order live and leaves it on the DLOB for a later fill crank. New
-    /// integrations use `trigger_market_order_v1`, which fires and fills the order
-    /// straight to the book in one instruction.
-    pub fn trigger_order<'c: 'info, 'info>(
-        ctx: Context<'info, TriggerOrder<'info>>,
-        order_id: u32,
-    ) -> Result<()> {
-        handle_legacy_trigger_order(ctx, order_id)
-    }
-
     /// Fire a DLOB trigger order straight to the book. It fills the fired
     /// order in the same instruction and rests only the remainder as a
     /// taker-origin order, so nothing stays live in `User.orders`.
-    /// `trigger_order` leaves the fired order on the DLOB instead.
     pub fn trigger_market_order_v1<'c: 'info, 'info>(
         ctx: Context<'info, TriggerMarketOrderV1<'info>>,
         args: TriggerMarketOrderV1Args,
@@ -2482,7 +2418,7 @@ pub mod velocity {
     /// Crank an armed trigger-limit order onto the market's CLOB once its
     /// trigger condition is met. The call is permissionless, and the keeper
     /// earns the flat reward from the user. A stop-market goes through
-    /// `trigger_order`.
+    /// `trigger_market_order_v1`.
     pub fn trigger_limit_order_v1<'c: 'info, 'info>(
         ctx: Context<'info, TriggerLimitOrderV1<'info>>,
         args: TriggerLimitOrderV1Args,
@@ -2574,11 +2510,6 @@ pub mod velocity {
         ctx: Context<'info, SyncTriggerConditions<'info>>,
     ) -> Result<()> {
         handle_sync_trigger_conditions(ctx)
-    }
-
-    /// Relay resolver for `trigger_order`. Simulate it rather than landing it.
-    pub fn resolve_trigger_order(ctx: Context<ResolveTriggerOrder>) -> Result<()> {
-        handle_resolve_trigger_order(ctx)
     }
 
     /// Relay resolver for `trigger_limit_order_v1`. Simulate it rather than

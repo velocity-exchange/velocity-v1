@@ -22,21 +22,19 @@ use {
             constants::BASE_PRECISION_U64, liquidation::validate_user_not_being_liquidated,
             router::RouterLeg, safe_unwrap::SafeUnwrap,
         },
-        print_error,
         state::{
-            events::OrderActionExplanation,
             fill_mode::FillMode,
             market_status::MarketStatus,
             paused_operations::PerpOperation,
             revenue_share::RevenueShareEscrowZeroCopyMut,
             state::State,
             user::{MarketType, Order, OrderStatus, ReferrerStatus, User, UserStats},
-            user_map::{UserMap, UserStatsMap},
+            user_map::UserMap,
         },
         validate,
     },
     anchor_lang::prelude::{msg, Clock, Pubkey},
-    std::{cell::RefMut, ops::DerefMut},
+    std::cell::RefMut,
 };
 
 /// [`fill_perp_order`] with no external quoter books.
@@ -44,8 +42,10 @@ use {
 /// The route still runs over the vAMM ladder and the passed DLOB makers. The
 /// split has no CPI book to price in. Every fill entrypoint that carries no
 /// quoter accounts arrives here.
-pub fn fill_perp_order_without_external_books<'a, 'info>(
-    target: FillTarget<'a>,
+#[cfg(test)]
+pub(crate) fn fill_perp_order_without_external_books<'info>(
+    order: &mut Order,
+    reserved: bool,
     state: &State,
     user: &AccountLoader<'info, User>,
     user_stats: &AccountLoader<'info, UserStats>,
@@ -53,7 +53,7 @@ pub fn fill_perp_order_without_external_books<'a, 'info>(
     filler: &AccountLoader<'info, User>,
     filler_stats: &AccountLoader<'info, UserStats>,
     makers_and_referrer: &UserMap,
-    makers_and_referrer_stats: &UserStatsMap,
+    makers_and_referrer_stats: &crate::state::user_map::UserStatsMap,
     clock: &Clock,
     fill_mode: FillMode,
     rev_share_escrow: &mut Option<&mut RevenueShareEscrowZeroCopyMut<'info>>,
@@ -74,7 +74,8 @@ pub fn fill_perp_order_without_external_books<'a, 'info>(
     };
     fill_perp_order(
         FillRequest {
-            target,
+            order,
+            reserved,
             mode: fill_mode,
             referrer_is_accelerated,
         },
@@ -96,35 +97,21 @@ pub fn fill_perp_order_without_external_books<'a, 'info>(
     )
 }
 
-/// Which order a fill is for, and whether the owner has a slot holding it.
-///
-/// A fill works on the order itself. Most orders live in their owner's
-/// `orders` array, and the fill reads one out and writes it back. A remainder
-/// lifted off a book lives nowhere. The caller passes it directly, so one fill
-/// path serves both and neither one needs a spare slot.
-pub enum FillTarget<'a> {
-    /// The open order with this id in the owner's `orders` array.
-    Slot(u32),
-    /// An order held by the caller. Nothing is written back. The caller owns
-    /// what happens to whatever the fill leaves unfilled.
-    ///
-    /// `reserved` says whether the taker owns an `open_bids`/`open_asks` and
-    /// `open_orders` reservation the fill must unwind as it fills. An order
-    /// lifted off the book rested first, so it reserved and `reserved` is
-    /// true. A fresh ephemeral taker that routes straight to the book never
-    /// reserved, so `reserved` is false. The fill must not unwind exposure it
-    /// never took. Such an unwind removes a co-resident order's reservation
-    /// and underflows the counter.
-    Detached {
-        order: &'a mut Order,
-        reserved: bool,
-    },
-}
-
 /// What one fill is asked to do.
 pub struct FillRequest<'a> {
-    /// Which order to fill, and where it lives.
-    pub target: FillTarget<'a>,
+    /// The order to fill. It is the caller's, and the fill writes its progress
+    /// back through this handle. No order lives in a `User.orders` slot while
+    /// it is live, so there is nowhere else for one to come from.
+    pub order: &'a mut Order,
+    /// Whether the taker already owns an `open_bids`/`open_asks` and
+    /// `open_orders` reservation that the fill must unwind as it fills.
+    ///
+    /// An order lifted off the book rested first, so it reserved and this is
+    /// true. A fresh ephemeral taker that routes straight to the book never
+    /// reserved, so it is false. The fill must not unwind exposure the order
+    /// never took: such an unwind removes a co-resident order's reservation
+    /// and underflows the counter.
+    pub reserved: bool,
     pub mode: FillMode,
     /// Whether the taker's referrer is on the accelerated schedule.
     pub referrer_is_accelerated: bool,
@@ -193,25 +180,20 @@ pub(super) struct Filler<'a> {
     pub user: Option<&'a mut User>,
     pub stats: Option<&'a mut UserStats>,
     pub key: Pubkey,
-    /// The flat reward the keeper earns for expiring or cancelling the order.
-    pub flat_filler_fee: u64,
 }
 
-/// The order a fill works on, and where it goes back to.
+/// The order a fill works on, and the caller's handle it goes back to.
 ///
-/// `Order` is `Copy` and 104 bytes, so the fill works on this copy. A slot
-/// order is read out of the owner's `orders` array and written back there. A
-/// detached order is the caller's, and is written back through the handle the
-/// caller passed.
-pub(super) struct OrderSlot<'a> {
+/// `Order` is `Copy` and 104 bytes, so the fill works on this copy and writes
+/// it back once. Writing back through the caller's handle is what lets the
+/// caller rest, cancel or discard whatever the fill left unfilled.
+pub(super) struct WorkingOrder<'a> {
     pub order: Order,
-    /// The index in the owner's `orders` array, when the order lives in one.
-    index: Option<usize>,
-    /// The caller's handle, when the order lives nowhere else.
-    detached: Option<&'a mut Order>,
-    /// Whether the taker owns an `open_bids`/`open_asks` and `open_orders`
-    /// reservation the fill must unwind as it fills. A slot order reserved at
-    /// placement. A detached order says for itself.
+    /// The caller's handle on the order.
+    handle: &'a mut Order,
+    /// Whether the taker already owns an `open_bids`/`open_asks` and
+    /// `open_orders` reservation the fill must unwind as it fills. See
+    /// [`FillRequest::reserved`].
     pub reserved: bool,
     /// The `reduce_only` flag the order was read with, before a reduce-only
     /// market stamped the flag on. The auction-duration skip reads the flag
@@ -219,27 +201,10 @@ pub(super) struct OrderSlot<'a> {
     reduce_only_at_entry: bool,
 }
 
-impl<'a> OrderSlot<'a> {
-    /// Find the order this fill is for.
-    fn resolve(target: FillTarget<'a>, user: &User) -> VelocityResult<Self> {
-        let mut detached = None;
-        let (index, reserved, order) = match target {
-            FillTarget::Slot(order_id) => {
-                let index = user
-                    .orders
-                    .iter()
-                    .position(|order| {
-                        order.order_id == order_id && order.status == OrderStatus::Open
-                    })
-                    .ok_or_else(print_error!(ErrorCode::OrderDoesNotExist))?;
-                (Some(index), true, user.orders[index])
-            }
-            FillTarget::Detached { order, reserved } => {
-                let snapshot = *order;
-                detached = Some(order);
-                (None, reserved, snapshot)
-            }
-        };
+impl<'a> WorkingOrder<'a> {
+    /// Take the fill's own copy of the caller's order.
+    fn of(handle: &'a mut Order, reserved: bool) -> VelocityResult<Self> {
+        let order = *handle;
         validate!(
             order.market_type == MarketType::Perp,
             ErrorCode::InvalidOrderMarketType,
@@ -248,34 +213,19 @@ impl<'a> OrderSlot<'a> {
         Ok(Self {
             reduce_only_at_entry: order.reduce_only,
             order,
-            index,
-            detached,
+            handle,
             reserved,
         })
     }
 
-    /// The slot index, when the order lives in one. An ephemeral order lives
-    /// nowhere else, so it has none.
-    fn slot_index(&self) -> Option<usize> {
-        self.index
-    }
-
-    /// Put the fill's progress back where the order came from. The
-    /// reduce-only check and the caller's own lookup by order id then see what
-    /// the fill did to the order.
-    fn write_back(&mut self, user: &mut User) {
-        let order = self.order;
-        if let Some(index) = self.index {
-            user.orders[index] = order;
-        }
-        if let Some(detached) = self.detached.as_deref_mut() {
-            *detached = order;
-        }
+    /// Put the fill's progress back on the caller's order, so the caller sees
+    /// what the fill did to it.
+    fn write_back(&mut self) {
+        *self.handle = self.order;
     }
 }
 
-/// Fill one perp order, from the owner's slot or from the caller (see
-/// [`FillTarget`]).
+/// Fill one perp order, which the caller holds.
 ///
 /// This layer governs the order. It finds the order, admits or refuses the
 /// fill, refreshes the market oracle statistics, binds the keeper and collects
@@ -296,7 +246,7 @@ pub fn fill_perp_order(
     let mut taker = Taker::new(&mut user, &mut user_stats, user_key);
     let rules = PricingRules::of(state, request.referrer_is_accelerated);
 
-    let mut order = OrderSlot::resolve(request.target, taker.user)?;
+    let mut order = WorkingOrder::of(request.order, request.reserved)?;
     let market_index = order.order.market_index;
 
     admit_perp_market(&mut order, &mut taker, parties.maps, clock.unix_timestamp)?;
@@ -330,7 +280,6 @@ pub fn fill_perp_order(
             user: filler.as_deref_mut(),
             stats: filler_stats.as_deref_mut(),
             key: filler_key,
-            flat_filler_fee: state.perp_fee_structure.flat_filler_fee,
         },
         state,
         rules,
@@ -352,7 +301,7 @@ pub fn fill_perp_order(
 /// `get_base_asset_amount_unfilled`, `should_cancel_reduce_only_order` and the
 /// trigger-path risk check.
 fn admit_perp_market(
-    order: &mut OrderSlot,
+    order: &mut WorkingOrder,
     taker: &mut Taker,
     maps: &mut AccountMaps,
     now: i64,
@@ -389,7 +338,7 @@ fn admit_perp_market(
 /// A bankrupt taker and a taker under liquidation both refuse the fill without
 /// failing the transaction, so the keeper keeps whatever else it did.
 fn admit_taker(
-    order: &OrderSlot,
+    order: &WorkingOrder,
     taker: &mut Taker,
     state: &State,
     parties: &mut FillParties,
@@ -441,7 +390,7 @@ fn admit_taker(
 /// keeper then passes no escrow by design, and skipped for liquidations,
 /// because the liquidatee's order is force-filled without an escrow.
 fn require_revenue_share_escrow(
-    order: &OrderSlot,
+    order: &WorkingOrder,
     taker: &Taker,
     state: &State,
     mode: FillMode,
@@ -512,7 +461,7 @@ fn bind_filler<'f, 'info>(
 /// `PerpFill` holds its own maps, because it consumes them rather than passing
 /// them on.
 struct OrderUnderFill<'a> {
-    order: OrderSlot<'a>,
+    order: WorkingOrder<'a>,
     taker: Taker<'a>,
     filler: Filler<'a>,
     state: &'a State,
@@ -545,10 +494,9 @@ impl OrderUnderFill<'_> {
         }
 
         let filled = self.fill(parties, router, rev_share_escrow)?;
-        self.order.write_back(self.taker.user);
+        self.order.write_back();
 
         self.record_fill_price(filled, parties)?;
-        self.cancel_reduce_only_after_fill(parties)?;
         self.cancel_dangling_trigger_orders(parties)?;
         if filled.base == 0 {
             return Ok(filled);
@@ -606,12 +554,6 @@ impl OrderUnderFill<'_> {
         if !should_expire && !should_cancel_reduce_only {
             return Ok(Admission::Proceed);
         }
-        let explanation = if should_expire {
-            OrderActionExplanation::OrderExpired
-        } else {
-            OrderActionExplanation::ReduceOnlyOrderIncreasedPosition
-        };
-        self.cancel_and_reward(explanation, parties)?;
         Ok(Admission::Skip)
     }
 
@@ -627,81 +569,6 @@ impl OrderUnderFill<'_> {
             &self.order.order,
             self.taker.position()?.base_asset_amount,
             step_size,
-        )
-    }
-
-    /// Pay the keeper the flat reward for the work, then cancel the order.
-    ///
-    /// An ephemeral order rests in no slot. There is no order to cancel and no
-    /// stale order a keeper cleaned up, so the caller's refusal to fill is the
-    /// whole outcome and nobody is paid. A reduce-only order reaches this on an
-    /// ephemeral route whenever the position it may reduce is under one step
-    /// size, which includes a flat position.
-    fn cancel_and_reward(
-        &mut self,
-        explanation: OrderActionExplanation,
-        parties: &mut FillParties,
-    ) -> VelocityResult {
-        let Some(order_index) = self.order.slot_index() else {
-            return Ok(());
-        };
-        let filler_reward = {
-            let mut market = parties
-                .maps
-                .perp_market_map
-                .get_ref_mut(&self.market_index)?;
-            pay_keeper_flat_reward_for_perps(
-                self.taker.user,
-                self.filler.user.as_deref_mut(),
-                market.deref_mut(),
-                self.filler.flat_filler_fee,
-                self.conditions.slot,
-            )?
-        };
-        cancel_order(
-            order_index,
-            self.taker.user,
-            &self.taker.key,
-            parties.maps,
-            self.conditions.now,
-            self.conditions.slot,
-            explanation,
-            Some(&self.filler.key),
-            filler_reward,
-            false,
-        )
-    }
-
-    /// Hand the order to the taker's risk limits, which fill it.
-    ///
-    /// The fill takes the order itself rather than a slot index. `Order` is
-    /// `Copy` and 104 bytes, so the copy costs little, and an order that lives
-    /// in no slot fills through the same path.
-    fn fill(
-        &mut self,
-        parties: &mut FillParties,
-        router: &mut RouterLeg,
-        rev_share_escrow: &mut Option<&mut RevenueShareEscrowZeroCopyMut>,
-    ) -> VelocityResult<FillAmounts> {
-        let mut taker = TakerSide::bind(
-            self.taker.user,
-            self.taker.stats,
-            self.taker.key,
-            &mut self.order.order,
-            self.order.reserved,
-        )?;
-        fill_within_taker_risk_limits(
-            &mut taker,
-            &self.rules,
-            &self.conditions,
-            parties,
-            &mut OfferedLiquidity { router },
-            &mut FillerSide {
-                user: &mut self.filler.user,
-                stats: &mut self.filler.stats,
-                key: self.filler.key,
-                rev_share_escrow,
-            },
         )
     }
 
@@ -734,14 +601,36 @@ impl OrderUnderFill<'_> {
         Ok(())
     }
 
-    /// Cancel a reduce-only order the fill left pointing the wrong way.
-    fn cancel_reduce_only_after_fill(&mut self, parties: &mut FillParties) -> VelocityResult {
-        if !self.should_cancel_reduce_only(parties)? {
-            return Ok(());
-        }
-        self.cancel_and_reward(
-            OrderActionExplanation::ReduceOnlyOrderIncreasedPosition,
+    /// Hand the order to the taker's risk limits, which fill it.
+    ///
+    /// The fill takes the order itself rather than a slot index. `Order` is
+    /// `Copy` and 104 bytes, so the copy costs little, and an order that lives
+    /// in no slot fills through the same path.
+    fn fill(
+        &mut self,
+        parties: &mut FillParties,
+        router: &mut RouterLeg,
+        rev_share_escrow: &mut Option<&mut RevenueShareEscrowZeroCopyMut>,
+    ) -> VelocityResult<FillAmounts> {
+        let mut taker = TakerSide::bind(
+            self.taker.user,
+            self.taker.stats,
+            self.taker.key,
+            &mut self.order.order,
+            self.order.reserved,
+        )?;
+        fill_within_taker_risk_limits(
+            &mut taker,
+            &self.rules,
+            &self.conditions,
             parties,
+            &mut OfferedLiquidity { router },
+            &mut FillerSide {
+                user: &mut self.filler.user,
+                stats: &mut self.filler.stats,
+                key: self.filler.key,
+                rev_share_escrow,
+            },
         )
     }
 
@@ -818,7 +707,7 @@ impl FillConditions {
         state: &State,
         maps: &mut AccountMaps,
         taker: &Taker,
-        slot_order: &OrderSlot,
+        slot_order: &WorkingOrder,
         mode: FillMode,
         clock: &Clock,
     ) -> VelocityResult<Self> {

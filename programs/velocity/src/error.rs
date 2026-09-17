@@ -214,19 +214,26 @@ pub enum ErrorCode {
     #[msg("AMMNotUpdatedInSameSlot")]
     AMMNotUpdatedInSameSlot,
     #[msg("AuctionNotComplete")]
+    /// @deprecated No path produces this. The DLOB it belonged to is gone.
     AuctionNotComplete,
     #[msg("MakerNotFound")]
+    /// @deprecated No path produces this. The DLOB it belonged to is gone.
     MakerNotFound,
     #[msg("MakerNotFound")]
     MakerStatsNotFound,
+    /// @deprecated No path produces this. The DLOB it belonged to is gone.
     // --- index 100 (error 0x1834 / 6100) ---
     #[msg("MakerMustBeWritable")]
+    /// @deprecated No path produces this. The DLOB it belonged to is gone.
     MakerMustBeWritable,
     #[msg("MakerMustBeWritable")]
     MakerStatsMustBeWritable,
+    /// @deprecated No path produces this. The DLOB it belonged to is gone.
     #[msg("MakerOrderNotFound")]
+    /// @deprecated No path produces this. The DLOB it belonged to is gone.
     MakerOrderNotFound,
     #[msg("CouldNotDeserializeMaker")]
+    /// @deprecated No path produces this. The DLOB it belonged to is gone.
     CouldNotDeserializeMaker,
     #[msg("CouldNotDeserializeMaker")]
     CouldNotDeserializeMakerStats,
@@ -234,8 +241,10 @@ pub enum ErrorCode {
     AuctionPriceDoesNotSatisfyMaker,
     #[msg("MakerCantFulfillOwnOrder")]
     MakerCantFulfillOwnOrder,
+    /// @deprecated No path produces this. The DLOB it belonged to is gone.
     #[msg("MakerOrderMustBePostOnly")]
     MakerOrderMustBePostOnly,
+    /// @deprecated No path produces this. The DLOB it belonged to is gone.
     #[msg("CantMatchTwoPostOnlys")]
     CantMatchTwoPostOnlys,
     #[msg("OrderBreachesOraclePriceLimits")]
@@ -513,6 +522,7 @@ pub enum ErrorCode {
     UnableToLoadUserStatsAccount,
     #[msg("User Not Inactive")]
     UserNotInactive,
+    /// @deprecated No path produces this. The DLOB it belonged to is gone.
     #[msg("RevertFill")]
     RevertFill,
     #[msg("Invalid MarketAccount for Deletion")]

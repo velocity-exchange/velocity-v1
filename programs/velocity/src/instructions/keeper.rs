@@ -37,7 +37,7 @@ use {
             insurance::update_user_stats_if_stake_amount,
             isolated_position::transfer_isolated_perp_position_deposit,
             liquidation::{liquidate_spot_with_swap_begin, liquidate_spot_with_swap_end},
-            orders::{cancel_orders, validate_spot_dlob_trading_enabled_for_market_type},
+            orders::cancel_orders,
             position::{get_position_index, PositionDirection},
             spot_balance::update_spot_balances,
             token::{receive, send_from_program_vault},
@@ -68,10 +68,7 @@ use {
                 calculate_user_equity, calculate_user_equity_for_trip,
                 meets_settle_pnl_maintenance_margin_requirement,
             },
-            orders::{
-                estimate_price_from_side, filter_bids_asks_by_oracle_divergence,
-                find_bids_and_asks_from_users, Level,
-            },
+            orders::{estimate_price_from_side, filter_bids_asks_by_oracle_divergence, Level},
             position::calculate_base_asset_value_and_pnl_with_oracle_price,
             router::RouterLeg,
             safe_math::SafeMath,
@@ -115,8 +112,7 @@ use {
             user::{
                 MarketType, Order, OrderStatus, OrderTriggerCondition, OrderType, User, UserStats,
             },
-            user_conditions::{UserConditionsV0, USER_CONDITIONS_PDA_SEED},
-            user_map::{load_user_map, load_user_maps, UserMap, UserStatsMap},
+            user_map::{load_user_maps, UserMap, UserStatsMap},
             zero_copy::{AccountZeroCopyMut, ZeroCopyLoader},
         },
         validate,
@@ -141,7 +137,6 @@ use {
 
 mod amm;
 mod bankruptcy;
-mod fill;
 mod force_delete;
 mod funding;
 mod insurance_fund;
@@ -153,19 +148,28 @@ mod revenue_share;
 mod settle_pnl;
 mod signed_msg;
 mod spot_interest;
-mod trigger;
 mod user_maintenance;
 
 pub use {
-    amm::*, bankruptcy::*, fill::*, force_delete::*, funding::*, insurance_fund::*, liquidation::*,
+    amm::*, bankruptcy::*, force_delete::*, funding::*, insurance_fund::*, liquidation::*,
     liquidation_swap::*, perp_fees::*, prelaunch_oracle::*, revenue_share::*, settle_pnl::*,
-    signed_msg::*, spot_interest::*, trigger::*, user_maintenance::*,
+    signed_msg::*, spot_interest::*, user_maintenance::*,
 };
+
+/// The named accounts a router fill acts on: whose order it is, and who turns
+/// it. Everything else the fill reads arrives in [`FillSections`].
+pub struct FillAccounts<'a, 'info> {
+    pub state: &'a AccountLoader<'info, State>,
+    pub filler: &'a AccountLoader<'info, User>,
+    pub filler_stats: &'a AccountLoader<'info, UserStats>,
+    pub user: &'a AccountLoader<'info, User>,
+    pub user_stats: &'a AccountLoader<'info, UserStats>,
+}
 
 /// The leftover accounts of a router fill, split into the sections it reads.
 ///
-/// Both keeper fill paths lay the sections out in the same order: the market
-/// and oracle accounts, the maker and referrer set, the taker's revenue-share
+/// Every fill path lays the sections out in the same order: the market and
+/// oracle accounts, the maker and referrer set, the taker's revenue-share
 /// escrow, and then the quoter tail.
 struct FillSections<'info> {
     maps: AccountMaps<'info>,

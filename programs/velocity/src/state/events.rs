@@ -414,6 +414,7 @@ pub enum OrderActionExplanation {
     Liquidation,
     OrderFilledWithAMM,
     OrderFilledWithAMMJit,
+    /// @deprecated No fill produces this. It labelled a DLOB match.
     OrderFilledWithMatch,
     OrderFilledWithMatchJit,
     MarketExpired,

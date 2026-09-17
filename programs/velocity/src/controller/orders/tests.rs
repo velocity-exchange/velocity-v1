@@ -15,7 +15,6 @@ use {
     },
     anchor_lang::prelude::Pubkey,
 };
-
 #[test]
 fn validate_spot_dlob_trading_enabled_for_market_type_rejects_spot() {
     let result = super::validate_spot_dlob_trading_enabled_for_market_type(MarketType::Spot);
@@ -24,13 +23,11 @@ fn validate_spot_dlob_trading_enabled_for_market_type_rejects_spot() {
         Err(crate::error::ErrorCode::SpotDlobTradingDisabled)
     );
 }
-
 #[test]
 fn validate_spot_dlob_trading_enabled_for_market_type_allows_perp() {
     let result = super::validate_spot_dlob_trading_enabled_for_market_type(MarketType::Perp);
     assert_eq!(result, Ok(()));
 }
-
 fn get_fee_structure() -> FeeStructure {
     let mut fee_tiers = [FeeTier::default(); 10];
     fee_tiers[0] = FeeTier {
@@ -45,7 +42,6 @@ fn get_fee_structure() -> FeeStructure {
         ..FeeStructure::test_default()
     }
 }
-
 /// Distinct keys, in (taker, maker, filler) order. They must not alias: the
 /// fill path distinguishes a self-fill (`filler_key` == the taker) from a maker
 /// that cranked its own fill (`filler_key` == a maker) purely by key, and the
@@ -57,18 +53,12 @@ fn get_user_keys() -> (Pubkey, Pubkey, Pubkey) {
         Pubkey::new_unique(),
     )
 }
-
-fn get_oracle_map<'a>() -> OracleMap<'a> {
-    OracleMap::empty()
-}
-
 fn get_state(min_auction_duration: u8) -> State {
     State {
         min_perp_auction_duration: legacy_slot_duration_u8(min_auction_duration),
         ..State::default()
     }
 }
-
 pub fn get_amm_is_available(
     order: &Order,
     min_auction_duration: u8,
@@ -119,7 +109,6 @@ pub fn get_amm_is_available(
         )
         .unwrap()
 }
-
 /// Router inputs with no external quoters — the fill routes across the vAMM
 /// and whatever DLOB makers were passed. Two locals rather than a helper
 /// because `RouterLeg` borrows its executor.
@@ -144,7 +133,6 @@ macro_rules! no_router {
         };
     };
 }
-
 pub mod fulfill_order {
     use {
         super::*,
@@ -153,28 +141,24 @@ pub mod fulfill_order {
                 orders::{
                     fill_perp_order_without_external_books, fill_within_taker_risk_limits,
                     validate_market_within_price_band, FillAmounts, FillConditions, FillParties,
-                    FillTarget, FillerSide, OfferedLiquidity, PricingRules, TakerSide,
+                    FillerSide, OfferedLiquidity, PricingRules, TakerSide,
                 },
                 position::PositionDirection,
             },
             create_anchor_account_info,
-            error::ErrorCode,
-            get_orders,
             instructions::optional_accounts::AccountMaps,
             math::{
                 constants::{
                     AMM_RESERVE_PRECISION, BASE_PRECISION_I64, BASE_PRECISION_U64,
                     MAX_CONCENTRATION_COEFFICIENT, PEG_PRECISION, PRICE_PRECISION,
                     PRICE_PRECISION_I64, PRICE_PRECISION_U64, QUOTE_PRECISION_I64,
-                    QUOTE_PRECISION_U64, SPOT_BALANCE_PRECISION_U64,
-                    SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+                    SPOT_BALANCE_PRECISION_U64, SPOT_CUMULATIVE_INTEREST_PRECISION,
+                    SPOT_WEIGHT_PRECISION,
                 },
-                margin::calculate_margin_requirement_and_total_collateral_and_liability_info,
                 time::SlotClock,
             },
             state::{
                 fill_mode::FillMode,
-                margin_calculation::MarginContext,
                 oracle::{HistoricalOracleData, OracleSource},
                 perp_market::{MarketStats, PerpMarket, AMM},
                 perp_market_map::PerpMarketMap,
@@ -190,12 +174,10 @@ pub mod fulfill_order {
         },
         std::{str::FromStr, u64},
     };
-
     #[test]
     fn validate_market_within_price_band_tests() {
         let oracle_price_key =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
-
         let mut market = PerpMarket {
             amm: AMM {
                 base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
@@ -220,7 +202,6 @@ pub mod fulfill_order {
                     last_oracle_price: (100 * PRICE_PRECISION) as i64,
                     last_oracle_price_twap: (100 * PRICE_PRECISION) as i64,
                     last_oracle_price_twap_5min: (100 * PRICE_PRECISION) as i64,
-
                     ..HistoricalOracleData::default()
                 },
                 ..MarketStats::default()
@@ -229,7 +210,6 @@ pub mod fulfill_order {
         };
         market.amm.max_base_asset_reserve = u128::MAX;
         market.amm.min_base_asset_reserve = 0;
-
         let mut state = State {
             oracle_guard_rails: OracleGuardRails {
                 validity: ValidityGuardRails {
@@ -242,26 +222,21 @@ pub mod fulfill_order {
             },
             ..State::default()
         };
-
         let oracle_price = market.market_stats.historical_oracle_data.last_oracle_price;
-
         // valid initial state
         assert!(validate_market_within_price_band(&market, &state, oracle_price).unwrap());
-
         // twap_5min $50 and mark $100 breaches 10% divergence -> failure
         market
             .market_stats
             .historical_oracle_data
             .last_oracle_price_twap_5min = 50 * PRICE_PRECISION as i64;
         assert!(validate_market_within_price_band(&market, &state, oracle_price).is_err());
-
         // within 60% ok -> success
         state
             .oracle_guard_rails
             .price_divergence
             .mark_oracle_percent_divergence = 6 * PERCENTAGE_PRECISION_U64 / 10;
         assert!(validate_market_within_price_band(&market, &state, oracle_price).unwrap());
-
         // twap_5min $20 and mark $100 breaches 60% divergence -> failure
         market
             .market_stats
@@ -269,7 +244,6 @@ pub mod fulfill_order {
             .last_oracle_price_twap_5min = 20 * PRICE_PRECISION as i64;
         assert!(validate_market_within_price_band(&market, &state, oracle_price).is_err());
     }
-
     #[test]
     fn fulfill_with_amm_skip_auction_duration() {
         let mut oracle_price = get_pyth_price(100, 6);
@@ -281,7 +255,6 @@ pub mod fulfill_order {
             PythLazerOracle,
             _oracle_account_info
         );
-
         let mut market = PerpMarket {
             amm: AMM {
                 base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
@@ -305,7 +278,6 @@ pub mod fulfill_order {
                     last_oracle_price: (100 * PRICE_PRECISION) as i64,
                     last_oracle_price_twap: (100 * PRICE_PRECISION) as i64,
                     last_oracle_price_twap_5min: (100 * PRICE_PRECISION) as i64,
-
                     ..HistoricalOracleData::default()
                 },
                 ..MarketStats::default()
@@ -314,26 +286,20 @@ pub mod fulfill_order {
         };
         market.amm.max_base_asset_reserve = i128::MAX as u128;
         market.amm.min_base_asset_reserve = 0;
-
         let mut state = State {
             min_perp_auction_duration: legacy_slot_duration_u8(1),
             default_market_order_time_in_force: 10,
             ..State::default()
         };
-
         assert!(!market.can_skip_auction_duration(&state, false).unwrap());
-
         market.amm.net_revenue_since_last_funding = 1;
         assert!(!market.can_skip_auction_duration(&state, false).unwrap());
         assert!(market.can_skip_auction_duration(&state, true).unwrap());
-
         assert!(!state.amm_immediate_fill_paused().unwrap());
         state.exchange_status = 0b10000000;
         assert!(state.amm_immediate_fill_paused().unwrap());
-
         assert!(!market.can_skip_auction_duration(&state, true).unwrap());
     }
-
     #[test]
     fn fulfill_with_amm_routes_off_projected_reserve_price() {
         // Stale-curve deadlock regression: the stored curve sits at 100 while
@@ -344,7 +310,6 @@ pub mod fulfill_order {
         // is the one being blocked.
         let now = 0_i64;
         let slot = 5_u64;
-
         let mut oracle_price = get_pyth_price(102, 6);
         let oracle_price_key =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
@@ -356,7 +321,6 @@ pub mod fulfill_order {
         );
         let mut oracle_map =
             OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
-
         let mut market = PerpMarket {
             amm: AMM {
                 base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
@@ -392,10 +356,8 @@ pub mod fulfill_order {
         };
         market.amm.max_base_asset_reserve = u64::MAX as u128;
         market.amm.min_base_asset_reserve = 0;
-
         create_anchor_account_info!(market, PerpMarket, market_account_info);
         let market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
-
         let mut spot_market = SpotMarket {
             market_index: 0,
             oracle_source: OracleSource::QuoteAsset,
@@ -409,7 +371,6 @@ pub mod fulfill_order {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
         let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
-
         let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
@@ -436,13 +397,11 @@ pub mod fulfill_order {
             }),
             ..User::default()
         };
-
         let mut filler = User::default();
         let fee_structure = get_fee_structure();
         let (taker_key, _, filler_key) = get_user_keys();
         let mut taker_stats = UserStats::default();
         let mut filler_stats = UserStats::default();
-
         let order_index = 0;
         let user_can_skip_auction_duration = taker
             .can_skip_auction_duration(&taker_stats, false)
@@ -456,7 +415,6 @@ pub mod fulfill_order {
             user_can_skip_auction_duration,
         );
         assert!(is_amm_available);
-
         no_router!(router);
         no_router!(router);
         let mut order = taker.orders[order_index];
@@ -500,7 +458,6 @@ pub mod fulfill_order {
         )
         .unwrap();
         taker.orders[order_index] = order;
-
         // Fill happened against the projected curve near the oracle price,
         // impossible against the stale stored bid at 100 (101.9 > 100 never
         // crosses). Partial: the sell walks the curve from ~102 down to the
@@ -509,7 +466,6 @@ pub mod fulfill_order {
         let avg_fill_price =
             quote_asset_amount as u128 * BASE_PRECISION_U64 as u128 / base_asset_amount as u128;
         assert!(avg_fill_price > 101_900_000 && avg_fill_price < 102_100_000);
-
         // The executed curve matches the routing projection: the AMM snapped
         // toward the oracle before quoting (then the sell moved it back down
         // a touch), so the post-fill reserve price sits near 102, not 100.
@@ -517,7 +473,6 @@ pub mod fulfill_order {
         let reserve_price_after = market_after.amm.reserve_price().unwrap();
         assert!(reserve_price_after > 101 * PRICE_PRECISION as u64);
     }
-
     #[test]
     fn fulfill_with_amm_projection_passthrough_keeps_stale_routing() {
         // Companion to fulfill_with_amm_routes_off_projected_reserve_price:
@@ -526,7 +481,6 @@ pub mod fulfill_order {
         // the stored curve and no fulfillment method is selected.
         let now = 0_i64;
         let slot = 5_u64;
-
         let mut oracle_price = get_pyth_price(102, 6);
         let oracle_price_key =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
@@ -538,7 +492,6 @@ pub mod fulfill_order {
         );
         let mut oracle_map =
             OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
-
         let mut market = PerpMarket {
             amm: AMM {
                 base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
@@ -574,10 +527,8 @@ pub mod fulfill_order {
         };
         market.amm.max_base_asset_reserve = u64::MAX as u128;
         market.amm.min_base_asset_reserve = 0;
-
         create_anchor_account_info!(market, PerpMarket, market_account_info);
         let market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
-
         let mut spot_market = SpotMarket {
             market_index: 0,
             oracle_source: OracleSource::QuoteAsset,
@@ -591,7 +542,6 @@ pub mod fulfill_order {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
         let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
-
         let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
@@ -618,13 +568,11 @@ pub mod fulfill_order {
             }),
             ..User::default()
         };
-
         let mut filler = User::default();
         let fee_structure = get_fee_structure();
         let (taker_key, _, filler_key) = get_user_keys();
         let mut taker_stats = UserStats::default();
         let mut filler_stats = UserStats::default();
-
         let order_index = 0;
         let user_can_skip_auction_duration = taker
             .can_skip_auction_duration(&taker_stats, false)
@@ -637,7 +585,6 @@ pub mod fulfill_order {
             slot,
             user_can_skip_auction_duration,
         );
-
         no_router!(router);
         let mut order = taker.orders[order_index];
         let FillAmounts {
@@ -680,16 +627,13 @@ pub mod fulfill_order {
         )
         .unwrap();
         taker.orders[order_index] = order;
-
         // No projection, no cross, no fill; pre-change behavior preserved.
         assert_eq!(base_asset_amount, 0);
         assert_eq!(quote_asset_amount, 0);
-
         let market_after = maps.perp_market_map.get_ref(&0).unwrap();
         let reserve_price_after = market_after.amm.reserve_price().unwrap();
         assert_eq!(reserve_price_after, 100 * PRICE_PRECISION as u64);
     }
-
     #[test]
     fn fulfill_no_cross_still_refreshes_curve() {
         // Routing projects and applies the refresh on the real AMM before
@@ -701,7 +645,6 @@ pub mod fulfill_order {
         // the taker's short at 103 never crosses the projected bid near 102.
         let now = 0_i64;
         let slot = 5_u64;
-
         let mut oracle_price = get_pyth_price(102, 6);
         let oracle_price_key =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
@@ -713,7 +656,6 @@ pub mod fulfill_order {
         );
         let mut oracle_map =
             OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
-
         let mut market = PerpMarket {
             amm: AMM {
                 base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
@@ -749,10 +691,8 @@ pub mod fulfill_order {
         };
         market.amm.max_base_asset_reserve = u64::MAX as u128;
         market.amm.min_base_asset_reserve = 0;
-
         create_anchor_account_info!(market, PerpMarket, market_account_info);
         let market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
-
         let mut spot_market = SpotMarket {
             market_index: 0,
             oracle_source: OracleSource::QuoteAsset,
@@ -766,7 +706,6 @@ pub mod fulfill_order {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
         let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
-
         let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
@@ -793,13 +732,11 @@ pub mod fulfill_order {
             }),
             ..User::default()
         };
-
         let mut filler = User::default();
         let fee_structure = get_fee_structure();
         let (taker_key, _, filler_key) = get_user_keys();
         let mut taker_stats = UserStats::default();
         let mut filler_stats = UserStats::default();
-
         let order_index = 0;
         let user_can_skip_auction_duration = taker
             .can_skip_auction_duration(&taker_stats, false)
@@ -812,7 +749,6 @@ pub mod fulfill_order {
             slot,
             user_can_skip_auction_duration,
         );
-
         no_router!(router);
         let mut order = taker.orders[order_index];
         let FillAmounts {
@@ -855,11 +791,9 @@ pub mod fulfill_order {
         )
         .unwrap();
         taker.orders[order_index] = order;
-
         // No cross, so no fill.
         assert_eq!(base_asset_amount, 0);
         assert_eq!(quote_asset_amount, 0);
-
         // The curve was still refreshed toward the oracle: reserve price
         // snapped from the stored 100 to near 102, and `last_update_slot`
         // advanced to this slot so a subsequent same-slot fill skips the
@@ -870,12 +804,10 @@ pub mod fulfill_order {
         assert!(reserve_price_after < 103 * PRICE_PRECISION as u64);
         assert_eq!(market_after.amm.last_update_slot, slot);
     }
-
     #[test]
     fn fulfill_with_amm_end_of_auction() {
         let now = 0_i64;
         let slot = 6_u64;
-
         let mut oracle_price = get_pyth_price(100, 6);
         let oracle_price_key =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
@@ -887,7 +819,6 @@ pub mod fulfill_order {
         );
         let mut oracle_map =
             OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
-
         let mut market = PerpMarket {
             amm: AMM {
                 base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
@@ -896,7 +827,6 @@ pub mod fulfill_order {
                 peg_multiplier: 100 * PEG_PRECISION,
                 max_slippage_ratio: 10,
                 max_fill_reserve_fraction: 100,
-
                 ..AMM::default()
             },
             margin_ratio_initial: 1000,
@@ -911,7 +841,6 @@ pub mod fulfill_order {
                     last_oracle_price: (100 * PRICE_PRECISION) as i64,
                     last_oracle_price_twap: (100 * PRICE_PRECISION) as i64,
                     last_oracle_price_twap_5min: (100 * PRICE_PRECISION) as i64,
-
                     ..HistoricalOracleData::default()
                 },
                 ..MarketStats::default()
@@ -920,10 +849,8 @@ pub mod fulfill_order {
         };
         market.amm.max_base_asset_reserve = u128::MAX;
         market.amm.min_base_asset_reserve = 0;
-
         create_anchor_account_info!(market, PerpMarket, market_account_info);
         let market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
-
         let mut spot_market = SpotMarket {
             market_index: 0,
             oracle_source: OracleSource::QuoteAsset,
@@ -937,7 +864,6 @@ pub mod fulfill_order {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
         let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
-
         let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
@@ -966,13 +892,9 @@ pub mod fulfill_order {
             }),
             ..User::default()
         };
-
         let fee_structure = get_fee_structure();
-
         let (taker_key, _, filler_key) = get_user_keys();
-
         let mut taker_stats = UserStats::default();
-
         let order_index = 0;
         let min_auction_duration = 0;
         let user_can_skip_auction_duration = taker
@@ -986,7 +908,6 @@ pub mod fulfill_order {
             slot,
             user_can_skip_auction_duration,
         );
-
         no_router!(router);
         let mut order = taker.orders[order_index];
         let FillAmounts {
@@ -1029,9 +950,7 @@ pub mod fulfill_order {
         )
         .unwrap();
         taker.orders[order_index] = order;
-
         assert_eq!(base_asset_amount, BASE_PRECISION_U64);
-
         let taker_position = &taker.perp_positions[0];
         assert_eq!(taker_position.base_asset_amount, BASE_PRECISION_I64);
         assert_eq!(taker_position.quote_asset_amount, -101060615);
@@ -1044,7 +963,6 @@ pub mod fulfill_order {
         assert_eq!(taker_stats.fees.total_token_discount, 0);
         assert_eq!(taker_stats.taker_volume_30d, 101010109);
         assert!(taker.orders[0].is_available());
-
         let market_after = maps.perp_market_map.get_ref(&0).unwrap();
         assert_eq!(market_after.amm.base_asset_amount_with_amm, 1000000000);
         assert_eq!(market_after.base_asset_amount_long, 1000000000);
@@ -1057,12 +975,10 @@ pub mod fulfill_order {
         assert_eq!(market_after.amm.total_fee_minus_distributions, 7);
         assert_eq!(market_after.amm.net_revenue_since_last_funding, 7);
     }
-
     #[test]
     fn fulfill_post_only_ask_with_amm() {
         let now = 0_i64;
         let slot = 0_u64;
-
         let mut oracle_price = get_pyth_price(100, 6);
         let oracle_price_key =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
@@ -1074,7 +990,6 @@ pub mod fulfill_order {
         );
         let mut oracle_map =
             OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
-
         let mut market = PerpMarket {
             amm: AMM {
                 base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
@@ -1098,7 +1013,6 @@ pub mod fulfill_order {
                     last_oracle_price: (100 * PRICE_PRECISION) as i64,
                     last_oracle_price_twap: (100 * PRICE_PRECISION) as i64,
                     last_oracle_price_twap_5min: (100 * PRICE_PRECISION) as i64,
-
                     ..HistoricalOracleData::default()
                 },
                 ..MarketStats::default()
@@ -1107,14 +1021,11 @@ pub mod fulfill_order {
         };
         market.amm.max_base_asset_reserve = u64::MAX as u128;
         market.amm.min_base_asset_reserve = 0;
-
         let reserve_price_before = market.amm.reserve_price().unwrap();
         let bid_price = market.amm.bid_price(reserve_price_before, 0, 0).unwrap();
         println!("bid_price: {}", bid_price); // $100
-
         create_anchor_account_info!(market, PerpMarket, market_account_info);
         let market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
-
         let mut spot_market = SpotMarket {
             market_index: 0,
             oracle_source: OracleSource::QuoteAsset,
@@ -1128,7 +1039,6 @@ pub mod fulfill_order {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
         let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
-
         let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
@@ -1156,20 +1066,13 @@ pub mod fulfill_order {
             }),
             ..User::default()
         };
-
         let makers_and_referrers = UserMap::empty();
-
         let mut filler = User::default();
-
         let fee_structure = get_fee_structure();
-
         let (taker_key, _, filler_key) = get_user_keys();
-
         let mut taker_stats = UserStats::default();
         let maker_and_referrer_stats = UserStatsMap::empty();
-
         let mut filler_stats = UserStats::default();
-
         let order_index = 0;
         let min_auction_duration = 0;
         let user_can_skip_auction_duration = taker
@@ -1183,7 +1086,6 @@ pub mod fulfill_order {
             slot,
             user_can_skip_auction_duration,
         );
-
         no_router!(router);
         let mut order = taker.orders[order_index];
         let FillAmounts {
@@ -1226,9 +1128,7 @@ pub mod fulfill_order {
         )
         .unwrap();
         taker.orders[order_index] = order;
-
         assert_eq!(base_asset_amount, 35032000);
-
         let taker_position = &taker.perp_positions[0];
         assert_eq!(taker_position.base_asset_amount, -35032000);
         assert_eq!(taker_position.quote_asset_amount, 3500746);
@@ -1240,7 +1140,6 @@ pub mod fulfill_order {
         assert_eq!(taker_stats.fees.total_token_discount, 0);
         assert_eq!(taker_stats.taker_volume_30d, 0);
         assert_eq!(taker_stats.maker_volume_30d, 3499697);
-
         let market_after = maps.perp_market_map.get_ref(&0).unwrap();
         assert_eq!(market_after.amm.base_asset_amount_with_amm, -35032000);
         assert_eq!(market_after.base_asset_amount_long, 0);
@@ -1252,18 +1151,15 @@ pub mod fulfill_order {
         assert_eq!(market_after.amm.total_fee, 0);
         assert_eq!(market_after.amm.total_fee_minus_distributions, 0);
         assert_eq!(market_after.amm.net_revenue_since_last_funding, 0);
-
         let market_after = maps.perp_market_map.get_ref(&0).unwrap();
         let reserve_price = market_after.amm.reserve_price().unwrap();
         let bid_price = market_after.amm.bid_price(reserve_price, 0, 0).unwrap();
         assert_eq!(bid_price, 99929972); // ~ 99.9 * (1.0003)
     }
-
     #[test]
     fn fulfill_post_only_bid_with_amm() {
         let now = 0_i64;
         let slot = 0_u64;
-
         let mut oracle_price = get_pyth_price(100, 6);
         let oracle_price_key =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
@@ -1275,7 +1171,6 @@ pub mod fulfill_order {
         );
         let mut oracle_map =
             OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
-
         let mut market = PerpMarket {
             amm: AMM {
                 base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
@@ -1299,7 +1194,6 @@ pub mod fulfill_order {
                     last_oracle_price: (100 * PRICE_PRECISION) as i64,
                     last_oracle_price_twap: (100 * PRICE_PRECISION) as i64,
                     last_oracle_price_twap_5min: (100 * PRICE_PRECISION) as i64,
-
                     ..HistoricalOracleData::default()
                 },
                 ..MarketStats::default()
@@ -1308,14 +1202,11 @@ pub mod fulfill_order {
         };
         market.amm.max_base_asset_reserve = u64::MAX as u128;
         market.amm.min_base_asset_reserve = 0;
-
         let reserve_price_before = market.amm.reserve_price().unwrap();
         let bid_price = market.amm.bid_price(reserve_price_before, 0, 0).unwrap();
         println!("bid_price: {}", bid_price); // $100
-
         create_anchor_account_info!(market, PerpMarket, market_account_info);
         let market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
-
         let mut spot_market = SpotMarket {
             market_index: 0,
             oracle_source: OracleSource::QuoteAsset,
@@ -1329,7 +1220,6 @@ pub mod fulfill_order {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
         let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
-
         let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
@@ -1357,20 +1247,13 @@ pub mod fulfill_order {
             }),
             ..User::default()
         };
-
         let makers_and_referrers = UserMap::empty();
-
         let mut filler = User::default();
-
         let fee_structure = get_fee_structure();
-
         let (taker_key, _, filler_key) = get_user_keys();
-
         let mut taker_stats = UserStats::default();
         let maker_and_referrer_stats = UserStatsMap::empty();
-
         let mut filler_stats = UserStats::default();
-
         let order_index = 0;
         let min_auction_duration = 0;
         let user_can_skip_auction_duration = taker
@@ -1384,7 +1267,6 @@ pub mod fulfill_order {
             slot,
             user_can_skip_auction_duration,
         );
-
         no_router!(router);
         let mut order = taker.orders[order_index];
         let FillAmounts {
@@ -1427,9 +1309,7 @@ pub mod fulfill_order {
         )
         .unwrap();
         taker.orders[order_index] = order;
-
         assert_eq!(base_asset_amount, 34966000);
-
         let taker_position = &taker.perp_positions[0];
         assert_eq!(taker_position.base_asset_amount, 34966000);
         assert_eq!(taker_position.quote_asset_amount, -3499046);
@@ -1441,7 +1321,6 @@ pub mod fulfill_order {
         assert_eq!(taker_stats.fees.total_token_discount, 0);
         assert_eq!(taker_stats.taker_volume_30d, 0);
         assert_eq!(taker_stats.maker_volume_30d, 3500096);
-
         let market_after = maps.perp_market_map.get_ref(&0).unwrap();
         assert_eq!(market_after.amm.base_asset_amount_with_amm, 34966000);
         assert_eq!(market_after.base_asset_amount_long, 34966000);
@@ -1453,17 +1332,14 @@ pub mod fulfill_order {
         assert_eq!(market_after.amm.total_fee, 0);
         assert_eq!(market_after.amm.total_fee_minus_distributions, 0);
         assert_eq!(market_after.amm.net_revenue_since_last_funding, 0);
-
         let market_after = maps.perp_market_map.get_ref(&0).unwrap();
         let reserve_price = market_after.amm.reserve_price().unwrap();
         let ask_price = market_after.amm.ask_price(reserve_price, 0, 0).unwrap();
         assert_eq!(ask_price, 100069968); // ~ 100.1 * (0.9997)
     }
-
     #[test]
     fn amm_unavailable_from_volatile_mm_oracle() {
         use anchor_lang::prelude::{AccountLoader, Clock};
-
         let slot = 56_u64;
         let clock = Clock {
             slot,
@@ -1472,7 +1348,6 @@ pub mod fulfill_order {
             leader_schedule_epoch: 0,
             unix_timestamp: 0,
         };
-
         let mut oracle_price = get_pyth_price(100, 6);
         let oracle_price_key =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
@@ -1484,7 +1359,6 @@ pub mod fulfill_order {
         );
         let mut oracle_map =
             OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
-
         let mut market = PerpMarket {
             amm: AMM {
                 base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
@@ -1511,7 +1385,6 @@ pub mod fulfill_order {
                     last_oracle_price: (100 * PRICE_PRECISION) as i64,
                     last_oracle_price_twap: (100 * PRICE_PRECISION) as i64,
                     last_oracle_price_twap_5min: (100 * PRICE_PRECISION) as i64,
-
                     ..HistoricalOracleData::default()
                 },
                 ..MarketStats::default()
@@ -1521,10 +1394,8 @@ pub mod fulfill_order {
         market.amm.max_base_asset_reserve = u128::MAX;
         market.amm.min_base_asset_reserve = 0;
         market.status = MarketStatus::Active;
-
         create_anchor_account_info!(market, PerpMarket, market_account_info);
         let market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
-
         let mut spot_market = SpotMarket {
             market_index: 0,
             oracle_source: OracleSource::QuoteAsset,
@@ -1538,7 +1409,6 @@ pub mod fulfill_order {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
         let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
-
         let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
@@ -1574,24 +1444,22 @@ pub mod fulfill_order {
         create_anchor_account_info!(UserStats::default(), UserStats, user_stats_account_info);
         let user_stats_account_loader: AccountLoader<UserStats> =
             AccountLoader::try_from(&user_stats_account_info).unwrap();
-
         let filler_key = Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap();
         create_anchor_account_info!(User::default(), &filler_key, User, user_account_info);
         let filler_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&user_account_info).unwrap();
-
         create_anchor_account_info!(UserStats::default(), UserStats, filler_stats_account_info);
         let filler_stats_account_loader: AccountLoader<UserStats> =
             AccountLoader::try_from(&filler_stats_account_info).unwrap();
-
         let state = State {
             min_perp_auction_duration: legacy_slot_duration_u8(1),
             default_market_order_time_in_force: 10,
             ..State::default()
         };
-
+        let mut taker_order = user_account_loader.load().unwrap().orders[0];
         let filled = fill_perp_order_without_external_books(
-            FillTarget::Slot(1),
+            &mut taker_order,
+            true,
             &state,
             &user_account_loader,
             &user_stats_account_loader,
@@ -1606,17 +1474,16 @@ pub mod fulfill_order {
             false,
         )
         .unwrap();
-
         assert_eq!(filled.base, 0);
-
         // Will fill if MM oracle price is not too volatile at mm oracle price
         market.market_stats.mm_oracle_price = 101 * PRICE_PRECISION_I64;
         create_anchor_account_info!(market, PerpMarket, market_account_info);
         let perp_market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
         maps.perp_market_map = perp_market_map;
-
+        let mut taker_order = user_account_loader.load().unwrap().orders[0];
         let filled = fill_perp_order_without_external_books(
-            FillTarget::Slot(1),
+            &mut taker_order,
+            true,
             &state,
             &user_account_loader,
             &user_stats_account_loader,
@@ -1631,11 +1498,9 @@ pub mod fulfill_order {
             false,
         )
         .unwrap();
-
         assert_eq!(filled.base, BASE_PRECISION_U64);
         assert_eq!(filled.quote, 101010102);
     }
-
     // Add back if we check free collateral in fill again
     // #[test]
     // fn fulfill_with_negative_free_collateral() {
@@ -1788,7 +1653,6 @@ pub mod fulfill_order {
     //     assert_eq!(taker.perp_positions[0], PerpPosition::default());
     //     assert_eq!(taker.orders[0], Order::default());
     // }
-
     // `fulfill_with_amm_when_maker_is_filler` with a hard gate firing: the AMM
     // would JIT the residual, but must not. Only the DLOB maker's half fills;
     // AMM reserves untouched.
@@ -1796,7 +1660,6 @@ pub mod fulfill_order {
     fn paused_operations_blocks_amm_fill() {
         let now = 0_i64;
         let slot = 0_u64;
-
         let mut oracle_price = get_pyth_price(100, 6);
         let oracle_price_key =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
@@ -1808,7 +1671,6 @@ pub mod fulfill_order {
         );
         let mut oracle_map =
             OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
-
         let mut market = PerpMarket {
             amm: AMM {
                 base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
@@ -1842,10 +1704,8 @@ pub mod fulfill_order {
             },
             ..PerpMarket::default_test()
         };
-
         create_anchor_account_info!(market, PerpMarket, market_account_info);
         let market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
-
         let mut spot_market = SpotMarket {
             market_index: 0,
             oracle_source: OracleSource::QuoteAsset,
@@ -1859,7 +1719,6 @@ pub mod fulfill_order {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
         let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
-
         let mut taker = User {
             orders: get_orders(Order {
                 market_index: 0,
@@ -1888,17 +1747,14 @@ pub mod fulfill_order {
             }),
             ..User::default()
         };
-
         let mut filler = User::default();
         let fee_structure = get_fee_structure();
         let (taker_key, _, filler_key) = get_user_keys();
-
         let mut taker_stats = UserStats {
             paused_operations: 4,
             ..UserStats::default()
         };
         let mut filler_stats = UserStats::default();
-
         let order_index = 0;
         let min_auction_duration = 0;
         let user_can_skip_auction_duration = taker
@@ -1912,10 +1768,8 @@ pub mod fulfill_order {
             slot,
             user_can_skip_auction_duration,
         );
-
         assert!(!user_can_skip_auction_duration);
         assert!(!is_amm_available);
-
         no_router!(router);
         let mut order = taker.orders[order_index];
         let FillAmounts {
@@ -1958,22 +1812,18 @@ pub mod fulfill_order {
         )
         .unwrap();
         taker.orders[order_index] = order;
-
         assert_eq!(base_asset_amount, 0);
         assert_eq!(taker.perp_positions[0].base_asset_amount, 0);
-
         let market_after = maps.perp_market_map.get_ref(&0).unwrap();
         assert_eq!(market_after.amm.base_asset_amount_with_amm, -1000000000);
     }
 }
-
 pub mod fill_order {
     use {
         super::*,
         crate::{
             controller::{
-                orders::{fill_perp_order_without_external_books, FillTarget},
-                position::PositionDirection,
+                orders::fill_perp_order_without_external_books, position::PositionDirection,
             },
             create_anchor_account_info,
             error::ErrorCode,
@@ -1995,7 +1845,7 @@ pub mod fill_order {
                 spot_market::{SpotBalanceType, SpotMarket},
                 spot_market_map::SpotMarketMap,
                 state::State,
-                user::{MarketType, OrderStatus, OrderType, SpotPosition, User, UserStats},
+                user::{OrderStatus, OrderType, SpotPosition, User, UserStats},
                 user_map::{UserMap, UserStatsMap},
             },
             test_utils::{get_orders, get_positions, get_pyth_price, get_spot_positions},
@@ -2004,143 +1854,6 @@ pub mod fill_order {
         anchor_lang::prelude::{AccountLoader, Clock},
         std::str::FromStr,
     };
-
-    #[test]
-    fn expire_order() {
-        let mut market = PerpMarket {
-            amm: AMM {
-                terminal_quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
-                base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
-                quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
-                sqrt_k: 100 * AMM_RESERVE_PRECISION,
-                peg_multiplier: 100 * PEG_PRECISION,
-                max_slippage_ratio: 100,
-                max_fill_reserve_fraction: 100,
-                max_base_asset_reserve: 200 * AMM_RESERVE_PRECISION,
-                min_base_asset_reserve: 50 * AMM_RESERVE_PRECISION,
-                ..AMM::default()
-            },
-            margin_ratio_initial: 1000,
-            margin_ratio_maintenance: 500,
-            status: MarketStatus::Initialized,
-            order_step_size: 10000000,
-            order_tick_size: 1,
-            market_stats: MarketStats {
-                historical_oracle_data: HistoricalOracleData::default_price(PRICE_PRECISION_I64),
-                ..MarketStats::default()
-            },
-            ..PerpMarket::default()
-        };
-
-        market.status = MarketStatus::Active;
-
-        create_anchor_account_info!(market, PerpMarket, market_account_info);
-        let market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
-
-        let mut spot_market = SpotMarket {
-            market_index: 0,
-            oracle_source: OracleSource::QuoteAsset,
-            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
-            decimals: 6,
-            initial_asset_weight: SPOT_WEIGHT_PRECISION,
-            ..SpotMarket::default()
-        };
-        create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
-        let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
-
-        let mut oracle_map = get_oracle_map();
-        let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
-
-        let mut user = User {
-            authority: Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap(),
-            orders: get_orders(Order {
-                market_index: 0,
-                order_id: 1,
-                status: OrderStatus::Open,
-                order_type: OrderType::Market,
-                direction: PositionDirection::Long,
-                base_asset_amount: BASE_PRECISION_U64,
-                slot: 0,
-                auction_start_price: 0,
-                auction_end_price: 102 * PRICE_PRECISION_I64,
-                auction_duration: 5,
-                price: 102 * PRICE_PRECISION_U64,
-                max_ts: 10,
-                ..Order::default()
-            }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                open_orders: 1,
-                open_bids: BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                balance_type: SpotBalanceType::Deposit,
-                scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
-                ..SpotPosition::default()
-            }),
-            ..User::default()
-        };
-        create_anchor_account_info!(user, User, user_account_info);
-        let user_account_loader: AccountLoader<User> =
-            AccountLoader::try_from(&user_account_info).unwrap();
-
-        create_anchor_account_info!(UserStats::default(), UserStats, user_stats_account_info);
-        let user_stats_account_loader: AccountLoader<UserStats> =
-            AccountLoader::try_from(&user_stats_account_info).unwrap();
-
-        let filler_key = Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap();
-        create_anchor_account_info!(User::default(), &filler_key, User, user_account_info);
-        let filler_account_loader: AccountLoader<User> =
-            AccountLoader::try_from(&user_account_info).unwrap();
-
-        create_anchor_account_info!(UserStats::default(), UserStats, filler_stats_account_info);
-        let filler_stats_account_loader: AccountLoader<UserStats> =
-            AccountLoader::try_from(&filler_stats_account_info).unwrap();
-
-        let state = State {
-            min_perp_auction_duration: legacy_slot_duration_u8(1),
-            default_market_order_time_in_force: 10,
-            ..State::default()
-        };
-
-        let clock = Clock {
-            slot: 11,
-            epoch_start_timestamp: 0,
-            epoch: 0,
-            leader_schedule_epoch: 0,
-            unix_timestamp: 11,
-        };
-
-        let filled = fill_perp_order_without_external_books(
-            FillTarget::Slot(1),
-            &state,
-            &user_account_loader,
-            &user_stats_account_loader,
-            &mut maps,
-            &filler_account_loader,
-            &filler_stats_account_loader,
-            &UserMap::empty(),
-            &UserStatsMap::empty(),
-            &clock,
-            FillMode::Fill,
-            &mut None,
-            false,
-        )
-        .unwrap();
-
-        let user_after = user_account_loader.load().unwrap();
-        assert_eq!(filled.base, 0);
-        assert_eq!(user_after.perp_positions[0].open_orders, 0);
-        assert_eq!(user_after.perp_positions[0].open_bids, 0);
-        assert_eq!(user_after.perp_positions[0].quote_asset_amount, -10000);
-        assert!(user_after.orders[0].is_available()); // order canceled
-
-        let filler_after = filler_account_loader.load().unwrap();
-        assert_eq!(filler_after.perp_positions[0].quote_asset_amount, 10000);
-    }
-
     #[test]
     fn max_open_interest() {
         let clock = Clock {
@@ -2150,7 +1863,6 @@ pub mod fill_order {
             leader_schedule_epoch: 0,
             unix_timestamp: 0,
         };
-
         let mut oracle_price = get_pyth_price(100, 6);
         let oracle_price_key =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
@@ -2167,7 +1879,6 @@ pub mod fill_order {
             None,
         )
         .unwrap();
-
         let mut market = PerpMarket {
             amm: AMM {
                 base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
@@ -2217,7 +1928,6 @@ pub mod fill_order {
             .unwrap();
         create_anchor_account_info!(market, PerpMarket, market_account_info);
         let market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
-
         let mut spot_market = SpotMarket {
             market_index: 0,
             oracle_source: OracleSource::QuoteAsset,
@@ -2231,7 +1941,6 @@ pub mod fill_order {
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
         let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
-
         let mut user = User {
             orders: get_orders(Order {
                 market_index: 0,
@@ -2264,28 +1973,25 @@ pub mod fill_order {
         create_anchor_account_info!(user, User, user_account_info);
         let user_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&user_account_info).unwrap();
-
         create_anchor_account_info!(UserStats::default(), UserStats, user_stats_account_info);
         let user_stats_account_loader: AccountLoader<UserStats> =
             AccountLoader::try_from(&user_stats_account_info).unwrap();
-
         let filler_key = Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap();
         create_anchor_account_info!(User::default(), &filler_key, User, user_account_info);
         let filler_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&user_account_info).unwrap();
-
         create_anchor_account_info!(UserStats::default(), UserStats, filler_stats_account_info);
         let filler_stats_account_loader: AccountLoader<UserStats> =
             AccountLoader::try_from(&filler_stats_account_info).unwrap();
-
         let state = State {
             min_perp_auction_duration: legacy_slot_duration_u8(1),
             default_market_order_time_in_force: 10,
             ..State::default()
         };
-
+        let mut taker_order = user_account_loader.load().unwrap().orders[0];
         let err = fill_perp_order_without_external_books(
-            FillTarget::Slot(1),
+            &mut taker_order,
+            true,
             &state,
             &user_account_loader,
             &user_stats_account_loader,
@@ -2299,11 +2005,9 @@ pub mod fill_order {
             &mut None,
             false,
         );
-
         assert_eq!(err, Err(ErrorCode::MaxOpenInterest));
     }
 }
-
 pub mod force_cancel_orders {
     use {
         super::*,
@@ -2335,7 +2039,6 @@ pub mod force_cancel_orders {
         anchor_lang::prelude::{AccountLoader, Clock},
         std::str::FromStr,
     };
-
     #[test]
     fn cancel_order_after_fulfill() {
         let clock = Clock {
@@ -2345,7 +2048,6 @@ pub mod force_cancel_orders {
             leader_schedule_epoch: 0,
             unix_timestamp: 0,
         };
-
         let mut oracle_price = get_pyth_price(100, 6);
         let oracle_price_key =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
@@ -2362,7 +2064,6 @@ pub mod force_cancel_orders {
             None,
         )
         .unwrap();
-
         let mut market = PerpMarket {
             amm: AMM {
                 base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
@@ -2415,7 +2116,6 @@ pub mod force_cancel_orders {
             .unwrap();
         create_anchor_account_info!(market, PerpMarket, market_account_info);
         let market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
-
         let mut usdc_spot_market = SpotMarket {
             market_index: 0,
             oracle_source: OracleSource::QuoteAsset,
@@ -2428,7 +2128,6 @@ pub mod force_cancel_orders {
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
-
         let mut sol_spot_market = SpotMarket {
             market_index: 1,
             deposit_balance: SPOT_BALANCE_PRECISION,
@@ -2439,7 +2138,6 @@ pub mod force_cancel_orders {
             ..SpotMarket::default_base_market()
         };
         create_anchor_account_info!(sol_spot_market, SpotMarket, sol_spot_market_account_info);
-
         let spot_market_map = SpotMarketMap::load_multiple(
             vec![
                 &usdc_spot_market_account_info,
@@ -2449,7 +2147,6 @@ pub mod force_cancel_orders {
         )
         .unwrap();
         let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
-
         let mut orders = [Order::default(); 32];
         orders[0] = Order {
             market_index: 0,
@@ -2499,7 +2196,6 @@ pub mod force_cancel_orders {
             price: 102 * PRICE_PRECISION_U64,
             ..Order::default()
         };
-
         let mut user = User {
             authority: Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap(), // different authority than filler
             orders,
@@ -2525,26 +2221,21 @@ pub mod force_cancel_orders {
         create_anchor_account_info!(user, User, user_account_info);
         let user_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&user_account_info).unwrap();
-
         create_anchor_account_info!(UserStats::default(), UserStats, user_stats_account_info);
         let _user_stats_account_loader: AccountLoader<UserStats> =
             AccountLoader::try_from(&user_stats_account_info).unwrap();
-
         let filler_key = Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap();
         create_anchor_account_info!(User::default(), &filler_key, User, user_account_info);
         let filler_account_loader: AccountLoader<User> =
             AccountLoader::try_from(&user_account_info).unwrap();
-
         create_anchor_account_info!(UserStats::default(), UserStats, filler_stats_account_info);
         let _filler_stats_account_loader: AccountLoader<UserStats> =
             AccountLoader::try_from(&filler_stats_account_info).unwrap();
-
         let state = State {
             min_perp_auction_duration: legacy_slot_duration_u8(1),
             default_market_order_time_in_force: 10,
             ..State::default()
         };
-
         force_cancel_orders(
             &state,
             &user_account_loader,
@@ -2553,18 +2244,15 @@ pub mod force_cancel_orders {
             &clock,
         )
         .unwrap();
-
         let user = user_account_loader.load().unwrap();
         assert!(user.orders[0].is_available());
         assert!(!user.orders[1].is_available());
         assert!(user.orders[2].is_available());
         assert!(!user.orders[3].is_available());
-
         assert_eq!(user.spot_positions[0].scaled_balance, 20000001);
         assert_eq!(user.spot_positions[0].balance_type, SpotBalanceType::Borrow,);
     }
 }
-
 pub mod cancel_reduce_only_trigger_orders {
     use {
         super::*,
@@ -2594,7 +2282,6 @@ pub mod cancel_reduce_only_trigger_orders {
         anchor_lang::prelude::Clock,
         std::str::FromStr,
     };
-
     #[test]
     fn test() {
         let clock = Clock {
@@ -2604,7 +2291,6 @@ pub mod cancel_reduce_only_trigger_orders {
             leader_schedule_epoch: 0,
             unix_timestamp: 0,
         };
-
         let mut oracle_price = get_pyth_price(100, 6);
         let oracle_price_key =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
@@ -2621,7 +2307,6 @@ pub mod cancel_reduce_only_trigger_orders {
             None,
         )
         .unwrap();
-
         let mut market = PerpMarket {
             amm: AMM {
                 base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
@@ -2674,7 +2359,6 @@ pub mod cancel_reduce_only_trigger_orders {
             .unwrap();
         create_anchor_account_info!(market, PerpMarket, market_account_info);
         let market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
-
         let mut usdc_spot_market = SpotMarket {
             market_index: 0,
             oracle_source: OracleSource::QuoteAsset,
@@ -2687,7 +2371,6 @@ pub mod cancel_reduce_only_trigger_orders {
             ..SpotMarket::default()
         };
         create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
-
         let mut sol_spot_market = SpotMarket {
             market_index: 1,
             deposit_balance: SPOT_BALANCE_PRECISION,
@@ -2698,7 +2381,6 @@ pub mod cancel_reduce_only_trigger_orders {
             ..SpotMarket::default_base_market()
         };
         create_anchor_account_info!(sol_spot_market, SpotMarket, sol_spot_market_account_info);
-
         let spot_market_map = SpotMarketMap::load_multiple(
             vec![
                 &usdc_spot_market_account_info,
@@ -2708,7 +2390,6 @@ pub mod cancel_reduce_only_trigger_orders {
         )
         .unwrap();
         let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
-
         let mut orders = [Order::default(); 32];
         orders[0] = Order {
             market_index: 0,
@@ -2754,7 +2435,6 @@ pub mod cancel_reduce_only_trigger_orders {
             reduce_only: true,
             ..Order::default()
         };
-
         let mut user = User {
             authority: Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap(), // different authority than filler
             orders,
@@ -2777,7 +2457,6 @@ pub mod cancel_reduce_only_trigger_orders {
             }),
             ..User::default()
         };
-
         cancel_reduce_only_trigger_orders(
             &mut user,
             &Pubkey::default(),
@@ -2788,7 +2467,6 @@ pub mod cancel_reduce_only_trigger_orders {
             0,
         )
         .unwrap();
-
         assert_eq!(user.orders[0].status, OrderStatus::Open);
         assert_eq!(user.orders[1].status, OrderStatus::Open);
         assert_eq!(user.orders[2].status, OrderStatus::Canceled);
@@ -2796,7 +2474,6 @@ pub mod cancel_reduce_only_trigger_orders {
         assert_eq!(user.orders[4].status, OrderStatus::Canceled);
     }
 }
-
 pub mod update_trigger_order_params {
     use crate::{
         controller::orders::update_trigger_order_params,
@@ -2807,7 +2484,6 @@ pub mod update_trigger_order_params {
         },
         PositionDirection, PRICE_PRECISION_I64, PRICE_PRECISION_U64,
     };
-
     #[test]
     fn test() {
         let mut order = Order {
@@ -2823,7 +2499,6 @@ pub mod update_trigger_order_params {
         };
         let slot = 10;
         let min_auction_duration = 10;
-
         update_trigger_order_params(
             &mut order,
             &oracle_price_data,
@@ -2833,7 +2508,6 @@ pub mod update_trigger_order_params {
             SlotClock::baseline(),
         )
         .unwrap();
-
         assert_eq!(order.slot, slot);
         assert_eq!(order.auction_duration, min_auction_duration);
         assert_eq!(
@@ -2842,14 +2516,12 @@ pub mod update_trigger_order_params {
         );
         assert_eq!(order.auction_start_price, 100000000);
         assert_eq!(order.auction_end_price, 100500000);
-
         let mut order = Order {
             order_type: OrderType::TriggerMarket,
             direction: PositionDirection::Short,
             trigger_condition: OrderTriggerCondition::Below,
             ..Order::default()
         };
-
         update_trigger_order_params(
             &mut order,
             &oracle_price_data,
@@ -2859,7 +2531,6 @@ pub mod update_trigger_order_params {
             SlotClock::baseline(),
         )
         .unwrap();
-
         assert_eq!(order.slot, slot);
         assert_eq!(order.auction_duration, min_auction_duration);
         assert_eq!(
@@ -2868,14 +2539,12 @@ pub mod update_trigger_order_params {
         );
         assert_eq!(order.auction_start_price, 100000000);
         assert_eq!(order.auction_end_price, 99500000);
-
         let mut order = Order {
             order_type: OrderType::TriggerMarket,
             direction: PositionDirection::Short,
             trigger_condition: OrderTriggerCondition::TriggeredAbove,
             ..Order::default()
         };
-
         let err = update_trigger_order_params(
             &mut order,
             &oracle_price_data,
@@ -2885,14 +2554,12 @@ pub mod update_trigger_order_params {
             SlotClock::baseline(),
         );
         assert!(err.is_err());
-
         let mut order = Order {
             order_type: OrderType::TriggerMarket,
             direction: PositionDirection::Short,
             trigger_condition: OrderTriggerCondition::TriggeredBelow,
             ..Order::default()
         };
-
         let err = update_trigger_order_params(
             &mut order,
             &oracle_price_data,
@@ -2904,61 +2571,46 @@ pub mod update_trigger_order_params {
         assert!(err.is_err());
     }
 }
-
 mod update_maker_fills_map {
     use {
         crate::{controller::orders::update_maker_fills_map, PositionDirection},
         solana_program::pubkey::Pubkey,
         std::collections::BTreeMap,
     };
-
     #[test]
     fn test() {
         let mut map: BTreeMap<Pubkey, (i64, bool)> = BTreeMap::new();
-
         let maker_key = Pubkey::new_unique();
         let fill = 100;
         let direction = PositionDirection::Long;
         update_maker_fills_map(&mut map, &maker_key, direction, fill, false).unwrap();
-
         assert_eq!(map.get(&maker_key).unwrap().0, fill as i64);
         assert_eq!(map.get(&maker_key).unwrap().1, false);
-
         update_maker_fills_map(&mut map, &maker_key, direction, fill, false).unwrap();
-
         assert_eq!(map.get(&maker_key).unwrap().0, 2 * fill as i64);
         assert_eq!(map.get(&maker_key).unwrap().1, false);
-
         let maker_key = Pubkey::new_unique();
         let direction = PositionDirection::Short;
         update_maker_fills_map(&mut map, &maker_key, direction, fill, false).unwrap();
-
         assert_eq!(map.get(&maker_key).unwrap().0, -(fill as i64));
         assert_eq!(map.get(&maker_key).unwrap().1, false);
-
         update_maker_fills_map(&mut map, &maker_key, direction, fill, false).unwrap();
-
         assert_eq!(map.get(&maker_key).unwrap().0, -2 * fill as i64);
         assert_eq!(map.get(&maker_key).unwrap().1, false);
     }
-
     #[test]
     fn test_isolated_position_true() {
         let mut map: BTreeMap<Pubkey, (i64, bool)> = BTreeMap::new();
-
         let fill = 100;
-
         // Single insert with isolated_position true
         let maker_key = Pubkey::new_unique();
         update_maker_fills_map(&mut map, &maker_key, PositionDirection::Long, fill, true).unwrap();
         assert_eq!(map.get(&maker_key).unwrap().0, fill as i64);
         assert_eq!(map.get(&maker_key).unwrap().1, true);
-
         // Merge: same maker_key, two updates both with true
         update_maker_fills_map(&mut map, &maker_key, PositionDirection::Long, fill, true).unwrap();
         assert_eq!(map.get(&maker_key).unwrap().0, 2 * fill as i64);
         assert_eq!(map.get(&maker_key).unwrap().1, true);
-
         // Last write wins: first false, then true -> final .1 is true
         let maker_key2 = Pubkey::new_unique();
         update_maker_fills_map(&mut map, &maker_key2, PositionDirection::Short, fill, false)
@@ -2969,13 +2621,11 @@ mod update_maker_fills_map {
         assert_eq!(map.get(&maker_key2).unwrap().1, true);
     }
 }
-
 mod order_is_low_risk_for_amm {
     use {
         super::*,
         crate::state::user::{OrderBitFlag, OrderStatus},
     };
-
     fn base_perp_order() -> Order {
         Order {
             status: OrderStatus::Open,
@@ -2984,32 +2634,26 @@ mod order_is_low_risk_for_amm {
             ..Order::default()
         }
     }
-
     #[test]
     fn older_than_oracle_delay_returns_true() {
         let order = base_perp_order();
         let clock_slot = 110u64;
         let mm_oracle_delay = 10i64;
-
         let is_low = order
             .is_low_risk_for_amm(mm_oracle_delay, clock_slot, false, true)
             .unwrap();
         assert!(is_low);
     }
-
     #[test]
     fn not_older_than_delay_returns_false() {
         let order = base_perp_order();
         let clock_slot = 110u64;
-
         let mm_oracle_delay = 11i64;
-
         let is_low = order
             .is_low_risk_for_amm(mm_oracle_delay, clock_slot, false, true)
             .unwrap();
         assert!(!is_low);
     }
-
     #[test]
     fn liquidation_always_low_risk() {
         let order = base_perp_order();
@@ -3018,36 +2662,30 @@ mod order_is_low_risk_for_amm {
             .unwrap();
         assert!(is_low);
     }
-
     #[test]
     fn safe_trigger_order_flag_sets_low_risk() {
         let mut order = base_perp_order();
         order.add_bit_flag(OrderBitFlag::SafeTriggerOrder);
-
         let is_low = order
             .is_low_risk_for_amm(0, order.slot, false, true)
             .unwrap();
         assert!(is_low);
     }
-
     #[test]
     fn user_can_skip_auction_duration() {
         let order = base_perp_order();
         let clock_slot = 110u64;
         let mm_oracle_delay = 10i64;
-
         let is_low = order
             .is_low_risk_for_amm(mm_oracle_delay, clock_slot, false, true)
             .unwrap();
         assert!(is_low);
-
         let is_low = order
             .is_low_risk_for_amm(mm_oracle_delay, clock_slot, false, false)
             .unwrap();
         assert!(!is_low);
     }
 }
-
 /// The signed-message sanitizer relaxation (`state::order_params`) preserves a
 /// client's fully-specified auction tuple on A/B markets — including a short
 /// `auction_duration`. But the duration the order is *placed* with is not the
@@ -3064,14 +2702,12 @@ mod get_auction_params_min_duration_floor {
         state::{oracle::OraclePriceData, order_params::OrderParams, user::OrderType},
         PositionDirection, PRICE_PRECISION_I64,
     };
-
     fn oracle() -> OraclePriceData {
         OraclePriceData {
             price: 100 * PRICE_PRECISION_I64,
             ..OraclePriceData::default()
         }
     }
-
     /// A fully-specified, aggressive 5-slot market auction — the shape a
     /// signed-message order has after the A/B sanitizer preserves it.
     fn aggressive_5_slot_market_order() -> OrderParams {
@@ -3085,13 +2721,11 @@ mod get_auction_params_min_duration_floor {
             ..OrderParams::default()
         }
     }
-
     #[test]
     fn floors_preserved_client_duration_to_mainnet_min() {
         let params = aggressive_5_slot_market_order();
         // tick_size = 1 is identity, so the only change is the duration floor.
         let (start, end, duration) = get_auction_params(&params, &oracle(), 1, 10).unwrap();
-
         assert_eq!(start, 99_700_000);
         assert_eq!(end, 100_300_000);
         // The client asked for 5 slots and the sanitizer preserved it, but the
@@ -3099,21 +2733,17 @@ mod get_auction_params_min_duration_floor {
         assert_eq!(duration, 10);
         assert_ne!(duration, params.auction_duration.unwrap());
     }
-
     #[test]
     fn preserves_client_duration_only_when_floor_is_low_enough() {
         let params = aggressive_5_slot_market_order();
-
         // Lowering state.min_perp_auction_duration to <= the client's choice is
         // what actually lets a 5-slot auction survive end-to-end.
         let (_, _, duration) = get_auction_params(&params, &oracle(), 1, 5).unwrap();
         assert_eq!(duration, 5);
-
         let (_, _, duration) = get_auction_params(&params, &oracle(), 1, 3).unwrap();
         assert_eq!(duration, 5);
     }
 }
-
 /// OtterSec #112 — a perp fill must measure its band checks against the 5-minute
 /// oracle TWAP as it stood *before* the fill's own refresh.
 ///
@@ -3140,14 +2770,12 @@ fn oracle_derived_stats_refresh_can_flip_the_5min_divergence_verdict() {
             state::{OracleGuardRails, ValidityGuardRails},
         },
     };
-
     let now = 3600_i64;
     let slot = 1_u64;
     // Live oracle at 20 against a 5-min TWAP still at 10 — a 100% divergence,
     // well past the 50% default ceiling, so the fill must be refused.
     let oracle_price = (20 * PRICE_PRECISION) as i64;
     let max_divergence = (PERCENTAGE_PRECISION_U64 / 2) as i64;
-
     let guard_rails = OracleGuardRails {
         validity: ValidityGuardRails {
             slots_before_stale_for_amm: legacy_slot_duration_i64(10),
@@ -3157,7 +2785,6 @@ fn oracle_derived_stats_refresh_can_flip_the_5min_divergence_verdict() {
         },
         ..OracleGuardRails::default()
     };
-
     let mut market = PerpMarket {
         market_index: 0,
         status: MarketStatus::Active,
@@ -3185,19 +2812,16 @@ fn oracle_derived_stats_refresh_can_flip_the_5min_divergence_verdict() {
         },
         ..PerpMarket::default()
     };
-
     let pre_refresh_twap_5min = market
         .market_stats
         .historical_oracle_data
         .last_oracle_price_twap_5min;
-
     // What the fill now reads: the oracle is too divergent, so the fill is refused.
     assert!(
         is_oracle_too_divergent_with_twap_5min(oracle_price, pre_refresh_twap_5min, max_divergence)
             .unwrap(),
         "the pre-refresh TWAP must still see this oracle as too divergent"
     );
-
     let oracle_price_data = OraclePriceData {
         price: oracle_price,
         confidence: 0,
@@ -3221,7 +2845,6 @@ fn oracle_derived_stats_refresh_can_flip_the_5min_divergence_verdict() {
         SlotClock::baseline(),
     )
     .unwrap();
-
     market
         .update_oracle_derived_stats(
             &mm_oracle_price_data,
@@ -3231,13 +2854,11 @@ fn oracle_derived_stats_refresh_can_flip_the_5min_divergence_verdict() {
             SlotClock::baseline(),
         )
         .unwrap();
-
     let post_refresh_twap_5min = market
         .market_stats
         .historical_oracle_data
         .last_oracle_price_twap_5min;
     assert!(post_refresh_twap_5min > pre_refresh_twap_5min);
-
     // What the fill used to read: the same oracle now looks acceptable.
     assert!(
         !is_oracle_too_divergent_with_twap_5min(
@@ -3250,7 +2871,6 @@ fn oracle_derived_stats_refresh_can_flip_the_5min_divergence_verdict() {
          the fixture no longer reproduces #112"
     );
 }
-
 pub mod builder_fee_margin_gate {
     use {
         super::*,
@@ -3297,7 +2917,6 @@ pub mod builder_fee_margin_gate {
             str::FromStr,
         },
     };
-
     /// The builder charges the global maximum, 1% of notional.
     const BUILDER_FEE_TENTH_BPS: u16 = 1000;
     /// The taker holds one base unit long, entered at the oracle price.
@@ -3313,7 +2932,6 @@ pub mod builder_fee_margin_gate {
     /// A second perp market the taker holds a position in. The fill never
     /// touches it, so spoiling its oracle leaves market 0's AMM able to fill.
     const OTHER_PERP_INDEX: u16 = 1;
-
     /// The taker's spot positions: a quote deposit that carries the margin,
     /// and a borrow in spot market 1 that the fill does not touch.
     fn sol_borrow_positions(
@@ -3326,7 +2944,6 @@ pub mod builder_fee_margin_gate {
             scaled_balance: collateral_dollars * SPOT_BALANCE_PRECISION_U64,
             ..SpotPosition::default()
         });
-
         if sol_borrow_hundredths > 0 {
             spot_positions[1] = SpotPosition {
                 market_index: 1,
@@ -3335,10 +2952,8 @@ pub mod builder_fee_margin_gate {
                 ..SpotPosition::default()
             };
         }
-
         spot_positions
     }
-
     /// The taker's perp positions: the one-unit long the order reduces, and a
     /// hundredth of a unit in `OTHER_PERP_INDEX`. The second is small enough to
     /// leave every margin verdict in these tests unchanged, and it is here only so
@@ -3354,7 +2969,6 @@ pub mod builder_fee_margin_gate {
             open_asks: -BASE_PRECISION_I64,
             ..PerpPosition::default()
         });
-
         perp_positions[1] = PerpPosition {
             market_index: OTHER_PERP_INDEX,
             base_asset_amount: BASE_PRECISION_I64 / 100,
@@ -3363,16 +2977,13 @@ pub mod builder_fee_margin_gate {
             quote_break_even_amount: -ENTRY_PRICE * QUOTE_PRECISION_I64 / 100,
             ..PerpPosition::default()
         };
-
         perp_positions
     }
-
     /// Fills the reducing order for a taker whose only liability is the perp
     /// position, on markets whose oracles are all valid.
     fn run_reducing_builder_fill(collateral_dollars: u64) -> (u64, u64) {
         run_reducing_builder_fill_with_borrow(collateral_dollars, 0, 0)
     }
-
     /// Serializes an escrow that holds one open builder row and one approved
     /// builder. The layout is the one the production loader reads:
     /// discriminator, fixed header, `padding0`, orders length, orders,
@@ -3384,12 +2995,10 @@ pub mod builder_fee_margin_gate {
             let full: &mut [u8] = bytemuck::cast_slice_mut(&mut backing);
             let buf = &mut full[..len];
             buf[0..8].copy_from_slice(RevenueShareEscrow::DISCRIMINATOR);
-
             let header = 8 + std::mem::size_of::<RevenueShareEscrowFixed>();
             let order_size = std::mem::size_of::<RevenueShareOrder>();
             buf[header + 4..header + 8].copy_from_slice(&1u32.to_le_bytes());
             buf[header + 8..header + 8 + order_size].copy_from_slice(bytemuck::bytes_of(order));
-
             let builders_len_offset = header + 12 + order_size;
             let builder_size = std::mem::size_of::<BuilderInfo>();
             buf[builders_len_offset..builders_len_offset + 4].copy_from_slice(&1u32.to_le_bytes());
@@ -3398,7 +3007,6 @@ pub mod builder_fee_margin_gate {
         }
         (backing, len)
     }
-
     /// Fills one position-decreasing, builder-coded order and returns
     /// `(base_filled, builder_fees_accrued)`. `collateral_dollars` sets the
     /// taker's quote deposit, which decides whether the taker meets initial
@@ -3424,7 +3032,6 @@ pub mod builder_fee_margin_gate {
     ) -> (u64, u64) {
         let now = 0_i64;
         let slot = 5_u64;
-
         let mut oracle_price = get_pyth_price(ENTRY_PRICE, 6);
         let oracle_price_key =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
@@ -3443,7 +3050,6 @@ pub mod builder_fee_margin_gate {
             PythLazerOracle,
             sol_oracle_account_info
         );
-
         let mut other_perp_oracle_price = get_pyth_price(ENTRY_PRICE, 6);
         other_perp_oracle_price.conf = other_perp_oracle_conf;
         let other_perp_oracle_price_key =
@@ -3454,7 +3060,6 @@ pub mod builder_fee_margin_gate {
             PythLazerOracle,
             other_perp_oracle_account_info
         );
-
         let oracle_account_infos = Vec::from([
             oracle_account_info,
             sol_oracle_account_info,
@@ -3467,7 +3072,6 @@ pub mod builder_fee_margin_gate {
             None,
         )
         .unwrap();
-
         let mut market = PerpMarket {
             amm: AMM {
                 base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
@@ -3502,9 +3106,7 @@ pub mod builder_fee_margin_gate {
         };
         market.amm.max_base_asset_reserve = u64::MAX as u128;
         market.amm.min_base_asset_reserve = 0;
-
         create_anchor_account_info!(market, PerpMarket, market_account_info);
-
         // The same market on a different oracle. The taker's position here is a
         // perp liability the fill does not touch.
         let mut other_perp_market = PerpMarket {
@@ -3512,7 +3114,6 @@ pub mod builder_fee_margin_gate {
             oracle: other_perp_oracle_price_key,
             ..market
         };
-
         create_anchor_account_info!(
             other_perp_market,
             PerpMarket,
@@ -3523,7 +3124,6 @@ pub mod builder_fee_margin_gate {
             true,
         )
         .unwrap();
-
         let mut spot_market = SpotMarket {
             market_index: 0,
             oracle_source: OracleSource::QuoteAsset,
@@ -3535,7 +3135,6 @@ pub mod builder_fee_margin_gate {
             ..SpotMarket::default()
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
-
         let mut sol_spot_market = SpotMarket {
             market_index: 1,
             oracle: sol_oracle_price_key,
@@ -3548,14 +3147,12 @@ pub mod builder_fee_margin_gate {
             ..SpotMarket::default_base_market()
         };
         create_anchor_account_info!(sol_spot_market, SpotMarket, sol_spot_market_account_info);
-
         let spot_market_map = SpotMarketMap::load_multiple(
             vec![&spot_market_account_info, &sol_spot_market_account_info],
             true,
         )
         .unwrap();
         let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
-
         // Long one unit, closing it with a builder-coded market sell. The order
         // reduces the position, so the post-fill check uses maintenance margin.
         let mut taker = User {
@@ -3576,7 +3173,6 @@ pub mod builder_fee_margin_gate {
             spot_positions: sol_borrow_positions(collateral_dollars, sol_borrow_hundredths),
             ..User::default()
         };
-
         let builder_row = RevenueShareOrder::new(
             0,
             taker.sub_account_id,
@@ -3604,13 +3200,11 @@ pub mod builder_fee_margin_gate {
             fixed: RefMut::map(escrow_fixed, |b| bytemuck::from_bytes_mut(b)),
             data: escrow_data,
         };
-
         let mut filler = User::default();
         let fee_structure = get_fee_structure();
         let (taker_key, _, filler_key) = get_user_keys();
         let mut taker_stats = UserStats::default();
         let mut filler_stats = UserStats::default();
-
         let order_index = 0;
         let user_can_skip_auction_duration = taker
             .can_skip_auction_duration(&taker_stats, false)
@@ -3624,7 +3218,6 @@ pub mod builder_fee_margin_gate {
             user_can_skip_auction_duration,
         );
         assert!(is_amm_available);
-
         // Router mode with no external quoters: vAMM + the passed makers.
         let mut no_externals = crate::state::prop_amm::NoExternalQuoters;
         let mut router_inputs = crate::math::router::RouterLeg {
@@ -3683,16 +3276,13 @@ pub mod builder_fee_margin_gate {
         )
         .unwrap();
         taker.orders[order_index] = order;
-
         (base_filled, escrow.get_order(0).unwrap().fees_accrued)
     }
-
     #[test]
     fn charges_builder_fee_when_taker_meets_initial_margin() {
         // $50 of collateral against a $100 position clears the 10% initial
         // requirement, so the fee is value the taker could also have withdrawn.
         let (base_filled, fees_accrued) = run_reducing_builder_fill(50);
-
         assert_eq!(base_filled, BASE_PRECISION_U64);
         // About 1% of a fill worth about $100.
         assert!(
@@ -3700,7 +3290,6 @@ pub mod builder_fee_margin_gate {
             "expected about 1% of notional, got {fees_accrued}"
         );
     }
-
     #[test]
     fn charges_builder_fee_when_a_liability_oracle_is_valid() {
         // A quarter of a unit borrowed in spot market 1, about $25 against $50
@@ -3708,14 +3297,12 @@ pub mod builder_fee_margin_gate {
         // its liabilities are priced on is precise, so the fee is charged.
         // Control for the invalid oracle case below.
         let (base_filled, fees_accrued) = run_reducing_builder_fill_with_borrow(50, 25, 0);
-
         assert_eq!(base_filled, BASE_PRECISION_U64);
         assert!(
             fees_accrued > 900_000 && fees_accrued < 1_100_000,
             "expected about 1% of notional, got {fees_accrued}"
         );
     }
-
     #[test]
     fn waives_builder_fee_when_a_liability_oracle_is_invalid() {
         // The same taker, and the same margin state, but the oracle on the perp
@@ -3723,22 +3310,18 @@ pub mod builder_fee_margin_gate {
         // The reduction still fills and the fee is waived.
         let (base_filled, fees_accrued) =
             run_reducing_builder_fill_with_borrow(50, 25, WIDE_ORACLE_CONF);
-
         assert_eq!(base_filled, BASE_PRECISION_U64);
         assert_eq!(fees_accrued, 0);
     }
-
     #[test]
     fn waives_builder_fee_when_taker_below_initial_margin() {
         // $7 of collateral clears the 5% maintenance requirement but not the
         // 10% initial one. The reduction still fills and the fee is waived.
         let (base_filled, fees_accrued) = run_reducing_builder_fill(7);
-
         assert_eq!(base_filled, BASE_PRECISION_U64);
         assert_eq!(fees_accrued, 0);
     }
 }
-
 /// The taker-side counterpart of the floored-maker pruning.
 ///
 /// A risk-increasing fill for a floored taker ends at the buffered-floor
@@ -3786,7 +3369,6 @@ mod taker_floor_unverifiable_withholds_fill {
         },
         std::str::FromStr,
     };
-
     /// The taker holds one base unit long in market 0, entered at the oracle
     /// price.
     const ENTRY_PRICE: i64 = 100;
@@ -3797,7 +3379,6 @@ mod taker_floor_unverifiable_withholds_fill {
     /// calculation: the widest tolerance any asset tier allows is 100% of the
     /// price, so this is twice the price.
     const WIDE_ORACLE_CONF: u64 = 2 * ENTRY_PRICE as u64 * PRICE_PRECISION_U64;
-
     /// Fills one market order on market 0 for a taker who also holds a
     /// hundredth of a unit long in `OTHER_PERP_INDEX`, and returns the base
     /// filled. `equity_floor` sets the taker's floor, `reducing` picks the
@@ -3806,7 +3387,6 @@ mod taker_floor_unverifiable_withholds_fill {
     fn run_fill(equity_floor: u64, reducing: bool, other_perp_oracle_conf: u64) -> u64 {
         let now = 0_i64;
         let slot = 5_u64;
-
         let mut oracle_price = get_pyth_price(ENTRY_PRICE, 6);
         let oracle_price_key =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
@@ -3816,7 +3396,6 @@ mod taker_floor_unverifiable_withholds_fill {
             PythLazerOracle,
             oracle_account_info
         );
-
         let mut other_perp_oracle_price = get_pyth_price(ENTRY_PRICE, 6);
         other_perp_oracle_price.conf = other_perp_oracle_conf;
         let other_perp_oracle_price_key =
@@ -3827,7 +3406,6 @@ mod taker_floor_unverifiable_withholds_fill {
             PythLazerOracle,
             other_perp_oracle_account_info
         );
-
         let oracle_account_infos = Vec::from([oracle_account_info, other_perp_oracle_account_info]);
         let mut oracle_map = OracleMap::load(
             &mut oracle_account_infos.iter().peekable(),
@@ -3836,7 +3414,6 @@ mod taker_floor_unverifiable_withholds_fill {
             None,
         )
         .unwrap();
-
         let mut market = PerpMarket {
             amm: AMM {
                 base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
@@ -3871,9 +3448,7 @@ mod taker_floor_unverifiable_withholds_fill {
         };
         market.amm.max_base_asset_reserve = u64::MAX as u128;
         market.amm.min_base_asset_reserve = 0;
-
         create_anchor_account_info!(market, PerpMarket, market_account_info);
-
         let mut other_perp_market = PerpMarket {
             market_index: OTHER_PERP_INDEX,
             oracle: other_perp_oracle_price_key,
@@ -3889,7 +3464,6 @@ mod taker_floor_unverifiable_withholds_fill {
             true,
         )
         .unwrap();
-
         let mut spot_market = SpotMarket {
             market_index: 0,
             oracle_source: OracleSource::QuoteAsset,
@@ -3904,7 +3478,6 @@ mod taker_floor_unverifiable_withholds_fill {
         let spot_market_map =
             SpotMarketMap::load_multiple(vec![&spot_market_account_info], true).unwrap();
         let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
-
         // A quarter unit either way: short reduces the one-unit long, long
         // increases it.
         let (direction, price) = if reducing {
@@ -3913,7 +3486,6 @@ mod taker_floor_unverifiable_withholds_fill {
             (PositionDirection::Long, 110 * PRICE_PRECISION_U64)
         };
         let order_base = BASE_PRECISION_U64 / 4;
-
         let mut perp_positions = get_positions(PerpPosition {
             market_index: 0,
             base_asset_amount: BASE_PRECISION_I64,
@@ -3933,7 +3505,6 @@ mod taker_floor_unverifiable_withholds_fill {
             quote_break_even_amount: -ENTRY_PRICE * QUOTE_PRECISION_I64 / 100,
             ..PerpPosition::default()
         };
-
         let mut taker = User {
             equity_floor,
             orders: get_orders(Order {
@@ -3957,13 +3528,11 @@ mod taker_floor_unverifiable_withholds_fill {
             }),
             ..User::default()
         };
-
         let mut filler = User::default();
         let fee_structure = get_fee_structure();
         let (taker_key, _, filler_key) = get_user_keys();
         let mut taker_stats = UserStats::default();
         let mut filler_stats = UserStats::default();
-
         let order_index = 0;
         let user_can_skip_auction_duration = taker
             .can_skip_auction_duration(&taker_stats, false)
@@ -3977,7 +3546,6 @@ mod taker_floor_unverifiable_withholds_fill {
             user_can_skip_auction_duration,
         );
         assert!(is_amm_available);
-
         no_router!(router_inputs);
         let mut order = taker.orders[order_index];
         let FillAmounts {
@@ -4019,12 +3587,9 @@ mod taker_floor_unverifiable_withholds_fill {
         )
         .unwrap();
         taker.orders[order_index] = order;
-
         base_filled
     }
-
     const FLOOR: u64 = QUOTE_PRECISION_I64 as u64;
-
     #[test]
     fn withholds_a_floored_takers_risk_increasing_fill_when_an_oracle_is_invalid() {
         // The spoiled oracle belongs to a market the fill never touches, yet
@@ -4033,7 +3598,6 @@ mod taker_floor_unverifiable_withholds_fill {
         let base_filled = run_fill(FLOOR, false, WIDE_ORACLE_CONF);
         assert_eq!(base_filled, 0);
     }
-
     #[test]
     fn reducing_fill_of_a_floored_taker_still_fills() {
         // A reducing order is exempt at the gate, so the precheck must not
@@ -4042,14 +3606,12 @@ mod taker_floor_unverifiable_withholds_fill {
         let base_filled = run_fill(FLOOR, true, WIDE_ORACLE_CONF);
         assert_eq!(base_filled, BASE_PRECISION_U64 / 4);
     }
-
     #[test]
     fn unfloored_taker_fills_despite_the_invalid_oracle() {
         // No floor, no gate: the same portfolio fills.
         let base_filled = run_fill(0, false, WIDE_ORACLE_CONF);
         assert_eq!(base_filled, BASE_PRECISION_U64 / 4);
     }
-
     #[test]
     fn floored_taker_fills_when_every_oracle_is_valid() {
         // The verifiable case passes the precheck and the post-fill gate
@@ -4058,7 +3620,6 @@ mod taker_floor_unverifiable_withholds_fill {
         assert_eq!(base_filled, BASE_PRECISION_U64 / 4);
     }
 }
-
 /// OtterSec #143 / #144 / #148 — a fill that reduces the position must not be
 /// exempt from the spot-valuation gates.
 ///
@@ -4071,9 +3632,7 @@ mod taker_floor_unverifiable_withholds_fill {
 /// One fixture drives all three findings. The taker holds a partial-reduce order,
 /// a borrow in market 1, and its collateral as a deposit in market 2. Each test
 /// spoils one input and asserts the fill stops.
-
 mod keeper_reward {
-
     /// A keeper reward must never leave the user's account without landing in
     /// the filler's.
     ///
@@ -4089,7 +3648,6 @@ mod keeper_reward {
             controller::orders::pay_keeper_flat_reward_for_perps,
             state::{perp_market::PerpMarket, user::User},
         };
-
         let mut market = PerpMarket {
             market_index: 0,
             ..PerpMarket::default()
@@ -4097,7 +3655,6 @@ mod keeper_reward {
         let mut user = User::default();
         user.perp_positions[0].market_index = 0;
         user.perp_positions[0].quote_asset_amount = 1_000_000;
-
         // Every slot occupied by another market, so this market cannot be
         // added — exactly the case the early return exists for.
         let mut filler = User::default();
@@ -4105,11 +3662,9 @@ mod keeper_reward {
             position.market_index = (i as u16) + 1;
             position.base_asset_amount = 1;
         }
-
         let paid =
             pay_keeper_flat_reward_for_perps(&mut user, Some(&mut filler), &mut market, 5_000, 10)
                 .unwrap();
-
         assert_eq!(paid, 0, "an unpayable reward is not paid");
         assert_eq!(
             user.perp_positions[0].quote_asset_amount, 1_000_000,

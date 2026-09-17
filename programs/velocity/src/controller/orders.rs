@@ -94,15 +94,14 @@ mod settle;
 mod trigger;
 
 #[cfg(test)]
-pub(crate) use perp_fill::{FillConditions, OfferedLiquidity};
+pub(crate) use perp_fill::{
+    fill_perp_order_without_external_books, FillConditions, OfferedLiquidity,
+};
 pub use {
     amend::*,
     cross::*,
     keeper::*,
-    perp_fill::{
-        fill_perp_order, fill_perp_order_without_external_books, FillParties, FillRequest,
-        FillTarget, PerpFillAccounts,
-    },
+    perp_fill::{fill_perp_order, FillParties, FillRequest, PerpFillAccounts},
     placement::*,
     trigger::*,
 };

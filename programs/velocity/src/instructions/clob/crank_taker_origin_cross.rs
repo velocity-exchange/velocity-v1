@@ -620,10 +620,10 @@ fn route_and_fill_remainder<'info>(
         controller::orders::FillRequest {
             // The remainder rested on the book first, so it holds an
             // `open_bids`/`open_asks` reservation this fill unwinds.
-            target: controller::orders::FillTarget::Detached {
-                order: &mut order,
-                reserved: true,
-            },
+            order: &mut order,
+            // The remainder rested on the book first, so it holds a
+            // reservation the fill must unwind as it fills.
+            reserved: true,
             mode: FillMode::Fill,
             referrer_is_accelerated: false,
         },

@@ -108,35 +108,6 @@ pub fn update_prelaunch_oracle(
     Ok(())
 }
 
-pub fn get_maker_and_maker_stats<'a>(
-    account_info_iter: &mut Peekable<Iter<'a, AccountInfo<'a>>>,
-) -> VelocityResult<(AccountLoader<'a, User>, AccountLoader<'a, UserStats>)> {
-    let maker_account_info =
-        next_account_info(account_info_iter).or(Err(ErrorCode::MakerNotFound))?;
-
-    validate!(
-        maker_account_info.is_writable,
-        ErrorCode::MakerMustBeWritable
-    )?;
-
-    let maker: AccountLoader<User> =
-        AccountLoader::try_from(maker_account_info).or(Err(ErrorCode::CouldNotDeserializeMaker))?;
-
-    let maker_stats_account_info =
-        next_account_info(account_info_iter).or(Err(ErrorCode::MakerStatsNotFound))?;
-
-    validate!(
-        maker_stats_account_info.is_writable,
-        ErrorCode::MakerStatsMustBeWritable
-    )?;
-
-    let maker_stats: AccountLoader<UserStats> =
-        AccountLoader::try_from(maker_stats_account_info)
-            .or(Err(ErrorCode::CouldNotDeserializeMakerStats))?;
-
-    Ok((maker, maker_stats))
-}
-
 #[allow(clippy::type_complexity)]
 pub fn get_referrer_and_referrer_stats<'a>(
     account_info_iter: &mut Peekable<Iter<'a, AccountInfo<'a>>>,

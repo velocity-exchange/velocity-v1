@@ -223,10 +223,8 @@ fn fill_signed_msg_taker_order<'c: 'info, 'info>(
         controller::orders::FillRequest {
             // The taker order is ephemeral. It never reserved, so the fill
             // unwinds no exposure for it.
-            target: controller::orders::FillTarget::Detached {
-                order: &mut placed.order,
-                reserved: false,
-            },
+            order: &mut placed.order,
+            reserved: false,
             mode,
             referrer_is_accelerated: sections.referrer_is_accelerated,
         },

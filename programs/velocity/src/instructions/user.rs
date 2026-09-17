@@ -140,10 +140,7 @@ use {
         token_2022::Token2022,
         token_interface::{Mint, TokenAccount, TokenInterface},
     },
-    solana_program::{
-        program::invoke,
-        sysvar::{instructions, instructions::ID as IX_ID},
-    },
+    solana_program::{program::invoke, sysvar::instructions},
     std::{collections::BTreeSet, convert::TryFrom, iter::Peekable, ops::DerefMut, slice::Iter},
 };
 

@@ -24,9 +24,6 @@
 //!   gate covers the net change. The CLOB has no in-place mutation.
 //!
 //! The keeper endpoints:
-//! - [`fill_legacy_dlob_order`]: the keeper fill for live orders in
-//!   `User.orders`. Only the legacy endpoints still create those. A restable
-//!   remainder migrates to the book, so each fill drains the legacy DLOB.
 //! - [`trigger_limit_order_v1`]: crank an armed trigger-limit onto the CLOB.
 //!   The `User.orders` slot becomes a shadow that holds the trigger parameters
 //!   and the CLOB `OrderRef`. A fill, a cancel or an expiry frees the slot. An
@@ -114,7 +111,6 @@ mod crank_clob_remove_expired;
 mod crank_conditions_setup;
 mod crank_cross_match;
 mod crank_taker_origin_cross;
-mod fill_legacy_dlob_order;
 mod force_cancel_clob_orders;
 pub mod helpers;
 mod initialize_quoter_cross_conditions;
@@ -129,8 +125,8 @@ mod trigger_market_order_v1;
 pub use {
     admin::*, cancel_order_v1::*, cancel_orders_v1::*, crank_clob_evict::*,
     crank_clob_remove_expired::*, crank_conditions_setup::*, crank_cross_match::*,
-    crank_taker_origin_cross::*, fill_legacy_dlob_order::*, force_cancel_clob_orders::*,
-    helpers::*, initialize_quoter_cross_conditions::*, modify_order_v1::*, place_and_make_v1::*,
+    crank_taker_origin_cross::*, force_cancel_clob_orders::*, helpers::*,
+    initialize_quoter_cross_conditions::*, modify_order_v1::*, place_and_make_v1::*,
     place_and_take_v1::*, refill_crank_reservoir::*, resolve_clob_crank::*,
     trigger_limit_order_v1::*, trigger_market_order_v1::*,
 };

@@ -18,89 +18,6 @@ pub struct TriggerAccounts<'a, 'info> {
     pub filler: &'a AccountLoader<'info, User>,
 }
 
-/// Fire a DLOB trigger order and leave it resting live in `User.orders`.
-///
-/// Returns whether the trigger did payable work. It returns `true` when it
-/// fired the order and paid the keeper. It returns `false` when it cancelled
-/// the order or found it already triggered. The crank handler skips the
-/// reservoir payout on `false`, so a failing account's cancel branch cannot
-/// drain the market's reservoir.
-pub fn trigger_order(
-    order_id: u32,
-    state: &State,
-    accounts: &TriggerAccounts,
-    maps: &mut AccountMaps,
-    clock: &Clock,
-) -> VelocityResult<bool> {
-    let now = clock.unix_timestamp;
-    let slot = clock.slot;
-    let user = &mut load_mut!(accounts.user)?;
-
-    let Some(firing) = open_trigger(user, order_id, state, maps, now)? else {
-        return Ok(false);
-    };
-    let FiringOrder {
-        order_index,
-        market_index,
-        oracle_price_data,
-        trigger_price,
-    } = firing;
-    let oracle_price = oracle_price_data.price;
-
-    let (_, worst_case_liability_value_before) = user
-        .get_perp_position(market_index)?
-        .worst_case_liability_value(oracle_price)?;
-
-    {
-        let perp_market = maps.perp_market_map.get_ref(&market_index)?;
-        arm_trigger_order(
-            &mut user.orders[order_index],
-            &oracle_price_data,
-            &perp_market,
-            state,
-            slot,
-        )?;
-    }
-    if user.orders[order_index].has_auction() {
-        user.increment_open_auctions();
-    }
-    let bit_flags = reserve_fired_order(user, order_index, market_index)?;
-
-    let (_, worst_case_liability_value_after) = user
-        .get_perp_position(market_index)?
-        .worst_case_liability_value(oracle_price)?;
-    let is_risk_increasing = worst_case_liability_value_after > worst_case_liability_value_before;
-
-    if is_risk_increasing
-        && !user.orders[order_index].reduce_only
-        && trigger_must_cancel(user, accounts.user_stats, maps)?
-    {
-        cancel_trigger_order(user, order_index, accounts, maps, clock)?;
-        // The cancel did no payable trigger work. The user paid no flat
-        // reward here, so the crank must not draw the reservoir either.
-        return Ok(false);
-    }
-
-    let fired = user.orders[order_index];
-    pay_and_record_trigger(
-        user,
-        &fired,
-        accounts,
-        &TriggerRecord {
-            oracle_price,
-            trigger_price,
-            bit_flags,
-            flat_filler_fee: state.perp_fee_structure.flat_filler_fee,
-        },
-        maps,
-        clock,
-    )?;
-
-    user.update_last_active_slot(slot);
-
-    Ok(true)
-}
-
 /// Fire a DLOB trigger order and hand back the now-live order for the caller to
 /// route straight to the book.
 ///
@@ -392,31 +309,6 @@ fn arm_trigger_order(
         Some(perp_market),
         state.slot_clock(),
     )
-}
-
-/// Reserve the exposure the fired order holds open, and report whether it
-/// landed in an isolated position.
-fn reserve_fired_order(
-    user: &mut User,
-    order_index: usize,
-    market_index: u16,
-) -> VelocityResult<u8> {
-    let direction = user.orders[order_index].direction;
-    let base_asset_amount = user.orders[order_index].base_asset_amount;
-    let update_open_bids_and_asks = user.orders[order_index].update_open_bids_and_asks();
-
-    let user_position = user.get_perp_position_mut(market_index)?;
-    increase_open_bids_and_asks(
-        user_position,
-        &direction,
-        base_asset_amount,
-        update_open_bids_and_asks,
-    )?;
-    Ok(set_order_bit_flag(
-        0,
-        user_position.is_isolated(),
-        OrderBitFlag::IsIsolatedPosition,
-    ))
 }
 
 /// Whether the fired order increases the account's risk.

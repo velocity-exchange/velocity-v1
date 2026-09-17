@@ -406,53 +406,47 @@ fn trigger_watch_for_order(
     })
 }
 
-/// Route each fired trigger to its resolver by order type and by whether the market
-/// has a CLOB. A trigger-limit with a fixed resting price rests whole on the book
-/// (`trigger_limit_order_v1`). A stop-market fires and fills against the book
-/// (`trigger_market_order_v1`). Everything else stays on the plain trigger crank for a
-/// keeper bot to fill. That is any trigger on a market without a CLOB, and any
-/// trigger-limit with an oracle offset that cannot rest at a fixed price.
+/// Route a fired trigger to its resolver by order type. A trigger-limit rests
+/// whole on the book (`trigger_limit_order_v1`). A stop-market fires and fills
+/// against the book (`trigger_market_order_v1`).
+///
+/// Both need the market's CLOB, which is where every fired order goes. A market
+/// with no CLOB attached can arm a trigger but has nowhere to fire it, so the
+/// sync refuses to stage one rather than arming a crank that must fail. An
+/// oracle-offset trigger cannot rest at a fixed price, and placement already
+/// refuses one (`validate_order` -> `InvalidOrderOracleOffset`), so a slot never
+/// holds one.
 fn route_trigger_resolver(
     order: &crate::state::user::Order,
     clob: Option<(Pubkey, Pubkey, Pubkey)>,
 ) -> Result<([u8; 8], TriggerSlotMetaV0)> {
-    let clob_rest = order.order_type == OrderType::TriggerLimit
-        && order.oracle_price_offset == 0
-        && clob.is_some();
-    let clob_fill = order.order_type == OrderType::TriggerMarket && clob.is_some();
-    if clob_rest || clob_fill {
-        let (slab, book, program) = clob.unwrap();
-        let disc = if clob_rest {
-            crate::instruction::ResolveTriggerLimitOrderV1::DISCRIMINATOR
-        } else {
-            crate::instruction::ResolveTriggerMarketOrderV1::DISCRIMINATOR
-        };
-        Ok((
-            crate::instructions::relay_harness::disc8(disc)?,
-            TriggerSlotMetaV0 {
-                quoter_slab: slab,
-                clob_market: book,
-                clob_program: program,
-                order_id: order.order_id,
-                market_index: order.market_index,
-                padding: [0; 2],
-            },
-        ))
-    } else {
-        Ok((
-            crate::instructions::relay_harness::disc8(
-                crate::instruction::ResolveTriggerOrder::DISCRIMINATOR,
-            )?,
-            TriggerSlotMetaV0 {
-                quoter_slab: Pubkey::default(),
-                clob_market: Pubkey::default(),
-                clob_program: Pubkey::default(),
-                order_id: order.order_id,
-                market_index: order.market_index,
-                padding: [0; 2],
-            },
-        ))
-    }
+    let (slab, book, program) = clob.ok_or_else(|| {
+        msg!(
+            "perp market {} has no CLOB, so trigger {} has nowhere to fire",
+            order.market_index,
+            order.order_id
+        );
+        ErrorCode::ClobRestUnavailable
+    })?;
+    let disc = match order.order_type {
+        OrderType::TriggerLimit => crate::instruction::ResolveTriggerLimitOrderV1::DISCRIMINATOR,
+        OrderType::TriggerMarket => crate::instruction::ResolveTriggerMarketOrderV1::DISCRIMINATOR,
+        _ => {
+            msg!("order {} is not a trigger order", order.order_id);
+            return Err(ErrorCode::OrderNotTriggerable.into());
+        }
+    };
+    Ok((
+        crate::instructions::relay_harness::disc8(disc)?,
+        TriggerSlotMetaV0 {
+            quoter_slab: slab,
+            clob_market: book,
+            clob_program: program,
+            order_id: order.order_id,
+            market_index: order.market_index,
+            padding: [0; 2],
+        },
+    ))
 }
 
 /// Every trigger resolver shares one account set: the scratch, the

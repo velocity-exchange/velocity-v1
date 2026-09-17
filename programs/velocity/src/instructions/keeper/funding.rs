@@ -180,13 +180,11 @@ pub fn handle_update_perp_bid_ask_twap<'c: 'info, 'info>(
         state.slot_clock(),
     )?;
 
-    let makers = load_user_map(&mut ctx.remaining_accounts.iter().peekable(), false)?;
     let book = book_source(&ctx, perp_market)?;
     let estimates = estimate_book(
         perp_market,
         &oracle_price_data,
         book.as_ref(),
-        &makers,
         &state,
         &clock,
     )?;
@@ -287,51 +285,21 @@ impl<'info> BookSource<'_, 'info> {
     }
 }
 
-/// Two sources for one side of the market, ordered best price first.
-///
-/// `estimate_price_from_side` averages the levels in the order it walks
-/// them, so a concatenation would price depth the market does not offer at
-/// that price. `side` is the direction the resting orders hold: a resting
-/// bid is a maker long.
-fn merge_levels(book: Vec<Level>, users: Vec<Level>, side: PositionDirection) -> Vec<Level> {
-    let mut levels = book;
-    levels.extend(users);
-    levels.sort_by(|a, b| match side {
-        PositionDirection::Long => b.price.cmp(&a.price),
-        PositionDirection::Short => a.price.cmp(&b.price),
-    });
-    levels
-}
-
 /// The best bid and ask the market stands behind, to the depth the market's
 /// funding rate is measured over.
 ///
-/// The book holds the market's resting liquidity, so the estimate reads it
-/// through the same `quote_l3_v0` leg every other book reader uses. The
-/// caller's `User` accounts add what still rests in `User.orders`: the
-/// legacy placement endpoints keep writing there, and that depth is takeable
-/// too. When those endpoints go, the `User` half goes with them and the book
-/// stands alone.
+/// The book holds every resting order the market has, so the estimate reads it
+/// through the same `quote_l3_v0` leg every other book reader uses. Nothing
+/// rests anywhere else, so the caller chooses no part of what moves the mark.
 fn estimate_book<'info>(
     perp_market: &PerpMarket,
     oracle_price_data: &crate::state::oracle::OraclePriceData,
     book: Option<&BookSource<'_, 'info>>,
-    makers: &UserMap,
     state: &State,
     clock: &Clock,
 ) -> Result<(Option<u64>, Option<u64>)> {
     let depth = perp_market.get_market_depth_for_funding_rate()?;
     let market_index = perp_market.market_index;
-
-    let (user_bids, user_asks) = find_bids_and_asks_from_users(
-        perp_market,
-        oracle_price_data,
-        makers,
-        clock.slot,
-        clock.unix_timestamp,
-        BID_ASK_TWAP_MIN_QUOTE_REST,
-        state.slot_clock(),
-    )?;
 
     let mut scratch = crate::state::prop_amm::QuoterCpiScratch::new();
     let (book_bids, book_asks) = match book {
@@ -346,8 +314,8 @@ fn estimate_book<'info>(
     };
 
     let (bids, asks) = filter_bids_asks_by_oracle_divergence(
-        merge_levels(book_bids, user_bids, PositionDirection::Long),
-        merge_levels(book_asks, user_asks, PositionDirection::Short),
+        book_bids,
+        book_asks,
         oracle_price_data.price,
         BID_ASK_TWAP_MAX_ORACLE_DIVERGENCE_PERCENT,
     )?;
@@ -545,50 +513,18 @@ mod tests {
         }
     }
 
-    /// A bid side reads best price first, which is the highest.
+    /// The estimate walks one side best price first and weights each level by
+    /// the base behind it, so it reads the average the depth would pay.
     #[test]
-    fn merged_bids_lead_with_the_highest_price() {
-        let merged = merge_levels(
-            vec![level(101, 1), level(98, 1)],
-            vec![level(100, 1), level(97, 1)],
-            PositionDirection::Long,
-        );
-        let prices: Vec<u64> = merged.iter().map(|level| level.price).collect();
-        assert_eq!(prices, vec![101, 100, 98, 97]);
+    fn the_estimate_weights_each_level_by_its_depth() {
+        let side = vec![level(100, 2), level(90, 2)];
+        assert_eq!(estimate_price_from_side(&side, 4).unwrap(), Some(95));
     }
 
-    /// An ask side reads best price first, which is the lowest.
+    /// A side shallower than the depth still prices what it holds.
     #[test]
-    fn merged_asks_lead_with_the_lowest_price() {
-        let merged = merge_levels(
-            vec![level(102, 1), level(105, 1)],
-            vec![level(103, 1), level(104, 1)],
-            PositionDirection::Short,
-        );
-        let prices: Vec<u64> = merged.iter().map(|level| level.price).collect();
-        assert_eq!(prices, vec![102, 103, 104, 105]);
-    }
-
-    /// The estimate walks the merged list in order, so a book level and a
-    /// `User` level at the same price both price the depth behind them.
-    #[test]
-    fn the_estimate_reads_both_sources() {
-        let merged = merge_levels(
-            vec![level(100, 2)],
-            vec![level(90, 2)],
-            PositionDirection::Long,
-        );
-        assert_eq!(estimate_price_from_side(&merged, 4).unwrap(), Some(95));
-    }
-
-    /// One source alone still prices the side.
-    #[test]
-    fn a_side_with_no_book_reads_the_users() {
-        let merged = merge_levels(
-            Vec::new(),
-            vec![level(90, 2), level(80, 2)],
-            PositionDirection::Long,
-        );
-        assert_eq!(estimate_price_from_side(&merged, 4).unwrap(), Some(85));
+    fn a_shallow_side_prices_what_it_holds() {
+        let side = vec![level(90, 2), level(80, 2)];
+        assert_eq!(estimate_price_from_side(&side, 4).unwrap(), Some(85));
     }
 }

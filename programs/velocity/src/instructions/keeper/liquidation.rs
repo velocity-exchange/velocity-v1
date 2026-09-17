@@ -275,10 +275,8 @@ impl<'info> LiquidationBooks<'_, 'info> {
             controller::orders::FillRequest {
                 // The forced order never reserved `open_bids`/`open_asks`, so
                 // the fill must not unwind a reservation for it.
-                target: controller::orders::FillTarget::Detached {
-                    order,
-                    reserved: false,
-                },
+                order,
+                reserved: false,
                 mode: FillMode::Liquidation,
                 referrer_is_accelerated: false,
             },

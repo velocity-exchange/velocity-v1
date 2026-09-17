@@ -71,26 +71,6 @@ struct TakeOutcome {
     success_condition: u8,
 }
 
-#[access_control(
-    fill_not_paused(&ctx.accounts.state)
-)]
-pub fn handle_legacy_place_and_take_perp_order<'c: 'info, 'info>(
-    ctx: Context<'info, PlaceAndTake<'info>>,
-    params: OrderParams,
-    optional_params: Option<u32>, // u32 for backwards compatibility
-) -> Result<()> {
-    place_and_take_perp_order_legacy(
-        PlaceAndTakeAccounts {
-            state: &ctx.accounts.state,
-            user: &ctx.accounts.user,
-            user_stats: &ctx.accounts.user_stats,
-            remaining_accounts: ctx.remaining_accounts,
-        },
-        params,
-        optional_params,
-    )
-}
-
 /// Enforce the caller's success condition against what the take filled. The
 /// legacy and v1 bodies share the same wire encoding for the condition, so
 /// they share the rule.
@@ -159,128 +139,6 @@ fn load_taker_escrow<'a>(
         get_referrer_accelerated_status(account_info_iter, escrow.as_ref())?;
 
     Ok((escrow, builder_fee_bps, referrer_is_accelerated))
-}
-
-/// Place the legacy taker order into `User.orders` and return its id, together
-/// with the escrow and referral status the fill still needs.
-fn place_legacy_take_order<'a>(
-    accounts: &PlaceAndTakeAccounts<'_, 'a>,
-    account_info_iter: &mut Peekable<Iter<'a, AccountInfo<'a>>>,
-    maps: &mut AccountMaps<'a>,
-    state: &State,
-    clock: &Clock,
-    params: OrderParams,
-) -> Result<(u32, Option<RevenueShareEscrowZeroCopyMut<'a>>, bool)> {
-    let user_key = accounts.user.key();
-    let mut user = load_mut!(accounts.user)?;
-
-    let (mut escrow, builder_fee_bps, referrer_is_accelerated) =
-        load_taker_escrow(account_info_iter, &user, &params, state)?;
-
-    let next_order_id = user.next_order_id;
-    let mut builder_order = add_builder_order(
-        &mut escrow,
-        &user,
-        params.builder_idx,
-        builder_fee_bps,
-        next_order_id,
-        params.market_index,
-    )?;
-
-    controller::orders::place_perp_order(
-        state,
-        &mut user,
-        user_key,
-        maps,
-        clock,
-        params,
-        PlaceOrderOptions::default(),
-        &mut builder_order,
-    )?;
-
-    // `builder_order` borrows `escrow`. That borrow ends at its last use above, so
-    // `escrow` is free to borrow again for the fill below.
-    Ok((user.get_last_order_id(), escrow, referrer_is_accelerated))
-}
-
-/// The v0 `place_and_take` body, ABI-frozen with the DLOB it fills against.
-/// The order is placed into `User.orders`, filled against the vAMM and the
-/// passed DLOB makers, and an unfilled IOC is cancelled from the slot it
-/// occupies. This path is deleted with the DLOB.
-pub fn place_and_take_perp_order_legacy<'info>(
-    accounts: PlaceAndTakeAccounts<'_, 'info>,
-    params: OrderParams,
-    optional_params: Option<u32>, // u32 for backwards compatibility
-) -> Result<()> {
-    let clock = Clock::get()?;
-    let state = accounts.state.load()?;
-
-    let remaining_accounts_iter = &mut accounts.remaining_accounts.iter().peekable();
-    let mut maps = load_one_perp_market_maps(
-        remaining_accounts_iter,
-        &state,
-        params.market_index,
-        clock.slot,
-    )?;
-
-    validate_take_is_not_post_only(&params)?;
-
-    let (makers_and_referrer, makers_and_referrer_stats) =
-        load_user_maps(remaining_accounts_iter, true)?;
-
-    let is_immediate_or_cancel = params.is_immediate_or_cancel();
-
-    // No `update_amm` here: `fill_perp_order_without_external_books` (called
-    // below) snaps the AMM
-    // and refreshes PerpMarket-level oracle stats internally before
-    // reading peg / reserves.
-
-    let (success_condition, auction_duration_percentage) = parse_optional_params(optional_params);
-
-    let (order_id, mut escrow, referrer_is_accelerated) = place_legacy_take_order(
-        &accounts,
-        remaining_accounts_iter,
-        &mut maps,
-        &state,
-        &clock,
-        params,
-    )?;
-
-    let fill_mode = FillMode::PlaceAndTake(
-        is_immediate_or_cancel || optional_params.is_some(),
-        auction_duration_percentage,
-    );
-    let filled = controller::orders::fill_perp_order_without_external_books(
-        controller::orders::FillTarget::Slot(order_id),
-        &state,
-        accounts.user,
-        accounts.user_stats,
-        &mut maps,
-        &accounts.user.clone(),
-        &accounts.user_stats.clone(),
-        &makers_and_referrer,
-        &makers_and_referrer_stats,
-        &Clock::get()?,
-        fill_mode,
-        &mut escrow.as_mut(),
-        referrer_is_accelerated,
-    )?;
-
-    let order_unfilled = load!(accounts.user)?
-        .orders
-        .iter()
-        .any(|order| order.order_id == order_id && order.status == OrderStatus::Open);
-
-    if is_immediate_or_cancel && order_unfilled {
-        controller::orders::cancel_order_by_order_id(
-            order_id,
-            accounts.user,
-            &mut maps,
-            &Clock::get()?,
-        )?;
-    }
-
-    validate_place_and_take_success_condition(success_condition, filled.base, order_unfilled)
 }
 
 /// An unattested taker on a bumped book rests whole and fills through the
@@ -476,10 +334,8 @@ fn fill_against_route(
         controller::orders::FillRequest {
             // Ephemeral taker: it never reserved, so the fill unwinds
             // nothing.
-            target: controller::orders::FillTarget::Detached {
-                order: take.order,
-                reserved: false,
-            },
+            order: take.order,
+            reserved: false,
             mode,
             referrer_is_accelerated,
         },
@@ -738,39 +594,4 @@ pub fn place_and_take_perp_order_v1<'info>(
             success_condition,
         },
     )
-}
-
-#[derive(Accounts)]
-pub struct PlaceAndTake<'info> {
-    pub state: AccountLoader<'info, State>,
-    #[account(
-        mut,
-        constraint = can_sign_for_user(&user, &authority)?
-    )]
-    pub user: AccountLoader<'info, User>,
-    #[account(
-        mut,
-        constraint = is_stats_for_user(&user, &user_stats)?
-    )]
-    pub user_stats: AccountLoader<'info, UserStats>,
-    pub authority: Signer<'info>,
-}
-
-#[derive(Accounts)]
-pub struct PlaceAndMatchRFQOrders<'info> {
-    pub state: AccountLoader<'info, State>,
-    #[account(mut)]
-    pub user: AccountLoader<'info, User>,
-    #[account(
-        mut,
-        constraint = is_stats_for_user(&user, &user_stats)?
-    )]
-    pub user_stats: AccountLoader<'info, UserStats>,
-    pub authority: Signer<'info>,
-    /// CHECK: The address check is needed because otherwise
-    /// the supplied Sysvar could be anything else.
-    /// The Instruction Sysvar has not been implemented
-    /// in the Anchor framework yet, so this is the safe approach.
-    #[account(address = IX_ID)]
-    pub ix_sysvar: UncheckedAccount<'info>,
 }

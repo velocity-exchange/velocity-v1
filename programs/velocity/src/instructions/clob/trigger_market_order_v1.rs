@@ -428,10 +428,8 @@ fn route_fill_fired_order<'info>(
         controller::orders::FillRequest {
             // The fired order is ephemeral. It reserved nothing, so the fill
             // unwinds no exposure for it.
-            target: controller::orders::FillTarget::Detached {
-                order: fired,
-                reserved: false,
-            },
+            order: fired,
+            reserved: false,
             mode: FillMode::Fill,
             referrer_is_accelerated: tail.referrer_is_accelerated,
         },

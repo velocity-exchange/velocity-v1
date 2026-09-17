@@ -396,28 +396,6 @@ pub mod instructions {
     #[automatically_derived]
     impl anchor_lang::InstructionData for ExtendAccountDevnet {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
-    pub struct FillLegacyDlobOrder {
-        pub args: FillLegacyDlobOrderArgs,
-    }
-    #[automatically_derived]
-    impl anchor_lang::Discriminator for FillLegacyDlobOrder {
-        const DISCRIMINATOR: &[u8] = &[167, 0, 20, 164, 143, 13, 165, 169];
-    }
-    #[automatically_derived]
-    impl anchor_lang::InstructionData for FillLegacyDlobOrder {}
-    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
-    pub struct FillPerpOrder {
-        pub order_id: Option<u32>,
-        pub _maker_order_id: Option<u32>,
-        pub signed_route: Vec<Pubkey>,
-    }
-    #[automatically_derived]
-    impl anchor_lang::Discriminator for FillPerpOrder {
-        const DISCRIMINATOR: &[u8] = &[13, 188, 248, 103, 134, 217, 106, 240];
-    }
-    #[automatically_derived]
-    impl anchor_lang::InstructionData for FillPerpOrder {}
-    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct ForceCancelClobOrders {
         pub args: ForceCancelClobOrdersArgs,
     }
@@ -939,17 +917,6 @@ pub mod instructions {
     #[automatically_derived]
     impl anchor_lang::InstructionData for PlaceAndMakePerpOrderV1 {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
-    pub struct PlaceAndTakePerpOrder {
-        pub params: OrderParams,
-        pub success_condition: Option<u32>,
-    }
-    #[automatically_derived]
-    impl anchor_lang::Discriminator for PlaceAndTakePerpOrder {
-        const DISCRIMINATOR: &[u8] = &[213, 51, 1, 187, 108, 220, 230, 224];
-    }
-    #[automatically_derived]
-    impl anchor_lang::InstructionData for PlaceAndTakePerpOrder {}
-    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct PlaceAndTakePerpOrderV1 {
         pub args: PlaceAndTakePerpOrderV1Args,
     }
@@ -959,36 +926,6 @@ pub mod instructions {
     }
     #[automatically_derived]
     impl anchor_lang::InstructionData for PlaceAndTakePerpOrderV1 {}
-    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
-    pub struct PlaceOrders {
-        pub params: Vec<OrderParams>,
-    }
-    #[automatically_derived]
-    impl anchor_lang::Discriminator for PlaceOrders {
-        const DISCRIMINATOR: &[u8] = &[60, 63, 50, 123, 12, 197, 60, 190];
-    }
-    #[automatically_derived]
-    impl anchor_lang::InstructionData for PlaceOrders {}
-    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
-    pub struct PlacePerpOrder {
-        pub params: OrderParams,
-    }
-    #[automatically_derived]
-    impl anchor_lang::Discriminator for PlacePerpOrder {
-        const DISCRIMINATOR: &[u8] = &[69, 161, 93, 202, 120, 126, 76, 185];
-    }
-    #[automatically_derived]
-    impl anchor_lang::InstructionData for PlacePerpOrder {}
-    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
-    pub struct PlaceScaleOrders {
-        pub params: ScaleOrderParams,
-    }
-    #[automatically_derived]
-    impl anchor_lang::Discriminator for PlaceScaleOrders {
-        const DISCRIMINATOR: &[u8] = &[129, 249, 70, 55, 177, 250, 252, 94];
-    }
-    #[automatically_derived]
-    impl anchor_lang::InstructionData for PlaceScaleOrders {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct PlaceSignedMsgTakerOrder {
         pub signed_msg_order_params_message_bytes: Vec<u8>,
@@ -1001,6 +938,16 @@ pub mod instructions {
     }
     #[automatically_derived]
     impl anchor_lang::InstructionData for PlaceSignedMsgTakerOrder {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct PlaceTriggerOrdersV1 {
+        pub args: PlaceTriggerOrdersV1Args,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for PlaceTriggerOrdersV1 {
+        const DISCRIMINATOR: &[u8] = &[74, 40, 227, 127, 252, 82, 67, 8];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for PlaceTriggerOrdersV1 {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct PostPythLazerOracleUpdate {
         pub pyth_message: Vec<u8>,
@@ -1231,14 +1178,6 @@ pub mod instructions {
     #[automatically_derived]
     impl anchor_lang::InstructionData for ResolveTriggerMarketOrderV1 {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
-    pub struct ResolveTriggerOrder {}
-    #[automatically_derived]
-    impl anchor_lang::Discriminator for ResolveTriggerOrder {
-        const DISCRIMINATOR: &[u8] = &[246, 112, 254, 98, 43, 234, 178, 33];
-    }
-    #[automatically_derived]
-    impl anchor_lang::InstructionData for ResolveTriggerOrder {}
-    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct ResyncLiqConditions {}
     #[automatically_derived]
     impl anchor_lang::Discriminator for ResyncLiqConditions {
@@ -1246,14 +1185,6 @@ pub mod instructions {
     }
     #[automatically_derived]
     impl anchor_lang::InstructionData for ResyncLiqConditions {}
-    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
-    pub struct RevertFill {}
-    #[automatically_derived]
-    impl anchor_lang::Discriminator for RevertFill {
-        const DISCRIMINATOR: &[u8] = &[236, 238, 176, 69, 239, 10, 181, 193];
-    }
-    #[automatically_derived]
-    impl anchor_lang::InstructionData for RevertFill {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct SetUserStatusToBeingLiquidated {}
     #[automatically_derived]
@@ -1496,16 +1427,6 @@ pub mod instructions {
     }
     #[automatically_derived]
     impl anchor_lang::InstructionData for TriggerMarketOrderV1 {}
-    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
-    pub struct TriggerOrder {
-        pub order_id: u32,
-    }
-    #[automatically_derived]
-    impl anchor_lang::Discriminator for TriggerOrder {
-        const DISCRIMINATOR: &[u8] = &[63, 112, 51, 233, 232, 47, 240, 199];
-    }
-    #[automatically_derived]
-    impl anchor_lang::InstructionData for TriggerOrder {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct TripEquityFloorBreaker {}
     #[automatically_derived]
@@ -4055,15 +3976,6 @@ pub mod types {
     }
     #[repr(C)]
     #[derive(
-        AnchorSerialize, AnchorDeserialize, Serialize, Deserialize, Clone, Default, Debug, PartialEq,
-    )]
-    pub struct FillLegacyDlobOrderArgs {
-        pub market_index: u16,
-        pub order_id: Option<u32>,
-        pub signed_route: Vec<Pubkey>,
-    }
-    #[repr(C)]
-    #[derive(
         AnchorSerialize,
         AnchorDeserialize,
         InitSpace,
@@ -5491,6 +5403,13 @@ pub mod types {
     }
     #[repr(C)]
     #[derive(
+        AnchorSerialize, AnchorDeserialize, Serialize, Deserialize, Clone, Default, Debug, PartialEq,
+    )]
+    pub struct PlaceTriggerOrdersV1Args {
+        pub params: Vec<OrderParams>,
+    }
+    #[repr(C)]
+    #[derive(
         AnchorSerialize,
         AnchorDeserialize,
         InitSpace,
@@ -6127,33 +6046,6 @@ pub mod types {
         pub levels: [BigArray<QuotedLevelV0, 128>; 16],
         pub rows: BigArray<QuotedRowV0, 128>,
     }
-    #[repr(C)]
-    #[derive(
-        AnchorSerialize,
-        AnchorDeserialize,
-        InitSpace,
-        Serialize,
-        Deserialize,
-        Copy,
-        Clone,
-        Default,
-        Debug,
-        PartialEq,
-    )]
-    pub struct ScaleOrderParams {
-        pub market_type: MarketType,
-        pub direction: PositionDirection,
-        pub market_index: u16,
-        pub total_base_asset_amount: u64,
-        pub start_price: u64,
-        pub end_price: u64,
-        pub order_count: u8,
-        pub size_distribution: SizeDistribution,
-        pub reduce_only: bool,
-        pub post_only: PostOnlyParam,
-        pub bit_flags: u8,
-        pub max_ts: Option<i64>,
-    }
     #[derive(
         AnchorSerialize,
         AnchorDeserialize,
@@ -6348,24 +6240,6 @@ pub mod types {
     )]
     pub struct SignedMsgWsDelegates {
         pub delegates: Vec<Pubkey>,
-    }
-    #[derive(
-        AnchorSerialize,
-        AnchorDeserialize,
-        InitSpace,
-        Serialize,
-        Deserialize,
-        Copy,
-        Clone,
-        Default,
-        Debug,
-        PartialEq,
-    )]
-    pub enum SizeDistribution {
-        #[default]
-        Flat,
-        Ascending,
-        Descending,
     }
     #[derive(
         AnchorSerialize,
@@ -12345,212 +12219,6 @@ pub mod accounts {
     }
     #[repr(C)]
     #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
-    pub struct FillLegacyDlobOrder {
-        pub state: Pubkey,
-        pub authority: Pubkey,
-        pub filler: Pubkey,
-        pub filler_stats: Pubkey,
-        pub user: Pubkey,
-        pub user_stats: Pubkey,
-        pub quoter_slab: Pubkey,
-        pub clob_market: Pubkey,
-        pub clob_program: Pubkey,
-        pub instructions_sysvar: Pubkey,
-    }
-    #[automatically_derived]
-    impl anchor_lang::Discriminator for FillLegacyDlobOrder {
-        const DISCRIMINATOR: &[u8] = &[187, 171, 223, 115, 134, 109, 136, 215];
-    }
-    #[automatically_derived]
-    unsafe impl anchor_lang::__private::bytemuck::Pod for FillLegacyDlobOrder {}
-    #[automatically_derived]
-    unsafe impl anchor_lang::__private::bytemuck::Zeroable for FillLegacyDlobOrder {}
-    #[automatically_derived]
-    impl anchor_lang::ZeroCopy for FillLegacyDlobOrder {}
-    #[automatically_derived]
-    impl anchor_lang::InstructionData for FillLegacyDlobOrder {}
-    #[automatically_derived]
-    impl ToAccountMetas for FillLegacyDlobOrder {
-        fn to_account_metas(&self) -> Vec<AccountMeta> {
-            vec![
-                AccountMeta {
-                    pubkey: self.state,
-                    is_signer: false,
-                    is_writable: false,
-                },
-                AccountMeta {
-                    pubkey: self.authority,
-                    is_signer: true,
-                    is_writable: false,
-                },
-                AccountMeta {
-                    pubkey: self.filler,
-                    is_signer: false,
-                    is_writable: true,
-                },
-                AccountMeta {
-                    pubkey: self.filler_stats,
-                    is_signer: false,
-                    is_writable: true,
-                },
-                AccountMeta {
-                    pubkey: self.user,
-                    is_signer: false,
-                    is_writable: true,
-                },
-                AccountMeta {
-                    pubkey: self.user_stats,
-                    is_signer: false,
-                    is_writable: true,
-                },
-                AccountMeta {
-                    pubkey: self.quoter_slab,
-                    is_signer: false,
-                    is_writable: false,
-                },
-                AccountMeta {
-                    pubkey: self.clob_market,
-                    is_signer: false,
-                    is_writable: true,
-                },
-                AccountMeta {
-                    pubkey: self.clob_program,
-                    is_signer: false,
-                    is_writable: false,
-                },
-                AccountMeta {
-                    pubkey: self.instructions_sysvar,
-                    is_signer: false,
-                    is_writable: false,
-                },
-            ]
-        }
-    }
-    #[automatically_derived]
-    impl anchor_lang::AccountSerialize for FillLegacyDlobOrder {
-        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
-            if writer.write_all(Self::DISCRIMINATOR).is_err() {
-                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
-            }
-            if AnchorSerialize::serialize(self, writer).is_err() {
-                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
-            }
-            Ok(())
-        }
-    }
-    #[automatically_derived]
-    impl anchor_lang::AccountDeserialize for FillLegacyDlobOrder {
-        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
-            let given_disc = &buf[..8];
-            if Self::DISCRIMINATOR != given_disc {
-                return Err(anchor_lang::error!(
-                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
-                ));
-            }
-            Self::try_deserialize_unchecked(buf)
-        }
-        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
-            let mut data: &[u8] = &buf[8..];
-            AnchorDeserialize::deserialize(&mut data)
-                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
-        }
-    }
-    #[repr(C)]
-    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
-    pub struct FillPerpOrder {
-        pub state: Pubkey,
-        pub authority: Pubkey,
-        pub filler: Pubkey,
-        pub filler_stats: Pubkey,
-        pub user: Pubkey,
-        pub user_stats: Pubkey,
-        pub instructions_sysvar: Pubkey,
-    }
-    #[automatically_derived]
-    impl anchor_lang::Discriminator for FillPerpOrder {
-        const DISCRIMINATOR: &[u8] = &[196, 125, 144, 95, 242, 149, 179, 234];
-    }
-    #[automatically_derived]
-    unsafe impl anchor_lang::__private::bytemuck::Pod for FillPerpOrder {}
-    #[automatically_derived]
-    unsafe impl anchor_lang::__private::bytemuck::Zeroable for FillPerpOrder {}
-    #[automatically_derived]
-    impl anchor_lang::ZeroCopy for FillPerpOrder {}
-    #[automatically_derived]
-    impl anchor_lang::InstructionData for FillPerpOrder {}
-    #[automatically_derived]
-    impl ToAccountMetas for FillPerpOrder {
-        fn to_account_metas(&self) -> Vec<AccountMeta> {
-            vec![
-                AccountMeta {
-                    pubkey: self.state,
-                    is_signer: false,
-                    is_writable: false,
-                },
-                AccountMeta {
-                    pubkey: self.authority,
-                    is_signer: true,
-                    is_writable: false,
-                },
-                AccountMeta {
-                    pubkey: self.filler,
-                    is_signer: false,
-                    is_writable: true,
-                },
-                AccountMeta {
-                    pubkey: self.filler_stats,
-                    is_signer: false,
-                    is_writable: true,
-                },
-                AccountMeta {
-                    pubkey: self.user,
-                    is_signer: false,
-                    is_writable: true,
-                },
-                AccountMeta {
-                    pubkey: self.user_stats,
-                    is_signer: false,
-                    is_writable: true,
-                },
-                AccountMeta {
-                    pubkey: self.instructions_sysvar,
-                    is_signer: false,
-                    is_writable: false,
-                },
-            ]
-        }
-    }
-    #[automatically_derived]
-    impl anchor_lang::AccountSerialize for FillPerpOrder {
-        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
-            if writer.write_all(Self::DISCRIMINATOR).is_err() {
-                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
-            }
-            if AnchorSerialize::serialize(self, writer).is_err() {
-                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
-            }
-            Ok(())
-        }
-    }
-    #[automatically_derived]
-    impl anchor_lang::AccountDeserialize for FillPerpOrder {
-        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
-            let given_disc = &buf[..8];
-            if Self::DISCRIMINATOR != given_disc {
-                return Err(anchor_lang::error!(
-                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
-                ));
-            }
-            Self::try_deserialize_unchecked(buf)
-        }
-        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
-            let mut data: &[u8] = &buf[8..];
-            AnchorDeserialize::deserialize(&mut data)
-                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
-        }
-    }
-    #[repr(C)]
-    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
     pub struct ForceCancelClobOrders {
         pub state: Pubkey,
         pub authority: Pubkey,
@@ -16751,82 +16419,6 @@ pub mod accounts {
     }
     #[repr(C)]
     #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
-    pub struct PlaceAndTakePerpOrder {
-        pub state: Pubkey,
-        pub user: Pubkey,
-        pub user_stats: Pubkey,
-        pub authority: Pubkey,
-    }
-    #[automatically_derived]
-    impl anchor_lang::Discriminator for PlaceAndTakePerpOrder {
-        const DISCRIMINATOR: &[u8] = &[106, 246, 39, 196, 36, 127, 12, 84];
-    }
-    #[automatically_derived]
-    unsafe impl anchor_lang::__private::bytemuck::Pod for PlaceAndTakePerpOrder {}
-    #[automatically_derived]
-    unsafe impl anchor_lang::__private::bytemuck::Zeroable for PlaceAndTakePerpOrder {}
-    #[automatically_derived]
-    impl anchor_lang::ZeroCopy for PlaceAndTakePerpOrder {}
-    #[automatically_derived]
-    impl anchor_lang::InstructionData for PlaceAndTakePerpOrder {}
-    #[automatically_derived]
-    impl ToAccountMetas for PlaceAndTakePerpOrder {
-        fn to_account_metas(&self) -> Vec<AccountMeta> {
-            vec![
-                AccountMeta {
-                    pubkey: self.state,
-                    is_signer: false,
-                    is_writable: false,
-                },
-                AccountMeta {
-                    pubkey: self.user,
-                    is_signer: false,
-                    is_writable: true,
-                },
-                AccountMeta {
-                    pubkey: self.user_stats,
-                    is_signer: false,
-                    is_writable: true,
-                },
-                AccountMeta {
-                    pubkey: self.authority,
-                    is_signer: true,
-                    is_writable: false,
-                },
-            ]
-        }
-    }
-    #[automatically_derived]
-    impl anchor_lang::AccountSerialize for PlaceAndTakePerpOrder {
-        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
-            if writer.write_all(Self::DISCRIMINATOR).is_err() {
-                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
-            }
-            if AnchorSerialize::serialize(self, writer).is_err() {
-                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
-            }
-            Ok(())
-        }
-    }
-    #[automatically_derived]
-    impl anchor_lang::AccountDeserialize for PlaceAndTakePerpOrder {
-        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
-            let given_disc = &buf[..8];
-            if Self::DISCRIMINATOR != given_disc {
-                return Err(anchor_lang::error!(
-                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
-                ));
-            }
-            Self::try_deserialize_unchecked(buf)
-        }
-        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
-            let mut data: &[u8] = &buf[8..];
-            AnchorDeserialize::deserialize(&mut data)
-                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
-        }
-    }
-    #[repr(C)]
-    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
     pub struct PlaceAndTakePerpOrderV1 {
         pub state: Pubkey,
         pub user: Pubkey,
@@ -16910,216 +16502,6 @@ pub mod accounts {
     }
     #[automatically_derived]
     impl anchor_lang::AccountDeserialize for PlaceAndTakePerpOrderV1 {
-        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
-            let given_disc = &buf[..8];
-            if Self::DISCRIMINATOR != given_disc {
-                return Err(anchor_lang::error!(
-                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
-                ));
-            }
-            Self::try_deserialize_unchecked(buf)
-        }
-        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
-            let mut data: &[u8] = &buf[8..];
-            AnchorDeserialize::deserialize(&mut data)
-                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
-        }
-    }
-    #[repr(C)]
-    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
-    pub struct PlaceOrders {
-        pub state: Pubkey,
-        pub user: Pubkey,
-        pub authority: Pubkey,
-    }
-    #[automatically_derived]
-    impl anchor_lang::Discriminator for PlaceOrders {
-        const DISCRIMINATOR: &[u8] = &[124, 246, 105, 210, 163, 120, 252, 61];
-    }
-    #[automatically_derived]
-    unsafe impl anchor_lang::__private::bytemuck::Pod for PlaceOrders {}
-    #[automatically_derived]
-    unsafe impl anchor_lang::__private::bytemuck::Zeroable for PlaceOrders {}
-    #[automatically_derived]
-    impl anchor_lang::ZeroCopy for PlaceOrders {}
-    #[automatically_derived]
-    impl anchor_lang::InstructionData for PlaceOrders {}
-    #[automatically_derived]
-    impl ToAccountMetas for PlaceOrders {
-        fn to_account_metas(&self) -> Vec<AccountMeta> {
-            vec![
-                AccountMeta {
-                    pubkey: self.state,
-                    is_signer: false,
-                    is_writable: false,
-                },
-                AccountMeta {
-                    pubkey: self.user,
-                    is_signer: false,
-                    is_writable: true,
-                },
-                AccountMeta {
-                    pubkey: self.authority,
-                    is_signer: true,
-                    is_writable: false,
-                },
-            ]
-        }
-    }
-    #[automatically_derived]
-    impl anchor_lang::AccountSerialize for PlaceOrders {
-        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
-            if writer.write_all(Self::DISCRIMINATOR).is_err() {
-                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
-            }
-            if AnchorSerialize::serialize(self, writer).is_err() {
-                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
-            }
-            Ok(())
-        }
-    }
-    #[automatically_derived]
-    impl anchor_lang::AccountDeserialize for PlaceOrders {
-        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
-            let given_disc = &buf[..8];
-            if Self::DISCRIMINATOR != given_disc {
-                return Err(anchor_lang::error!(
-                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
-                ));
-            }
-            Self::try_deserialize_unchecked(buf)
-        }
-        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
-            let mut data: &[u8] = &buf[8..];
-            AnchorDeserialize::deserialize(&mut data)
-                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
-        }
-    }
-    #[repr(C)]
-    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
-    pub struct PlacePerpOrder {
-        pub state: Pubkey,
-        pub user: Pubkey,
-        pub authority: Pubkey,
-    }
-    #[automatically_derived]
-    impl anchor_lang::Discriminator for PlacePerpOrder {
-        const DISCRIMINATOR: &[u8] = &[246, 108, 77, 100, 111, 83, 209, 236];
-    }
-    #[automatically_derived]
-    unsafe impl anchor_lang::__private::bytemuck::Pod for PlacePerpOrder {}
-    #[automatically_derived]
-    unsafe impl anchor_lang::__private::bytemuck::Zeroable for PlacePerpOrder {}
-    #[automatically_derived]
-    impl anchor_lang::ZeroCopy for PlacePerpOrder {}
-    #[automatically_derived]
-    impl anchor_lang::InstructionData for PlacePerpOrder {}
-    #[automatically_derived]
-    impl ToAccountMetas for PlacePerpOrder {
-        fn to_account_metas(&self) -> Vec<AccountMeta> {
-            vec![
-                AccountMeta {
-                    pubkey: self.state,
-                    is_signer: false,
-                    is_writable: false,
-                },
-                AccountMeta {
-                    pubkey: self.user,
-                    is_signer: false,
-                    is_writable: true,
-                },
-                AccountMeta {
-                    pubkey: self.authority,
-                    is_signer: true,
-                    is_writable: false,
-                },
-            ]
-        }
-    }
-    #[automatically_derived]
-    impl anchor_lang::AccountSerialize for PlacePerpOrder {
-        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
-            if writer.write_all(Self::DISCRIMINATOR).is_err() {
-                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
-            }
-            if AnchorSerialize::serialize(self, writer).is_err() {
-                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
-            }
-            Ok(())
-        }
-    }
-    #[automatically_derived]
-    impl anchor_lang::AccountDeserialize for PlacePerpOrder {
-        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
-            let given_disc = &buf[..8];
-            if Self::DISCRIMINATOR != given_disc {
-                return Err(anchor_lang::error!(
-                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
-                ));
-            }
-            Self::try_deserialize_unchecked(buf)
-        }
-        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
-            let mut data: &[u8] = &buf[8..];
-            AnchorDeserialize::deserialize(&mut data)
-                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
-        }
-    }
-    #[repr(C)]
-    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
-    pub struct PlaceScaleOrders {
-        pub state: Pubkey,
-        pub user: Pubkey,
-        pub authority: Pubkey,
-    }
-    #[automatically_derived]
-    impl anchor_lang::Discriminator for PlaceScaleOrders {
-        const DISCRIMINATOR: &[u8] = &[110, 212, 208, 126, 8, 182, 230, 16];
-    }
-    #[automatically_derived]
-    unsafe impl anchor_lang::__private::bytemuck::Pod for PlaceScaleOrders {}
-    #[automatically_derived]
-    unsafe impl anchor_lang::__private::bytemuck::Zeroable for PlaceScaleOrders {}
-    #[automatically_derived]
-    impl anchor_lang::ZeroCopy for PlaceScaleOrders {}
-    #[automatically_derived]
-    impl anchor_lang::InstructionData for PlaceScaleOrders {}
-    #[automatically_derived]
-    impl ToAccountMetas for PlaceScaleOrders {
-        fn to_account_metas(&self) -> Vec<AccountMeta> {
-            vec![
-                AccountMeta {
-                    pubkey: self.state,
-                    is_signer: false,
-                    is_writable: false,
-                },
-                AccountMeta {
-                    pubkey: self.user,
-                    is_signer: false,
-                    is_writable: true,
-                },
-                AccountMeta {
-                    pubkey: self.authority,
-                    is_signer: true,
-                    is_writable: false,
-                },
-            ]
-        }
-    }
-    #[automatically_derived]
-    impl anchor_lang::AccountSerialize for PlaceScaleOrders {
-        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
-            if writer.write_all(Self::DISCRIMINATOR).is_err() {
-                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
-            }
-            if AnchorSerialize::serialize(self, writer).is_err() {
-                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
-            }
-            Ok(())
-        }
-    }
-    #[automatically_derived]
-    impl anchor_lang::AccountDeserialize for PlaceScaleOrders {
         fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
             let given_disc = &buf[..8];
             if Self::DISCRIMINATOR != given_disc {
@@ -17238,6 +16620,76 @@ pub mod accounts {
     }
     #[automatically_derived]
     impl anchor_lang::AccountDeserialize for PlaceSignedMsgTakerOrder {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct PlaceTriggerOrdersV1 {
+        pub state: Pubkey,
+        pub user: Pubkey,
+        pub authority: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for PlaceTriggerOrdersV1 {
+        const DISCRIMINATOR: &[u8] = &[145, 163, 163, 103, 84, 198, 121, 17];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for PlaceTriggerOrdersV1 {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for PlaceTriggerOrdersV1 {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for PlaceTriggerOrdersV1 {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for PlaceTriggerOrdersV1 {}
+    #[automatically_derived]
+    impl ToAccountMetas for PlaceTriggerOrdersV1 {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.user,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.authority,
+                    is_signer: true,
+                    is_writable: false,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for PlaceTriggerOrdersV1 {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for PlaceTriggerOrdersV1 {
         fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
             let given_disc = &buf[..8];
             if Self::DISCRIMINATOR != given_disc {
@@ -19233,88 +18685,6 @@ pub mod accounts {
     }
     #[repr(C)]
     #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
-    pub struct ResolveTriggerOrder {
-        pub scratch: Pubkey,
-        pub trigger_conditions: Pubkey,
-        pub user: Pubkey,
-        pub oracle: Pubkey,
-        pub perp_market: Pubkey,
-    }
-    #[automatically_derived]
-    impl anchor_lang::Discriminator for ResolveTriggerOrder {
-        const DISCRIMINATOR: &[u8] = &[165, 245, 62, 182, 187, 122, 166, 91];
-    }
-    #[automatically_derived]
-    unsafe impl anchor_lang::__private::bytemuck::Pod for ResolveTriggerOrder {}
-    #[automatically_derived]
-    unsafe impl anchor_lang::__private::bytemuck::Zeroable for ResolveTriggerOrder {}
-    #[automatically_derived]
-    impl anchor_lang::ZeroCopy for ResolveTriggerOrder {}
-    #[automatically_derived]
-    impl anchor_lang::InstructionData for ResolveTriggerOrder {}
-    #[automatically_derived]
-    impl ToAccountMetas for ResolveTriggerOrder {
-        fn to_account_metas(&self) -> Vec<AccountMeta> {
-            vec![
-                AccountMeta {
-                    pubkey: self.scratch,
-                    is_signer: false,
-                    is_writable: true,
-                },
-                AccountMeta {
-                    pubkey: self.trigger_conditions,
-                    is_signer: false,
-                    is_writable: false,
-                },
-                AccountMeta {
-                    pubkey: self.user,
-                    is_signer: false,
-                    is_writable: false,
-                },
-                AccountMeta {
-                    pubkey: self.oracle,
-                    is_signer: false,
-                    is_writable: false,
-                },
-                AccountMeta {
-                    pubkey: self.perp_market,
-                    is_signer: false,
-                    is_writable: false,
-                },
-            ]
-        }
-    }
-    #[automatically_derived]
-    impl anchor_lang::AccountSerialize for ResolveTriggerOrder {
-        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
-            if writer.write_all(Self::DISCRIMINATOR).is_err() {
-                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
-            }
-            if AnchorSerialize::serialize(self, writer).is_err() {
-                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
-            }
-            Ok(())
-        }
-    }
-    #[automatically_derived]
-    impl anchor_lang::AccountDeserialize for ResolveTriggerOrder {
-        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
-            let given_disc = &buf[..8];
-            if Self::DISCRIMINATOR != given_disc {
-                return Err(anchor_lang::error!(
-                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
-                ));
-            }
-            Self::try_deserialize_unchecked(buf)
-        }
-        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
-            let mut data: &[u8] = &buf[8..];
-            AnchorDeserialize::deserialize(&mut data)
-                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
-        }
-    }
-    #[repr(C)]
-    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
     pub struct ResyncLiqConditions {
         pub keeper: Pubkey,
         pub user: Pubkey,
@@ -19374,82 +18744,6 @@ pub mod accounts {
     }
     #[automatically_derived]
     impl anchor_lang::AccountDeserialize for ResyncLiqConditions {
-        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
-            let given_disc = &buf[..8];
-            if Self::DISCRIMINATOR != given_disc {
-                return Err(anchor_lang::error!(
-                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
-                ));
-            }
-            Self::try_deserialize_unchecked(buf)
-        }
-        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
-            let mut data: &[u8] = &buf[8..];
-            AnchorDeserialize::deserialize(&mut data)
-                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
-        }
-    }
-    #[repr(C)]
-    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
-    pub struct RevertFill {
-        pub state: Pubkey,
-        pub authority: Pubkey,
-        pub filler: Pubkey,
-        pub filler_stats: Pubkey,
-    }
-    #[automatically_derived]
-    impl anchor_lang::Discriminator for RevertFill {
-        const DISCRIMINATOR: &[u8] = &[119, 31, 174, 155, 246, 22, 28, 126];
-    }
-    #[automatically_derived]
-    unsafe impl anchor_lang::__private::bytemuck::Pod for RevertFill {}
-    #[automatically_derived]
-    unsafe impl anchor_lang::__private::bytemuck::Zeroable for RevertFill {}
-    #[automatically_derived]
-    impl anchor_lang::ZeroCopy for RevertFill {}
-    #[automatically_derived]
-    impl anchor_lang::InstructionData for RevertFill {}
-    #[automatically_derived]
-    impl ToAccountMetas for RevertFill {
-        fn to_account_metas(&self) -> Vec<AccountMeta> {
-            vec![
-                AccountMeta {
-                    pubkey: self.state,
-                    is_signer: false,
-                    is_writable: false,
-                },
-                AccountMeta {
-                    pubkey: self.authority,
-                    is_signer: true,
-                    is_writable: false,
-                },
-                AccountMeta {
-                    pubkey: self.filler,
-                    is_signer: false,
-                    is_writable: true,
-                },
-                AccountMeta {
-                    pubkey: self.filler_stats,
-                    is_signer: false,
-                    is_writable: true,
-                },
-            ]
-        }
-    }
-    #[automatically_derived]
-    impl anchor_lang::AccountSerialize for RevertFill {
-        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
-            if writer.write_all(Self::DISCRIMINATOR).is_err() {
-                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
-            }
-            if AnchorSerialize::serialize(self, writer).is_err() {
-                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
-            }
-            Ok(())
-        }
-    }
-    #[automatically_derived]
-    impl anchor_lang::AccountDeserialize for RevertFill {
         fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
             let given_disc = &buf[..8];
             if Self::DISCRIMINATOR != given_disc {
@@ -21484,100 +20778,6 @@ pub mod accounts {
     }
     #[automatically_derived]
     impl anchor_lang::AccountDeserialize for TriggerMarketOrderV1 {
-        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
-            let given_disc = &buf[..8];
-            if Self::DISCRIMINATOR != given_disc {
-                return Err(anchor_lang::error!(
-                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
-                ));
-            }
-            Self::try_deserialize_unchecked(buf)
-        }
-        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
-            let mut data: &[u8] = &buf[8..];
-            AnchorDeserialize::deserialize(&mut data)
-                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
-        }
-    }
-    #[repr(C)]
-    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
-    pub struct TriggerOrder {
-        pub state: Pubkey,
-        pub authority: Pubkey,
-        pub filler: Pubkey,
-        pub user: Pubkey,
-        pub user_stats: Pubkey,
-        pub trigger_conditions: Pubkey,
-        pub crank_conditions: Pubkey,
-    }
-    #[automatically_derived]
-    impl anchor_lang::Discriminator for TriggerOrder {
-        const DISCRIMINATOR: &[u8] = &[236, 61, 42, 190, 152, 12, 106, 116];
-    }
-    #[automatically_derived]
-    unsafe impl anchor_lang::__private::bytemuck::Pod for TriggerOrder {}
-    #[automatically_derived]
-    unsafe impl anchor_lang::__private::bytemuck::Zeroable for TriggerOrder {}
-    #[automatically_derived]
-    impl anchor_lang::ZeroCopy for TriggerOrder {}
-    #[automatically_derived]
-    impl anchor_lang::InstructionData for TriggerOrder {}
-    #[automatically_derived]
-    impl ToAccountMetas for TriggerOrder {
-        fn to_account_metas(&self) -> Vec<AccountMeta> {
-            vec![
-                AccountMeta {
-                    pubkey: self.state,
-                    is_signer: false,
-                    is_writable: false,
-                },
-                AccountMeta {
-                    pubkey: self.authority,
-                    is_signer: false,
-                    is_writable: true,
-                },
-                AccountMeta {
-                    pubkey: self.filler,
-                    is_signer: false,
-                    is_writable: true,
-                },
-                AccountMeta {
-                    pubkey: self.user,
-                    is_signer: false,
-                    is_writable: true,
-                },
-                AccountMeta {
-                    pubkey: self.user_stats,
-                    is_signer: false,
-                    is_writable: true,
-                },
-                AccountMeta {
-                    pubkey: self.trigger_conditions,
-                    is_signer: false,
-                    is_writable: true,
-                },
-                AccountMeta {
-                    pubkey: self.crank_conditions,
-                    is_signer: false,
-                    is_writable: true,
-                },
-            ]
-        }
-    }
-    #[automatically_derived]
-    impl anchor_lang::AccountSerialize for TriggerOrder {
-        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
-            if writer.write_all(Self::DISCRIMINATOR).is_err() {
-                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
-            }
-            if AnchorSerialize::serialize(self, writer).is_err() {
-                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
-            }
-            Ok(())
-        }
-    }
-    #[automatically_derived]
-    impl anchor_lang::AccountDeserialize for TriggerOrder {
         fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
             let given_disc = &buf[..8];
             if Self::DISCRIMINATOR != given_disc {
@@ -33279,6 +32479,8 @@ pub mod errors {
         TakerExposureNotProtocolOwned,
         #[msg("The market's book cannot rest a fired trigger, so the trigger stays armed")]
         ClobRestUnavailable,
+        #[msg("A user order slot holds only a trigger order")]
+        OrderTypeNotConditional,
     }
 }
 pub mod events {

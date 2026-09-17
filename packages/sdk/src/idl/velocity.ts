@@ -811,9 +811,9 @@ export type Velocity = {
         {
           "name": "perpMarket",
           "docs": [
-            "Read-only, and read for one thing: the cached oracle price the cancel",
-            "record is stamped with. Deliberately not an oracle account — a maker",
-            "pulling orders off a book must not be able to fail on a stale feed."
+            "Read-only, and read for one value: the cached oracle price that stamps",
+            "the cancel record. This is not an oracle account. A maker who removes",
+            "orders from a book must not fail on a stale feed."
           ]
         },
         {
@@ -838,7 +838,7 @@ export type Velocity = {
         {
           "name": "clobProgram",
           "docs": [
-            "registration; the handler re-checks through the slot."
+            "registration. The handler checks it again through the slot."
           ],
           "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
         }
@@ -945,10 +945,10 @@ export type Velocity = {
     {
       "name": "cancelOrdersV1",
       "docs": [
-        "Pull every resting CLOB order this `User` holds on one side (or both) in",
-        "a single CPI, unwinding the aggregates from per-side totals. The book",
-        "caps one sweep; the log says when it stopped early and the call is safe",
-        "to repeat."
+        "Cancel every resting CLOB order this `User` holds on one side, or on",
+        "both, in a single CPI. It unwinds the aggregates from per-side totals.",
+        "The book caps one sweep. The log says when the sweep stopped early, and",
+        "the call is safe to repeat."
       ],
       "discriminator": [
         59,
@@ -972,7 +972,7 @@ export type Velocity = {
         {
           "name": "quoterSlab",
           "docs": [
-            "The market's quoter slab; the book's config is its `Clob` slot."
+            "The market's quoter slab. The book's configuration is its `Clob` slot."
           ]
         },
         {
@@ -985,7 +985,7 @@ export type Velocity = {
         {
           "name": "clobProgram",
           "docs": [
-            "registration; the handler re-checks through the slot."
+            "registration. The handler checks it again through the slot."
           ],
           "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
         }
@@ -1301,9 +1301,9 @@ export type Velocity = {
         {
           "name": "authority",
           "docs": [
-            "the constraint below); in program-keeper mode it is only the lamport",
-            "payout target — relay's `KEEPER_PLACEHOLDER` slot — and no signature",
-            "is required."
+            "constraint below enforces. In program-keeper mode it is only the lamport",
+            "payout target, relay's `KEEPER_PLACEHOLDER` slot, and no signature is",
+            "required."
           ],
           "writable": true
         },
@@ -1318,9 +1318,10 @@ export type Velocity = {
         {
           "name": "user",
           "docs": [
-            "The owner of the order being removed (the book's tail for evict, the",
-            "hinted order for expire). Verified against the CLOB's return data —",
-            "a race that removed someone else's order fails the whole crank."
+            "The owner of the order the crank removes. Eviction removes the book's",
+            "tail and expiry removes the hinted order. The CLOB's return data is",
+            "checked against this account, so a race that removed someone else's",
+            "order fails the whole crank."
           ],
           "writable": true
         },
@@ -1331,8 +1332,8 @@ export type Velocity = {
         {
           "name": "quoterSlab",
           "docs": [
-            "Deliberately not gated on active/approved: dead books still need",
-            "their resting orders reclaimed."
+            "Not gated on active or approved, because a dead book still needs its",
+            "resting orders reclaimed."
           ],
           "relations": [
             "perpMarket"
@@ -1351,7 +1352,7 @@ export type Velocity = {
         {
           "name": "clobProgram",
           "docs": [
-            "registration; the handler re-checks through the slot."
+            "registration. The handler checks it again through the slot."
           ],
           "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
         },
@@ -1359,8 +1360,9 @@ export type Velocity = {
           "name": "crankConditions",
           "docs": [
             "The market's relay conditions account: the expiry-hint host and the",
-            "lamport reservoir. Optional so signed keepers can crank markets whose",
-            "conditions were never initialized; required in program-keeper mode."
+            "lamport reservoir. It is optional so that a signed keeper can crank a",
+            "market whose conditions were never initialized. Program-keeper mode",
+            "requires it."
           ],
           "writable": true,
           "optional": true,
@@ -1430,9 +1432,9 @@ export type Velocity = {
         {
           "name": "authority",
           "docs": [
-            "the constraint below); in program-keeper mode it is only the lamport",
-            "payout target — relay's `KEEPER_PLACEHOLDER` slot — and no signature",
-            "is required."
+            "constraint below enforces. In program-keeper mode it is only the lamport",
+            "payout target, relay's `KEEPER_PLACEHOLDER` slot, and no signature is",
+            "required."
           ],
           "writable": true
         },
@@ -1447,9 +1449,10 @@ export type Velocity = {
         {
           "name": "user",
           "docs": [
-            "The owner of the order being removed (the book's tail for evict, the",
-            "hinted order for expire). Verified against the CLOB's return data —",
-            "a race that removed someone else's order fails the whole crank."
+            "The owner of the order the crank removes. Eviction removes the book's",
+            "tail and expiry removes the hinted order. The CLOB's return data is",
+            "checked against this account, so a race that removed someone else's",
+            "order fails the whole crank."
           ],
           "writable": true
         },
@@ -1460,8 +1463,8 @@ export type Velocity = {
         {
           "name": "quoterSlab",
           "docs": [
-            "Deliberately not gated on active/approved: dead books still need",
-            "their resting orders reclaimed."
+            "Not gated on active or approved, because a dead book still needs its",
+            "resting orders reclaimed."
           ],
           "relations": [
             "perpMarket"
@@ -1480,7 +1483,7 @@ export type Velocity = {
         {
           "name": "clobProgram",
           "docs": [
-            "registration; the handler re-checks through the slot."
+            "registration. The handler checks it again through the slot."
           ],
           "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
         },
@@ -1488,8 +1491,9 @@ export type Velocity = {
           "name": "crankConditions",
           "docs": [
             "The market's relay conditions account: the expiry-hint host and the",
-            "lamport reservoir. Optional so signed keepers can crank markets whose",
-            "conditions were never initialized; required in program-keeper mode."
+            "lamport reservoir. It is optional so that a signed keeper can crank a",
+            "market whose conditions were never initialized. Program-keeper mode",
+            "requires it."
           ],
           "writable": true,
           "optional": true,
@@ -1543,9 +1547,10 @@ export type Velocity = {
     {
       "name": "crankCrossMatch",
       "docs": [
-        "Fill two crossed resting sources against each other (permissionless;",
-        "the protocol User takes both legs and keeps the spread, the caller is",
-        "paid reservoir lamports). Reverts unless profitable after fees."
+        "Fill two crossed resting sources against each other. The call is",
+        "permissionless. The protocol User takes both legs and keeps the spread,",
+        "and the caller is paid reservoir lamports. It reverts unless the match",
+        "is profitable after fees."
       ],
       "discriminator": [
         121,
@@ -1564,7 +1569,7 @@ export type Velocity = {
         {
           "name": "authority",
           "docs": [
-            "No signature: the cross's own profitability rules are the gate."
+            "signature is required. The cross's own profitability rules are the gate."
           ],
           "writable": true
         },
@@ -1624,8 +1629,8 @@ export type Velocity = {
         {
           "name": "perpMarket",
           "docs": [
-            "The crossed market. Named rather than read out of the maps section:",
-            "the cross serves exactly one market, so the account is structural."
+            "The crossed market. It is named rather than read out of the maps",
+            "section, because the cross serves one market."
           ],
           "writable": true,
           "pda": {
@@ -1656,8 +1661,8 @@ export type Velocity = {
         {
           "name": "quoterSlab",
           "docs": [
-            "The market's approved quoters. Bound by the market's `has_one`, which",
-            "is a memcmp where a seeds constraint pays a PDA derivation. Each leg",
+            "The market's approved quoters. The market's `has_one` binds it, which",
+            "costs a memcmp where a seeds constraint pays a PDA derivation. Each leg",
             "assembles its route off the copy that rides the account tail, as every",
             "router fill does."
           ],
@@ -1687,14 +1692,15 @@ export type Velocity = {
     {
       "name": "crankTakerOriginCross",
       "docs": [
-        "Resolve one taker-origin cross on a market's CLOB (permissionless):",
-        "consume the crossing counterparty at its own price, lift the migrated",
-        "taker remainder off the book, and settle the pair at the counterparty's",
-        "price so the taker — not whoever lands a transaction at the activation",
-        "slot — captures the improvement. The cranker is paid a filler reward in",
-        "quote out of that improvement, capped so the taker's net still beats the",
-        "price it was resting at; a cross that cannot clear that bar is left",
-        "resting."
+        "Resolve one taker-origin cross on a market's CLOB. The call is",
+        "permissionless. It consumes the crossing counterparty at that",
+        "counterparty's price, removes the migrated taker remainder from the",
+        "book, and settles the pair at the counterparty's price. The taker",
+        "captures the improvement, rather than whoever lands a transaction at",
+        "the activation slot. The cranker is paid a filler reward in quote out",
+        "of that improvement. The reward is capped so the taker's net price",
+        "still beats the price it was resting at. A cross that cannot clear that",
+        "cap is left resting."
       ],
       "discriminator": [
         105,
@@ -1713,9 +1719,9 @@ export type Velocity = {
         {
           "name": "authority",
           "docs": [
-            "constraint below enforces it); in program-keeper mode it is only the",
-            "lamport payout target — relay's keeper-placeholder slot — and no",
-            "signature is required."
+            "constraint below enforces. In program-keeper mode it is only the lamport",
+            "payout target, relay's keeper-placeholder slot, and no signature is",
+            "required."
           ],
           "writable": true
         },
@@ -1733,7 +1739,7 @@ export type Velocity = {
         {
           "name": "taker",
           "docs": [
-            "Owner of the taker-origin order — the taker of this match. Verified",
+            "Owner of the taker-origin order, and the taker of this match. Verified",
             "against the identity the CLOB reports on removal, so a wrong account",
             "fails the crank rather than settling against someone else."
           ],
@@ -1746,13 +1752,13 @@ export type Velocity = {
         {
           "name": "quoterSlab",
           "docs": [
-            "The market's quoter slab; the book's config is its `Clob` slot."
+            "The market's quoter slab. The book's config is its `Clob` slot."
           ]
         },
         {
           "name": "clobMarket",
           "docs": [
-            "(`ClobMarket::from_slab`), so a valid slot cannot be pointed at an",
+            "registered response account, so a valid slot cannot be pointed at an",
             "arbitrary account."
           ],
           "writable": true,
@@ -1763,7 +1769,7 @@ export type Velocity = {
         {
           "name": "clobProgram",
           "docs": [
-            "registration; the handler re-checks through the slot."
+            "registration. The handler checks it again through the slot."
           ],
           "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
         },
@@ -1771,8 +1777,9 @@ export type Velocity = {
           "name": "crankConditions",
           "docs": [
             "The market's relay conditions account: the wake-hint host and the",
-            "lamport reservoir. Optional so a signed keeper can crank a market whose",
-            "conditions were never initialized; required in program-keeper mode."
+            "lamport reservoir. It is optional so that a signed keeper can crank a",
+            "market whose conditions were never initialized. Program-keeper mode",
+            "requires it."
           ],
           "writable": true,
           "optional": true,
@@ -1817,12 +1824,12 @@ export type Velocity = {
             "The taker's signed-message record, which carries the route its signer",
             "chose. The fill below is held to it.",
             "",
-            "Required, and pinned to the taker's own authority by its seeds, even",
-            "though a remainder off a directly-placed order has no such record. The",
-            "two are not the same thing: an address the program derives cannot be",
-            "omitted or substituted, so a caller cannot hide a route by leaving it",
-            "out. A record that was never created still arrives — owned by the system",
-            "program, with no data — and reads as genuinely unrouted.",
+            "The account is required and its seeds pin it to the taker's own",
+            "authority, even though a remainder off a directly-placed order has no",
+            "such record. An address the program derives cannot be omitted or",
+            "substituted, so a caller cannot hide a route by leaving it out. A record",
+            "that was never created still arrives. It is owned by the system program",
+            "and holds no data, and it reads as unrouted.",
             "and the discriminator before anything is read out of it."
           ],
           "pda": {
@@ -2217,15 +2224,14 @@ export type Velocity = {
         {
           "name": "revenueShareEscrow",
           "docs": [
-            "most users never create one. Deliberately an `UncheckedAccount` **pinned by",
-            "`seeds`** rather than a typed `AccountLoader`: because the address is derived",
-            "and not caller-chosen, absence is *provable* (`data_is_empty()`), so the handler",
-            "can distinguish \"this authority has no escrow\" from \"the caller omitted it to",
-            "skip the check\". A typed loader would instead make deletion impossible for the",
-            "majority of users, who have no escrow account to pass.",
+            "never create one. It is an `UncheckedAccount` pinned by `seeds`, not a typed",
+            "`AccountLoader`. The address is derived and not caller-chosen, so",
+            "`data_is_empty()` proves absence. The handler can then tell \"this authority has",
+            "no escrow\" from \"the caller omitted it to skip the check\". A typed loader would",
+            "make deletion impossible for the many users who have no escrow account to pass.",
             "",
-            "Required rather than `Option` so a caller holding fee-bearing builder rows",
-            "cannot simply leave it out (OtterSec #128)."
+            "It is required rather than `Option`, so a caller holding fee-bearing builder",
+            "rows cannot leave it out (OtterSec #128)."
           ],
           "writable": true,
           "pda": {
@@ -2989,6 +2995,15 @@ export type Velocity = {
     },
     {
       "name": "extendAccount",
+      "docs": [
+        "Grow a zero-copy account to the size this program build compiles in",
+        "for its type. The account discriminator resolves the type. This is the",
+        "migration crank after an upgrade that appends fields to an account",
+        "struct. It does nothing when the account is already at size. The payer",
+        "covers the rent-exempt shortfall. The authority is the",
+        "`AccountExtension` hot key, or the warm or cold admin. See",
+        "`docs/ACCOUNT-EXTENSION.md`."
+      ],
       "discriminator": [
         234,
         102,
@@ -3015,7 +3030,7 @@ export type Velocity = {
         {
           "name": "account",
           "docs": [
-            "size) from the account discriminator"
+            "target size from the account discriminator."
           ],
           "writable": true
         },
@@ -3029,11 +3044,11 @@ export type Velocity = {
     {
       "name": "extendAccountDevnet",
       "docs": [
-        "Devnet/test-only: grow a zero-copy account to an arbitrary larger size",
-        "to exercise the extension flow before a real struct extension exists.",
-        "Stripped from production mainnet builds; `anchor-test` keeps it so the",
-        "integration suite (which builds with default features + `anchor-test`)",
-        "can exercise extension end to end."
+        "Devnet and test builds only. Grows a zero-copy account to an arbitrary",
+        "larger size, so the extension flow can be exercised before a real",
+        "struct extension exists. Production mainnet builds compile it out.",
+        "`anchor-test` keeps it, so the integration suite can exercise extension",
+        "end to end. That suite builds with default features plus `anchor-test`."
       ],
       "discriminator": [
         58,
@@ -3061,7 +3076,7 @@ export type Velocity = {
         {
           "name": "account",
           "docs": [
-            "zero-copy discriminator"
+            "zero-copy discriminator."
           ],
           "writable": true
         },
@@ -3078,185 +3093,10 @@ export type Velocity = {
       ]
     },
     {
-      "name": "fillLegacyDlobOrder",
-      "docs": [
-        "`fill_perp_order` with the market's CLOB accounts required: a restable",
-        "remainder of the filled order migrates to the book instead of resting",
-        "in `User.orders`. v0's account list is frozen, so this is a separate",
-        "endpoint. Only the legacy placement and trigger endpoints create live",
-        "orders in `User.orders`, so this endpoint fills legacy orders only.",
-        "It is deleted together with that legacy surface. `market_index` is an",
-        "argument because the crank-conditions PDA seed needs it before any",
-        "account is loaded; it is checked against the order's own market."
-      ],
-      "discriminator": [
-        167,
-        0,
-        20,
-        164,
-        143,
-        13,
-        165,
-        169
-      ],
-      "accounts": [
-        {
-          "name": "state"
-        },
-        {
-          "name": "authority",
-          "signer": true
-        },
-        {
-          "name": "filler",
-          "writable": true
-        },
-        {
-          "name": "fillerStats",
-          "writable": true
-        },
-        {
-          "name": "user",
-          "writable": true
-        },
-        {
-          "name": "userStats",
-          "writable": true
-        },
-        {
-          "name": "quoterSlab",
-          "docs": [
-            "The market's quoter slab — a remainder only ever rests on the vetted",
-            "book its `Clob` slot names."
-          ]
-        },
-        {
-          "name": "clobMarket",
-          "docs": [
-            "(`ClobMarket::from_slab`), so a valid slot cannot be pointed at an",
-            "arbitrary account."
-          ],
-          "writable": true,
-          "relations": [
-            "quoterSlab"
-          ]
-        },
-        {
-          "name": "clobProgram",
-          "docs": [
-            "registration; the handler re-checks through the slot."
-          ],
-          "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
-        },
-        {
-          "name": "instructionsSysvar",
-          "docs": [
-            "fill cannot get anywhere else: whether the taker signed this",
-            "transaction, and how many accounts the transaction locks.",
-            "",
-            "Optional, and it costs one of those locks. A fill needs it only when a",
-            "book withholds depth for an owner the transaction does not carry, and",
-            "only when the taker did not sign. A fill that meets neither condition",
-            "passes `None` and spends nothing. A fill that meets both and passes",
-            "`None` is refused, because the obligation cannot be checked."
-          ],
-          "optional": true,
-          "address": "Sysvar1nstructions1111111111111111111111111"
-        }
-      ],
-      "args": [
-        {
-          "name": "args",
-          "type": {
-            "defined": {
-              "name": "fillLegacyDlobOrderArgs"
-            }
-          }
-        }
-      ]
-    },
-    {
-      "name": "fillPerpOrder",
-      "docs": [
-        "`signed_route` is the route the order's signer chose, as the filler",
-        "read it off their signed message. It is checked against the digest the",
-        "order carries, so a filler cannot misreport it, and every entry in it",
-        "must appear in this transaction — the taker picks who competes for",
-        "their flow, not the filler. Empty for an order with no signed route.",
-        "@deprecated Legacy fill, kept for ABI compatibility. It routes the fill",
-        "through the vAMM + DLOB makers but carries no CLOB books, and a restable",
-        "remainder stays on the DLOB. `fill_legacy_dlob_order` carries the",
-        "market's CLOB and migrates the remainder to the book."
-      ],
-      "discriminator": [
-        13,
-        188,
-        248,
-        103,
-        134,
-        217,
-        106,
-        240
-      ],
-      "accounts": [
-        {
-          "name": "state"
-        },
-        {
-          "name": "authority",
-          "signer": true
-        },
-        {
-          "name": "filler",
-          "writable": true
-        },
-        {
-          "name": "fillerStats",
-          "writable": true
-        },
-        {
-          "name": "user",
-          "writable": true
-        },
-        {
-          "name": "userStats",
-          "writable": true
-        },
-        {
-          "name": "instructionsSysvar",
-          "docs": [
-            "what it is read for and why it is optional."
-          ],
-          "optional": true,
-          "address": "Sysvar1nstructions1111111111111111111111111"
-        }
-      ],
-      "args": [
-        {
-          "name": "orderId",
-          "type": {
-            "option": "u32"
-          }
-        },
-        {
-          "name": "makerOrderId",
-          "type": {
-            "option": "u32"
-          }
-        },
-        {
-          "name": "signedRoute",
-          "type": {
-            "vec": "pubkey"
-          }
-        }
-      ]
-    },
-    {
       "name": "forceCancelClobOrders",
       "docs": [
-        "Force-cancel a failing account's CLOB orders (keeper-passed",
-        "`OrderRef`s; same gates and flat fee as `force_cancel_orders`)."
+        "Force-cancel a failing account's CLOB orders. The keeper passes the",
+        "`OrderRef`s. The gates and the flat fee match `force_cancel_orders`."
       ],
       "discriminator": [
         4,
@@ -3275,8 +3115,9 @@ export type Velocity = {
         {
           "name": "authority",
           "docs": [
-            "program-keeper mode (protocol `User` as filler, relay turners) it is",
-            "only the reservoir payout target and no signature is required."
+            "program-keeper mode, where the protocol `User` is the filler and relay",
+            "turners call, it is only the reservoir payout target and needs no",
+            "signature."
           ],
           "writable": true
         },
@@ -3304,9 +3145,10 @@ export type Velocity = {
         {
           "name": "quoterSlab",
           "docs": [
-            "Deliberately not gated on active/approved: dead books still need",
-            "failing makers' orders reclaimed — the header's book pointer survives",
-            "a suspension, so the `has_one` still passes on a killed book."
+            "Not gated on the active and approved flags, because a dead book still",
+            "needs a failing maker's orders reclaimed. The header's book pointer",
+            "survives a suspension, so the `has_one` still passes on a killed",
+            "book."
           ]
         },
         {
@@ -3319,14 +3161,14 @@ export type Velocity = {
         {
           "name": "clobProgram",
           "docs": [
-            "registration; the handler re-checks through the slot."
+            "registration. The handler checks it again through the slot."
           ],
           "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
         },
         {
           "name": "crankConditions",
           "docs": [
-            "Wake-hint host; optional like every other CLOB path."
+            "Wake-hint host. It is optional, as on every other CLOB path."
           ],
           "writable": true,
           "optional": true,
@@ -3618,13 +3460,15 @@ export type Velocity = {
         {
           "name": "escrowAuthority",
           "docs": [
-            "The owner of the escrow that holds the row."
+            "The owner of the escrow that holds the row.",
+            "the authority in the escrow header."
           ]
         },
         {
           "name": "revenueShareEscrow",
           "docs": [
-            "The escrow that holds the row to write off."
+            "The escrow that holds the row to write off.",
+            "seeds fix the address."
           ],
           "writable": true,
           "pda": {
@@ -3655,7 +3499,9 @@ export type Velocity = {
           "name": "beneficiaryUser",
           "docs": [
             "Sub-account 0 of the beneficiary of the row. This is the payout account. The handler proves",
-            "that it does not exist."
+            "that it does not exist.",
+            "any other address. Anchor `seeds` cannot express this, because the address depends on",
+            "`builder_idx` and on `approved_builders`, which the handler reads at run time."
           ]
         }
       ],
@@ -4091,11 +3937,9 @@ export type Velocity = {
     {
       "name": "initializeCrankTreasury",
       "docs": [
-        "Create the program's shared resolver staging account (one for the",
-        "whole program; permissionless, pays its own rent once).",
-        "Create the protocol's relay crank treasury — the one account that funds",
-        "every market's crank reservoir. Born unpriced; `update_crank_treasury`",
-        "decides what it spends."
+        "Create the protocol's relay crank treasury, the one account that funds",
+        "every market's crank reservoir. It starts unpriced.",
+        "`update_crank_treasury` sets what it spends."
       ],
       "discriminator": [
         192,
@@ -4849,7 +4693,7 @@ export type Velocity = {
         {
           "name": "authority",
           "docs": [
-            "Becomes `QuoterV0::authority` — manages the entry's config."
+            "Becomes `QuoterV0::authority`, which manages the entry's config."
           ],
           "signer": true
         },
@@ -4887,8 +4731,8 @@ export type Velocity = {
         {
           "name": "perpMarket",
           "docs": [
-            "Written when the entry is the market's book: a Clob-type entry becomes",
-            "the market's `clob_market` here, once and for good."
+            "Written when the entry is the market's book. A `Clob` entry becomes the",
+            "market's `clob_market` here, once and for good."
           ],
           "writable": true,
           "pda": {
@@ -4919,15 +4763,15 @@ export type Velocity = {
         {
           "name": "state",
           "docs": [
-            "Read for the admin check a non-Custom type needs."
+            "Read for the admin check that a non-`Custom` type needs."
           ]
         },
         {
           "name": "quoterSlab",
           "docs": [
-            "The market's approved set. Required to designate a book, because the",
+            "The market's approved set. A book designation needs it, because the",
             "designation is refused when an approved entry already names the book",
-            "account. Absent for every other registration."
+            "account. Every other registration omits it."
           ],
           "optional": true,
           "pda": {
@@ -4961,8 +4805,8 @@ export type Velocity = {
         {
           "name": "user",
           "docs": [
-            "loads it and requires `authority` to be its authority (creation is",
-            "consent). Ignored for Vamm/Clob-type entries."
+            "loads it and requires `authority` to be its authority, so creation is the",
+            "consent. A `Vamm` or `Clob` entry ignores it."
           ]
         },
         {
@@ -4988,8 +4832,8 @@ export type Velocity = {
     {
       "name": "initializeQuoterCrossConditions",
       "docs": [
-        "Stand up (or re-price) a Custom quoter's relay cross-discovery",
-        "conditions — permissionless; rent on the caller."
+        "Create or re-price a Custom quoter's relay cross-discovery conditions.",
+        "The call is permissionless, and the caller pays the rent."
       ],
       "discriminator": [
         22,
@@ -5013,8 +4857,8 @@ export type Velocity = {
         {
           "name": "quoter",
           "docs": [
-            "The Custom entry to discover crosses for — the conditions PDA derives",
-            "from it. Its live config is read from the slab, not from here."
+            "The Custom entry to discover crosses for. The conditions PDA derives",
+            "from it. Its live config comes from the slab rather than from here."
           ]
         },
         {
@@ -5047,10 +4891,10 @@ export type Velocity = {
         {
           "name": "quoterSlab",
           "docs": [
-            "The market's slab: the entry's approved config, and the book's — the",
-            "other leg of every staged cross — at slot 0. Bound by the market's",
-            "`has_one`, which is a memcmp where a seeds constraint pays a PDA",
-            "derivation."
+            "The market's slab. It holds the entry's approved config, and the",
+            "book's config at slot 0. The book is the other leg of every staged",
+            "cross. The market's `has_one` binds the slab, which costs a memcmp where",
+            "a seeds constraint would pay for a PDA derivation."
           ],
           "relations": [
             "perpMarket"
@@ -5059,7 +4903,8 @@ export type Velocity = {
         {
           "name": "marketConditions",
           "docs": [
-            "The market's crank conditions: the keeper-payment source of truth."
+            "The market's crank conditions, which are the source of truth for the",
+            "keeper payment."
           ],
           "pda": {
             "seeds": [
@@ -5177,8 +5022,8 @@ export type Velocity = {
         {
           "name": "perpMarket",
           "docs": [
-            "Existence check: a slab serves a market that exists. The market",
-            "stored the slab PDA at its own initialization, so the `has_one` holds",
+            "Existence check, so a slab serves a market that exists. The market",
+            "stored the slab PDA at its own initialization, so `has_one` holds",
             "before the slab account exists."
           ],
           "pda": {
@@ -5340,6 +5185,11 @@ export type Velocity = {
     },
     {
       "name": "initializeRelayScratch",
+      "docs": [
+        "Create the program's shared resolver staging account. There is one for",
+        "the whole program. The call is permissionless, and the caller pays its",
+        "rent once."
+      ],
       "discriminator": [
         87,
         141,
@@ -5969,13 +5819,13 @@ export type Velocity = {
         {
           "name": "userConditions",
           "docs": [
-            "Relay liquidation coverage, created alongside the account it",
-            "watches. Required: relay can only watch an account that exists, and",
-            "the moment coverage matters is the moment somebody else's transaction",
-            "gave the user a position, where the user signs nothing and no rent can",
-            "be charged to them. `deploy-scripts/migrate.ts` backfills the accounts",
-            "that predate the field. Coming up empty is fine — the first sync",
-            "writes the thresholds."
+            "Relay liquidation coverage, created alongside the account it watches.",
+            "It is required because relay can only watch an account that exists.",
+            "Coverage first matters when somebody else's transaction gives the user a",
+            "position. The user signs nothing there, so no rent can be charged to",
+            "them. `deploy-scripts/migrate.ts` backfills the accounts that predate",
+            "the field. An empty block is fine, because the first sync writes the",
+            "thresholds."
           ],
           "writable": true,
           "pda": {
@@ -6191,9 +6041,10 @@ export type Velocity = {
         {
           "name": "authority",
           "docs": [
-            "program-keeper mode (protocol `User` as liquidator, relay turners —",
-            "`liquidate_perp_with_fill` ONLY, the plain path rejects it) it is",
-            "only the lamport payout target and no signature is required."
+            "program-keeper mode the liquidator is the protocol `User` and the caller",
+            "is a relay turner. This account is then only the lamport payout target,",
+            "and it needs no signature. Program-keeper mode reaches",
+            "`liquidate_perp_with_fill` alone, because the plain path rejects it."
           ],
           "writable": true
         },
@@ -6216,9 +6067,9 @@ export type Velocity = {
         {
           "name": "crankConditions",
           "docs": [
-            "The fired market's crank conditions — the reservoir that pays the",
-            "keeper in program-keeper mode (validated against `market_index` in",
-            "the handler). Required in program-keeper mode."
+            "The fired market's crank conditions. Its reservoir pays the keeper in",
+            "program-keeper mode, and the handler checks it against `market_index`.",
+            "Program-keeper mode requires the account."
           ],
           "writable": true,
           "optional": true
@@ -6226,9 +6077,9 @@ export type Velocity = {
         {
           "name": "instructionsSysvar",
           "docs": [
-            "crank that wants its priority fee reimbursed — the fee is stated in",
-            "the transaction's own compute-budget instructions and read back from",
-            "here. Absent, the crank takes the flat payment."
+            "a crank that wants its priority fee reimbursed. The transaction's own",
+            "compute-budget instructions state the fee, and the handler reads it back",
+            "from here. Without this account the crank takes the flat payment."
           ],
           "optional": true,
           "address": "Sysvar1nstructions1111111111111111111111111"
@@ -6328,9 +6179,10 @@ export type Velocity = {
         {
           "name": "authority",
           "docs": [
-            "program-keeper mode (protocol `User` as liquidator, relay turners —",
-            "`liquidate_perp_with_fill` ONLY, the plain path rejects it) it is",
-            "only the lamport payout target and no signature is required."
+            "program-keeper mode the liquidator is the protocol `User` and the caller",
+            "is a relay turner. This account is then only the lamport payout target,",
+            "and it needs no signature. Program-keeper mode reaches",
+            "`liquidate_perp_with_fill` alone, because the plain path rejects it."
           ],
           "writable": true
         },
@@ -6353,9 +6205,9 @@ export type Velocity = {
         {
           "name": "crankConditions",
           "docs": [
-            "The fired market's crank conditions — the reservoir that pays the",
-            "keeper in program-keeper mode (validated against `market_index` in",
-            "the handler). Required in program-keeper mode."
+            "The fired market's crank conditions. Its reservoir pays the keeper in",
+            "program-keeper mode, and the handler checks it against `market_index`.",
+            "Program-keeper mode requires the account."
           ],
           "writable": true,
           "optional": true
@@ -6363,9 +6215,9 @@ export type Velocity = {
         {
           "name": "instructionsSysvar",
           "docs": [
-            "crank that wants its priority fee reimbursed — the fee is stated in",
-            "the transaction's own compute-budget instructions and read back from",
-            "here. Absent, the crank takes the flat payment."
+            "a crank that wants its priority fee reimbursed. The transaction's own",
+            "compute-budget instructions state the fee, and the handler reads it back",
+            "from here. Without this account the crank takes the flat payment."
           ],
           "optional": true,
           "address": "Sysvar1nstructions1111111111111111111111111"
@@ -6397,10 +6249,10 @@ export type Velocity = {
         {
           "name": "authority",
           "docs": [
-            "A spot liquidation settles by handing the liquidator the borrow and",
-            "the collateral behind it, so whoever liquidates takes on that inventory",
-            "and its price risk. That rules out a protocol keeper, which has no way",
-            "to unwind it, and therefore rules out relay: an executor may name no",
+            "A spot liquidation settles by handing the liquidator the borrow and the",
+            "collateral behind it, so whoever liquidates takes on that inventory and",
+            "its price risk. A protocol keeper has no way to unwind it, so it cannot",
+            "liquidate here. That rules out relay as well. An executor may name no",
             "signer, so a path that requires one is a signed-keeper path only."
           ],
           "signer": true
@@ -6561,14 +6413,14 @@ export type Velocity = {
             "The liquidator's `UserStats`, read by `begin` to bar an authority whose",
             "equity breaker is tripped.",
             "",
-            "It sits last, not beside `liquidator` where the direct liquidation",
-            "contexts carry it, because this pair is addressed by position rather",
-            "than by name: `begin` introspects the matching `end` and compares the",
-            "two account lists index by index, and the swap accounts both forward",
-            "begin where this fixed block ends. Taking the last slot renumbered",
-            "nothing. Slotting it beside `liquidator` would have moved `user`, both",
-            "vaults and both token accounts down one, silently invalidating every",
-            "hand-built transaction that still filled the old order."
+            "It sits last instead of beside `liquidator`, where the direct liquidation",
+            "contexts carry it. This pair is addressed by position and not by name.",
+            "`begin` introspects the matching `end` and compares the two account lists",
+            "index by index, and the swap accounts of both instructions start where",
+            "this fixed block ends. The last slot renumbers nothing. A slot beside",
+            "`liquidator` would move `user`, both vaults and both token accounts down",
+            "one, and that breaks every hand-built transaction that still fills the",
+            "old order."
           ]
         }
       ],
@@ -6710,14 +6562,14 @@ export type Velocity = {
             "The liquidator's `UserStats`, read by `begin` to bar an authority whose",
             "equity breaker is tripped.",
             "",
-            "It sits last, not beside `liquidator` where the direct liquidation",
-            "contexts carry it, because this pair is addressed by position rather",
-            "than by name: `begin` introspects the matching `end` and compares the",
-            "two account lists index by index, and the swap accounts both forward",
-            "begin where this fixed block ends. Taking the last slot renumbered",
-            "nothing. Slotting it beside `liquidator` would have moved `user`, both",
-            "vaults and both token accounts down one, silently invalidating every",
-            "hand-built transaction that still filled the old order."
+            "It sits last instead of beside `liquidator`, where the direct liquidation",
+            "contexts carry it. This pair is addressed by position and not by name.",
+            "`begin` introspects the matching `end` and compares the two account lists",
+            "index by index, and the swap accounts of both instructions start where",
+            "this fixed block ends. The last slot renumbers nothing. A slot beside",
+            "`liquidator` would move `user`, both vaults and both token accounts down",
+            "one, and that breaks every hand-built transaction that still fills the",
+            "old order."
           ]
         }
       ],
@@ -7379,9 +7231,9 @@ export type Velocity = {
     {
       "name": "modifyOrderV1",
       "docs": [
-        "Reprice/resize a resting CLOB order: cancel-and-replace in one",
-        "instruction, with a single margin gate over the net change. `None`",
-        "fields keep the resting order's value."
+        "Reprice or resize a resting CLOB order. It cancels and replaces the",
+        "order in one instruction, with a single margin gate over the net",
+        "change. A `None` field keeps the resting order's value."
       ],
       "discriminator": [
         163,
@@ -7408,9 +7260,9 @@ export type Velocity = {
         {
           "name": "quoterSlab",
           "docs": [
-            "The book's registry entry. The replacement leg additionally requires it",
-            "to be active and approved.",
-            "The market's quoter slab; the book's config is its `Clob` slot."
+            "The market's quoter slab. The book's configuration is its `Clob` slot.",
+            "The replacement leg also requires that slot to be active and",
+            "approved."
           ]
         },
         {
@@ -7423,7 +7275,7 @@ export type Velocity = {
         {
           "name": "clobProgram",
           "docs": [
-            "registration; the handler re-checks through the slot."
+            "registration. The handler checks it again through the slot."
           ],
           "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
         },
@@ -7431,8 +7283,8 @@ export type Velocity = {
           "name": "flowAuthority",
           "docs": [
             "The flow authority, signing this transaction as a named account.",
-            "Required only for a faster-than-default activation delay on the",
-            "replacement — presence is the attestation. The zero key cannot sign,",
+            "It is required only for an activation delay below the default on the",
+            "replacement. The signature is the attestation. The zero key cannot sign,",
             "so an unset flow authority admits nobody."
           ],
           "signer": true,
@@ -7619,8 +7471,9 @@ export type Velocity = {
       "docs": [
         "Rest a maker limit order on the market's CLOB. The order goes straight to",
         "the book as a maker quote and never occupies a `User.orders` slot.",
-        "`activation_delay_slots` sets the book speed bump; `None` takes the",
-        "default, and a below-default value needs the flow-authority attestation."
+        "`activation_delay_slots` sets the book speed bump. `None` takes the",
+        "default. A value below the default needs the flow-authority",
+        "attestation."
       ],
       "discriminator": [
         29,
@@ -7651,14 +7504,14 @@ export type Velocity = {
         {
           "name": "quoterSlab",
           "docs": [
-            "The market's quoter slab — the maker only ever rests on the vetted",
-            "book its `Clob` slot names."
+            "The market's quoter slab. The maker only ever rests on the vetted book",
+            "that its `Clob` slot names."
           ]
         },
         {
           "name": "clobMarket",
           "docs": [
-            "(`ClobMarket::from_slab`), so a valid slot can't be pointed at an",
+            "registered response account. A valid slot cannot be pointed at an",
             "arbitrary account."
           ],
           "writable": true,
@@ -7669,7 +7522,7 @@ export type Velocity = {
         {
           "name": "clobProgram",
           "docs": [
-            "registration; the handler re-checks through the slot."
+            "registration. The handler checks it again through the slot."
           ],
           "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
         },
@@ -7677,8 +7530,8 @@ export type Velocity = {
           "name": "flowAuthority",
           "docs": [
             "The flow authority, signing this transaction as a named account.",
-            "Required only for a faster-than-default activation delay — presence",
-            "is the attestation. The zero key cannot sign, so an unset flow",
+            "It is required only for an activation delay below the default. The",
+            "signature is the attestation. The zero key cannot sign, so an unset flow",
             "authority admits nobody."
           ],
           "signer": true,
@@ -7697,63 +7550,10 @@ export type Velocity = {
       ]
     },
     {
-      "name": "placeAndTakePerpOrder",
-      "docs": [
-        "@deprecated Legacy DLOB path, kept for ABI compatibility. New",
-        "integrations use `place_and_take_perp_order_v1`, which routes through the",
-        "CLOB and rests any restable remainder on the book instead of the DLOB."
-      ],
-      "discriminator": [
-        213,
-        51,
-        1,
-        187,
-        108,
-        220,
-        230,
-        224
-      ],
-      "accounts": [
-        {
-          "name": "state"
-        },
-        {
-          "name": "user",
-          "writable": true
-        },
-        {
-          "name": "userStats",
-          "writable": true
-        },
-        {
-          "name": "authority",
-          "signer": true
-        }
-      ],
-      "args": [
-        {
-          "name": "params",
-          "type": {
-            "defined": {
-              "name": "orderParams"
-            }
-          }
-        },
-        {
-          "name": "successCondition",
-          "type": {
-            "option": "u32"
-          }
-        }
-      ]
-    },
-    {
       "name": "placeAndTakePerpOrderV1",
       "docs": [
-        "`place_and_take_perp_order` with the market's CLOB accounts required:",
-        "an unfilled restable limit remainder rests on the book instead of the",
-        "DLOB. v0's account list is frozen for ABI compatibility, so the CLOB",
-        "route is a separate endpoint rather than optional accounts on v0."
+        "Place a taker order and fill it in one instruction. Whatever the route",
+        "leaves unfilled rests on the market's book when the order can rest."
       ],
       "discriminator": [
         168,
@@ -7784,14 +7584,14 @@ export type Velocity = {
         {
           "name": "quoterSlab",
           "docs": [
-            "The market's quoter slab — the remainder only ever rests on the",
-            "vetted book its `Clob` slot names."
+            "The market's quoter slab. The remainder only ever rests on the vetted",
+            "book that its `Clob` slot names."
           ]
         },
         {
           "name": "clobMarket",
           "docs": [
-            "(`ClobMarket::from_slab`), so a valid slot can't be pointed at an",
+            "registered response account. A valid slot cannot be pointed at an",
             "arbitrary account."
           ],
           "writable": true,
@@ -7802,18 +7602,18 @@ export type Velocity = {
         {
           "name": "clobProgram",
           "docs": [
-            "registration; the handler re-checks through the slot."
+            "registration. The handler checks it again through the slot."
           ],
           "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
         },
         {
           "name": "flowAuthority",
           "docs": [
-            "The flow authority, signing this transaction as a named account —",
-            "swift builds and signs its own user transactions, so presence marks",
-            "the flow attested. Absent reads as unattested, which on a book with",
-            "a speed bump rests the order whole instead of filling. The zero key",
-            "cannot sign, so an unset flow authority admits nobody."
+            "The flow authority, signing this transaction as a named account. Swift",
+            "builds and signs its own user transactions, so a signature here marks",
+            "the flow attested. An absent signer reads as unattested. On a book with",
+            "a speed bump, an unattested order rests whole instead of filling. The",
+            "zero key cannot sign, so an unset flow authority admits nobody."
           ],
           "signer": true,
           "optional": true
@@ -7831,116 +7631,6 @@ export type Velocity = {
       ]
     },
     {
-      "name": "placeOrders",
-      "discriminator": [
-        60,
-        63,
-        50,
-        123,
-        12,
-        197,
-        60,
-        190
-      ],
-      "accounts": [
-        {
-          "name": "state"
-        },
-        {
-          "name": "user",
-          "writable": true
-        },
-        {
-          "name": "authority",
-          "signer": true
-        }
-      ],
-      "args": [
-        {
-          "name": "params",
-          "type": {
-            "vec": {
-              "defined": {
-                "name": "orderParams"
-              }
-            }
-          }
-        }
-      ]
-    },
-    {
-      "name": "placePerpOrder",
-      "discriminator": [
-        69,
-        161,
-        93,
-        202,
-        120,
-        126,
-        76,
-        185
-      ],
-      "accounts": [
-        {
-          "name": "state"
-        },
-        {
-          "name": "user",
-          "writable": true
-        },
-        {
-          "name": "authority",
-          "signer": true
-        }
-      ],
-      "args": [
-        {
-          "name": "params",
-          "type": {
-            "defined": {
-              "name": "orderParams"
-            }
-          }
-        }
-      ]
-    },
-    {
-      "name": "placeScaleOrders",
-      "discriminator": [
-        129,
-        249,
-        70,
-        55,
-        177,
-        250,
-        252,
-        94
-      ],
-      "accounts": [
-        {
-          "name": "state"
-        },
-        {
-          "name": "user",
-          "writable": true
-        },
-        {
-          "name": "authority",
-          "signer": true
-        }
-      ],
-      "args": [
-        {
-          "name": "params",
-          "type": {
-            "defined": {
-              "name": "scaleOrderParams"
-            }
-          }
-        }
-      ]
-    },
-    {
       "name": "placeSignedMsgTakerOrder",
       "docs": [
         "Place, route and rest one signed-message taker order.",
@@ -7951,15 +7641,16 @@ export type Velocity = {
         "auction start price, and rests what is left on the market's CLOB as a",
         "taker-origin remainder. A signed-message order never rests on the DLOB.",
         "",
-        "The keeper that builds the transaction is a filler: the taker signed a",
-        "message, not a transaction, so the keeper answers for the account list",
-        "it chose. It must carry every quoter the message named, and it owes the",
-        "taker every maker it had room for.",
+        "The keeper that builds the transaction is a filler. The taker signed a",
+        "message and not a transaction, so the keeper answers for the account",
+        "list it chose. It must carry every quoter the message named, and it",
+        "owes the taker every maker it had room for.",
+        "",
         "`flow_attestation` is swift's detached signature over the order's own",
-        "signature plus an expiry: proof the order served the hold, without",
-        "the flow authority signing this keeper-built transaction. Absent",
-        "reads as unattested — on a book with a speed bump the order rests",
-        "whole instead of filling."
+        "signature plus an expiry. It proves the order served the hold, without",
+        "the flow authority signing this keeper-built transaction. An absent",
+        "attestation reads as unattested. On a book with a speed bump the order",
+        "then rests whole instead of filling."
       ],
       "discriminator": [
         32,
@@ -8054,7 +7745,7 @@ export type Velocity = {
         {
           "name": "clobProgram",
           "docs": [
-            "registration; the handler re-checks through the slot."
+            "handler re-checks it through the slot."
           ],
           "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
         }
@@ -8075,6 +7766,50 @@ export type Velocity = {
               "defined": {
                 "name": "flowAttestationV0"
               }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "placeTriggerOrdersV1",
+      "docs": [
+        "Arm trigger orders in the user's own order slots.",
+        "",
+        "A slot holds one unfired conditional. Every other order type rests on",
+        "the market's book, so this endpoint refuses it. One margin check covers",
+        "the whole batch, which is what lets a stop loss and a take profit arrive",
+        "together."
+      ],
+      "discriminator": [
+        74,
+        40,
+        227,
+        127,
+        252,
+        82,
+        67,
+        8
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "user",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "placeTriggerOrdersV1Args"
             }
           }
         }
@@ -8117,8 +7852,8 @@ export type Velocity = {
     {
       "name": "quoteRouter",
       "docs": [
-        "Read-only router quote: writes per-source verified books into the",
-        "caller's quote buffer. Meant to be simulated, not landed."
+        "Read-only router quote. It writes per-source verified books into the",
+        "caller's quote buffer. Simulate it rather than landing it."
       ],
       "discriminator": [
         130,
@@ -8143,9 +7878,6 @@ export type Velocity = {
         },
         {
           "name": "quoteBuffer",
-          "docs": [
-            "`has_one` pins the writer, and the constraint pins the market."
-          ],
           "writable": true
         }
       ],
@@ -8305,10 +8037,10 @@ export type Velocity = {
     {
       "name": "refillCrankReservoir",
       "docs": [
-        "Top a market's crank reservoir back up out of the protocol treasury —",
-        "permissionless, and relay-cranked like the work it funds. Reverts",
-        "while the reservoir is above its watermark, so it cannot be repeated",
-        "for the payment."
+        "Refill a market's crank reservoir from the protocol treasury. The call",
+        "is permissionless, and relay cranks it like the work it funds. It",
+        "reverts while the reservoir is above its watermark, so it cannot be",
+        "repeated for the payment."
       ],
       "discriminator": [
         65,
@@ -8395,8 +8127,8 @@ export type Velocity = {
         {
           "name": "authority",
           "docs": [
-            "never signs, so a turner can name a payout account that is not the key",
-            "paying for the transaction."
+            "slot. It never signs, so a turner can name a payout account that is not",
+            "the key paying for the transaction."
           ],
           "writable": true
         }
@@ -8986,13 +8718,12 @@ export type Velocity = {
     {
       "name": "resolveClobCrank",
       "docs": [
-        "Relay resolver for the evict condition. Meant to be simulated, not",
-        "landed: stages the executor call and returns a response pointer.",
-        "Resolver for every condition a market's CLOB cranks wake on: an",
-        "expired order, a side at its eviction threshold, the book crossing",
+        "Resolver for every condition a market's CLOB cranks wake on. Those are",
+        "an expired order, a side at its eviction threshold, the book crossing",
         "itself, and the poll that catches a cross a PropAMM created. Relay",
-        "hands over which condition fired, so one resolver answers for all of",
-        "them and stages the executor that fits."
+        "reports which condition fired, so one resolver answers for all of them",
+        "and stages the executor that fits. It returns a response pointer.",
+        "Simulate it rather than landing it."
       ],
       "discriminator": [
         0,
@@ -9008,8 +8739,8 @@ export type Velocity = {
         {
           "name": "scratch",
           "docs": [
-            "The shared staging account, index 0 by convention — a resolver's",
-            "response pointer is interpreted against it."
+            "The shared staging account, at index 0 by convention. A resolver's",
+            "response pointer is read against it."
           ],
           "writable": true,
           "pda": {
@@ -9038,18 +8769,18 @@ export type Velocity = {
         {
           "name": "crankConditions",
           "docs": [
-            "Read-only: resolvers stage into the shared scratch account, not",
-            "into the block they read."
+            "Read-only, because resolvers stage into the shared scratch account",
+            "rather than into the block they read."
           ]
         },
         {
           "name": "clobMarket",
           "docs": [
             "",
-            "Writable for the book's response tail: the cross resolver asks the book",
-            "for its resting orders through `quote_l3_v0`, which streams the answer",
-            "into that tail. Nothing a resolver sends ever lands, and the tail is a",
-            "scratch region the book rewrites on every quote."
+            "It is writable for the book's response tail. The cross resolver asks the",
+            "book for its resting orders through `quote_l3_v0`, which streams the",
+            "answer into that tail. Nothing a resolver sends ever lands, and the tail",
+            "is a scratch region the book rewrites on every quote."
           ],
           "writable": true,
           "relations": [
@@ -9065,15 +8796,15 @@ export type Velocity = {
         {
           "name": "clobProgram",
           "docs": [
-            "registration; the linkage check re-verifies through the slot."
+            "registration. The linkage check verifies it again through the slot."
           ],
           "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
         },
         {
           "name": "treasury",
           "docs": [
-            "Read-only: the refill resolver reads the levels a reservoir is held",
-            "between, which are the treasury's setting rather than the market's."
+            "Read-only. The refill resolver reads the levels a reservoir is held",
+            "between, which the treasury sets rather than the market."
           ],
           "pda": {
             "seeds": [
@@ -9114,9 +8845,9 @@ export type Velocity = {
     {
       "name": "resolveCrankCrossMatchQuoter",
       "docs": [
-        "Relay resolver for a Custom quoter's cross conditions: prices the",
-        "quoter generically through its registered `quote_v0` surface and",
-        "stages `crank_cross_match`. Meant to be simulated, not landed."
+        "Relay resolver for a Custom quoter's cross conditions. It prices the",
+        "quoter through its registered `quote_v0` surface and stages",
+        "`crank_cross_match`. Simulate it rather than landing it."
       ],
       "discriminator": [
         170,
@@ -9132,8 +8863,8 @@ export type Velocity = {
         {
           "name": "scratch",
           "docs": [
-            "The shared staging account, index 0 by convention — a resolver's",
-            "response pointer is interpreted against it."
+            "The shared staging account, at index 0 by convention. A resolver's",
+            "response pointer is read against it."
           ],
           "writable": true,
           "pda": {
@@ -9162,7 +8893,7 @@ export type Velocity = {
         {
           "name": "crossConditions",
           "docs": [
-            "Read-only: resolvers stage into the shared scratch account."
+            "Read-only, because resolvers stage into the shared scratch account."
           ]
         },
         {
@@ -9179,8 +8910,8 @@ export type Velocity = {
         {
           "name": "quoterSlab",
           "docs": [
-            "The market's slab: both legs' approved configs — the entry the",
-            "conditions name, and the book at slot 0."
+            "The market's slab, which holds both legs' approved configs: the entry",
+            "the conditions name, and the book at slot 0."
           ],
           "pda": {
             "seeds": [
@@ -9210,9 +8941,9 @@ export type Velocity = {
         {
           "name": "user",
           "docs": [
-            "The entry's quoted user — the maker every staged balance change",
-            "lands on; its identity derives the staged `(User, UserStats)` pair.",
-            "Checked against the entry's approved config in the handler."
+            "The entry's quoted user, and the maker every staged balance change lands",
+            "on. Its identity derives the staged `(User, UserStats)` pair. The handler",
+            "checks it against the entry's approved config."
           ]
         },
         {
@@ -9224,9 +8955,10 @@ export type Velocity = {
     {
       "name": "resolveLiquidatePerpWithFill",
       "docs": [
-        "Relay resolver for a liquidation threshold: runs the real margin",
+        "Relay resolver for a liquidation threshold. It runs the real margin",
         "calculation and stages `liquidate_perp_with_fill` with the protocol",
-        "`User` as the (inventory-free) liquidator. Simulated, not landed."
+        "`User` as the liquidator. That `User` holds no inventory. Simulate it",
+        "rather than landing it."
       ],
       "discriminator": [
         170,
@@ -9242,8 +8974,8 @@ export type Velocity = {
         {
           "name": "scratch",
           "docs": [
-            "The shared staging account, index 0 by convention — a resolver's",
-            "response pointer is interpreted against it."
+            "The shared staging account, at index 0 by convention. A resolver's",
+            "response pointer is read against it."
           ],
           "writable": true,
           "pda": {
@@ -9272,8 +9004,8 @@ export type Velocity = {
         {
           "name": "liqConditions",
           "docs": [
-            "Read-only: resolvers stage into the shared scratch account, not",
-            "into the block they read."
+            "Read-only. A resolver stages into the shared scratch account rather",
+            "than into the block it reads."
           ]
         },
         {
@@ -9522,7 +9254,8 @@ export type Velocity = {
     {
       "name": "resolveResyncLiqConditions",
       "docs": [
-        "Relay resolver for the self-sync conditions. Simulated, not landed."
+        "Relay resolver for the self-sync conditions. Simulate it rather than",
+        "landing it."
       ],
       "discriminator": [
         192,
@@ -9538,8 +9271,8 @@ export type Velocity = {
         {
           "name": "scratch",
           "docs": [
-            "The shared staging account, index 0 by convention — a resolver's",
-            "response pointer is interpreted against it."
+            "The shared staging account, at index 0 by convention. A resolver's",
+            "response pointer is read against it."
           ],
           "writable": true,
           "pda": {
@@ -9568,8 +9301,8 @@ export type Velocity = {
         {
           "name": "liqConditions",
           "docs": [
-            "Read-only: resolvers stage into the shared scratch account, not",
-            "into the block they read."
+            "Read-only. A resolver stages into the shared scratch account rather",
+            "than into the block it reads."
           ]
         },
         {
@@ -9702,8 +9435,8 @@ export type Velocity = {
     {
       "name": "resolveTriggerLimitOrderV1",
       "docs": [
-        "Relay resolver for `trigger_limit_order_v1`. Meant to be simulated, not",
-        "landed."
+        "Relay resolver for `trigger_limit_order_v1`. Simulate it rather than",
+        "landing it."
       ],
       "discriminator": [
         207,
@@ -9719,8 +9452,8 @@ export type Velocity = {
         {
           "name": "scratch",
           "docs": [
-            "The shared staging account, index 0 by convention — a resolver's",
-            "response pointer is interpreted against it."
+            "The shared staging account, at index 0 by convention. A resolver's",
+            "response pointer is read against it."
           ],
           "writable": true,
           "pda": {
@@ -9749,8 +9482,8 @@ export type Velocity = {
         {
           "name": "triggerConditions",
           "docs": [
-            "Read-only: resolvers stage into the shared scratch account, not",
-            "into the block they read."
+            "Read-only. A resolver stages into the shared scratch account rather",
+            "than into the block it reads."
           ]
         },
         {
@@ -9771,8 +9504,8 @@ export type Velocity = {
     {
       "name": "resolveTriggerMarketOrderV1",
       "docs": [
-        "Relay resolver for `trigger_market_order_v1`. Meant to be simulated, not",
-        "landed."
+        "Relay resolver for `trigger_market_order_v1`. Simulate it rather than",
+        "landing it."
       ],
       "discriminator": [
         12,
@@ -9788,8 +9521,8 @@ export type Velocity = {
         {
           "name": "scratch",
           "docs": [
-            "The shared staging account, index 0 by convention — a resolver's",
-            "response pointer is interpreted against it."
+            "The shared staging account, at index 0 by convention. A resolver's",
+            "response pointer is read against it."
           ],
           "writable": true,
           "pda": {
@@ -9818,76 +9551,8 @@ export type Velocity = {
         {
           "name": "triggerConditions",
           "docs": [
-            "Read-only: resolvers stage into the shared scratch account, not into",
-            "the block they read."
-          ]
-        },
-        {
-          "name": "user"
-        },
-        {
-          "name": "oracle",
-          "relations": [
-            "perpMarket"
-          ]
-        },
-        {
-          "name": "perpMarket"
-        }
-      ],
-      "args": []
-    },
-    {
-      "name": "resolveTriggerOrder",
-      "docs": [
-        "Relay resolver for `trigger_order`. Meant to be simulated, not landed."
-      ],
-      "discriminator": [
-        246,
-        112,
-        254,
-        98,
-        43,
-        234,
-        178,
-        33
-      ],
-      "accounts": [
-        {
-          "name": "scratch",
-          "docs": [
-            "The shared staging account, index 0 by convention — a resolver's",
-            "response pointer is interpreted against it."
-          ],
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  114,
-                  101,
-                  108,
-                  97,
-                  121,
-                  95,
-                  115,
-                  99,
-                  114,
-                  97,
-                  116,
-                  99,
-                  104
-                ]
-              }
-            ]
-          }
-        },
-        {
-          "name": "triggerConditions",
-          "docs": [
-            "Read-only: resolvers stage into the shared scratch account, not",
-            "into the block they read."
+            "Read-only. A resolver stages into the shared scratch account rather",
+            "than into the block it reads."
           ]
         },
         {
@@ -9908,9 +9573,9 @@ export type Velocity = {
     {
       "name": "resyncLiqConditions",
       "docs": [
-        "Relay's unsigned self-maintenance path: rewrite an existing block",
-        "and pay the keeper from its own lamports. Names no signer — staged",
-        "executors are submitted unsigned."
+        "Relay's unsigned self-maintenance path. It rewrites an existing block",
+        "and pays the keeper from the block's own lamports. It names no signer,",
+        "because a staged executor is submitted unsigned."
       ],
       "discriminator": [
         1,
@@ -9926,8 +9591,8 @@ export type Velocity = {
         {
           "name": "keeper",
           "docs": [
-            "slot. Never a signer (see the module doc); it only receives",
-            "lamports."
+            "`KEEPER_PLACEHOLDER` slot. It is never a signer, as the module doc",
+            "explains. It only receives lamports."
           ],
           "writable": true
         },
@@ -9995,37 +9660,6 @@ export type Velocity = {
               }
             ]
           }
-        }
-      ],
-      "args": []
-    },
-    {
-      "name": "revertFill",
-      "discriminator": [
-        236,
-        238,
-        176,
-        69,
-        239,
-        10,
-        181,
-        193
-      ],
-      "accounts": [
-        {
-          "name": "state"
-        },
-        {
-          "name": "authority",
-          "signer": true
-        },
-        {
-          "name": "filler",
-          "writable": true
-        },
-        {
-          "name": "fillerStats",
-          "writable": true
         }
       ],
       "args": []
@@ -10447,13 +10081,15 @@ export type Velocity = {
         {
           "name": "escrowAuthority",
           "docs": [
-            "The owner of the escrow to settle."
+            "The owner of the escrow to settle.",
+            "the authority in the escrow header."
           ]
         },
         {
           "name": "revenueShareEscrow",
           "docs": [
-            "The escrow that holds the accrued builder and referrer rows."
+            "The escrow that holds the accrued builder and referrer rows.",
+            "seeds fix the address."
           ],
           "writable": true,
           "pda": {
@@ -10699,7 +10335,7 @@ export type Velocity = {
       "name": "sweepCrankReservoir",
       "docs": [
         "Move lamports from a market's crank reservoir back to the treasury, so",
-        "an over-provisioned or retired market does not hold them for good."
+        "an over-provisioned or retired market does not hold them forever."
       ],
       "discriminator": [
         163,
@@ -10842,9 +10478,6 @@ export type Velocity = {
         },
         {
           "name": "spotMarket",
-          "docs": [
-            "The perp market's quote spot market (enforced by the PDA derivation)"
-          ],
           "writable": true,
           "pda": {
             "seeds": [
@@ -10888,11 +10521,10 @@ export type Velocity = {
     {
       "name": "syncLiqConditions",
       "docs": [
-        "Rewrite only the liquidation half of a user's condition block.",
-        "Prefer `sync_user_conditions` unless the trigger half is known",
-        "current. Staged by the block's own self-sync watch on position",
-        "changes, which is why this half has a relay path and the other",
-        "does not."
+        "Rewrite only the liquidation half of a user's condition block. Prefer",
+        "`sync_user_conditions` unless the trigger half is known current. The",
+        "block's own self-sync watch on position changes stages this half, which",
+        "is why this half has a relay path and the other does not."
       ],
       "discriminator": [
         87,
@@ -10908,8 +10540,8 @@ export type Velocity = {
         {
           "name": "payer",
           "docs": [
-            "sync it is the keeper payout target (paid from the conditions",
-            "account's own lamports). Writable for both roles."
+            "Whoever runs the sync. It pays the rent when this call creates the",
+            "conditions account, so it is writable."
           ],
           "writable": true,
           "signer": true
@@ -11018,7 +10650,7 @@ export type Velocity = {
         {
           "name": "featureGate",
           "docs": [
-            "serialized activation state is validated by the handler."
+            "keys. The handler validates the serialized activation state."
           ]
         }
       ],
@@ -11095,20 +10727,14 @@ export type Velocity = {
     {
       "name": "syncUserConditions",
       "docs": [
-        "Grow a zero-copy account to the size this program build compiles in",
-        "for its type (resolved from the account discriminator). The migration",
-        "crank after an upgrade that appends fields to an account struct; no-op",
-        "when already at size. Payer covers the rent-exempt shortfall (auth:",
-        "`AccountExtension` hot key, or warm/cold admin). See",
-        "`docs/ACCOUNT-EXTENSION.md`.",
-        "Derive a user's whole relay condition block — liquidation",
-        "thresholds and trigger watches — in one pass.",
+        "Derive a user's whole relay condition block in one pass. The block",
+        "holds the liquidation thresholds and the trigger watches.",
         "",
-        "The default way to sync a user. `sync_liq_conditions` and",
-        "`sync_trigger_conditions` remain for callers that genuinely want",
-        "one half (a user with orders and no positions needs no thresholds),",
-        "but both write the same account, so calling them in sequence just",
-        "classifies the same `remaining_accounts` twice."
+        "This is the default way to sync a user. `sync_liq_conditions` and",
+        "`sync_trigger_conditions` remain for a caller that wants one half. A",
+        "user with orders and no positions needs no thresholds. Both write the",
+        "same account, so calling them in sequence classifies the same",
+        "`remaining_accounts` twice."
       ],
       "discriminator": [
         25,
@@ -11800,8 +11426,9 @@ export type Velocity = {
       "name": "triggerLimitOrderV1",
       "docs": [
         "Crank an armed trigger-limit order onto the market's CLOB once its",
-        "trigger condition is met (permissionless; keeper earns the flat",
-        "reward from the user). Stop-markets go through `trigger_order`."
+        "trigger condition is met. The call is permissionless, and the keeper",
+        "earns the flat reward from the user. A stop-market goes through",
+        "`trigger_market_order_v1`."
       ],
       "discriminator": [
         238,
@@ -11820,8 +11447,9 @@ export type Velocity = {
         {
           "name": "authority",
           "docs": [
-            "program-keeper mode (protocol `User` as filler, relay turners) it is",
-            "only the lamport payout target and no signature is required."
+            "program-keeper mode, where the protocol `User` is the filler and relay",
+            "turners call, it is only the lamport payout target and needs no",
+            "signature."
           ],
           "writable": true
         },
@@ -11849,9 +11477,8 @@ export type Velocity = {
         {
           "name": "quoterSlab",
           "docs": [
-            "The market's quoter slab — placement is only allowed on the vetted",
-            "book its `Clob` slot names, same as a maker's own",
-            "`place_and_make_perp_order_v1`."
+            "The market's quoter slab. Placement is allowed only on the vetted book",
+            "that its `Clob` slot names, as in `place_and_make_perp_order_v1`."
           ]
         },
         {
@@ -11867,7 +11494,7 @@ export type Velocity = {
         {
           "name": "clobProgram",
           "docs": [
-            "registration; the handler re-checks through the slot."
+            "registration. The handler checks it again through the slot."
           ],
           "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
         },
@@ -11916,9 +11543,9 @@ export type Velocity = {
         {
           "name": "triggerConditions",
           "docs": [
-            "The user's relay trigger conditions: the fired slot is released so",
-            "its level-triggered wake goes quiet. Optional, like everything else",
-            "on the relay side."
+            "The user's relay trigger conditions. The handler releases the fired",
+            "slot, which silences its level-triggered wake. It is optional, like",
+            "every relay-side account."
           ],
           "writable": true,
           "optional": true,
@@ -11966,10 +11593,9 @@ export type Velocity = {
     {
       "name": "triggerMarketOrderV1",
       "docs": [
-        "Fire a DLOB trigger order straight to the book. Unlike `trigger_order`,",
-        "it fills the fired order in the same instruction and rests only the",
-        "remainder as a taker-origin order, so nothing lingers live in",
-        "`User.orders`."
+        "Fire a DLOB trigger order straight to the book. It fills the fired",
+        "order in the same instruction and rests only the remainder as a",
+        "taker-origin order, so nothing stays live in `User.orders`."
       ],
       "discriminator": [
         126,
@@ -11988,8 +11614,9 @@ export type Velocity = {
         {
           "name": "authority",
           "docs": [
-            "program-keeper mode (protocol `User` as filler, relay turners) it is",
-            "only the lamport payout target and no signature is required."
+            "program-keeper mode, where the protocol `User` is the filler and relay",
+            "turners call, it is only the lamport payout target and needs no",
+            "signature."
           ],
           "writable": true
         },
@@ -12015,8 +11642,8 @@ export type Velocity = {
         {
           "name": "quoterSlab",
           "docs": [
-            "The market's quoter slab — the remainder only ever rests on the",
-            "vetted book its `Clob` slot names."
+            "The market's quoter slab. The remainder only ever rests on the vetted",
+            "book that its `Clob` slot names."
           ]
         },
         {
@@ -12029,7 +11656,7 @@ export type Velocity = {
         {
           "name": "clobProgram",
           "docs": [
-            "registration; the handler re-checks through the slot."
+            "registration. The handler checks it again through the slot."
           ],
           "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
         },
@@ -12079,8 +11706,9 @@ export type Velocity = {
         {
           "name": "triggerConditions",
           "docs": [
-            "The user's relay trigger conditions: the fired slot is released so its",
-            "level-triggered wake goes quiet. Optional, like everything relay-side."
+            "The user's relay trigger conditions. The handler releases the fired",
+            "slot, which silences its level-triggered wake. It is optional, like",
+            "every relay-side account."
           ],
           "writable": true,
           "optional": true,
@@ -12116,12 +11744,12 @@ export type Velocity = {
         {
           "name": "ixSysvar",
           "docs": [
-            "owner signed the transaction and how many accounts it locks — the same",
-            "filler-obligation facts `fill_legacy_dlob_order` needs. Optional, and it",
-            "costs one lock: a fill needs it only when a book withholds depth for an",
-            "owner the transaction does not carry, and the owner did not sign. A",
-            "trigger crank's owner never signs, so a fill that reaches a withheld",
-            "order and passes `None` here is refused."
+            "the owner signed the transaction and how many accounts it locks, which",
+            "are the filler-obligation facts `fill_legacy_dlob_order` needs. It is",
+            "optional and costs one lock. A fill needs it only when a book withholds",
+            "depth for an owner the transaction does not carry, and the owner did not",
+            "sign. A trigger crank's owner never signs, so a fill that reaches a",
+            "withheld order and passes `None` here is refused."
           ],
           "optional": true,
           "address": "Sysvar1nstructions1111111111111111111111111"
@@ -12135,104 +11763,6 @@ export type Velocity = {
               "name": "triggerMarketOrderV1Args"
             }
           }
-        }
-      ]
-    },
-    {
-      "name": "triggerOrder",
-      "docs": [
-        "@deprecated Legacy trigger, kept for ABI compatibility. It flips the",
-        "fired order live and leaves it on the DLOB for a later fill crank. New",
-        "integrations use `trigger_market_order_v1`, which fires and fills the order",
-        "straight to the book in one instruction."
-      ],
-      "discriminator": [
-        63,
-        112,
-        51,
-        233,
-        232,
-        47,
-        240,
-        199
-      ],
-      "accounts": [
-        {
-          "name": "state"
-        },
-        {
-          "name": "authority",
-          "docs": [
-            "program-keeper mode (protocol `User` as filler, relay turners) it is",
-            "only the lamport payout target and no signature is required."
-          ],
-          "writable": true
-        },
-        {
-          "name": "filler",
-          "writable": true
-        },
-        {
-          "name": "user",
-          "writable": true
-        },
-        {
-          "name": "userStats",
-          "writable": true
-        },
-        {
-          "name": "triggerConditions",
-          "docs": [
-            "The user's relay trigger conditions: the fired slot is released so",
-            "its level-triggered wake goes quiet. Optional — keepers on markets",
-            "(or users) without relay plumbing crank exactly as before."
-          ],
-          "writable": true,
-          "optional": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  117,
-                  115,
-                  101,
-                  114,
-                  95,
-                  99,
-                  111,
-                  110,
-                  100,
-                  105,
-                  116,
-                  105,
-                  111,
-                  110,
-                  115
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "user"
-              }
-            ]
-          }
-        },
-        {
-          "name": "crankConditions",
-          "docs": [
-            "The fired market's crank conditions — the reservoir that pays the",
-            "keeper in program-keeper mode (validated against the order's market",
-            "in the handler). Required in program-keeper mode."
-          ],
-          "writable": true,
-          "optional": true
-        }
-      ],
-      "args": [
-        {
-          "name": "orderId",
-          "type": "u32"
         }
       ]
     },
@@ -12255,7 +11785,7 @@ export type Velocity = {
         {
           "name": "keeper",
           "docs": [
-            "Any signer may trip the breaker; the proof is the margin calculation."
+            "Any signer may trip the breaker. The margin calculation is the proof."
           ],
           "signer": true
         },
@@ -13922,18 +13452,18 @@ export type Velocity = {
         {
           "name": "quoter",
           "docs": [
-            "Writable: the attach mirrors the book's placement rules onto the",
-            "staging entry, so a later re-approval copies them forward."
+            "Writable, because the attach mirrors the book's placement rules onto",
+            "the staging entry. A later re-approval then copies them forward."
           ],
           "writable": true
         },
         {
           "name": "quoterSlab",
           "docs": [
-            "Writable: the attach mirrors the book's placement rules onto the",
-            "approved copy in the book's slot, so the hot paths read a loaded",
-            "field instead of CPI'ing `order_rules_v0`. Bound by the market's",
-            "`has_one`."
+            "Writable, because the attach mirrors the book's placement rules onto",
+            "the approved copy in the book's slot. The hot paths then read a loaded",
+            "field instead of calling `order_rules_v0` by CPI. The market's `has_one`",
+            "binds this account."
           ],
           "writable": true,
           "relations": [
@@ -13943,10 +13473,10 @@ export type Velocity = {
         {
           "name": "clobMarket",
           "docs": [
-            "designated. Writable because the attach registers velocity's",
-            "resolvers on the book itself: the wakes for an expiry, an activation,",
-            "a side at its cap and a crossed book are facts about this account, so",
-            "the conditions that watch for them live on it."
+            "designated. It is writable because the attach registers velocity's",
+            "resolvers on the book itself. The wakes for an expiry, an activation, a",
+            "side at its cap and a crossed book are facts about this account, so the",
+            "conditions that watch for them live on it."
           ],
           "writable": true,
           "relations": [
@@ -13956,16 +13486,16 @@ export type Velocity = {
         {
           "name": "clobProgram",
           "docs": [
-            "registration; the handler re-checks through the slot."
+            "registration. The handler checks it again through the slot."
           ],
           "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
         },
         {
           "name": "crankConditions",
           "docs": [
-            "The market's relay conditions + keeper reservoir, stood up (or",
-            "re-priced) as part of the attach so a new market needs no separate",
-            "crank ceremony."
+            "The market's relay conditions and keeper reservoir. The attach creates",
+            "them, or re-prices them, so a new market needs no separate crank",
+            "ceremony."
           ],
           "writable": true,
           "pda": {
@@ -14006,8 +13536,8 @@ export type Velocity = {
         {
           "name": "treasury",
           "docs": [
-            "Read-only: the levels a reservoir is held between are the treasury's",
-            "setting, and the low one is resolved onto this market here."
+            "Read-only. The treasury holds the levels a reservoir is kept between.",
+            "The attach resolves the low level onto this market."
           ],
           "pda": {
             "seeds": [
@@ -15569,8 +15099,8 @@ export type Velocity = {
         {
           "name": "state",
           "docs": [
-            "Read for the admin check a non-Custom entry needs. Absent for a",
-            "Custom entry, which answers to its own stored authority."
+            "Read for the admin check that a non-`Custom` entry needs. A `Custom`",
+            "entry answers to its own stored authority and omits this account."
           ],
           "optional": true
         }
@@ -15610,11 +15140,11 @@ export type Velocity = {
         {
           "name": "quoterSlab",
           "docs": [
-            "The market's slab, so the switch reaches the approved copy. Optional:",
-            "an entry that was never approved has no copy to write. Omitting it on",
-            "an approved entry leaves the live copy as it was — the staging value",
-            "still lands at the next approval — so a maker flipping the live",
-            "switch passes it."
+            "The market's slab, so the switch reaches the approved copy. It is",
+            "optional because an entry that was never approved has no copy to write.",
+            "An approved entry that omits it keeps the live copy as it was, and the",
+            "staged value lands at the next approval. A maker who wants the switch",
+            "to take effect at once passes the slab."
           ],
           "writable": true,
           "optional": true,
@@ -15646,8 +15176,8 @@ export type Velocity = {
         {
           "name": "state",
           "docs": [
-            "Read for the admin check a non-Custom entry needs. Absent for a",
-            "Custom entry, which answers to its own stored authority."
+            "Read for the admin check that a non-`Custom` entry needs. A `Custom`",
+            "entry answers to its own stored authority and omits this account."
           ],
           "optional": true
         }
@@ -15679,8 +15209,8 @@ export type Velocity = {
         {
           "name": "admin",
           "docs": [
-            "Mutable: approval growth takes the added rent from the admin, and",
-            "revocation shrink refunds it there."
+            "Mutable, because approval growth takes the added rent from the admin",
+            "and revocation refunds it there."
           ],
           "writable": true,
           "signer": true
@@ -15691,16 +15221,16 @@ export type Velocity = {
         {
           "name": "quoter",
           "docs": [
-            "The staging entry whose config is copied in (or whose copy is pulled)."
+            "The staging entry whose config is copied in, or whose copy is pulled."
           ]
         },
         {
           "name": "perpMarket",
           "docs": [
-            "The market the entry serves. A `Clob` approval is held to the book",
-            "this market designated at registration: the staging entry's response",
-            "account is maker-editable, so without the pin an edited entry could",
-            "put a different book into slot 0 than the one the market names."
+            "The market the entry serves. A `Clob` approval is held to the book this",
+            "market designated at registration. The staging entry's response account",
+            "is maker-editable. Without that pin an edited entry could put a different",
+            "book into slot 0 than the one the market names."
           ],
           "pda": {
             "seeds": [
@@ -15743,17 +15273,17 @@ export type Velocity = {
         {
           "name": "quoterProgramData",
           "docs": [
-            "handler. Read for the slot the program was last deployed at. Optional",
-            "because revoking approval needs none of this, and a program on a loader",
-            "that cannot redeploy has no such account."
+            "account. It is read for the slot the program was last deployed at. It is",
+            "optional, because revoking approval needs none of this, and a program on",
+            "a loader that cannot redeploy has no such account."
           ],
           "optional": true
         },
         {
           "name": "clobMarket",
           "docs": [
-            "designation. Required to approve a `Clob` entry, because the handler",
-            "asks it for its own placement rules. Absent for every other entry."
+            "designation. A `Clob` approval needs it, because the handler asks the",
+            "book for its own placement rules. Every other entry omits it."
           ],
           "optional": true
         },
@@ -15797,8 +15327,8 @@ export type Velocity = {
         {
           "name": "state",
           "docs": [
-            "Read for the admin check a non-Custom entry needs. Absent for a",
-            "Custom entry, which answers to its own stored authority."
+            "Read for the admin check that a non-`Custom` entry needs. A `Custom`",
+            "entry answers to its own stored authority and omits this account."
           ],
           "optional": true
         }
@@ -15830,8 +15360,8 @@ export type Velocity = {
         {
           "name": "authority",
           "docs": [
-            "The entry's own authority — the quoted user's wallet for Custom",
-            "entries."
+            "The entry's own authority. For a `Custom` entry that is the quoted",
+            "user's wallet."
           ],
           "signer": true
         },
@@ -15842,8 +15372,8 @@ export type Velocity = {
         {
           "name": "quoterSlab",
           "docs": [
-            "The market's slab. Optional for an entry that was never approved;",
-            "omitting it on an approved entry leaves the live band as it was."
+            "The market's slab. It is optional for an entry that was never approved.",
+            "An approved entry that omits it keeps the live band as it was."
           ],
           "writable": true,
           "optional": true,
@@ -15968,8 +15498,8 @@ export type Velocity = {
         {
           "name": "authority",
           "docs": [
-            "The entry's own authority — the quoted user's wallet for Custom",
-            "entries."
+            "The entry's own authority. For a `Custom` entry that is the quoted",
+            "user's wallet."
           ],
           "signer": true
         },
@@ -15980,15 +15510,15 @@ export type Velocity = {
         {
           "name": "watchAccount",
           "docs": [
-            "quoter's own state account; not otherwise constrained (the admin",
-            "vets it, and a wrong watch only costs the maker latency)."
+            "quoter's own state account. Nothing else constrains it. The admin",
+            "reviews it, and a wrong watch only costs the maker latency."
           ]
         },
         {
           "name": "state",
           "docs": [
-            "Read for the admin check a non-Custom entry needs. Absent for a",
-            "Custom entry, which answers to its own stored authority."
+            "Read for the admin check that a non-`Custom` entry needs. A `Custom`",
+            "entry answers to its own stored authority and omits this account."
           ],
           "optional": true
         }
@@ -17811,11 +17341,12 @@ export type Velocity = {
     {
       "name": "updateUserVaultOwned",
       "docs": [
-        "Mark a User as vault-owned (its authority is a vault PDA and its equity",
-        "prices vault depositor shares). Set-only and authority-gated: only the",
-        "User's authority may call it, and it is CPI'd by the vaults program at",
-        "vault init. A vault-owned User is skipped by the revenue-share sweep so a",
-        "builder/referral reward can never enter vault NAV (OtterSec #91/#92/#93)."
+        "Mark a User as vault-owned. Its authority is a vault PDA, and its",
+        "equity prices vault depositor shares. The instruction sets the flag and",
+        "never clears it. Only the User's authority may call it, and the vaults",
+        "program CPIs it at vault init. The revenue-share sweep skips a",
+        "vault-owned User, so a builder or referral reward can never enter vault",
+        "NAV (OtterSec #91/#92/#93)."
       ],
       "discriminator": [
         50,
@@ -21904,6 +21435,11 @@ export type Velocity = {
       "code": 6409,
       "name": "clobRestUnavailable",
       "msg": "The market's book cannot rest a fired trigger, so the trigger stays armed"
+    },
+    {
+      "code": 6410,
+      "name": "orderTypeNotConditional",
+      "msg": "A user order slot holds only a trigger order"
     }
   ],
   "types": [
@@ -22248,9 +21784,10 @@ export type Velocity = {
     {
       "name": "acceleratedReferralStatusChange",
       "docs": [
-        "Consumers decode `action` by discriminant, so the order is ABI. `AutoEnrollment` is last",
-        "because it is deleted with `ACCELERATED_REFERRAL_ENROLLMENT_ENABLED`; removing a trailing",
-        "variant leaves the admin discriminants where they are."
+        "Consumers decode `action` by discriminant, so the variant order is ABI.",
+        "`AutoEnrollment` is last because it goes away with",
+        "`ACCELERATED_REFERRAL_ENROLLMENT_ENABLED`. Removal of a trailing variant",
+        "leaves the admin discriminants where they are."
       ],
       "type": {
         "kind": "enum",
@@ -22339,10 +21876,11 @@ export type Velocity = {
             "name": "isWritable",
             "docs": [
               "Whether the account is passed writable to the quoter program.",
-              "`is_signer` is intentionally not stored: the only slot a quoter CPI",
-              "ever receives signer privilege on is the market's slab, decided by",
-              "pubkey match rather than by registration (see",
-              "[`super::wire::write_quoter_account_metas`])."
+              "",
+              "`is_signer` is not stored. The market's slab is the only account a",
+              "quoter CPI ever receives signer privilege on, and",
+              "[`super::wire::write_quoter_account_metas`] decides that by pubkey match",
+              "rather than by registration."
             ],
             "type": "bool"
           },
@@ -22710,7 +22248,7 @@ export type Velocity = {
           {
             "name": "orderRef",
             "docs": [
-              "The hint returned at placement; the CLOB fails closed on a stale one."
+              "The hint returned at placement. The CLOB rejects a stale hint."
             ],
             "type": {
               "defined": {
@@ -22746,14 +22284,14 @@ export type Velocity = {
       "docs": [
         "Which sides a `cancel_all_v0` withdraws.",
         "",
-        "Named sides rather than a pair of bools, because the wire must not be able",
-        "to express \"neither\" — that is a maker believing their quotes are gone",
-        "when nothing happened.",
+        "Named sides rather than a pair of bools, because the wire must not express",
+        "\"neither\". A maker would then believe the quotes are gone when nothing",
+        "happened.",
         "",
-        "What the sides *mean* differs by who is reading: a book walks them as book",
-        "sides, a caller unwinds them as position directions, a spline reads them as",
-        "taker directions. Each program adds that reading itself; the tags are the",
-        "part that has to agree."
+        "What the sides mean differs by reader. A book walks them as book sides, a",
+        "caller unwinds them as position directions, and a spline reads them as taker",
+        "directions. Each program adds that reading itself. The tags are the part",
+        "that has to agree."
       ],
       "type": {
         "kind": "enum",
@@ -22782,9 +22320,9 @@ export type Velocity = {
           {
             "name": "relay",
             "docs": [
-              "Everything relay needs hosted, in one field: the `relay-spec` header,",
-              "the condition slots, and the resolver account list every condition",
-              "here points at. First field, so its watch offset is 8."
+              "Everything relay hosts, in one field. It holds the `relay-spec` header,",
+              "the condition slots, and the resolver account list every condition here",
+              "points at. It is the first field, so its watch offset is 8."
             ],
             "type": {
               "defined": {
@@ -22795,10 +22333,10 @@ export type Velocity = {
           {
             "name": "oracle",
             "docs": [
-              "The market's oracle, captured at attach time. Resolvers hold only",
-              "four fixed accounts, so the staged executor's map section is derived",
-              "from here rather than from the perp market account; an admin oracle",
-              "rotation goes live for the cranks on re-attach."
+              "The market's oracle, captured at attach time. The resolver account list",
+              "is fixed, so the staged executor's map section comes from here rather",
+              "than from the perp market account. An admin oracle rotation reaches the",
+              "cranks on the next attach."
             ],
             "type": "pubkey"
           },
@@ -22806,19 +22344,17 @@ export type Velocity = {
             "name": "crankPayments",
             "docs": [
               "Lamports each executor pays its keeper, mirrored into that crank's",
-              "`min_payment`. This account doubles as the reservoir those lamports",
-              "come from: relay's `assert_paid_v0` measures the keeper's lamport",
-              "balance, so a crank that moves no lamports cannot express a fee, and",
-              "turners would have no signal to prioritize (or decline) the work. Held",
-              "here rather than in a global PDA because the executor already has to",
-              "touch this account to repair the expiry hint — so the reservoir costs",
-              "no extra account in a crank transaction.",
+              "`min_payment`. This account is also the reservoir those lamports come",
+              "from. Relay's `assert_paid_v0` measures the keeper's lamport balance,",
+              "so a crank that moves no lamports cannot express a fee and turners have",
+              "no signal to take or decline the work. The reservoir lives here rather",
+              "than in a global PDA because the executor already writes this account",
+              "to repair the expiry hint, so it costs no extra account in a crank",
+              "transaction.",
               "",
-              "Refilled by the maker, not the protocol: the flat removal reward the",
-              "maker pays accrues to a protocol-owned `User`, and a hot role withdraws",
-              "that quote and converts it to SOL to top these reservoirs off. An empty",
-              "reservoir stops cranks rather than silently paying nothing, which is the",
-              "failure mode ops can actually see."
+              "[`crate::state::crank_treasury::CrankTreasuryV0`] refills the",
+              "reservoir. An empty reservoir fails the crank rather than paying",
+              "nothing, so the failure names the empty reservoir."
             ],
             "type": {
               "defined": {
@@ -22830,16 +22366,16 @@ export type Velocity = {
             "name": "minCrossSurplus",
             "docs": [
               "Floor on the protocol's quote surplus from a cross-match crank, in",
-              "QUOTE_PRECISION. A cross costs the protocol real SOL — the reservoir",
-              "pays `crank_payments.cross` to whoever cranked it — so a cross that",
-              "clears by a cent is a cross worth declining. Zero keeps the bare",
-              "\"strictly profitable\" rule.",
+              "`QUOTE_PRECISION`. A cross costs the protocol SOL, because the",
+              "reservoir pays `crank_payments.cross` to whoever cranked it. A cross",
+              "that clears by a cent is worth declining. Zero keeps the rule that a",
+              "cross only has to be profitable.",
               "",
-              "Denominated in quote rather than derived from the lamport cost because",
-              "the conversion needs a SOL price, and the cross crank carries no SOL",
-              "oracle (it holds the perp's oracle and its map section, nothing more).",
-              "Admins set it to cover the cross payout with margin and re-price it",
-              "alongside the payments, which is the same cadence."
+              "The floor is in quote rather than derived from the lamport cost,",
+              "because the conversion needs a SOL price and the cross crank carries no",
+              "SOL oracle. It holds the perp's oracle and its map section only. An",
+              "admin sets this floor to cover the cross payout with margin and",
+              "re-prices it alongside the payments."
             ],
             "type": "u64"
           },
@@ -22849,11 +22385,11 @@ export type Velocity = {
               "Where the book's own condition block sits in the market account, as it",
               "reported at attach.",
               "",
-              "A market has two blocks and each needs its own relay watch: this",
-              "account's, whose block is its first field at offset 8, and the book's,",
-              "which holds the four conditions describing the book itself. A",
-              "registrar that watches only this account leaves the book's cranks",
-              "unwoken, so the offset is captured here for it to find."
+              "A market has two blocks and each one needs its own relay watch. This",
+              "account's block is its first field, at offset 8. The book's block holds",
+              "the four conditions that describe the book. A registrar that watches",
+              "only this account leaves the book's cranks unwoken, so the book's",
+              "offset is captured here for the registrar to find."
             ],
             "type": "u32"
           },
@@ -22863,12 +22399,11 @@ export type Velocity = {
               "The region of the book that changes whenever either side's best moves,",
               "as the book reported it at attach.",
               "",
-              "A crossing order is by definition a new best, so a relay watch here",
-              "catches every cross the moment it appears. Captured rather than",
-              "derived: the book answers where its own heads sit, so velocity",
-              "registers a watch on it without knowing its layout. Read by the",
-              "per-quoter cross conditions, which watch this same book for a cross",
-              "against a PropAMM."
+              "A crossing order is a new best, so a relay watch here catches every",
+              "cross as it appears. The book reports the region rather than velocity",
+              "deriving it, so velocity registers the watch without knowing the book's",
+              "layout. The per-quoter cross conditions read this region too. They",
+              "watch the same book for a cross against a PropAMM."
             ],
             "type": "u32"
           },
@@ -22886,8 +22421,8 @@ export type Velocity = {
           {
             "name": "quoteSpotMarketIndex",
             "docs": [
-              "The market's quote spot market, captured at attach time (the staged",
-              "executor's map section needs its PDA)."
+              "The market's quote spot market, captured at attach time. The staged",
+              "executor's map section needs its PDA."
             ],
             "type": "u16"
           },
@@ -22896,12 +22431,12 @@ export type Velocity = {
             "docs": [
               "The spendable balance this reservoir wakes its refill at, in lamports.",
               "",
-              "Resolved at attach from the treasury's watermark setting and this",
-              "market's dearest crank, and stored because it is the threshold the",
-              "wake condition carries: relay compares the mirror against this number,",
-              "so the executor has to read the same one rather than recompute it. A",
-              "figure recomputed from a program constant would drift from the",
-              "conditions written before an upgrade, and a market would wake at one",
+              "The attach resolves this from the treasury's watermark setting and this",
+              "market's most expensive crank. It is stored because it is the threshold",
+              "the wake condition carries. Relay compares the mirror against this",
+              "number, so the executor must read the same number rather than recompute",
+              "it. A figure recomputed from a program constant would drift from the",
+              "conditions written before an upgrade. A market would then wake at one",
               "level while its executor refused at another."
             ],
             "type": "u64"
@@ -22909,34 +22444,34 @@ export type Velocity = {
           {
             "name": "spendableMirror",
             "docs": [
-              "This account's spendable lamports — its balance less its rent",
-              "exemption — as of the last payment or refill.",
+              "This account's spendable lamports as of the last payment or refill.",
+              "Spendable means the balance less the rent exemption.",
               "",
               "A relay watch reads account data, and a lamport balance is account",
-              "metadata rather than data. Mirroring it here is what lets the refill",
-              "condition wake on a draining reservoir. The write costs nothing: every",
+              "metadata rather than data. The mirror is what lets the refill condition",
+              "wake on a draining reservoir. The write costs nothing, because every",
               "payment already writes this account.",
               "",
-              "Advisory, not authoritative. The refill instruction reads the real",
-              "balance, and the resolver refuses to stage one against a reservoir that",
-              "is genuinely full.",
+              "The mirror is advisory. The refill instruction reads the real balance,",
+              "and the resolver refuses to stage a refill against a reservoir that is",
+              "full.",
               "",
-              "Written by the attach and by every payment, which is every way the",
+              "The attach and every payment write it, which covers every way the",
               "balance falls. A plain lamport transfer into the reservoir is the one",
-              "way it can rise without a write, and that leaves the mirror low: the",
-              "condition then stays due and turners keep resolving it to \"no work\"",
-              "until the next payment restates it. That costs simulations rather than",
-              "lamports, and the treasury refill exists so that hand-funding a",
-              "reservoir is not the normal path."
+              "way the balance can rise without a write, and that leaves the mirror",
+              "low. The condition then stays due, and turners keep resolving it to no",
+              "work until the next payment restates it. That costs simulations rather",
+              "than lamports. The treasury refill exists so that funding a reservoir",
+              "by hand is not the normal path."
             ],
             "type": "u64"
           },
           {
             "name": "padding",
             "docs": [
-              "Tail reserve: 4 bytes of alignment slack plus room for a captured",
-              "pubkey and change, so a resolver that needs another fixed account can",
-              "take it from here instead of forcing an `extend_account` migration on",
+              "Tail reserve. It holds 4 bytes of alignment slack plus room for a",
+              "captured pubkey and change. A resolver that needs another fixed account",
+              "takes it from here, instead of forcing an `extend_account` migration on",
               "every market's conditions."
             ],
             "type": {
@@ -22952,15 +22487,15 @@ export type Velocity = {
     {
       "name": "clobOrderRefV0",
       "docs": [
-        "Order handle: an O(1) node hint verified against the order id, so a stale",
-        "hint (node freed or reused) fails closed rather than acting on whichever",
-        "order took the slot.",
+        "Order handle. The node index is an O(1) hint that the book verifies",
+        "against the order id. A stale hint, whose node was freed or reused, fails",
+        "closed rather than acting on whichever order took the slot.",
         "",
-        "The `Clob` prefix is load-bearing and stutters here on purpose. This is the",
-        "one type on this wire that reaches velocity's *instruction* arguments, so",
-        "it is the one that lands in velocity's IDL — beside `Order`, `OrderType`",
+        "The `Clob` prefix repeats the crate name on purpose. This is the one type",
+        "on this wire that reaches velocity's instruction arguments, so it is the",
+        "one that lands in velocity's IDL. There it sits beside `Order`, `OrderType`",
         "and `OrderParams`, where a bare `OrderRefV0` names no program. Anchor takes",
-        "the declared name, not the alias, so renaming it here renames it there."
+        "the declared name, not the alias, so a rename here renames it there."
       ],
       "type": {
         "kind": "struct",
@@ -23080,8 +22615,8 @@ export type Velocity = {
           {
             "name": "oracleStalenessThreshold",
             "docs": [
-              "Delay allowed for valid AUM calculation, encoded in historical 400ms",
-              "slot quanta while remaining a one-word onchain field."
+              "Delay allowed for valid AUM calculation. The value is stored in 400ms",
+              "units so the field stays one word onchain."
             ],
             "type": "u64"
           },
@@ -23469,10 +23004,11 @@ export type Velocity = {
       "docs": [
         "Cost units each of a market's cranks requests, one field per crank.",
         "",
-        "Measured, not guessed: a turner simulates the crank and requests a compute",
-        "limit from what it burned, and the rest of the sum — signatures, write",
-        "locks, instruction-data bytes, the loaded-accounts limit — falls out of the",
-        "transaction it assembles. An admin passes those totals here.",
+        "These figures are measured. A turner simulates the crank and asks for a",
+        "compute limit based on what the simulation used. The rest of the sum comes",
+        "out of the transaction the turner assembles: signatures, write locks,",
+        "instruction-data bytes, and the loaded-accounts limit. An admin passes",
+        "those totals here.",
         "",
         "The unit is the block-packing cost unit, which is what the network prices a",
         "transaction by. `State.transaction_fee_rails` turns it into lamports."
@@ -23545,8 +23081,8 @@ export type Velocity = {
             "name": "size",
             "docs": [
               "Base the buy leg takes. The sell leg returns exactly what the buy leg",
-              "filled, and the cross is refused unless every unit of it crossed — so",
-              "a size past the crossing depth fails rather than sweeping through it."
+              "filled, and the cross is refused unless every unit of it crossed. A size",
+              "past the crossing depth therefore fails rather than sweeping through it."
             ],
             "type": "u64"
           }
@@ -23560,13 +23096,14 @@ export type Velocity = {
         "",
         "One figure per crank rather than one for the market. A book removal and a",
         "two-legged cross differ by an order of magnitude in what they request, and",
-        "the network charges a transaction for what it requests — so a single figure",
-        "either underpays the cross, and nobody runs it, or overpays every removal.",
+        "the network charges a transaction for what it requests. A single figure",
+        "would either underpay the cross, so nobody runs it, or overpay every",
+        "removal.",
         "",
-        "Derived once at attach time from [`CrankCostUnitsV0`] and",
-        "`State.transaction_fee_rails`. Stored rather than recomputed at crank time",
-        "for two reasons: pricing itself would cost a crank compute and an extra",
-        "account, and a staged executor that could re-derive its own terms could",
+        "The attach derives these once from [`CrankCostUnitsV0`] and",
+        "`State.transaction_fee_rails`. They are stored rather than recomputed at",
+        "crank time for two reasons. Pricing costs a crank compute and an extra",
+        "account. A staged executor that could re-derive its own terms could",
         "re-price its own work."
       ],
       "serialization": "bytemuckunsafe",
@@ -23603,13 +23140,13 @@ export type Velocity = {
           {
             "name": "refill",
             "docs": [
-              "What the *treasury* pays to have this market's reservoir refilled.",
+              "What the treasury pays to have this market's reservoir refilled.",
               "",
-              "Stored with the market's other crank prices even though the treasury is",
-              "the purse, because this is where the refill condition lives and a",
-              "condition has to advertise a floor a turner can filter on. Derived from",
-              "the same rails as every other crank, so re-pricing the network",
-              "re-prices this too on the market's next attach."
+              "The treasury holds the lamports, but this price is stored with the",
+              "market's other crank prices. The refill condition lives here, and a",
+              "condition has to advertise a floor a turner can filter on. It comes",
+              "from the same rails as every other crank, so a change to the rails",
+              "re-prices it on the market's next attach."
             ],
             "type": "u32"
           },
@@ -23640,8 +23177,8 @@ export type Velocity = {
           {
             "name": "signedRoute",
             "docs": [
-              "The taker's signed route, when the crank claims one. Empty claims the",
-              "market baseline."
+              "The taker's signed route, when the crank claims one. An empty vector",
+              "claims the market baseline."
             ],
             "type": {
               "vec": "pubkey"
@@ -23698,18 +23235,18 @@ export type Velocity = {
             "docs": [
               "Wake the refill when a reservoir can pay fewer than this many.",
               "",
-              "A refill needs two levels or it fills by nothing. This is the low one,",
-              "and unlike the target it is *resolved to lamports at attach* and stored",
-              "on the market, because it is the threshold relay compares the mirrored",
-              "balance against and a condition carries its own threshold. Changing it",
-              "therefore reaches a market on its next attach.",
+              "A refill needs two levels, or it fills by nothing. This is the low one.",
+              "Unlike the target, the attach resolves it to lamports and stores it on",
+              "the market. Relay compares the mirrored balance against it, and a",
+              "condition carries its own threshold. A change to it therefore reaches a",
+              "market on that market's next attach.",
               "",
               "Size it for the refill's own round trip. The refill is itself a relay",
-              "crank — polled for, simulated, then landed — and the reservoir goes on",
-              "paying for ordinary work throughout. Both terms are worst together: a",
-              "market-wide move is when cranks fire fastest and when the network is",
-              "slowest to land one, and a reservoir that runs dry stops cranking at",
-              "exactly that point with nothing else to report it."
+              "crank, so a turner polls for it, simulates it, and then lands it. The",
+              "reservoir keeps paying for ordinary work throughout. Both terms are at",
+              "their worst together. A market-wide move is when cranks fire fastest",
+              "and when the network is slowest to land one. An empty reservoir stops",
+              "cranking at exactly that point, and nothing else reports it."
             ],
             "type": "u16"
           },
@@ -23932,8 +23469,8 @@ export type Velocity = {
         "Taker direction, from the taker's perspective.",
         "",
         "Encoded as its discriminant, `Long = 0`, and every program on this wire",
-        "reads the same declaration — a taker direction inverted across the",
-        "boundary would fill the wrong side of a book."
+        "reads the same declaration. A taker direction inverted across the boundary",
+        "would fill the wrong side of a book."
       ],
       "type": {
         "kind": "enum",
@@ -24003,10 +23540,10 @@ export type Velocity = {
             "docs": [
               "cumulative fee provision granted to the AMM via `amm_fee_numerator`,",
               "plus the vAMM maker rebate when `FeatureBitFlags::VammMakerRebate` is",
-              "enabled — its backstop-of-last-resort tranche, drawable (and",
-              "decremented) only in bankruptcy. Enabling the rebate bit therefore",
-              "grows the bankruptcy clawback cap by the rebates earned. The AMM's own",
-              "spread/trading capital beyond this provision is never tapped.",
+              "enabled. This is the AMM's last-resort tranche. Only a bankruptcy draws",
+              "it down and decrements it. Enabling the rebate bit therefore grows the",
+              "bankruptcy clawback cap by the rebates earned. The AMM's own spread and",
+              "trading capital beyond this provision is never used.",
               "precision: QUOTE_PRECISION"
             ],
             "type": "u128"
@@ -24014,7 +23551,7 @@ export type Velocity = {
           {
             "name": "pendingAmmProvision",
             "docs": [
-              "AMM fee provision (including the vAMM maker rebate when enabled)",
+              "AMM fee provision, including the vAMM maker rebate when enabled,",
               "accrued at fill (already booked into the AMM's",
               "`total_fee_minus_distributions`) but not yet tokenized into",
               "`amm.fee_pool` by the sweep. Invariant: `<= amm_protocol_fees_received`.",
@@ -24128,47 +23665,17 @@ export type Velocity = {
       }
     },
     {
-      "name": "fillLegacyDlobOrderArgs",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "marketIndex",
-            "type": "u16"
-          },
-          {
-            "name": "orderId",
-            "docs": [
-              "The DLOB order to fill. `None` fills the user's most recent order."
-            ],
-            "type": {
-              "option": "u32"
-            }
-          },
-          {
-            "name": "signedRoute",
-            "docs": [
-              "The taker's signed route, when the fill claims one. Empty claims the",
-              "market baseline."
-            ],
-            "type": {
-              "vec": "pubkey"
-            }
-          }
-        ]
-      }
-    },
-    {
       "name": "firedConditionArgV0",
       "docs": [
         "Which condition relay is asking about.",
         "",
         "Byte-identical to `relay_spec::FiredConditionV0`, which is what the turner",
-        "appends to a resolver's instruction data. Declared here because that crate",
-        "carries no borsh derives, and stated in velocity's own types — a `Pubkey`",
-        "and a `u32` rather than the byte arrays a `Pod` layout needs — so the IDL",
-        "reads as an argument list instead of a blob. `tests::the_fired_condition_is",
-        "_what_relay_appends` pins the two encodings together."
+        "appends to a resolver's instruction data. It is declared here because that",
+        "crate carries no borsh derives. It uses velocity's own types, a `Pubkey` and",
+        "a `u32`, rather than the byte arrays a `Pod` layout needs, so the IDL reads",
+        "as an argument list instead of a blob. The test",
+        "`the_fired_condition_is_what_relay_appends` pins the two encodings",
+        "together."
       ],
       "type": {
         "kind": "struct",
@@ -24200,15 +23707,14 @@ export type Velocity = {
     {
       "name": "flowAttestationV0",
       "docs": [
-        "A flow attestation: the flow authority's detached signature over one",
-        "order's own signature plus an expiry. It marks the order's flow as",
-        "having served the swift hold, without the flow authority signing the",
-        "transaction. A transaction signer is transaction-global — the fill",
-        "transaction is keeper-built, and a co-signature on it needed an",
-        "allowlist, a shape proof, and a drain-vector analysis. A detached",
-        "signature over one order's signature authorizes exactly one thing.",
-        "It also costs no signature fee: it is verified in-program, like the",
-        "taker signature it binds to."
+        "The flow authority's detached signature over one order's own signature and",
+        "an expiry. It marks the order's flow as having served the swift hold,",
+        "without the flow authority signing the transaction. A transaction signer",
+        "authorizes the whole transaction. The fill transaction is keeper-built, so a",
+        "co-signature on it needed an allowlist, a shape proof, and a drain-vector",
+        "analysis. A detached signature over one order's signature authorizes one",
+        "thing. It also costs no signature fee, because the program verifies it, like",
+        "the taker signature it binds to."
       ],
       "type": {
         "kind": "struct",
@@ -24265,12 +23771,12 @@ export type Velocity = {
         "One order the caller wants reclaimed.",
         "",
         "The side is declared rather than read, because a node carries no side of",
-        "its own — the book stores it by which list the node is linked into, and",
-        "finding that out costs a walk from the head. Declaring it lets the",
-        "risk-reducing test run *before* the CPI, so a reducing order is passed",
-        "over instead of being cancelled and then reverting the call. The",
-        "declaration is not trusted: the removal the CLOB returns carries the real",
-        "side and is checked against it."
+        "its own. The book stores the side as the list the node is linked into, and",
+        "reading it costs a walk from the head. A declared side lets the",
+        "risk-reducing test run before the CPI, so a reducing order is passed over",
+        "rather than cancelled and then reverted. The declaration is not trusted. The",
+        "removal the CLOB returns carries the real side, and the handler checks it",
+        "against the declaration."
       ],
       "type": {
         "kind": "struct",
@@ -24721,8 +24227,8 @@ export type Velocity = {
           {
             "name": "expireFallbackSlots",
             "docs": [
-              "The poll interval behind the reprice watch — the discovery floor when",
-              "the maker's declared watch misses a reprice."
+              "The poll interval behind the reprice watch. It is the discovery floor",
+              "when the maker's declared watch misses a reprice."
             ],
             "type": "u64"
           }
@@ -24853,8 +24359,8 @@ export type Velocity = {
               "(staker-owned). precision: IF_FACTOR_PRECISION. (Was `total_factor`; the",
               "protocol-vs-staker split was removed — the IF is now 100% staker-owned,",
               "so this is purely the staker IF carveout.) A cut too small to reach a",
-              "whole unit is carried on `revenue_pool`, not floored away. See",
-              "`split_deposit_interest`."
+              "whole unit is carried on the carveout pools rather than floored away.",
+              "See `split_deposit_interest`."
             ],
             "type": "u32"
           },
@@ -25358,10 +24864,10 @@ export type Velocity = {
             "name": "targetOracleDelayFeeBpsPer10Slots",
             "docs": [
               "Bps of fee charged per 10 whole 400ms periods of oracle delay past the",
-              "staleness threshold, so one step is 4 seconds of wall clock. The `_slots`",
-              "suffix is the historical name from when a slot was 400ms; `step_fee`",
-              "receives period counts, so the rate no longer scales with slot time.",
-              "Renaming the field would change the IDL, so the unit lives here."
+              "staleness threshold. One step is 4 seconds of wall clock. The `_slots`",
+              "suffix dates from when a slot was 400ms. `step_fee` takes period counts,",
+              "so the rate does not scale with slot time. A rename changes the IDL, so",
+              "the unit is stated here instead."
             ],
             "type": "u8"
           },
@@ -25369,7 +24875,7 @@ export type Velocity = {
             "name": "targetPositionDelayFeeBpsPer10Slots",
             "docs": [
               "Bps of fee charged per 10 whole 400ms periods of position delay past the",
-              "staleness threshold. Same units as the oracle sibling above."
+              "staleness threshold. The units match the oracle field above."
             ],
             "type": "u8"
           },
@@ -26307,8 +25813,9 @@ export type Velocity = {
           {
             "name": "orderRef",
             "docs": [
-              "Handle for the order being modified; the CLOB fails closed on a stale",
-              "hint, and velocity fails the whole call if the removal hit anyone else."
+              "Handle for the order being modified. The CLOB rejects a stale hint, and",
+              "velocity fails the whole call if the removal took another user's",
+              "order."
             ],
             "type": {
               "defined": {
@@ -26328,8 +25835,8 @@ export type Velocity = {
           {
             "name": "baseAssetAmount",
             "docs": [
-              "`None` keeps the *remaining* size of the resting order (not its",
-              "original size)."
+              "`None` keeps the remaining size of the resting order, not its original",
+              "size."
             ],
             "type": {
               "option": "u64"
@@ -26338,9 +25845,8 @@ export type Velocity = {
           {
             "name": "maxTs",
             "docs": [
-              "`None` keeps the resting expiry (read off the book node before the",
-              "cancel — the CLOB's removal response doesn't carry it). `Some(0)` makes",
-              "the replacement good-till-cancelled."
+              "`None` keeps the resting expiry, which the CLOB's removal response",
+              "reports. `Some(0)` makes the replacement good-till-cancelled."
             ],
             "type": {
               "option": "i64"
@@ -26349,8 +25855,9 @@ export type Velocity = {
           {
             "name": "activationDelaySlots",
             "docs": [
-              "Same rule as `place_and_make_perp_order_v1`: `None` takes the book's default speed",
-              "bump, anything below it needs the flow-authority attestation."
+              "The rule of `place_and_make_perp_order_v1` applies. `None` takes the",
+              "book's default speed bump. A value below it needs the flow-authority",
+              "attestation."
             ],
             "type": {
               "option": "u32"
@@ -26359,10 +25866,11 @@ export type Velocity = {
           {
             "name": "rejectIfCrossed",
             "docs": [
-              "Same rule as `place_and_make_perp_order_v1`: refuse the replacement rather than",
-              "rest it crossed. The original is already off the book when this fires,",
-              "so a refused replacement leaves the maker with no order — which is what",
-              "a maker repricing into a crossed book is asking for."
+              "The rule of `place_and_make_perp_order_v1` applies. Refuse the",
+              "replacement rather than rest it crossed. The original is already off the",
+              "book at that point, so a refused replacement leaves the maker with no",
+              "order. That is what a maker who reprices into a crossed book asked",
+              "for."
             ],
             "type": "bool"
           }
@@ -27639,17 +27147,20 @@ export type Velocity = {
           {
             "name": "takerFeeAddonTenthBps",
             "docs": [
-              "Additive per-market taker-fee surcharge in tenth-bps (10 = 1bp),",
-              "unsigned: surcharge only (e.g. toxic-flow markets), never a discount.",
-              "A discount could push the taker fee below the maker rebate it must",
-              "fund and revert every match fill; promo discounts go through",
-              "`State.promo_fee_tier` instead. Applied on top of the tier fee before",
-              "`fee_adjustment` scales the sum:",
-              "`taker_fee = (tier_fee + add-on) * (1 +/- fee_adjustment%)`.",
-              "Taker fee only; the maker rebate and the post-only path see",
-              "`fee_adjustment` alone. Occupies 2 bytes of the former 4-byte",
-              "`_padding_buffer` (same offset/alignment on all targets), so existing",
-              "accounts read 0 = no add-on until the admin sets it."
+              "Additive per-market taker-fee surcharge in tenth-bps. 10 is 1 basis",
+              "point. The field is unsigned, so it can only raise the fee, for example",
+              "on a toxic-flow market. A discount could push the taker fee below the",
+              "maker rebate it must fund, which reverts every match fill. Promo",
+              "discounts go through `State.promo_fee_tier` instead.",
+              "",
+              "The surcharge applies on top of the tier fee, before `fee_adjustment`",
+              "scales the sum:",
+              "`taker_fee = (tier_fee + surcharge) * (1 +/- fee_adjustment%)`.",
+              "The maker rebate and the post-only path see `fee_adjustment` alone.",
+              "",
+              "The field takes 2 bytes of the former 4-byte `_padding_buffer`, at the",
+              "same offset and alignment on all targets. Existing accounts therefore",
+              "read 0, which is no surcharge, until the admin sets it."
             ],
             "type": "u16"
           },
@@ -27974,26 +27485,26 @@ export type Velocity = {
               "A liquidation that latches a user bankrupt increments it. Both writers",
               "of `PerpPosition.quote_asset_amount` decrement it when that debt",
               "reaches zero: `update_quote_asset_amount` and",
-              "`update_position_and_market`. The count tracks the debt, not the latch:",
-              "an un-latched estate that still owes the market stays booked, because",
+              "`update_position_and_market`. The count tracks the debt, not the latch.",
+              "An un-latched estate that still owes the market stays booked, because",
               "the debt still resolves through the bankruptcy waterfall.",
               "",
-              "While it is above zero the fee sweep withholds the whole",
-              "`pending_if_fee`, not just `get_bankruptcy_if_floor()` — the sweep is",
+              "While the count is above zero the fee sweep withholds the whole",
+              "`pending_if_fee`, not only `get_bankruptcy_if_floor()`. The sweep is",
               "permissionless, so a caller could otherwise drain the first-loss",
-              "tranche between the latch and the resolution and push the loss onto the",
-              "shared insurance fund or into socialization. The freeze is independent",
-              "of open interest and of `bankruptcy_if_floor_pct`, both of which can be",
+              "tranche between the latch and the resolution. The loss then falls on",
+              "the shared insurance fund or on socialization. The freeze does not",
+              "depend on open interest or on `bankruptcy_if_floor_pct`. Both can be",
               "zero exactly when a bankruptcy is pending.",
               "",
-              "Occupies 2 of the 6 bytes the Rust compiler inserts to 8-align",
-              "`last_fill_price`. The remaining 4 stay explicit padding, so every",
-              "later byte offset and the account size are unchanged and existing",
-              "accounts read 0 (no pending claim).",
-              "",
-              "`settle_expired_market_pools_to_revenue_pool` rejects while this count",
+              "`settle_expired_market_pools_to_revenue_pool` rejects while the count",
               "is above zero, because that instruction's final sweep bypasses the",
-              "floor."
+              "floor.",
+              "",
+              "The field takes 2 of the 6 bytes the Rust compiler inserts to 8-align",
+              "`last_fill_price`. The other 4 stay explicit padding, so every later",
+              "byte offset and the account size are unchanged. Existing accounts read",
+              "0, which is no pending claim."
             ],
             "type": "u16"
           },
@@ -28063,21 +27574,25 @@ export type Velocity = {
           {
             "name": "oracleSlotDelayOverride",
             "docs": [
-              "Max oracle delay (legacy 400ms units) tolerated by immediate (JIT / auction-skipping)",
-              "AMM fills. Positive is an explicit threshold. `0` disables immediate AMM",
-              "fills entirely. Negative (the init default, `-1`) means unset, which",
-              "resolves by price source: `MM_ORACLE_MIN_WRITE_GAP` for an MM-oracle-sourced",
-              "price (the tightest window the crank can satisfy, since the program refuses",
-              "MM-oracle writes closer together than that) and `0` for an exchange-oracle",
-              "price, which can be same-slot fresh. See `math::oracle::oracle_validity`."
+              "Max oracle delay tolerated by an immediate AMM fill, in legacy 400ms",
+              "units. An immediate fill is a JIT fill that skips the auction. A",
+              "positive value is an explicit threshold. `0` disables immediate AMM",
+              "fills. A negative value means unset, and `-1` is the init default.",
+              "",
+              "An unset override resolves by price source. An MM-oracle price gets",
+              "`MM_ORACLE_MIN_WRITE_GAP`, the tightest window the crank can satisfy,",
+              "because the program refuses MM-oracle writes closer together than that.",
+              "An exchange-oracle price gets `0`, because it can be fresh in the same",
+              "slot. See `math::oracle::oracle_validity`."
             ],
             "type": "i8"
           },
           {
             "name": "oracleLowRiskSlotDelayOverride",
             "docs": [
-              "Low-risk oracle delay override (legacy 400ms units): 0 = unset (use the",
-              "guard rail), otherwise a literal threshold. See `math::time::DelayOverride`."
+              "Low-risk oracle delay override, in legacy 400ms units. `0` is unset and",
+              "takes the guard rail. Any other value is a literal threshold. See",
+              "`math::time::DelayOverride`."
             ],
             "type": "i8"
           },
@@ -28086,11 +27601,11 @@ export type Velocity = {
             "docs": [
               "Floor on the unswept IF-fee carveout, as a percentage of open-interest",
               "notional (PERCENTAGE_PRECISION). The fee sweep's IF drain leaves",
-              "`pending_if_fee` at (at least) this floor, so a standing first-loss",
+              "`pending_if_fee` at this floor or above it, so a standing first-loss",
               "tranche is available to `resolve_perp_bankruptcy` before any user is",
-              "latched bankrupt — a permissionless sweep (or the inline sweep on any",
-              "pnl settle) cannot drain the tranche below it. Notional is valued at",
-              "the market's own oracle TWAP so a manipulated spot print can't crush",
+              "latched bankrupt. Neither a permissionless sweep nor the inline sweep",
+              "on a pnl settle can drain the tranche below it. Notional is valued at",
+              "the market's own oracle TWAP, so a manipulated spot print cannot crush",
               "the floor.",
               "",
               "`0` means `DEFAULT_BANKRUPTCY_IF_FLOOR_PCT`, so every market created",
@@ -28103,8 +27618,8 @@ export type Velocity = {
               "every latched bankruptcy exactly, by withholding all of",
               "`pending_if_fee` until it resolves.",
               "",
-              "Occupies the former 4-byte trailing padding before `market_stats`",
-              "(same offset/alignment on all targets)."
+              "The field takes the former 4-byte trailing padding before",
+              "`market_stats`, at the same offset and alignment on all targets."
             ],
             "type": "u32"
           },
@@ -28174,14 +27689,14 @@ export type Velocity = {
           {
             "name": "clobMarket",
             "docs": [
-              "The market's canonical book — the CLOB market account, which is also",
-              "the book slot's response account on the slab. When set, every router",
-              "fill must consult it — the mandatory-baseline rule: a route can't",
-              "exclude the public book. A dead book still has to be passed but is",
-              "skipped at quote time, so killing it never bricks fills. Accounts",
-              "structs that name both bind them with `has_one = clob_market`.",
-              "`Pubkey::default()` = no CLOB requirement. Carved out of master's",
-              "reserved tail padding, so it keeps that account size."
+              "The market's canonical book. This is the CLOB market account, which is",
+              "also the book slot's response account on the slab. When the key is set,",
+              "every router fill must consult the book, so no route can exclude it. A",
+              "dead book must still be passed, but quoting skips it, so killing the",
+              "book does not stop fills. Accounts structs that name both bind them",
+              "with `has_one = clob_market`. `Pubkey::default()` means the market has",
+              "no CLOB requirement. The field comes out of master's reserved tail",
+              "padding, so the account size is unchanged."
             ],
             "type": "pubkey"
           },
@@ -28189,20 +27704,20 @@ export type Velocity = {
             "name": "quoterSlab",
             "docs": [
               "The market's quoter slab PDA, written at market initialization. The",
-              "address is derivable from the market index, but the stored copy lets",
-              "every accounts struct that names both bind them with",
-              "`has_one = quoter_slab` — a memcmp instead of a PDA derivation, and a",
-              "check the compiler keeps on every context rather than one each",
-              "handler must remember."
+              "address is derivable from the market index. The stored copy lets every",
+              "accounts struct that names both bind them with `has_one = quoter_slab`.",
+              "That is a memcmp instead of a PDA derivation. The compiler also keeps",
+              "the check on every context, instead of each handler having to remember",
+              "it."
             ],
             "type": "pubkey"
           },
           {
             "name": "paddingFuture",
             "docs": [
-              "Reserved for future fields (master's tail reservation, less the 64",
-              "bytes `clob_quoter` and `quoter_slab` took). Existing accounts must be",
-              "extended before the program loads them with this layout."
+              "Reserved for future fields. This is master's tail reservation, less the",
+              "64 bytes `clob_market` and `quoter_slab` take. Existing accounts must",
+              "be extended before the program loads them with this layout."
             ],
             "type": {
               "array": [
@@ -28422,11 +27937,33 @@ export type Velocity = {
           {
             "name": "successCondition",
             "docs": [
-              "Bit 0 selects a success condition (`PlaceAndTakeOrderSuccessCondition`);",
-              "a u32 for wire compatibility with the v0 `optional_params`."
+              "Bit 0 selects a `PlaceAndTakeOrderSuccessCondition`. The field is a u32",
+              "for wire compatibility with the v0 `optional_params`."
             ],
             "type": {
               "option": "u32"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "placeTriggerOrdersV1Args",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "params",
+            "docs": [
+              "The triggers to arm. Each entry must be a `TriggerMarket` or a",
+              "`TriggerLimit` on a perp market."
+            ],
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "orderParams"
+                }
+              }
             }
           }
         ]
@@ -28462,9 +27999,9 @@ export type Velocity = {
             "docs": [
               "Filler for the alignment gap before the two dust fields. Those fields must",
               "start at offsets 20 and 24. The host layout and the SBF layout then agree,",
-              "and the packed borsh layout in the IDL reaches the same offsets. This",
-              "field shrank from 14 bytes to 2. The size of the struct and every other",
-              "field offset are unchanged. Do not reorder or resize these fields."
+              "and the packed borsh layout in the IDL reaches the same offsets. The",
+              "size of the struct and every other field offset are unchanged. Do not",
+              "reorder or resize these fields."
             ],
             "type": {
               "array": [
@@ -28699,17 +28236,17 @@ export type Velocity = {
     {
       "name": "protocolUserWithdrawRecordV0",
       "docs": [
-        "Emitted when the hot fee-withdraw role drains accumulated crank rewards",
-        "from the protocol-owned `User` (`withdraw_protocol_user_deposit`).",
+        "Emitted when `withdraw_protocol_user_deposit` draws accumulated crank",
+        "rewards out of the protocol-owned `User`.",
         "",
-        "Versioned in the name, unlike the records inherited from upstream. An",
-        "`#[event]`'s discriminator is derived from its struct name, so adding a",
-        "field to a `…Record` changes the payload under a discriminator consumers",
-        "already decode — the old decoder either truncates or fails, and nothing on",
-        "the wire says which shape it got. A field addition here ships as",
-        "`ProtocolUserWithdrawRecordV1` instead, with its own discriminator, so an",
-        "old subscriber ignores it rather than mis-parsing it. Events velocity adds",
-        "from here on follow the same rule."
+        "The name carries a version, unlike the records inherited from upstream. An",
+        "`#[event]` derives its discriminator from its struct name. A field added to",
+        "a `…Record` therefore changes the payload under a discriminator that",
+        "consumers already decode. The old decoder then truncates or fails, and",
+        "nothing on the wire says which shape it received. A field addition here",
+        "ships as `ProtocolUserWithdrawRecordV1` with its own discriminator, so an",
+        "old subscriber ignores it rather than misreading it. Every event velocity",
+        "adds follows the same rule."
       ],
       "type": {
         "kind": "struct",
@@ -28807,22 +28344,22 @@ export type Velocity = {
           {
             "name": "size",
             "docs": [
-              "Size to quote up to. The books returned are what's available for a",
-              "taker of this size — resting sources are merely truncated by it, the",
-              "vAMM and PropAMMs genuinely price against it."
+              "Size to quote up to. The books returned are what a taker of this size",
+              "can get. A resting source is truncated by it. The vAMM and the",
+              "PropAMMs price against it."
             ],
             "type": "u64"
           },
           {
             "name": "takerServedWindow",
             "docs": [
-              "Whether the flow this view prices for served a protection window —",
-              "the swift hold, or the book's activation delay. What the real route",
-              "asks: a bumped book quotes no depth to unprotected flow, and a",
-              "protected-flow quoter (the midpoint's `require_attested_flow`)",
-              "refuses it, so a view for unprotected flow must show the same books",
-              "the fill would get. Swift and the book publisher price protected",
-              "flow and pass `true`."
+              "Whether the flow this view prices for served a protection window. The",
+              "window is the swift hold or the book's activation delay. The real route",
+              "asks the same question. A book with an activation delay quotes no depth",
+              "to unprotected flow, and a protected-flow quoter refuses it. The",
+              "midpoint's `require_attested_flow` is such a quoter. A view for",
+              "unprotected flow must show the same books the fill would get. Swift and",
+              "the book publisher price protected flow and pass `true`."
             ],
             "type": "bool"
           },
@@ -28832,10 +28369,10 @@ export type Velocity = {
               "Quote the vAMM into the buffer as well.",
               "",
               "A market with more quoters than one view can carry is read in several",
-              "passes. The vAMM prices against every other book in the same call, so",
-              "a pass holding a subset would shade it against a subset and each pass",
-              "would return a different vAMM. Exactly one pass sets this, and the",
-              "caller merges the vAMM from that one. The passes that clear it also",
+              "passes. The vAMM prices against every other book in the same call, so a",
+              "pass that holds a subset would shade the vAMM against a subset, and each",
+              "pass would return a different vAMM. Exactly one pass sets this flag, and",
+              "the caller merges the vAMM from that pass. The passes that clear it also",
               "stop paying to compute a ladder they would discard."
             ],
             "type": "bool"
@@ -28846,7 +28383,7 @@ export type Velocity = {
     {
       "name": "quotedLevelV0",
       "docs": [
-        "A quoted level, in the buffer's Pod form (the wire `PriceLevel` is borsh)."
+        "A quoted level in the buffer's Pod form. The wire `PriceLevel` is borsh."
       ],
       "serialization": "bytemuckunsafe",
       "repr": {
@@ -28869,14 +28406,13 @@ export type Velocity = {
     {
       "name": "quotedRowV0",
       "docs": [
-        "One resting order behind a quoted book, in the buffer's Pod form (the wire",
-        "`L3RowV0` is the same bytes).",
+        "One resting order behind a quoted book, in the buffer's Pod form. The wire",
+        "`L3RowV0` holds the same bytes.",
         "",
-        "A book's ladder aggregates orders that belong to different people, and a",
-        "caller that has to carry those accounts — or draw the book — needs them",
-        "apart. Every other quoter fills from the one account its registry entry",
-        "names, so its rows say that instead, and a consumer reads one shape either",
-        "way."
+        "A book's ladder can aggregate orders that belong to different people. A",
+        "caller that must carry those accounts, or draw the book, needs them apart.",
+        "Every other quoter fills from the one account its registry entry names, so",
+        "its rows report that account. A consumer reads one shape either way."
       ],
       "serialization": "bytemuckunsafe",
       "repr": {
@@ -28950,10 +28486,10 @@ export type Velocity = {
     {
       "name": "quotedSourceKind",
       "docs": [
-        "Which kind of liquidity a quoted book came from. The router needs this to",
-        "know how to *execute* the allocation (a CPI leg, an in-program DLOB order,",
-        "or the vAMM), and a UI needs it to label depth honestly — a PropAMM's",
-        "levels are a quote at a size, not resting orders."
+        "Which kind of liquidity a quoted book came from. The router needs it to",
+        "execute the allocation as a CPI leg, an in-program DLOB order, or the",
+        "vAMM. A user interface needs it to label depth, because a PropAMM's levels",
+        "are a quote at a size rather than resting orders."
       ],
       "repr": {
         "kind": "rust"
@@ -29003,8 +28539,8 @@ export type Velocity = {
           {
             "name": "priority",
             "docs": [
-              "Routing tier the split will apply (`QuoterV0::priority`, or the",
-              "type default for the in-program sources)."
+              "Routing tier the split applies. It is `QuoterV0::priority`, or the",
+              "type default for the in-program sources."
             ],
             "type": "u8"
           },
@@ -29019,18 +28555,18 @@ export type Velocity = {
           {
             "name": "clamped",
             "docs": [
-              "Set when verification reduced this book — a Custom quoter advertising",
-              "more depth than its `User`'s margin supports gets truncated here, so",
-              "the caller never routes against or displays phantom depth. The",
-              "difference between what the quoter said and what came back."
+              "Set when verification cut this book. A Custom quoter can advertise more",
+              "depth than its `User`'s margin supports, and the cut removes the",
+              "excess. The caller then never routes against or displays depth that no",
+              "fill can take."
             ],
             "type": "bool"
           },
           {
             "name": "rowStart",
             "docs": [
-              "This source's slice of `rows`: where it starts and how long it is. A",
-              "source with no per-order detail has none."
+              "Where this source's slice of `rows` starts and how long it is. A source",
+              "with no per-order detail has no slice."
             ],
             "type": "u8"
           },
@@ -29074,9 +28610,9 @@ export type Velocity = {
         "",
         "Held in two places with two meanings. On the [`QuoterV0`] staging entry it",
         "is the maker's proposal, writable by the entry authority. In a",
-        "[`QuoterSlabV0`] slot it is the copy the admin approved, which is the only",
-        "copy a fill reads — so a maker edit never reaches flow until the admin",
-        "copies it in again."
+        "[`super::QuoterSlabV0`] slot it is the copy the admin approved, which is the",
+        "only copy a fill reads. A maker edit therefore never reaches flow until the",
+        "admin copies it in again."
       ],
       "serialization": "bytemuckunsafe",
       "repr": {
@@ -29089,20 +28625,20 @@ export type Velocity = {
             "name": "approvedProgramSlot",
             "docs": [
               "The slot the approved program was last deployed at, read from its",
-              "program-data account when the admin approved this config. Zero when",
-              "the program sits on a loader that cannot redeploy it. Meaningful only",
-              "in a slab slot; the staging copy holds the last approval's figure.",
+              "program-data account when the admin approved this config. Zero when the",
+              "program sits on a loader that cannot redeploy it. Meaningful only in a",
+              "slab slot. The staging copy holds the last approval's figure.",
               "",
               "Approval does not freeze the program. A maker may upgrade, and the",
-              "bounds on a quoter hold either way: a `Custom` entry can move only its",
+              "bounds on a quoter hold either way. A `Custom` entry can move only its",
               "own registered user, at a price held to its own quote and to the taker's",
               "limit, sized inside its own margin. So an upgrade can lose the maker's",
               "money and cannot take anyone else's.",
               "",
-              "What it can still do is quote and not deliver, which costs the taker a",
-              "fill. That is why the slot is recorded: an off-chain reader compares it",
-              "to the live one and knows the code changed, rather than waiting to infer",
-              "it from behaviour."
+              "What an upgrade can still do is quote and not deliver, which costs the",
+              "taker a fill. That is why the slot is recorded. An off-chain reader",
+              "compares it to the live one and knows the code changed, rather than",
+              "waiting to infer the change from behaviour."
             ],
             "type": "u64"
           },
@@ -29110,13 +28646,14 @@ export type Velocity = {
             "name": "bookTickSize",
             "docs": [
               "The book's placement rules, mirrored here by the attach",
-              "(`update_perp_market_clob_quoter`) so the hot paths read a loaded",
-              "field instead of CPI'ing `order_rules_v0`",
-              "Zero for non-`Clob` entries and for a book no market has",
-              "attached. Changing the book's rules requires re-running the attach:",
-              "a stale mirror degrades gracefully (a wrong tick or minimum drops",
-              "the remainder to the plain cancel; a stale-zero delay routes an",
-              "unattested taker synchronously where it should have rested)"
+              "(`update_perp_market_clob_quoter`) so the hot paths read a loaded field",
+              "instead of calling `order_rules_v0`. Zero for a non-`Clob` entry and for",
+              "a book no market has attached.",
+              "",
+              "Changing the book's rules requires re-running the attach. A stale mirror",
+              "degrades rather than fails. A wrong tick or minimum drops the remainder",
+              "to the plain cancel. A stale zero delay routes an unattested taker",
+              "synchronously where it should have rested."
             ],
             "type": "u64"
           },
@@ -29127,9 +28664,9 @@ export type Velocity = {
           {
             "name": "user",
             "docs": [
-              "For Custom quoters, the User this quoter is allowed to quote for.",
-              "That user's authority creates the entry, so creation is consent. For",
-              "vAMM, the vAMM user. For CLOB, ignored: execute may return balance",
+              "For a Custom quoter, the User this quoter may quote for. That user's",
+              "authority creates the entry, so creation is consent. For the vAMM, the",
+              "vAMM user. For a CLOB it is ignored, because execute may return balance",
               "changes for any user with resting orders on the CLOB."
             ],
             "type": "pubkey"
@@ -29137,32 +28674,32 @@ export type Velocity = {
           {
             "name": "programId",
             "docs": [
-              "The external program invoked for `quote_v0` / `execute_v0`."
+              "The external program invoked for `quote_v0` and `execute_v0`."
             ],
             "type": "pubkey"
           },
           {
             "name": "responseAccount",
             "docs": [
-              "Account owned by `program_id` that quote/execute responses are written",
-              "into; must be named by both legs' index lists. Responses are read at",
-              "the pointer returned via return data, so payloads aren't bound by the",
+              "Account owned by `program_id` that quote and execute responses are",
+              "written into. Both legs' index lists must name it. A response is read at",
+              "the pointer returned via return data, so a payload is not bound by the",
               "1024-byte return-data cap.",
               "",
-              "For CLOB entries this is the book itself — the CLOB's response region",
-              "lives in its market account — which is what lets velocity read the",
-              "resting orders an execute may touch without a second registered",
-              "account to trust."
+              "For a CLOB entry this is the book itself, because the CLOB's response",
+              "region lives in its market account. That is what lets velocity read the",
+              "resting orders an execute may touch without a second registered account",
+              "to trust."
             ],
             "type": "pubkey"
           },
           {
             "name": "authority",
             "docs": [
-              "Manages the staging entry. For Custom quoters this is the quoted",
-              "user's authority (enforced at creation, no handoff), so the maker can",
-              "always kill their own quoter (`is_active` writes through to the",
-              "approved copy); the admin vets the CPI surface by copying it into the",
+              "Manages the staging entry. For a Custom quoter this is the quoted user's",
+              "authority, enforced at creation with no handoff. The maker can therefore",
+              "always kill their own quoter, because `is_active` writes through to the",
+              "approved copy. The admin vets the CPI surface by copying it into the",
               "slab."
             ],
             "type": "pubkey"
@@ -29170,13 +28707,15 @@ export type Velocity = {
           {
             "name": "watchAccount",
             "docs": [
-              "Maker-declared reprice region: the account bytes whose change means",
-              "\"this quoter may quote differently now\" (a midpoint's mid region, a",
-              "custom AMM's parameter block). Relay cross-discovery conditions wake",
-              "on it; `watch_len == 0` means no declaration (poll-only discovery).",
-              "Config like everything else here: vetted by the admin at the copy into",
-              "the slab — a watch that misses reprices only costs the maker cross",
-              "latency, never correctness (the poll is the floor)."
+              "Maker-declared reprice region: the account bytes whose change means the",
+              "quoter may quote differently now. A midpoint's mid region and a custom",
+              "AMM's parameter block are examples. Relay cross-discovery conditions",
+              "wake on it, and `watch_len == 0` means the maker declared none, which",
+              "leaves discovery to the poll.",
+              "",
+              "It is config like everything else here, vetted by the admin at the copy",
+              "into the slab. A watch that misses reprices costs the maker cross",
+              "latency and never correctness, because the poll is the floor."
             ],
             "type": "pubkey"
           },
@@ -29205,11 +28744,11 @@ export type Velocity = {
           {
             "name": "quoteL3V0Discriminator",
             "docs": [
-              "The optional third leg: `quote_l3_v0`, which reports the resting",
-              "orders behind a ladder and who each belongs to. Zero means the quoter",
-              "does not implement it, and a reader attributes the whole ladder to",
-              "[`Self::user`] — which is right for every quoter that fills from one",
-              "account. A book is the exception, and this is how it says so."
+              "The optional third leg, `quote_l3_v0`. It reports the resting orders",
+              "behind a ladder and who each one belongs to. Zero means the quoter does",
+              "not implement it, and a reader attributes the whole ladder to",
+              "[`Self::user`]. That is right for every quoter that fills from one",
+              "account. A book is the exception, and this field is how it says so."
             ],
             "type": {
               "array": [
@@ -29222,9 +28761,9 @@ export type Velocity = {
             "name": "accounts",
             "docs": [
               "The one registered CPI account list. Only the first `accounts_count`",
-              "entries are live. Each leg forwards a subset, in its own order, named",
-              "by the index lists below — one list to vet, and a leg cannot smuggle",
-              "an account the other leg's reviewer never saw."
+              "entries are live. Each leg forwards a subset, in its own order, named by",
+              "the index lists below. That leaves one list to vet, and a leg cannot",
+              "smuggle an account the other leg's reviewer never saw."
             ],
             "type": {
               "array": [
@@ -29240,8 +28779,8 @@ export type Velocity = {
           {
             "name": "quoteAccountIndexes",
             "docs": [
-              "Indexes into `accounts` forwarded to `quote_v0` (and `quote_l3_v0`),",
-              "in CPI order. Only the first `quote_accounts_count` are live."
+              "Indexes into `accounts` forwarded to `quote_v0` and `quote_l3_v0`, in",
+              "CPI order. Only the first `quote_accounts_count` are live."
             ],
             "type": {
               "array": [
@@ -29280,13 +28819,14 @@ export type Velocity = {
               "",
               "A maker sets this to cap what its own program can lose if that program",
               "is compromised. Velocity already bounds every external leg by the",
-              "market's band, and that band is sized for a market rather than for one",
-              "quoter's risk appetite; this is how a quoter asks for a tighter one.",
+              "market's band. That band is sized for a market rather than for one",
+              "quoter's risk appetite, and this field is how a quoter asks for a",
+              "tighter one.",
               "",
               "Unlike the rest of the config it writes through to the approved copy",
               "without re-vetting. The band applies as the smaller of this and the",
               "market's, so no value it can hold is wider than the one the admin",
-              "vetted, and a maker tightening it during an incident must not wait.",
+              "vetted. A maker tightening it during an incident must not wait.",
               "",
               "`Custom` entries only. A book fills third parties, so a band on one",
               "would let its entry authority revert other people's fills."
@@ -29315,17 +28855,17 @@ export type Velocity = {
           {
             "name": "isActive",
             "docs": [
-              "The authority's own on/off switch — always settable by the maker, and",
-              "written through to the approved copy so a kill takes effect at once."
+              "The authority's own on and off switch. The maker can always set it, and",
+              "it writes through to the approved copy so a kill takes effect at once."
             ],
             "type": "bool"
           },
           {
             "name": "priority",
             "docs": [
-              "Routing priority: at a price, lower-priority tiers fill first, pro",
-              "rata within a tier. Defaults by type (vAMM 0, CLOB 10, Custom 20);",
-              "admin-set thereafter — never by the maker."
+              "Routing priority. At one price, a lower-priority tier fills first, pro",
+              "rata within a tier. It defaults by type: vAMM 0, CLOB 10, Custom 20.",
+              "Only the admin sets it afterwards, never the maker."
             ],
             "type": "u8"
           },
@@ -29356,10 +28896,10 @@ export type Velocity = {
           {
             "name": "relay",
             "docs": [
-              "Everything relay needs hosted, in one field: the `relay-spec` header,",
-              "the condition slots, and the resolver account list (written at attach)",
-              "every condition here points at. First field, so its watch offset",
-              "is 8."
+              "Everything relay needs, in one field. It holds the `relay-spec`",
+              "header, the condition slots, and the resolver account list that every",
+              "condition here points at. The attach writes that list. This is the",
+              "first field, so its watch offset is 8."
             ],
             "type": {
               "defined": {
@@ -29377,9 +28917,9 @@ export type Velocity = {
           {
             "name": "clobMarket",
             "docs": [
-              "The market's book and its program, captured at attach time (the",
-              "resolver stages the executor's CLOB leg from here without holding",
-              "those accounts). Re-attach after a CLOB rotation."
+              "The market's book and its program, captured at attach time. The",
+              "resolver stages the executor's CLOB leg from here without holding those",
+              "accounts. Attach again after a CLOB rotation."
             ],
             "type": "pubkey"
           },
@@ -29390,8 +28930,8 @@ export type Velocity = {
           {
             "name": "oracle",
             "docs": [
-              "The market's oracle, captured at attach time (the staged executor's",
-              "map section)."
+              "The market's oracle, captured at attach time. It fills the map section",
+              "of the staged executor."
             ],
             "type": "pubkey"
           },
@@ -29406,10 +28946,10 @@ export type Velocity = {
           {
             "name": "padding",
             "docs": [
-              "Tail reserve: 3 bytes of alignment slack plus room for two more",
-              "captured pubkeys, so a resolver that needs another fixed account can",
-              "take it from here instead of forcing an `extend_account` migration on",
-              "every attached quoter entry."
+              "Tail reserve. A resolver that needs another fixed account takes a",
+              "pubkey from here. That avoids an `extend_account` migration on every",
+              "attached quoter entry. The length also keeps `SIZE - 8` a multiple of",
+              "16."
             ],
             "type": {
               "array": [
@@ -29426,23 +28966,23 @@ export type Velocity = {
       "docs": [
         "One market's approved quoters, in one account.",
         "",
-        "The slab exists to spend one account lock where per-quoter registry",
-        "entries spent one each: a router fill carries the slab plus each quoter's",
-        "program and response account, so a quoter costs two unshared locks instead",
-        "of three, on the budget that decides how many quoters a route can hold.",
-        "A route names the slots it consults by carrying their response accounts —",
-        "the slab itself carries no per-transaction selection.",
+        "The slab spends one account lock where per-quoter registry entries spent one",
+        "each. A router fill carries the slab plus each quoter's program and response",
+        "account, so a quoter costs two unshared locks instead of three. That budget",
+        "decides how many quoters a route can hold. A route names the slots it",
+        "consults by carrying their response accounts. The slab itself carries no",
+        "per-transaction selection.",
         "",
         "This struct is only the fixed header. The slot region follows it in the",
-        "account's remaining bytes: back-to-back [`QuoterSlotV0`]s, so capacity is",
-        "the account's size, never a layout constant. The approval flow keeps the",
-        "account right-sized: it grows by exactly the slot an approval needs and",
-        "gives trailing vacancy back on revocation, so readers pay compute for the",
-        "roster rather than for a guess made at creation. Read it through",
-        "[`quoter_slab_slots`] / [`quoter_slab_slots_mut`]; a vacant slot is all",
-        "zeroes, which is what a fresh or grown region holds.",
+        "account's remaining bytes as back-to-back [`QuoterSlotV0`]s, so capacity is",
+        "the account's size rather than a layout constant. The approval flow keeps",
+        "the account right-sized. It grows by exactly the slot an approval needs and",
+        "gives trailing vacancy back on revocation, so a reader pays compute for the",
+        "roster rather than for a guess made at creation. Read the region through",
+        "[`QuoterSlabExt::slots`] or [`QuoterSlabExt::slots_mut`]. A vacant slot is",
+        "all zeroes, which is what a fresh or grown region holds.",
         "",
-        "Creation is permissionless (`initialize_quoter_slab`): the payer buys",
+        "Creation through `initialize_quoter_slab` is permissionless. The payer buys",
         "rent on an all-vacant slab, and only the approval flow writes slots."
       ],
       "serialization": "bytemuckunsafe",
@@ -29455,15 +28995,15 @@ export type Velocity = {
           {
             "name": "market",
             "docs": [
-              "Perp market this slab serves; also in the PDA seeds."
+              "Perp market this slab serves. It is also in the PDA seeds."
             ],
             "type": "u16"
           },
           {
             "name": "capacity",
             "docs": [
-              "Slots the region holds. Written at creation and when the account",
-              "grows; the account must be at least [`QuoterSlabV0::space`] of it."
+              "Slots the region holds. Written at creation and when the account grows.",
+              "The account must be at least [`QuoterSlabV0::space`] of it."
             ],
             "type": "u16"
           },
@@ -29471,9 +29011,9 @@ export type Velocity = {
             "name": "bump",
             "docs": [
               "The slab PDA's bump, stored at creation. The slab is the identity",
-              "velocity signs every external quoter CPI as (see `crate::signer`), and",
-              "signing needs the bump; a stored byte is cheaper than a derivation on",
-              "every leg."
+              "velocity signs every external quoter CPI as. See `crate::signer`.",
+              "Signing needs the bump, and a stored byte is cheaper than a derivation",
+              "on every leg."
             ],
             "type": "u8"
           },
@@ -29489,11 +29029,11 @@ export type Velocity = {
           {
             "name": "clobMarket",
             "docs": [
-              "The market's book — the `Clob` slot's response account, written at",
-              "approval. Stored in the header so every accounts struct that names",
-              "both binds them with `has_one = clob_market`, a check the compiler",
-              "keeps on every context. Survives a book suspension, because the",
-              "removal paths must keep reaching a killed book; `Pubkey::default()`",
+              "The market's book, which is the `Clob` slot's response account, written",
+              "at approval. It is stored in the header so every accounts struct that",
+              "names both binds them with `has_one = clob_market`, a check the compiler",
+              "keeps on every context. It survives a book suspension, because the",
+              "removal paths must keep reaching a killed book. `Pubkey::default()`",
               "means no book was ever approved."
             ],
             "type": "pubkey"
@@ -29536,17 +29076,17 @@ export type Velocity = {
     {
       "name": "quoterV0",
       "docs": [
-        "The staging half of the registry: one entry per (perp market, quoter",
-        "program, quoted user), created by the quoted user's authority, holding the",
-        "config that authority proposes. Nothing fills from it — the admin copies",
-        "it into the market's [`QuoterSlabV0`] (`update_quoter_approved`), and",
-        "fills read only that copy. A maker edit here therefore never reaches flow",
-        "until the admin copies again, and the approved copy keeps serving its",
-        "vetted config in the meantime.",
+        "The staging half of the registry: one entry per perp market, quoter program",
+        "and quoted user. The quoted user's authority creates it, and it holds the",
+        "config that authority proposes.",
         "",
-        "The entry's address is also the quoter's *identity*: signed routes name",
-        "it, relay conditions reference it, and",
-        "its slab slot records it."
+        "Nothing fills from it. `update_quoter_approved` copies it into the market's",
+        "[`super::QuoterSlabV0`], and a fill reads only that copy. A maker edit here",
+        "therefore never reaches flow until the admin copies again, and the approved",
+        "copy keeps serving its vetted config in the meantime.",
+        "",
+        "The entry's address is also the quoter's identity. A signed route names it,",
+        "a relay condition references it, and its slab slot records it."
       ],
       "serialization": "bytemuckunsafe",
       "repr": {
@@ -29979,24 +29519,24 @@ export type Velocity = {
           {
             "name": "authority",
             "docs": [
-              "Only this signer may quote into the buffer, so two routers sharing a",
-              "market don't overwrite each other's reads."
+              "Only this signer may quote into the buffer, so two routers that share a",
+              "market do not overwrite each other's reads."
             ],
             "type": "pubkey"
           },
           {
             "name": "quotedSize",
             "docs": [
-              "Taker size the books were quoted at. Meaningful output, not an echo:",
-              "resting books (CLOB, DLOB) are size-independent and merely truncated",
-              "by it, while the vAMM's and a PropAMM's levels genuinely depend on it."
+              "Taker size the books were quoted at. The size changes the answer rather",
+              "than echoing the request. It only truncates a resting book on the CLOB",
+              "or the DLOB, but the vAMM's levels and a PropAMM's levels depend on it."
             ],
             "type": "u64"
           },
           {
             "name": "slot",
             "docs": [
-              "Slot the quote ran at, so a cached book's staleness is checkable."
+              "Slot the quote ran at, so a reader can tell how stale a cached book is."
             ],
             "type": "u64"
           },
@@ -30021,27 +29561,28 @@ export type Velocity = {
           {
             "name": "rowsTruncated",
             "docs": [
-              "The rows region filled before every source had been described, so the",
-              "last sources carry fewer rows than their books hold. The ladders are",
-              "unaffected — a row is detail about a level, never the level itself."
+              "The rows region filled before every source was described, so the last",
+              "sources carry fewer rows than their books hold. The ladders keep every",
+              "level. A row is detail about a level, never the level itself."
             ],
             "type": "bool"
           },
           {
             "name": "direction",
             "docs": [
-              "Taker direction quoted (`Direction` as u8: 0 = long, 1 = short)."
+              "Taker direction quoted, as a `Direction` cast to u8. 0 is long and 1 is",
+              "short."
             ],
             "type": "u8"
           },
           {
             "name": "padding",
             "docs": [
-              "Pads the header to 128 bytes: 12 bytes of alignment slack (so the",
-              "struct stays a multiple of 16 and `(SIZE - 8) % 16 == 0` holds — see",
-              "docs/alignment-and-native-offsets.md) plus room for two more pubkeys,",
-              "so naming another account in the header doesn't shift `sources` /",
-              "`levels` and break every off-chain decoder of this buffer."
+              "Pads the header to 128 bytes. The reserve holds two more pubkeys, so",
+              "naming another account in the header does not move `sources` or",
+              "`levels` and break every off-chain decoder of this buffer. The length",
+              "also keeps `(SIZE - 8) % 16 == 0`. See",
+              "docs/alignment-and-native-offsets.md."
             ],
             "type": {
               "array": [
@@ -30099,110 +29640,6 @@ export type Velocity = {
                 },
                 128
               ]
-            }
-          }
-        ]
-      }
-    },
-    {
-      "name": "scaleOrderParams",
-      "docs": [
-        "Parameters for placing scale orders - multiple limit orders distributed across a price range"
-      ],
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "marketType",
-            "type": {
-              "defined": {
-                "name": "marketType"
-              }
-            }
-          },
-          {
-            "name": "direction",
-            "type": {
-              "defined": {
-                "name": "positionDirection"
-              }
-            }
-          },
-          {
-            "name": "marketIndex",
-            "type": "u16"
-          },
-          {
-            "name": "totalBaseAssetAmount",
-            "docs": [
-              "Total base asset amount to distribute across all orders"
-            ],
-            "type": "u64"
-          },
-          {
-            "name": "startPrice",
-            "docs": [
-              "Starting price for the scale (in PRICE_PRECISION)"
-            ],
-            "type": "u64"
-          },
-          {
-            "name": "endPrice",
-            "docs": [
-              "Ending price for the scale (in PRICE_PRECISION)"
-            ],
-            "type": "u64"
-          },
-          {
-            "name": "orderCount",
-            "docs": [
-              "Number of orders to place (min 2, max 32)"
-            ],
-            "type": "u8"
-          },
-          {
-            "name": "sizeDistribution",
-            "docs": [
-              "How to distribute sizes across orders"
-            ],
-            "type": {
-              "defined": {
-                "name": "sizeDistribution"
-              }
-            }
-          },
-          {
-            "name": "reduceOnly",
-            "docs": [
-              "Whether orders should be reduce-only"
-            ],
-            "type": "bool"
-          },
-          {
-            "name": "postOnly",
-            "docs": [
-              "Post-only setting for all orders"
-            ],
-            "type": {
-              "defined": {
-                "name": "postOnlyParam"
-              }
-            }
-          },
-          {
-            "name": "bitFlags",
-            "docs": [
-              "Order bit flags"
-            ],
-            "type": "u8"
-          },
-          {
-            "name": "maxTs",
-            "docs": [
-              "Maximum timestamp for orders to be valid"
-            ],
-            "type": {
-              "option": "i64"
             }
           }
         ]
@@ -30325,15 +29762,15 @@ export type Velocity = {
       "docs": [
         "One signed message this user sent, and what is still live from it.",
         "",
-        "Two jobs. The `uuid` is replay protection, which is what this account was",
-        "built for. The rest is the routing state of the order that message became:",
-        "a signed-message order routes at placement and rests any remainder on the",
-        "market's CLOB, and the fill that resolves that remainder happens in a later",
-        "transaction built by somebody else. `route_digest` is what holds that",
-        "somebody to the quoters the taker chose, so it has to outlive the message.",
+        "The entry does two jobs. The `uuid` is replay protection, which is what",
+        "this account was built for. The rest is the routing state of the order the",
+        "message became. A signed-message order routes at placement and rests any",
+        "remainder on the market's CLOB. Somebody else builds the later transaction",
+        "that fills that remainder. `route_digest` holds that filler to the quoters",
+        "the taker chose, so it has to outlive the message.",
         "",
-        "Field order is chosen so `#[repr(C)]` leaves no padding hole: the two `u64`",
-        "fields sit on eight-byte boundaries and the two byte arrays need no",
+        "The field order leaves no padding hole under `#[repr(C)]`. The two `u64`",
+        "fields sit on eight-byte boundaries, and the two byte arrays need no",
         "alignment of their own. The stride is 40 bytes."
       ],
       "serialization": "bytemuckunsafe",
@@ -30489,10 +29926,10 @@ export type Velocity = {
     {
       "name": "signedMsgOrderParamsMessage",
       "docs": [
-        "Trailing fields are appended, never inserted: the verifier zero-pads a",
+        "Trailing fields are appended, never inserted. The verifier zero-pads a",
         "short payload before decoding, so an older producer's message reads as",
-        "`None` for everything it did not send (see",
-        "`validation::sig_verification`)."
+        "`None` for everything it did not send. See",
+        "`validation::sig_verification`."
       ],
       "type": {
         "kind": "struct",
@@ -30578,12 +30015,12 @@ export type Velocity = {
           {
             "name": "route",
             "docs": [
-              "The route the taker signed for: `QuoterV0` entries of the **custom**",
-              "quoters (PropAMMs) it wants used. The CLOB and the vAMM are the",
-              "mandatory baseline of every router fill, so they are implicit and",
-              "never named here. Advisory to the program today — swift forwards it",
-              "to keepers, which is what makes a routed order reach the quoters the",
-              "taker chose."
+              "The route the taker signed for. It names the `QuoterV0` entries of the",
+              "custom quoters, the PropAMMs, that the taker wants used. The CLOB and",
+              "the vAMM are the mandatory baseline of every router fill, so they are",
+              "implicit and never named here. The field is advisory to the program",
+              "today. Swift forwards it to keepers, and that is what makes a routed",
+              "order reach the quoters the taker chose."
             ],
             "type": {
               "option": {
@@ -30697,26 +30134,6 @@ export type Velocity = {
             "type": {
               "vec": "pubkey"
             }
-          }
-        ]
-      }
-    },
-    {
-      "name": "sizeDistribution",
-      "docs": [
-        "How to distribute order sizes across scale orders"
-      ],
-      "type": {
-        "kind": "enum",
-        "variants": [
-          {
-            "name": "flat"
-          },
-          {
-            "name": "ascending"
-          },
-          {
-            "name": "descending"
           }
         ]
       }
@@ -31371,8 +30788,8 @@ export type Velocity = {
             "docs": [
               "Protocol's carveout of lending deposit-interest gains, routed to",
               "`protocol_fee_pool`. precision: IF_FACTOR_PRECISION. A cut too small to",
-              "reach a whole unit is carried on the carveout pools, not floored away. See",
-              "`split_deposit_interest`."
+              "reach a whole unit is carried on the carveout pools rather than floored",
+              "away. See `split_deposit_interest`."
             ],
             "type": "u32"
           },
@@ -31383,7 +30800,7 @@ export type Velocity = {
               "settle. `settle_revenue_to_insurance_fund` starts each period by writing",
               "the live vault balance plus the amount that settle transfers in, and",
               "`record_insurance_fund_outflow` lowers it on every path that moves tokens",
-              "out of the vault: `remove_insurance_fund_stake`,",
+              "out of the vault. Those paths are `remove_insurance_fund_stake`,",
               "`resolve_perp_pnl_deficit`, `resolve_perp_bankruptcy`, and",
               "`resolve_spot_bankruptcy`. A transfer into the vault never raises it, so",
               "it lags the live vault by up to one `revenue_settle_period`.",
@@ -31391,20 +30808,21 @@ export type Velocity = {
               "The per-period revenue-settle APR cap is sized off",
               "`min(live_if_vault, this)`, so it counts only capital the fund held for",
               "the whole period. A donation spiked into the live vault right before a",
-              "settle is absent from this field and cannot lift the cap. Tracking the",
-              "running minimum is what closes the same trick after a dip: a loss draw",
-              "takes the vault to 100, a donation puts it back to 1000, and a plain",
-              "end-of-period snapshot would read 1000 again. A donation that does",
-              "survive a full period counts, and correctly so — by then it belongs to",
-              "the stakers pro rata, so the fund really is that large.",
+              "settle is absent from this field and cannot lift the cap. The running",
+              "minimum closes the same trick after a dip. A loss draw takes the vault",
+              "to 100 and a donation puts it back to 1000, where a plain end-of-period",
+              "snapshot would read 1000 again. A donation that survives a full period",
+              "does count. By then it belongs to the stakers pro rata, so the fund",
+              "really is that large.",
               "",
               "`0` means the market never settled revenue, or settled while the vault",
-              "was empty. Both give a cap base of `0` for one period and then self-heal,",
+              "was empty. Both give a cap base of `0` for one period and then recover,",
               "because the settle that reads `0` still writes the new period's balance.",
               "",
-              "(The unstake-cancel share forfeiture is donation-proofed differently — by",
-              "withdraw-and-restake at the active share price — and does *not* read this",
-              "field.) Repurposed from trailing padding — layout and size are unchanged."
+              "The unstake-cancel share forfeiture does not read this field. It is",
+              "donation-proofed by withdraw-and-restake at the active share price. The",
+              "field was repurposed from trailing padding, so the layout and the size",
+              "are unchanged."
             ],
             "type": "u64"
           },
@@ -31746,9 +31164,9 @@ export type Velocity = {
           {
             "name": "defaultSpotAuctionDuration",
             "docs": [
-              "An actual slot-count setting, not a wall-clock duration. It currently has",
-              "no onchain reader (spot DLOB trading is disabled), so it intentionally",
-              "remains raw rather than using `StoredSlotDuration`."
+              "A slot count rather than a wall-clock duration. Spot DLOB trading is",
+              "disabled, so no onchain reader reads it. It therefore stays raw instead",
+              "of using `StoredSlotDuration`."
             ],
             "type": "u8"
           },
@@ -31834,12 +31252,12 @@ export type Velocity = {
           {
             "name": "promoFeeTier",
             "docs": [
-              "Promotional fee-tier floor applied to every account: the effective",
-              "perp fee tier is `max(volume tier, promo_fee_tier)` (clamped to the",
-              "configured tier count), so nobody is downgraded by it. 0 = no-op",
-              "(disabled), also what pre-upgrade accounts read from former padding.",
-              "Reset to 0 and every account is back on its volume tier at its next",
-              "fill; no per-user state."
+              "Promotional fee-tier floor applied to every account. The effective perp",
+              "fee tier is `max(volume tier, promo_fee_tier)`, clamped to the",
+              "configured tier count, so it never downgrades an account. Zero disables",
+              "it, and a pre-upgrade account reads zero out of former padding. A reset",
+              "to zero puts every account back on its volume tier at its next fill,",
+              "because no per-user state records the promotion."
             ],
             "type": "u8"
           },
@@ -32110,8 +31528,8 @@ export type Velocity = {
     {
       "name": "syncLiqConditionsArgs",
       "docs": [
-        "What the caller asks for; the terms the account ends up holding are",
-        "[`SyncLiqConditionsTerms`], derived from these."
+        "What the caller asks for. [`SyncLiqConditionsTerms`] holds the terms the",
+        "account ends up with, derived from these."
       ],
       "type": {
         "kind": "struct",
@@ -32120,16 +31538,16 @@ export type Velocity = {
             "name": "syncCostUnits",
             "docs": [
               "Cost units the staged self-sync requests, measured by simulating it.",
-              "Priced against `State.transaction_fee_rails`. 0 keeps the watch/poll",
-              "conditions inactive (manual syncs only) — turners have no signal to",
-              "take unpaid work."
+              "Priced against `State.transaction_fee_rails`. Zero leaves the watch and",
+              "the fallback poll inactive, so only a manual sync updates the block. A",
+              "turner has no signal to take unpaid work."
             ],
             "type": "u32"
           },
           {
             "name": "syncFallbackSlots",
             "docs": [
-              "Coarse fallback interval, in slots. 0 = use the previous value."
+              "Coarse fallback interval, in slots. Zero keeps the previous value."
             ],
             "type": "u64"
           }
@@ -32140,10 +31558,10 @@ export type Velocity = {
       "name": "takerOriginCrossRecordV0",
       "docs": [
         "The first shape of the taker-origin resolution record, from when the crank",
-        "resolved a cross against exactly one book counterparty. Superseded by",
-        "[`TakerOriginCrossRecordV1`]: the crank now routes the remainder, so a",
-        "single `maker` no longer describes the match. Kept so a reader of historical",
-        "logs still has the type — nothing emits it."
+        "resolved a cross against exactly one book counterparty.",
+        "[`TakerOriginCrossRecordV1`] replaces it. The crank now routes the",
+        "remainder, so a single `maker` no longer describes the match. Nothing emits",
+        "this type. It stays so that a reader of historical logs still has it."
       ],
       "type": {
         "kind": "struct",
@@ -32166,8 +31584,8 @@ export type Velocity = {
           {
             "name": "taker",
             "docs": [
-              "owner of the taker-origin order that aggressed this match — the later of",
-              "the two to rest when both sides were taker-origin"
+              "owner of the taker-origin order that took liquidity in this match. When",
+              "both sides were taker-origin, this is the later of the two to rest."
             ],
             "type": "pubkey"
           },
@@ -32210,7 +31628,7 @@ export type Velocity = {
           {
             "name": "improvement",
             "docs": [
-              "gross quote the taker gained: |rest_price − fill_price| × base"
+              "gross quote the taker gained, |rest_price - fill_price| times base"
             ],
             "type": "u64"
           },
@@ -32224,36 +31642,36 @@ export type Velocity = {
           {
             "name": "makerTakerOrigin",
             "docs": [
-              "the counterparty was itself a migrated taker remainder, and won the",
-              "price by resting first — so this match was two remainders clearing",
-              "against each other rather than one against an ordinary maker"
+              "true when the counterparty was itself a migrated taker remainder that",
+              "won the price by resting first. The match was then two remainders",
+              "clearing against each other rather than one against an ordinary maker."
             ],
             "type": "bool"
           },
           {
             "name": "remainderBaseAssetAmount",
             "docs": [
-              "size the match was too small to consume, put back on the book still",
-              "taker-origin (0 when the cross consumed both orders outright, or when",
-              "the leftover was below the book's minimum and was dropped)"
+              "size the match was too small to consume, placed back on the book still",
+              "taker-origin. Zero when the cross consumed both orders, or when what",
+              "was left fell below the book's minimum and was dropped."
             ],
             "type": "u64"
           },
           {
             "name": "remainderOrderId",
             "docs": [
-              "the re-placed remainder's new CLOB order id (0 when nothing was",
-              "re-placed) — the old handle is stale, this is the client's new one"
+              "the re-placed remainder's new CLOB order id. Zero when nothing was",
+              "re-placed. The client's old handle is stale, and this is its new one."
             ],
             "type": "u64"
           },
           {
             "name": "remainderOwner",
             "docs": [
-              "whose remainder was re-placed: `taker` or `maker` above (the default",
-              "pubkey when nothing was). Only a match between two remainders can leave",
-              "it on the maker, since an ordinary counterparty is consumed to exactly",
-              "the size the cross was priced for"
+              "whose remainder was re-placed, `taker` or `maker` above. The default",
+              "pubkey when nothing was. Only a match between two remainders can leave",
+              "it on the maker, because an ordinary counterparty is consumed to",
+              "exactly the size the cross was priced for."
             ],
             "type": "pubkey"
           }
@@ -32263,17 +31681,17 @@ export type Velocity = {
     {
       "name": "takerOriginCrossRecordV1",
       "docs": [
-        "Emitted when `crank_taker_origin_cross` resolves a resting taker remainder:",
-        "what the taker gained by being routed instead of left at its own price, and",
-        "what the cranker took out of that.",
+        "Emitted when `crank_taker_origin_cross` resolves a resting taker remainder.",
+        "It reports what the taker gained by being routed instead of left at its own",
+        "price, and what the cranker took out of that gain.",
         "",
-        "The fill itself also emits the ordinary `OrderActionRecord`s for the match —",
-        "one per source the router reached, which is where the counterparties are",
-        "named. This record carries what those structurally cannot: the price the",
-        "order was *resting* at (an `OrderActionRecord` only ever knows the price it",
-        "filled at), the improvement between the two, and the crank reward, which is",
-        "charged to the taker out of the improvement rather than carved out of the",
-        "taker fee, so it never appears as that record's `filler_reward`."
+        "The fill also emits the ordinary `OrderActionRecord`s for the match, one",
+        "per source the router reached. Those records name the counterparties. This",
+        "record carries three things they cannot. The price the order was resting",
+        "at, because an `OrderActionRecord` only knows the price it filled at. The",
+        "improvement between the two prices. The crank reward, which is charged to",
+        "the taker out of the improvement rather than taken from the taker fee, so",
+        "it never appears as that record's `filler_reward`."
       ],
       "type": {
         "kind": "struct",
@@ -32296,8 +31714,9 @@ export type Velocity = {
           {
             "name": "taker",
             "docs": [
-              "owner of the remainder this crank resolved. When two remainders crossed,",
-              "this is the later of the two to rest — the one demanding liquidity."
+              "owner of the remainder this crank resolved. When two remainders",
+              "crossed, this is the later of the two to rest, the one that demanded",
+              "liquidity."
             ],
             "type": "pubkey"
           },
@@ -32334,7 +31753,7 @@ export type Velocity = {
           {
             "name": "improvement",
             "docs": [
-              "gross quote the taker gained: |rest_price − fill_price| × base"
+              "gross quote the taker gained, |rest_price - fill_price| times base"
             ],
             "type": "u64"
           },
@@ -32348,18 +31767,18 @@ export type Velocity = {
           {
             "name": "remainderBaseAssetAmount",
             "docs": [
-              "size still resting after the fill (0 when the fill took the whole",
+              "size still resting after the fill. Zero when the fill took the whole",
               "remainder, or when what was left fell under the book's minimum and was",
-              "culled)"
+              "culled."
             ],
             "type": "u64"
           },
           {
             "name": "clobOrderId",
             "docs": [
-              "the CLOB order this resolved. It keeps its id and its queue position —",
-              "the fill shrinks it in place rather than re-placing it, so a client's",
-              "existing handle stays good."
+              "the CLOB order this resolved. It keeps its id and its queue position,",
+              "because the fill shrinks it in place rather than re-placing it. A",
+              "client's existing handle stays good."
             ],
             "type": "u64"
           }
@@ -32583,8 +32002,9 @@ export type Velocity = {
           {
             "name": "quoterSlab",
             "docs": [
-              "The market's quoter slab / book / program — set when this slot's",
-              "executor is `trigger_limit_order_v1`, zeroed for `trigger_order`."
+              "The market's quoter slab, book and program. They are set when this",
+              "slot's executor is `trigger_limit_order_v1`, and zeroed for",
+              "`trigger_order`."
             ],
             "type": "pubkey"
           },
@@ -32619,18 +32039,19 @@ export type Velocity = {
     {
       "name": "updateCrankTreasuryArgs",
       "docs": [
-        "Both levels are counted in cranks rather than lamports, so one setting",
-        "serves every market: a market whose cranks cost more carries a",
-        "proportionally larger float.",
+        "Both levels are counted in cranks and not in lamports, so one setting serves",
+        "every market. A market whose cranks cost more then holds a proportionally",
+        "larger balance.",
         "",
-        "The target is read at refill time and so reaches every market at once. The",
-        "watermark is resolved to lamports and written onto a market at attach,",
-        "because it is the threshold that market's wake condition carries, so a new",
-        "watermark reaches a market on its next attach.",
+        "A refill reads the target, so a new target reaches every market at once. The",
+        "attach resolves the watermark to lamports and writes it onto the market,",
+        "because the market's wake condition carries that threshold. A new watermark",
+        "therefore reaches a market on that market's next attach.",
         "",
-        "What a refill *pays* is not set here. It is priced from the network rails",
-        "like every other crank and stored on the market whose reservoir it fills,",
-        "because that is where the condition advertising it lives."
+        "This instruction does not set what a refill pays. That payment is priced from",
+        "the network rails like every other crank. It is stored on the market whose",
+        "reservoir the refill fills, because the condition that advertises it lives",
+        "there."
       ],
       "type": {
         "kind": "struct",
@@ -32655,13 +32076,13 @@ export type Velocity = {
     {
       "name": "updateLiquidationCrankReimbursementArgs",
       "docs": [
-        "Set what the protocol will spend getting a liquidation cranked, and the",
-        "market whose oracle prices it.",
+        "Sets what the protocol spends to get a liquidation cranked, and the market",
+        "whose oracle prices that spend.",
         "",
         "A liquidation crank repays the priority fee its keeper paid, so the crank",
-        "stays worth landing when the fee market moves — and this bounds that at a",
-        "share of what the liquidation recovers, so a recovery too small to cover",
-        "its own gas is simply left. Both halves are needed: a share with no SOL",
+        "stays worth landing when the fee market moves. The share bounds that repay",
+        "at a fraction of what the liquidation recovers. A recovery too small to",
+        "cover its own gas is left alone. Both fields are needed. A share with no SOL",
         "market has no way to turn quote into lamports, and a market with no share",
         "spends nothing.",
         "",
@@ -32692,24 +32113,17 @@ export type Velocity = {
     {
       "name": "updatePerpMarketClobQuoterArgs",
       "docs": [
-        "Name the market's canonical CLOB quoter entry: once set, every router",
-        "fill must carry it in its quoter section (mandatory baseline — a route",
-        "can't exclude the public book). A dead entry is still passed but skipped",
-        "at quote time, so deactivating the book never bricks fills; there is no",
-        "clear path for the same reason — kill the entry instead.",
+        "Names the market's canonical CLOB quoter entry. Once the entry is set,",
+        "every router fill must carry it in its quoter section, so a route cannot",
+        "exclude the public book. A dead entry is still passed but skipped at quote",
+        "time, so deactivating the book never stops fills. There is no clear path for",
+        "the same reason. Kill the entry instead.",
         "",
-        "The attach also stands up (or, on re-attach, rewrites) the market's relay",
-        "crank conditions: the evict/expire condition block plus the lamport",
-        "reservoir that pays relay keepers per crank. This is the earliest point the",
-        "full reference graph (book + registry entry) exists, so a new market needs",
-        "no separate conditions ceremony, and re-pricing the cranks is just",
-        "re-running the attach.",
-        "",
-        "`crank_cost_units` is what each crank requests, measured by simulating it.",
-        "The lamport payments are derived here from `State.transaction_fee_rails`,",
-        "so a change in what the network charges is one write to the rails plus a",
-        "re-run of this instruction per market — not a fresh round of guesswork per",
-        "market."
+        "The attach also writes the market's relay crank conditions. Those are the",
+        "evict and expire condition block, plus the lamport reservoir that pays relay",
+        "keepers per crank. A re-attach rewrites them. The attach is the earliest",
+        "point at which the full reference graph exists, that is the book and the",
+        "registry entry, so a new market needs no separate conditions ceremony."
       ],
       "type": {
         "kind": "struct",
@@ -32718,7 +32132,9 @@ export type Velocity = {
             "name": "crankCostUnits",
             "docs": [
               "What each crank requests, measured by simulating it. The lamport",
-              "payments derive from these and `State.transaction_fee_rails`."
+              "payments derive from these and `State.transaction_fee_rails`. A change",
+              "in what the network charges is therefore one write to the rails plus a",
+              "re-run of this instruction per market."
             ],
             "type": {
               "defined": {
@@ -32771,7 +32187,7 @@ export type Velocity = {
           {
             "name": "metas",
             "docs": [
-              "The unified registered list, replacing the stored one whole."
+              "The unified registered list. It replaces the stored list whole."
             ],
             "type": {
               "vec": {
@@ -32819,7 +32235,7 @@ export type Velocity = {
           {
             "name": "approved",
             "docs": [
-              "True copies the staged config into the slab; false pulls the copy."
+              "True copies the staged config into the slab. False pulls the copy."
             ],
             "type": "bool"
           }
@@ -32884,8 +32300,8 @@ export type Velocity = {
           {
             "name": "maxOracleDeviationBps",
             "docs": [
-              "In MARGIN_PRECISION units, so one unit is one basis point. Zero clears",
-              "the declaration and the market's own band stands."
+              "In `MARGIN_PRECISION` units, so one unit is one basis point. Zero clears",
+              "the declaration, and the market's own band stands."
             ],
             "type": "u32"
           }
@@ -32900,7 +32316,7 @@ export type Velocity = {
           {
             "name": "priority",
             "docs": [
-              "Routing tier at a shared price: lower fills first, pro rata within."
+              "Routing tier at a shared price. A lower value fills first."
             ],
             "type": "u8"
           }
@@ -32919,7 +32335,7 @@ export type Velocity = {
           {
             "name": "watchLen",
             "docs": [
-              "0 clears the declaration (poll-only discovery)."
+              "Zero clears the declaration. Discovery then polls."
             ],
             "type": "u32"
           }
@@ -33209,9 +32625,10 @@ export type Velocity = {
           {
             "name": "relay",
             "docs": [
-              "Everything relay needs hosted, in one field: the `relay-spec` header,",
-              "the condition slots, and the shared sync account list (see",
-              "[`LIQ_SYNC_ACCOUNTS_MAX`]). First field, so its watch offset is 8."
+              "Everything relay needs, in one field. It holds the `relay-spec`",
+              "header, the condition slots, and the shared sync account list. See",
+              "[`LIQ_SYNC_ACCOUNTS_MAX`]. This is the first field, so its watch offset",
+              "is 8."
             ],
             "type": {
               "defined": {
@@ -33238,7 +32655,7 @@ export type Velocity = {
           {
             "name": "triggerResolvers",
             "docs": [
-              "Per-slot trigger resolver lists (see [`TRIGGER_RESOLVERS_LEN`])."
+              "Per-slot trigger resolver lists. See [`TRIGGER_RESOLVERS_LEN`]."
             ],
             "type": {
               "array": [
@@ -33282,12 +32699,10 @@ export type Velocity = {
             "name": "positionsDigest",
             "docs": [
               "Digest of the exposures the last sync ran against. The resolver",
-              "compares it to the user's current positions to decide staleness —",
-              "comparing *watched markets* instead never converges for a user",
-              "whose exposures produce no watchable threshold (an unsupported",
-              "oracle layout, a market with no reservoir), leaving the",
-              "level-triggered sync wake firing forever. The localnet harness",
-              "caught exactly that loop, once a second."
+              "compares it to the user's current positions to decide staleness.",
+              "Comparing watched markets instead never converges for a user whose",
+              "exposures arm no condition, such as one in a market with no crank",
+              "reservoir. The level-triggered sync wake then fires forever."
             ],
             "type": "u64"
           },
@@ -33298,19 +32713,18 @@ export type Velocity = {
               "",
               "A resync is paid at most once per [`Self::sync_fallback_slots`], which",
               "is the cadence the fallback poll already runs at. Opting in is",
-              "permissionless and the treasury pays, so without this anyone could",
-              "crank the same account in a loop and draw the fee every time — real",
-              "work is not required for the instruction to succeed, only for it to be",
-              "worth paying for."
+              "permissionless and the treasury pays. Without this slot anyone could",
+              "crank the same account in a loop and draw the fee every time. The",
+              "instruction succeeds whether or not it had real work to do."
             ],
             "type": "u64"
           },
           {
             "name": "padding",
             "docs": [
-              "Tail reserve: 8 bytes of alignment slack plus room for two more",
-              "pubkeys, so a future sync input can be captured here instead of",
-              "forcing an `extend_account` migration on every opted-in user."
+              "Tail reserve, sized for two more pubkeys. A future sync input is",
+              "captured here instead of forcing an `extend_account` migration on every",
+              "opted-in user."
             ],
             "type": {
               "array": [
@@ -33517,10 +32931,11 @@ export type Velocity = {
           {
             "name": "acceleratedReferralStatus",
             "docs": [
-              "Persistent referral reward status. See [`AcceleratedReferralStatus`]. Kept",
-              "separate from `referrer_status`, which describes whether this authority",
-              "refers or was referred by somebody else. Carved out of former padding so",
-              "preupgrade accounts read `0` (standard, automatic enrollment allowed)."
+              "Persistent referral reward status. See [`AcceleratedReferralStatus`].",
+              "This is separate from `referrer_status`, which says whether this",
+              "authority refers or was referred by somebody else. The field comes out",
+              "of former padding, so an account written before the upgrade reads `0`.",
+              "That value is standard status with automatic enrollment allowed."
             ],
             "type": "u8"
           },

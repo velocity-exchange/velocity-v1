@@ -7,7 +7,7 @@ use {
     crate::{
         controller::{
             funding::settle_funding_payment,
-            orders::{self, cancel_order, place_perp_order},
+            orders::{self, create_ephemeral_perp_order},
             position::{
                 get_position_index, update_position_and_market, update_quote_asset_amount,
                 update_quote_asset_and_break_even_amount, update_settled_pnl, PositionDirection,
@@ -847,8 +847,8 @@ pub enum LiquidationStep {
     /// position, or its shortage allows no transfer yet. All three are correct
     /// outcomes, and none of them leaves work for the caller.
     Settled,
-    /// A forced order rests in the liquidated user's own slots. Fill it,
-    /// then hand both back to [`settle_liquidation_fill`].
+    /// A forced order is built and waiting for its fill. Route it, then hand
+    /// it and the fill back to [`settle_liquidation_fill`].
     Placed(PlacedLiquidation),
 }
 
@@ -859,8 +859,11 @@ pub enum LiquidationStep {
 /// fill. Every field here is computed before the fill and read after it, so
 /// carrying the field is what lets the caller run the fill.
 pub struct PlacedLiquidation {
-    /// The forced order, in the liquidated user's own `orders`.
-    pub order_id: u32,
+    /// The forced order itself. It holds no slot in the liquidated user's
+    /// `orders`, so the caller routes it through
+    /// `FillTarget::Detached { reserved: false }` and the fill writes its
+    /// progress back here.
+    pub order: Order,
     pub market_index: u16,
     liquidation_id: u16,
     liquidation_mode: Box<dyn LiquidatePerpMode>,
@@ -1253,12 +1256,15 @@ pub fn place_liquidation_order<'info>(
         liquidator_fee,
     )?;
 
-    let order_id = user.next_order_id;
     let fill_record_id = maps
         .perp_market_map
         .get_ref(&market_index)?
         .next_fill_record_id;
-    place_perp_order(
+
+    // The forced order never occupies a slot. A liquidation fills what it
+    // builds in the same instruction and rests no remainder, so a slot would
+    // be written and cancelled without anything ever reading it.
+    let order = create_ephemeral_perp_order(
         state,
         &mut user,
         *user_key,
@@ -1267,7 +1273,14 @@ pub fn place_liquidation_order<'info>(
         order_params,
         PlaceOrderOptions::default().explanation(OrderActionExplanation::Liquidation),
         &mut None,
-    )?;
+    )?
+    .ok_or_else(|| {
+        // The soft skips are an expired `max_ts` and a `TryPostOnly` order that
+        // would cross. A forced order is a market order with neither, so this
+        // is unreachable rather than a case with a correct empty outcome.
+        msg!("liquidation order was not built");
+        ErrorCode::LiquidationOrderFailedToFill
+    })?;
 
     drop(user);
     drop(liquidator);
@@ -1276,7 +1289,7 @@ pub fn place_liquidation_order<'info>(
     // so the forced order routes like any other taker order and reaches the
     // market's book rather than only the makers the caller loaded.
     Ok(LiquidationStep::Placed(PlacedLiquidation {
-        order_id,
+        order,
         market_index,
         liquidation_id,
         liquidation_mode,
@@ -1315,7 +1328,7 @@ pub fn settle_liquidation_fill<'info>(
         ..
     } = parties;
     let PlacedLiquidation {
-        order_id,
+        order,
         market_index,
         liquidation_id,
         liquidation_mode,
@@ -1338,20 +1351,8 @@ pub fn settle_liquidation_fill<'info>(
 
     let mut user = load_mut!(user_loader)?;
 
-    if let Ok(order_index) = user.get_order_index(order_id) {
-        cancel_order(
-            order_index,
-            &mut user,
-            user_key,
-            maps,
-            clock.unix_timestamp,
-            clock.slot,
-            OrderActionExplanation::None,
-            Some(liquidator_key),
-            0,
-            false,
-        )?;
-    }
+    // Nothing is cancelled here. The forced order held no slot and reserved
+    // nothing, so whatever the fill left unfilled goes out of scope with it.
 
     // no fill
     if fill_base_asset_amount == 0 {
@@ -1425,7 +1426,7 @@ pub fn settle_liquidation_fill<'info>(
             oracle_price,
             base_asset_amount: user_position_delta.base_asset_amount,
             quote_asset_amount: user_position_delta.quote_asset_amount,
-            user_order_id: order_id,
+            user_order_id: order.order_id,
             liquidator_order_id: 0,
             fill_record_id,
             liquidator_fee: 0,

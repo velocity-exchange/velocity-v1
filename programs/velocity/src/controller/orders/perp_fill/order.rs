@@ -44,8 +44,8 @@ use {
 /// The route still runs over the vAMM ladder and the passed DLOB makers. The
 /// split has no CPI book to price in. Every fill entrypoint that carries no
 /// quoter accounts arrives here.
-pub fn fill_perp_order_without_external_books<'info>(
-    order_id: u32,
+pub fn fill_perp_order_without_external_books<'a, 'info>(
+    target: FillTarget<'a>,
     state: &State,
     user: &AccountLoader<'info, User>,
     user_stats: &AccountLoader<'info, UserStats>,
@@ -74,7 +74,7 @@ pub fn fill_perp_order_without_external_books<'info>(
     };
     fill_perp_order(
         FillRequest {
-            target: FillTarget::Slot(order_id),
+            target,
             mode: fill_mode,
             referrer_is_accelerated,
         },

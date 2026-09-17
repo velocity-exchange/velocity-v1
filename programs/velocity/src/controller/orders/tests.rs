@@ -3183,7 +3183,7 @@ pub mod fulfill_order {
                 orders::{
                     fill_perp_order_without_external_books, fill_within_taker_risk_limits,
                     validate_market_within_price_band, FillAmounts, FillConditions, FillParties,
-                    FillerSide, OfferedLiquidity, PricingRules, TakerSide,
+                    FillTarget, FillerSide, OfferedLiquidity, PricingRules, TakerSide,
                 },
                 position::PositionDirection,
             },
@@ -6062,7 +6062,7 @@ pub mod fulfill_order {
         };
 
         let filled = fill_perp_order_without_external_books(
-            1,
+            FillTarget::Slot(1),
             &state,
             &user_account_loader,
             &user_stats_account_loader,
@@ -6087,7 +6087,7 @@ pub mod fulfill_order {
         maps.perp_market_map = perp_market_map;
 
         let filled = fill_perp_order_without_external_books(
-            1,
+            FillTarget::Slot(1),
             &state,
             &user_account_loader,
             &user_stats_account_loader,
@@ -7254,7 +7254,8 @@ pub mod fill_order {
         super::*,
         crate::{
             controller::{
-                orders::fill_perp_order_without_external_books, position::PositionDirection,
+                orders::{fill_perp_order_without_external_books, FillTarget},
+                position::PositionDirection,
             },
             create_anchor_account_info,
             error::ErrorCode,
@@ -7471,7 +7472,7 @@ pub mod fill_order {
         };
 
         let filled = fill_perp_order_without_external_books(
-            1,
+            FillTarget::Slot(1),
             &state,
             &user_account_loader,
             &user_stats_account_loader,
@@ -7682,7 +7683,7 @@ pub mod fill_order {
         };
 
         let filled = fill_perp_order_without_external_books(
-            1,
+            FillTarget::Slot(1),
             &state,
             &user_account_loader,
             &user_stats_account_loader,
@@ -7810,7 +7811,7 @@ pub mod fill_order {
         };
 
         let filled = fill_perp_order_without_external_books(
-            1,
+            FillTarget::Slot(1),
             &state,
             &user_account_loader,
             &user_stats_account_loader,
@@ -7981,7 +7982,7 @@ pub mod fill_order {
         };
 
         let err = fill_perp_order_without_external_books(
-            1,
+            FillTarget::Slot(1),
             &state,
             &user_account_loader,
             &user_stats_account_loader,

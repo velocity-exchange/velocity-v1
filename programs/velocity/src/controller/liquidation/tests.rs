@@ -2924,7 +2924,7 @@ pub mod liquidate_perp_with_fill {
                     place_liquidation_order, settle_liquidation_fill, LiquidationParties,
                     LiquidationStep,
                 },
-                orders::fill_perp_order_without_external_books,
+                orders::{fill_perp_order_without_external_books, FillTarget},
                 position::PositionDirection,
             },
             create_anchor_account_info,
@@ -2994,9 +2994,12 @@ pub mod liquidate_perp_with_fill {
         };
         match place_liquidation_order(market_index, refreshed(), maps, clock, state)? {
             LiquidationStep::Settled => Ok(0),
-            LiquidationStep::Placed(placed) => {
+            LiquidationStep::Placed(mut placed) => {
                 let filled = fill_perp_order_without_external_books(
-                    placed.order_id,
+                    FillTarget::Detached {
+                        order: &mut placed.order,
+                        reserved: false,
+                    },
                     state,
                     user,
                     user_stats,

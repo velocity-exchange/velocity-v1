@@ -251,7 +251,7 @@ pub fn place_and_take_perp_order_legacy<'info>(
         auction_duration_percentage,
     );
     let filled = controller::orders::fill_perp_order_without_external_books(
-        order_id,
+        controller::orders::FillTarget::Slot(order_id),
         &state,
         accounts.user,
         accounts.user_stats,

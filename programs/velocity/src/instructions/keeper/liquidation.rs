@@ -139,8 +139,8 @@ pub fn handle_liquidate_perp_with_fill<'c: 'info, 'info>(
         &state,
     )? {
         controller::liquidation::LiquidationStep::Settled => 0,
-        controller::liquidation::LiquidationStep::Placed(placed) => {
-            let fill = books.route_fill(placed.order_id, &mut maps, &clock)?;
+        controller::liquidation::LiquidationStep::Placed(mut placed) => {
+            let fill = books.route_fill(&mut placed.order, &mut maps, &clock)?;
             controller::liquidation::settle_liquidation_fill(
                 placed,
                 fill,
@@ -196,20 +196,20 @@ struct LiquidationBooks<'a, 'info> {
 }
 
 impl<'info> LiquidationBooks<'_, 'info> {
-    /// Fill the order the liquidation placed, through the market's book, its
+    /// Fill the order the liquidation built, through the market's book, its
     /// quoters and the vAMM.
+    ///
+    /// The order holds no slot, so it arrives by reference and the fill writes
+    /// its progress back through the same reference.
     fn route_fill(
         &self,
-        order_id: u32,
+        order: &mut Order,
         maps: &mut AccountMaps<'info>,
         clock: &Clock,
     ) -> Result<controller::orders::FillAmounts> {
         let market_index = self.market_index;
-        let order = {
+        let routed = {
             let user = load!(self.user)?;
-            let order = user
-                .get_order(order_id)
-                .ok_or(ErrorCode::OrderDoesNotExist)?;
             RouteContext {
                 market_index,
                 maps,
@@ -228,10 +228,10 @@ impl<'info> LiquidationBooks<'_, 'info> {
                 },
             ),
         )?;
-        let inputs = order.quote_inputs(
+        let inputs = routed.quote_inputs(
             market_index,
             &users,
-            self.served_window(&order, clock.slot, &mut cpi_scratch)?,
+            self.served_window(&routed, clock.slot, &mut cpi_scratch)?,
         );
         let quoted = crate::instructions::quote_route(
             self.tail,
@@ -273,7 +273,12 @@ impl<'info> LiquidationBooks<'_, 'info> {
         });
         Ok(controller::orders::fill_perp_order(
             controller::orders::FillRequest {
-                target: controller::orders::FillTarget::Slot(order_id),
+                // The forced order never reserved `open_bids`/`open_asks`, so
+                // the fill must not unwind a reservation for it.
+                target: controller::orders::FillTarget::Detached {
+                    order,
+                    reserved: false,
+                },
                 mode: FillMode::Liquidation,
                 referrer_is_accelerated: false,
             },

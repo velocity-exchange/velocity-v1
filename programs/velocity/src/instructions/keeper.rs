@@ -112,7 +112,9 @@ use {
                 get_writable_spot_market_set, get_writable_spot_market_set_from_many, SpotMarketMap,
             },
             state::{HotRole, State},
-            user::{MarketType, OrderStatus, OrderTriggerCondition, OrderType, User, UserStats},
+            user::{
+                MarketType, Order, OrderStatus, OrderTriggerCondition, OrderType, User, UserStats,
+            },
             user_conditions::{UserConditionsV0, USER_CONDITIONS_PDA_SEED},
             user_map::{load_user_map, load_user_maps, UserMap, UserStatsMap},
             zero_copy::{AccountZeroCopyMut, ZeroCopyLoader},

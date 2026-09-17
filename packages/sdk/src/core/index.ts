@@ -4,7 +4,6 @@ export * from './signedMsg';
 export * from './instructions/deposit';
 export * from './instructions/withdraw';
 export * from './instructions/orders';
-export * from './instructions/fill';
 export * from './instructions/trigger';
 export * from './instructions/settlement';
 export * from './instructions/liquidation';

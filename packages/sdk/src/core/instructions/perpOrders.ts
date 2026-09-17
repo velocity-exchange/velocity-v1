@@ -6,34 +6,36 @@ import type {
 import type { VelocityProgram } from '../../config';
 
 /**
- * Builds a `placePerpOrder` instruction, placing a single resting perp order. Rejects
- * immediate-or-cancel orders (`InvalidOrderIOC`) — use `buildPlaceAndTakePerpOrderInstruction`
- * or `buildPlaceAndMakePerpOrderInstruction` for IOC orders instead.
+ * Builds a `placeTriggerOrdersV1` instruction, arming trigger orders in the user's own
+ * order slots. A slot holds one unfired conditional, so every entry must be a
+ * `TriggerMarket` or a `TriggerLimit` on a perp market — the program returns
+ * `OrderTypeNotConditional` otherwise. A live order rests on the market's book instead:
+ * use `buildPlaceAndTakePerpOrderInstruction` or `buildPlaceAndMakePerpOrderInstruction`.
+ *
+ * One margin check covers the whole batch, which is what lets a stop loss and a take
+ * profit arrive together.
  * @param args.program - Anchor `Program<Velocity>` used to build the instruction.
- * @param args.orderParams - an `OrderParams` object; `baseAssetAmount` is BASE_PRECISION (1e9), `price`/`triggerPrice`/`oraclePriceOffset` are PRICE_PRECISION (1e6).
+ * @param args.orderParams - the triggers to arm; `baseAssetAmount` is BASE_PRECISION (1e9), `price`/`triggerPrice` are PRICE_PRECISION (1e6).
  * @param args.state - the global `State` PDA.
- * @param args.user - the `User` account the order is placed on.
- * @param args.userStats - accepted for forward-compatibility but not required by the current on-chain `place_perp_order` accounts.
+ * @param args.user - the `User` account the triggers are armed on.
  * @param args.authority - signer that must own or be a registered delegate of `user`.
- * @param args.remainingAccounts - oracle/market `AccountMeta[]` for `orderParams.marketIndex`, plus the placing user's `RevenueShareEscrow` account if the order carries a `builderIdx` and builder codes are enabled protocol-wide.
- * @returns the unsigned `placePerpOrder` `TransactionInstruction`.
+ * @param args.remainingAccounts - oracle/market `AccountMeta[]` for each `marketIndex`, plus the placing user's `RevenueShareEscrow` account if an order carries a `builderIdx` and builder codes are enabled protocol-wide.
+ * @returns the unsigned `placeTriggerOrdersV1` `TransactionInstruction`.
  */
-export async function buildPlacePerpOrderInstruction(args: {
+export async function buildPlaceTriggerOrdersInstruction(args: {
 	program: VelocityProgram;
-	orderParams: any;
+	orderParams: any[];
 	state: PublicKey;
 	user: PublicKey;
-	userStats: PublicKey;
 	authority: PublicKey;
 	remainingAccounts: AccountMeta[];
 }): Promise<TransactionInstruction> {
-	return await (args.program.instruction as any).placePerpOrder(
-		args.orderParams,
+	return await args.program.instruction.placeTriggerOrdersV1(
+		{ params: args.orderParams },
 		{
 			accounts: {
 				state: args.state,
 				user: args.user,
-				userStats: args.userStats,
 				authority: args.authority,
 			},
 			remainingAccounts: args.remainingAccounts,

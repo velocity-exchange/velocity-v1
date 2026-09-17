@@ -17,15 +17,8 @@ import { fetchAccount } from '../accounts/fetch';
 import type { BN } from '@coral-xyz/anchor';
 import { buildDepositInstruction } from './instructions/deposit';
 import { buildWithdrawInstruction } from './instructions/withdraw';
-import {
-	buildCancelOrdersInstruction,
-	buildPlaceOrdersInstruction,
-} from './instructions/orders';
-import { buildFillPerpOrderInstruction } from './instructions/fill';
-import {
-	buildTriggerOrderInstruction,
-	buildTriggerMarketOrderV1Instruction,
-} from './instructions/trigger';
+import { buildCancelOrdersInstruction } from './instructions/orders';
+import { buildTriggerMarketOrderV1Instruction } from './instructions/trigger';
 import { buildSettlePnlInstruction } from './instructions/settlement';
 import { buildLiquidatePerpInstruction } from './instructions/liquidation';
 import { buildUpdateFundingRateInstruction } from './instructions/funding';
@@ -37,7 +30,7 @@ import {
 	buildModifyOrderInstruction,
 	buildPlaceAndMakePerpOrderInstruction,
 	buildPlaceAndTakePerpOrderInstruction,
-	buildPlacePerpOrderInstruction,
+	buildPlaceTriggerOrdersInstruction,
 } from './instructions/perpOrders';
 import * as remainingAccounts from './remainingAccounts';
 import * as signedMsg from './signedMsg';
@@ -199,31 +192,6 @@ export class VelocityCore {
 	}
 
 	/**
-	 * Builds a `placeOrders` instruction, placing a batch of up to 32 perp and/or spot
-	 * orders in one instruction. None of the orders may be immediate-or-cancel — IOC
-	 * orders are only valid via `placeAndTake`/`placeAndMake` — or the instruction throws.
-	 * @param args.program - Anchor `Program<Velocity>` used to build the instruction.
-	 * @param args.formattedParams - array of `OrderParams` (see `OrderParams` in `types`): `baseAssetAmount` is BASE_PRECISION (1e9), `price`/`triggerPrice`/`oraclePriceOffset` are PRICE_PRECISION (1e6).
-	 * @param args.state - the global `State` PDA.
-	 * @param args.user - the `User` account the orders are placed on; `authority` must own or be a delegate of it.
-	 * @param args.userStats - accepted for forward-compatibility but not required by the current on-chain `place_orders` accounts (only `state`/`user`/`authority` are used).
-	 * @param args.authority - signer that must own or be a registered delegate of `user`.
-	 * @param args.remainingAccounts - oracle/market `AccountMeta[]` covering every order's market, plus (if builder codes are enabled protocol-wide) the placing user's `RevenueShareEscrow` account when any order carries a `builderIdx`.
-	 * @returns the unsigned `placeOrders` `TransactionInstruction`.
-	 */
-	static async buildPlaceOrdersInstruction(args: {
-		program: VelocityProgram;
-		formattedParams: any[];
-		state: PublicKey;
-		user: PublicKey;
-		userStats: PublicKey;
-		authority: PublicKey;
-		remainingAccounts: AccountMeta[];
-	}): Promise<TransactionInstruction> {
-		return await buildPlaceOrdersInstruction(args);
-	}
-
-	/**
 	 * Builds a `cancelOrders` instruction, cancelling every open order on `user` that
 	 * matches all of the given (optional) filters. Passing `null`/`undefined` for a
 	 * filter means "don't filter on this dimension" — passing all three as `null`
@@ -251,67 +219,6 @@ export class VelocityCore {
 		remainingAccounts: AccountMeta[];
 	}): Promise<TransactionInstruction> {
 		return await buildCancelOrdersInstruction(args);
-	}
-
-	/**
-	 * Builds a `fillPerpOrder` instruction, matching a resting perp order against the
-	 * AMM and/or the supplied maker accounts. Permissionless: `user` (the order owner)
-	 * does not need to sign — only `authority` (owner/delegate of `filler`) does.
-	 * @param args.program - Anchor `Program<Velocity>` used to build the instruction.
-	 * @param args.orderId - the order to fill, or `null` to fill `user`'s most recently placed order (resolved on-chain via `get_last_order_id`).
-	 * @param args.state - the global `State` PDA.
-	 * @param args.filler - the keeper's `User` account that earns the filler reward.
-	 * @param args.fillerStats - the filler's `UserStats` PDA.
-	 * @param args.user - the order owner's `User` account (the taker being filled).
-	 * @param args.userStats - the taker's `UserStats` PDA.
-	 * @param args.authority - signer that must own or be a registered delegate of `filler`.
-	 * @param args.remainingAccounts - the writable perp market and oracle `AccountMeta[]`
-	 * for the order's market, then any maker and referrer `(User, UserStats)` account
-	 * pairs, then the taker's `RevenueShareEscrow` account if builder codes are enabled
-	 * protocol-wide, then the referrer's read-only `UserStats` when that taker is referred.
-	 * @returns the unsigned `fillPerpOrder` `TransactionInstruction`.
-	 */
-	static async buildFillPerpOrderInstruction(args: {
-		program: VelocityProgram;
-		orderId: number | null;
-		state: PublicKey;
-		filler: PublicKey;
-		fillerStats: PublicKey;
-		user: PublicKey;
-		userStats: PublicKey;
-		authority: PublicKey;
-		remainingAccounts: AccountMeta[];
-	}): Promise<TransactionInstruction> {
-		return await buildFillPerpOrderInstruction(args);
-	}
-
-	/**
-	 * Builds a `triggerOrder` instruction, flipping a resting trigger order (stop-loss /
-	 * take-profit) into a fillable market/limit order once its trigger condition is met
-	 * against the oracle. Permissionless: `user` (the order owner) does not need to sign
-	 * — only `authority` (owner/delegate of `filler`) does. Does not fill the order; a
-	 * subsequent `fillPerpOrder` (or `placeAndTake`) is needed to actually execute it.
-	 * @param args.program - Anchor `Program<Velocity>` used to build the instruction.
-	 * @param args.orderId - the trigger order's on-chain order ID.
-	 * @param args.state - the global `State` PDA.
-	 * @param args.filler - the keeper's `User` account submitting the trigger.
-	 * @param args.user - the order owner's `User` account.
-	 * @param args.userStats - the order owner's `UserStats` account (authority-wide equity breaker).
-	 * @param args.authority - signer that must own or be a registered delegate of `filler`.
-	 * @param args.remainingAccounts - oracle/market `AccountMeta[]` for the order's market.
-	 * @returns the unsigned `triggerOrder` `TransactionInstruction`.
-	 */
-	static async buildTriggerOrderInstruction(args: {
-		program: VelocityProgram;
-		orderId: number;
-		state: PublicKey;
-		filler: PublicKey;
-		user: PublicKey;
-		userStats: PublicKey;
-		authority: PublicKey;
-		remainingAccounts: AccountMeta[];
-	}): Promise<TransactionInstruction> {
-		return await buildTriggerOrderInstruction(args);
 	}
 
 	/**
@@ -398,28 +305,27 @@ export class VelocityCore {
 	}
 
 	/**
-	 * Builds a `placePerpOrder` instruction, placing a single resting perp order.
-	 * Rejects immediate-or-cancel orders — use `buildPlaceAndTakePerpOrderInstruction`
-	 * or `buildPlaceAndMakePerpOrderInstruction` for IOC orders instead.
+	 * Builds a `placeTriggerOrdersV1` instruction, arming trigger orders in the user's
+	 * own order slots. Every entry must be a `TriggerMarket` or a `TriggerLimit`; a live
+	 * order rests on the market's book, through `buildPlaceAndTakePerpOrderInstruction`
+	 * or `buildPlaceAndMakePerpOrderInstruction`.
 	 * @param args.program - Anchor `Program<Velocity>` used to build the instruction.
-	 * @param args.orderParams - an `OrderParams` object; `baseAssetAmount` is BASE_PRECISION (1e9), `price`/`triggerPrice`/`oraclePriceOffset` are PRICE_PRECISION (1e6).
+	 * @param args.orderParams - the triggers to arm; `baseAssetAmount` is BASE_PRECISION (1e9), `price`/`triggerPrice` are PRICE_PRECISION (1e6).
 	 * @param args.state - the global `State` PDA.
-	 * @param args.user - the `User` account the order is placed on.
-	 * @param args.userStats - accepted for forward-compatibility but not required by the current on-chain `place_perp_order` accounts.
+	 * @param args.user - the `User` account the triggers are armed on.
 	 * @param args.authority - signer that must own or be a registered delegate of `user`.
-	 * @param args.remainingAccounts - oracle/market `AccountMeta[]` for `orderParams.marketIndex`, plus the placing user's `RevenueShareEscrow` account if the order carries a `builderIdx` and builder codes are enabled.
-	 * @returns the unsigned `placePerpOrder` `TransactionInstruction`.
+	 * @param args.remainingAccounts - oracle/market `AccountMeta[]` for each `marketIndex`, plus the placing user's `RevenueShareEscrow` account if an order carries a `builderIdx` and builder codes are enabled.
+	 * @returns the unsigned `placeTriggerOrdersV1` `TransactionInstruction`.
 	 */
-	static async buildPlacePerpOrderInstruction(args: {
+	static async buildPlaceTriggerOrdersInstruction(args: {
 		program: VelocityProgram;
-		orderParams: any;
+		orderParams: any[];
 		state: PublicKey;
 		user: PublicKey;
-		userStats: PublicKey;
 		authority: PublicKey;
 		remainingAccounts: AccountMeta[];
 	}): Promise<TransactionInstruction> {
-		return await buildPlacePerpOrderInstruction(args);
+		return await buildPlaceTriggerOrdersInstruction(args);
 	}
 
 	/**

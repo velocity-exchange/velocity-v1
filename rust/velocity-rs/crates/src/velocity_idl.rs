@@ -33277,6 +33277,8 @@ pub mod errors {
         CrossMatchLegsDoNotCross,
         #[msg("Only the protocol user may skip the taker checks of a fill")]
         TakerExposureNotProtocolOwned,
+        #[msg("The market's book cannot rest a fired trigger, so the trigger stays armed")]
+        ClobRestUnavailable,
     }
 }
 pub mod events {

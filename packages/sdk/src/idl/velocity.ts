@@ -21899,6 +21899,11 @@ export type Velocity = {
       "code": 6408,
       "name": "takerExposureNotProtocolOwned",
       "msg": "Only the protocol user may skip the taker checks of a fill"
+    },
+    {
+      "code": 6409,
+      "name": "clobRestUnavailable",
+      "msg": "The market's book cannot rest a fired trigger, so the trigger stays armed"
     }
   ],
   "types": [
@@ -33258,7 +33263,11 @@ export type Velocity = {
               "Stated by whoever opts in, and capped at",
               "[`LIQ_SYNC_MAX_COST_UNITS`] when it is priced, because opting in is",
               "permissionless and the payer is protocol funds rather than the account",
-              "itself. [`Self::last_paid_sync_slot`] bounds how often it can be drawn."
+              "itself. [`Self::last_paid_sync_slot`] bounds how often it can be drawn.",
+              "",
+              "A payment above zero is only sound beside an interval of at least",
+              "[`LIQ_SYNC_MIN_FALLBACK_SLOTS`], because the interval is that bound.",
+              "A block holding a shorter interval pays nothing."
             ],
             "type": "u64"
           },

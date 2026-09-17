@@ -2002,14 +2002,6 @@ impl Order {
         matches!(self.order_type, OrderType::Limit | OrderType::TriggerLimit)
     }
 
-    pub fn is_resting_limit_order(&self, slot: u64, slot_clock: SlotClock) -> VelocityResult<bool> {
-        if !self.is_limit_order() {
-            return Ok(false);
-        }
-
-        Ok(self.post_only || self.is_auction_complete(slot, slot_clock)?)
-    }
-
     pub fn is_signed_msg(&self) -> bool {
         self.is_bit_flag_set(OrderBitFlag::SignedMessage)
     }

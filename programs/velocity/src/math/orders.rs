@@ -3,7 +3,6 @@ use {
         controller::position::{PositionDelta, PositionDirection},
         error::{ErrorCode, VelocityResult},
         instructions::optional_accounts::AccountMaps,
-        load,
         math::{
             casting::Cast,
             constants::{
@@ -19,20 +18,19 @@ use {
             safe_math::SafeMath,
             spot_balance::get_strict_token_value,
             spot_withdraw::get_max_withdraw_for_market_with_token_amount,
-            time::{Millis, SlotClock},
+            time::SlotClock,
         },
         math_error, msg, print_error,
         state::{
             margin_calculation::{MarginCalculation, MarginContext},
-            oracle::{OraclePriceData, StrictOraclePrice},
+            oracle::StrictOraclePrice,
             order_params::PostOnlyParam,
             perp_market::{PerpMarket, AMM},
             spot_market::SpotMarket,
             user::{
-                MarketType, Order, OrderBitFlag, OrderFillSimulation, OrderStatus,
-                OrderTriggerCondition, PerpPosition, User,
+                Order, OrderBitFlag, OrderFillSimulation, OrderStatus, OrderTriggerCondition,
+                PerpPosition, User,
             },
-            user_map::UserMap,
         },
         validate,
         vlp::amm::math::amm::calculate_amm_available_liquidity,
@@ -1137,126 +1135,6 @@ fn calculate_free_collateral_delta_for_spot(
 pub struct Level {
     pub price: u64,
     pub base_asset_amount: u64,
-}
-
-/// Slots elapsed since an order was posted, from `Order::posted_slot_tail`.
-///
-/// `posted_slot_tail` holds the low 8 bits of the clock slot at post time. See
-/// `get_posted_slot_from_clock_slot`. The result is therefore exact only modulo 256, and that error
-/// is safe for a minimum-age check. A fresh order has an elapsed count below 256, where the result
-/// is exact, so a fresh quote can never look old. An order older than 256 slots can understate its
-/// age and count as fresh.
-///
-/// `Order::slot` is not used here. Signed-message orders back-date it to
-/// `min(clock_slot, signed_msg_taker_order_slot)`, so it does not show when the order became visible
-/// on-chain.
-pub fn slots_since_order_posted(slot: u64, posted_slot_tail: u8) -> u64 {
-    (slot as u8).wrapping_sub(posted_slot_tail) as u64
-}
-
-/// Collect the resting bid/ask levels for `perp_market` from the supplied `users`.
-///
-/// `min_quote_rest` drops any quote that has rested for less wall-clock time than that. The rest
-/// time is integrated per slot-duration regime. Pass `BID_ASK_TWAP_MIN_QUOTE_REST` when the result
-/// feeds the mark TWAP, and `Millis::ZERO` when the caller needs the true current book. Arbitrage
-/// needs the true book, because a fresh quote is still takeable.
-pub fn find_bids_and_asks_from_users(
-    perp_market: &PerpMarket,
-    oracle_price_date: &OraclePriceData,
-    users: &UserMap,
-    slot: u64,
-    now: i64,
-    min_quote_rest: Millis,
-    slot_clock: SlotClock,
-) -> VelocityResult<(Vec<Level>, Vec<Level>)> {
-    let mut bids: Vec<Level> = Vec::with_capacity(32);
-    let mut asks: Vec<Level> = Vec::with_capacity(32);
-
-    let market_index = perp_market.market_index;
-    let tick_size = perp_market.order_tick_size;
-    let oracle_price = Some(oracle_price_date.price);
-
-    let mut insert_order = |base_asset_amount: u64, price: u64, direction: PositionDirection| {
-        let orders = match direction {
-            PositionDirection::Long => &mut bids,
-            PositionDirection::Short => &mut asks,
-        };
-        let index = match orders.binary_search_by(|level| match direction {
-            PositionDirection::Long => price.cmp(&level.price),
-            PositionDirection::Short => level.price.cmp(&price),
-        }) {
-            Ok(index) => index,
-            Err(index) => index,
-        };
-
-        if index < orders.capacity() {
-            if orders.len() == orders.capacity() {
-                orders.pop();
-            }
-
-            orders.insert(
-                index,
-                Level {
-                    price,
-                    base_asset_amount,
-                },
-            );
-        }
-    };
-
-    for account_loader in users.0.values() {
-        let user = load!(account_loader)?;
-
-        for order in user.orders.iter() {
-            if order.status != OrderStatus::Open {
-                continue;
-            }
-            // Shadows of CLOB-resident orders are not DLOB liquidity. The
-            // size lives on the book and not in a reservation here.
-            if order.is_placed_on_clob() {
-                continue;
-            }
-
-            if order.market_type != MarketType::Perp || order.market_index != market_index {
-                continue;
-            }
-
-            // if order is not limit order or must be triggered and not triggered, skip
-            if !order.is_limit_order() || (order.must_be_triggered() && !order.triggered()) {
-                continue;
-            }
-
-            if !order.is_resting_limit_order(slot, slot_clock)? {
-                continue;
-            }
-
-            // A quote must rest long enough that a third party could have taken it, before it can
-            // move the mark TWAP (OtterSec #146). `is_resting_limit_order` admits a post-only order
-            // in its own post slot, so without this the crank's caller can quote, crank and cancel
-            // in one transaction at no risk.
-            if min_quote_rest > Millis::ZERO
-                && slot_clock.elapsed_slot_delta(
-                    slots_since_order_posted(slot, order.posted_slot_tail),
-                    slot,
-                ) < min_quote_rest
-            {
-                continue;
-            }
-
-            if now > order.max_ts && order.max_ts != 0 {
-                continue;
-            }
-
-            let existing_position = user.get_perp_position(market_index)?.base_asset_amount;
-            let base_amount = order.get_base_asset_amount_unfilled(Some(existing_position))?;
-            let limit_price =
-                order.force_get_limit_price(oracle_price, None, slot, tick_size, slot_clock)?;
-
-            insert_order(base_amount, limit_price, order.direction);
-        }
-    }
-
-    Ok((bids, asks))
 }
 
 /// Filter out bids and asks whose price diverges from the oracle by more than

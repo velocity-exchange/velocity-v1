@@ -343,14 +343,29 @@ pub fn list_stays_off_the_book<'a>(
 /// slab — but a quoter has no legitimate use for the key either, so naming it
 /// is refused at registration rather than silently downgraded to a read-only
 /// slot.
-pub fn validate_quoter_accounts<'a>(pubkeys: impl IntoIterator<Item = &'a Pubkey>) -> Result<()> {
+pub fn validate_quoter_accounts<'a>(
+    metas: impl IntoIterator<Item = (&'a Pubkey, bool)>,
+    market_index: u16,
+) -> Result<()> {
     let vault_authority = crate::state::pdas::velocity_signer();
-    pubkeys.into_iter().try_for_each(|pubkey| {
+    let slab = crate::state::pdas::quoter_slab(market_index);
+    metas.into_iter().try_for_each(|(pubkey, is_writable)| {
         validate!(
             *pubkey != vault_authority,
             ErrorCode::InvalidQuoterConfig,
             "velocity's vault authority {} cannot be a quoter cpi account",
             vault_authority
+        )?;
+        // The slab rides every quoter CPI as the signer, and the runtime
+        // refuses to lend an account writable that the caller holds
+        // read-only. A list that asks for it writable therefore fails at the
+        // CPI, once per fill, for a reason the registrant never sees. Refuse
+        // it here, where the registrant is the one reading the error.
+        validate!(
+            !(*pubkey == slab && is_writable),
+            ErrorCode::InvalidQuoterConfig,
+            "the market's quoter slab {} may only be registered read-only",
+            slab
         )
     })?;
     Ok(())

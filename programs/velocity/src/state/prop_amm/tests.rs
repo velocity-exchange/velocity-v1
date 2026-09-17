@@ -79,9 +79,25 @@ fn registration_rejects_the_vault_authority() {
     let slab = pdas::quoter_slab(0);
     let book = Pubkey::new_unique();
 
-    assert!(validate_quoter_accounts([book, slab].iter()).is_ok());
-    assert!(validate_quoter_accounts([book, vault_authority].iter()).is_err());
-    assert!(validate_quoter_accounts([vault_authority].iter()).is_err());
+    assert!(validate_quoter_accounts([(&book, false), (&slab, false)], 0).is_ok());
+    assert!(validate_quoter_accounts([(&book, false), (&vault_authority, false)], 0).is_err());
+    assert!(validate_quoter_accounts([(&vault_authority, false)], 0).is_err());
+}
+
+/// The slab rides every quoter CPI as the signer, and a caller cannot lend an
+/// account writable that it holds read-only. A list that asks for the slab
+/// writable is refused where the registrant reads the error, rather than once
+/// per fill inside a CPI.
+#[test]
+fn registration_rejects_a_writable_slab() {
+    let slab = pdas::quoter_slab(0);
+    let book = Pubkey::new_unique();
+
+    assert!(validate_quoter_accounts([(&slab, false)], 0).is_ok());
+    assert!(validate_quoter_accounts([(&slab, true)], 0).is_err());
+    // Another market's slab is an ordinary account to this one.
+    assert!(validate_quoter_accounts([(&pdas::quoter_slab(1), true)], 0).is_ok());
+    assert!(validate_quoter_accounts([(&book, true)], 0).is_ok());
 }
 
 /// A quoter's registered list may not name the market's book, and the rule

@@ -65,7 +65,12 @@ pub fn handle_update_quoter_accounts(
         args.metas.len(),
         MAX_QUOTER_ACCOUNTS
     )?;
-    validate_quoter_accounts(args.metas.iter().map(|meta| &meta.pubkey))?;
+    validate_quoter_accounts(
+        args.metas
+            .iter()
+            .map(|meta| (&meta.pubkey, meta.is_writable)),
+        config.market,
+    )?;
     for (name, indexes) in [
         ("quote", &args.quote_indexes),
         ("execute", &args.execute_indexes),

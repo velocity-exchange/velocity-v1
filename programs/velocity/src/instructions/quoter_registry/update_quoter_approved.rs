@@ -110,19 +110,25 @@ pub struct UpdateQuoterApproved<'info> {
 const PROGRAM_DATA_TAG: [u8; 4] = [3, 0, 0, 0];
 const DEPLOY_SLOT_OFFSET: usize = 4;
 
-/// The slot `program` was last deployed at, or zero when its loader keeps no
-/// such record.
+/// The slot `program` was last deployed at, or zero when this code cannot
+/// read one.
 ///
 /// Recorded rather than enforced. A later upgrade moves this slot, so an
 /// off-chain reader that holds the approved figure can see that the code
 /// changed and act on it.
+///
+/// Zero means unknown, not immutable. Only the upgradeable loader is read
+/// here, and a program on a later loader is redeployable while reporting
+/// zero, so a reader must not take zero as proof that the code is fixed. A
+/// reader that needs that proof compares the program's own bytes.
 fn deployed_slot(
     program: &UncheckedAccount,
     program_data: Option<&UncheckedAccount>,
 ) -> Result<u64> {
     if program.owner != &bpf_loader_upgradeable::ID {
-        // Any other loader writes the program once. There is no program-data
-        // account, and no slot to move.
+        // Only the upgradeable loader's record is read. A program on any
+        // other loader reports zero, which says this code read no slot. It
+        // does not say the program cannot be redeployed.
         return Ok(0);
     }
     let program_data = program_data.ok_or_else(|| {
@@ -390,7 +396,12 @@ fn validate_approvable_config(config: &QuoterConfigV0) -> Result<()> {
     // Re-checked here, not only at write time: a list stored before the
     // reserved-key check existed is still on chain, and approval is the gate
     // that lets a config take flow.
-    validate_quoter_accounts(registered.iter().map(|meta| &meta.pubkey))
+    validate_quoter_accounts(
+        registered
+            .iter()
+            .map(|meta| (&meta.pubkey, meta.is_writable)),
+        config.market,
+    )
 }
 
 /// Whether two approved quoters keep out of each other's response account.

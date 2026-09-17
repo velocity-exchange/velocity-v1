@@ -18,7 +18,6 @@ use {
             oracle::PrelaunchOracleParams,
             order_params::{ModifyOrderParams, OrderParams},
             perp_market::ContractTier,
-            scale_order_params::ScaleOrderParams,
             settle_pnl_mode::SettlePnlMode,
             spot_market::AssetTier,
             state::{FeeStructure, *},
@@ -245,11 +244,17 @@ pub mod velocity {
         )
     }
 
-    pub fn place_perp_order<'c: 'info, 'info>(
-        ctx: Context<'info, PlaceOrder>,
-        params: OrderParams,
+    /// Arm trigger orders in the user's own order slots.
+    ///
+    /// A slot holds one unfired conditional. Every other order type rests on
+    /// the market's book, so this endpoint refuses it. One margin check covers
+    /// the whole batch, which is what lets a stop loss and a take profit arrive
+    /// together.
+    pub fn place_trigger_orders_v1<'c: 'info, 'info>(
+        ctx: Context<'info, PlaceTriggerOrdersV1>,
+        args: PlaceTriggerOrdersV1Args,
     ) -> Result<()> {
-        handle_place_perp_order(ctx, params)
+        handle_place_trigger_orders_v1(ctx, args)
     }
 
     pub fn cancel_order<'c: 'info, 'info>(
@@ -362,20 +367,6 @@ pub mod velocity {
             is_delegate_signer,
             flow_attestation,
         )
-    }
-
-    pub fn place_orders<'c: 'info, 'info>(
-        ctx: Context<'info, PlaceOrder>,
-        params: Vec<OrderParams>,
-    ) -> Result<()> {
-        handle_place_orders(ctx, params)
-    }
-
-    pub fn place_scale_orders<'c: 'info, 'info>(
-        ctx: Context<'info, PlaceOrder>,
-        params: ScaleOrderParams,
-    ) -> Result<()> {
-        handle_place_scale_orders(ctx, params)
     }
 
     pub fn begin_swap<'c: 'info, 'info>(

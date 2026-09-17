@@ -32,7 +32,6 @@ pub mod relay_scratch;
 pub mod revenue_share;
 pub mod revenue_share_map;
 pub mod router_quote;
-pub mod scale_order_params;
 pub mod settle_pnl_mode;
 pub mod signed_msg_user;
 pub mod spot_fulfillment_params;

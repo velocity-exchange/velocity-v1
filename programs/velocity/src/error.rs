@@ -882,6 +882,8 @@ pub enum ErrorCode {
     TakerExposureNotProtocolOwned,
     #[msg("The market's book cannot rest a fired trigger, so the trigger stays armed")]
     ClobRestUnavailable,
+    #[msg("A user order slot holds only a trigger order")]
+    OrderTypeNotConditional,
 }
 
 #[macro_export]

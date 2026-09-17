@@ -18,7 +18,8 @@
 //!   the vAMM.
 //! * [`isolated_position`] funds and drains the collateral of an isolated perp
 //!   position.
-//! * [`orders`] places, cancels, and modifies orders.
+//! * [`orders`] cancels and modifies an order a user holds in their own slots.
+//! * [`place_trigger_orders_v1`] arms trigger orders in those slots.
 //! * [`place_and_take`] holds the two taker routes that place and fill in one
 //!   instruction.
 //! * [`swap`] holds the two halves of a spot swap.
@@ -34,10 +35,7 @@ use {
         controller::{
             self,
             funding::settle_funding_payment,
-            orders::{
-                cancel_orders, validate_spot_dlob_trading_enabled_for_market_type, ModifyOrderId,
-                PlaceOrderResult,
-            },
+            orders::{cancel_orders, ModifyOrderId, PlaceOrderResult},
             position::{update_position_and_market, PositionDelta, PositionDirection},
             spot_balance::update_revenue_pool_balances,
             spot_position::{
@@ -53,8 +51,7 @@ use {
             optional_accounts::{
                 add_builder_order, get_referrer_accelerated_status,
                 get_referrer_and_referrer_stats, get_revenue_share_escrow_account,
-                get_whitelist_token, load_maps, validate_and_load_builder, validate_builder_fee,
-                AccountMaps,
+                get_whitelist_token, load_maps, validate_builder_fee, AccountMaps,
             },
         },
         load, load_mut,
@@ -108,7 +105,6 @@ use {
                 RevenueShareEscrowZeroCopyMut, RevenueShareOrder, REVENUE_SHARE_ESCROW_PDA_SEED,
                 REVENUE_SHARE_PDA_SEED,
             },
-            scale_order_params::ScaleOrderParams,
             signed_msg_user::{
                 SignedMsgOrderId, SignedMsgUserOrders, SignedMsgWsDelegates, SIGNED_MSG_PDA_SEED,
                 SIGNED_MSG_WS_PDA_SEED,
@@ -157,6 +153,7 @@ mod isolated_position;
 mod lifecycle;
 mod orders;
 mod place_and_take;
+mod place_trigger_orders_v1;
 mod revenue_share;
 mod settings;
 mod signed_msg;
@@ -168,8 +165,9 @@ mod transfer_position;
 #[cfg(feature = "isolated-position")]
 pub use isolated_position::*;
 pub use {
-    deposit::*, lifecycle::*, orders::*, place_and_take::*, revenue_share::*, settings::*,
-    signed_msg::*, swap::*, transfer_deposit::*, transfer_pools::*, transfer_position::*,
+    deposit::*, lifecycle::*, orders::*, place_and_take::*, place_trigger_orders_v1::*,
+    revenue_share::*, settings::*, signed_msg::*, swap::*, transfer_deposit::*, transfer_pools::*,
+    transfer_position::*,
 };
 
 /// Load the market and oracle maps for an instruction that writes one spot

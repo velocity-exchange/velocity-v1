@@ -750,24 +750,6 @@ pub fn preview_pyth_lazer_oracle(
     })
 }
 
-/// The forward clock skew this code tolerates before it treats a future-dated feed timestamp
-/// as invalid. A timestamp further ahead than this means a bad clock on one side, not a fresh
-/// price.
-const PYTH_MAX_CLOCK_SKEW_US: u64 = 1_000_000;
-
-/// Returns true if a pyth-lazer update's feed timestamp is within `max_age_us` of the wall
-/// clock `now_us`. A caller gates use of the cached `PythPriceUpdate` on wall-clock age. A
-/// frozen websocket leaves the cache holding a price of any age, and the update itself carries
-/// no sign of that. See [`subscribe_price_feeds`].
-pub fn pyth_update_is_fresh(
-    update_ts_us: TimestampUs,
-    now_us: TimestampUs,
-    max_age_us: u64,
-) -> bool {
-    now_us.saturating_us_since(update_ts_us) <= max_age_us
-        && update_ts_us.saturating_us_since(now_us) <= PYTH_MAX_CLOCK_SKEW_US
-}
-
 fn fixed_rate(feed_id: u32) -> FixedRate {
     match feed_id {
         1 | 2 | 6 => FixedRate::MIN,
@@ -1064,10 +1046,10 @@ pub fn subscribe_price_feeds(
 mod tests {
     use {
         super::{
-            is_resting_swift_limit, preview_pyth_lazer_oracle, pyth_update_is_fresh,
-            should_poll_swift, swift_order_expired, swift_slot_wait, swift_slot_wait_if_known,
-            OrderParams, OrderSlotLimiter, OrderType, PendingTxMeta, PendingTxs, Pubkey,
-            PythPriceUpdate, SwiftSlotWait, TxIntent,
+            is_resting_swift_limit, preview_pyth_lazer_oracle, should_poll_swift,
+            swift_order_expired, swift_slot_wait, swift_slot_wait_if_known, OrderParams,
+            OrderSlotLimiter, OrderType, PendingTxMeta, PendingTxs, Pubkey, PythPriceUpdate,
+            SwiftSlotWait, TxIntent,
         },
         pyth_lazer_protocol::{
             message::SolanaMessage,
@@ -1468,35 +1450,6 @@ mod tests {
         assert_eq!(intent.swift_uuid(), Some(*b"abcd1234"));
         // even the place-only path carries the taker so its lifecycle is filterable by user
         assert_eq!(intent.user(), Some(taker));
-    }
-
-    #[test]
-    fn pyth_update_freshness() {
-        let update_ts = TimestampUs(1_000_000);
-        // exactly at max_age: still fresh
-        assert!(pyth_update_is_fresh(
-            update_ts,
-            TimestampUs(1_010_000),
-            10_000
-        ));
-        // one us past max_age: stale
-        assert!(!pyth_update_is_fresh(
-            update_ts,
-            TimestampUs(1_010_001),
-            10_000
-        ));
-        // update from the near future (clock skew within PYTH_MAX_CLOCK_SKEW_US): fresh
-        assert!(pyth_update_is_fresh(
-            update_ts,
-            TimestampUs(500_000),
-            10_000
-        ));
-        // update from beyond the tolerated skew: invalid, treated as stale
-        assert!(!pyth_update_is_fresh(
-            TimestampUs(3_000_001),
-            TimestampUs(2_000_000),
-            10_000
-        ));
     }
 
     #[test]

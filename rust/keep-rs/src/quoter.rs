@@ -35,7 +35,9 @@ use {
     crate::{Config, UseMarkets},
     std::time::Duration,
     velocity_rs::{
+        market_clob_accounts,
         math::constants::{BASE_PRECISION_U64, PRICE_PRECISION_U64, QUOTE_PRECISION},
+        program::state::prop_amm::ClobCancelSides,
         types::{
             accounts::User, MarketId, MarketType, OrderParams, OrderType, PerpPosition,
             PositionDirection, PostOnlyParam, SpotBalanceType,
@@ -445,22 +447,32 @@ impl QuoterBot {
         )
         .with_priority_fee(self.config.priority_fee, Some(self.config.fill_cu_limit));
 
-        // velocity-rs's `cancel_orders_by_user_id` does not inject the target
-        // perp market into remaining_accounts (and `build_accounts` only
-        // scans user positions, not user.orders), so a cancel on a market
-        // where we hold no position fails on-chain with PerpMarketNotFound.
-        // Force-include this market so both the cancel and place ixs see it.
+        // `build_accounts` scans user positions only, so a market this account
+        // holds no position in would not reach the instruction and the call
+        // would fail with PerpMarketNotFound. Force-include it for every ix
+        // below.
         tx.force_include_markets(&[MarketId::perp(snap.market_index)], &[]);
 
-        let mut replace_ids = Vec::new();
-        if bid_replace {
-            replace_ids.push(USER_ORDER_ID_BID);
-        }
-        if ask_replace {
-            replace_ids.push(USER_ORDER_ID_ASK);
-        }
-        if !replace_ids.is_empty() {
-            tx = tx.cancel_orders_by_user_id(replace_ids.clone());
+        let Some(clob) = market_clob_accounts(&self.velocity, snap.market_index).await else {
+            log::warn!(
+                target: TARGET,
+                "market {}: no approved book on the quoter slab, skipping quote",
+                snap.market_index
+            );
+            return Ok(());
+        };
+
+        // Quotes rest on the book, so replacing them sweeps a side rather than
+        // naming an order. The book removes every order this account holds on
+        // that side in one CPI, whatever the depth.
+        let replace_sides = match (bid_replace, ask_replace) {
+            (true, true) => Some(ClobCancelSides::Both),
+            (true, false) => Some(ClobCancelSides::Bids),
+            (false, true) => Some(ClobCancelSides::Asks),
+            (false, false) => None,
+        };
+        if let Some(sides) = replace_sides {
+            tx = tx.cancel_clob_orders(clob, sides);
         }
 
         let mut orders = Vec::new();
@@ -499,11 +511,20 @@ impl QuoterBot {
             orders.push(o);
         }
 
-        if orders.is_empty() && replace_ids.is_empty() {
+        if orders.is_empty() && replace_sides.is_none() {
             return Ok(());
         }
-        if !orders.is_empty() {
-            tx = tx.place_orders(orders);
+        // Each quote rests through its own maker instruction. The endpoint
+        // takes one order, because a maker order goes straight to the book
+        // rather than into a batch of slots.
+        for order in orders {
+            tx = if order.reduce_only {
+                // The rebalance leg is a taker order, not a quote. It routes
+                // and trades rather than resting.
+                tx.place_and_take(order, clob, None)
+            } else {
+                tx.place_and_make(order, clob, None)
+            };
         }
 
         let msg = tx.build();
@@ -530,7 +551,7 @@ impl QuoterBot {
         if self.config.dry {
             log::info!(
                 target: TARGET,
-                "[dry] market {}: oracle={} bid={} ask={} bid_ok={bid_ok} ask_ok={ask_ok} replaced={replace_ids:?}",
+                "[dry] market {}: oracle={} bid={} ask={} bid_ok={bid_ok} ask_ok={ask_ok} replaced={replace_sides:?}",
                 snap.market_index, snap.oracle_price, snap.target_bid, snap.target_ask
             );
             return Ok(());
@@ -539,7 +560,7 @@ impl QuoterBot {
             Ok(sig) => {
                 log::info!(
                     target: TARGET,
-                    "market {}: oracle={} bid={} ask={} bid_ok={bid_ok} ask_ok={ask_ok} replaced={replace_ids:?} sig={sig}",
+                    "market {}: oracle={} bid={} ask={} bid_ok={bid_ok} ask_ok={ask_ok} replaced={replace_sides:?} sig={sig}",
                     snap.market_index, snap.oracle_price, snap.target_bid, snap.target_ask
                 );
                 Ok(())

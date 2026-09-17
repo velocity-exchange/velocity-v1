@@ -35,6 +35,7 @@ use {
     crate::{Config, UseMarkets},
     std::time::{Duration, SystemTime, UNIX_EPOCH},
     velocity_rs::{
+        market_clob_accounts,
         types::{
             accounts::User, MarketId, MarketType, OrderParams, OrderType, PerpPosition,
             PositionDirection,
@@ -146,10 +147,11 @@ impl TakerBot {
         let direction = self.choose_direction(market_index, base_position);
 
         // Market order, auction params left to the program to derive
-        // (direction-correct sanitization). A filler — local or the deployed
-        // devnet one — matches it against resting quotes or the AMM. When stuck
-        // one-sided the forced order is `reduce_only` so a chunk larger than the
-        // remaining position can't overshoot flat and re-open the other side.
+        // (direction-correct sanitization). The placement routes it against the
+        // market's book, its quoters and the AMM, so the order trades in the
+        // same instruction. When stuck one-sided the forced order is
+        // `reduce_only` so a chunk larger than the remaining position can't
+        // overshoot flat and re-open the other side.
         let order = OrderParams {
             order_type: OrderType::Market,
             market_type: MarketType::Perp,
@@ -158,6 +160,14 @@ impl TakerBot {
             base_asset_amount: size,
             reduce_only: stuck,
             ..Default::default()
+        };
+
+        let Some(clob) = market_clob_accounts(&self.velocity, market_index).await else {
+            log::warn!(
+                target: TARGET,
+                "market {market_index}: no approved book on the quoter slab, skipping take",
+            );
+            return Ok(());
         };
 
         let mut tx = TransactionBuilder::new(
@@ -170,7 +180,7 @@ impl TakerBot {
         // The order touches a market we may hold no position in; force-include it
         // so the place ix sees the perp market account (same reason as the quoter).
         tx.force_include_markets(&[MarketId::perp(market_index)], &[]);
-        tx = tx.place_orders(vec![order]);
+        tx = tx.place_and_take(order, clob, None);
         let msg = tx.build();
 
         if self.config.dry {

@@ -1358,10 +1358,26 @@ impl ServerParams {
             );
         }
 
+        // The order routes as it places, so the simulation must carry the
+        // market's book accounts to reproduce what the real placement does.
+        let Some(clob) =
+            velocity_rs::market_clob_accounts(&self.velocity, taker_order_params.market_index)
+                .await
+        else {
+            return Err((
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                format!(
+                    "market {} has no approved book on its quoter slab",
+                    taker_order_params.market_index
+                ),
+                None,
+            ));
+        };
+
         // always set fee payer to some other account with SOL
         // supports privey wallets and how a swift order is intended to be placed anyway
         let message = tx
-            .place_orders(vec![*taker_order_params])
+            .place_and_take(*taker_order_params, clob, None)
             .fee_payer(self.config.sim_fee_payer)
             .build();
 

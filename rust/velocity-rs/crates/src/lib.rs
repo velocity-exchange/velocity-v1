@@ -2044,6 +2044,26 @@ pub struct ClobFillAccounts {
     pub crank_conditions: Option<Pubkey>,
 }
 
+/// The market's CLOB accounts, read off its quoter slab.
+///
+/// Every endpoint that reaches the book takes these, so each bot that places an
+/// order resolves them the same way. `None` is a market whose slab holds no
+/// approved book: it has no venue, and the caller has nothing to place onto.
+pub async fn market_clob_accounts(
+    velocity: &VelocityClient,
+    market_index: u16,
+) -> Option<ClobFillAccounts> {
+    let slots = velocity.get_quoter_slab_slots(market_index).await.ok()?;
+    let book = crate::utils::clob_slot_config(&slots)?;
+    Some(ClobFillAccounts {
+        market_index,
+        quoter_slab: constants::derive_quoter_slab(market_index),
+        clob_market: book.response_account,
+        clob_program: book.program_id,
+        crank_conditions: None,
+    })
+}
+
 impl ForceMarkets {
     /// Set given `markets` as readable, enforcing there inclusion in a final Tx
     pub fn with_readable(&mut self, markets: &[MarketId]) -> &mut Self {
@@ -2758,6 +2778,109 @@ impl<'a> TransactionBuilder<'a> {
         self
     }
 
+    /// Rest a maker order on the market's CLOB.
+    ///
+    /// The order goes straight to the book as a maker quote and never occupies
+    /// a `User.orders` slot.
+    ///
+    /// * `order` - the maker order to rest
+    /// * `clob` - the market's book, its quoter slab and the CLOB program
+    /// * `activation_delay_slots` - the book speed bump the maker rests behind.
+    ///   `None` takes the book's default. A value below the default needs the
+    ///   flow authority's signature, which this builder does not carry.
+    pub fn place_and_make(
+        mut self,
+        order: OrderParams,
+        clob: ClobFillAccounts,
+        activation_delay_slots: Option<u32>,
+    ) -> Self {
+        assert!(
+            order.market_type == MarketType::Perp,
+            "only perp place-and-make is supported"
+        );
+
+        let perp_writable = [MarketId::perp(order.market_index)];
+        let mut accounts = build_accounts(
+            self.program_data,
+            program::accounts::PlaceAndMakeV1 {
+                state: *state_account(),
+                authority: self.authority,
+                user: self.sub_account,
+                user_stats: Wallet::derive_stats_account(&self.owner()),
+                quoter_slab: clob.quoter_slab,
+                clob_market: clob.clob_market,
+                clob_program: clob.clob_program,
+                // Only an activation delay below the book's default needs the
+                // attestation, and this builder never asks for one.
+                flow_authority: None,
+            },
+            [self.account_data.as_ref()].into_iter(),
+            self.force_markets.readable.iter(),
+            perp_writable
+                .iter()
+                .chain(self.force_markets.writeable.iter()),
+        );
+
+        // Upstream drift removed User.margin_mode; high-leverage mode now
+        // comes exclusively from individual OrderParams flags.
+        if order.high_leverage_mode() {
+            accounts.push(AccountMeta::new(*high_leverage_mode_account(), false));
+        }
+
+        let ix = Instruction {
+            program_id: constants::PROGRAM_ID,
+            accounts,
+            data: InstructionData::data(&program::instruction::PlaceAndMakePerpOrderV1 {
+                args: program::instructions::PlaceAndMakePerpOrderV1Args {
+                    params: order,
+                    activation_delay_slots,
+                },
+            }),
+        };
+
+        self.ixs.push(ix);
+        self
+    }
+
+    /// Remove every order this account holds on a market's CLOB, on one side or
+    /// on both.
+    ///
+    /// One call and one CPI, whatever the depth. The book reports what it
+    /// removed, and a capped sweep converges on repeat calls.
+    pub fn cancel_clob_orders(
+        mut self,
+        clob: ClobFillAccounts,
+        sides: program::state::prop_amm::ClobCancelSides,
+    ) -> Self {
+        let accounts = build_accounts(
+            self.program_data,
+            program::accounts::CancelOrdersV1 {
+                authority: self.authority,
+                user: self.sub_account,
+                quoter_slab: clob.quoter_slab,
+                clob_market: clob.clob_market,
+                clob_program: clob.clob_program,
+            },
+            [self.account_data.as_ref()].into_iter(),
+            self.force_markets.readable.iter(),
+            self.force_markets.writeable.iter(),
+        );
+
+        let ix = Instruction {
+            program_id: constants::PROGRAM_ID,
+            accounts,
+            data: InstructionData::data(&program::instruction::CancelOrdersV1 {
+                params: program::instructions::CancelOrdersV1Params {
+                    market_index: clob.market_index,
+                    sides,
+                },
+            }),
+        };
+
+        self.ixs.push(ix);
+        self
+    }
+
     /// Place a swift order (Perps only)
     ///
     /// The order routes when it is placed. It fills against the market's book
@@ -2767,12 +2890,18 @@ impl<'a> TransactionBuilder<'a> {
     ///
     /// * `signed_order_info` - the signed swift order info
     /// * `taker_account` - taker subaccount data
+    /// * `makers` - the accounts of the book makers this order would sweep
     /// * `clob` - the market's book, its quoter slab and the CLOB program
     ///
+    /// A fill settles only for the users the transaction carries, and the book
+    /// stops at the first maker it was not handed. A maker left out of `makers`
+    /// is therefore depth the order does not get, and leaving out the best one
+    /// gives up the rest of the book behind it.
     pub fn place_swift_order(
         mut self,
         signed_order_info: &SignedOrderInfo,
         taker_account: &User,
+        makers: &[User],
         clob: ClobFillAccounts,
         // Swift's detached attestation for this order, from `/attest`. On a
         // book with a speed bump, `None` rests the whole order instead of
@@ -2809,7 +2938,7 @@ impl<'a> TransactionBuilder<'a> {
                 clob_market: clob.clob_market,
                 clob_program: clob.clob_program,
             },
-            [taker_account].into_iter(),
+            std::iter::once(taker_account).chain(makers.iter()),
             self.force_markets.readable.iter(),
             perp_writable
                 .iter()

@@ -37,6 +37,7 @@ use {
             TransactionUpdate,
         },
         jupiter::JupiterSwapApi,
+        market_clob_accounts,
         market_state::{MarketStateData, SimplifiedMarginCalculation},
         math::{
             constants::{
@@ -1441,16 +1442,31 @@ async fn derisk_subaccount(
                 PositionDirection::Long
             };
 
-            tx_builder = tx_builder.place_orders(vec![OrderParams {
-                order_type: OrderType::Market,
-                market_type: MarketType::Perp,
-                direction,
-                base_asset_amount: position.base_asset_amount.unsigned_abs(),
-                market_index: position.market_index,
-                reduce_only: true,
-                max_ts: Some((current_time_millis() / 1000 + 15) as i64), // ~15s
-                ..Default::default()
-            }]);
+            let Some(clob) = market_clob_accounts(velocity, position.market_index).await else {
+                log::warn!(
+                    target: TARGET,
+                    "market {} has no approved book on its quoter slab; cannot derisk {subaccount}",
+                    position.market_index,
+                );
+                return;
+            };
+
+            // The placement routes the order, so the derisk trades in the same
+            // instruction instead of resting and waiting for a filler.
+            tx_builder = tx_builder.place_and_take(
+                OrderParams {
+                    order_type: OrderType::Market,
+                    market_type: MarketType::Perp,
+                    direction,
+                    base_asset_amount: position.base_asset_amount.unsigned_abs(),
+                    market_index: position.market_index,
+                    reduce_only: true,
+                    max_ts: Some((current_time_millis() / 1000 + 15) as i64), // ~15s
+                    ..Default::default()
+                },
+                clob,
+                None,
+            );
 
             tx_sender
                 .send_tx(

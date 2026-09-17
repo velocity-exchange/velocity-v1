@@ -2023,11 +2023,9 @@ struct ForceMarkets {
     writeable: Vec<MarketId>,
 }
 
-/// The market's CLOB accounts. Their presence selects
-/// `fill_legacy_dlob_order`, where the filled order's restable remainder
-/// migrates to the book instead of resting in `User.orders`. `market_index` is
-/// separate from the fill's own, because the crank-conditions PDA seed needs
-/// it before any account is loaded.
+/// The market's CLOB accounts. Every endpoint that reaches the book takes
+/// them. `market_index` is separate from any order's own, because the
+/// crank-conditions PDA seed needs it before an account is loaded.
 #[derive(Clone, Copy, Debug)]
 pub struct ClobFillAccounts {
     pub market_index: u16,
@@ -2418,10 +2416,16 @@ impl<'a> TransactionBuilder<'a> {
         self
     }
 
-    /// Place new orders for account
+    /// Arm trigger orders in the account's own order slots.
     ///
-    /// * `orders` list of orders to place
-    pub fn place_orders(mut self, orders: Vec<OrderParams>) -> Self {
+    /// A slot holds one unfired conditional. Every other order type rests on
+    /// the market's book, so the program refuses it here. One margin check
+    /// covers the whole batch, which is what lets a stop loss and a take
+    /// profit arrive together.
+    ///
+    /// * `orders` the triggers to arm, each a `TriggerMarket` or a
+    ///   `TriggerLimit` on a perp market
+    pub fn place_trigger_orders(mut self, orders: Vec<OrderParams>) -> Self {
         let mut readable_accounts: Vec<MarketId> = orders
             .iter()
             .map(|o| (o.market_index, o.market_type).into())
@@ -2430,7 +2434,7 @@ impl<'a> TransactionBuilder<'a> {
 
         let mut accounts = build_accounts(
             self.program_data,
-            program::accounts::PlaceOrder {
+            program::accounts::PlaceTriggerOrdersV1 {
                 state: *state_account(),
                 authority: self.authority,
                 user: self.sub_account,
@@ -2449,7 +2453,9 @@ impl<'a> TransactionBuilder<'a> {
         let ix = Instruction {
             program_id: constants::PROGRAM_ID,
             accounts,
-            data: InstructionData::data(&program::instruction::PlaceOrders { params: orders }),
+            data: InstructionData::data(&program::instruction::PlaceTriggerOrdersV1 {
+                args: program::instructions::PlaceTriggerOrdersV1Args { params: orders },
+            }),
         };
 
         self.ixs.push(ix);
@@ -2662,7 +2668,7 @@ impl<'a> TransactionBuilder<'a> {
     pub fn modify_orders_by_user_id(mut self, orders: &[(u8, ModifyOrderParams)]) -> Self {
         let accounts = build_accounts(
             self.program_data,
-            program::accounts::PlaceOrder {
+            program::accounts::CancelOrder {
                 state: *state_account(),
                 authority: self.authority,
                 user: self.sub_account,
@@ -2687,79 +2693,64 @@ impl<'a> TransactionBuilder<'a> {
         self
     }
 
-    /// Add a place and take instruction (perp-only; spot variant removed upstream).
+    /// Place a perp taker order and fill it in one instruction.
+    ///
+    /// The order routes through the market's book and its quoters. Whatever is
+    /// left rests on the book when the order can rest, so no separate fill
+    /// instruction is needed to make the order trade.
     ///
     /// * `order` - the order to place
-    /// * `maker_info` - pubkey of the maker/counter-party(s) to take against and account data
-    /// * `referrer` - authority of the placing taker's referrer, if any
+    /// * `clob` - the market's book, its quoter slab and the CLOB program
+    /// * `success_condition` - refuse the whole call unless the fill meets it
     pub fn place_and_take(
         mut self,
         order: OrderParams,
-        maker_info: &[(Pubkey, User)],
-        referrer: Option<Pubkey>,
+        clob: ClobFillAccounts,
         success_condition: Option<u32>,
     ) -> Self {
-        let mut user_accounts = vec![self.account_data.as_ref()];
+        assert!(
+            order.market_type == MarketType::Perp,
+            "only perp place-and-take is supported"
+        );
 
-        for (_maker, maker_account) in maker_info {
-            user_accounts.push(maker_account);
-        }
-
-        let is_perp = order.market_type == MarketType::Perp;
+        // The market is writable. The order fills through it rather than only
+        // recording against it.
         let perp_writable = [MarketId::perp(order.market_index)];
-        let spot_writable = [MarketId::spot(order.market_index), MarketId::QUOTE_SPOT];
-
         let mut accounts = build_accounts(
             self.program_data,
-            program::accounts::PlaceAndTake {
+            program::accounts::PlaceAndTakeV1 {
                 state: *state_account(),
                 authority: self.authority,
                 user: self.sub_account,
                 user_stats: Wallet::derive_stats_account(&self.owner()),
+                quoter_slab: clob.quoter_slab,
+                clob_market: clob.clob_market,
+                clob_program: clob.clob_program,
+                // The taker signs this transaction themselves, so the flow
+                // authority's separate attestation is not needed.
+                flow_authority: None,
             },
-            user_accounts.into_iter(),
+            [self.account_data.as_ref()].into_iter(),
             self.force_markets.readable.iter(),
-            if is_perp {
-                perp_writable.iter()
-            } else {
-                spot_writable.iter()
-            }
-            .chain(self.force_markets.writeable.iter()),
+            perp_writable
+                .iter()
+                .chain(self.force_markets.writeable.iter()),
         );
 
-        if is_perp && order.high_leverage_mode() {
+        // Upstream drift removed User.margin_mode; high-leverage mode now
+        // comes exclusively from individual OrderParams flags.
+        if order.high_leverage_mode() {
             accounts.push(AccountMeta::new(*high_leverage_mode_account(), false));
-        }
-
-        for (maker, maker_account) in maker_info {
-            accounts.push(AccountMeta::new(*maker, false));
-            accounts.push(AccountMeta::new(
-                Wallet::derive_stats_account(&maker_account.authority),
-                false,
-            ));
-        }
-
-        let order_has_builder =
-            order.builder_idx.is_some() && order.builder_fee_tenth_bps.is_some();
-        if order_has_builder || referrer.is_some() {
-            accounts.push(AccountMeta::new(
-                derive_revenue_share_escrow(&self.owner()),
-                false,
-            ));
-            if let Some(referrer) = referrer {
-                accounts.push(AccountMeta::new_readonly(
-                    Wallet::derive_stats_account(&referrer),
-                    false,
-                ));
-            }
         }
 
         let ix = Instruction {
             program_id: constants::PROGRAM_ID,
             accounts,
-            data: InstructionData::data(&program::instruction::PlaceAndTakePerpOrder {
-                params: order,
-                success_condition,
+            data: InstructionData::data(&program::instruction::PlaceAndTakePerpOrderV1 {
+                args: program::instructions::PlaceAndTakePerpOrderV1Args {
+                    params: order,
+                    success_condition,
+                },
             }),
         };
 
@@ -3488,167 +3479,6 @@ impl<'a> TransactionBuilder<'a> {
         self
     }
 
-    /// Fill a perpetual order by matching it against maker orders
-    ///
-    /// This instruction allows a filler to execute a taker's order by matching it against
-    /// existing maker orders in the order book. The filler receives a fee for providing
-    /// liquidity and executing the trade.
-    ///
-    /// * `market_index` - the perpetual market index to fill orders on
-    /// * `taker` - the taker's subaccount pubkey
-    /// * `taker_account` - the taker's user account data
-    /// * `taker_stats` - the taker's user stats account data
-    /// * `taker_order_id` - optional order ID to fill, if None fills the best available order
-    /// * `makers` - list of maker user accounts that will provide liquidity
-    /// * `has_builder` - if true include RevenueShareEscrow account for the taker, otherwise
-    ///   try to infer from the taker's orders. This exists because the caller may have additional
-    ///   information about the builder status of the order, such as from decoding the Swift message.
-    ///   Worst case it will include the RevenueShareEscrow account optimistically.
-    pub fn fill_perp_order(
-        mut self,
-        market_index: u16,
-        taker: Pubkey,
-        taker_account: &User,
-        taker_stats: &UserStats,
-        taker_order_id: Option<u32>,
-        makers: &[User],
-        has_builder: Option<bool>,
-        // The staging `QuoterV0` entries the taker's signed message named.
-        // The program checks them against the order's digest. The fill must
-        // consult each named entry's slab slot, so its response account and
-        // its registered CPI accounts must travel in this transaction's
-        // quoter tail. Empty for an order placed without a signed route.
-        signed_route: &[Pubkey],
-        // Some means the v1 route. A restable remainder of the filled order
-        // migrates to the market's CLOB instead of resting in `User.orders`.
-        clob: Option<ClobFillAccounts>,
-    ) -> Self {
-        let user_stats = Wallet::derive_stats_account(&taker_account.authority);
-        let filler_stats = Wallet::derive_stats_account(&self.owner());
-        let mut accounts = match &clob {
-            Some(clob) => build_accounts(
-                self.program_data,
-                program::accounts::FillLegacyDlobOrder {
-                    state: *state_account(),
-                    authority: self.authority,
-                    user: taker,
-                    user_stats,
-                    filler: self.sub_account,
-                    filler_stats,
-                    quoter_slab: clob.quoter_slab,
-                    clob_market: clob.clob_market,
-                    clob_program: clob.clob_program,
-                    // Always named. A fill that leaves a book short of an
-                    // owner is refused unless velocity can count the
-                    // transaction's accounts, and only this sysvar tells it.
-                    instructions_sysvar: Some(SYSVAR_INSTRUCTIONS_PUBKEY),
-                },
-                makers.iter().chain(std::iter::once(taker_account)),
-                std::iter::empty(),
-                std::iter::once(&MarketId::perp(market_index)),
-            ),
-            None => build_accounts(
-                self.program_data,
-                program::accounts::FillOrder {
-                    state: *state_account(),
-                    authority: self.authority,
-                    user: taker,
-                    user_stats,
-                    filler: self.sub_account,
-                    filler_stats,
-                    instructions_sysvar: Some(SYSVAR_INSTRUCTIONS_PUBKEY),
-                },
-                makers.iter().chain(std::iter::once(taker_account)),
-                std::iter::empty(),
-                std::iter::once(&MarketId::perp(market_index)),
-            ),
-        };
-
-        for maker in makers {
-            accounts.extend([
-                AccountMeta::new(
-                    Wallet::derive_user_account(&maker.authority, maker.sub_account_id),
-                    false,
-                ),
-                AccountMeta::new(Wallet::derive_stats_account(&maker.authority), false),
-            ]);
-        }
-
-        // The onchain FillPerpOrder (programs/velocity/src/controller/orders.rs)
-        // requires the taker's RevenueShareEscrow in two independent cases: the
-        // order carries a builder code, OR the taker is referred (their escrow was
-        // initialized with a referrer, i.e. the `BuilderReferral` status bit).
-        let order_has_builder = if let Some(has) = has_builder {
-            has
-        } else if let Some(order_id) = taker_order_id {
-            taker_account
-                .orders
-                .iter()
-                .find(|o| o.order_id == order_id)
-                .is_none_or(|o| o.has_builder())
-        } else {
-            // no taker_order_id, should be a swift order, include the revenue share escrow optimistically
-            true
-        };
-        if order_has_builder || taker_stats.has_builder_referral() {
-            accounts.push(AccountMeta::new(
-                derive_revenue_share_escrow(&taker_account.authority),
-                false,
-            ));
-            if taker_stats.has_builder_referral() {
-                accounts.push(AccountMeta::new_readonly(
-                    Wallet::derive_stats_account(&taker_stats.referrer),
-                    false,
-                ));
-            }
-        }
-
-        let ix = Instruction {
-            program_id: constants::PROGRAM_ID,
-            accounts,
-            data: match &clob {
-                Some(clob) => InstructionData::data(&program::instruction::FillLegacyDlobOrder {
-                    args: program::instructions::FillLegacyDlobOrderArgs {
-                        market_index: clob.market_index,
-                        order_id: taker_order_id,
-                        signed_route: signed_route.to_vec(),
-                    },
-                }),
-                None => InstructionData::data(&program::instruction::FillPerpOrder {
-                    order_id: taker_order_id,
-                    _maker_order_id: None,
-                    signed_route: signed_route.to_vec(),
-                }),
-            },
-        };
-
-        self.ixs.push(ix);
-        self
-    }
-
-    /// Assert that the filler was activated in the current slot.
-    ///
-    /// The guard is slot-scoped. It is not transaction-local proof. If another
-    /// transaction already activated the filler in this slot, a later no-op
-    /// fill also passes. A caller that needs transaction-local proof must also
-    /// inspect the simulation's `OrderFill` event.
-    pub fn revert_fill(mut self) -> Self {
-        let accounts = program::accounts::RevertFill {
-            state: *state_account(),
-            authority: self.authority,
-            filler: self.sub_account,
-            filler_stats: Wallet::derive_stats_account(&self.owner()),
-        }
-        .to_account_metas(None);
-
-        self.ixs.push(Instruction {
-            program_id: constants::PROGRAM_ID,
-            accounts,
-            data: InstructionData::data(&program::instruction::RevertFill {}),
-        });
-        self
-    }
-
     /// Accrue a spot market's interest up to the current slot.
     ///
     /// This instruction is permissionless. A value-releasing path refuses to
@@ -3681,50 +3511,6 @@ impl<'a> TransactionBuilder<'a> {
                 &program::instruction::UpdateSpotMarketCumulativeInterest {},
             ),
         });
-        self
-    }
-
-    /// Trigger a conditional order (stop loss, take profit, etc.)
-    ///
-    /// This instruction allows a filler to trigger a conditional order when the specified
-    /// market conditions are met. Conditional orders include stop losses, take profits,
-    /// and other trigger-based order types.
-    ///
-    /// * `user` - the user's subaccount pubkey that owns the conditional order
-    /// * `user_account` - the user's account data containing the conditional order
-    /// * `order_id` - the ID of the conditional order to trigger
-    /// * `market` - tuple of (market_index, market_type) for the market the order is on
-    pub fn trigger_order(
-        mut self,
-        user: Pubkey,
-        user_account: &User,
-        order_id: u32,
-        market: (u16, MarketType),
-    ) -> Self {
-        let accounts = build_accounts(
-            self.program_data,
-            program::accounts::TriggerOrder {
-                state: *state_account(),
-                authority: self.authority,
-                user,
-                filler: self.sub_account,
-                user_stats: Wallet::derive_stats_account(&user_account.authority),
-                trigger_conditions: None,
-                crank_conditions: None,
-            },
-            std::iter::once(user_account),
-            std::iter::empty(),
-            std::iter::once(&MarketId::from(market)),
-        );
-
-        let ix = Instruction {
-            program_id: constants::PROGRAM_ID,
-            accounts,
-            data: InstructionData::data(&program::instruction::TriggerOrder { order_id }),
-        };
-
-        self.ixs.push(ix);
-
         self
     }
 
@@ -4691,7 +4477,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_place_orders_high_leverage() {
+    async fn test_place_trigger_orders_high_leverage() {
         let user = Cow::Owned(User::default());
 
         let program_data = ProgramData::new(
@@ -4708,124 +4494,14 @@ mod tests {
             market_index: 0,
             market_type: MarketType::Perp,
             direction: PositionDirection::Long,
-            order_type: OrderType::Limit,
+            order_type: OrderType::TriggerMarket,
             bit_flags: <OrderParams as crate::types::OrderParamsExt>::HIGH_LEVERAGE_MODE_FLAG,
             ..Default::default()
         }];
 
-        let tx = builder.place_orders(orders).build();
+        let tx = builder.place_trigger_orders(orders).build();
 
         let high_leverage_account = *high_leverage_mode_account();
         assert!(tx.static_account_keys().contains(&high_leverage_account));
-    }
-
-    /// A fill of a referred taker's order must attach the escrow account even
-    /// when the order itself carries no builder code. A referred taker's
-    /// RevenueShareEscrow was initialized with a referrer, which sets the
-    /// `BuilderReferral` status bit. Without the escrow the on-chain
-    /// `FillPerpOrder` reverts with `UnableToLoadRevenueShareAccount`.
-    #[test]
-    fn fill_perp_order_attaches_escrow_for_referred_taker() {
-        let program_data = ProgramData::new(
-            vec![SpotMarket::default()],
-            vec![PerpMarket::default()],
-            vec![],
-            State::default(),
-        );
-        let filler = Pubkey::new_unique();
-        let taker = Pubkey::new_unique();
-
-        // Taker holds a plain order (id 1) that carries no builder code.
-        let mut taker_account = User::default();
-        taker_account.orders[0].order_id = 1;
-        assert!(!taker_account.orders[0].has_builder());
-        let makers: Vec<User> = vec![];
-        let escrow = derive_revenue_share_escrow(&taker_account.authority);
-
-        // Referred taker (BuilderReferral bit set): escrow MUST be attached even
-        // though the order has no builder. This is the regressed case.
-        let mut referred_stats = UserStats::default();
-        referred_stats.referrer = Pubkey::new_unique();
-        referred_stats.referrer_status = 0b0000_0100;
-        assert!(referred_stats.has_builder_referral());
-        let tx = TransactionBuilder::new(&program_data, filler, Cow::Owned(User::default()), false)
-            .fill_perp_order(
-                0,
-                taker,
-                &taker_account,
-                &referred_stats,
-                Some(1),
-                &makers,
-                None,
-                &[],
-                None,
-            )
-            .build();
-        assert!(
-            tx.static_account_keys().contains(&escrow),
-            "referred taker's fill must include the RevenueShareEscrow account"
-        );
-        assert!(
-            tx.static_account_keys()
-                .contains(&Wallet::derive_stats_account(&referred_stats.referrer)),
-            "referred taker's fill must include the referrer's UserStats account"
-        );
-
-        // Control: not referred and order has no builder -> escrow omitted.
-        let plain_stats = UserStats::default();
-        assert!(!plain_stats.has_builder_referral());
-        let tx = TransactionBuilder::new(&program_data, filler, Cow::Owned(User::default()), false)
-            .fill_perp_order(
-                0,
-                taker,
-                &taker_account,
-                &plain_stats,
-                Some(1),
-                &makers,
-                None,
-                &[],
-                None,
-            )
-            .build();
-        assert!(
-            !tx.static_account_keys().contains(&escrow),
-            "non-referred, non-builder fill must not include the RevenueShareEscrow account"
-        );
-    }
-
-    #[test]
-    fn revert_fill_builds_expected_instruction() {
-        let program_data = ProgramData::new(
-            vec![SpotMarket::default()],
-            vec![PerpMarket::default()],
-            vec![],
-            State::default(),
-        );
-        let filler = Pubkey::new_unique();
-        let filler_account = User {
-            authority: Pubkey::new_unique(),
-            ..User::default()
-        };
-
-        let builder =
-            TransactionBuilder::new(&program_data, filler, Cow::Owned(filler_account), false)
-                .revert_fill();
-        let ix = builder.ixs().last().expect("revert fill instruction");
-
-        assert_eq!(
-            ix.data,
-            InstructionData::data(&program::instruction::RevertFill {})
-        );
-        assert_eq!(ix.accounts.len(), 4);
-        assert_eq!(ix.accounts[0].pubkey, *state_account());
-        assert_eq!(ix.accounts[1].pubkey, builder.authority);
-        assert!(ix.accounts[1].is_signer);
-        assert_eq!(ix.accounts[2].pubkey, filler);
-        assert!(ix.accounts[2].is_writable);
-        assert_eq!(
-            ix.accounts[3].pubkey,
-            Wallet::derive_stats_account(&builder.owner())
-        );
-        assert!(ix.accounts[3].is_writable);
     }
 }

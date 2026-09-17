@@ -122,7 +122,7 @@ impl EventSubscriber {
     ///
     /// * `sub_account` - pubkey of the user's sub-account to subscribe to (use Velocity Program ID to get all program events)
     ///
-    /// passing the driftV2 address `dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH`
+    /// passing the program address `vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P`
     /// will yield events from all sub-accounts.
     ///
     /// Returns a stream of events
@@ -1068,8 +1068,8 @@ mod test {
 
         let cpi_logs = &[
             "Program vAuLTsyrvSfZRuRB3XgvkPwNGgYSs9YRYymVebLKoxR invoke [1]".to_string(),
-            "Program log: Instruction: FillOrder".to_string(),
-            "Program dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH invoke [2]".to_string(),
+            "Program log: Instruction: PlaceAndTakePerpOrderV1".to_string(),
+            "Program vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P invoke [2]".to_string(),
             format!("{PROGRAM_DATA}{}", serialize_event(order_record)),
             format!("{PROGRAM_DATA}{}", serialize_event(fill)),
             "Program vAuLTsyrvSfZRuRB3XgvkPwNGgYSs9YRYymVebLKoxR success".to_string(),

@@ -40,6 +40,12 @@ import {
 import { PEG_PRECISION, PostOnlyParams } from '../../packages/sdk/src';
 import dotenv from 'dotenv';
 import { nanoid } from 'nanoid';
+
+// The cluster the built program names. This suite builds velocity with its
+// default features, which include `mainnet-beta`, so the program expects the
+// mainnet tag even though the validator is local. A message that names the
+// other cluster is refused, as is one that names none.
+const SUITE_NETWORK = SignedMsgNetwork.MAINNET;
 dotenv.config();
 
 describe('place and make signedMsg order', () => {
@@ -217,7 +223,7 @@ describe('place and make signedMsg order', () => {
 		});
 		const uuid = Uint8Array.from(Buffer.from(nanoid(8)));
 		const takerOrderParamsMessage: SignedMsgOrderParamsMessage = {
-			network: SignedMsgNetwork.DEVNET,
+			network: SUITE_NETWORK,
 			signedMsgOrderParams: takerOrderParams,
 			subAccountId: 0,
 			slot: new BN(await connection.getSlot()),
@@ -341,7 +347,7 @@ describe('place and make signedMsg order', () => {
 		});
 		const uuid = Uint8Array.from(Buffer.from(nanoid(8)));
 		const takerOrderParamsMessage: SignedMsgOrderParamsMessage = {
-			network: SignedMsgNetwork.DEVNET,
+			network: SUITE_NETWORK,
 			signedMsgOrderParams: takerOrderParams,
 			subAccountId: 0,
 			slot: new BN(await connection.getSlot()),
@@ -475,7 +481,7 @@ describe('place and make signedMsg order', () => {
 		});
 		const uuid = Uint8Array.from(Buffer.from(nanoid(8)));
 		const takerOrderParamsMessage: SignedMsgOrderParamsMessage = {
-			network: SignedMsgNetwork.DEVNET,
+			network: SUITE_NETWORK,
 			signedMsgOrderParams: takerOrderParams,
 			subAccountId: 0,
 			slot: new BN(await connection.getSlot()),
@@ -603,7 +609,7 @@ describe('place and make signedMsg order', () => {
 		});
 		const uuid = Uint8Array.from(Buffer.from(nanoid(8)));
 		const takerOrderParamsMessage: SignedMsgOrderParamsMessage = {
-			network: SignedMsgNetwork.DEVNET,
+			network: SUITE_NETWORK,
 			signedMsgOrderParams: takerOrderParams,
 			subAccountId: 0,
 			slot: new BN((await connection.getSlot()) + 2),
@@ -734,7 +740,7 @@ describe('place and make signedMsg order', () => {
 		});
 		const uuid = Uint8Array.from(Buffer.from(nanoid(8)));
 		const takerOrderParamsMessage: SignedMsgOrderParamsMessage = {
-			network: SignedMsgNetwork.DEVNET,
+			network: SUITE_NETWORK,
 			signedMsgOrderParams: takerOrderParams,
 			subAccountId: 0,
 			slot: new BN((await connection.getSlot()) - 1),

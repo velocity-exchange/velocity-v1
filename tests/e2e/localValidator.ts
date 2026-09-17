@@ -2511,8 +2511,12 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				takeProfitOrderParams: null,
 				stopLossOrderParams: null,
 				// Tagged for this cluster (the program refuses a message
-				// signed for the other one) and routed through the midpoint
-				// explicitly — the CLOB and vAMM baseline is implicit.
+				// signed for the other one, and one signed for none) and
+				// routed through the midpoint explicitly — the CLOB and vAMM
+				// baseline is implicit. This harness builds velocity without
+				// its default features, so the program names devnet. The
+				// anchor suite builds with them and names mainnet, which is
+				// why the two suites tag differently.
 				network: SignedMsgNetwork.DEVNET,
 				route: [midEntry],
 			});

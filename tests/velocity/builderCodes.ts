@@ -65,6 +65,12 @@ import {
 } from '../../packages/sdk/src/math/builder';
 import { createTransferInstruction } from '@solana/spl-token';
 
+// The cluster the built program names. This suite builds velocity with its
+// default features, which include `mainnet-beta`, so the program expects the
+// mainnet tag even though the validator is local. A message that names the
+// other cluster is refused, as is one that names none.
+const SUITE_NETWORK = SignedMsgNetwork.MAINNET;
+
 dotenv.config();
 
 const PYTH_STORAGE_ACCOUNT_INFO: AccountInfo<Buffer> = {
@@ -103,7 +109,7 @@ function buildMsg(
 		builderFeeTenthBps: feeBps,
 		takeProfitOrderParams: null,
 		stopLossOrderParams: null,
-		network: SignedMsgNetwork.DEVNET,
+		network: SUITE_NETWORK,
 	} as SignedMsgOrderParamsMessage;
 }
 
@@ -626,7 +632,7 @@ describe('builder codes', () => {
 		assert(userOrders.length === 0);
 
 		const takerOrderParamsMessage: SignedMsgOrderParamsMessage = {
-			network: SignedMsgNetwork.DEVNET,
+			network: SUITE_NETWORK,
 			signedMsgOrderParams: takerOrderParams,
 			subAccountId: 0,
 			slot,
@@ -792,7 +798,7 @@ describe('builder codes', () => {
 
 		const builderFeeBps = 7 * 10;
 		const takerOrderParamsMessage: SignedMsgOrderParamsMessage = {
-			network: SignedMsgNetwork.DEVNET,
+			network: SUITE_NETWORK,
 			signedMsgOrderParams: takerOrderParams,
 			subAccountId: 0,
 			slot,
@@ -1097,7 +1103,7 @@ describe('builder codes', () => {
 		const uuid = Uint8Array.from(Buffer.from(nanoid(8)));
 		const builderFeeBps = 5;
 		const msg: SignedMsgOrderParamsMessage = {
-			network: SignedMsgNetwork.DEVNET,
+			network: SUITE_NETWORK,
 			signedMsgOrderParams: orderParams,
 			subAccountId: 0,
 			slot,

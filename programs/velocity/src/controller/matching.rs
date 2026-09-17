@@ -254,9 +254,9 @@ mod tests {
         oracle: &'a OraclePriceData,
         tick: u64,
     ) -> QuoteContext<'a> {
-        // `StepMaker` tests use unit-less values, so they take
-        // `base_precision = 1`. A test that drives a real perp market through
-        // `AmmQuoter` takes `BASE_PRECISION`. A test can override it.
+        // Use base_precision = 1 for StepMaker tests (unit-less values) and
+        // BASE_PRECISION for tests that involve real perp markets via
+        // AmmQuoter; individual tests override as needed.
         QuoteContext {
             stats,
             oracle,

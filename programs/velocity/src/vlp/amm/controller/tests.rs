@@ -1252,8 +1252,8 @@ fn sweep_market_fees_reserves_frozen_if_tranche_backing() {
 
 #[test]
 fn sweep_market_fees_reserves_floored_if_tranche_backing() {
-    // The tokens backing the floored IF bankruptcy tranche must stay in the pnl
-    // pool even against the buffer-exempt protocol drain (OtterSec #53).
+    // Audit #53: the tokens backing the floored IF bankruptcy tranche must
+    // stay in the pnl pool even against the buffer-exempt protocol drain.
     // `resolve_perp_bankruptcy` cancels a forgiven loss against `pending_if_fee`
     // counter-only, relying on that value still sitting in the pnl pool, but the
     // protocol drain moves value to `protocol_fee_pool` (outside the insurance
@@ -1325,8 +1325,8 @@ fn sweep_market_fees_reserves_floored_if_tranche_backing() {
 
 #[test]
 fn sweep_market_fees_reserves_pending_revenue_share() {
-    // Already-accrued builder/referrer revenue share is owed out of the pnl pool
-    // (OtterSec #73); the protocol drain must leave its backing behind so those
+    // Audit #73: already-accrued builder/referrer revenue share is owed out of
+    // the pnl pool; the protocol drain must leave its backing behind so those
     // claims stay payable by `sweep_completed_revenue_share_for_market`.
     let mut spot_market = SpotMarket {
         deposit_balance: 400 * QUOTE_PRECISION * SPOT_BALANCE_PRECISION,

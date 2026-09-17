@@ -361,7 +361,7 @@ pub fn request_remove_insurance_fund_stake(
 }
 
 /// Cancel a pending unstake request, modeled as **withdraw-and-restake at the current
-/// active share price** (OtterSec #30). The staker's `n_shares` requested shares are
+/// active share price** (finding #30). The staker's `n_shares` requested shares are
 /// treated as if they were withdrawn (paying out the value frozen at request time) and
 /// immediately re-staked at the price prevailing now: any appreciation accrued during the
 /// escrow window is forfeited to the remaining stakers (`if_shares_lost`), while a cancel

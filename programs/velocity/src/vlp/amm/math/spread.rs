@@ -320,8 +320,8 @@ pub(crate) fn refresh_cached_spread_reserves(amm: &mut AMM) -> VelocityResult<()
         PositionDirection::Short,
     )?;
 
-    // With no reference offset, asks stay at or above the reserve and bids stay
-    // at or below it.
+    // Mirror the clamp from the legacy `update_spread_reserves`: with no
+    // reference offset, asks stay >= reserve and bids stay <= reserve.
     if amm.reference_price_offset == 0 {
         amm.ask_base_asset_reserve = ask_base_asset_reserve.min(amm.base_asset_reserve);
         amm.ask_quote_asset_reserve = ask_quote_asset_reserve.max(amm.quote_asset_reserve);
@@ -351,9 +351,9 @@ fn validate_amm_quote_state(amm: &AMM) -> VelocityResult<()> {
         amm.max_spread,
     )?;
 
-    // When both adjustments are non-negative, the post-spread bid and ask
-    // cannot be tighter than `base_spread - 2`. The 2 absorbs the i32 to u32
-    // signed rounding from the spread builders.
+    // When both adjustments are non-negative, the post-spread bid/ask
+    // can't be tighter than `base_spread - 2` (the -2 absorbs i32→u32
+    // signed rounding from the spread builders).
     if amm.amm_spread_adjustment >= 0 && amm.amm_inventory_spread_adjustment >= 0 {
         validate!(
             amm.long_spread.safe_add(amm.short_spread)? >= amm.base_spread.saturating_sub(2),

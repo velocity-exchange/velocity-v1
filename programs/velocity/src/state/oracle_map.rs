@@ -36,7 +36,7 @@ pub(crate) type OracleIdentifier = (Pubkey, OracleSource);
 /// TWAP (the `TooVolatile` band), the confidence-interval multiplier, and the staleness
 /// slot-delay overrides — so two markets sharing one oracle can legitimately reach different
 /// verdicts. Keying the cache by the oracle pubkey alone let market B reuse market A's verdict
-/// (OtterSec #69); this key folds in every per-market validity input so each combination is cached
+/// (#69); this key folds in every per-market validity input so each combination is cached
 /// independently. The cached *price* stays keyed by [`OracleIdentifier`] (price is a pure
 /// function of the oracle account and the slot).
 pub(crate) type OracleValidityKey = (
@@ -153,8 +153,8 @@ impl<'a> OracleMap<'a> {
             LogMode::ExchangeOracle
         };
 
-        // Validity depends on the per-market inputs below, not just the oracle account, so it
-        // is cached per (oracle, market-params) combination rather than per oracle (OtterSec #69).
+        // #69: validity depends on the per-market inputs below, not just the oracle account,
+        // so it is cached per (oracle, market-params) combination rather than per oracle.
         let validity_key: OracleValidityKey = (
             *oracle_id,
             market_type as u8,

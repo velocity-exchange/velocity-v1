@@ -333,12 +333,13 @@ use crate::state::user::Order;
 /// presents as one discrete level at `best_price`, sized by what remains of
 /// it.
 ///
-/// A DLOB maker is never fee-exempt. The matcher sorts it with the vAMM by
-/// price. At a tied price the vAMM fills first, and the remaining makers split
-/// pro rata.
+/// DLOB makers do not implement `is_prio` or `is_fee_exempt` (defaults of
+/// `false`). The matcher sorts them with the vAMM by price; at tied prices
+/// the vAMM (prio) wins, otherwise non-prio makers pro-rata.
 ///
-/// `try_fill_solo` is implemented because a single resting order has a trivial
-/// closed-form fill. It takes `min(target, remaining)` at the limit price.
+/// `try_fill_solo` is implemented because a single resting order has a
+/// trivial closed-form fill: take `min(target, remaining)` at the limit
+/// price.
 pub struct DlobOrderQuoter<'a> {
     pub order: &'a mut Order,
     /// Upper bound on how much base this order may fill, on top of the

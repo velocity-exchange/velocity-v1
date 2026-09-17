@@ -1,14 +1,14 @@
 # @velocity-exchange/admin-cli
 
-CLI for Velocity v1 admin operations. Sign with the right key, or pass a Squads
-V4 multisig. The on-chain program enforces which tier of authority an action
-requires.
+CLI for Velocity v1 admin operations. Sign with the right key (or pass a Squads
+V4 multisig); the on-chain program enforces which tier of authority is
+required for the action.
 
 ## Install
 
 ```sh
 npm install -g @velocity-exchange/admin-cli
-# or run it once:
+# or, one-off:
 npx @velocity-exchange/admin-cli --help
 ```
 
@@ -280,26 +280,27 @@ in a new command, so every command reads the same way.
 
 ## Routing through a Squads V4 multisig
 
-Append `--multisig <multisigPda>` to any subcommand. When the multisig's vault 0
-PDA must sign the action, for example because it holds the cold admin role, the
-CLI submits one transaction that creates a `vault_transaction` and a `proposal`
-against the multisig, with your wallet as the proposer. Members then approve and
-execute the proposal in the Squads UI. When the vault does not need to sign, for
-example because the wallet itself holds the required authority, a proposal would
-change nothing. The CLI reports that and sends the transaction directly.
+Append `--multisig <multisigPda>` to any subcommand. If the multisig's vault 0
+PDA is a required signer of the action (e.g. it is the cold admin / authority),
+the CLI submits a single transaction that creates a `vault_transaction` +
+`proposal` against the multisig with your wallet as the proposer. Members then
+approve + execute via the Squads UI. If the vault does **not** need to sign
+(e.g. the wallet itself is the required authority), a proposal would be
+pointless — the CLI says so and sends the transaction directly instead.
 
-The user-scoped commands `user deposit`, `user withdraw`, `user set-delegate`,
-and `if stake` default the authority to the multisig's vault 0 PDA under
-`--multisig`, because the vault is what signs at execution. The vault must be
-the velocity user or stake authority, and it must own the source token account.
-`user deposit`, `user withdraw`, and `user set-delegate` also accept
+User-scoped commands (`user deposit`, `user withdraw`, `user set-delegate`,
+`if stake`) default the authority to the multisig's vault 0 PDA when
+`--multisig` is passed, since the vault is what signs at execution. The vault
+must be the velocity user / stake authority and own the source token account.
+`user deposit`, `user withdraw` and `user set-delegate` also honor
 `--vault-index` to target and propose against a vault other than 0.
 
-`user init` follows the same pattern on mainnet. The program allows account
-creation only when the authority signs or pays, so under `--multisig` the create
-instructions go into one proposal and the vault PDA is the inner payer. The
-vault must therefore hold enough SOL for the rent. Without `--multisig` the local
-keypair is both authority and payer, and the CLI sends the transaction directly.
+`user init` follows the same pattern on mainnet: the program only allows
+account creation when the authority signs or is the payer, so with `--multisig`
+the create instructions are batched into one proposal and the vault PDA is the
+inner payer — the vault itself must hold enough SOL for the rent. Without
+`--multisig` the local keypair is both authority and payer and the transaction
+is sent directly.
 
 ```sh
 velocity-admin auth set-warm-admin <newWarmAdmin> \
@@ -309,10 +310,10 @@ velocity-admin auth set-warm-admin <newWarmAdmin> \
 
 ## Creating a Squads V4 multisig
 
-`multisig create` creates a Squads V4 multisig. The current wallet becomes a 1/1
-signer with Initiate, Vote, and Execute permissions. The proposer member can only
-Initiate. The on-chain Squads program config supplies the treasury. An ephemeral
-create-key seeds the multisig PDA.
+`multisig create` provisions a fresh Squads V4 multisig with the current wallet
+as a 1/1 signer (full Initiate/Vote/Execute permissions) plus a proposer member
+that can only Initiate transactions. The on-chain Squads program config supplies
+the treasury; an ephemeral create-key seeds the multisig PDA.
 
 ```sh
 velocity-admin multisig create \
@@ -409,18 +410,20 @@ velocity-admin multisig proposals [-m <pda>] [--limit <n>]  # recent proposals: 
 
 ## Local development
 
-Install once at the repo root, then work in this package:
-
 ```sh
-bun install                       # at the repo root, for the whole workspace
-cd packages/cli-admin
-bun run start --help              # run from src through bun
-bun run build                     # tsc into lib/
-./lib/index.js --help             # run the compiled binary the way the published package does
+cd cli-admin
+bun install
+bun run start --help    # run from src directly via bun
+bun run build           # tsc → lib/
+./lib/index.js --help   # run the compiled binary as the published package would
 ```
 
-The committed `package.json` depends on `"@velocity-exchange/sdk": "workspace:*"`,
-so a local SDK edit takes effect at once. `.github/scripts/rewrite-workspace-deps.mjs`
-rewrites that range to the concrete published version before a publish. Publishing
-runs from CI on an `npm-cli-admin-v<version>` tag. See the repository CLAUDE.md for
-the changeset and tag flow.
+The committed `package.json` keeps `"@velocity-exchange/sdk": "file:../sdk"` so
+local edits to the SDK are picked up immediately. Publishing rewrites that
+to a real semver range based on `sdk/package.json`'s version (see
+`scripts/prepare-publish.js`) and restores the `file:` ref afterwards. CI
+handles this automatically; for a manual publish:
+
+```sh
+bun run publish-cli
+```

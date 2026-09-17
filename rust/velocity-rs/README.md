@@ -1,6 +1,7 @@
 # velocity-rs
 
-Rust SDK for offchain clients of the [Velocity](https://velocity.exchange) protocol on Solana.
+High performance Rust SDK for building offchain clients for the
+[Velocity](https://velocity.exchange) protocol on Solana.
 
 `velocity-rs` lives in the [velocity-v1](https://github.com/velocity-exchange/velocity-v1)
 monorepo, under `rust/velocity-rs`.
@@ -15,8 +16,8 @@ locates the package inside the monorepo automatically:
 velocity-rs = { git = "https://github.com/velocity-exchange/velocity-v1", rev = "<commit-sha>" }
 ```
 
-Pin a `rev`, or a `tag` once tagged releases exist. A dependency on the default branch lets
-every `cargo update` pull a breaking change.
+Pin a `rev` (or a `tag`, once tagged releases exist) — depending on the default branch
+means every `cargo update` can pull breaking changes.
 
 ### Requirements
 
@@ -38,9 +39,9 @@ Nix therefore build cleanly.
 
 ## Use
 
-`VelocityClient` reads velocity program accounts and builds transactions. It caches live account
-updates from a subscription and exposes them through accessor methods. Subscribe over WebSocket or
-over gRPC.
+The `VelocityClient` struct provides methods for reading velocity program accounts and crafting transactions.
+It is built on a subscription model where live account updates are transparently cached and made accessible via accessor methods.
+The client may be subscribed either via Ws or gRPC.
 
 ```rust
 use velocity_rs::{AccountFilter, VelocityClient, Wallet, grpc::GrpcSubscribeOpts};
@@ -100,42 +101,42 @@ rustup toolchain install stable-x86_64-apple-darwin --force-non-host
 rustup override set stable-x86_64-apple-darwin
 ```
 
-Warning: native aarch64 toolchains are unsupported. The program's zero-copy account structs must
-match the on-chain x86_64 SBF memory layout. An aarch64 build can fail at runtime with a
-deserialization error such as `InvalidSize`.
+⚠️ Native aarch64 toolchains are unsupported: the program's zero-copy account structs
+must match the on-chain (x86_64/SBF) memory layout, and aarch64 builds can fail at
+runtime with deserialization errors like `InvalidSize`.
 
 ### Linux
 
-x86_64 with stable Rust ≥ 1.89. No extra setup is needed.
+x86_64 with stable Rust ≥ 1.89 — no special setup.
 
-## Local development
+## Local Development
 
-`velocity-rs` consumes the `velocity` program crate as a host-library path-dep at
-`../../programs/velocity`. There is no FFI layer, no `drift-ffi-sys`, and no git submodule.
+`velocity-rs` consumes the `velocity` program crate directly as a host-library path-dep
+(`../../programs/velocity`). There is no FFI layer, no `drift-ffi-sys`, and no git submodule.
 
-Clone the monorepo:
+**clone the monorepo**
 
 ```bash
 git clone https://github.com/velocity-exchange/velocity-v1 &&\
 cd velocity-v1/rust/velocity-rs
 ```
 
-Build:
+**build**
 
 ```bash
 cargo check
 ```
 
-The `rust/` directory is its own Cargo workspace, separate from the program workspace at the repo
-root. It has its own lockfile and its own `rust/target/` build directory.
+The `rust/` directory is its own Cargo workspace (separate from the program workspace at
+the repo root) with its own lockfile and `rust/target/` build dir.
 
 ## Updating IDL types
 
-`crates/src/velocity_idl.rs` is generated from the canonical program IDL at
-`packages/sdk/src/idl/velocity.json`, the same file the TypeScript SDK uses. The generated file is
-committed. `build.rs` regenerates it only when the canonical IDL is present, which means inside the
-monorepo, and rewrites it only when the content changed. CI fails if the committed file is out of
-sync with the IDL.
+`crates/src/velocity_idl.rs` is generated from the canonical program IDL
+`packages/sdk/src/idl/velocity.json` (the same file the TypeScript SDK uses). The
+generated file is **committed**; `build.rs` regenerates it only when the canonical IDL
+is present (i.e. inside the monorepo) and only rewrites it when the content changed.
+CI fails if the committed file is out of sync with the IDL.
 
 To refresh it after a program change, from the monorepo root:
 

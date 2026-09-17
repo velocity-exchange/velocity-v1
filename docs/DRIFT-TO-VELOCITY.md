@@ -5,8 +5,9 @@ This repo is a fork of [`velocity-exchange/protocol-v2`](https://github.com/velo
 **paused**; Velocity is an **entirely new program deployment** with a new program ID, a
 reduced feature set, and a renamed SDK.
 
-This document tracks everything that changed between the two repos from an integrator's point of
-view. It reflects the current state of `master`. Every PR referenced below is **merged**.
+This document tracks everything that changed between the two repos from an integrator's
+point of view. It reflects the current state of `master` — every PR referenced below is
+**merged**.
 
 ---
 
@@ -22,13 +23,13 @@ view. It reflects the current state of `master`. Every PR referenced below is **
 | Rust crate        | `drift` (`programs/drift/`)                   | `velocity` (`programs/velocity/`)                                |
 | Package manager   | yarn                                          | bun                                                              |
 
-Because the program ID is new, **every PDA address changes**. Seed strings are unchanged, but the
-program ID input to derivation is different. **No on-chain state carries over**, so users,
-markets, and balances start fresh on Velocity. Anchor derives account and instruction
-discriminators from names rather than from the program ID, so the discriminators for surviving
-accounts and instructions (`User`, `PerpMarket`, `place_perp_order`, and the rest) are
-byte-identical to Drift's. The account **layouts** behind them changed (§5), so do not point an
-old decoder at a Velocity account.
+Because the program ID is new, **every PDA address changes** (seed strings are unchanged,
+but the program ID input to derivation is different) and **no on-chain state carries
+over** — users, markets, and balances start fresh on Velocity. Anchor account and
+instruction discriminators are derived from names, not the program ID, so the
+discriminators for surviving accounts/instructions (`User`, `PerpMarket`,
+`place_perp_order`, …) are byte-identical to Drift's — but the account **layouts**
+behind them changed (see §5), so old decoders must not be pointed at Velocity accounts.
 
 ---
 
@@ -65,7 +66,7 @@ or reworked.
 | **`transfer_deposit_by_delegate` + `update_user_allow_delegate_transfer`** | #45 | Delegates can transfer spot deposits between subaccounts once the authority opts in. Before a delegate can call `transfer_deposit_by_delegate`, the owner must call `update_user_allow_delegate_transfer(true)` to set the `AllowDelegateTransfer` bit in `UserStats.delegate_permissions`. SDK: `VelocityClient.updateUserAllowDelegateTransfer(...)` and `transferDepositByDelegate(...)`. `UserStatsAccount` gains a `delegatePermissions: number` field (1 byte carved from trailing padding; size and all other offsets unchanged at 240 bytes).                                                                                                                                                                                                                                              |
 | **`transfer_fee_and_pnl_pool`**                  | #1             | Admin instruction to rebalance tokens between a perp market's AMM fee pool and PnL pool (same or cross-market). Requires the **warm admin** key. SDK: `AdminClient.transferFeeAndPnlPool(perpMarketIndexWithFeePool, perpMarketIndexWithPnlPool, amount, direction)` and `getTransferFeeAndPnlPoolIx(...)`. Direction via the new `TransferFeeAndPnlPoolDirection` export (`.FEE_TO_PNL_POOL` / `.PNL_TO_FEE_POOL`). Emits a `TransferFeeAndPnlPoolRecord` event (`ts`, `slot`, `perp_market_index_with_fee_pool`, `perp_market_index_with_pnl_pool`, `direction`, `amount`).                                                                                                                                                                                                                       |
 | **Funding rate clamp + floor increase**          | #12            | Funding floor raised from 7.3% to 10.95% annualized (`FUNDING_RATE_OFFSET_DENOMINATOR` 5000 → 3333). Dead-zone clamp added: when `\|mark_twap − oracle_twap\| ≤ 0.05%` of oracle price (`FUNDING_RATE_CLAMP_DENOMINATOR = 2000`), the funding premium is suppressed to the offset-only floor value. Changes funding dynamics vs Drift for low-divergence markets. (Superseded by the per-market continuous dead zone in #94.)                                                                                                                                                                                                                                                                                                                                                                    |
-| **Continuous funding dead zone (per-market)**    | #94            | Replaces #12's global hard cutoff with a per-market continuous ramp. Two new `AMM` fields (occupying the 8 bytes previously `_padding_funding_twap`): `funding_clamp_threshold: u32` (noise band, BPS_PRECISION; default 5 bps) and `funding_ramp_slope: u32` (PERCENTAGE_PRECISION; default 1.0×). New admin instruction `update_perp_market_funding_dead_zone(funding_clamp_threshold, funding_ramp_slope)`; SDK `AdminClient.updatePerpMarketFundingDeadZone(...)` / `getUpdatePerpMarketFundingDeadZoneIx(...)`. `PerpMarketAccount` gains `fundingClampThreshold` / `fundingRampSlope` (replacing `paddingFundingTwap`). `PerpMarket` size unchanged.                                                                                                                                |
+| **Continuous funding dead zone (per-market)**    | #94            | Replaces #12's global hard cutoff with a per-market continuous ramp. Two new `AMM` fields (occupying the 8 bytes previously `_padding_funding_twap`): `funding_clamp_threshold: u32` (noise band, BPS_PRECISION; default 5 bps) and `funding_ramp_slope: u32` (PERCENTAGE_PRECISION; default 1.0×). New admin instruction `update_perp_market_funding_dead_zone(funding_clamp_threshold, funding_ramp_slope)`; SDK `AdminClient.updatePerpMarketFundingDeadZone(...)` / `getUpdatePerpMarketFundingDeadZoneIx(...)`. `PerpMarketAccount` gains `fundingClampThreshold` / `fundingRampSlope` (replacing `paddingFundingTwap`). `PerpMarket` size unchanged (1304).                                                                                                                                |
 | **MM oracle validation**                         | #60            | Slot-monotonicity, minimum 2-slot gap, and a 1% per-write step cap added to the existing MM oracle native handler.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | **Special user status**                          | #17            | New `User.special_user_status: u8` bitmask field (replaces 1 byte of padding; account size unchanged); new `SpecialUserStatus` SDK enum (`VammHedger = 1`). Two new instructions: `update_special_user_status(status)` (admin/hot-wallet — `AdminClient.updateSpecialUserStatus` / `getUpdateSpecialUserStatusIx`) and `special_transfer_perp_position_to_vamm(market_index, amount)` (user-callable, authority signs, only when `special_user_status == VammHedger` — `VelocityClient.specialTransferPerpPositionToVamm` / `getSpecialTransferPerpPositionToVammIx`). New error `InvalidTransferPerpPosition` (6312).                                                                                                                                                                            |
 | **Builder codes**                                | #68            | Optional `builder_idx` / `builder_fee_tenth_bps` on `OrderParams`; new `change_approved_builder` instruction and `RevenueShareEscrow` account. Existing order placements are unaffected (fields are optional).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
@@ -118,7 +119,7 @@ npm install @velocity-exchange/sdk
 - Anchor imports inside the SDK go through an isomorphic layer (`sdk/src/isomorphic/anchor`)
   with separate node/browser builds.
 
-### 4.2 Renames (no deprecated aliases, so find and replace)
+### 4.2 Renames (no deprecated aliases — find/replace required)
 
 PR #37 originally shipped `@deprecated` Drift aliases; they have since been **removed**.
 The old names no longer exist.
@@ -172,8 +173,8 @@ Gov-token stake fee discount removal (#80): `VelocityClient.updateUserGovTokenIn
 
 Dead-export cleanup (#82): the following previously-exported symbols had no consumer
 inside the SDK, its tests, or any velocity-exchange org repository and were removed.
-The module `tx/forwardOnlyTxSender` was deleted (`ForwardOnlyTxSender` class) and then
-**restored in #89** (§4.6).
+The module `tx/forwardOnlyTxSender` was deleted (`ForwardOnlyTxSender` class) —
+**but later restored in #89** (see §4.6).
 Removed `math` functions: `builderCodesEnabled`, `builderReferralEnabled`,
 `calculateAvailablePerpLiquidity`, `calculateBudgetedK` (the non-`BN` variant;
 `calculateBudgetedKBN` is unaffected), `calculateCollateralValueOfDeposit`,
@@ -188,7 +189,7 @@ Removed `math` functions: `builderCodesEnabled`, `builderReferralEnabled`,
 `PYTH_SOLANA_RECEIVER_IDL` (`pyth/types`). The misspelled constant `PTYH_LAZER_PROGRAM_ID`
 was renamed to the correctly-spelled `PYTH_LAZER_PROGRAM_ID`.
 
-(`calculateMaxRemainingDeposit` was in this removal batch but was restored in #89. See §4.6.)
+(`calculateMaxRemainingDeposit` was in this removal batch but was restored in #89 — see §4.6.)
 
 Legacy referrer migration removal (#149): `VelocityClient.migrateReferrer` /
 `getMigrateReferrerIx` were removed. These wrapped the `migrate_referrer` program
@@ -278,11 +279,11 @@ Jupiter Swap API v2 opt-in (jupiter-swap-api-v2): the former v1-only
   `getPlaceAndMakePerpOrderIx`, and `getPlaceAndMakeSignedMsgPerpOrderIxs` accept an
   optional trailing `takerEscrow` (the taker's decoded `RevenueShareEscrowAccount`,
   e.g. from a `RevenueShareEscrowMap`) so the taker's escrow is attached when the
-  taker is referred. The program's fill-time enforcement requires it (§3). The builders validate
-  `takerEscrow.authority` against the taker's authority. **Note:** #68
+  taker is referred (required by the program's fill-time enforcement — see §3). The
+  builders validate `takerEscrow.authority` against the taker's authority. **Note:** #68
   originally took a `revenueShareEscrowMap?: RevenueShareEscrowMap` on
   `placeAndTakePerpOrder` / `getPlaceAndTakePerpOrderIx`; #73 replaced that with the
-  decoded `takerEscrow?`, so a caller passing a map must switch to the decoded escrow account.
+  decoded `takerEscrow?` — callers passing a map must switch to the decoded escrow account.
   The settle-PnL builders keep their map-based `revenueShareEscrowMap` param.
 - **`PerpOperation` bit values**: 8 flags total, with `AMM_IMMEDIATE_FILL = 64` and
   `SETTLE_REV_POOL = 128`. Code hardcoding these numeric values instead of referencing the
@@ -313,28 +314,28 @@ Jupiter Swap API v2 opt-in (jupiter-swap-api-v2): the former v1-only
     market orders); the type now admits it. A new `getPriceOrThrow(...)` is provided for
     call sites that structurally require a defined price.
   - `BlockhashSubscriber.getLatestBlockHeight()` now returns `number | undefined` (was
-    `number`). It is `undefined` before any blockhash has been fetched, as the runtime already
-    returned.
+    `number`) — `undefined` before any blockhash has been fetched, as the runtime
+    already did.
   - `nextRevenuePoolSettleApr(spotMarket, vaultBalance, amount)`'s third positional
     `amount: BN` is now required (was `amount?: BN`); the function always dereferenced it,
     so omitting it already produced `NaN`/threw at runtime.
   - `BasicUserAccountSubscriber.getUserAccountAndSlot()` and
     `BasicUserStatsAccountSubscriber.getUserStatsAccountAndSlot()` now return
     `DataAndSlot<T> | undefined` (was the non-optional `DataAndSlot<T>`), matching the
-    `UserAccountSubscriber` / `UserStatsAccountSubscriber` interface. They return `undefined`
-    until an account is loaded, as the runtime already did. Relatedly, the
+    `UserAccountSubscriber` / `UserStatsAccountSubscriber` interface — they return
+    `undefined` until an account is loaded, as the runtime already did. Relatedly, the
     `{ data, slot }` pair these and the polling subscribers store is now **atomic**: a
     loaded account always carries a real `slot` (`number`, never `undefined`; seeded
     accounts use `0` as an oldest-possible sentinel), so `DataAndSlot.slot` can be relied
     on as defined. `doesAccountExist()` on these subscribers is now a type predicate.
   - `User.getUserAccountAndSlot()` (and `VelocityClient.getUserAccountAndSlot()`) keep
-    their `DataAndSlot<UserAccount> | undefined` return, which is `undefined` until the account
+    their `DataAndSlot<UserAccount> | undefined` return — `undefined` until the account
     loads, as the runtime already did. A new `User.getUserAccountAndSlotOrThrow()` is
     provided for call sites that structurally require a loaded account.
   - **`UserAccountSubscriber` "not subscribed" contract is now uniform.** Every
     implementation's `getUserAccountAndSlot()` throws `NotSubscribedError` when called
-    before `subscribe()`. The WebSocket and polling subscribers already did, and the gRPC-multi
-    and WebSocket-program subscribers now match. Consequently
+    before `subscribe()` — the WebSocket and polling subscribers already did, and the
+    gRPC-multi and WebSocket-program subscribers now match. Consequently
     `User.getUserAccount()` **throws** when not subscribed and returns `undefined` only
     when subscribed but the account was not found on chain (since `subscribe()` awaits
     the initial fetch, `undefined` means "not found", not "still loading"). The
@@ -399,21 +400,21 @@ These public exports were **added** (or restored) relative to the fork point:
   and `calculateMaxRemainingDeposit` (`math/spotMarket`).
 - `PriceUpdateAccount` is now re-exported from the package root (#97); previously it was only
   reachable via a subpath import.
-- `AdminClient.updatePauseAdmin` / `getUpdatePauseAdminIx`, the cold-admin rotation of the
-  emergency `pause_admin` key (`StateAccount.pauseAdmin`), sitting alongside `updateWarmAdmin` and
-  `updateHotAdmin`.
+- `AdminClient.updatePauseAdmin` / `getUpdatePauseAdminIx` — cold-admin rotation of the
+  emergency `pause_admin` key (`StateAccount.pauseAdmin`), sitting alongside
+  `updateWarmAdmin` / `updateHotAdmin`.
 - `isIsolatedPositionBankrupt(user, marketIndex)` and `hasIsolatedMarginBankrupt(user)`
-  (`math/bankruptcy`) mirror the isolated half of the program's bankruptcy routing
+  (`math/bankruptcy`) — mirror the isolated half of the program's bankruptcy routing
   (`is_isolated_margin_bankrupt` + `has_isolated_margin_bankrupt`). Needed because
   `User.isBankrupt()` reads only the account-level `UserStatus.BANKRUPT` bit, which is never
   set for isolated-only bankruptcies, and `isUserBankrupt` (cross) deliberately skips isolated
   positions. `isIsolatedPositionBankrupt` throws `InvalidPerpPosition` on a non-isolated index.
-- `calculatePerpIfFee` / `calculateSpotIfFee` (`math/liquidation`) port the
-  margin-shortage-aware insurance-fund fee caps. Feed their output into the covering-amount
-  helpers rather than the raw `if + protocol` sum. `calculateMaxPctToLiquidate` gained an `isIsolatedPosition` param
+- `calculatePerpIfFee` / `calculateSpotIfFee` (`math/liquidation`) — port the margin-shortage-aware
+  insurance-fund fee caps; feed their output (not the raw `if + protocol` sum) into the
+  covering-amount helpers. `calculateMaxPctToLiquidate` gained an `isIsolatedPosition` param
   (returns 100% in one shot for isolated positions, per `IsolatedMarginLiquidatePerpMode`).
 - `User.calculateFeeForQuoteAmount` was **renamed to `User.calculatePerpTakerFee`** (the old
-  name is gone, so update call sites). It also gained an optional trailing `builderInfo`
+  name is gone — update call sites). It also gained an optional trailing `builderInfo`
   (`Pick<OrderParams, 'builderIdx' | 'builderFeeTenthBps'>`) arg; when present the builder fee
   (`quoteAmount * builderFeeTenthBps / 100_000`) is added on top of the tiered fee.
   `VelocityClient.getMarketFees` now also applies the **referee discount** to the taker fee
@@ -434,8 +435,8 @@ These public exports were **added** (or restored) relative to the fork point:
   fill before `getTriggerPrice` treats the last-fill leg as absent and substitutes the oracle
   price.
 - `calculateUserProtectiveAssetPrice` / `calculateUserProtectiveLiabilityPrice`
-  (`math/liquidation`) mirror the program's user-protective conversion pricing, which spot and
-  pnl-vs-spot liquidations use when the deposit or borrow oracle is margin-invalid: asset leg
+  (`math/liquidation`) — mirror the program's user-protective conversion pricing used by spot
+  and pnl-vs-spot liquidations when the deposit/borrow oracle is margin-invalid: asset leg
   `max(oracle, 5min twap, oracle+conf)`, liability leg `min(oracle, 5min twap, oracle−conf)`
   floored at 1. Feed the result as `assetPrice`/`liabilityPrice` to
   `calculateAssetTransferForLiabilityTransfer` to predict on-chain transfer amounts in that case.
@@ -602,7 +603,7 @@ accounts/events with the previous TS shapes should note:
   - Event/record types: `DepositRecord` (`signer?`, `userTokenAmountAfter`);
     `OrderActionRecord` (`triggerPrice`, `builderIdx`, `builderFee`); `LiquidationRecord` (`bitFlags`);
     `LiquidatePerpRecord` + `LiquidateSpotRecord` (`protocolFee`).
-- **Corrected field types.** There is no on-chain change. The TypeScript type was wrong.
+- **Corrected field types** (no on-chain change — the TS type was wrong):
   - `LiquidationRecord.canceledOrderIds`: `BN[]` → `number[]`.
   - `LiquidatePerpRecord.userOrderId` / `liquidatorOrderId`: `BN` → `number`.
   - `OrderFillerRewardStructure.rewardNumerator` / `rewardDenominator`: `BN` → `number`.
@@ -616,16 +617,16 @@ accounts/events with the previous TS shapes should note:
   `RevenueShareSettleRecord`, `TransferFeeAndPnlPoolRecord`, and `LPBorrowLendDepositRecord` are
   now registered in `EventMap` / `VelocityEvent` / the default `eventTypes` list
   (`events/types.ts`). All five have long been emitted on-chain with IDL entries and TS types,
-  but `parseEventsFromLogs` dropped any event not in that registration list without reporting an
-  error. They are now subscribable like any other record type.
+  but `parseEventsFromLogs` silently dropped any event not in that registration list — they are
+  now subscribable like any other record type.
 
 ---
 
 ## 5. On-chain layout & ABI notes
 
 - **Account discriminators unchanged** for surviving accounts (`User`, `UserStats`,
-  `State`, `PerpMarket`, `SpotMarket`, and the rest), because Anchor derives them from the
-  account name. The same holds for surviving instruction discriminators.
+  `State`, `PerpMarket`, `SpotMarket`, …) — Anchor derives them from the account name.
+  Same for surviving instruction discriminators.
 - **`request_remove_insurance_fund_stake` account list changed** (if-request-remove-settle):
   the instruction now settles already-due revenue before freezing the exit value, so its
   `#[derive(Accounts)]` gained `state`, `spot_market_vault`, `velocity_signer`, and
@@ -635,16 +636,15 @@ accounts/events with the previous TS shapes should note:
   add path. The discriminator is unchanged, but a manual (non-SDK) builder must now supply
   these accounts. `cancel_request_remove_insurance_fund_stake` was split onto its own
   `CancelRequestRemoveInsuranceFundStake` struct with the **same** 5 accounts it always had
-  (`spot_market`, `insurance_fund_stake`, `user_stats`, `authority`, `insurance_fund_vault`), so
-  cancel callers need no change. No on-chain account layout change.
+  (`spot_market`, `insurance_fund_stake`, `user_stats`, `authority`, `insurance_fund_vault`) —
+  no change for cancel callers. No on-chain account layout change.
 - **Layouts changed**: `User` is 4376 → 4496 bytes. `PerpMarket` grew across several PRs:
   1216 → 1240 (#16, Anchor-1.0 16-byte `PoolBalance` alignment), reorganized through the
   AMM decoupling (#65) and `HedgeConfig` addition down to 1224 (#66), then 1224 → 1304
-  (#75, embedded `FeeLedger` + protocol fee fields), then 1304 → **1560** when
-  `market-account-padding` appended 256 reserved bytes. The current size is **1560 bytes**, with
-  u128/i128 fields front-loaded for alignment. Any custom (non-IDL) decoder must be rebuilt
-  against `sdk/src/idl/velocity.json`.
-- **`PerpMarket.pending_revenue_share: u64`** (OtterSec #73) was carved in place from the
+  (#75, embedded `FeeLedger` + protocol fee fields). The current size is **1304 bytes**,
+  with u128/i128 fields front-loaded for alignment. Any custom (non-IDL) decoder must be
+  rebuilt against `sdk/src/idl/velocity.json`.
+- **`PerpMarket.pending_revenue_share: u64`** (audit #73) was carved in place from the
   8-byte alignment padding that precedes `amm` (formerly `_padding_align_amm: [u8; 8]`; a
   u64 at the same 8-aligned offset). The account did not grow and no other field offset moved.
   Existing accounts read it as 0, meaning nothing owed, but custom (non-IDL)
@@ -734,7 +734,7 @@ accounts/events with the previous TS shapes should note:
 - **`SpotMarket` per-market withdraw/deposit limit fields** (deposit-caps): three fields
   carved from the 13-byte alignment gap before `protocol_fee_pool`:
   `withdraw_circuit_breaker_bps: u16` and `max_deposit_bps_per_day: u16` (both basis points,
-  10000 = 100%) and `deposit_guard_threshold: u64` (token amount). The account did not grow and
+  10000 = 100%) and `deposit_guard_threshold: u64` (token amount). Account size stays 808 and
   no other field offset moved (`protocol_fee_pool` remains at struct offset 752), so existing
   accounts stay valid and read the new fields as 0 (default 25% breaker, disabled deposit cap).
   SDK `SpotMarketAccount` gains `withdrawCircuitBreakerBps` / `maxDepositBpsPerDay` (`number`,
@@ -777,9 +777,9 @@ accounts/events with the previous TS shapes should note:
   delegate-permissions addition (#45): `if_staked_gov_token_amount` was replaced in place by
   padding, and `delegate_permissions: u8` (#45) and `equity_breaker_tripped: u8`
   (equity-floor breaker) were carved from the trailing padding. The account size
-  (240 bytes) and every other field offset are unchanged, so existing accounts stay valid.
-  Custom decoders must account for the new `delegate_permissions` and `equity_breaker_tripped`
-  bytes.
+  (240 bytes) and every other field offset are unchanged — existing accounts stay
+  valid, but custom decoders must account for the new `delegate_permissions` and
+  `equity_breaker_tripped` bytes.
   The `update_user_gov_token_insurance_stake` and
   `update_delegate_user_gov_token_insurance_stake` instructions no longer exist.
 - **`trigger_order` gained a required `user_stats` account** (equity-floor-gaps): the
@@ -828,13 +828,13 @@ accounts/events with the previous TS shapes should note:
   old `switchboard` / `switchboardOnDemand` keys will fail to decode these oracle sources.
 - **`LiquidationRecord.bankrupt` is now state-derived, not a constant** (#174):
   the top-level `bankrupt` flag on `LiquidationRecord` (a sibling of the nested
-  `perpBankruptcy` / `spotBankruptcy` sub-records, which have no `bankrupt` field of their own)
-  now reflects whether the user still holds a bankrupting liability
+  `perpBankruptcy` / `spotBankruptcy` sub-records — those sub-records have no `bankrupt`
+  field of their own) now reflects whether the user still holds a bankrupting liability
   **after** the resolve call completes, rather than always being `true`. Read it as
   `record.bankrupt`, not `record.perpBankruptcy.bankrupt`. The wire type is unchanged
-  (still a `bool`), so a type-checker cannot see the change. An indexer or downstream consumer
-  that assumed `bankrupt == true` on every emitted record must re-check the field's value instead
-  of treating its presence as the signal.
+  (still a `bool`), so this is invisible to type-checkers — indexers and downstream
+  consumers that assumed `bankrupt == true` on every emitted record must re-check the
+  field's value instead of treating its presence as the signal.
 - **Mainnet `initialize` requires a fixed signer** (#158): the one-time global `State`
   creation now locks the `admin` account to `state_init_authority`
   (`prpHJmuXnqdaz92tBVdwsqmqyhqPLuq5Km35a5QWco3`) on real mainnet builds only, to prevent
@@ -1157,7 +1157,15 @@ accounts/events with the previous TS shapes should note:
 | #158      | Mainnet `initialize` (one-time global `State` creation) now requires a fixed admin signer (`state_init_authority` = `prpHJmuXnqdaz92tBVdwsqmqyhqPLuq5Km35a5QWco3`) to prevent front-running of genesis; devnet/localnet and the integration-test build are unaffected (§5) |
 | #174      | `LiquidationRecord.bankrupt` (the top-level flag, not a field of the nested `perpBankruptcy`/`spotBankruptcy` sub-records) now reflects whether the user still holds a bankrupting liability after the resolve call, instead of always being `true`. Wire type unchanged — consumers assuming `bankrupt == true` must update (§5) |
 | #182      | AMM JIT no longer participates in a DLOB match fill when a hard AMM-fill gate (pause / drawdown / MM-oracle volatility / oracle invalidity) is active; match fills can now be smaller or route entirely to the resting DLOB maker under those conditions |
+| equity-floor | New warm-admin instruction `update_user_equity_floor(equity_floor)` sets `User.equity_floor: u64` (QUOTE_PRECISION; tail padding, size unchanged): a minimum cross-margin total collateral below which risk-increasing order placement/fills, withdrawals, deposit/position transfers out revert with `EquityBelowFloor` (6358) and keepers may force-cancel risk-increasing resting orders; reduce-only activity unaffected, `0` disables. `transfer_deposit_by_delegate` gains an `equity_floor_delta` arg (signature change) that atomically moves floor with the funds between same-authority sub-accounts, preserving the sum of floors (`InvalidEquityFloorTransfer`, 6359). Authority-wide breaker: permissionless `trip_equity_floor_breaker` proves one sub-account below its floor and sets `UserStats.equity_breaker_tripped` (padding byte, size unchanged), freezing all of the authority's sub-accounts until warm-admin `reset_equity_floor_breaker`. SDK `AdminClient.updateUserEquityFloor`/`resetEquityFloorBreaker`, `VelocityClient.tripEquityFloorBreaker`, `UserAccount.equityFloor`, `UserStatsAccount.equityBreakerTripped`, `User.isBelowEquityFloor`/`getEquityAboveFloor`, floor-capped `getWithdrawalLimit`, `transferDepositByDelegate(..., equityFloorDelta?)`; admin CLI `user set-equity-floor`, `user reset-equity-breaker` (§3, §5) |
+| bankruptcy-if-floor | Fix a High audit finding: the permissionless fee sweep (`sweep_perp_market_fees` and the inline sweep on every `settle_pnl`) could drain `fee_ledger.pending_if_fee` — `resolve_perp_bankruptcy`'s first-loss tranche — ahead of a bankruptcy resolution, converting a tranche-covered loss into a shared-IF draw or socialized funding loss. New `PerpMarket.bankruptcy_if_floor_pct: u32` (repurposed trailing padding before `market_stats`; size/offsets unchanged) makes the sweep's IF drain leave that fraction of OI notional (at the oracle TWAP) behind as a standing tranche; new markets default to 10 bps, existing markets read 0 (disabled) until set via the new warm-admin `update_perp_market_bankruptcy_if_floor_pct` (SDK `AdminClient.updatePerpMarketBankruptcyIfFloorPct`, CLI `perp-market set-bankruptcy-if-floor`); `PerpMarketAccount.bankruptcyIfFloorPct` added (§5) |
+| bid-ask-twap-hardening | Harden `update_perp_bid_ask_twap`: (1) `update_funding_rate` is no longer called from the crank — refreshing the caller-curated DLOB mark TWAP and applying funding in one instruction let the just-written TWAP feed funding at zero elapsed time; funding now runs only via its own `update_funding_rate` crank and on fills. Integrators/keepers relying on the funding side-effect must call `update_funding_rate` separately (the keeper-bots `fundingRateUpdater` already does). (2) The oracle-divergence filter is now symmetric — DLOB levels are kept only within `oracle ± BID_ASK_TWAP_MAX_ORACLE_DIVERGENCE_PERCENT` (15%) on both sides, so caller-supplied depth can no longer push mark TWAP past the band via high bids / low asks. (3) `keeper_stats` is bound to the signer (`has_one = authority`); a caller can no longer point at a third party's staked `UserStats` to pass the IF-stake gate. No layout/IDL change |
+| spot-bankruptcy-revenue-pool | `resolve_spot_bankruptcy` now consumes the spot market's `revenue_pool` as a first-loss tranche before the staker-owned IF vault and before socializing any remainder to depositors (replacing upstream's unimplemented `todo`; mirrors the perp-bankruptcy tranche order where in-transit IF revenue pays before the vault). The draw is counter-only (no token movement), bypasses the periodic revenue-settle timer and staker APR cap, and shrinks `revenue_pool.scaled_balance`/`deposit_balance` in place. `SpotBankruptcyRecord` is unchanged — `if_payment` still records only the IF-vault draw; the revenue-pool tranche is program-log only, and `cumulative_deposit_interest_delta`/`total_social_loss` now reflect the smaller post-tranche socialized loss. No layout/IDL change |
+| trigger-price-staleness | Trigger-price last-fill leg gains a staleness guard: `PerpMarket::get_trigger_price` (median trigger price, `MedianTriggerPrice` feature) substitutes the oracle price for `last_fill_price` when the market's last fill (`market_stats.last_trade_ts`) is older than `TRIGGER_PRICE_LAST_FILL_MAX_AGE` (5 min); previously a fill from hours ago voted in the median indefinitely on quiet markets. Zero-fill fulfillment steps no longer stamp `last_trade_ts` or update the volume rolling sums (real fills only). SDK `getTriggerPrice` mirrors the guard; new export `TRIGGER_PRICE_LAST_FILL_MAX_AGE`. No layout/IDL change |
 | equity-floor-gaps | Fix audit findings closing three gaps in the per-user equity floor / authority-wide breaker enforcement: (1) `trigger_order` now cancels a risk-increasing trigger order (instead of activating it and paying the keeper) when the owning authority's `equity_breaker_tripped` flag is set — the instruction **gains a required `user_stats` account** (order owner's `UserStats`), an ABI/IDL change (§5); (2) generic spot swaps (`end_swap`) now reject with `EquityBelowFloor` while the breaker is tripped, matching withdrawals/transfers-out (the per-subaccount floor was already enforced); (3) `transfer_perp_position` now also checks the **recipient's** equity floor (previously only the sender's), so exposure can't be pushed into a sibling subaccount that passes initial margin but lands below its warm-admin floor; (4) `transfer_deposit_by_delegate` now rejects (`InvalidEquityFloorTransfer`) a floor-delta that would reduce a sub-account's floor while that sub-account is already below the floor being reduced — an owner could otherwise shed floor off a breached sub-account with a zero-amount transfer and drop it out of breach before the permissionless breaker trips; (5) a tripped authority is now barred (`EquityBelowFloor`) from every balance-acquiring liquidation — `liquidate_perp`, `liquidate_spot`, `liquidate_borrow_for_perp_pnl` (takes over a borrow), and `liquidate_perp_pnl_for_deposit` (takes a deposit against negative pnl) — all of which acquire the liquidatee's risk and earn a fee; `liquidate_perp_with_fill` stays allowed (its liquidator routes the position to the book and never acquires a balance), as do bankruptcy resolutions. No account-layout change; the `trigger_order` and `liquidate_spot` account lists changed (each gains a `UserStats` account, §5). SDK `getTriggerOrderIx`/`buildTriggerOrderInstruction` supply the owner's `userStats` and `getLiquidateSpotIx` supplies the liquidator's `liquidatorStats`; velocity-rs `trigger_order` and `liquidate_spot` builders updated (§3, §5) |
+| order-amm-correctness | Fix three OtterSec audit findings in the perp order/fill path (no layout/IDL/ABI change). (1) A `ReduceOnly` perp market now forces every order it fills to be risk-reducing: `fill_perp_order` (taker) and `get_maker_orders_info` (makers) re-derive the market's reduce-only status at fill time and stamp `order.reduce_only`, so a legacy order placed while the market was `Active` can no longer increase exposure after the market is flipped to `ReduceOnly` (previously the fill keyed only off the flag stored at placement). (2) The AMM fallback-price premium (`AMM::get_fallback_price`) now clamps the seconds-to-expiry operand before multiplying, so an order with an unbounded `max_ts` (e.g. `i64::MAX`) no longer overflows and aborts every fill routed through it; the divisor is unchanged for all in-range expiries. (3) The perp DLOB matcher now builds its `QuoteContext` with the real (safe) oracle instead of a zero-price default, so oracle-offset resting makers are requoted at the same price maker discovery froze them at rather than reverting in `validate_fill_price`. SDK unaffected (the TS DLOB matcher already threads the oracle consistently; the fallback-price math is not mirrored) |
+| auction-floor-client-spread | Auction-duration floor in order sanitization (`update_perp_auction_params`, market/oracle and crossing-limit variants) now paces the **narrower of the requested and sanitized price ranges** instead of always the sanitized range. Previously, pulling the start price toward baseline (tail-tier markets, and any non-signed market order) widened the range and inflated the duration floor — a tier-C signed-msg order asking a 0.2% spread / 20 slots could be floored to 60–100+ slots by the market's baseline spread. Orders whose auction prices are left untouched, or whose end price is sanitized inward, keep today's durations; orders whose start is improved toward baseline keep the client-requested duration when within the 10-slot signed-msg grace. Applies to signed-msg and regular orders alike; fully-derived auctions (no client prices) are unaffected. Program-only behavior change (the swift server's `will_sanitize` simulation calls the program function and inherits it); no SDK logic mirror exists, no layout/IDL change |
+| lazer-max-staleness | Fix a High audit finding: `post_pyth_lazer_oracle_update` validated a signed Lazer message only for signer trust and a monotonic (non-decreasing) feed timestamp versus the cached account — never against `Clock::unix_timestamp` — yet always stamped `posted_slot` to the current slot, and downstream oracle staleness is derived solely from that slot. An authentic-but-stale or replayed message was therefore treated as slot-fresh for AMM/margin/liquidation/settlement (and because the monotonic check is strict `<`, the same message could be re-posted each slot to peg a stale price as perpetually fresh). The handler now rejects (skips) any feed whose message timestamp lags `Clock::unix_timestamp` by more than the new `PYTH_LAZER_MAX_STALENESS_SECONDS` (15s). Keepers/integrators posting Lazer updates must post reasonably promptly (legit updates are sub-second, so unaffected); a message older than 15s no longer updates the cache. No account-layout or IDL change (the constant is not IDL-exposed) |
 | #243      | Spot liquidations price both legs of the transfer exchange rate protectively when the corresponding oracle is margin-invalid (`StaleForMargin`/`TooUncertain` but still `Liquidate`-acceptable): the seized collateral (deposit) leg at `max(oracle, 5min twap, oracle + confidence)` and the repaid borrow (liability) leg at `min(oracle, 5min twap, oracle - confidence)` instead of the raw oracle price — in `liquidate_spot`, `liquidate_spot_with_swap_begin`/`_end` (including the swap worst-case price), and the spot leg of `liquidate_perp_pnl_for_deposit`/`liquidate_borrow_for_perp_pnl`. Liquidatability and shortage→token valuation are unchanged (a stale price can still flag the account), but a depressed collateral price or inflated debt price can no longer cheapen what the liquidator receives per unit repaid. SDK adds `calculateUserProtectiveAssetPrice`/`calculateUserProtectiveLiabilityPrice`; pass them to `calculateAssetTransferForLiabilityTransfer` when the respective oracle is margin-invalid. No layout/IDL change |
 | #220 equity-floor | New warm-admin instruction `update_user_equity_floor(equity_floor)` sets `User.equity_floor: u64` (QUOTE_PRECISION; tail padding, size unchanged): a minimum cross-margin total collateral below which risk-increasing order placement/fills, withdrawals, deposit/position transfers out revert with `EquityBelowFloor` (6358) and keepers may force-cancel risk-increasing resting orders; reduce-only activity unaffected, `0` disables. `transfer_deposit_by_delegate` gains an `equity_floor_delta` arg (signature change) that atomically moves floor with the funds between same-authority sub-accounts, preserving the sum of floors (`InvalidEquityFloorTransfer`, 6359). Authority-wide breaker: permissionless `trip_equity_floor_breaker` proves one sub-account below its floor and sets `UserStats.equity_breaker_tripped` (padding byte, size unchanged), freezing all of the authority's sub-accounts until warm-admin `reset_equity_floor_breaker`. SDK `AdminClient.updateUserEquityFloor`/`resetEquityFloorBreaker`, `VelocityClient.tripEquityFloorBreaker`, `UserAccount.equityFloor`, `UserStatsAccount.equityBreakerTripped`, `User.isBelowEquityFloor`/`getEquityAboveFloor`, floor-capped `getWithdrawalLimit`, `transferDepositByDelegate(..., equityFloorDelta?)`; admin CLI `user set-equity-floor`, `user reset-equity-breaker` (§3, §5) |
 | #266 if-cancel-rebase-floor | Fix an audit finding (#34): a market-level IF rebase divides a staker's `last_withdraw_request_shares` by the rebase divisor, flooring a small pending unstake request to zero. The cancel path re-checked `last_withdraw_request_shares != 0` *after* applying that rebase and reverted (`InvalidIFUnstakeCancel`), stranding the stake — `remove_insurance_fund_stake` also rejects a zero request, and `add`/re-`request` are blocked by the still-in-progress request. `cancel_request_remove_insurance_fund_stake` no longer re-checks the post-rebase share count, so a zeroed request cancels successfully: it clears the request, returns the intact rebased stake to active, and abandons only the dust `last_withdraw_request_value`. The genuine "no request in progress" case is still rejected by the pre-rebase guard in the instruction handler. No ABI/layout/SDK change (`InvalidIFUnstakeCancel` (6187) is retained but no longer emitted by this path) |
@@ -1170,8 +1178,8 @@ accounts/events with the previous TS shapes should note:
 | #271 signed-msg-hardening | Two OtterSec-Medium fixes to the signed-message ("swift") taker path. (1) `place_signed_msg_taker_order` is now gated by `exchange_not_paused` (rejects with `ExchangePaused` when the exchange is fully paused), matching normal `place_perp_order` — signed-msg orders no longer bypass the global pause. (2) `resize_signed_msg_user_orders`: the `SignedMsgUserOrders` account is authority-scoped and shared across all of an authority's sub-accounts, so a per-sub-account **delegate** may no longer **shrink** it (a shrink evicts other sub-accounts' active replay-protection UUIDs, re-enabling replay); only the `authority` itself may shrink, anyone may still grow. The now-redundant `user` account was removed from the `ResizeSignedMsgUserOrders` accounts struct (IDL/ABI change); SDK `resizeSignedMsgUserOrders` / `getResizeSignedMsgUserOrdersInstruction` drop the trailing `userSubaccountId` parameter accordingly. No account-layout change. (OtterSec #78 — signed-message deployment/domain separation — is tracked separately as a signed-digest format change.) (§5) |
 | #258 trigger-price-staleness | Trigger-price last-fill leg gains a staleness guard: `PerpMarket::get_trigger_price` (median trigger price, `MedianTriggerPrice` feature) substitutes the oracle price for `last_fill_price` when the market's last fill (`market_stats.last_trade_ts`) is older than `TRIGGER_PRICE_LAST_FILL_MAX_AGE` (5 min); previously a fill from hours ago voted in the median indefinitely on quiet markets. Zero-fill fulfillment steps no longer stamp `last_trade_ts` or update the volume rolling sums (real fills only). SDK `getTriggerPrice` mirrors the guard; new export `TRIGGER_PRICE_LAST_FILL_MAX_AGE`. No layout/IDL change |
 | #276 funding-pause-enforcement | Fix two OtterSec Medium findings that let the funding pause be bypassed. (1) Spot interest accrual (`update_spot_market_cumulative_interest`) now honors the exchange-wide `FundingPaused` bit on **all** call paths (deposit/withdraw/transfer, fills, PnL settlement, liquidation, IF revenue-settle, protocol-fee withdraw, LP/hedge), not just the dedicated `update_spot_market_cumulative_interest` crank; previously the shared helper checked only the market-scoped `SpotOperation::UpdateCumulativeInterest` bit, so interest kept accruing during a global funding pause. TWAP stats still advance and `last_interest_ts` freezes, so on resume the next accrual covers the full elapsed interval (unchanged crank semantics, now applied everywhere). (2) `update_perp_bid_ask_twap` now no-ops when the market's `PerpOperation::UpdateFunding` bit is paused, mirroring the market-scoped gate the direct `update_funding_rate` path enforces (the crank already blocked the exchange-wide `FundingPaused` via `funding_not_paused`); a single paused market's mark/bid/ask funding-input TWAP can no longer keep advancing and feed a stale jump into funding on resume. No layout/IDL/SDK-surface change |
-| #255 revshare-reserve-net-user-pnl | Fix three related High audit findings on the permissionless pnl-pool fee sweeps (all reserve tokens that other claimants are owed before draining). **#48**: the builder/referrer revenue-share sweep (`sweep_completed_revenue_share_for_market`, run on every permissionless `settle_pnl`/`settle_multiple_pnls` with a `RevenueShareEscrow`) paid rows out of a market's PnL pool checking only the raw pool balance against `fees_accrued`, never reserving `max(net_user_pnl, 0)`; a caller could move tokens backing a third party's positive unsettled PnL. It now draws only `pnl_pool_token_amount − reserved` (`net_user_pnl` valued at the market's oracle price, validity-gated in-slot by the preceding settle). **#53**: the protocol fee sweep (`sweep_market_fees`) let its buffer-exempt protocol-fee drain move the tokens backing the #245 floored `pending_if_fee` bankruptcy tranche into `protocol_fee_pool` (outside the insurance backstop) without touching the counter; a later `resolve_perp_bankruptcy` then cancelled the loss counter-only against an unbacked tranche, leaving surviving-trader PnL short. Every drain (protocol included, and the revenue-share sweep) now reserves `min(pending_if_fee, get_bankruptcy_if_floor())` on top of user PnL. **#73**: `sweep_market_fees` drained protocol fees without reserving already-accrued builder/referrer revenue share, briefly leaving those claims unpayable. New per-market counter `PerpMarket.pending_revenue_share: u64` (QUOTE_PRECISION) is incremented as builder/referrer fees accrue on fills and decremented as the revenue-share sweep pays them; `sweep_market_fees` now reserves it too. So `sweep_market_fees`'s reservable total is `max(net_user_pnl, 0)` + floored IF tranche + `pending_revenue_share`. **Layout**: `pending_revenue_share` reuses the 8-byte alignment padding before `amm` (`_padding_align_amm`) — `PerpMarket` did not grow, all offsets unchanged, existing accounts read 0 (§5). `PerpMarketAccount.pendingRevenueShare` added; no instruction/SDK-API change (the sweeps are program-internal, not reimplemented client-side) |
-| #254 if-revenue-settle-cap | Fix a High audit finding: `settle_revenue_to_insurance_fund` sized the per-period APR cap from the **live** IF-vault token balance, which anyone can inflate with a direct SPL donation, letting a dominant IF staker spike the vault right before a settle to lift the cap toward the 10%-of-revenue-pool bound and capture accelerated revenue. The cap is now sized off `min(live_if_vault, if_last_settle_vault_amount)`, where the new `SpotMarket.if_last_settle_vault_amount: u64` (repurposed 8-byte trailing padding; the account did not grow) is a donation-proof accounted balance (grown by stakes + settled revenue, shrunk by withdrawals) — so a raw SPL donation isn't reflected while legitimate stakes are. Existing accounts read 0 and self-seed on the first post-upgrade add/settle; new markets init to 0. Maintained automatically by **every** IF-vault movement (no new instruction): grown by add-stake + settled revenue, shrunk by remove-stake and by all three loss-draws (`resolve_perp_pnl_deficit`, `resolve_perp_bankruptcy`, `resolve_spot_bankruptcy`), so it never drifts from the real vault after a bankruptcy/deficit; only raw SPL donations are excluded. SDK `SpotMarketAccount.ifLastSettleVaultAmount: BN` added. The display-only `nextRevenuePoolSettleApr` estimate is unchanged (it disclaims being a program mirror; steady-state APR is unaffected). Same fix family, another High finding: the unstake-cancel share forfeiture (`cancel_request_remove_insurance_fund_stake` / `calculate_if_shares_lost`) valued a canceling staker's requested shares off the **live** IF-vault balance, so an attacker holding a residual IF share could sandwich a victim's signed cancel with an SPL donation, manufacture "appreciation", and burn the victim's pending shares into their own. It is now framed and documented as **withdraw-and-restake at the current active share price**: a cancel completes the withdrawal of the requested shares (paying out the value frozen at request time) and immediately re-stakes the resulting tokens at the live price — forfeiting genuine escrow-window appreciation (anti-free-option) while remaining donation-immune, because the withdraw leg is bounded by the request-time snapshot `last_withdraw_request_value` (a raw donation, spread pro-rata across all shareholders, cannot manufacture forfeiture an attacker could profitably capture). This path does **not** read `if_last_settle_vault_amount` — the accounted-balance coupling considered for cancel was dropped in favor of the clearer withdraw-and-restake model. Cancel is the only affected path (`remove` already caps its payout at the frozen request-time value; the SDK does not mirror the forfeiture), and the cancel instruction's accounts/token-flows are unchanged so the vaults-program CPI wrapper is unaffected (§5) |
+| #255 revshare-reserve-net-user-pnl | Fix three related High audit findings on the permissionless pnl-pool fee sweeps (all reserve tokens that other claimants are owed before draining). **#48**: the builder/referrer revenue-share sweep (`sweep_completed_revenue_share_for_market`, run on every permissionless `settle_pnl`/`settle_multiple_pnls` with a `RevenueShareEscrow`) paid rows out of a market's PnL pool checking only the raw pool balance against `fees_accrued`, never reserving `max(net_user_pnl, 0)`; a caller could move tokens backing a third party's positive unsettled PnL. It now draws only `pnl_pool_token_amount − reserved` (`net_user_pnl` valued at the market's oracle price, validity-gated in-slot by the preceding settle). **#53**: the protocol fee sweep (`sweep_market_fees`) let its buffer-exempt protocol-fee drain move the tokens backing the #245 floored `pending_if_fee` bankruptcy tranche into `protocol_fee_pool` (outside the insurance backstop) without touching the counter; a later `resolve_perp_bankruptcy` then cancelled the loss counter-only against an unbacked tranche, leaving surviving-trader PnL short. Every drain (protocol included, and the revenue-share sweep) now reserves `min(pending_if_fee, get_bankruptcy_if_floor())` on top of user PnL. **#73**: `sweep_market_fees` drained protocol fees without reserving already-accrued builder/referrer revenue share, briefly leaving those claims unpayable. New per-market counter `PerpMarket.pending_revenue_share: u64` (QUOTE_PRECISION) is incremented as builder/referrer fees accrue on fills and decremented as the revenue-share sweep pays them; `sweep_market_fees` now reserves it too. So `sweep_market_fees`'s reservable total is `max(net_user_pnl, 0)` + floored IF tranche + `pending_revenue_share`. **Layout**: `pending_revenue_share` reuses the 8-byte alignment padding before `amm` (`_padding_align_amm`) — `PerpMarket` stays **1304 bytes**, all offsets unchanged, existing accounts read 0 (§5). `PerpMarketAccount.pendingRevenueShare` added; no instruction/SDK-API change (the sweeps are program-internal, not reimplemented client-side) |
+| #254 if-revenue-settle-cap | Fix a High audit finding: `settle_revenue_to_insurance_fund` sized the per-period APR cap from the **live** IF-vault token balance, which anyone can inflate with a direct SPL donation, letting a dominant IF staker spike the vault right before a settle to lift the cap toward the 10%-of-revenue-pool bound and capture accelerated revenue. The cap is now sized off `min(live_if_vault, if_last_settle_vault_amount)`, where the new `SpotMarket.if_last_settle_vault_amount: u64` (repurposed 8-byte trailing padding; size 808 unchanged) is a donation-proof accounted balance (grown by stakes + settled revenue, shrunk by withdrawals) — so a raw SPL donation isn't reflected while legitimate stakes are. Existing accounts read 0 and self-seed on the first post-upgrade add/settle; new markets init to 0. Maintained automatically by **every** IF-vault movement (no new instruction): grown by add-stake + settled revenue, shrunk by remove-stake and by all three loss-draws (`resolve_perp_pnl_deficit`, `resolve_perp_bankruptcy`, `resolve_spot_bankruptcy`), so it never drifts from the real vault after a bankruptcy/deficit; only raw SPL donations are excluded. SDK `SpotMarketAccount.ifLastSettleVaultAmount: BN` added. The display-only `nextRevenuePoolSettleApr` estimate is unchanged (it disclaims being a program mirror; steady-state APR is unaffected). Same fix family, another High finding: the unstake-cancel share forfeiture (`cancel_request_remove_insurance_fund_stake` / `calculate_if_shares_lost`) valued a canceling staker's requested shares off the **live** IF-vault balance, so an attacker holding a residual IF share could sandwich a victim's signed cancel with an SPL donation, manufacture "appreciation", and burn the victim's pending shares into their own. It is now framed and documented as **withdraw-and-restake at the current active share price**: a cancel completes the withdrawal of the requested shares (paying out the value frozen at request time) and immediately re-stakes the resulting tokens at the live price — forfeiting genuine escrow-window appreciation (anti-free-option) while remaining donation-immune, because the withdraw leg is bounded by the request-time snapshot `last_withdraw_request_value` (a raw donation, spread pro-rata across all shareholders, cannot manufacture forfeiture an attacker could profitably capture). This path does **not** read `if_last_settle_vault_amount` — the accounted-balance coupling considered for cancel was dropped in favor of the clearer withdraw-and-restake model. Cancel is the only affected path (`remove` already caps its payout at the frozen request-time value; the SDK does not mirror the forfeiture), and the cancel instruction's accounts/token-flows are unchanged so the vaults-program CPI wrapper is unaffected (§5) |
 | #266 revenue-pool-deposit-cdi | Fix a Medium audit finding: `deposit_into_spot_market_revenue_pool` now refreshes `cumulative_deposit_interest` (via `update_spot_market_cumulative_interest`) before crediting the revenue pool, matching the normal `deposit` path. Previously a donation into a stale market minted the scaled revenue-pool balance at the lower stored interest and revalued it upward at the next refresh, letting the revenue pool claim interest that accrued before the deposit existed. No signature/layout/IDL change |
 | #252 if-request-remove-settle | Fix a High audit finding: `request_remove_insurance_fund_stake` now settles already-due protocol revenue into the IF vault **before** freezing the staker's `last_withdraw_request_value`, mirroring `add_insurance_fund_stake`. Previously the exit value was frozen against the pre-settle vault, so a public revenue settle between request and remove shifted the exiting staker's rightful share of that already-due revenue to the remaining stakers. **Instruction accounts changed (ABI):** `request_remove_insurance_fund_stake` gains `state`, `spot_market_vault`, `velocity_signer`, `token_program` (and accepts the transfer-hook `remaining_accounts` + token-mint like the add path); `cancel_request_remove_insurance_fund_stake` moves to its own unchanged accounts struct (`CancelRequestRemoveInsuranceFundStake`, same 5 accounts as before). Integrators constructing the request-remove ix manually must pass the new accounts; SDK `VelocityClient.requestRemoveInsuranceFundStake` handles them automatically. Because the pre-freeze settle goes through `attempt_settle_revenue_to_insurance_fund` — which skips while withdraws are paused — the request itself is now rejected during a withdraw pause (`ExchangePaused` exchange-wide, `MarketWithdrawPaused` for the market's `SpotOperation::Withdraw` bit), so an accepted request always freezes a post-settle exit value; cancel stays allowed. No on-chain account layout change (§5) |
 | #272 deposit-revenue-pause-enforcement | Close pause/status-gating bypasses on the deposit / withdraw / revenue-settle paths (OtterSec Mediums): (1) `transfer_pools` now applies direct-`deposit()` admission on each deposit-side credit — the market-scoped `SpotOperation::Deposit` pause, active-status for a positive deposit balance, and the `max_token_deposits` cap; (2) `liquidate_spot_with_swap_begin` now rejects when the global Deposit/Withdraw status is paused, the asset market's `SpotOperation::Withdraw` is paused, or the liability market's `SpotOperation::Deposit` is paused (was only `liq_not_paused`); (3) `deposit_into_spot_market_revenue_pool` now honors the market's `SpotOperation::Deposit` bit; (4) the direct `settle_revenue_to_insurance_fund` now honors the market's `SpotOperation::Withdraw` bit (in addition to the global withdraw pause); (5) the opportunistic revenue→IF settle folded into IF-add / liquidations / pnl-deficit resolution now *skips* (rather than errors) when the global `WithdrawPaused` status or the market's `SpotOperation::Withdraw` bit is set; (6) the builder/referrer revenue-share sweep now respects the perp market's `PerpOperation::SettleRevPool` pause like the direct fee sweep. Reuses existing error codes (`MarketActionPaused`, `MarketWithdrawPaused`, `ExchangePaused`). Calls that previously succeeded while the relevant pause was set now revert. No layout/IDL change |

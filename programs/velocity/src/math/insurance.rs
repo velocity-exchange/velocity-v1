@@ -145,7 +145,7 @@ pub fn calculate_if_shares_lost(
     let n_shares = insurance_fund_stake.last_withdraw_request_shares;
 
     // Forfeiture on unstake-cancel, modeled as **withdraw-and-restake at the current
-    // active share price** (OtterSec #30). A cancel is treated as if the staker completed
+    // active share price** (finding #30). A cancel is treated as if the staker completed
     // the withdrawal of their `n_shares` requested shares and immediately re-staked the
     // resulting tokens at the price prevailing right now:
     //   * the withdrawal pays out `withdraw_value = min(current value of n_shares,

@@ -1,19 +1,20 @@
-# Devnet end-to-end tests: CI reliability and orchestration
+# Devnet E2E — CI reliability & orchestration handoff
 
-Status for `tests/devnet_e2e.rs`, which the `rpc_tests` feature gates. This document says
-**which scenarios are deterministic, which depend on market or infrastructure state nobody
-can control from CI, and what it would take to make each of the latter deterministic.**
+Status for `tests/devnet_e2e.rs` (gated `--features rpc_tests`). This doc explains
+**which scenarios are deterministic, which depend on uncontrollable market/infra
+state, and exactly what it would take to make each of the latter deterministic.**
 
-The taker-versus-AMM investigation is closed. The blocker is **auction sanitization plus
-TWAP lag**, and not the rust-filler. Two facts rule the rust-filler out:
+It supersedes the earlier "taker-vs-AMM" handoff: that investigation is resolved
+(see "Root cause" below) — the blocker was **auction sanitization + TWAP lag**, NOT
+the rust-filler. Two earlier hypotheses are now **refuted**:
 
-- The filler's DLOB does update from gRPC streaming. Run locally in dry-run, the filler
-  streams `User` accounts over Helius LaserStream gRPC, and the DLOB sees resting limit
-  makers and a lone taker auction order (`taker_bids=1, kind=Market`) within a slot of
-  placement.
-- `find_crosses_for_auctions` does not need resting makers to produce a lone-taker vAMM
-  cross. `MakerCrosses::is_empty()` is `orders.is_empty() && !has_vamm_cross`, so it keeps
-  a lone taker that has `has_vamm_cross`.
+- ~~(A) the rust-filler's DLOB doesn't update from gRPC streaming~~ — FALSE. Run
+  locally in dry-run, the filler streams `User` accounts over Helius LaserStream
+  gRPC and the DLOB sees resting limit makers AND a lone taker auction order
+  (`taker_bids=1, kind=Market`) within a slot of placement.
+- ~~(B) `find_crosses_for_auctions` needs resting makers to produce a lone-taker
+  vAMM cross~~ — FALSE. `MakerCrosses::is_empty()` is `orders.is_empty() &&
+  !has_vamm_cross`, so a lone taker with `has_vamm_cross` is kept.
 
 ## How to run
 
@@ -27,24 +28,23 @@ cargo test -p velocity-rs --test devnet_e2e --features rpc_tests -- --test-threa
 cargo test -p velocity-rs --test devnet_e2e --features rpc_tests -- --include-ignored --test-threads=1 --nocapture
 ```
 
-On devnet the program is `vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P`. SOL-PERP is perp 0,
-dUSDT is spot 0 with 6 decimals, and SOL is spot 1 with 9 decimals.
+Devnet: program `vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P`. Markets: SOL-PERP =
+perp 0, dUSDT = spot 0 (6dp), SOL = spot 1 (9dp).
 
-## Provisioning the deployed market-maker and taker bots
+## Provisioning the deployed MM / taker bots
 
-The `rust-quoter-bot`, which is the market maker, and `rust-taker-bot` run on subaccounts
-**1** and **2** of the filler authority. Subaccount 0 is the filler. Before they can quote
-or trade, those subaccounts need to be initialized and funded with dUSDT collateral. The
-one-shot `fund_mm_taker_subaccounts` in `devnet_e2e.rs`, marked `#[ignore]`, runs the init,
-the faucet and the deposit for subaccounts 1 and 2 through `ensure_subaccount` and
-`fund_and_deposit_dusdt`.
+The `rust-quoter-bot` (MM) and `rust-taker-bot` run on subaccounts **1** and **2**
+of the filler authority (sub 0 = filler). Before they can quote/trade they need
+those subaccounts initialized and funded with dUSDT collateral. The one-shot
+`fund_mm_taker_subaccounts` (`#[ignore]`, in `devnet_e2e.rs`) does init + faucet +
+deposit for sub 1 and sub 2 via `ensure_subaccount` + `fund_and_deposit_dusdt`.
 
-It is a plain set of devnet transactions signed by `TEST_PRIVATE_KEY`. Run it **with the
-filler key**, from anywhere with a devnet RPC. It does **not** need cluster access. The
-keep-rs pod ships only the `keeprs` binary, which can run `--init-user` but cannot use the
-faucet or deposit. The one prerequisite is the **filler private key**, in AWS Secrets
-Manager under `velocity/non-prod/master-secret-store`, key `FILLER_PRIVATE_KEY`. That needs
-Secrets Manager read access, not kube access.
+It is a plain set of devnet txs signed by `TEST_PRIVATE_KEY` — run it **with the
+filler key**, from anywhere with a devnet RPC. It does **not** need cluster access
+(the keep-rs pod only ships the `keeprs` binary, which can `--init-user` but cannot
+faucet/deposit). The only real prerequisite is the **filler private key**
+(in AWS Secrets Manager `velocity/non-prod/master-secret-store`, key
+`FILLER_PRIVATE_KEY` — needs Secrets Manager read, not kube access):
 
 ```bash
 cd rust
@@ -54,31 +54,32 @@ FUND_DUSDT=5000 \
   fund_mm_taker_subaccounts -- --ignored --nocapture
 ```
 
-## CI topology, and why "unreliable" matters per job
+## CI topology (why "unreliable" matters per job)
 
-- **`rust-live-tests`** in `.github/workflows/main.yml` runs on a nightly cron and on
-  manual dispatch. It runs `--features rpc_tests` **without** `--include-ignored`, so it
-  runs every test that is not `#[ignore]`. It is non-gating and never blocks a PR.
-- **`devnet-e2e`** runs on manual dispatch only. It runs the devnet suite **with**
-  `--include-ignored`, so it runs everything.
-- A PR runs neither. The suite holds only a funded **`TEST_PRIVATE_KEY`**, a normal user
-  that is **not** the program admin and **not** an oracle authority. A CI run therefore
-  **cannot set any market, admin or oracle state**. That single fact is the root of every
-  unreliable scenario below.
+- **`rust-live-tests`** (`.github/workflows/main.yml`) — nightly cron + manual
+  dispatch; runs `--features rpc_tests` **without** `--include-ignored`. So it runs
+  every **non-`#[ignore]`** test. Non-gating: never blocks PRs.
+- **`devnet-e2e`** — manual dispatch only; runs the devnet suite **with**
+  `--include-ignored` (everything).
+- PRs run neither. The suite only has a funded **`TEST_PRIVATE_KEY`** (a normal
+  user, **not** the program admin and **not** an oracle authority), so a CI run
+  **cannot set any market/admin/oracle state**. That single fact is the root of
+  every "unreliable" scenario below.
 
 ## The design contract
 
-A scenario whose *outcome* depends on a deployed bot, or on market state CI cannot set, is
-written to be **sound rather than flaky**. It asserts the parts it can control, meaning the
-setup and any program-level invariant, and it treats a bot or market that did not cooperate
-in time as a `log::warn!("INCONCLUSIVE…")` and a pass. It never fails hard and never sits in
-a silent multi-minute timeout. So in CI these scenarios are *green but may verify only their
-setup* on a given night. Read the logs rather than a bare "ok".
+Every scenario whose *outcome* depends on a deployed bot or on market state we
+can't set is written to be **sound, not flaky**: it asserts the parts it CAN
+control (the setup, and any program-level invariant) and treats "the bot/market
+didn't cooperate in time" as **`log::warn!("INCONCLUSIVE…")` + pass**, never a hard
+failure or a silent multi-minute timeout. So in CI these scenarios are *green but
+may verify only their setup* on a given night — read the logs, don't trust a bare
+"ok".
 
-`#[ignore]` covers the stricter case where the **setup itself cannot be established on
-devnet right now**, so the test cannot even reach its warn-skip.
+`#[ignore]` is reserved for the stricter case where the **setup itself cannot be
+established on devnet right now** (so the test can't even reach its warn-skip).
 
-## Reliable scenarios, deterministic enough to trust
+## Reliable scenarios (deterministic — trust these)
 
 | Test | Why deterministic |
 |---|---|
@@ -90,11 +91,10 @@ devnet right now**, so the test cannot even reach its warn-skip.
 
 ## Unreliable scenarios: what each depends on, and how to orchestrate it
 
-Each of these needs market, admin, oracle or bot state that a CI run holding only
-`TEST_PRIVATE_KEY` cannot set. "Orchestrate" means what it would take to make the outcome
-deterministic.
+All of these need market/admin/oracle/bot state a `TEST_PRIVATE_KEY`-only CI run
+can't set. "Orchestrate" = what it would take to make the outcome deterministic.
 
-### 1. `taker_fills_against_amm`, *the fill*: a lone taker against the AMM, low-risk auction route
+### 1. `taker_fills_against_amm` — *the fill* (lone taker vs AMM, low-risk auction route)
 - **Depends on:** the **sanitized** auction price out-pricing the live `vamm_ask`.
 - **Why nobody can control it:** placement rewrites a market order's auction params in
   `update_perp_auction_params_market_and_oracle_orders` and clamps them to
@@ -237,6 +237,6 @@ the right design.
   `SWIFT_WS_URL=wss://swift.master.velocity.exchange`. It is gitignored and not committed.
 - After a devnet state wipe or reset, re-run keep-rs `--init-user` so the filler's `User`
   subaccount exists.
-- Two infrastructure asks block the last two `#[ignore]` tests. First, stabilize the swift
-  HTTP backend. Second, raise the SOL spot-1 daily withdraw guard and borrow limit, which
-  currently caps a borrow at about 0.0012 SOL. Liquidity is fine. The guard is the blocker.
+- Infra asks blocking the last two `#[ignore]`s: (a) stabilize the swift HTTP
+  backend, (b) raise the SOL spot-1 daily withdraw guard / borrow limit (currently
+  caps borrows to ~0.0012 SOL — liquidity is fine, the guard is the blocker).

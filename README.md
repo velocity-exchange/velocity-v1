@@ -10,11 +10,11 @@
 </div>
 
 Velocity Protocol v1: a Solana perpetuals and spot trading protocol. This monorepo holds the
-on-chain programs, the TypeScript and Rust SDKs, the admin CLI, and the deployable keeper and DLOB
+on-chain programs, the TypeScript and Rust SDKs, the admin CLI, and the deployable keeper/DLOB
 services.
 
-To integrate against the protocol, start with the [SDK guide](./packages/sdk/README.md). To migrate
-from the Drift SDK, read [docs/DRIFT-TO-VELOCITY.md](./docs/DRIFT-TO-VELOCITY.md).
+Integrating against the protocol? Start with the [SDK guide](./packages/sdk/README.md) and, if you
+are migrating from the Drift SDK, [docs/DRIFT-TO-VELOCITY.md](./docs/DRIFT-TO-VELOCITY.md).
 
 ## Repository map
 
@@ -49,21 +49,21 @@ own `rust/target/`, so its split solana 4.2 crate tree never unifies with the SB
 | Anchor CLI                 | **1.0.2**              | Matches the `anchor-lang` version pinned in the programs                                                    |
 | Bun                        | ≥ 1.x                  | The only supported JavaScript package manager here. Do not use yarn or npm                                  |
 
-**On Apple Silicon, always use the x86_64 cross-compile toolchain, never a native aarch64 one.** A
-native ARM toolchain breaks the memory-layout expectations of zero-copy accounts, which must match
-the on-chain x86_64 representation:
+**Apple Silicon (M-series): always use the x86_64 cross-compile toolchain, never a native aarch64
+one.** Native ARM toolchains break the memory-layout expectations of zero-copy accounts, which must
+match the on-chain (x86_64) representation:
 
 ```bash
 rustup default stable-x86_64-apple-darwin
 ```
 
-macOS also needs the SDK path exported for the platform-tools clang. Add it to your shell profile:
+macOS also needs the SDK path exported for the platform-tools clang (add to your shell profile):
 
 ```bash
 export SDKROOT="$(xcrun --show-sdk-path)"
 ```
 
-Upgrade the platform-tools once:
+And upgrade the platform-tools once:
 
 ```bash
 cargo-build-sbf --tools-version v1.54 --force-tools-install
@@ -74,27 +74,25 @@ cargo-build-sbf --tools-version v1.54 --force-tools-install
 ```bash
 git clone https://github.com/velocity-exchange/velocity-v1.git && cd velocity-v1
 
-# install every workspace dependency, once, at the repo root (never inside an individual package)
+# install ALL workspace deps, once, at the repo root (never inside individual packages)
 bun install
 
-# build the program and sync the IDL and types into packages/sdk
+# build the program and sync the IDL + types into packages/sdk
 bun run program:build
 
 # run the Rust unit tests
 cargo test -p velocity
 
-# build the whole TypeScript workspace (turbo, in dependency order)
+# build the whole TypeScript workspace (turbo, dependency order)
 bun run build
 
-# run the full integration suite (about 70 files, serial; builds the .so first)
+# run the full integration suite (~70 files, serial; builds the .so first)
 bash test-scripts/run-anchor-tests.sh
 ```
 
 ## Fuzzing
 
-The program's fuzz harnesses are in [`fuzz/`](./fuzz/README.md), built on
-[Crucible](https://github.com/asymmetric-research/crucible). They run as a separate Cargo workspace
-and never ship on-chain.
+Fuzz harnesses for the program live in [`fuzz/`](./fuzz/README.md), built on [Crucible](https://github.com/asymmetric-research/crucible). They run as a separate Cargo workspace and don't ship on-chain.
 
 ```bash
 # install the Crucible CLI (pinned rev in fuzz/README.md)
@@ -142,38 +140,37 @@ Three rules worth knowing before you start:
   companion, and `rust/velocity-rs/crates/src/velocity_idl.rs` are generated from the Rust program.
   Change the program, then run `bun run program:build`, or `program:idl` for the fast path.
 - **`packages/sdk/src/types.ts` is a hand-maintained mirror of the on-chain structs.** Whenever a
-  struct, account or event changes in the program, update the mirror in the same change.
+  struct/account/event changes in the program, update the mirror in the same change.
 
 ## Troubleshooting
 
-**`fatal error: 'assert.h' file not found` during `anchor build` on macOS.**
-The platform-tools clang has no built-in macOS SDK path. Run
-`export SDKROOT="$(xcrun --show-sdk-path)"`, and put it in your shell profile.
+**`fatal error: 'assert.h' file not found` during `anchor build` (macOS).**
+The platform-tools clang has no built-in macOS SDK path. Fix:
+`export SDKROOT="$(xcrun --show-sdk-path)"` (put it in your shell profile).
 
 **`feature 'edition2024' is required ... not stabilized in this version of Cargo (1.84.0)`.**
-The cargo bundled with older platform-tools cannot parse `edition2024` dependencies. Upgrade once
-with `cargo-build-sbf --tools-version v1.54 --force-tools-install`, then verify with
+The bundled cargo in older platform-tools can't parse `edition2024` dependencies. Upgrade once with
+`cargo-build-sbf --tools-version v1.54 --force-tools-install`, then verify via
 `cargo-build-sbf --version`.
 
-**Runtime panic `Access violation in unknown section at address 0x...` on instructions that touch
-types you did not change.**
-This is almost always stale SBF build artifacts after a `Cargo.lock` change, such as a `cargo
-update` or a branch switch to a different lockfile. The cache key misses some dependency-resolution
-changes, and the resulting `.so` reads wrong offsets. Fix it with:
+**Runtime panic `Access violation in unknown section at address 0x...` on instructions touching
+types you didn't change.**
+Almost always stale SBF build artifacts after a `Cargo.lock` change (e.g. after `cargo update` or
+switching branches with different lockfiles). The cache key misses some dep-resolution changes and
+the resulting `.so` reads wrong offsets. Fix:
 
 ```bash
 rm -rf target/sbpf-solana-solana target/deploy
 cargo-build-sbf --tools-version v1.54 -- --features anchor-test
 ```
 
-**Unexplained zero-copy layout failures or `const_assert_eq!` failures on Apple Silicon.**
-The toolchain is a native aarch64 one. Switch with `rustup default stable-x86_64-apple-darwin`.
+**Weird zero-copy layout/`const_assert_eq!` failures on Apple Silicon.**
+You're on a native aarch64 toolchain. Switch: `rustup default stable-x86_64-apple-darwin`.
 
 ## Dev container (alternative)
 
-To avoid installing the toolchain locally, use `.devcontainer/`, which ships a Dockerfile and a
-docker-compose file with pinned Rust, Solana and Anchor versions. Use your IDE's "Reopen in
-Container", or:
+If you'd rather not install the toolchain locally, `.devcontainer/` ships a Dockerfile and
+docker-compose with pinned Rust/Solana/Anchor versions. Use your IDE's "Reopen in Container", or:
 
 ```bash
 cd .devcontainer && docker compose up -d && docker compose exec velocity bash
@@ -181,19 +178,18 @@ cd .devcontainer && docker compose up -d && docker compose exec velocity bash
 
 ## Releases
 
-This monorepo uses [changesets](https://github.com/changesets/changesets) to version and publish the
-library packages under `packages/*`. The apps under `apps/*` are `private` and ship as Docker images
-(see `docker-info.json` and `docker-on-tag.yml`), not to npm.
+This monorepo uses [changesets](https://github.com/changesets/changesets) for versioning and
+publishing the library packages under `packages/*`. Apps under `apps/*` are `private` and ship as
+Docker images (see `docker-info.json` / `docker-on-tag.yml`), not npm.
 
 Workflow:
 
 1. In a PR that changes a publishable package, run `bun run changeset` and describe the bump.
-2. On merge to `master`, the `changesets` workflow opens or updates a **Version Packages** PR that
-   runs `changeset version`, which bumps the versions and writes the CHANGELOGs. Merge it to commit
-   the bumps.
-3. Push a per-package tag `npm-<pkg>-v<version>`. The `npm-publish` workflow builds and publishes
-   that package through npm OIDC trusted publishing. It is idempotent and skips the publish if that
-   version is already on the registry. `<pkg>` is the directory name under `packages/`:
+2. On merge to `master`, the `changesets` workflow opens/updates a **Version Packages** PR that
+   runs `changeset version` (bumps versions + writes CHANGELOGs). Merge it to commit the bumps.
+3. Push a per-package tag `npm-<pkg>-v<version>`; the `npm-publish` workflow builds and publishes
+   that package via npm OIDC trusted publishing (idempotent: skipped if that version is already on
+   the registry). `<pkg>` is the directory name under `packages/`:
 
 | Package                         | Tag example             |
 | ------------------------------- | ----------------------- |
@@ -206,10 +202,10 @@ edit a `package.json` version by hand. Changesets and the bot own those fields.
 
 ## Further reading
 
-| Doc                                                                          | What it covers                                                               |
+| Doc                                                                          | What's in it                                                                 |
 | ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| [ARCHITECTURE.md](./ARCHITECTURE.md)                                          | Execution flow maps, the module responsibility matrix, SDK to program mappings |
-| [docs/DRIFT-TO-VELOCITY.md](./docs/DRIFT-TO-VELOCITY.md)                      | The record of every change against upstream Drift. Read it if you integrate   |
+| [ARCHITECTURE.md](./ARCHITECTURE.md)                                          | Execution flow maps, module responsibility matrix, SDK ↔ program mappings     |
+| [docs/DRIFT-TO-VELOCITY.md](./docs/DRIFT-TO-VELOCITY.md)                      | Canonical record of every change vs upstream Drift; read this if integrating |
 | [FEES.md](./FEES.md)                                                          | The fee architecture: per-fill splits, fee ledger, sweeps, carveouts          |
 | [deploy-scripts/README.md](./deploy-scripts/README.md)                        | Devnet upgrade runbook: two-phase buffer deploys, wipe and reinit             |
 | [docs/clob-client-integration.md](./docs/clob-client-integration.md)          | Placing, cancelling, modifying and displaying orders that rest on a CLOB      |

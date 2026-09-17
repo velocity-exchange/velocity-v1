@@ -474,7 +474,7 @@ describe('equity floor', () => {
 		const floor0 = await floorOf(0);
 		const floor1 = await floorOf(1);
 
-		// The sum is conserved, and some floor moved.
+		// sum still conserved, and some floor actually moved
 		assert(floor0.add(floor1).eq(new BN(4 * 10 ** 6)));
 		assert(floor1.gt(ZERO));
 	});

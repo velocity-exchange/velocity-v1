@@ -12725,9 +12725,9 @@ pub mod resolve_spot_bankruptcy {
         assert_eq!(deposit_token_amount, 900 * QUOTE_PRECISION);
     }
 
-    // resolve_spot_bankruptcy must refuse to run while the user still has a
-    // pending cross-margin perp bankruptcy, meaning a non-isolated perp position
-    // with bad debt (OtterSec #52). Both resolvers draw from the shared quote insurance fund,
+    // Audit #52: resolve_spot_bankruptcy must refuse to run while the user still
+    // has a pending cross-margin perp bankruptcy (a non-isolated perp position
+    // with bad debt). Both resolvers draw from the shared quote insurance fund,
     // so a fixed perp-before-spot precedence (matching the keeper bots) keeps the
     // socialized-loss split deterministic and unforgeable by the public caller.
     #[test]
@@ -13938,9 +13938,9 @@ pub mod liquidate_spot_with_swap {
                 .unwrap(),
             40661800
         );
-        // The insurance-side fee is capped by the account's margin shortage (~$7
-        // here) exactly like the direct `liquidate_spot` path, so it charges ~0.098%
-        // instead of the raw 1% if_liquidation_fee (OtterSec #51). The user keeps
+        // Audit #51: the insurance-side fee is now capped by the account's margin
+        // shortage (~$7 here) exactly like the direct `liquidate_spot` path, so it
+        // charges ~0.098% instead of the raw 1% if_liquidation_fee. The user keeps
         // more borrow relief (-357251 -> -357249, i.e. less residual borrow) and
         // only ~631 (vs 6433 at the raw rate) routes into the revenue pool.
         assert_eq!(

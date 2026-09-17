@@ -694,9 +694,9 @@ export function maxSpotInterestStalenessForMargin(bank: SpotMarketAccount): BN {
  * @param {SpotMarketAccount} bank - The spot market account
  * @param {BN} now - The timestamp (unix seconds) to project interest up to
  * @return {{ borrowInterest: BN; depositInterest: BN }} `borrowInterest` is the exact amount added
- *   to `cumulativeBorrowInterest`. `depositInterest` is the gross amount before the carveouts, and
- *   not necessarily what is added to `cumulativeDepositInterest`. Both are in the same fixed-point
- *   units as those cumulative fields (`SPOT_MARKET_CUMULATIVE_INTEREST_PRECISION`)
+ *   to `cumulativeBorrowInterest`; `depositInterest` is the gross pre-carveout amount, not
+ *   necessarily what's added to `cumulativeDepositInterest` (see above). Both in the same
+ *   fixed-point units as those cumulative fields (`SPOT_MARKET_CUMULATIVE_INTEREST_PRECISION`)
  */
 export function calculateInterestAccumulated(
 	bank: SpotMarketAccount,

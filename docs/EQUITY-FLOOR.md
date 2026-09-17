@@ -231,7 +231,7 @@ breach and the completed wind-down.
 The floor is checked per subaccount, and each subaccount's floor is its own field. Moving USDT from
 subaccount A to subaccount B without also moving floor leaves A clearing its full original floor
 with less collateral in it, so a transfer must carry floor along with the funds. The SDK's
-`EquityFloorManager` handles all of that, and it is how to move USDT between subaccounts:
+`EquityFloorManager` handles all of that; this is the way to move USDT between subaccounts:
 
 ```ts
 const manager = new EquityFloorManager(velocityClient);
@@ -253,7 +253,7 @@ await manager.cureBreaches(); // top breached subaccounts back up from the other
 
 `rebalanceFloors` computes a proportional-to-equity floor split and applies it with zero-amount
 transfers, so after PnL has moved equity around, every subaccount ends with the same relative
-headroom. Run it periodically or after large swings, and floor placement stops being a concern.
+headroom; run it periodically or after large swings and floor placement stops being a concern.
 `getStatus` reports a level per subaccount (`healthy`, `warning`, `critical`, `breached`) using
 the same thresholds Velocity's guard bot monitors.
 
@@ -305,7 +305,7 @@ delta  = min(max(amount - excess, 0), floor_from)
 ```
 
 The first `excess` USDT of the transfer is equity held above the buffered floor and carries no
-floor with it. Anything beyond that must take floor along, capped at the floor the debited side
+floor with it; anything beyond that must take floor along, capped at the floor the debited side
 has. Worked example, from side holding 500k USDT of equity against a 350k floor and a 20k buffer,
 transferring 250k:
 
@@ -347,15 +347,15 @@ await velocityClient.transferDepositByDelegate(
 
 Reach for this when:
 
-- Rebalancing floor without moving funds. A zero `amount` with a delta moves floor alone, which is
-  what `rebalanceFloors` submits.
-- Shedding more floor than the minimum, to leave the debited side extra slack.
-- Transferring on a non-quote spot market, where the SDK cannot value the tokens, so the caller
-  must compute the delta.
-- Planning a flow without sending it. `manager.planQuoteTransfer(amount, from, to)` returns the
-  padded parameters for inspection.
+- rebalancing floor without moving funds: a zero `amount` with a delta moves floor alone (this is
+  what `rebalanceFloors` submits under the hood);
+- deliberately shedding more floor than the minimum, to leave the debited side extra slack;
+- transferring on a non-quote spot market, where the SDK cannot value the tokens and the delta
+  must be computed by the caller;
+- a planned flow needs the delta without sending: `manager.planQuoteTransfer(amount, from, to)`
+  returns the padded parameters for inspection.
 
-The same three rules apply to every variant. There is no way to place floor where equity does not
+The same three rules apply to every variant; there is no way to place floor where equity does not
 back it.
 
 ## A worked session
@@ -566,8 +566,8 @@ line.
 | Layer          | Where                                      | Role                                                         |
 | -------------- | ------------------------------------------ | ------------------------------------------------------------ |
 | Program        | `programs/velocity`                        | The only enforcement: gates, trip, freeze                    |
-| TypeScript SDK | `packages/sdk`                             | Mirrors the checks. Holds `EquityFloorManager`               |
-| Rust SDK       | `rust/velocity-rs`                         | Mirrors the math. Holds the bindings and predicates          |
+| TypeScript SDK | `packages/sdk`                             | Mirrors the checks; `EquityFloorManager`                     |
+| Rust SDK       | `rust/velocity-rs`                         | Mirrors the math; bindings and predicates                    |
 | Guard bot      | `apps/keeper-bots-v2` (`equityFloorGuard`) | Watches, alerts, and trips the breaker                       |
 | Admin CLI      | `packages/cli-admin` (`user` commands)     | Velocity's lifecycle tooling: set, inspect, wind down, reset |
 

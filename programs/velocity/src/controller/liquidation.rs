@@ -2676,9 +2676,9 @@ pub fn liquidate_spot_with_swap_end(
 
     let margin_shortage = margin_calculation.cross_margin_margin_shortage()?;
 
-    // Cap the insurance-side fee by the account's margin shortage, exactly as
-    // the direct spot-liquidation path (`liquidate_spot`) does via
-    // `calculate_spot_if_fee` (OtterSec #51). Charging the raw if + protocol rates on the
+    // Audit #51: cap the insurance-side fee by the account's margin shortage,
+    // exactly as the direct spot-liquidation path (`liquidate_spot`) does via
+    // `calculate_spot_if_fee`. Charging the raw if + protocol rates on the
     // swap-realized borrow relief would route value into the fee pools that the
     // account needs to climb out of its shortage, delivering less borrow relief
     // than the direct path for an equivalent seizure. The basis is the
@@ -3372,10 +3372,10 @@ pub fn liquidate_perp_pnl_for_deposit(
         perp_market_index
     )?;
 
-    // A market in `Settlement` winds positions down at the expiry price whatever
-    // the margin improvement is. The postcondition below, that the shortage must
-    // not grow, is therefore skipped in that status. See the guard below for the
-    // rest of the reasoning (OtterSec #25).
+    // Audit #25 scoping: an expired/delisted market (Settlement) winds positions
+    // down at the expiry price regardless of margin improvement, so the
+    // "shortage must not grow" postcondition below is deliberately skipped there
+    // — see the guard for the rationale.
     let market_in_settlement = perp_market.status == MarketStatus::Settlement;
 
     drop(perp_market);

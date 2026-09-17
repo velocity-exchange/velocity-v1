@@ -51,12 +51,11 @@ function parseTransferDirection(value: string): TransferFeeAndPnlPoolDirection {
 /**
  * Protocol fee operations.
  *
- * The fee design gives the protocol a directly withdrawable
- * `protocol_fee_pool` on every market. Explicit per-fill carveouts feed it,
- * and the streaming sweep moves the balance into it. See FEES.md. These
- * commands cover the routine work: setting the recipient with the cold admin,
- * withdrawing with the FeeWithdraw hot key, sweeping a market on demand, and
- * changing the global trade-fee split.
+ * The fee design (see FEES.md) gives the protocol a directly-withdrawable
+ * `protocol_fee_pool` on every market, fed by explicit per-fill carveouts and
+ * materialized by the streaming sweep. The commands here cover the routine
+ * ops: setting the recipient (cold admin), withdrawing (FeeWithdraw hot key),
+ * sweeping a market on demand, and tuning the global trade-fee split.
  */
 export function registerFees(parent: Command): void {
 	const fees = parent
@@ -216,7 +215,7 @@ export function registerFees(parent: Command): void {
 		fees
 			.command('set-recipient <pubkey> <marketType>')
 			.description(
-				'Set the protocol fee recipient for one side. Only the cold admin can sign. <marketType> is "perp" for quote-denominated perp fees, or "spot" for per-market lending and liquidation fees. A withdrawal pays the associated token account of the configured key.'
+				'Set the protocol fee recipient for one side (cold admin only): <marketType> is "perp" (quote-denominated perp fees) or "spot" (per-market lending/liquidation fees). Withdrawals pay the ATA of the configured key.'
 			)
 	).action(
 		async (pubkey: string, marketTypeArg: string, _flags, cmd: Command) => {
@@ -249,7 +248,7 @@ export function registerFees(parent: Command): void {
 		fees
 			.command('withdraw-perp <market> <amount>')
 			.description(
-				"Withdraw quote tokens from a perp market protocol_fee_pool to the recipient's associated token account. The command creates that account when it does not exist. The signer must hold the FeeWithdraw hot role. <amount> is in token base units."
+				"Withdraw from a perp market protocol_fee_pool (quote tokens) to the recipient's associated token account (created if needed). Signer must hold the FeeWithdraw hot role. <amount> in token base units."
 			)
 	).action(async (market: string, amount: string, _flags, cmd: Command) => {
 		const opts = readGlobalOpts(cmd);
@@ -309,7 +308,7 @@ export function registerFees(parent: Command): void {
 		fees
 			.command('withdraw-spot <market> <amount>')
 			.description(
-				"Withdraw from a spot market protocol_fee_pool to the recipient's associated token account. The command creates that account when it does not exist. The signer must hold the FeeWithdraw hot role. <amount> is in token base units."
+				"Withdraw from a spot market protocol_fee_pool to the recipient's associated token account (created if needed). Signer must hold the FeeWithdraw hot role. <amount> in token base units."
 			)
 	).action(async (market: string, amount: string, _flags, cmd: Command) => {
 		const opts = readGlobalOpts(cmd);
@@ -339,7 +338,7 @@ export function registerFees(parent: Command): void {
 		fees
 			.command('sweep <market>')
 			.description(
-				'Run the streaming fee sweep for a perp market. Permissionless. It moves the pending insurance-fund, protocol and AMM carveouts out of the pnl pool.'
+				'Run the streaming fee sweep for a perp market (permissionless): materialize pending IF/protocol/AMM carveouts out of the pnl pool.'
 			)
 	).action(async (market: string, _flags, cmd: Command) => {
 		const opts = readGlobalOpts(cmd);
@@ -794,7 +793,7 @@ export function registerFees(parent: Command): void {
 		fees
 			.command('set-split <ammFeeNumerator> <ifFeeNumerator>')
 			.description(
-				'Set the global trade-fee remainder split. Each value is a percent from 0 to 100, and the protocol receives the residual. The command fetches the current perp fee structure and updates only the two numerators.'
+				'Set the global trade-fee remainder split (percent, 0-100 each; protocol receives the residual). Fetches the current perp fee structure and updates only the two numerators.'
 			)
 	).action(
 		async (

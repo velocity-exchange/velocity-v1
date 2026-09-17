@@ -1,15 +1,16 @@
 # Velocity fuzz harnesses (Crucible)
 
-Property- and invariant-based fuzzing of the `velocity` program with
-[Crucible](https://github.com/asymmetric-research/crucible), which is LibAFL-backed, plus
+Property- and invariant-based fuzzing of the `velocity` program using
+[Crucible](https://github.com/asymmetric-research/crucible) (LibAFL-backed) plus
 LiteSVM for the end-to-end tier. This directory is a **set of standalone Cargo
-workspaces**, one per harness crate. The root `Cargo.toml` excludes them on purpose, so
-their `solana-sdk` 3.x, LibAFL and Crucible dependency trees never unify with the
-on-chain SBF program build. There is no `fuzz/Cargo.toml` root.
+workspaces**, one per harness crate, deliberately excluded from the repo-root
+workspace (see the root `Cargo.toml`) so its `solana-sdk` 3.x / LibAFL / Crucible
+dependency trees never unify with the on-chain (SBF) program build. There is no
+`fuzz/Cargo.toml` root.
 
 Nothing here ships on-chain. The only program-side hook is the off-by-default
-`fuzz-fixtures` cargo feature on `programs/velocity`, which exposes `pub mod test_utils`
-to host crates. No SBF, mainnet or devnet build ever enables it.
+`fuzz-fixtures` cargo feature on `programs/velocity` (exposes `pub mod test_utils`
+to host crates); it is never enabled by any SBF/mainnet/devnet build.
 
 ## Layout
 
@@ -22,10 +23,10 @@ to host crates. No SBF, mainnet or devnet build ever enables it.
 
 ## Prerequisites
 
-- The pinned toolchain, which `fuzz/rust-toolchain.toml` installs. Use Rust 1.77 or later
-  on an **x86_64** host so zero-copy `u128` alignment matches on-chain. On Apple Silicon,
-  run `rustup override set 1.91.1-x86_64-apple-darwin` inside `fuzz/`.
-- The Crucible CLI, at the pinned rev:
+- The pinned toolchain (installed automatically from `fuzz/rust-toolchain.toml`);
+  Rust ≥ 1.77 on an **x86_64** host so zero-copy `u128` alignment matches on-chain
+  (Apple Silicon: `rustup override set 1.91.1-x86_64-apple-darwin` inside `fuzz/`).
+- The Crucible CLI (pinned rev):
   ```bash
   cargo install --git https://github.com/asymmetric-research/crucible \
     --rev daeaa4d4a4e334175c4f171daacc7e177ad2fae0 crucible-fuzz-cli --locked
@@ -47,9 +48,9 @@ crucible run e2e-svm invariant_solvency --release --timeout 60
 ```
 
 `crucible run <crate> <feature>` builds `--features <feature>` and fuzzes it.
-The useful flags are `--timeout <secs>`, `-j <cores>`, `--release`, `--coverage`, which is
-single-core, and `--corpus-in` or `--corpus-out <dir>`. Replay a crash with
-`crucible show <crate> <feature>`. Minimize with `crucible tmin` or `cmin`.
+Useful flags: `--timeout <secs>`, `-j <cores>`, `--release`, `--coverage`
+(single-core), `--corpus-in/--corpus-out <dir>`. Replay a crash with
+`crucible show <crate> <feature>`; minimize with `crucible tmin` / `cmin`.
 
 Harness features come in two kinds:
 
@@ -82,27 +83,27 @@ workspace boundary adds no new requirement.
 
 ## Writing a sound harness
 
-The campaign is only as good as its assertions. Before you add one, check it against these
-failure modes. Each one has caught out a harness here.
+The campaign is only as good as its assertions. Before adding one, check it
+against these failure modes (each has bitten a harness here):
 
-1. **Not tautological.** Do not assert a function's own construction back at it, such as
-   that a value is bracketed by bounds derived from that same value, or that a monotone
-   function is monotone. Assert a *joint* or *independent* relationship that a bug could
-   break.
-2. **Reaches the target.** Make sure the fixture state can get past the early guards into
-   the logic you mean to test. A victim with `base == 0` never reaches the liquidation
-   math, and a post-only order that does not cross never produces a fill. Confirm
-   reachability with `--coverage`.
-3. **Observes the real effect.** A `regr_` target must observe the mutated state itself, or
-   assert a **fix-exclusive** error code. It must not infer the bug from an unrelated
-   downstream failure or from a generic pre-existing error code.
-4. **Fails loudly on decode drift.** A read of a zero-copy account must panic, rather than
-   skip the invariant, when an existing account is the wrong size. A wrong size means the
-   host layout drifted from the `.so`. `read_zc` panics.
-5. **No false positives.** An invariant that is not *always* true for the protocol
-   generates noise that drowns real crashes. Gate a conditional property on the exact
-   precondition, and mind the precision scales. `LIQUIDATION_FEE_PRECISION` is 1e6 and
-   `MARGIN_PRECISION` is 1e4.
+1. **Not tautological.** Don't assert a function's own construction back at it
+   (e.g. that a value is bracketed by bounds derived from that same value), or
+   that a monotone function is monotone. Assert a *joint* or *independent*
+   relationship a bug could actually break.
+2. **Reaches the target.** Make sure the fixture state can actually get past the
+   early guards into the logic you mean to test (a victim with `base == 0` never
+   reaches the liquidation math; post-only-no-cross orders never produce a fill).
+   Prefer confirming reachability with `--coverage`.
+3. **Observes the real effect.** A `regr_` should observe the actual mutated
+   state or assert a **fix-exclusive** error code, not infer the bug from an
+   unrelated downstream failure or a generic pre-existing error code.
+4. **Fails loudly on decode drift.** Reading zero-copy accounts must panic (not
+   silently skip the invariant) when an existing account is the wrong size, which
+   means the host layout drifted from the `.so`. `read_zc` does this.
+5. **No false positives.** An invariant that isn't *always* true for the protocol
+   generates noise that drowns real crashes. Gate conditional properties on the
+   exact precondition (mind precision scales: `LIQUIDATION_FEE_PRECISION` = 1e6 vs
+   `MARGIN_PRECISION` = 1e4).
 
 ## CI
 

@@ -17,25 +17,24 @@ The backend server that provides a REST API for the Velocity
 
 ## Features
 
-- Live DLOB data publishing
-- Perp and spot markets
-- WebSocket, gRPC, and polling subscriptions
+- Real-time DLOB data publishing
+- Support for both perp and spot markets
+- Multiple subscription methods (WebSocket, gRPC, polling)
 - Health checks and metrics
-- Top of book (TOB) monitoring for stuck orders. See
-  [Top of book monitoring](#top-of-book-monitoring).
+- **TOB (Top of Book) monitoring for stuck orders** (see [TOB Monitoring Configuration](#tob-monitoring-configuration))
 
 # Run the server
 
 ## Setup
 
-Install dependencies from the repo root, then build this app:
+Install dependencies and build:
 
 ```
-bun install
-bunx turbo run build --filter=@velocity-exchange/dlob-server
+yarn install
+yarn build
 ```
 
-Set the environment variables:
+Set the necessary environment variables:
 
 ```
 cp .env.example .env
@@ -43,23 +42,29 @@ cp .env.example .env
 
 ## Security
 
-### Secret scan
+### Pre-commit Hook
 
-`scripts/check-secrets.sh` scans the staged files for RPC URLs, API keys, tokens, and other
-patterns that look like a secret. It exits non-zero on a match and names the file and the pattern.
+This repository uses [Husky](https://typicode.github.io/husky/) to manage Git hooks. A pre-commit hook automatically checks for potential secrets before each commit. The hook will:
 
-Run it before a commit:
+- Scan for RPC URLs, API keys, tokens, and other potential secrets
+- Prevent commits that contain suspicious patterns
+- Provide helpful guidance if false positives are detected
+
+The hook is automatically installed when you run `npm install` (via the `prepare` script). If you need to bypass it for a specific commit, use:
 
 ```bash
-bash apps/dlob-server/scripts/check-secrets.sh
+git commit --no-verify
 ```
 
-No hook runs it today. The repository pre-commit hook at `.husky/pre-commit` starts with `exit 0`,
-so every check in it is skipped.
+### Scripts
 
-## Environment variables
+The `scripts/` directory contains utility scripts:
 
-Set these variables in your `.env` file:
+- `check-secrets.sh` - Secret detection script used by the pre-commit hook
+
+## Environment Variables
+
+To properly configure the DLOB server, set the following environment variables in your `.env` file:
 
 | Variable                      | Description                                                     | Example Value                       |
 | ----------------------------- | --------------------------------------------------------------- | ----------------------------------- |
@@ -80,7 +85,7 @@ Set these variables in your `.env` file:
 | `REDIS_CLIENT`                | (for websocket server) Redis client type (DLOB/DLOB_HELIUS).    | `DLOB`                              |
 | `WS_PORT`                     | (for websocket server) The port to run the websocket server on. | `3000`                              |
 
-Note: to use several Redis hosts, give a comma separated string.
+Note: multiple Redis hosts can be provided by providing a comma separated string.
 
 ## HTTP mode
 
@@ -94,11 +99,9 @@ bun run dev
 
 ## Websocket mode
 
-The websocket server has two components. `dlob-publisher` takes frequent snapshots of the DLOB and
-publishes them to Redis. `ws-manager` accepts new connections and sends the latest DLOB to websocket
-clients. The two components talk through Redis pub-sub.
+The websocket server has 2 components, the `dlob-publisher` that takes frequent snapshots of the DLOB and publishes them to Redis, and `ws-manager` listens for new connections and sends the latest DLOB to ws clients, the two components communicate through Redis pub-sub.
 
-The websocket server needs a Redis cache and these environment variables:
+To run the websocket server, a Redis cache is required, and the following environment variables must be set:
 
 - `REDIS_HOSTS`
 - `REDIS_PASSWORDS`
@@ -111,21 +114,21 @@ bash redisCluster.sh start
 bash redisCluster.sh create
 ```
 
-In a second terminal, run:
+In second terminal, run:
 
 ```
-bun run dlob-publish
+yarn run dlob-publish
 ```
 
 In a third terminal, run:
 
 ```
-bun run ws-manager
+yarn run ws-manager
 ```
 
-Then connect to the websocket server at ws://127.0.0.1:3000.
+Then connect to the ws server at ws://127.0.0.1:3000
 
-To finish, stop the redis cluster:
+When you're done, stop the redis cluster:
 
 ```
 bash redisCluster.sh stop
@@ -140,34 +143,31 @@ describe the protocol they speak.
 
 ## Top of book monitoring
 
-`dlob-publisher` watches the top of book (TOB) of selected perp markets and detects a book that
-stopped moving because of a stuck order. A gRPC connection can miss updates, which is the case this
-catches.
+## TOB (Top of Book) Monitoring [#tob-monitoring]
+
+The server includes a TOB monitoring feature that detects when order books become stuck due to ghost/stuck orders. This is particularly useful for gRPC connections that may miss updates.
 
 ### Configuration
 
-- `ENABLE_TOB_MONITORING` - set to `true` to monitor. Monitoring is on unless the variable is set
-  to something other than `true`.
-- `TOB_CHECK_INTERVAL` - milliseconds between checks. Default `60000`.
-- `TOB_STUCK_THRESHOLD` - milliseconds the TOB can stay unchanged before a resubscribe. Default
-  `60000`.
-- `TOB_MONITORING_ENABLED_PERP_MARKETS` - comma separated perp market indexes to monitor. Default
-  `0,1,2`, which is SOL-PERP, BTC-PERP, and ETH-PERP.
+Set the following environment variables to enable and configure TOB monitoring:
 
-Monitoring also needs `USE_ORDER_SUBSCRIBER`, because the recovery step drives the `OrderSubscriber`
-instance. A node that loads none of the configured markets monitors nothing.
+- `ENABLE_TOB_MONITORING=true` - Enable TOB monitoring (default: false)
+- `TOB_CHECK_INTERVAL=60000` - How often to check TOB (default: 60 seconds)
+- `TOB_STUCK_THRESHOLD=60000` - How long TOB can be stuck before resubscribing (default: 60 seconds)
+- `TOP_MONITORING_ENABLED_PERP_MARKETS=0,1,2` - Comma-separated list of perp market indexes to monitor for TOB (default: 0,1,2 for SOL-PERP, BTC-PERP, ETH-PERP)
 
 ### How it works
 
-1. Intersect `TOB_MONITORING_ENABLED_PERP_MARKETS` with the perp markets this node loaded.
-2. Every `TOB_CHECK_INTERVAL`, read the best bid order id and the best ask order id of each of those
-   markets.
-3. When either id changed, record the time and stop.
-4. When neither id changed for longer than `TOB_STUCK_THRESHOLD`, log a warning and recover.
-5. Recovery calls `unsubscribe`, `subscribe`, and `fetch` on the `OrderSubscriber`, then resets the
-   timer for that market.
+1. Checks if the current node is configured to handle any TOB monitoring markets
+2. Only enables monitoring if the node has TOB monitoring markets configured
+3. Monitors the top bid/ask prices for TOB monitoring perp markets on this node
+4. If TOB hasn't changed for the configured threshold time, triggers a resubscribe
+5. Performs unsubscribe → subscribe → fetch sequence on the OrderSubscriber instance
+6. Logs warnings and updates metrics for monitoring
 
 ### Metrics
 
-- `tob_resubscribe` - counter of resubscribe attempts, labelled with `success`.
-- `tob_stuck_duration` - gauge of the seconds the TOB stayed unchanged, per market.
+The following metrics are available for TOB monitoring:
+
+- `tob_resubscribe` - Counter for resubscribe attempts (with success/failure labels)
+- `tob_stuck_duration` - Gauge showing how long TOB has been stuck for each market

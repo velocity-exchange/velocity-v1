@@ -57,30 +57,11 @@ use {
 ///   3. `pending_amm_provision` to `amm.fee_pool`. This tokenizes a provision
 ///      the AMM already booked at fill, so the ledger does not change.
 ///
-/// The protocol drain runs first and ignores the `fee_pool_buffer_target`
-/// retention margin. It sweeps on every settle, so each drain is small. Its
-/// value is also not recoverable in bankruptcy.
-///
-/// The exemption covers the buffer only. Every drain, the protocol one
-/// included, leaves `max(net_user_pnl, 0)`, the floored IF bankruptcy tranche,
-/// and `pending_revenue_share` behind. A permissionless protocol-fee sweep
-/// therefore cannot unback the bankruptcy tranche or the builder and referrer
-/// revenue share already owed. The IF and provision drains leave the buffer
-/// behind on top of those claims. The buffer throttles the outflows whose
-/// value the bankruptcy waterfall can still reach.
-///
-/// Steps 1 and 2 never touch the AMM ledger or the AMM token pool, so no other
-/// money passes through the AMM. A remainder the sweep cannot drain waits for
-/// the next sweep. This is the only fee routing out of a perp market. It runs
-/// inline on every `update_pool_balances`, after the user's settle, and on
-/// demand through the `sweep_perp_market_fees` keeper instruction.
-///
-/// `force` bypasses the `SettleRevPool` operation pause and the IF floor. It
-/// exists for the final sweep on market delisting. That sweep is the last
-/// chance to route the protocol carveout to `protocol_fee_pool` before the
-/// remaining pnl pool drains to the revenue pool, so a standing pause must not
-/// strand it. The streaming and keeper callers pass `false` and respect the
-/// pause.
+/// `force` bypasses the `SettleRevPool` operation pause. It exists for the
+/// final sweep on market delisting: that is the last chance to route the
+/// protocol carveout to `protocol_fee_pool` before the remaining pnl pool is
+/// drained to the revenue pool, so a standing pause must not strand it. The
+/// streaming/keeper callers pass `false` and continue to respect the pause.
 ///
 /// Returns `(if_swept, protocol_swept, amm_provision_tokenized)`.
 pub fn sweep_market_fees(

@@ -191,7 +191,7 @@ pub fn perp_markets_with_forfeitable_claims(user: &User) -> Vec<u16> {
 /// Returns true if the user still has an unresolved cross-margin perp
 /// bankruptcy: a non-isolated perp position carrying bad debt (no base, no open
 /// order, negative unsettled pnl). Used to enforce the deterministic
-/// perp-before-spot bankruptcy-resolution precedence (OtterSec #52) so a public
+/// perp-before-spot bankruptcy-resolution precedence (audit #52) so a public
 /// caller cannot pick which resolver drains the shared (quote) insurance fund
 /// first and thereby shift socialized loss between perp and spot stakeholders.
 pub fn has_pending_cross_margin_perp_bankruptcy(user: &User) -> bool {

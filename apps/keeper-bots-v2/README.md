@@ -12,23 +12,24 @@
 
 # Setting up
 
+
 This repo has two main branches:
 
-* `master`: active development. It may be unstable, and it runs on the `devnet` cluster
-* `mainnet-beta`: stable, and it runs on the `mainnet-beta` cluster
+* `master`: bleeding edge, may be unstable, currently running on the `devnet` cluster
+* `mainnet-beta`: stable, currently running on the `mainnet-beta` cluster
 
-## Set up the environment
+## Setup Environment
 
-### YAML config file
+### yaml Config file:
 
-A `.yaml` file configures the bot setup. `example.config.yaml` is a commented example.
+A `.yaml` file can be used to configure the bot setup now. See `example.config.yaml` for a commented example.
 
-Run a bot by loading the config file:
+Then you can run the bot by loading the config file:
 ```shell
-bun run dev --config-file=example.config.yaml
+yarn run dev --config-file=example.config.yaml
 ```
 
-The fields, their meanings, and their defaults:
+Here is a table defining the various fields and their usage/defaults:
 
 | Field             | Type   | Description | Default |
 | ----------------- | ------ | --- | --- |
@@ -48,15 +49,16 @@ The fields, their meanings, and their defaults:
 
 ### Install dependencies
 
-Run this once at the repo root. It installs every workspace dependency:
+Run from repo root to install all npm dependencies:
 ```shell
-bun install
-bun run build
+yarn install
+yarn build
 ```
 
-## Initialize a user
 
-A `User` account must exist before the bot interacts with the velocity program.
+## Initialize User
+
+A `ClearingHouseUser` must be created before interacting with the `ClearingHouse` program.
 
 ```shell
 bun run dev --init-user
@@ -82,15 +84,17 @@ Free collateral determines the size of the borrows and perp positions an account
 
 After you create the `config.yaml` file above, run:
 
+After creating your `config.yaml` file as above, run with:
+  
 ```shell
-bun run dev --config-file=config.yaml
+yarn run dev --config-file=config.yaml
 ```
 
-By default some [Prometheus](https://prometheus.io/) metrics are exposed on `localhost:9464/metrics`.
+By default, some [Prometheus](https://prometheus.io/) metrics are exposed on `localhost:9464/metrics`.
 
 # Notes on some bots
 
-## Filler bot
+## Filler Bot
 
 Include `filler`, `spotFiller`, or both under `.enabledBots` in `config.yaml`. For a lightweight
 filler for perp markets, include `fillerLite` rather than `filler`. The lighter filler runs on public
@@ -104,22 +108,22 @@ orders.
 
 ### Common errors
 
-A filler bot can log these error codes in the transaction logs when pre-flight simulation fails:
+When running the filler bots, you might see the following error codes in the transaction logs on a failed in pre-flight simulation:
 
 #### For perps
 
-| Error             | Description |
+| Error             | Description |   
 | ----------------- | ------ |
-| OrderDoesNotExist | Outcompeted. Someone else already filled the order |
-| OrderNotTriggerable | Outcompeted. Someone else already triggered the order |
-| RevertFill | Outcompeted. Someone else already filled the order |
+| OrderDoesNotExist | Outcompeted: Order was already filled by someone else|
+| OrderNotTriggerable | Outcompeted: order was already triggered by someone else |
+| RevertFill |  Outcompeted: order was already filled by someone else|
 
 
 #### Other messages
 
 | Message | Description |
 | --------|--------------|
-| filler last active slot != current slot | This can appear when another filler wins the fill. The *filler last active slot* is the last slot in which the filler filled an order, so it diverges from the *current slot* when the filler has not landed one since. |
+| filler last active slot != current slot | You might see this when outcompeted on a fill. The *filler last active slot* was the last slot that the filler had a successful fill in, so it may diverge *current slot* if the filler has not placed a successful order.
 
 
 ## Liquidator bot
@@ -128,19 +132,18 @@ The liquidator bot monitors spot and perp markets for bankrupt accounts, and att
 
 ### Notes on derisking
 
-Set `disableAutoDerisking` to `true` to turn off the derisking loop. That suits a larger strategy
-that accepts the risk at a price better than market, because the liquidation fee applies.
+### Notes on configuring subaccount
 
-### Notes on configuring a subaccount
+By default the liquidator will attempt to liqudate (inherit the risk of)
+endangered positions in all markets. Set `botConfigs.liquidator.perpMarketIndicies` and/or `botConfigs.liquidator.spotMarketIndicies`
+in the config file to restrict which markets you want to liquidate. The
+account specified in `global.subaccounts` will be used as the active
+account.
 
-By default the liquidator tries to liquidate, and so inherit the risk of, endangered positions in
-every market. Set `botConfigs.liquidator.perpMarketIndicies`,
-`botConfigs.liquidator.spotMarketIndicies`, or both in the config file to restrict which markets it
-liquidates. The account named in `global.subaccounts` is the active account.
-
-`perpSubaccountConfig` and `spotSubaccountConfig` replace `perpMarketIndicies` and
-`spotMarketIndicies`. They map a subaccount to a list of market indexes. Both fields take a JSON
-string:
+`perpSubaccountConfig` and `spotSubaccountConfig` can be used instead
+of `perpMarketIndicies` and `spotMarketIndicies` to specify a mapping
+from subaccount to list of market indicies. The value of these 2 fields
+are json strings:
 
 ### An example `config.yaml`
 ```
@@ -170,7 +173,7 @@ botConfigs:
         - 1
         - 2
 ```
-That config liquidates perp markets 0 to 2 on subaccount 0, perp markets 3 to 12 on subaccount 1, and spot markets 0 to 2 on subaccount 0. It also uses Jupiter to derisk spot assets into USDC. Every subaccount named in `botConfigs` must also appear in the global config. For the example above:
+Means the liquidator will liquidate perp markets 0-2 using subaccount 0, perp markets 3-12 using subaccount 1, and spot markets 0-2 using subaccount 0. It will also use jupiter to derisk spot assets into USDC. Make sure that for all subaccounts specified in the botConfigs, that they are also listed in the global configs. So for the above example config:
 
 ```
 global:
@@ -180,9 +183,9 @@ global:
 
 ### Common errors
 
-The liquidator can log these error codes in the transaction logs when pre-flight simulation fails:
+When running the liquidator, you might see the following error codes in the transaction logs on a failed in pre-flight simulation:
 
-| Error             | Description |
+| Error             | Description |   
 | ----------------- | ------ |
 | SufficientCollateral | The target account holds enough collateral, so it cannot be liquidated |
 | InvalidSpotPosition | Outcompeted. Someone else already liquidated that account's spot position |

@@ -5711,8 +5711,8 @@ mod native_auth_tests {
 
     #[test]
     fn mm_oracle_native_rejects_forged_state() {
-        // A State account with the attacker's key at the hot-key field, owned by
-        // a foreign program. Nothing but the owner check rejects it.
+        // State account with the attacker's key at the hot-key field but owned by
+        // a foreign program — the pre-fix bug authenticated against exactly this.
         let attacker = Pubkey::new_unique();
         let mut state = State::default();
         state.hot_mm_oracle_crank = attacker;
@@ -5752,8 +5752,8 @@ mod native_auth_tests {
 
     #[test]
     fn mm_oracle_native_rejects_non_perp_market_in_market_slot() {
-        // Genuine state, but the market slot holds a second State rather than a
-        // PerpMarket. Nothing but the discriminator check rejects it.
+        // Genuine state, but the "market" slot holds a non-PerpMarket account
+        // (here a second State) — the pre-fix bug bytemuck-cast it blindly.
         let hot_key = Pubkey::new_unique();
         let mut state = State::default();
         state.hot_mm_oracle_crank = hot_key;

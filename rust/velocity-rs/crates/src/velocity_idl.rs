@@ -3119,13 +3119,13 @@ pub mod types {
     impl<const N: usize> anchor_lang::Space for Padding<N> {
         const INIT_SPACE: usize = 8 * N;
     }
-    #[doc = " Fixed-size array wrapper for lengths serde's derives don't cover."]
+    #[doc = " A fixed-size array wrapper for lengths serde's derives do not cover."]
     #[doc = ""]
-    #[doc = " serde implements `Serialize`/`Deserialize` for `[T; N]` only up to N = 32,"]
-    #[doc = " so a generated account holding a longer array (a quote buffer's level"]
-    #[doc = " slots, say) would fail to compile the moment it entered the IDL. The"]
-    #[doc = " wrapper carries the array and serializes it as a sequence, which is what"]
-    #[doc = " serde would have done anyway."]
+    #[doc = " serde implements `Serialize` and `Deserialize` for `[T; N]` only up to"]
+    #[doc = " N = 32. A generated account that holds a longer array, such as a quote"]
+    #[doc = " buffer's level slots, would fail to compile the moment it entered the IDL."]
+    #[doc = " The wrapper carries the array and serializes it as a sequence, which is what"]
+    #[doc = " serde would have done."]
     #[derive(AnchorSerialize, AnchorDeserialize, Copy, Clone, PartialEq, Debug)]
     pub struct BigArray<T: Copy, const N: usize>(pub [T; N]);
     impl<T: Copy + Default, const N: usize> Default for BigArray<T, N> {
@@ -3175,11 +3175,11 @@ pub mod types {
     }
     #[doc = " [`BigArray`] specialized to bytes."]
     #[doc = ""]
-    #[doc = " `BigArray<u8, N>` cannot satisfy anchor's `Space` — the `InitSpace` derive"]
-    #[doc = " inlines primitive sizes rather than implementing `Space` for `u8`, and"]
-    #[doc = " coherence forbids a local `u8` specialization next to the generic impl —"]
-    #[doc = " so byte regions past serde's 32-element derive limit (a condition block,"]
-    #[doc = " a staging buffer) get their own wrapper with the obvious byte count."]
+    #[doc = " `BigArray<u8, N>` cannot satisfy anchor's `Space`. The `InitSpace` derive"]
+    #[doc = " inlines primitive sizes instead of implementing `Space` for `u8`, and"]
+    #[doc = " coherence forbids a local `u8` specialization next to the generic impl. A"]
+    #[doc = " byte region past serde's 32-element derive limit, such as a condition block"]
+    #[doc = " or a staging buffer, therefore gets its own wrapper with a plain byte count."]
     #[derive(AnchorSerialize, AnchorDeserialize, Copy, Clone, PartialEq, Debug)]
     pub struct ByteArray<const N: usize>(pub [u8; N]);
     impl<const N: usize> Default for ByteArray<N> {

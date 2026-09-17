@@ -391,15 +391,17 @@ pub struct ClobHeaderV0 {
     pub max_activation_delay_slots: u32,
     /// Fills race the tx's fixed account set: quote and execute take the set
     /// of users the caller can settle, and an order whose owner is absent is
-    /// skipped while younger than this many slots — the caller cannot be
-    /// expected to have heard of it yet — and ends the walk once older. Age
-    /// runs from `activation_slot`, the slot the order first became visible
-    /// to any reader of this book, not from when it was placed.
+    /// skipped while its age is at most this many slots — the caller cannot
+    /// be expected to have heard of it yet — and ends the walk once its age
+    /// passes that. The window is therefore this many slots plus the slot the
+    /// order became matchable in. Age runs from `activation_slot`, the slot
+    /// the order first became visible to any reader of this book, not from
+    /// when it was placed.
     ///
     /// So this is how far the caller's account set is allowed to lag the
-    /// book. Below that age a new maker costs the caller nothing; above it,
-    /// a maker the caller did not bring is where its fill stops, and the book
-    /// reports the depth behind as withheld.
+    /// book. At or below that age a new maker costs the caller nothing; past
+    /// it, a maker the caller did not bring is where its fill stops, and the
+    /// book reports the depth behind as withheld.
     ///
     /// Sizing it is a question about how the callers of this market build
     /// their account sets. A set assembled from a live subscription can lag

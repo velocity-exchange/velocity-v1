@@ -7834,32 +7834,6 @@ export class VelocityClient {
 	}
 
 	/**
-	 * Builds the `revertFill` instruction. Used by keepers as a same-transaction fallback after a
-	 * simulated fill fails downstream (e.g. a subsequent instruction errors): it only asserts the
-	 * filler's `lastActiveSlot` equals the current slot and otherwise is a no-op, letting the
-	 * keeper's earlier fill CPI effects be discarded by the transaction failing cleanly rather than
-	 * with a confusing downstream error.
-	 * @param fillerPublicKey - Filler's user account public key; defaults to this client's own
-	 * user account.
-	 * @returns The instruction.
-	 */
-	public async getRevertFillIx(
-		fillerPublicKey?: PublicKey
-	): Promise<TransactionInstruction> {
-		const filler = fillerPublicKey ?? (await this.getUserAccountPublicKey());
-		const fillerStatsPublicKey = this.getUserStatsAccountPublicKey();
-
-		return this.program.instruction.revertFill({
-			accounts: {
-				state: await this.getStatePublicKey(),
-				filler,
-				fillerStats: fillerStatsPublicKey,
-				authority: this.wallet.publicKey,
-			},
-		});
-	}
-
-	/**
 	 * Disabled. Spot DLOB trading (order placement/matching) is turned off in this deployment —
 	 * spot balances, deposits, withdrawals, and swaps remain available.
 	 * @throws Always throws with the spot-DLOB-disabled message.
@@ -9440,11 +9414,11 @@ export class VelocityClient {
 		// decoded escrow (e.g. from a RevenueShareEscrowMap) to cover the referred case.
 		// Referral accounts are discovered automatically when no decoded escrow is supplied.
 		takerEscrow?: RevenueShareEscrowAccount,
-		// Pass the market's CLOB accounts to select the v1 route: the fill goes
-		// through the router (so the taker reaches book and PropAMM liquidity,
-		// not just the vAMM and any makers passed) and an unfilled limit
-		// remainder rests on the CLOB instead of being cancelled. The quoter
-		// section these imply is appended to the remaining accounts for you.
+		// The market's CLOB accounts. The order routes through them, so the taker
+		// reaches book and PropAMM liquidity and not only the vAMM, and an
+		// unfilled limit remainder rests on the book. The quoter section they
+		// imply is appended to the remaining accounts for you. Optional only to
+		// keep this positional signature stable; the call throws without them.
 		clobAccounts?: {
 			quoterSlab: PublicKey;
 			clobMarket: PublicKey;
@@ -9523,6 +9497,12 @@ export class VelocityClient {
 		}
 
 		const authority = overrides?.authority ?? this.wallet.publicKey;
+
+		if (!clobAccounts) {
+			throw new Error(
+				'placeAndTakePerpOrder requires the market CLOB accounts: the order routes through the book'
+			);
+		}
 
 		return await VelocityCore.buildPlaceAndTakePerpOrderInstruction({
 			program: this.program,

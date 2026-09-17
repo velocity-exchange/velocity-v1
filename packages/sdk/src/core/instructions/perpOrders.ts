@@ -42,11 +42,11 @@ export async function buildPlacePerpOrderInstruction(args: {
 }
 
 /**
- * Builds a `placeAndTakePerpOrder` instruction: places an order and immediately attempts
- * to fill it as a taker against the AMM and/or the supplied maker accounts.
+ * Builds a `placeAndTakePerpOrderV1` instruction: places an order and routes it as a
+ * taker against the market's book, its quoters and the AMM.
  * `orderParams.postOnly` must be `PostOnlyParam.None` (`InvalidOrderPostOnly` otherwise).
- * Any portion left unfilled is auto-cancelled when the order is (or becomes, via
- * `optionalParams`) immediate-or-cancel.
+ * A restable remainder rests on the book. Any portion left unfilled is auto-cancelled
+ * when the order is (or becomes, via `optionalParams`) immediate-or-cancel.
  * @param args.program - Anchor `Program<Velocity>` used to build the instruction.
  * @param args.orderParams - an `OrderParams` object; `baseAssetAmount` is BASE_PRECISION (1e9), `price`/`triggerPrice`/`oraclePriceOffset` are PRICE_PRECISION (1e6).
  * @param args.optionalParams - packed `u32` combining a `PlaceAndTakeOrderSuccessCondition` (fail the tx if not at least partially/fully filled) and an auction-duration percentage override; `null` for default behavior. Passing any non-null value also forces IOC cancel-remainder semantics.
@@ -56,12 +56,9 @@ export async function buildPlacePerpOrderInstruction(args: {
  * @param args.authority - signer that must own or be a registered delegate of `user`.
  * @param args.remainingAccounts - writable perp market + oracle `AccountMeta[]` for `orderParams.marketIndex`, followed by maker/referrer `(User, UserStats)` pairs, followed by the taker's `RevenueShareEscrow` account if builder codes are enabled.
  * @param args.clobAccounts - the market's CLOB accounts, which are `quoterSlab`, a
- * writable `clobMarket`, and `clobProgram`. Pass them to have an unfilled limit remainder
- * rest on the CLOB instead of being cancelled. Passing them builds
- * `placeAndTakePerpOrderV1`. `placeAndTakePerpOrder`'s account list is frozen for ABI
- * compatibility, so the CLOB route is a separate instruction that requires those
- * accounts. Omit them for the v0 instruction, which cancels the remainder.
- * @returns the unsigned `placeAndTakePerpOrder`/`placeAndTakePerpOrderV1` `TransactionInstruction`.
+ * writable `clobMarket`, and `clobProgram`. The order routes through them, and a
+ * restable remainder rests on the book.
+ * @returns the unsigned `placeAndTakePerpOrderV1` `TransactionInstruction`.
  */
 export async function buildPlaceAndTakePerpOrderInstruction(args: {
 	program: VelocityProgram;
@@ -72,7 +69,7 @@ export async function buildPlaceAndTakePerpOrderInstruction(args: {
 	userStats: PublicKey;
 	authority: PublicKey;
 	remainingAccounts: AccountMeta[];
-	clobAccounts?: {
+	clobAccounts: {
 		quoterSlab: PublicKey;
 		clobMarket: PublicKey;
 		clobProgram: PublicKey;
@@ -81,7 +78,7 @@ export async function buildPlaceAndTakePerpOrderInstruction(args: {
 	 * flow, so a take on a book with a speed bump fills synchronously. */
 	flowAuthority?: PublicKey;
 }): Promise<TransactionInstruction> {
-	if (args.clobAccounts) {
+	{
 		// Anchor encodes an omitted `Option` account as the program id, which the
 		// program decodes as `None`.
 		const omitted = args.program.programId;
@@ -106,19 +103,6 @@ export async function buildPlaceAndTakePerpOrderInstruction(args: {
 			}
 		);
 	}
-	return await args.program.instruction.placeAndTakePerpOrder(
-		args.orderParams,
-		args.optionalParams,
-		{
-			accounts: {
-				state: args.state,
-				user: args.user,
-				userStats: args.userStats,
-				authority: args.authority,
-			},
-			remainingAccounts: args.remainingAccounts,
-		}
-	);
 }
 
 /**

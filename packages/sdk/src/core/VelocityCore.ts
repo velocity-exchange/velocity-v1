@@ -440,9 +440,9 @@ export class VelocityCore {
 	 * then the taker's `RevenueShareEscrow` account if builder codes are enabled, then the
 	 * referrer's read-only `UserStats` when that taker is referred.
 	 * @param args.clobAccounts - the market's CLOB accounts, which are `quoterSlab`, a
-	 * writable `clobMarket`, and `clobProgram`. When they are passed, an unfilled limit
-	 * remainder rests on the CLOB instead of being cancelled.
-	 * @returns the unsigned `placeAndTakePerpOrder` `TransactionInstruction`.
+	 * writable `clobMarket`, and `clobProgram`. The order routes through them, and a
+	 * restable remainder rests on the book.
+	 * @returns the unsigned `placeAndTakePerpOrderV1` `TransactionInstruction`.
 	 */
 	static async buildPlaceAndTakePerpOrderInstruction(args: {
 		program: VelocityProgram;
@@ -453,7 +453,7 @@ export class VelocityCore {
 		userStats: PublicKey;
 		authority: PublicKey;
 		remainingAccounts: AccountMeta[];
-		clobAccounts?: {
+		clobAccounts: {
 			quoterSlab: PublicKey;
 			clobMarket: PublicKey;
 			clobProgram: PublicKey;

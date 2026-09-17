@@ -60,6 +60,7 @@ import {
 	getCrankTreasuryPublicKey,
 	getPerpMarketPublicKeySync,
 	getLimitOrderParams,
+	getOrderParams,
 	generateSignedMsgUuid,
 	HotRole,
 	SignedMsgNetwork,
@@ -76,6 +77,8 @@ import {
 	OracleSource,
 	PEG_PRECISION,
 	PositionDirection,
+	MarketType,
+	OptionalOrderParams,
 	PostOnlyParams,
 	parseLogs,
 	PRICE_PRECISION,
@@ -265,7 +268,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 	const midMakerKp = Keypair.generate();
 	const midConfigKp = Keypair.generate();
 	const midHotKp = Keypair.generate();
-	const dlobMakerKp = Keypair.generate();
+	const bookMaker2Kp = Keypair.generate();
 	const takerKp = Keypair.generate();
 	const crosserKp = Keypair.generate();
 	const publisherKp = Keypair.generate();
@@ -274,7 +277,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 	let clobMaker: TestClient;
 	let clobMaker2: TestClient;
 	let midMaker: TestClient;
-	let dlobMaker: TestClient;
+	let bookMaker2: TestClient;
 	let taker: TestClient;
 	let crosser: TestClient;
 	const clients: TestClient[] = [];
@@ -462,8 +465,11 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			.reduce((sum, r) => sum.add(r.baseAssetAmountFilled!), new BN(0));
 
 	/** Fills route through every quoter, well past the default CU budget. */
-	const sendFill = (ix: TransactionInstruction) =>
-		send([ComputeBudgetProgram.setComputeUnitLimit({ units: 800_000 }), ix]);
+	const sendFill = (ix: TransactionInstruction, signers: Keypair[] = []) =>
+		send(
+			[ComputeBudgetProgram.setComputeUnitLimit({ units: 800_000 }), ix],
+			signers
+		);
 
 	/** `SystemProgram.createAccount`, rent looked up for `space`. */
 	const createAccount = async (
@@ -1219,64 +1225,47 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		ro(MIDPOINT_ID),
 	];
 
-	/** A keeper fill with the router tail that the SDK's `getFillPerpOrderIx`
-	 * cannot express. That builder has no quoter section, and it marks the
-	 * quote spot market read-only. */
-	const fillPerpOrderIx = async (
-		orderId: number,
+	/** Place a taker order and route it in one instruction, with the router tail
+	 * the SDK's builder cannot express: that builder has no quoter section, and
+	 * it marks the quote spot market read-only.
+	 *
+	 * This is how a position opens on a real validator. The placement routes the
+	 * order as it places it, so there is no separate fill to send. */
+	const placeAndTakeIx = async (
 		takerAuthority: PublicKey,
-		makerKps: Keypair[],
-		/** The route the order's signer chose, as a keeper reads it off the
-		 * signed message. The program checks it against the digest stamped on
-		 * the order and requires every entry to be in the transaction, so a
-		 * keeper cannot route somewhere else. */
-		signedRoute: PublicKey[] = [],
-		/** Who fills. The default is the keeper, `payer`. Pass the taker's own
-		 * authority for a self-fill. The taker then endorses the account list,
-		 * so the filler obligation to carry every reachable maker does not
-		 * apply. The caller must also sign the transaction with this key. */
-		fillerAuthority: PublicKey = payer.publicKey
+		orderParams: OptionalOrderParams,
+		makerKps: Keypair[] = [clobMakerKp, midMakerKp]
 	) =>
-		// `fill_legacy_dlob_order` rests a restable remainder of the filled
-		// order on the book instead of leaving it in `User.orders`. Keepers use
-		// it in production through keep-rs's swift path, so the suite fills the
-		// same way.
-		admin.program.instruction.fillLegacyDlobOrder(
-			{ marketIndex: 0, orderId, signedRoute },
+		admin.program.instruction.placeAndTakePerpOrderV1(
+			{
+				params: getOrderParams(orderParams, { marketType: MarketType.PERP }),
+				successCondition: null,
+			},
 			{
 				accounts: {
 					state: await admin.getStatePublicKey(),
-					authority: fillerAuthority,
-					filler: userOf(fillerAuthority),
-					fillerStats: statsOf(fillerAuthority),
 					user: userOf(takerAuthority),
 					userStats: statsOf(takerAuthority),
+					authority: takerAuthority,
 					quoterSlab,
 					clobMarket: clobBook.publicKey,
 					clobProgram: CLOB_ID,
-					// Read for the filler obligation: whether the taker signed
-					// and how many accounts the transaction locks.
-					instructionsSysvar: SYSVAR_INSTRUCTIONS_PUBKEY,
+					// The taker signs this transaction, so no separate flow
+					// attestation is needed. Anchor reads the program id as
+					// `None`.
+					flowAuthority: VELOCITY_ID,
 				},
 				remainingAccounts: routerTail(makerKps),
 			}
 		);
 
-	/** Fill a user's open order as the keeper. This is how a position opens on
-	 * a real validator, because nothing here can be synthesized. */
-	const fillPendingOrder = async (
-		client: TestClient,
+	/** Open a position by placing a taker order that routes as it places. */
+	const placeAndTake = async (
 		kp: Keypair,
+		orderParams: OptionalOrderParams,
 		makerKps: Keypair[] = [clobMakerKp, midMakerKp]
-	) => {
-		await client.fetchAccounts();
-		const order = client
-			.getUserAccount()!
-			.orders.find((o) => isVariant(o.status, 'open'))!;
-		await sendFill(
-			await fillPerpOrderIx(order.orderId, kp.publicKey, makerKps)
-		);
-	};
+	) =>
+		sendFill(await placeAndTakeIx(kp.publicKey, orderParams, makerKps), [kp]);
 
 	/** Opt a user into relay coverage for liquidation thresholds and triggers.
 	 * It is one instruction over one account. `extra` is appended to the
@@ -1319,7 +1308,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			clobMaker2Kp,
 			midMakerKp,
 			midHotKp,
-			dlobMakerKp,
+			bookMaker2Kp,
 			takerKp,
 			crosserKp,
 			publisherKp,
@@ -1417,14 +1406,14 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		clobMaker = newClient(clobMakerKp);
 		clobMaker2 = newClient(clobMaker2Kp);
 		midMaker = newClient(midMakerKp);
-		dlobMaker = newClient(dlobMakerKp);
+		bookMaker2 = newClient(bookMaker2Kp);
 		taker = newClient(takerKp);
 		crosser = newClient(crosserKp);
 		for (const [client, kp] of [
 			[clobMaker, clobMakerKp],
 			[clobMaker2, clobMaker2Kp],
 			[midMaker, midMakerKp],
-			[dlobMaker, dlobMakerKp],
+			[bookMaker2, bookMaker2Kp],
 			[taker, takerKp],
 			[crosser, crosserKp],
 		] as const) {
@@ -1491,9 +1480,9 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			}
 		})();
 
-		// Standing liquidity: a CLOB bid and ask of 1.0 at 99.5 and 100.5, and
-		// a DLOB post-only ask of 1.0 at 100.6. The DLOB ask is still served by
-		// the TS side of the book wire.
+		// Standing liquidity: a CLOB bid and ask of 1.0 at 99.5 and 100.5, and a
+		// second maker's ask of 1.0 at 100.6 behind it. Every quote rests on the
+		// book, because that is the only place a live order rests.
 		await placeClobOrder(
 			clobMaker,
 			clobMakerKp,
@@ -1508,14 +1497,12 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			usd(99.5),
 			UNIT
 		);
-		await dlobMaker.placePerpOrder(
-			getLimitOrderParams({
-				marketIndex: 0,
-				direction: PositionDirection.SHORT,
-				baseAssetAmount: UNIT,
-				price: usd(100.6),
-				postOnly: PostOnlyParams.MUST_POST_ONLY,
-			})
+		await placeClobOrder(
+			bookMaker2,
+			bookMaker2Kp,
+			PositionDirection.SHORT,
+			usd(100.6),
+			UNIT
 		);
 
 		// The publisher, configured exactly as it is deployed: RPC transport
@@ -1716,29 +1703,19 @@ describe('e2e localnet: programs + publisher + redis', function () {
 
 	it('keeper fill splits the taker across CLOB + midpoint + vAMM', async function () {
 		this.timeout(120_000);
-		// Long 3.5: midpoint 100.1 (2.0), CLOB 100.5 (1.0), then the DLOB maker
-		// at 100.6 (0.5). The vAMM ask sits about 1% out and yields to all
-		// three.
+		// Long 3.5: midpoint 100.1 (2.0), CLOB 100.5 (1.0), and the vAMM covers
+		// the rest. Its ask sits about 1% out, so it yields to both books and
+		// takes only what they leave.
 		const size = UNIT.muln(35).divn(10);
-		await taker.placePerpOrder(
+		await placeAndTake(
+			takerKp,
 			getMarketOrderParams({
 				marketIndex: 0,
 				direction: PositionDirection.LONG,
 				baseAssetAmount: size,
 				price: usd(102),
-			})
-		);
-		const order = (await taker.forceGetUserAccount())!.orders.find((o) =>
-			o.baseAssetAmount.eq(size)
-		)!;
-
-		// Maker section: the DLOB maker and both quoted users.
-		await sendFill(
-			await fillPerpOrderIx(order.orderId, takerKp.publicKey, [
-				dlobMakerKp,
-				clobMakerKp,
-				midMakerKp,
-			])
+			}),
+			[clobMakerKp, midMakerKp]
 		);
 
 		await taker.fetchAccounts();
@@ -1760,11 +1737,9 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			clobMaker.getUser().getPerpPosition(0)!.baseAssetAmount.toString(),
 			UNIT.neg().toString()
 		);
-		await dlobMaker.fetchAccounts();
-		assert.equal(
-			dlobMaker.getUser().getPerpPosition(0)!.baseAssetAmount.toString(),
-			UNIT.divn(2).neg().toString()
-		);
+		// What the books did not cover came from the vAMM. The taker's own
+		// total above is what pins that; the curve's share is not asserted as a
+		// figure, because it moves with the reserves the suite happens to be at.
 	});
 
 	it('place-and-take rests the unfilled limit remainder on the CLOB', async function () {
@@ -2182,15 +2157,15 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				{ offsetPpm: 200_000, size: UNIT.muln(2) },
 			]);
 			// A stop that sells 1.0 if the oracle rises through 104.
-			await stopper.placePerpOrder(
+			await stopper.placeTriggerOrders([
 				getTriggerMarketOrderParams({
 					marketIndex: 0,
 					direction: PositionDirection.SHORT,
 					baseAssetAmount: UNIT,
 					triggerPrice: usd(104),
 					triggerCondition: OrderTriggerCondition.ABOVE,
-				})
-			);
+				}),
+			]);
 			await stopper.fetchAccounts();
 			const armed = stopper
 				.getUserAccount()!
@@ -2281,7 +2256,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		// takes the `resolve_trigger_limit_order_v1` path, which is not the
 		// stop-market's `resolve_trigger_market_order_v1`. This one is a buy
 		// limit at 99, armed to fire when the oracle falls through 98.
-		await taker.placePerpOrder(
+		await taker.placeTriggerOrders([
 			getTriggerLimitOrderParams({
 				marketIndex: 0,
 				direction: PositionDirection.LONG,
@@ -2289,8 +2264,8 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				price: usd(99),
 				triggerPrice: usd(98),
 				triggerCondition: OrderTriggerCondition.BELOW,
-			})
-		);
+			}),
+		]);
 		await taker.fetchAccounts();
 		const armed = taker
 			.getUserAccount()!
@@ -2358,7 +2333,8 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		);
 		// About 8.5x: 5 units near 102 on 60 of collateral. A price drop to 84
 		// puts equity below zero, well past maintenance.
-		await victim.placePerpOrder(
+		await placeAndTake(
+			victimKp,
 			getMarketOrderParams({
 				marketIndex: 0,
 				direction: PositionDirection.LONG,
@@ -2366,7 +2342,6 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				price: usd(103),
 			})
 		);
-		await fillPendingOrder(victim, victimKp);
 		await victim.fetchAccounts();
 		assert.isTrue(
 			victim.getUser().getPerpPosition(0)!.baseAssetAmount.eq(UNIT.muln(5)),
@@ -2716,33 +2691,23 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		]);
 
 		const size = UNIT.muln(15).divn(10);
-		// The id is read before the order is placed, for the same reason the
-		// route test reads it that way. Matching an order by its size finds
-		// whichever order matches.
-		const orderId = (await taker.forceGetUserAccount())!.nextOrderId;
-		await taker.placePerpOrder(
-			getMarketOrderParams({
-				marketIndex: 0,
-				direction: PositionDirection.LONG,
-				baseAssetAmount: size,
-				price: usd(102),
-			})
-		);
-
-		// `clobMaker2Kp` is absent from the account list. The taker fills its
-		// own order, so it endorses that list and the filler obligation to carry
-		// every reachable maker does not apply. That isolates the reserve
-		// behavior from the obligation guard. A keeper that omitted a maker it
-		// had room for would be refused instead.
+		// `clobMaker2Kp` is absent from the account list. The taker places and
+		// routes its own order, so it endorses that list and the filler
+		// obligation to carry every reachable maker does not apply. That
+		// isolates the reserve behavior from the obligation guard. A keeper that
+		// omitted a maker it had room for would be refused instead.
 		const signature = await send(
 			[
 				ComputeBudgetProgram.setComputeUnitLimit({ units: 800_000 }),
-				await fillPerpOrderIx(
-					orderId,
+				await placeAndTakeIx(
 					takerKp.publicKey,
-					[clobMakerKp, midMakerKp],
-					[],
-					takerKp.publicKey
+					getMarketOrderParams({
+						marketIndex: 0,
+						direction: PositionDirection.LONG,
+						baseAssetAmount: size,
+						price: usd(102),
+					}),
+					[clobMakerKp, midMakerKp]
 				),
 			],
 			[takerKp]
@@ -2794,9 +2759,10 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			'a route quoting the book',
 			60_000,
 			async () => {
+				// No maker is named in the query. Every quote rests on the book,
+				// and the endpoint reads the book itself.
 				const res = await fetch(
-					`${SWIFT_URL}/route?marketIndex=0&direction=long&size=${size.toString()}` +
-						`&dlobMakers=${userOf(dlobMakerKp.publicKey).toBase58()}`
+					`${SWIFT_URL}/route?marketIndex=0&direction=long&size=${size.toString()}`
 				);
 				if (!res.ok) {
 					return undefined;
@@ -2817,7 +2783,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		// the matching `UserStats` account. Which maker it is depends on what
 		// the suite left resting, and that is not what this spec tests.
 		const byUser = new Map(
-			[clobMakerKp, clobMaker2Kp, dlobMakerKp, midMakerKp, takerKp].map(
+			[clobMakerKp, clobMaker2Kp, bookMaker2Kp, midMakerKp, takerKp].map(
 				(kp) => [userOf(kp.publicKey).toBase58(), kp]
 			)
 		);
@@ -2849,28 +2815,22 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		// afterwards. By now the taker has older orders of every common size,
 		// and `find` can return a closed one. A fill against a closed order
 		// lands and does nothing.
-		const orderId = (await taker.forceGetUserAccount())!.nextOrderId;
-		await taker.placePerpOrder(
-			getMarketOrderParams({
-				marketIndex: 0,
-				direction: PositionDirection.LONG,
-				baseAssetAmount: size,
-				price: worstQuoted.muln(102).divn(100),
-			})
-		);
-		// The taker fills its own order from the endpoint's account list, which
-		// is the realistic use of /route. The fill is taker-signed, so it is
-		// held only to whether the endpoint's accounts let it land. The filler
-		// obligation a keeper owes on withheld depth does not apply.
+		// The taker routes its own order through the endpoint's account list,
+		// which is the realistic use of /route. The call is taker-signed, so it
+		// is held only to whether the endpoint's accounts let it land. The
+		// filler obligation a keeper owes on withheld depth does not apply.
 		const fillSig = await send(
 			[
 				ComputeBudgetProgram.setComputeUnitLimit({ units: 800_000 }),
-				await fillPerpOrderIx(
-					orderId,
+				await placeAndTakeIx(
 					takerKp.publicKey,
-					[...namedKps, midMakerKp],
-					[],
-					takerKp.publicKey
+					getMarketOrderParams({
+						marketIndex: 0,
+						direction: PositionDirection.LONG,
+						baseAssetAmount: size,
+						price: worstQuoted.muln(102).divn(100),
+					}),
+					[...namedKps, midMakerKp]
 				),
 			],
 			[takerKp]

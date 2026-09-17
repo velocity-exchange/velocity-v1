@@ -6310,34 +6310,37 @@ export class VelocityClient {
 	}
 
 	/**
-	 * Places a single perp order without attempting to fill it in the same instruction — the
-	 * order rests until a keeper (or a `placeAndTake*`/signed-msg fill) matches it. Use
-	 * `placeAndTakePerpOrder` instead if the caller wants an immediate attempt to fill against
-	 * the AMM/makers.
-	 * @param orderParams - Order to place; `baseAssetAmount` is BASE_PRECISION (1e9), `price` /
-	 * `triggerPrice` / `oraclePriceOffset` (signed) / `auctionStartPrice` / `auctionEndPrice` are
-	 * PRICE_PRECISION (1e6).
+	 * Arms trigger orders in the user's own order slots. A slot holds one unfired
+	 * conditional, so every entry must be a `TriggerMarket` or a `TriggerLimit` — the
+	 * program returns `OrderTypeNotConditional` otherwise. A live order rests on the
+	 * market's book: use `placeAndTakePerpOrder` to take, or `placeAndMakePerpOrder` to
+	 * make. One margin check covers the whole batch, which is what lets a stop loss and a
+	 * take profit arrive together.
+	 * @param orderParams - Triggers to arm; `baseAssetAmount` is BASE_PRECISION (1e9),
+	 * `price` / `triggerPrice` are PRICE_PRECISION (1e6).
 	 * @param txParams - Optional compute-unit/priority-fee overrides.
 	 * @param subAccountId - Sub-account to place the order for; defaults to the active sub-account.
 	 * @param isolatedPositionDepositAmount - If set and the order increases the position, a transfer
 	 * into an isolated-margin position (token-mint precision) is prepended in the same transaction.
 	 * @returns The transaction signature.
 	 */
-	public async placePerpOrder(
-		orderParams: OptionalOrderParams,
+	public async placeTriggerOrders(
+		orderParams: OptionalOrderParams[],
 		txParams?: TxParams,
 		subAccountId?: number,
 		isolatedPositionDepositAmount?: BN
 	): Promise<TransactionSignature> {
 		const preIxs: TransactionInstruction[] = [];
-		if (
-			isolatedPositionDepositAmount?.gt?.(ZERO) &&
-			this.isOrderIncreasingPosition(orderParams, subAccountId)
-		) {
+		// The deposit funds the isolated position the triggers arm against, so
+		// one is enough however many of them name that market.
+		const increasing = orderParams.find((params) =>
+			this.isOrderIncreasingPosition(params, subAccountId)
+		);
+		if (isolatedPositionDepositAmount?.gt?.(ZERO) && increasing) {
 			preIxs.push(
 				await this.getTransferIsolatedPerpPositionDepositIx(
 					isolatedPositionDepositAmount as BN,
-					orderParams.marketIndex,
+					increasing.marketIndex,
 					subAccountId
 				)
 			);
@@ -6345,7 +6348,7 @@ export class VelocityClient {
 
 		const { txSig, slot } = await this.sendTransaction(
 			await this.buildTransaction(
-				await this.getPlaceTriggerOrdersIx([orderParams], subAccountId),
+				await this.getPlaceTriggerOrdersIx(orderParams, subAccountId),
 				txParams,
 				undefined,
 				undefined,
@@ -6356,7 +6359,9 @@ export class VelocityClient {
 			[],
 			this.opts
 		);
-		this.cachePerpMarketSlot(slot, orderParams.marketIndex);
+		for (const params of orderParams) {
+			this.cachePerpMarketSlot(slot, params.marketIndex);
+		}
 		return txSig;
 	}
 

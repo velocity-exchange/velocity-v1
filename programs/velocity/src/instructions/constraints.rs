@@ -26,17 +26,18 @@ pub fn can_sign_for_user(user: &AccountLoader<User>, signer: &Signer) -> anchor_
     })
 }
 
-/// A `User` owned by the protocol itself: the velocity signer PDA's
-/// sub-account 0, which no one can sign for. The crank rewards and the
-/// cross-match surplus accrue to it and only the hot-role withdraw can take
-/// value out.
+/// Tests whether the `User` is the one the protocol owns. That account is
+/// sub-account 0 of the velocity signer PDA, and nobody can sign for it. The
+/// crank rewards and the cross-match surplus accrue to it, and
+/// `withdraw_protocol_user_deposit` is the only exit.
 ///
-/// Both halves are load-bearing. `initialize_user` takes its authority
-/// unchecked, so anyone can pay to create the signer PDA's sub-account 1, 2,
-/// … as well. An authority-only test would accept those, and the paths that
-/// waive the signature for the protocol `User` would then credit a
-/// sub-account the protocol does not track. Every `User` lives at the PDA of
-/// `(authority, sub_account_id)`, so the pair names exactly one account.
+/// The test covers the authority and the sub-account id together.
+/// `initialize_user` takes its authority unchecked, so anyone can pay to create
+/// sub-account 1 or higher under the signer PDA. A test on the authority alone
+/// would accept one of those. The crank paths waive the caller's signature for
+/// the protocol `User`, so they would then credit a sub-account the protocol
+/// does not track. A `User` lives at the PDA of `(authority, sub_account_id)`,
+/// so the pair names exactly one account.
 pub fn is_protocol_user(
     user: &AccountLoader<User>,
     state: &AccountLoader<State>,
@@ -45,11 +46,11 @@ pub fn is_protocol_user(
     Ok(user.sub_account_id == 0 && user.authority.eq(&state.load()?.signer))
 }
 
-/// `can_sign_for_user`, relaxed for the dual-mode cranks: the caller signs
-/// for the filler as today, **or** the filler is the protocol `User` — the
-/// program-keeper mode, where the reward accrues to the protocol and the
-/// caller is paid reservoir lamports instead, so no signature is required
-/// (relay turners submit executors without one).
+/// `can_sign_for_user`, relaxed for the cranks that run in two modes. Either
+/// the caller signs for the filler, or the filler is the protocol `User`. In
+/// the second mode the reward accrues to the protocol and the caller is paid
+/// reservoir lamports, so the crank needs no signature. Relay turners submit
+/// executors without one.
 pub fn can_crank_for_filler(
     filler: &AccountLoader<User>,
     authority: &AccountInfo,
@@ -243,10 +244,10 @@ mod tests {
     };
 
     /// `initialize_user` takes its authority unchecked and derives the `User`
-    /// PDA from `(authority, sub_account_id)`. Anyone can therefore pay to
-    /// create the velocity signer's sub-account 1. It must not read as the
-    /// protocol `User`, because the crank paths waive the caller's signature
-    /// for that identity and credit it the reward and the cross-match surplus.
+    /// PDA from `(authority, sub_account_id)`. Anyone can pay to create the
+    /// velocity signer's sub-account 1. That account must not read as the
+    /// protocol `User`. The crank paths waive the caller's signature for the
+    /// protocol `User` and credit it the reward and the cross-match surplus.
     #[test]
     fn only_sub_account_zero_is_the_protocol_user() {
         let signer = Pubkey::from_str("JCNCMFXo5M5qwUPg2Utu1u6YWp3MbygxqBsBeXXJfrw").unwrap();
@@ -278,7 +279,6 @@ mod tests {
             "a sibling sub-account of the signer PDA is not the protocol user"
         );
 
-        // And an unsigned caller cannot crank for it.
         let authority_key = Pubkey::default();
         let mut lamports = 0;
         let authority_info = AccountInfo::new(

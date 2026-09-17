@@ -1,6 +1,6 @@
-// Anchor's IDL source parser expands the account-field aliases and needs these
-// names in scope even though the runtime Rust compiler does not. Do not remove
-// this apparently-unused import without regenerating and checking the IDL.
+// Anchor's IDL source parser expands the account-field aliases, so it needs
+// these names in scope even though the Rust compiler does not. The import
+// reads as unused. Regenerate the IDL and check it before removing the import.
 #[allow(unused_imports)]
 use crate::math::time::{StoredSlotDuration, STORED_UNIT_MS};
 use {
@@ -78,9 +78,9 @@ pub struct State {
     /// unix timestamp, so this never converts through the slot length and stays
     /// a raw integer. It currently has no onchain reader.
     pub default_market_order_time_in_force: u8,
-    /// An actual slot-count setting, not a wall-clock duration. It currently has
-    /// no onchain reader (spot DLOB trading is disabled), so it intentionally
-    /// remains raw rather than using `StoredSlotDuration`.
+    /// A slot count rather than a wall-clock duration. Spot DLOB trading is
+    /// disabled, so no onchain reader reads it. It therefore stays raw instead
+    /// of using `StoredSlotDuration`.
     pub default_spot_auction_duration: u8,
     pub exchange_status: u8,
     /// Compact wall-clock duration encoded in historical 400ms slot quanta.
@@ -113,12 +113,12 @@ pub struct State {
     /// accounts to the deployed program's size after a struct-extending
     /// upgrade).
     pub hot_account_extension: Pubkey,
-    /// Promotional fee-tier floor applied to every account: the effective
-    /// perp fee tier is `max(volume tier, promo_fee_tier)` (clamped to the
-    /// configured tier count), so nobody is downgraded by it. 0 = no-op
-    /// (disabled), also what pre-upgrade accounts read from former padding.
-    /// Reset to 0 and every account is back on its volume tier at its next
-    /// fill; no per-user state.
+    /// Promotional fee-tier floor applied to every account. The effective perp
+    /// fee tier is `max(volume tier, promo_fee_tier)`, clamped to the
+    /// configured tier count, so it never downgrades an account. Zero disables
+    /// it, and a pre-upgrade account reads zero out of former padding. A reset
+    /// to zero puts every account back on its volume tier at its next fill,
+    /// because no per-user state records the promotion.
     pub promo_fee_tier: u8,
     /// Legacy current slot duration field in milliseconds, kept coherent by
     /// the permissionless sync as the IBRL feature gates activate

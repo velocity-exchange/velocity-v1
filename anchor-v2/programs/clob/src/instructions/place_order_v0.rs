@@ -26,13 +26,13 @@ pub use clob_wire::PlaceOrderArgsV0;
 ///
 /// The cluster targets 400ms per slot and does not hold a faster rate. The
 /// only use of this number is to refuse an order that cannot outlive its own
-/// activation delay, so the bound must be a floor: a slower cluster makes the
-/// refusal catch more orders, and a bound above the real rate would refuse an
+/// activation delay, so the bound must be a floor. A slower cluster makes the
+/// refusal catch more orders. A bound above the real rate would refuse an
 /// order that could still activate.
 const MIN_SLOT_MILLIS: u64 = 400;
 
-/// Place a resting order. Returns the new order's [`OrderRefV0`] (as return
-/// data) so the CPI caller can persist the hint.
+/// Place a resting order. Returns the new order's [`OrderRefV0`] as return
+/// data, so the CPI caller can store the hint.
 pub fn handle_place_order_v0(
     ctx: &mut Context<PlaceOrderV0>,
     args: PlaceOrderArgsV0,
@@ -41,7 +41,7 @@ pub fn handle_place_order_v0(
     let user = args.user;
     let market = &mut ctx.accounts.market;
 
-    // Arg validation up front; account validation lives on the struct.
+    // Argument checks live here. Account checks live on the accounts struct.
     require!(
         args.max_ts == 0 || args.max_ts > clock.unix_timestamp,
         ClobError::MaxTsInPast
@@ -50,7 +50,7 @@ pub fn handle_place_order_v0(
         None => market.default_activation_delay_slots,
         Some(d) => {
             // Only the upper bound is checked here. A delay below the default
-            // is legal from the place authority: velocity gates that on the
+            // is legal from the place authority. Velocity gates that on the
             // flow attestation, and only velocity can place.
             require!(
                 d <= market.max_activation_delay_slots,

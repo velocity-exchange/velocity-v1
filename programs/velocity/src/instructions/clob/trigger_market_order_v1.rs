@@ -1,23 +1,23 @@
-//! `trigger_market_order_v1` — fire a DLOB trigger straight to the book.
+//! `trigger_market_order_v1`, which fires a DLOB trigger straight to the book.
 //!
 //! A stop-market on the DLOB rests as an armed trigger in `User.orders`. The v0
-//! `trigger_order` crank flips it live and leaves it there for a later
-//! `fill_legacy_dlob_order` crank to fill. This crank fires it and rests it on the
-//! book in one instruction: it validates the trigger, transforms the slot's
-//! order into a live market order, frees the slot, and rests the order as a
-//! taker-origin order. Nothing lingers live in `User.orders`.
+//! `trigger_order` crank makes it live and leaves it there for a later
+//! `fill_legacy_dlob_order` crank to fill. This crank fires it and rests it on
+//! the book in one instruction. It validates the trigger, turns the slot's
+//! order into a live market order, frees the slot, and rests the order
+//! taker-origin. Nothing stays live in `User.orders`.
 //!
-//! Whether the order fills here first depends on the account tail. A caller
-//! that staged a quoter tail — a keeper that read the book — routes the fill
-//! and rests only the remainder. The relay resolver stages no tail: it sees
-//! only the book, not the propAMMs, so a fill it staged would take a worse
-//! price than the full router. It rests the whole order instead, and the cross
-//! crank fills it across every source at the best price.
+//! The account tail decides whether the order fills here first. A caller that
+//! staged a quoter tail, such as a keeper that read the book, routes the fill
+//! and rests only the remainder. The relay resolver stages no tail. A resolver
+//! sees only the book and not the propAMMs, so a fill it staged would take a
+//! worse price than the full router. It rests the whole order instead, and the
+//! cross crank fills it across every source at the best price.
 //!
 //! The account set is the v0 trigger keeper set plus the market's CLOB accounts
-//! the rest needs, the same superset `trigger_limit_order_v1` and
-//! `fill_legacy_dlob_order` carry. CLOB trigger-limits keep their own path: they
-//! rest their whole order and never take a fill here.
+//! the rest needs. `trigger_limit_order_v1` and `fill_legacy_dlob_order` carry
+//! the same superset. CLOB trigger-limits keep their own path. They rest their
+//! whole order and never take a fill here.
 
 use {
     crate::{
@@ -52,9 +52,10 @@ pub struct TriggerMarketOrderV1Args {
 #[instruction(args: TriggerMarketOrderV1Args)]
 pub struct TriggerMarketOrderV1<'info> {
     pub state: AccountLoader<'info, State>,
-    /// CHECK: in signed-keeper mode this must sign for `filler`; in
-    /// program-keeper mode (protocol `User` as filler, relay turners) it is
-    /// only the lamport payout target and no signature is required.
+    /// CHECK: in signed-keeper mode this must sign for `filler`. In
+    /// program-keeper mode, where the protocol `User` is the filler and relay
+    /// turners call, it is only the lamport payout target and needs no
+    /// signature.
     #[account(mut)]
     pub authority: UncheckedAccount<'info>,
     #[account(
@@ -75,8 +76,8 @@ pub struct TriggerMarketOrderV1<'info> {
         constraint = is_stats_for_user(&user, &user_stats)?
     )]
     pub user_stats: AccountLoader<'info, UserStats>,
-    /// The market's quoter slab — the remainder only ever rests on the
-    /// vetted book its `Clob` slot names.
+    /// The market's quoter slab. The remainder only ever rests on the vetted
+    /// book that its `Clob` slot names.
     #[account(
         has_one = clob_market,
         constraint = quoter_slab.load()?.market == args.market_index,
@@ -86,7 +87,7 @@ pub struct TriggerMarketOrderV1<'info> {
     #[account(mut)]
     pub clob_market: UncheckedAccount<'info>,
     /// CHECK: a Clob slot's program is pinned to velocity's CLOB at
-    /// registration; the handler re-checks through the slot.
+    /// registration. The handler checks it again through the slot.
     #[account(address = crate::ids::clob_program::id())]
     pub clob_program: UncheckedAccount<'info>,
     /// Wake-hint host for the rested remainder, optional as on every CLOB
@@ -100,8 +101,9 @@ pub struct TriggerMarketOrderV1<'info> {
         bump
     )]
     pub crank_conditions: Option<AccountLoader<'info, ClobCrankConditionsV0>>,
-    /// The user's relay trigger conditions: the fired slot is released so its
-    /// level-triggered wake goes quiet. Optional, like everything relay-side.
+    /// The user's relay trigger conditions. The handler releases the fired
+    /// slot, which silences its level-triggered wake. It is optional, like
+    /// every relay-side account.
     #[account(
         mut,
         seeds = [
@@ -112,13 +114,13 @@ pub struct TriggerMarketOrderV1<'info> {
     )]
     pub trigger_conditions:
         Option<AccountLoader<'info, crate::state::user_conditions::UserConditionsV0>>,
-    /// CHECK: address-locked to the instructions sysvar. Read for whether the
-    /// owner signed the transaction and how many accounts it locks — the same
-    /// filler-obligation facts `fill_legacy_dlob_order` needs. Optional, and it
-    /// costs one lock: a fill needs it only when a book withholds depth for an
-    /// owner the transaction does not carry, and the owner did not sign. A
-    /// trigger crank's owner never signs, so a fill that reaches a withheld
-    /// order and passes `None` here is refused.
+    /// CHECK: address-locked to the instructions sysvar. It supplies whether
+    /// the owner signed the transaction and how many accounts it locks, which
+    /// are the filler-obligation facts `fill_legacy_dlob_order` needs. It is
+    /// optional and costs one lock. A fill needs it only when a book withholds
+    /// depth for an owner the transaction does not carry, and the owner did not
+    /// sign. A trigger crank's owner never signs, so a fill that reaches a
+    /// withheld order and passes `None` here is refused.
     #[account(address = ::solana_program::sysvar::instructions::ID)]
     pub ix_sysvar: Option<UncheckedAccount<'info>>,
 }
@@ -155,10 +157,10 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
         &ctx.accounts.user,
     )?;
 
-    // Firing is irreversible: it frees the trigger slot and charges the flat
-    // reward, and what the order becomes is a rest on the book. A book that
-    // takes no new orders would leave the owner with a paid fee and no order,
-    // so refuse before anything moves and leave the trigger armed. The v0
+    // Firing is irreversible. It frees the trigger slot, charges the flat
+    // reward, and turns the order into a rest on the book. A book that takes no
+    // new orders would leave the owner with a paid fee and no order. So refuse
+    // before anything moves, and leave the trigger armed. The v0
     // `trigger_order` crank still fires such an order into `User.orders`.
     validate!(
         ctx.accounts.quoter_slab.clob_slot(market_index)?.quotes(),
@@ -167,10 +169,11 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
         market_index
     )?;
 
-    // Fire the trigger: validate, transform a copy of the slot order into a
-    // live market order, free the slot, pay the flat reward. `None` means no
-    // payable work — already triggered, or a risk-increasing trigger on a
-    // failing account cancelled — so skip the fill and the reservoir payout.
+    // Fire the trigger. This validates it, turns a copy of the slot order into
+    // a live market order, frees the slot, and pays the flat reward. `None`
+    // means there was no payable work. The order was already triggered, or a
+    // risk-increasing trigger on a failing account was cancelled. Either way,
+    // skip the fill and the reservoir payout.
     let Some(mut fired) = controller::orders::trigger_and_route_order(
         order_id,
         &state,
@@ -209,8 +212,8 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
 
     rest_fired_remainder(&ctx, &mut maps, &fired, market_index, order_id, clock)?;
 
-    // ---- Pay the reservoir and release the trigger wake slot. ----
-    // Drop the state borrow first: the reservoir payout loads state itself.
+    // Pay the reservoir and release the trigger wake slot. Drop the state
+    // borrow first, because the reservoir payout loads state itself.
     drop(state);
     super::helpers::crank_common::finish_trigger_crank(
         &ctx.accounts.state,
@@ -228,14 +231,14 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
 
 /// What the caller staged after the market maps.
 ///
-/// A trigger crank carries the tail a fill carries: the maker accounts, the
-/// taker's builder escrow, and the quoter accounts a route reads. The quoter
-/// accounts decide whether the fired order fills here at all.
+/// A trigger crank carries the same tail a fill carries. That is the maker
+/// accounts, the taker's builder escrow, and the quoter accounts a route reads.
+/// The quoter accounts decide whether the fired order fills here at all.
 struct RouteTail<'info> {
     makers_and_referrer: crate::state::user_map::UserMap<'info>,
     makers_and_referrer_stats: crate::state::user_map::UserStatsMap<'info>,
-    /// The quoter section: everything the maps, the makers and the escrow
-    /// left behind.
+    /// The quoter section, which is everything the maps, the makers and the
+    /// escrow left behind.
     accounts: &'info [AccountInfo<'info>],
     escrow: Option<crate::state::revenue_share::RevenueShareEscrowZeroCopyMut<'info>>,
     referrer_is_accelerated: bool,
@@ -319,18 +322,17 @@ fn read_fired_route_inputs(
 /// Routes the fired order against the book, and fills what the route reaches.
 ///
 /// A caller routes the fill only by staging a quoter tail. A keeper that read
-/// the book stages one and fills here; the relay resolver stages none and skips
-/// straight to the rest. Relay cannot route: it sees only the book, not the
-/// propAMMs, so a fill it stages would take a worse price than the full router.
-/// The whole order rests taker-origin instead, and the cross crank fills it
-/// across every source at the best price.
+/// the book stages one and fills here. The relay resolver stages none and goes
+/// straight to the rest. Relay cannot route, because it sees only the book and
+/// not the propAMMs, so a fill it stages would take a worse price than the full
+/// router. The whole order rests taker-origin instead, and the cross crank
+/// fills it across every source at the best price.
 ///
-/// Maker priority gates the staged fill the same way it gates every taker
-/// route: on a book with a speed bump, only attested flow fills
-/// synchronously. An unattested keeper's tail is ignored and the fired
-/// order rests whole, exactly as the relay path does.
-/// A trigger crank is keeper-built and carries no attestation transport,
-/// so its flow never counts as protected.
+/// Maker priority gates the staged fill the way it gates every taker route. On
+/// a book with a speed bump, only attested flow fills synchronously. An
+/// unattested keeper's tail is ignored, and the fired order rests whole, as it
+/// does on the relay path. A trigger crank is keeper-built and carries no
+/// attestation transport, so its flow never counts as protected.
 #[allow(clippy::too_many_arguments)]
 fn route_fill_fired_order<'info>(
     ctx: &Context<'info, TriggerMarketOrderV1<'info>>,
@@ -402,7 +404,7 @@ fn route_fill_fired_order<'info>(
     )?;
 
     let obligation = crate::math::router::FillerObligation {
-        // A trigger crank is not a signed transaction: the owner does not
+        // A trigger crank is not a signed transaction. The owner does not
         // sign, so the keeper answers for what its account list left out.
         taker_signed: false,
         tx_accounts: match &ctx.accounts.ix_sysvar {
@@ -424,8 +426,8 @@ fn route_fill_fired_order<'info>(
     });
     controller::orders::fill_perp_order(
         controller::orders::FillRequest {
-            // The fired order is ephemeral: it never reserved, so the
-            // fill unwinds no exposure for it.
+            // The fired order is ephemeral. It reserved nothing, so the fill
+            // unwinds no exposure for it.
             target: controller::orders::FillTarget::Detached {
                 order: fired,
                 reserved: false,
@@ -454,17 +456,17 @@ fn route_fill_fired_order<'info>(
 
 /// Rests the fired order's unfilled base on the book, taker-origin.
 ///
-/// A fired market order rests its unfilled amount at its slippage bound. Safe
-/// only because a migrated remainder is taker-origin: a cross settles at the
-/// counterparty's price, so a maker arriving in the activation window
-/// competes on price rather than on transaction landing.
-/// A fired trigger-market's auction bound is stored relative to the oracle,
-/// so the rest price is read against the live oracle.
+/// A fired market order rests its unfilled amount at its slippage bound. That
+/// is safe only because a migrated remainder is taker-origin. A cross settles
+/// at the counterparty's price, so a maker that arrives in the activation
+/// window competes on price rather than on transaction landing. A fired
+/// trigger-market's auction bound is stored relative to the oracle, so the rest
+/// price is read against the live oracle.
 ///
-/// A remainder that cannot rest is gone: the trigger slot was freed and the
-/// flat reward charged before the fill ran, and the fill has already moved the
-/// position, so nothing can be put back. It leaves a cancel record instead, so
-/// the order never vanishes from the order history without a statement.
+/// A remainder that cannot rest is lost. The trigger slot was freed and the
+/// flat reward charged before the fill ran, and the fill already moved the
+/// position, so nothing can be restored. The handler emits a cancel record
+/// instead, so the order never leaves the order history without a statement.
 fn rest_fired_remainder<'info>(
     ctx: &Context<'info, TriggerMarketOrderV1<'info>>,
     maps: &mut crate::instructions::optional_accounts::AccountMaps<'info>,
@@ -499,8 +501,7 @@ fn rest_fired_remainder<'info>(
         };
         (remainder, unfilled, is_isolated_position)
     };
-    // The fill took the whole order, so there is no remainder to rest and none
-    // to lose.
+    // The fill took the whole order, so there is no remainder to rest.
     if unfilled == 0 {
         return Ok(());
     }
@@ -530,8 +531,9 @@ fn rest_fired_remainder<'info>(
         return Ok(());
     }
 
-    // The remainder is gone. Say so, with the size and the price it would have
-    // rested at, so a reader sees the order end rather than stop appearing.
+    // The remainder is lost. Report it with the size and the price it would
+    // have rested at, so a reader sees the order end rather than stop
+    // appearing.
     super::emit_clob_cancel_record(
         clock.unix_timestamp,
         rest_oracle_price,
@@ -555,25 +557,25 @@ fn rest_fired_remainder<'info>(
     Ok(())
 }
 
-/// The relay resolver for `trigger_market_order_v1` (`Resolve<EndpointName>`):
-/// simulation-only, staged from the user's synced trigger conditions. It fires
-/// a DLOB stop-market to the book.
+/// The relay resolver for `trigger_market_order_v1`. It is simulation-only and
+/// is staged from the user's synced trigger conditions. It fires a DLOB
+/// stop-market to the book.
 ///
-/// The staged executor carries no quoter tail, so it does not fill: the whole
-/// fired order rests taker-origin and the cross crank fills it across every
-/// source at the best price. A resolver sees only the book, not the propAMMs,
-/// so a fill it staged would take a worse price than the full router. The
-/// executor still names the market's CLOB accounts, which the rest places
+/// The staged executor carries no quoter tail, so it does not fill. The whole
+/// fired order rests taker-origin, and the cross crank fills it across every
+/// source at the best price. A resolver sees only the book and not the
+/// propAMMs, so a fill it staged would take a worse price than the full router.
+/// The executor still names the market's CLOB accounts, which the rest places
 /// behind. A DLOB trigger carries no signed route, so the staged call claims
 /// none.
 #[derive(Accounts)]
 pub struct ResolveTriggerMarketOrderV1<'info> {
-    /// The shared staging account, index 0 by convention — a resolver's
-    /// response pointer is interpreted against it.
+    /// The shared staging account, at index 0 by convention. A resolver's
+    /// response pointer is read against it.
     #[account(mut, seeds = [crate::state::relay_scratch::RELAY_SCRATCH_PDA_SEED], bump)]
     pub scratch: AccountLoader<'info, crate::state::relay_scratch::RelayScratchV0>,
-    /// Read-only: resolvers stage into the shared scratch account, not into
-    /// the block they read.
+    /// Read-only. A resolver stages into the shared scratch account rather
+    /// than into the block it reads.
     #[account(constraint = trigger_conditions.load()?.user == user.key())]
     pub trigger_conditions: AccountLoader<'info, crate::state::user_conditions::UserConditionsV0>,
     pub user: AccountLoader<'info, User>,
@@ -628,9 +630,9 @@ pub fn handle_resolve_trigger_market_order_v1(
                 // No fill, so no filler-obligation read of the sysvar.
                 ix_sysvar: None,
             })
-            // The rest's margin map: the fired market and the quote spot
-            // market. No quoter tail follows, so the executor rests the whole
-            // order rather than routing it.
+            // The margin map for the rest holds the fired market and the
+            // quote spot market. No quoter tail follows, so the executor rests
+            // the whole order rather than routing it.
             .map_section(
                 ctx.accounts.oracle.key(),
                 quote_spot_market_index,

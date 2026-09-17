@@ -332,10 +332,10 @@ export function calculateCollateralDepositRequiredForTrade(
  * (`equityFloor + equityFloorBuffer`): the first
  * `netEquity - (floor + buffer)` of the transfer carries no floor, the
  * remainder carries floor one-for-one, capped at the floor the subaccount
- * actually holds. `netEquity` is `User.getFloorNetEquity().value`, the
- * metric the onchain floor checks use. Returns zero when no floor is set. The result
+ * actually holds. `netEquity` is `User.getFloorNetEquity().value`, the metric
+ * the on-chain floor checks use. Returns zero when no floor is set. The result
  * never exceeds `amount`, so a credited side that met its own buffered floor
- * before the transfer still meets it after. All values QUOTE_PRECISION.
+ * before the transfer still meets it after. All values are in QUOTE_PRECISION.
  */
 export function calculateEquityFloorAutoDelta(
 	amount: BN,
@@ -398,13 +398,13 @@ export function getEquityFloorLevel(
 }
 
 /**
- * Net equity paired with the oracle-validity verdict of the walk that
- * produced it, mirroring the program's `FloorNetEquity`. The onchain floor
- * gates fail closed on the verdict: an action is authorized only when every
- * oracle is valid AND the value clears the relevant floor, and being below
- * the raw floor counts as force-cancel grounds only when every oracle is
- * valid AND the value sits below it. The breaker trip derives a separate
- * upper-bound verdict from the same position walk. Values QUOTE_PRECISION.
+ * Net equity paired with the oracle-validity verdict of the walk that produced
+ * it. This mirrors the program's `FloorNetEquity`. The on-chain floor gates
+ * refuse on a bad verdict. They authorize an action only when every oracle is
+ * valid and the value clears the relevant floor. A value below the raw floor
+ * counts as force-cancel grounds only when every oracle is valid. The breaker
+ * trip derives a separate upper-bound verdict from the same position walk.
+ * Values are in QUOTE_PRECISION.
  */
 export type FloorNetEquity = {
 	value: BN;
@@ -412,13 +412,13 @@ export type FloorNetEquity = {
 };
 
 /**
- * Net-equity upper bound for the breaker trip, mirroring the program's
- * `TripNetEquity`. Positions with valid oracles are valued at live prices.
- * An invalid-oracle asset or long has no finite upper bound and makes the
- * breach unprovable (`provable` false). An invalid-oracle liability or short
- * base leg contributes zero, its sound maximum at a positive price; stored
- * quote and funding legs still count exactly. An invalid quote conversion
- * also makes the result unprovable. Values QUOTE_PRECISION.
+ * Net-equity upper bound for the breaker trip. This mirrors the program's
+ * `TripNetEquity`. A position with a valid oracle is valued at the live price.
+ * An asset or long with an invalid oracle has no finite upper bound and sets
+ * `provable` to false. A liability or short base leg with an invalid oracle
+ * contributes zero, which is its sound maximum at a positive price. The stored
+ * quote and funding legs still count exactly. An invalid quote conversion also
+ * sets `provable` to false. Values are in QUOTE_PRECISION.
  */
 export type TripNetEquity = {
 	equityUpperBound: BN;

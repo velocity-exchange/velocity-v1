@@ -20,10 +20,10 @@ pub struct EvictWorstV0 {
 /// Declared by `clob-wire`.
 pub use clob_wire::EvictWorstArgsV0;
 
-/// Crank eviction of the side's tail, allowed once the side is at or above
-/// `evict_threshold_per_side`. Velocity is the caller: it loads the evicted
-/// maker's `User`, applies the returned removal to the open-order
-/// aggregates, and re-arms a trigger slot holding this `OrderRef`.
+/// Crank eviction of the side's tail. It is allowed once the side is at or
+/// above `evict_threshold_per_side`. Velocity is the caller. It loads the
+/// evicted maker's `User`, applies the returned removal to the open-order
+/// aggregates, and re-arms a trigger slot that holds this `OrderRef`.
 pub fn handle_evict_worst_v0(
     ctx: &mut Context<EvictWorstV0>,
     args: EvictWorstArgsV0,
@@ -31,8 +31,8 @@ pub fn handle_evict_worst_v0(
     let clock = Clock::get()?;
     let market = &mut ctx.accounts.market;
     let removed = market.evict_worst(args.side)?;
-    // The removal path takes no clock, so an activation hint the chain
-    // has already reached is dropped here instead.
+    // The removal path takes no clock. An activation hint that the chain
+    // already reached is dropped here.
     market.expire_activation_hint(clock.slot)?;
 
     emit_pod!(OrderEvictRecordV0 {

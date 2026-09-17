@@ -66,7 +66,7 @@ export type SerializedOrder = {
 	bitFlags: number;
 	postedSlotTail: number;
 	/** Free bytes, mirroring `Order.padding`. The route a signed message names
-	 * travels on `SignedMsgOrderId.routeDigest`, not on the order. */
+	 * travels on `SignedMsgOrderId.routeDigest` rather than on the order. */
 	padding: number[];
 };
 

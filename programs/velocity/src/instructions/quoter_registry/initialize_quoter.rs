@@ -1,21 +1,20 @@
-//! Create a [`QuoterV0`] staging entry for (perp market, quoter program,
-//! quoted user). For Custom quoters the quoted user's authority must be the
-//! creating authority — creation is consent. Nothing fills from a staging
-//! entry: the admin copies its config into the market's `QuoterSlabV0`
-//! (`update_quoter_approved`), and fills read only that copy. The account
-//! list is set before that via `update_quoter_accounts`.
+//! Create a [`QuoterV0`] staging entry for one perp market, quoter program and
+//! quoted user. For a `Custom` entry the quoted user's authority must be the
+//! creating authority, so creation is the consent. A staging entry fills
+//! nothing. The admin copies its config into the market's `QuoterSlabV0` with
+//! `update_quoter_approved`, and fills read only that copy. The account list is
+//! set before that with `update_quoter_accounts`.
 //!
-//! Any other type is the admin's to designate. The type decides whose
-//! balances the entry may move: a Custom entry is held to the one account it
-//! consented for, while a book settles for whoever rests on it, which
-//! velocity cannot bind it to. A maker that could type its own entry as a
-//! book would be asking for the second rule and getting it, so the type is a
-//! warm-admin decision and it cannot be changed afterwards.
+//! Only the admin designates any other type. The type decides whose balances
+//! the entry may move. A `Custom` entry is held to the one account it consented
+//! for. A book settles for whoever rests on it, and velocity cannot bind it to
+//! one account. A maker that could type its own entry as a book would get the
+//! second rule, so the type is a warm-admin decision and it cannot change.
 //!
 //! A `Clob` entry also designates the market's book, once and for good. The
 //! designation is refused when an approved quoter's registered account list
 //! already names that account. Such a quoter would receive the book plus the
-//! slab signature every quoter CPI carries, and the book gates its whole
+//! slab signature that every quoter CPI carries, and the book gates its whole
 //! authority surface on that signature. See [`crate::signer`].
 
 use {
@@ -42,7 +41,7 @@ use {
 pub struct InitializeQuoter<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
-    /// Becomes `QuoterV0::authority` — manages the entry's config.
+    /// Becomes `QuoterV0::authority`, which manages the entry's config.
     pub authority: Signer<'info>,
     #[account(
         init,
@@ -57,30 +56,30 @@ pub struct InitializeQuoter<'info> {
         payer = payer
     )]
     pub quoter: AccountLoader<'info, QuoterV0>,
-    /// Written when the entry is the market's book: a Clob-type entry becomes
-    /// the market's `clob_market` here, once and for good.
+    /// Written when the entry is the market's book. A `Clob` entry becomes the
+    /// market's `clob_market` here, once and for good.
     #[account(
         mut,
         seeds = [b"perp_market", args.market_index.to_le_bytes().as_ref()],
         bump
     )]
     pub perp_market: AccountLoader<'info, PerpMarket>,
-    /// Read for the admin check a non-Custom type needs.
+    /// Read for the admin check that a non-`Custom` type needs.
     pub state: AccountLoader<'info, State>,
-    /// The market's approved set. Required to designate a book, because the
+    /// The market's approved set. A book designation needs it, because the
     /// designation is refused when an approved entry already names the book
-    /// account. Absent for every other registration.
+    /// account. Every other registration omits it.
     #[account(
         seeds = [QUOTER_SLAB_PDA_SEED, args.market_index.to_le_bytes().as_ref()],
         bump
     )]
     pub quoter_slab: Option<AccountLoader<'info, QuoterSlabV0>>,
-    /// CHECK: only constrained to be a program; velocity never trusts it.
+    /// CHECK: the constraint only requires a program. Velocity never trusts it.
     #[account(executable)]
     pub quoter_program: UncheckedAccount<'info>,
-    /// CHECK: the velocity `User` quoted for. For Custom quoters the handler
-    /// loads it and requires `authority` to be its authority (creation is
-    /// consent). Ignored for Vamm/Clob-type entries.
+    /// CHECK: the velocity `User` quoted for. For a `Custom` entry the handler
+    /// loads it and requires `authority` to be its authority, so creation is the
+    /// consent. A `Vamm` or `Clob` entry ignores it.
     pub user: UncheckedAccount<'info>,
     pub rent: Sysvar<'info, Rent>,
     pub system_program: Program<'info, System>,
@@ -102,18 +101,17 @@ pub fn handle_initialize_quoter(
     ctx: Context<InitializeQuoter>,
     args: InitializeQuoterArgs,
 ) -> Result<()> {
-    // A quoter's program is CPI'd during a fill; velocity itself must never be
-    // that program. A self-CPI would re-enter the fill under velocity's own
-    // authority against accounts a fill already holds, so the callee is always
-    // a distinct program.
+    // A fill calls the quoter's program, and velocity must never be that
+    // program. A self-CPI would re-enter the fill under velocity's own authority
+    // against accounts the fill already holds.
     validate!(
         ctx.accounts.quoter_program.key() != crate::ID,
         ErrorCode::InvalidQuoterConfig,
         "a quoter program cannot be velocity itself"
     )?;
     if args.quoter_type != QuoterType::Custom {
-        // A book's response may name any user the transaction carries, so
-        // designating one is not a maker's call to make.
+        // A book's response may name any user the transaction carries, so a
+        // maker may not designate one.
         validate!(
             check_warm(&ctx.accounts.authority.key(), &ctx.accounts.state)?,
             ErrorCode::InvalidQuoterAuthority,
@@ -123,11 +121,11 @@ pub fn handle_initialize_quoter(
     }
     if args.quoter_type == QuoterType::Clob {
         // A book settles for whoever it says rests on it, so the program behind
-        // a Clob entry is the trust root for maker identity. Pin it to the CLOB
-        // velocity wrote, so the admin's power is to give a market a book, not
-        // to choose the code a book runs. Without this a warm admin could point
-        // a market's book at a program of its own and name any loaded user as a
-        // maker at a price of its choosing.
+        // a `Clob` entry is the trust root for maker identity. Pin it to the
+        // CLOB that velocity wrote. The admin can then give a market a book, but
+        // it cannot choose the code a book runs. Otherwise a warm admin could
+        // point a market's book at a program of its own, and name any loaded
+        // user as a maker at a price of its choosing.
         validate!(
             ctx.accounts.quoter_program.key() == crate::ids::clob_program::id(),
             ErrorCode::InvalidQuoterConfig,
@@ -135,12 +133,11 @@ pub fn handle_initialize_quoter(
             crate::ids::clob_program::id(),
             ctx.accounts.quoter_program.key()
         )?;
-        // No approved entry may already reach the account being designated.
-        // A registered list is held apart from the market's book at approval,
-        // and an entry approved before the designation was never held to it.
-        // Such an entry would receive the book plus the slab signature its own
-        // execute holds, and the book gates its whole authority surface on
-        // that signature alone.
+        // No approved entry may already name the account being designated.
+        // Approval holds a registered list apart from the market's book, and an
+        // entry approved before the designation was never held to it. Such an
+        // entry would receive the book plus the slab signature its own execute
+        // holds. The book gates its whole authority surface on that signature.
         {
             let slab = ctx.accounts.quoter_slab.as_ref().ok_or_else(|| {
                 msg!("designating a book requires the market's quoter slab");
@@ -160,13 +157,13 @@ pub fn handle_initialize_quoter(
                 args.response_account
             )?;
         }
-        // The market names its book here, and only here: a book settles for
-        // whoever rests on it, so a market that could be pointed at a second
-        // one later would put every user a fill carries behind whoever holds
-        // the admin key. Registering the book *is* the designation, and it is
-        // a one-way door. The stored key is the book account itself — the
-        // entry's response account — so every accounts struct that names the
-        // market and the book binds them with `has_one = clob_market`.
+        // The market names its book here and nowhere else. A book settles for
+        // whoever rests on it. A market that could be pointed at a second book
+        // later would put every user a fill carries behind whoever holds the
+        // admin key. Registering the book is the designation, and it cannot be
+        // changed. The stored key is the book account itself, which is the
+        // entry's response account. Every accounts struct that names the market
+        // and the book binds them with `has_one = clob_market`.
         let mut perp_market = ctx.accounts.perp_market.load_mut()?;
         validate!(
             perp_market.clob_market == Pubkey::default()
@@ -179,11 +176,11 @@ pub fn handle_initialize_quoter(
         perp_market.clob_market = args.response_account;
     }
     if args.quoter_type == QuoterType::Custom {
-        // Creation is consent: only the quoted user's authority may register
-        // a quoter that settles fills on that user's account. Verified
-        // manually (owner + discriminator + `User.authority` at offset 8,
-        // the struct's first field) because the account is only required to
-        // be a `User` for Custom entries.
+        // Creation is the consent. Only the quoted user's authority may
+        // register a quoter that settles fills on that user's account. The
+        // handler checks the owner, the discriminator and `User.authority` at
+        // offset 8 by hand, because the account must be a `User` only for a
+        // `Custom` entry.
         let info = &ctx.accounts.user;
         validate!(
             info.owner == &crate::ID,
@@ -218,8 +215,8 @@ pub fn handle_initialize_quoter(
     config.market = args.market_index;
     config.quoter_type = args.quoter_type;
     config.priority = args.quoter_type.default_priority();
-    // The maker's own switch is on from birth; nothing fills until the admin
-    // copies this config into the market's slab.
+    // The maker's switch starts on. Nothing fills until the admin copies this
+    // config into the market's slab.
     config.is_active = true;
     Ok(())
 }

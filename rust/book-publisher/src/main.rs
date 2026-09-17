@@ -1,21 +1,21 @@
-//! Order-book publisher: the Rust half of the dlob-server split.
+//! The order-book publisher, which is the Rust half of the dlob-server split.
 //!
-//! Book *production* moves here — quote every source through velocity's
-//! `quote_router` view, simulated against cached chain state — while book
-//! *serving* (HTTP endpoints, websocket fan-out, auth) stays in the
-//! TypeScript dlob-server, reading the same Redis keys this writes. The
-//! payload is the existing L2 wire shape with `clob`/`propamm` joining
-//! `vamm`/`dlob` in the per-level `sources` breakdown, so consumers don't
+//! Book production lives here. It quotes every source through velocity's
+//! `quote_router` view, simulated against cached chain state. Book serving
+//! stays in the TypeScript dlob-server, which holds the HTTP endpoints, the
+//! websocket fan-out and the auth, and reads the same Redis keys this writes.
+//! The payload is the existing L2 wire shape, with `clob` and `propamm` joining
+//! `vamm` and `dlob` in the per-level `sources` breakdown, so consumers do not
 //! move.
 //!
-//! Simulation is the design, not an optimization: a Custom quoter is an
-//! arbitrary program with no off-chain decoder, so `quote_v0` (i.e. running
-//! it) is the only way to price it — and the view runs sources in fill
-//! order, so published books equal fill-time books by construction
-//! (margin-clamped PropAMMs, vAMM last-look shading included).
+//! Simulation is the design rather than an optimization. A Custom quoter is an
+//! arbitrary program with no off-chain decoder, so running `quote_v0` is the
+//! only way to price it. The view also runs sources in fill order, so a
+//! published book equals the fill-time book by construction, margin-clamped
+//! PropAMMs and vAMM last-look shading included.
 //!
-//! What the TS publisher keeps until the DLOB dies: DLOB maker books (this
-//! quote view is built without `(User, UserStats)` maker pairs).
+//! The TypeScript publisher keeps DLOB maker books until the DLOB is removed.
+//! This quote view is built without `(User, UserStats)` maker pairs.
 
 mod cross;
 mod metrics_server;
@@ -49,8 +49,8 @@ use {
     },
 };
 
-/// Ticks between deploy-record checks. At the default 400 ms tick this is
-/// about a minute, which is prompt for something that happens rarely.
+/// Ticks between deploy-record checks. At the default 200 ms tick this is
+/// about 30 seconds, which is prompt for something that happens rarely.
 const DEPLOY_WATCH_TICKS: u32 = 150;
 
 #[derive(Parser, Debug)]
@@ -58,7 +58,7 @@ const DEPLOY_WATCH_TICKS: u32 = 150;
 pub struct Config {
     #[clap(long, env = "RPC_URL")]
     pub rpc_url: String,
-    /// rpc | ws | grpc — how account state reaches the simulation cache.
+    /// How account state reaches the simulation cache: rpc, ws or grpc.
     #[clap(long, env = "TRANSPORT", default_value = "rpc")]
     pub transport: String,
     #[clap(long, env = "WS_URL")]
@@ -72,17 +72,18 @@ pub struct Config {
     /// Perp market indexes to publish, comma-separated.
     #[clap(long, env = "MARKETS", default_value = "0")]
     pub markets: String,
-    /// Payer + quote-buffer authority keypair (JSON byte array).
+    /// Payer and quote-buffer authority keypair, as a JSON byte array.
     #[clap(long, env = "KEYPAIR_PATH")]
     pub keypair_path: String,
-    /// Where per-market quote-buffer keypairs persist across restarts (a
-    /// buffer is ~33 KB of rent; recreating one per run would leak it).
+    /// Where per-market quote-buffer keypairs persist across restarts. A
+    /// buffer is about 33 KB of rent, and a new one per run would leak it.
     #[clap(long, env = "BUFFER_DIR", default_value = "./quote-buffers")]
     pub buffer_dir: String,
     #[clap(long, env = "REDIS_URL", default_value = "redis://127.0.0.1:6379")]
     pub redis_url: String,
-    /// Prefix on every key and channel, matching the TS side's client
-    /// prefix (ioredis applies it implicitly; here it is explicit).
+    /// Prefix on every key and channel. It matches the TypeScript side's
+    /// client prefix, which ioredis applies implicitly and this sets
+    /// explicitly.
     #[clap(long, env = "REDIS_KEY_PREFIX", default_value = "")]
     pub redis_prefix: String,
     /// Where `/metrics` is served. 9464 matches the exporters the rest of
@@ -97,8 +98,8 @@ pub struct Config {
     /// Pooled in-process SVM instances; 0 simulates over RPC instead.
     #[clap(long, env = "LOCAL_SIM_POOL", default_value = "4")]
     pub local_sim_pool: usize,
-    /// Submit `crank_cross_match` when the tick's books cross net of fees
-    /// (the publisher is the fast path; relay's poll is the liveness floor).
+    /// Submit `crank_cross_match` when the tick's books cross net of fees. The
+    /// publisher is the fast path, and relay's poll is the liveness floor.
     #[clap(long, env = "CROSS_MATCH", default_value = "true")]
     pub cross_match: bool,
 }
@@ -141,13 +142,14 @@ fn maybe_local_sim<S: ChainSource + 'static>(inner: S, pool: usize) -> Arc<dyn C
     }
 }
 
-/// Create + initialize a market's quote buffer if it doesn't exist yet.
-/// Compute units requested for `crank_cross_match`. Measured at about 328,000
-/// for a self-crossed book: each of the crank's two legs is a whole router
-/// fill, with its own quote, split, execute and post-fill checks. The headroom
-/// covers a cross that reaches more sources than a book against itself.
+/// Compute units requested for `crank_cross_match`. A self-crossed book
+/// measured at about 328,000, because each of the crank's two legs is a whole
+/// router fill with its own quote, split, execute and post-fill checks. The
+/// headroom covers a cross that reaches more sources than a book against
+/// itself.
 const CROSS_MATCH_COMPUTE_UNITS: u32 = 500_000;
 
+/// Create and initialize a market's quote buffer when it does not exist yet.
 async fn ensure_buffer(
     source: &Arc<dyn ChainSource>,
     velocity: &Pubkey,
@@ -162,10 +164,10 @@ async fn ensure_buffer(
         .flatten()
     {
         // A buffer persists across restarts, so one created before the layout
-        // grew is still on chain and still too small — every quote into it
-        // would fail on a push. Say so rather than run: the old account holds
+        // grew is still on chain and still too small. Every quote into it would
+        // fail on a push. Report that rather than run. The old account holds
         // rent this process cannot reclaim, so replacing it is the operator's
-        // call.
+        // decision.
         let wanted = program::state::router_quote::RouterQuoteBufferV0::SIZE;
         if existing.data.len() < wanted {
             bail!(
@@ -231,8 +233,8 @@ async fn main() -> Result<()> {
         .collect::<Result<_>>()?;
     let payer = load_keypair(&config.keypair_path)?;
 
-    // Discover quoter programs up front so the feed subscribes to them; the
-    // slab subscription itself keeps the approved set fresh afterwards.
+    // Discover quoter programs up front so the feed subscribes to them. The
+    // slab subscription then keeps the approved set fresh.
     let rpc = RpcSource::new(config.rpc_url.clone());
     let mut quoter_programs: Vec<Pubkey> = Vec::new();
     for market in &markets {
@@ -311,8 +313,8 @@ async fn main() -> Result<()> {
         .context("connect redis")?;
 
     // The publisher simulates every market every tick, so it exercises every
-    // registered quoter continuously — including ones no taker is routing
-    // to. That makes it the router stack's health probe, at no extra cost.
+    // registered quoter continuously, including ones no taker is routing to.
+    // That makes it the router stack's health probe, at no extra cost.
     let registry = std::sync::Arc::new(prometheus::Registry::new());
     let metrics = std::sync::Arc::new(Metrics::register(&registry));
     let health = std::sync::Arc::new(Health::with_metrics(Policy::default(), metrics.clone()));
@@ -322,8 +324,8 @@ async fn main() -> Result<()> {
     // apart from the health layer because the layer holds no chain state.
     let carried: Arc<Mutex<Vec<EntryRef>>> = Arc::new(Mutex::new(Vec::new()));
     let mut deploy_watch = DEPLOY_WATCH_TICKS;
-    // What the per-user index published last, so a tick that changed no
-    // user's orders — which is most of them — writes nothing.
+    // What the per-user index published last, so a tick that changed no user's
+    // orders writes nothing. Most ticks change no user's orders.
     let mut user_orders = user_orders::UserOrdersIndex::default();
 
     let mut tick = tokio::time::interval(Duration::from_millis(config.tick_ms));
@@ -355,9 +357,9 @@ async fn main() -> Result<()> {
         // Expiry is evaluated when a quoter is looked at, so a quarantine on
         // a quoter no market carries needs this to end.
         health.sweep();
-        // A redeploy makes a quoter's score describe code that no longer
-        // runs. Checked on a slow cadence: a deploy is rare, and the check
-        // costs one account read per distinct quoter program.
+        // A redeploy makes a quoter's score describe code that no longer runs.
+        // The check runs on a slow cadence, because a deploy is rare and the
+        // check costs one account read per distinct quoter program.
         deploy_watch = deploy_watch.saturating_sub(1);
         if deploy_watch == 0 {
             deploy_watch = DEPLOY_WATCH_TICKS;
@@ -393,7 +395,8 @@ async fn publish_market(
         .ok_or_else(|| anyhow!("perp market {market_index} not found"))?;
     let perp_market: PerpMarket = read_zero_copy(&perp_market_account.data)?;
 
-    // State (mm-oracle guard rails) and the oracle itself, one batch.
+    // The state, which carries the mm-oracle guard rails, and the oracle
+    // itself, in one batch.
     let mut side_accounts = source
         .get_multiple_accounts(&[state_pda(velocity), perp_market.oracle])
         .await?;
@@ -410,8 +413,8 @@ async fn publish_market(
     )?;
 
     // The market's approved quoters, off its slab. The book slot's registered
-    // market account is the L3/best-makers source; the slot is vacant until a
-    // book is approved.
+    // market account is the source for L3 and for best makers. The slot is
+    // vacant until a book is approved.
     let slab_slots = velocity_router_sim::quoter_slab_slots(source, velocity, market_index).await?;
     let clob_slot = program::state::prop_amm::clob_slot_index(&slab_slots);
     let clob_book_key = clob_slot.map(|index| slab_slots[index].config.response_account);
@@ -421,7 +424,7 @@ async fn publish_market(
         .map(|index| slab_slots[index].entry)
         .unwrap_or_default();
 
-    // A long taker consumes asks; a short taker consumes bids. Both go
+    // A long taker consumes asks and a short taker consumes bids. Both go
     // through the health layer, so a quoter that breaks the simulation costs
     // the market that one source instead of its whole book.
     let request = |direction| {
@@ -432,8 +435,8 @@ async fn publish_market(
             market_index,
             direction,
             quote_size,
-            // The publisher holds no DLOB view; its books come from the
-            // TypeScript publisher until that dies.
+            // The publisher holds no DLOB view. Those books come from the
+            // TypeScript publisher until the DLOB is removed.
             &[],
         )
     };
@@ -505,8 +508,8 @@ async fn publish_market(
         ts_ms,
     );
 
-    // The channel gets the full document; the key a depth-100 slice —
-    // matching the TS publisher's publish/SET split.
+    // The channel gets the full document and the key gets a depth-100 slice,
+    // which matches the TypeScript publisher's split between publish and SET.
     let mut l2_depth100 = l2.clone();
     for side in ["bids", "asks"] {
         if let Some(levels) = l2_depth100[side].as_array_mut() {
@@ -528,9 +531,10 @@ async fn publish_market(
     }
 
     // L3 and best makers, out of the same view the ladders came from. Every
-    // source describes who its depth belongs to — a book through its
-    // `quote_l3_v0` leg, everything else against the one user its registry
-    // entry names — so this reads rows rather than decoding a book.
+    // source describes who its depth belongs to. A book does so through its
+    // `quote_l3_v0` leg, and every other source against the one user its
+    // registry entry names. This therefore reads rows rather than decoding a
+    // book.
     let l3_bids = payload::view_rows(velocity, &bids, &bids_quote.entries);
     let l3_asks = payload::view_rows(velocity, &asks, &asks_quote.entries);
     if bids_quote.rows_truncated || asks_quote.rows_truncated {
@@ -563,9 +567,9 @@ async fn publish_market(
         )
         .await?;
 
-    // Who is resting what, off the book's own account. Independent of the
-    // ladders above: a quoted book is what a taker of one size would reach,
-    // and a maker asking after their own orders wants all of them.
+    // Who is resting what, off the book's own account. This is independent of
+    // the ladders above. A quoted book is what a taker of one size would reach,
+    // and a maker that asks after their own orders wants all of them.
     if let Some(book_key) = clob_book_key {
         let book = source
             .get_multiple_accounts(&[book_key])
@@ -589,9 +593,9 @@ async fn publish_market(
         }
     }
 
-    // Fast-path cross matching: books in hand, a cross is free to see.
-    // Simulate before sending — the executor is its own predicate, so a
-    // clean simulation implies a profitable crank.
+    // Fast-path cross matching. With the books in hand a cross is free to see.
+    // The simulation runs before the send. The executor is its own predicate,
+    // so a clean simulation implies a profitable crank.
     if cross_match {
         if let Some(plan) = cross::find_cross_plan(
             source.as_ref(),
@@ -635,8 +639,9 @@ async fn publish_market(
                     );
                 }
                 Some(err) => {
-                    // Raced by a fill or inside the fee gulf on-chain —
-                    // expected occasionally; the estimate is conservative.
+                    // A fill raced the crank, or the cross sits inside the
+                    // on-chain fee gulf. This happens sometimes, because the
+                    // estimate is conservative.
                     warn!(market_index, error = %err, "cross match simulation failed; not sent");
                 }
             }

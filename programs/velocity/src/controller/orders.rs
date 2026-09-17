@@ -212,7 +212,7 @@ pub(crate) fn determine_if_user_order_is_position_decreasing(
     market_index: u16,
     order: &Order,
 ) -> VelocityResult<bool> {
-    // A fresh ephemeral taker has no position yet: opening one is not
+    // A fresh ephemeral taker has no position yet. Opening one is not
     // decreasing, so a missing position reads as base zero.
     let position_base_asset_amount_before = get_position_index(&user.perp_positions, market_index)
         .map(|position_index| user.perp_positions[position_index].base_asset_amount)
@@ -285,12 +285,12 @@ fn cancel_reduce_only_trigger_orders(
             continue;
         }
 
-        // A placed trigger's slot is a shadow whose live order rests on the
-        // CLOB. `cancel_order` refuses one, because cancelling the shadow
-        // strands the CLOB order and double-unwinds its accounting. Such an
-        // order also holds an `open_bids`/`open_asks` reservation, so the flat
-        // position this sweep runs under keeps it out of reach today. Skip it
-        // here too, so the sweep does not depend on that.
+        // A placed trigger's slot is a shadow, and its live order rests on
+        // the CLOB. `cancel_order` refuses such a slot, because cancelling the
+        // shadow strands the CLOB order and unwinds its accounting twice. The
+        // slot also holds an `open_bids` or `open_asks` reservation, so the
+        // flat position this sweep runs under already puts it out of reach.
+        // Skip it here as well, so the sweep does not depend on that.
         if user.orders[order_index].is_placed_on_clob() {
             continue;
         }
@@ -314,10 +314,11 @@ fn cancel_reduce_only_trigger_orders(
 
 /// The market's safe MM oracle price and how valid it is.
 ///
-/// Every perp fill path reads the oracle this way: the MM price the market
-/// derives from the raw feed, then the validity of its safe, confidence
-/// bounded form. The caller passes the raw price data it already holds, so
-/// this never repeats the map lookup and never reorders it.
+/// Every perp fill path reads the oracle this way. It takes the MM price the
+/// market derives from the raw feed, then the validity of the safe,
+/// confidence-bounded form of that price. The caller passes the raw price data
+/// it already holds, so this never repeats the map lookup and never reorders
+/// it.
 fn safe_mm_oracle_state(
     market: &PerpMarket,
     state: &State,

@@ -480,22 +480,23 @@ pub fn calculate_net_user_pnl(
 }
 
 /// Solve for the settlement price at which aggregate user claims fit inside the
-/// value that actually backs them.
+/// value that backs them.
 ///
-/// `total_excess_balance` must be **only** the balance a claim can actually be
-/// paid out of — the PnL pool. `settle_expired_position` pays via
-/// `update_pnl_pool_and_user_balance`, which caps at `market.pnl_pool` and
-/// reverts `InsufficientPerpPnlPool`; the fee pool is never payable, so counting
-/// it here over-prices winners and strands the tail of them (OtterSec #116).
+/// `total_excess_balance` must hold only the balance a claim can be paid out of,
+/// which is the PnL pool. `settle_expired_position` pays through
+/// `update_pnl_pool_and_user_balance`, which caps the payout at `market.pnl_pool`
+/// and reverts with `InsufficientPerpPnlPool`. The fee pool is never payable, so
+/// counting it here over-prices winners and the last claims then revert
+/// (OtterSec #116).
 ///
-/// `net_unsettled_funding_pnl` is folded into the cost basis via the shared
+/// `net_unsettled_funding_pnl` is folded into the cost basis through the shared
 /// [`calculate_net_user_cost_basis`], the same way [`calculate_net_user_pnl`]
-/// does it. Expired-position settlement runs `settle_funding_payment` before
-/// computing the payout, so each user's pending funding is already inside the
-/// quote they are paid on; solving against `quote_asset_amount` alone leaves
-/// aggregate claims exceeding the pools by exactly the market's unsettled
-/// funding (OtterSec #125). Taking it as a parameter rather than reading a bare
-/// quote keeps the two consumers of the cost basis symmetric.
+/// does it. `settle_expired_position` runs `settle_funding_payment` before it
+/// computes the payout, so each user's pending funding is already inside the
+/// quote they are paid on. A solve against `quote_asset_amount` alone leaves
+/// aggregate claims above the pools by exactly the market's unsettled funding
+/// (OtterSec #125). The parameter keeps the two callers of the cost basis
+/// symmetric.
 pub fn calculate_expiry_price(
     amm: &AMM,
     target_price: i64,

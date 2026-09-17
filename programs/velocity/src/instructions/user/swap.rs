@@ -43,7 +43,7 @@ struct SwapTokenRoute<'a, 'info> {
     hooks: &'a mut Peekable<Iter<'info, AccountInfo<'info>>>,
 }
 
-/// What the in leg did: how much the route actually spent, and what the
+/// What the in leg did. It holds how much the route spent, and what the
 /// account held before and after.
 struct InLeg {
     amount_in: u64,
@@ -292,22 +292,19 @@ fn admit_swapper(
 
 /// Accrue interest on one leg of a swap and prove the market may take one.
 ///
-/// Interest and the deposit/borrow/utilization TWAPs advance, but `None` is
-/// passed so the swap does NOT advance the market's *oracle* TWAPs.
-/// `end_swap`'s `validate_price_bands_for_swap` measures the realized fill
-/// against `last_oracle_price_twap_5min` on this very market. Refreshing it
-/// here, in the same transaction and from an instruction the swapper controls,
-/// pulls it toward the live oracle price and widens the band the swap is then
-/// checked against. That lets an underpriced swap through that the pre-refresh
-/// TWAP rejects (OtterSec #110). `validate_price_bands_for_swap` reads
-/// whichever of the two markets has a zero initial margin ratio, so both sides
-/// must stay unrefreshed until the check has run.
+/// Interest and the deposit, borrow, and utilization TWAPs advance. `None` is
+/// passed, so the oracle TWAPs do not. `end_swap` measures the realized fill
+/// against `last_oracle_price_twap_5min` on this market. A refresh here runs in
+/// the same transaction, from an instruction the swapper controls. It pulls
+/// that anchor toward the live oracle price and widens the band, so an
+/// underpriced swap passes a check the pre-refresh TWAP rejects (OtterSec
+/// #110). `validate_price_bands_for_swap` reads whichever of the two markets
+/// has a zero initial margin ratio, so neither side may refresh before it runs.
 ///
-/// `begin_swap` and `end_swap` are separate instructions, so there is nowhere
-/// to hold an in-memory snapshot across the check the way the perp fill does
-/// for #112. The refresh is moved rather than dropped: `end_swap` advances both
-/// markets' oracle TWAPs after its band check, so the swap still contributes to
-/// the EMA and the check still reads the pre-swap value.
+/// `end_swap` advances both markets' oracle TWAPs after its band check, so the
+/// swap still contributes to the EMA. The two halves are separate instructions,
+/// so no in-memory snapshot can cross the check the way the perp fill does for
+/// OtterSec #112.
 fn arm_swap_leg(
     spot_market: &mut SpotMarket,
     market_index: u16,
@@ -796,13 +793,13 @@ fn credit_out_leg(
     // update fees
     update_revenue_pool_balances(fee.cast()?, &SpotBalanceType::Deposit, out_market, false)?;
 
-    // The swap's out leg credits deposits through the plain balance update rather than the shared
-    // `_with_limits` path, so before this the daily deposit cap did not apply to it at all: a
-    // swapper could lift a market's deposit level arbitrarily far above its cap, and (until the
-    // growth gate above) thereby lock every other user out of withdrawing or repaying in that
-    // market while liquidation stayed live against them (finding #118). Capped here, after the
-    // revenue-pool fee credit so the whole out-side increase is accounted, and gated on real
-    // growth so a swap that merely repays an existing borrow is never rejected.
+    // The out leg credits deposits through the plain balance update, not the shared
+    // `_with_limits` path, so the daily deposit cap did not apply to it at all. A swapper
+    // could lift a market's deposit level far above its cap. That locks every other user
+    // out of withdrawing or repaying in that market while liquidation stays live against
+    // them (OtterSec #118). The check runs after the revenue-pool fee credit, so it sees the
+    // whole out-side increase. It passes when the deposit level did not grow, so a swap
+    // that only repays an existing borrow is never rejected.
     math::spot_withdraw::validate_deposit_cap_after_increase(
         out_market,
         deposit_token_amount_before,
@@ -1035,16 +1032,15 @@ fn book_swap_onto_account<'info>(
 /// band, and then advance both markets' oracle TWAPs.
 ///
 /// The TWAPs advance last, after the band check has read them. `begin_swap`
-/// passes `None` so the swap does not refresh the very anchor
+/// passes `None`, so the swap does not refresh the anchor that
 /// `validate_price_bands_for_swap` measures the realized fill against
-/// (OtterSec #110). Skipping the refresh entirely would leave the swap lane
-/// contributing nothing to the EMA, so it happens here instead: the check is
-/// already done, and `begin_swap` forbids any Velocity instruction after
-/// `end_swap`, so nothing else in this transaction can read the new value.
+/// (OtterSec #110). The refresh happens here so the swap lane still
+/// contributes to the EMA. It is safe because the check is done, and
+/// `begin_swap` forbids any Velocity instruction after `end_swap`.
 /// `begin_swap` left `last_oracle_price_twap_ts` alone, so this update still
 /// weights the full elapsed interval. The deposit, borrow, and utilization
-/// TWAPs were already advanced there and `last_twap_ts` stamped, so they are a
-/// no-op here.
+/// TWAPs advanced there and stamped `last_twap_ts`, so they do not change
+/// here.
 fn close_swap_flash_loan(
     maps: &mut AccountMaps,
     markets: &SwapMarkets,
@@ -1173,7 +1169,7 @@ impl EndSwap<'_, '_> {
         )?;
 
         // The exempt swap skips the buffered-floor gate and may legally end below
-        // the raw floor; arm the breaker inline instead of waiting for the
+        // the raw floor. The breaker is armed here instead of waiting for the
         // permissionless trip.
         if booked.strictly_reducing {
             controller::equity_floor::try_lazy_equity_breaker_trip(

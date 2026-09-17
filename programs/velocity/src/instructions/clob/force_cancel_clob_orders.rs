@@ -1,30 +1,29 @@
-//! Force-cancel a deteriorated account's CLOB orders — the CLOB arm of the
-//! `force_cancel_orders` keeper flow, and how placed-trigger shadows on a
-//! failing account get reclaimed (the DLOB-side sweep deliberately skips
-//! them: their live orders rest on the book).
+//! Force-cancel a deteriorated account's CLOB orders. This is the CLOB arm of
+//! the `force_cancel_orders` keeper flow. It is also how a failing account's
+//! placed-trigger shadows are reclaimed. The DLOB-side sweep skips those
+//! shadows, because their live orders rest on the book.
 //!
-//! Same gates as the DLOB force-cancel: the account must fail initial
-//! margin or sit below its equity floor (pre-liquidation cleanup), and
-//! risk-*reducing* orders are skipped — cancelling those would only make
-//! the account worse. The keeper reads the user's orders off the book and
-//! passes their `OrderRef`s; each hint fails closed on the CLOB side if it
-//! no longer belongs to this user. The keeper earns the same flat fee per
-//! cancelled order, charged to the user's quote deposit in one transfer at
-//! the end.
+//! The gates are the gates of the DLOB force-cancel. The account must fail
+//! initial margin or sit below its equity floor, which is the cleanup before a
+//! liquidation. Risk-reducing orders are skipped, because cancelling one would
+//! only make the account worse. The keeper reads the user's orders off the book
+//! and passes their `OrderRef`s. The CLOB rejects a hint that no longer belongs
+//! to this user. The keeper earns the same flat fee per cancelled order, and
+//! one transfer at the end charges the user's quote deposit.
 //!
-//! Deliberately not gated on the quoter entry's active/approved flags —
-//! dead books still need failing makers' orders reclaimed.
+//! The handler is not gated on the quoter entry's active and approved flags. A
+//! dead book still needs a failing maker's orders reclaimed.
 //!
-//! Dual-mode, like the evict and expiry cranks: a signed keeper cranks for
-//! its own filler, or the protocol `User` is passed as filler and no
-//! signature is required, which is how a relay turner drives it.
+//! The crank has two modes, like the evict and expiry cranks. A signed keeper
+//! cranks for its own filler. Otherwise the protocol `User` is passed as the
+//! filler and no signature is required, which is how a relay turner drives it.
 //!
-//! Every gate answers "nothing to do" with success rather than an error. A
-//! fill that would touch a doomed maker prefixes this instruction to clear
-//! the way, and relay is racing to do the same thing; whichever lands second
-//! must not take the transaction down with it. Only a caller that is wrong
-//! about something it declared — a ref belonging to another user, a side that
-//! does not match the order — still fails loudly.
+//! Every gate answers a case of no work with success rather than an error. A
+//! fill that would touch a doomed maker puts this instruction in front of
+//! itself to clear the way, and relay races to do the same thing. Whichever
+//! lands second must not fail the transaction. A caller that is wrong about
+//! something it declared still fails loudly. That covers a ref belonging to
+//! another user, and a side that does not match the order.
 
 use {
     crate::{
@@ -74,12 +73,12 @@ const _: () =
 /// One order the caller wants reclaimed.
 ///
 /// The side is declared rather than read, because a node carries no side of
-/// its own — the book stores it by which list the node is linked into, and
-/// finding that out costs a walk from the head. Declaring it lets the
-/// risk-reducing test run *before* the CPI, so a reducing order is passed
-/// over instead of being cancelled and then reverting the call. The
-/// declaration is not trusted: the removal the CLOB returns carries the real
-/// side and is checked against it.
+/// its own. The book stores the side as the list the node is linked into, and
+/// reading it costs a walk from the head. A declared side lets the
+/// risk-reducing test run before the CPI, so a reducing order is passed over
+/// rather than cancelled and then reverted. The declaration is not trusted. The
+/// removal the CLOB returns carries the real side, and the handler checks it
+/// against the declaration.
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
 pub struct ForceCancelClobRefV0 {
     pub order_ref: ClobOrderRefV0,
@@ -98,9 +97,10 @@ pub struct ForceCancelClobOrdersArgs {
 #[instruction(args: ForceCancelClobOrdersArgs)]
 pub struct ForceCancelClobOrders<'info> {
     pub state: AccountLoader<'info, State>,
-    /// CHECK: in signed-keeper mode this must sign for `filler`; in
-    /// program-keeper mode (protocol `User` as filler, relay turners) it is
-    /// only the reservoir payout target and no signature is required.
+    /// CHECK: in signed-keeper mode this must sign for `filler`. In
+    /// program-keeper mode, where the protocol `User` is the filler and relay
+    /// turners call, it is only the reservoir payout target and needs no
+    /// signature.
     #[account(mut)]
     pub authority: UncheckedAccount<'info>,
     #[account(
@@ -119,9 +119,10 @@ pub struct ForceCancelClobOrders<'info> {
     /// Carries the authority-wide equity breaker, which is grounds on its own.
     #[account(constraint = is_stats_for_user(&user, &user_stats)?)]
     pub user_stats: AccountLoader<'info, UserStats>,
-    /// Deliberately not gated on active/approved: dead books still need
-    /// failing makers' orders reclaimed — the header's book pointer survives
-    /// a suspension, so the `has_one` still passes on a killed book.
+    /// Not gated on the active and approved flags, because a dead book still
+    /// needs a failing maker's orders reclaimed. The header's book pointer
+    /// survives a suspension, so the `has_one` still passes on a killed
+    /// book.
     #[account(
         has_one = clob_market,
         constraint = quoter_slab.load()?.market == args.market_index,
@@ -131,10 +132,10 @@ pub struct ForceCancelClobOrders<'info> {
     #[account(mut)]
     pub clob_market: UncheckedAccount<'info>,
     /// CHECK: a Clob slot's program is pinned to velocity's CLOB at
-    /// registration; the handler re-checks through the slot.
+    /// registration. The handler checks it again through the slot.
     #[account(address = crate::ids::clob_program::id())]
     pub clob_program: UncheckedAccount<'info>,
-    /// Wake-hint host; optional like every other CLOB path.
+    /// Wake-hint host. It is optional, as on every other CLOB path.
     #[account(
         mut,
         seeds = [
@@ -177,7 +178,7 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
         &get_writable_spot_market_set(QUOTE_SPOT_MARKET_INDEX),
         clock.slot,
         state.slot_clock(),
-        // The State's rails, like the DLOB force-cancel: the oracle decides
+        // The State's rails, as in the DLOB force-cancel. The oracle decides
         // whether this account is failing, so it answers to the configured
         // staleness and confidence bounds rather than to the defaults.
         Some(state.oracle_guard_rails),
@@ -190,9 +191,8 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
         &ctx.accounts.clob_program,
     )?;
 
-    // ---- Gate: the account must actually be failing, same as the DLOB
-    // force-cancel, and the refs must be this user's risk-increasing
-    // orders. ----
+    // The gate. The account must be failing, as in the DLOB force-cancel, and
+    // the refs must name this user's risk-increasing orders.
     let plan = {
         let user = &mut load_mut!(ctx.accounts.user)?;
         if !has_force_cancel_grounds(user, &ctx.accounts.user_stats, &mut maps, market_index)? {
@@ -216,21 +216,21 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
 
     let removals = cancel_orders_on_book(&clob, &plan)?;
 
-    // Stamped on every cancel record below. Read once, before the user
-    // borrow, because the record is the only thing that wants it.
+    // Every cancel record below is stamped with this price. Read it once,
+    // before the user borrow, because the records are its only readers.
     let oracle_price = {
         let oracle_id = maps.perp_market_map.get_ref(&market_index)?.oracle_id();
         maps.oracle_map.get_price_data(&oracle_id)?.price
     };
 
-    // Orders this crank actually reclaimed. The reservoir pays for work, and
-    // reaching this point does not prove any was done: `plan.refs` may be
-    // empty, and the sweep is decided from `open_bids`/`open_asks`, which count
-    // DLOB orders too. A user holding only DLOB orders therefore sweeps a book
-    // that holds nothing of theirs, and `cancel_all_v0` removes zero without
-    // erroring. Paying for that would let anyone with a failing account drain
-    // the market's reservoir in a loop, which stops every other crank on the
-    // market — liquidations included.
+    // The orders this crank reclaimed. The reservoir pays for work, and
+    // reaching this point does not prove any work was done. `plan.refs` may be
+    // empty, and the sweep is decided from `open_bids` and `open_asks`, which
+    // count DLOB orders too. A user holding only DLOB orders therefore sweeps a
+    // book that holds nothing of theirs, and `cancel_all_v0` removes zero
+    // without an error. Paying for that would let anyone with a failing account
+    // drain the market's reservoir in a loop, which stops every other crank on
+    // the market. Liquidations stop with them.
     let reclaimed_orders = removals.orders.len() as u64
         + removals.swept.map_or(0, |outcome| {
             u64::from(outcome.bid_orders) + u64::from(outcome.ask_orders)
@@ -267,8 +267,8 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
 struct ForceCancelPlan {
     /// The account the orders belong to, as the book names it.
     user_ref: ClobUserRefV0,
-    /// The refs to cancel one at a time. Each one is this user's, and the
-    /// declared side makes it risk-increasing.
+    /// The refs to cancel one at a time. Each ref is this user's, and the
+    /// declared side makes the order risk-increasing.
     refs: Vec<ForceCancelClobRefV0>,
     /// The sides the whole-side sweep takes. `None` when neither side
     /// qualifies.
@@ -295,9 +295,9 @@ struct SweepDecision {
 ///
 /// The account must fail its initial margin requirement, sit below its equity
 /// floor, or carry a tripped equity breaker. A market that still meets its own
-/// requirement is left alone. Both "nothing to do" answers are `false` rather
-/// than an error, because a prefixed force-cancel races relay for the same
-/// work.
+/// requirement is left alone. Both no-work answers return `false` rather than
+/// an error, because a force-cancel put in front of a fill races relay for the
+/// same work.
 fn has_force_cancel_grounds(
     user: &User,
     user_stats: &AccountLoader<'_, UserStats>,
@@ -315,30 +315,31 @@ fn has_force_cancel_grounds(
         maps,
         MarginContext::standard(MarginRequirementType::Initial),
     )?;
-    // "Below floor" authorizes a keeper against the user here, so it fails
-    // closed the other way from the gates that restrict the user: the floor
-    // counts as grounds only when every oracle is valid and the trusted
-    // value sits below it, so a bad price cannot manufacture authorization.
+    // Being below the floor authorizes a keeper against the user, so this test
+    // fails closed in the opposite direction from the gates that restrict the
+    // user. The floor counts as grounds only when every oracle is valid and the
+    // trusted value sits below it. A bad price therefore cannot create
+    // authorization.
     let below_equity_floor = calculate_net_equity_for_floor(user, maps)?
         .is_some_and(|net_equity| net_equity.proves_below_floor(user));
-    // A tripped breaker is grounds on its own. It is the authority-wide
-    // latch that says one of this authority's subaccounts was proven
-    // below its floor, it is already permissionless to set, and while it
-    // is set every subaccount is barred from risk-increasing activity —
-    // so the risk-increasing orders this one is resting cannot legally
-    // fill, and holding them on the book only blocks other people's.
+    // A tripped breaker is grounds on its own. It is the authority-wide latch
+    // that records that one of this authority's subaccounts was proven below
+    // its floor, and setting it is already permissionless. While it is set,
+    // every subaccount is barred from risk-increasing activity. The
+    // risk-increasing orders this subaccount rests therefore cannot fill, and
+    // holding them on the book only blocks other people's orders.
     let breaker_tripped = user_stats.load()?.is_equity_breaker_tripped();
     if margin_calc.meets_margin_requirement() && !below_equity_floor && !breaker_tripped {
-        // Not a "no": a "nothing to do". A prefixed force-cancel races
-        // relay for the same work, and the account may also have simply
-        // recovered since the caller looked.
+        // There is no work here, which is not a refusal. A force-cancel put in
+        // front of a fill races relay for the same work, and the account may
+        // have recovered since the caller looked.
         msg!("account meets its requirements; nothing to force-cancel");
         return Ok(false);
     }
-    // Per-market arm of the DLOB sweep's skip logic: an isolated
-    // position answers to its own requirement, cross positions to the
-    // cross requirement. The breaker outranks both — it freezes every
-    // subaccount, whatever this one market looks like.
+    // The per-market arm of the DLOB sweep's skip logic. An isolated position
+    // answers to its own requirement. A cross position answers to the cross
+    // requirement. The breaker outranks both, because it freezes every
+    // subaccount whatever this one market looks like.
     let market_isolated = user
         .get_perp_position(market_index)
         .map(|position| position.is_isolated())
@@ -359,19 +360,20 @@ fn has_force_cancel_grounds(
 
 /// Decide which whole sides go in one sweep instead of one cancel per order.
 ///
-/// One whole side is always beyond saving, and often both, so it goes
-/// in a single sweep instead of one CPI per order. `is_order_position_reducing`
-/// only ever answers yes to an order facing an open position, so every
-/// order on the side that *adds* to the position is risk-increasing
-/// whatever its size — and a flat account has no reducing side at all.
+/// At least one whole side is always beyond saving, and often both sides are.
+/// That side goes in a single sweep instead of one CPI per order.
+/// `is_order_position_reducing` answers yes only for an order that faces an
+/// open position. Every order on the side that adds to the position is
+/// therefore risk-increasing whatever its size, and a flat account has no
+/// reducing side at all.
 ///
-/// This is what stops a maker outrunning its own cleanup. Resting
-/// orders cost `OPEN_ORDER_MARGIN_REQUIREMENT` each, so a few dollars
-/// buys the per-position ceiling of 255, and clearing those eight at a
-/// time is 32 transactions the keeper pays for and an insolvent
-/// account may never repay. The sweep takes them in one CPI, and the
-/// per-order refs are left to the tail of the reducing side, which is
-/// bounded by how far past flat that side's orders reach.
+/// The sweep is what stops a maker from outrunning its own cleanup. Each
+/// resting order costs `OPEN_ORDER_MARGIN_REQUIREMENT`, so a few dollars buys
+/// the per-position ceiling of 255 orders. Clearing those eight at a time is 32
+/// transactions that the keeper pays for and an insolvent account may never
+/// repay. The sweep takes them in one CPI. The per-order refs are left for the
+/// tail of the reducing side, which is bounded by how far past flat that side's
+/// orders reach.
 fn decide_sweep(user: &User, market_index: u16) -> SweepDecision {
     let position = user.get_perp_position(market_index).ok();
     let position_base = position.map(|p| p.base_asset_amount).unwrap_or(0);
@@ -381,10 +383,10 @@ fn decide_sweep(user: &User, market_index: u16) -> SweepDecision {
         core::cmp::Ordering::Less => (false, true),
         core::cmp::Ordering::Equal => (true, true),
     };
-    // A zero aggregate proves this side rests nothing on the book (it
-    // counts the DLOB too, so only the zero direction is conclusive), and
-    // skipping the call keeps a one-sided account from paying for a CPI
-    // that can remove nothing.
+    // A zero aggregate proves this side rests nothing on the book. The
+    // aggregate counts DLOB orders too, so only a zero is conclusive. Skipping
+    // the call keeps a one-sided account from paying for a CPI that can remove
+    // nothing.
     let bids_swept = bids_swept && position.is_some_and(|p| p.open_bids != 0);
     let asks_swept = asks_swept && position.is_some_and(|p| p.open_asks != 0);
     let sides = match (bids_swept, asks_swept) {
@@ -400,18 +402,17 @@ fn decide_sweep(user: &User, market_index: u16) -> SweepDecision {
     }
 }
 
-/// Ask the book what each hinted ref still holds. A ref that no longer
-/// names a live order comes back empty — relay or a fill got there
-/// first, which is the expected outcome of the race, not an error. A
-/// ref naming someone else's order is the caller being wrong about
-/// what it passed, and fails loudly.
+/// Ask the book what each hinted ref still holds. A ref that no longer names a
+/// live order comes back empty, because relay or a fill reached it first. That
+/// is the expected outcome of the race rather than an error. A ref that names
+/// another user's order means the caller was wrong about what it passed, and it
+/// fails loudly.
 ///
-/// Risk-reducing orders are dropped here rather than after the cancel:
-/// cancelling one would only make the account worse, and a caller
-/// whose refs went stale against a position that moved must not take
-/// the transaction down for it. That decision needs the order's size,
-/// which is why this asks before removing rather than reading the
-/// answer out of what came back.
+/// Risk-reducing orders are dropped here rather than after the cancel.
+/// Cancelling one would only make the account worse, and a caller whose refs
+/// went stale against a position that moved must not fail the transaction for
+/// it. That decision needs the order's size, so this function asks before
+/// removing rather than reading the answer out of the removal.
 fn select_cancellable_refs(
     clob: &ClobMarket<'_, '_>,
     order_refs: &[ForceCancelClobRefV0],
@@ -434,8 +435,8 @@ fn select_cancellable_refs(
                 view.user.authority,
                 view.user.sub_account_id
             )?;
-            // The sweep is taking this whole side; a per-order CPI for it
-            // would be a second call for work already done.
+            // The sweep takes this whole side, so a per-order CPI would be a
+            // second call for work already done.
             if sweep
                 .sides
                 .is_some_and(|sides| sides.includes(order_ref.side.to_position_direction()))
@@ -458,13 +459,13 @@ fn select_cancellable_refs(
 /// Take the planned orders off the book. The caller holds no user borrow,
 /// because every removal is a CPI.
 ///
-/// Per-order first, while the node indices the plan carries are still
-/// current: the sweep below moves the book and would invalidate them. The
-/// sweep itself names no index, so it is safe to run second.
+/// The per-order removals run first, while the node indices the plan carries
+/// are still current. The sweep below moves the book and would invalidate them.
+/// The sweep itself names no index, so it is safe to run second.
 ///
-/// `force` is set on this path alone. A taker-origin remainder is bound to
-/// its activation window against its own owner, but it is still an open
-/// order holding margin, so liquidation has to be able to reclaim it.
+/// `force` is set on this path alone. A taker-origin remainder is bound to its
+/// activation window against its own owner, but it is still an open order that
+/// holds margin, so a liquidation must be able to reclaim it.
 fn cancel_orders_on_book(
     clob: &ClobMarket<'_, '_>,
     plan: &ForceCancelPlan,
@@ -520,11 +521,10 @@ fn unwind_cancelled_orders(
             ErrorCode::DefaultError,
             "clob cancelled an order for a different user"
         )?;
-        // The declared side decided, before the CPI, that this order was
-        // not risk-reducing. A caller that declared it wrong got a
-        // different order cancelled than the one it was judged on, so the
-        // judgement did not apply — that is the caller being wrong about
-        // what it passed, and it fails loudly.
+        // The declared side decided, before the CPI, that this order was not
+        // risk-reducing. A caller that declared the side wrong had a different
+        // order cancelled from the one the test judged, so the test did not
+        // apply. The caller was wrong about what it passed, so fail loudly.
         validate!(
             removed.side == order_ref.side,
             ErrorCode::DefaultError,
@@ -532,7 +532,7 @@ fn unwind_cancelled_orders(
             removed.order_id
         )?;
         let direction = removed.side.to_position_direction();
-        // The cleanup also frees a placed trigger's shadow for good — a
+        // The cleanup also frees a placed trigger's shadow permanently. A
         // failing account must not re-arm.
         user.cleanup_removed_clob_order(
             market_index,
@@ -554,11 +554,11 @@ fn unwind_cancelled_orders(
         )?;
     }
 
-    // The sweep unwinds by its per-side totals: identical arithmetic to
-    // one unwind per order (each placement reserved its own amount, so
-    // the sum cannot exceed what is reserved) at a fixed cost. Both
-    // directions regardless of which sides were asked for, so the reserve
-    // moves by exactly what left the book.
+    // The sweep unwinds by its per-side totals. That is the same arithmetic as
+    // one unwind per order, at a fixed cost. Each placement reserved its own
+    // amount, so the sum cannot exceed what is reserved. The unwind covers both
+    // directions whatever sides were asked for, so the reserve moves by exactly
+    // what left the book.
     if let (Some(sides), Some(swept)) = (plan.sweep, removals.swept) {
         validate!(
             swept.user == plan.user_ref,
@@ -573,8 +573,8 @@ fn unwind_cancelled_orders(
                 .safe_mul(orders.into())?,
         )?;
         if !swept.exhaustive {
-            // The CLOB stopped at its per-call cap. Everything unwound
-            // here is real; the caller repeats to take the rest.
+            // The CLOB stopped at its per-call cap. Everything unwound here
+            // is real, and the caller repeats the call to take the rest.
             msg!("sweep hit the clob's per-call cap; orders remain");
         }
     }
@@ -591,11 +591,11 @@ fn unwind_cancelled_orders(
     Ok(())
 }
 
-/// Pay the relay turner out of the reservoir when it is the one that
-/// cranked, and only for a crank that reclaimed something. The same rule
-/// `liquidate_perp_with_fill` applies to its own reward: a crank that
-/// removed nothing is a correct outcome rather than an error, but it is not
-/// work, and paying for it empties the reservoir.
+/// Pay the relay turner out of the reservoir when the turner cranked, and only
+/// for a crank that reclaimed something. `liquidate_perp_with_fill` applies the
+/// same rule to its own reward. A crank that removed nothing is a correct
+/// outcome rather than an error, but it is not work, and paying for it empties
+/// the reservoir.
 fn pay_crank_reward<'info>(
     crank_conditions: &Option<AccountLoader<'info, ClobCrankConditionsV0>>,
     authority: &UncheckedAccount<'info>,

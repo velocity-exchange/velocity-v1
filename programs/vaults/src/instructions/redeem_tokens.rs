@@ -20,10 +20,10 @@ pub fn redeem_tokens<'info>(
     ctx: Context<'info, RedeemTokens<'info>>,
     tokens_to_burn: u64,
 ) -> Result<()> {
-    // Book the lending interest of every market that prices NAV BEFORE any account
-    // is borrowed and before NAV is snapshotted (OtterSec #136/#137). Must precede
-    // `load_mut`/`load_maps`: `invoke` rejects a CPI whose writable accounts still
-    // have live borrows, and the maps must read post-refresh data.
+    // Book the lending interest of every market that prices NAV before any
+    // account is borrowed and before NAV is snapshotted (OtterSec #136/#137). The refresh must run
+    // before `load_mut` and `load_maps`. `invoke` rejects a CPI whose writable
+    // accounts still have live borrows, and the maps must read refreshed data.
     refresh_velocity_spot_market!(ctx);
 
     let clock = &Clock::get()?;
@@ -40,8 +40,8 @@ pub fn redeem_tokens<'info>(
     vault.validate_vault_protocol(&vp)?;
     let mut vp = vp.as_mut().map(|vp| vp.load_mut()).transpose()?;
 
-    // #101: apply a matured fee update on this share-movement path (mirrors deposit/withdraw),
-    // so the redeem doesn't run under stale fee terms.
+    // A matured fee update applies on every path that moves shares, so a redeem
+    // cannot run under stale fee terms (OtterSec #101).
     let has_fee_update = FeeUpdateStatus::has_pending_fee_update(vault.fee_update_status);
     let mut fee_update = ctx.fee_update(vp.is_some(), has_fee_update);
     vault.validate_fee_update(&fee_update)?;
@@ -79,12 +79,12 @@ pub fn redeem_tokens<'info>(
         oracle.price,
     )?;
 
-    // #100: snapshot the *complete* share domain (including protocol shares) AFTER fees are
-    // crystallized (above) but BEFORE the transfer, and keep the VaultProtocol provider alive
-    // across the transfer (capture transfer_shares' returned provider instead of discarding it).
-    // Including protocol shares lets the receiving depositor's profit share (which may mint to
-    // both manager and protocol) net to zero across the snapshots, and a live provider keeps
-    // get_manager_shares consistently excluding protocol shares before and after.
+    // The snapshot runs after the fees above are crystallized and before the
+    // transfer (OtterSec #100). It counts protocol shares because the receiving depositor's
+    // profit share can mint to the manager and to the protocol. Counting both
+    // lets that mint net to zero across the two snapshots. The VaultProtocol
+    // provider stays alive across the transfer, so `get_manager_shares` excludes
+    // protocol shares the same way before and after.
     let manager_shares_before = vault.get_manager_shares(&mut vp)?;
     let protocol_shares_before = vault.get_protocol_shares(&mut vp);
     let total_shares_before = vault_depositor
@@ -105,17 +105,19 @@ pub fn redeem_tokens<'info>(
         oracle.price,
     )?;
 
-    // #105: the transfer above moved shares out of the tokenized depositor; re-checkpoint its
-    // last_vault_shares to the post-transfer balance so future tokenize_shares still works.
+    // The transfer moved shares out of the tokenized depositor. Re-checkpoint
+    // `last_vault_shares` to the new balance so a later tokenize_shares works
+    // (OtterSec #105).
     tokenized_vault_depositor.checkpoint_vault_shares();
 
-    // #140: if that emptied the pool of shares and tokens, its cost basis is now orphaned with nobody
-    // behind it. Above value it is a free loss shelter for the next tokenizer; below value it is an
-    // unearned fee liability for them. Clear it.
+    // An empty pool leaves a cost basis with no shares behind it. A basis above
+    // the current value shelters the next tokenizer from a loss. A basis below
+    // it charges the next tokenizer a fee they did not earn. Clear it
+    // (OtterSec #140).
     //
-    // Test `tokens_to_burn == total_supply_before` rather than reading the post-burn supply: the
-    // depositor is dropped before `ctx.burn(...)` runs. The two are equivalent, given the
-    // `supply_delta == tokens_to_burn` assertion this instruction already makes.
+    // The test reads `total_supply_before` instead of the post-burn supply,
+    // because the depositor is dropped before `ctx.burn` runs. This instruction
+    // asserts `supply_delta == tokens_to_burn`, so the two tests are equivalent.
     if tokenized_vault_depositor.get_vault_shares() == 0 && tokens_to_burn == total_supply_before {
         msg!("tokenized depositor emptied; clearing orphaned cost basis");
         tokenized_vault_depositor.reset_orphaned_cost_basis();

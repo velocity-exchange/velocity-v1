@@ -94,9 +94,10 @@ function parseAccountMeta(value: string): {
 
 /**
  * The market's quoter slab, when it exists on chain. The write-through
- * instructions (`set-active`, `set-priority`, `set-oracle-band`) take it as
- * an optional account: passed, the value also lands in the entry's live slot.
- * The entry names its market, so the slab is derived rather than asked for.
+ * instructions `set-active`, `set-priority` and `set-oracle-band` take the slab
+ * as an optional account. When the caller passes it, the value also lands in
+ * the entry's live slot. The entry names its market, so this derives the slab
+ * instead of asking the caller for it.
  */
 async function liveSlabFor(
 	client: {
@@ -117,15 +118,17 @@ async function liveSlabFor(
 }
 
 /**
- * Quoter registry operations (PropAMM order flow, see `state::prop_amm`).
+ * Quoter registry operations for the PropAMM order flow. See
+ * `state::prop_amm`.
  *
- * The `QuoterV0` entry is the staging half: its authority proposes config
- * there, and nothing fills from it. The admin copies the staging config into
- * the market's `QuoterSlabV0` slot (`set-approved`), and fills read only that
- * copy. A staging edit does not touch the slab — the approved copy keeps
- * serving until the admin re-approves. For Custom quoters the quoted user's
- * authority creates the entry — creation is consent — and keeps a permanent
- * kill switch (`set-active`, written through to the live slot).
+ * The `QuoterV0` entry is the staging half. Its authority proposes config
+ * there, and no fill reads it. `set-approved` copies the staging config into
+ * the market's `QuoterSlabV0` slot, and fills read only that copy. A staging
+ * edit does not change the slab, so the approved copy keeps serving until the
+ * admin approves again. For a Custom quoter, the quoted user's authority
+ * creates the entry, and that creation is the user's consent. That authority
+ * keeps a permanent kill switch in `set-active`, which writes through to the
+ * live slot.
  */
 export function registerQuoter(parent: Command): void {
 	const quoter = parent
@@ -140,7 +143,7 @@ export function registerQuoter(parent: Command): void {
 				'init <market> <quoterProgram> <user> <responseAccount> <quoteDisc> <executeDisc>'
 			)
 			.description(
-				"Initialize a QuoterV0 registry entry for (perp market, quoter program, quoted user). Born active but unapproved — nothing fills until the admin vets it (set-approved). For custom-type entries the signing authority must be the quoted user's authority (creation is consent). Routing priority defaults by type (vamm 0, clob 10, custom 20); admin-adjustable via set-priority. <quoteDisc>/<executeDisc> are the 8-byte instruction discriminators on the quoter program, as 16 hex chars. Set account lists afterwards via update-accounts."
+				"Initialize a QuoterV0 registry entry for one perp market, quoter program and quoted user. The entry starts active but unapproved, and nothing fills from it until the admin approves it with set-approved. For a custom-type entry the signing authority must be the quoted user's authority, because that creation is the user's consent. Routing priority defaults by type: vamm 0, clob 10, custom 20. The admin changes it with set-priority. <quoteDisc> and <executeDisc> are the 8-byte instruction discriminators on the quoter program, as 16 hex chars. Set the account lists afterwards with update-accounts."
 			)
 			.option(
 				'-t, --type <type>',
@@ -204,9 +207,10 @@ export function registerQuoter(parent: Command): void {
 								client.program.programId,
 								marketIndex
 							),
-							// Designating the book is refused when an approved quoter's
-							// account list already names it, so a book registration
-							// reads the slab. No other type does.
+							// The program refuses a book registration when an approved
+							// quoter's account list already names that book, so a
+							// book registration must read the slab. No other quoter
+							// type reads it.
 							quoterSlab: isClobEntry(quoterType)
 								? getQuoterSlabPublicKey(client.program.programId, marketIndex)
 								: null,
@@ -239,7 +243,7 @@ export function registerQuoter(parent: Command): void {
 		quoter
 			.command('init-slab <market>')
 			.description(
-				"Initialize a perp market's QuoterSlabV0 — the per-market account that holds every approved quoter config, and the identity velocity signs every external quoter CPI as. One per market; approval (set-approved) copies a staging entry into a slot and grows the account to fit it, so the slab is born with one slot (the book's) and stays right-sized. Permissionless; the signer pays the rent."
+				"Initialize a perp market's QuoterSlabV0. The slab holds every approved quoter config for the market, and velocity signs every external quoter CPI as the slab. There is one slab per market. Approval with set-approved copies a staging entry into a slot and grows the account to fit, so the slab starts with one slot for the book and stays at the size its slots need. Permissionless, and the signer pays the rent."
 			)
 	).action(async (market: string, cmd: Command) => {
 		const marketIndex = Number.parseInt(market, 10);
@@ -285,7 +289,7 @@ export function registerQuoter(parent: Command): void {
 		quoter
 			.command('update-accounts <quoter> <metas...>')
 			.description(
-				'Replace a quoter\'s registered CPI account list whole. Each meta is "<pubkey>" (readonly) or "<pubkey>:w" (writable); --quote-indexes and --execute-indexes pick which metas each leg forwards, in CPI order. The approved slab copy keeps serving until the admin re-approves (set-approved). Signer must be the entry authority.'
+				'Replace a quoter\'s registered CPI account list whole. Each meta is "<pubkey>" for readonly or "<pubkey>:w" for writable. --quote-indexes and --execute-indexes pick which metas each leg forwards, in CPI order. The approved slab copy keeps serving until the admin approves again with set-approved. The signer must be the entry authority.'
 			)
 			.requiredOption(
 				'--quote-indexes <list>',
@@ -355,13 +359,13 @@ export function registerQuoter(parent: Command): void {
 		quoter
 			.command('update-config <quoter>')
 			.description(
-				"Update a quoter's scalar CPI config on the staging entry; only the passed options change. The approved slab copy keeps serving until the admin re-approves (set-approved). Signer must be the entry authority."
+				"Update a quoter's scalar CPI config on the staging entry. Only the passed options change. The approved slab copy keeps serving until the admin approves again with set-approved. The signer must be the entry authority."
 			)
 			.option('--response-account <pubkey>', 'new response account')
 			.option('--quote-disc <hex>', 'new quote_v0 discriminator (16 hex chars)')
 			.option(
 				'--l3-disc <hex>',
-				'new quote_l3_v0 discriminator (16 hex chars); all-zero withdraws the leg'
+				'new quote_l3_v0 discriminator (16 hex chars). An all-zero value withdraws the leg'
 			)
 			.option(
 				'--execute-disc <hex>',
@@ -447,7 +451,7 @@ export function registerQuoter(parent: Command): void {
 		quoter
 			.command('set-active <quoter> <active>')
 			.description(
-				"The maker's own kill switch: enable or disable the entry. Written through to the market's slab slot when one exists, so the change takes effect without a re-approval. Always available to the entry authority — for Custom quoters the quoted user's authority. <active> = true|false."
+				"The maker's own kill switch. Enable or disable the entry. The value is written through to the market's slab slot when one exists, so the change takes effect without a new approval. The entry authority can always run this. For a Custom quoter that authority is the quoted user's authority. <active> = true|false."
 			)
 			.option(
 				'-a, --authority <pubkey>',
@@ -508,7 +512,7 @@ export function registerQuoter(parent: Command): void {
 		quoter
 			.command('set-approved <quoter> <approved>')
 			.description(
-				"Admin vetting gate (warm/cold admin): copy the staging config into the market's slab slot, or revoke that slot. Approving validates non-empty account lists on both legs, each containing the response account. Fills read only the slab copy, so a staged edit serves nothing until re-approved here. <approved> = true|false."
+				"Admin vetting gate for the warm or cold admin. Copies the staging config into the market's slab slot, or revokes that slot. Approval requires a non-empty account list on both legs, and each list must contain the response account. Fills read only the slab copy, so a staged edit serves nothing until it is approved here. <approved> = true|false."
 			)
 			.option(
 				'--admin <pubkey>',
@@ -526,10 +530,11 @@ export function registerQuoter(parent: Command): void {
 			const provider = buildProvider(opts);
 			const client = await buildAdminClient(opts, false);
 			try {
-				// Approval is approval of a binary, so the program behind the entry
-				// has to be frozen — the program-data account is what says whether
-				// it is. Read from the entry rather than taken as a flag: an
-				// operator naming the wrong program would approve the wrong code.
+				// Approval approves a binary, so the program behind the entry must
+				// be frozen. The program-data account records whether it is. The
+				// program id comes from the entry rather than from a flag, because
+				// an operator who names the wrong program would approve the wrong
+				// code.
 				const quoterKey = new PublicKey(quoterArg);
 				const entry = await (client.program.account as any).quoterV0.fetch(
 					quoterKey
@@ -565,7 +570,7 @@ export function registerQuoter(parent: Command): void {
 								on && isClobEntry(entry.config.quoterType)
 									? new PublicKey(entry.config.responseAccount)
 									: null,
-							// Approval right-sizes the slab account.
+							// Approval can grow the slab account.
 							systemProgram: SystemProgram.programId,
 						},
 					}
@@ -592,7 +597,7 @@ export function registerQuoter(parent: Command): void {
 		quoter
 			.command('set-priority <quoter> <priority>')
 			.description(
-				"Set a quoter registry entry's routing priority (warm/cold admin): at a price, lower-priority tiers fill first, pro rata within a tier. Registration defaults by type (vamm 0, clob 10, custom 20). Written through to the market's slab slot when one exists. Admin-only — a maker choosing their own priority could jump the vAMM/CLOB. <priority> = 0-255."
+				"Set a quoter registry entry's routing priority. The warm or cold admin signs. At one price, lower-priority tiers fill first, pro rata within a tier. Registration defaults by type: vamm 0, clob 10, custom 20. The value is written through to the market's slab slot when one exists. Only the admin can set it, because a maker who chose their own priority could fill ahead of the vAMM and the book. <priority> = 0-255."
 			)
 			.option(
 				'--admin <pubkey>',
@@ -653,12 +658,12 @@ export function registerQuoter(parent: Command): void {
 					'set-market-clob <market> <quoter> <clobMarket> [expireFallbackSlots]'
 				)
 				.description(
-					"Name a perp market's canonical CLOB quoter entry (warm/cold admin): once set, every router fill must carry it (mandatory baseline). Also stands up (or re-prices) the market's cranks in the same instruction: the lamport reservoir relay keepers are paid from, and the registration that tells the book which resolver answers each of its own conditions (an expired order, a side at its cap, a crossed book, an order reaching its activation slot). Each crank's payment is derived here from the cost units it requests and State.transactionFeeRails, so re-running this is how a market is re-priced after the network's fee model changes. Top the reservoir off with a plain lamport transfer to the conditions PDA. [expireFallbackSlots] is the cross fallback poll interval (default 1500 slots, ~10 min), the liveness floor for a cross a PropAMM created by repricing."
+					"Name a perp market's canonical CLOB quoter entry. The warm or cold admin signs. Once set, every router fill must carry that entry. The same instruction also creates or re-prices the market's cranks: the lamport reservoir that pays relay keepers, and the registration that tells the book which resolver answers each of its own conditions. Those conditions are an expired order, a side at its cap, a crossed book, and an order reaching its activation slot. Each crank's payment is derived here from the cost units it requests and State.transactionFeeRails, so running this again is how a market is re-priced after the network's fee model changes. Add lamports to the reservoir with a plain transfer to the conditions PDA. [expireFallbackSlots] is the cross fallback poll interval, default 1500 slots or about 10 minutes. It is the liveness floor for a cross that a PropAMM created by repricing."
 				)
 		)
 			.option(
 				'--min-cross-surplus <quote>',
-				"floor on what the protocol must net from a cross-match crank, in QUOTE_PRECISION (1e6). Cranking a cross pays the reservoir's keeper fee, so a cross that clears by a cent is one the protocol pays to run — and one anyone can manufacture. Must be above zero; set it to cover the cross payout with margin",
+				"floor on what the protocol must net from a cross-match crank, in QUOTE_PRECISION (1e6). Cranking a cross pays the reservoir's keeper fee, so a cross that clears by a cent costs the protocol more than it earns, and anyone can create one. Must be above zero. Set it high enough to cover the cross payout with margin",
 				'10000'
 			)
 			.option(
@@ -682,9 +687,9 @@ export function registerQuoter(parent: Command): void {
 			const provider = buildProvider(opts);
 			const client = await buildAdminClient(opts, false);
 			try {
-				// The book's program comes off the entry rather than the
-				// command line: the attach registers velocity's resolvers on
-				// the book, and the entry is what the registration is checked
+				// The book's program comes from the entry, not from the command
+				// line. This instruction registers velocity's resolvers on the
+				// book, and the entry is what that registration is checked
 				// against.
 				const entryInfo = await provider.connection.getAccountInfo(
 					new PublicKey(quoterArg)
@@ -756,7 +761,7 @@ export function registerQuoter(parent: Command): void {
 		quoter
 			.command('set-watch <quoter>')
 			.description(
-				"Declare (or clear) a Custom quoter's reprice-watch region — the account bytes whose change means the quoter may quote differently (a midpoint's mid region). Relay cross-discovery conditions wake on it. Staged on the entry; the admin re-approves (set-approved) to publish it to the slab. Signer must be the entry authority."
+				"Declare or clear a Custom quoter's reprice-watch region. The region is the account bytes whose change means the quoter may quote differently, such as a midpoint's mid region. Relay cross-discovery conditions wake on it. The declaration is staged on the entry, and the admin publishes it to the slab with set-approved. The signer must be the entry authority."
 			)
 			.option(
 				'--watch-account <pubkey>',
@@ -765,7 +770,7 @@ export function registerQuoter(parent: Command): void {
 			.requiredOption('--offset <n>', 'watch region offset (account data)')
 			.requiredOption(
 				'--len <n>',
-				'watch region length; 0 clears the declaration'
+				'watch region length. 0 clears the declaration'
 			)
 			.option(
 				'-a, --authority <pubkey>',
@@ -835,7 +840,7 @@ export function registerQuoter(parent: Command): void {
 		quoter
 			.command('set-oracle-band <quoter> <bps>')
 			.description(
-				"Declare (or clear) how far from oracle a Custom quoter's fills may price, in basis points. Velocity already bounds every external leg by the market's own band; this asks for a tighter one, so a maker caps what its own program can lose if that program is compromised. Applied as the smaller of this and the market's margin ratio, so it can only tighten a bound the admin already vetted — which is why it is written through to the market's slab slot without a re-approval. <bps> = 0 clears the declaration. Signer must be the entry authority."
+				"Declare or clear how far from oracle a Custom quoter's fills may price, in basis points. Velocity already bounds every external leg by the market's own band. This asks for a tighter one, so a maker caps what its own program can lose if an attacker takes that program over. The program applies the smaller of this value and the market's margin ratio, so the declaration can only tighten a bound the admin already approved. That is why it is written through to the market's slab slot without a new approval. <bps> = 0 clears the declaration. The signer must be the entry authority."
 			)
 			.option(
 				'-a, --authority <pubkey>',
@@ -897,7 +902,7 @@ export function registerQuoter(parent: Command): void {
 		quoter
 			.command('attach-cross <quoter>')
 			.description(
-				"Stand up (or re-price) a Custom quoter's relay cross-discovery conditions — the per-entry account whose resolver prices the quoter through its registered quote_v0 surface and stages crank_cross_match. Permissionless; the signer pays the rent. Requires the entry active + approved and the market's canonical CLOB attached."
+				"Create or re-price a Custom quoter's relay cross-discovery conditions. That per-entry account holds the resolver which prices the quoter through its registered quote_v0 surface and stages crank_cross_match. Permissionless, and the signer pays the rent. The entry must be active and approved, and the market's canonical CLOB must be attached."
 			)
 			.option('--fallback-slots <n>', 'periodic poll interval (slots)', '1500')
 	).action(

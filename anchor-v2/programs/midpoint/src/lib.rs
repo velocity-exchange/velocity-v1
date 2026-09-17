@@ -1,31 +1,33 @@
 //! Velocity midpoint (spline) quoter program (Anchor v2 / anchor-next).
 //!
-//! **Production and multi-tenant**: makers don't deploy their own quoter
-//! programs — they create [`state::MidpointQuoterV0`] PDA instances of this
-//! one and register them as Custom quoters in velocity's registry. Each
-//! instance is a *spline around a midpoint*: per-side ladders of
-//! `(offset-from-mid, size)` that change rarely, plus a mid price the
-//! maker's hot key tracks tick-by-tick through `set_mid_v0` — the hot path,
-//! deliberately kept near the compute floor (see its module doc) and
-//! CU-pinned by a litesvm test.
+//! The program is multi-tenant. A maker does not deploy a quoter program. A
+//! maker creates a [`state::MidpointQuoterV0`] PDA instance of this one and
+//! registers it as a Custom quoter in velocity's registry. Each instance is a
+//! spline around a midpoint. It holds a per-side ladder of
+//! `(offset-from-mid, size)` levels that change rarely, plus a mid price. The
+//! maker's hot key tracks the mid tick by tick through `set_mid_v0`. That is
+//! the hot path. It stays near the compute floor, and a litesvm test pins its
+//! compute use.
 //!
-//! Exposed to velocity through the quoter interface: `quote_v0`/`execute_v0`
-//! stream borsh responses directly into the instance's response tail and
-//! return a `ResponsePointerV0` via return data. Execute is gated on the
-//! registered `execute_authority` (velocity's quoter CPI signer PDA —
-//! velocity clamps size to the quoted user's margin before CPI'ing here). Safety is the
-//! mid-staleness gate: a dead feed stops quoting on its own.
+//! Velocity reaches this program through the quoter interface. `quote_v0` and
+//! `execute_v0` stream borsh responses into the instance's response tail and
+//! return a `ResponsePointerV0` through return data. Execute is gated on the
+//! registered `execute_authority`, which is velocity's quoter CPI signer PDA.
+//! Velocity clamps size to the quoted user's margin before it calls here. The
+//! mid-staleness gate is the safety property. A dead feed stops quoting on its
+//! own.
 //!
-//! Two authorities are held per instance and neither derives from the other:
-//! the maker's config key (`authority`) and the quoted velocity `User`'s
-//! wallet (`user_authority`, which signs creation and seeds the PDA). Nothing
-//! *trust*-bearing is configured locally: the protected-flow gate reads
-//! `taker_served_window` off the quoter wire — velocity's assertion that the
-//! flow served the swift hold or the book's activation delay. Velocity reads
-//! the flow co-signature once, at its own boundary, so rotating a compromised
-//! flow key is one velocity admin call, not a per-maker migration.
+//! Each instance holds two authorities, and neither derives from the other.
+//! The maker's config key is `authority`. The quoted velocity `User`'s wallet
+//! is `user_authority`, which signs creation and seeds the PDA. No trust
+//! bearing value is configured locally. The protected-flow gate reads
+//! `taker_served_window` off the quoter wire. That field is velocity's
+//! assertion that the flow served the swift hold or the book's activation
+//! delay. Velocity reads the flow co-signature once, at its own boundary, so
+//! rotating a compromised flow key is one velocity admin call and not a
+//! per-maker migration.
 //!
-//! Discriminators stay 8-byte anchor defaults: the velocity quoter registry
+//! Discriminators stay at the 8-byte anchor default. Velocity's quoter registry
 //! stores `[u8; 8]` discriminators.
 
 use anchor_lang::prelude::*;
@@ -36,8 +38,8 @@ pub mod events;
 pub mod instructions;
 pub mod state;
 
-// Re-exported so integration tests can reach wincode/BORSH_CONFIG through the
-// crate without their own git dep.
+// Re-exported so integration tests reach wincode and BORSH_CONFIG through this
+// crate without their own git dependency.
 pub use {anchor_lang, instructions::*};
 
 declare_id!("eb3Kwmht4evPGGonNHCQs1h7ng63ZUwZ9TyV1qPo23D");

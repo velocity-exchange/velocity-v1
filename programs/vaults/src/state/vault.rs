@@ -33,15 +33,17 @@ use {
     velocity_macros::assert_no_slop,
 };
 
-/// Shared fee-policy bounds enforced at vault initialization and on every fee-update path
-/// (queue + maturity). Centralizes the init bounds so the timelocked fee-update path cannot
-/// install a state no initialization could create (OtterSec #97):
-/// - management fee < 100%
-/// - profit share < 100%
-/// - for protocol vaults: manager+protocol fee sum < 100%, manager+protocol profit-share sum
-///   < 100%, and hurdle rate must be 0 (protocol-vault hurdle mode is unimplemented).
+/// The fee-policy bounds that vault initialization and every fee-update path apply. One
+/// function holds them, so the timelocked fee-update path cannot install a policy that
+/// initialization would refuse (OtterSec #97).
 ///
-/// `protocol_fee`/`protocol_profit_share` are ignored for non-protocol vaults (pass 0).
+/// - The management fee is below 100%.
+/// - The profit share is below 100%.
+/// - A protocol vault also keeps the manager fee plus the protocol fee below 100%, keeps the
+///   manager profit share plus the protocol profit share below 100%, and requires a hurdle rate
+///   of 0. A protocol vault has no hurdle-rate implementation.
+///
+/// A non-protocol vault ignores `protocol_fee` and `protocol_profit_share`. Pass 0 for both.
 pub fn validate_fee_policy(
     management_fee: i64,
     profit_share: u32,
@@ -201,10 +203,10 @@ impl Vault {
     ) -> Result<VaultFee> {
         let mut update_matured = false;
         if let Some(ref mut fee_update) = fee_update {
-            // #97: before a matured update takes effect, validate it against the live protocol
-            // state (queue-time validation can only see the manager fields, not the protocol
-            // combined sums). Reverts here leave the pending update in place, recoverable via
-            // manager_cancel_fee_update.
+            // Validate a matured update against the live protocol state before it takes
+            // effect (OtterSec #97). Queue-time validation sees only the manager fields, and
+            // not the combined protocol sums. A revert here leaves the pending update in place, and
+            // manager_cancel_fee_update removes it.
             let fu = fee_update.load()?;
             update_matured = fu.is_pending() && now >= fu.incoming_update_ts;
             if update_matured {
@@ -236,7 +238,7 @@ impl Vault {
         match vault_protocol {
             None => {
                 if self.management_fee != 0 && depositor_equity > 0 {
-                    // legacy vault: no protocol state, so rebase with &mut None
+                    // A legacy vault holds no protocol state, so the rebase takes &mut None.
                     let (mgmt_fee_shares, skip) = self.apply_management_fee_only(
                         &mut None,
                         depositor_equity,
@@ -256,13 +258,13 @@ impl Vault {
                         .safe_add(vp.protocol_fee.cast()?)?
                         .cast::<i128>()?;
 
-                    // #102: cap the *combined* fee to equity - 1 first, then split it between
-                    // manager and protocol. This guarantees management_fee_payment,
-                    // protocol_fee_payment, and their sum each stay <= equity - 1, so every
-                    // fee-share-factor denominator (equity - payment) stays >= 1 and the u128
-                    // casts below can never abort on a negative value. The manager keeps its
-                    // full slice whenever that slice fits under the cap; only in the extreme
-                    // (manager slice alone exceeds equity) does the protocol absorb the shortfall.
+                    // Cap the combined fee at equity - 1 first, then split it between the
+                    // manager and the protocol (OtterSec #102). management_fee_payment,
+                    // protocol_fee_payment and their sum then each stay at or below equity - 1. Every fee-share-factor
+                    // denominator, equity - payment, therefore stays at or above 1, and the u128
+                    // casts below cannot abort on a negative value. The manager keeps its full
+                    // slice whenever that slice fits under the cap. The protocol absorbs the
+                    // shortfall only when the manager slice alone exceeds equity.
                     let total_fee_payment = depositor_equity
                         .safe_mul(total_fee)?
                         .safe_div(PERCENTAGE_PRECISION_I128)?
@@ -377,11 +379,11 @@ impl Vault {
                     // in case total_shares is pushed to level that warrants a rebase
                     self.apply_rebase(vault_protocol, vault_equity)?;
                 } else if self.management_fee != 0 && vp_protocol_fee == 0 && depositor_equity > 0 {
-                    // #96: a protocol vault with a management fee but zero *current* protocol fee
-                    // may still hold protocol shares (from profit share or a prior protocol fee).
-                    // Pass the real vault_protocol into the rebase so those protocol shares scale
-                    // by the same divisor as total/user shares, instead of the old &mut None path
-                    // that left them in a stale denomination.
+                    // A protocol vault with a management fee and a zero current protocol fee can
+                    // still hold protocol shares, earned from profit share or from an earlier
+                    // protocol fee. Pass the real vault_protocol into the rebase, so those
+                    // protocol shares scale by the same divisor as the total shares and the
+                    // user shares (OtterSec #96).
                     let (mgmt_fee_shares, skip) = self.apply_management_fee_only(
                         vault_protocol,
                         depositor_equity,
@@ -394,9 +396,11 @@ impl Vault {
             }
         }
 
-        // #98: a matured update installs only after the accrual above closed the interval at the
-        // policy that was in force while it accrued. Stamp the boundary even when that accrual was
-        // too small to move a share, so the new policy never prices an interval it did not cover.
+        // A matured update installs only after the accrual above closes the interval at the
+        // policy that was in force while it accrued (OtterSec #98). Stamp the boundary even when
+        // that accrual
+        // was too small to move a share, so the new policy never prices an interval it did not
+        // cover.
         if !skip_ts_update || update_matured {
             self.last_fee_update_ts = now;
         }
@@ -424,11 +428,13 @@ impl Vault {
         })
     }
 
-    /// Accrue a management-fee-only interval (no protocol fee). Returns
-    /// `(management_fee_shares, skip_ts_update)`. The `vault_protocol` argument is passed through
-    /// to [`Vault::apply_rebase`] so that, when the fee inflates total_shares enough to warrant a
-    /// rebase, any protocol shares scale by the same divisor (OtterSec #96). Callers that are
-    /// legacy (non-protocol) vaults pass `&mut None`.
+    /// Accrue an interval that charges the management fee and no protocol fee. Returns
+    /// `(management_fee_shares, skip_ts_update)`.
+    ///
+    /// The `vault_protocol` argument passes through to [`Vault::apply_rebase`]. When the fee
+    /// inflates total_shares far enough to warrant a rebase, any protocol shares then scale by
+    /// the same divisor (OtterSec #96). A legacy vault holds no protocol state and passes
+    /// `&mut None`.
     fn apply_management_fee_only(
         &mut self,
         vault_protocol: &mut Option<RefMut<VaultProtocol>>,
@@ -520,10 +526,11 @@ impl Vault {
                         .protocol_profit_and_fee_shares
                         .safe_div(_rebase_divisor)?;
 
-                    // #99: the outstanding protocol withdraw request is stored in
-                    // last_protocol_withdraw_request.shares; it must scale by the same divisor,
-                    // otherwise a stale request exceeds the rebased supply and permanently locks
-                    // the protocol's cancel/execute/replace paths.
+                    // last_protocol_withdraw_request.shares holds the outstanding protocol
+                    // withdraw request. It must scale by the same divisor (OtterSec #99). A
+                    // stale request
+                    // otherwise exceeds the rebased supply, and the protocol cancel, execute and
+                    // replace paths stop working.
                     if vp.last_protocol_withdraw_request.shares != 0 {
                         vp.last_protocol_withdraw_request.rebase(_rebase_divisor)?;
                     }
@@ -548,18 +555,18 @@ impl Vault {
 
     /// Vault NAV, denominated in `spot_market_index`'s token.
     ///
-    /// A CALLER WHOSE RESULT REACHES SHARE MATH MUST FIRST run the `refresh_velocity_spot_market!`
+    /// A caller whose result reaches share math must first run the `refresh_velocity_spot_market!`
     /// macro. See [`crate::velocity_cpi::refresh_spot_markets_that_price_equity`].
     ///
     /// `manager_borrow`, `manager_repay` and `manager_update_borrow` are the exceptions. They read
-    /// equity only to populate event fields, so a stale index misreports a log and nothing else.
+    /// equity only to fill event fields, so a stale index misreports a log and nothing else.
     /// Nothing enforces that split, so a new handler that prices shares must add the macro.
     ///
-    /// This function values every velocity spot position through its market's STORED cumulative
-    /// index, and an isolated perp position's collateral through the quote spot market's. A market
-    /// that has not accrued since the last crank therefore misprices that position: a deposit
-    /// reads low by the unbooked lender interest, and a borrow reads low as a liability, which
-    /// reads NAV high. Pricing shares against a stale NAV overmints for entrants, and misprices
+    /// This function values every velocity spot position through its market's stored cumulative
+    /// index, and an isolated perp position's collateral through the quote spot market's index. A
+    /// market that has not accrued since the last crank therefore misprices that position. A
+    /// deposit reads low by the unbooked lender interest. A borrow reads low as a liability, which
+    /// reads NAV high. Pricing shares against a stale NAV overmints for entrants, and it misprices
     /// withdraw requests and cancellations (OtterSec #136/#137).
     ///
     /// The vaults program cannot advance an index itself. Only the owning program may write a
@@ -568,8 +575,8 @@ impl Vault {
     /// Two writes still move an index outside that refresh, and neither needs one. A carveout too
     /// small to convert to one token defers its whole interval, so the index stays put and the
     /// unbooked amount stays under one token of the carveout divided by its factor. A spot
-    /// bankruptcy haircuts depositors by lowering `cumulative_deposit_interest` directly, in the
-    /// same instruction as the loss, so it leaves nothing unbooked to catch up on.
+    /// bankruptcy reduces depositor value by lowering `cumulative_deposit_interest` directly, in
+    /// the same instruction as the loss, so it leaves nothing unbooked to catch up on.
     pub fn calculate_equity(
         &self,
         user: &User,
@@ -590,17 +597,17 @@ impl Vault {
 
         let spot_market = maps.spot_market_map.get_ref(&self.spot_market_index)?;
         let spot_market_precision = spot_market.get_precision().cast::<i128>()?;
-        // Fetch the denomination-market oracle WITH validity and gate on it before
-        // using it as the NAV divisor. `calculate_user_equity` above only validates
-        // oracles backing *held* positions and skips an "available" (zero-balance,
-        // no-open-orders) spot position — so if the vault holds no denomination
-        // position, that oracle would otherwise never be checked, and a raw
-        // `get_price_data` let a stale-high price shrink NAV and overmint shares
-        // (OtterSec #94). Use the same policy the margin walk applies to the
-        // position oracles feeding `all_oracles_valid`: `MarketType::Spot` +
-        // `VelocityAction::MarginCalc` (rejects NonPositive / TooVolatile /
-        // TooUncertain / StaleForMargin), keeping both sides of the equity
-        // computation consistent.
+        // Read the denomination-market oracle with its validity, and gate on that
+        // validity before the price becomes the NAV divisor. `calculate_user_equity`
+        // above validates only the oracles behind held positions. It skips an
+        // available spot position, which holds a zero balance and no open orders. A
+        // vault that holds no denomination position therefore never checks that
+        // oracle, and a stale high price shrinks NAV and overmints shares
+        // (OtterSec #94). Apply the policy the margin walk applies to the position
+        // oracles behind `all_oracles_valid`: `MarketType::Spot` with
+        // `VelocityAction::MarginCalc`. That policy rejects NonPositive, TooVolatile,
+        // TooUncertain and StaleForMargin, so both sides of the equity computation
+        // use one rule.
         let (oracle_price_data, oracle_validity) = maps.oracle_map.get_price_data_and_validity(
             MarketType::Spot,
             spot_market.market_index,

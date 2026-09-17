@@ -825,14 +825,15 @@ const main = async (): Promise<void> => {
 	/**
 	 * A user's resting CLOB orders, per market.
 	 *
-	 * These have no `User.orders` slot to read them out of — a book order
-	 * lives on the book — so this is the answer to "what am I resting". The
-	 * book-publisher writes one key per user per market and republishes only
-	 * when that user's set actually changes, so the cached document is
-	 * current without the fan-out of a per-tick rewrite.
+	 * A book order lives on the book and has no `User.orders` slot to read it
+	 * out of, so this route reports what a user is resting. The book publisher
+	 * writes one key per user per market and republishes only when that user's
+	 * set changes. The cached document therefore stays current without a rewrite
+	 * on every tick.
 	 *
-	 * `marketIndexes` is optional; omitted, every perp market is read. Markets
-	 * the user rests nothing in have no key and are simply absent.
+	 * `marketIndexes` is optional. When it is omitted, every perp market is
+	 * read. A market the user rests nothing in has no key and is absent from the
+	 * result.
 	 */
 	app.get('/userOrders', async (req, res, next) => {
 		try {

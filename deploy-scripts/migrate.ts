@@ -1,28 +1,26 @@
 /**
- * One command to run after a program upgrade: everything on-chain that has
- * to change to match the new code, in dependency order, idempotent, with a
- * dry run.
- *
- * The point is that there is exactly one thing to remember at deploy time.
- * Every migration this branch introduced is a step below; adding a new one
- * means adding a step here, not a note in a runbook.
+ * Run this after a program upgrade. It applies every on-chain change the new
+ * code needs, in dependency order.
  *
  *   bun run deploy-scripts/migrate.ts --url <rpc> --keypair <path> [--dry-run]
  *
  * Steps:
- *   1. resize — grow every velocity-owned zero-copy account whose struct
- *      gained fields (`extend_account` resolves the target size from the
- *      discriminator, so this covers past and future growth uniformly).
- *   2. liq coverage — create + sync relay liquidation conditions for every
- *      user with exposure. New users get theirs from `initialize_user`;
- *      this backfills everyone who predates that.
- *   3. watches — register the relay `WatchV0` records that make all of the
- *      above discoverable: market crank conditions, per-quoter cross
- *      conditions, and the per-user liquidation conditions from step 2.
+ *   1. resize: grow every velocity-owned zero-copy account whose struct
+ *      gained fields. `extend_account` resolves the target size from the
+ *      discriminator, so this step covers past and future growth the same
+ *      way.
+ *   2. liq coverage: create and sync relay liquidation conditions for every
+ *      user with exposure. `initialize_user` creates them for a new user.
+ *      This step backfills the users that predate that field.
+ *   3. watches: register the relay `WatchV0` records that make the blocks
+ *      above discoverable. Those are the market crank conditions, the
+ *      per-quoter cross conditions, and the per-user liquidation conditions
+ *      from step 2.
  *
- * Safe to re-run: every step checks on-chain state first and skips what is
- * already correct, so a partial run (rate limit, laptop lid) is resumed by
- * running it again.
+ * Every step reads on-chain state first and skips what is already correct. A
+ * run that stops part way is resumed by running it again.
+ *
+ * A new migration belongs here as a step, not in a runbook.
  */
 import { createHash } from 'crypto';
 import * as fs from 'fs';
@@ -52,12 +50,14 @@ const RELAY_PROGRAM = new PublicKey(
 	process.env.RELAY_PROGRAM_ID ?? '4D5tPhw9sqkdkR5CpmP427TH6y9p9AMuKUukUEHn3Mpu'
 );
 const WATCH_V0_LEN = 112;
-/** Block offset within every velocity conditions account (past anchor's disc). */
+/** Offset of the relay block in every velocity conditions account, past the
+ * anchor discriminator. */
 const BLOCK_OFFSET = 8;
 /**
- * Bytes after `UserConditionsV0.sync_payment_lamports`: `syncFallbackSlots`,
- * `positionsDigest`, and the 72-byte tail reserve. Measured from the end so a
- * field added ahead of it does not move the read.
+ * Bytes that follow `UserConditionsV0.sync_payment_lamports`. They are
+ * `sync_fallback_slots`, `positions_digest`, `last_paid_sync_slot`, and the
+ * 64-byte tail reserve. The read is measured from the end of the account, so a
+ * field added ahead of the payment does not move it.
  */
 const BYTES_AFTER_SYNC_PAYMENT = 8 + 8 + 72;
 
@@ -99,19 +99,19 @@ function ixDiscriminator(name: string): Buffer {
 	return createHash('sha256').update(`global:${name}`).digest().subarray(0, 8);
 }
 
-/** Zero-copy accounts `extend_account` knows how to grow, and their sizes in
- * the *current* build. Anything already at or beyond its target is skipped,
- * so this list is a superset — listing a type that never grew is harmless. */
+/** Zero-copy accounts `extend_account` can grow, and their sizes in the
+ * current build. An account already at or beyond its target is skipped, so a
+ * type that never grew is harmless to list. */
 const RESIZABLE: { name: string; size: number }[] = [
 	{ name: 'User', size: 8 + 4496 },
 	{ name: 'perpMarket', size: 8 + 1328 },
 	{ name: 'quoterV0', size: 8 + 784 },
-	// Relay condition hosts. Sizes come from the `sizes_for_the_migration_script`
-	// test in `state/relay_scratch.rs` — run it (`cargo test -p velocity --lib
-	// sizes_for_the_migration_script -- --show-output`) and paste, rather than
-	// working them out by hand. A type missing from (or stale in) this table is
-	// the failure that has no symptom until an account is read at the wrong
-	// offset.
+	// Relay condition hosts. The `sizes_for_the_migration_script` test in
+	// `state/relay_scratch.rs` prints these sizes. Run it and paste the output
+	// rather than working the sizes out by hand:
+	// `cargo test -p velocity --lib sizes_for_the_migration_script -- --show-output`.
+	// A type that is missing or stale here has no symptom until an account is
+	// read at the wrong offset.
 	{ name: 'clobCrankConditionsV0', size: 808 },
 	{ name: 'QuoterCrossConditionsV0', size: 2424 },
 	{ name: 'UserConditionsV0', size: 6040 },
@@ -146,7 +146,7 @@ async function main() {
 	console.log(`velocity ${velocity.toBase58()} @ ${args.url}`);
 	console.log(args.dryRun ? '(dry run — nothing will be sent)\n' : '');
 
-	// ---- 1. resize --------------------------------------------------------
+	// 1. resize
 	const state = PublicKey.findProgramAddressSync(
 		[Buffer.from('velocity_state')],
 		velocity
@@ -184,10 +184,9 @@ async function main() {
 		}
 	}
 
-	// ---- 1b. shared resolver staging --------------------------------------
-	// Every resolver names this account. Until it exists, every relay crank
-	// in the program fails simulation with an owner error, so it comes
-	// before anything that registers a watch.
+	// Every resolver names this account. Until it exists, every relay crank in
+	// the program fails simulation with an owner error. The account therefore
+	// comes before anything that registers a watch.
 	const scratch = getRelayScratchPublicKey(velocity);
 	if (await connection.getAccountInfo(scratch)) {
 		console.log(`\nscratch ${scratch.toBase58()}: already created`);
@@ -208,9 +207,9 @@ async function main() {
 
 	// The treasury every market's crank reservoir refills from. The CLOB crank
 	// resolver and the liquidation-conditions resync both name it, so it has to
-	// exist before either can run. Created inert; pricing and funding are
-	// operator decisions (velocity-admin fees set-crank-treasury, then a plain
-	// SOL transfer).
+	// exist before either one can run. It is created inert. An operator decides
+	// the pricing and the funding with `velocity-admin fees set-crank-treasury`
+	// and a SOL transfer.
 	const treasury = getCrankTreasuryPublicKey(velocity);
 	if (await connection.getAccountInfo(treasury)) {
 		console.log(`\ntreasury ${treasury.toBase58()}: already created`);
@@ -230,13 +229,13 @@ async function main() {
 		]);
 	}
 
-	// ---- 2. liquidation coverage -----------------------------------------
+	// 2. liquidation coverage
 	const userDisc = discriminator('User');
 	const users = await connection.getProgramAccounts(velocity, {
 		filters: [{ memcmp: { offset: 0, bytes: bs58(userDisc) } }],
 	});
 	console.log(`\nliq coverage: ${users.length} user accounts`);
-	// Markets + oracles the sync needs, gathered once.
+	// The markets and oracles the sync needs, read once.
 	const perpMarkets = await connection.getProgramAccounts(velocity, {
 		filters: [
 			{ memcmp: { offset: 0, bytes: bs58(discriminator('PerpMarket')) } },
@@ -244,9 +243,8 @@ async function main() {
 	});
 	const marketOracles = new Map<number, PublicKey>();
 	for (const { account } of perpMarkets) {
-		// Decoded through the IDL rather than by byte offset: layouts move,
-		// and a migration reading the wrong field is worse than one that
-		// fails loudly.
+		// Decode through the IDL rather than by byte offset. Layouts move, and
+		// a migration that reads the wrong field is worse than one that fails.
 		const decoded: any = program.coder.accounts.decode('perpMarket', account.data);
 		marketOracles.set(decoded.marketIndex, decoded.oracle);
 	}
@@ -282,8 +280,9 @@ async function main() {
 				isWritable: false,
 			}))
 		);
-		// `SyncLiqConditionsArgs`: cost units (u32) then the fallback interval.
-		// The lamport fee is derived on chain from `State.transactionFeeRails`.
+		// `SyncLiqConditionsArgs` is the cost units as a u32, then the fallback
+		// interval in slots. The program derives the lamport fee from
+		// `State.transactionFeeRails`.
 		const argsBuf = Buffer.alloc(12);
 		argsBuf.writeUInt32LE(args.syncCostUnits, 0);
 		argsBuf.writeBigUInt64LE(args.fallbackSlots, 4);
@@ -318,8 +317,8 @@ async function main() {
 			const floor = await connection.getMinimumBalanceForRentExemption(
 				info?.data.length ?? 7272
 			);
-			// Fifty syncs' worth. The fee is priced on chain, so read what the
-			// account was actually written with rather than restating it.
+			// Fund fifty syncs. The program prices the fee, so read the value
+			// the account holds rather than restating it here.
 			const paid = info
 				? Number(
 						info.data.readBigUInt64LE(
@@ -343,17 +342,17 @@ async function main() {
 	}
 	console.log(`liq coverage: ${covered} accounts with exposure`);
 
-	// ---- 3. watches for market + quoter conditions ------------------------
+	// 3. watches for the market and quoter conditions
 	console.log('');
 	for (const [marketIndex] of marketOracles) {
 		const conditions = getClobCrankConditionsPublicKey(velocity, marketIndex);
 		const info = await connection.getAccountInfo(conditions);
 		if (!info) continue;
 		await ensureWatch(connection, provider, payer, conditions, act);
-		// The book hosts the four conditions that describe itself, so it needs
-		// a watch of its own. Where its block sits and which account it is are
-		// both recorded on the conditions above, by the attach that registered
-		// velocity's resolvers there.
+		// The book hosts the four conditions that describe the book, so it
+		// needs a watch of its own. The attach that registered velocity's
+		// resolvers recorded where the book's block sits on the conditions
+		// account above.
 		const decoded = program.coder.accounts.decode(
 			'clobCrankConditionsV0',
 			info.data
@@ -390,8 +389,7 @@ async function main() {
 	if (plan.length > 40) console.log(`  … ${plan.length - 40} more`);
 }
 
-/** The market's book account: its perp market names the CLOB quoter entry,
- * and the entry names the book as its response account. */
+/** The book account the perp market names. */
 async function clobBookFor(
 	connection: Connection,
 	velocity: PublicKey,
@@ -401,7 +399,6 @@ async function clobBookFor(
 	const perpMarket = getPerpMarketPublicKeySync(velocity, marketIndex);
 	const marketInfo = await connection.getAccountInfo(perpMarket);
 	if (!marketInfo) return undefined;
-	// The market stores its book directly.
 	const { clobMarket } = program.coder.accounts.decode(
 		'perpMarket',
 		marketInfo.data
@@ -410,8 +407,8 @@ async function clobBookFor(
 	return new PublicKey(clobMarket);
 }
 
-/** Register a relay watch over a conditions block, unless one already
- * exists for that (target, offset). */
+/** Register a relay watch over a conditions block, unless the registry
+ * already holds a watch on that target. */
 async function ensureWatch(
 	connection: Connection,
 	provider: AnchorProvider,
@@ -424,8 +421,8 @@ async function ensureWatch(
 	) => Promise<void>,
 	blockOffset: number = BLOCK_OFFSET
 ) {
-	// WatchV0 leads with target_program then target, so the registry is
-	// queryable by target without decoding.
+	// `WatchV0` holds `target_program` and then `target`, so a memcmp finds
+	// every watch on a target without decoding the account.
 	const existing = await connection.getProgramAccounts(RELAY_PROGRAM, {
 		filters: [{ memcmp: { offset: 40, bytes: target.toBase58() } }],
 		dataSlice: { offset: 0, length: 0 },
@@ -474,8 +471,6 @@ async function getMultipleAccountsChunked(
 }
 
 function bs58(buffer: Buffer): string {
-	// web3.js accepts base58 for memcmp; use its own encoder via PublicKey
-	// when the payload is 32 bytes, otherwise fall back to bs58 of 8 bytes.
 	// eslint-disable-next-line @typescript-eslint/no-var-requires
 	const bs58lib = require('bs58');
 	return bs58lib.default ? bs58lib.default.encode(buffer) : bs58lib.encode(buffer);

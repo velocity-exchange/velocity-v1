@@ -1,15 +1,14 @@
 # Wire fixtures
 
-One file per payload that crosses a language boundary, and the reason each is here rather than
-written inline in a test.
+One file per payload that crosses a language boundary.
 
 A producer test that builds its own fixture and a consumer test that builds its own are blind to
-each other: a field the producer stopped emitting is still in the consumer's literal, both suites
-pass, and the wire is broken. So the fixture is the declaration, checked in once, and both sides
-assert against it — the Rust producer that it emits exactly this, the TypeScript consumer that it
-reads exactly this.
+each other. A field the producer stopped emitting stays in the consumer's literal, both suites
+pass, and the wire is broken. The fixture is the one declaration instead. The Rust producer asserts
+that it emits exactly this, and the TypeScript consumer asserts that it reads exactly this.
 
-Changing the payload means changing the fixture, which fails whichever side was not changed with it.
+A change to the payload means a change to the fixture. That fails whichever side was not changed
+with it.
 
 | File | Produced by | Consumed by |
 | --- | --- | --- |

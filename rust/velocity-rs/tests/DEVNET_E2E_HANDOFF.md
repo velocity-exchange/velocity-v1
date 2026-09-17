@@ -1,20 +1,19 @@
-# Devnet E2E — CI reliability & orchestration handoff
+# Devnet end-to-end tests: CI reliability and orchestration
 
-Status for `tests/devnet_e2e.rs` (gated `--features rpc_tests`). This doc explains
-**which scenarios are deterministic, which depend on uncontrollable market/infra
-state, and exactly what it would take to make each of the latter deterministic.**
+Status for `tests/devnet_e2e.rs`, which the `rpc_tests` feature gates. This document says
+**which scenarios are deterministic, which depend on market or infrastructure state nobody
+can control from CI, and what it would take to make each of the latter deterministic.**
 
-It supersedes the earlier "taker-vs-AMM" handoff: that investigation is resolved
-(see "Root cause" below) — the blocker was **auction sanitization + TWAP lag**, NOT
-the rust-filler. Two earlier hypotheses are now **refuted**:
+The taker-versus-AMM investigation is closed. The blocker is **auction sanitization plus
+TWAP lag**, and not the rust-filler. Two facts rule the rust-filler out:
 
-- ~~(A) the rust-filler's DLOB doesn't update from gRPC streaming~~ — FALSE. Run
-  locally in dry-run, the filler streams `User` accounts over Helius LaserStream
-  gRPC and the DLOB sees resting limit makers AND a lone taker auction order
-  (`taker_bids=1, kind=Market`) within a slot of placement.
-- ~~(B) `find_crosses_for_auctions` needs resting makers to produce a lone-taker
-  vAMM cross~~ — FALSE. `MakerCrosses::is_empty()` is `orders.is_empty() &&
-  !has_vamm_cross`, so a lone taker with `has_vamm_cross` is kept.
+- The filler's DLOB does update from gRPC streaming. Run locally in dry-run, the filler
+  streams `User` accounts over Helius LaserStream gRPC, and the DLOB sees resting limit
+  makers and a lone taker auction order (`taker_bids=1, kind=Market`) within a slot of
+  placement.
+- `find_crosses_for_auctions` does not need resting makers to produce a lone-taker vAMM
+  cross. `MakerCrosses::is_empty()` is `orders.is_empty() && !has_vamm_cross`, so it keeps
+  a lone taker that has `has_vamm_cross`.
 
 ## How to run
 
@@ -28,23 +27,24 @@ cargo test -p velocity-rs --test devnet_e2e --features rpc_tests -- --test-threa
 cargo test -p velocity-rs --test devnet_e2e --features rpc_tests -- --include-ignored --test-threads=1 --nocapture
 ```
 
-Devnet: program `vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P`. Markets: SOL-PERP =
-perp 0, dUSDT = spot 0 (6dp), SOL = spot 1 (9dp).
+On devnet the program is `vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P`. SOL-PERP is perp 0,
+dUSDT is spot 0 with 6 decimals, and SOL is spot 1 with 9 decimals.
 
-## Provisioning the deployed MM / taker bots
+## Provisioning the deployed market-maker and taker bots
 
-The `rust-quoter-bot` (MM) and `rust-taker-bot` run on subaccounts **1** and **2**
-of the filler authority (sub 0 = filler). Before they can quote/trade they need
-those subaccounts initialized and funded with dUSDT collateral. The one-shot
-`fund_mm_taker_subaccounts` (`#[ignore]`, in `devnet_e2e.rs`) does init + faucet +
-deposit for sub 1 and sub 2 via `ensure_subaccount` + `fund_and_deposit_dusdt`.
+The `rust-quoter-bot`, which is the market maker, and `rust-taker-bot` run on subaccounts
+**1** and **2** of the filler authority. Subaccount 0 is the filler. Before they can quote
+or trade, those subaccounts need to be initialized and funded with dUSDT collateral. The
+one-shot `fund_mm_taker_subaccounts` in `devnet_e2e.rs`, marked `#[ignore]`, runs the init,
+the faucet and the deposit for subaccounts 1 and 2 through `ensure_subaccount` and
+`fund_and_deposit_dusdt`.
 
-It is a plain set of devnet txs signed by `TEST_PRIVATE_KEY` — run it **with the
-filler key**, from anywhere with a devnet RPC. It does **not** need cluster access
-(the keep-rs pod only ships the `keeprs` binary, which can `--init-user` but cannot
-faucet/deposit). The only real prerequisite is the **filler private key**
-(in AWS Secrets Manager `velocity/non-prod/master-secret-store`, key
-`FILLER_PRIVATE_KEY` — needs Secrets Manager read, not kube access):
+It is a plain set of devnet transactions signed by `TEST_PRIVATE_KEY`. Run it **with the
+filler key**, from anywhere with a devnet RPC. It does **not** need cluster access. The
+keep-rs pod ships only the `keeprs` binary, which can run `--init-user` but cannot use the
+faucet or deposit. The one prerequisite is the **filler private key**, in AWS Secrets
+Manager under `velocity/non-prod/master-secret-store`, key `FILLER_PRIVATE_KEY`. That needs
+Secrets Manager read access, not kube access.
 
 ```bash
 cd rust
@@ -54,174 +54,189 @@ FUND_DUSDT=5000 \
   fund_mm_taker_subaccounts -- --ignored --nocapture
 ```
 
-## CI topology (why "unreliable" matters per job)
+## CI topology, and why "unreliable" matters per job
 
-- **`rust-live-tests`** (`.github/workflows/main.yml`) — nightly cron + manual
-  dispatch; runs `--features rpc_tests` **without** `--include-ignored`. So it runs
-  every **non-`#[ignore]`** test. Non-gating: never blocks PRs.
-- **`devnet-e2e`** — manual dispatch only; runs the devnet suite **with**
-  `--include-ignored` (everything).
-- PRs run neither. The suite only has a funded **`TEST_PRIVATE_KEY`** (a normal
-  user, **not** the program admin and **not** an oracle authority), so a CI run
-  **cannot set any market/admin/oracle state**. That single fact is the root of
-  every "unreliable" scenario below.
+- **`rust-live-tests`** in `.github/workflows/main.yml` runs on a nightly cron and on
+  manual dispatch. It runs `--features rpc_tests` **without** `--include-ignored`, so it
+  runs every test that is not `#[ignore]`. It is non-gating and never blocks a PR.
+- **`devnet-e2e`** runs on manual dispatch only. It runs the devnet suite **with**
+  `--include-ignored`, so it runs everything.
+- A PR runs neither. The suite holds only a funded **`TEST_PRIVATE_KEY`**, a normal user
+  that is **not** the program admin and **not** an oracle authority. A CI run therefore
+  **cannot set any market, admin or oracle state**. That single fact is the root of every
+  unreliable scenario below.
 
 ## The design contract
 
-Every scenario whose *outcome* depends on a deployed bot or on market state we
-can't set is written to be **sound, not flaky**: it asserts the parts it CAN
-control (the setup, and any program-level invariant) and treats "the bot/market
-didn't cooperate in time" as **`log::warn!("INCONCLUSIVE…")` + pass**, never a hard
-failure or a silent multi-minute timeout. So in CI these scenarios are *green but
-may verify only their setup* on a given night — read the logs, don't trust a bare
-"ok".
+A scenario whose *outcome* depends on a deployed bot, or on market state CI cannot set, is
+written to be **sound rather than flaky**. It asserts the parts it can control, meaning the
+setup and any program-level invariant, and it treats a bot or market that did not cooperate
+in time as a `log::warn!("INCONCLUSIVE…")` and a pass. It never fails hard and never sits in
+a silent multi-minute timeout. So in CI these scenarios are *green but may verify only their
+setup* on a given night. Read the logs rather than a bare "ok".
 
-`#[ignore]` is reserved for the stricter case where the **setup itself cannot be
-established on devnet right now** (so the test can't even reach its warn-skip).
+`#[ignore]` covers the stricter case where the **setup itself cannot be established on
+devnet right now**, so the test cannot even reach its warn-skip.
 
-## Reliable scenarios (deterministic — trust these)
+## Reliable scenarios, deterministic enough to trust
 
 | Test | Why deterministic |
 |---|---|
-| `deposit_into_spot_market` | pure user action; exact balance assert |
-| `withdraw_from_spot_market` | pure user action; exact balance assert |
-| `dlob_maker_taker_filled_by_filler` | matched maker↔taker; deployed filler reliably matches crossing limit orders (the limit path, unlike a market-order auction, is not sanitized out — see Root cause) |
-| `mark_twap_crank_advances` | the mark-twap crank runs ~every 10s; asserts a bounded ts advance |
-| `taker_fills_against_amm` (the **assertions**) | the sanitization regression locks always run; only the *fill* is gated (next table). They are deterministic **only because the requested band is built from the live baseline** — see the note below |
+| `deposit_into_spot_market` | A pure user action, with an exact balance assertion |
+| `withdraw_from_spot_market` | A pure user action, with an exact balance assertion |
+| `dlob_maker_taker_filled_by_filler` | A matched maker and taker. The deployed filler reliably matches crossing limit orders. The limit path is not sanitized out, unlike a market-order auction. See scenario 1 |
+| `mark_twap_crank_advances` | The mark-twap crank runs about every 10 seconds. The test asserts a bounded timestamp advance |
+| `taker_fills_against_amm` (the **assertions**) | The sanitization regression locks always run, and only the *fill* is gated. See the next table. They are deterministic **only because the requested band is built from the live baseline**. See the note below |
 
-## Unreliable scenarios — what each depends on and how to orchestrate it
+## Unreliable scenarios: what each depends on, and how to orchestrate it
 
-All of these need market/admin/oracle/bot state a `TEST_PRIVATE_KEY`-only CI run
-can't set. "Orchestrate" = what it would take to make the outcome deterministic.
+Each of these needs market, admin, oracle or bot state that a CI run holding only
+`TEST_PRIVATE_KEY` cannot set. "Orchestrate" means what it would take to make the outcome
+deterministic.
 
-### 1. `taker_fills_against_amm` — *the fill* (lone taker vs AMM, low-risk auction route)
+### 1. `taker_fills_against_amm`, *the fill*: a lone taker against the AMM, low-risk auction route
 - **Depends on:** the **sanitized** auction price out-pricing the live `vamm_ask`.
-- **Why uncontrollable:** a market order's auction params are rewritten on
-  placement (`update_perp_auction_params_market_and_oracle_orders`), clamped to
-  `get_perp_baseline_start_end_price_offset(market, dir, 2)`. The baseline END is
-  built from the **bid/ask price TWAPs**, an EWMA over the ~1h funding period
-  (`calculate_new_twap`). On a low-volume devnet those TWAPs **lag the live
-  oracle**, while `vamm_ask` tracks the **live** reserve price → sanitized end
-  (~oracle+0.5%) sits *below* `vamm_ask` (~oracle+0.73%), so the cross never
-  happens. (Observed: `start==end==oracle+0.50%`, `vamm_ask=oracle+0.73%`.)
-- **The baseline is not stable — never hardcode a band against it.** The same
-  formula also produces a baseline END around **oracle+21%**: it is
-  `(last_ask_price_twap - oracle_twap) + baseline_end_price_buffer`, and the buffer
-  is `2 * max(mark_std, oracle_std, amm_spread * twap)` clamped by the contract tier
-  (`get_auction_end_min_max_divisors`, 1%..10% of price for Speculative). Devnet
-  market 0 has sat with its mark TWAP ~10% above the oracle TWAP and
-  `amm.long_spread` at ~11%, which pins the buffer to the 10% ceiling. The old test
-  hardcoded `+2% → +15%` as "aggressive"; with the baseline end at +19.6% the top of
-  the band was *milder* than the baseline, so only the start was clamped and the
-  spread assertion failed every night from 17 July with the misleading message
-  "sanitization logic changed". The test now reads the market first and offsets past
-  the live baseline by the tier's buffer ceiling plus 4% on both ends, so the request
-  still clears the threshold if the baseline rises before the placement slot.
-- **Reads that must be ordered against a tx cannot come from the cache.** `TestCtx`
-  subscribes to all three markets, so `get_perp_market_account` serves the websocket
-  cache, whose slot has no ordering guarantee against a just-confirmed tx. The
-  baseline bracket needs one read strictly before placement and one strictly after,
-  so it uses `fetch_perp_market` (raw `rpc().get_account_data` + `try_deser_zero_copy`,
-  not anchor's `try_deserialize`, which panics on 16-aligned zero-copy structs
-  off-chain). Cache reads are fine everywhere the ordering does not matter.
-- **To orchestrate (any one):**
-  1. **Warm the TWAPs** to the live price first — loop matched maker↔taker fills
-     (the reliable `dlob_maker_taker_filled_by_filler` path) at ~oracle. Slow: the
-     EWMA closes only ~0.3% of the gap per ~10s crank, so ~5–7 min of sustained
-     flow. Non-deterministic on a quiet night.
-  2. **Admin reset** `last_bid_price_twap` / `last_ask_price_twap` to oracle
-     (admin path exists, `instructions/admin.rs`) — instant, needs the **admin key**.
-  3. **Admin shrink** `amm.long_spread` so `vamm_ask` drops below the sanitized end
-     — needs the admin key.
-- Today the test gates on `sanitized_end > vamm_ask`; if false it warn-skips with
-  the exact numbers (no 120s timeout).
+- **Why nobody can control it:** placement rewrites a market order's auction params in
+  `update_perp_auction_params_market_and_oracle_orders` and clamps them to
+  `get_perp_baseline_start_end_price_offset(market, dir, 2)`. The baseline end price comes
+  from the **bid and ask price TWAPs**, an EWMA over the roughly one-hour funding period in
+  `calculate_new_twap`. On a low-volume devnet those TWAPs **lag the live oracle**, while
+  `vamm_ask` tracks the **live** reserve price. The sanitized end, around oracle plus 0.5%,
+  then sits *below* `vamm_ask`, around oracle plus 0.73%, so the cross never happens. One
+  observation: `start == end == oracle + 0.50%` against `vamm_ask = oracle + 0.73%`.
+- **The baseline is not stable. Never hardcode a band against it.** The same formula also
+  produces a baseline end around **oracle plus 21%**. The end is
+  `(last_ask_price_twap - oracle_twap) + baseline_end_price_buffer`, and the buffer is
+  `2 * max(mark_std, oracle_std, amm_spread * twap)`, clamped by the contract tier in
+  `get_auction_end_min_max_divisors`, which is 1% to 10% of price for Speculative. Devnet
+  market 0 has sat with its mark TWAP about 10% above the oracle TWAP and `amm.long_spread`
+  around 11%, which pins the buffer to the 10% ceiling. An earlier version of the test
+  hardcoded a band of +2% to +15% as "aggressive". With the baseline end at +19.6% the top
+  of that band was *milder* than the baseline, so only the start was clamped and the spread
+  assertion failed every night from 17 July, with the misleading message "sanitization logic
+  changed". The test now reads the market first and offsets past the live baseline by the
+  tier's buffer ceiling plus 4% on both ends, so the request still clears the threshold when
+  the baseline rises before the placement slot.
+- **A read that must be ordered against a transaction cannot come from the cache.**
+  `TestCtx` subscribes to all three markets, so `get_perp_market_account` serves the
+  websocket cache, and that cache's slot has no ordering guarantee against a just-confirmed
+  transaction. The baseline bracket needs one read strictly before placement and one
+  strictly after, so it uses `fetch_perp_market`, a raw `rpc().get_account_data` plus
+  `try_deser_zero_copy`. It does not use anchor's `try_deserialize`, which panics on
+  16-aligned zero-copy structs off-chain. A cache read is fine everywhere the ordering does
+  not matter.
+- **To orchestrate, do any one of:**
+  1. **Warm the TWAPs** to the live price first. Loop matched maker and taker fills through
+     the reliable `dlob_maker_taker_filled_by_filler` path at about the oracle price. This
+     is slow. The EWMA closes only about 0.3% of the gap per 10-second crank, so it needs 5
+     to 7 minutes of sustained flow, and it is not deterministic on a quiet night.
+  2. **Reset** `last_bid_price_twap` and `last_ask_price_twap` to the oracle price. The
+     admin path exists in `instructions/admin.rs`. It is instant and needs the **admin
+     key**.
+  3. **Shrink** `amm.long_spread` so `vamm_ask` drops below the sanitized end. This needs
+     the admin key.
+- Today the test gates on `sanitized_end > vamm_ask`. When that is false it warn-skips with
+  the exact numbers, and it does not wait out a 120-second timeout.
 
-### 2. `taker_fills_against_amm_via_jit` — lone taker vs AMM, JIT route
-- **Depends on:** `amm_jit_intensity > 0` **and** the AMM holding inventory on the
-  side a taker would relieve: `base_asset_amount_with_amm` (== net user position)
-  beyond `±order_step_size`.
-- **Why uncontrollable:** `jit_intensity` is set by init-devnet (currently 100),
-  but the AMM is **flat** (`base_asset_amount_with_amm == 0`) with no flow, so
-  there's nothing to JIT-offload. Seeding inventory needs prior taker flow against
-  the AMM — which is itself gated (see #1) — i.e. a chicken-and-egg.
-- **To orchestrate (any one):**
-  1. **Admin-set** `base_asset_amount_with_amm` (or run a quoter + sustained flow
-     to build it) so the AMM is net long/short past `order_step_size`.
-  2. Have a **second-authority** account open a position the AMM must take (needs a
-     non-`TEST_PRIVATE_KEY` funded key to avoid the duplicate-`UserStats` issue).
-- Today the test reads live inventory, picks the direction the AMM would offload,
-  fills via `place_and_take` in-tx; warn-skips when the AMM is flat or jit off.
+### 2. `taker_fills_against_amm_via_jit`: a lone taker against the AMM, JIT route
+- **Depends on:** `amm_jit_intensity > 0` **and** the AMM holding inventory on the side a
+  taker would relieve, meaning `base_asset_amount_with_amm`, which is the net user position,
+  beyond plus or minus `order_step_size`.
+- **Why nobody can control it:** init-devnet sets `jit_intensity`, currently to 100, but the
+  AMM is **flat**, with `base_asset_amount_with_amm == 0` and no flow, so there is nothing
+  to offload through JIT. Seeding inventory needs prior taker flow against the AMM, which
+  scenario 1 already gates. The two block each other.
+- **To orchestrate, do either:**
+  1. **Set** `base_asset_amount_with_amm` through the admin path, or run a quoter and
+     sustained flow to build it, so the AMM is net long or net short past
+     `order_step_size`.
+  2. Have a **second-authority** account open a position the AMM must take. This needs a
+     funded key other than `TEST_PRIVATE_KEY`, to avoid the duplicate `UserStats` problem.
+- Today the test reads the live inventory, picks the direction the AMM would offload, and
+  fills through `place_and_take` in the same transaction. It warn-skips when the AMM is flat
+  or JIT is off.
 
-### 3. `bad_perp_trade_gets_liquidated` — deployed liquidator
-- **Depends on:** adverse **oracle drift** moving SOL enough to push the position
-  past maintenance within the timeout, **and** a running liquidator.
-- **Why uncontrollable:** the oracle is external (pyth/switchboard); the program
-  won't let you open an already-underwater position; CI can't move the price.
-  (Setup is fine — the +1 SOL position opens via the filler reliably.)
-- **To orchestrate (any one):**
-  1. **Controllable/mock oracle** on devnet (push an adverse price via the oracle
-     authority).
-  2. **Admin-raise** the market's `margin_ratio_maintenance` so the existing
-     leverage breaches immediately, then let the deployed liquidator act.
-  Either needs an admin/oracle authority + a running liquidator.
+### 3. `bad_perp_trade_gets_liquidated`: the deployed liquidator
+- **Depends on:** adverse **oracle drift** moving SOL far enough to push the position past
+  maintenance within the timeout, **and** a running liquidator.
+- **Why nobody can control it:** the oracle is external, the program refuses to open an
+  already-underwater position, and CI cannot move the price. The setup is fine, because the
+  +1 SOL position opens reliably through the filler.
+- **To orchestrate, do either:**
+  1. Use a **controllable or mock oracle** on devnet and push an adverse price through the
+     oracle authority.
+  2. **Raise** the market's `margin_ratio_maintenance` so the existing leverage breaches
+     immediately, then let the deployed liquidator act.
 
-### 4. `bad_spot_borrow_gets_liquidated` — deployed liquidator (spot) — `#[ignore]`
-- **Depends on:** a meaningful SOL (spot 1) borrow being **allowed by the daily
-  withdraw guard**, then a maintenance breach (same oracle-drift problem as #4).
-- **Why uncontrollable:** NOT liquidity. Verified live by seeding the vault from a
-  lender (the deposit lands — vault held 4 SOL) and then borrowing: the borrow
-  fails with **`DailyWithdrawLimit` (err 6128)** — `max_borrow_token ≈ 1_195_748`
-  (**~0.0012 SOL**) vs a 1 SOL attempt. The cap is derived from the deposit TWAP,
-  which is tiny on a market with no deposit history; a single fresh deposit doesn't
-  lift it (same TWAP-lag shape as #1). The **same guard caps withdraws**, so seeded
-  SOL can't even be pulled back — seeding liquidity is the wrong lever and just
+  Either one needs an admin or oracle authority and a running liquidator.
+
+### 4. `bad_spot_borrow_gets_liquidated`: the deployed spot liquidator, `#[ignore]`
+- **Depends on:** the daily withdraw guard **allowing** a meaningful SOL borrow on spot 1,
+  then a maintenance breach. The maintenance breach hits the same oracle-drift problem as
+  scenario 3.
+- **Why nobody can control it:** the blocker is not liquidity. A live check seeded the vault
+  from a lender, the deposit landed, and the vault held 4 SOL. The borrow still failed with
+  **`DailyWithdrawLimit`, error 6128**, because `max_borrow_token` was about `1_195_748`,
+  which is roughly 0.0012 SOL, against a 1 SOL attempt. The cap comes from the deposit TWAP,
+  which is tiny on a market with no deposit history, and one fresh deposit does not lift it.
+  That is the same TWAP-lag shape as scenario 1. The **same guard caps withdrawals**, so the
+  seeded SOL cannot be pulled back either. Seeding liquidity is the wrong lever and only
   locks SOL.
-- **To orchestrate:** **admin must raise the SOL spot-1 withdraw guard / borrow
-  limit** (or build up deposit-TWAP history over time). Then borrow against dUSDT
-  collateral and warn-skip the oracle-drift liquidation as in #4. A repay step is
-  also needed in cleanup (the borrowed SOL can't be returned without acquiring SOL;
-  `cleanup` only cancels orders).
-- **Note:** the experiment left ~4 SOL of the test authority's own SOL deposited in
-  spot-1 (locked behind the same withdraw guard; recoverable only once the guard is
-  raised).
+- **To orchestrate:** an **admin must raise the SOL spot-1 withdraw guard and borrow
+  limit**, or the deposit-TWAP history must build up over time. Then borrow against dUSDT
+  collateral and warn-skip the oracle-drift liquidation as scenario 3 does. Cleanup also
+  needs a repay step, because the borrowed SOL cannot be returned without acquiring SOL, and
+  `cleanup` only cancels orders.
+- **Note:** that check left about 4 SOL of the test authority's own SOL deposited in spot 1.
+  It sits behind the same withdraw guard and is recoverable only once the guard is raised.
 
-### 5. `unsettled_pnl_gets_settled` — deployed userPnlSettler
-- **Depends on:** the deployed **userPnlSettler being up** and the banked pnl
-  exceeding **its settle threshold**.
-- **Why uncontrollable:** external bot liveness + an off-chain threshold we don't
-  control. (Setup is fine — open+close via the filler banks unsettled pnl reliably.)
-- **To orchestrate (any one):**
-  1. Size the position so realized pnl clears the settler's threshold (requires
-     knowing/controlling that threshold).
-  2. Drive `settle_pnl` **from the test** (deterministic) — but then it verifies
-     our crank, not the deployed settler.
+### 5. `unsettled_pnl_gets_settled`: the deployed userPnlSettler
+- **Depends on:** the deployed **userPnlSettler being up** and the banked PnL exceeding
+  **its settle threshold**.
+- **Why nobody can control it:** external bot liveness, and an off-chain threshold nobody
+  here controls. The setup is fine, because an open and close through the filler reliably
+  banks unsettled PnL.
+- **To orchestrate, do either:**
+  1. Size the position so the realized PnL clears the settler's threshold. This requires
+     knowing or controlling that threshold.
+  2. Drive `settle_pnl` **from the test**, which is deterministic. It then verifies this
+     crank rather than the deployed settler.
 
-### 6. `swift_taker_filled_by_deployed_maker` — swift server + deployed maker — `#[ignore]`
-- **Depends on:** the swift **HTTP order server being reachable** and a deployed
-  swift maker filling.
-- **Why uncontrollable:** `swift.master.velocity.exchange/orders` **intermittently
-  502s** from the ALB (seen both 422 = up and 502 minutes apart) — server-side
-  reliability. (Host is correct; the swapped `master.swift.…` does not resolve; the
-  WS feed on the right host works for the filler.) Hence `#[ignore]`.
-- **To orchestrate:** stabilize the swift HTTP backend (ops), and run a swift maker
-  — or downgrade the test to "POST accepted (2xx)" without asserting a fill.
+### 6. `swift_taker_filled_by_deployed_maker`: the swift server and a deployed maker, `#[ignore]`
+- **Depends on:** the swift **HTTP order server being reachable**, and a deployed swift
+  maker filling.
+- **Why nobody can control it:** `swift.master.velocity.exchange/orders` returns an
+  intermittent **502** from the ALB. One check saw a 422, meaning the server was up, and a
+  502 minutes apart. This is server-side reliability. The host is correct, the swapped
+  `master.swift.…` does not resolve, and the websocket feed on the right host works for the
+  filler. Hence the `#[ignore]`.
+- **To orchestrate:** stabilize the swift HTTP backend, which is an ops task, and run a
+  swift maker. The alternative is to weaken the test to "POST accepted with a 2xx" without
+  asserting a fill.
 
-## What deterministic orchestration generally requires (not available to CI today)
+## What deterministic orchestration needs, and CI does not have
 
-The CI run holds only a funded `TEST_PRIVATE_KEY`. Making the above deterministic
-needs one or more of: **the program admin key** (oracle push / margin / spread /
-jit-intensity / borrow-enable / TWAP reset), **a controllable devnet oracle**,
-**test-pinned bots** (maker / liquidator / settler) rather than ambient prod bots,
-**a second funded authority** (to avoid duplicate-`UserStats` when one side fills
-another), and/or **TWAP warm-up time**. Until some of those exist for the e2e
-environment, the warn-skip contract above is the correct design.
+The CI run holds only a funded `TEST_PRIVATE_KEY`. Making the scenarios above deterministic
+needs one or more of:
 
-## Cleanup / loose ends
-- `keep-rs/.env` is set up to run the filler locally in dry-run for debugging
-  (`MAINNET=false DRY_RUN=true`, Helius LaserStream gRPC, Triton RPC,
-  `SWIFT_WS_URL=wss://swift.master.velocity.exchange`). Not committed (gitignored).
-- If devnet state is wiped/reset, re-run keep-rs `--init-user` so the filler's User
+- **the program admin key**, for an oracle push, margin, spread, jit-intensity,
+  borrow-enable or TWAP reset;
+- **a controllable devnet oracle**;
+- **test-pinned bots** for the maker, liquidator and settler roles, rather than the ambient
+  production bots;
+- **a second funded authority**, to avoid a duplicate `UserStats` when one side fills
+  another;
+- **TWAP warm-up time**.
+
+Until some of those exist for the end-to-end environment, the warn-skip contract above is
+the right design.
+
+## Cleanup and loose ends
+- `keep-rs/.env` runs the filler locally in dry-run for debugging, with `MAINNET=false`,
+  `DRY_RUN=true`, Helius LaserStream gRPC, Triton RPC, and
+  `SWIFT_WS_URL=wss://swift.master.velocity.exchange`. It is gitignored and not committed.
+- After a devnet state wipe or reset, re-run keep-rs `--init-user` so the filler's `User`
   subaccount exists.
-- Infra asks blocking the last two `#[ignore]`s: (a) stabilize the swift HTTP
-  backend, (b) raise the SOL spot-1 daily withdraw guard / borrow limit (currently
-  caps borrows to ~0.0012 SOL — liquidity is fine, the guard is the blocker).
+- Two infrastructure asks block the last two `#[ignore]` tests. First, stabilize the swift
+  HTTP backend. Second, raise the SOL spot-1 daily withdraw guard and borrow limit, which
+  currently caps a borrow at about 0.0012 SOL. Liquidity is fine. The guard is the blocker.

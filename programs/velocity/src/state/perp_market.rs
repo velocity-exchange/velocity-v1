@@ -145,13 +145,13 @@ pub struct FeeLedger {
     pub pending_if_fee: u128,
     /// cumulative fee provision granted to the AMM via `amm_fee_numerator`,
     /// plus the vAMM maker rebate when `FeatureBitFlags::VammMakerRebate` is
-    /// enabled — its backstop-of-last-resort tranche, drawable (and
-    /// decremented) only in bankruptcy. Enabling the rebate bit therefore
-    /// grows the bankruptcy clawback cap by the rebates earned. The AMM's own
-    /// spread/trading capital beyond this provision is never tapped.
+    /// enabled. This is the AMM's last-resort tranche. Only a bankruptcy draws
+    /// it down and decrements it. Enabling the rebate bit therefore grows the
+    /// bankruptcy clawback cap by the rebates earned. The AMM's own spread and
+    /// trading capital beyond this provision is never used.
     /// precision: QUOTE_PRECISION
     pub amm_protocol_fees_received: u128,
-    /// AMM fee provision (including the vAMM maker rebate when enabled)
+    /// AMM fee provision, including the vAMM maker rebate when enabled,
     /// accrued at fill (already booked into the AMM's
     /// `total_fee_minus_distributions`) but not yet tokenized into
     /// `amm.fee_pool` by the sweep. Invariant: `<= amm_protocol_fees_received`.
@@ -192,14 +192,15 @@ impl FeeLedger {
         Ok(())
     }
 
-    /// Move a bankrupt estate's forfeited perp claim to this pool's insurance tranche (OtterSec #145).
+    /// Move a bankrupt estate's forfeited perp claim to this pool's insurance
+    /// tranche (OtterSec #145). Nobody charged a fee here, so
+    /// `total_liquidation_fee` stays put. Only the creditor changes, from a
+    /// bankrupt user to the insurance fund.
     ///
-    /// This is not `accrue_liquidation_fees`, which also raises `total_liquidation_fee`. Nobody
-    /// charged a fee here. Only the creditor changed, from a bankrupt user to the insurance fund.
-    ///
-    /// `pending_if_fee` is already a claim on future PnL-pool inflows, which is what the user's
-    /// unfundable claim was. The swap is therefore equity-neutral: zeroing the user's
-    /// `quote_asset_amount` lowers `market.quote_asset_amount`, and so `net_user_pnl`, which raises the
+    /// `pending_if_fee` is already a claim on future PnL-pool inflows, and so
+    /// was the user's unfundable claim. The swap is therefore equity-neutral.
+    /// Zeroing the user's `quote_asset_amount` lowers
+    /// `market.quote_asset_amount` and so `net_user_pnl`, which raises the
     /// market's excess by the amount this subtracts.
     pub fn accrue_forfeited_claim_to_if(&mut self, amount: u128) -> VelocityResult {
         self.pending_if_fee = self.pending_if_fee.safe_add(amount)?;
@@ -295,17 +296,20 @@ pub struct PerpMarket {
     /// Protocol's cut of a perp liquidation, taken from the liquidatee.
     /// precision: LIQUIDATOR_FEE_PRECISION
     pub protocol_liquidation_fee: u32,
-    /// Additive per-market taker-fee surcharge in tenth-bps (10 = 1bp),
-    /// unsigned: surcharge only (e.g. toxic-flow markets), never a discount.
-    /// A discount could push the taker fee below the maker rebate it must
-    /// fund and revert every match fill; promo discounts go through
-    /// `State.promo_fee_tier` instead. Applied on top of the tier fee before
-    /// `fee_adjustment` scales the sum:
-    /// `taker_fee = (tier_fee + add-on) * (1 +/- fee_adjustment%)`.
-    /// Taker fee only; the maker rebate and the post-only path see
-    /// `fee_adjustment` alone. Occupies 2 bytes of the former 4-byte
-    /// `_padding_buffer` (same offset/alignment on all targets), so existing
-    /// accounts read 0 = no add-on until the admin sets it.
+    /// Additive per-market taker-fee surcharge in tenth-bps. 10 is 1 basis
+    /// point. The field is unsigned, so it can only raise the fee, for example
+    /// on a toxic-flow market. A discount could push the taker fee below the
+    /// maker rebate it must fund, which reverts every match fill. Promo
+    /// discounts go through `State.promo_fee_tier` instead.
+    ///
+    /// The surcharge applies on top of the tier fee, before `fee_adjustment`
+    /// scales the sum:
+    /// `taker_fee = (tier_fee + surcharge) * (1 +/- fee_adjustment%)`.
+    /// The maker rebate and the post-only path see `fee_adjustment` alone.
+    ///
+    /// The field takes 2 bytes of the former 4-byte `_padding_buffer`, at the
+    /// same offset and alignment on all targets. Existing accounts therefore
+    /// read 0, which is no surcharge, until the admin sets it.
     pub taker_fee_addon_tenth_bps: u16,
     pub _padding_buffer: [u8; 2],
     /// The pnl-pool retention buffer the streaming sweep's IF and
@@ -430,26 +434,26 @@ pub struct PerpMarket {
     /// A liquidation that latches a user bankrupt increments it. Both writers
     /// of `PerpPosition.quote_asset_amount` decrement it when that debt
     /// reaches zero: `update_quote_asset_amount` and
-    /// `update_position_and_market`. The count tracks the debt, not the latch:
-    /// an un-latched estate that still owes the market stays booked, because
+    /// `update_position_and_market`. The count tracks the debt, not the latch.
+    /// An un-latched estate that still owes the market stays booked, because
     /// the debt still resolves through the bankruptcy waterfall.
     ///
-    /// While it is above zero the fee sweep withholds the whole
-    /// `pending_if_fee`, not just `get_bankruptcy_if_floor()` — the sweep is
+    /// While the count is above zero the fee sweep withholds the whole
+    /// `pending_if_fee`, not only `get_bankruptcy_if_floor()`. The sweep is
     /// permissionless, so a caller could otherwise drain the first-loss
-    /// tranche between the latch and the resolution and push the loss onto the
-    /// shared insurance fund or into socialization. The freeze is independent
-    /// of open interest and of `bankruptcy_if_floor_pct`, both of which can be
+    /// tranche between the latch and the resolution. The loss then falls on
+    /// the shared insurance fund or on socialization. The freeze does not
+    /// depend on open interest or on `bankruptcy_if_floor_pct`. Both can be
     /// zero exactly when a bankruptcy is pending.
     ///
-    /// Occupies 2 of the 6 bytes the Rust compiler inserts to 8-align
-    /// `last_fill_price`. The remaining 4 stay explicit padding, so every
-    /// later byte offset and the account size are unchanged and existing
-    /// accounts read 0 (no pending claim).
-    ///
-    /// `settle_expired_market_pools_to_revenue_pool` rejects while this count
+    /// `settle_expired_market_pools_to_revenue_pool` rejects while the count
     /// is above zero, because that instruction's final sweep bypasses the
     /// floor.
+    ///
+    /// The field takes 2 of the 6 bytes the Rust compiler inserts to 8-align
+    /// `last_fill_price`. The other 4 stay explicit padding, so every later
+    /// byte offset and the account size are unchanged. Existing accounts read
+    /// 0, which is no pending claim.
     pub pending_bankruptcy_claims: u16,
     /// Explicit padding so the IDL records the 4 bytes the Rust compiler
     /// still inserts to 8-align `last_fill_price`. Without this the JS borsh
@@ -468,24 +472,28 @@ pub struct PerpMarket {
     pub market_config: u8,
     /// the oracle provider information. used to decode/scale the oracle public key
     pub oracle_source: OracleSource,
-    /// Max oracle delay (legacy 400ms units) tolerated by immediate (JIT / auction-skipping)
-    /// AMM fills. Positive is an explicit threshold. `0` disables immediate AMM
-    /// fills entirely. Negative (the init default, `-1`) means unset, which
-    /// resolves by price source: `MM_ORACLE_MIN_WRITE_GAP` for an MM-oracle-sourced
-    /// price (the tightest window the crank can satisfy, since the program refuses
-    /// MM-oracle writes closer together than that) and `0` for an exchange-oracle
-    /// price, which can be same-slot fresh. See `math::oracle::oracle_validity`.
+    /// Max oracle delay tolerated by an immediate AMM fill, in legacy 400ms
+    /// units. An immediate fill is a JIT fill that skips the auction. A
+    /// positive value is an explicit threshold. `0` disables immediate AMM
+    /// fills. A negative value means unset, and `-1` is the init default.
+    ///
+    /// An unset override resolves by price source. An MM-oracle price gets
+    /// `MM_ORACLE_MIN_WRITE_GAP`, the tightest window the crank can satisfy,
+    /// because the program refuses MM-oracle writes closer together than that.
+    /// An exchange-oracle price gets `0`, because it can be fresh in the same
+    /// slot. See `math::oracle::oracle_validity`.
     pub oracle_slot_delay_override: i8,
-    /// Low-risk oracle delay override (legacy 400ms units): 0 = unset (use the
-    /// guard rail), otherwise a literal threshold. See `math::time::DelayOverride`.
+    /// Low-risk oracle delay override, in legacy 400ms units. `0` is unset and
+    /// takes the guard rail. Any other value is a literal threshold. See
+    /// `math::time::DelayOverride`.
     pub oracle_low_risk_slot_delay_override: i8,
     /// Floor on the unswept IF-fee carveout, as a percentage of open-interest
     /// notional (PERCENTAGE_PRECISION). The fee sweep's IF drain leaves
-    /// `pending_if_fee` at (at least) this floor, so a standing first-loss
+    /// `pending_if_fee` at this floor or above it, so a standing first-loss
     /// tranche is available to `resolve_perp_bankruptcy` before any user is
-    /// latched bankrupt — a permissionless sweep (or the inline sweep on any
-    /// pnl settle) cannot drain the tranche below it. Notional is valued at
-    /// the market's own oracle TWAP so a manipulated spot print can't crush
+    /// latched bankrupt. Neither a permissionless sweep nor the inline sweep
+    /// on a pnl settle can drain the tranche below it. Notional is valued at
+    /// the market's own oracle TWAP, so a manipulated spot print cannot crush
     /// the floor.
     ///
     /// `0` means `DEFAULT_BANKRUPTCY_IF_FLOOR_PCT`, so every market created
@@ -498,8 +506,8 @@ pub struct PerpMarket {
     /// every latched bankruptcy exactly, by withholding all of
     /// `pending_if_fee` until it resolves.
     ///
-    /// Occupies the former 4-byte trailing padding before `market_stats`
-    /// (same offset/alignment on all targets).
+    /// The field takes the former 4-byte trailing padding before
+    /// `market_stats`, at the same offset and alignment on all targets.
     pub bankruptcy_if_floor_pct: u32,
     /// Market-wide stats shared across all makers: mark/oracle TWAPs, std,
     /// volume, intensity, mm-oracle snapshot, `historical_oracle_data`,
@@ -532,25 +540,25 @@ pub struct PerpMarket {
     /// This market's hedge (LP pool) configuration. Sits immediately after `amm`
     /// so the trailing `[amm, hedge_config]` span is the contiguous VLP region.
     pub hedge_config: HedgeConfig,
-    /// The market's canonical book — the CLOB market account, which is also
-    /// the book slot's response account on the slab. When set, every router
-    /// fill must consult it — the mandatory-baseline rule: a route can't
-    /// exclude the public book. A dead book still has to be passed but is
-    /// skipped at quote time, so killing it never bricks fills. Accounts
-    /// structs that name both bind them with `has_one = clob_market`.
-    /// `Pubkey::default()` = no CLOB requirement. Carved out of master's
-    /// reserved tail padding, so it keeps that account size.
+    /// The market's canonical book. This is the CLOB market account, which is
+    /// also the book slot's response account on the slab. When the key is set,
+    /// every router fill must consult the book, so no route can exclude it. A
+    /// dead book must still be passed, but quoting skips it, so killing the
+    /// book does not stop fills. Accounts structs that name both bind them
+    /// with `has_one = clob_market`. `Pubkey::default()` means the market has
+    /// no CLOB requirement. The field comes out of master's reserved tail
+    /// padding, so the account size is unchanged.
     pub clob_market: Pubkey,
     /// The market's quoter slab PDA, written at market initialization. The
-    /// address is derivable from the market index, but the stored copy lets
-    /// every accounts struct that names both bind them with
-    /// `has_one = quoter_slab` — a memcmp instead of a PDA derivation, and a
-    /// check the compiler keeps on every context rather than one each
-    /// handler must remember.
+    /// address is derivable from the market index. The stored copy lets every
+    /// accounts struct that names both bind them with `has_one = quoter_slab`.
+    /// That is a memcmp instead of a PDA derivation. The compiler also keeps
+    /// the check on every context, instead of each handler having to remember
+    /// it.
     pub quoter_slab: Pubkey,
-    /// Reserved for future fields (master's tail reservation, less the 64
-    /// bytes `clob_quoter` and `quoter_slab` took). Existing accounts must be
-    /// extended before the program loads them with this layout.
+    /// Reserved for future fields. This is master's tail reservation, less the
+    /// 64 bytes `clob_market` and `quoter_slab` take. Existing accounts must
+    /// be extended before the program loads them with this layout.
     pub _padding_future: [u8; 192],
 }
 
@@ -726,12 +734,11 @@ impl PerpMarket {
     /// cache the latest reference-price-offset (used by the next quote's
     /// smoothing branch), and stamp `last_oracle_valid`. Called from the
     /// `update_amms` keeper crank and the bid-ask-twap keeper ix. This is a
-    /// PerpMarket-side concern — it does NOT mutate AMM fields. It does read
-    /// the AMM (for `reserve_price` and the spread snapshot used to derive
-    /// the offset).
+    /// PerpMarket-side concern and mutates no AMM field. It does read the AMM,
+    /// for `reserve_price` and for the spread snapshot the offset comes from.
     ///
-    /// Callers that then *gate* on a TWAP this would move must not use this
-    /// composed form — see [`Self::refresh_amm_quote_state`].
+    /// A caller that then gates on a TWAP this call would move must not use
+    /// this composed form. See [`Self::refresh_amm_quote_state`].
     pub fn update_oracle_derived_stats(
         &mut self,
         mm_oracle_price_data: &crate::state::oracle::MMOraclePriceData,
@@ -764,10 +771,10 @@ impl PerpMarket {
     /// Advance the funding-period and 5-minute oracle TWAPs, when the oracle is
     /// valid for `UpdateTwap`.
     ///
-    /// Split out of [`Self::update_oracle_derived_stats`] so a caller that gates
-    /// on the *pre-refresh* TWAP can skip it. Refreshing first would drag the
-    /// TWAP toward the live price and let a too-volatile / too-divergent oracle
-    /// clear its own gate inside the same instruction (OtterSec #109).
+    /// A caller that gates on the TWAP as it stood before the refresh can skip
+    /// this step. Refreshing first would drag the TWAP toward the live price.
+    /// An oracle that is too volatile or too divergent could then clear its own
+    /// gate inside the same instruction (OtterSec #109).
     fn refresh_oracle_twaps(
         &mut self,
         mm_oracle_price_data: &crate::state::oracle::MMOraclePriceData,
@@ -795,11 +802,11 @@ impl PerpMarket {
         Ok(())
     }
 
-    /// Refresh the AMM's cached quote state and stamp `last_oracle_valid`,
-    /// **without** touching the oracle TWAPs.
+    /// Refresh the AMM's cached quote state and stamp `last_oracle_valid`. The
+    /// oracle TWAPs are left alone.
     ///
-    /// This is the half of [`Self::update_oracle_derived_stats`] that is safe to
-    /// run ahead of a check that reads `last_oracle_price_twap` /
+    /// This is the half of [`Self::update_oracle_derived_stats`] that is safe
+    /// to run ahead of a check that reads `last_oracle_price_twap` or
     /// `last_oracle_price_twap_5min`.
     pub fn refresh_amm_quote_state(
         &mut self,
@@ -1008,11 +1015,11 @@ impl PerpMarket {
             .unsigned_abs()
     }
 
-    /// The effective floor percentage. `0` is the value every market written
-    /// before the field existed holds, so it resolves to
-    /// `DEFAULT_BANKRUPTCY_IF_FLOOR_PCT` — a market gets the standing tranche
-    /// without an admin call. `BANKRUPTCY_IF_FLOOR_DISABLED` resolves to 0.
-    /// precision: PERCENTAGE_PRECISION
+    /// The effective floor percentage. Every market written before the field
+    /// existed holds `0`, which resolves to
+    /// `DEFAULT_BANKRUPTCY_IF_FLOOR_PCT`, so such a market gets the standing
+    /// tranche without an admin call. `BANKRUPTCY_IF_FLOOR_DISABLED` resolves
+    /// to 0. precision: PERCENTAGE_PRECISION
     pub fn get_bankruptcy_if_floor_pct(&self) -> u32 {
         match self.bankruptcy_if_floor_pct {
             0 => DEFAULT_BANKRUPTCY_IF_FLOOR_PCT,
@@ -1041,9 +1048,9 @@ impl PerpMarket {
 
     /// The `pending_if_fee` floor the sweep's IF drain must leave behind:
     /// `get_bankruptcy_if_floor_pct()` of open-interest notional, valued at
-    /// the market's oracle TWAP (manipulation-resistant; no live oracle
-    /// needed). This is the standing tranche, held before any user is latched.
-    /// precision: QUOTE_PRECISION
+    /// the market's oracle TWAP. The TWAP resists manipulation and needs no
+    /// live oracle. This is the standing tranche, held before any user is
+    /// latched. precision: QUOTE_PRECISION
     pub fn get_bankruptcy_if_floor(&self) -> VelocityResult<u128> {
         let bankruptcy_if_floor_pct = self.get_bankruptcy_if_floor_pct();
         if bankruptcy_if_floor_pct == 0 {
@@ -1065,9 +1072,9 @@ impl PerpMarket {
     }
 
     /// The `pending_if_fee` the sweep's IF drain must leave behind. A latched
-    /// bankruptcy holds all of it; otherwise the standing floor holds its
-    /// part. `force` (the delisting sweep) holds nothing, because the delist
-    /// handler rejects while `pending_bankruptcy_claims` is above zero.
+    /// bankruptcy holds all of it. Otherwise the standing floor holds its
+    /// part. `force` is the delisting sweep and holds nothing, because the
+    /// delist handler rejects while `pending_bankruptcy_claims` is above zero.
     /// precision: QUOTE_PRECISION
     pub fn get_pending_if_fee_floor(&self, force: bool) -> VelocityResult<u128> {
         if force {
@@ -1084,16 +1091,18 @@ impl PerpMarket {
     /// The pnl-pool tokens that must stay behind to keep the first-loss IF
     /// bankruptcy tranche backed: `min(pending_if_fee,
     /// get_pending_if_fee_floor())`. `resolve_perp_bankruptcy` consumes
-    /// `pending_if_fee` counter-only (it cancels the forgiven loss against the
-    /// pending claim with no token movement, relying on that fee value still
-    /// sitting in the pnl pool), so a permissionless drain that moved those
-    /// tokens elsewhere — e.g. `sweep_market_fees`' buffer-exempt protocol cut
-    /// into `protocol_fee_pool`, which is not part of the insurance backstop —
-    /// would leave the tranche unbacked and surviving-trader PnL short. Every
-    /// permissionless pnl-pool drain reserves this on top of
-    /// `max(net_user_pnl, 0)`. `force` (delisting, which the handler allows
-    /// only after every bankruptcy claim is discharged) returns 0.
-    /// precision: QUOTE_PRECISION
+    /// `pending_if_fee` in the counter only. It cancels the forgiven loss
+    /// against the pending claim and moves no tokens, so it relies on that fee
+    /// value still sitting in the pnl pool.
+    ///
+    /// A permissionless drain that moved those tokens elsewhere would leave
+    /// the tranche unbacked and surviving traders short of PnL. One such drain
+    /// is the buffer-exempt protocol cut that `sweep_market_fees` sends to
+    /// `protocol_fee_pool`, which is not part of the insurance backstop. Every
+    /// permissionless pnl-pool drain therefore reserves this amount on top of
+    /// `max(net_user_pnl, 0)`. `force` is the delisting path and returns 0,
+    /// because the handler allows it only after every bankruptcy claim is
+    /// discharged. precision: QUOTE_PRECISION
     pub fn get_bankruptcy_if_tranche_reservation(&self, force: bool) -> VelocityResult<u128> {
         Ok(self
             .fee_ledger
@@ -1665,9 +1674,9 @@ pub struct PoolBalance {
     pub market_index: u16,
     /// Filler for the alignment gap before the two dust fields. Those fields must
     /// start at offsets 20 and 24. The host layout and the SBF layout then agree,
-    /// and the packed borsh layout in the IDL reaches the same offsets. This
-    /// field shrank from 14 bytes to 2. The size of the struct and every other
-    /// field offset are unchanged. Do not reorder or resize these fields.
+    /// and the packed borsh layout in the IDL reaches the same offsets. The
+    /// size of the struct and every other field offset are unchanged. Do not
+    /// reorder or resize these fields.
     pub padding: [u8; 2],
     /// Remainder of one index-space division that splits a spot market's deposit
     /// interest between lenders and the carveout pools. The accrual carries the
@@ -2097,43 +2106,45 @@ impl MarketStats {
     ///
     /// A mark-TWAP update weights the new sample by `elapsed / funding_period`,
     /// where `elapsed` is the time since the TWAP was last advanced. That weight
-    /// is only honest while `elapsed` is time during which the sample could not
-    /// have been chosen by whoever profits from it. The bid/ask crank breaks that
-    /// property: it folds caller-supplied DLOB depth into the TWAP and can run
-    /// after an arbitrarily long gap, so one caller-chosen snapshot would claim a
-    /// near-full-period weight and move the TWAP (and the funding rate it feeds)
-    /// in a single instruction.
+    /// is correct only while `elapsed` is time during which whoever profits from
+    /// the sample could not choose it. The bid/ask crank does not meet that
+    /// condition. It folds caller-supplied DLOB depth into the TWAP and can run
+    /// after a gap of any length. One caller-chosen snapshot would then claim a
+    /// weight near the full period and move the TWAP, and the funding rate it
+    /// feeds, in a single instruction.
     ///
-    /// Capping the elapsed a single sample may claim bounds that move to
+    /// The cap bounds a single sample's move to
     /// `sample_deviation * cap / funding_period` no matter how large the gap, so
     /// no one crank can set the funding input. Moving it then requires holding
-    /// the book across many samples, which costs real resting, fillable depth
-    /// over time and stays bounded by the oracle-divergence band. The cap does
-    /// not make funding manipulation-proof against an actor willing to pay that
-    /// sustained cost; it removes the free, single-shot version.
+    /// the book across many samples. That costs real resting, fillable depth
+    /// over time and stays bounded by the oracle-divergence band. An actor
+    /// willing to pay that sustained cost can still move funding. The cap
+    /// removes the version that is free and takes one instruction.
     ///
     /// The value is the same staleness granularity `update_mark_twap` already
-    /// uses to shrink a stale TWAP toward the oracle, so the sample-weight cap
-    /// and that oracle shrink trip at one shared threshold.
+    /// uses to shrink a stale TWAP toward the oracle. The sample-weight cap and
+    /// that oracle shrink therefore trip at one shared threshold.
     pub fn max_mark_twap_sample_elapsed(&self) -> VelocityResult<i64> {
         Ok(self.funding_period.safe_div(60)?.max(ONE_MINUTE.cast()?))
     }
 
     /// Update the bid/ask/mid mark-price TWAPs (funding-period and 5-minute)
-    /// from a freshly-observed bid/ask pair. Pure MarketStats mutation —
-    /// callers compute `bid_price` / `ask_price` from whichever liquidity
-    /// source produced the fill (vAMM quote, DLOB, JIT participant).
+    /// from a freshly-observed bid/ask pair. This mutates `MarketStats` only.
+    /// Callers compute `bid_price` and `ask_price` from whichever liquidity
+    /// source produced the fill, such as the vAMM quote, the DLOB, or a JIT
+    /// participant.
     ///
     /// A market that does not write these TWAPs for several funding periods keeps no
     /// usable history. [`Self::reseed_mark_twap_from_oracle_if_stale`] then re-seeds
     /// them from the oracle TWAPs, and this sample lands on the next call.
     ///
-    /// `max_sample_elapsed` caps the elapsed time credited to this sample (see
-    /// [`MarketStats::max_mark_twap_sample_elapsed`]). Fills and the AMM re-blend
-    /// pass `None` (their samples are AMM/trade-derived, not caller-curated); the
-    /// bid/ask crank passes `Some(..)` so caller-supplied DLOB depth cannot claim
-    /// a full-period weight after a gap. It bounds only the new sample's weight;
-    /// the stale-TWAP shrink below still keys off the real last-update timestamp.
+    /// `max_sample_elapsed` caps the elapsed time credited to this sample. See
+    /// [`MarketStats::max_mark_twap_sample_elapsed`]. Fills and the AMM re-blend
+    /// pass `None`, because their samples come from the AMM and from trades and
+    /// no caller curates them. The bid/ask crank passes `Some(..)`, so
+    /// caller-supplied DLOB depth cannot claim a full-period weight after a gap.
+    /// The cap bounds only the new sample's weight. The stale-TWAP shrink below
+    /// still keys off the real last-update timestamp.
     pub fn update_mark_twap(
         &mut self,
         now: i64,
@@ -2159,22 +2170,23 @@ impl MarketStats {
         };
 
         // A re-seed stamps the clock to `now`. Every weighted average below then sees a
-        // zero interval and returns the value the re-seed wrote. The blend reaches the
-        // same answer at a cost. The sanitize step clamps this sample against the TWAP
-        // that the re-seed just wrote. `update_mark_std` also measures the seeded price
-        // across a one second interval that it did not observe. This must run before
-        // `sample_last_ts` below, so a post-gap sample is measured against the stamp
-        // the re-seed wrote, not against the gap it just consumed.
+        // zero interval and returns the value the re-seed wrote. Running the blend
+        // anyway reaches the same answer at a cost. The sanitize step would clamp this
+        // sample against the TWAP that the re-seed just wrote. `update_mark_std` would
+        // also measure the seeded price across a one second interval it did not
+        // observe. The re-seed must run before `sample_last_ts` below. A post-gap
+        // sample is then measured against the stamp the re-seed wrote, and not against
+        // the gap it just consumed.
         if self.reseed_mark_twap_from_oracle_if_stale(now)? {
             return Ok(self.last_mark_price_twap);
         }
 
         // Timestamp the new sample is weighted against. `calculate_new_twap`
-        // credits the sample `now - last_ts` of elapsed time; capping that span
-        // caps the sample's weight. Uncapped callers use the real last-update
-        // time; the crank passes `Some(cap)` so a post-gap sample cannot claim
-        // more than `cap` of elapsed time. The stale-shrink branch below keeps
-        // using the real `last_mark_price_twap_ts`, and the update still stamps
+        // credits the sample `now - last_ts` of elapsed time, so capping that
+        // span caps the sample's weight. An uncapped caller uses the real
+        // last-update time. The crank passes `Some(cap)`, so a post-gap sample
+        // cannot claim more than `cap` of elapsed time. The stale-shrink branch
+        // below keeps using the real `last_mark_price_twap_ts`, and the update stamps
         // `last_mark_price_twap_ts = now` at the end.
         let sample_last_ts = match max_sample_elapsed {
             Some(cap) => max(self.last_mark_price_twap_ts, now.safe_sub(cap)?),
@@ -2374,7 +2386,8 @@ impl MarketStats {
             direction,
             order_tick_size,
         )?;
-        // AMM/trade-derived sample, not caller-curated: no sample-weight cap.
+        // The sample comes from the AMM and from trades, so no caller curates
+        // it and no sample-weight cap applies.
         self.update_mark_twap(
             now,
             bid_price,
@@ -2389,10 +2402,10 @@ impl MarketStats {
     /// bid/ask). Used by the explicit mark-twap crank to fold DLOB liquidity
     /// into the on-chain TWAP estimate.
     ///
-    /// The DLOB side is caller-supplied, so this is the one path that curates
-    /// its own sample. It caps the sample's elapsed weight
-    /// ([`MarketStats::max_mark_twap_sample_elapsed`]) so a single crank after a
-    /// gap cannot set the funding input; funding and fills stay uncapped.
+    /// The DLOB side is caller-supplied, so this is the one path whose sample
+    /// the caller curates. It caps the sample's elapsed weight with
+    /// [`MarketStats::max_mark_twap_sample_elapsed`], so a single crank after a
+    /// gap cannot set the funding input. Funding and fills stay uncapped.
     pub fn update_mark_twap_crank(
         &mut self,
         amm: &AMM,
@@ -2494,9 +2507,10 @@ impl MarketStats {
             self.last_oracle_normalised_price = capped_oracle_update_price;
             self.historical_oracle_data.last_oracle_price =
                 mm_oracle_price_data.get_exchange_oracle_price_data().price;
-            // (price, conf) identify the validated sample; consumers of the
-            // cached `last_oracle_valid` verdict compare against these to
-            // detect a same-slot oracle rewrite after the AMM update.
+            // The price and the confidence together identify the validated
+            // sample. A consumer of the cached `last_oracle_valid` verdict
+            // compares against both, to detect a same-slot oracle rewrite that
+            // landed after the AMM update.
             self.historical_oracle_data.last_oracle_conf = mm_oracle_price_data
                 .get_exchange_oracle_price_data()
                 .confidence;

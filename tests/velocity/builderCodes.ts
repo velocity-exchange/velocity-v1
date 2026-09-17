@@ -387,11 +387,12 @@ describe('builder codes', () => {
 	});
 
 	it('cannot initialize a RevenueShareEscrow with zero order slots', async () => {
-		// A zero-capacity escrow can hold neither a builder nor a referral row, so every fee,
-		// discount and reward computation silently falls back to its no-revenue-share value.
-		// `authority` is unchecked on this instruction and only `payer` signs, so a third party
-		// could create any user's escrow PDA this way and suppress their rewards (finding #114).
-		// Must run before the successful init below, while the PDA still does not exist.
+		// A zero-capacity escrow can hold neither a builder nor a referral row. Every fee,
+		// discount and reward computation then falls back to its no-revenue-share value.
+		// This instruction does not check `authority`, and only `payer` signs. A third party
+		// could therefore create any user's escrow PDA this way and suppress their rewards
+		// (OtterSec #114).
+		// This test must run before the successful init below, while the PDA does not exist.
 		try {
 			await userClient.initializeRevenueShareEscrow(
 				userClient.wallet.publicKey,
@@ -604,8 +605,8 @@ describe('builder codes', () => {
 		);
 	});
 
-	// Skipped: a signed-message order now routes through the market's CLOB,
-	// and solana-bankrun@0.4.0 cannot execute that program. See
+	// Skipped, because a signed-message order routes through the market's CLOB and
+	// solana-bankrun@0.4.0 cannot execute that program. See
 	// placeAndMakeSignedMsgBankrun.ts for the full reason.
 	it.skip('user with no RevenueShareEscrow can place and fill order with no builder', async () => {
 		const slot = new BN(
@@ -758,8 +759,8 @@ describe('builder codes', () => {
 		assert(builderUsdcAfterSettle.eq(builderUsdcBeforeSettle));
 	});
 
-	// Skipped: a signed-message order now routes through the market's CLOB,
-	// and solana-bankrun@0.4.0 cannot execute that program. See
+	// Skipped, because a signed-message order routes through the market's CLOB and
+	// solana-bankrun@0.4.0 cannot execute that program. See
 	// placeAndMakeSignedMsgBankrun.ts for the full reason.
 	it.skip('user can place and fill order with builder', async () => {
 		const slot = new BN(
@@ -1066,8 +1067,8 @@ describe('builder codes', () => {
 		);
 	});
 
-	// Skipped: a signed-message order now routes through the market's CLOB,
-	// and solana-bankrun@0.4.0 cannot execute that program. See
+	// Skipped, because a signed-message order routes through the market's CLOB and
+	// solana-bankrun@0.4.0 cannot execute that program. See
 	// placeAndMakeSignedMsgBankrun.ts for the full reason.
 	it.skip('user can place and cancel with no fill (no fees accrued, escrow unchanged)', async () => {
 		const builder = builderClient.wallet;
@@ -1143,8 +1144,8 @@ describe('builder codes', () => {
 		assert(afterTotalFees.eq(beforeTotalFees));
 	});
 
-	// Skipped: a signed-message order now routes through the market's CLOB,
-	// and solana-bankrun@0.4.0 cannot execute that program. See
+	// Skipped, because a signed-message order routes through the market's CLOB and
+	// solana-bankrun@0.4.0 cannot execute that program. See
 	// placeAndMakeSignedMsgBankrun.ts for the full reason.
 	it.skip('user can place and fill multiple orders (fees accumulate and settle)', async () => {
 		const builder = builderClient.wallet;
@@ -1315,8 +1316,8 @@ describe('builder codes', () => {
 		);
 	});
 
-	// Skipped: a signed-message order now routes through the market's CLOB,
-	// and solana-bankrun@0.4.0 cannot execute that program. See
+	// Skipped, because a signed-message order routes through the market's CLOB and
+	// solana-bankrun@0.4.0 cannot execute that program. See
 	// placeAndMakeSignedMsgBankrun.ts for the full reason.
 	it.skip('user can place and fill with multiple maker orders', async () => {
 		const builder = builderClient.wallet;
@@ -1518,8 +1519,8 @@ describe('builder codes', () => {
 		);
 	});
 
-	// Skipped: a signed-message order now routes through the market's CLOB,
-	// and solana-bankrun@0.4.0 cannot execute that program. See
+	// Skipped, because a signed-message order routes through the market's CLOB and
+	// solana-bankrun@0.4.0 cannot execute that program. See
 	// placeAndMakeSignedMsgBankrun.ts for the full reason.
 	it.skip('can track referral rewards for 2 markets', async () => {
 		// userClient is referred by the builder (builder == referrer here) and has

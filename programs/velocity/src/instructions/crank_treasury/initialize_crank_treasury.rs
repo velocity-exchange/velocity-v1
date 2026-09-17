@@ -29,9 +29,10 @@ pub struct InitializeCrankTreasury<'info> {
 }
 
 pub fn handle_initialize_crank_treasury(ctx: Context<InitializeCrankTreasury>) -> Result<()> {
-    // Born unpriced: a zero target refills nothing and a zero payment offers
-    // no keeper anything, so the treasury is inert until it is priced. That
-    // keeps creating it separate from deciding what it spends.
+    // The treasury is born unpriced. A zero target stages no refill, and a
+    // zero watermark never wakes one, so the treasury does nothing until an
+    // admin prices it. Creating the account stays separate from deciding what
+    // it spends.
     ctx.accounts.treasury.load_init()?;
     Ok(())
 }

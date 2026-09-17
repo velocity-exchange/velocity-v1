@@ -1,6 +1,6 @@
 //! Resolving a deficit or a bankruptcy against the insurance fund.
 //!
-//! All three resolvers run the same frame: sweep the market's revenue pool
+//! All three resolvers run the same frame. They sweep the market's revenue pool
 //! into the fund, value what is left unfunded, then pay that claim out of the
 //! fund. [`InsuranceVaults`] holds the token half of that frame.
 
@@ -264,11 +264,11 @@ pub fn handle_resolve_perp_pnl_deficit<'c: 'info, 'info>(
 
 /// Value the perp market's deficit and decide what the insurance fund owes it.
 ///
-/// The oracle drives a value transfer here, so it is gated before it is used.
-/// A curve-update market must have validated its oracle in this slot, and the
-/// sample the AMM validated must still be the sample being read: a later
-/// oracle write in the same slot replaces the sample without touching
-/// `last_oracle_valid`.
+/// The oracle drives a value transfer here, so this function gates the price
+/// before it uses it. A curve-update market must have validated its oracle in
+/// this slot. The sample the AMM validated must also still be the sample being
+/// read. A later oracle write in the same slot replaces the sample without
+/// touching `last_oracle_valid`.
 fn resolve_perp_deficit(
     maps: &mut AccountMaps,
     state: &State,
@@ -424,9 +424,8 @@ pub fn handle_resolve_spot_bankruptcy<'c: 'info, 'info>(
         // so the markets holding them are written to even though the
         // bankruptcy being resolved is a spot borrow.
         &get_writable_perp_market_set_from_vec(&forfeitable_claim_markets(user, None)),
-        // The quote market is written too: a recovered claim lands in the estate's quote deposit,
-        // and the borrow being resolved may be in another market entirely. It was already a required
-        // account here, because the claim passes read it, but only as read-only.
+        // The quote market is writable because a recovered claim lands in the estate's quote
+        // deposit. The borrow being resolved may be in another market.
         &get_writable_spot_market_set_from_many(vec![market_index, QUOTE_SPOT_MARKET_INDEX]),
         clock.slot,
         state.slot_clock(),

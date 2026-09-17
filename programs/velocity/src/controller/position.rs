@@ -362,8 +362,8 @@ pub fn update_position_and_market(
     position.quote_break_even_amount = new_quote_break_even_amount;
 
     // This path writes the quote directly, so it releases a booked claim too.
-    // It is reachable on a booked position: the stale-latch path un-latches an
-    // estate that still owes the market, and the account can trade again.
+    // A booked position can reach it. The stale-latch path clears the latch on
+    // an estate that still owes the market, and the account can trade again.
     release_bankruptcy_claim_if_settled(position, market);
 
     Ok(pnl)
@@ -429,27 +429,27 @@ pub fn update_quote_asset_amount(
     Ok(())
 }
 
-/// Release a booked bankruptcy claim once the position's quote debt is gone.
+/// Releases a booked bankruptcy claim once the position's quote debt is gone.
 ///
 /// A latched bankrupt debt is booked against the market in
 /// `pending_bankruptcy_claims`, which freezes the fee sweep's IF drain. The
-/// booking must be released whoever cleared the debt: the bankruptcy resolver,
-/// a quote-deposit setoff, or a settle or fill after the latch is lifted. The
-/// position flag makes the release happen exactly once.
+/// booking must be released by whoever clears the debt. That may be the
+/// bankruptcy resolver, a quote-deposit setoff, or a settle or fill after the
+/// latch is lifted. The position flag makes the release happen once.
 ///
-/// EVERY writer of `PerpPosition::quote_asset_amount` must call this. There
-/// are two — `update_quote_asset_amount` and `update_position_and_market` —
-/// and missing either one strands the counter: `add_new_position` recycles any
-/// slot that reports `is_available()` by overwriting the whole position,
-/// `position_flag` included, so a claim left on a zeroed position is destroyed
-/// without ever decrementing the market. The market's IF-fee sweep would then
-/// stay frozen for good.
+/// Every writer of `PerpPosition::quote_asset_amount` must call this. There
+/// are two, `update_quote_asset_amount` and `update_position_and_market`. A
+/// missed call strands the counter. `add_new_position` recycles any slot that
+/// reports `is_available()` by overwriting the whole position, `position_flag`
+/// included, so a claim left on a zeroed position is destroyed and the market
+/// is never decremented. The market's IF-fee sweep would then stay frozen for
+/// good.
 ///
-/// A non-negative quote means there is no bankrupt debt left for the tranche
-/// to absorb: `resolve_perp_bankruptcy` takes a negative quote and refuses
-/// anything else. This does NOT assume a non-negative quote proves solvency.
-/// It cannot, because a position holding base can carry either sign.
-/// `flag_perp_bankruptcy_claim` books only a settled claim (zero base), and a
+/// A non-negative quote means no bankrupt debt is left for the tranche to
+/// absorb. `resolve_perp_bankruptcy` takes a negative quote and refuses
+/// anything else. A non-negative quote does not prove solvency, because a
+/// position that holds base can carry either sign.
+/// `flag_perp_bankruptcy_claim` books only a settled claim with zero base. A
 /// later loss on a re-traded account is a new admission and a new booking.
 fn release_bankruptcy_claim_if_settled(position: &mut PerpPosition, market: &mut PerpMarket) {
     if position.has_bankruptcy_claim() && position.quote_asset_amount >= 0 {
@@ -531,19 +531,18 @@ pub fn increase_open_bids_and_asks(
     Ok(())
 }
 
-/// Release exactly `base_asset_amount` of the reservation this position holds
-/// on `direction`, or fail.
+/// Releases exactly `base_asset_amount` of the reservation this position holds
+/// on `direction`, or fails.
 ///
-/// [`decrease_open_bids_and_asks`] clamps at zero. That is right for a number
-/// velocity itself authored: the reservation and the order it backs move
-/// together, so the clamp only ever absorbs rounding. It is wrong for a number
-/// an external quoter reported. A report above the reservation collapses the
-/// whole side and frees the margin behind orders that still rest, and the
-/// clamp makes that silent.
+/// [`decrease_open_bids_and_asks`] clamps at zero. The clamp is right for a
+/// number velocity authored itself. The reservation and the order it backs
+/// move together, so the clamp only absorbs rounding. The clamp is wrong for a
+/// number an external quoter reported. A report above the reservation
+/// collapses the whole side and frees the margin behind orders that still
+/// rest, and the clamp makes that silent.
 ///
-/// So this is the flavour for a report velocity did not author. Every place a
-/// quoter's answer moves a user's aggregates uses it, which is what holds a
-/// book to orders its users really placed.
+/// Use this function for a report velocity did not author. Every place a
+/// quoter's answer moves a user's aggregates uses it.
 pub fn release_reserved_open_base(
     position: &mut PerpPosition,
     direction: &PositionDirection,
@@ -563,14 +562,14 @@ pub fn release_reserved_open_base(
     decrease_open_bids_and_asks(position, direction, base_asset_amount, true)
 }
 
-/// Release what the report names, or the whole reservation when it names more,
-/// and say which happened.
+/// Releases what the report names, or the whole reservation when the report
+/// names more.
 ///
-/// The lenient half of [`release_reserved_open_base`], and only for the paths
-/// an owner signs to pull their own orders off a book. Those paths run against
-/// a book that may be dead or de-listed, so failing them would trap a maker's
-/// orders on exactly the book they need to leave. The clamp is the escape
-/// hatch; the message is what stops it from being silent.
+/// This is the lenient form of [`release_reserved_open_base`]. Use it only on
+/// the paths an owner signs to remove their own orders from a book. Those
+/// paths run against a book that may be dead or de-listed, so a failure would
+/// trap a maker's orders on the book they need to leave. The log line keeps
+/// the clamp from being silent.
 pub fn release_reserved_open_base_for_exit(
     position: &mut PerpPosition,
     direction: &PositionDirection,
@@ -591,11 +590,11 @@ pub fn release_reserved_open_base_for_exit(
     decrease_open_bids_and_asks(position, direction, base_asset_amount, true)
 }
 
-/// Take `count` open-order slots back off this position, or fail.
+/// Removes `count` open-order slots from this position, or fails.
 ///
 /// The counterpart to [`release_reserved_open_base`] for the order count a
-/// quoter reports it retired. Saturating here would let one answer collapse
-/// the count backing orders that still rest.
+/// quoter reports it retired. A saturating subtraction would let one report
+/// collapse the count that backs orders which still rest.
 pub fn release_reserved_open_orders(position: &mut PerpPosition, count: u8) -> VelocityResult {
     validate!(
         count <= position.open_orders,

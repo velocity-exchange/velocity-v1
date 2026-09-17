@@ -1,39 +1,40 @@
-//! Stands up a market's CLOB cranks: the one condition velocity hosts, and
-//! the registration that tells the book which resolver answers each of its
-//! own. Not an instruction: standing up the cranks is part of attaching a
-//! CLOB to a market (`update_perp_market_clob_quoter` creates the conditions
-//! account `init_if_needed` and calls this), so a new market needs no separate
-//! ceremony and re-attaching re-prices the crank.
+//! Creates a market's CLOB cranks. That is the one condition velocity hosts,
+//! plus the registration that tells the book which resolver answers each of
+//! its own conditions. This is not an instruction. Creating the cranks is part
+//! of attaching a CLOB to a market. `update_perp_market_clob_quoter` creates
+//! the conditions account with `init_if_needed` and calls this, so a new market
+//! needs no separate ceremony, and a re-attach re-prices the cranks.
 //!
 //! # Where each condition lives
 //!
-//! A condition is a wake and an answer, and the two have different owners.
-//! The wake is a fact about an account, so it belongs to the program that
-//! writes that account: an expiry, an activation, a side at its eviction
-//! threshold and a crossed book are the book's, and the book keeps their
-//! wakes current in the same instruction that changes what they describe. The
-//! answer is what to do about it, and every one of these removes an order,
+//! A condition is a wake and an answer, and the two have different owners. The
+//! wake is a fact about an account, so it belongs to the program that writes
+//! that account. An expiry, an activation, a side at its eviction threshold and
+//! a crossed book are all the book's facts, and the book keeps their wakes
+//! current in the same instruction that changes what they describe. The answer
+//! is what to do about the wake. Every one of these answers removes an order,
 //! which releases a maker's margin reservation, pays a reward and frees a
-//! trigger slot — none of which the book holds.
+//! trigger slot. The book holds none of that state.
 //!
-//! So [`register_clob_crank_conditions`] hands the book velocity's resolvers
-//! and velocity's account list, and [`ClobCrankConditionsV0::write_crank_conditions`] keeps the
-//! one wake that is not about the book: the poll that catches a cross a
-//! PropAMM created by repricing.
+//! So [`clob_crank_registration`] gives the book velocity's resolvers and
+//! velocity's account list. [`ClobCrankConditionsV0::write_crank_conditions`]
+//! keeps the one wake that is not about the book. That wake is the poll which
+//! catches a cross a PropAMM created by repricing.
 //!
 //! # The resolver account list
 //!
 //! One list serves every condition, in the fixed order the resolvers'
-//! `#[derive(Accounts)]` expects: the shared scratch account (writable — the
-//! staging region lives on it, at index 0 as [`ClobCrankConditionsV0::stage`]
-//! encodes), the CLOB market, the conditions account, the quoter registry
-//! entry, the state, and the CLOB program.
+//! `#[derive(Accounts)]` expects: the shared scratch account, the conditions
+//! account, the CLOB market, the quoter slab, the state, the CLOB program, and
+//! the crank treasury. The scratch account is writable and sits at index 0,
+//! which is the index [`crate::state::relay_scratch::RelayScratchV0::stage`]
+//! encodes into the response pointer.
 //!
-//! The program is there because a resolver asks the book what work it has
-//! rather than reading the answer out of the book's bytes, and the book is
-//! writable because one of those questions is `quote_l3_v0`, which streams its
-//! answer into the market account's own response tail. Both are
-//! simulation-only calls: nothing a resolver sends ever lands.
+//! The program is in the list because a resolver asks the book what work it has
+//! rather than reading the answer out of the book's bytes. The book is writable
+//! because one of those questions is `quote_l3_v0`, which streams its answer
+//! into the market account's own response tail. Both are simulation-only calls.
+//! Nothing a resolver sends ever lands.
 
 use {
     crate::{
@@ -93,13 +94,13 @@ fn disc8(disc: &[u8]) -> Result<[u8; 8]> {
     disc.try_into().map_err(|_| error!(ErrorCode::DefaultError))
 }
 
-/// What the book's four conditions wake into, and what each pays.
+/// What the book's four conditions wake into, and what each one pays.
 ///
-/// One resolver for all four: relay hands it the condition that fired, so it
-/// asks the book only about the work that condition describes. `min_payment`
-/// stays per-condition, because that is where relay reads it — a removal is
-/// held to a removal's payment, a cross to the cheaper of the two crosses its
-/// answer can stage. The dearer one pays more than the floor, which passes,
+/// One resolver serves all four. Relay passes it the condition that fired, so
+/// it asks the book only about the work that condition describes. `min_payment`
+/// stays per-condition, because that is where relay reads it. A removal is held
+/// to a removal's payment. A cross is held to the cheaper of the two crosses
+/// its answer can stage. The dearer cross pays more than that floor and passes,
 /// while a floor set to the dearer one would fail the cheaper.
 pub fn clob_crank_registration(
     keys: &ClobCrankConditionKeys,
@@ -115,8 +116,8 @@ pub fn clob_crank_registration(
     let cross = resolver(payments.cross.min(payments.taker_origin_cross))?;
     Ok(ClobCrankConditionsArgsV0 {
         expiry: resolver(payments.removal)?,
-        // Activation makes an order matchable with no account change, so the
-        // book names the slot and the cross answer resolves it.
+        // Activation makes an order matchable with no account change. The book
+        // names the slot, and the cross answer resolves it.
         activation: cross,
         capacity: resolver(payments.removal)?,
         cross,
@@ -132,12 +133,14 @@ pub fn clob_crank_registration(
 }
 
 impl ClobCrankConditionsV0 {
-    /// (Re)write velocity's own block: the cross fallback poll, and the
-    /// market references every staged executor is built from.
+    /// Write velocity's own block. That is the cross fallback poll, plus the
+    /// market references every staged executor is built from. A re-attach
+    /// writes it again.
     ///
-    /// Declared here rather than in `state::clob_crank` because everything it
-    /// writes — the resolver keys, the payments, the condition specs — is the
-    /// attach's business; the state module only holds the layout.
+    /// It is declared here rather than in `state::clob_crank` because
+    /// everything it writes belongs to the attach. That is the resolver keys,
+    /// the payments and the condition specs. The state module only holds the
+    /// layout.
     pub fn write_crank_conditions(
         &mut self,
         keys: &ClobCrankConditionKeys,
@@ -159,8 +162,8 @@ impl ClobCrankConditionsV0 {
         )?;
 
         // The block stamps its own account offset before anything points into
-        // it. Stored once on the account; the condition below points at it.
-        // Index 0 by contract: the staged response pointer names the scratch.
+        // it. The offset is stored once on the account, and the condition below
+        // points at it.
         self.init_block()?;
         let resolvers = self.write_resolvers(&keys.resolver_accounts())?;
 
@@ -172,9 +175,9 @@ impl ClobCrankConditionsV0 {
         self.quote_spot_market_index = keys.quote_spot_market_index;
         self.set_condition(
             CLOB_CRANK_CROSS_FALLBACK,
-            // A PropAMM crossing the CLOB writes to neither account the book's
-            // own cross watch covers, so the poll is that case's liveness floor
-            // (the book publisher is the fast path).
+            // A PropAMM that crosses the CLOB writes to neither account the
+            // book's own cross watch covers. The poll is the liveness floor for
+            // that case. The book publisher is the fast path.
             &ConditionV0::every_slots(
                 cross_fallback_slots,
                 CrankSpecV0 {
@@ -185,11 +188,12 @@ impl ClobCrankConditionsV0 {
                 resolvers,
             ),
         )?;
-        // The reservoir's own liveness. A lamport balance is account metadata and
-        // a watch reads account data, so the account mirrors its spendable balance
-        // into `spendable_mirror` and this wakes on that value falling to the
-        // watermark. Watched account and block account are the same one, so the
-        // watch that finds this block already covers the value.
+        // The reservoir's own liveness. A lamport balance is account metadata,
+        // and a watch reads account data. So the account mirrors its spendable
+        // balance into `spendable_mirror`, and this condition wakes when that
+        // value falls to the watermark. The watched account and the block
+        // account are the same account, so the watch that finds this block
+        // already covers the value.
         self.set_condition(
             CLOB_CRANK_REFILL,
             &ConditionV0::on_value_cross(
@@ -207,21 +211,21 @@ impl ClobCrankConditionsV0 {
                 CrankSpecV0 {
                     resolver_program: crate::ID.to_bytes(),
                     resolver_disc: disc8(crate::instruction::ResolveClobCrank::DISCRIMINATOR)?,
-                    // A turner drops any condition advertising less than its own
-                    // configured floor, so this states what the refill really
-                    // pays. Priced from the same rails as every other crank and
-                    // stored on this account, so re-pricing the network re-prices
-                    // it on the next attach — the treasury holds the lamports, not
-                    // the price.
+                    // A turner drops any condition that advertises less than
+                    // its own configured floor, so this states what the refill
+                    // pays. The price comes from the same rails as every other
+                    // crank and is stored on this account. Re-pricing the
+                    // network therefore re-prices the refill on the next
+                    // attach. The treasury holds the lamports, not the price.
                     min_payment: u64::from(payments.refill),
                 },
                 resolvers,
             ),
         )?;
-        // A new account's mirror is zero, which reads as below the watermark, so
-        // the refill fires as soon as the market is attached. That is the intent:
-        // a market funds its own reservoir from the treasury and nobody seeds it
-        // by hand.
+        // A new account's mirror is zero, which reads as below the watermark.
+        // The refill therefore fires as soon as the market is attached. A market
+        // funds its own reservoir from the treasury, and no operator seeds it by
+        // hand.
         Ok(())
     }
 }

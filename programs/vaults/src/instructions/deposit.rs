@@ -22,12 +22,13 @@ use {
 };
 
 pub fn deposit<'info>(ctx: Context<'info, Deposit<'info>>, amount: u64) -> Result<()> {
-    // Book the lending interest of every market that prices NAV BEFORE the NAV
-    // snapshot, so the entrant mints against indexes that already hold the
-    // incumbents' accrued lender interest (OtterSec #136). The deposit CPI below
-    // refreshes the denomination market too, but that runs after shares are minted.
-    // Must precede `load_mut`/`load_maps`: `invoke` rejects a CPI whose writable
-    // accounts still have live borrows, and the maps must read post-refresh data.
+    // Book the lending interest of every market that prices NAV before the NAV
+    // snapshot. The entrant then mints against indexes that already hold the
+    // accrued lender interest of the depositors already in the vault (OtterSec #136). The deposit
+    // CPI below refreshes the denomination market too, but it runs after the mint.
+    // The refresh must run before `load_mut` and `load_maps`. `invoke` rejects a
+    // CPI whose writable accounts still have live borrows, and the maps must read
+    // refreshed data.
     refresh_velocity_spot_market!(ctx);
 
     let clock = &Clock::get()?;

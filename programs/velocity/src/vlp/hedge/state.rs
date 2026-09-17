@@ -1,6 +1,6 @@
-// Anchor's IDL source parser expands the account-field alias and needs these
-// names in scope even though the runtime Rust compiler does not. Do not remove
-// this apparently-unused import without regenerating and checking the IDL.
+// The Anchor IDL parser expands the account field type alias, so it needs these
+// names in scope. The Rust compiler does not need them. Do not remove this
+// import without regenerating the IDL and checking the result.
 #[allow(unused_imports)]
 use crate::math::time::{StoredSlotDuration, STORED_UNIT_MS};
 use {
@@ -170,13 +170,13 @@ pub struct LPPool {
     pub xi: u8,
 
     /// Bps of fee charged per 10 whole 400ms periods of oracle delay past the
-    /// staleness threshold, so one step is 4 seconds of wall clock. The `_slots`
-    /// suffix is the historical name from when a slot was 400ms; `step_fee`
-    /// receives period counts, so the rate no longer scales with slot time.
-    /// Renaming the field would change the IDL, so the unit lives here.
+    /// staleness threshold. One step is 4 seconds of wall clock. The `_slots`
+    /// suffix dates from when a slot was 400ms. `step_fee` takes period counts,
+    /// so the rate does not scale with slot time. A rename changes the IDL, so
+    /// the unit is stated here instead.
     pub target_oracle_delay_fee_bps_per_10_slots: u8,
     /// Bps of fee charged per 10 whole 400ms periods of position delay past the
-    /// staleness threshold. Same units as the oracle sibling above.
+    /// staleness threshold. The units match the oracle field above.
     pub target_position_delay_fee_bps_per_10_slots: u8,
 
     pub lp_pool_id: u8,
@@ -749,17 +749,17 @@ impl LPPool {
         current_slot: u64,
         slot_clock: SlotClock,
     ) -> VelocityResult<i128> {
-        // measured slot delays become wall-clock, counted in whole 400ms
-        // periods (the fee ramp's historical granularity)
+        // The measured slot delays become wall clock time, counted in whole
+        // 400ms periods. That period is the granularity of the fee ramp.
         let position_periods = slot_clock
             .elapsed_slot_delta(target_position_slot_delay, current_slot)
             .div_periods(Millis::UNIT);
         let oracle_periods = slot_clock
             .elapsed_slot_delta(target_oracle_slot_delay, current_slot)
             .div_periods(Millis::UNIT);
-        // Gives an uncertainty fee in bps if the oracle or position was stale when calcing target.
-        // Uses a step function that goes up every 10 periods (one 400ms period = one "block")
-        // beyond a threshold where we consider it okay:
+        // The fee is in bps. It rises when the oracle or the position was stale
+        // at the time the target was calculated. The step function rises once
+        // per block past the threshold, and one block is 10 periods.
         //  - delay 0 (<= threshold) = 0 bps
         //  - delay 1..10 periods  = 10 bps (1 block)
         //  - delay 11..20 periods = 20 bps (2 blocks)
@@ -814,7 +814,6 @@ impl LPPool {
         let mut derivative_groups: BTreeMap<u16, Vec<u16>> = BTreeMap::new();
         for i in 0..self.constituents as usize {
             let constituent = constituent_map.get_ref(&(i as u16))?;
-            // threshold is admin-set (stored in legacy 400ms units)
             if slot_clock.elapsed(constituent.last_oracle_slot, slot)
                 > legacy_slot_duration_u64_to_millis(constituent.oracle_staleness_threshold)
             {
@@ -1022,8 +1021,8 @@ pub struct Constituent {
     pub last_oracle_price: i64,
     pub last_oracle_slot: u64,
 
-    /// Delay allowed for valid AUM calculation, encoded in historical 400ms
-    /// slot quanta while remaining a one-word onchain field.
+    /// Delay allowed for valid AUM calculation. The value is stored in 400ms
+    /// units so the field stays one word onchain.
     pub oracle_staleness_threshold: LegacySlotDurationU64,
 
     pub flash_loan_initial_token_amount: u64,

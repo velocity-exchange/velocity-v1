@@ -150,9 +150,9 @@ pub fn zero_account_to_bytes<T: bytemuck::Pod + anchor_lang::Discriminator>(acco
 
 /// zero-copy deserialize anchor account `data` as T
 ///
-/// Reads exactly `size_of::<T>()` bytes after the discriminator, so a buffer
-/// longer than the compiled-in struct (an account extended by a program
-/// upgrade) still decodes instead of panicking on the size mismatch.
+/// Reads exactly `size_of::<T>()` bytes after the discriminator. A program
+/// upgrade can leave the account longer than the compiled-in struct. Such a
+/// buffer still decodes instead of panicking on the size mismatch.
 ///
 /// ## Params
 /// - * `data` - Anchor borsh encoded buffer (including discriminator)
@@ -182,8 +182,8 @@ pub fn try_deser_zero_copy<T: Discriminator + Pod>(data: &[u8]) -> Option<T> {
 
 /// Decode a `QuoterSlabV0` account's slot region.
 ///
-/// The slab account is the fixed header plus `capacity` raw back-to-back
-/// [`QuoterSlotV0`]s, so the anchor account type alone decodes only the
+/// The slab account holds the fixed header plus `capacity` raw
+/// [`QuoterSlotV0`] values, so the anchor account type decodes only the
 /// header. Returns every slot, vacant ones included, so a slot index here is
 /// the on-chain slot index.
 pub fn decode_quoter_slab_slots(data: &[u8]) -> SdkResult<Vec<QuoterSlotV0>> {
@@ -199,11 +199,11 @@ pub fn decode_quoter_slab_slots(data: &[u8]) -> SdkResult<Vec<QuoterSlotV0>> {
         .collect())
 }
 
-/// The market's book config off its slab slots: slot 0 by convention,
-/// occupied and `Clob` — the program's own `clob_slot_index` rule.
-/// Deliberately not gated on `suspended`/`is_active`: those mean "may take
-/// new flow", and the removal paths must keep working on a killed or
-/// de-listed book.
+/// The market's book config from its slab slots. The book is slot 0 by
+/// convention, occupied and `Clob`, which is the program's `clob_slot_index`
+/// rule. The lookup ignores `suspended` and `is_active`. Those flags mean the
+/// book may take new flow, and the removal paths must keep working on a
+/// killed or de-listed book.
 pub fn clob_slot_config(slots: &[QuoterSlotV0]) -> Option<QuoterConfigV0> {
     program::state::prop_amm::clob_slot_index(slots).map(|index| slots[index].config)
 }
@@ -315,8 +315,8 @@ pub mod test_utils {
     };
     // helpers from velocity-program test_utils.
     /// A pyth push price account, with the header the pyth program writes.
-    /// The velocity program refuses an account whose header does not say
-    /// "pyth price account", so a test feed has to carry one.
+    /// The velocity program refuses an account whose header does not mark it
+    /// as a pyth price account, so a test feed must carry one.
     pub fn get_pyth_price(price: i64, expo: i32) -> pyth_test::Price {
         let mut pyth_price = pyth_test::Price::default();
         let price = price * 10_i64.pow(expo as u32);
@@ -502,9 +502,9 @@ mod tests {
         use crate::PerpMarket;
         use bytemuck::Zeroable;
 
-        // buffer longer than the compiled-in struct (account extended by a
-        // program upgrade): decode reads exactly size_of::<T>() bytes and
-        // ignores the tail
+        // A program upgrade can leave the account longer than the compiled-in
+        // struct. Decode reads exactly size_of::<T>() bytes and ignores the
+        // tail.
         let mut market = PerpMarket::zeroed();
         market.market_index = 7;
         let mut bytes = zero_account_to_bytes(market);

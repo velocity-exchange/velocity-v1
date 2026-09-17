@@ -23,9 +23,9 @@ pub fn handle_legacy_trigger_order<'c: 'info, 'info>(
 
     let state = ctx.accounts.state.load()?;
 
-    // Load the map under the live State guard rails so every oracle-validity
-    // decision on this path, including the lazy breaker trip on the cancel
-    // branch, uses the same policy as the permissionless trip.
+    // Load the map under the live State guard rails. Every oracle-validity
+    // decision on this path then uses the same policy as the permissionless
+    // trip. That includes the lazy breaker trip on the cancel branch.
     let mut maps = load_maps(
         &mut ctx.remaining_accounts.iter().peekable(),
         &writeable_perp_markets,
@@ -47,12 +47,12 @@ pub fn handle_legacy_trigger_order<'c: 'info, 'info>(
         &Clock::get()?,
     )?;
 
-    // Only a trigger that placed the order did payable work. A cancel (a
-    // failing account whose trigger condition is already met), an
-    // already-triggered order, or a no-op must not draw the reservoir — the
-    // cancel branch pays the user no flat reward, so paying the caller from
-    // the reservoir for it would be free lamports. Mirrors trigger_limit_order_v1,
-    // whose cancel branch returns before this call.
+    // Only a trigger that placed the order did payable work. A cancel, an
+    // already-triggered order and a no-op must not draw the reservoir. A cancel
+    // happens when a failing account meets its trigger condition, and that
+    // branch pays the user no flat reward. Paying the caller from the reservoir
+    // for it would be free lamports. `trigger_limit_order_v1` does the same,
+    // and its cancel branch returns before this call.
     if triggered {
         crate::instructions::finish_trigger_crank(
             &ctx.accounts.state,
@@ -72,9 +72,10 @@ pub fn handle_legacy_trigger_order<'c: 'info, 'info>(
 #[derive(Accounts)]
 pub struct TriggerOrder<'info> {
     pub state: AccountLoader<'info, State>,
-    /// CHECK: in signed-keeper mode this must sign for `filler`; in
-    /// program-keeper mode (protocol `User` as filler, relay turners) it is
-    /// only the lamport payout target and no signature is required.
+    /// CHECK: in signed-keeper mode this account must sign for `filler`. In
+    /// program-keeper mode the filler is the protocol `User` and the caller is
+    /// a relay turner. This account is then only the lamport payout target, and
+    /// it needs no signature.
     #[account(mut)]
     pub authority: UncheckedAccount<'info>,
     #[account(
@@ -89,32 +90,34 @@ pub struct TriggerOrder<'info> {
         constraint = is_stats_for_user(&user, &user_stats)?
     )]
     pub user_stats: AccountLoader<'info, UserStats>,
-    /// The user's relay trigger conditions: the fired slot is released so
-    /// its level-triggered wake goes quiet. Optional — keepers on markets
-    /// (or users) without relay plumbing crank exactly as before.
+    /// The user's relay trigger conditions. The crank releases the fired slot,
+    /// so its level-triggered wake goes quiet. The account is optional. A
+    /// keeper cranks without it on a market or a user that has no relay
+    /// plumbing.
     #[account(
         mut,
         seeds = [USER_CONDITIONS_PDA_SEED, user.key().as_ref()],
         bump
     )]
     pub trigger_conditions: Option<AccountLoader<'info, UserConditionsV0>>,
-    /// The fired market's crank conditions — the reservoir that pays the
-    /// keeper in program-keeper mode (validated against the order's market
-    /// in the handler). Required in program-keeper mode.
+    /// The fired market's crank conditions. Its reservoir pays the keeper in
+    /// program-keeper mode, and the crank checks it against the order's market.
+    /// Program-keeper mode requires the account.
     #[account(mut)]
     pub crank_conditions: Option<AccountLoader<'info, ClobCrankConditionsV0>>,
 }
 
-/// The relay resolver for `trigger_order` (`Resolve<EndpointName>`):
-/// simulation-only, staged from the user's synced trigger conditions.
+/// The relay resolver for `trigger_order` (`Resolve<EndpointName>`). It runs in
+/// simulation only. It stages the crank from the user's synced trigger
+/// conditions.
 #[derive(Accounts)]
 pub struct ResolveTriggerOrder<'info> {
-    /// The shared staging account, index 0 by convention — a resolver's
-    /// response pointer is interpreted against it.
+    /// The shared staging account. Convention puts it at index 0, and a
+    /// resolver's response pointer is interpreted against it.
     #[account(mut, seeds = [crate::state::relay_scratch::RELAY_SCRATCH_PDA_SEED], bump)]
     pub scratch: AccountLoader<'info, crate::state::relay_scratch::RelayScratchV0>,
-    /// Read-only: resolvers stage into the shared scratch account, not
-    /// into the block they read.
+    /// Read-only. A resolver stages into the shared scratch account and never
+    /// into the block it reads.
     #[account(constraint = trigger_conditions.load()?.user == user.key())]
     pub trigger_conditions: AccountLoader<'info, UserConditionsV0>,
     pub user: AccountLoader<'info, User>,

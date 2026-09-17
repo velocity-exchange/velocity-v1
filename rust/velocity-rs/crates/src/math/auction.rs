@@ -6,9 +6,9 @@ use crate::{
 };
 use program::math::time::{Millis, SlotClock};
 
-/// Auction interpolation progress: elapsed wall clock ms over the auction's
-/// wall clock length (`auction_duration` is stored in 400ms units). Mirrors
-/// the program's `auction_progress`.
+/// Auction interpolation progress, as elapsed wall clock milliseconds over the
+/// auction's wall clock length. `auction_duration` is stored in 400ms units.
+/// Mirrors the program's `auction_progress`.
 fn auction_progress(order: &Order, slot: u64, slot_clock: SlotClock) -> (i128, i128) {
     let duration_ms = Millis::from_stored_units(order.auction_duration as u64).as_ms();
     let elapsed_ms = slot_clock.elapsed(order.slot, slot).as_ms();

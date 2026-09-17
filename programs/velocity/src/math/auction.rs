@@ -88,21 +88,21 @@ pub fn calculate_auction_prices(
     Ok((oracle_price, auction_end_price))
 }
 
-/// Auction interpolation progress: elapsed wall clock ms (integrated per
-/// slot duration regime, saturating at zero for a same slot read) capped at
-/// the auction's wall clock length, over that length.
-/// `Order.auction_duration` stores 400ms units, so the ramp's endpoints and
-/// wall clock shape are identical to the historical per slot interpolation at
-/// the 400ms baseline and hold at every gate.
+/// Auction interpolation progress, as elapsed milliseconds over the auction's
+/// wall-clock length. Elapsed time is integrated per slot-duration regime and
+/// saturates at zero for a same-slot read. It is capped at the auction length.
+/// `Order.auction_duration` stores 400ms units, so at the 400ms baseline the ramp's
+/// endpoints and wall-clock shape match the earlier per-slot interpolation. That shape
+/// holds at every slot-duration gate.
 fn auction_progress(order: &Order, slot: u64, slot_clock: SlotClock) -> (u64, u64) {
     let duration_ms = Millis::from_stored_units(order.auction_duration as u64).as_ms();
     let elapsed_ms = slot_clock.elapsed(order.slot, slot).as_ms();
     (min(elapsed_ms, duration_ms), duration_ms)
 }
 
-/// The auction's wall clock progress at `fraction_pct` percent of its length,
-/// for callers that price a fixed fraction rather than a chain slot
-/// (place-and-take's `auction_duration_percentage`).
+/// The auction's wall-clock progress at `fraction_pct` percent of its length. Use it
+/// for a caller that prices a fixed fraction rather than a chain slot, such as
+/// place-and-take's `auction_duration_percentage`.
 pub fn auction_progress_at_fraction(
     order: &Order,
     fraction_pct: u64,
@@ -127,8 +127,8 @@ pub fn calculate_auction_price(
     )
 }
 
-/// Interpolate the auction price at an explicit `(elapsed_ms, duration_ms)`
-/// progress pair (see [`auction_progress`] / [`auction_progress_at_fraction`]).
+/// Interpolate the auction price at an explicit `(elapsed_ms, duration_ms)` progress
+/// pair. [`auction_progress`] and [`auction_progress_at_fraction`] build that pair.
 pub fn calculate_auction_price_with_progress(
     order: &Order,
     progress: (u64, u64),
@@ -260,9 +260,9 @@ pub fn is_auction_complete(
         return Ok(true);
     }
 
-    // wall clock elapsed (integrated per slot duration regime) vs the
-    // auction's wall clock length in 400ms units; identity with the
-    // historical per slot comparison at the 400ms baseline
+    // Wall-clock elapsed time, integrated per slot-duration regime, against the
+    // auction's wall-clock length in 400ms units. At the 400ms baseline this is the
+    // same comparison the earlier per-slot code made.
     let elapsed = slot_clock.elapsed(order_slot, slot);
 
     Ok(elapsed > Millis::from_stored_units(auction_duration as u64))

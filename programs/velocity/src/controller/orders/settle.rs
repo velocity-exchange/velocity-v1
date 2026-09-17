@@ -2,9 +2,9 @@
 //!
 //! A fill is a set of allocations, and each one settles through this module:
 //! the vAMM house, a DLOB match, or an external quoter match. Each leg prices
-//! on its own fee schedule, then the three walk one spine — accrue the
-//! market's share, charge the taker, pay the maker and the keeper, accrue the
-//! revenue share, and advance the taker's order.
+//! on its own fee schedule. Then the three walk one spine. The spine accrues
+//! the market's share, charges the taker, pays the maker and the keeper,
+//! accrues the revenue share, and advances the taker's order.
 //!
 //! The seat types are the vocabulary of that spine: who takes, who makes, and
 //! who fills.
@@ -138,11 +138,11 @@ fn emit_perp_action_record(
         builder_fee_option,
     )?;
     // A maker whose order rests on a book has no `Order` here to snapshot.
-    // What the fill knows of it is its id and its side, which is what a
-    // reader needs to attribute the fill; the order's size and its running
-    // totals live in the reader's own table, built from the place record.
-    // Reporting this fill's size as the order's size would be wrong, so the
-    // fields say nothing instead.
+    // What the fill knows of it is its id and its side, which is what a reader
+    // needs to attribute the fill. The order's size and its running totals
+    // live in the reader's own table, built from the place record. Reporting
+    // this fill's size as the order's size would be wrong, so the fields say
+    // nothing instead.
     if maker_record_order.is_some_and(|order| order.is_placed_on_clob()) {
         record.maker_order_base_asset_amount = None;
         record.maker_order_cumulative_base_asset_amount_filled = None;
@@ -334,11 +334,11 @@ impl<'a, 'stats> MakerSide<'a, 'stats> {
     ///
     /// A fresh position is cross-margined, so this fallback would settle a
     /// book order into the wrong collateral pool if it ever fired for one. It
-    /// cannot: a resting CLOB order holds `open_orders` and `open_bids` or
-    /// `open_asks` on its owner's position, so that slot is never available
-    /// and never recycled, and the order keeps one margin regime for its whole
-    /// life. The fallback is for a maker the fill reaches with no book order
-    /// behind it.
+    /// cannot fire for one. A resting CLOB order holds `open_orders` and
+    /// `open_bids` or `open_asks` on its owner's position, so that slot is
+    /// never available and never recycled, and the order keeps one margin
+    /// regime for its whole life. The fallback is for a maker the fill reaches
+    /// with no book order behind it.
     #[allow(clippy::too_many_arguments)]
     pub fn bind(
         user: &'a mut User,
@@ -730,11 +730,11 @@ impl SettledFees {
 
 /// Book the market's share of one settled allocation.
 ///
-/// The AMM books ONLY its own money: its fee provision plus any spread surplus
-/// (`fee_to_market = amm_fee + surplus`). The protocol and insurance-fund
-/// carveouts never touch the AMM's ledger or pools. They accrue as pending
-/// quote counters here, because the quote spot market is not in scope at fill;
-/// their token value lands in the pnl pool as fills settle and
+/// The AMM books only its own money. That is its fee provision plus any spread
+/// surplus, so `fee_to_market = amm_fee + surplus`. The protocol and
+/// insurance-fund carveouts never touch the AMM's ledger or pools. They accrue
+/// as pending quote counters here, because the quote spot market is not in
+/// scope at fill. Their token value lands in the pnl pool as fills settle, and
 /// `sweep_market_fees` materializes it. The AMM provision also grows the
 /// lifetime backstop-of-last-resort clawback cap.
 ///
@@ -834,8 +834,8 @@ fn move_maker_position(
 
 /// Move the taker's position by what this leg filled.
 ///
-/// The volume it counts as is the leg's own business: a post-only taker fills
-/// as the maker, so the house leg records maker volume instead.
+/// This records no volume. Each leg records its own, because a post-only taker
+/// fills as the maker and the house leg then records maker volume.
 fn move_taker_position(
     taker: &mut TakerSide,
     filled: FillAmounts,
@@ -887,15 +887,17 @@ fn pay_fill_keeper(
 /// reservation it held for that size.
 ///
 /// Only a reservation the taker actually took is unwound. A fresh ephemeral
-/// taker never reserved, and unwinding here would eat a co-resident order's
-/// `open_bids`/`open_asks`.
+/// taker never reserved, and unwinding here would release a co-resident
+/// order's `open_bids` or `open_asks`.
+///
+/// The caller emits the fill record after this, so the record reports the
+/// order as advanced.
 fn advance_taker_order(
     taker: &mut TakerSide,
     filler: &mut FillerSide,
     settled: &SettledFees,
     filled: FillAmounts,
 ) -> VelocityResult {
-    // Update the taker order BEFORE the event emit.
     if update_order_after_fill(taker.order, filled.base, filled.quote)? {
         settled.mark_builder_order_complete(filler);
     }
@@ -917,7 +919,8 @@ pub(super) struct AmmAllocation {
     /// shade for the LPs.
     pub quote: u64,
     pub base: u64,
-    /// The taker's order as the AMM fee schedule reads it.
+    /// Whether the taker's order is post-only, as the AMM fee schedule reads
+    /// it.
     pub post_only: bool,
     pub order_slot: u64,
     pub order_id: u32,
@@ -936,7 +939,7 @@ pub(super) struct HouseSide<'a, 'user, 'stats> {
 
 /// What the taker pays for a vAMM slice, and what the house keeps as spread.
 ///
-/// A post-only sole-AMM step makes the taker the maker: it transacts at its
+/// A post-only sole-AMM step makes the taker the maker. It transacts at its
 /// own limit, and the house keeps the curve-to-limit gap as spread surplus.
 /// Every other step charges the router's shade and holds the taker to its
 /// limit.
@@ -1200,11 +1203,12 @@ fn price_matched_fill(
     let reward_referrer =
         can_reward_user_with_referral_reward(market_index, filler.rev_share_escrow);
     // A maker that cranks its own fill arrives as `filler: None` with the
-    // filler key naming itself: it is already loaded in the maker map, and the
+    // filler key naming itself. It is already loaded in the maker map, and the
     // same account cannot be loaded mutably twice. It did the keeper's work on
-    // a slice it actually filled, so it earns the reward for that slice, which
-    // spreads a multi-maker fill's reward pro rata. A taker filling its own
-    // order names *itself*, so this stays false and no reward is charged.
+    // a slice it actually filled, so it earns the reward for that slice. The
+    // reward of a multi-maker fill then spreads pro rata. A taker that fills
+    // its own order names itself, so this stays false and no reward is
+    // charged.
     let maker_is_filler = filler.key == maker.key;
     let reward_filler = can_reward_user_with_perp_pnl(filler.user, market_index) || maker_is_filler;
     let escrow = cx
@@ -1373,11 +1377,11 @@ fn unwind_matched_maker_order(
 
 /// Settle one external-quoter balance change.
 ///
-/// The maker is a loaded `User` whose resting liquidity lives outside velocity
-/// — a CLOB order or a PropAMM quote — so unlike [`settle_dlob_match_fill`]
-/// there is no velocity `Order` to advance: the external program already
-/// committed its own book state. Everything protocol-level is the same match
-/// spine.
+/// The maker is a loaded `User` whose resting liquidity lives outside
+/// velocity, in a CLOB order or a PropAMM quote. There is no velocity `Order`
+/// to advance, because the external program already committed its own book
+/// state. [`settle_dlob_match_fill`] advances one. Everything
+/// protocol-level is the same match spine.
 ///
 /// The maker side runs no `validate_fill_price`. The route already held the
 /// response per unit to this quoter's own quoted levels, which is the
@@ -1451,9 +1455,9 @@ pub(crate) fn settle_external_match_fill(
 /// filled.
 ///
 /// The maker's leg is the quoter's own claim about a user it does not own, so
-/// it is held to that user's reservation rather than clamped to it. This is
-/// the single place every external settlement passes through — the router
-/// fill and both cross cranks — which is what stops a caller from settling one
+/// it is held to that user's reservation rather than clamped to it. Every
+/// external settlement passes through this one place, which is the router fill
+/// and both cross cranks. That is what stops a caller from settling one
 /// without the bound.
 ///
 /// CLOB orders are margin-reserved through velocity at placement, so their
@@ -1537,7 +1541,7 @@ fn emit_matched_record(
 /// Accrue a revenue-share amount against the builder's order.
 ///
 /// The per-order accrual is mirrored into the market aggregate the fee sweep
-/// reserves against (audit #73), so the two never drift.
+/// reserves against (OtterSec #73), so the two never drift.
 fn accrue_revenue_share(
     escrow: &mut RevenueShareEscrowZeroCopyMut,
     order_index: u32,

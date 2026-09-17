@@ -511,10 +511,10 @@ async function main() {
 	writeReceipt();
 
 	// Phase A.3: the protocol User
-	// Permissionless cranks name this account as the filler or the taker, and
+	// A permissionless crank names this account as the filler or the taker, and
 	// `initialize_user` does not require the authority to sign. Any key can
-	// therefore create it first and choose its name and its referrer. Create it
-	// with the rest of the protocol, before the program serves anybody.
+	// therefore create the account first and choose its name and its referrer.
+	// Create it with the rest of the protocol, before the program serves anyone.
 	const velocitySigner = getVelocitySignerPublicKey(programId);
 	const protocolUser = getUserAccountPublicKeySync(
 		programId,
@@ -541,9 +541,9 @@ async function main() {
 			'initializeUserStats + initializeUser (protocol)',
 			protocolUser.toBase58()
 		);
-		// Built here rather than through the client helpers: those act for the
-		// wallet's own authority, and this account's authority is a program
-		// address that no wallet holds.
+		// The instructions are built here rather than through the client
+		// helpers. A helper acts for the wallet's own authority, and this
+		// account's authority is a program address that no wallet holds.
 		const sharedAccounts = {
 			state: statePk,
 			authority: velocitySigner,

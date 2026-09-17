@@ -1,18 +1,20 @@
 //! CLOB lifecycle events.
 //!
-//! Every event type carries an explicit version suffix, matching the `_v0`
-//! instruction and `V0` wire generation. The event discriminator is derived
-//! from the type name, so a layout change means a new `…RecordV1` type
-//! emitted alongside (or in place of) the V0 one — never an edit in place,
-//! which would silently repurpose a discriminator indexers already key on.
+//! Every event type carries an explicit version suffix, which matches the
+//! `_v0` instruction and the `V0` wire generation. Anchor derives the event
+//! discriminator from the type name. A layout change therefore ships as a new
+//! `…RecordV1` type, emitted beside the V0 one or in place of it. An edit in
+//! place would repurpose a discriminator that indexers already key on, and no
+//! reader would see the change.
 //!
-//! Lifecycle events are `#[event(bytemuck)]` — fixed-size, zero-padding, the
-//! cheapest layout. `side`/`direction` are raw u8s (0 = bid/long).
+//! Lifecycle events are `#[event(bytemuck)]`, a fixed-size layout with zeroed
+//! padding and the lowest cost. `side` and `direction` are raw `u8` values.
+//! Zero is a bid or a long.
 //!
-//! None of them is emitted through anchor's `emit!`: every `Event::data()`
+//! None of them is emitted through anchor's `emit!`. Every `Event::data()`
 //! flavour allocates, so [`crate::emit`] builds the same log bytes in a stack
-//! buffer instead. The types here stay the schema of record for what goes on
-//! the wire, and `tests::emit` pins the two encodings against each other.
+//! buffer. The types here stay the schema of record for what goes on the wire,
+//! and `tests::emit` pins the two encodings against each other.
 
 use anchor_lang::prelude::*;
 
@@ -51,18 +53,18 @@ pub struct OrderCancelRecordV0 {
     pub client_order_id: u32,
 }
 
-/// One per `cancel_all_v0` — a maker withdrawing a whole side (or both) in one
-/// instruction, rather than one [`OrderCancelRecordV0`] per order.
+/// One per `cancel_all_v0`. A maker withdraws a whole side, or both sides, in
+/// one instruction, rather than one [`OrderCancelRecordV0`] per order.
 ///
-/// Orders are referenced by id only, the same contract [`ExecuteRecordV0`]
-/// uses: an indexer resolves price and size against the order table it built
-/// from place records, so the sweep's log stays ~8 bytes per order instead of
-/// re-stating what the reader already has. Ids come in book order, bids before
-/// asks.
+/// The record names orders by id only, under the same contract
+/// [`ExecuteRecordV0`] uses. An indexer resolves price and size against the
+/// order table it built from place records. The sweep's log therefore stays
+/// four bytes per order instead of restating what the reader already holds.
+/// Ids come in book order, bids before asks.
 ///
 /// `exhaustive` false means the call stopped at
 /// [`crate::state::CANCEL_ALL_ORDERS_CEILING`] and this user still has resting
-/// orders — a reader must not treat the side as empty.
+/// orders. A reader must not treat the side as empty.
 #[event]
 pub struct OrdersCancelRecordV0 {
     pub authority: Address,
@@ -82,8 +84,9 @@ pub struct OrdersCancelRecordV0 {
     pub client_order_ids: Vec<u32>,
 }
 
-/// Crank eviction at the soft cap. Distinct from cancel: the UI shows
-/// "re-armed"/"evicted", and velocity re-arms triggers in the same tx.
+/// Crank eviction at the soft cap. It is a separate record from a cancel,
+/// because the UI shows an order as evicted or re-armed, and velocity re-arms
+/// triggers in the same transaction.
 #[event(bytemuck)]
 #[repr(C)]
 pub struct OrderEvictRecordV0 {
@@ -97,7 +100,8 @@ pub struct OrderEvictRecordV0 {
     pub client_order_id: u32,
 }
 
-/// Crank reclamation of an expired order (execute only skips expired).
+/// Crank reclamation of an expired order. An execute only skips an expired
+/// order.
 #[event(bytemuck)]
 #[repr(C)]
 pub struct OrderExpireRecordV0 {
@@ -111,9 +115,10 @@ pub struct OrderExpireRecordV0 {
     pub client_order_id: u32,
 }
 
-/// One per execute — the hot path stays cheap by referencing orders by id
-/// only. `user`/`price` resolve against the indexer's order table (built
-/// from place records); quote amounts derive from price × base.
+/// One per execute. The record names orders by id only, which keeps the hot
+/// path cheap. A reader resolves user and price against the indexer's order
+/// table, which it builds from place records. Quote amounts come from price
+/// times base.
 #[event]
 pub struct ExecuteRecordV0 {
     pub ts: i64,
@@ -132,13 +137,12 @@ pub struct ExecuteRecordV0 {
 pub struct FillSlimV0 {
     pub order_id: u64,
     pub base_size: u64,
-    /// The placing caller's own id for this order. Carried so a reader that
-    /// files orders under the caller's ids — which every reader downstream of
-    /// velocity does — joins a fill to an order without holding a map between
-    /// the two id spaces.
+    /// The placing caller's own id for this order. Every reader downstream of
+    /// velocity files orders under the caller's ids. The field lets such a
+    /// reader join a fill to an order without a map between the two id spaces.
     pub client_order_id: u32,
 }
 
-/// Borsh width of a [`FillSlimV0`] — the per-fill stride of the execute
-/// record's payload, which [`crate::emit`] sizes its stack buffer from.
+/// Borsh width of a [`FillSlimV0`]. This is the per-fill stride of the execute
+/// record's payload, and [`crate::emit`] sizes its stack buffer from it.
 pub const FILL_SLIM_BYTES: usize = 2 * core::mem::size_of::<u64>() + core::mem::size_of::<u32>();

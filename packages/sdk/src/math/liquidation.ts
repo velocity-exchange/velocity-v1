@@ -425,19 +425,20 @@ export function calculateAssetTransferForLiabilityTransfer(
  * Calculates the fraction of a position's remaining liability a liquidator may currently
  * take, mirroring `calculate_max_pct_to_liquidate` in
  * `programs/velocity/src/math/liquidation.rs`. Liquidations ramp up gradually over
- * the `liquidationDuration` wall-clock window (starting from `initialPctToLiquidate`) rather than allowing
- * 100% in one shot, so a user isn't force-closed more aggressively than necessary — except:
- * isolated perp positions (`isIsolatedPosition`) are always liquidated 100% in one shot
- * since they have no other cross-margin exposure to protect, and any position is liquidated
- * 100% immediately once `marginShortage` is under $50 (dust threshold, not worth ramping).
+ * the `liquidationDuration` wall-clock window, starting from `initialPctToLiquidate`, rather
+ * than allow 100% at once. A user is therefore not force-closed more aggressively than
+ * necessary. Two cases skip the ramp. An isolated perp position, which `isIsolatedPosition`
+ * marks, is always liquidated 100% at once, because it has no other cross-margin exposure to
+ * protect. Any position is liquidated 100% at once once `marginShortage` falls under $50,
+ * which is too small to ramp.
  * @param userLastActiveSlot Slot the user was last active (start of the liquidation ramp), used with `slot` to compute elapsed time.
  * @param userLiquidationMarginFreed Margin already freed by liquidation actions so far this liquidation, QUOTE_PRECISION (1e6).
  * @param marginShortage Total margin shortfall for the user/position, QUOTE_PRECISION (1e6).
  * @param slot Current slot.
  * @param initialPctToLiquidate Starting liquidatable fraction at slot zero of the ramp, LIQUIDATION_PCT_PRECISION (1e4).
- * @param liquidationDuration Ramp length as a wall-clock duration; decode the onchain field with `millisFromStoredUnits(state.liquidationDuration)` (~1 minute for the onchain default).
+ * @param liquidationDuration Ramp length as a wall-clock duration. Decode the on-chain field with `millisFromStoredUnits(state.liquidationDuration)`. The on-chain default is about one minute.
  * @param isIsolatedPosition If true, always returns 100% (LIQUIDATION_PCT_PRECISION) regardless of the other inputs (default false).
- * @param slotDurationState The `State` account (or its slot duration fields); elapsed ramp time is integrated per slot duration regime, mirroring `calculate_max_pct_to_liquidate`.
+ * @param slotDurationState The `State` account, or the slot duration fields of it. The elapsed ramp time is integrated per slot duration regime, as `calculate_max_pct_to_liquidate` does.
  * @returns Fraction of the remaining liability liquidatable now, LIQUIDATION_PCT_PRECISION (1e4).
  */
 export function calculateMaxPctToLiquidate(
@@ -460,11 +461,12 @@ export function calculateMaxPctToLiquidate(
 		return LIQUIDATION_PCT_PRECISION;
 	}
 
-	// ratio of elapsed wall clock time to the configured liquidation window;
-	// elapsed time is integrated per slot duration regime so an interval
-	// spanning an IBRL transition ramps at the same wall clock rate on both
-	// sides, identity with the historical slot ratio at 400ms. duration 0
-	// (unset) -> 100%, matching the program's divide by zero fallback
+	// The ratio of elapsed wall clock time to the configured liquidation window.
+	// The elapsed time is integrated per slot duration regime, so an interval
+	// that spans a slot-duration transition ramps at the same wall clock rate on
+	// both sides. At 400ms the ratio equals the earlier slot ratio. A duration of
+	// 0 means unset and gives 100 percent, which matches the program's fallback
+	// for a division by zero.
 	const elapsedMs = elapsedMillis(slotDurationState, userLastActiveSlot, slot);
 
 	const rampPct = liquidationDuration.isZero()
@@ -490,13 +492,14 @@ export function calculateMaxPctToLiquidate(
 
 /** Ten-minute grace window before the liquidation fee starts increasing. */
 export const LIQUIDATION_FEE_ADJUST_GRACE_PERIOD = millisFromSecs(600);
-/** One fee-precision unit added per whole legacy 400ms calibration period. */
+/** One fee-precision unit added per whole 400ms calibration period. */
 export const LIQUIDATION_FEE_INCREASE_PER_PERIOD = 1;
 
 /**
- * Mirrors the program's `get_liquidation_fee`: after a ten-minute grace
- * period, increase the base fee once per whole 400ms calibration period of
- * elapsed wall-clock time, capped at `maxLiquidationFee`.
+ * The liquidation fee at a given slot. This mirrors the program's
+ * `get_liquidation_fee`. After a ten-minute grace period, the base fee rises
+ * once per whole 400ms calibration period of elapsed wall clock time. The fee
+ * is capped at `maxLiquidationFee`.
  */
 export function getLiquidationFee(
 	baseLiquidationFee: number,

@@ -1,10 +1,10 @@
 //! Placing a signed-message taker order, routing it, and resting what is left.
 //!
 //! The taker signs a message rather than a transaction, so a keeper builds the
-//! transaction and is held to the route the message names. One instruction
-//! does three legs in order: the placement builds the order and its sidecars,
-//! the fill routes what the order can take now, and the rest leg migrates any
-//! remainder onto the market's book.
+//! transaction and the program holds it to the route the message names. One
+//! instruction runs three legs in order. The placement builds the order and its
+//! sidecars. The fill routes what the order can take now. The rest leg migrates
+//! any remainder onto the market's book.
 
 use super::*;
 
@@ -20,16 +20,15 @@ pub fn handle_place_signed_msg_taker_order<'c: 'info, 'info>(
 ) -> Result<()> {
     let clock = Clock::get()?;
     let state = ctx.accounts.state.load()?;
-    // The taker's own signature: the first 64 bytes of the envelope, and
-    // what a flow attestation binds to. Captured before the placement
-    // consumes the bytes.
+    // The taker's own signature is the first 64 bytes of the envelope, and a
+    // flow attestation binds to it. Read it before the placement consumes the
+    // bytes.
     let taker_order_signature: Option<[u8; 64]> = signed_msg_order_params_message_bytes
         .get(..64)
         .and_then(|sig| <[u8; 64]>::try_from(sig).ok());
-    // The market comes off the quoter slab rather than an argument, because
-    // the slab is what the crank-conditions seed already derives from and the
-    // two must name the same market. The message is checked against it once
-    // decoded.
+    // The market comes off the quoter slab and not off an argument. The
+    // crank-conditions seed already derives from the slab, and the two must name
+    // the same market. The message is checked against it once decoded.
     let market_index = ctx.accounts.quoter_slab.load()?.market;
 
     let mut sections = FillSections::load(
@@ -70,7 +69,7 @@ pub fn handle_place_signed_msg_taker_order<'c: 'info, 'info>(
         market_index,
     )?;
 
-    // The fill mutates the ephemeral order's filled amounts in place; the rest
+    // The fill mutates the ephemeral order's filled amounts in place. The rest
     // leg reads its remainder from there.
     let filled = if synchronous_take {
         fill_signed_msg_taker_order(
@@ -97,9 +96,9 @@ pub fn handle_place_signed_msg_taker_order<'c: 'info, 'info>(
 
 /// Build the order and its sidecars.
 ///
-/// The taker's `User` is borrowed for this leg alone: the router fill takes
-/// the loader, not a live borrow. The escrow goes out and comes back, because
-/// the placement may attach builder rows to it.
+/// This leg borrows the taker's `User` for its own body alone, because the
+/// router fill takes the loader instead of a live borrow. The escrow goes out
+/// and comes back, because the placement may attach builder rows to it.
 fn run_placement_leg<'c: 'info, 'info>(
     ctx: &Context<'info, PlaceSignedMsgTakerOrder<'info>>,
     sections: &mut FillSections<'info>,
@@ -133,14 +132,13 @@ fn run_placement_leg<'c: 'info, 'info>(
 
 /// Whether the taker's flow served the book's protection window.
 ///
-/// Maker priority: on a book with a speed bump, only attested flow fills
-/// synchronously. An unattested submission of a signed message rests the whole
-/// order taker-origin through the activation window instead, and the cross
-/// cranks fill it. The attestation is detached: swift signs over the taker's
-/// own order signature after the hold, so the flow authority never signs a
-/// keeper-built transaction and the fill pays no second signature fee. The
-/// placement already validated the envelope, so the signature prefix is
-/// present.
+/// A book with a speed bump gives makers priority, so only attested flow fills
+/// synchronously. An unattested submission of a signed message instead rests the
+/// whole order taker-origin through the activation window, and the cross cranks
+/// fill it. The attestation is detached. Swift signs over the taker's own order
+/// signature after the hold, so the flow authority never signs a keeper-built
+/// transaction and the fill pays no second signature fee. The placement already
+/// validated the envelope, so the signature prefix is present.
 fn verify_taker_served_window(
     attestation: &Option<crate::validation::sig_verification::FlowAttestationV0>,
     taker_order_signature: Option<[u8; 64]>,
@@ -163,11 +161,12 @@ fn verify_taker_served_window(
 /// reaches at or better than its auction start price.
 ///
 /// The taker did not sign this transaction, so the keeper is a filler and the
-/// obligation rules apply: it owes the taker every maker it had room to carry,
-/// and it must carry every quoter the message named. `require_signed_route`
-/// states the second rule. The route is the message's own list here rather
-/// than a claim the caller makes, because the message is in this transaction —
-/// only a later fill of the rested remainder has to work from the digest.
+/// obligation rules apply. The keeper owes the taker every maker it had room to
+/// carry, and it must carry every quoter the message named.
+/// `require_signed_route` states the second rule. The route here is the
+/// message's own list and not a claim the caller makes, because the message
+/// rides this transaction. Only a later fill of the rested remainder works from
+/// the digest.
 fn fill_signed_msg_taker_order<'c: 'info, 'info>(
     ctx: &Context<'info, PlaceSignedMsgTakerOrder<'info>>,
     sections: &mut FillSections<'info>,
@@ -222,7 +221,7 @@ fn fill_signed_msg_taker_order<'c: 'info, 'info>(
     sections.run_fill(
         &fill_accounts(ctx),
         controller::orders::FillRequest {
-            // The taker order is ephemeral: it never reserved, so the fill
+            // The taker order is ephemeral. It never reserved, so the fill
             // unwinds no exposure for it.
             target: controller::orders::FillTarget::Detached {
                 order: &mut placed.order,
@@ -276,9 +275,9 @@ fn fill_accounts<'a, 'info>(
 /// activation window. `restable_remainder_price` is the shared rule for which
 /// residuals can rest at all.
 ///
-/// The CLOB order id goes back onto the message's own record, which is how the
-/// fill at the activation slot — a different transaction, built by somebody
-/// else — finds the route this taker signed for.
+/// The CLOB order id goes back onto the message's own record. The fill at the
+/// activation slot runs in a different transaction, built by somebody else, and
+/// that record is how it finds the route this taker signed for.
 fn rest_signed_msg_remainder<'c: 'info, 'info>(
     ctx: &Context<'info, PlaceSignedMsgTakerOrder<'info>>,
     placed: &PlacedSignedMsgOrder,
@@ -302,7 +301,7 @@ fn rest_signed_msg_remainder<'c: 'info, 'info>(
     };
 
     // Immediate-or-cancel asked for no residual. The order never persisted, so
-    // dropping it is enough — nothing of it can fill after the window its signer
+    // dropping it is enough. Nothing of it can fill after the window its signer
     // allowed.
     if placed.is_immediate_or_cancel {
         return Ok(());
@@ -315,8 +314,8 @@ fn rest_signed_msg_remainder<'c: 'info, 'info>(
         return Ok(());
     }
 
-    // No slot to cancel: the order never entered `user.orders`. Its remainder
-    // migrates straight onto the CLOB.
+    // There is no slot to cancel, because the order never entered
+    // `user.orders`. Its remainder migrates straight onto the CLOB.
     let rested = crate::instructions::try_place_remainder_on_clob(
         &ctx.accounts.user,
         &ctx.accounts.quoter_slab,
@@ -398,13 +397,13 @@ pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
 
     apply_message_position_settings(&mut taker, &message, env)?;
 
-    // If the main taker order would soft-skip on an already-expired `max_ts`,
-    // place NOTHING. The reduce-only sidecars below are trigger orders, which
-    // are exempt from `max_ts` expiry, so without this pre-check they would be
-    // installed as standalone triggers even though the main entry never
-    // existed, which breaks the bundle's atomicity. The check runs up front,
-    // rather than after placing the main order, so the sidecars keep their
-    // order ids and the main keeps the trailing id that clients and the
+    // Place nothing when the main taker order would soft-skip on an
+    // already-expired `max_ts`. The reduce-only sidecars below are trigger
+    // orders, and `max_ts` expiry does not apply to them. Without this check
+    // they would be installed as standalone triggers even though the main entry
+    // never existed, which breaks the bundle's atomicity. The check runs first
+    // and not after the main order is placed, so the sidecars keep their order
+    // ids. The main order then keeps the trailing id that clients and the
     // `SignedMsgOrderRecord` rely on.
     if let Some(max_ts) = message.signed_msg_order_params.max_ts {
         if max_ts != 0 && max_ts < env.clock.unix_timestamp {
@@ -428,17 +427,17 @@ pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
     place_bracket_orders(&mut taker, &message, &mut builder, env)?;
     let placed = place_entry_order(&mut taker, &mut message, &mut order_id, &mut builder, env)?;
 
-    // `revoke_completed_orders` is deliberately not run here. The fill leg
-    // follows in the same instruction and completes orders of its own, so the
-    // caller revokes once, after it.
+    // This function does not run `revoke_completed_orders`. The fill leg follows
+    // in the same instruction and completes orders of its own, so the caller
+    // revokes once, after it.
     Ok((escrow_zc, placed))
 }
 
 /// Authenticate the message and bind it to the taker account it names.
 ///
-/// The taker's signature is verified in-program over the message the argument
-/// carries, so no preceding ed25519 precompile instruction is required. A
-/// delegate signs for a named taker pubkey. An authority signs for a
+/// This function verifies the taker's signature inside the program, over the
+/// message the argument carries. No preceding ed25519 precompile instruction is
+/// required. A delegate signs for a named taker pubkey. An authority signs for a
 /// subaccount, and the PDA of that subaccount must be the account passed.
 fn verify_signed_msg(
     taker: &SignedMsgTaker<'_, '_>,
@@ -484,12 +483,11 @@ fn verify_signed_msg(
 /// carries that max slot. The entry's own order id and route digest are
 /// written onto it later, once the sidecars have taken their ids.
 ///
-/// Immediate-or-cancel is allowed. The hazard it used to carry was a stored
-/// IOC limit order resting forever, because a limit order defaults `max_ts` to
-/// 0 and residual cancellation only existed in the take and make fill modes.
-/// This instruction now routes and fills in the same transaction, and cancels
-/// the residual rather than storing it, so nothing of an IOC order survives
-/// the call.
+/// Immediate-or-cancel is allowed. This instruction routes and fills in the same
+/// transaction, and it cancels the residual instead of storing it. Nothing of an
+/// immediate-or-cancel order survives the call. A stored order would be the
+/// hazard, because a limit order defaults `max_ts` to 0 and residual
+/// cancellation exists only in the take and make fill modes.
 fn signed_msg_order_slot(
     taker: &mut SignedMsgTaker<'_, '_>,
     message: &VerifiedMessage,
@@ -508,13 +506,14 @@ fn signed_msg_order_slot(
     } else {
         params.auction_duration.safe_unwrap()?
     };
-    // A limit order with no auction rests from placement, so its message slot is
-    // a placement deadline (`max_slot` below equals it), not an auction start.
-    // Clients stamp that deadline ahead as the signing budget (~14s), so the
-    // order may be placed before the slot arrives, within a bounded lead.
+    // A limit order with no auction rests from placement. Its message slot is a
+    // placement deadline rather than an auction start, and `max_slot` below
+    // equals it. A client stamps that deadline ahead by its signing budget of
+    // about 14 seconds, so the order may be placed before the slot arrives. The
+    // lead is bounded.
     let is_resting_limit = params.order_type == OrderType::Limit && auction_duration_units == 0;
     let max_resting_limit_lead = Millis::from_secs(30);
-    // ~200s of wall clock age, integrated per slot duration regime
+    // About 200 seconds of wall-clock age, integrated per slot duration regime.
     let max_order_age = Millis::from_secs(200);
 
     let order_slot = message.slot;
@@ -547,9 +546,9 @@ fn signed_msg_order_slot(
         return Err(print_error!(ErrorCode::InvalidSignedMsgOrderParam)().into());
     }
 
-    // Resolve the first slot reaching the auction duration across every known
-    // future transition so placement expiry cannot disagree with auction
-    // completion at a gate boundary.
+    // Resolve the first slot that reaches the auction duration across every
+    // known future transition. Placement expiry then cannot disagree with
+    // auction completion at a gate boundary.
     let max_slot = env.state.slot_clock().slot_at_or_after_duration(
         order_slot,
         Millis::from_stored_units(auction_duration_units as u64),
@@ -582,8 +581,8 @@ fn signed_msg_order_slot(
     Ok(Some(signed_msg_order_id))
 }
 
-/// Apply the per-position settings the message carries: the margin ratio cap
-/// and the isolated-position deposit.
+/// Apply the per-position settings the message carries. Those are the margin
+/// ratio cap and the isolated-position deposit.
 fn apply_message_position_settings(
     taker: &mut SignedMsgTaker<'_, '_>,
     message: &VerifiedMessage,
@@ -627,8 +626,8 @@ fn apply_message_position_settings(
 
 /// Install the reduce-only stop-loss and take-profit sidecars of a bundle.
 ///
-/// Both sit opposite the entry. A long entry stops below and takes profit
-/// above; a short entry is the mirror. The entry is not placed yet, so
+/// Both sit opposite the entry. A long entry stops below and takes profit above.
+/// A short entry is the mirror. The entry is not placed yet, so
 /// `existing_position_direction_override` tells the margin walk which side it
 /// will open.
 fn place_bracket_orders(
@@ -705,8 +704,8 @@ fn place_bracket_orders(
 /// straight to the book, and only its remainder rests on the CLOB. The route
 /// goes onto the message's own record, because a keeper builds the fill
 /// transaction and the route would otherwise be a suggestion it can ignore.
-/// The record outlives the message, which is what lets a fill in a later
-/// transaction still be held to it.
+/// The record outlives the message, so a fill in a later transaction is still
+/// held to it.
 ///
 /// `None` means the order soft-skipped its build, so there is nothing to fill
 /// or rest.
@@ -736,9 +735,9 @@ fn place_entry_order(
         entry.market_index,
     )?;
 
-    // Sweep expired slot orders first: their reservations release, which
-    // can be what lets the new order pass the margin gate. The create never
-    // touches `user.orders`, so the sweep is the caller's.
+    // Sweep expired slot orders first. Their reservations release, and that
+    // release can be what lets the new order pass the margin gate. The create
+    // never touches `user.orders`, so the caller owns the sweep.
     controller::orders::expire_orders(
         taker.user,
         &taker.key,
@@ -765,8 +764,8 @@ fn place_entry_order(
         return Ok(None);
     };
 
-    // `signature` is `[u8; 64]`; borsh serializes it as its raw bytes, so hash
-    // the array directly rather than allocating an identical copy.
+    // `signature` is `[u8; 64]`, and borsh serializes it as its raw bytes. Hash
+    // the array directly instead of allocating an identical copy.
     let order_params_hash = base64::encode(solana_program::hash::hash(&message.signature).as_ref());
 
     emit!(SignedMsgOrderRecord {
@@ -797,18 +796,19 @@ fn place_entry_order(
 /// borrow. This is the state that has to cross that boundary.
 pub struct PlacedSignedMsgOrder {
     pub order_id: u32,
-    /// The ephemeral taker order. It never enters `user.orders`: the fill leg
-    /// routes it detached and mutates its filled amounts here, and the rest leg
+    /// The ephemeral taker order. It never enters `user.orders`. The fill leg
+    /// routes it detached and mutates its filled amounts here. The rest leg
     /// reads its remainder from here to migrate onto the CLOB.
     pub order: crate::state::user::Order,
     pub uuid: [u8; 8],
     pub market_index: u16,
     /// The custom quoters the taker's message named. The fill must carry every
-    /// one of them; the CLOB and the vAMM are the baseline and are not listed.
+    /// one of them. The CLOB and the vAMM are the baseline, so the list omits
+    /// them.
     pub route: Vec<Pubkey>,
-    /// The digest of `route`, computed once at placement. The fill and the rest
-    /// both hold the quoters they carry against it, so it is cached rather than
-    /// re-hashed at each.
+    /// The digest of `route`. The placement computes it once. The fill leg and
+    /// the rest leg both hold the quoters they carry against it, so it is cached
+    /// and not re-hashed at each one.
     pub route_digest: crate::state::order_params::RouteDigest,
     /// The taker asked for no remainder to rest.
     pub is_immediate_or_cancel: bool,
@@ -859,8 +859,8 @@ pub struct PlaceSignedMsgTakerOrder<'info> {
     /// CHECK: the slab's `has_one` binds it to the book the admin approved.
     #[account(mut)]
     pub clob_market: UncheckedAccount<'info>,
-    /// CHECK: a Clob slot's program is pinned to velocity's CLOB at
-    /// registration; the handler re-checks through the slot.
+    /// CHECK: registration pins a Clob slot's program to velocity's CLOB. The
+    /// handler re-checks it through the slot.
     #[account(address = crate::ids::clob_program::id())]
     pub clob_program: UncheckedAccount<'info>,
 }

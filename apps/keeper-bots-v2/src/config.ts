@@ -52,9 +52,9 @@ export type FillerMultiThreadedConfig = BaseBotConfig & {
 
 	triggerPriorityFeeMultiplier?: number;
 
-	/// wall-clock ms between fill attempts per order (paces re-attempts against
-	/// the DLOB builder's ~200ms re-emit; expressed in actual slots at the current
-	/// slot duration). Defaults to 2000.
+	/// Wall-clock ms between fill attempts for one order. It paces re-attempts
+	/// against the DLOB builder's re-emit, which runs about every 200ms. The bot
+	/// converts it to slots at the current slot duration. Defaults to 2000.
 	fillAttemptIntervalMs?: number;
 };
 
@@ -94,10 +94,10 @@ export type SubaccountConfig = {
 };
 
 export type LiquidatorConfig = BaseBotConfig & {
-	/// dlob-server base URL, used to read a liquidatee's resting CLOB orders so
-	/// they can be force-cancelled before a perp liquidation (which reverts
-	/// while the account holds CLOB orders). When unset, the liquidator skips
-	/// the force-cancel and relies on the on-chain revert as the backstop.
+	/// dlob-server base URL. The liquidator reads a liquidatee's resting CLOB
+	/// orders from it and force-cancels them before a perp liquidation, because
+	/// a perp liquidation reverts while the account holds CLOB orders. When this
+	/// is unset, the liquidator skips the force-cancel and relies on that revert.
 	dlobServerHttpUrl?: string;
 	disableAutoDerisking: boolean;
 	/// Skip the startup sweep that deposits idle wallet token balances into
@@ -114,7 +114,8 @@ export type LiquidatorConfig = BaseBotConfig & {
 	maxSlippagePct?: number;
 	maxSlippageBps?: number;
 
-	/// wall-clock ms for derisk order auctions (expressed in actual slots at the current slot duration)
+	/// Wall-clock ms for a derisk order auction. The bot converts it to slots at
+	/// the current slot duration.
 	deriskAuctionDurationMs?: number;
 	twapDurationSec?: number;
 	minDepositToLiq?: Map<number, number>;
@@ -151,7 +152,8 @@ export type PythLazerCrankerBotConfig = BaseBotConfig & {
 	/// acts as the condition poll rate rather than the post rate. Unset
 	/// preserves the legacy post-every-tick behavior.
 	crankDivergenceBps?: number;
-	/// Max time between posts per chunk in adaptive mode (default 4 x the live slot duration)
+	/// Max time between posts for one chunk in adaptive mode. It defaults to four
+	/// times the live slot duration.
 	maxCrankIntervalMs?: number;
 };
 
@@ -364,11 +366,12 @@ function mergeDefaults<T>(defaults: T, data: Partial<T>): T {
 }
 
 /**
- * Back-compat for the *Slots -> *Ms config renames. Slot time is no longer a
- * fixed 400ms, so these intervals are denominated in wall-clock ms now. If a
- * deprecated slot-denominated key is present, warn and, when the new ms key is
- * unset, carry the old value forward converted at the 400ms baseline (its
- * original wall-clock meaning) so behavior does not silently change.
+ * Accepts the old `*Slots` config keys after the rename to `*Ms`. Slot time is
+ * no longer a fixed 400ms, so these intervals now carry wall-clock ms. When a
+ * deprecated slot-denominated key is present, this function warns. When the new
+ * ms key is also unset, it converts the old value at the 400ms baseline, which
+ * is the wall-clock time that value originally meant, so behavior stays the
+ * same.
  */
 function migrateDeprecatedSlotConfigs(config: Partial<Config>): void {
 	const BASELINE_MS = 400;

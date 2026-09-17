@@ -24,10 +24,10 @@ use {
 pub struct UserMap<'a>(pub BTreeMap<Pubkey, AccountLoader<'a, User>>);
 
 impl<'a> UserMap<'a> {
-    /// Index the loaded users by their derivable identity `(authority,
-    /// sub_account_id)` — how quoter-wire user refs resolve back to account
-    /// keys. A field match per loaded user, never a PDA derivation, so the
-    /// fill path pays nothing for the wire keeping identity derivable.
+    /// Index the loaded users by `(authority, sub_account_id)`, which is how a
+    /// quoter-wire user reference resolves back to an account key. This reads
+    /// two fields per loaded user and derives no PDA, so the fill path pays
+    /// nothing for that reference shape.
     pub fn user_ref_index(
         &self,
     ) -> VelocityResult<std::collections::BTreeMap<(Pubkey, u16), Pubkey>> {

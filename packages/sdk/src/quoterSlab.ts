@@ -9,9 +9,8 @@ import {
 } from './types';
 
 /**
- * Where a `QuoterSlabV0` account's slot region starts: the 8-byte
- * discriminator plus the fixed 160-byte header. Mirrors
- * `QuoterSlabV0::SLOT_REGION_OFFSET` on-chain.
+ * Where a `QuoterSlabV0` account's slot region starts: the 8-byte discriminator
+ * plus the fixed 160-byte header. Mirrors `QuoterSlabV0::SLOT_REGION_OFFSET`.
  */
 export const QUOTER_SLAB_SLOT_REGION_OFFSET = 8 + 160;
 
@@ -37,10 +36,10 @@ function readQuoterType(byte: number): QuoterType {
 }
 
 /**
- * Decode one `QuoterConfigV0` at `offset`. A hand-rolled mirror of the
- * on-chain layout: the slot region is raw bytes past the account struct, so
- * the type never reaches the IDL and the generated coder cannot decode it.
- * Field order and offsets follow `state/prop_amm.rs`.
+ * Decode one `QuoterConfigV0` at `offset`. The slot region is raw bytes past the
+ * account struct, so the type never reaches the IDL and the generated coder
+ * cannot decode it. Field order and offsets follow
+ * `programs/velocity/src/state/prop_amm/registry.rs`.
  */
 export function decodeQuoterConfig(
 	data: Buffer,
@@ -91,10 +90,10 @@ export function decodeQuoterConfig(
 }
 
 /**
- * Decode a `QuoterSlabV0` account: the fixed header plus every slot in the
- * tail region, vacant ones included so indexes stay stable. Slot 0 is the
- * market's book by convention; `Custom` quoters occupy slots 1+ and a vacant
- * slot's `entry` is the default pubkey.
+ * Decode a `QuoterSlabV0` account: the fixed header plus every slot in the tail
+ * region. Vacant slots are included so indexes stay stable. Slot 0 is the
+ * market's book by convention, and `Custom` quoters occupy slot 1 and above. A
+ * vacant slot's `entry` is the default pubkey.
  */
 export function decodeQuoterSlab(data: Buffer): {
 	header: QuoterSlabV0Account;

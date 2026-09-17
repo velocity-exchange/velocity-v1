@@ -1,33 +1,33 @@
 //! Per-user resting-order index.
 //!
-//! A CLOB order has no `User.orders` slot, so a client asking "what am I
-//! resting" cannot get the answer from the account it already watches. This
-//! builds that answer here, where the book's account is already resident, and
-//! writes it to the same Redis the books go to.
+//! A CLOB order has no `User.orders` slot, so a client cannot learn which
+//! orders it is resting from the account it already watches. This module builds
+//! that answer here, where the book's account is already resident, and writes it
+//! to the same Redis the books go to.
 //!
 //! # Why the account and not a call
 //!
-//! The book answers about orders a caller already names (`orders_v0`) or about
-//! the depth a taker of some size would reach (`quote_v0`). Neither is "every
-//! order this user holds": the first needs the refs the question is asking
-//! for, and the second stops at the size it was quoted at, so a user's order
-//! deeper than that would simply be missing. The arena has all of them, and it
-//! is public data this process already subscribes to. `clob-state` is the one
-//! declaration of its layout.
+//! The book answers about orders a caller already names, through `orders_v0`,
+//! or about the depth a taker of some size would reach, through `quote_v0`.
+//! Neither answers which orders a user holds. The first needs the refs the
+//! question is asking for. The second stops at the size it was quoted at, so a
+//! user's order deeper than that would be missing. The arena holds all of them,
+//! and it is public data this process already subscribes to. `clob-state` is
+//! the one declaration of its layout.
 //!
 //! # Why almost every tick writes nothing
 //!
 //! Books are re-quoted continuously because prices move continuously. Resting
-//! orders do not: a user's set changes when that user places, cancels or gets
-//! filled, which is rare per user and rare per market next to a 200 ms tick.
-//! So there are two gates, cheapest first. The market's whole arena is
-//! fingerprinted, and an unchanged arena ends the tick before anything is
-//! decoded. Past that, each user's own rows are fingerprinted, and only the
-//! users whose rows moved are written and published.
+//! orders do not move that way. A user's set changes when that user places,
+//! cancels or gets filled, which is rare per user and rare per market next to a
+//! 200 ms tick. There are therefore two gates, cheapest first. The market's
+//! whole arena is fingerprinted, and an unchanged arena ends the tick before
+//! anything is decoded. Past that gate, each user's own rows are fingerprinted,
+//! and only the users whose rows moved are written and published.
 //!
-//! A user who *had* orders and now has none still gets one write — an empty
-//! list — because a subscriber that heard nothing cannot tell an empty book
-//! from a quiet one.
+//! A user who held orders and now has none still gets one write, an empty list.
+//! A subscriber that heard nothing cannot tell an empty book from a quiet
+//! one.
 
 use {
     anyhow::{Context, Result},
@@ -57,17 +57,18 @@ pub struct UserOrdersIndex {
 
 /// One resting order, as a subscriber reads it.
 ///
-/// `orderId` is velocity's, minted from the `User`'s own counter — the id a
-/// client already names its orders by. `nodeIndex` and `clobOrderId` are the
-/// book's handle for the same order, carried so a cancel or a modify needs no
-/// lookup: they are exactly the `ClobOrderRefV0` those instructions take.
+/// `orderId` is velocity's, minted from the `User`'s own counter. It is the id
+/// a client already names its orders by. `nodeIndex` and `clobOrderId` are the
+/// book's handle for the same order. They ride along so a cancel or a modify
+/// needs no lookup, because together they are the `ClobOrderRefV0` those
+/// instructions take.
 fn order_json_at(node: &OrderNodeV0, node_index: u32, market_index: u16) -> Value {
     json!({
         "orderId": node.client_order_id,
         "nodeIndex": node_index,
-        // On the row and not only on the document: a reader after every market
-        // a user rests in gets one flat list, and a row that could not name its
-        // own market would be unusable in it.
+        // The market index sits on the row, not only on the document. A reader
+        // that asks for every market a user rests in gets one flat list, and a
+        // row that could not name its own market would be unusable in it.
         "marketIndex": market_index,
         "clobOrderId": node.order_id.to_string(),
         "direction": if node.side() == clob_state::Side::Bid { "long" } else { "short" },
@@ -91,8 +92,8 @@ fn fingerprint<T: Hash>(value: &T) -> u64 {
 ///
 /// `None` when the market's arena is byte-identical to the last one seen,
 /// which is the common case and ends the tick before anything is decoded.
-/// `Some` carries only the users to write — a user whose rows are unchanged is
-/// not in it, and a user who went from resting to empty is, with an empty
+/// `Some` carries only the users to write. A user whose rows are unchanged is
+/// not in it. A user who went from resting to empty is in it, with an empty
 /// list.
 ///
 /// Separated from the writing so the gates can be tested without a Redis.
@@ -109,9 +110,9 @@ pub fn changed_users(
     }
     index.arenas.insert(market_index, arena_print);
 
-    // Group by owner. Node order inside a user is arena order, which is
-    // stable for an unchanged book — the fingerprint below depends on it, and
-    // a set that reshuffled without changing would publish for nothing.
+    // Group by owner. Node order inside a user is arena order, which is stable
+    // for an unchanged book. The fingerprint below depends on that stability. A
+    // set that reshuffled without changing would publish for nothing.
     let mut by_user: HashMap<Pubkey, Vec<Value>> = HashMap::new();
     for (node_index, node) in live_orders(book_account_data) {
         let user = user_pda(velocity, &node.user_ref());
@@ -181,14 +182,14 @@ pub async fn publish(
 /// One key per user per market.
 ///
 /// A hash keyed by market would fit the shape better, but the serving side's
-/// Redis wrapper exposes no hash commands and does expose `mget` — and the
-/// market set is small and known to both ends, so a caller after every market
-/// asks for the keys it wants in one round trip either way.
+/// Redis wrapper exposes no hash commands and does expose `mget`. The market
+/// set is also small and known to both ends, so a caller that wants every
+/// market asks for the keys it wants in one round trip either way.
 fn user_key(prefix: &str, user: &Pubkey, market_index: u16) -> String {
     format!("{prefix}last_update_user_orders_{user}_{market_index}")
 }
 
-/// One user's rows for one market: stored under that market's key, and
+/// One user's rows for one market. They are stored under that market's key, and
 /// published on that user's channel for anyone already holding the rest.
 ///
 /// An empty list is published but not stored. A subscriber has to hear that
@@ -287,7 +288,7 @@ mod tests {
         Pubkey::new_from_array([9u8; 32])
     }
 
-    /// The gate that matters: books are re-quoted every tick because prices
+    /// The gate that matters. Books are re-quoted every tick because prices
     /// move every tick, but nobody's resting orders moved, so nothing is
     /// written.
     #[test]
@@ -322,7 +323,7 @@ mod tests {
     }
 
     /// A subscriber that heard nothing cannot tell an empty book from a quiet
-    /// one, so the last order leaving is a write — and exactly one.
+    /// one, so the last order leaving is a write, and exactly one write.
     #[test]
     fn emptying_publishes_once_and_then_goes_quiet() {
         let mut index = UserOrdersIndex::default();
@@ -335,8 +336,8 @@ mod tests {
         assert!(changed_users(&mut index, &velocity(), 0, &empty).is_none());
     }
 
-    /// Markets are indexed independently: one book moving must not reprint a
-    /// user's rows on another.
+    /// Markets are indexed independently. One book that moves must not reprint
+    /// a user's rows on another.
     #[test]
     fn each_market_is_gated_on_its_own_arena() {
         let mut index = UserOrdersIndex::default();
@@ -381,7 +382,8 @@ mod tests {
     }
 
     /// The rows carry the book's handle for each order, which is what a cancel
-    /// or a modify takes — so holding the feed is enough to act on an order.
+    /// or a modify takes. Holding the feed is therefore enough to act on an
+    /// order.
     #[test]
     fn a_row_carries_the_handle_a_cancel_needs() {
         let mut index = UserOrdersIndex::default();
@@ -393,8 +395,9 @@ mod tests {
         assert_eq!(rows[0]["nodeIndex"], 0);
         assert_eq!(rows[1]["nodeIndex"], 1);
         assert_eq!(rows[0]["venue"], "clob");
-        // A row names its own market, because a reader after every market gets
-        // one flat list and cannot recover it from the document it came in.
+        // A row names its own market, because a reader that asks for every
+        // market gets one flat list and cannot recover the market from the
+        // document the row came in.
         assert_eq!(rows[0]["marketIndex"], 0);
         let mut other = UserOrdersIndex::default();
         let rows = changed_users(&mut other, &velocity(), 7, &data).unwrap()[0]

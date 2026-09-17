@@ -1,25 +1,25 @@
 /**
- * vAMM quote ladder — TypeScript mirror of
+ * The vAMM quote ladder. It mirrors
  * `programs/velocity/src/vlp/amm/router_adapter.rs::vamm_quote_levels`.
  *
  * The router turns the continuous curve into discrete price levels so the vAMM
- * can be split against the CLOB and PropAMM books. Clients must reproduce it to
- * predict a fill, because the ladder — not the raw curve — is what the split
- * consumes.
+ * can be split against the CLOB and PropAMM books. A client reproduces the
+ * ladder to predict a fill, because the split consumes the ladder rather than
+ * the raw curve.
  *
  * Two properties carry over from the Rust and matter for prediction:
  *
- *  - A rung's price is the exact per-unit cost of its own slice, computed from
- *    the same swap math the fill runs (spread reserves included), rounded
- *    against the taker. It is NOT the curve's marginal price.
- *  - Rival prices within {@link LAST_LOOK_BAND} of the vAMM's top become rungs
- *    (last look): the slice of curve cheaper than a rival is quoted AT the
- *    rival's price and the vAMM wins the tie on tier priority. So a client that
- *    ignores rival books will under-estimate what the taker pays. A rung
+ *  - A rung's price is the exact per-unit cost of its own slice. It comes from
+ *    the same swap math the fill runs, spread reserves included, rounded
+ *    against the taker. It is not the curve's marginal price.
+ *  - A rival price within {@link LAST_LOOK_BAND} of the vAMM's top becomes a
+ *    rung. The slice of curve that is cheaper than the rival is quoted at the
+ *    rival's price, and the vAMM wins the tie on tier priority. A client that
+ *    ignores rival books therefore under-estimates what the taker pays. A rung
  *    reprices no more base than the rivals at that price offer, so rival size
  *    matters as much as rival price.
  *
- * Divergence from `router_adapter.rs` is a bug. Change both together.
+ * A divergence from `router_adapter.rs` is a bug. Change both together.
  */
 
 import { BN } from '@coral-xyz/anchor';
@@ -50,9 +50,9 @@ import { RouterPriceLevel, RouterQuoterBook } from './router';
 export const VAMM_QUOTE_CHECKPOINTS = 8;
 
 /**
- * Rival prices are honored as shading rungs only within this fraction of the
- * vAMM's top price (PERCENTAGE_PRECISION): 5%. Beyond it a garbage price from a
- * malicious-but-approved quoter can't inflate the vAMM's book.
+ * A rival price becomes a shading rung only within this fraction of the vAMM's
+ * top price, in PERCENTAGE_PRECISION. It is 5 percent. Beyond the band a bad
+ * price from an approved but hostile quoter cannot inflate the vAMM's book.
  */
 export const LAST_LOOK_BAND = PERCENTAGE_PRECISION.divn(20);
 
@@ -62,7 +62,8 @@ function floorToStep(value: BN, step: BN): BN {
 
 /**
  * Quote notional the AMM charges for a swap of `base`, on the spread-adjusted
- * reserves — the TS equivalent of `calculate_base_swap_output(...).quote_asset_amount`.
+ * reserves. This is the TypeScript form of
+ * `calculate_base_swap_output(...).quote_asset_amount`.
  */
 function swapNotional(
 	spreadReserves: {
@@ -96,18 +97,18 @@ function swapNotional(
 }
 
 /**
- * The vAMM's ladder for a taker of `direction`/`size`: best-first levels
- * covering `min(size, available liquidity)`, shaded toward `rivalBooks` inside
- * the last-look band, capped at `takerLimit`.
+ * The vAMM's ladder for a taker of `direction` and `size`. The levels run best
+ * first and cover the lesser of `size` and the available liquidity. Rival
+ * prices inside the last-look band shade them, and `takerLimit` caps them.
  *
  * @param amm the market's AMM
- * @param marketStats the market's stats (spread reserves derive from it)
- * @param mmOraclePriceData current MM oracle reading
- * @param direction taker direction
- * @param size base the taker wants
- * @param stepSize the market's `orderStepSize` — rung sizes are multiples of it
- * @param rivalBooks every other book the router already quoted (last look)
- * @param takerLimit the taker's effective limit price, if any
+ * @param marketStats the market's stats, which the spread reserves derive from
+ * @param mmOraclePriceData the current MM oracle reading
+ * @param direction the taker's direction
+ * @param size the base the taker wants
+ * @param stepSize the market's `orderStepSize`. Rung sizes are multiples of it
+ * @param rivalBooks every other book the router already quoted
+ * @param takerLimit the taker's effective limit price, if the taker set one
  */
 export function vammQuoteLevels(
 	amm: AMM,
@@ -151,11 +152,11 @@ export function vammQuoteLevels(
 			mmOraclePriceData
 		);
 		if (!isVariant(tradeDirection, isLong ? 'long' : 'short')) {
-			// `top` is the reserve price plus one spread, but the swap's first
-			// marginal is higher. A limit above `top` can still sit below that
-			// marginal, so the inversion trades the other way. No size fills
-			// within the limit. Quote nothing rather than leaving `total`
-			// uncapped and quoting past the limit.
+			// `top` is the reserve price plus one spread, and the swap's first
+			// marginal is higher than that. A limit above `top` can still sit
+			// below the marginal, so the inversion trades the other way. No
+			// size fills within the limit. Quote nothing rather than leave
+			// `total` uncapped and quote past the limit.
 			return [];
 		}
 		total = BN.min(total, reachable);
@@ -164,8 +165,8 @@ export function vammQuoteLevels(
 		}
 	}
 
-	// Rival prices past our top but inside the band (and the taker's limit)
-	// become shading rungs, best-first.
+	// A rival price past the vAMM's top becomes a shading rung when it stays
+	// inside the band and inside the taker's limit. Rungs are best first.
 	const band = top.mul(LAST_LOOK_BAND).div(PERCENTAGE_PRECISION);
 	const bandEdge = isLong ? top.add(band) : top.sub(band);
 	const rungEdge = takerLimit
@@ -173,10 +174,10 @@ export function vammQuoteLevels(
 			? BN.min(bandEdge, takerLimit)
 			: BN.max(bandEdge, takerLimit)
 		: bandEdge;
-	// The best VAMM_QUOTE_CHECKPOINTS rungs, best first, each carrying the
+	// The best VAMM_QUOTE_CHECKPOINTS rungs, best first. Each one carries the
 	// depth the rivals offer at its price. The Rust insert-sorts into a fixed
 	// array of that length, so a price that never reaches the array loses its
-	// depth as well; the walk below reproduces that bound exactly.
+	// depth too. The walk below reproduces that bound.
 	const rivalRungs: RouterPriceLevel[] = [];
 	const ranksBefore = (a: BN, b: BN) => (isLong ? a.lt(b) : a.gt(b));
 	for (const book of rivalBooks) {
@@ -265,9 +266,9 @@ export function vammQuoteLevels(
 		mmOraclePriceData
 	);
 
-	// Emit step-aligned rungs priced off the swap math that will execute, with
-	// a running bound so shading can't break monotonicity (the split truncates
-	// a book at its first non-monotone level).
+	// Emit step-aligned rungs priced off the swap math that executes the fill.
+	// A running bound keeps the book monotone under shading. The split
+	// truncates a book at its first non-monotone level.
 	const levels: RouterPriceLevel[] = [];
 	let previous = ZERO;
 	let previousNotional = ZERO;

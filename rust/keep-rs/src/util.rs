@@ -28,9 +28,10 @@ use {
     },
 };
 
-/// Live slot duration at `now_slot` from the client's cached `State`, resolved
-/// through the full slot clock (transition archive first, legacy staging fields
-/// as fallback); the 400ms baseline when State is not yet subscribed.
+/// Live slot duration at `now_slot`, read from the client's cached `State`. The
+/// full slot clock resolves it. The clock reads the transition archive first and
+/// falls back to the legacy staging fields. It returns the 400ms baseline while
+/// State has no subscription.
 pub fn client_slot_duration(velocity: &velocity_rs::VelocityClient, now_slot: u64) -> SlotDuration {
     velocity.slot_duration_at(now_slot)
 }
@@ -463,53 +464,55 @@ impl<const N: usize> PendingTxs<N> {
     }
 }
 
-/// Max age of a swift signed message before the program refuses to place it
-/// (~200s, expressed in actual slots at the current slot duration).
+/// The maximum age of a swift signed message before the program refuses to place
+/// it. The bound is about 200 seconds, measured in actual slots at the current
+/// slot duration.
 ///
-/// Mirrors the staleness gate in `place_signed_msg_taker_order`
-/// (programs/velocity/src/instructions/keeper.rs).
+/// This mirrors the staleness gate in `place_signed_msg_taker_order`, in
+/// `programs/velocity/src/instructions/keeper.rs`.
 pub const SWIFT_SIGNED_MSG_MAX_AGE: Millis = Millis::from_secs(200);
 
-/// Max lead of a resting swift limit's message slot over the current slot before the
-/// program refuses to place it early (~30s; the UI stamps ~14s ahead).
+/// The maximum lead of a resting swift limit's message slot over the current slot
+/// before the program refuses to place it early. The bound is about 30 seconds. The
+/// UI stamps about 14 seconds ahead.
 ///
-/// Mirrors `max_resting_limit_lead` in `place_signed_msg_taker_order`.
+/// This mirrors `max_resting_limit_lead` in `place_signed_msg_taker_order`.
 pub const SWIFT_RESTING_LIMIT_MAX_LEAD: Millis = Millis::from_secs(30);
 
 /// How to treat a swift order whose signed message may be stamped ahead of the chain.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SwiftSlotWait {
-    /// The message slot has arrived: the order can be filled or placed now.
+    /// The message slot has arrived. The order can be filled or placed now.
     Ready,
-    /// Stamped ahead of the chain, within a credible signing buffer: hold the order and
-    /// re-evaluate once its slot arrives.
+    /// The stamp is ahead of the chain and within a credible signing buffer. Hold the
+    /// order and read it again once its slot arrives.
     Wait,
-    /// Stamped so far ahead it cannot be a signing buffer: don't hold it.
+    /// The stamp is so far ahead that it cannot be a signing buffer. Do not hold the order.
     TooFarAhead,
 }
 
-/// True if a swift order is a limit order with no auction. It rests from placement, so the
-/// program treats its message slot as a placement deadline rather than an auction start
-/// and accepts it ahead of that slot (see [`swift_slot_wait`]).
+/// True if a swift order is a limit order with no auction. Such an order rests from
+/// placement, so the program treats its message slot as a placement deadline and not as an
+/// auction start. The program accepts it ahead of that slot. See [`swift_slot_wait`].
 pub fn is_resting_swift_limit(order_params: &OrderParams) -> bool {
     order_params.order_type == OrderType::Limit && order_params.auction_duration.unwrap_or(0) == 0
 }
 
 /// Classify a swift order's signed-message slot against the current slot.
 ///
-/// For an auction order `place_signed_msg_taker_order` rejects `order_slot > clock.slot`
-/// (`InvalidSignedMsgOrderParam`), so one stamped ahead of the chain can be neither
-/// filled nor placed yet. Signers add a buffer so the message stays valid while it travels
-/// (the UI stamps a few slots ahead), which makes this a normal arrival state rather than a
-/// bad order: the swift feed delivers each order exactly once, so the only way not to lose
-/// it is to hold it until its slot arrives. `max_wait` bounds how far ahead a stamp is
+/// For an auction order, `place_signed_msg_taker_order` rejects `order_slot > clock.slot`
+/// with `InvalidSignedMsgOrderParam`. An order stamped ahead of the chain can therefore be
+/// neither filled nor placed yet. A signer adds a buffer so the message stays valid while it
+/// travels, and the UI stamps a few slots ahead. That makes an early stamp a normal arrival
+/// state and not a bad order. The swift feed delivers each order once, so the only way to
+/// keep it is to hold it until its slot arrives. `max_wait` bounds how far ahead a stamp is
 /// still credible as a signing buffer.
 ///
-/// A resting limit (`resting_limit`, see [`is_resting_swift_limit`]) has no auction to
-/// start: its message slot is the placement deadline (`max_slot`), stamped a whole signing
-/// budget ahead, and the program places it before that slot as long as the stamp is within
-/// [`SWIFT_RESTING_LIMIT_MAX_LEAD`]. Waiting would leave a single slot to land the tx, so it
-/// is ready on arrival.
+/// A resting limit, the `resting_limit` argument, has no auction to start. See
+/// [`is_resting_swift_limit`]. Its message slot is the placement deadline, `max_slot`, and a
+/// signer stamps it a whole signing budget ahead. The program places it before that slot as
+/// long as the stamp is within [`SWIFT_RESTING_LIMIT_MAX_LEAD`]. Waiting would leave one slot
+/// to land the transaction, so the order is ready on arrival.
 pub fn swift_slot_wait(
     order_slot: u64,
     current_slot: u64,
@@ -556,9 +559,9 @@ pub fn swift_slot_wait_if_known(
     }
 }
 
-/// Whether the biased filler select should poll Swift this iteration. When both
-/// streams stay ready, `prefer_slot` alternates after each successful slot/Swift
-/// poll so neither a slot backlog nor a busy Swift feed can starve the other.
+/// Whether the biased filler select polls Swift this iteration. When both streams
+/// stay ready, `prefer_slot` alternates after each successful slot poll and Swift
+/// poll, so neither a slot backlog nor a busy Swift feed can starve the other.
 pub fn should_poll_swift(
     swift_feed_live: bool,
     slot_update_pending: bool,
@@ -567,24 +570,27 @@ pub fn should_poll_swift(
     swift_feed_live && !(slot_update_pending && prefer_slot)
 }
 
-/// Returns true if a swift (signed-message) order is too old to be usefully filled or placed
-/// on-chain, so the bot shouldn't spend a tx on it.
+/// Returns true if a swift (signed-message) order is too old to fill or place on chain, so
+/// the bot does not spend a transaction on it.
 ///
-/// The two slot gates mirror `place_signed_msg_taker_order` exactly:
-/// - **signed message staleness**: the program rejects once the order's
-///   wall clock age (integrated per slot duration regime) exceeds ~200s
-/// - **placement deadline**: program silently no-ops once `max_slot < current_slot`, where
-///   `max_slot` is the first slot reaching the auction duration across all
-///   known slot-duration transitions (identical formula for limit & market orders)
+/// The two slot gates mirror `place_signed_msg_taker_order` exactly.
 ///
-/// The `max_ts` check is an *additional* client-side guard (the program does not gate placement
-/// on `max_ts`): an order whose `max_ts` has passed is already dead, so placing it would waste a
-/// tx. Note `auction_duration` is a `u8` (≤ 255 units ≈ 102s), so the placement deadline always
-/// binds before the ~200s staleness window; both are checked for completeness/robustness.
+/// - Signed message staleness. The program rejects the order once its wall clock age,
+///   integrated over each slot duration regime, exceeds about 200 seconds.
+/// - Placement deadline. The program does nothing once `max_slot < current_slot`. `max_slot`
+///   is the first slot that reaches the auction duration across every known slot-duration
+///   transition. The formula is the same for a limit order and a market order.
 ///
-/// The opposite end of the window, an order stamped *ahead* of the chain, is
-/// [`swift_slot_wait`]'s job: that order is not dead but early, and is held rather than dropped.
-/// This function reports "not expired" for one, so callers must run the wait gate first.
+/// The `max_ts` check is an extra client-side guard, because the program does not gate
+/// placement on `max_ts`. An order whose `max_ts` has passed is already dead, so placing it
+/// would waste a transaction. `auction_duration` is a `u8`, so it holds at most 255 units, or
+/// about 102 seconds. The placement deadline therefore always binds before the 200 second
+/// staleness window. This function checks both.
+///
+/// An order stamped ahead of the chain is the other end of the window, and
+/// [`swift_slot_wait`] handles it. Such an order is early rather than dead, and the caller
+/// holds it rather than dropping it. This function reports "not expired" for one, so a caller
+/// must run the wait gate first.
 pub fn swift_order_expired(
     order_slot: u64,
     auction_duration: u8,
@@ -623,28 +629,32 @@ pub struct PythPriceUpdate {
     pub ts: TimestampUs,
 }
 
-/// One-shot marker recorded when a liquidate-with-fill tx fails onchain with
-/// `LiquidationOrderFailedToFill`, telling the liquidator to route the next
-/// attempt on that (liquidatee, market) straight to a collateral takeover.
-/// The marker survives until a takeover tx is actually sent; `attempts`
-/// counts takeover routings it has driven and `recorded_ms` bounds its
-/// lifetime, so a takeover path that keeps failing before send cannot pin
-/// the marker forever.
+/// A marker recorded when a liquidate-with-fill transaction fails on chain with
+/// `LiquidationOrderFailedToFill`. It tells the liquidator to route the next
+/// attempt on that liquidatee and market straight to a collateral takeover.
+///
+/// The marker survives until a takeover transaction is sent. `attempts` counts
+/// the takeover routings it has driven, and `recorded_ms` bounds its lifetime, so
+/// a takeover path that keeps failing before send cannot hold the marker forever.
 #[derive(Clone, Copy, Debug)]
 pub struct PerpFillFallback {
     pub recorded_ms: u64,
     pub attempts: u32,
 }
 
-/// The oracle state `update_pyth_lazer_oracle` would persist for `update`,
-/// read back the way `get_pyth_price` reads it, with `delay: 0` since the
-/// posting tx stamps the current slot. Mirrors the program end to end:
-/// confidence is the widest of the 20bps floor, the bid/ask distance and the
-/// signed confidence property (`calculate_lazer_conf`), price and confidence
-/// scale by the feed exponent and the source multiple, and a stablecoin
-/// source snaps to $1 inside the tighter of 5bps and the confidence
-/// (`get_pyth_stable_coin_price`). Returns `None` when the retained message
-/// does not parse or does not carry the update's feed.
+/// The oracle state that `update_pyth_lazer_oracle` would persist for `update`,
+/// read back the way `get_pyth_price` reads it. `delay` is 0, because the posting
+/// transaction stamps the current slot.
+///
+/// This mirrors the program end to end. The confidence is the widest of the 20bps
+/// floor, the distance between the best bid and the best ask, and the signed
+/// confidence property. See `calculate_lazer_conf`. The price and the confidence
+/// scale by the feed exponent and the source multiple. A stablecoin source snaps
+/// to one dollar inside the tighter of 5bps and the confidence. See
+/// `get_pyth_stable_coin_price`.
+///
+/// Returns `None` when the retained message does not parse, or does not carry the
+/// update's feed.
 pub fn preview_pyth_lazer_oracle(
     update: &PythPriceUpdate,
     oracle_source: &OracleSource,
@@ -678,7 +688,7 @@ pub fn preview_pyth_lazer_oracle(
     let price = price.filter(|p| *p != 0)?;
     let exponent = exponent?;
 
-    // widest-of-three confidence, as `calculate_lazer_conf` stores it
+    // The widest of the three confidence signals, as `calculate_lazer_conf` stores it.
     let mut conf = price / 500;
     if let (Some(bid), Some(ask)) = (best_bid, best_ask) {
         let spread = i128::from(ask)
@@ -691,7 +701,7 @@ pub fn preview_pyth_lazer_oracle(
         conf = conf.max(signed_confidence);
     }
 
-    // scale mantissas to PRICE_PRECISION, as `get_pyth_price` reads them
+    // Scale the mantissas to PRICE_PRECISION, as `get_pyth_price` reads them.
     let multiple = match oracle_source {
         OracleSource::PythLazer | OracleSource::PythLazerStableCoin => 1u128,
         OracleSource::PythLazer1K => 1_000,
@@ -740,14 +750,15 @@ pub fn preview_pyth_lazer_oracle(
     })
 }
 
-/// Tolerated forward clock skew before a future-dated feed timestamp is treated as invalid —
-/// a timestamp further ahead than this means a bad clock on one side, not a fresh price.
+/// The forward clock skew this code tolerates before it treats a future-dated feed timestamp
+/// as invalid. A timestamp further ahead than this means a bad clock on one side, not a fresh
+/// price.
 const PYTH_MAX_CLOCK_SKEW_US: u64 = 1_000_000;
 
-/// Returns true if a pyth-lazer update's feed timestamp is within `max_age_us` of wall-clock
-/// `now_us`. Used to gate consumption of the cached `PythPriceUpdate` on wall-clock age, since
-/// a frozen websocket (see [`subscribe_price_feeds`]) leaves the cache holding a price that's
-/// arbitrarily old with no signal of that in the update itself.
+/// Returns true if a pyth-lazer update's feed timestamp is within `max_age_us` of the wall
+/// clock `now_us`. A caller gates use of the cached `PythPriceUpdate` on wall-clock age. A
+/// frozen websocket leaves the cache holding a price of any age, and the update itself carries
+/// no sign of that. See [`subscribe_price_feeds`].
 pub fn pyth_update_is_fresh(
     update_ts_us: TimestampUs,
     now_us: TimestampUs,
@@ -811,10 +822,10 @@ pub fn subscribe_price_feeds(
     let feed_ids: Vec<PriceFeedId> = feed_id_set.into_iter().map(PriceFeedId).collect();
 
     const MAX_RETRIES: u32 = 10;
-    // Pyth feeds tick every 50-200ms (see `fixed_rate`), so this much silence on the
-    // websocket is unambiguous. A half-open socket never yields an error or `None` —
-    // `stream.next()` just pends forever — so wrap it in a timeout and fall through
-    // to the existing reconnect/backoff machinery below rather than trusting the socket.
+    // A pyth feed ticks every 50ms to 200ms. See `fixed_rate`. This much silence on the
+    // websocket therefore has one meaning. A half-open socket never yields an error or
+    // `None`, because `stream.next()` pends forever. So the read runs under a timeout and
+    // falls through to the reconnect and backoff machinery below.
     const PYTH_FEED_STALE_LIMIT: Duration = Duration::from_secs(30);
 
     let (price_tx, price_rx) = tokio::sync::mpsc::channel(512);
@@ -909,12 +920,13 @@ pub fn subscribe_price_feeds(
 
                                     log::trace!(target: "pyth", "got update: {data:?}");
                                     for f in data.feeds {
-                                        // the program gates staleness and monotonicity on the
-                                        // per-feed `FeedUpdateTimestamp` (see
-                                        // `instructions/pyth_lazer_oracle.rs`), not the payload
-                                        // timestamp — a fixed-rate channel keeps ticking a fresh
-                                        // payload timestamp even when a feed's price is stalled,
-                                        // so stamp updates with the timestamp the program checks
+                                        // The program gates staleness and monotonicity on the
+                                        // per-feed `FeedUpdateTimestamp`, not on the payload
+                                        // timestamp. See
+                                        // `instructions/pyth_lazer_oracle.rs`. A fixed-rate
+                                        // channel keeps ticking a fresh payload timestamp even
+                                        // when a feed's price is stalled. So stamp each update
+                                        // with the timestamp the program checks.
                                         let feed_update_ts = f
                                             .properties
                                             .iter()

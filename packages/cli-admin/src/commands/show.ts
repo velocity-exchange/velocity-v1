@@ -75,9 +75,9 @@ function describeBitmask(
 }
 
 /**
- * Render any decoded account field: pubkeys as base58, BNs as decimals,
- * arrays/structs inline. Sanitized: account fields are chain data and a
- * string field can carry terminal escapes.
+ * Renders any decoded account field. It prints a pubkey as base58, a BN as a
+ * decimal, and an array or a struct inline. It sanitizes the result, because an
+ * account field is chain data and a string field can carry a terminal escape.
  */
 function formatField(value: unknown): string {
 	return ui.safe(renderField(value));
@@ -243,7 +243,8 @@ export function registerShow(parent: Command): void {
 					quoteSpot,
 					SpotBalanceType.DEPOSIT
 				);
-				// AMM reserve price: (quote/base) * peg. Good enough for display.
+				// The AMM reserve price is (quote / base) * peg. This display does not
+				// need more precision.
 				const price =
 					(Number(m.amm.quoteAssetReserve.toString()) /
 						Number(m.amm.baseAssetReserve.toString())) *
@@ -376,9 +377,9 @@ export function registerShow(parent: Command): void {
 		try {
 			const state = client.getStateAccount();
 
-			// Breakpoints mirror determine_perp_fee_tier (math/fees.rs) /
-			// User.getUserFeeTier: taker's rolling 30-day volume picks tiers 0-3
-			// (Regular / VIP 1 / VIP 2 / VIP 3).
+			// The breakpoints mirror `determine_perp_fee_tier` in `math/fees.rs` and
+			// `User.getUserFeeTier`. The taker's rolling 30-day volume picks tier 0
+			// through tier 3, named Regular, VIP 1, VIP 2 and VIP 3.
 			const perpTierLabels = [
 				['Regular', '30d vol <  $5M  '],
 				['VIP 1  ', '30d vol >= $5M  '],

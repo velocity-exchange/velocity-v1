@@ -1,15 +1,16 @@
-//! Stamp a router's quote buffer — the account [`super::quote_router`] writes
-//! its per-source books into.
+//! Stamp a router's quote buffer. [`super::quote_router`] writes its
+//! per-source books into that account.
 //!
-//! The account is **created by the caller**, not by this instruction: at
-//! ~33KB it exceeds the 10,240-byte limit on account allocation from inside a
-//! CPI, which is the same reason the CLOB's market account is pre-created.
-//! So the caller allocates and assigns it to velocity, and this instruction
-//! takes it `zero` (program-owned, zeroed, unstamped) and records who may
-//! quote into it.
+//! The caller creates the account, not this instruction. At about 42 KB the
+//! account exceeds the 10,240-byte limit on account allocation from inside a
+//! CPI, which is the same reason the CLOB's market account is pre-created. The
+//! caller allocates the account and assigns it to velocity. This instruction
+//! takes it `zero`, which means program-owned, zeroed and unstamped, and
+//! records who may quote into it.
 //!
-//! Permissionless: the buffer holds no protocol state, only the caller's own
-//! view of available liquidity, and it is written under simulation.
+//! The instruction is permissionless. The buffer holds no protocol state. It
+//! holds the caller's own view of available liquidity, and it is written under
+//! simulation.
 
 use {crate::state::router_quote::RouterQuoteBufferV0, anchor_lang::prelude::*};
 

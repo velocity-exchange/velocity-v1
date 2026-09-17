@@ -1,8 +1,8 @@
 //! Booking spot lending interest, and halting a short market.
 //!
-//! Interest accrues lazily: nothing is owed until somebody reads a balance, so
-//! these cranks exist to keep a market's stored figures current for readers
-//! that do not settle anything themselves.
+//! Interest accrues lazily. Nothing is owed until somebody reads a balance.
+//! These cranks keep a market's stored figures current for a reader that
+//! settles nothing itself.
 
 use super::*;
 
@@ -44,31 +44,31 @@ pub fn handle_update_spot_market_cumulative_interest(
     Ok(())
 }
 
-/// Permissionless batch refresh: book the lending interest of several spot markets in one
-/// instruction. Markets and their indexes arrive through `remaining_accounts`, and each one goes
-/// through the same `update_spot_market_cumulative_interest` as the single-market crank above.
+/// Book the lending interest of several spot markets in one instruction. Anyone may call it. The
+/// markets and their indexes arrive through `remaining_accounts`. Each market goes through the
+/// same `update_spot_market_cumulative_interest` as the single-market crank above.
 ///
-/// Written for a caller that must value several markets in one transaction, such as a program
+/// This exists for a caller that must value several markets in one transaction, such as a program
 /// that prices a share against the markets a user holds. The single-market crank stays the
 /// instruction that keeps a market's oracle EMA fresh.
 ///
-/// This instruction moves no tokens and passes no oracle, which is why it drops two of the crank's
-/// guards and its spot-vault assertion, and keeps the third:
+/// This instruction moves no tokens and passes no oracle. It therefore drops two of the crank's
+/// guards and its spot-vault assertion, and it keeps the third.
 ///
 /// - No oracle means `update_spot_market_twap_stats` leaves `historical_oracle_data` alone. A
-///   caller that reads a market's oracle TWAP after this call therefore reads a value this call
-///   did not move, and no caller can pick the sampling instant of an oracle EMA.
+///   caller that reads a market's oracle TWAP after this call reads a value this call did not
+///   move. No caller can pick the sampling instant of an oracle EMA.
 /// - A market status of `Delisted` is not rejected. `deposit` and `force_delete_user` already
-///   book interest on a delisted market, so refusing here would block callers without stopping
-///   the accrual.
+///   book interest on a delisted market. A refusal here would block callers without stopping the
+///   accrual.
 /// - `exchange_not_paused` is kept. A full halt sets every `ExchangeStatus` bit, `FundingPaused`
-///   included, so no interest can accrue and the only work left is stamping the clock and the
+///   included, so no interest can accrue. The only work left is stamping the clock and the
 ///   balance TWAPs. Those TWAPs size the withdraw and borrow circuit breakers, and a halt freezes
-///   them for a reason. Without this guard a caller could re-baseline a breaker mid-halt, or stamp
-///   the halted interval away so nobody is charged for it.
-/// - The spot vault holds the same tokens after this call as before it, and booking interest can
-///   only lower the depositors' claim, never raise it. Asserting the vault invariant here would
-///   let one market that is already short abort the refresh of every other market in the batch.
+///   them on purpose. Without this guard a caller could re-baseline a breaker during a halt. A
+///   caller could also stamp the halted interval away so nobody is charged for it.
+/// - The spot vault holds the same tokens after this call as before it. Booking interest can only
+///   lower the depositors' claim, never raise it. Asserting the vault invariant here would let one
+///   market that is already short abort the refresh of every other market in the batch.
 #[access_control(
     exchange_not_paused(&ctx.accounts.state)
 )]
@@ -77,9 +77,10 @@ pub fn handle_refresh_spot_market_interest<'c: 'info, 'info>(
     args: RefreshSpotMarketInterestArgs,
 ) -> Result<()> {
     let RefreshSpotMarketInterestArgs { market_indexes } = args;
-    // A user holds eight spot positions, and every perp market quotes the same spot market
-    // (`initialize_perp_market` hardcodes it and no setter exists), so ten markets cover every
-    // market one user's equity can read. The cap keeps one call inside a compute budget.
+    // A user holds eight spot positions, and every perp market quotes the same spot market.
+    // `initialize_perp_market` hardcodes that market and no setter exists. Ten markets therefore
+    // cover every market one user's equity can read. The cap keeps one call inside a compute
+    // budget.
     validate!(
         market_indexes.len() <= 16,
         ErrorCode::DefaultError,

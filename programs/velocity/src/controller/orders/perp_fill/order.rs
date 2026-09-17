@@ -1,10 +1,10 @@
 //! The order layer of a perp fill.
 //!
-//! This layer governs the order. It resolves the order from its owner's slot
-//! or from the caller's handle, admits or refuses the fill, refreshes the
-//! market oracle statistics, binds the keeper, and applies the bookkeeping the
-//! fill leaves behind: the write-back, the fill-price band, the reduce-only
-//! cancel, the open-interest cap and the funding update.
+//! This layer governs the order. It finds the order in its owner's slot or in
+//! the caller's handle, admits or refuses the fill, refreshes the market
+//! oracle statistics, and binds the keeper. It then applies the bookkeeping
+//! the fill leaves behind: the write-back, the fill-price band, the
+//! reduce-only cancel, the open-interest cap and the funding update.
 //!
 //! [`super::taker_risk`] applies the taker's own limits around the fill.
 
@@ -39,10 +39,11 @@ use {
     std::{cell::RefMut, ops::DerefMut},
 };
 
-/// [`fill_perp_order`] with no external quoter books. The route still runs
-/// over the vAMM ladder and the passed DLOB makers. The split has no CPI book
-/// to price in. This is every fill entrypoint that carries no quoter accounts
-/// (place-and-take flows; external books there are a planned follow-up).
+/// [`fill_perp_order`] with no external quoter books.
+///
+/// The route still runs over the vAMM ladder and the passed DLOB makers. The
+/// split has no CPI book to price in. Every fill entrypoint that carries no
+/// quoter accounts arrives here.
 pub fn fill_perp_order_without_external_books<'info>(
     order_id: u32,
     state: &State,
@@ -97,22 +98,23 @@ pub fn fill_perp_order_without_external_books<'info>(
 
 /// Which order a fill is for, and whether the owner has a slot holding it.
 ///
-/// A fill works on the order itself. Most orders live in their owner's `orders`
-/// array and the fill reads one out and writes it back; a remainder lifted off
-/// a book lives nowhere, and passing it directly is what lets the same fill
-/// path serve both without either one needing a spare slot.
+/// A fill works on the order itself. Most orders live in their owner's
+/// `orders` array, and the fill reads one out and writes it back. A remainder
+/// lifted off a book lives nowhere. The caller passes it directly, so one fill
+/// path serves both and neither one needs a spare slot.
 pub enum FillTarget<'a> {
     /// The open order with this id in the owner's `orders` array.
     Slot(u32),
-    /// An order held by the caller. Nothing is written back: the caller owns
+    /// An order held by the caller. Nothing is written back. The caller owns
     /// what happens to whatever the fill leaves unfilled.
     ///
-    /// `reserved` says whether the taker owns an `open_bids`/`open_asks` +
+    /// `reserved` says whether the taker owns an `open_bids`/`open_asks` and
     /// `open_orders` reservation the fill must unwind as it fills. An order
-    /// lifted off the book rested first, so it reserved: `reserved: true`. A
-    /// fresh ephemeral taker that routes straight to the book never reserved:
-    /// `reserved: false`, and the fill must not unwind exposure it never took,
-    /// or it eats a co-resident order's reservation and underflows the counter.
+    /// lifted off the book rested first, so it reserved and `reserved` is
+    /// true. A fresh ephemeral taker that routes straight to the book never
+    /// reserved, so `reserved` is false. The fill must not unwind exposure it
+    /// never took. Such an unwind removes a co-resident order's reservation
+    /// and underflows the counter.
     Detached {
         order: &'a mut Order,
         reserved: bool,
@@ -128,8 +130,9 @@ pub struct FillRequest<'a> {
     pub referrer_is_accelerated: bool,
 }
 
-/// The two seats a perp fill loads for itself: whose order it is, and who
-/// turns it. Everyone else the fill touches arrives in [`FillParties`].
+/// The two seats a perp fill loads for itself: the taker whose order it is,
+/// and the keeper that runs the fill. Everyone else the fill touches arrives
+/// in [`FillParties`].
 pub struct PerpFillAccounts<'a, 'escrow, 'info> {
     pub user: &'a AccountLoader<'info, User>,
     pub user_stats: &'a AccountLoader<'info, UserStats>,
@@ -181,7 +184,7 @@ impl<'a> Taker<'a> {
     }
 }
 
-/// The filler that turns a fill, and what the flat reward is worth.
+/// The filler that runs a fill, and what the flat reward is worth.
 ///
 /// Both accounts are absent when the filler is the taker, one of the makers,
 /// or another subaccount of the taker's authority. Such a filler earns no
@@ -206,7 +209,7 @@ pub(super) struct OrderSlot<'a> {
     index: Option<usize>,
     /// The caller's handle, when the order lives nowhere else.
     detached: Option<&'a mut Order>,
-    /// Whether the taker owns an `open_bids`/`open_asks` + `open_orders`
+    /// Whether the taker owns an `open_bids`/`open_asks` and `open_orders`
     /// reservation the fill must unwind as it fills. A slot order reserved at
     /// placement. A detached order says for itself.
     pub reserved: bool,
@@ -257,9 +260,9 @@ impl<'a> OrderSlot<'a> {
         self.index
     }
 
-    /// Put the fill's progress back where the order came from, so everything
-    /// downstream — the reduce-only check, and the caller's own lookup by
-    /// order id — sees what the fill did to it.
+    /// Put the fill's progress back where the order came from. The
+    /// reduce-only check and the caller's own lookup by order id then see what
+    /// the fill did to the order.
     fn write_back(&mut self, user: &mut User) {
         let order = self.order;
         if let Some(index) = self.index {
@@ -274,7 +277,7 @@ impl<'a> OrderSlot<'a> {
 /// Fill one perp order, from the owner's slot or from the caller (see
 /// [`FillTarget`]).
 ///
-/// This layer governs the order. It resolves the order, admits or refuses the
+/// This layer governs the order. It finds the order, admits or refuses the
 /// fill, refreshes the market oracle statistics, binds the keeper and collects
 /// the DLOB maker orders the fill may match. [`OrderUnderFill`] carries all of
 /// that through the fill and the bookkeeping it leaves behind.
@@ -340,15 +343,14 @@ pub fn fill_perp_order(
 /// The market admits the fill.
 ///
 /// A `ReduceOnly` market forces every order it fills to be risk-reducing.
-/// Placement only stamps `order.reduce_only` from the market status at the time
-/// the order was created (`place_perp_order` -> `force_reduce_only`), so a
-/// legacy order placed while the market was `Active` still carries
-/// `reduce_only = false` after the market is flipped to `ReduceOnly`. Every
-/// downstream reduce-only guard keys off the stored flag — the fill-size clamp
-/// in `get_base_asset_amount_unfilled`, `should_cancel_reduce_only_order` and
-/// the trigger-path risk check — so the flag is re-derived from the live market
-/// status here and stamped onto the order. This mirrors placement: once a
-/// market is reduce-only, its orders are reduce-only.
+/// Placement stamps `order.reduce_only` from the market status at the time the
+/// order was created. An order placed while the market was `Active` therefore
+/// still carries `reduce_only = false` after an admin sets the market to
+/// `ReduceOnly`. Every downstream reduce-only guard reads the stored flag, so
+/// the flag is re-derived from the live market status here and stamped onto
+/// the order. Those guards are the fill-size clamp in
+/// `get_base_asset_amount_unfilled`, `should_cancel_reduce_only_order` and the
+/// trigger-path risk check.
 fn admit_perp_market(
     order: &mut OrderSlot,
     taker: &mut Taker,
@@ -426,9 +428,9 @@ fn admit_taker(
     Ok(Admission::Proceed)
 }
 
-/// The taker's `RevenueShareEscrow` is an optional account, so a keeper could
-/// omit it and the associated fees would silently resolve to zero. Two cases
-/// require it to be supplied:
+/// The taker's `RevenueShareEscrow` is an optional account. A keeper that
+/// omits it resolves the fees that depend on it to zero. Two cases require the
+/// keeper to supply it:
 ///
 /// 1. the taker order carries a builder code, so the builder fee must accrue;
 /// 2. the taker is referred and their escrow exists, so the referee discount
@@ -466,7 +468,7 @@ fn require_revenue_share_escrow(
 /// reward.
 type BoundKeeper<'a> = (Option<RefMut<'a, User>>, Option<RefMut<'a, UserStats>>);
 
-/// Load the keeper that turns the fill, when it is a third party.
+/// Load the keeper that runs the fill, when it is a third party.
 ///
 /// A filler that is the taker, one of the makers, or another subaccount of the
 /// taker's authority earns no reward and is not loaded: the taker and the
@@ -498,16 +500,17 @@ fn bind_filler<'f, 'info>(
 /// One perp order, as the fill works on it.
 ///
 /// This is the order layer's own subject: the order and where it goes back to,
-/// the taker that owns it, the filler that turns the fill, and the rules the
+/// the taker that owns it, the filler that runs the fill, and the rules the
 /// three run under. [`Self::run`] names the steps and they run in the order
 /// they are written.
 ///
-/// The account maps, the router leg and the escrow arrive per step instead.
-/// This layer lends all three to the layer below. A market handle taken from
-/// the maps is also rooted outside `self`. A step can therefore hold the
-/// market and still mutate the taker and the filler. A field would root that
-/// handle in `self`, and the two borrows would then collide. `PerpFill` holds
-/// its own maps because it consumes them instead of lending them.
+/// The account maps, the router leg and the escrow are not fields. Each step
+/// takes them as arguments, because this layer passes all three to the layer
+/// below. A market handle taken from the maps is then rooted outside `self`.
+/// A step can hold the market and still mutate the taker and the filler. A
+/// field would root that handle in `self`, and the two borrows would collide.
+/// `PerpFill` holds its own maps, because it consumes them rather than passing
+/// them on.
 struct OrderUnderFill<'a> {
     order: OrderSlot<'a>,
     taker: Taker<'a>,
@@ -691,10 +694,9 @@ impl OrderUnderFill<'_> {
 
     /// Hand the order to the taker's risk limits, which fill it.
     ///
-    /// The fill takes the order itself, not a slot index — `Order` is `Copy`
-    /// and 104 bytes, so this costs nothing and it is what lets an order that
-    /// lives nowhere (a remainder lifted off a book) be filled by the same
-    /// path.
+    /// The fill takes the order itself rather than a slot index. `Order` is
+    /// `Copy` and 104 bytes, so the copy costs little, and an order that lives
+    /// in no slot fills through the same path.
     fn fill(
         &mut self,
         dlob_makers: &[MakerOrderInfo],
@@ -801,13 +803,13 @@ impl OrderUnderFill<'_> {
 
     /// Try to update the funding rate at the end of every trade.
     ///
-    /// The reserve price is passed as `None` so the funding update recomputes
-    /// it from the POST-fill AMM. The fills just moved the reserves, so gating
-    /// the mark/oracle divergence check — and the oracle-TWAP sanitization
-    /// that shares this value — on the pre-fill mark would test a stale price.
-    /// That lets a fill which pushes the mark past the divergence band still
-    /// update funding, or blocks a funding update the post-fill mark no longer
-    /// warrants.
+    /// The reserve price is passed as `None`, so the funding update recomputes
+    /// it from the AMM after the fill. The fills just moved the reserves. The
+    /// mark-to-oracle divergence check, and the oracle-TWAP sanitization that
+    /// reads the same value, would test a stale price if they ran on the
+    /// pre-fill mark. A fill that pushes the mark past the divergence band
+    /// could then still update funding, or a funding update the post-fill mark
+    /// no longer warrants could be blocked.
     fn update_funding(&mut self, parties: &mut FillParties) -> VelocityResult {
         let market = &mut parties
             .maps
@@ -832,10 +834,10 @@ impl OrderUnderFill<'_> {
 impl FillConditions {
     /// Read the market oracle and decide what this fill may use it for.
     ///
-    /// The market's own oracle bookkeeping — the TWAPs, the reference-price
-    /// offset and `last_oracle_valid` — is advanced here. The AMM is not
-    /// touched: the liquidity pass builds an `AmmQuoter` and refreshes it
-    /// before it quotes, which is the only non-admin AMM refresh.
+    /// This advances the market's own oracle bookkeeping: the TWAPs, the
+    /// reference-price offset and `last_oracle_valid`. It does not touch the
+    /// AMM. The liquidity pass builds an `AmmQuoter` and refreshes it before
+    /// it quotes, which is the only AMM refresh outside the admin paths.
     pub(super) fn read(
         state: &State,
         maps: &mut AccountMaps,
@@ -906,16 +908,15 @@ impl FillConditions {
 /// Advance the market's own oracle bookkeeping, and report the 5-minute oracle
 /// TWAP as it stood before that.
 ///
-/// The TWAP is snapshotted *before* the refresh because this fill's own band
-/// checks — `is_oracle_too_divergent_with_twap_5min` and
-/// `validate_fill_price_within_price_bands` — both measure against it, and the
-/// refresh pulls it toward the live oracle price. Reading it afterwards let a
-/// currently-divergent oracle normalize itself inside the same instruction and
-/// clear the very checks meant to stop the fill.
+/// The TWAP is read before the refresh. This fill's own band checks,
+/// `is_oracle_too_divergent_with_twap_5min` and
+/// `validate_fill_price_within_price_bands`, both measure against it, and the
+/// refresh pulls it toward the live oracle price. Reading it after the refresh
+/// lets a divergent oracle normalize itself inside the same instruction and
+/// clear the checks that are meant to stop the fill.
 ///
-/// Unlike the funding crank, the refresh itself stays. A fill is one of the
-/// paths that legitimately advances the TWAPs, and it does not gate on them,
-/// so snapshotting the reader is the whole fix.
+/// The refresh itself stays. A fill is one of the paths that advances the
+/// TWAPs, and it does not gate on the refreshed value.
 fn refresh_market_oracle_stats(
     market: &mut PerpMarket,
     state: &State,
@@ -946,8 +947,7 @@ fn refresh_market_oracle_stats(
 
 /// The oracle price an oracle-relative limit resolves against.
 ///
-/// `None` when the oracle is not valid for it. Allow the oracle price to be
-/// used to calculate a limit price if it is valid, or stale for the AMM.
+/// `None` when the oracle is not valid for that action.
 fn limit_price_oracle(
     safe_validity: OracleValidity,
     oracle_price: i64,

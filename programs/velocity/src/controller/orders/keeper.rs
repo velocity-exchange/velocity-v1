@@ -103,12 +103,12 @@ struct ForceCancelScope {
 impl ForceCancelScope {
     /// Hold the keeper to the grounds that let it act against this account.
     ///
-    /// "Below floor" authorizes a keeper against the user, so it fails closed
-    /// in the other direction from the gates above it: the floor counts as
-    /// grounds only when every oracle is valid and the trusted value sits
-    /// below it, so a bad price cannot manufacture authorization. Under oracle
-    /// degradation the keeper falls back to the margin arm, which keeps
-    /// force-cancel available on a margin-breached account.
+    /// A below-floor account is grounds for a keeper to act, so the floor test
+    /// fails closed. The floor counts only when every oracle is valid and the
+    /// trusted value sits below it. A bad price then cannot manufacture
+    /// authorization. Under oracle degradation the keeper falls back to the
+    /// margin arm, which keeps force-cancel available on a margin-breached
+    /// account.
     fn authorize(user: &User, maps: &mut AccountMaps) -> VelocityResult<Self> {
         validate!(
             !user.is_being_liquidated(),
@@ -154,8 +154,9 @@ impl ForceCancelScope {
             return Ok(None);
         }
 
-        // Placed triggers rest on the CLOB; force-cancelling them goes
-        // through the CLOB (keeper-passed `OrderRef`s), not the shadow slot.
+        // A placed trigger rests on the CLOB. A keeper force-cancels it
+        // through the CLOB with an `OrderRef`, so the shadow slot is left
+        // alone.
         if order.is_placed_on_clob() {
             return Ok(None);
         }
@@ -259,14 +260,13 @@ pub fn pay_keeper_flat_reward_for_perps(
 ) -> VelocityResult<u64> {
     let filler_reward = if let Some(filler) = filler {
         filler.update_last_active_slot(slot);
-        // Claim the filler's position slot BEFORE debiting the user, because
-        // this is the half that can fail — a filler holding a position in
-        // every slot, none of them this market's, gets none. Debiting first
-        // and then bailing paid nobody and destroyed the user's quote: the
-        // user's position and the market's aggregate both came out short by
-        // the reward, so the value accrued to the pool instead of to the
-        // keeper that earned it. `force_get_perp_position_mut` creates the
-        // slot, so claiming it here is what the credit below finds.
+        // The filler's position slot is the half that can fail, so it is
+        // claimed before the user is debited. A filler that holds a position
+        // in every slot, none of them this market's, gets no slot. A debit
+        // first would take the user's quote and pay nobody. The reward would
+        // then accrue to the pool instead of to the keeper that earned it.
+        // `force_get_perp_position_mut` creates the slot, so the credit below
+        // finds it.
         if filler
             .force_get_perp_position_mut(market.market_index)
             .is_err()
@@ -363,19 +363,18 @@ pub fn expire_orders(
     Ok(())
 }
 
-/// Pay the cranker its cut of a routed remainder's improvement, in quote,
-/// taker → filler.
+/// Pay the cranker its cut of a routed remainder's improvement. The quote
+/// moves from the taker to the filler.
 ///
-/// The same quote-for-work transfer the flat keeper rewards make, sized by the
-/// improvement rather than by a flat fee, and paid in full or not at all —
-/// [`crate::math::fees::calculate_taker_origin_cross_fee`] already decided
-/// which.
+/// This is the quote-for-work transfer the flat keeper rewards make. The
+/// improvement sizes it instead of a flat fee. The reward is paid in full or
+/// not at all, and
+/// [`crate::math::fees::calculate_taker_origin_cross_fee`] decides which.
 ///
-/// The fill this follows has already run its own margin checks, so the debit
-/// here happens after them and the taker is re-checked below. The reward is
-/// bounded by the improvement the fill just delivered, so a taker that could
-/// afford to rest can afford this; the check is what makes that a fact rather
-/// than an argument.
+/// The fill this follows already ran its own margin checks, so this debit
+/// lands after them. The reward is bounded by the improvement the fill
+/// delivered, so a taker that could afford to rest can afford the reward. The
+/// maintenance-margin check below proves that rather than assuming it.
 #[allow(clippy::too_many_arguments)]
 pub fn pay_taker_origin_crank_reward(
     market_index: u16,
@@ -401,10 +400,10 @@ pub fn pay_taker_origin_crank_reward(
             fee.crank_reward,
             clock.slot,
         )?;
-        // A filler with no room for a position in this market reports zero
-        // *after* debiting the taker, so the reward would leave the taker and
-        // land nowhere. Revert instead: the cranker can pass a `User` that can
-        // hold the position.
+        // `pay_keeper_flat_reward_for_perps` pays nothing when the filler has
+        // no room for a position in this market. Refuse the crank instead of
+        // completing it unpaid. The cranker can pass a `User` that can hold
+        // the position.
         validate!(
             paid == fee.crank_reward,
             ErrorCode::DefaultError,

@@ -3,7 +3,8 @@
 //! This layer governs the taker. Before the fill it measures the two facts
 //! every limit is scoped by, withholds a fill whose equity floor it cannot
 //! verify, and decides whether a builder fee may be charged. After the fill it
-//! holds both seats — the taker and every maker — to the post-fill checks.
+//! holds both seats to the post-fill checks. Both seats are the taker and
+//! every maker.
 //!
 //! [`super::liquidity`] draws the liquidity in between.
 
@@ -34,9 +35,10 @@ use {
 /// The taker facts one fill measures its risk limits against, and the scopes
 /// the checks run under.
 ///
-/// Measured before the fill, because a fill changes both scope facts: one that
-/// closes the position makes the order look non-decreasing afterwards, and one
-/// that opens a position makes an absent position look cross-margined.
+/// The facts are measured before the fill, because a fill changes both of the
+/// scope facts. A fill that closes the position makes the order look
+/// non-decreasing afterwards. A fill that opens a position makes an absent
+/// position look cross-margined.
 pub struct TakerRiskLimits {
     pub market_index: u16,
     /// Whether the order reduces the position the taker held before the fill.
@@ -58,11 +60,8 @@ pub struct TakerRiskLimits {
 
 /// Fill the taker's order inside the taker's own risk limits.
 ///
-/// This layer governs the taker. Before the fill it measures the two facts
-/// every limit is scoped by, withholds a fill whose equity floor it cannot
-/// verify, and decides whether a builder fee may be charged. After the fill it
-/// holds both seats to the post-fill checks.
-/// [`fill_from_liquidity_sources`] draws the liquidity in between.
+/// [`fill_from_liquidity_sources`] draws the liquidity in between the checks
+/// this function runs before and after the fill.
 pub fn fill_within_taker_risk_limits(
     taker: &mut TakerSide,
     rules: &PricingRules,
@@ -106,11 +105,11 @@ pub fn fill_within_taker_risk_limits(
 /// Refuse a caller that claims the taker-exposure exemption for an account
 /// that cannot hold it.
 ///
-/// The exemption is earned by identity, not claimed by a flag. The protocol
-/// `User` is the only taker whose exposure a caller closes inside the
-/// instruction, and `protocol_authority` is `State::signer`, written by the
-/// entrypoint from the account the runtime verified. A path that sets the flag
-/// for any other account is refused here rather than trusted.
+/// The exemption follows from the account's identity. The protocol `User` is
+/// the only taker whose exposure a caller closes inside the instruction.
+/// `protocol_authority` is `State::signer`, which the entrypoint writes from
+/// the account the runtime verified. This refuses a path that sets the flag
+/// for any other account.
 fn validate_taker_exposure_exemption(taker: &TakerSide, router: &RouterLeg) -> VelocityResult {
     if !router.standing.taker_exposure_closed_by_caller {
         return Ok(());
@@ -127,14 +126,13 @@ fn validate_taker_exposure_exemption(taker: &TakerSide, router: &RouterLeg) -> V
 /// Withhold the whole fill when the taker's equity floor cannot be verified.
 ///
 /// A risk-increasing taker whose floor cannot be verified would execute its
-/// fulfillment legs and then revert at the buffered-floor gate:
+/// fulfillment legs and then revert at the buffered-floor gate.
 /// `validate_clears_buffered_floor` fails closed on any invalid oracle in the
-/// taker's portfolio, related to this market or not, and by then the legs have
-/// executed. A floored maker with the same defect is pruned in
-/// `get_maker_orders_info`; the taker had no counterpart, so its visible order
-/// made every fill attempt revert deterministically for the length of the
-/// outage. Withhold the whole fill instead and leave the order resting until
-/// its oracles recover.
+/// taker's portfolio, whether or not it is this market's, and the legs have
+/// executed by then. `get_maker_orders_info` prunes a floored maker with the
+/// same defect. The taker has no such counterpart, so its visible order made
+/// every fill attempt revert for the length of the outage. Withhold the whole
+/// fill instead and leave the order resting until its oracles recover.
 ///
 /// Runs after the caller's expired and reduce-only cleanup, which is
 /// unaffected. Reducing orders are exempt at the gate and stay fillable. A
@@ -168,23 +166,23 @@ fn withhold_unverifiable_floor(
 
 /// Whether this fill may charge the taker's builder fee.
 ///
-/// A builder fee is an additive debit on the taker (the fill debits
-/// `user_fee + builder_fee`) that the builder later claims into its own
-/// account. The taker approves the builder, so the taker can approve itself.
-/// The fee is therefore a transfer out of the account, and a transfer out must
-/// clear the gate a withdrawal clears: initial margin.
+/// A builder fee is an extra debit on the taker. The fill debits
+/// `user_fee + builder_fee`, and the builder later claims that amount into its
+/// own account. The taker approves the builder, so the taker can approve
+/// itself. The fee is a transfer out of the account, so it must clear the gate
+/// a withdrawal clears: initial margin.
 ///
-/// A position-decreasing fill is checked against maintenance margin, not
-/// initial. Without this gate, a taker below initial margin reduces the
-/// position in slices and routes up to `MAX_BUILDER_FEE_TENTH_BPS` of each
-/// slice to itself. Each slice also lowers the maintenance requirement, so the
-/// next slice has more room and the sequence compounds. It moves value that
-/// the initial-margin gate holds in the account.
+/// A position-decreasing fill is held to maintenance margin. Without this
+/// gate, a taker below initial margin reduces the position in slices and
+/// routes up to `MAX_BUILDER_FEE_TENTH_BPS` of each slice to itself. Each
+/// slice also lowers the maintenance requirement, so the next slice has more
+/// room. The sequence moves value that the initial-margin gate holds in the
+/// account.
 ///
-/// The fee is waived, not the fill. The taker still closes the position and
-/// the builder is not paid for that fill. The margin state is read before the
-/// fill, so a reduction that restores initial margin still waives the fee for
-/// that fill. This is the safe direction.
+/// The gate waives the fee and keeps the fill. The taker still closes the
+/// position, and the builder is not paid for that fill. The margin state is
+/// read before the fill, so a reduction that restores initial margin still
+/// waives the fee for that fill. That is the safe direction.
 ///
 /// The gate uses the same oracle rules as the withdraw gate. It is strict, so
 /// each price is the more conservative of the live price and the TWAP. It
@@ -192,7 +190,7 @@ fn withhold_unverifiable_floor(
 /// collateral. It also requires every liability oracle to be valid. A single
 /// oracle push, or one stale oracle on an unrelated position, then cannot
 /// clear the gate for the instant the fill needs. An oracle the program cannot
-/// trust waives the fee; it does not fail the fill.
+/// trust waives the fee and does not fail the fill.
 fn builder_fee_allowed(
     taker: &TakerSide,
     limits: &TakerRiskLimits,
@@ -220,10 +218,6 @@ fn builder_fee_allowed(
 
 impl TakerRiskLimits {
     /// Measure the taker facts one fill is held to, before it moves anything.
-    ///
-    /// The two margin-scope facts are read here because a fill changes both: a
-    /// fill that closes the position makes it look non-decreasing afterwards,
-    /// and a fill that opens one makes an absent position look cross-margined.
     pub fn measure(
         taker: &TakerSide,
         conditions: &FillConditions,
@@ -238,7 +232,7 @@ impl TakerRiskLimits {
                 market_index,
                 taker.order,
             )?,
-            // A fresh ephemeral taker has no position yet: it opens a
+            // A fresh ephemeral taker has no position yet. It opens a
             // cross-margin one, so a missing position is not isolated.
             is_isolated: taker
                 .user
@@ -353,18 +347,18 @@ impl TakerRiskLimits {
         };
 
         // A spot deposit whose oracle is invalid for margin contributes zero
-        // collateral instead of its stale weighted value. Crediting it let
-        // phantom collateral buy an in-band losing DLOB trade whose
-        // counterparty then settled a real profit out of the PnL pool. Every
-        // other value-releasing path already drops such a deposit —
+        // collateral instead of its stale weighted value. Crediting it lets
+        // collateral the program cannot price buy an in-band losing DLOB
+        // trade, whose counterparty then settles a real profit out of the PnL
+        // pool. Every other value-releasing path drops such a deposit.
         // `meets_withdraw_margin_requirement` and its two siblings all set
-        // this — and a fill is the same decision.
+        // this, and a fill is the same decision.
         //
-        // Dropping the deposit rather than rejecting the fill keeps the honest
-        // test: an account with enough *valid* collateral still fills, and an
-        // account that needs the stale deposit fails on
-        // `InsufficientCollateral`. It also covers the reducing fill, which no
-        // reject keyed on risk direction can reach.
+        // Dropping the deposit is a truer test than rejecting the fill. An
+        // account with enough valid collateral still fills, and an account
+        // that needs the stale deposit fails on `InsufficientCollateral`. It
+        // also covers the reducing fill, which no reject keyed on risk
+        // direction can reach.
         let mut context =
             MarginContext::standard_with_config(self.margin_config(requirement, self.is_isolated))
                 .ignore_invalid_deposit_oracles(true);
@@ -390,8 +384,8 @@ impl TakerRiskLimits {
     ) -> VelocityResult {
         if self.order_decreasing {
             // A reducing fill is exempt from the buffered-floor gate and may
-            // legally leave the subaccount below its raw floor; arm the
-            // breaker inline instead of waiting for the permissionless trip.
+            // leave the subaccount below its raw floor. Arm the breaker here
+            // instead of waiting for the permissionless trip.
             return controller::equity_floor::try_lazy_equity_breaker_trip(
                 taker.user,
                 taker.stats,
@@ -404,8 +398,8 @@ impl TakerRiskLimits {
             "taker equity breaker is tripped"
         )?;
         // A risk-increasing fill must prove the taker clears its buffered
-        // floor: an invalid oracle cannot price the taker up through the floor
-        // and buy the fill.
+        // floor. An invalid oracle then cannot price the taker up through the
+        // floor and buy the fill.
         if let Some(net_equity) = calculate_net_equity_for_floor(taker.user, parties.maps)? {
             net_equity.validate_clears_buffered_floor(taker.user)?;
         }
@@ -433,10 +427,11 @@ impl TakerRiskLimits {
         )?;
         reject_margin_breach(&calculation, self.market_index, Some(maker_key))?;
 
-        // Excluded during a liquidation, which is how the taker side treats it
-        // as well. This runs for liquidation fills too, so an unqualified
-        // reject would let one maker's stale spot oracle, or one maker's
-        // un-cranked borrow market, block the liquidation of another account.
+        // The borrow rules are skipped during a liquidation, the same way the
+        // taker side skips them. This function itself runs for liquidation
+        // fills, so an unqualified reject would let one maker's stale spot
+        // oracle, or one maker's un-cranked borrow market, block the
+        // liquidation of another account.
         if !self.mode.is_liquidation() {
             validate_borrow_rules(&maker, &calculation, parties, now)?;
         }
@@ -455,10 +450,10 @@ impl TakerRiskLimits {
     /// The margin scope one maker is measured under.
     ///
     /// A stale oracle requires one of the two seats to be reducing, and prices
-    /// a risk-increasing maker at full margin. The stale spot deposit gets the
-    /// same treatment as on the taker seat: the two-account transfer that
-    /// closes needs both seats, so phantom collateral is worth exactly as much
-    /// on either one.
+    /// a risk-increasing maker at full margin. A stale spot deposit gets the
+    /// same treatment as on the taker seat. The two-account transfer this
+    /// closes needs both seats, so collateral the program cannot price is
+    /// worth as much on either one.
     fn maker_margin_context(
         &self,
         requirement: MarginRequirementType,
@@ -502,8 +497,8 @@ impl TakerRiskLimits {
                 return Ok(());
             }
             // A reducing maker fill is exempt from the buffered-floor gate and
-            // may legally leave the subaccount below its raw floor; arm the
-            // breaker inline instead of waiting for the permissionless trip.
+            // may leave the subaccount below its raw floor. Arm the breaker
+            // here instead of waiting for the permissionless trip.
             if maker.authority == taker.user.authority {
                 return controller::equity_floor::try_lazy_equity_breaker_trip(
                     maker,
@@ -619,24 +614,24 @@ fn reject_margin_breach(
 /// The two ways the walk misvalues a borrow are a stale oracle and a stale
 /// cumulative index. A `StaleForMargin` spot borrow is priced at its stale low
 /// value, so an account that is insolvent at the refreshed price passes and
-/// becomes protocol bad debt. This handler also makes no spot market
-/// refreshable, so every scaled borrow is valued through the market's stored
-/// borrow index and the interest accrued since `last_interest_ts` is simply
-/// absent. A borrow has no counterpart to the stale-deposit treatment:
-/// dropping it understates the debt, which is the very error being closed, so
-/// the fill must revert instead. The interest crank is permissionless and can
-/// be bundled into the same transaction.
+/// becomes protocol bad debt. This handler also refreshes no spot market, so
+/// every scaled borrow is valued through the market's stored borrow index and
+/// the interest accrued since `last_interest_ts` is absent. A borrow has no
+/// counterpart to the stale-deposit treatment. Dropping it understates the
+/// debt, which is the error this closes, so the fill reverts instead. The
+/// interest crank is permissionless and can be bundled into the same
+/// transaction.
 ///
 /// Both apply whichever direction the fill moves the position. The two-account
-/// DLOB transfer this closes works with both seats reducing: one seat closes
-/// into the worst in-band price and leaves bad debt, the other settles the
+/// DLOB transfer this closes works with both seats reducing. One seat closes
+/// into the worst in-band price and leaves bad debt, and the other settles the
 /// matching profit out of the PnL pool. `meets_withdraw_margin_requirement`
 /// draws the same line and exempts no direction.
 ///
-/// The spot-only liability flag is deliberate. `all_liability_oracles_valid`
-/// is also cleared by an invalid *perp* oracle, which the stale-oracle margin
-/// override handles by pricing at 100% rather than rejecting. Reading the
-/// broader field would silently replace that design with a hard reject.
+/// The check reads the spot-only liability flag on purpose. An invalid perp
+/// oracle also clears `all_liability_oracles_valid`, and the stale-oracle
+/// margin override handles that case by pricing at 100% rather than rejecting.
+/// Reading the broader field would replace that with a hard reject.
 fn validate_borrow_rules(
     user: &User,
     calculation: &MarginCalculation,

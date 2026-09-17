@@ -20,10 +20,10 @@ pub struct ExecuteV0 {
 /// reads them, so the shape lives in the crate both compile against.
 pub use quoter_spec::ExecuteArgsV0;
 
-/// Quoter interface: commit a fill; balance changes (merged by user) are
-/// streamed into the market's response tail as the book is consumed, located
-/// by the returned pointer. Velocity clamps `size` to margin before calling
-/// and validates the changes on its side.
+/// Quoter interface. Commits a fill. The book streams balance changes, merged
+/// by user, into the market's response tail as it consumes the book. The
+/// returned pointer locates them. Velocity clamps `size` to margin before it
+/// calls, and checks the changes on its own side.
 pub fn handle_execute_v0(
     ctx: &mut Context<ExecuteV0>,
     args: ExecuteArgsV0<'_>,

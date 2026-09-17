@@ -1,38 +1,36 @@
 //! Turn the logs of a failed simulation into an attributed cause.
 //!
 //! A simulation that carries several quoters fails for many reasons that
-//! belong to no quoter: the taker's own margin, a stale oracle, a compute
-//! limit, an account the builder left out. Attribution is therefore positive.
-//! A quoter is charged only when the evidence names it. Everything else is
-//! counted as unattributed, against the router.
+//! belong to no quoter. The taker's own margin, a stale oracle, a compute
+//! limit, and an account the builder left out are four of them. A quoter is
+//! charged only when the evidence names it. Everything else counts as
+//! unattributed, against the router.
 //!
 //! Two kinds of evidence appear in the logs, and they split the failure
 //! surface between them.
 //!
-//! **Velocity names the entry, for answers it refuses.** Every message
-//! velocity writes about a quoter it could not use starts `quoter <key>`: the
-//! checks around the quote call, the execute leg, and each fill-path response
-//! check. This covers the contract violations — a fill off its own quote, an
-//! overfill, a user the quoter may not touch, a response that does not
-//! decode. One line convicts.
+//! Velocity names the entry for an answer it refuses. Every message velocity
+//! writes about a quoter it could not use starts `quoter <key>`. That covers
+//! the checks around the quote call, the execute leg, and each fill-path
+//! response check, which is where the contract violations appear. One named
+//! line is enough to charge a quoter.
 //!
 //! Who failed and why arrive separately. `validate!` writes the error on one
-//! line and the message on the next, so the reason is taken from the
-//! transaction's own error code, which is the code that actually aborted.
+//! line and the message on the next. The reason therefore comes from the
+//! transaction's own error code, which is the code that aborted it.
 //!
-//! **The runtime names the program, for quoters that never answer.** A failed
+//! The runtime names the program for a quoter that never answers. A failed
 //! CPI ends the calling instruction, so velocity never reaches the line where
 //! it would name the entry. A quoter that reverts, or that exhausts the
-//! compute budget, therefore leaves no named line at all — only the runtime's
-//! `Program <id> invoke [2]` frame and its failure. This is verified against
-//! captured logs in `tests/real_logs.rs`; do not build on the assumption that
-//! a revert names itself.
+//! compute budget, leaves no named line at all. Only the runtime's
+//! `Program <id> invoke [2]` frame and its failure survive. Captured logs in
+//! `tests/real_logs.rs` pin this. Do not assume that a revert names itself.
 //!
 //! A program id is not an entry, because one quoter program serves many
 //! registry entries. Counting frames against the route's entry order resolves
 //! which entry it was, but only if the on-chain entry set still matched the
-//! one the route was built from. So a frame yields a suspect, never a charge,
-//! and a re-simulation without that suspect is what turns it into proof.
+//! one the route was built from. A frame therefore yields a suspect, never a
+//! charge. A re-simulation without that suspect turns it into proof.
 
 use {
     crate::observe::{Attribution, FailReason},
@@ -87,8 +85,8 @@ impl Verdict {
 const LOG_PREFIX: &str = "Program log: ";
 const NAMED_MARKER: &str = "quoter ";
 
-/// Substrings the runtime uses when a program runs out of compute budget.
-/// The wording has changed across runtime versions, so match several.
+/// Substrings the runtime uses when a program exhausts the compute budget.
+/// The wording changed across runtime versions, so match several.
 const COMPUTE_EXHAUSTED_MARKERS: [&str; 4] = [
     "exceeded CUs meter",
     "Computational budget exceeded",
@@ -102,11 +100,11 @@ fn is_compute_exhausted(line: &str) -> bool {
         .any(|marker| line.contains(marker))
 }
 
-/// Pull the code out of either anchor rendering of an error.
+/// Read the code from either anchor rendering of an error.
 ///
-/// `Debug` writes `error_code_number: 6385`; the prose form written by
-/// `AnchorError::log` writes `Error Number: 6385`. Both appear in logs, from
-/// different call sites, so both are read.
+/// `Debug` writes `error_code_number: 6385`. The prose form that
+/// `AnchorError::log` writes carries `Error Number: 6385`. Both appear in
+/// logs, from different call sites, so both are read.
 fn anchor_error_number(text: &str) -> Option<u32> {
     let rest = text
         .split("error_code_number:")
@@ -120,8 +118,8 @@ fn anchor_error_number(text: &str) -> Option<u32> {
     digits.parse().ok()
 }
 
-/// Pull the code out of `Custom program error: 0x18f0`, how a failed CPI
-/// reaches the caller.
+/// Read the code from `Custom program error: 0x18f0`. A failed CPI reaches
+/// the caller in that form.
 fn custom_program_error(text: &str) -> Option<u32> {
     let rest = text
         .split("ustom program error:")
@@ -135,10 +133,11 @@ fn custom_program_error(text: &str) -> Option<u32> {
 /// The reason a named line reports, from the error text that follows the key.
 ///
 /// Anchor renders an `Error` through `Debug`, not through the prose form its
-/// `log()` method writes, so the text carries `error_code_number: 6385` and
-/// `error_name: "QuoterFillOffQuote"` rather than `Error Number: 6385`. A
-/// failed CPI arrives as a plain `ProgramError`, which renders as
-/// `Custom program error: 0x18f0`. All three shapes are read here.
+/// `log()` method writes. The text therefore carries
+/// `error_code_number: 6385` and `error_name: "QuoterFillOffQuote"` rather
+/// than `Error Number: 6385`. A failed CPI arrives as a plain `ProgramError`,
+/// which renders as `Custom program error: 0x18f0`. All three shapes are read
+/// here.
 fn reason_from_text(text: &str) -> FailReason {
     if let Some(reason) = anchor_error_number(text).and_then(FailReason::from_velocity_code) {
         return reason;
@@ -169,9 +168,9 @@ fn reason_from_text(text: &str) -> FailReason {
 /// Read `quoter <key> <what happened>` out of one log line.
 ///
 /// Every velocity message about an unusable quoter opens this way, so the
-/// shape of what follows is not constrained. A maker's own log that starts
-/// with the same word is filtered by the key: an arbitrary word does not
-/// parse as a 32-byte base58 public key.
+/// shape of what follows is not constrained. The key filters out a maker's
+/// own log that starts with the same word. An arbitrary word does not parse
+/// as a 32-byte base58 public key.
 fn parse_named(line: &str) -> Option<(Pubkey, FailReason)> {
     let body = line.strip_prefix(LOG_PREFIX)?;
     let rest = body.strip_prefix(NAMED_MARKER)?;

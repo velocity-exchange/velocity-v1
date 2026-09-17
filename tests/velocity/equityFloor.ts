@@ -266,14 +266,14 @@ describe('equity floor', () => {
 				.perpPositions[0].baseAssetAmount.eq(ZERO)
 		);
 
-		// the reducing fill succeeded on a subaccount below its raw floor, so
-		// it armed the authority-wide breaker inline (lazy trip)
+		// The reducing fill landed on a subaccount below its raw floor, so the fill
+		// armed the authority-wide breaker itself.
 		assert((await fetchBreakerTripped()) !== 0);
 
-		// clear it so the tests below start from an unarmed authority. The
-		// reset verifies every subaccount clears its floor + buffer, so the
-		// 20 floor sub 0 cannot back comes down first; bankrun lacks
-		// getProgramAccounts, so the subaccounts are passed by hand
+		// Clear the breaker so the tests below start from an unarmed authority. The
+		// reset verifies that every subaccount clears its floor plus buffer, so the
+		// 20 of floor that sub 0 cannot back comes down first. Bankrun has no
+		// getProgramAccounts, so this test passes the subaccounts by hand.
 		await velocityClient.updateUserEquityFloor(
 			userAccountPublicKey,
 			new BN(2 * 10 ** 6),
@@ -474,7 +474,7 @@ describe('equity floor', () => {
 		const floor0 = await floorOf(0);
 		const floor1 = await floorOf(1);
 
-		// sum still conserved, and some floor actually moved
+		// The sum is conserved, and some floor moved.
 		assert(floor0.add(floor1).eq(new BN(4 * 10 ** 6)));
 		assert(floor1.gt(ZERO));
 	});
@@ -538,7 +538,7 @@ describe('equity floor', () => {
 		assert(err, 'withdraw from healthy subaccount should have been rejected');
 		assert(err.message.includes(EQUITY_BELOW_FLOOR_HEX));
 
-		// delegate transfers are frozen as well: floor cannot move
+		// The freeze also covers a delegate transfer, so the floor cannot move.
 		let transferErr: Error | undefined;
 		try {
 			await delegateVelocityClient.transferDepositByDelegate(
@@ -579,8 +579,8 @@ describe('equity floor', () => {
 		await velocityClient.fetchAccounts();
 		const equity0Before = velocityClient.getUser(0).getNetUsdValue();
 
-		// funds-only transfer into breached sub 0: the one delegate transfer
-		// the breaker allows, so internal surplus can cure a breach
+		// A funds-only transfer into the breached sub 0. This is the one delegate
+		// transfer the breaker allows, so an internal surplus can cure a breach.
 		await delegateVelocityClient.transferDepositByDelegate(
 			new BN(1 * 10 ** 6),
 			0,
@@ -595,8 +595,8 @@ describe('equity floor', () => {
 		assert((await floorOf(1)).eq(floor1Before));
 		assert((await fetchBreakerTripped()) !== 0);
 
-		// deposits also stay allowed under the freeze; restore sub 1's equity
-		// so the later buffer-band arithmetic keeps its transfer history
+		// A deposit also stays allowed under the freeze. Restore sub 1's equity, so
+		// the later buffer-band arithmetic keeps its transfer history.
 		await velocityClient.deposit(
 			new BN(1 * 10 ** 6),
 			0,
@@ -613,7 +613,7 @@ describe('equity floor', () => {
 			velocityClient.getUser(1).getUserAccount(),
 		];
 
-		// sub 0 is still below its 50 floor: the self-verifying reset reverts
+		// Sub 0 is still below its 50 floor, so the reset verifies itself and reverts.
 		let err: Error | undefined;
 		try {
 			await velocityClient.resetEquityFloorBreaker(
@@ -628,8 +628,8 @@ describe('equity floor', () => {
 		assert(err.message.includes(INVALID_BREAKER_RESET_HEX));
 		assert((await fetchBreakerTripped()) !== 0);
 
-		// omitting the breached subaccount does not help: the count is pinned
-		// to the authority's live subaccounts
+		// Omitting the breached subaccount does not help. The program pins the count
+		// to the authority's live subaccounts.
 		let incompleteErr: Error | undefined;
 		try {
 			await velocityClient.resetEquityFloorBreaker(
@@ -646,8 +646,8 @@ describe('equity floor', () => {
 	});
 
 	it('warm admin resets the breaker and unfreezes', async () => {
-		// sub 0 cannot back its simulated 50 floor; resuming anyway means
-		// lowering the floor first, explicitly, then the reset verifies clean
+		// Sub 0 cannot back its simulated 50 floor. To resume, lower the floor first,
+		// and the reset then verifies successfully.
 		await velocityClient.updateUserEquityFloor(
 			userAccountPublicKey,
 			ZERO,
@@ -865,8 +865,8 @@ describe('equity floor', () => {
 		assert((await floorOf(1)).eq(ZERO));
 		assert((await floorOf(0)).eq(new BN(1 * 10 ** 6)));
 
-		// the whole buffer travels with the whole floor: no orphan buffer is
-		// left on the now check-disabled sub 1
+		// The whole buffer moves with the whole floor, so no buffer stays behind on
+		// sub 1, whose check is now disabled.
 		assert((await bufferOf(1)).eq(ZERO));
 		assert((await bufferOf(0)).eq(buffer0Before.add(new BN(1 * 10 ** 6))));
 
@@ -890,9 +890,10 @@ describe('equity floor', () => {
 	});
 
 	it('floor rebalances without funds, inside the same rules', async () => {
-		// sub 1 (~0.4 equity) cannot take 0.3 of floor: the buffer share the
-		// move carries (0.3 of sub 0's 1 of buffer) makes the credited side
-		// back 0.6 of floor + buffer with only ~0.4 of equity
+		// Sub 1 holds about 0.4 of equity and cannot take 0.3 of floor. The move
+		// carries a share of the buffer with it, which is 0.3 of sub 0's 1 of
+		// buffer. The credited side would then back 0.6 of floor plus buffer with
+		// about 0.4 of equity.
 		await delegateVelocityClient.fetchAccounts();
 		let err: Error | undefined;
 		try {

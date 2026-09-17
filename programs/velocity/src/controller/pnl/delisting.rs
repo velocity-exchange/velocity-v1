@@ -783,8 +783,8 @@ pub mod delisting_test {
 
         let market = maps.perp_market_map.get_ref_mut(&0).unwrap();
         assert_eq!(market.pnl_pool.scaled_balance, 960519800000);
-        // #44: the permissionless expiry closeout charges a taker fee; it must
-        // accrue to the market fee ledger (split IF + protocol, AMM provision
+        // The permissionless expiry closeout charges a taker fee (OtterSec #44).
+        // It must accrue to the market fee ledger (split IF + protocol, AMM provision
         // zeroed since there is no AMM counterparty) rather than lingering in
         // the pnl pool to be dumped into the revenue pool at delisting. With
         // the default fee structure (amm/if numerators both 0) the whole fee
@@ -802,12 +802,11 @@ pub mod delisting_test {
         assert_eq!(taker.perp_positions[0].quote_break_even_amount, 0);
     }
 
-    /// A caller with no position in an expired market settles nothing, and the
-    /// no-op returns before the market's SettlePnl pause check. The handler
-    /// gates `sweep_completed_revenue_share_for_market` on the returned flag,
-    /// so the flag must be `false` here. A `true` would let anyone move
-    /// builder/referrer fees out of the pnl pool of a market whose settlement
-    /// an operator paused.
+    /// A caller with no position in an expired market settles nothing, and the no-op
+    /// returns before the market's SettlePnl pause check. The handler gates
+    /// `sweep_completed_revenue_share_for_market` on the returned flag, so the flag
+    /// must be `false` here. A `true` would let anyone move builder and referrer fees
+    /// out of the pnl pool of a market whose settlement an operator paused.
     #[test]
     fn settle_expired_position_with_no_position_reports_not_settled() {
         let slot = 0_u64;

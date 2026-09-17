@@ -1,8 +1,9 @@
 /**
  * Place a 1 SOL-PERP market long on devnet.
  *
- * Assumes the wallet already has an initialized Velocity account with collateral
- * (see https://docs.velocity.exchange/developers/velocity-sdk/deposits-withdrawals).
+ * The wallet must already hold an initialized Velocity account with collateral.
+ * See the Velocity SDK guide on
+ * https://docs.velocity.exchange/developers/velocity-sdk/deposits-withdrawals.
  * Run with:
  *   KEYPAIR=~/.config/solana/id.json bunx ts-node examples/place-order.ts
  */

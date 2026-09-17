@@ -45,15 +45,15 @@ const INVALID_ORACLE_HEX = '0x1793';
 
 // Fill-path and trigger-path halves of the equity-floor oracle handling.
 //
-// The perp market prices off its own oracle; the floored accounts also hold a
-// wsol deposit priced by a SEPARATE spot oracle, so each test can invalidate
-// one leg without touching the other:
+// The perp market prices off its own oracle. The floored accounts also hold a
+// wsol deposit priced by a separate spot oracle. Each test can therefore
+// invalidate one leg and leave the other alone:
 //
-//  - an invalid PERP oracle blocks the match itself (match fills yield zero,
-//    the expired-maker cleanup still lands),
-//  - an invalid SPOT oracle makes a floored account's equity unverifiable
-//    while the fill market stays healthy, which is the maker-prune and
-//    trigger-reject territory.
+//  - an invalid perp oracle blocks the match itself, so a match fill yields
+//    zero while the expired-maker cleanup still lands,
+//  - an invalid spot oracle makes a floored account's equity unverifiable
+//    while the fill market stays healthy, which is what the maker prune and
+//    the trigger reject cover.
 describe('equity floor fill gates', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
 

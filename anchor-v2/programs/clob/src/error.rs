@@ -30,24 +30,24 @@ pub enum ClobError {
     InvalidCapacity,
     #[msg("Market config out of bounds")]
     InvalidConfig,
-    /// @deprecated Nothing raises this any more, and the numeric code stays
-    /// so nothing else claims it.
+    /// @deprecated Nothing raises this any more. The numeric code stays so
+    /// nothing else claims it.
     ///
-    /// It used to mean two things, and both were refusals a caller could not
-    /// act on. An order past the grace window whose owner was missing failed
-    /// the call, which made a book with more makers than a transaction can
-    /// carry unfillable by anyone; the walk ends there instead and reports
-    /// what it was holding. A user set wider than `max_execute_users` also
-    /// failed, which counted accounts that cost the response nothing, since
-    /// `execute` bounds its own records where it writes them.
+    /// It meant two things, and both were refusals a caller could not act on.
+    /// An order past the grace window whose owner was missing failed the call.
+    /// That made a book with more makers than one transaction can carry
+    /// unfillable by anyone. The walk now ends at that order and reports what
+    /// it holds. A user set wider than `max_execute_users` also failed. That
+    /// counted accounts which cost the response nothing, because `execute`
+    /// bounds its own records where it writes them.
     #[msg("Deprecated: an unreachable maker ends the walk and is reported, it no longer fails")]
     StaleUserSet,
     #[msg("Side is below evict_threshold_per_side; nothing to evict")]
     BelowEvictThreshold,
     #[msg("Order is not expired")]
     OrderNotExpired,
-    // Numeric codes are the on-chain identity of these errors: add new
-    // variants at the bottom, never reorder or reuse.
+    // Numeric codes are the on-chain identity of these errors. Add a new
+    // variant at the bottom. Never reorder or reuse one.
     #[msg("Node index is outside the order arena")]
     NodeIndexOutOfRange,
     #[msg("Order arena has no free node")]
@@ -59,13 +59,13 @@ pub enum ClobError {
     #[msg("Event payload exceeds its buffer")]
     EventTooLarge,
     /// @deprecated Never returned. This was the first shape of the crossing
-    /// reservation, which failed any fill that reached a taker remainder a
-    /// counterparty crossed. Claimed depth is now *skipped* the way an expired
-    /// order is (see `book::CrossReservation`), so the depth behind it stays
-    /// tradeable and a taker simply finds less depth than it hoped for. That is
-    /// ordinary book behaviour, not an error. Kept in place because the numeric
-    /// code is the on-chain identity of this and every later variant: do not
-    /// delete or reuse.
+    /// reservation. It failed any fill that reached a taker remainder which a
+    /// counterparty crossed. The walk now skips claimed depth the way it skips
+    /// an expired order. See `book::CrossReservation`. The depth behind the
+    /// claimed order stays tradeable, and a taker finds less depth than it
+    /// asked for, which is ordinary book behaviour. The variant stays because
+    /// the numeric code is the on-chain identity of this and every later
+    /// variant. Do not delete or reuse it.
     #[msg("Deprecated: a crossed taker-origin order is skipped, not rejected")]
     TakerOriginCrossPending,
     #[msg("User set holds more entries than USER_SET_CAPACITY")]
@@ -74,8 +74,8 @@ pub enum ClobError {
     OrderWouldCross,
     /// A taker remainder rests for its activation window so counterparties can
     /// compete on price inside it. A taker that could withdraw at the last slot
-    /// would hold a free option on that window, and the makers who priced
-    /// against it wrote it. The window ends at the activation slot, `max_ts`
+    /// would hold a free option over that window, at the cost of the makers who
+    /// priced against it. The window ends at the activation slot. `max_ts`
     /// still expires the order, and liquidation passes `force`.
     #[msg("Taker-origin remainder is bound until its activation slot")]
     TakerOriginBound,
@@ -93,12 +93,12 @@ pub enum ClobError {
 }
 
 impl From<quoter_spec::SpecError> for ClobError {
-    /// A response the market's own region could not hold or could not be read
-    /// at is a program bug, not a caller's: the region size and every record
-    /// stride are fixed at compile time, and `state`'s ceilings are what make
-    /// both unreachable for a market whose config the init/update checks
-    /// accepted. A dangling completed order is the same kind of bug one step
-    /// further in — the walk named a balance change it never wrote.
+    /// A response the market's region cannot hold, or cannot be read at, is a
+    /// program bug rather than a caller error. The region size and every record
+    /// stride are fixed at compile time. The ceilings in `state` make both
+    /// failures unreachable for a market whose config the init and update
+    /// checks accepted. A dangling completed order is the same kind of bug one
+    /// step further in. The walk named a balance change that it never wrote.
     fn from(error: quoter_spec::SpecError) -> Self {
         match error {
             quoter_spec::SpecError::DanglingCompletedOrder => ClobError::BookInvariantViolated,

@@ -174,7 +174,7 @@ pub fn if_shares_lost_test() {
 
 #[test]
 pub fn if_shares_lost_sole_staker_full_request_test() {
-    // finding #108: a staker whose pending request covers the entire fund must keep their
+    // OtterSec #108: a staker whose pending request covers the entire fund must keep their
     // position on cancel. The withdraw-and-restake forfeiture accrues to the *remaining*
     // stakers, and a sole staker has none, so nothing is forfeited. Before the guard the
     // restake leg divided into a zero-share pool, returned 0 new shares, and the cancel path

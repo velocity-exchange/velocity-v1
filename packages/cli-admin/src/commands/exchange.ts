@@ -42,7 +42,7 @@ export function registerExchange(parent: Command): void {
 		ex
 			.command('sync-slot-duration <ms>')
 			.description(
-				'Synchronize one IBRL slot-duration transition (400 -> 350 -> 300 -> 250 -> 200) from its feature-gate account. Permissionless: the program validates the gate and derives the effective slot from the EpochSchedule itself; idempotent per gate. 0 on chain reads as 400.'
+				'Synchronize one IBRL slot-duration transition from its feature-gate account. The transitions run 400 -> 350 -> 300 -> 250 -> 200. The command is permissionless. The program validates the gate and derives the effective slot from the EpochSchedule itself. Running it twice for one gate changes nothing. A stored 0 reads as 400.'
 			)
 	).action(async (ms: string, _flags, cmd: Command) => {
 		const opts = readGlobalOpts(cmd);
@@ -62,8 +62,8 @@ export function registerExchange(parent: Command): void {
 				new BN(currentSlot)
 			);
 			console.log(`slot duration ${currentMs}ms -> ${newMs}ms`);
-			// Preview the effective slot the program will derive: first slot of the
-			// epoch after the gate's activation epoch (mirrors Agave).
+			// Preview the effective slot the program derives. That is the first slot
+			// of the epoch after the gate's activation epoch, which mirrors Agave.
 			const featureGate = getIbrlFeatureGate(newMs);
 			if (featureGate) {
 				const acct = await provider.connection.getAccountInfo(featureGate);
@@ -88,9 +88,9 @@ export function registerExchange(parent: Command): void {
 				}
 			}
 			const ix = await client.getSyncStateSlotDurationIx(newMs);
-			// permissionless instruction with no admin signer: always send
-			// directly, never through a multisig proposal (a proposal would
-			// fail to execute and only adds delay)
+			// The instruction is permissionless and takes no admin signer, so this
+			// command always sends it directly. A multisig proposal would fail to
+			// execute and would only add delay.
 			const result = await sendOrPropose(
 				provider,
 				[ix],

@@ -117,8 +117,8 @@ struct Orderbook {
     market_tick_size: u64,
     /// slot where dynamic orders where last checked
     last_modified_slot: u64,
-    /// cluster slot clock (IBRL transition archive) auction wall clock math
-    /// converts elapsed slots through; stamped by the owning `DLOB`
+    /// cluster slot clock, the IBRL transition archive. Auction wall clock
+    /// math converts elapsed slots through it. The owning `DLOB` stamps it.
     slot_clock: SlotClock,
     /// market index of this book
     market: MarketId,
@@ -168,7 +168,8 @@ impl Orderbook {
         self.last_modified_slot = slot;
     }
 
-    /// Update the cluster slot clock auction wall clock math converts through
+    /// Update the cluster slot clock that auction wall clock math converts
+    /// through
     pub fn update_slot_clock(&mut self, slot_clock: SlotClock) {
         self.slot_clock = slot_clock;
     }
@@ -311,9 +312,9 @@ impl DLOBNotifier {
             .expect("Failed to send DLOB event - channel may be closed");
     }
 
-    /// Push a cluster slot clock update (the velocity `State` transition
-    /// archive) to the DLOB. Cheap to send every slot: the DLOB no-ops
-    /// unless the clock changed.
+    /// Push a cluster slot clock update to the DLOB. The clock is the
+    /// velocity `State` transition archive. Sending it every slot is cheap,
+    /// because the DLOB does nothing unless the clock changed.
     #[inline]
     pub fn slot_clock_update(&self, slot_clock: SlotClock) {
         self.sender
@@ -351,8 +352,8 @@ pub struct DLOB {
     program_data: &'static ProgramData,
     /// last slot update
     last_modified_slot: AtomicU64,
-    /// cluster slot clock (IBRL transition archive); auction wall clock math
-    /// converts elapsed slots through it. Update via `update_slot_clock`
+    /// cluster slot clock, the IBRL transition archive. Auction wall clock
+    /// math converts elapsed slots through it. Call `update_slot_clock`
     /// whenever the velocity `State` account changes.
     slot_clock: std::sync::RwLock<SlotClock>,
     // Maintain live L2 snapshots (default: false)
@@ -506,10 +507,11 @@ impl DLOB {
         *self.slot_clock.read().expect("read slot clock")
     }
 
-    /// Update the cluster slot clock (the velocity `State` transition
-    /// archive) so auction wall clock math stays exact across IBRL
-    /// slot duration transitions; without it the books assume the 400ms
-    /// baseline. Cheap to call every slot: a no-op unless the clock changed.
+    /// Update the cluster slot clock, the velocity `State` transition
+    /// archive, so auction wall clock math stays exact across IBRL slot
+    /// duration transitions. Without an update the books assume the 400ms
+    /// baseline. Calling this every slot is cheap. It returns at once unless
+    /// the clock changed.
     pub fn update_slot_clock(&self, slot_clock: SlotClock) {
         if *self.slot_clock.read().expect("read slot clock") == slot_clock {
             return;
@@ -1025,8 +1027,9 @@ impl DLOB {
                 },
             );
 
-            // skip, don't stop: `can_order_cross_vamm` gates on the order's own size,
-            // so a non-crossing order says nothing about the ones behind it
+            // A taker order that finds no cross does not end the scan.
+            // `can_order_cross_vamm` gates on the order's own size, so a
+            // non-crossing order says nothing about the orders behind it.
             if !new_crosses.is_empty() {
                 all_crosses.push((taker_bid, new_crosses));
             }

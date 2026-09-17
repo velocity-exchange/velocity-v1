@@ -1,46 +1,45 @@
 //! Trigger a resting trigger-limit order onto the market's CLOB.
 //!
-//! `User.orders` is the conditional store: a trigger-limit rests there
-//! (`Armed`) until a keeper cranks this instruction with the trigger
-//! condition met, at which point velocity places the order on the CLOB and
-//! the slot becomes a shadow (`Placed`) keeping the trigger params + the
-//! CLOB `OrderRef`. The shadow deliberately stays *untriggered* so every
-//! DLOB matching path ignores it exactly like an armed order — the
-//! [`OrderBitFlag::PlacedOnClob`] bit alone marks it, and the CLOB order
-//! carries the slot's open-order count from here on.
+//! `User.orders` is the conditional store. A trigger-limit rests there, armed,
+//! until a keeper cranks this instruction with the trigger condition met.
+//! Velocity then places the order on the CLOB, and the slot becomes a shadow
+//! that holds the trigger parameters and the CLOB `OrderRef`. The shadow stays
+//! untriggered, so every DLOB matching path ignores it the way it ignores an
+//! armed order. Only the [`OrderBitFlag::PlacedOnClob`] bit marks it, and the
+//! CLOB order carries the slot's open-order count from that point on.
 //!
-//! Gating mirrors today's `trigger_order`: oracle validity + TWAP
-//! divergence, and a risk-increasing, non-reduce-only trigger on an account
-//! failing initial margin, the buffered equity floor, or the authority
-//! equity breaker is cancelled with `InsufficientFreeCollateral` instead of
-//! placed — never re-armed, so an underfunded stop can't livelock. The
-//! keeper earns the same flat reward from the user.
+//! The gates are the gates of `trigger_order`: oracle validity and TWAP
+//! divergence. A risk-increasing, non-reduce-only trigger is cancelled with
+//! `InsufficientFreeCollateral` rather than placed when the account fails
+//! initial margin, the buffered equity floor, or the authority equity breaker.
+//! Such an order is never re-armed, so an underfunded stop cannot repeat
+//! forever. The keeper earns the same flat reward from the user.
 //!
-//! Re-triggering after an eviction is edge-gated
-//! ([`OrderBitFlag::AwaitingTriggerRecross`]): while the flag is set, a
-//! crank that observes the price on the non-trigger side clears it (and
-//! places nothing); a crank that observes it still through the trigger
-//! fails. The on-chain approximation of "price must cross back through the
-//! trigger", which is what stops an evicted stop-limit — near the tail by
-//! definition — from re-placing into an immediate re-eviction.
+//! Re-triggering after an eviction runs behind an edge gate, which is
+//! [`OrderBitFlag::AwaitingTriggerRecross`]. While the flag is set, a crank
+//! that observes the price on the non-trigger side clears it and places
+//! nothing. A crank that observes the price still through the trigger fails.
+//! This is the on-chain approximation of a price that must cross back through
+//! the trigger. An evicted stop-limit sits near the tail by definition, and the
+//! gate stops it from re-placing into an immediate second eviction.
 //!
-//! The placed order rests **taker-origin**. A fired trigger is an order that
-//! came to trade, so it gets what any other taker remainder gets: a cross
-//! settles at the counterparty's price rather than its own, and the
-//! activation-slot window turns the race to fill it into a race on price.
-//! That is also how a fired trigger reaches a route at all — the taker-origin
-//! cross crank carries the market's baseline book, and an order resting as an
-//! ordinary maker quote never asks for one.
+//! The placed order rests taker-origin. A fired trigger is an order that came
+//! to trade, so it gets what any other taker remainder gets. A cross settles at
+//! the counterparty's price rather than its own, and the activation-slot window
+//! turns the race to fill it into a race on price. Resting taker-origin is also
+//! how a fired trigger reaches a route at all. The taker-origin cross crank
+//! carries the market's baseline book, and an order resting as an ordinary
+//! maker quote never asks for one.
 //!
-//! Two consequences follow. Its owner pays taker fees when a counterparty
-//! crosses it, which is the price of demanding liquidity. And it cannot be
-//! cancelled before its activation slot, so a trigger commits its owner for
-//! that window; liquidation force-cancel stays exempt, and `max_ts` still
-//! bounds its life.
+//! Two consequences follow. The owner pays taker fees when a counterparty
+//! crosses the order, which is the price of demanding liquidity. The order also
+//! cannot be cancelled before its activation slot, so a trigger commits its
+//! owner for that window. A liquidation force-cancel stays exempt, and `max_ts`
+//! still bounds the order's life.
 //!
-//! Stop-markets never come here: `trigger_market_order_v1` fires them,
-//! fills them through the router, and rests only the remainder. A fired
-//! market order fills first; a fired limit rests whole.
+//! Stop-markets never come here. `trigger_market_order_v1` fires them, fills
+//! them through the router, and rests only the remainder. A fired market order
+//! fills first. A fired limit rests whole.
 
 use {
     crate::{
@@ -98,9 +97,10 @@ pub struct TriggerLimitOrderV1Args {
 #[instruction(args: TriggerLimitOrderV1Args)]
 pub struct TriggerLimitOrderV1<'info> {
     pub state: AccountLoader<'info, State>,
-    /// CHECK: in signed-keeper mode this must sign for `filler`; in
-    /// program-keeper mode (protocol `User` as filler, relay turners) it is
-    /// only the lamport payout target and no signature is required.
+    /// CHECK: in signed-keeper mode this must sign for `filler`. In
+    /// program-keeper mode, where the protocol `User` is the filler and relay
+    /// turners call, it is only the lamport payout target and needs no
+    /// signature.
     #[account(mut)]
     pub authority: UncheckedAccount<'info>,
     #[account(
@@ -119,9 +119,8 @@ pub struct TriggerLimitOrderV1<'info> {
     /// Read for the authority-wide equity breaker in the margin gate.
     #[account(constraint = is_stats_for_user(&user, &user_stats)?)]
     pub user_stats: AccountLoader<'info, UserStats>,
-    /// The market's quoter slab — placement is only allowed on the vetted
-    /// book its `Clob` slot names, same as a maker's own
-    /// `place_and_make_perp_order_v1`.
+    /// The market's quoter slab. Placement is allowed only on the vetted book
+    /// that its `Clob` slot names, as in `place_and_make_perp_order_v1`.
     #[account(
         has_one = clob_market,
         constraint = quoter_slab.load()?.market == args.market_index,
@@ -132,7 +131,7 @@ pub struct TriggerLimitOrderV1<'info> {
     #[account(mut)]
     pub clob_market: UncheckedAccount<'info>,
     /// CHECK: a Clob slot's program is pinned to velocity's CLOB at
-    /// registration; the handler re-checks through the slot.
+    /// registration. The handler checks it again through the slot.
     #[account(address = crate::ids::clob_program::id())]
     pub clob_program: UncheckedAccount<'info>,
     /// Expiry-hint host, same optional contract as `place_and_make_perp_order_v1`.
@@ -145,9 +144,9 @@ pub struct TriggerLimitOrderV1<'info> {
         bump
     )]
     pub crank_conditions: Option<AccountLoader<'info, ClobCrankConditionsV0>>,
-    /// The user's relay trigger conditions: the fired slot is released so
-    /// its level-triggered wake goes quiet. Optional, like everything else
-    /// on the relay side.
+    /// The user's relay trigger conditions. The handler releases the fired
+    /// slot, which silences its level-triggered wake. It is optional, like
+    /// every relay-side account.
     #[account(
         mut,
         seeds = [
@@ -204,8 +203,8 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
         )?
     };
 
-    // ---- Gate, reserve, reward — everything that can decide NOT to place,
-    // while the user is borrowed. ----
+    // Everything that can decide against placing runs here, while the user is
+    // borrowed. That is the gate, the reservation and the reward.
     let (side, price, base_asset_amount, max_ts, reduce_only, user_ref, is_isolated_position) = {
         let user = &mut load_mut!(ctx.accounts.user)?;
         let user_stats = load!(ctx.accounts.user_stats)?;
@@ -230,15 +229,11 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
             return Ok(());
         }
 
-        // Reduce-only has no meaning on the book. The CLOB cannot clamp a fill
-        // to the maker's position, so a reduce-only order that rests here fills
-        // its full size, and a position that shrank elsewhere after placement
-        // makes that fill risk-increasing. The trigger-time gate below exempts
-        // reduce-only orders. The book is position-blind, but the router now
-        // carries an authoritative `base_cover` per user, so a reduce-only order
-        // rests flagged and the book clamps every fill against it to the
-        // position it may reduce. A reduce-only trigger therefore rests here
-        // like any other.
+        // The gate below exempts a reduce-only order. The book itself is
+        // position-blind, but the router carries an authoritative `base_cover`
+        // per user. A reduce-only order therefore rests flagged, and the book
+        // clamps every fill against that cover to the position the order may
+        // reduce. A reduce-only trigger rests here like any other trigger.
         let Some(reserved) = reserve_and_gate_trigger(
             user,
             &user_stats,
@@ -255,7 +250,8 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
             return Ok(());
         };
 
-        // Trigger accepted: pay the keeper the flat reward from the user.
+        // The trigger is accepted, so pay the keeper the flat reward out of
+        // the user.
         pay_trigger_keeper(
             user,
             &ctx.accounts.filler,
@@ -285,7 +281,7 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
         )
     };
 
-    // ---- CPI the placement while no user borrows are held. ----
+    // Place through the CPI while no borrow of `user` is held.
     let order_ref = clob.place(ClobPlaceOrderArgsV0 {
         side,
         price,
@@ -293,27 +289,28 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
         activation_delay_slots: None,
         max_ts,
         user: user_ref,
-        // A fired trigger came to trade. It rests taker-origin so a live
-        // counterparty crosses it at the counterparty's price instead of
-        // picking it off at its own, and so the activation-slot auction
-        // decides who fills it on price rather than on who lands a
-        // transaction first. It is also what routes it: the taker-origin
-        // cross crank carries the market's baseline book, which an order
-        // resting as an ordinary maker quote never asks for.
+        // A fired trigger came to trade. It rests taker-origin, so a live
+        // counterparty crosses it at the counterparty's price instead of taking
+        // it at its own price. The activation-slot auction then decides who
+        // fills it on price rather than on who lands a transaction first.
+        // Resting taker-origin is also what routes it. The taker-origin cross
+        // crank carries the market's baseline book, which an order resting as
+        // an ordinary maker quote never asks for.
         taker_origin: true,
-        // The slot the trigger armed keeps its id: to its owner this is the
-        // order they placed, now live, and the shadow slot holds the same id.
+        // The slot the trigger armed keeps its id. To the owner this is the
+        // order they placed, now live, and the shadow slot holds the same
+        // id.
         client_order_id: order_id,
         // A triggered stop is meant to reach the market. Refusing it for
         // crossing would leave the position unprotected, which is the one
         // thing the trigger exists to prevent.
         reject_if_crossed: false,
-        // A reduce-only trigger rests flagged; the book clamps its fills to the
-        // owner's base cover.
+        // A reduce-only trigger rests flagged. The book clamps its fills to
+        // the owner's base cover.
         reduce_only,
     })?;
 
-    // ---- Mark the slot as the placed shadow. ----
+    // Mark the slot as the placed shadow.
     mark_slot_placed(
         &ctx.accounts.user,
         order_id,
@@ -494,9 +491,9 @@ fn observe_trigger_condition(
 ) -> Result<bool> {
     let satisfied = order_satisfies_trigger_condition(&user.orders[order_index], trigger_price)?;
 
-    // Edge gate after an eviction: a crank observing the price back on
-    // the non-trigger side re-arms the trigger for real; one observing
-    // it still through the trigger must wait for the recross.
+    // The edge gate after an eviction. A crank that observes the price back on
+    // the non-trigger side re-arms the trigger. A crank that observes the price
+    // still through the trigger must wait for the recross.
     if user.orders[order_index].is_bit_flag_set(OrderBitFlag::AwaitingTriggerRecross) {
         validate!(
             !satisfied,
@@ -533,10 +530,11 @@ struct ReservedTrigger {
 /// Reserves the worst-case aggregates for the resting order, then gates
 /// exactly like `trigger_order`.
 ///
-/// `None` means the gate cancelled the order instead of placing it: a
-/// risk-increasing, non-reduce-only trigger on an account that fails initial
-/// margin, the buffered equity floor, or the authority equity breaker. The
-/// order is never re-armed, so an underfunded stop cannot livelock.
+/// `None` means the gate cancelled the order instead of placing it. That
+/// happens to a risk-increasing, non-reduce-only trigger on an account that
+/// fails initial margin, the buffered equity floor, or the authority equity
+/// breaker. The order is never re-armed, so an underfunded stop cannot repeat
+/// forever.
 #[allow(clippy::too_many_arguments)]
 fn reserve_and_gate_trigger(
     user: &mut User,
@@ -573,10 +571,10 @@ fn reserve_and_gate_trigger(
         )?;
         let net_equity = calculate_net_equity_for_floor(user, maps)?;
 
-        // An unverifiable floor rejects the trigger instead of cancelling:
-        // a cancel is irreversible, so an oracle blip must not destroy a
-        // resting order the account may legitimately carry. The keeper
-        // retries once the feed recovers and the gate resolves either way.
+        // A floor that cannot be verified rejects the trigger rather than
+        // cancelling it. A cancel is irreversible, so a brief oracle fault must
+        // not destroy a resting order the account may carry. The keeper retries
+        // once the feed recovers, and the gate then answers either way.
         if let Some(net_equity) = net_equity {
             validate!(
                 net_equity.all_oracles_valid,
@@ -593,8 +591,8 @@ fn reserve_and_gate_trigger(
             || net_equity.is_some_and(|net_equity| !net_equity.clears_buffered_floor(user))
             || user_stats.is_equity_breaker_tripped()
         {
-            // The slot reads as untriggered, so cancel_order won't unwind
-            // the aggregates we just reserved — take them back first.
+            // The slot reads as untriggered, so `cancel_order` does not
+            // unwind the aggregates reserved above. Release them first.
             let position_index = get_position_index(&user.perp_positions, market_index)?;
             decrease_open_bids_and_asks(
                 &mut user.perp_positions[position_index],
@@ -690,16 +688,16 @@ fn mark_slot_placed(
     Ok(())
 }
 
-/// The relay resolver for `trigger_limit_order_v1` (`Resolve<EndpointName>`):
-/// simulation-only, staged from the user's synced trigger conditions.
+/// The relay resolver for `trigger_limit_order_v1`. It is simulation-only and
+/// is staged from the user's synced trigger conditions.
 #[derive(Accounts)]
 pub struct ResolveTriggerLimitOrderV1<'info> {
-    /// The shared staging account, index 0 by convention — a resolver's
-    /// response pointer is interpreted against it.
+    /// The shared staging account, at index 0 by convention. A resolver's
+    /// response pointer is read against it.
     #[account(mut, seeds = [crate::state::relay_scratch::RELAY_SCRATCH_PDA_SEED], bump)]
     pub scratch: AccountLoader<'info, crate::state::relay_scratch::RelayScratchV0>,
-    /// Read-only: resolvers stage into the shared scratch account, not
-    /// into the block they read.
+    /// Read-only. A resolver stages into the shared scratch account rather
+    /// than into the block it reads.
     #[account(constraint = trigger_conditions.load()?.user == user.key())]
     pub trigger_conditions: AccountLoader<'info, crate::state::user_conditions::UserConditionsV0>,
     pub user: AccountLoader<'info, User>,

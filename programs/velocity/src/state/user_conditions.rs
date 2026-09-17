@@ -1,35 +1,24 @@
-//! Per-user relay condition block for liquidations — the keeper-bot
-//! architecture (bucket by risk, recheck the bucket on oracle moves,
-//! event-recheck on the user's own changes, coarse full sweep), expressed
-//! as relay conditions.
+//! Per-user relay condition block for liquidations and trigger orders.
 //!
-//! One account per `User`, opt-in. Three kinds of liquidation condition, plus
-//! the trigger-order slots that share the block (see [`TRIGGER_SLOT_BASE`] for
-//! why the two live on one account):
+//! One account per `User`, opt-in. The liquidation side arms three
+//! conditions. The trigger-order slots share the same block. See
+//! [`TRIGGER_SLOT_BASE`] for why the two live on one account.
 //!
-//! - **Threshold slots** — one `OnValueCross` per exposure, watching that
-//!   exposure's oracle at a *conservative* single-oracle liquidation-price
-//!   estimate (closed-form slope, holding other prices fixed, haircut
-//!   toward early). Crossing one is "entering the high-risk bucket": the
-//!   level-triggered wake plus the turner's backoff then re-checks the
-//!   user for free until they either liquidate or recover — and recovery
-//!   silences the wake with no cleanup transaction.
-//! - **The sync watch** — `OnAccountChange` over the user's own position
-//!   regions, whose *executor is the sync itself*: positions change → the
-//!   thresholds are re-derived, paid a small fee from this account's own
-//!   lamports. The hint set maintains itself.
-//! - **The fallback poll** — coarse `EverySlots` into the same sync,
-//!   catching correlated drift the single-oracle thresholds under-model
-//!   and any missed syncs.
+//! - [`LIQ_SYNC_WATCH`] is an `OnAccountChange` over the user's own position
+//!   regions. Its executor is the sync itself, so a position change rewrites
+//!   the block. The protocol crank treasury pays the keeper that runs it.
+//! - [`LIQ_SYNC_FALLBACK`] is a coarse `EverySlots` poll into the same sync.
+//!   It catches whatever the watch misses.
+//! - [`LIQ_LIVENESS_POLL`] wakes the liquidation resolver on a fixed
+//!   interval.
 //!
-//! Cross-margin honesty: a threshold assumes other prices fixed, so hints
-//! fire early (the haircut) or bounded-late (the poll), never wrongly —
-//! the staged `liquidate_perp_with_fill` re-validates liquidatability
-//! exactly, and the liquidator is only the filler, so the protocol `User`
-//! warehouses no inventory. Users the sync can't model (no perp positions,
-//! unsupported oracle layouts, past the slot cap) stay on the keeper-bot
-//! floor, which remains how a liquidator that wants to take the inventory
-//! itself liquidates.
+//! No condition here predicts a liquidation price. The staged
+//! `liquidate_perp_with_fill` runs the real maintenance-margin calculation
+//! and reports no work while the account is healthy. The liquidator is only
+//! the filler, so the protocol `User` warehouses no inventory. An account
+//! whose markets pay no crank reservoir arms no liveness poll and stays on
+//! the keeper-bot floor. That floor is also how a liquidator that wants to
+//! take the inventory itself liquidates.
 
 use {
     crate::error::ErrorCode,
@@ -42,8 +31,9 @@ use {
 #[derive(Default, Eq, PartialEq, Debug)]
 #[repr(C)]
 pub struct TriggerSlotMetaV0 {
-    /// The market's quoter slab / book / program — set when this slot's
-    /// executor is `trigger_limit_order_v1`, zeroed for `trigger_order`.
+    /// The market's quoter slab, book and program. They are set when this
+    /// slot's executor is `trigger_limit_order_v1`, and zeroed for
+    /// `trigger_order`.
     pub quoter_slab: Pubkey,
     pub clob_market: Pubkey,
     pub clob_program: Pubkey,
@@ -52,12 +42,11 @@ pub struct TriggerSlotMetaV0 {
     pub padding: [u8; 2],
 }
 
-/// The shortest fallback interval a *paid* self-sync may ask for.
+/// The shortest fallback interval a paid self-sync may ask for.
 ///
-/// The interval doubles as the rate limit on what the treasury pays for
-/// resyncing one account, so a caller free to name one slot would be paid
-/// every slot. Roughly a minute of slots, which is far below the cadence at
-/// which a user's thresholds actually go stale.
+/// The interval is also the rate limit on what the treasury pays for
+/// resyncing one account. A caller free to name one slot would be paid every
+/// slot. This is roughly a minute of slots.
 pub const LIQ_SYNC_MIN_FALLBACK_SLOTS: u64 = 150;
 
 /// The most cost units a self-sync may price its resync at.
@@ -67,29 +56,29 @@ pub const LIQ_SYNC_MIN_FALLBACK_SLOTS: u64 = 150;
 /// figure would let anyone name their own price against protocol funds. A
 /// caller may state less, never more.
 ///
-/// This is a bound on the work a resync does, not on what a transaction may
-/// request. A resync loads at most [`LIQ_SYNC_ACCOUNTS_MAX`] accounts, reads a
-/// few fields from each, and rewrites the block — nothing like a full
-/// transaction's budget. A ceiling set at that budget instead is the whole
-/// exploit: the caller names the price, the caller cranks it, and the treasury
-/// pays the difference between the honest cost and the stated one, once per
-/// interval per account, on as many accounts as the caller cares to opt in.
+/// This bounds the work a resync does, not what a transaction may request. A
+/// resync loads at most [`LIQ_SYNC_ACCOUNTS_MAX`] accounts, reads a few fields
+/// from each, and rewrites the block. That is far below a full transaction's
+/// budget. A ceiling set at that budget is exploitable. The caller names the
+/// price, the caller cranks it, and the treasury pays the difference between
+/// the honest cost and the stated one. That repeats once per interval per
+/// account, on as many accounts as the caller opts in.
 ///
-/// Erring low is the safe direction here, unlike the per-market crank figures
-/// an *admin* sets (see `crankCostUnits.ts`, which errs high for that reason).
+/// A low figure is the safe direction here. A per-market crank figure an admin
+/// sets errs high instead, for the opposite reason (see `crankCostUnits.ts`).
 /// Too low and a turner declines the work, which costs this account its
-/// fallback poll while every other liquidation path keeps working. Too high and
-/// anyone can drain the treasury. Re-measure with `sol_log_compute_units`
-/// around a full-map resync if [`super::user_conditions`]'s rewrite changes.
+/// fallback poll while every other liquidation path keeps working. Too high
+/// and anyone can drain the treasury. Measure again with
+/// `sol_log_compute_units` around a full-map resync when the rewrite changes.
 pub const LIQ_SYNC_MAX_COST_UNITS: u32 = 40_000;
 
 /// The longest fallback interval a paid self-sync may ask for.
 ///
-/// The interval is how long the account may go without its thresholds being
-/// re-derived, and opting in is permissionless — so without an upper bound a
-/// third party could opt an account in with an interval long enough that the
-/// poll never meaningfully fires, and the block would read as covered while
-/// providing no safety net. Roughly a day of slots.
+/// The interval is how long the account may go without a rewrite, and opting
+/// in is permissionless. Without an upper bound a third party could opt an
+/// account in with an interval long enough that the poll never fires. The
+/// block would then read as covered while providing no safety net. This is
+/// roughly a day of slots.
 pub const LIQ_SYNC_MAX_FALLBACK_SLOTS: u64 = 216_000;
 
 /// PDA seed: `["user_conditions", user key]`.
@@ -97,57 +86,45 @@ pub const USER_CONDITIONS_PDA_SEED: &[u8] = b"user_conditions";
 
 /// The sync watch, the sync fallback, then the liveness poll.
 ///
-/// There are no per-exposure threshold slots. Velocity used to solve, per
-/// position, the price at which the account turned liquidatable and watch that
-/// number. Doing so meant a second implementation of the margin engine living
-/// beside the real one, approximate by construction and needing to be kept in
-/// step with every future change to margin — for a latency gain over the poll
-/// below that a keeper bot already provides. The resolver runs the real
-/// calculation, so the poll is exact and the estimate bought nothing that
-/// justified maintaining it.
+/// The block holds no per-exposure threshold slot. Watching a solved
+/// liquidation price needs a second margin engine beside the real one. That
+/// copy is approximate by construction, and every change to margin has to
+/// reach it. The resolver runs the real calculation instead, so the poll
+/// below is exact.
 pub const LIQ_SYNC_WATCH: usize = 0;
 pub const LIQ_SYNC_FALLBACK: usize = 1;
-/// The coverage floor: a slow poll that asks the liquidation resolver the
-/// real question rather than re-deriving a threshold.
+/// The coverage floor. It is a slow poll that asks the liquidation resolver
+/// the real question.
 ///
-/// The thresholds are a latency device. Each one predicts, from a snapshot,
-/// the price at which an account turns liquidatable, and a prediction can be
-/// wrong in ways no arithmetic fixes: funding and borrow interest accrue
-/// against a clock rather than a watched value, an admin can raise a margin
-/// ratio, an oracle's confidence can widen, and the account can hold more
-/// exposures than there are slots.
-///
-/// None of that has to be predicted, because the resolver recomputes the real
-/// maintenance-margin calculation before it stages anything and reports no
-/// work when the account is healthy. A wake that fires early costs one
-/// simulation. A wake that never fires is the only failure. So this poll
-/// exists to guarantee that something asks, and the thresholds exist to make
-/// the asking early.
+/// The resolver recomputes the maintenance-margin calculation before it
+/// stages anything, and reports no work when the account is healthy. A wake
+/// that fires early costs one simulation. A wake that never fires is the only
+/// failure. This poll guarantees that something asks.
 pub const LIQ_LIVENESS_POLL: usize = 2;
 
 /// How often the liveness poll asks.
 ///
-/// A floor on how long an account can be liquidatable with every threshold
-/// having missed it, so shorter is safer for the protocol. It is not free:
-/// the poll resolves to no work almost every time, relay tracks how often a
-/// program's cranks turn out to be worth landing, and a program that mostly
-/// wastes a turner's simulation is one turners learn to deprioritize. Roughly
-/// two minutes of slots keeps the floor tight without flooding.
+/// The interval bounds how long an account can stay liquidatable before
+/// anything asks, so a shorter interval is safer for the protocol. It is not
+/// free. The poll resolves to no work almost every time. Relay tracks how
+/// often a program's cranks turn out to be worth landing, and turners
+/// deprioritize a program that mostly wastes a simulation. This is roughly two
+/// minutes of slots.
 pub const LIQ_LIVENESS_POLL_SLOTS: u64 = 300;
-/// Trigger-order slots follow the liquidation ones in the same block.
-/// One account per user, not two: both are keyed by the user, invalidated
-/// by the same account changing, and want the same margin map — carrying
-/// them separately paid rent, a `WatchV0`, and a turner registry entry
+/// Trigger-order slots follow the liquidation ones in the same block. The two
+/// share one account per user. Both are keyed by the user, both are
+/// invalidated when that account changes, and both want the same margin map.
+/// Separate accounts would pay rent, a `WatchV0`, and a turner registry entry
 /// twice for one user.
 pub const TRIGGER_SLOT_BASE: usize = 3;
 pub const TRIGGER_CONDITION_SLOTS: usize = 8;
 pub const USER_CONDITIONS: usize = TRIGGER_SLOT_BASE + TRIGGER_CONDITION_SLOTS;
 
-/// Each trigger slot's resolver names that slot's own market oracle and
-/// perp market, so unlike the margin map there is no one list every
-/// condition can share; the region is per slot. `relay_spec` owns the stride
-/// and offset math (see [`relay_spec::write_resolver_stripe`]); the region is
-/// [`relay_spec::resolver_stripes_len`] bytes, striped by slot.
+/// Each trigger slot's resolver names that slot's own market oracle and perp
+/// market, so no one list can serve every condition the way the margin map
+/// does. The region is striped by slot instead. `relay_spec` owns the stride
+/// and offset math. See [`relay_spec::write_resolver_stripe`] and
+/// [`relay_spec::resolver_stripes_len`].
 pub const TRIGGER_RESOLVERS_PER_SLOT: usize = 5;
 pub const TRIGGER_RESOLVERS_LEN: usize =
     relay_spec::resolver_stripes_len(TRIGGER_CONDITION_SLOTS, TRIGGER_RESOLVERS_PER_SLOT);
@@ -159,46 +136,47 @@ pub const TRIGGER_RESOLVERS_OFFSET: usize =
 /// Account-data offset of the relay block (what a `WatchV0` registers at).
 pub const USER_CONDITIONS_BLOCK_OFFSET: usize = relay_spec::block_offset!(UserConditionsV0, relay);
 
-/// Capacity of the stored sync account list — the remaining-accounts list
-/// the sync was last called with, verbatim ([`relay_spec::AccountRefV0`]
-/// wire): the user's full margin maps followed by the markets'
-/// crank-conditions accounts and quoter entries. Staged executors reuse it
-/// — `load_maps` parses positionally and stops at the first non-map
-/// account, so the tail is inert there but still reaches a staged resync,
-/// which re-classifies everything. It lives in the relay block's built-in
-/// resolver region because it *doubles as the threshold conditions'
-/// indirect resolver account list*: a condition may only carry a pointer,
-/// and `ResolveLiquidatePerpWithFill` needs its named accounts plus the
-/// whole margin map — stored once, shared by every threshold slot.
+/// Capacity of the stored sync account list.
 ///
-/// Sized from what an account actually needs rather than from a round number.
-/// The list is four fixed resolver accounts plus roughly three per market the
-/// user is exposed in — an oracle, the market, and a crank-conditions or quoter
-/// tail entry. Thirty-two therefore ran out somewhere around six markets, and
-/// the sync *reverts* when the list does not fit (it is written, not
-/// truncated), so the opt-in was unavailable to exactly the accounts carrying
-/// the most risk. Forty-eight covers about fourteen markets and still leaves
-/// room under a transaction's account-lock budget for the staged crank's own
-/// accounts, which is the real ceiling on this number.
+/// The list is the remaining-accounts list the sync was last called with, in
+/// [`relay_spec::AccountRefV0`] wire form. It holds the user's full margin
+/// maps followed by the markets' crank-conditions accounts and quoter
+/// entries. Staged executors reuse it. `load_maps` parses positionally and
+/// stops at the first non-map account, so the tail is inert there. The tail
+/// still reaches a staged resync, which classifies everything again.
+///
+/// The list lives in the relay block's built-in resolver region because every
+/// condition on this account points at it. A condition may only carry a
+/// pointer, and `ResolveLiquidatePerpWithFill` needs its named accounts plus
+/// the whole margin map. Storing the list once lets every slot share it.
+///
+/// The capacity is four fixed resolver accounts plus roughly three per market
+/// the user is exposed in. Those three are an oracle, the market, and a
+/// crank-conditions or quoter tail entry. A list that does not fit reverts the
+/// sync rather than truncating, so too small a capacity denies the opt-in to
+/// exactly the accounts carrying the most risk. Forty-eight covers about
+/// fourteen markets. A transaction's account-lock budget must still hold the
+/// staged crank's own accounts, which is the real ceiling on this number.
 pub const LIQ_SYNC_ACCOUNTS_MAX: usize = 48;
 
-/// The stored list's leading entries are the resolver's named accounts —
-/// `[scratch, conditions, user, state]`, deliberately nothing
-/// market-specific, so all twelve threshold slots share one list.
-/// [`UserConditionsV0::read_sync_accounts`] skips them.
+/// The stored list starts with the resolver's named accounts, which are
+/// `[scratch, conditions, user, state]`. None of them is market-specific, so
+/// every condition slot shares one list.
+/// [`UserConditionsV0::read_sync_accounts`] skips this prefix.
 pub const LIQ_RESOLVER_PREFIX: usize = 4;
 
 #[account(zero_copy(unsafe))]
 #[derive(Debug)]
 #[repr(C)]
 pub struct UserConditionsV0 {
-    /// Everything relay needs hosted, in one field: the `relay-spec` header,
-    /// the condition slots, and the shared sync account list (see
-    /// [`LIQ_SYNC_ACCOUNTS_MAX`]). First field, so its watch offset is 8.
+    /// Everything relay needs, in one field. It holds the `relay-spec`
+    /// header, the condition slots, and the shared sync account list. See
+    /// [`LIQ_SYNC_ACCOUNTS_MAX`]. This is the first field, so its watch offset
+    /// is 8.
     pub relay: RelayBlock<USER_CONDITIONS, LIQ_SYNC_ACCOUNTS_MAX>,
     /// Parallel to the trigger condition slots.
     pub trigger_slots: [TriggerSlotMetaV0; TRIGGER_CONDITION_SLOTS],
-    /// Per-slot trigger resolver lists (see [`TRIGGER_RESOLVERS_LEN`]).
+    /// Per-slot trigger resolver lists. See [`TRIGGER_RESOLVERS_LEN`].
     pub trigger_resolvers: [u8; TRIGGER_RESOLVERS_LEN],
     /// The `User` these conditions watch.
     pub user: Pubkey,
@@ -217,25 +195,22 @@ pub struct UserConditionsV0 {
     /// The fallback poll interval.
     pub sync_fallback_slots: u64,
     /// Digest of the exposures the last sync ran against. The resolver
-    /// compares it to the user's current positions to decide staleness —
-    /// comparing *watched markets* instead never converges for a user
-    /// whose exposures produce no watchable threshold (an unsupported
-    /// oracle layout, a market with no reservoir), leaving the
-    /// level-triggered sync wake firing forever. The localnet harness
-    /// caught exactly that loop, once a second.
+    /// compares it to the user's current positions to decide staleness.
+    /// Comparing watched markets instead never converges for a user whose
+    /// exposures arm no condition, such as one in a market with no crank
+    /// reservoir. The level-triggered sync wake then fires forever.
     pub positions_digest: u64,
     /// Slot the treasury last paid a keeper for resyncing this account.
     ///
     /// A resync is paid at most once per [`Self::sync_fallback_slots`], which
     /// is the cadence the fallback poll already runs at. Opting in is
-    /// permissionless and the treasury pays, so without this anyone could
-    /// crank the same account in a loop and draw the fee every time — real
-    /// work is not required for the instruction to succeed, only for it to be
-    /// worth paying for.
+    /// permissionless and the treasury pays. Without this slot anyone could
+    /// crank the same account in a loop and draw the fee every time. The
+    /// instruction succeeds whether or not it had real work to do.
     pub last_paid_sync_slot: u64,
-    /// Tail reserve: 8 bytes of alignment slack plus room for two more
-    /// pubkeys, so a future sync input can be captured here instead of
-    /// forcing an `extend_account` migration on every opted-in user.
+    /// Tail reserve, sized for two more pubkeys. A future sync input is
+    /// captured here instead of forcing an `extend_account` migration on every
+    /// opted-in user.
     pub padding: [u8; 64],
 }
 
@@ -267,9 +242,8 @@ impl UserConditionsV0 {
         + 8
         + 64;
 
-    /// FNV-1a over every exposure that moves a threshold. Cheap enough for
-    /// the executor to recompute on each sync, and exact enough that a
-    /// changed position always changes the digest.
+    /// FNV-1a over every live position. It is cheap enough for the executor to
+    /// recompute on each sync.
     pub fn digest_positions(user: &crate::state::user::User) -> u64 {
         let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
         let mut fold = |value: u64| {
@@ -278,16 +252,16 @@ impl UserConditionsV0 {
                 hash = hash.wrapping_mul(0x1000_0000_01b3);
             }
         };
-        // Skipped on the margin engine's own emptiness test, and folding every
-        // field that moves a threshold.
+        // The skip uses the margin engine's own emptiness test, and the fold
+        // covers every field that can change the account's margin.
         //
-        // `base_asset_amount == 0 && quote_asset_amount == 0` is not emptiness:
-        // a position holding only open orders, or only an isolated balance, is
-        // one `is_available` reports as live and the margin walk still visits.
-        // Reading a narrower test here left those positions out of the digest
-        // entirely, so the watch this digest drives never fired when their open
-        // orders changed — and open orders are exactly what the initial-margin
-        // stage of the ladder (the force-cancel threshold) is priced from.
+        // `base_asset_amount == 0 && quote_asset_amount == 0` is not
+        // emptiness. A position that holds only open orders, or only an
+        // isolated balance, is one `is_available` reports as live, and the
+        // margin walk still visits it. A narrower test here left those
+        // positions out of the digest, so the watch this digest drives never
+        // fired when their open orders changed. Open orders are what the
+        // initial-margin tier behind the force-cancel gate is computed from.
         for position in user.perp_positions.iter() {
             if position.is_available() {
                 continue;
@@ -316,9 +290,9 @@ impl UserConditionsV0 {
         ConditionBlock::block(&self.relay)
     }
 
-    /// Anchor-flavoured wrappers over [`relay_spec::ConditionBlock`]'s
-    /// provided methods, so handlers keep using `?` with the program's own
-    /// error type.
+    /// This method and the four below wrap
+    /// [`relay_spec::ConditionBlock`] and return the program's own error
+    /// type, so a handler can use `?`.
     pub fn init_block(&mut self) -> Result<()> {
         self.relay
             .init(USER_CONDITIONS_BLOCK_OFFSET as u32)
@@ -354,9 +328,8 @@ impl UserConditionsV0 {
     }
 
     /// Write trigger slot `index`'s resolver list and describe where it
-    /// landed. (The liquidation side's shared list is
-    /// [`Self::write_sync_accounts`] — this region is per slot, see
-    /// [`TRIGGER_RESOLVERS_PER_SLOT`].)
+    /// landed. This region is per slot. See [`TRIGGER_RESOLVERS_PER_SLOT`].
+    /// The liquidation side's shared list is [`Self::write_sync_accounts`].
     pub fn write_slot_resolvers(
         &mut self,
         index: usize,
@@ -372,10 +345,10 @@ impl UserConditionsV0 {
         .map_err(|_| ErrorCode::DefaultError.into())
     }
 
-    /// Deactivate the trigger slot watching `(market_index, order_id)` —
-    /// called when the trigger fires (or the order otherwise dies) so a
-    /// level-triggered wake goes quiet. Missing slot is fine: syncs are
-    /// best-effort.
+    /// Deactivate the trigger slot watching `(market_index, order_id)`. The
+    /// caller runs this when the trigger fires, or when the order ends for
+    /// another reason, so the level-triggered wake goes quiet. A missing slot
+    /// is not an error, because a sync is best-effort.
     pub fn release_slot(&mut self, market_index: u16, order_id: u32) {
         for (index, meta) in self.trigger_slots.iter_mut().enumerate() {
             if meta.market_index == market_index && meta.order_id == order_id {
@@ -389,8 +362,8 @@ impl UserConditionsV0 {
         }
     }
 
-    /// Store the shared sync account list and describe where it landed
-    /// (the threshold conditions' indirect resolver list).
+    /// Store the shared sync account list and describe where it landed. Every
+    /// condition on this account points relay at that list.
     pub fn write_sync_accounts(
         &mut self,
         refs: &[relay_spec::AccountRefV0],
@@ -401,8 +374,8 @@ impl UserConditionsV0 {
         })
     }
 
-    /// The margin-map accounts only — the resolver-list prefix is skipped,
-    /// so staged executors see exactly the list the sync was called with.
+    /// The margin-map accounts only. The call skips the resolver-list prefix,
+    /// so a staged executor sees exactly the list the sync was called with.
     pub fn read_sync_accounts(&self) -> Vec<relay_spec::AccountRefV0> {
         let refs = self.relay.resolver_refs();
         refs.get(LIQ_RESOLVER_PREFIX..).unwrap_or(&[]).to_vec()
@@ -435,13 +408,13 @@ mod tests {
 mod merged_size_tests {
     use super::*;
 
-    /// One account per user instead of two. The number is load-bearing —
-    /// it is rent every user pays — so it is pinned rather than left to
-    /// drift as fields are added.
+    /// One account per user instead of two. Every user pays rent on this
+    /// size, so the test pins it rather than letting it drift as fields are
+    /// added.
     #[test]
     fn size_is_pinned() {
         // The sync watch, the sync fallback, the liveness poll, then the
-        // trigger slots. No per-exposure thresholds.
+        // trigger slots.
         assert_eq!(USER_CONDITIONS, 11);
         assert_eq!(LIQ_LIVENESS_POLL, 2);
         assert_eq!(TRIGGER_SLOT_BASE, 3);
@@ -468,10 +441,10 @@ mod merged_size_tests {
 
     /// The interval is also the rate limit on what the treasury pays for one
     /// account, so a paid sync cannot name one short enough to be paid every
-    /// slot. An unpaid sync is free to poll as it likes.
+    /// slot. An unpaid sync may name any interval.
     ///
-    /// The rule is stated over the terms a block ends up holding, so a change
-    /// to the pricing cannot move a paid block past it.
+    /// The rule reads the terms a block holds, so a change to the pricing
+    /// cannot move a paid block past it.
     #[test]
     fn a_paid_self_sync_cannot_ask_to_be_paid_every_slot() {
         let paid = |slots: u64| terms(1_000, slots);
@@ -482,7 +455,7 @@ mod merged_size_tests {
         assert!(terms(0, 1).is_ok());
     }
 
-    /// Zero cost units is an unpaid opt-in and has to store a zero payment.
+    /// Zero cost units is an unpaid opt-in, and it must store a zero payment.
     ///
     /// The fee rails charge a signature for a transaction of any shape, so
     /// pricing zero units through them stores the signature fee. The fallback

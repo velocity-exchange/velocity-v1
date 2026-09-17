@@ -37,11 +37,11 @@ import {
 import { isOperationPaused } from './exchangeStatus';
 
 /**
- * Default SDK-only allowance subtracted from a raw oracle delay to absorb normal
- * reporting lag. A wall-clock duration, expressed in actual slots at the live
- * slot duration, so the allowance does not shrink as slots get faster. The
- * program has no equivalent subtraction, so this only ever makes the SDK's
- * verdict more permissive than the chain's, by a constant amount of time.
+ * Allowance the SDK subtracts from a raw oracle delay to absorb normal
+ * reporting lag. The program has no such subtraction. The allowance is a
+ * wall-clock duration converted to slots at the live slot duration, so it does
+ * not shrink as slots get faster. It only makes the SDK's verdict more
+ * permissive than the chain's, by a constant amount of time.
  */
 export const ORACLE_STALENESS_BUFFER = millis(5 * STORED_UNIT_MS);
 
@@ -110,14 +110,15 @@ export function getMaxConfidenceIntervalMultiplier(
  * @param oraclePriceData Oracle reading to validate (`price`/`confidence` PRICE_PRECISION 1e6, `slot`).
  * @param oracleGuardRails Protocol-wide validity thresholds (`state.oracleGuardRails`).
  * @param slot Current slot, used to compute oracle delay.
- * @param oracleStalenessBuffer Slots subtracted from the raw oracle delay before staleness checks. Omit for `ORACLE_STALENESS_BUFFER` (2s of wall clock) converted at the live slot duration.
- * @param isMmSourcedPrice Whether `oraclePriceData` carries an MM-oracle-sourced price. Only
- * affects the unset (`oracleSlotDelayOverride < 0`) immediate-fill threshold, which resolves to
- * `MM_ORACLE_MIN_WRITE_GAP` for an MM-sourced price and to zero for an exchange-sourced one,
- * mirroring `oracle_validity`'s `immediate_price_is_mm_sourced`.
- * @param slotDurationState The `State` account (or its slot duration fields). The oracle age
- * is integrated per slot duration regime and compared against the wall clock staleness
- * thresholds, mirroring `oracle_validity`.
+ * @param oracleStalenessBuffer Slots subtracted from the raw oracle delay before the staleness checks. Omit it for `ORACLE_STALENESS_BUFFER`, two seconds of wall clock, converted at the live slot duration.
+ * @param isMmSourcedPrice Whether `oraclePriceData` carries an MM-oracle-sourced price. It
+ * affects only the immediate-fill threshold for an unset `oracleSlotDelayOverride`, which is a
+ * negative one. That threshold resolves to `MM_ORACLE_MIN_WRITE_GAP` for an MM-sourced price and
+ * to zero for an exchange-sourced one. This mirrors `immediate_price_is_mm_sourced` in
+ * `oracle_validity`.
+ * @param slotDurationState The `State` account, or the slot duration fields of it. The oracle
+ * age is integrated per slot duration regime and compared against the wall clock staleness
+ * thresholds, as `oracle_validity` does.
  * @returns The most severe `OracleValidity` classification that applies.
  */
 export function getOracleValidity(
@@ -161,19 +162,20 @@ export function getOracleValidity(
 	);
 
 	// The buffered oracle delay as wall clock age, integrated per slot duration
-	// regime (mirrors `oracle_validity`'s `oracle_age`).
+	// regime. This mirrors `oracle_age` in `oracle_validity`.
 	const oracleAge = elapsedMillisFromSlotDelta(
 		slotDurationState,
 		BN.max(slot.sub(oraclePriceData.slot).sub(stalenessBuffer), ZERO),
 		slot
 	);
 
-	// Mirrors `math::oracle::oracle_validity`. `0` is the explicit "never allow
-	// immediate AMM fills" sentinel. A negative override means unset, and its
-	// resolution is source-aware: MM_ORACLE_MIN_WRITE_GAP for an MM-oracle-sourced
-	// price (the program will not accept MM-oracle writes closer together than
-	// that, so a tighter threshold could never be satisfied) and the strict zero
-	// threshold for an exchange-sourced price, which can be same-slot fresh.
+	// This mirrors `math::oracle::oracle_validity`. An override of 0 is the
+	// explicit sentinel for "never allow immediate AMM fills". A negative
+	// override means unset, and what it resolves to depends on the price
+	// source. An MM-oracle-sourced price resolves to MM_ORACLE_MIN_WRITE_GAP.
+	// The program refuses MM-oracle writes closer together than that, so a
+	// tighter threshold could never be satisfied. An exchange-sourced price
+	// resolves to the strict zero threshold, because it can be same-slot fresh.
 	let isStaleForAmmImmediate = true;
 	if (market.oracleSlotDelayOverride < 0) {
 		const unsetThreshold = isMmSourcedPrice
@@ -245,7 +247,7 @@ export function getOracleValidity(
  * @param oraclePriceData Oracle reading to validate (`price`/`confidence` PRICE_PRECISION 1e6).
  * @param oracleGuardRails Protocol-wide validity thresholds.
  * @param slot Current slot, used to compute oracle staleness.
- * @param slotDuration Current slot duration (`slotDurationFromState(state.slotDurationMs)`); staleness windows convert to actual slots through it.
+ * @param slotDurationState The `State` account, or the slot duration fields of it. The staleness windows convert to actual slots through the live slot duration.
  * @returns `true` if the oracle is valid for an AMM-only fill.
  */
 export function isOracleValid(
@@ -344,11 +346,12 @@ export function isMarkOracleTooDivergent(
 }
 
 /**
- * Predict whether the program will block a funding update, mirroring
- * `math::oracle::block_operation`. Funding accepts stale/insufficient oracle
- * readings but rejects non-positive, too-volatile, or too-uncertain prices; it
- * also blocks on mark/TWAP divergence, a paused market, or an AMM that has not
- * updated for more than 40% of the funding period.
+ * Predicts whether the program blocks a funding update. This mirrors
+ * `math::oracle::block_operation`. Funding accepts a stale reading and a
+ * reading with too few data points. It rejects a non-positive, too volatile, or
+ * too uncertain price. It also blocks on mark to TWAP divergence, on a paused
+ * market, and on an AMM that has not updated for more than 40 percent of the
+ * funding period.
  */
 export function blockOperation(
 	market: PerpMarketAccount,
@@ -605,10 +608,11 @@ export function getMultipleBetweenOracleSources(
 
 /**
  * Per-market multiplier applied to `confidenceIntervalMaxSize` for spot oracle
- * validity, mirroring `SpotMarket::get_max_confidence_interval_multiplier`:
- * 1x for Collateral/Protected, 5x for Cross, 50x for Isolated/Unlisted.
- * @param spotMarket Spot market whose `assetTier` selects the multiplier.
- * @returns Unitless multiplier (dimensionless BN).
+ * validity. This mirrors `SpotMarket::get_max_confidence_interval_multiplier`.
+ * The multiplier is 1 for Collateral and Protected, 5 for Cross, and 50 for
+ * Isolated and Unlisted.
+ * @param spotMarket The spot market whose `assetTier` selects the multiplier.
+ * @returns The multiplier, as a unitless BN.
  */
 export function getSpotMaxConfidenceIntervalMultiplier(
 	spotMarket: SpotMarketAccount
@@ -627,19 +631,19 @@ export function getSpotMaxConfidenceIntervalMultiplier(
 
 /**
  * Classifies a spot oracle reading's validity for the checks `MarginCalc`
- * cares about, mirroring the spot-market parameterization of
- * `oracle_validity` in `programs/velocity/src/math/oracle.rs` (twap from the
- * spot market's `historicalOracleData`, confidence multiplier from the asset
- * tier, stablecoin sources tolerate 3x margin staleness). Only the four
- * `MarginCalc`-relevant severities are distinguished; readings that pass all
- * four report `Valid`.
- * @param spotMarket Spot market providing the oracle TWAP, asset tier and oracle source.
- * @param oraclePriceData Oracle reading to validate (`price`/`confidence` PRICE_PRECISION 1e6, `slot`).
- * @param oracleGuardRails Protocol-wide validity thresholds (`state.oracleGuardRails`).
- * @param slot Current slot, used to compute oracle delay.
- * @param oracleStalenessBuffer Slots subtracted from the raw oracle delay. Omit for `ORACLE_STALENESS_BUFFER` (2s of wall clock) converted at the live slot duration.
- * @param slotDurationState The `State` account (or its slot duration fields); the oracle age is integrated per slot duration regime.
- * @returns The most severe `MarginCalc`-relevant `OracleValidity` that applies.
+ * depends on. This mirrors the spot-market parameters of `oracle_validity` in
+ * `programs/velocity/src/math/oracle.rs`. The TWAP comes from the spot market's
+ * `historicalOracleData`, the confidence multiplier comes from the asset tier,
+ * and a stablecoin source tolerates three times the margin staleness. Only the
+ * four severities `MarginCalc` reads are distinguished. A reading that passes
+ * all four reports `Valid`.
+ * @param spotMarket The spot market that provides the oracle TWAP, the asset tier and the oracle source.
+ * @param oraclePriceData The oracle reading to validate. `price` and `confidence` are in PRICE_PRECISION 1e6.
+ * @param oracleGuardRails Protocol-wide validity thresholds, from `state.oracleGuardRails`.
+ * @param slot The current slot, which the oracle delay is measured against.
+ * @param oracleStalenessBuffer Slots subtracted from the raw oracle delay. Omit it for `ORACLE_STALENESS_BUFFER`, two seconds of wall clock, converted at the live slot duration.
+ * @param slotDurationState The `State` account, or the slot duration fields of it. The oracle age is integrated per slot duration regime.
+ * @returns The most severe `OracleValidity` that `MarginCalc` reads and that applies.
  */
 export function getSpotOracleValidity(
 	spotMarket: SpotMarketAccount,
@@ -698,12 +702,12 @@ export function getSpotOracleValidity(
 }
 
 /**
- * True when `validity` is acceptable for `VelocityAction::MarginCalc`,
- * mirroring `is_oracle_valid_for_action`: rejects `NonPositive`,
- * `TooVolatile`, `TooUncertain`, and `StaleForMargin`; every other
+ * True when `validity` is acceptable for `VelocityAction::MarginCalc`. This
+ * mirrors `is_oracle_valid_for_action`. It rejects `NonPositive`,
+ * `TooVolatile`, `TooUncertain` and `StaleForMargin`. Every other
  * classification passes.
- * @param validity Classification from `getOracleValidity`/`getSpotOracleValidity`.
- * @returns Whether the equity-floor metric may trust this oracle.
+ * @param validity The classification from `getOracleValidity` or `getSpotOracleValidity`.
+ * @returns Whether the equity-floor metric can trust this oracle.
  */
 export function isOracleValidForMarginCalc(validity: OracleValidity): boolean {
 	return !(

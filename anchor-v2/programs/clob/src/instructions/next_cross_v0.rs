@@ -1,19 +1,19 @@
 //! Whether the book crosses itself, answered by the book.
 //!
-//! A book can cross itself: makers post both sides, and an unfilled taker
-//! remainder the caller migrated on rests like any other order. Neither the
-//! book nor the caller matches on its own — the book holds no funds and the
-//! caller holds no arena — so the caller has to see the top of both sides to
-//! decide what to send.
+//! A book can cross itself. Makers post both sides, and an unfilled taker
+//! remainder that the caller migrated on rests like any other order. Neither
+//! the book nor the caller matches on its own. The book holds no funds and the
+//! caller holds no arena. The caller has to see the top of both sides to decide
+//! what to send.
 //!
-//! It used to see it by reading the market account: the side heads, then a
+//! The caller used to read that from the market account: the side heads, then a
 //! walk down the linked list to skip whatever was not matchable yet. That put
 //! the node layout and the activation and expiry rules in a program that never
-//! called into the book. Both are questions the book can answer, and answering
-//! them here is what lets the arena stay the book's own.
+//! called into the book. The book can answer both questions itself, which lets
+//! the arena stay the book's own.
 //!
-//! Read-only, and meant to be simulated: a caller runs this to find work, then
-//! sends the match it names.
+//! Read-only. A caller simulates this to find work, then sends the match it
+//! names.
 
 use {
     crate::{
@@ -43,18 +43,18 @@ pub fn handle_next_cross_v0(ctx: &mut Context<NextCrossV0Accounts>) -> Result<Ne
 
 /// Walk one side from its best price to the first order a match may consume.
 ///
-/// The walk skips orders that are not matchable yet rather than stopping on
-/// them: an order still inside its speed bump sits at a price better than the
+/// The walk skips an order that is not matchable yet rather than stopping on
+/// it. An order still inside its speed bump sits at a price better than the
 /// depth behind it, and that depth is matchable now. No taker is excluded,
 /// because the caller supplies one only when it sends the match.
 ///
-/// An order a crossing taker remainder claims whole is skipped too. Nobody but
-/// the crank that settles that remainder may take it, so it is the head of
+/// The walk also skips an order that a crossing taker remainder claims whole.
+/// Only the crank that settles that remainder may take it, so it is the head of
 /// nothing a caller of this can send.
 ///
-/// The claim on the *cover* is what this applies, not the withholding of the
-/// remainder itself. The remainder is the work: a caller reads this to find a
-/// cross, and hiding the crossing order would hide the cross.
+/// This applies the claim on the cover. It does not withhold the remainder
+/// itself. The remainder is the work. A caller reads this to find a cross, and
+/// hiding the crossing order would hide the cross.
 fn head(market: &ClobMarketV0, side: Side, slot: u64, now: i64) -> OrderViewV0 {
     let mut reservation = CrossReservation::new(market, side, slot, now, false);
     let mut cursor = market.best(side);

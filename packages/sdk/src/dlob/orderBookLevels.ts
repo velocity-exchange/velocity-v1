@@ -30,11 +30,10 @@ import { SlotDurationState } from '../math/time';
 /**
  * Where a level's depth came from.
  *
- * `clob` is a resting order on the market's book and `propamm` a quote a
- * registered maker program answered with — the distinction matters to a
- * reader, because only the first has a queue position and can be cancelled,
- * and the second is a quote at the size it was asked for rather than standing
- * depth.
+ * `clob` is a resting order on the market's book. `propamm` is a quote that a
+ * registered maker program answered with. Only a `clob` level holds a queue
+ * position, and only a `clob` level can be cancelled. A `propamm` level is a
+ * quote at the size it was asked for, and not standing depth.
  */
 type liquiditySource = 'vamm' | 'dlob' | 'indicative' | 'clob' | 'propamm';
 
@@ -96,8 +95,8 @@ export type L3OrderBook = {
  * `getVammL2Generator` to produce tighter, more granular vAMM levels near the top of the book
  * before falling back to evenly sized levels for the remaining depth.
  *
- * The first bucket is small enough that its price impact stays negligible against the AMM's own
- * spread. The rest ramp toward the evenly sized levels that follow, though how closely they meet
+ * The first bucket is small enough that its price impact stays small against the AMM's own
+ * spread. The rest ramp toward the evenly sized levels that follow. How closely the two meet
  * depends on the market's open liquidity, so the fit is not uniform across markets.
  */
 export const DEFAULT_TOP_OF_BOOK_QUOTE_AMOUNTS = [
@@ -108,12 +107,13 @@ export const DEFAULT_TOP_OF_BOOK_QUOTE_AMOUNTS = [
 ];
 
 /**
- * Breakpoints for markets `isMajorPerpMarket` classifies as majors; `DLOBSubscriber.getL2`
- * selects between this and `DEFAULT_TOP_OF_BOOK_QUOTE_AMOUNTS`.
+ * Breakpoints for markets that `isMajorPerpMarket` classifies as majors.
+ * `DLOBSubscriber.getL2` selects between this set and
+ * `DEFAULT_TOP_OF_BOOK_QUOTE_AMOUNTS`.
  *
- * Currently identical to the default set. The split is kept as a seam for lower-liquidity
- * listings, whose smaller books will want a shallower ladder, rather than because majors
- * presently need different values.
+ * The two sets hold the same values today. The split stays so that a
+ * lower-liquidity listing can take a shallower ladder later. Majors do not need
+ * different values now.
  */
 export const MAJORS_TOP_OF_BOOK_QUOTE_AMOUNTS = [
 	new BN(250).mul(QUOTE_PRECISION),
@@ -299,8 +299,8 @@ export function getVammL2Generator({
 	now?: BN;
 	topOfBookQuoteAmounts?: BN[];
 	latestSlot?: BN;
-	// required: reference-price-offset smoothing integrates the complete clock
-	// across any transition boundary.
+	// Required. Reference-price-offset smoothing integrates the whole clock
+	// across a slot-duration transition boundary.
 	slotDurationState: SlotDurationState;
 }): L2OrderBookGenerator {
 	const updatedAmm = calculateUpdatedAMM(marketAccount.amm, mmOraclePriceData);

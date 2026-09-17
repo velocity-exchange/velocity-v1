@@ -116,7 +116,8 @@ const MAX_POSITIONS_PER_USER = 8;
 export const SETTLE_POSITIVE_PNL_COOLDOWN_MS = 60_000;
 export const CONFIRM_TX_INTERVAL_MS = 5_000;
 const SIM_CU_ESTIMATE_MULTIPLIER = 1.15;
-// wall-clock lead to build+send before the jito leader window (~4 slots at 400ms)
+// Wall-clock lead to build and send before the jito leader window, which is
+// about 4 slots at 400ms.
 const JITO_LEADER_LEAD_MS = 1_600;
 export const TX_CONFIRMATION_BATCH_SIZE = 100;
 export const TX_TIMEOUT_THRESHOLD_MS = 60_000; // tx considered stale after this time and give up confirming
@@ -1087,9 +1088,9 @@ export class FillerBot extends TxThreaded implements Bot {
 		const takerIsReferred = takerStatsAccount
 			? isBuilderReferral(takerStatsAccount)
 			: false;
-		// The fill ix needs the referrer authority to derive the referrer's readonly
-		// UserStats. It comes from the UserStats already loaded here, so passing it keeps
-		// the SDK from refetching.
+		// The fill instruction needs the referrer authority to derive the
+		// referrer's read-only UserStats. It comes from the UserStats already
+		// loaded here, so passing it keeps the SDK from fetching it again.
 		const takerReferrer = takerStatsAccount?.referrer;
 
 		return Promise.resolve({
@@ -1442,11 +1443,11 @@ export class FillerBot extends TxThreaded implements Bot {
 	 * Builds the permissionless interest cranks a fill needs.
 	 *
 	 * The program refuses a fill when the taker, or any maker, carries a borrow in a
-	 * spot market whose interest has not accrued recently enough
-	 * (`SpotMarketInterestStaleForMargin`): the margin check values that borrow
-	 * through a stale index and understates the debt. The fill instruction receives
-	 * those markets read-only and cannot refresh them, so the crank is bundled ahead
-	 * of it.
+	 * spot market whose interest has not accrued recently enough, and returns
+	 * `SpotMarketInterestStaleForMargin`. The margin check values that borrow through
+	 * a stale index and understates the debt. The fill instruction receives those
+	 * markets read-only and cannot refresh them, so the crank goes ahead of it in the
+	 * same transaction.
 	 *
 	 * A market the filler misses only costs a reverted fill, so a failure here is
 	 * logged and the fill is attempted anyway.
@@ -2111,9 +2112,10 @@ export class FillerBot extends TxThreaded implements Bot {
 
 			const velocityUser = this.velocityClient.getUser();
 
-			// Cranked once for the full maker set rather than inside `getSimResult`:
-			// that closure is retried with successively fewer makers and appends to
-			// the same `ixs`, and the full set's cranks cover every subset of it.
+			// The crank runs once for the full maker set rather than inside
+			// `getSimResult`. That closure is retried with fewer makers each time
+			// and appends to the same `ixs`, and the full set's cranks cover every
+			// subset of it.
 			ixs.push(
 				...(await this.getSpotInterestCrankIxs([
 					user.data,

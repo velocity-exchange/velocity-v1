@@ -1,18 +1,19 @@
-//! Withdraw settled crank rewards from the protocol-owned `User` to the
-//! protocol fee recipient's ATA.
+//! Withdraws settled crank rewards from the protocol-owned `User` to the
+//! associated token account of the protocol fee recipient.
 //!
-//! The CLOB cranks (and any future crank paid this way) accrue the maker's
-//! flat removal reward to a `User` whose authority is the velocity signer
-//! PDA — an authority nobody can sign for, so the normal withdraw path is
-//! unreachable and this hot-role instruction is the only exit. The hot role
-//! settles the accrued perp quote to deposits first (`settle_pnl` is
-//! permissionless), withdraws here, and swaps the quote to SOL off-chain to
-//! top the crank reservoirs back off — the loop that makes makers, not the
-//! protocol, fund crank gas.
+//! The CLOB cranks accrue the maker's flat removal reward to a `User` whose
+//! authority is the velocity signer PDA. Any other crank paid this way does
+//! the same. Nobody can sign for that authority, so the normal withdraw path
+//! is unreachable and this hot-role instruction is the only exit. The hot role
+//! first settles the accrued perp quote into deposits, which `settle_pnl`
+//! allows permissionlessly. It then withdraws here and swaps the quote to SOL
+//! off-chain to refill the crank reservoirs. That loop makes makers fund crank
+//! gas instead of the protocol.
 //!
-//! Deliberately narrower than a user withdrawal: deposit-capped (can never
-//! open a borrow), so no margin machinery — the protocol `User` only ever
-//! holds reward quote, never base exposure.
+//! This is narrower than a user withdrawal. The existing deposit caps the
+//! amount, so the withdrawal can never open a borrow and needs no margin
+//! machinery. The protocol `User` only holds reward quote, never base
+//! exposure.
 
 use {
     crate::{
@@ -118,8 +119,8 @@ pub fn handle_withdraw_protocol_user_deposit<'c: 'info, 'info>(
         state.funding_paused()?,
     )?;
 
-    // Deposit-capped: an existing deposit position is the ceiling, so this
-    // can never flip the protocol User into a borrower.
+    // The existing deposit position is the ceiling, so this withdrawal can
+    // never make the protocol `User` a borrower.
     let position_index = user.get_spot_position_index(market_index)?;
     validate!(
         user.spot_positions[position_index].balance_type == SpotBalanceType::Deposit,

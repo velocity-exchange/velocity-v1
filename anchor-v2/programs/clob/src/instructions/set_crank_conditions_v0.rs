@@ -1,20 +1,21 @@
 //! Who resolves the book's own crank work.
 //!
-//! The book knows *when* a turner has to be woken: an order past its `max_ts`,
-//! an order reaching its activation slot, a side at its eviction threshold,
-//! the two sides crossing. All four are facts about this account, so the
-//! conditions that watch for them live on it and the book keeps every wake
-//! current as it places and removes. No caller passes a second account to
-//! maintain a hint, and a hint cannot go stale because one was omitted.
+//! The book states when a turner must wake: an order past its `max_ts`, an
+//! order that reaches its activation slot, a side at its eviction threshold,
+//! and the two sides crossing. All four are facts about this account, so the
+//! conditions that watch for them live on it. The book keeps every condition
+//! current as it places and removes orders. No caller passes a second account
+//! to hold a hint, so no hint goes stale because a caller omitted it.
 //!
-//! The book does not know *what to do* about any of them. Removing an order
+//! The book does not state what to do about any of them. Removing an order
 //! releases a maker's margin reservation, pays a reward, and frees a trigger
-//! slot the order carried — none of which the book holds. So the program that
-//! owns the flow registers its own resolver here, and the conditions wake into
-//! it. That program is free to do whatever else it needs on the way through;
-//! the book neither knows nor constrains it.
+//! slot the order carried. The book holds none of those. The program that owns
+//! the flow registers its own resolver here, and the conditions wake into it.
+//! That program can do whatever else it needs on the way through. The book
+//! does not constrain it.
 //!
-//! Place-authority signed, because a book's flow already belongs to that key.
+//! The place authority signs, because a book's flow already belongs to that
+//! key.
 
 use {
     crate::{
@@ -60,16 +61,15 @@ pub fn handle_set_crank_conditions_v0(
     let market = &mut ctx.accounts.market;
     let fail = |_| Error::from(ClobError::InvalidConfig);
 
-    // Re-stamp before writing: a block written by an older spec is brought up
-    // to the current one first, so the slots below are the shape this program
-    // addresses them by.
+    // A block written by an older spec is migrated first. The slots below are
+    // then in the shape this program addresses them by.
     market.crank.migrate().map_err(fail)?;
     let resolvers = market.crank.write_resolvers(&refs).map_err(fail)?;
 
-    // The wakes are the book's, so they are written from its own state rather
-    // than taken as arguments. The two watches point at this account: one on
-    // the side counts and one on the side heads, each covering the pair of
-    // `u32`s as a single region.
+    // The conditions come from the book's own state rather than from
+    // arguments. The two account watches point at this account. One covers the
+    // side counts and one covers the two best prices. Each pair of `u32`s is
+    // adjacent, so one region covers it.
     let spec = |resolver: &CrankResolverV0| CrankSpecV0 {
         resolver_program: resolver.program,
         resolver_disc: resolver.disc,
@@ -108,8 +108,8 @@ pub fn handle_set_crank_conditions_v0(
             self_watch(TOP_OF_BOOK_OFFSET, TOP_OF_BOOK_BYTES, &args.cross),
         ),
     ];
-    // A resolver registered with a zeroed program is a condition the caller
-    // does not want: the slot goes inactive instead of waking into nothing.
+    // A resolver with a zeroed program is a condition the caller does not want.
+    // The slot goes inactive instead of waking into nothing.
     for (index, program, condition) in conditions {
         if program == [0u8; 32] {
             market.crank.deactivate_condition(index).map_err(fail)?;

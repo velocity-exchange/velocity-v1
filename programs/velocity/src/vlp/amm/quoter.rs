@@ -48,12 +48,11 @@ use crate::{
 ///    settlement of expired user positions where the AMM becomes
 ///    counterparty ([`apply_settlement_counterparty`]).
 ///
-/// Anything generic to a Maker (fills, periodic oracle refresh, funding
-/// reactions) lives on `AmmQuoter` instead. Only the vAMM
-/// implements `on_market_event` for `Refresh` / `FundingApplied`
-/// because only the AMM has the curve/peg/k state those events update — but
-/// the event channel itself is the generic Maker interface, not an
-/// AMM-specific surface.
+/// Anything generic to a quoter (fills, periodic oracle refresh, funding
+/// reactions) lives on `AmmQuoter` instead. Only the vAMM implements
+/// `on_market_event` for `Refresh` and `FundingApplied`, because only the AMM
+/// holds the curve, peg and k state those events update. The event channel
+/// itself is the generic quoter interface, not an AMM-specific surface.
 pub trait AmmContract {
     /// Credit the AMM's books with an external deposit (insurance fund
     /// covering a PnL deficit, etc.). The token movement itself happens at
@@ -242,18 +241,16 @@ impl<'a> AmmQuoter<'a> {
             crate::msg!("AmmQuoter::refresh requires ctx.mm_oracle");
             ErrorCode::DefaultError
         })?;
-        // Slot-idempotency for the curve projection: a prior `setup` (or the
-        // keeper crank) already bumped `last_update_slot` to this slot, which
-        // means the AMM was already projected against this slot's oracle.
-        // Re-running `project_post_refresh_scalar` (peg / reserves / k-budget
-        // math) is the expensive part of `setup` — skip it. Subsequent fills
-        // in the same slot move reserves along the curve but don't trigger
-        // another oracle-driven refresh.
+        // The curve projection is slot-idempotent. A `last_update_slot` at this
+        // slot means an earlier refresh or the keeper crank already projected
+        // the AMM against this slot's oracle. `project_post_refresh_scalar` is
+        // the expensive part, so it is skipped. Later fills in the same slot
+        // move reserves along the curve without another oracle-driven refresh.
         let projection_current = self.amm.last_update_slot >= ctx.slot;
         if !projection_current {
-            // Pull the PerpMarket-level scalars the projection needs from
-            // ctx. The orchestrator populates these once when building the
-            // context; the AMM never reaches back into PerpMarket itself.
+            // Read the PerpMarket-level scalars the projection needs from the
+            // context. The orchestrator fills them once when it builds the
+            // context. The AMM never reads PerpMarket itself.
             let projection_inputs = crate::vlp::amm::math::repeg::ProjectionInputs {
                 market_status: ctx.market_status,
                 market_config: ctx.market_config,
@@ -266,14 +263,14 @@ impl<'a> AmmQuoter<'a> {
                 ctx.oracle_validity,
             )?;
             projection.apply_to(self.amm)?;
-            // Match legacy `_update_amm` (and `snap_to_oracle`): bump
-            // `last_update_slot` when the oracle is fresh enough for low-risk
-            // fills and the affordability floor didn't reject the curve update.
-            // Gate on `rejected_due_to_affordability` — a rejected refresh is
-            // returned as a passthrough with `cost == 0` (peg/reserves stay at
-            // current values), so `cost > 0` never catches it and would
-            // otherwise mark stale curve state fresh for downstream same-slot
-            // freshness gates.
+            // Same gates as `snap_to_oracle`. Set `last_update_slot` when the
+            // oracle is fresh enough for low-risk fills and the affordability
+            // floor accepts the curve update. The gate reads
+            // `rejected_due_to_affordability` because a rejected refresh comes
+            // back as a passthrough with `cost == 0`, and peg and reserves keep
+            // their current values. A `cost > 0` test never catches that case,
+            // and it would mark stale curve state fresh for the same-slot
+            // freshness gates downstream.
             if let Some(validity) = ctx.oracle_validity {
                 if crate::math::oracle::is_oracle_valid_for_action(
                     validity,
@@ -284,10 +281,10 @@ impl<'a> AmmQuoter<'a> {
                 }
             }
         }
-        // Refresh the cached spread state against the just-projected AMM.
-        // Runs after the (projection-idempotent) block above so the cached
-        // ask/bid reserves stay consistent with the post-projection curve.
-        // All quote/fill reads in this match then see the one cached value.
+        // Refresh the cached spread state against the projected AMM. It runs
+        // after the block above so the cached ask and bid reserves match the
+        // projected curve. Every quote and fill read in this match then sees
+        // the one cached value.
         let reserve_price = self.amm.reserve_price()?;
         crate::vlp::amm::math::spread::update_amm_quote_state(
             self.amm,
@@ -310,10 +307,9 @@ impl<'a> AmmQuoter<'a> {
         AmmQuoter { amm }
     }
 
-    /// Pre-fill `validate_for_fill` on the underlying AMM. Orchestrator
-    /// calls this before the router quotes when the AMM will participate. Kept
-    /// as a separate entrypoint so quoter construction stays side-effect-
-    /// free.
+    /// Pre-fill `validate_for_fill` on the underlying AMM. The orchestrator
+    /// calls it before the router quotes when the AMM will participate. It is a
+    /// separate entrypoint so quoter construction stays free of side effects.
     pub fn validate_for_fill(&self, side: PositionDirection) -> VelocityResult {
         self.amm.validate_for_fill(side)
     }
@@ -338,12 +334,12 @@ impl<'a> AmmQuoter<'a> {
         self.amm.base_spread
     }
 
-    /// Base the AMM can fill before its marginal price reaches `price` (the
-    /// analytical inverse of its constant-product curve), clamped to reserve
-    /// bounds and standardised to `ctx.step_size`. Used by
-    /// the sole-vAMM fill path to cap a take at the
-    /// taker's limit price. Inherent to the AMM — continuous-curve depth is
-    /// not part of the generic discrete router-quoter interface.
+    /// Base the AMM can fill before its marginal price reaches `price`. It is
+    /// the analytical inverse of the constant-product curve, clamped to the
+    /// reserve bounds and standardised to `ctx.step_size`. The sole-vAMM fill
+    /// path uses it to cap a take at the taker's limit price. It stays inherent
+    /// to the AMM, because continuous-curve depth is not part of the generic
+    /// discrete router-quoter interface.
     pub fn cumulative_size(
         &self,
         ctx: &QuoteContext,
@@ -458,9 +454,9 @@ impl<'a> AmmQuoter<'a> {
         }
     }
 
-    /// The AMM is the sole *continuous* maker and fills via the dedicated
-    /// sole-vAMM path, never the discrete level walk — so this is only
-    /// here to satisfy the trait. Reports the reserve-bounded max fillable.
+    /// The AMM is the sole continuous maker and fills through the dedicated
+    /// sole-vAMM path, never the discrete level walk. This method exists to
+    /// satisfy the trait. It reports the reserve-bounded maximum fillable.
     pub fn level_capacity(
         &self,
         _ctx: &QuoteContext,

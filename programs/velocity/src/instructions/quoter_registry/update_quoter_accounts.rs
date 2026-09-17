@@ -1,10 +1,11 @@
-//! Write a quoter's registered CPI account list: one unified list, plus the
-//! index lists that say which of its accounts each leg forwards, in CPI
-//! order. One call replaces all three, so a leg can never point past the
-//! list it was written with. Staging only: the approved copy in the market's
-//! slab keeps serving its vetted config until the admin copies again. A
-//! Custom entry answers to its own stored authority; a book's entry answers
-//! to the State admin roles.
+//! Write a quoter's registered CPI account list. One call replaces the unified
+//! list and both index lists. Each index list says which of the quoter's
+//! accounts a leg forwards, in CPI order. Replacing all three together stops a
+//! leg from pointing past the list it was written with.
+//!
+//! The write is staging only. The approved copy in the market's slab keeps
+//! serving until the admin copies again. A `Custom` entry answers to its own
+//! stored authority. A book's entry answers to the State admin roles.
 
 use {
     crate::{
@@ -24,8 +25,8 @@ pub struct UpdateQuoterAccounts<'info> {
     pub authority: Signer<'info>,
     #[account(mut)]
     pub quoter: AccountLoader<'info, QuoterV0>,
-    /// Read for the admin check a non-Custom entry needs. Absent for a
-    /// Custom entry, which answers to its own stored authority.
+    /// Read for the admin check that a non-`Custom` entry needs. A `Custom`
+    /// entry answers to its own stored authority and omits this account.
     pub state: Option<AccountLoader<'info, State>>,
 }
 
@@ -37,7 +38,7 @@ pub struct QuoterAccountMetaArg {
 
 #[derive(Clone, AnchorSerialize, AnchorDeserialize)]
 pub struct UpdateQuoterAccountsArgs {
-    /// The unified registered list, replacing the stored one whole.
+    /// The unified registered list. It replaces the stored list whole.
     pub metas: Vec<QuoterAccountMetaArg>,
     /// Indexes into `metas` forwarded to `quote_v0` / `quote_l3_v0`, in CPI
     /// order.

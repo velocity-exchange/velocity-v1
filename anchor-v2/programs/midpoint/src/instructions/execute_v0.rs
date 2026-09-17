@@ -17,14 +17,15 @@ pub struct ExecuteV0 {
     pub execute_authority: Signer,
 }
 
-/// Declared by `quoter-spec`; see [`crate::instructions::quote_v0`] for why
-/// this program does not keep its own.
+/// Declared by `quoter-spec`. See [`crate::instructions::quote_v0`] for why
+/// this program keeps no local mirror.
 pub use quoter_spec::ExecuteArgsV0;
 
-/// Quoter interface: commit a fill against the spline. The response carries
-/// exactly one balance change (the quoted user) and never cancels anything
-/// (standing intent has no orders). Velocity clamps `size` to the quoted
-/// user's margin before calling and validates at-or-better on its side.
+/// Quoter interface. Commit a fill against the spline. The response carries
+/// one balance change, which is the quoted user. It cancels nothing, because
+/// standing intent holds no orders. Velocity clamps `size` to the quoted
+/// user's margin before the call, and it validates at-or-better on its own
+/// side.
 pub fn handle_execute_v0(
     ctx: &mut Context<ExecuteV0>,
     args: ExecuteArgsV0<'_>,
@@ -49,7 +50,7 @@ pub fn handle_execute_v0(
     if open {
         let fill = quoter.fill(args.direction, args.size, clock.slot)?;
         if fill.base > 0 {
-            // Applying the fill also asserts the consumed rungs are a
+            // Applying the fill also asserts that the consumed rungs are a
             // monotone best-first prefix of the side.
             quoter.apply_fill(args.direction, &fill)?;
             emit_pod!(MidpointExecuteRecordV0 {

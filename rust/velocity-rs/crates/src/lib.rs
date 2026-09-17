@@ -692,9 +692,9 @@ impl VelocityClient {
 
     /// Fetch the market's `QuoterSlabV0` and decode its slot region.
     ///
-    /// The slab holds every approved quoter config for the market: the book
-    /// at slot 0, Custom quoters at slots 1 and up. Vacant slots are
-    /// included, so an index into the result is the on-chain slot index.
+    /// The slab holds every approved quoter config for the market. The book
+    /// is at slot 0, and Custom quoters are at slots 1 and up. Vacant slots
+    /// are included, so an index into the result is the on-chain slot index.
     pub async fn get_quoter_slab_slots(
         &self,
         market_index: u16,
@@ -857,19 +857,20 @@ impl VelocityClient {
     /// List the spot markets that must be cranked before these accounts can be used
     /// on a value-releasing path.
     ///
-    /// The program refuses to value a spot **borrow** for margin through an index
-    /// that has not accrued recently (`SpotMarketInterestStaleForMargin`). It
-    /// applies on withdraw, transfer deposit, transfer pools, swap,
-    /// isolated-position withdraw, and any perp fill, for the taker and for every
-    /// maker alike. Only borrow positions count: a stale deposit index understates
-    /// collateral and is allowed.
+    /// The program refuses to value a spot borrow for margin through an index
+    /// that has not accrued recently. It fails with
+    /// `SpotMarketInterestStaleForMargin`. The rule applies on withdraw,
+    /// transfer deposit, transfer pools, swap, isolated-position withdraw, and
+    /// any perp fill, for the taker and for every maker. Only borrow positions
+    /// count. A stale deposit index understates collateral, so the program
+    /// allows it.
     ///
-    /// Each market earns its own window from its rate ceiling, so a market that may
-    /// charge more interest must be cranked more often.
+    /// Each market earns its own window from its rate ceiling, so a market
+    /// that may charge more interest must be cranked more often.
     ///
-    /// The program also exempts a borrow whose un-booked interest is still under one
-    /// token unit, which this does not model, so the result is a superset. Cranking
-    /// every market it names always clears the check.
+    /// The program also exempts a borrow whose un-booked interest is still
+    /// under one token unit. This does not model that exemption, so the result
+    /// is a superset. Cranking every market it names always clears the check.
     ///
     /// A market missing from the cache is skipped, so a caller that is not
     /// subscribed to it gets no crank for it.
@@ -893,11 +894,11 @@ impl VelocityClient {
                     continue;
                 };
 
-                // A window this cannot compute falls to zero, which names the market
-                // for any staleness at all. The two outcomes are not symmetric: a
-                // market this fails to name reverts the transaction the caller is
-                // building, while one it names needlessly costs an idempotent
-                // permissionless crank.
+                // A window this cannot compute falls to zero, which names the
+                // market for any staleness at all. The two outcomes differ in
+                // cost. A market this fails to name reverts the transaction
+                // the caller is building. A market it names needlessly costs
+                // one idempotent permissionless crank.
                 let window =
                     program::math::margin::max_spot_interest_staleness_for_margin(&spot_market)
                         .unwrap_or(0);
@@ -1112,9 +1113,9 @@ impl VelocityClient {
             .try_get_oracle_price_data_and_slot(MarketId::perp(market_index))
             .ok_or(SdkError::InvalidOracle)?;
         let perp_market = self.try_get_perp_market_account(market_index)?;
-        // One `State` read serves both the guard rails and the slot duration:
-        // `state_account()` Borsh-deserializes the whole account, and this is a
-        // per-fill-decision path.
+        // One `State` read serves both the guard rails and the slot duration.
+        // `state_account()` Borsh-deserializes the whole account, and this
+        // path runs on every fill decision.
         let state = self.state_account()?;
         let oracle_validity_guard_rails = state.oracle_guard_rails.validity;
 
@@ -2022,24 +2023,26 @@ struct ForceMarkets {
     writeable: Vec<MarketId>,
 }
 
-/// The market's CLOB accounts, which select `fill_legacy_dlob_order`: the filled
-/// order's restable remainder migrates to the book rather than resting in
-/// `User.orders`. `market_index` is separate from the fill's own because the
-/// crank-conditions PDA seed needs it before any account is loaded.
+/// The market's CLOB accounts. Their presence selects
+/// `fill_legacy_dlob_order`, where the filled order's restable remainder
+/// migrates to the book instead of resting in `User.orders`. `market_index` is
+/// separate from the fill's own, because the crank-conditions PDA seed needs
+/// it before any account is loaded.
 #[derive(Clone, Copy, Debug)]
 pub struct ClobFillAccounts {
     pub market_index: u16,
-    /// The market's `QuoterSlabV0` PDA (`["quoter_slab", market_index_le]`,
-    /// [`constants::derive_quoter_slab`]). The slab holds every approved
-    /// quoter config, the book at slot 0. It is also the one signer velocity
-    /// CPIs external quoter programs as, the book's `place_authority`
-    /// included. See `velocity::signer`.
+    /// The market's `QuoterSlabV0` PDA, seeded
+    /// `["quoter_slab", market_index_le]`.
+    /// [`constants::derive_quoter_slab`] derives it. The slab holds every
+    /// approved quoter config, with the book at slot 0. It is also the one
+    /// signer velocity uses to CPI external quoter programs, the book's
+    /// `place_authority` included. See `velocity::signer`.
     pub quoter_slab: Pubkey,
     pub clob_market: Pubkey,
     pub clob_program: Pubkey,
-    /// Only `force_cancel_clob_orders` reads this — it is the wake-hint host
-    /// for that sweep. The placement and fill builders do not use it.
-    /// `None` = the market's crank conditions were never initialized.
+    /// Only `force_cancel_clob_orders` reads this. It is the wake-hint host
+    /// for that sweep, and the placement and fill builders do not use it.
+    /// `None` means the market's crank conditions were never initialized.
     pub crank_conditions: Option<Pubkey>,
 }
 
@@ -2199,27 +2202,27 @@ impl<'a> TransactionBuilder<'a> {
         self
     }
 
-    /// Cap the account data this tx may load, in bytes.
+    /// Cap the account data this transaction may load, in bytes.
     ///
-    /// Optional: [`Self::build`] adds
-    /// [`crate::constants::LOADED_ACCOUNTS_DATA_SIZE_DEFAULT`] when no limit is
-    /// set. Call this to widen it for a transaction that loads more, or to
-    /// narrow it for one that loads much less.
+    /// This call is optional. [`Self::build`] adds
+    /// [`crate::constants::LOADED_ACCOUNTS_DATA_SIZE_DEFAULT`] when no limit
+    /// is set. Call this to widen the limit for a transaction that loads more,
+    /// or to narrow it for one that loads much less.
     ///
-    /// Worth setting on every transaction. The limit is priced, and it is
-    /// priced on what the transaction asks for — so a transaction that asks
-    /// for nothing in particular is charged for the 64 MiB default however
-    /// little it loads. The velocity program and its program data count
-    /// toward the limit, because the transaction names the program, so leave
-    /// headroom above them: asking under what the transaction really loads
-    /// makes it fail to load at all.
+    /// Setting it on every transaction is worthwhile. The limit is priced on
+    /// what the transaction asks for, so a transaction that asks for nothing
+    /// in particular is charged for the 64 MiB default however little it
+    /// loads. The velocity program and its program data count toward the
+    /// limit, because the transaction names the program. Leave headroom above
+    /// them. A limit under what the transaction really loads makes it fail to
+    /// load at all.
     ///
-    /// Appended, not inserted at the front. The runtime finds compute-budget
-    /// instructions by program id wherever they sit, and an instruction added
-    /// at the front shifts every index behind it — which
-    /// [`Self::place_swift_order`] encodes: its ed25519 verify instruction
-    /// points at the instruction holding the message it verifies, by absolute
-    /// index. Only the tail is free.
+    /// The instruction is appended rather than inserted at the front. The
+    /// runtime finds compute-budget instructions by program id wherever they
+    /// sit. An instruction added at the front shifts every index behind it,
+    /// and [`Self::place_swift_order`] encodes such an index. Its ed25519
+    /// verify instruction points at the instruction that holds the message it
+    /// verifies, by absolute index. Only the tail is free.
     pub fn with_loaded_accounts_data_size(mut self, bytes: u32) -> Self {
         self.ixs
             .push(ComputeBudgetInstruction::set_loaded_accounts_data_size_limit(bytes));
@@ -2482,10 +2485,11 @@ impl<'a> TransactionBuilder<'a> {
         self
     }
 
-    /// Force-cancel a deteriorated account's resting CLOB orders — the CLOB arm
-    /// of `force_cancel_orders`, and the precondition a perp liquidation of an
-    /// account holding book orders must run first. Cranked as the caller's own
-    /// filler, which earns the flat per-order fee from the user's quote deposit.
+    /// Force-cancel a deteriorated account's resting CLOB orders. This is the
+    /// CLOB arm of `force_cancel_orders`. A perp liquidation of an account
+    /// that holds book orders must run it first. The caller cranks it as its
+    /// own filler, and earns the flat per-order fee from the user's quote
+    /// deposit.
     ///
     /// * `user_account` - the deteriorated account whose orders are cancelled
     /// * `order_refs` - the account's resting CLOB orders, read off the book feed
@@ -2765,10 +2769,10 @@ impl<'a> TransactionBuilder<'a> {
 
     /// Place a swift order (Perps only)
     ///
-    /// The order routes when it is placed: it fills against the market's book
+    /// The order routes when it is placed. It fills against the market's book
     /// and the routed quoters, and whatever is left rests on the book as a
-    /// taker-origin remainder. The CLOB accounts are therefore required, not
-    /// an add-on, and no separate fill Ix is needed to make the order trade.
+    /// taker-origin remainder. The CLOB accounts are therefore required, and
+    /// no separate fill instruction is needed to make the order trade.
     ///
     /// * `signed_order_info` - the signed swift order info
     /// * `taker_account` - taker subaccount data
@@ -2794,8 +2798,8 @@ impl<'a> TransactionBuilder<'a> {
             self.force_include_markets(&[], &[MarketId::QUOTE_SPOT]);
         }
 
-        // The market is writable now: the placement fills through it rather
-        // than only recording an order against it.
+        // The market is writable. The placement fills through it rather than
+        // only recording an order against it.
         let perp_writable = [MarketId::perp(order_params.market_index)];
         let mut accounts = build_accounts(
             self.program_data,
@@ -2834,9 +2838,9 @@ impl<'a> TransactionBuilder<'a> {
             ));
         }
 
-        // The signature, public key, and order travel in this instruction's
-        // own data. The program verifies the signature in-program, so no
-        // ed25519 precompile instruction precedes it.
+        // The signature, the public key and the order travel in this
+        // instruction's own data. The program verifies the signature itself,
+        // so no ed25519 precompile instruction precedes it.
         let swift_taker_ix_data = signed_order_info.to_ix_data();
         let place_swift_ix = Instruction {
             program_id: constants::PROGRAM_ID,
@@ -3037,13 +3041,14 @@ impl<'a> TransactionBuilder<'a> {
     /// This function handles common Jupiter-specific logic and returns a struct containing
     /// all the instructions that need to be inserted between begin and end wrapper instructions.
     ///
-    /// Of the route's instructions only the swap and a non-token cleanup (a SOL unwrap)
-    /// go in the bracket. Jupiter's compute-budget instructions are not used — the caller
-    /// budgets the whole transaction, not the swap alone — and its setup instructions are
-    /// replaced with idempotent ATA creation for the two swap token accounts, placed
-    /// before `begin_swap` rather than inside the bracket. Auxiliary instructions the
-    /// bracket could not carry (a Jito tip) are rejected when the route is parsed, so
-    /// nothing the route needs is dropped here.
+    /// Of the route's instructions, only the swap and a non-token cleanup go
+    /// in the bracket. The cleanup is a SOL unwrap. Jupiter's compute-budget
+    /// instructions are dropped, because the caller budgets the whole
+    /// transaction rather than the swap alone. Idempotent ATA creation for the
+    /// two swap token accounts replaces Jupiter's setup instructions, and it
+    /// goes before `begin_swap` rather than inside the bracket. The route
+    /// parser refuses an auxiliary instruction the bracket cannot carry, such
+    /// as a Jito tip, so nothing the route needs is dropped here.
     ///
     /// # Arguments
     /// * `jupiter_swap_info` - Jupiter swap route and instructions
@@ -3509,12 +3514,12 @@ impl<'a> TransactionBuilder<'a> {
         makers: &[User],
         has_builder: Option<bool>,
         // The staging `QuoterV0` entries the taker's signed message named.
-        // Checked on-chain against the order's digest. Each named entry's
-        // slab slot must be consulted: its response account and registered
-        // CPI accounts must ride this transaction's quoter tail. Empty for
-        // an order placed without a signed route.
+        // The program checks them against the order's digest. The fill must
+        // consult each named entry's slab slot, so its response account and
+        // its registered CPI accounts must travel in this transaction's
+        // quoter tail. Empty for an order placed without a signed route.
         signed_route: &[Pubkey],
-        // Present = the v1 route: a restable remainder of the filled order
+        // Some means the v1 route. A restable remainder of the filled order
         // migrates to the market's CLOB instead of resting in `User.orders`.
         clob: Option<ClobFillAccounts>,
     ) -> Self {
@@ -3623,9 +3628,10 @@ impl<'a> TransactionBuilder<'a> {
 
     /// Assert that the filler was activated in the current slot.
     ///
-    /// This is a slot-scoped guard, not transaction-local proof: if another transaction already
-    /// activated the filler in this slot, a subsequent no-op fill also passes. Callers that need
-    /// transaction-local proof must additionally inspect the simulation's `OrderFill` event.
+    /// The guard is slot-scoped. It is not transaction-local proof. If another
+    /// transaction already activated the filler in this slot, a later no-op
+    /// fill also passes. A caller that needs transaction-local proof must also
+    /// inspect the simulation's `OrderFill` event.
     pub fn revert_fill(mut self) -> Self {
         let accounts = program::accounts::RevertFill {
             state: *state_account(),
@@ -3645,12 +3651,13 @@ impl<'a> TransactionBuilder<'a> {
 
     /// Accrue a spot market's interest up to the current slot.
     ///
-    /// Permissionless. A value-releasing path refuses to value a spot borrow through
-    /// an index that has not accrued within `MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN`
-    /// (`SpotMarketInterestStaleForMargin`), and it receives that market read-only,
-    /// so the crank must precede it in the same transaction.
-    /// `VelocityClient::stale_spot_interest_markets` names the markets a given set
-    /// of accounts needs.
+    /// This instruction is permissionless. A value-releasing path refuses to
+    /// value a spot borrow through an index that has not accrued within
+    /// `MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN`, and it fails with
+    /// `SpotMarketInterestStaleForMargin`. That path receives the market
+    /// read-only, so this crank must precede it in the same transaction.
+    /// `VelocityClient::stale_spot_interest_markets` names the markets a given
+    /// set of accounts needs.
     ///
     /// * `market_index` - the spot market to accrue
     pub fn update_spot_market_cumulative_interest(mut self, market_index: u16) -> Self {
@@ -3818,8 +3825,9 @@ impl<'a> TransactionBuilder<'a> {
             payer: self.authority,
             rent: SYSVAR_RENT_PUBKEY,
             system_program: SYSTEM_PROGRAM_ID,
-            // Optional, but passed by default so a new user is covered by
-            // relay liquidation/trigger conditions from birth.
+            // Optional. The builder passes it by default, so relay
+            // liquidation and trigger conditions cover a new user from
+            // creation.
             user_conditions: Pubkey::find_program_address(
                 &[b"user_conditions", user.as_ref()],
                 &program::ID,
@@ -4099,8 +4107,8 @@ impl<'a> TransactionBuilder<'a> {
                 liquidator: self.sub_account,
                 liquidator_stats: Wallet::derive_stats_account(&self.owner()),
                 crank_conditions: None,
-                // A signed keeper pays its own fee; the sysvar is there for a
-                // relay crank that wants its priority fee repaid.
+                // A signed keeper pays its own fee. The sysvar is for a relay
+                // crank that wants its priority fee repaid.
                 instructions_sysvar: None,
             },
             [&self.account_data, user_account].into_iter(),
@@ -4151,8 +4159,8 @@ impl<'a> TransactionBuilder<'a> {
                 liquidator: self.sub_account,
                 liquidator_stats: Wallet::derive_stats_account(&self.owner()),
                 crank_conditions: None,
-                // A signed keeper pays its own fee; the sysvar is there for a
-                // relay crank that wants its priority fee repaid.
+                // A signed keeper pays its own fee. The sysvar is for a relay
+                // crank that wants its priority fee repaid.
                 instructions_sysvar: None,
             },
             [&self.account_data, liquidatee].into_iter().chain(makers),
@@ -4340,16 +4348,14 @@ impl<'a> TransactionBuilder<'a> {
     }
 
     /// Build the transaction message ready for signing and sending
-    /// Compile the assembled instructions into a message.
     ///
     /// A loaded-accounts data size limit is added if the caller did not set
-    /// one. The limit is priced, and it is priced on what a transaction asks
-    /// for — so a transaction that asks for nothing in particular is charged
-    /// for the 64 MiB default however little it loads. There is no case where
-    /// taking that default is what a caller wanted, so the default here is a
-    /// figure with room in it rather than nothing at all.
+    /// one. The limit is priced on what a transaction asks for, so a
+    /// transaction that asks for nothing in particular is charged for the
+    /// 64 MiB default however little it loads. No caller wants that default,
+    /// so the value used here has room in it instead.
     ///
-    /// It goes at the end, where it shifts no index — see
+    /// The instruction goes at the end, where it shifts no index. See
     /// [`Self::with_loaded_accounts_data_size`].
     pub fn build(mut self) -> VersionedMessage {
         if !self.ixs.iter().any(is_loaded_accounts_data_size_ix) {
@@ -4713,10 +4719,11 @@ mod tests {
         assert!(tx.static_account_keys().contains(&high_leverage_account));
     }
 
-    /// Regression: a fill of a *referred* taker's order (their RevenueShareEscrow
-    /// was initialized with a referrer -> `BuilderReferral` status bit) must attach
-    /// the escrow account even when the order itself carries no builder code, or the
-    /// onchain `FillPerpOrder` reverts with `UnableToLoadRevenueShareAccount`.
+    /// A fill of a referred taker's order must attach the escrow account even
+    /// when the order itself carries no builder code. A referred taker's
+    /// RevenueShareEscrow was initialized with a referrer, which sets the
+    /// `BuilderReferral` status bit. Without the escrow the on-chain
+    /// `FillPerpOrder` reverts with `UnableToLoadRevenueShareAccount`.
     #[test]
     fn fill_perp_order_attaches_escrow_for_referred_taker() {
         let program_data = ProgramData::new(

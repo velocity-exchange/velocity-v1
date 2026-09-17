@@ -4,16 +4,18 @@ import { CrankCostUnitsV0 } from '@velocity-exchange/sdk';
 /**
  * Cost units to assume for a crank nobody has measured yet.
  *
- * Deliberately a ceiling. The payment derived from it is what a keeper is paid
- * to run the crank, so too low means the crank costs the keeper more than it
- * earns and nobody runs it; too high means the reservoir overpays. Only one of
- * those stops a market working, so the default errs the other way.
+ * The value is a ceiling on purpose. A keeper is paid the payment derived from
+ * it to run the crank. A figure that is too low makes the crank cost the keeper
+ * more than it earns, and nobody runs it. A figure that is too high makes the
+ * reservoir overpay. Only the first outcome stops a market working, so the
+ * default errs toward the second.
  *
- * Roughly what the widest fill this protocol measures requests: a three-source
- * router fill, plus the signature, write locks and loaded-accounts limit that
- * come with it. A real crank is far below it. Measure each one — the turner
- * reports the compute a crank burns, and the rest of the sum falls out of the
- * transaction it assembles — and re-run the attach with the real figures.
+ * The value is about what the widest fill this protocol measures requests. That
+ * is a three-source router fill, plus the signature, the write locks and the
+ * loaded-accounts limit that come with it. A real crank costs far less. Measure
+ * each crank and re-run the attach with the real figures. The turner reports
+ * the compute a crank burns, and the rest of the sum comes from the transaction
+ * the turner assembles.
  */
 export const CRANK_COST_UNITS_CEILING = 250_000;
 
@@ -29,7 +31,7 @@ const CRANKS = [
 ] as const;
 
 /**
- * Add `--crank-cu` and its six per-crank overrides to a command.
+ * Add `--crank-cu` and one override per crank to a command.
  *
  * @param command - the command to extend.
  * @returns the same command, for chaining.
@@ -58,7 +60,7 @@ function flagKey(flag: string): string {
  * @param flags - the command's parsed options.
  * @returns one cost-unit figure per crank, ready to pass to
  * `updatePerpMarketClobQuoter`.
- * @throws if any figure is not a positive integer — a zero payment is a crank
+ * @throws if any figure is not a positive integer. A zero payment is a crank
  * no turner takes, and the program refuses it.
  */
 export function readCrankCostUnits(

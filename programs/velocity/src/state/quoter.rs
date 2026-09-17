@@ -1,34 +1,34 @@
-//! # Quoter interfaces — the shared-orderbook architecture
+//! # Quoter interfaces for the shared orderbook
 //!
-//! Velocity matches across multiple liquidity sources: DLOB maker orders, the
-//! vAMM, and external quoter programs (CLOB, PropAMMs) reached over CPI. They
-//! are matched uniformly, not pairwise: every source publishes discrete price
-//! levels and the router splits a take across them.
+//! Velocity matches across several liquidity sources. They are DLOB maker
+//! orders, the vAMM, and external quoter programs such as the CLOB and
+//! PropAMMs, which velocity reaches over CPI. Every source publishes discrete
+//! price levels and the router splits a take across them.
 //!
-//! The interface is [`RouterQuoter`] — `quote` returns a source's book as
-//! [`PriceLevel`]s, `execute` fills an allocation against it and settles the
-//! source's own bytes. A source is the sole authority on how its bytes mutate;
-//! the router only hands it the allocation it won. `priority` places it in a
-//! tier: at any given price, lower-priority-number tiers fill first and ties
-//! within a tier split pro rata.
+//! The interface is [`RouterQuoter`]. `quote` returns a source's book as
+//! [`PriceLevel`]s. `execute` fills an allocation against the source and
+//! settles the source's own bytes. A source is the sole authority on how its
+//! bytes change, and the router only hands it the allocation it won.
+//! `priority` places it in a tier. At a shared price, a lower priority number
+//! fills first, and a tie inside one tier splits pro rata.
 //!
-//! Two implementations live in-program: [`DlobOrderQuoter`], bridging one
-//! resting DLOB order (a single discrete level), and `AmmQuoter`, whose ladder
-//! is built by `vlp::amm::router_adapter::vamm_quote_levels` — so the
-//! continuous curve is reduced to levels before the router sees it. External
-//! quoters are not `RouterQuoter` impls at all; they are quoted and executed
-//! over CPI via [`crate::state::prop_amm::QuoterConfigV0`].
+//! Two implementations live in this program. [`DlobOrderQuoter`] bridges one
+//! resting DLOB order as a single discrete level. `AmmQuoter` has its ladder
+//! built by `vlp::amm::router_adapter::vamm_quote_levels`, so the continuous
+//! curve is reduced to levels before the router sees it. An external quoter is
+//! not a `RouterQuoter` implementation. It is quoted and executed over CPI
+//! through [`crate::state::prop_amm::QuoterConfigV0`].
 //!
-//! [`QuoteContext`] is the snapshot every source quotes against: quote methods
-//! read from it, and `execute` reads it again so a source reaches the same
-//! conclusion at execute time as it did at quote time. Refresh cost (e.g. AMM
-//! repeg) flows out via [`QuoterFill::refresh_cost`] for the fill controller to
-//! apply to the `PerpMarket`.
+//! [`QuoteContext`] is the snapshot every source quotes against. A quote
+//! method reads from it, and `execute` reads it again, so a source reaches the
+//! same conclusion at execute time as it did at quote time. Refresh cost, such
+//! as an AMM repeg, comes back through [`QuoterFill::refresh_cost`] for the
+//! fill controller to apply to the `PerpMarket`.
 //!
-//! Fee handling is per-source: [`FillFeePolicy`] selects the schedule a fill
-//! settles on (`DlobMatch` for resting orders, `AmmHouse` for the vAMM), and
-//! the vAMM is fee-exempt from the maker schedule because it earns from the
-//! spread it quotes rather than from a rebate.
+//! Each source picks its own fee handling. [`FillFeePolicy`] selects the
+//! schedule a fill settles on. A resting order uses `DlobMatch` and the vAMM
+//! uses `AmmHouse`. The vAMM is exempt from the maker schedule, because it
+//! earns from the spread it quotes rather than from a rebate.
 //!
 //! See `docs/amm-decoupling-and-maker-interface.md` for the full design,
 //! including pro-rata policy and snapshot consistency rules.
@@ -83,9 +83,10 @@ pub struct QuoteContext<'a> {
     /// (an order in active auction prices differently than the same order
     /// resting post-auction).
     pub slot: u64,
-    /// Cluster slot clock (`State::slot_clock()`). Used to scale
-    /// slot denominated windows calibrated to the 400ms baseline (e.g. the
-    /// reference price offset smoothing budget) across IBRL transitions.
+    /// Cluster slot clock, from `State::slot_clock()`. It scales the
+    /// slot-denominated windows that are calibrated to the 400ms baseline,
+    /// such as the reference price offset smoothing budget, across an IBRL
+    /// transition.
     pub slot_clock: SlotClock,
     /// Base-asset precision divisor: when computing `quote_amount` from a
     /// base amount filled at a price, the formula is
@@ -182,11 +183,6 @@ pub enum FillFeePolicy {
     DlobMatch,
 }
 
-// `CurveSnapshot`, `MarketEventEffects`, and `SnapOutcome` were deleted.
-// `on_market_event` returns `()`; AMM-side Anchor records
-// (`AmmCurveChanged`) are emitted by the AMM directly. `snap_to_oracle`
-// returns just the cost (`i128`).
-
 /// A market-level signal a maker may want to react to.
 ///
 /// The variants carry every input a maker needs to handle the event in
@@ -244,22 +240,25 @@ pub enum MarketEvent<'a> {
 // definition co-locates with the only impl (`impl AmmContract for AMM`).
 // Callers import it from there directly.
 
-/// A liquidity source the router fill reads and executes — the in-program
-/// mirror of the registry's external `QuoterConfigV0` CPI legs, deliberately the
-/// same shape: `quote` returns discrete best-first levels, `execute` commits
-/// a fill of the routed allocation and reports it. Implementors that need a
-/// per-fill refresh (the AMM's projection/curve update) do it in their own
-/// setup step before the router quotes them — setup is not part of this
-/// contract, mirroring how external quoters refresh their own state.
+/// A liquidity source the router fill reads and executes. It is the
+/// in-program mirror of the registry's external `QuoterConfigV0` CPI legs,
+/// and it keeps the same shape. `quote` returns discrete best-first levels.
+/// `execute` commits a fill of the routed allocation and reports it. An
+/// implementation that needs a per-fill refresh, such as the AMM's projection
+/// and curve update, runs it in its own setup step before the router quotes
+/// it. Setup is not part of this contract, which is how an external quoter
+/// refreshes its own state too.
 pub trait RouterQuoter {
-    /// Routing tier, same semantics as the registry's `QuoterConfigV0::priority`:
-    /// lower fills first at a shared price, pro rata within a tier.
+    /// Routing tier, with the same meaning as the registry's
+    /// `QuoterConfigV0::priority`. A lower number fills first at a shared
+    /// price, and one tier splits pro rata.
     fn priority(&self) -> u8;
 
-    /// Discrete best-first levels for a taker of `direction`/`size` — the
-    /// in-program `quote_v0`. `rival_books` carries the books already built
-    /// this fill (external CPI books + worse-tier internals), enabling last
-    /// look for quoters that want it; most ignore it.
+    /// Discrete best-first levels for a taker of `direction` and `size`. This
+    /// is the in-program `quote_v0`. `rival_books` carries the books already
+    /// built in this fill, which are the external CPI books and the
+    /// worse-tier internal ones. It lets a quoter run a last look. Most
+    /// quoters ignore it.
     fn quote(
         &self,
         ctx: &QuoteContext,
@@ -268,9 +267,9 @@ pub trait RouterQuoter {
         rival_books: &[crate::math::router::QuoterBook],
     ) -> VelocityResult<Vec<crate::state::prop_amm::PriceLevel>>;
 
-    /// Commit a fill of up to `size` (the routed allocation) — the
-    /// in-program `execute_v0`. Applies the quoter's own state changes and
-    /// reports the fill; taker-side settlement stays with the fill
+    /// Commit a fill of up to `size`, which is the routed allocation. This is
+    /// the in-program `execute_v0`. It applies the quoter's own state changes
+    /// and reports the fill. Taker-side settlement stays with the fill
     /// controller.
     fn execute(
         &mut self,
@@ -286,8 +285,8 @@ impl RouterQuoter for DlobOrderQuoter<'_> {
         crate::state::prop_amm::QuoterType::Clob.default_priority()
     }
 
-    /// A resting order is a single level: its effective limit price and
-    /// remaining size.
+    /// A resting order is a single level at its effective limit price, sized
+    /// by what remains of it.
     fn quote(
         &self,
         ctx: &QuoteContext,
@@ -327,20 +326,19 @@ use crate::state::user::Order;
 
 /// A [`RouterQuoter`] view over a single resting DLOB order.
 ///
-/// The order's direction (Long = bid, Short = ask) determines which side of
-/// the book it offers liquidity on; a maker offers liquidity to the *opposite*
-/// taker side. `best_price` returns the order's effective limit price (from
-/// `Order::get_limit_price`, accounting for oracle-offset orders). The order
-/// presents as a single discrete level: its `best_price` and its remaining
-/// size (the `try_fill_solo` capacity).
+/// The order's direction says which side of the book it offers liquidity on.
+/// Long is a bid and Short is an ask. A maker offers liquidity to the opposite
+/// taker side. `best_price` returns the order's effective limit price from
+/// `Order::get_limit_price`, which handles oracle-offset orders. The order
+/// presents as one discrete level at `best_price`, sized by what remains of
+/// it.
 ///
-/// DLOB makers do not implement `is_prio` or `is_fee_exempt` (defaults of
-/// `false`). The matcher sorts them with the vAMM by price; at tied prices
-/// the vAMM (prio) wins, otherwise non-prio makers pro-rata.
+/// A DLOB maker is never fee-exempt. The matcher sorts it with the vAMM by
+/// price. At a tied price the vAMM fills first, and the remaining makers split
+/// pro rata.
 ///
-/// `try_fill_solo` is implemented because a single resting order has a
-/// trivial closed-form fill: take `min(target, remaining)` at the limit
-/// price.
+/// `try_fill_solo` is implemented because a single resting order has a trivial
+/// closed-form fill. It takes `min(target, remaining)` at the limit price.
 pub struct DlobOrderQuoter<'a> {
     pub order: &'a mut Order,
     /// Upper bound on how much base this order may fill, on top of the
@@ -352,9 +350,9 @@ pub struct DlobOrderQuoter<'a> {
 }
 
 impl<'a> DlobOrderQuoter<'a> {
-    /// A DLOB resting order is never fee-exempt: it pays / receives maker
-    /// fees per the protocol schedule. (The vAMM is the exempt one — it earns
-    /// from the spread it quotes.)
+    /// A DLOB resting order is never fee-exempt. It pays or receives maker
+    /// fees under the protocol schedule. The vAMM is the exempt one, because
+    /// it earns from the spread it quotes.
     pub fn is_fee_exempt(&self) -> bool {
         false
     }
@@ -368,9 +366,9 @@ impl<'a> DlobOrderQuoter<'a> {
         DlobOrderQuoter { order, max_fill }
     }
 
-    /// Fill up to `size` at this order's price and apply it to the order —
-    /// the whole of what a router allocation does to a resting maker. Returns
-    /// [`QuoterFill::ZERO`] when the order doesn't quote this side or has
+    /// Fill up to `size` at this order's price and apply it to the order. That
+    /// is everything a router allocation does to a resting maker. Returns
+    /// [`QuoterFill::ZERO`] when the order does not quote this side or has
     /// nothing left.
     pub fn fill(
         &mut self,
@@ -468,8 +466,8 @@ impl<'a> DlobOrderQuoter<'a> {
 
 impl DlobOrderQuoter<'_> {
     /// Closed-form fill of `target_size` at this order's effective limit
-    /// price: `min(target, remaining)`, with the quote rounded in the maker's
-    /// favor. `None` when the order doesn't quote this side.
+    /// price. It takes `min(target, remaining)` and rounds the quote in the
+    /// maker's favor. Returns `None` when the order does not quote this side.
     fn solo_fill(
         &self,
         ctx: &QuoteContext,
@@ -537,9 +535,10 @@ impl<'a> DlobOrderQuoter<'a> {
 // AMM Quoter impl (v1)
 // ============================================================================
 //
-// `AmmQuoter` exposes the existing `AMM` struct as a router quoter so
-// the matcher can drive it. `is_prio = true`, `is_fee_exempt = true` per
-// design — the AMM front-runs DLOB at tied prices and doesn't pay maker fees.
+// `AmmQuoter` exposes the existing `AMM` struct as a router quoter so the
+// matcher can drive it. It reports `is_prio = true` and `is_fee_exempt =
+// true`. The AMM fills ahead of the DLOB at a tied price and pays no maker
+// fee.
 //
 // **Design choice: repeg / k-update happens via `_update_amm`, not inside
 // `try_fill_solo`.** The AmmQuoter quote reflects the AMM's CURRENT reserves
@@ -758,10 +757,10 @@ mod dlob_order_maker_tests {
 /// An owned snapshot of everything a [`QuoteContext`] needs from a
 /// `PerpMarket`, so a caller can build the context once and hand out borrows.
 ///
-/// Both quoting entrypoints — the fill's fulfillment pass and the router's
-/// quote view — need the same dozen fields pulled off the market before they
-/// can borrow its AMM mutably. Assembling them by hand at each site is how the
-/// two drift; the snapshot makes "what quoting needs from a market" one thing.
+/// Both quoting entry points need the same fields pulled off the market before
+/// they can borrow its AMM mutably. Those entry points are the fill's
+/// fulfillment pass and the router's quote view. Assembling the fields by hand
+/// at each site lets the two drift apart.
 pub struct MarketQuoteInputs {
     pub stats: MarketStats,
     pub safe_oracle: OraclePriceData,
@@ -791,11 +790,11 @@ impl MarketQuoteInputs {
             validity_guard_rails,
             slot_clock,
         )?;
-        // `oracle_validity` is read only inside `project_and_apply`, which
-        // returns early when the curve was already refreshed at this slot (by
-        // the router's own projection, an earlier fill, or a keeper crank). In
-        // that dominant case the value is never looked at, so skip the
-        // recompute — it is not cheap — and pass `None`.
+        // Only `project_and_apply` reads `oracle_validity`, and it returns
+        // early when the curve was already refreshed at this slot. The
+        // router's own projection, an earlier fill, or a keeper crank can do
+        // that refresh. In that common case the value is never read, so the
+        // recompute is skipped. It is not cheap.
         let oracle_validity = if market.amm.last_update_slot < slot {
             crate::vlp::amm::refresh::compute_amm_refresh_validity_with_guard_rails(
                 market,
@@ -822,8 +821,8 @@ impl MarketQuoteInputs {
         })
     }
 
-    /// The context quoting reads from. Borrows the snapshot, so it stays valid
-    /// while the caller holds the market's AMM mutably.
+    /// The context quoting reads from. It borrows the snapshot, so it stays
+    /// valid while the caller holds the market's AMM mutably.
     pub fn ctx(&self, slot: u64) -> QuoteContext<'_> {
         QuoteContext {
             stats: &self.stats,

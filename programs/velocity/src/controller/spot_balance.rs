@@ -138,15 +138,15 @@ pub fn update_spot_market_twap_stats(
     Ok(())
 }
 
-/// Stamp `last_interest_ts` forward to `now` **without** accruing anything.
+/// Stamps `last_interest_ts` forward to `now` and accrues nothing.
 ///
-/// Used for intervals in which no interest is charged to anyone. This is load-bearing, not
-/// bookkeeping: `calculate_accumulated_interest` bills the entire `now - last_interest_ts`
-/// span at whatever rate prevails when it finally runs, so an interval left un-stamped is
-/// billed retroactively to whoever happens to hold debt later (findings #115, #117).
+/// Use this for an interval that charges nobody interest.
+/// `calculate_accumulated_interest` bills the whole `now - last_interest_ts` span at the rate
+/// that applies when it runs. An interval left un-stamped is therefore billed later to
+/// whoever holds debt at that time (OtterSec #115 and #117).
 ///
-/// Never moves the stamp backwards — `now` can trail the stored value (the accrual is also
-/// driven from user instructions, whose `now` comes from their own `Clock`).
+/// The stamp never moves backwards. `now` can trail the stored value, because user
+/// instructions also drive the accrual and each one reads its own `Clock`.
 fn stamp_interest_ts_without_accrual(spot_market: &mut SpotMarket, now: i64) -> VelocityResult {
     if now.cast::<u64>()? > spot_market.last_interest_ts {
         spot_market.last_interest_ts = now.cast()?;
@@ -170,12 +170,11 @@ pub fn update_spot_market_cumulative_interest(
     // crank.
     //
     // The clock is stamped forward as the pause is observed, so the paused interval is
-    // dropped rather than deferred. Previously it was left in place and the first accrual
-    // after resume applied the whole paused span to whatever balances existed at that
-    // moment: a deposit made just before the unpause collected interest for time it was not
-    // deposited, and a borrow opened during the pause was charged for time it did not exist
-    // (finding #115). A pause means interest does not accrue for that window — not that it
-    // accrues and is billed later to a different set of balances.
+    // dropped rather than deferred. A deferred span would reach the first accrual after
+    // the resume and apply to the balances that exist then. A deposit made just before
+    // the unpause would collect interest for time it was not deposited, and a borrow
+    // opened during the pause would pay for time it did not exist (OtterSec #115). A pause
+    // means interest does not accrue for that window.
     if funding_paused || spot_market.is_operation_paused(SpotOperation::UpdateCumulativeInterest) {
         stamp_interest_ts_without_accrual(spot_market, now)?;
         update_spot_market_twap_stats(spot_market, oracle_price_data, now)?;
@@ -187,24 +186,23 @@ pub fn update_spot_market_cumulative_interest(
         borrow_interest,
     } = calculate_accumulated_interest(spot_market, now)?;
 
-    // An interval that is owed commits on the interval that it belongs to, as soon as it is
-    // large enough to represent on both indexes.
+    // Interest commits on the interval that it belongs to, once it is large enough to
+    // represent on both indexes.
     //
-    // `calculate_accumulated_interest` bills the whole span since `last_interest_ts`. It uses
-    // the rate that applies when it runs. It commits the span with an index move, and the
-    // index credits every balance that exists at that moment.
+    // `calculate_accumulated_interest` bills the whole span since `last_interest_ts` at the
+    // rate that applies when it runs. It commits the span with an index move, and the index
+    // credits every balance that exists at that moment. Balances change between cranks, and
+    // every spot instruction that moves balances cranks this function first. An un-stamped
+    // span is therefore billed against later balances. A deposit made in the gap earns
+    // interest for time before the deposit, and a borrow opened in the gap pays interest for
+    // time before the borrow (OtterSec #115 and #117).
     //
-    // Balances change between cranks. Every spot instruction that moves balances cranks this
-    // function first. An un-stamped span is therefore billed against later balances. A deposit
-    // made in the gap earns interest for time before the deposit. A borrow opened in the gap
-    // pays interest for time before the borrow. Findings #115 and #117 describe this result.
+    // Three outcomes follow. The commit arm moves both indexes, pays both carveouts, carries
+    // the remainders, and stamps the clock. The drop arm stamps the clock without accrual,
+    // because nobody owes anything for the interval. The defer arm leaves the clock where it
+    // stands and retries the span on the next crank.
     //
-    // Three outcomes remain. COMMIT moves both indexes, pays both carveouts, carries the
-    // remainders, and stamps the clock. DROP stamps the clock without accrual, because nobody
-    // owes anything for the interval. DEFER leaves the clock where it stands and retries the
-    // span on the next crank.
-    //
-    // DEFER covers an interval that does not reach a whole index unit on both sides.
+    // The defer arm covers an interval that does not reach a whole index unit on both sides.
     // `borrow_interest` is 1 when the borrow side floors to zero, and `deposit_interest` is 0
     // when the lender side floors to zero. A stamp would forgive that interest, and frequent
     // cranks of this permissionless accrual would then hold every interval under the floor. A
@@ -218,15 +216,15 @@ pub fn update_spot_market_cumulative_interest(
         // `split_deposit_interest` carries the index-space remainders, so a share too small to
         // round to a whole index unit is delayed instead of lost. It also guarantees that the
         // two cuts never sum past the gain, so lenders never fall below zero and the split
-        // cannot hold up the commit.
+        // cannot block the commit.
         let split = split_deposit_interest(spot_market, deposit_interest)?;
 
         // Both cuts convert to tokens against the same `deposit_balance`, before either pool is
         // credited. A credit to the first pool raises `deposit_balance`. A conversion of the
         // second cut against the raised balance would exceed its stated factor.
         //
-        // The conversion floors to zero on a small market, even when the index-space cut is not
-        // zero. The value is already withheld from lenders at that point, so a floored cut
+        // The conversion can floor to zero on a small market, even when the index-space cut is
+        // not zero. The value is already withheld from lenders at that point, so a floored cut
         // credits nobody. Each pool therefore carries its own token-space remainder.
         let (if_token_amount, if_token_dust) = get_interest_token_amount_with_dust(
             spot_market.deposit_balance,
@@ -292,21 +290,21 @@ pub fn update_spot_market_cumulative_interest(
         // condition that makes `calculate_accumulated_interest` return zero. Stamp the clock
         // to remove the idle span from the ledger.
         //
-        // The code tests `borrow_balance == 0` first to save work. That case is the one that
-        // occurs, and one comparison answers it. The utilization arm needs two
-        // `get_token_amount` conversions and a division. The utilization arm remains because
-        // zero utilization is the exact condition that returns zero. It also covers a borrow
-        // that is very small next to deposits, where the ratio floors to zero.
+        // `borrow_balance == 0` is tested first because it is one comparison, and it answers
+        // the common case. The utilization test needs two `get_token_amount` conversions and
+        // a division. It stays because zero utilization is the exact condition that returns
+        // zero, and it also covers a borrow so small next to deposits that the ratio floors
+        // to zero.
         //
-        // An un-stamped idle span stayed on the clock for the whole zero-borrow period. The
-        // first accrual after a borrow then billed that whole span at the new rate. Any lender
-        // could farm this. The lender deposits into an idle market, waits for the first
-        // borrower, cranks the accrual, and collects interest that the new debt never owed.
-        // Finding #117 describes this. Every path that creates a borrow cranks this function
-        // before it changes balances. The stamp is therefore current when debt appears, and a
-        // new borrow pays only from its own creation.
+        // An un-stamped idle span would stay on the clock for the whole zero-borrow period,
+        // and the first accrual after a borrow would bill that whole span at the new rate.
+        // Any lender could farm that. The lender deposits into an idle market, waits for the
+        // first borrower, cranks the accrual, and collects interest the new debt never owed
+        // (OtterSec #117). Every path that creates a borrow cranks this function before it
+        // changes balances, so the stamp is current when debt appears and a new borrow pays
+        // only from its own creation.
         //
-        // This branch stays narrow. Only an interval that nobody owes anything for is stamped.
+        // This branch stays narrow. It stamps only an interval that nobody owes anything for.
         stamp_interest_ts_without_accrual(spot_market, now)?;
     }
 
@@ -563,9 +561,9 @@ pub struct SpotMarketOracleRefresh {
     /// liquidation pricing collateral protectively when the oracle is margin-invalid). The
     /// quote spot market skips validity checks and reports `Valid`.
     pub validity: OracleValidity,
-    /// 5-minute oracle TWAP as of before the refresh below advanced it. Callers that bound a
-    /// price against this TWAP must use this snapshot, not the field, for the same reason the
-    /// verdict itself is computed first (OtterSec #109-#112, #134).
+    /// The 5-minute oracle TWAP as it stood before the refresh advanced it. A caller that
+    /// bounds a price against this TWAP must read this snapshot and not the field, for the
+    /// same reason the verdict is computed first (OtterSec #109 to #112, and #134).
     pub pre_refresh_twap_5min: i64,
 }
 
@@ -620,12 +618,13 @@ pub fn check_spot_oracle_validity(
     Ok(validity)
 }
 
-/// Judges the oracle against the TWAPs as they stand on entry, then advances them. An
-/// instruction must not relax a gate that reads a value it just moved: the refresh drags both
-/// oracle TWAPs toward the live price, so reading them afterwards lets a too-volatile or
-/// depressed oracle normalize away the very check meant to stop it. The direct spot
-/// liquidation lane legitimately advances these TWAPs and does gate on them, so the refresh
-/// stays and moves after the gate. Its gates then read `pre_refresh_twap_5min`.
+/// Judges the oracle against the TWAPs as they stand on entry, then advances them.
+///
+/// An instruction must not relax a gate that reads a value it just moved. The refresh drags
+/// both oracle TWAPs toward the live price, so a gate that reads them afterwards lets a
+/// too-volatile or depressed oracle pass the check meant to stop it. The direct spot
+/// liquidation lane does advance these TWAPs and does gate on them, so the refresh stays and
+/// runs after the gate. Its gates read `pre_refresh_twap_5min`.
 pub fn update_spot_market_and_check_validity(
     spot_market: &mut SpotMarket,
     oracle_price_data: &OraclePriceData,
@@ -664,7 +663,7 @@ pub fn update_spot_market_and_check_validity(
     })
 }
 
-/// Advance the lending-interest indexes of several spot markets in one pass.
+/// Advances the lending-interest indexes of several spot markets in one pass.
 ///
 /// Every market goes through [`update_spot_market_cumulative_interest`], so a caller that
 /// refreshes many markets gets the same per-market treatment as a caller that refreshes one.

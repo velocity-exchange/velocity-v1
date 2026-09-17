@@ -28,10 +28,10 @@ pub struct PlaceOrderResult {
 
 /// A perp `Order` built from its params, ready to place or to route detached.
 ///
-/// The output of [`build_perp_order`]: the constructed order plus the facts a
-/// caller needs to reserve, margin-check, and record it. It holds no slot and
-/// touches no open-order counter, so an ephemeral taker can route it without
-/// ever entering `user.orders`.
+/// [`build_perp_order`] returns this. It carries the constructed order plus
+/// the facts a caller needs to reserve, margin-check, and record it. It holds
+/// no slot and touches no open-order counter, so an ephemeral taker can route
+/// it without ever entering `user.orders`.
 pub struct BuiltPerpOrder {
     pub order: Order,
     pub position_index: usize,
@@ -64,22 +64,20 @@ impl BuiltPerpOrder {
     }
 }
 
-/// Build a perp `Order` from its params, minting its id, without persisting it.
+/// Build a perp `Order` from its params and mint its id, without storing it.
 ///
-/// This is the shared core of order construction: market and status checks, the
-/// position lookup, size and direction, auction params, the max-time-in-force
-/// default, the order value itself, and `validate_order`. It writes no slot,
-/// bumps no counter, reserves no `open_bids`/`open_asks`, and runs no margin
-/// check — the caller does those, because a slot placement and an ephemeral
-/// detached fill need them differently.
+/// This is the shared core of order construction. It writes no slot, changes
+/// no open-order counter, reserves no `open_bids` or `open_asks`, and runs no
+/// margin check. The caller runs those, because a slot placement and an
+/// ephemeral detached fill need them differently.
 ///
-/// Returns `None` for the two soft-skips that are not errors: an already
-/// expired `max_ts`, and a `TryPostOnly` order that would cross. Both clear the
-/// builder-order row so it cannot linger.
+/// Returns `None` for the two soft skips that are not errors. Those are an
+/// already expired `max_ts`, and a `TryPostOnly` order that would cross. Both
+/// clear the builder-order row so it cannot linger.
 ///
-/// The caller must run the placement preconditions first (not-liquidated,
-/// not-bankrupt, the reduce-only-user gate), since those guard the whole
-/// placement, not the order value.
+/// The caller must run the placement preconditions first. Those are the
+/// not-liquidated check, the not-bankrupt check, and the reduce-only-user
+/// gate. They guard the whole placement rather than the order value.
 #[allow(clippy::too_many_arguments)]
 pub fn build_perp_order(
     state: &State,
@@ -95,8 +93,8 @@ pub fn build_perp_order(
     let market_index = params.market_index;
 
     // The market's own gates, and the one value the sizing below reads. The
-    // borrow ends with this block, because a maximum-size order prices
-    // against every market the user holds and needs the whole map set.
+    // borrow ends with this block. A maximum-size order prices against every
+    // market the user holds, so it needs the map free.
     let (force_reduce_only, order_step_size) = {
         let market = maps.perp_market_map.get_ref(&market_index)?;
         perp_placement_market_gates(&market, user, now)?
@@ -167,7 +165,7 @@ pub fn build_perp_order(
 /// `add_builder_order` writes the builder-order row before the order is built,
 /// so a placement that returns without an order must free the row. A row left
 /// behind is keyed to an order id, and a later order that reuses that id would
-/// pick the row up.
+/// find the row.
 fn skip_placement<T>(
     rev_share_order: &mut Option<&mut RevenueShareOrder>,
 ) -> VelocityResult<Option<T>> {
@@ -266,7 +264,7 @@ struct OrderAuction {
 /// A crossing limit order without an auction duration gets its auction params
 /// here. A liquidation keeps the params it was given.
 ///
-/// `None` means the order has already expired, which is not an error: the
+/// `None` means the order has already expired, which is not an error. The
 /// caller skips the placement.
 fn resolve_auction_and_max_ts(
     state: &State,
@@ -292,7 +290,8 @@ fn resolve_auction_and_max_ts(
         params,
         oracle_price_data,
         market.order_tick_size,
-        // the stored min is already in the auction's wall clock 400ms units
+        // The stored minimum is already in the auction's 400ms wall-clock
+        // units.
         legacy_slot_duration_u8_raw(state.min_perp_auction_duration),
     )?;
 
@@ -316,11 +315,12 @@ fn resolve_auction_and_max_ts(
 
 /// The time in force an auctioned order gets when its params name none.
 ///
-/// At least 30s, else the auction's wall-clock length plus a quarter again
-/// plus 10s of pad, so the default always outlives the auction. The /800
-/// reproduces the historical `auction_duration_slots / 2 + 10` exactly. A
-/// 400ms unit is one historical slot, so units/2 == ms/800. An order type
-/// that runs no auction never expires by default.
+/// The default is at least 30 seconds. Otherwise it is the auction's
+/// wall-clock length plus a quarter again, plus 10 seconds of pad. The default
+/// therefore always outlives the auction. The division by 800 reproduces the
+/// historical `auction_duration_slots / 2 + 10` exactly. A 400ms unit is one
+/// historical slot, so units/2 equals ms/800. An order type that runs no
+/// auction never expires by default.
 fn default_order_max_ts(
     order_type: OrderType,
     now: i64,
@@ -425,7 +425,7 @@ fn assemble_perp_order(
 
 /// Whether the built order may be placed.
 ///
-/// `false` is the one soft skip: a `TryPostOnly` order that would cross is not
+/// `false` is the one soft skip. A `TryPostOnly` order that would cross is not
 /// an error, and the caller returns without an order.
 fn validate_built_order(
     order: &Order,
@@ -675,12 +675,14 @@ fn emit_place_records(
     })
 }
 
-/// Whether `user` can carry one more order of this shape, without keeping
-/// any of it. The margin engine prices the user *with* the prospective
-/// exposure, so the check models the reservation — the aggregates and the
-/// per-open-order flat term — and reverses it either way: validation, not a
-/// state change. Both the ephemeral create and the remainder rest gate
-/// through here, so the two paths cannot drift.
+/// Whether `user` can carry one more order of this shape, without keeping any
+/// of it.
+///
+/// The margin engine prices the user with the prospective exposure, so the
+/// check models the reservation and then reverses it. The model covers the
+/// aggregates and the per-open-order flat term. The user is left as it was.
+/// Both the ephemeral create and the remainder rest gate through here, so the
+/// two paths cannot drift.
 #[allow(clippy::too_many_arguments)]
 pub fn check_prospective_order_margin(
     user: &mut User,
@@ -716,22 +718,22 @@ pub fn check_prospective_order_margin(
 
 /// Validate and create a perp order that never touches `user.orders`.
 ///
-/// The straight-to-book path: run the same preconditions, margin gate,
-/// open-interest guard, and place records `place_perp_order` runs, and
-/// return the order as a value. Nothing is placed: no slot is written and
-/// no `open_bids`/`open_asks` reservation is kept. What does change on the
-/// user are the facts of the order coming into existence — the id counter,
-/// a builder-order row when one applies, and the activity stamp. The
-/// caller routes the returned order through
-/// `FillTarget::Detached { reserved: false }` and rests only its remainder
-/// on the CLOB. Returns `None` on the same soft-skips as `place_perp_order`
-/// (expired `max_ts`, `TryPostOnly` that would cross).
+/// This is the straight-to-book path. It runs the same preconditions, margin
+/// gate, open-interest guard and place records that `place_perp_order` runs,
+/// and it returns the order as a value. Nothing is placed. No slot is written,
+/// and no `open_bids` or `open_asks` reservation is kept. What does change on
+/// the user are the facts of the order coming into existence: the id counter,
+/// a builder-order row when one applies, and the activity stamp. The caller
+/// routes the returned order through
+/// `FillTarget::Detached { reserved: false }` and rests only its remainder on
+/// the CLOB. Returns `None` on the same soft skips as `place_perp_order`,
+/// which are an expired `max_ts` and a `TryPostOnly` order that would cross.
 ///
-/// Expired slot orders are the caller's to sweep first (`expire_orders`):
-/// this function never touches `user.orders`, and the sweep matters to the
-/// gate — an expired order still holds its reservation, and releasing it
-/// can be what lets the new order pass. `options.try_expire_orders` is not
-/// read here.
+/// The caller sweeps expired slot orders first, with `expire_orders`. This
+/// function never touches `user.orders`, and the sweep matters to the gate. An
+/// expired order still holds its reservation, and releasing it can be what
+/// lets the new order pass. This function does not read
+/// `options.try_expire_orders`.
 #[allow(clippy::too_many_arguments)]
 pub fn create_ephemeral_perp_order(
     state: &State,
@@ -768,10 +770,10 @@ pub fn create_ephemeral_perp_order(
         .is_isolated()
         .then_some(market_index);
 
-    // The ephemeral order never carries a reservation into the fill: the
-    // fill unwinds nothing for it, and only the rested remainder reserves
-    // (`try_place_remainder_on_clob`). The check itself is identical to
-    // `place_perp_order`'s.
+    // The ephemeral order never carries a reservation into the fill. The fill
+    // unwinds nothing for it, and only the rested remainder reserves, in
+    // `try_place_remainder_on_clob`. The check itself is the one
+    // `place_perp_order` runs.
     if options.enforce_margin_check && !options.is_liquidation() {
         check_prospective_order_margin(
             user,

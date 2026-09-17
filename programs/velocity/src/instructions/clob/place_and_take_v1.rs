@@ -1,17 +1,17 @@
-//! `place_and_take_perp_order_v1` — the CLOB-aware taker route.
+//! `place_and_take_perp_order_v1`, the CLOB-aware taker route.
 //!
-//! The taker's order is ephemeral: built on the stack, margin-checked, filled
-//! through the router across the vAMM, the quoter books, and the passed DLOB
-//! makers, and never written into `User.orders`. The restable remainder rests
-//! on the market's CLOB taker-origin ("if it can rest and be matched, it
-//! lives on the CLOB", applied to the taker flow's leftover).
+//! The taker's order is ephemeral. The handler builds it on the stack, checks
+//! margin, and fills it through the router across the vAMM, the quoter books,
+//! and the passed DLOB makers. It never writes the order into `User.orders`.
+//! The restable remainder rests on the market's CLOB taker-origin, because an
+//! order that can rest and be matched belongs on the CLOB.
 //!
-//! Why a new instruction rather than optional accounts on v0: appending
+//! This is a separate endpoint rather than optional accounts on v0. Appending
 //! optional accounts to a shipped `#[derive(Accounts)]` changes the account
-//! list every existing client builds, so v0 keeps its exact `master` shape
-//! forever and callers opt into the book by naming this endpoint. The two
-//! paths are separate bodies: v0 runs the legacy slot-order fill
-//! ([`crate::instructions::place_and_take_perp_order_legacy`]); this endpoint
+//! list every existing client builds. So v0 keeps its exact `master` shape, and
+//! a caller opts into the book by naming this endpoint. The two paths have
+//! separate bodies. v0 runs the legacy slot-order fill
+//! ([`crate::instructions::place_and_take_perp_order_legacy`]). This endpoint
 //! runs the ephemeral routed fill
 //! ([`crate::instructions::place_and_take_perp_order_v1`]).
 
@@ -46,27 +46,27 @@ pub struct PlaceAndTakeV1<'info> {
     )]
     pub user_stats: AccountLoader<'info, UserStats>,
     pub authority: Signer<'info>,
-    /// The market's quoter slab — the remainder only ever rests on the
-    /// vetted book its `Clob` slot names.
+    /// The market's quoter slab. The remainder only ever rests on the vetted
+    /// book that its `Clob` slot names.
     #[account(
         has_one = clob_market,
         constraint = quoter_slab.load()?.market == args.params.market_index,
     )]
     pub quoter_slab: AccountLoader<'info, QuoterSlabV0>,
-    /// CHECK: validated against the book slot's registered response account
-    /// (`ClobMarket::from_slab`), so a valid slot can't be pointed at an
+    /// CHECK: `ClobMarket::from_slab` checks this against the book slot's
+    /// registered response account. A valid slot cannot be pointed at an
     /// arbitrary account.
     #[account(mut)]
     pub clob_market: UncheckedAccount<'info>,
     /// CHECK: a Clob slot's program is pinned to velocity's CLOB at
-    /// registration; the handler re-checks through the slot.
+    /// registration. The handler checks it again through the slot.
     #[account(address = crate::ids::clob_program::id())]
     pub clob_program: UncheckedAccount<'info>,
-    /// The flow authority, signing this transaction as a named account —
-    /// swift builds and signs its own user transactions, so presence marks
-    /// the flow attested. Absent reads as unattested, which on a book with
-    /// a speed bump rests the order whole instead of filling. The zero key
-    /// cannot sign, so an unset flow authority admits nobody.
+    /// The flow authority, signing this transaction as a named account. Swift
+    /// builds and signs its own user transactions, so a signature here marks
+    /// the flow attested. An absent signer reads as unattested. On a book with
+    /// a speed bump, an unattested order rests whole instead of filling. The
+    /// zero key cannot sign, so an unset flow authority admits nobody.
     #[account(
         constraint = flow_authority.key()
             == state.load()?.hot_key(crate::state::state::HotRole::FlowAuthority)
@@ -78,8 +78,8 @@ pub struct PlaceAndTakeV1<'info> {
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
 pub struct PlaceAndTakePerpOrderV1Args {
     pub params: OrderParams,
-    /// Bit 0 selects a success condition (`PlaceAndTakeOrderSuccessCondition`);
-    /// a u32 for wire compatibility with the v0 `optional_params`.
+    /// Bit 0 selects a `PlaceAndTakeOrderSuccessCondition`. The field is a u32
+    /// for wire compatibility with the v0 `optional_params`.
     pub success_condition: Option<u32>,
 }
 

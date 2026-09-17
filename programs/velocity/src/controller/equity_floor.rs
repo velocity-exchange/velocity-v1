@@ -1,13 +1,16 @@
-//! Lazy equity-breaker trips. The authority-wide equity breaker is normally
-//! armed by the permissionless `trip_equity_floor_breaker` instruction, which
-//! requires a separate keeper transaction to land. This module lets the paths
-//! that are allowed to run while a floored subaccount sits below its raw
-//! floor (reducing fills, strictly reducing swaps, trigger cancels) arm the
-//! breaker inline as a side effect of the interaction itself, shrinking the
-//! window in which sibling subaccounts can keep taking risk to the next
-//! touch instead of the next keeper transaction. A rejected instruction
-//! reverts its own writes, so only succeeding paths can host a trip; the
-//! gated paths (which reject at floor + buffer) never can, and never need to.
+//! Lazy equity-breaker trips.
+//!
+//! The permissionless `trip_equity_floor_breaker` instruction normally arms
+//! the authority-wide equity breaker, and it needs its own keeper transaction
+//! to land. This module lets the paths that may run while a floored subaccount
+//! sits below its raw floor arm the breaker inline, as a side effect of the
+//! interaction. Those paths are reducing fills, strictly reducing swaps, and
+//! trigger cancels. The window in which sibling subaccounts can keep taking
+//! risk then ends at the next touch instead of the next keeper transaction.
+//!
+//! A rejected instruction reverts its own writes, so only a path that succeeds
+//! can host a trip. The gated paths reject at the floor plus the buffer, so
+//! they never host one and never need to.
 
 use crate::{
     error::VelocityResult,
@@ -18,19 +21,20 @@ use crate::{
 };
 
 /// Arms the authority-wide equity breaker if the subaccount's net equity is
-/// provably below its raw floor. Decides with the same
-/// `TripNetEquity::proves_breach` predicate as the permissionless trip:
-/// invalid-oracle liabilities and shorts receive their sound zero upper
-/// bound, while any invalid-oracle asset or long keeps the breach
-/// unprovable. Where the permissionless trip
-/// rejects on an unprovable breach so the keeper can retry, this skips
-/// silently (it must not fail its host); a breach that rides out such an
-/// outage is armed by
-/// the next touch after the feed recovers. The gates cover the outage
-/// itself, failing closed on the strict verdict, and match fills carry
-/// their own `FillOrderMatch` validity rule. Skips all work when the
-/// subaccount has no floor or the breaker is already set, and never fails
-/// the host instruction on its own.
+/// provably below its raw floor.
+///
+/// The decision uses the same `TripNetEquity::proves_breach` predicate as the
+/// permissionless trip. An invalid-oracle liability and an invalid-oracle
+/// short receive their sound zero upper bound. An invalid-oracle asset or long
+/// keeps the breach unprovable. The permissionless trip rejects on an
+/// unprovable breach so the keeper can retry. This function skips instead,
+/// because it must not fail its host. The next touch after the feed recovers
+/// arms a breach that rides out such an outage.
+///
+/// The gates cover the outage itself and fail closed on the strict verdict.
+/// Match fills carry their own `FillOrderMatch` validity rule. This function
+/// does no work when the subaccount has no floor or the breaker is already
+/// set, and it never fails the host instruction.
 pub fn try_lazy_equity_breaker_trip(
     user: &User,
     user_stats: &mut UserStats,

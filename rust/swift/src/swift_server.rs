@@ -100,12 +100,14 @@ struct Config {
     /// aggressive one. `0` disables. Override with `AUCTION_ORACLE_BAND_BPS`
     /// (default 300 = 3%).
     auction_oracle_band_bps: u32,
-    /// Skip the oracle-band guard (fail open) when the server's own oracle is
-    /// more than this many slots behind the latest slot — so a stale swift-side
-    /// oracle can't start rejecting otherwise-valid orders. `0` disables the
-    /// staleness gate (always apply the band). Override with
-    /// `AUCTION_ORACLE_MAX_STALENESS_SLOTS` (default 10 ≈ 4s), in 400ms
-    /// baseline slot units — inflated to actual slots at the live slot duration.
+    /// Skip the oracle-band guard, failing open, when the server's own oracle
+    /// is more than this far behind the latest slot. A lagging swift-side
+    /// oracle must not start rejecting otherwise-valid orders. `0` disables
+    /// the staleness gate, so the band always applies. Override with
+    /// `AUCTION_ORACLE_MAX_STALENESS_SLOTS` (default 10). The value counts
+    /// 400ms units, so the default is about 4 seconds of wall clock. The
+    /// measured age is wall clock, so faster slots fit more of them in that
+    /// window.
     auction_oracle_max_staleness_slots: u64,
 }
 
@@ -228,7 +230,7 @@ pub async fn process_order_wrapper(
             ];
             let topic = format!("swift_orders_{}_{}", metrics_labels[0], metrics_labels[1]);
             let payload = order_metadata.encode();
-            // The order is now attestable: keepers may request the
+            // The order is now attestable. A keeper may request the
             // flow-authority co-signature once the hold window elapses.
             server_params.attest.record(
                 order_metadata.uuid,
@@ -333,9 +335,9 @@ pub async fn process_order(
         None
     };
 
-    // Carried through to the log and the keeper feed: the network tag the
-    // program validates, and the route the taker signed for (its custom
-    // quoters — the CLOB and vAMM baseline is implicit).
+    // Both reach the log and the keeper feed. The network tag is what the
+    // program validates. The route is the custom quoters the taker signed
+    // for, because the CLOB and vAMM baseline is implicit.
     let network = signed_msg.network();
     let route = signed_msg.route().map(<[_]>::to_vec);
 
@@ -486,10 +488,11 @@ pub async fn process_order(
             .metrics
             .current_slot_gauge
             .set(current_slot as f64);
-        // Recorded on accept, not on publish: this is the one point both HTTP entry
-        // points converge on with `order_params` still in scope. A publish that then
-        // fails counts here anyway — swift_redis_publish_fail_count is the panel for
-        // that gap, and it is normally zero.
+        // This is recorded on accept rather than on publish. It is the one
+        // point both HTTP entry points reach with `order_params` still in
+        // scope. A publish that then fails still counts here.
+        // swift_redis_publish_fail_count measures that gap, and it is
+        // normally zero.
         server_params.record_order_notional(&order_params, context);
 
         Ok(order_metadata)
@@ -1565,8 +1568,8 @@ impl ServerParams {
         // measurement — unreliable) or a stale oracle must never turn this guard
         // into a source of rejections for otherwise-valid orders.
         let slot_subscriber_stale = self.slot_subscriber.is_stale();
-        // configured in 400ms unit encoding (env knob); the measured age is
-        // wall clock, integrated per slot duration regime
+        // The env knob is configured in 400ms units. The measured age is
+        // wall clock, integrated over each slot duration regime.
         let max_staleness =
             Millis::from_stored_units(self.config.auction_oracle_max_staleness_slots);
         let oracle_age = self
@@ -1615,17 +1618,18 @@ impl ServerParams {
         ))
     }
 
-    /// Record the notional USD of an accepted order (`base_asset_amount × oracle
-    /// price`). Reads the locally subscribed oracle — no RPC, so this is safe
-    /// in the request path.
+    /// Record the notional USD of an accepted order, as `base_asset_amount`
+    /// times the oracle price. This reads the locally subscribed oracle and
+    /// makes no RPC call, so it is safe in the request path.
     ///
-    /// Skips (and counts the skip) rather than guessing in the two cases where a
-    /// number would be worse than a gap:
-    ///   - `base_asset_amount == u64::MAX` — the max-leverage sentinel, resolved to
-    ///     a real size on-chain. Multiplying it out would add ~1.8e10 base units of
-    ///     imaginary notional per order and swamp every real number on the chart.
-    ///   - no readable oracle price — the same condition that makes the auction band
-    ///     guard fail open.
+    /// Two cases skip the record and count the skip, because a number there
+    /// would be worse than a gap.
+    ///   - `base_asset_amount == u64::MAX` is the max-leverage sentinel, which
+    ///     the program resolves to a real size on chain. Multiplying it out
+    ///     would add about 1.8e10 base units of imaginary notional per order,
+    ///     which hides every real number.
+    ///   - No readable oracle price. This is the same condition that makes the
+    ///     auction band guard fail open.
     fn record_order_notional(&self, order_params: &OrderParams, context: &RequestContext) {
         let market_index_str = order_params.market_index.to_string();
         let labels = [order_params.market_type.as_str(), &market_index_str];
@@ -1656,9 +1660,9 @@ impl ServerParams {
             return;
         }
 
-        // Precision-correct in f64: base is 1e9-scaled, price 1e6-scaled. The
-        // product of the raw integers overflows i64 for a large order, so divide
-        // before multiplying rather than after.
+        // Base is 1e9-scaled and price is 1e6-scaled. The product of the raw
+        // integers overflows i64 for a large order, so each one is divided
+        // down before the multiply.
         let base = order_params.base_asset_amount as f64 / BASE_PRECISION_U64 as f64;
         let price = oracle.data.price as f64 / PRICE_PRECISION_I64 as f64;
         self.metrics
@@ -1846,8 +1850,9 @@ fn validate_order(
         ));
     }
 
-    // Validate slot: ~200s of wall clock age, integrated per slot duration
-    // regime; mirrors the program's signed-msg staleness gate
+    // Validate the slot against about 200 seconds of wall-clock age,
+    // integrated over each slot duration regime. This mirrors the program's
+    // signed-msg staleness gate.
     if slot_clock.elapsed(taker_slot, current_slot) > Millis::from_secs(200) {
         return Err((
             axum::http::StatusCode::BAD_REQUEST,

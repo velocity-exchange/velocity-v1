@@ -1,10 +1,15 @@
-# Velocity Protocol v1 — Architecture
+# Velocity Protocol v1 architecture
 
-Navigation map for `programs/velocity` and `sdk/`. Start here to find the right file for any query.
+Navigation map for `programs/velocity` and `packages/sdk`. Start here to find the right file for a
+question.
+
+Several trees are a module root file beside a directory of the same name, such as
+`controller/orders.rs` with `controller/orders/`. The root holds the doc comment, the `mod`
+declarations, and the re-exports. The subject code is in the directory.
 
 ---
 
-## Module Responsibility Matrix
+## Module responsibility matrix
 
 | Module | Owns | Does NOT own |
 |---|---|---|
@@ -16,162 +21,192 @@ Navigation map for `programs/velocity` and `sdk/`. Start here to find the right 
 
 ---
 
-## Execution Flows
+## Execution flows
 
-### Place Perp Order
-1. User calls `place_perp_order` → `instructions/user.rs` (`PlacePerpOrder` context)
-2. → `validation::order::validate_order` (`validation/order.rs`)
-3. → `controller::orders::place_perp_order` (`controller/orders.rs`)
-4. → `math::orders::standardize_base_asset_amount` + auction parameter derivation
-5. → `state::user::add_order` writes order to `User` account
+### Place perp order
 
-### Fill Perp Order (keeper crank)
-1. Keeper calls `fill_perp_order` → `instructions/keeper.rs` (`FillPerpOrder` context)
-2. → `controller::orders::fill_perp_order` (`controller/orders.rs`)
-3. → `math::margin::calculate_margin_requirement` (pre-fill margin check)
-4. → `controller::orders::fulfill_perp_order_with_match` (maker matching loop)
-5. → `controller::position::update_position_and_market` (`controller/position.rs`)
-6. → `controller::orders::update_order_after_fill` + bookkeeping
-7. → emits `OrderActionRecord` event (`state/events.rs`)
+1. A user calls `place_perp_order`, context `PlaceOrder` (`instructions/user/orders.rs`)
+2. → `controller::orders::place_perp_order` (`controller/orders/placement.rs`)
+3. → `math::orders::standardize_base_asset_amount` and auction parameter derivation
+4. → `validation::order::validate_order` (`validation/order.rs`)
+5. → `commit_order_to_slot` writes the order into `User.orders` and reserves its exposure
 
-### Liquidate Perp
-1. Keeper calls `liquidate_perp` → `instructions/keeper.rs`
+### Fill perp order (keeper crank)
+
+1. A keeper calls `fill_perp_order`, context `FillOrder` (`instructions/keeper/fill.rs`)
+2. → `controller::orders::fill_perp_order` (`controller/orders/perp_fill/order.rs`)
+3. The fill runs in three layers, each one calling the layer below as a step
+   (`controller/orders/perp_fill/`):
+   - `order` finds the order, decides whether the market and the taker admit a fill, and applies the
+     bookkeeping the fill leaves behind
+   - `taker_risk` runs the gates the fill must pass before it moves anything, and the checks both
+     seats are held to after it does
+   - `liquidity` quotes, splits, executes and settles
+4. → `controller::position::update_position_and_market` (`controller/position.rs`)
+5. → emits `OrderActionRecord` (`state/events.rs`)
+
+### Liquidate perp
+
+1. A keeper calls `liquidate_perp`, context in `instructions/keeper/liquidation.rs`
 2. → `controller::liquidation::liquidate_perp` (`controller/liquidation.rs`)
-3. → `math::margin::calculate_margin_requirement` (confirms liquidatable)
-4. → `math::liquidation::calculate_perp_liquidation_price` + fee
+3. → `math::margin::calculate_margin_requirement_and_total_collateral_and_liability_info` confirms
+   the account is liquidatable
+4. → `math::liquidation::calculate_base_asset_amount_to_cover_margin_shortage` sizes the transfer
 5. → `controller::position::update_position_and_market`
 6. → emits `LiquidationRecord`
 
 ### Settle PnL
-1. Keeper calls `settle_pnl` → `instructions/keeper.rs`
-2. → `controller::pnl::settle_funding_payment` (`controller/pnl.rs`)
-3. → `math::pnl::calculate_per_lp_position`
-4. → mutates `PerpMarket.pnl_pool` and `User` position
 
-### Update Funding Rate
-1. Keeper calls `update_funding_rate` → `instructions/keeper.rs`
+1. A keeper calls `settle_pnl`, context `SettlePNL` (`instructions/keeper/settle_pnl.rs`)
+2. → `controller::pnl::settle_pnl` (`controller/pnl.rs`)
+3. → `PerpPosition::get_claimable_pnl` against the oracle price and the pool's excess
+4. → `controller::update_pnl_pool_and_user_balance` moves `PerpMarket.pnl_pool` and the user's quote
+   balance
+
+### Update funding rate
+
+1. A keeper calls `update_funding_rate`, context in `instructions/keeper/funding.rs`
 2. → `controller::funding::update_funding_rate` (`controller/funding.rs`)
-3. → `math::funding::calculate_funding_rate` (TWAP-based)
-4. → writes `PerpMarket.amm.last_funding_rate`
+3. → `math::funding::calculate_funding_rate_long_short` from the TWAPs
+4. → writes `PerpMarket.last_funding_rate`
 
 ---
 
-## Fee & Revenue Flow
+## Fee and revenue flow
 
-The full fee and revenue documentation — per-fee flow, pool-movement diagrams, the protocol/staker insurance-fund split, and a snapshot of the old-program per-market fee parameters — lives in [FEES.md](./FEES.md).
+The per-fee flow, the pool-movement diagrams, the protocol and staker insurance-fund split, and a
+snapshot of the old-program per-market fee parameters are in [FEES.md](./FEES.md).
 
 ---
 
-## Account Type Locations
+## Account type locations
 
 | Type | File | Notes |
 |---|---|---|
 | `User` | `state/user.rs` | Zero-copy, `AccountLoader`. Holds positions, open orders, margin info. |
-| `UserStats` | `state/user.rs` | Companion to `User`, tracks volume/fees/referrals. |
-| `PerpMarket` | `state/perp_market.rs` | Zero-copy. Embeds `AMM` struct for AMM state. |
-| `SpotMarket` | `state/spot_market.rs` | Zero-copy. Tracks deposits/borrows, oracle, insurance. |
+| `UserStats` | `state/user.rs` | Companion to `User`, tracks volume, fees and referrals. |
+| `PerpMarket` | `state/perp_market.rs` | Zero-copy. Embeds the `AMM` struct for AMM state. |
+| `SpotMarket` | `state/spot_market.rs` | Zero-copy. Tracks deposits, borrows, oracle and insurance. |
 | `State` | `state/state.rs` | Global protocol config: fees, admin pubkey, number of markets. |
-| `InsuranceFundStake` | `state/insurance_fund_stake.rs` | Per-user IF stake position. |
+| `InsuranceFundStake` | `state/insurance_fund_stake.rs` | Per-user insurance-fund stake position. |
 | `OracleMap` | `state/oracle_map.rs` | Per-instruction oracle account loader, built from `remaining_accounts`. |
-| `OrderParams` | `state/order_params.rs` | Shared input struct for place/modify order instructions. |
-| All events | `state/events.rs` | `OrderActionRecord`, `DepositRecord`, `LiquidationRecord`, `FundingPaymentRecord`, etc. |
+| `OrderParams` | `state/order_params.rs` | Shared input struct for place and modify order instructions. |
+| All events | `state/events.rs` | `OrderActionRecord`, `DepositRecord`, `LiquidationRecord`, `FundingPaymentRecord`, and the rest. |
 
 ---
 
-## Key Design Patterns
+## Key design patterns
 
-### Custom High-Frequency Entrypoint
-Keeper instructions (`fill_perp_order`, `update_funding_rate`, etc.) use a custom native entrypoint with discriminator `[0xFF, 0xFF, 0xFF, 0xFF, opcode]` that bypasses Anchor's account deserialization overhead. Standard user and admin instructions use the normal Anchor `#[program]` entrypoint.
+### Custom high-frequency entrypoint
 
-### `remaining_accounts` Convention
-Variable-length account lists are passed via `remaining_accounts` to avoid fixed Anchor context sizes:
-- **Oracles**: one oracle account per market referenced in the instruction
-- **Spot markets**: for instructions touching multiple spot positions
-- **Maker accounts**: `(User, UserStats)` pairs for each DLOB maker in a fill
-- **Referrer**: optional `(User, UserStats)` pair at the end of remaining_accounts
+Keeper instructions such as `fill_perp_order` and `update_funding_rate` use a custom native
+entrypoint with discriminator `[0xFF, 0xFF, 0xFF, 0xFF, opcode]`, which bypasses Anchor's account
+deserialization overhead. Standard user and admin instructions use the normal Anchor `#[program]`
+entrypoint.
 
-### Zero-Copy Account Loading
-`User`, `PerpMarket`, and `SpotMarket` are loaded via `AccountLoader<'info, T>` (zero-copy). Call `.load()`/`.load_mut()` rather than direct deserialization. This avoids stack overflow on large structs.
+### The `remaining_accounts` convention
 
-### Feature Flags
+Variable-length account lists travel in `remaining_accounts`, so an Anchor context does not have to
+fix their number:
+
+- **Oracles**: one oracle account per market the instruction references
+- **Spot markets**: for instructions touching several spot positions
+- **Maker accounts**: a `(User, UserStats)` pair for each DLOB maker in a fill
+- **Referrer**: an optional `(User, UserStats)` pair at the end
+
+### Zero-copy account loading
+
+`User`, `PerpMarket` and `SpotMarket` load through `AccountLoader<'info, T>`. Call `.load()` or
+`.load_mut()` rather than deserializing directly. Direct deserialization overflows the stack on
+structs this large.
+
+### Feature flags
+
 | Flag | Purpose |
 |---|---|
 | `mainnet-beta` | Production gates (program IDs, conservative limits) |
-| `anchor-test` | Enables test helper instructions used by TS integration tests |
-| `no-entrypoint` | Excludes native entrypoint (for use as CPI dependency) |
-| `cpi` | Exposes CPI client only (implies `no-entrypoint`) |
+| `anchor-test` | Enables test helper instructions used by the TypeScript integration tests |
+| `no-entrypoint` | Excludes the native entrypoint, for use as a CPI dependency |
+| `cpi` | Exposes the CPI client only (implies `no-entrypoint`) |
 
 ---
 
-## SDK Structure (`sdk/src/`)
+## SDK structure (`packages/sdk/src/`)
 
-### Key Files
-| File | Size | Purpose |
-|---|---|---|
-| `velocityClient.ts` | ~13k lines | Main client. All trading + keeper instruction builders. |
-| `adminClient.ts` | ~6.5k lines | Admin instruction builders (extends `VelocityClient`). |
-| `user.ts` | ~4.7k lines | `User` account abstraction: margin queries, position accessors, PnL. |
-| `types.ts` | ~45k lines | All shared TypeScript types mirroring on-chain structs. |
-| `idl/velocity.json` | — | Generated Anchor IDL. Source of truth for instruction interfaces and account layouts. **Do not edit manually.** |
+### Key files
 
-### Key Directories
+| File | Purpose |
+|---|---|
+| `velocityClient.ts` | Main client. All trading and keeper instruction builders. |
+| `adminClient.ts` | Admin instruction builders. Extends `VelocityClient`. |
+| `user.ts` | `User` account abstraction: margin queries, position accessors, PnL. |
+| `types.ts` | Hand-maintained TypeScript mirrors of the on-chain structs. |
+| `idl/velocity.json` | Generated Anchor IDL. The source of truth for instruction interfaces and account layouts. **Do not edit manually.** |
+
+### Key directories
+
 | Directory | Purpose |
 |---|---|
-| `accounts/` | Account subscription infrastructure: WebSocket, polling, bulk loaders. |
-| `addresses/` | `pda.ts` — all PDA derivation helpers. |
-| `dlob/` | Decentralized Limit Order Book: order matching, price levels, maker selection. |
-| `math/` | TypeScript mirrors of on-chain math (margin, funding, AMM pricing). |
+| `accounts/` | Account subscription infrastructure: websocket, polling, bulk loaders. |
+| `addresses/` | `pda.ts`, which holds every PDA derivation helper. |
+| `clob/` | The user-orders feed client for orders resting on a CLOB. |
+| `dlob/` | Decentralized limit order book: order matching, price levels, maker selection. |
+| `math/` | TypeScript mirrors of the on-chain math (margin, funding, AMM pricing). |
 | `oracles/` | Oracle client adapters (Pyth, Pyth Lazer, Prelaunch, QuoteAsset). |
 | `events/` | Event parsing and subscription from program logs. |
-| `tx/` | Transaction building utilities, compute unit estimation. |
-| `constants/` | Market indices, precision constants, numeric limits. |
+| `tx/` | Transaction building, compute unit estimation. |
+| `constants/` | Market indexes, precision constants, numeric limits. |
 
-### SDK ↔ On-Chain Instruction Mapping
-| SDK Method | On-Chain Instruction | Handler File |
+### SDK to on-chain instruction mapping
+
+| SDK method | Instruction | Handler file |
 |---|---|---|
-| `velocityClient.placePerpOrder` | `PlacePerpOrder` | `instructions/user.rs` |
-| `velocityClient.cancelOrder` | `CancelOrder` | `instructions/user.rs` |
-| `velocityClient.modifyOrder` | `ModifyOrder` | `instructions/user.rs` |
-| `velocityClient.deposit` | `Deposit` | `instructions/user.rs` |
-| `velocityClient.withdraw` | `Withdraw` | `instructions/user.rs` |
-| `velocityClient.fillPerpOrder` | `FillPerpOrder` | `instructions/keeper.rs` |
-| `velocityClient.settlePnl` | `SettlePnl` | `instructions/keeper.rs` |
-| `velocityClient.liquidatePerp` | `LiquidatePerp` | `instructions/keeper.rs` |
-| `velocityClient.updateFundingRate` | `UpdateFundingRate` | `instructions/keeper.rs` |
-| `adminClient.initializePerpMarket` | `InitializePerpMarket` | `instructions/admin.rs` |
-| `adminClient.updatePerpMarket*` | `UpdatePerpMarket*` | `instructions/admin.rs` |
-| `adminClient.updateOracleGuardRails` | `UpdateOracleGuardRails` | `instructions/admin.rs` |
+| `velocityClient.placePerpOrder` | `place_perp_order` | `instructions/user/orders.rs` |
+| `velocityClient.cancelOrder` | `cancel_order` | `instructions/user/orders.rs` |
+| `velocityClient.modifyOrder` | `modify_order` | `instructions/user/orders.rs` |
+| `velocityClient.deposit` | `deposit` | `instructions/user/deposit.rs` |
+| `velocityClient.withdraw` | `withdraw` | `instructions/user/deposit.rs` |
+| `velocityClient.fillPerpOrder` | `fill_perp_order` | `instructions/keeper/fill.rs` |
+| `velocityClient.settlePNL` | `settle_pnl` | `instructions/keeper/settle_pnl.rs` |
+| `velocityClient.liquidatePerp` | `liquidate_perp` | `instructions/keeper/liquidation.rs` |
+| `velocityClient.updateFundingRate` | `update_funding_rate` | `instructions/keeper/funding.rs` |
+| `adminClient.initializePerpMarket` | `initialize_perp_market` | `instructions/admin.rs` |
+| `adminClient.updatePerpMarket*` | `update_perp_market_*` | `instructions/admin.rs` |
+| `adminClient.updateOracleGuardRails` | `update_oracle_guard_rails` | `instructions/admin.rs` |
 
 ---
 
-## Ancillary Programs
+## Ancillary programs
 
-These are stubs/wrappers used by Velocity for oracle integrations, JIT fills, and testing. No core protocol logic lives here.
+These are type definitions and test utilities. No core protocol logic lives here.
 
 | Program | Purpose |
 |---|---|
-| `programs/pyth-lazer/` | Pyth Lazer type definitions, linked into `velocity` as a real library dependency (not a CPI target) |
-| `programs/pyth/` | Pyth V1 oracle account layout definitions; optional dependency, only pulled in by `velocity`'s `fuzz-fixtures` feature and tests |
-| `programs/token_faucet/` | Devnet/test token minting utility (not on mainnet) |
+| `programs/pyth-lazer/` | Pyth Lazer type definitions, linked into `velocity` as a library dependency rather than a CPI target |
+| `programs/pyth/` | Pyth V1 oracle account layout definitions. An optional dependency, pulled in only by `velocity`'s `fuzz-fixtures` feature and by tests |
+| `programs/token_faucet/` | Devnet and test token minting utility, not deployed on mainnet |
 
-Switchboard oracle support and external spot-fulfillment venues (Serum, Phoenix, OpenBook) have been removed; there is no `programs/switchboard*` or `programs/openbook_v2`. `OracleSource` keeps `DeprecatedSwitchboard`/`DeprecatedSwitchboardOnDemand` variants only to preserve ABI discriminants.
+Switchboard oracle support and the external spot-fulfillment venues (Serum, Phoenix, OpenBook) are
+removed. There is no `programs/switchboard*` and no `programs/openbook_v2`. `OracleSource` keeps its
+`DeprecatedSwitchboard` and `DeprecatedSwitchboardOnDemand` variants only to preserve the ABI
+discriminants.
 
 ---
 
-## Build & Test Quick Reference
+## Build and test quick reference
 
-See `CLAUDE.md` for full commands. Key entry points:
+`CLAUDE.md` holds the full commands. The entry points:
 
 ```bash
-# Verify program compiles after Rust changes
+# Verify the program compiles after Rust changes
 cargo build -p velocity
 
-# Run Rust unit tests
+# Run the Rust unit tests
 cargo test -p velocity
 
-# Run a single TS integration test
+# Run a single TypeScript integration test
 ts-mocha -t 300000 ./tests/<test_file>.ts
 
-# Full TS integration suite
+# Full TypeScript integration suite
 bash test-scripts/run-anchor-tests.sh --skip-build
 ```

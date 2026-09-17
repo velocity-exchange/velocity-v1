@@ -1,24 +1,27 @@
-//! Per-quoter relay condition block for PropAMM×CLOB cross discovery.
+//! Per-quoter relay condition block that finds crosses between a PropAMM
+//! quoter and the CLOB.
 //!
-//! One account per Custom registry entry (PDA off the entry key, rent on
-//! whoever attaches it — normally the maker), so discovery scales to any
-//! number of PropAMMs with zero per-quoter velocity code: the resolver
-//! prices the quoter *generically*, by CPI-ing its registered `quote_v0`
-//! surface under simulation — the same interface every fill uses — and the
-//! wake comes from the entry's maker-declared reprice region
-//! (`QuoterConfigV0::watch_*`). Three conditions:
+//! One account holds the conditions for one Custom registry entry. The PDA
+//! derives from the entry key, and whoever attaches it pays the rent. That is
+//! normally the maker. Discovery needs no per-quoter velocity code. The
+//! resolver prices any entry through the `quote_v0` surface the entry
+//! registered, by CPI under simulation. Every fill uses that same interface.
+//! The wake comes from the reprice region the maker declares in
+//! `QuoterConfigV0::watch_*`. Three conditions:
 //!
-//! - [`QUOTER_CROSS_WATCH`] — `OnAccountChange` over the declared watch
-//!   region (inactive when the maker declared none).
-//! - [`QUOTER_CROSS_CLOB`] — `OnAccountChange` over the CLOB's bests: a
-//!   cross can be created from the CLOB side too (a new crossing order is
-//!   always a new best).
-//! - [`QUOTER_CROSS_FALLBACK`] — `EverySlots`, the liveness floor for both
-//!   (and the only wake when no watch region is declared).
+//! - [`QUOTER_CROSS_WATCH`] is an `OnAccountChange` over the declared watch
+//!   region. It stays inactive when the maker declares none.
+//! - [`QUOTER_CROSS_CLOB`] is an `OnAccountChange` over the CLOB's bests. A
+//!   cross can also start on the CLOB side, because a new crossing order is
+//!   always a new best.
+//! - [`QUOTER_CROSS_FALLBACK`] is an `EverySlots` poll. It is the liveness
+//!   floor for both, and the only wake when the maker declares no watch
+//!   region.
 //!
 //! All three run [`ResolveCrankCrossMatchQuoter`] and stage the same
-//! `crank_cross_match` executor the CLOB×CLOB conditions do; the market's
-//! `ClobCrankConditionsV0` reservoir pays the keeper either way.
+//! `crank_cross_match` executor that the market's own CLOB conditions stage.
+//! The market's `ClobCrankConditionsV0` reservoir pays the keeper in both
+//! cases.
 
 use {
     crate::error::ErrorCode,
@@ -32,20 +35,18 @@ pub const QUOTER_CROSS_CONDITIONS_PDA_SEED: &[u8] = b"quoter_cross_conditions";
 
 /// Index of the maker-declared reprice watch.
 pub const QUOTER_CROSS_WATCH: usize = 0;
-/// Index of the CLOB-bests watch (the other side of the cross).
+/// Index of the watch on the CLOB's bests, which are the other side of the
+/// cross.
 pub const QUOTER_CROSS_CLOB: usize = 1;
 /// Index of the periodic fallback poll.
 pub const QUOTER_CROSS_FALLBACK: usize = 2;
 /// Conditions hosted per entry.
 pub const QUOTER_CROSS_CONDITIONS: usize = 3;
 
-/// The resolver's account list capacity: 5 named accounts + the entry's
-/// registered quote surface (≤32) + its program, rounded to
-/// [`RelayBlockV0`]'s granularity of 8.
-// 8 fixed accounts + the entry's full quote surface (`MAX_QUOTER_ACCOUNTS` = 32)
-// + the quoter program once more = 41 accounts. A capacity below that leaves a
-// maker with a full quote list unable to attach cross discovery. RelayBlockV0
-// requires a multiple of 8, so round up to 48.
+/// Capacity of the resolver account list. It must hold the resolver's fixed
+/// accounts, the entry's full quote surface (`MAX_QUOTER_ACCOUNTS`) and the
+/// quoter program. A smaller capacity leaves a maker with a full quote list
+/// unable to attach cross discovery. [`RelayBlockV0`] requires a multiple of 8.
 pub const QUOTER_CROSS_RESOLVER_CAPACITY: usize = 48;
 
 /// Account-data offset of the relay block (what a `WatchV0` registers at).
@@ -56,32 +57,32 @@ pub const QUOTER_CROSS_BLOCK_OFFSET: usize =
 #[derive(Debug)]
 #[repr(C)]
 pub struct QuoterCrossConditionsV0 {
-    /// Everything relay needs hosted, in one field: the `relay-spec` header,
-    /// the condition slots, and the resolver account list (written at attach)
-    /// every condition here points at. First field, so its watch offset
-    /// is 8.
+    /// Everything relay needs, in one field. It holds the `relay-spec`
+    /// header, the condition slots, and the resolver account list that every
+    /// condition here points at. The attach writes that list. This is the
+    /// first field, so its watch offset is 8.
     pub relay: RelayBlock<QUOTER_CROSS_CONDITIONS, QUOTER_CROSS_RESOLVER_CAPACITY>,
     /// The Custom entry these conditions discover crosses for.
     pub quoter: Pubkey,
-    /// The market's book and its program, captured at attach time (the
-    /// resolver stages the executor's CLOB leg from here without holding
-    /// those accounts). Re-attach after a CLOB rotation.
+    /// The market's book and its program, captured at attach time. The
+    /// resolver stages the executor's CLOB leg from here without holding those
+    /// accounts. Attach again after a CLOB rotation.
     pub clob_market: Pubkey,
     pub clob_program: Pubkey,
-    /// The market's oracle, captured at attach time (the staged executor's
-    /// map section).
+    /// The market's oracle, captured at attach time. It fills the map section
+    /// of the staged executor.
     pub oracle: Pubkey,
     pub market_index: u16,
     pub quote_spot_market_index: u16,
-    /// Tail reserve: 3 bytes of alignment slack plus room for two more
-    /// captured pubkeys, so a resolver that needs another fixed account can
-    /// take it from here instead of forcing an `extend_account` migration on
-    /// every attached quoter entry.
+    /// Tail reserve. A resolver that needs another fixed account takes a
+    /// pubkey from here. That avoids an `extend_account` migration on every
+    /// attached quoter entry. The length also keeps `SIZE - 8` a multiple of
+    /// 16.
     pub padding: [u8; 92],
 }
 
-// `padding` is longer than 32 bytes, which `#[derive(Default)]` does not
-// cover (arrays only derive it up to 32).
+// `#[derive(Default)]` covers an array of at most 32 elements, and `padding`
+// is longer.
 impl Default for QuoterCrossConditionsV0 {
     fn default() -> Self {
         Self {
@@ -121,9 +122,9 @@ impl QuoterCrossConditionsV0 {
         ConditionBlock::block(&self.relay)
     }
 
-    /// Anchor-flavoured wrappers over [`relay_spec::ConditionBlock`]'s
-    /// provided methods, so handlers keep using `?` with the program's own
-    /// error type.
+    /// This method and the four below wrap
+    /// [`relay_spec::ConditionBlock`] and return the program's own error
+    /// type, so a handler can use `?`.
     pub fn init_block(&mut self) -> Result<()> {
         self.relay
             .init(QUOTER_CROSS_BLOCK_OFFSET as u32)

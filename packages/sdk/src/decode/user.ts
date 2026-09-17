@@ -277,9 +277,9 @@ export function decodeUser(buffer: Buffer): UserAccount {
 		offset += 1;
 		const bitFlags = buffer.readUint8(offset);
 		offset += 1;
-		// Five trailing free bytes. They held a route digest while a
-		// signed-message order could rest on the DLOB; the route now travels
-		// with the message instead. The width is unchanged either way.
+		// Five trailing free bytes. The route digest travels with the signed
+		// message rather than on the order, so nothing reads them. The width is
+		// the same either way.
 		const padding = Array.from(buffer.subarray(offset, offset + 5));
 		offset += 5;
 		orders.push({

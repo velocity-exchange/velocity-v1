@@ -35,8 +35,8 @@ fn admit_deposit(user: &User, spot_market: &SpotMarket, market_index: u16) -> Re
 
 /// What a credited deposit tells the rest of the handler.
 struct DepositCredit {
-    /// The amount actually credited. A reduce-only deposit is clamped to the
-    /// borrow it repays.
+    /// The amount credited. A reduce-only deposit is clamped to the borrow it
+    /// repays.
     amount: u64,
     /// Whether the position was a borrow before the credit. The record
     /// explains the deposit as a repayment when it was.
@@ -60,11 +60,11 @@ fn credit_deposit(
 
     let is_borrow_before = user.spot_positions[position_index].is_borrow();
 
-    // Snapshot the market's deposit level so the daily cap below can be gated on real growth.
-    // This instruction also repays borrows (see `DepositExplanation::RepayBorrow`), and a
-    // repayment reduces `borrow_balance` while leaving `deposit_balance` untouched, so it must
-    // not be throttled by a level predicate — that is the exit lock finding #118 removed from
-    // the shared credit path.
+    // Snapshot the market's deposit level so the daily cap below runs only on real growth.
+    // This instruction also repays borrows (see `DepositExplanation::RepayBorrow`). A repayment
+    // reduces `borrow_balance` and leaves `deposit_balance` alone, so a market-wide level
+    // predicate must not block it. OtterSec #118 removed that exit lock from the shared credit
+    // path.
     let deposit_token_amount_before = math::spot_balance::get_token_amount(
         spot_market.deposit_balance,
         spot_market,
@@ -248,20 +248,19 @@ fn admit_revenue_pool_deposit(spot_market: &SpotMarket, now: i64) -> Result<()> 
 /// Accrue interest on the market a withdrawal debits, and hold its oracle
 /// TWAPs at the values the margin check must read.
 ///
-/// #81: the refresh below drags both stored TWAPs toward the live price, and
-/// the margin check in the same instruction then reads the dragged values.
+/// A refresh drags both stored TWAPs toward the live price, and the margin
+/// check in the same instruction then reads the dragged values (OtterSec #81).
+/// Each field feeds a different gate.
 ///
-/// Both fields matter, and for different gates:
-///
-///   `last_oracle_price_twap` (1h) — `TooVolatile` validity compares the live
+///   `last_oracle_price_twap` (1h). `TooVolatile` validity compares the live
 ///   oracle price against it. A refresh that drags it toward the live price
 ///   lets a too-volatile oracle pass the same-instruction margin check and
 ///   release vault tokens.
 ///
-///   `last_oracle_price_twap_5min` — `StrictOraclePrice` bounds are the min and
+///   `last_oracle_price_twap_5min`. `StrictOraclePrice` bounds are the min and
 ///   max of the live price and this field, and a liability is priced at the
 ///   upper bound. The margin check runs with `Initial`, which enables strict
-///   pricing, so dragging the 5-minute TWAP toward a temporarily depressed live
+///   pricing. Dragging the 5-minute TWAP toward a temporarily depressed live
 ///   price under-values the debt and admits a withdrawal the pre-refresh value
 ///   rejects.
 ///
@@ -330,7 +329,7 @@ fn accrue_withdraw_market(
 ///
 /// OtterSec #135: this handler cranks only the market being withdrawn, so a
 /// borrow in any *other* market is valued through its stale stored
-/// `cumulative_borrow_interest`. The due interest is simply missing from the
+/// `cumulative_borrow_interest`. The due interest is missing from the
 /// initial-margin check, and those markets arrive read-only so they cannot be
 /// refreshed here. Their accrual is required to be recent instead.
 fn check_withdraw_margin(user: &mut User, maps: &mut AccountMaps, now: i64) -> Result<()> {
@@ -380,7 +379,7 @@ fn emit_withdraw_record(
 }
 
 /// Clamp a reduce-only withdrawal to the deposit it consumes, then debit it.
-/// Returns the amount actually debited.
+/// Returns the amount debited.
 fn debit_withdraw(
     user: &mut User,
     maps: &mut AccountMaps,
@@ -505,10 +504,10 @@ pub fn handle_deposit<'c: 'info, 'info>(
 
     spot_market.validate_max_token_deposits_and_borrows(false)?;
 
-    // Gated on real growth for the same reason as the shared credit path (finding #118): the cap
-    // is a market-wide *level* predicate, so validating it unconditionally here blocked a
-    // borrow repayment through this instruction whenever the market already sat above its cap —
-    // one of the actions that brings the level back down, and one a liquidatable user needs.
+    // The cap runs only on real growth, for the same reason as the shared credit path
+    // (OtterSec #118). The cap is a market-wide level predicate. Validating it on every call
+    // blocked a borrow repayment whenever the market already sat above its cap. A repayment is
+    // one of the actions that brings the level back down, and a liquidatable user needs it.
     math::spot_withdraw::validate_deposit_cap_after_increase(
         spot_market,
         credit.deposit_token_amount_before,
@@ -631,14 +630,13 @@ pub fn handle_deposit_into_spot_market_revenue_pool<'c: 'info, 'info>(
 
     admit_revenue_pool_deposit(&spot_market, now)?;
 
-    // Refresh cumulative deposit/borrow interest before crediting, exactly like the
-    // normal `handle_deposit` path. `update_revenue_pool_balances` converts `amount`
-    // into a scaled balance using `cumulative_deposit_interest`; if the market is stale
-    // the stored (lower) interest would mint too large a scaled balance, and a later
-    // interest refresh at settlement would revalue it upward — letting the revenue pool
-    // claim interest that accrued before this deposit existed. No oracle account is
-    // passed to this instruction, so refresh with `None` (matches the revenue-settle
-    // and pnl-deficit paths).
+    // Refresh cumulative deposit and borrow interest before crediting, like the normal
+    // `handle_deposit` path. `update_revenue_pool_balances` converts `amount` into a
+    // scaled balance using `cumulative_deposit_interest`. A stale market holds a lower
+    // interest value, which mints too large a scaled balance. A later refresh at
+    // settlement then revalues it upward, so the revenue pool claims interest that
+    // accrued before this deposit existed. No oracle account reaches this instruction,
+    // so the refresh passes `None`, like the revenue-settle and pnl-deficit paths.
     controller::spot_balance::update_spot_market_cumulative_interest(
         &mut spot_market,
         None,

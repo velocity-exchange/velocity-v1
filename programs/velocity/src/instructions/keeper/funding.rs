@@ -74,24 +74,23 @@ pub fn handle_update_funding_rate(
 
 /// Refresh the market's cached quote state against this slot's oracle.
 ///
-/// AMM refresh happens inside `update_funding_rate` via the AmmQuoter's setup
-/// phase, not here.
+/// The AMM refresh happens inside `update_funding_rate`, in the AmmQuoter's
+/// setup phase, and not here.
 ///
-/// Deliberately the TWAP-free half. `update_funding_rate`'s gate
-/// (`oracle::block_operation` -> `get_oracle_status`) reads
-/// `last_oracle_price_twap` for the too-volatile check and
+/// This is the TWAP-free half, by design. `update_funding_rate`'s gate runs
+/// `oracle::block_operation` and then `get_oracle_status`. That gate reads
+/// `last_oracle_price_twap` for the too-volatile check, and
 /// `last_oracle_price_twap_5min` for the mark-divergence check. Advancing
-/// either one here would pull it toward the live price and let a too-volatile
-/// or too-divergent oracle clear its own gate inside this same instruction,
-/// then go on to mutate cumulative funding.
+/// either one here would pull it toward the live price. A too-volatile or
+/// too-divergent oracle could then clear its own gate inside this same
+/// instruction, and go on to mutate cumulative funding.
 ///
-/// Nothing is lost by skipping it: on the path where funding actually updates,
-/// `update_funding_rate` advances the TWAPs itself, and on every path where it
-/// does not the caller returns `FundingWasNotUpdated`, which reverts the whole
-/// instruction. The TWAPs also keep advancing independently via `update_amms`,
-/// perp fills, and `update_perp_bid_ask_twap`, so a market whose oracle is
-/// genuinely too volatile still recovers. Relaxing its own gate is not this
-/// crank's job.
+/// The skip loses nothing. On the path where funding updates,
+/// `update_funding_rate` advances the TWAPs itself. On every path where it does
+/// not, the caller returns `FundingWasNotUpdated`, which reverts the whole
+/// instruction. The TWAPs also keep advancing through `update_amms`, perp
+/// fills, and `update_perp_bid_ask_twap`, so a market whose oracle is too
+/// volatile still recovers. This crank does not relax its own gate.
 fn refresh_quote_state_for_funding(
     perp_market: &mut PerpMarket,
     state: &State,
@@ -163,11 +162,10 @@ pub fn handle_update_perp_bid_ask_twap<'c: 'info, 'info>(
         &state.oracle_guard_rails.validity,
         state.slot_clock(),
     )?;
-    // PerpMarket-level oracle stats only — this ix reads the book and the
-    // passed makers to estimate bid/ask TWAP and does not read AMM peg or
-    // reserves. The AMM snap_to_oracle that used to fire here was
-    // cargo-cult and is dropped; oracle TWAP / reference-price-offset
-    // bookkeeping still happens via refresh_perp_market_stats_from_oracle.
+    // This crank writes `PerpMarket`-level oracle stats only. It reads the book
+    // and the passed makers to estimate the bid and ask TWAP. It reads neither
+    // the AMM peg nor the AMM reserves. `update_oracle_derived_stats` below
+    // keeps the oracle TWAP and the reference price offset current.
     let validity = crate::vlp::amm::refresh::compute_amm_refresh_validity(
         perp_market,
         &mm_oracle_price_data,
@@ -193,11 +191,11 @@ pub fn handle_update_perp_bid_ask_twap<'c: 'info, 'info>(
         &clock,
     )?;
 
-    // Funding is intentionally decoupled from this crank: refreshing the mark
-    // TWAP from resting depth and applying funding in the same instruction let
-    // a caller stamp `last_mark_price_twap_ts = now` and then have funding read
-    // that just-written TWAP back at zero elapsed time. Funding runs via its
-    // own `update_funding_rate` crank (and on fills).
+    // This crank does not apply funding. One instruction that refreshed the
+    // mark TWAP from resting depth and then applied funding would let a caller
+    // stamp `last_mark_price_twap_ts = now`. Funding would then read that
+    // just-written TWAP back at zero elapsed time. Funding runs on its own
+    // `update_funding_rate` crank, and on fills.
     apply_bid_ask_twap(
         perp_market,
         &mm_oracle_price_data,
@@ -208,7 +206,8 @@ pub fn handle_update_perp_bid_ask_twap<'c: 'info, 'info>(
     )
 }
 
-/// Only a keeper with skin in the game may move a TWAP from its own estimate.
+/// Only a keeper that holds an insurance-fund stake may move a TWAP from its
+/// own estimate.
 fn require_twap_keeper(keeper_stats: &UserStats) -> Result<()> {
     validate!(
         keeper_stats.can_update_bid_ask_twap(),

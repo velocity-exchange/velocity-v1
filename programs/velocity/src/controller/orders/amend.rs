@@ -79,9 +79,10 @@ impl CancelScope {
             return false;
         }
 
-        // Placed triggers live on the CLOB; their shadow slots can only be
-        // reclaimed through the CLOB removal paths (cancel_order_v1 or the
-        // cranks), where the book and the aggregates unwind together.
+        // A placed trigger's live order rests on the CLOB. Its shadow slot
+        // is reclaimed only through a CLOB removal path, which is
+        // `cancel_order_v1` or one of the cranks. There the book and the
+        // aggregates unwind together.
         if order.is_placed_on_clob() {
             return false;
         }
@@ -201,10 +202,11 @@ pub fn cancel_order(
 
     validate!(order_status == OrderStatus::Open, ErrorCode::OrderNotOpen)?;
 
-    // A placed trigger's live order rests on the CLOB; the slot here is a
+    // A placed trigger's live order rests on the CLOB. The slot here is a
     // shadow whose open-order count the CLOB order carries. Cancelling the
-    // shadow would strand the CLOB order and double-unwind its accounting —
-    // it must go through `cancel_order_v1` (bulk sweeps skip these slots).
+    // shadow would strand the CLOB order and unwind its accounting twice, so
+    // the cancel must go through `cancel_order_v1`. A bulk sweep skips these
+    // slots.
     validate!(
         !user.orders[order_index].is_placed_on_clob(),
         ErrorCode::OrderPlacedOnClob,
@@ -302,7 +304,7 @@ fn emit_cancel_record(
 /// Release what the cancelled order reserved, and retire its slot.
 ///
 /// A trigger order that never fired reserved nothing, so only its open-order
-/// count comes off.
+/// count is released.
 fn release_order_reservation(
     user: &mut User,
     order_index: usize,
@@ -389,11 +391,11 @@ pub fn modify_order(
     let existing_order = user.orders[order_index];
 
     // A builder-coded order's fee attribution lives in the `RevenueShareEscrow`
-    // row keyed to its order_id. modify cancels and re-places under a NEW order
-    // id without carrying that row across, silently downgrading the order to
-    // no-builder and dropping the builder fee (OtterSec #82). Reject the modify
-    // so the attribution can't be stripped; the taker can cancel and re-place
-    // with builder params to change a builder-coded order.
+    // row keyed to its order id. A modify cancels and re-places under a new
+    // order id, and it does not carry that row across. The order becomes a
+    // no-builder order and the builder fee is dropped (OtterSec #82). The
+    // modify is refused instead. A taker changes a builder-coded order by
+    // cancelling it and placing again with builder params.
     validate!(
         !existing_order.is_has_builder(),
         ErrorCode::CannotModifyBuilderOrder,
@@ -487,10 +489,10 @@ fn merge_modify_order_params_with_existing_order(
             .unwrap_or(existing_order.reduce_only),
         post_only: merged_post_only(existing_order, modify_order_params),
         // Preserve the recross gate across a modify. A triggered order that
-        // must observe the price recross before re-arming carries
-        // `AwaitingTriggerRecross`; rebuilding with `bit_flags = 0` would clear
-        // it, letting a user re-arm by modifying without the price ever
-        // recrossing.
+        // must observe the price recross before it re-arms carries
+        // `AwaitingTriggerRecross`. Rebuilding with `bit_flags = 0` would
+        // clear the flag. A user could then re-arm the order by modifying it,
+        // with the price never recrossing.
         bit_flags: existing_order.bit_flags & (OrderBitFlag::AwaitingTriggerRecross as u8),
         max_ts: modify_order_params.max_ts.or(Some(existing_order.max_ts)),
         trigger_price: modify_order_params
@@ -510,7 +512,7 @@ fn merge_modify_order_params_with_existing_order(
 
 /// The base the modified order carries.
 ///
-/// `None` means the modify has nothing left to place: the caller asked for a
+/// `None` means the modify has nothing left to place. The caller asked for a
 /// size it has already filled.
 fn merged_base_asset_amount(
     existing_order: &Order,

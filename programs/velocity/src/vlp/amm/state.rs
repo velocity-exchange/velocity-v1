@@ -1,9 +1,9 @@
 //! AMM zero-copy struct and its methods.
 //!
 //! Hosts:
-//! - [`AMM`]: the constant-product vAMM state. See the doc-comment on the
-//!   struct for the write-access policy that keeps mutations funneled through
-//!   `AmmContract` / `AmmQuoter` rather than direct field writes.
+//! - [`AMM`]: the constant-product vAMM state. The doc comment on the struct
+//!   holds the write-access policy. That policy routes every mutation through
+//!   `AmmContract` or `AmmQuoter` rather than a direct field write.
 
 #[cfg(test)]
 use crate::math::constants::{AMM_RESERVE_PRECISION, MAX_CONCENTRATION_COEFFICIENT};
@@ -31,48 +31,47 @@ use {
     anchor_lang::prelude::*,
 };
 
-/// Constant-product virtual AMM state.
-///
-/// # Write-access policy
-///
-/// In the target architecture, the vAMM is one of several quoter modules
-/// that share a perp-market account's bytes — its state slice sits next
-/// to other quoter slices (DLOB makers, future propAMM-style
-/// participants, etc.) in the same program. No external code reaches into
-/// AMM fields directly; every mutation goes through a method on the AMM
-/// module. The contract boundary is enforced in-process by the type
-/// system, not by a CPI — and today's code follows the same discipline:
-///
-/// - **Fills + market events**: `controller/match` dispatches through
-///   `commit_fill` / `on_market_event` on [`crate::vlp::amm::AmmQuoter`].
-/// - **AMM-special P&L / position operations**: external code (insurance fund,
-///   settlement) calls methods on the
-///   [`crate::vlp::amm::quoter::AmmContract`] trait (`record_credit`,
-///   `record_amm_pnl`, `apply_fill_fees`, `apply_settlement_counterparty`).
-/// - **Admin / keeper-crank operations**: call methods on `&mut AMM`
-///   (`apply_cost`, `set_peg`, `apply_summary_stats_correction`). These are
-///   explicit AMM-specific
-///   admin handlers — not general-purpose admin reach-ins.
-/// - **Single-field config setters**: AMM-specific admin handlers that update
-///   one config value (`base_spread`, `max_spread`, `curve_update_intensity`,
-///   `amm_jit_intensity`, etc.) still write fields directly. Each such
-///   handler is named `handle_update_perp_market_<field>` or
-///   `handle_update_amm_<field>` so the audit `rg 'market\.amm\.\w+\s*=' programs/velocity/src/`
-///   surfaces only these clearly-scoped admin sets plus `#[cfg(test)]` shims.
-///
-/// **Adding code that writes an AMM field?** Either it's an AMM-specific
-/// admin handler (add the new field-setter alongside its peers in
-/// `instructions/admin.rs`) or it's a non-admin write — in which case it
-/// belongs in `state/quoter.rs` (extend `AmmContract` or `Quoter::on_market_event`)
-/// rather than reaching into fields.
-/// Snapshot of the AMM's fee pool returned by [`AMM::fee_pool_snapshot`].
-/// Pure query — for event logging and cache writes.
+/// Snapshot of the AMM's fee pool returned by [`AMM::fee_pool_snapshot`]. It is
+/// a query only, for event logging and cache writes.
 #[derive(Debug, Clone, Copy)]
 pub struct AmmFeePoolSnapshot {
     pub scaled_balance: u128,
     pub balance_type: crate::state::spot_market::SpotBalanceType,
 }
 
+/// Constant-product virtual AMM state.
+///
+/// # Write-access policy
+///
+/// In the target architecture the vAMM is one of several quoter modules that
+/// share a perp-market account's bytes. Its state slice sits next to other
+/// quoter slices, such as DLOB makers and future propAMM-style participants, in
+/// the same program. No external code reaches into AMM fields directly. Every
+/// mutation goes through a method on the AMM module. The type system enforces
+/// the contract boundary in-process rather than a CPI, and today's code follows
+/// the same discipline.
+///
+/// - Fills and market events: `controller/match` dispatches through
+///   `commit_fill` and `on_market_event` on [`crate::vlp::amm::AmmQuoter`].
+/// - AMM-special P&L and position operations: external code, such as the
+///   insurance fund and settlement, calls methods on the
+///   [`crate::vlp::amm::quoter::AmmContract`] trait (`record_credit`,
+///   `record_amm_pnl`, `apply_fill_fees`, `apply_settlement_counterparty`).
+/// - Admin and keeper-crank operations: these call methods on `&mut AMM`
+///   (`apply_cost`, `set_peg`, `apply_summary_stats_correction`). They are
+///   AMM-specific admin handlers, not general-purpose admin reach-ins.
+/// - Single-field config setters: AMM-specific admin handlers that update one
+///   config value (`base_spread`, `max_spread`, `curve_update_intensity`,
+///   `amm_jit_intensity`) still write fields directly. Each such handler is
+///   named `handle_update_perp_market_<field>` or `handle_update_amm_<field>`,
+///   so the audit `rg 'market\.amm\.\w+\s*=' programs/velocity/src/` surfaces
+///   only these scoped admin sets plus the `#[cfg(test)]` shims.
+///
+/// New code that writes an AMM field is one of two things. It is an
+/// AMM-specific admin handler, and its field setter goes alongside its peers in
+/// `instructions/admin.rs`. Otherwise it is a non-admin write and belongs on
+/// the quoter surface. Extend `AmmContract` or `AmmQuoter::on_market_event` in
+/// `vlp/amm/quoter.rs` rather than reach into fields.
 #[zero_copy(unsafe)]
 #[derive(Debug, PartialEq, Eq)]
 #[repr(C)]

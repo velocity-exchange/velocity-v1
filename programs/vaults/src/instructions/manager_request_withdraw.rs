@@ -14,10 +14,10 @@ pub fn manager_request_withdraw<'info>(
     withdraw_amount: u64,
     withdraw_unit: WithdrawUnit,
 ) -> Result<()> {
-    // Book the lending interest of every market that prices NAV BEFORE any account
-    // is borrowed and before NAV is snapshotted (OtterSec #136/#137). Must precede
-    // `load_mut`/`load_maps`: `invoke` rejects a CPI whose writable accounts still
-    // have live borrows, and the maps must read post-refresh data.
+    // Book the lending interest of every market that prices NAV before any
+    // account is borrowed and before NAV is snapshotted (OtterSec #136/#137). The refresh must run
+    // before `load_mut` and `load_maps`. `invoke` rejects a CPI whose writable
+    // accounts still have live borrows, and the maps must read refreshed data.
     refresh_velocity_spot_market!(ctx);
 
     let clock = &Clock::get()?;

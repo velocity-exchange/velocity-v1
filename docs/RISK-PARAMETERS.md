@@ -2,38 +2,40 @@
 
 Every admin-settable parameter of the Velocity program: which instruction sets it, who can call
 that instruction, what units the value is in, what range the program enforces on it, and what a
-change does to a user with an open position, a resting order, or a pending withdrawal.
+change does to a user with an open position, a resting order, or a pending withdrawal. It records
+what the program enforces today. It does not restate the fee system or the equity floor, which
+have their own documents. See [Related documents](#related-documents).
 
-Two facts frame everything below:
+Two rules hold over every table below.
 
-1. **There is no on-chain timelock.** The program checks the signer against the admin keys stored
-   on `State` and applies the write in the same transaction (`auth.rs:1-14` states the cold admin
-   is *expected* to be an off-chain multisig plus timelock; the pause admin deliberately has
-   none). Any delay between a decision and its effect lives in off-chain key custody, not in the
-   program.
-2. **Nothing grandfathers open positions.** Almost every parameter is read live from the account
-   it lives on, so a change takes effect at the next instruction that reads it. A tightened
-   maintenance margin ratio can make an already-open position liquidatable at the next keeper
-   evaluation. The per-parameter tables below say when each value actually bites; the few latched
-   exceptions (TWAP-fed inputs, per-period counters, the equity-floor breaker) are called out
-   where they occur.
+There is no on-chain timelock. The program checks the signer against the admin keys stored on
+`State` and applies the write in the same transaction. The module doc at `auth.rs:1-14` states
+that the warm admin is expected to be an off-chain multisig plus timelock, and that the pause
+admin has no timelock by design. Any delay between a decision and its effect lives in off-chain
+key custody, not in the program.
 
-This is a reference for operators changing parameters and for integrators predicting what a
-change does. It describes what the program enforces today; it does not restate the fee system or
-the equity floor, which have their own documents (see [Related documents](#related-documents)).
+Nothing grandfathers open positions. Almost every parameter is read live from the account it
+lives on, so a change takes effect at the next instruction that reads it. A tightened maintenance
+margin ratio can make an already-open position liquidatable at the next keeper evaluation. Each
+table below says when its values take effect. The latched exceptions are the TWAP-fed inputs, the
+per-period counters, and the equity-floor breaker. Each one is named where it occurs.
 
 ## How to read this document
 
-**File paths.** Bare paths like `validation/margin.rs:22` are relative to
-`programs/velocity/src/`. Four files are cited so often they get shorthand names:
-`admin.rs` = `instructions/admin.rs`, `keeper.rs` = `instructions/keeper.rs`,
-`constraints.rs` = `instructions/constraints.rs`, and `constants.rs` = `math/constants.rs`
-(the `vlp/hedge/admin.rs` twin is always written in full). Paths outside the program (SDK,
-docs) are given from the repo root. Line numbers are exact as of the commit that introduced
-this document; they drift as files are edited, so treat them as anchors for `git log -L`, not
-eternal truths.
+### File paths
 
-**Authority tiers.** Three additive signer tiers live on `State` (`auth.rs:1-14`):
+Bare paths like `validation/margin.rs:22` are relative to `programs/velocity/src/`. Four files
+are cited often enough to carry shorthand names: `admin.rs` = `instructions/admin.rs`,
+`keeper.rs` = `instructions/keeper.rs`, `constraints.rs` = `instructions/constraints.rs`, and
+`constants.rs` = `math/constants.rs`. The `vlp/hedge/admin.rs` twin is always written in full.
+Paths outside the program (SDK, docs) are given from the repo root. Line numbers are exact as of
+the commit that introduced this document. They move as files change, so treat them as anchors for
+`git log -L` rather than as fixed addresses.
+
+### Authority tiers
+
+`State` holds three additive signer tiers, cold then warm then hot, plus the orthogonal
+`pause_admin` key (`auth.rs:1-14`):
 
 | Tier | Meaning | Constraint helper |
 | --- | --- | --- |
@@ -42,11 +44,13 @@ eternal truths.
 | hot | Cold, warm, **or** the purpose-specific bot key for one `HotRole`. | `check_hot` (`auth.rs:79`) |
 | pause | Cold, warm, **or** the dedicated emergency `state.pause_admin`. | `check_pause` (`auth.rs:86`) |
 
-The tier column below names the *lowest* tier that can call the instruction; every tier above it
-can too. For pause-reachable bitmask setters, `require_pause_only_added` (`auth.rs:112`) lets the
-pause admin only *add* pause bits; clearing any bit needs warm or cold.
+The tier column below names the *lowest* tier that can call the instruction. Every tier above it
+can call it too. On pause-reachable bitmask setters, `require_pause_only_added` (`auth.rs:112`)
+lets the pause admin only *add* pause bits. Clearing any bit needs warm or cold.
 
-**Units.** Values are fixed-point integers scaled by the constants in `math/constants.rs`:
+### Units
+
+Values are fixed-point integers scaled by the constants in `math/constants.rs`:
 
 | Constant | Value | 1 unit means |
 | --- | --- | --- |
@@ -60,28 +64,30 @@ pause admin only *add* pause bits; clearing any bit needs warm or cold.
 | `BASE_PRECISION` | 1e9 (`constants.rs:16`) | 1e-9 of one base unit |
 | `FUNDING_RATE_PRECISION` | 1e9 (`constants.rs:102`) | funding-rate scale |
 
-**"unchecked".** A bound column that says **unchecked** means the handler writes the value with
-no validation at all, on-chain, after following every helper the handler calls. It is a verified
-claim about the program, not an observation that a check was hard to find; each one survived a
-second adversarial pass that actively searched for a validator. It says nothing about off-chain
-guards (the admin CLI, multisig policy, or deploy scripts may well constrain the same value), and
-where a type's own width is the only limit, the tables say so. The confirmed cases where an
-unchecked value can damage users are collected in
+### What "unchecked" means
+
+A bound column that says **unchecked** means the handler writes the value with no validation at
+all, on-chain, after following every helper the handler calls. It is a verified claim about the
+program, not an observation that a check was hard to find. Each one survived a second adversarial
+pass that searched for a validator. It says nothing about off-chain guards. The admin CLI, the
+multisig policy, and the deploy scripts can all constrain the same value. Where a type's own
+width is the only limit, the tables say so. The confirmed cases where an unchecked value can
+damage users are collected in
 [Missing bounds worth knowing about](#missing-bounds-worth-knowing-about).
 
-**What "takes effect" means.** Solana programs only run inside transactions. "Immediately at the
-next X" below means: the moment any transaction executes instruction X after the parameter write
-lands, the new value governs that execution. There is no epoch boundary, no cache, and no
-per-user snapshot unless a row says otherwise.
+### What "takes effect" means
+
+Solana programs run only inside transactions. "Immediately at the next X" below means that the
+new value governs the next execution of instruction X after the parameter write lands. There is
+no epoch boundary, no cache, and no per-user snapshot unless a row says otherwise.
 
 ## Margin and liquidation
 
-The best-guarded family in the program. Perp margin ratios and liquidation fees flow through the
-shared validator `validate_margin` (`validation/margin.rs:15-53`, unit-tested at
-`validation/margin.rs:141-173`), reached from the setters via
-`AMM::validate_compatible_with_margin_ratio` (`vlp/amm/state.rs:481-495`) and
+Perp margin ratios and liquidation fees flow through the shared validator `validate_margin`
+(`validation/margin.rs:15-53`, unit-tested at `validation/margin.rs:141-173`). The setters reach
+it through `AMM::validate_compatible_with_margin_ratio` (`vlp/amm/state.rs:481-495`) and
 `validate_compatible_with_liquidation_fee` (`vlp/amm/state.rs:501-515`). The `State`-level
-liquidation tunables, by contrast, are all bare assignments.
+liquidation tunables are bare assignments with no validator.
 
 | Field | Set by | Tier | Units | Enforced bounds |
 | --- | --- | --- | --- | --- |
@@ -109,81 +115,96 @@ liquidation tunables, by contrast, are all bare assignments.
 
 ### What a change does
 
-**Margin ratios** (`update_perp_market_margin_ratio`). The two ratios feed
-`PerpMarket::get_margin_ratio` (`state/perp_market.rs:821-851`). The initial ratio governs order
-placement and withdrawals (via `math/margin.rs:157`) and half of the Fill-type average; raising
-it lowers every position holder's free collateral at the next margin computation, but it never
-decides liquidation eligibility. The maintenance ratio is what liquidation entry compares against
-(`controller/liquidation.rs:203-217` against the unbuffered requirement,
-`state/margin_calculation.rs:416-418`): raising it can make an already-open position liquidatable
-at the next keeper evaluation, with no grace period. Both bite immediately; nothing is latched.
+#### Margin ratios
 
-**Liquidation fees.** Perp fees are read on every perp liquidation fill
-(`controller/liquidation.rs:403,423-427,530,536`); the effective liquidator fee ages upward per
-slot after a grace period and is clamped to
+`update_perp_market_margin_ratio` writes both ratios, and both feed
+`PerpMarket::get_margin_ratio` (`state/perp_market.rs:821-851`). The initial ratio governs order
+placement and withdrawals (through `math/margin.rs:157`) and half of the Fill-type average.
+Raising it lowers every position holder's free collateral at the next margin computation, and it
+never decides liquidation eligibility. Liquidation entry compares against the maintenance ratio
+(`controller/liquidation.rs:203-217` against the unbuffered requirement,
+`state/margin_calculation.rs:416-418`). Raising the maintenance ratio can make an already-open
+position liquidatable at the next keeper evaluation, with no grace period. Both ratios take
+effect at the next read. Nothing is latched.
+
+#### Liquidation fees
+
+Perp fees are read on every perp liquidation fill
+(`controller/liquidation.rs:403,423-427,530,536`). The effective liquidator fee ages upward per
+slot after a grace period, and it is clamped to
 `min(liquidator_fee * 3, margin_ratio_maintenance * 100)` (`state/perp_market.rs:857-864`,
 `math/liquidation.rs:587-605`). Spot fees are read raw on spot liquidation paths
 (`controller/liquidation.rs:1479,1551,1677-1678,2154-2155,2531-2532`), with no aging and no
-maintenance-weight clamp. A user liquidated on the fill after the change pays the new rate. Fee
-routing is described in [FEES.md](../FEES.md).
+maintenance-weight clamp. A user liquidated on the fill after the change pays the new rate. For
+fee routing, see [FEES.md](../FEES.md).
 
-**IMF factors and unrealized-PnL weights.** `imf_factor` adds a size premium to *all three*
-margin requirement types for large positions (`state/perp_market.rs:842`,
-`math/margin.rs:51-84`; the premium can only raise the requirement), so raising it can push a
-large open position toward liquidation. The three `unrealized_pnl_*` weight/factor/imbalance
-fields only shape the Initial and Fill branches of `get_unrealized_asset_weight`
-(`state/perp_market.rs:868-922`), with one exception: `unrealized_pnl_maintenance_asset_weight`
-is returned untouched on the Maintenance branch (`state/perp_market.rs:922`), so lowering *that
-one* field reduces the collateral credit of unrealized profits in liquidation-eligibility checks
-and can newly flag open winners. The `unrealized_pnl_max_imbalance` discount compares against a
-net-unsettled-PnL figure computed from the stored `historical_oracle_data.last_oracle_price`
-(`state/perp_market.rs:887`), so the size of that discount moves with the oracle crank, not the
-live price.
+#### IMF factors and unrealized-PnL weights
 
-**Insurance claim caps** (`update_perp_market_max_imbalances`). These do not touch positions.
-`quote_max_insurance` caps cumulative insurance spend for the market's bankruptcy and PnL-deficit
-repair (`controller/insurance.rs:842-891`, `controller/liquidation.rs:4101-4110`);
+`imf_factor` adds a size premium to all three margin requirement types for large positions
+(`state/perp_market.rs:842`, `math/margin.rs:51-84`). The premium can only raise the requirement,
+so raising the factor can push a large open position toward liquidation. The three
+`unrealized_pnl_*` weight, factor and imbalance fields shape only the Initial and Fill branches
+of `get_unrealized_asset_weight` (`state/perp_market.rs:868-922`), with one exception. The
+Maintenance branch returns `unrealized_pnl_maintenance_asset_weight` untouched
+(`state/perp_market.rs:922`), so lowering that one field reduces the collateral credit of
+unrealized profits in liquidation-eligibility checks and can newly flag open winners. The
+`unrealized_pnl_max_imbalance` discount compares against a net-unsettled-PnL figure computed from
+the stored `historical_oracle_data.last_oracle_price` (`state/perp_market.rs:887`), so the size
+of that discount moves with the oracle crank rather than with the live price.
+
+#### Insurance claim caps
+
+`update_perp_market_max_imbalances` does not touch positions. `quote_max_insurance` caps
+cumulative insurance spend for the market's bankruptcy and PnL-deficit repair
+(`controller/insurance.rs:842-891`, `controller/liquidation.rs:4101-4110`).
 `max_revenue_withdraw_per_period` caps the per-period draw out of the insurance fund into the
-market's PnL pool (`controller/insurance.rs:824-840`). Lowering either shrinks the next solvency
-repair; at 0 the insurance tranche is skipped and losses fall through to the socialized-loss
-path.
+market's PnL pool (`controller/insurance.rs:824-840`). Lowering either one shrinks the next
+solvency repair. At 0 the program skips the insurance tranche, and losses fall through to the
+socialized-loss path.
 
-**Contract tier** (`update_perp_market_contract_tier`, **unchecked**). The tier switches
-liquidation ordering (positions in less-safe markets must close first,
-`controller/liquidation.rs:3448-3525`), oracle-divergence and volatility tolerances
-(`state/perp_market.rs:1028,1053,1208-1210`), and the insurance caps enforced by the *max
-imbalances* setter (`admin.rs:1556-1566`). Two hazards: the change re-prioritizes liquidation
-ordering for every open position immediately, and a downgrade silently leaves the previously-set
-insurance caps above the new tier's limit (the speculative tiers cap insurance at 0,
-`constants.rs:150`) until an admin separately re-runs the max-imbalances setter. Nothing
-re-validates the pair.
+#### Contract tier
 
-**State-level liquidation tunables** (all **unchecked**, all read live from `State` on every
-liquidation). `initial_pct_to_liquidate` is the baseline share of the margin shortage a
-liquidator may free at once, and `liquidation_duration` is the slot ramp toward 100%
-(`math/liquidation.rs:420-451`); shortening the duration or raising the pct makes every
-liquidation, in-progress ones included, seize more per fill. `liquidation_margin_buffer_ratio`
-does not decide who is liquidatable (entry is unbuffered); it sets how deep a liquidation goes
-before it can exit (`state/margin_calculation.rs:240-246,446-453`) and when a flagged user is
-released to place orders again (`math/liquidation.rs:258-287`). As an uncapped u32 it can be set
-high enough that no liquidation can ever exit, permanently freezing flagged users out of new
-orders; large values fail closed via safe-math rather than misbehaving.
+`update_perp_market_contract_tier` is **unchecked**. The tier switches liquidation ordering, so
+positions in less-safe markets must close first (`controller/liquidation.rs:3448-3525`). It also
+switches the oracle-divergence and volatility tolerances
+(`state/perp_market.rs:1028,1053,1208-1210`) and the insurance caps the max-imbalances setter
+enforces (`admin.rs:1556-1566`). Two hazards follow. The change re-prioritizes liquidation
+ordering for every open position at once. And a downgrade leaves the previously-set insurance
+caps above the new tier's limit until an admin re-runs the max-imbalances setter, with no error
+and nothing that re-validates the pair. The speculative tiers cap insurance at 0
+(`constants.rs:150`).
 
-**Equity floor** (`update_user_equity_floor`, per-`User`, both fields **unchecked**). Raising a
-subaccount's floor above its current net equity makes the authority freezable: the authority-wide
+#### State-level liquidation tunables
+
+All three are **unchecked**, and every liquidation reads them live from `State`.
+`initial_pct_to_liquidate` is the baseline share of the margin shortage a liquidator may free at
+once, and `liquidation_duration` is the slot ramp toward 100% (`math/liquidation.rs:420-451`).
+Shortening the duration or raising the pct makes every liquidation seize more per fill, including
+liquidations already in progress. `liquidation_margin_buffer_ratio` does not decide who is
+liquidatable, because entry is unbuffered. It sets how deep a liquidation goes before it can exit
+(`state/margin_calculation.rs:240-246,446-453`) and when a flagged user is released to place
+orders again (`math/liquidation.rs:258-287`). It is an uncapped u32. A high enough value means no
+liquidation can ever exit, and flagged users stay blocked from new orders while that value
+stands. Large values fail closed through safe-math rather than misbehaving.
+
+#### Equity floor
+
+`update_user_equity_floor` writes two per-`User` fields, both **unchecked**. Raising a
+subaccount's floor above its current net equity makes the authority freezable. The authority-wide
 breaker is latched, so the freeze lands at the next permissionless trip
-(`instructions/keeper.rs:306-364`) or lazy trip inside a fill or force-cancel
-(`controller/equity_floor.rs:34-60`), while the per-subaccount effects (risk-increasing fill
-cancellation, delegate-transfer gates) bite at the next such instruction. Raising the buffer can
-make a tripped breaker unresettable until equity recovers, because the warm-admin reset requires
-every subaccount to clear floor + buffer (`admin.rs:4419-4427`). The full lifecycle is in
-[docs/EQUITY-FLOOR.md](./EQUITY-FLOOR.md).
+(`instructions/keeper.rs:306-364`) or at the next lazy trip inside a fill or force-cancel
+(`controller/equity_floor.rs:34-60`). The per-subaccount effects, risk-increasing fill
+cancellation and the delegate-transfer gates, take effect at the next such instruction. Raising
+the buffer can make a tripped breaker unresettable until equity recovers, because the warm-admin
+reset requires every subaccount to clear floor plus buffer (`admin.rs:4419-4427`). For the full
+lifecycle, see [docs/EQUITY-FLOOR.md](./EQUITY-FLOOR.md).
 
-**A doc-comment trap for operators:** the field docs of `PerpMarket.imf_factor` and
-`unrealized_pnl_imf_factor` (`state/perp_market.rs:380-385`) claim `MARGIN_PRECISION` (1e4). The
-enforced bound and the formula denominator are both `SPOT_IMF_PRECISION` (1e6). A value chosen on
-the 1e4 assumption is 100x too small. The in-repo test spells out the real scale
-(`math/margin/tests.rs:263`).
+#### Wrong precision in two field doc comments
+
+The field docs of `PerpMarket.imf_factor` and `unrealized_pnl_imf_factor`
+(`state/perp_market.rs:380-385`) claim `MARGIN_PRECISION` (1e4). The enforced bound and the
+formula denominator are both `SPOT_IMF_PRECISION` (1e6). A value chosen on the 1e4 assumption is
+100x too small. The in-repo test states the real scale (`math/margin/tests.rs:263`).
 
 ## Spot markets: weights, rates, and caps
 
@@ -219,76 +240,87 @@ few one-field setters are bare assignments.
 
 ### What a change does
 
-**Margin weights.** All four weights and the spot `imf_factor` are read live inside
-`get_asset_weight` / `get_liability_weight` (`state/spot_market.rs:425-518`). Lowering an asset
-weight or raising a liability weight immediately reduces free collateral for every holder at the
-next margin computation; the maintenance variants move users toward their liquidation boundary
-the same way the perp maintenance ratio does. One coupling is enforced only one way:
+#### Margin weights
+
+All four weights and the spot `imf_factor` are read live inside `get_asset_weight` and
+`get_liability_weight` (`state/spot_market.rs:425-518`). Lowering an asset weight or raising a
+liability weight reduces free collateral for every holder at the next margin computation. The
+maintenance variants move users toward their liquidation boundary the same way the perp
+maintenance ratio does. One coupling is enforced in one direction only.
 `update_spot_market_asset_tier` requires the tier to be Collateral or Protected when
 `initial_asset_weight > 0` (`admin.rs:1981-2004`), but this weights handler can raise the weight
-above 0 on a Cross/Isolated/Unlisted-tier market without any check firing.
+above 0 on a Cross, Isolated or Unlisted tier market with no check firing.
 
-**Borrow-rate curve** (`update_spot_market_borrow_rate`). The triple shapes
-`calculate_borrow_rate` (`math/spot_balance.rs:225-271`): the optimal point is the pivot between
-the linear low-utilization slope and the hard-coded high-utilization segments
-(`constants.rs:271-278`), `max_borrow_rate` is the rate at 100% utilization, and the expanded
-`min_borrow_rate` floors the result at any utilization. `optimal_utilization` also feeds the
-withdraw/borrow utilization ceiling (`math/spot_withdraw.rs:236`); at the permitted extreme of
-100% it effectively disables that half of the limiter. The timing here is the sharpest edge in
-this family: interest accrual is computed over the whole interval since `last_interest_ts` in one
-shot (`math/spot_balance.rs:157-181`), so a rate change is applied **retroactively to all
-un-accrued elapsed time**, and there is no absolute ceiling on `max_borrow_rate`. One warm-admin
-write followed by any instruction that touches the market can bill every existing borrower at an
-extreme rate for the elapsed span.
+#### Borrow-rate curve
 
-**Withdraw guard and circuit breaker.** `withdraw_guard_threshold` is the balance floor below
-which the daily withdraw/borrow limiter never restricts, and the budget for the small-depositor
-bypass (`math/spot_withdraw.rs:213,248-256,296-308,378`). It is the only field in the subsystem
-with an absolute enforced notional cap ($10,000 at the stricter of live price and 5-min TWAP),
-and the cold-only oracle setter exists precisely because swapping the oracle would re-price that
-cap (`admin.rs:4728-4739`). `withdraw_circuit_breaker_bps` sets how much of the 24h deposit TWAP
-may leave per day (`math/spot_withdraw.rs:21-47`); 0 is a sentinel for the default 25%, not a
+`update_spot_market_borrow_rate` writes the triple that shapes `calculate_borrow_rate`
+(`math/spot_balance.rs:225-271`). The optimal point is the pivot between the linear
+low-utilization slope and the hard-coded high-utilization segments (`constants.rs:271-278`),
+`max_borrow_rate` is the rate at 100% utilization, and the expanded `min_borrow_rate` floors the
+result at any utilization. `optimal_utilization` also feeds the withdraw and borrow utilization
+ceiling (`math/spot_withdraw.rs:236`). At the permitted extreme of 100% that half of the limiter
+stops restricting.
+
+The timing is the sharpest edge in this family. Interest accrual is computed over the whole
+interval since `last_interest_ts` in one step (`math/spot_balance.rs:157-181`), so a rate change
+applies **retroactively to all un-accrued elapsed time**, and there is no absolute ceiling on
+`max_borrow_rate`. One warm-admin write, followed by any instruction that touches the market, can
+bill every existing borrower at an extreme rate for the elapsed span.
+
+#### Withdraw guard and circuit breaker
+
+`withdraw_guard_threshold` is the balance floor below which the daily withdraw and borrow limiter
+never restricts, and it is the budget for the small-depositor bypass
+(`math/spot_withdraw.rs:213,248-256,296-308,378`). It is the only field in the subsystem with an
+absolute enforced notional cap, $10,000 at the stricter of live price and 5-min TWAP. The
+oracle setter is cold-only because swapping the oracle re-prices that cap
+(`admin.rs:4728-4739`). `withdraw_circuit_breaker_bps` sets how much of the 24h deposit TWAP may
+leave per day (`math/spot_withdraw.rs:21-47`). 0 is a sentinel for the default 25% rather than a
 freeze, and only the cold admin can loosen past 25%. Lowering it can block a withdrawal that
 would have succeeded a moment earlier.
 
-**Deposit and borrow caps.** `max_token_deposits` gates new deposits post-credit
-(`state/spot_market.rs:547-581`); lowering it below current deposits blocks new deposits but
-unwinds nothing. Setting it to 0 disables the deposit cap *and* the borrow cap in the runtime
-check (both short-circuit on it, `state/spot_market.rs:555,562`), a stronger effect than the
-field doc's "no limit" suggests. `max_token_borrows_fraction` is validated against outstanding
-borrows at set time, which is stricter than the runtime check in two awkward ways: with
-`max_token_deposits == 0` the setter rejects *any* fraction while borrows are outstanding, and
-even setting 0 to disable is rejected then, so the setter can lock itself until borrows fall.
-The deposit-side rate limiter (`deposit_guard_threshold`, `max_deposit_bps_per_day`) is entirely
-unchecked, ships disabled by default (0 = no daily cap), and its threshold has no equivalent of
-the $10k notional cap its withdraw-side mirror carries.
+#### Deposit and borrow caps
 
-**Scaled initial asset weight** (`scale_initial_asset_weight_start`, **unchecked**). Once the
-market's total deposit notional exceeds this value, every depositor's initial asset weight is
-scaled down by `start / deposit_value` (`state/spot_market.rs:460-482`). The hazardous direction
-is small-but-nonzero: a value of 1 (one millionth of a dollar) collapses the market's collateral
-contribution toward 0 protocol-wide in one write. 0 disables the scaling, and no check
-distinguishes the two intents.
+`max_token_deposits` gates new deposits post-credit (`state/spot_market.rs:547-581`). Lowering it
+below current deposits blocks new deposits and unwinds nothing. Setting it to 0 disables the
+deposit cap *and* the borrow cap in the runtime check, because both short-circuit on it
+(`state/spot_market.rs:555,562`). That is a stronger effect than the field doc's "no limit"
+states. `max_token_borrows_fraction` is validated against outstanding borrows at set time, which
+is stricter than the runtime check in two ways. With `max_token_deposits == 0` the setter rejects
+*any* fraction while borrows are outstanding, and it rejects 0 as well, so the setter can lock
+itself until borrows fall. The deposit-side rate limiter, `deposit_guard_threshold` and
+`max_deposit_bps_per_day`, is unchecked, ships disabled (0 = no daily cap), and its threshold has
+no equivalent of the $10k notional cap its withdraw-side mirror carries.
 
-**Insurance fund settings.** `unstaking_period` is read at unstake *completion* time, not
-latched at request time (`controller/insurance.rs:443-446`), so a change re-times every pending
-unstake: zero or negative values (it is a signed i64, fully unchecked) instantly release all
-pending unstakes, and a huge value strands them. `revenue_settle_period` gates and sizes the
-per-period revenue settle into the insurance fund (`controller/insurance.rs:608-663`); it also
-divides into the per-settle APR cap, so shortening it settles more often in smaller slices. The
-two fee factors carve the IF and protocol shares off depositors' accrued interest
-(`controller/spot_balance.rs:207-236`), jointly bounded below 100% because a full carveout would
-freeze the whole accrual block (the comment at `admin.rs:1881-1886` spells this out); the same
-retroactive-interval timing as the rate curve applies. `if_paused_operations` blocks individual
-IF-stake operations per bit; pausing `Remove` strands stakers who already served their unstaking
-period until the bit is cleared (warm or cold only).
+#### Scaled initial asset weight
+
+`scale_initial_asset_weight_start` is **unchecked**. Once the market's total deposit notional
+exceeds this value, every depositor's initial asset weight is scaled down by
+`start / deposit_value` (`state/spot_market.rs:460-482`). The hazardous direction is small but
+nonzero. A value of 1, one millionth of a dollar, collapses the market's collateral contribution
+toward 0 protocol-wide in one write. 0 disables the scaling, and no check distinguishes the two
+intents.
+
+#### Insurance fund settings
+
+`unstaking_period` is read at unstake *completion* time rather than latched at request time
+(`controller/insurance.rs:443-446`), so a change re-times every pending unstake. It is a signed
+i64 and fully unchecked: zero or negative releases all pending unstakes at once, and a huge value
+strands them. `revenue_settle_period` gates and sizes the per-period revenue settle into the
+insurance fund (`controller/insurance.rs:608-663`). It also divides into the per-settle APR cap,
+so shortening it settles more often in smaller slices. The two fee factors carve the IF and
+protocol shares off depositors' accrued interest (`controller/spot_balance.rs:207-236`). They are
+jointly bounded below 100% because a full carveout would freeze the whole accrual block, which
+the comment at `admin.rs:1881-1886` states. The same retroactive-interval timing as the rate
+curve applies. `if_paused_operations` blocks individual IF-stake operations per bit. Pausing
+`Remove` strands stakers who already served their unstaking period until warm or cold clears the
+bit.
 
 ## Oracles and staleness
 
-Oracle *identity* changes are the only setters in the program reserved for the cold admin
-(`auth.rs:60-63` explains why: an oracle swap re-prices the withdraw-guard notional cap and every
-other rail). The staleness and validity thresholds, by contrast, all live in one `State` struct
-written by a single bare assignment.
+Oracle *identity* changes are cold-admin only. `auth.rs:59-63` says why: an oracle swap
+re-prices the withdraw-guard notional cap and every other rail. The staleness and validity
+thresholds all live in one `State` struct written by a single bare assignment.
 
 | Field | Set by | Tier | Units | Enforced bounds |
 | --- | --- | --- | --- | --- |
@@ -302,128 +334,124 @@ written by a single bare assignment.
 
 ### Oracle swaps (cold)
 
-Both swap handlers enforce price continuity (new price > 0, within 10% of the old,
-`constants.rs:55`) unless the admin passes `skip_invariant_check=true`, which reduces the check
-to "the account decodes". Two escape hatches survive even with the invariant check on:
+Both swap handlers enforce price continuity, meaning a new price above 0 and within 10% of the
+old one (`constants.rs:55`), unless the admin passes `skip_invariant_check=true`. That flag
+reduces the check to "the account decodes". Two cases pass even with the invariant check on:
 
-- `Pubkey::default()` is accepted outright by `validate_oracle_account_info`
-  (`state/oracle_map.rs:348-358`) and then reads as a permanently **valid $1.00 price with zero
-  delay** (`state/oracle_map.rs:71-73,109-111`), bypassing every staleness, confidence, and
-  volatility gate for that market.
+- `validate_oracle_account_info` accepts `Pubkey::default()` outright
+  (`state/oracle_map.rs:348-358`), and the program then reads it as a permanently **valid $1.00
+  price with zero delay** (`state/oracle_map.rs:71-73,109-111`). That bypasses every staleness,
+  confidence, and volatility gate for the market.
 - `OracleSource::QuoteAsset` returns a synthetic $1 without reading the account at all
-  (`state/oracle.rs:456-490`), so the decodability requirement is vacuous under it.
+  (`state/oracle.rs:456-490`), so the decodability requirement means nothing under it.
 
 A swap re-prices margin, unrealized PnL, funding, and liquidation eligibility for every open
-position at the next instruction that reads the market. Choosing a `*StableCoin` source variant
-also changes behavior silently: it triples the margin-staleness budget
-(`math/oracle.rs:423-429`) and snaps prices within 5 bps to exactly $1
+position at the next instruction that reads the market. A `*StableCoin` source variant also
+changes two behaviors that no error reports: it triples the margin-staleness budget
+(`math/oracle.rs:423-429`) and it snaps prices within 5 bps to exactly $1
 (`state/oracle.rs:596-606`). Switching a perp market to `OracleSource::Prelaunch` hands price
 control to the admin-writable `PrelaunchOracle` account.
 
 ### Oracle guard rails (warm, all six fields unchecked)
 
-One instruction assigns the whole struct. What each field gates, and what the read sites impose
-that the setter does not:
+One instruction assigns the whole struct. Each field below is followed by what it gates and by
+what the read sites impose that the setter does not.
 
 - `price_divergence.mark_oracle_percent_divergence` (`PERCENTAGE_PRECISION`, default 10%).
   Bounds the vAMM-vs-5min-oracle-TWAP spread for PnL settlement, fee sweeps, deficit resolution
-  (`controller/orders.rs:1557-1611` via `validate_market_within_price_band`) and the funding
+  (`controller/orders.rs:1557-1611` through `validate_market_within_price_band`) and the funding
   gate (`math/oracle.rs:262,313-316`). It is not on the taker fill path. The reader floors the
-  effective value at 10% (`math/oracle.rs:25-33`); no ceiling exists, so a large value disables
-  the band. Lowering has no effect below the floor.
+  effective value at 10% (`math/oracle.rs:25-33`). No ceiling exists, so a large value disables
+  the band, and lowering has no effect below the floor.
 - `price_divergence.oracle_twap_5min_percent_divergence` (default 50%). Aborts fills, triggers,
   signed-message placement, and every liquidation and bankruptcy path with `PriceBandsBreached`
-  when the live oracle strays from its own 5-min TWAP (`math/orders.rs:532-554`;
-  `controller/liquidation.rs:375,1057,1792,1810,2377,2395`), and bands fill prices
+  when the live oracle strays from its own 5-min TWAP (`math/orders.rs:532-554`,
+  `controller/liquidation.rs:375,1057,1792,1810,2377,2395`). It also bands fill prices
   (`math/orders.rs:468-520`). The reader floors it at 50%. The dangerous direction is down: at
-  the floor it can already block liquidation of underwater users on a fast-moving market. No
-  ceiling; values above i64::MAX fail as `CastingFailure` at read time.
+  the floor it can already block liquidation of underwater users on a fast-moving market. There
+  is no ceiling, and values above i64::MAX fail as `CastingFailure` at read time.
 - `validity.slots_before_stale_for_amm` (i64 slots, default 10). The default AMM low-risk
   staleness threshold wherever the per-market override is 0 (`math/oracle.rs:417-421`), which is
-  all spot markets and any perp market left at init default. **The trap:** `get_oracle_status`
-  narrows it to i8 (`math/oracle.rs:292`), so any value outside -128..=127 makes every
-  `update_funding_rate` revert with `CastingFailure`, halting funding accrual protocol-wide. A
-  value <= -1 freezes AMM low-risk fills even on a same-slot price.
+  all spot markets and any perp market left at the init default. `get_oracle_status` narrows it
+  to i8 (`math/oracle.rs:292`), so any value outside -128..=127 makes every `update_funding_rate`
+  revert with `CastingFailure` and halts funding accrual protocol-wide. A value at or below -1
+  freezes AMM low-risk fills even on a same-slot price.
 - `validity.slots_before_stale_for_margin` (i64 slots, default 120). Past it, oracles are
   `StaleForMargin`, which flips the margin calculation's validity flags
   (`math/margin.rs:301-302,651-659`) and with them withdrawals and risk-increasing actions.
   Liquidations, matched fills, PnL settlement, and triggers tolerate this verdict
   (`math/oracle.rs:209-232`), so lowering it does not block liquidating a stale-priced account.
-- `validity.confidence_interval_max_size` (`BID_ASK_SPREAD_PRECISION`, default 2%). Multiplied
-  by the market's tier-keyed 1x-50x confidence multiplier (`state/perp_market.rs:646-656`,
-  `state/spot_market.rs:405-413`) and compared against the oracle's reported confidence
-  (`math/oracle.rs:362-369`). Exceeding it is `TooUncertain`: fills, margin validity, and PnL
-  settlement reject; liquidations and triggers tolerate. 0 blocks all of the former while still
-  allowing liquidations.
+- `validity.confidence_interval_max_size` (`BID_ASK_SPREAD_PRECISION`, default 2%). The reader
+  multiplies it by the market's tier-keyed 1x-50x confidence multiplier
+  (`state/perp_market.rs:646-656`, `state/spot_market.rs:405-413`) and compares the result
+  against the oracle's reported confidence (`math/oracle.rs:362-369`). Exceeding it is
+  `TooUncertain`: fills, margin validity, and PnL settlement reject, while liquidations and
+  triggers tolerate it. 0 blocks all of the former and still allows liquidations.
 - `validity.too_volatile_ratio` (unitless i64, default 5). Trips `TooVolatile` when
   `max(price, twap) / min(price, twap)` exceeds it as an integer quotient
   (`math/oracle.rs:358-360`). `TooVolatile` rejects everything except TWAP and AMM-curve
-  updates, so it halts the market. Any value <= 0 trips on every read with a positive price,
-  freezing the market entirely; 0 is also the struct's `#[derive(Default)]` zero-value.
+  updates, so it halts the market. Any value at or below 0 trips on every read with a positive
+  price and freezes the market. 0 is also the struct's `#[derive(Default)]` zero value.
 
 ### vAMM quote management hot role (program bounded)
 
 The `VammQuoteManagement` hot role can update only the six active quoting instructions below.
-Calls signed only by that role must remain inside protocol wide constants compiled into the
-program. Warm/cold calls bypass these hot role limits while retaining the setters' original
-semantic checks. There is no per market configuration or mutable baseline for a compromised hot
-key to widen or ratchet.
+Calls signed by that role alone must stay inside protocol-wide constants compiled into the
+program. Warm and cold calls bypass these hot-role limits and keep the setters' original semantic
+checks. There is no per-market configuration and no mutable baseline for a compromised hot key to
+widen or ratchet.
 
 | Managed value | Existing semantic range | Hot role range |
 | --- | --- | --- |
 | `amm.curve_update_intensity` | `0..=200` | `100..=150` |
 | `amm.reference_price_offset_deadband_pct` | `0..=100` | `0..=25` |
 | `amm.amm_jit_intensity` | `0..=100` | `0..=25` |
-| `amm.max_spread` | `base_spread..=margin_ratio_initial * 100` | `10_000..=20_000`, plus the market dependent semantic range |
+| `amm.max_spread` | `base_spread..=margin_ratio_initial * 100` | `10_000..=20_000`, plus the market-dependent semantic range |
 | `amm.amm_spread_adjustment` + `amm.amm_inventory_spread_adjustment` | full i8 for warm/cold (the setter has no semantic check) | both `-100..=100`, checked atomically |
 | `amm.funding_bias_sensitivity` | full u8 | `0..=100` |
 
-Oracle selection/validity, base spread, reserve/peg/k controls, MM-oracle state, and the low-CU
-native spread bot remain outside this role.
+Oracle selection and validity, base spread, the reserve, peg and k controls, MM-oracle state, and
+the low-CU native spread bot stay outside this role.
 
 ### Per-market slot delay overrides (warm, unchecked)
 
 Both are i8 fields on `PerpMarket`, read on every fill, trigger, signed-message placement, AMM
 refresh, and margin calculation. `oracle_low_risk_slot_delay_override` replaces the state-level
-AMM threshold when nonzero; every negative value clamps to a threshold of 0 (same-slot price
-required), which blocks AMM low-risk fills outright. `oracle_slot_delay_override` gates
-immediate (JIT, auction-skipping) AMM fills: 0 disables them for the market; negative means
-unset (resolving to a 2-slot gap for MM-sourced prices, `constants.rs:281`); a high positive
-value lets JIT fills execute against a price up to 127 slots old (plus up to 2 slots of hidden
-MM-oracle source age, `constants.rs:292-299`), exposing counterparties to stale-price
-arbitrage. These controls remain warm-only and are deliberately excluded from the vAMM
-`VammQuoteManagement` role, along with global oracle guard rails and oracle identity setters.
+AMM threshold when nonzero. Every negative value clamps to a threshold of 0, which requires a
+same-slot price and so blocks AMM low-risk fills outright. `oracle_slot_delay_override` gates
+immediate, auction-skipping AMM fills. 0 disables them for the market. A negative value means
+unset, and resolves to a 2-slot gap for MM-sourced prices (`constants.rs:281`). A high positive
+value lets immediate fills execute against a price up to 127 slots old, plus up to 2 slots of
+hidden MM-oracle source age (`constants.rs:292-299`), which exposes counterparties to
+stale-price arbitrage. Both controls stay warm-only and are excluded from the
+`VammQuoteManagement` role, along with the global oracle guard rails and the oracle identity
+setters.
 
-The field doc comment on `oracle_low_risk_slot_delay_override`
-(`state/perp_market.rs:451-453`) still describes an auction speed-bump override; the code uses
-it purely as an oracle-staleness threshold. Treat the doc comment as stale.
+The field doc comment on `oracle_low_risk_slot_delay_override` (`state/perp_market.rs:451-453`)
+still describes an auction speed-bump override. The code uses it only as an oracle-staleness
+threshold. Treat that doc comment as stale.
 
 ### Prelaunch oracle (warm)
 
-`update_prelaunch_oracle_params` sets the synthetic price directly and, in the same instruction,
-overwrites the market's mark TWAPs (`admin.rs:3270-3280`), moving every open position's
+`update_prelaunch_oracle_params` sets the synthetic price directly, and in the same instruction
+overwrites the market's mark TWAPs (`admin.rs:3270-3280`). That moves every open position's
 TWAP-based margin, funding, and price-band math at once. The write is not durable: the next
 permissionless crank recomputes the price from `min(last_mark_price_twap, max_price)`
-(`state/oracle.rs:717-756`), so `max_price` is the only standing admin-side ceiling on what is
-otherwise a self-referential feed (the market's own trading sets the TWAP that sets the price).
-A negative price passes `validate()` but freezes the market rather than mis-pricing it: every
-action rejects a `NonPositive` oracle (`math/oracle.rs:356,431-432`).
+(`state/oracle.rs:717-756`). `max_price` is therefore the only standing admin-side ceiling on a
+feed that is otherwise self-referential, because the market's own trading sets the TWAP that sets
+the price. A negative price passes `validate()` but freezes the market rather than mis-pricing
+it, because every action rejects a `NonPositive` oracle (`math/oracle.rs:356,431-432`).
 
 ### MM-oracle kill switch
 
 Clearing the `MmOracleUpdate` bit stops both native MM-oracle crank handlers from storing new
-prices (`admin.rs:3615-3618,3907-3910`). Positions do not freeze; pricing falls back to the
+prices (`admin.rs:3615-3618,3907-3910`). Positions do not freeze. Pricing falls back to the
 exchange oracle once the stored MM price ages past it (`state/oracle.rs:333-357`), and
-immediate-fill staleness tightens. Disabling needs only the `FeatureFlag` hot key; re-enabling
-requires the cold admin exactly. The MM-oracle write path itself (step caps, slot gaps) is
-governed by hard-coded constants, not admin parameters (`constants.rs:281-299`).
+immediate-fill staleness tightens. Disabling needs only the `FeatureFlag` hot key. Re-enabling
+requires the cold admin. Hard-coded constants govern the MM-oracle write path itself, meaning its
+step caps and slot gaps, rather than admin parameters (`constants.rs:281-299`).
 
 ## Market status, pauses, and kill switches
-
-This family has the widest spread of authority tiers: the exchange-wide and per-market pause
-bitmasks admit the pause admin (add-only), feature kill switches sit on a hot key (disable-only,
-with cold-only re-enable), one circuit breaker is fully permissionless, and the solvency switch
-is cold-only.
 
 | Field | Set by | Tier | Units | Enforced bounds |
 | --- | --- | --- | --- | --- |
@@ -445,96 +473,117 @@ is cold-only.
 
 ### What a change does
 
-**Exchange status** (`update_exchange_status`, pause tier). The exchange-wide kill switch. Each
-bit fails its operation across every market at once via the per-instruction guards in
-`instructions/constraints.rs:85-170` (deposit, withdraw, AMM, fill, liquidation, funding,
-settle-PnL, immediate AMM fill). A user's next matching instruction fails with `ExchangePaused`.
-The pause admin can only add bits; unpausing needs warm or cold.
+#### Exchange status
 
-**Perp market status.** ReduceOnly forces every fill in the market to be risk-reducing
-(`controller/orders.rs:175,1106,1675`); positions can still be closed. Initialized is much
-harsher than it sounds: order placement fails *and* the fill gate (Active|ReduceOnly only,
-`controller/orders.rs:1080-1087`) fails, so existing positions cannot be closed through the book
-either. Settlement and Delisted cannot be set here; they are written only by
+`update_exchange_status` (pause tier) is the exchange-wide kill switch. Each bit fails its
+operation across every market at once, through the per-instruction guards in
+`instructions/constraints.rs:85-170`: deposit, withdraw, AMM, fill, liquidation, funding,
+settle-PnL, and immediate AMM fill. A user's next matching instruction fails with
+`ExchangePaused`. The pause admin can only add bits. Unpausing needs warm or cold.
+
+#### Perp market status
+
+ReduceOnly forces every fill in the market to be risk-reducing
+(`controller/orders.rs:175,1106,1675`), and positions can still be closed. Initialized is
+stricter than the name suggests. Order placement fails, *and* the fill gate, which admits Active
+and ReduceOnly only (`controller/orders.rs:1080-1087`), fails as well, so existing positions
+cannot be closed through the book either. Settlement and Delisted cannot be set here. Only
 `settle_expired_market` (`vlp/amm/refresh.rs:573`) and the pools-settlement instruction
-(`admin.rs:1313`).
+(`admin.rs:1313`) write them.
 
-**Spot market status is the sharpest edge in this family.** The handler writes any status with
-no validation, including Delisted. Withdrawals admit only Active|ReduceOnly|Settlement
-(`controller/spot_position.rs:157-165`), so writing Delisted (or Initialized) blocks all
-withdrawals in the market. And because every writer of spot status carries
-`#[access_control(spot_market_valid)]`, which rejects a Delisted market, **Delisted is a one-way
-door for a spot market**: one warm-tier transaction can permanently strand every user's
-collateral in that market. This directly contradicts the comment at
-`controller/isolated_position.rs:520-532`, which justifies the withdrawal gate on the claim that
-an admin can move a market out of Delisted again. See
-[missing bounds](#missing-bounds-worth-knowing-about).
+#### Spot market status
 
-**Expiry setters.** Both flip the market to ReduceOnly immediately and set a future expiry. On
-the perp side, once the clock passes `expiry_ts` the market closes to new risk on every path,
-and there is a window trap: between `expiry_ts` and a keeper running `settle_expired_market`,
-liquidation of the market is refused (`controller/liquidation.rs:171-185,876-890`), so an
-underwater expired position cannot be liquidated in that window. Nothing enforces a minimum lead
-time. On the spot side, `expiry_ts` has exactly one reader (the revenue-pool deposit gate,
-`instructions/user.rs:3754-3759`); the user-visible effect of the instruction is entirely the
-ReduceOnly flip, and there is no spot settlement machinery behind the timestamp.
+This is the sharpest edge in this family. The handler writes any status with no validation,
+Delisted included. Withdrawals admit Active, ReduceOnly and Settlement only
+(`controller/spot_position.rs:157-165`), so writing Delisted or Initialized blocks all
+withdrawals in the market. Every writer of spot status carries
+`#[access_control(spot_market_valid)]`, which rejects a Delisted market, so a spot market cannot
+leave Delisted again. One warm-tier transaction can strand every user's collateral in that
+market for good. The comment at `controller/isolated_position.rs:520-532` justifies the
+withdrawal gate on the claim that an admin can move a market out of Delisted again, and that
+claim is wrong. See [missing bounds](#missing-bounds-worth-knowing-about).
 
-**Per-market pause bits.** Perp bits block their operation live: `Fill` stops resting orders
-filling, `UpdateFunding` freezes funding accrual, `SettlePnl*` blocks settlement, `Liquidation`
-refuses liquidations (leaving underwater positions un-liquidatable until cleared), the AMM bits
-withdraw the vAMM as counterparty. Warm callers who are not cold can only toggle
-`UpdateFunding` and `SettleRevPool` (`state/paused_operations.rs:33-34`); everything else needs
-cold, or add-only via the pause admin. Spot bits gate deposits, withdrawals, swap legs,
-IF unstaking, and the two legs of spot liquidations; there is no warm bit budget on the spot
-side. The permissionless `pause_spot_market_deposit_withdraw` can OR in the Deposit and Withdraw
-bits, but only when the spot vault invariant is genuinely violated on-chain; any signer can trip
-it, and only warm or cold can clear it.
+#### Expiry setters
 
-**One authority caveat spans all the pause bitmasks:** `require_pause_only_added` short-circuits
-when the signer is warm (`auth.rs:118`), and the perp handler's bit-budget check is skipped for
-the pause admin (`admin.rs:2356`). A single key holding both the warm and pause roles therefore
-bypasses both restrictions. The documented matrix holds only while the keys are distinct.
+Both setters flip the market to ReduceOnly at once and set a future expiry. On the perp side,
+once the clock passes `expiry_ts` the market closes to new risk on every path, and one window is
+a trap. Between `expiry_ts` and a keeper running `settle_expired_market`, the program refuses
+liquidation of the market (`controller/liquidation.rs:171-185,876-890`), so an underwater expired
+position cannot be liquidated in that window. Nothing enforces a minimum lead time. On the spot
+side, `expiry_ts` has exactly one reader, the revenue-pool deposit gate
+(`instructions/user.rs:3754-3759`). The user-visible effect of the spot instruction is the
+ReduceOnly flip alone, and there is no spot settlement machinery behind the timestamp.
 
-**Solvency status** (`update_solvency_status`, cold, **unchecked**). Bit 0 pauses all three
-solvency-repair instructions (PnL deficit resolution and both bankruptcy paths,
-`instructions/keeper.rs:2091-2094,2257-2260,2406-2409`); a bankrupt user stays bankrupt until it
-clears. The missing bound has a self-inflicted-DoS consequence: the readers decode the byte with
-`BitFlags::from_bits(...)` and only bit 0 is defined, so any stored value >= 2 makes all three
-repair instructions fail with `FailedUnwrap` until the cold admin writes 0 or 1 back
-(`state/state.rs:246-248`, `math/safe_unwrap.rs:32-47`). Other bitmask setters guard against
-unknown bits (`admin.rs:2227-2234,4315-4322`); this one does not.
+#### Per-market pause bits
 
-**Per-user throttles** (`admin_update_user_stats_paused_operations`). Three bits on a single
-user's `UserStats`: force their market orders through the full auction instead of atomic vAMM
-fills (`state/user.rs:817-836`), restrict atomic fills to reduce-only, or stop their fills
-moving the bid/ask TWAP (`state/user.rs:2153-2159`).
+Perp bits block their operation live. `Fill` stops resting orders filling, `UpdateFunding`
+freezes funding accrual, `SettlePnl*` blocks settlement, `Liquidation` refuses liquidations and
+leaves underwater positions un-liquidatable until the bit clears, and the AMM bits withdraw the
+vAMM as counterparty. Warm callers who are not cold can toggle `UpdateFunding` and
+`SettleRevPool` only (`state/paused_operations.rs:33-34`). Everything else needs cold, or
+add-only through the pause admin. Spot bits gate deposits, withdrawals, swap legs, IF unstaking,
+and the two legs of spot liquidations, and there is no warm bit budget on the spot side. The
+permissionless `pause_spot_market_deposit_withdraw` can OR in the Deposit and Withdraw bits, but
+only when the spot vault invariant is violated on chain. Any signer can trip it, and only warm or
+cold can clear it.
 
-**Feature kill switches.** All follow one pattern: any holder of the `FeatureFlag` hot key (or
-warm/cold) can *disable*; only the cold admin can *re-enable*. `MedianTriggerPrice` changes
-which reference price trigger orders evaluate against (`controller/orders.rs:3799`,
+#### One authority caveat over all the pause bitmasks
+
+`require_pause_only_added` short-circuits when the signer is warm (`auth.rs:118`), and the perp
+handler skips its bit-budget check for the pause admin (`admin.rs:2356`). A single key holding
+both the warm and the pause role therefore bypasses both restrictions. The authority matrix above
+holds only while the keys are distinct.
+
+#### Solvency status
+
+`update_solvency_status` is cold and **unchecked**. Bit 0 pauses all three solvency-repair
+instructions, meaning PnL deficit resolution and both bankruptcy paths
+(`instructions/keeper.rs:2091-2094,2257-2260,2406-2409`), and a bankrupt user stays bankrupt
+until it clears. The missing bound is a self-inflicted denial of service. The readers decode the
+byte with `BitFlags::from_bits(...)` and only bit 0 is defined, so any stored value at or above 2
+makes all three repair instructions fail with `FailedUnwrap` until the cold admin writes 0 or 1
+back (`state/state.rs:246-248`, `math/safe_unwrap.rs:32-47`). Other bitmask setters guard against
+unknown bits (`admin.rs:2227-2234,4315-4322`). This one does not.
+
+#### Per-user throttles
+
+`admin_update_user_stats_paused_operations` writes three bits on one user's `UserStats`. They
+force that user's market orders through the full auction instead of atomic vAMM fills
+(`state/user.rs:817-836`), restrict atomic fills to reduce-only, or stop that user's fills moving
+the bid/ask TWAP (`state/user.rs:2153-2159`).
+
+#### Feature kill switches
+
+All follow one pattern: any holder of the `FeatureFlag` hot key, or warm or cold, can *disable*,
+and only the cold admin can *re-enable*. `MedianTriggerPrice` changes which reference price
+trigger orders evaluate against (`controller/orders.rs:3799`,
 `state/perp_market.rs:1102-1121`), so the same oracle print can trigger a stop under one setting
-and not the other. `BuilderCodes` gates builder-fee escrow and revenue share on every order and
-fill. The three LP-pool bits gate LP-pool settlement, swaps, and mint/redeem; mint and redeem
-share one bit, so there is no way to close entry while leaving the exit open. Note the LP-pool
-consumers are compiled out of mainnet builds (`vlp-hedge` feature), so on mainnet those three
-bits currently have no reachable reader.
+and not under the other. `BuilderCodes` gates builder-fee escrow and revenue share on every order
+and fill. The three LP-pool bits gate LP-pool settlement, swaps, and mint/redeem. Mint and redeem
+share one bit, so there is no way to close entry and leave the exit open. The LP-pool consumers
+are compiled out of mainnet builds by the `vlp-hedge` feature, so on mainnet those three bits
+have no reachable reader.
 
-**Dead switch:** `SpotMarket.orders_enabled` has no reader anywhere in the program (declaration,
-default, initializer, and setter are the only references). The SDK admin wrapper's doc comment
-(`packages/sdk/src/adminClient.ts:3776`) claims it enables or disables spot limit orders; on
-chain it does nothing. Spot DLOB trading is disabled by a hard-coded rejection instead
+#### A dead switch
+
+`SpotMarket.orders_enabled` has no reader anywhere in the program. The declaration, the default,
+the initializer, and the setter are the only references. The SDK admin wrapper's doc comment
+(`packages/sdk/src/adminClient.ts:3776`) claims it enables or disables spot limit orders. On
+chain it does nothing. A hard-coded rejection disables spot DLOB trading instead
 (`controller/orders.rs:835-843`).
 
-**LP-pool hedge config on mainnet:** `hedge_config.status` (unchecked, warm) kills both LP-pool
-revenue tracking and quote-owed settlement for a market when 0, silently (loop skips, not
-reverts). Its setter is feature-gated out of mainnet builds while the field and readers ship, so
-on mainnet the value is frozen at whatever it holds.
+#### LP-pool hedge config on mainnet
+
+`hedge_config.status` (unchecked, warm) at 0 kills both LP-pool revenue tracking and quote-owed
+settlement for a market. The loop skips rather than reverts, so nothing reports the change. The
+setter is feature-gated out of mainnet builds while the field and its readers ship, so on mainnet
+the value is frozen at whatever it holds.
 
 ## Order sizing, auctions, and pools
 
-The perp order-parameter setters carry partial bounds; every spot-side sibling is inert today
-because spot DLOB trading is hard-disabled by an unconditional rejection
-(`controller/orders.rs:835-843`, `SpotDlobTradingDisabled`). This section says which is which.
+The perp order-parameter setters carry partial bounds. Every spot-side sibling is inert today,
+because an unconditional rejection disables spot DLOB trading (`controller/orders.rs:835-843`,
+`SpotDlobTradingDisabled`).
 
 | Field | Set by | Tier | Units | Enforced bounds |
 | --- | --- | --- | --- | --- |
@@ -551,70 +600,82 @@ because spot DLOB trading is hard-disabled by an unconditional rejection
 
 ### What a change does
 
-**Perp step size is retroactively enforced against existing state.** New orders must be at least
-one step and are rounded down to a step multiple (`controller/orders.rs:201-222`,
-`math/orders.rs:237-246`). But the current step size is also an *invariant* on state that already
-exists: `validate_perp_market` requires the market's aggregate long/short base amounts to be
-exact multiples (`validation/perp_market.rs:13-30`) and runs inside every fill
-(`controller/orders.rs:1184`) and settle-PnL (`controller/pnl.rs:419-423`);
+#### Perp step size
+
+The step size is enforced retroactively against state that already exists. New orders must be at
+least one step and are rounded down to a step multiple (`controller/orders.rs:201-222`,
+`math/orders.rs:237-246`). The current step size is also an *invariant* on existing state.
+`validate_perp_market` requires the market's aggregate long and short base amounts to be exact
+multiples (`validation/perp_market.rs:13-30`), and it runs inside every fill
+(`controller/orders.rs:1184`) and every settle-PnL (`controller/pnl.rs:419-423`).
 `validate_perp_position_with_perp_market` does the same per position
 (`validation/position.rs:22-29`). A value inside the legal 1..=2e9 range that does not divide the
-existing aggregates therefore halts all fills and PnL settlement in the market until reverted.
-Nothing at write time re-checks divisibility of existing positions, aggregates, or
-`max_open_interest` (whose own multiple-of-step check runs only when *it* is written,
-`admin.rs:2865-2872`).
+existing aggregates therefore halts all fills and PnL settlement in the market until an admin
+reverts it. Nothing at write time re-checks the divisibility of existing positions, of
+aggregates, or of `max_open_interest`, whose own multiple-of-step check runs only when *it* is
+written (`admin.rs:2865-2872`).
 
-**Perp tick size is read live by resting orders.** An auction or oracle-offset order's effective
-limit price is recomputed from the *current* tick size on every fill attempt
+#### Perp tick size
+
+Resting orders read the tick size live. The effective limit price of an auction or oracle-offset
+order is recomputed from the *current* tick size on every fill attempt
 (`state/user.rs:1521-1550`, `state/fill_mode.rs:24-47`), and the bid/ask TWAP crank reprices
-resting makers with it (`math/orders.rs:1213`), so a tick change reprices the resting book and
-feeds funding at the next crank, not just new placements. With no upper bound, a large tick has
-concrete failure modes: post-only Slide placement underflows (`math/orders.rs:333,339`), the
-AMM fill-sizing helper underflows (`math/orders.rs:176`), and oracle-offset limit prices are
-silently floored at one tick (`state/user.rs:1543`).
+resting makers with it (`math/orders.rs:1213`). A tick change therefore reprices the resting book
+and feeds funding at the next crank, not only new placements. There is no upper bound, and a
+large tick has three failure modes: post-only Slide placement underflows
+(`math/orders.rs:333,339`), the AMM fill-sizing helper underflows (`math/orders.rs:176`), and
+oracle-offset limit prices are floored at one tick with no error (`state/user.rs:1543`).
 
-**Perp min order size** floors non-reduce-only placements (`validation/order.rs:334-340`) and,
-less obviously, anchors the funding-rate depth clamp
-(`state/perp_market.rs:1001-1008`: OI/1000 clamped into [100x, 5000x] of it) and AMM fallback
-pricing and k-lowering (`vlp/amm/state.rs:545-598,774-783`, `vlp/amm/quoter.rs:649`). Raising it
-does not cancel resting orders below the new floor. A value above u64::MAX/5000 makes the depth
-helper error and takes funding down with it.
+#### Perp min order size
 
-**Max open interest** gates risk-increasing placement when nonzero
-(`controller/orders.rs:422-442`) and is re-checked *unconditionally after every fill*
-(`controller/orders.rs:1513-1526`, strict >). Setting it to a nonzero value at or below current
-open interest therefore reverts every fill in the market, position-reducing fills included,
-until raised or zeroed. Existing positions are never force-reduced.
+It floors non-reduce-only placements (`validation/order.rs:334-340`). It also anchors the
+funding-rate depth clamp (`state/perp_market.rs:1001-1008`, where OI/1000 is clamped into
+[100x, 5000x] of it) and AMM fallback pricing and k-lowering
+(`vlp/amm/state.rs:545-598,774-783`, `vlp/amm/quoter.rs:649`). Raising it does not cancel resting
+orders below the new floor. A value above u64::MAX/5000 makes the depth helper error and takes
+funding down with it.
 
-**Perp auction duration** (`min_perp_auction_duration`, **unchecked**). Floors the auction
-length of every market and oracle order, and of limit orders that request an auction
-(`controller/orders.rs:498-561`); the duration also stretches the order's `max_ts`. It is
-latched onto the order at placement, so a change affects newly placed orders only. Triggered
-stop orders are unaffected; their path hardcodes a floor of 20 slots
-(`controller/orders.rs:3819-3825`, relied on by the TWAP-manipulation defense at
-`constants.rs:223-237`). At 255 slots (~102s) every market order's auction stretches
-accordingly; nothing bounds it.
+#### Max open interest
 
-**Pool partition tags.** `SpotMarket.pool_id` is the sharp one: users can only deposit,
-withdraw, transfer, be margined, and be liquidated against spot markets whose `pool_id` matches
-their `User.pool_id` (`math/margin.rs:289-297`, `instructions/user.rs:590-596,1347-1352`,
-`controller/liquidation.rs:1358-1381,2016-2020`). The status-must-be-Initialized gate looks like
-a protection but is bypassable by the same warm admin in two transactions (set status back to
-Initialized via the unchecked status setter, change the pool, restore Active). Repointing a live
-market makes `calculate_margin_requirement` fail for every user holding it in the old pool: they
-cannot withdraw, place orders, or be liquidated until the value is restored.
-`PerpMarket.hedge_config.pool_id` is unchecked and uncross-checked; a wrong value hard-fails the
-whole LP-pool hedge settle batch (`vlp/hedge/settle.rs:87-95`) rather than skipping the market.
-On mainnet builds this consumer is compiled out (`vlp-hedge` feature), so the write is currently
-inert there.
+A nonzero value gates risk-increasing placement (`controller/orders.rs:422-442`), and the program
+re-checks it *after every fill*, unconditionally and with a strict comparison
+(`controller/orders.rs:1513-1526`). Setting it to a nonzero value at or below current open
+interest therefore reverts every fill in the market, position-reducing fills included, until an
+admin raises or zeroes it. Existing positions are never force-reduced.
 
-**Inert spot knobs.** The three spot order-parameter fields and
-`State.default_spot_auction_duration` have no live reader while spot DLOB trading is disabled
-(the one surviving read path always ends in `SpotDlobTradingDisabled`). Their setters also share
-a quirk worth knowing if spot trading is ever re-enabled: the quote market (index 0) is exempt
-from the > 0 checks, so 0 is writable for it, which would surface as `MathError`s in the sizing
-helpers. Whether these knobs are reserved for a spot re-enable or are dead config is a team
-question, not something the code answers.
+#### Perp auction duration
+
+`min_perp_auction_duration` is **unchecked**. It floors the auction length of every market and
+oracle order, and of limit orders that request an auction (`controller/orders.rs:498-561`). The
+duration also stretches the order's `max_ts`. It is latched onto the order at placement, so a
+change affects newly placed orders only. Triggered stop orders are unaffected, because their path
+hardcodes a floor of 20 slots (`controller/orders.rs:3819-3825`), which the TWAP-manipulation
+defense at `constants.rs:223-237` relies on. At 255 slots, about 102 seconds, every market
+order's auction stretches to match. Nothing bounds it.
+
+#### Pool partition tags
+
+`SpotMarket.pool_id` is the sharp one. A user can deposit, withdraw, transfer, be margined and be
+liquidated only against spot markets whose `pool_id` matches their `User.pool_id`
+(`math/margin.rs:289-297`, `instructions/user.rs:590-596,1347-1352`,
+`controller/liquidation.rs:1358-1381,2016-2020`). The status-must-be-Initialized gate reads as a
+protection, but the same warm admin can bypass it in two transactions: set the status back to
+Initialized through the unchecked status setter, change the pool, then restore Active. Repointing
+a live market makes `calculate_margin_requirement` fail for every user holding it in the old
+pool, so those users cannot withdraw, place orders, or be liquidated until the value is restored.
+`PerpMarket.hedge_config.pool_id` is unchecked and cross-checked against nothing. A wrong value
+fails the whole LP-pool hedge settle batch (`vlp/hedge/settle.rs:87-95`) rather than skipping the
+market. Mainnet builds compile this consumer out through the `vlp-hedge` feature, so the write is
+inert there today.
+
+#### Inert spot knobs
+
+The three spot order-parameter fields and `State.default_spot_auction_duration` have no live
+reader while spot DLOB trading is disabled, because the one surviving read path always ends in
+`SpotDlobTradingDisabled`. Their setters share one quirk that matters if spot trading is ever
+re-enabled: the quote market (index 0) is exempt from the > 0 checks, so 0 is writable for it,
+and it would surface as `MathError` in the sizing helpers. The code does not say whether these
+knobs are reserved for a spot re-enable or are dead config.
 
 ## Fees
 

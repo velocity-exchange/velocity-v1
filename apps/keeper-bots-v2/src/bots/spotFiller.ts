@@ -98,7 +98,8 @@ const THROTTLED_NODE_SIZE_TO_PRUNE = 10; // Size of throttled nodes to get to be
 const FILL_ORDER_THROTTLE_BACKOFF = 1000; // the time to wait before trying to fill a throttled (error filling) node again
 const TRIGGER_ORDER_COOLDOWN_MS = 1000; // the time to wait before trying to a node in the triggering map again
 const SIM_CU_ESTIMATE_MULTIPLIER = 1.15;
-// wall-clock lead to build+send before the jito leader window (~4 slots at 400ms)
+// Wall-clock lead to build and send before the jito leader window, which is
+// about 4 slots at 400ms.
 const JITO_LEADER_LEAD_MS = 1_600;
 const CONFIRM_TX_ATTEMPTS = 2;
 const MAX_MAKERS_PER_FILL = 6; // max number of unique makers to include per fill
@@ -1480,9 +1481,10 @@ export class SpotFillerBot implements Bot {
 				slotsUntilJito <
 				msToSlotsNum(
 					JITO_LEADER_LEAD_MS,
-					// getMaxSlot, not the dlob slot source alone: a 0 here resolves a
-					// staged slot-duration switch against slot 0, which always yields
-					// the pre-switch value and shortens the lead window.
+					// The call uses getMaxSlot rather than the dlob slot source
+					// alone. A 0 here resolves a staged slot-duration switch
+					// against slot 0, which always yields the pre-switch value and
+					// shortens the lead window.
 					currentSlotDuration(this.velocityClient, this.getMaxSlot())
 				)
 			);

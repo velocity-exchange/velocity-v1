@@ -1,12 +1,13 @@
-//! `place_and_make_perp_order_v1` — rest a maker order on the CLOB.
+//! `place_and_make_perp_order_v1`, which rests a maker order on the CLOB.
 //!
 //! A maker posts a limit order that rests on the market's CLOB. The order never
-//! enters `User.orders`: it is built, margin-checked, and placed straight on the
-//! book as a maker quote. Whoever wants that liquidity takes it off the book.
+//! enters `User.orders`. The handler builds it, checks margin, and places it
+//! straight on the book as a maker quote. A later taker removes that liquidity
+//! from the book.
 //!
-//! Just-in-time matching against a named taker order is gone. A maker provides
-//! liquidity that rests; it does not consume liquidity and quotes no external
-//! books, so there is no taker to name and nothing to route.
+//! There is no just-in-time matching against a named taker order. A maker
+//! provides liquidity that rests. It consumes no liquidity and quotes no
+//! external book, so there is no taker to name and nothing to route.
 
 use {
     crate::{
@@ -41,25 +42,25 @@ pub struct PlaceAndMakeV1<'info> {
     )]
     pub user_stats: AccountLoader<'info, UserStats>,
     pub authority: Signer<'info>,
-    /// The market's quoter slab — the maker only ever rests on the vetted
-    /// book its `Clob` slot names.
+    /// The market's quoter slab. The maker only ever rests on the vetted book
+    /// that its `Clob` slot names.
     #[account(
         has_one = clob_market,
         constraint = quoter_slab.load()?.market == args.params.market_index,
     )]
     pub quoter_slab: AccountLoader<'info, QuoterSlabV0>,
-    /// CHECK: validated against the book slot's registered response account
-    /// (`ClobMarket::from_slab`), so a valid slot can't be pointed at an
+    /// CHECK: `ClobMarket::from_slab` checks this against the book slot's
+    /// registered response account. A valid slot cannot be pointed at an
     /// arbitrary account.
     #[account(mut)]
     pub clob_market: UncheckedAccount<'info>,
     /// CHECK: a Clob slot's program is pinned to velocity's CLOB at
-    /// registration; the handler re-checks through the slot.
+    /// registration. The handler checks it again through the slot.
     #[account(address = crate::ids::clob_program::id())]
     pub clob_program: UncheckedAccount<'info>,
     /// The flow authority, signing this transaction as a named account.
-    /// Required only for a faster-than-default activation delay — presence
-    /// is the attestation. The zero key cannot sign, so an unset flow
+    /// It is required only for an activation delay below the default. The
+    /// signature is the attestation. The zero key cannot sign, so an unset flow
     /// authority admits nobody.
     #[account(
         constraint = flow_authority.key()
@@ -108,20 +109,20 @@ pub fn handle_place_and_make_perp_order_v1<'c: 'info, 'info>(
         ErrorCode::InvalidOrderIOCPostOnly,
         "place_and_make rests a limit order on the book"
     )?;
-    // A post-only order refuses to rest crossed; a plain limit rests crossed and
-    // the cross crank matches it at the counterparty's price. Either way the
-    // order rests as a maker, so `post_only` chooses only whether a crossed
-    // placement is refused, not the fee schedule.
+    // A post-only order refuses to rest crossed. A plain limit rests crossed,
+    // and the cross crank matches it at the counterparty's price. Either way the
+    // order rests as a maker. So `post_only` chooses only whether a crossed
+    // placement is refused. It does not choose the fee schedule.
     let reject_if_crossed = params.post_only != PostOnlyParam::None;
 
-    // Build and margin-check the maker order without persisting it to
-    // `User.orders`. The build reserves nothing that lasts; the rest below makes
-    // the order's own reservation on the book.
+    // Build and margin-check the maker order without writing it to
+    // `User.orders`. The build reserves nothing that lasts. The placement below
+    // makes the order's own reservation on the book.
     let placed = {
         let mut user = load_mut!(ctx.accounts.user)?;
-        // Sweep expired slot orders first: their reservations release, which
-        // can be what lets the new order pass the margin gate. The create
-        // never touches `user.orders`, so the sweep is the caller's.
+        // Sweep expired slot orders first. Their reservations release, which
+        // can be what lets the new order pass the margin gate. The create call
+        // never touches `user.orders`, so the caller runs the sweep.
         controller::orders::expire_orders(
             &mut user,
             &user_key,
@@ -136,9 +137,9 @@ pub fn handle_place_and_make_perp_order_v1<'c: 'info, 'info>(
             &mut maps,
             &clock,
             params,
-            // The order rests straight on the CLOB; its CLOB placement record
-            // is the one statement about it, so suppress the ephemeral place
-            // record that would be a redundant second one.
+            // The order rests straight on the CLOB, and its CLOB placement
+            // record is the one statement about it. Suppress the ephemeral
+            // place record, which would be a second copy.
             PlaceOrderOptions {
                 emit_place_record: false,
                 ..PlaceOrderOptions::default()
@@ -147,13 +148,13 @@ pub fn handle_place_and_make_perp_order_v1<'c: 'info, 'info>(
         )?
     };
     let Some(order) = placed else {
-        // The order soft-skipped its build. Nothing to rest.
+        // The build skipped the order. There is nothing to rest.
         return Ok(());
     };
 
-    // A maker order rests at a fixed price. The CLOB has no oracle-offset or
-    // reduce-only semantics, so refuse those. Unlike a taker remainder a maker
-    // is post-only, so `restable_remainder_price` is the wrong gate here.
+    // A maker order rests at a fixed price. The CLOB has no oracle-offset and
+    // no reduce-only semantics, so refuse both. A maker is post-only, unlike a
+    // taker remainder, so `restable_remainder_price` is the wrong gate here.
     validate!(
         order.order_type == OrderType::Limit
             && order.oracle_price_offset == 0
@@ -190,7 +191,8 @@ pub fn handle_place_and_make_perp_order_v1<'c: 'info, 'info>(
         unfilled,
         order.max_ts,
         order.order_id,
-        // A maker quote, not a taker remainder: it may be taken at its own price.
+        // A maker quote rests as maker-origin, so a later order takes it at
+        // its own price.
         false,
         reject_if_crossed,
         order.reduce_only,

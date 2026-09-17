@@ -119,9 +119,9 @@ pub fn deserialize_into_verified_message(
     }
 }
 
-/// Refuse an over-long route rather than truncating it: a taker's signed
-/// route is a statement about where their order may fill, and silently
-/// dropping entries would fill somewhere they did not sign for.
+/// Refuse an over-long route rather than truncating it. A taker's signed route
+/// states where their order may fill. Dropping entries would fill the order
+/// somewhere the taker did not sign for.
 fn validate_signed_msg_route(
     route: Option<Vec<Pubkey>>,
 ) -> std::result::Result<Option<Vec<Pubkey>>, anchor_lang::error::Error> {
@@ -140,11 +140,11 @@ fn validate_signed_msg_route(
 
 /// Reject a message that does not name this cluster.
 ///
-/// The signature covers the order, not the chain, so a message without the
-/// tag replays verbatim from devnet against mainnet. The tag is therefore
-/// required, not merely checked when present: an absent tag is the same
-/// replay as a wrong one. A producer that does not emit it is refused, and
-/// the verifier's zero-padding of short payloads no longer admits it.
+/// The signature covers the order and not the chain. A message without the tag
+/// therefore replays from devnet against mainnet. The tag is required, because
+/// an absent tag is the same replay as a wrong one. A producer that does not
+/// emit it is refused. The verifier's zero-padding of short payloads no longer
+/// admits it either.
 fn validate_signed_msg_network(
     network: Option<u8>,
 ) -> std::result::Result<(), anchor_lang::error::Error> {
@@ -169,15 +169,14 @@ fn validate_signed_msg_network(
     }
 }
 
-/// A flow attestation: the flow authority's detached signature over one
-/// order's own signature plus an expiry. It marks the order's flow as
-/// having served the swift hold, without the flow authority signing the
-/// transaction. A transaction signer is transaction-global — the fill
-/// transaction is keeper-built, and a co-signature on it needed an
-/// allowlist, a shape proof, and a drain-vector analysis. A detached
-/// signature over one order's signature authorizes exactly one thing.
-/// It also costs no signature fee: it is verified in-program, like the
-/// taker signature it binds to.
+/// The flow authority's detached signature over one order's own signature and
+/// an expiry. It marks the order's flow as having served the swift hold,
+/// without the flow authority signing the transaction. A transaction signer
+/// authorizes the whole transaction. The fill transaction is keeper-built, so a
+/// co-signature on it needed an allowlist, a shape proof, and a drain-vector
+/// analysis. A detached signature over one order's signature authorizes one
+/// thing. It also costs no signature fee, because the program verifies it, like
+/// the taker signature it binds to.
 #[derive(
     anchor_lang::prelude::AnchorSerialize,
     anchor_lang::prelude::AnchorDeserialize,
@@ -199,9 +198,10 @@ pub struct FlowAttestationV0 {
 pub const FLOW_ATTESTATION_DOMAIN: &[u8] = b"velocity.flow.attestation.v0";
 
 /// Verify a flow attestation against the current flow authority, the order
-/// signature it must bind to, and the clock. An invalid, expired, or
-/// impossible (no flow authority configured) attestation is an error rather
-/// than an unattested fill: the caller claimed protection it does not have.
+/// signature it must bind to, and the clock. An attestation that is invalid,
+/// expired, or impossible because no flow authority is configured raises an
+/// error. It does not fall back to an unattested fill, because the caller
+/// claimed protection it does not have.
 pub fn verify_flow_attestation(
     attestation: &FlowAttestationV0,
     flow_authority: &anchor_lang::prelude::Pubkey,
@@ -268,8 +268,8 @@ pub fn verify_and_decode_signed_msg(
         .get(PAYLOAD_OFFSET..payload_end)
         .ok_or(SignatureVerificationError::InvalidMessageDataSize)?;
 
-    // Bind the key to the taker before the crypto: a valid signature under a
-    // key that is not the taker's authority is still refused.
+    // Bind the key to the taker before the crypto. A valid signature under a key
+    // that is not the taker's authority is still refused.
     if !slice_eq(&public_key, signer) {
         msg!(
             "signed message key {:?} is not the expected signer {:?}",

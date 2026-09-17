@@ -17,8 +17,8 @@ pub struct SetLevelsV0 {
 #[derive(Clone, Default, wincode::SchemaRead, wincode::SchemaWrite)]
 #[cfg_attr(feature = "idl-build", derive(anchor_lang::IdlType))]
 pub struct SetLevelsArgsV0 {
-    /// Present = also stamp a new mid in the same write (atomic shape+mid
-    /// moves); the sequence rule from `set_mid_v0` applies.
+    /// When present, the write also stamps a new mid, so a shape move and a
+    /// mid move stay atomic. The sequence rule from `set_mid_v0` applies.
     pub mid: Option<u64>,
     pub sequence: Option<u64>,
     /// Sides to replace. Writing a side resets its `filled` counters.
@@ -39,7 +39,7 @@ pub fn handle_set_levels_v0(ctx: &mut Context<SetLevelsV0>, args: SetLevelsArgsV
         quoter.set_mid(mid, args.sequence.unwrap_or(0), slot)?;
     }
     // Shape writes are rare, so they pay for the full post-write invariant
-    // scan: counts within capacity, live rungs ascending with `filled` inside
-    // `size`, and a zeroed tail behind a shrinking rewrite.
+    // scan. The scan checks counts against capacity, ascending live rungs with
+    // `filled` inside `size`, and a zeroed tail behind a shrinking rewrite.
     quoter.validate()
 }

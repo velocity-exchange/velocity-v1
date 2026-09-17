@@ -55,18 +55,19 @@ builder_fee = notional × fee_tenth_bps / 100_000   ADDED on top of taker_fee; p
   bankruptcy-clawback tranche.
 - DLOB matches split the same way; the AMM's provision is credited to its books
   (`apply_fill_fees`) and tokenized by the sweep.
-- Referral rewards come at two independent rates. Standard is the active fee tier's
-  `referrer_reward_numerator`, which a fresh deployment defaults to 10% of the referee's
-  taker fee (existing deployments keep whatever the tier already holds until
-  `update_perp_fee_structure` changes it); Accelerated is a fixed 20% that ignores the
-  tier. The referee discount remains 5% in both cases. Accelerated is a persistent flag on
-  `UserStats`. While the beta-scoped `ACCELERATED_REFERRAL_ENROLLMENT_ENABLED` constant is
-  true, creating a user account, filling a perp order as taker or maker, or completing a
-  swap grants it automatically; a liquidation does not grant it to the liquidatee. Ending
-  enrollment is a program upgrade, not a config change: flip the constant and delete the
-  branches that read it. The warm admin can grant or revoke per user at any time with
-  `update_user_accelerated_referral_status`, and a revoke blocks automatic reenrollment
-  until a later admin grant.
+- Referral rewards come at two independent rates. The standard rate is the active fee
+  tier's `referrer_reward_numerator`. A fresh deployment defaults it to 10% of the referee's
+  taker fee, and an existing deployment keeps whatever the tier already holds until
+  `update_perp_fee_structure` changes it. The accelerated rate is a fixed 20% and ignores
+  the tier. The referee discount stays at 5% in both cases. Accelerated status is a
+  persistent flag on `UserStats`. While the beta-scoped
+  `ACCELERATED_REFERRAL_ENROLLMENT_ENABLED` constant is true, creating a user account,
+  filling a perp order as taker or maker, and completing a swap each grant the flag
+  automatically. A liquidation does not grant it to the liquidatee. Ending enrollment is a
+  program upgrade rather than a config change: flip the constant and delete the branches
+  that read it. The warm admin can grant or revoke the flag per user at any time with
+  `update_user_accelerated_referral_status`. A revoke blocks automatic reenrollment until a
+  later admin grant.
 - `calculate_fee_for_fulfillment_with_amm` / `_with_match`
   (`math/fees.rs`, `split_fee_remainder`).
 
@@ -133,13 +134,13 @@ pool's surplus over live user claims — the AMM is never a conduit:
       rejects while `pending_bankruptcy_claims` is above zero, so every
       bankruptcy is resolved before wind-down, and the pnl pool is drained
       wholesale right after.
-   3. `pending_amm_provision` → tokenized into `amm.fee_pool` (the AMM's
-      ledger was already credited at fill — this is a pure token transfer)
-   Steps 2-3 additionally leave the `fee_pool_buffer_target` retention margin
-   behind — the buffer throttles the outflows whose value the bankruptcy
-   waterfall can still reach (an unswept IF cut even upgrades coverage:
-   market-local tranche-1 forgiveness is uncapped, the shared vault is
-   capped). Steps 1-2 never touch the AMM's books or pools. Un-drained
+   3. `pending_amm_provision` → tokenized into `amm.fee_pool`. The fill already
+      credited the AMM's ledger, so this is a pure token transfer.
+   Steps 2-3 also leave the `fee_pool_buffer_target` retention margin behind.
+   The buffer throttles the outflows whose value the bankruptcy waterfall can
+   still reach. An unswept IF cut even improves coverage, because market-local
+   tranche-1 forgiveness is uncapped while the shared vault is capped.
+   Steps 1-2 never touch the AMM's books or pools. Un-drained
    remainders wait for the next sweep. This is the **only** fee routing out
    of a perp market.
    It runs inline on every pnl settle (`update_pool_balances`, after the
@@ -180,12 +181,13 @@ market tracks the cumulative amount in `fee_ledger.amm_protocol_fees_received`
 and a perp bankruptcy claws back whatever is still recoverable. The resolution
 waterfall (`resolve_perp_bankruptcy`, `controller/liquidation.rs`):
 
-1. **`pending_if_fee`** — the market's own in-transit insurance fees,
-   counter-only: the pending claim and the forgiven loss are both claims on
-   future pnl-pool inflows, so canceling one against the other needs no token
-   movement. The sweep keeps this tranche stocked (see the waterfall above):
-   the latch freezes the whole counter, and `bankruptcy_if_floor_pct` holds a
-   standing floor before any latch, so a front-running sweep can't clear it
+1. **`pending_if_fee`**, the market's own in-transit insurance fees. This is
+   counter-only, because the pending claim and the forgiven loss are both
+   claims on future pnl-pool inflows, so canceling one against the other needs
+   no token movement. The sweep keeps this tranche stocked, as the waterfall
+   above describes. The latch freezes the whole counter, and
+   `bankruptcy_if_floor_pct` holds a standing floor before any latch, so a
+   front-running sweep cannot clear it
 2. **Insurance fund vault** (bounded by the market's `insurance_claim` caps;
    real tokens → pnl pool)
 3. **Provision clawback** — capped at `amm_protocol_fees_received`, two
@@ -313,7 +315,7 @@ flowchart LR
 | IF bootstrap | `controller/insurance.rs` (`settle_revenue_to_insurance_fund`, `add_insurance_fund_stake`) |
 | Withdrawal | `instructions/protocol_fees/`; `State.protocol_fee_recipient_perp`/`_spot` + `hot_fee_withdraw`; `HotRole::FeeWithdraw` |
 | Admin setters | `update_perp/spot_market_liquidation_fee` (+protocol rate), `update_spot_market_if_factor` (if_fee_factor, protocol_fee_factor), `update_protocol_fee_recipient`, `update_perp/spot_fee_structure`, `update_perp_market_fee_pool_buffer_target`, `update_user_accelerated_referral_status` |
-| Event | `ProtocolFeeWithdrawRecord`, `AcceleratedReferralStatusChangedRecord`; `protocol_fee` on liquidation records |
+| Event | `ProtocolFeeWithdrawRecord`, `AcceleratedReferralStatusChangedRecordV0`; `protocol_fee` on liquidation records |
 
 ---
 
@@ -329,10 +331,10 @@ Classifies every fee the protocol charges by destination: **protocol-retained re
 
 ## Differences from upstream Drift
 
-- **Spot trading charges no fee.** The swap fee is hardcoded to zero (`let fee = 0_u64;`, `instructions/user.rs:3949`), and there is no spot order-book fill path (`fulfill_spot_order` does not exist); spot trades route through `begin_swap`/`end_swap` and `lp_pool_swap`. `SpotMarket.total_spot_fee` and `total_swap_fee` are therefore inert. The unused `spot_fee_pool` slot is reserved padding.
+- **Spot trading charges no fee.** The swap fee is hardcoded to zero (`let fee = 0_u64;`, `instructions/user/swap.rs`), and there is no spot order-book fill path, because `fulfill_spot_order` does not exist. Spot trades route through `begin_swap`, `end_swap` and `lp_pool_swap`. `SpotMarket.total_spot_fee` and `total_swap_fee` are therefore inert, and the former `spot_fee_pool` slot is now `padding_former_spot_fee_pool`.
 - **Perp taker fees are the only trading-fee revenue.**
-- **The AMM lives in `src/vlp/`** (the decoupled AMM). Its fee counters (`total_fee`, `total_mm_fee`, `total_fee_minus_distributions`, `total_fee_withdrawn`, `fee_pool`) are on `vlp/amm/state.rs`, not `PerpMarket`; `lp_fee_transfer_scalar` is now `HedgeConfig.fee_transfer_scalar` (`vlp/hedge/state.rs:80`).
-- **The protocol's automatic fee share is ½ of taker fees** (`SHARE_OF_FEES_ALLOCATED_TO_DRIFT = 1/2`, `math/constants.rs:111-112`). This bounds only the continuous revenue-pool sweep; AMM spread surplus and trading PnL are excluded from it and are realized at market wind-down instead (see [Protocol fee share](#protocol-fee-share-streaming-vs-wind-down)).
+- **The AMM lives in `src/vlp/`**, the decoupled AMM. Its fee counters (`total_fee`, `total_mm_fee`, `total_fee_minus_distributions`, `total_fee_withdrawn`, `fee_pool`) are on `vlp/amm/state.rs` rather than `PerpMarket`, and `lp_fee_transfer_scalar` is now `HedgeConfig.fee_transfer_scalar` (`vlp/hedge/state.rs`).
+- **The protocol's automatic fee share is ½ of taker fees** (`SHARE_OF_FEES_ALLOCATED_TO_DRIFT = 1/2`, a constant the redesign removed). This bounds only the continuous revenue-pool sweep. AMM spread surplus and trading PnL are excluded from it and are realized at market wind-down instead. See [Protocol fee share](#protocol-fee-share-streaming-vs-wind-down).
 
 ## Diagram 1 — Perp taker-fee decomposition
 

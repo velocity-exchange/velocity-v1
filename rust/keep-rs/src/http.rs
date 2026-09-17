@@ -67,9 +67,8 @@ pub struct Metrics {
     pub trigger_actual: IntCounter,
     pub swift_placed: IntCounter,
     pub swift_place_skipped: IntCounter,
-    /// Book makers a fill reached past but could not carry.
     pub clob_makers_dropped: IntCounter,
-    /// Book makers a fill did carry, so the two read as a ratio.
+    /// Book makers a fill did carry. Read it against `clob_makers_dropped` as a ratio.
     pub clob_makers_carried: IntCounter,
     pub fill_expected: IntCounterVec,
     pub fill_actual: IntCounterVec,
@@ -86,11 +85,11 @@ pub struct Metrics {
     pub cu_spent: HistogramVec,
     /// Quoter health, reported from what the filler's own simulations show.
     ///
-    /// The filler sees a class of failure nothing else does: a quoter whose
-    /// execute leg breaks a real fill. It does not exclude the quoter itself,
-    /// because a signed route is enforced on chain and dropping an entry the
-    /// taker named only trades one rejection for another. Exclusion belongs
-    /// where the route is chosen, before it is signed.
+    /// The filler sees a failure that nothing else sees: a quoter whose execute
+    /// leg breaks a real fill. The filler does not exclude the quoter itself. A
+    /// signed route is enforced on chain, so dropping an entry the taker named
+    /// trades one rejection for another. Exclusion belongs where the route is
+    /// chosen, before it is signed.
     pub quoter_health: Arc<Health>,
     pub registry: Registry,
 }
@@ -171,10 +170,9 @@ impl Metrics {
             .register(Box::new(swift_place_skipped.clone()))
             .unwrap();
 
-        // A book stops at the first maker the transaction did not bring, so
-        // every dropped maker is depth this fill left resting and the taker
-        // did not get. Whether that is worth designing around depends on how
-        // often it happens at all, which nothing measured until now.
+        // A book stops at the first maker the transaction did not bring. Every
+        // dropped maker is therefore depth that this fill left resting and the
+        // taker did not get. This counter measures how often that happens.
         let clob_makers_dropped = IntCounter::new(
             "rfb_clob_makers_dropped_total",
             "CLOB makers within reach of a fill that its account budget could not carry",
@@ -350,8 +348,8 @@ impl Metrics {
 }
 
 pub async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
-    // Quoter gauges describe the state as it stands, so they are refreshed
-    // here. The counters beside them were written as observations arrived.
+    // A quoter gauge reports the state as it stands, so the scrape refreshes it
+    // here. The counters beside it were written as each observation arrived.
     if let Some(quoter) = state.metrics.quoter_health.metrics() {
         quoter.sync(&state.metrics.quoter_health, now_ms());
     }
@@ -461,9 +459,9 @@ pub struct FeedHealth {
 }
 
 impl FeedHealth {
-    /// gRPC slots arrive at least ~2.5/s (faster as slot time drops); this much silence means the feed is dead
+    /// gRPC slots arrive at 2.5 per second or faster; this much silence means the feed is dead
     const GRPC_STALE_LIMIT_MS: u64 = 60_000;
-    /// pyth-lazer feeds tick every 50-200ms; this much silence means the feed is dead
+    /// pyth-lazer feeds tick every 50ms to 200ms; this much silence means the feed is dead
     const PYTH_STALE_LIMIT_MS: u64 = 60_000;
 
     fn unix_now_ms() -> u64 {

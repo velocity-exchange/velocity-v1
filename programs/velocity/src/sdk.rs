@@ -227,8 +227,8 @@ pub struct VelocityAccounts {
     pub oracles: Vec<(Pubkey, OwnedAccount)>,
     pub latest_slot: u64,
     pub oracle_guard_rails: Option<OracleGuardRails>,
-    /// Cluster slot clock, built by the caller from the `State` account
-    /// (`State::slot_clock`). Default is the 400ms baseline.
+    /// Cluster slot clock. The caller builds it from the `State` account with
+    /// `State::slot_clock`. The default is the 400ms baseline.
     pub slot_clock: SlotClock,
 }
 

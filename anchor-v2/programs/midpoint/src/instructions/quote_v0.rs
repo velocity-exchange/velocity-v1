@@ -5,35 +5,36 @@ use {
 
 #[derive(Accounts)]
 pub struct QuoteV0 {
-    /// mut only for the response tail — the ladder is not touched.
+    /// Mutable only for the response tail. The ladder is not written.
     #[account(mut)]
     pub quoter: Account<MidpointQuoterV0>,
 }
 
 /// Declared by `quoter-spec`, which owns every shape on this wire. A local
-/// mirror is not a convenience here: the fields are read in declaration
-/// order, so a mirror that is missing one reads every field after it from the
-/// wrong place and reports nothing wrong.
+/// mirror is unsafe. The reader takes the fields in declaration order, so a
+/// mirror that misses one field reads every later field from the wrong place
+/// and reports no error.
 ///
 /// The midpoint reads `users`, `taker`, `limit_price` and `reference_price`.
-/// It ignores `caps`: it settles against one standing-intent user and holds no
+/// It ignores `caps`. It settles against one standing-intent user and holds no
 /// orders, so there is no per-user budget to spend and nothing to skip
-/// mid-book. `reference_price` is velocity's oracle; the quoter refuses to
-/// quote when its mid is outside the configured band of that price.
+/// mid-book. `reference_price` is velocity's oracle price. The quoter refuses
+/// to quote when its mid is outside the configured band of that price.
 pub use quoter_spec::QuoteArgsV0;
 
-/// Whether this quoter has anything to say to this caller: settleability,
-/// self-trade, and (when configured) protected flow. The mid-staleness /
-/// pause gate lives in `MidpointQuoterV0::is_quoting`, applied by the
-/// quote/fill walks themselves.
+/// Report whether this quoter has anything to say to this caller. The gate
+/// covers settleability, self-trade, and protected flow when protected flow is
+/// configured. The mid-staleness gate and the pause gate live in
+/// `MidpointQuoterV0::is_quoting`, which the quote walk and the fill walk
+/// apply.
 ///
-/// The protected-flow branch reads `taker_served_window` off the wire:
-/// velocity asserts that the flow served a protection window — the swift
-/// hold (velocity read the co-signature off the instructions sysvar), or
-/// the book's activation delay (a crank fills an order that rested through
-/// it). The claim is trusted the way `users` and `caps` are: this program
-/// already authenticates its caller, and the caller is the settlement
-/// engine.
+/// The protected-flow branch reads `taker_served_window` off the wire.
+/// Velocity asserts that the flow served a protection window. The window is
+/// either the swift hold, where velocity read the co-signature off the
+/// instructions sysvar, or the book's activation delay, where a crank fills an
+/// order that rested through it. This program trusts the claim the way it
+/// trusts `users` and `caps`. It authenticates its caller, and the caller is
+/// the settlement engine.
 pub fn caller_gate(
     quoter: &MidpointQuoterV0,
     users: &[UserRefV0],
@@ -60,9 +61,9 @@ pub fn caller_gate(
     Ok(true)
 }
 
-/// Quoter interface: price levels for a taker of `direction`/`size` off the
-/// spline at the current mid, streamed into the quoter's response tail; the
-/// returned pointer locates them.
+/// Quoter interface. Price the levels a taker of `direction` and `size` takes
+/// off the spline at the current mid. The handler streams them into the
+/// quoter's response tail, and the returned pointer locates them.
 pub fn handle_quote_v0(ctx: &mut Context<QuoteV0>, args: QuoteArgsV0) -> Result<ResponsePointerV0> {
     let clock = Clock::get()?;
     let open = caller_gate(

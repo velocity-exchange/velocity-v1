@@ -222,12 +222,12 @@ export class SwiftMaker {
 									.divn(10000);
 								price = signedMsgOrderParams.auctionStartPrice!.add(offset);
 							}
-							// A maker no longer names the taker: a signed-msg order
-							// routes at placement and fills against the book. The
-							// maker quotes by resting a post-only order on the
-							// market's CLOB. The book rests at a fixed price, so
-							// an oracle-relative quote is priced here and rested
-							// fixed.
+							// A maker does not name the taker. A signed-msg order
+							// routes at placement and fills against the book, and
+							// the maker quotes by resting a post-only order on the
+							// market's CLOB. The book rests an order at a fixed
+							// price, so an oracle-relative quote is priced here and
+							// rested at that fixed price.
 							const { slots } = await this.velocityClient.getQuoterSlabAccount(
 								signedMsgOrderParams.marketIndex
 							);

@@ -1,30 +1,29 @@
 //! Where a relay watch reads an oracle's price, and how to state a
 //! protocol-precision threshold in that oracle's own raw units.
 //!
-//! A [`WakeKind::OnValueCross`] condition is deliberately dumb: it names an
-//! account, a byte offset, and a width, and the turner compares the signed
-//! little-endian integer it finds there against a threshold. That keeps the
-//! watch cheap — no CPI, no deserialization, no oracle-specific code in the
-//! turner — but it moves the burden here. The threshold has to be written
-//! in whatever units that particular oracle account happens to store, so
-//! the byte layout and the precision conversion have to agree, per source.
+//! A [`WakeKind::OnValueCross`] condition carries no oracle knowledge. It
+//! names an account, a byte offset, and a width. The turner compares the
+//! signed little-endian integer it finds there against a threshold. That keeps
+//! the watch cheap, with no CPI, no deserialization, and no oracle-specific
+//! code in the turner. It moves the work here instead. The threshold must be
+//! written in whatever units that oracle account stores, so the byte layout
+//! and the precision conversion must agree for each source.
 //!
-//! Both the trigger-order sync and the liquidation sync need exactly this,
-//! so it lives here rather than in either of them. Getting it wrong is not
-//! a loud failure: the watch simply fires at the wrong price, or never.
+//! The trigger-order sync and the liquidation sync both need this, so it lives
+//! here rather than in either of them. A mistake here is quiet. The watch
+//! fires at the wrong price, or never fires.
 //!
-//! Sources with no entry here return `None`, which is a supported outcome
-//! everywhere this is called — the caller falls back to its periodic sync
-//! condition and the keeper path, which is slower but not wrong. That is
-//! the right default for anything whose price is not an affine function of
-//! a fixed-width field:
+//! A source with no entry here returns `None`. Every caller supports that
+//! outcome and falls back to its periodic sync condition and the keeper path,
+//! which is slower but not wrong. `None` is the right answer for any price
+//! that is not an affine function of a fixed-width field:
 //!
-//! - **Stablecoin sources** snap the price to exactly `PRICE_PRECISION`
-//!   when it lands within 5bps of parity (`get_pyth_stable_coin_price`).
-//!   That step is not monotonic in the raw field, so no single raw
-//!   threshold expresses a protocol-price crossing.
-//! - **Prelaunch** and the deprecated switchboard variants store prices
-//!   already in protocol precision or in layouts we do not track.
+//! - A stablecoin source snaps the price to exactly `PRICE_PRECISION` when it
+//!   lands within 5bps of parity. See `get_pyth_stable_coin_price`. That step
+//!   is not monotonic in the raw field, so no single raw threshold expresses a
+//!   protocol-price crossing.
+//! - Prelaunch and the deprecated switchboard variants store prices already in
+//!   protocol precision, or in layouts this module does not track.
 
 use {
     crate::{
@@ -35,23 +34,23 @@ use {
     std::convert::TryInto,
 };
 
-/// Pyth push (`pyth_client::Price`): a 112-byte header, then `prod`,
-/// `next`, and `agg_pub` (32 bytes each), then `agg: PriceInfo` whose first
+/// Pyth push (`pyth_client::Price`) holds a 112-byte header, then `prod`,
+/// `next`, and `agg_pub` at 32 bytes each, then `agg: PriceInfo` whose first
 /// field is `price: i64`. `expo: i32` is the sixth word of the header.
 const PYTH_PUSH_PRICE_OFFSET: u32 = 208;
 const PYTH_PUSH_EXPONENT_OFFSET: usize = 20;
 
-/// PythLazer: `price: i64` immediately past the anchor discriminator,
-/// `exponent: i32` at 32.
+/// PythLazer holds `price: i64` immediately past the anchor discriminator and
+/// `exponent: i32` at offset 32.
 const PYTH_LAZER_PRICE_OFFSET: u32 = 8;
 const PYTH_LAZER_EXPONENT_OFFSET: usize = 32;
 
 /// Every source below stores its price as an `i64`.
 const PRICE_LEN: u32 = 8;
 
-/// The largest decimal exponent the raw conversion will attempt. Well past
-/// any real oracle (pyth publishes 8-ish); the bound exists so the `pow`
-/// cannot overflow rather than to express a policy.
+/// The largest decimal exponent the raw conversion attempts. It sits well
+/// past any real oracle, because pyth publishes about 8. The bound exists so
+/// that the `pow` cannot overflow. It states no policy.
 const MAX_DECIMALS: u32 = 12;
 
 /// A registered raw-price watch: where the value lives, and what it means.
@@ -73,10 +72,10 @@ impl OracleWatchV0 {
     /// The oracle's current price in `PRICE_PRECISION`, matching what
     /// `get_pyth_price` would report for it.
     ///
-    /// Callers doing margin arithmetic against a watched market need this
-    /// rather than [`Self::raw_price`]: the raw field is in the oracle's
-    /// own units, which are only the protocol's when the feed happens to
-    /// publish six decimals.
+    /// A caller that does margin arithmetic against a watched market needs
+    /// this rather than [`Self::raw_price`]. The raw field is in the oracle's
+    /// own units, which match the protocol's only when the feed publishes six
+    /// decimals.
     pub fn protocol_price(&self) -> Option<i128> {
         if self.decimals > MAX_DECIMALS {
             return None;
@@ -86,19 +85,19 @@ impl OracleWatchV0 {
             .checked_div(10i128.checked_pow(self.decimals)?)
     }
 
-    /// A `PRICE_PRECISION` price in this oracle's raw units, or `None` if
-    /// it does not survive the conversion — which is the inverse of
-    /// `get_pyth_price`'s scaling, so that a raw crossing and a protocol
-    /// crossing are the same event.
+    /// A `PRICE_PRECISION` price in this oracle's raw units, or `None` when it
+    /// does not survive the conversion. The conversion inverts
+    /// `get_pyth_price`'s scaling, so a raw crossing and a protocol crossing
+    /// are the same event.
     ///
-    /// Rounding follows `direction`, always toward firing early: the
-    /// resolver re-derives everything from the real oracle code, so an
-    /// early wake costs one simulation, while a late one is a missed
-    /// trigger or a missed liquidation.
+    /// Rounding follows `direction` and always moves toward firing early. The
+    /// resolver re-derives everything from the real oracle code, so an early
+    /// wake costs one simulation. A late wake is a missed trigger or a missed
+    /// liquidation.
     ///
-    /// `None` means "do not arm this watch": a threshold that overflows,
-    /// or that lands at or below zero, is not a price the oracle can
-    /// report.
+    /// `None` means the caller must not arm this watch. A threshold that
+    /// overflows, or that lands at or below zero, is not a price the oracle
+    /// can report.
     pub fn raw_threshold(&self, price: i128, direction: WatchDirection) -> Option<i64> {
         if self.decimals > MAX_DECIMALS {
             return None;
@@ -110,8 +109,8 @@ impl OracleWatchV0 {
         }
         let raw = match direction {
             WatchDirection::AtOrAbove => numerator.checked_div(denominator)?,
-            // Ceiling division (`int_roundings` is unstable on this
-            // toolchain); both operands are positive above.
+            // Ceiling division. `int_roundings` is unstable on this
+            // toolchain. Both operands are positive by the check above.
             WatchDirection::AtOrBelow => numerator
                 .checked_add(denominator.checked_sub(1)?)?
                 .checked_div(denominator)?,
@@ -123,8 +122,8 @@ impl OracleWatchV0 {
     }
 }
 
-/// Which way a watch fires. Also the rounding direction for its threshold,
-/// which is why the two are one type: they can never disagree.
+/// Which way a watch fires. It is also the rounding direction for the
+/// threshold. One type carries both, so the two can never disagree.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WatchDirection {
     /// Fires once the watched value is at or above the threshold.
@@ -147,9 +146,9 @@ impl WatchDirection {
 /// configured with, or `None` when the source has no registered layout or
 /// the account does not look like one.
 ///
-/// The source is taken from market config rather than sniffed, mirroring
-/// every other read of these accounts: an oracle whose bytes disagree with
-/// its configured source is an admin error, not something to guess around.
+/// The source comes from market config rather than from the account bytes,
+/// which is how every other read of these accounts works. An oracle whose
+/// bytes disagree with its configured source is an admin error.
 pub fn oracle_watch(oracle: &AccountInfo, source: OracleSource) -> Option<OracleWatchV0> {
     let (price_offset, exponent_offset) = match source {
         OracleSource::Pyth | OracleSource::Pyth1K | OracleSource::Pyth1M => {
@@ -164,8 +163,8 @@ pub fn oracle_watch(oracle: &AccountInfo, source: OracleSource) -> Option<Oracle
 
     let data = oracle.try_borrow_data().ok()?;
     if price_offset == PYTH_LAZER_PRICE_OFFSET {
-        // Lazer accounts are anchor-owned, so the discriminator is a real
-        // check that the layout is what we think it is.
+        // Lazer accounts are anchor-owned, so the discriminator proves the
+        // layout.
         if data.len() < 8 + core::mem::size_of::<PythLazerOracle>()
             || data.get(..8)? != PythLazerOracle::DISCRIMINATOR
         {
@@ -203,8 +202,8 @@ mod tests {
         }
     }
 
-    /// The conversion has to round-trip against `get_pyth_price`'s
-    /// scaling: raw * 10^-decimals * multiple, in PRICE_PRECISION.
+    /// The conversion must round-trip against `get_pyth_price`'s scaling,
+    /// which is raw * 10^-decimals * multiple, in `PRICE_PRECISION`.
     #[test]
     fn raw_threshold_inverts_the_price_scaling() {
         let up = WatchDirection::AtOrAbove;
@@ -213,8 +212,8 @@ mod tests {
             watch(8, 1).raw_threshold(150_000_000, up),
             Some(15_000_000_000)
         );
-        // Same feed as a 1K source: the raw field carries a thousandth of
-        // the protocol price, so the threshold is 1000x smaller.
+        // The same feed as a 1K source. The raw field carries a thousandth of
+        // the protocol price, so the threshold is 1000 times smaller.
         assert_eq!(
             watch(8, 1000).raw_threshold(150_000_000, up),
             Some(15_000_000)
@@ -226,8 +225,8 @@ mod tests {
     /// Rounding always moves the threshold toward firing early.
     #[test]
     fn raw_threshold_rounds_toward_firing_early() {
-        // $1.500005 on a 5-decimal feed: exactly half a raw unit, so the
-        // two directions have to land on different integers.
+        // $1.500005 on a 5-decimal feed is exactly half a raw unit, so the
+        // two directions must land on different integers.
         let price = 1_500_005i128;
         assert_eq!(
             watch(5, 1).raw_threshold(price, WatchDirection::AtOrAbove),
@@ -280,8 +279,8 @@ mod tests {
         }
     }
 
-    /// The bug this module exists to prevent: an 8-decimal feed's raw field
-    /// is 100x the protocol price, not equal to it.
+    /// An 8-decimal feed's raw field is 100 times the protocol price. This
+    /// module exists so that no caller reads the raw field as a price.
     #[test]
     fn protocol_price_is_not_the_raw_field() {
         let mut w = watch(8, 1);

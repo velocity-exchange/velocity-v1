@@ -318,8 +318,8 @@ fn settle_escrow_on_delete<'c: 'info, 'info>(
     let mut escrow = RevenueShareEscrowLoader::load_zc_mut(&*ctx.accounts.revenue_share_escrow)?;
     escrow.revoke_completed_orders(user)?;
 
-    // Belt and braces: after the above, nothing for this subaccount may still be
-    // outstanding. If it somehow is, fail rather than retire the id over it.
+    // After the revoke above, nothing for this subaccount may still be
+    // outstanding. If something is, fail rather than retire the id over it.
     validate!(
         !escrow.has_outstanding_orders_for_sub_account(user.sub_account_id)?,
         ErrorCode::UserCantBeDeleted,

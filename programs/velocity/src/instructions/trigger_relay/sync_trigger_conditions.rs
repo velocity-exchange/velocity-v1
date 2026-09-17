@@ -1,37 +1,36 @@
 //! Rewrite a user's relay trigger-condition block from their live orders.
 //!
-//! Permissionless and idempotent — the block is a *hint set*, and this is
-//! its only writer besides the trigger cranks' slot release: anyone (the
-//! user's UI after placing, a keeper, the user) can call it, paying rent on
-//! first touch. Each armed trigger order (up to the slot cap) gets one
-//! `OnValueCross` condition watching the market oracle's raw price at the
-//! trigger threshold, so relay turners pay nothing while the price is away
-//! from the trigger. Orders past the cap, on markets without crank
-//! conditions (no reservoir → no keeper fee to express), or on oracle
-//! sources without a raw-price watch layout simply stay on the keeper-bot
-//! path — the correctness floor either way.
+//! The pass is permissionless and idempotent. The block is a hint set, and this is
+//! its only writer besides the trigger cranks' slot release. Anyone can call it, and
+//! the first caller pays the rent. Each armed trigger order up to the slot cap gets
+//! one `OnValueCross` condition on the market oracle's raw price at the trigger
+//! threshold, so relay turners pay nothing while the price is away from the trigger.
 //!
-//! Each fired trigger routes to one of three executors by order type and
-//! whether the market has a CLOB: a trigger-limit rests whole on the book
-//! (`trigger_limit_order_v1`), a stop-market fires and fills against the book
-//! (`trigger_market_order_v1`), and anything on a market without a CLOB stays on the
+//! Three kinds of order stay on the keeper-bot path, which is the correctness floor
+//! either way: orders past the slot cap, orders on markets with no crank conditions,
+//! and orders on oracle sources with no raw-price watch layout. A market with no
+//! reservoir has no keeper fee to express.
+//!
+//! Each fired trigger routes to one of three executors by order type and by whether
+//! the market has a CLOB. A trigger-limit rests whole on the book
+//! (`trigger_limit_order_v1`). A stop-market fires and fills against the book
+//! (`trigger_market_order_v1`). Anything on a market without a CLOB stays on the
 //! plain trigger crank (`trigger_order`) for a keeper bot.
 //!
-//! `remaining_accounts` carry, in any order: the perp markets of the user's
-//! trigger orders, their oracle accounts, their `ClobCrankConditionsV0`
-//! (keeper payment), the markets' CLOB entries (for the two CLOB executors),
-//! and the user's full margin-map section (every spot/perp
-//! market + oracle their positions touch — what the SDK's
-//! `getRemainingAccounts` already computes). The margin maps are captured
-//! onto the account for the staged executors; they go stale when positions
-//! change and a re-sync repairs them.
+//! `remaining_accounts` carry these accounts in any order: the perp markets of the
+//! user's trigger orders, their oracle accounts, their `ClobCrankConditionsV0` for
+//! keeper payment, the markets' CLOB entries for the two CLOB executors, and the
+//! user's full margin-map section. That section is every spot market, perp market and
+//! oracle the user's positions touch, which is what the SDK's `getRemainingAccounts`
+//! computes. The margin maps are captured onto the account for the staged executors.
+//! They go stale when positions change, and a re-sync repairs them.
 //!
-//! The margin-map section is required, not optional. The captured list is the
-//! one list every liquidation condition on the account also reads, and this
-//! instruction is permissionless. A caller that passed less than the user is
-//! exposed in would replace that account's liquidation coverage with a list
-//! that fails to load maps. So this pass refuses the same short call the
-//! liquidation pass refuses, and it stores the list in the same shape.
+//! The margin-map section is required. The captured list is the one list every
+//! liquidation condition on the account also reads, and this instruction is
+//! permissionless. A caller that passed less than the user is exposed in would replace
+//! that account's liquidation coverage with a list that fails to load maps. This pass
+//! therefore refuses the same short call the liquidation pass refuses, and it stores
+//! the list in the same shape.
 
 use {
     crate::{
@@ -102,9 +101,9 @@ pub fn handle_sync_trigger_conditions<'c: 'info, 'info>(
 
 /// Derive this user's trigger conditions into the trigger slot range.
 ///
-/// `write_shared_list` is false when the liquidation pass in the same
-/// instruction already wrote the resolver list — it is the same list, and
-/// writing it twice is just CU.
+/// `write_shared_list` is false when the liquidation pass in the same instruction
+/// already wrote the resolver list. It is the same list, so writing it twice only
+/// spends compute units.
 ///
 /// The list is the whole of the account's liquidation coverage: every
 /// liquidation condition and every staged executor reads it, and a write
@@ -226,8 +225,8 @@ impl TriggerInputs<'_> {
     }
 }
 
-/// Classify the remaining accounts by discriminator; oracles are matched
-/// by pubkey against the loaded markets afterwards.
+/// Classify the remaining accounts by discriminator. Oracles are matched by pubkey
+/// against the loaded markets afterwards.
 fn collect_trigger_inputs<'info>(
     remaining_accounts: &'info [AccountInfo<'info>],
 ) -> Result<TriggerInputs<'info>> {
@@ -291,10 +290,10 @@ fn collect_trigger_inputs<'info>(
                 continue;
             }
         }
-        // Anything else is a candidate oracle: matched by pubkey below, and
-        // part of the margin-map section (readonly). Velocity-owned
-        // accounts land here too — deliberately: velocity hosts its own
-        // oracle accounts (PythLazer, prelaunch).
+        // Anything else is a candidate oracle. It is matched by pubkey below and is
+        // part of the readonly margin-map section. Velocity-owned accounts land here
+        // on purpose, because velocity hosts its own oracle accounts for PythLazer and
+        // prelaunch markets.
         oracle_infos.insert(*info.key, info);
     }
 
@@ -326,14 +325,14 @@ fn resolve_oracle_watches(inputs: &mut TriggerInputs<'_>) -> Vec<AccountRefV0> {
     oracle_refs
 }
 
-/// The same stored list the liquidation sync writes: the resolver's
-/// named accounts, then the user's margin map. Either sync populating
-/// it is enough, and neither has to carry its own copy.
+/// The same stored list the liquidation sync writes: the resolver's named accounts,
+/// then the user's margin map. Either sync can populate it, and neither has to carry
+/// its own copy.
 ///
-/// The map section follows load_maps order: oracles (readonly) first, then
-/// the spot/perp markets (writable), then the crank tail the map parser never
-/// reaches. Both passes build the list the same way from the same accounts,
-/// so neither can write a weaker one than the other.
+/// The map section follows `load_maps` order. Readonly oracles come first, then the
+/// writable spot and perp markets, then the crank tail the map parser never reaches.
+/// Both passes build the list the same way from the same accounts, so neither can write
+/// a weaker one than the other.
 fn build_sync_accounts(
     conditions_key: Pubkey,
     user_key: Pubkey,
@@ -367,16 +366,16 @@ struct TriggerWatch {
     clob: Option<(Pubkey, Pubkey, Pubkey)>,
 }
 
-/// Derive the watch that arms one order. `None` leaves the order on the
-/// keeper-bot path: it does not trigger, its market is absent, or the
-/// market gives no oracle, no watch layout, or no keeper payment.
+/// Derive the watch that arms one order. `None` leaves the order on the keeper-bot
+/// path. That happens when the order does not trigger, when its market is absent, or
+/// when the market gives no oracle, no watch layout, or no keeper payment.
 fn trigger_watch_for_order(
     order: &crate::state::user::Order,
     markets: &BTreeMap<u16, MarketInputs>,
 ) -> Option<TriggerWatch> {
-    // Skip a trigger already resting on a book: it deliberately reads
-    // as untriggered, so without this the watch re-fires every round
-    // and `trigger_limit_order_v1` rejects the staged crank each time.
+    // A trigger already resting on a book reads as untriggered by design. Without
+    // this skip the watch re-fires every round, and `trigger_limit_order_v1` rejects
+    // the staged crank each time.
     if order.status != OrderStatus::Open
         || !order.must_be_triggered()
         || order.triggered()
@@ -407,13 +406,12 @@ fn trigger_watch_for_order(
     })
 }
 
-/// Route each fired trigger to its resolver by order type and whether
-/// the market has a CLOB. A trigger-limit with a fixed resting price
-/// rests whole on the book (`trigger_limit_order_v1`). A stop-market fires
-/// and fills against the book (`trigger_market_order_v1`). Everything else —
-/// any trigger on a market without a CLOB, or a trigger-limit with an
-/// oracle offset that cannot rest at a fixed price — stays on the plain
-/// trigger crank for a keeper bot to fill.
+/// Route each fired trigger to its resolver by order type and by whether the market
+/// has a CLOB. A trigger-limit with a fixed resting price rests whole on the book
+/// (`trigger_limit_order_v1`). A stop-market fires and fills against the book
+/// (`trigger_market_order_v1`). Everything else stays on the plain trigger crank for a
+/// keeper bot to fill. That is any trigger on a market without a CLOB, and any
+/// trigger-limit with an oracle offset that cannot rest at a fixed price.
 fn route_trigger_resolver(
     order: &crate::state::user::Order,
     clob: Option<(Pubkey, Pubkey, Pubkey)>,
@@ -480,7 +478,7 @@ fn slot_resolver_refs(
     ]
 }
 
-/// Stale tail slots go quiet.
+/// Zero the slots past the last order written, so stale conditions stop firing.
 fn clear_unused_trigger_slots(conditions: &mut UserConditionsV0, from: usize) -> Result<()> {
     for index in from..TRIGGER_CONDITION_SLOTS {
         conditions.set_condition(

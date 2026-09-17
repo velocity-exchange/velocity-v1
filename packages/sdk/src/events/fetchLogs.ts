@@ -31,9 +31,9 @@ const eventTypeByLowercaseName = new Map<string, EventType>(
 
 type Log = { txSig: TransactionSignature; slot: number; logs: string[] };
 type FetchLogsResponse = {
-	/** Oldest signature safe to page backwards from; undefined when a `getTransaction` failed on the newest signature in the page. */
+	/** Oldest signature that is safe to page backwards from. It is undefined when a `getTransaction` failed on the newest signature in the page. */
 	earliestTx: string | undefined;
-	/** Newest signature safe to resume forwards from; undefined when a `getTransaction` failed on the oldest signature in the page. */
+	/** Newest signature that is safe to resume forwards from. It is undefined when a `getTransaction` failed on the oldest signature in the page. */
 	mostRecentTx: string | undefined;
 	earliestSlot: number | undefined;
 	mostRecentSlot: number | undefined;
@@ -64,7 +64,7 @@ function mapTransactionResponseToLog(
  * @param untilTx Stop at (exclusive of) this signature.
  * @param limit Max signatures to request from `getSignaturesForAddress`; RPC default applies if omitted.
  * @param batchSize Number of `getTransaction` calls batched per RPC round-trip; defaults to 25.
- * @returns `undefined` if no non-failed signatures were found in range; otherwise the transaction logs plus the earliest/most-recent signature, slot, and block time safe to resume from, for use as the next `beforeTx`/`mostRecentSeenTx` cursor. A cursor side with no safe signature left (a `getTransaction` failed on the outermost one) comes back undefined while the fetched logs are still returned, so the caller can deliver them and then keep or stop at the cursor it already has.
+ * @returns `undefined` when no non-failed signature is found in range. Otherwise the transaction logs, plus the earliest and most recent signature, slot, and block time that are safe to resume from, for use as the next `beforeTx` or `mostRecentSeenTx` cursor. A cursor side with no safe signature left comes back undefined, which happens when a `getTransaction` failed on the outermost signature. The fetched logs are still returned, so the caller can deliver them and then keep or stop at the cursor it already has.
  */
 export async function fetchLogs(
 	connection: Connection,
@@ -99,9 +99,10 @@ export async function fetchLogs(
 
 	const chunkedSignatures = chunk(filteredSignatures, batchSize);
 
-	// Signatures whose `getTransaction` came back as a JSON-RPC error. These are
-	// retryable (rate limit, node hiccup, unsupported tx version), so the resume
-	// cursors below must not move past them.
+	// Signatures whose `getTransaction` came back as a JSON-RPC error. The call
+	// is retryable, because the cause is a rate limit, a transient node failure,
+	// or an unsupported transaction version. The resume cursors below therefore
+	// must not move past such a signature.
 	const erroredSignatures = new Set<TransactionSignature>();
 
 	const transactionLogs = (
@@ -117,13 +118,13 @@ export async function fetchLogs(
 		)
 	).flat();
 
-	// `filteredSignatures` is oldest-first. `mostRecentTx` is the forward resume
-	// cursor (`PollingLogProvider` feeds it back as `untilTx`, so the next poll
-	// only sees newer signatures) and must stop just before the oldest failure.
-	// `earliestTx` is the backward one (`EventSubscriber.fetchPreviousTx` feeds it
-	// back as `beforeTx`, paging into older history) and must stop just after the
-	// newest failure. Either way a failed signature stays in range for a later
-	// fetch instead of being skipped for good.
+	// `filteredSignatures` runs oldest first. `mostRecentTx` is the forward
+	// resume cursor and stops just before the oldest failure.
+	// `PollingLogProvider` feeds it back as `untilTx`, so the next poll sees only
+	// newer signatures. `earliestTx` is the backward cursor and stops just after
+	// the newest failure. `EventSubscriber.fetchPreviousTx` feeds it back as
+	// `beforeTx` to page into older history. Either way a failed signature stays
+	// in range for a later fetch instead of being skipped for good.
 	const erroredIndexes = filteredSignatures
 		.map((signature, index) =>
 			erroredSignatures.has(signature.signature) ? index : -1
@@ -138,9 +139,9 @@ export async function fetchLogs(
 		: filteredSignatures.length - 1;
 
 	// A side with no signature left past the failures gets an undefined cursor
-	// instead of sinking the whole response: the logs that did come back are
-	// still returned so the caller can deliver them, and with no cursor to
-	// advance to the caller keeps (or stops at) the one it already has.
+	// rather than discard the whole response. The logs that came back are still
+	// returned, so the caller can deliver them. With no cursor to advance to,
+	// the caller keeps the cursor it already has or stops there.
 	const earliest =
 		earliestIndex < filteredSignatures.length
 			? filteredSignatures[earliestIndex]
@@ -164,8 +165,8 @@ export async function fetchLogs(
  * @param connection RPC connection.
  * @param signatures Signatures to fetch (fetched as `maxSupportedTransactionVersion: 1`).
  * @param finality Commitment to fetch each transaction at.
- * @param erroredSignatures Optional set, populated with each signature whose `getTransaction` returned a JSON-RPC error so the caller can avoid advancing a cursor past it.
- * @returns One `Log` per signature that returned a result (signatures the RPC couldn't resolve are dropped, not padded with placeholders; errored ones are logged).
+ * @param erroredSignatures Optional set. It receives each signature whose `getTransaction` returned a JSON-RPC error, so the caller can avoid advancing a cursor past it.
+ * @returns One `Log` per signature that returned a result. A signature the RPC cannot resolve is dropped rather than padded with a placeholder, and a signature that errored is logged.
  * @throws (rejects) if the batch RPC call doesn't complete within 10 seconds.
  */
 export async function fetchTransactionLogs(
@@ -187,9 +188,10 @@ export async function fetchTransactionLogs(
 		});
 	}
 
-	// Responses come back aligned to `requests`, so `signatures[index]` is the
-	// signature this response answers. Reading the raw `_rpcBatchRequest` array
-	// by position would not be: JSON-RPC lets a server reorder a batch.
+	// The responses come back aligned to `requests`, so `signatures[index]` is
+	// the signature that each response answers. Reading the raw
+	// `_rpcBatchRequest` array by position is not safe, because JSON-RPC lets a
+	// server reorder a batch.
 	const rpcResponses: any | null = await promiseTimeout(
 		rpcBatchRequest(connection, requests),
 		10 * 1000 // 10 second timeout
@@ -205,7 +207,8 @@ export async function fetchTransactionLogs(
 		if (rpcResponse?.result) {
 			logs.push(mapTransactionResponseToLog(rpcResponse.result));
 		} else if (rpcResponse?.error) {
-			// One unreadable entry must not sink the whole batch, so log and carry on.
+			// One unreadable entry must not fail the whole batch, so log it and
+			// continue.
 			const signature = signatures[index];
 			console.error(
 				`fetchTransactionLogs: getTransaction failed for ${signature}: ${rpcResponse.error.code} ${rpcResponse.error.message}`

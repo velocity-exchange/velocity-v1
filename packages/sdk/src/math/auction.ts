@@ -27,11 +27,13 @@ import {
 } from './time';
 
 /**
- * Auction interpolation progress, mirroring the program's `auction_progress`:
- * elapsed wall clock ms (integrated per slot duration regime) capped at the
- * auction's wall clock length, over that length. `order.auctionDuration` is
- * stored in 400ms units (one slot at the 400ms baseline, where this is
- * identical to the historical per slot interpolation).
+ * Auction interpolation progress. This mirrors the program's
+ * `auction_progress`. The numerator is the elapsed wall clock time in
+ * milliseconds, integrated per slot duration regime and capped at the
+ * auction's wall clock length. The denominator is that length.
+ * `order.auctionDuration` is stored in 400ms units. One such unit is one slot
+ * at the 400ms baseline, where this matches the earlier per-slot
+ * interpolation.
  */
 function auctionProgress(
 	order: Order,
@@ -385,12 +387,12 @@ export function deriveOracleAuctionParams({
 }
 
 /**
- * Mirrors `PerpMarket::get_auction_end_min_max_divisors` (`state/perp_market.rs`): the tier band for
- * a perp auction's width, as divisors of the oracle TWAP. A larger divisor gives a smaller price, so
- * `oracleTwap / minDivisor` is the narrowest auction the tier allows and `oracleTwap / maxDivisor`
- * the widest. Per tier the widest is 2% (A), 5% (B, C), 10% (Speculative), 20% (HighlySpeculative,
- * Isolated).
- * @param perpMarket Market whose `contractTier` selects the band.
+ * The tier band for a perp auction's width, as divisors of the oracle TWAP. This mirrors
+ * `PerpMarket::get_auction_end_min_max_divisors` in `state/perp_market.rs`. A larger divisor
+ * gives a smaller price, so `oracleTwap / minDivisor` is the narrowest auction the tier allows
+ * and `oracleTwap / maxDivisor` is the widest. The widest is 2 percent for tier A, 5 percent for
+ * B and C, 10 percent for Speculative, and 20 percent for HighlySpeculative and Isolated.
+ * @param perpMarket The market whose `contractTier` selects the band.
  * @returns `{ minDivisor, maxDivisor }` to divide the oracle TWAP by.
  */
 export function getAuctionEndMinMaxDivisors(perpMarket: PerpMarketAccount): {
@@ -412,13 +414,14 @@ export function getAuctionEndMinMaxDivisors(perpMarket: PerpMarketAccount): {
 }
 
 /**
- * Widest distance from the oracle TWAP that a baseline auction start offset may sit, mirroring
- * `OrderParams::get_perp_baseline_max_price_offset` (`state/order_params.rs`). This is
- * `oracleTwap / maxDivisor` from `getAuctionEndMinMaxDivisors`. An auction that STARTS further from
- * oracle than the widest auction the tier permits is nonsense, so the same number bounds the start
- * offset (OtterSec #146).
- * @param perpMarket Market providing the oracle TWAP and the contract tier.
- * @returns Non-negative bound, PRICE_PRECISION (1e6). The program clamps the start offset to ± this.
+ * The widest distance from the oracle TWAP that a baseline auction start offset may sit. This
+ * mirrors `OrderParams::get_perp_baseline_max_price_offset` in `state/order_params.rs`. The
+ * value is `oracleTwap / maxDivisor` from `getAuctionEndMinMaxDivisors`. An auction that starts
+ * further from the oracle than the widest auction the tier permits is nonsense, so the same
+ * number bounds the start offset (OtterSec #146).
+ * @param perpMarket The market that provides the oracle TWAP and the contract tier.
+ * @returns A non-negative bound, in PRICE_PRECISION (1e6). The program clamps the start offset
+ *   to plus or minus this value.
  */
 export function getPerpBaselineMaxPriceOffset(
 	perpMarket: PerpMarketAccount
@@ -505,10 +508,10 @@ export function getTriggerAuctionStartPrice(params: {
 			  );
 	}
 
-	// OtterSec #146: the program clamps the baseline start offset to the tier auction-width band
-	// (`OrderParams::get_perp_baseline_start_price_offset`). Both TWAP inputs above are movable by a
-	// crank caller, and these offsets set the auction band for a third party's forced close. The clamp
-	// runs before the start buffer, as it does in the program.
+	// The program clamps the baseline start offset to the tier auction-width band in
+	// `OrderParams::get_perp_baseline_start_price_offset` (OtterSec #146). A crank caller can
+	// move both TWAP inputs above, and these offsets set the auction band for a third party's
+	// forced close. The clamp runs before the start buffer, as it does in the program.
 	const maxPriceOffset = getPerpBaselineMaxPriceOffset(perpMarket);
 	baselineStartOffset = BN.min(
 		BN.max(baselineStartOffset, maxPriceOffset.neg()),

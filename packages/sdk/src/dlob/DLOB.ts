@@ -162,10 +162,10 @@ export class DLOB {
 	initialized = false;
 
 	/**
-	 * The `State` slot duration fields (`SlotDurationState`) auction wall clock
-	 * math converts elapsed slots through. Set it from a subscribed `State`
-	 * (e.g. `dlob.slotDurationState = velocityClient.getStateAccount()`) so
-	 * auction progress stays exact across IBRL slot duration transitions;
+	 * The `State` slot duration fields that auction wall-clock math converts
+	 * elapsed slots through. Set it from a subscribed `State`, for example
+	 * `dlob.slotDurationState = velocityClient.getStateAccount()`. Auction
+	 * progress then stays exact across a slot duration transition. While it is
 	 * unset, the 400ms baseline applies.
 	 */
 	slotDurationState: SlotDurationState = {};
@@ -359,11 +359,11 @@ export class DLOB {
 	 * `signedMsg` bid/ask list, unconditionally (no status/order-type filtering, unlike
 	 * `insertOrder`). Lazily creates the market's `MarketNodeLists` on first insert.
 	 *
-	 * No slot gating: the program rejects a place of an auction order while
-	 * `order.slot > clock.slot` (a resting limit, with no auction, may be placed ahead of its
-	 * slot within a bounded lead), so callers that act on inserted signed-msg orders (e.g.
-	 * fillers) should hold an order back until `signedMsgOrderPlaceable(state, order,
-	 * currentSlot)` (from `math/orders`) is true.
+	 * This method applies no slot gating. The program rejects a place of an auction order
+	 * while `order.slot > clock.slot`. A resting limit order carries no auction and may be
+	 * placed ahead of its slot within a bounded lead. A caller that acts on an inserted
+	 * signed-message order, such as a filler, must hold the order back until
+	 * `signedMsgOrderPlaceable(state, order, currentSlot)` in `math/orders` returns true.
 	 *
 	 * @param order the signed-message order to insert
 	 * @param userAccount base58 pubkey string of the order's owner
@@ -1325,20 +1325,6 @@ export class DLOB {
 		return nodesToFill;
 	}
 
-	/**
-	 * Finds orders in a market that are eligible to be expired: any non-trigger, non-TIF-limit
-	 * order whose `maxTs` (plus a 25-second buffer for limit orders, via `isOrderExpired`) has
-	 * passed the given timestamp. Also proactively removes (not just reports) signed-message
-	 * orders whose placement window (`signedMsgMaxSlot`, mirroring the program's `max_slot`) has
-	 * passed `slot`, since those never landed on-chain and have no on-chain expiration to wait for.
-	 *
-	 * @param marketIndex the market to scan
-	 * @param ts current unix timestamp (seconds)
-	 * @param marketType `MarketType.PERP` or `MarketType.SPOT`
-	 * @param slot current slot; required if the market has any signed-message orders (throws otherwise)
-	 * @returns `NodeToFill`s (with empty `makerNodes`) for orders ready to expire
-	 * @throws if a signed-message order is present and `slot` was not provided
-	 */
 	/** The order's placement window, resolved against this DLOB's slot clock. */
 	private signedMsgMaxSlot(order: Order): BN {
 		return signedMsgOrderMaxSlot(
@@ -1348,6 +1334,21 @@ export class DLOB {
 		);
 	}
 
+	/**
+	 * Finds orders in a market that are eligible to be expired. Any non-trigger,
+	 * non-TIF-limit order qualifies once its `maxTs` has passed the given timestamp.
+	 * `isOrderExpired` adds a 25-second buffer for a limit order. This method also
+	 * removes, and not only reports, a signed-message order whose placement window has
+	 * passed `slot`. `signedMsgMaxSlot` resolves that window, mirroring the program's
+	 * `max_slot`. Such an order never landed on chain and has no on-chain expiration.
+	 *
+	 * @param marketIndex the market to scan
+	 * @param ts current unix timestamp (seconds)
+	 * @param marketType `MarketType.PERP` or `MarketType.SPOT`
+	 * @param slot current slot. Required if the market holds any signed-message order, and the method throws without it
+	 * @returns `NodeToFill`s with empty `makerNodes`, for orders ready to expire
+	 * @throws if a signed-message order is present and `slot` was not provided
+	 */
 	public findExpiredNodesToFill(
 		marketIndex: number,
 		ts: number,
@@ -2073,11 +2074,12 @@ export class DLOB {
 	}
 
 	/**
-	 * Decides which of a crossing ask/bid pair is the maker and which is the taker: if both are
-	 * post-only, they can't be matched (`undefined`); if exactly one is post-only, it's the
-	 * maker; otherwise whichever order's auction ends later in wall clock (placement time plus
-	 * `auctionDuration` in 400ms units, measured through the slot clock) is treated as the taker
-	 * (it "arrived crossing" the earlier order).
+	 * Decides which of a crossing ask and bid pair is the maker and which is the taker.
+	 * Two post-only orders cannot match, and the method returns `undefined`. When exactly
+	 * one order is post-only, that order is the maker. Otherwise the order whose auction
+	 * ends later in wall clock is the taker, because it crossed an order that was already
+	 * resting. An auction ends at the placement time plus `auctionDuration`, which is
+	 * stored in 400ms units and measured through the slot clock.
 	 *
 	 * @param askNode the crossing ask node
 	 * @param bidNode the crossing bid node
@@ -2089,8 +2091,8 @@ export class DLOB {
 	): { takerNode: DLOBNode; makerNode: DLOBNode } | undefined {
 		const askOrder = getOrderOrThrow(askNode);
 		const bidOrder = getOrderOrThrow(bidNode);
-		// auction end instants in ms from a common anchor, so the ordering is
-		// exact even when the two auctions straddle a slot duration transition
+		// Auction end instants in ms from a common anchor. The ordering then stays
+		// exact when the two auctions cross a slot duration transition.
 		const anchorSlot = BN.min(askOrder.slot, bidOrder.slot);
 		const askSlot = elapsedMillis(
 			this.slotDurationState,

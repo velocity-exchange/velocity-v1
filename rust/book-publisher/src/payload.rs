@@ -1,21 +1,21 @@
 //! Synthesize the dlob-server wire payloads from a pair of quote views.
 //!
-//! The TypeScript serving side keeps its Redis contract: one JSON document
-//! per market under `last_update_orderbook_perp_{index}` (and the matching
-//! pub/sub channel), levels as decimal strings in on-chain precision, a
-//! numeric top-level `slot` (the freshness key `selectMostRecentBySlot`
-//! picks by), and a per-level `sources` breakdown. The four-source book
-//! rides the existing `sources` field with two new keys — `clob` and
-//! `propamm` — so consumers that only know `vamm`/`dlob` keep working.
+//! The TypeScript serving side keeps its Redis contract. That contract is one
+//! JSON document per market under `last_update_orderbook_perp_{index}` and the
+//! matching pub/sub channel, levels as decimal strings in on-chain precision, a
+//! numeric top-level `slot` that the freshness key `selectMostRecentBySlot`
+//! picks by, and a per-level `sources` breakdown. The four-source book rides
+//! the existing `sources` field with two added keys, `clob` and `propamm`, so
+//! a consumer that only knows `vamm` and `dlob` keeps working.
 //!
-//! Beyond the base L2 document this module mirrors the rest of the TS
-//! publisher's surface: the `oracle`/`oracleData`/`mmOracleData`/
-//! `marketSlot` decorations (priced by the program's own host-compiled
-//! oracle parser, so the published oracle equals the fill-time oracle), the
+//! Beyond the base L2 document this module mirrors the rest of the TypeScript
+//! publisher's surface. That is the `oracle`, `oracleData`, `mmOracleData` and
+//! `marketSlot` decorations, priced by the program's own host-compiled oracle
+//! parser so the published oracle equals the fill-time oracle. It is also the
 //! `_grouped_{1,10,100,500,1000}` aggregation channels, the per-order L3
-//! document (CLOB orders read straight off the book bytes — the DLOB's L3
-//! stays with the TS publisher until the DLOB dies), and the best-makers
-//! key (maker `User` PDAs derived from node identity).
+//! document, and the best-makers key whose maker `User` PDAs derive from the
+//! identity a row carries. The DLOB's L3 stays with the TypeScript publisher
+//! until the DLOB dies.
 
 use {
     anyhow::{anyhow, Result},
@@ -86,17 +86,17 @@ fn levels_json<'a>(
 /// document. Built once per market per tick and shared by L2, the grouped
 /// channels (which inherit L2's fields wholesale), and L3.
 pub struct Decorations {
-    /// Primary oracle price as a plain number — the legacy `oracle` field.
+    /// Primary oracle price as a plain number, for the legacy `oracle` field.
     pub oracle: i64,
     pub oracle_data: Value,
     pub mm_oracle_data: Value,
     pub market_slot: u64,
 }
 
-/// The TS side's `SerializableOraclePriceData`: strings for the numerics,
-/// with `slot` recovered from the parse-time delay. The optional
-/// twap/maxPrice fields are omitted, matching `JSON.stringify` dropping
-/// `undefined` members.
+/// The TypeScript side's `SerializableOraclePriceData`. The numerics are
+/// strings, and `slot` is recovered from the parse-time delay. The optional
+/// twap and maxPrice fields are omitted, which matches `JSON.stringify`
+/// dropping `undefined` members.
 fn oracle_data_json(data: &OraclePriceData, clock_slot: u64) -> Value {
     json!({
         "price": data.price.to_string(),

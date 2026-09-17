@@ -21,23 +21,23 @@ use {
 
 pub const SIGNED_MSG_PDA_SEED: &str = "SIGNED_MSG";
 pub const SIGNED_MSG_WS_PDA_SEED: &str = "SIGNED_MSG_WS";
-/// Grace past `max_slot` before a signed-msg order id is prunable (~4s),
-/// expressed in actual slots at the read site.
+/// Grace past `max_slot` before a signed-message order id can be pruned. The
+/// read site converts it to actual slots.
 pub const SIGNED_MSG_EVICTION_BUFFER: Millis = Millis::from_ms(4_000);
 
 mod tests;
 
 /// One signed message this user sent, and what is still live from it.
 ///
-/// Two jobs. The `uuid` is replay protection, which is what this account was
-/// built for. The rest is the routing state of the order that message became:
-/// a signed-message order routes at placement and rests any remainder on the
-/// market's CLOB, and the fill that resolves that remainder happens in a later
-/// transaction built by somebody else. `route_digest` is what holds that
-/// somebody to the quoters the taker chose, so it has to outlive the message.
+/// The entry does two jobs. The `uuid` is replay protection, which is what
+/// this account was built for. The rest is the routing state of the order the
+/// message became. A signed-message order routes at placement and rests any
+/// remainder on the market's CLOB. Somebody else builds the later transaction
+/// that fills that remainder. `route_digest` holds that filler to the quoters
+/// the taker chose, so it has to outlive the message.
 ///
-/// Field order is chosen so `#[repr(C)]` leaves no padding hole: the two `u64`
-/// fields sit on eight-byte boundaries and the two byte arrays need no
+/// The field order leaves no padding hole under `#[repr(C)]`. The two `u64`
+/// fields sit on eight-byte boundaries, and the two byte arrays need no
 /// alignment of their own. The stride is 40 bytes.
 #[zero_copy(unsafe)]
 #[derive(Default, Eq, PartialEq, Debug, BorshDeserialize, BorshSerialize)]
@@ -148,9 +148,9 @@ impl<'a> SignedMsgUserOrdersZeroCopy<'a> {
 
     /// The route the signer chose for the order resting as `clob_order_id`.
     ///
-    /// Absent means the order carries no signed route: it was placed directly,
+    /// `None` means the order carries no signed route. It was placed directly,
     /// or its entry was reclaimed. Both read as unrouted, which is the same
-    /// answer a zero digest has always given.
+    /// answer a zero digest gives.
     pub fn route_for_clob_order(
         &self,
         clob_order_id: u64,
@@ -189,9 +189,9 @@ impl<'a> SignedMsgUserOrdersZeroCopyMut<'a> {
     /// Replay check and stale sweep in one pass.
     ///
     /// An entry that names a live CLOB order is kept even once its `max_slot`
-    /// is old: the remainder still rests, and the fill that resolves it reads
-    /// the route from here. Such an entry is reclaimable only under the
-    /// pressure `add_signed_msg_order_id` describes.
+    /// is old. The remainder still rests, and the fill that resolves it reads
+    /// the route from here. Only the pressure `add_signed_msg_order_id`
+    /// describes reclaims such an entry.
     pub fn check_exists_and_prune_stale_signed_msg_order_ids(
         &mut self,
         signed_msg_order_id: SignedMsgOrderId,
@@ -216,12 +216,12 @@ impl<'a> SignedMsgUserOrdersZeroCopyMut<'a> {
     ///
     /// A retained entry describes an order that may rest forever, because a
     /// signed limit order carries no expiry. Without a second pass those
-    /// entries would fill the account and a user would stop being able to
-    /// trade. So a full account reclaims the entry whose `max_slot` is oldest,
-    /// which costs that order its route: the fill then treats it as unrouted
-    /// and the taker's own limit price is what still bounds it. That is a lost
-    /// guarantee under pressure, never a loss of funds, and it is bounded by
-    /// how many orders the account holds.
+    /// entries fill the account and the user can no longer trade. A full
+    /// account therefore reclaims the entry whose `max_slot` is oldest. That
+    /// costs the order its route, and the fill then treats it as unrouted. The
+    /// taker's own limit price still bounds that fill. The account loses a
+    /// guarantee under pressure, never funds, and the number of orders the
+    /// account holds bounds how often it happens.
     pub fn add_signed_msg_order_id(
         &mut self,
         signed_msg_order_id: SignedMsgOrderId,
@@ -261,8 +261,8 @@ impl<'a> SignedMsgUserOrdersZeroCopyMut<'a> {
     /// route the fill that resolves it must carry.
     ///
     /// Returns false when the uuid is not held, which happens once the entry
-    /// has been reclaimed. The caller places the order either way — a
-    /// remainder without a route is an unrouted order, not a failed one.
+    /// was reclaimed. The caller places the order either way. A remainder
+    /// without a route is an unrouted order rather than a failed one.
     pub fn set_resting_route(
         &mut self,
         uuid: [u8; 8],

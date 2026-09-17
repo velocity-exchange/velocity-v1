@@ -1,26 +1,24 @@
-//! Quote a perp market's router liquidity by **simulating the fill**, not by
-//! decoding books off-chain.
+//! Quote a perp market's router liquidity by simulating the fill. This crate
+//! does not decode books off chain.
 //!
 //! The router splits a taker across the vAMM, resting DLOB orders, the CLOB,
-//! and any registered PropAMM — and it learns each external quoter's prices
-//! by CPI'ing `quote_v0`. A Custom quoter is an arbitrary third-party
-//! program, so there is no general way to decode its book from the outside:
-//! calling it is the only way to price it. Simulation is therefore not an
-//! optimization here, it is the only correct approach, and it subsumes the
-//! CLOB and vAMM for free.
+//! and any registered PropAMM. It learns each external quoter's prices by CPI
+//! into `quote_v0`. A Custom quoter is an arbitrary third-party program, so
+//! there is no general way to decode its book from outside. A call is the only
+//! way to price it. Simulation is therefore the only correct approach, and it
+//! covers the CLOB and the vAMM as well.
 //!
-//! So this crate does the obvious thing: build the real
-//! `fill_perp_order` transaction, run it against cached chain state in an
-//! in-process SVM ([`relay_chain_source`]), and read the answer out of
-//! logs, return data, and post-simulation account state. What comes back is
-//! not an estimate of the split — it is the split, produced by the code that
-//! will run on chain, including the margin clamps, the at-or-better
-//! rejections, the mandatory-CLOB baseline check, and the CU cost.
+//! This crate builds the real `fill_perp_order` transaction, runs it against
+//! cached chain state in an in-process SVM ([`relay_chain_source`]), and reads
+//! the answer out of logs, return data, and post-simulation account state. The
+//! result is the split the on-chain code produces. It includes the margin
+//! clamps, the at-or-better rejections, the mandatory CLOB baseline check, and
+//! the compute unit cost.
 //!
-//! Cheapness comes from the account feed: subscribe to the CLOB program, the
-//! per-market quoter slabs, and each live PropAMM (an unfiltered
-//! [`relay_chain_source::ProgramSubscription`]) and every account a fill
-//! touches is already resident, so a quote costs microseconds and no RPC.
+//! The account feed keeps a quote cheap. Subscribe to the CLOB program, the
+//! per-market quoter slabs, and each live PropAMM through an unfiltered
+//! [`relay_chain_source::ProgramSubscription`]. Every account a fill touches is
+//! then resident, so a quote costs microseconds and no RPC call.
 
 use {
     anchor_lang::Discriminator,
@@ -36,9 +34,8 @@ use {
 pub mod health;
 pub mod quote_view;
 
-/// PDA of a market's [`QuoterSlabV0`]: one per market, holding every approved
-/// quoter config. Fills and quote views read quoters from it, so it is the
-/// account a router has to know about.
+/// PDA of a market's [`QuoterSlabV0`]. There is one per market, and it holds
+/// every approved quoter config. Fills and quote views read quoters from it.
 pub fn quoter_slab_pda(velocity: &Pubkey, market_index: u16) -> Pubkey {
     Pubkey::find_program_address(
         &[QUOTER_SLAB_PDA_SEED, market_index.to_le_bytes().as_ref()],
@@ -47,8 +44,8 @@ pub fn quoter_slab_pda(velocity: &Pubkey, market_index: u16) -> Pubkey {
     .0
 }
 
-/// Account-data offset of `QuoterSlabV0::market`, derived from the struct so a
-/// field reorder can't silently turn this filter into a wrong-market match.
+/// Account-data offset of `QuoterSlabV0::market`. The offset comes from the
+/// struct, so a field reorder cannot turn this filter into a wrong-market match.
 pub fn quoter_slab_market_offset() -> usize {
     8 + core::mem::offset_of!(QuoterSlabV0, market)
 }
@@ -58,10 +55,10 @@ pub fn quoter_slab_discriminator() -> Vec<u8> {
     QuoterSlabV0::DISCRIMINATOR.to_vec()
 }
 
-/// Decode a slab account's slot region: the fixed header, then `capacity` raw
-/// back-to-back [`QuoterSlotV0`]s. Vacant slots are kept, so an index into
-/// the result is the on-chain slot index — the handle `crank_cross_match`
-/// legs are named by.
+/// Decode a slab account's slot region. The region holds the fixed header, then
+/// `capacity` back-to-back [`QuoterSlotV0`] values. Vacant slots stay in the
+/// result, so an index into it is the on-chain slot index. A `crank_cross_match`
+/// leg names its quoter by that index.
 pub fn decode_quoter_slab_slots(data: &[u8]) -> Result<Vec<QuoterSlotV0>> {
     let header: QuoterSlabV0 = quote_view::read_zero_copy(data)?;
     let slot_size = core::mem::size_of::<QuoterSlotV0>();
@@ -80,9 +77,9 @@ pub fn decode_quoter_slab_slots(data: &[u8]) -> Result<Vec<QuoterSlotV0>> {
         .collect())
 }
 
-/// The market's slab slots, straight from the feed. Empty when the market
-/// has no slab account yet, which reads the same as an all-vacant slab: no
-/// approved quoters.
+/// The market's slab slots, read from the feed. The result is empty when the
+/// market has no slab account yet. That reads the same as an all-vacant slab,
+/// which means no approved quoters.
 pub async fn quoter_slab_slots<S: ChainSource + ?Sized>(
     source: &S,
     velocity_program: &Pubkey,
@@ -103,10 +100,11 @@ pub async fn quoter_slab_slots<S: ChainSource + ?Sized>(
 
 /// What to subscribe to so router simulations stay off the network.
 ///
-/// The slab query is filtered (only `QuoterSlabV0`s, and only this market's
-/// when `market_index` is given) so another market's slab never crosses the
-/// wire; the CLOB and PropAMM programs are subscribed unfiltered, because a
-/// fill can touch any of their accounts and residency is the whole point.
+/// The slab query is filtered to `QuoterSlabV0` accounts, and to this market
+/// alone when `market_index` is given, so another market's slab never crosses
+/// the wire. The CLOB and PropAMM programs are subscribed without a filter,
+/// because a fill can touch any of their accounts and all of them must be
+/// resident.
 pub fn router_subscriptions(
     velocity_program: Pubkey,
     market_index: Option<u16>,
@@ -142,22 +140,23 @@ pub fn quote_buffer_discriminator() -> Vec<u8> {
     program::state::router_quote::RouterQuoteBufferV0::DISCRIMINATOR.to_vec()
 }
 
-/// Account-data offset of `RouterQuoteBufferV0::market`, derived from the
-/// struct so a field reorder can't silently mis-filter.
+/// Account-data offset of `RouterQuoteBufferV0::market`. The offset comes from
+/// the struct, so a field reorder cannot produce a wrong filter.
 pub fn quote_buffer_market_offset() -> usize {
     8 + core::mem::offset_of!(program::state::router_quote::RouterQuoteBufferV0, market)
 }
 
-/// Find an existing quote buffer for a market and report `(buffer,
-/// authority)`.
+/// Find an existing quote buffer for a market and report the buffer and its
+/// authority.
 ///
-/// Quoting is simulation-only and simulation skips signature verification,
-/// so a read-only consumer (an HTTP `/route`, a dashboard) can quote through
-/// *any* live buffer — typically the book-publisher's — by naming its stored
-/// authority as the instruction's signer, without holding a key or paying
-/// the ~33 KB of rent a buffer costs. Writers that land quotes for real
-/// still need their own buffer (the authority gate exists so two routers
-/// sharing a market don't overwrite each other's reads).
+/// A quote runs in simulation only, and simulation skips signature
+/// verification. A read-only consumer such as an HTTP route handler or a
+/// dashboard can therefore quote through any live buffer, which is usually the
+/// book publisher's. It names the stored authority as the instruction signer.
+/// It needs no key, and it pays none of the roughly 33 KB of rent a buffer
+/// costs. A writer that lands quotes on chain still needs its own buffer. The
+/// authority gate stops two routers on one market from overwriting each other's
+/// reads.
 pub async fn find_quote_buffer<S: ChainSource>(
     source: &S,
     velocity_program: &Pubkey,
@@ -188,15 +187,15 @@ pub async fn find_quote_buffer<S: ChainSource>(
 pub struct RouterQuote {
     /// `None` when the fill simulated cleanly.
     pub err: Option<String>,
-    /// Program logs — the router's per-quoter decisions and any rejection
-    /// reason are in here verbatim.
+    /// Program logs. They carry the router's per-quoter decisions and any
+    /// rejection reason verbatim.
     pub logs: Vec<String>,
     /// Compute units the fill consumed, for sizing the real transaction's
     /// CU limit.
     pub units_consumed: u64,
-    /// Post-simulation state of the accounts the caller asked for, in order
-    /// — a taker's `User` shows the exact position and fees the fill would
-    /// produce, without landing anything.
+    /// Post-simulation state of the accounts the caller asked for, in the same
+    /// order. A taker's `User` shows the position and the fees the fill would
+    /// produce, with nothing landed on chain.
     pub accounts: Vec<Option<solana_sdk::account::Account>>,
 }
 
@@ -213,15 +212,14 @@ impl From<SimOutcome> for RouterQuote {
 
 /// Simulate a router fill and report what it would do.
 ///
-/// `fill` is a real `fill_perp_order` transaction — built exactly as it
-/// would be sent, quoter section and all. `read_accounts` names the accounts
-/// whose post-fill state the caller wants back (typically the taker's
-/// `User`, the makers', and the perp market).
+/// `fill` is a real `fill_perp_order` transaction, built as it would be sent,
+/// including the quoter section. `read_accounts` names the accounts whose
+/// post-fill state the caller wants back. That is usually the taker's `User`,
+/// the makers' accounts, and the perp market.
 ///
-/// Failure is information, not an error: a fill that trips the baseline
+/// A failed fill is still a successful call. A fill that trips the baseline
 /// check, a margin clamp, or at-or-better comes back with `err` set and the
-/// reason in `logs`, which is exactly what a router needs in order to drop a
-/// quoter and try again.
+/// reason in `logs`. A router reads that to drop a quoter and try again.
 pub async fn simulate_router_fill<S: ChainSource>(
     source: &S,
     fill: &Transaction,
@@ -238,21 +236,20 @@ pub async fn simulate_router_fill<S: ChainSource>(
 mod tests {
     use super::*;
 
-    /// The slab filter has to match what the chain actually stores, and a
-    /// memcmp at a wrong offset silently matches the wrong accounts rather
-    /// than failing — so pin both against the program's own layout.
+    /// The slab filter must match what the chain stores. A memcmp at a wrong
+    /// offset matches the wrong accounts instead of failing, so pin both the
+    /// discriminator and the offset against the program's own layout.
     #[test]
     fn slab_filter_matches_the_program_layout() {
         assert_eq!(quoter_slab_discriminator().len(), 8);
-        // `market` is the header's first field, right after the
-        // discriminator; deriving it means this number moves by itself when
-        // the struct changes.
+        // `market` is the header's first field, right after the discriminator.
+        // The derived offset moves by itself when the struct changes.
         assert_eq!(quoter_slab_market_offset(), 8);
         assert!(quoter_slab_market_offset() + 2 <= QuoterSlabV0::SLOT_REGION_OFFSET);
     }
 
-    /// The decoder reads the slot region straight out of account bytes, so
-    /// pin it against the program's own layout with a round trip.
+    /// The decoder reads the slot region out of raw account bytes, so pin it
+    /// against the program's own layout with a round trip.
     #[test]
     fn slab_slots_round_trip_through_the_decoder() {
         let capacity = 3usize;
@@ -279,28 +276,29 @@ mod tests {
     }
 }
 
-/// The program's own split, reachable off-chain.
+/// The program's own split, reachable off chain.
 ///
-/// Selection needs the split evaluated over *candidate subsets* of quoters,
-/// which can't be done by simulating fills (combinatorial). Depending on the
-/// program as a host library means the router runs the same
-/// `split_across_quoters` the chain will run — no port, no mirror to drift.
+/// Selection evaluates the split over candidate subsets of quoters. The number
+/// of subsets makes one simulated fill per subset impractical. This crate
+/// depends on the program as a host library, so the router runs the same
+/// `split_across_quoters` the chain runs. There is no port and no mirror that
+/// can drift.
 pub use program::math::router::{split_across_quoters, QuoterAllocation, QuoterBook};
 pub use program::state::prop_amm::{Direction, PriceLevel};
 
-/// Asking a book who rests on it.
+/// Ask a book which makers rest on it.
 ///
-/// A fill settles only for users whose accounts the transaction carries, and
-/// a book stores its makers as an authority and a sub-account on an order, so
-/// whoever assembles a fill has to learn whose accounts to bring. Reading the
-/// book from outside is how that used to work, and it made every caller a
-/// second reader of a layout the book is entitled to change.
+/// A fill settles only for users whose accounts the transaction carries. A book
+/// stores each maker as an authority and a sub-account on an order, so whoever
+/// assembles a fill must learn which accounts to bring. Reading the book from
+/// outside makes every caller a second reader of a layout the book may change.
 ///
-/// So the book answers for itself, through the optional `quote_l3_v0` leg of
-/// the quoter interface, and this crate asks it the way it asks a quoter
-/// anything: by simulation. A caller already holding a [`quote_view::QuoteView`]
-/// wants [`quote_view::QuoteView::settleable_users`] instead — the rows are
-/// in the view it already paid for.
+/// The book answers for itself instead, through the optional `quote_l3_v0` leg
+/// of the quoter interface. This crate asks it by simulation, the same way it
+/// asks a quoter anything else. A caller that already holds a
+/// [`quote_view::QuoteView`] wants
+/// [`quote_view::QuoteView::settleable_users`], because the rows are already in
+/// that view.
 pub mod l3 {
     use {
         super::*,
@@ -314,18 +312,18 @@ pub mod l3 {
         },
     };
 
-    /// Distinct makers a taker of `size` would sweep off a quoter's book,
-    /// best price first. `config` is the quoter's approved config, read from
-    /// its slab slot.
+    /// Distinct makers a taker of `size` would sweep off a quoter's book, best
+    /// price first. `config` is the quoter's approved config, read from its slab
+    /// slot.
     ///
-    /// The order is the answer, not a detail of it: the book stops at the
-    /// first maker the transaction did not carry, so a prefix of this list
-    /// fills and a gap forfeits everything behind it. `limit` bounds how many
-    /// the caller wants to hear about — every maker costs two accounts.
+    /// The order matters. The book stops at the first maker the transaction did
+    /// not carry, so a prefix of this list fills and a gap forfeits every maker
+    /// behind it. `limit` bounds how many rows the caller wants. Every maker
+    /// costs two accounts.
     ///
-    /// Empty when the entry declares no L3 leg, which is every quoter that
-    /// fills from the one account its registry entry names: there is nothing
-    /// to discover, the caller already has it.
+    /// The result is empty when the entry declares no L3 leg. That is every
+    /// quoter that fills from the one account its registry entry names. The
+    /// caller already holds that account.
     pub async fn resting_makers<S: ChainSource + ?Sized>(
         source: &S,
         config: &QuoterConfigV0,

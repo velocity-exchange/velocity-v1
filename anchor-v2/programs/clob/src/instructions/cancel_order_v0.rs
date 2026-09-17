@@ -20,9 +20,9 @@ pub struct CancelOrderV0 {
 /// Declared by `clob-wire`. The owner is verified against the node.
 pub use clob_wire::CancelOrderArgsV0;
 
-/// Cancel a resting order. Returns the removed order (as return data) so the
-/// CPI caller (velocity) can decrement the maker's open-order aggregates by
-/// the remaining size on the right side.
+/// Cancel a resting order. Returns the removed order as return data, so
+/// velocity can decrement the maker's open-order aggregates by the remaining
+/// size on the correct side.
 pub fn handle_cancel_order_v0(
     ctx: &mut Context<CancelOrderV0>,
     args: CancelOrderArgsV0,
@@ -30,8 +30,8 @@ pub fn handle_cancel_order_v0(
     let clock = Clock::get()?;
     let market = &mut ctx.accounts.market;
     let removed = market.cancel(args.user, args.order_ref, clock.slot, args.force)?;
-    // The removal path takes no clock, so an activation hint the chain
-    // has already reached is dropped here instead.
+    // The removal path takes no clock. An activation hint that the chain
+    // already reached is dropped here.
     market.expire_activation_hint(clock.slot)?;
     emit_pod!(OrderCancelRecordV0 {
         authority: removed.user.authority,

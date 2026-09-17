@@ -331,9 +331,10 @@ export class SwiftPlacer {
 						});
 					}
 
-					// Resolve the taker's referral state once. The maker-pruning loop below
-					// rebuilds the fill ix repeatedly, and without these the SDK re-fetches
-					// the taker's UserStats on every rebuild.
+					// Resolve the taker's referral state once. The maker-pruning loop
+					// below rebuilds the fill instruction many times, and without
+					// these values the SDK fetches the taker's UserStats on every
+					// rebuild.
 					const takerStatsAccount = await fetchUserStatsAccount(
 						this.velocityClient.connection,
 						this.velocityClient.program,

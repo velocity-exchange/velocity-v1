@@ -1,59 +1,58 @@
-//! The shared shape of every relay resolver, so a new one is its discovery
-//! logic and nothing else.
+//! The shared shape of every relay resolver, so a new resolver holds only its
+//! discovery logic.
 //!
-//! A resolver is always: look for work; if there is none say so; otherwise
-//! describe the executor call (its account list and its args), write that
-//! into the shared scratch account, and return a pointer to it. Only the
-//! first step differs between resolvers — [`resolve_into`] owns the rest.
+//! Every resolver looks for work. If there is none it says so. Otherwise it
+//! describes the executor call, meaning its account list and its args, writes
+//! that into the shared scratch account, and returns a pointer to it. Only the
+//! first step differs between resolvers. [`resolve_into`] owns the rest.
 //!
-//! The builder is also where relay's two hard rules about staged executors
-//! are enforced, because both have already been tripped once by hand:
+//! The builder also enforces relay's two rules about staged executors.
 //!
-//! - **The keeper placeholder must appear.** Relay substitutes its payout
-//!   account for [`KEEPER_PLACEHOLDER`]; an executor that never names it
-//!   leaves the payment guard asserting against a stranger's balance, and
-//!   the turner rejects the resolver output.
-//! - **No account may be a signer.** The turner marks every executor meta
-//!   non-signing *and* refuses to sign a transaction whose executor names
-//!   a signer, because executors are permissionless and a signing account
-//!   handed to one is a drain vector. In practice this means an anchor
-//!   `Signer` — or an `init`/`init_if_needed` that needs a payer — cannot
-//!   appear in an instruction relay stages.
+//! - The keeper placeholder must appear. Relay substitutes its payout account
+//!   for [`KEEPER_PLACEHOLDER`]. An executor that never names it leaves the
+//!   payment guard asserting against a stranger's balance, and the turner
+//!   rejects the resolver output.
+//! - No account may be a signer. The turner marks every executor meta
+//!   non-signing, and it refuses to sign a transaction whose executor names a
+//!   signer. An executor is permissionless, so a signing account handed to one
+//!   can be drained. An anchor `Signer`, and an `init` or `init_if_needed`
+//!   that needs a payer, therefore cannot appear in an instruction relay
+//!   stages.
 //!
-//! Both are checked here rather than left to review, so a resolver that
-//! violates one fails its own simulation with a named error instead of
-//! being silently skipped forever by turners.
+//! Both checks live here rather than in review. A resolver that breaks one
+//! fails its own simulation with a named error, instead of being skipped by
+//! every turner with no message.
 //!
 //! ## The executor is the resolver's answer
 //!
-//! A condition names only its resolver; the instruction to actually run
-//! comes back inside the staged payload. So a [`StagedCall`] is built from
-//! *both* of the executor's generated types — `crate::instruction::X` for
-//! its discriminator and `crate::accounts::X` for its account list — which
-//! is what [`staged_call!`] exists to pair. Naming the executor here rather
-//! than in the condition means arming a crank no longer has to restate an
-//! identity its resolver already knows.
+//! A condition names only its resolver. The instruction to run comes back
+//! inside the staged payload. A [`StagedCall`] is therefore built from both of
+//! the executor's generated types, `crate::instruction::X` for its
+//! discriminator and `crate::accounts::X` for its account list.
+//! [`staged_call!`] pairs the two. Naming the executor here rather than in the
+//! condition means arming a crank does not restate an identity its resolver
+//! already knows.
 //!
-//! ## The fired-condition identity is deliberately ignored
+//! ## The fired-condition identity is ignored
 //!
-//! Relay appends a [`relay_spec::FiredConditionV0`] (target account, block
-//! offset, slot index) to every resolver's instruction data. Velocity's
-//! resolvers do not declare it — anchor's borsh dispatch ignores trailing
-//! bytes — because for these blocks it is redundant, and trusting it would
-//! be worse than scanning:
+//! Relay appends a [`relay_spec::FiredConditionV0`] to every resolver's
+//! instruction data. It holds the target account, the block offset and the
+//! slot index. Velocity's resolvers do not declare it, and anchor's borsh
+//! dispatch ignores the trailing bytes. For these blocks the identity is
+//! redundant, and trusting it would be worse than scanning.
 //!
 //! - Each condition kind has its own resolver, so the discriminator relay
 //!   dispatched already says what kind of work is due.
 //! - The sync instructions rewrite a whole block in place, so a slot index
-//!   moves under a re-sync while the watch that fired keeps its coordinates.
-//!   A resolver that answered only for the index it was handed would answer
-//!   about whatever moved into that slot; one that re-derives the due work
+//!   moves under a resync while the watch that fired keeps its coordinates. A
+//!   resolver that answered only for the index it was handed would answer
+//!   about whatever moved into that slot. One that re-derives the due work
 //!   from the accounts it holds cannot.
 //!
-//! A resolver that ever *needs* the identity (a block whose slots share one
-//! resolver) should declare it as an argument and validate it against the
-//! account it loaded, exactly as relay's docs require — it is an argument,
-//! not a capability.
+//! A resolver that needs the identity, such as one shared by several slots of
+//! the same block, must declare it as an argument and validate it against the
+//! account it loaded. Relay's docs require that. The identity is an argument,
+//! and it grants no capability.
 
 use {
     crate::{
@@ -67,7 +66,7 @@ use {
     std::ops::DerefMut,
 };
 
-/// An executor call a resolver has decided on: which instruction to run,
+/// An executor call a resolver decided on. It holds the instruction to run,
 /// its account list, and the borsh args that follow the discriminator.
 pub struct StagedCall {
     disc: &'static [u8],
@@ -76,13 +75,13 @@ pub struct StagedCall {
 }
 
 impl StagedCall {
-    /// Name the executor by its two generated types: `I` is
-    /// `crate::instruction::X` (the discriminator relay will invoke) and
-    /// `accounts` is `crate::accounts::X`, so a change to either the
-    /// instruction's name or its `#[derive(Accounts)]` shape breaks staging
-    /// at compile time — and the writability flags come from the derive
-    /// rather than being restated by hand. Prefer [`staged_call!`], which
-    /// pairs the two from one name.
+    /// Name the executor by its two generated types. `I` is
+    /// `crate::instruction::X`, the discriminator relay invokes, and
+    /// `accounts` is `crate::accounts::X`. A change to the instruction's name
+    /// or to its `#[derive(Accounts)]` shape then breaks staging at compile
+    /// time, and the writability flags come from the derive rather than from
+    /// hand-written metas. Prefer [`staged_call!`], which pairs the two types
+    /// from one name.
     pub fn new<I: anchor_lang::Discriminator>(accounts: impl ToAccountMetas) -> Self {
         Self {
             disc: I::DISCRIMINATOR,
@@ -101,24 +100,25 @@ impl StagedCall {
         self
     }
 
-    /// Append a `(User, UserStats)` pair — both writable, as every
+    /// Append a `(User, UserStats)` pair. Both are writable, as every
     /// settlement path expects.
     pub fn user_pair(self, user: Pubkey, stats: Pubkey) -> Self {
         self.account(user, true).account(stats, true)
     }
 
     /// The margin-map section for an executor that names the perp market in
-    /// its own accounts struct: oracle (readonly), then the quote spot
-    /// market. **Positional**, like [`Self::map_section`].
+    /// its own accounts struct. It appends the oracle as readonly, then the
+    /// quote spot market. The order matters, as it does in
+    /// [`Self::map_section`].
     pub fn map_section_named_perp(self, oracle: Pubkey, quote_spot_market_index: u16) -> Self {
         self.account(oracle, false)
             .account(pdas::spot_market(quote_spot_market_index), true)
     }
 
-    /// Append the margin-map section every executor's `load_maps` call
-    /// parses: oracle (readonly), the quote spot market, then the perp
-    /// market. **Positional** — `load_maps` reads these by order, not by
-    /// name, so the ordering lives here once instead of in each resolver.
+    /// Append the margin-map section every executor's `load_maps` call parses.
+    /// It holds the oracle as readonly, the quote spot market, then the perp
+    /// market. `load_maps` reads these by order rather than by name, so the
+    /// ordering lives here once instead of in each resolver.
     pub fn map_section(
         self,
         oracle: Pubkey,
@@ -131,8 +131,8 @@ impl StagedCall {
     }
 
     /// Append the `(User, UserStats)` pairs of maker identities read off a
-    /// book — the derivation the CLOB's `(authority, sub_account_id)`
-    /// nodes exist to make possible.
+    /// book. A CLOB node carries `(authority, sub_account_id)`, which is what
+    /// makes the derivation possible.
     pub fn maker_refs(
         self,
         makers: impl IntoIterator<Item = crate::state::prop_amm::ClobUserRefV0>,
@@ -143,8 +143,8 @@ impl StagedCall {
         })
     }
 
-    /// Append account refs captured earlier (a stored margin-map section,
-    /// a registered CPI surface).
+    /// Append account refs captured earlier, such as a stored margin-map
+    /// section or a registered CPI surface.
     pub fn refs(mut self, refs: impl IntoIterator<Item = AccountRefV0>) -> Self {
         for r in refs {
             self.metas.push(if r.writable != 0 {
@@ -202,10 +202,10 @@ impl StagedCall {
     }
 }
 
-/// Run a resolver: `discover` returns the executor call, or `None` for no
-/// work. Everything else — the no-work response, the account-ref
-/// conversion and its rule checks, staging, and the return data — happens
-/// here.
+/// Run a resolver. `discover` returns the executor call, or `None` for no
+/// work. This function does everything else: the no-work response, the
+/// account-ref conversion and its rule checks, the staging, and the return
+/// data.
 pub fn resolve_into<'info>(
     scratch: &AccountLoader<'info, RelayScratchV0>,
     discover: impl FnOnce() -> Result<Option<StagedCall>>,

@@ -69,18 +69,19 @@ type TrackedUserState = {
  * `tripEquityFloorBreaker` instruction, freezing all of the authority's
  * subaccounts on-chain.
  *
- * Levels mirror the SDK's `getEquityFloorLevel`, using the same net-equity
- * metric the onchain checks use: `breached` (below the floor, trippable),
- * `critical` (below floor + buffer, risk-increasing actions rejecting),
- * `warning` (inside `warningBufferMultiple` buffers of the floor), `healthy`.
+ * The levels mirror the SDK's `getEquityFloorLevel` and use the same net-equity
+ * metric the onchain checks use. `breached` is below the floor and trippable.
+ * `critical` is below the floor plus the buffer, where risk-increasing actions
+ * are rejected. `warning` is inside `warningBufferMultiple` buffers of the
+ * floor. `healthy` is above all of those.
  *
- * The trip attempt itself is gated on the point-value level OR the SDK's
- * `provesEquityFloorBreach` mirror of the onchain trip proof: the point value
+ * The trip attempt is gated on the point-value level, or on the SDK's
+ * `provesEquityFloorBreach` mirror of the onchain trip proof. The point value
  * prices every position at the live oracle with no validity check, so an
- * invalid oracle printing high can hide a breach the program's concession
+ * invalid oracle printing high can hide a breach that the program's concession
  * walk still proves.
  *
- * Detection and escalation only: this bot holds no privileged key. The
+ * This bot only detects and escalates, and it holds no privileged key. The
  * per-subaccount enforcement is automatic inside the program, and position
  * unwind / floor reset are multisig operations handled by humans.
  */
@@ -101,7 +102,8 @@ export class EquityFloorGuardBot implements Bot {
 	private trackedUsers = new Map<string, TrackedUserState>();
 	/** authorities whose breaker this bot already attempted to trip */
 	private trippedAuthorities = new Set<string>();
-	/** Authorities whose trip is currently blocked by an invalid oracle; webhook debounce. */
+	/** Authorities whose trip is blocked by an invalid oracle. It debounces the
+	 * webhook. */
 	private oracleBlockedAuthorities = new Set<string>();
 
 	// metrics
@@ -295,7 +297,7 @@ export class EquityFloorGuardBot implements Bot {
 
 	private async checkFlooredUsers() {
 		try {
-			// slot for oracle staleness classification in the trip-proof mirror
+			// The trip-proof mirror classifies oracle staleness against this slot.
 			const slot = new BN(await this.velocityClient.connection.getSlot());
 			const seen = new Set<string>();
 			for (const user of this.userMap.values()) {
@@ -308,7 +310,7 @@ export class EquityFloorGuardBot implements Bot {
 				const authorityKey = userAccount.authority.toBase58();
 				seen.add(userKey);
 
-				// net equity: what the onchain checks and the trip proof see
+				// Net equity is what the onchain checks and the trip proof see.
 				const equity = user.getNetUsdValue();
 				const headroom = equity.sub(userAccount.equityFloor);
 				const bufferedHeadroom = headroom.sub(userAccount.equityFloorBuffer);
@@ -379,11 +381,11 @@ export class EquityFloorGuardBot implements Bot {
 
 				this.trackedUsers.set(userKey, { level, headroom });
 
-				// The trip decision mirrors the onchain predicate, not the point
-				// value alone: an invalid oracle printing high can make the point
-				// value look healthy while the program's concession walk still
-				// proves the breach. Either signal attempts the trip; the
-				// simulation classifies the chain's answer.
+				// The trip decision mirrors the onchain predicate rather than the
+				// point value alone. An invalid oracle printing high can make
+				// the point value look healthy while the program's concession
+				// walk still proves the breach. Either signal attempts the trip,
+				// and the simulation classifies the chain's answer.
 				const provesBreach = user.provesEquityFloorBreach(slot);
 				if (level === 'breached' || provesBreach) {
 					logger.error(
@@ -416,17 +418,17 @@ export class EquityFloorGuardBot implements Bot {
 		user: User,
 		authorityKey: string
 	): Promise<void> {
-		// dry run never sets the onchain flag, so the cache alone debounces it
+		// A dry run never sets the onchain flag, so the cache alone debounces it.
 		if (this.dryRun && this.trippedAuthorities.has(authorityKey)) {
 			return;
 		}
 
 		const userAccount = user.getUserAccountOrThrow();
 
-		// skip if already tripped on chain (by us earlier or anyone else). The
-		// cache is only trusted while the onchain flag backs it: a warm-admin
-		// reset clears the flag, the entry is evicted, and a later breach
-		// trips again instead of being skipped until the bot restarts.
+		// Skip an authority already tripped on chain, whether by this bot or by
+		// anyone else. The cache is trusted only while the onchain flag backs it.
+		// A warm-admin reset clears the flag, the entry is evicted, and a later
+		// breach trips again instead of being skipped until the bot restarts.
 		try {
 			const stats = await (
 				this.velocityClient.program.account as any
@@ -482,11 +484,11 @@ export class EquityFloorGuardBot implements Bot {
 
 			if (simResult.simError !== null) {
 				const simErrorText = JSON.stringify(simResult.simError);
-				// InvalidOracle (6035 / 0x1793) is not "not breached": the
-				// account is below its floor but the trip cannot prove it
-				// until the oracle recovers. During an oracle outage this is
-				// exactly the state worth alerting on, so it must not drown
-				// in generic sim-error noise.
+				// InvalidOracle, code 6035 or 0x1793, does not mean the account
+				// is healthy. The account is below its floor, and the trip
+				// cannot prove it until the oracle recovers. During an oracle
+				// outage this is the state worth alerting on, so it gets its
+				// own branch rather than the generic sim-error path.
 				if (
 					simErrorText.includes('"Custom":6035') ||
 					simErrorText.includes('0x1793')
@@ -495,7 +497,7 @@ export class EquityFloorGuardBot implements Bot {
 						`${this.name}: trip for ${authorityKey} blocked by invalid oracle; ` +
 						`account is breached but unprovable until the feed recovers, retrying`;
 					logger.warn(message);
-					// webhook once per outage, not once per cycle
+					// Send one webhook per outage rather than one per cycle.
 					if (!this.oracleBlockedAuthorities.has(authorityKey)) {
 						this.oracleBlockedAuthorities.add(authorityKey);
 						await webhookMessage(message);

@@ -17,13 +17,12 @@ export type GlobalOpts = {
 	env: VelocityEnv;
 	multisig?: string;
 	/**
-	 * Whether env came from a flag or profile (true) or is the legacy
-	 * fallback default (false). A declared env that contradicts the RPC's
-	 * genesis hash is a fatal mismatch; the fallback is silently replaced by
-	 * the detected cluster instead.
+	 * True when the env came from a flag or a profile. False when it is the
+	 * fallback default. A declared env that contradicts the RPC's genesis hash
+	 * is a fatal mismatch. The detected cluster replaces the fallback instead.
 	 */
 	envExplicit?: boolean;
-	/** Name of the config profile these opts were resolved from, if any. */
+	/** Name of the config profile these options came from, if there was one. */
 	profile?: string;
 	/** Skip the interactive mainnet direct-send confirmation. */
 	yes?: boolean;

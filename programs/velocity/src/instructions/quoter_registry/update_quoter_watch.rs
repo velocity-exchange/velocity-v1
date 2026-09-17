@@ -1,10 +1,12 @@
-//! Declare (or clear) a quoter's reprice-watch region: the account bytes
-//! whose change means "this quoter may quote differently now" — a
-//! midpoint's mid region, a custom AMM's parameter block. Relay
-//! cross-discovery conditions wake on it. Maker-declared because only the
-//! maker knows their program's layout; generic because it is registry
-//! metadata, not per-program velocity code. A config change like any other:
-//! staging only, live once the admin copies it into the market's slab.
+//! Declare or clear a quoter's reprice-watch region. The region is the account
+//! bytes whose change means the quoter may quote differently now. A midpoint
+//! declares its mid region, and a custom AMM declares its parameter block.
+//! Relay cross-discovery conditions wake on a write to the region.
+//!
+//! The maker declares the region, because only the maker knows the layout of
+//! their program. The region is registry metadata, so velocity holds no
+//! per-program code. The write is staging only. It goes live once the admin
+//! copies it into the market's slab.
 
 use {
     crate::{
@@ -21,24 +23,24 @@ use {
 
 #[derive(Accounts)]
 pub struct UpdateQuoterWatch<'info> {
-    /// The entry's own authority — the quoted user's wallet for Custom
-    /// entries.
+    /// The entry's own authority. For a `Custom` entry that is the quoted
+    /// user's wallet.
     pub authority: Signer<'info>,
     #[account(mut)]
     pub quoter: AccountLoader<'info, QuoterV0>,
-    /// CHECK: the account whose bytes the watch covers — typically the
-    /// quoter's own state account; not otherwise constrained (the admin
-    /// vets it, and a wrong watch only costs the maker latency).
+    /// CHECK: the account whose bytes the watch covers. It is usually the
+    /// quoter's own state account. Nothing else constrains it. The admin
+    /// reviews it, and a wrong watch only costs the maker latency.
     pub watch_account: UncheckedAccount<'info>,
-    /// Read for the admin check a non-Custom entry needs. Absent for a
-    /// Custom entry, which answers to its own stored authority.
+    /// Read for the admin check that a non-`Custom` entry needs. A `Custom`
+    /// entry answers to its own stored authority and omits this account.
     pub state: Option<AccountLoader<'info, State>>,
 }
 
 #[derive(Clone, AnchorSerialize, AnchorDeserialize)]
 pub struct UpdateQuoterWatchArgs {
     pub watch_offset: u32,
-    /// 0 clears the declaration (poll-only discovery).
+    /// Zero clears the declaration. Discovery then polls.
     pub watch_len: u32,
 }
 

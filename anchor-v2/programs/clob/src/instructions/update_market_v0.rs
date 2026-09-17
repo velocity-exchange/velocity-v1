@@ -39,10 +39,9 @@ pub fn handle_update_market_v0(
     args: UpdateMarketArgsV0,
 ) -> Result<()> {
     // place_authority is immutable after initialize_market_v0. A book settles
-    // for whoever it names as a maker, and its caller (velocity) pins this to
-    // its own signing PDA; a rotation — even a transient one — would let this
-    // market's authority place orders for any user, so the book does not offer
-    // one.
+    // for whoever it names as a maker, and velocity pins this field to its own
+    // signing PDA. Any rotation, even a short one, would let this market's
+    // authority place orders for any user. The book offers no rotation.
     let market = &mut ctx.accounts.market;
     if let Some(v) = args.order_tick_size {
         market.order_tick_size = v;

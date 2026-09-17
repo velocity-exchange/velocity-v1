@@ -1,34 +1,33 @@
-//! Which crossed orders on a book match each other, at whose price, and who
-//! is entitled to the difference.
+//! Which crossed orders on a book match each other, at whose price, and who is
+//! entitled to the difference.
 //!
-//! A book declines to resolve its own crosses: every order fills at its own
-//! stored price, and deciding *which* of two crossing prices a match settles
-//! at is an economic question the book has no answer for. So a crossed book
-//! sits there until somebody reads both sides and says what should happen.
-//! This is that reading.
+//! A book does not resolve its own crosses. Every order fills at its own stored
+//! price. The choice between the two crossing prices is an economic question
+//! the book has no answer for. So a crossed book stays crossed until somebody
+//! reads both sides and says what happens. This module is that reading.
 //!
-//! Three outcomes, and the flags on the two orders decide between them:
+//! The flags on the two orders decide between three outcomes.
 //!
-//! - **One side is a taker remainder.** It rests at the worst price its signer
-//!   agreed to tolerate, and it demands liquidity rather than offering it, so
-//!   it aggresses and the maker's price stands. The difference is the taker's.
-//! - **Both sides are taker remainders.** Price-time decides: the one that
-//!   rested later arrived into a book already showing the other, so the earlier
-//!   one's price stands and the later one aggresses.
-//! - **Neither is.** Two makers crossing is unclaimed arbitrage — nobody
-//!   demanded anything, so nobody is owed the spread. The protocol stands
-//!   between them as a pass-through taker and keeps it, floored so the trade is
-//!   worth making.
+//! - One side is a taker remainder. It rests at the worst price its signer
+//!   agreed to tolerate, and it demands liquidity rather than offering it. So
+//!   it aggresses, the maker's price stands, and the difference is the taker's.
+//! - Both sides are taker remainders. Price and time decide. The one that
+//!   rested later arrived into a book that already showed the other, so the
+//!   earlier price stands and the later order aggresses.
+//! - Neither side is a taker remainder. Two makers that cross are unclaimed
+//!   arbitrage. Nobody demanded anything, so nobody is owed the spread. The
+//!   protocol stands between them as a pass-through taker and keeps the spread.
+//!   A floor on the surplus keeps the trade worth making.
 //!
 //! Taker-origin crosses resolve first. Middling one of those would hand a
-//! taker's own improvement to the protocol, which is why the arb path used to
-//! refuse to run while one was pending; resolving both here in the right order
-//! removes the need to refuse.
+//! taker's own improvement to the protocol. Resolving both kinds here in that
+//! order removes the need for the arb path to refuse to run while a taker cross
+//! is pending.
 //!
-//! Rows in, crosses out. No accounts and no settlement, so the cases that
-//! matter — several remainders crossing at once, a chain where resolving one
-//! pair frees the next, a maker cross hiding behind a taker one — can be tested
-//! without a book.
+//! The input is rows and the output is crosses. This module touches no account
+//! and settles nothing, so the cases that matter can be tested without a book.
+//! Those cases are several remainders that cross at once, a chain where
+//! resolving one pair frees the next, and a maker cross behind a taker one.
 
 use crate::state::prop_amm::{
     ClobOrderRefV0, ClobSide, ClobUserRefV0, L3_ROW_FLAG_REDUCE_ONLY, L3_ROW_FLAG_TAKER_ORIGIN,
@@ -37,15 +36,15 @@ use crate::state::prop_amm::{
 #[cfg(test)]
 mod tests;
 
-/// Slots an order must have rested before a crank may mark its flow as
-/// having served a protection window (`taker_served_window` on the quoter
-/// wire). The cranks cannot vouch by construction alone: on a book whose
-/// default activation delay is zero, "rested through placement" is a
-/// zero-length window, and a caller could place a crossing order and crank
-/// the cross in the next transaction — fresh informed flow wearing the
-/// protected flag. Measured age closes that: two slots (~800ms) is above
-/// the swift hold, so the crank path never vouches for less protection
-/// than the attested path does.
+/// Slots an order must rest before a crank may mark its flow as having served
+/// a protection window. The flag is `taker_served_window` on the quoter wire.
+///
+/// A crank cannot vouch for the window by construction alone. On a book whose
+/// default activation delay is zero, resting through placement is a zero-length
+/// window. A caller could then place a crossing order and crank the cross in
+/// the next transaction, so fresh informed flow would carry the protected flag.
+/// Measured age closes that. Two slots is above the swift hold, so the crank
+/// path never vouches for less protection than the attested path does.
 pub const SERVED_WINDOW_MIN_SLOTS: u64 = 2;
 
 /// Whether an order placed at `placed_slot` has rested long enough that a
@@ -56,8 +55,8 @@ pub fn served_window(placed_slot: u64, slot: u64) -> bool {
 
 /// One resting order, reduced to what matching needs.
 ///
-/// `order_id` doubles as rest time: a book hands out ids from a counter that
-/// only increases and never reuses one, so a lower id rested earlier.
+/// `order_id` also states rest time. A book hands out ids from a counter that
+/// only increases and never reuses an id, so a lower id rested earlier.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RestingOrder {
     pub order_ref: ClobOrderRefV0,
@@ -69,8 +68,9 @@ pub struct RestingOrder {
     /// A cross that settles it must bind the fill to the owner's cover and stop
     /// tracking the owner's reduce-only exposure once it leaves the book.
     pub reduce_only: bool,
-    /// Slot it was placed in. Not what orders it — the id does that — but what
-    /// prices the work of resolving it.
+    /// The slot the order was placed in. The order id decides rest order, not
+    /// this field. This field decides whether a crank may mark the order's flow
+    /// as protected.
     pub placed_slot: u64,
 }
 
@@ -92,8 +92,8 @@ impl RestingOrder {
     }
 }
 
-/// How a crossed pair settles, which is entirely a question of which side (if
-/// either) demanded liquidity.
+/// How a crossed pair settles. Only one thing decides it: which side, if
+/// either, demanded liquidity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CrossKind {
     /// The bid demanded liquidity. It aggresses, and settles at the ask's
@@ -134,8 +134,8 @@ pub struct Cross {
 }
 
 impl Cross {
-    /// The price this settles at, for a cross that has an aggressor. A
-    /// protocol-middled cross has no single price — each leg fills at its own.
+    /// The price a cross with an aggressor settles at. A protocol-middled cross
+    /// has no single price, because each leg fills at its own.
     pub fn settlement_price(&self) -> Option<u64> {
         match self.kind {
             CrossKind::BidAggresses => Some(self.ask.price),
@@ -145,18 +145,18 @@ impl Cross {
     }
 }
 
-/// Every cross on one book, in the order they should be settled.
+/// Every cross on one book, in the order they must be settled.
 ///
-/// Both sides are walked as a whole rather than pair by pair, because the pairs
-/// are not independent: resolving the two best-priced orders can leave a third
-/// still crossing a fourth, and stopping at the first pair would need a fresh
-/// crank for each. Sizes are consumed as crosses are made, so an order that
-/// fills two counterparties appears twice and never over-fills.
+/// The walk reads both sides as a whole rather than pair by pair, because the
+/// pairs are not independent. Resolving the two best-priced orders can leave a
+/// third still crossing a fourth, and stopping at the first pair would need a
+/// fresh crank for each pair. Each cross consumes size, so an order that fills
+/// two counterparties appears twice and never over-fills.
 ///
 /// A self-cross is skipped on the owning authority rather than the full user
-/// ref: the cranker is paid out of what a cross produces, so one authority
-/// resting both sides across two sub-accounts could otherwise manufacture one
-/// and collect for it.
+/// ref. The cranker is paid out of what a cross produces. One authority resting
+/// both sides across two sub-accounts could otherwise manufacture a cross and
+/// collect for it.
 pub fn resolve_crosses(
     bids: &[RestingOrder],
     asks: &[RestingOrder],
@@ -195,16 +195,16 @@ fn next_cross(bids: &[RestingOrder], asks: &[RestingOrder]) -> Option<(usize, us
                 continue;
             };
             // A taker's own improvement outranks arbitrage the protocol would
-            // take, and within taker crosses the latest to rest goes first: it
-            // is the one whose improvement is at stake, and settling it can
-            // free a pair behind it.
+            // take. Among taker crosses the latest to rest goes first. Its
+            // improvement is the one at stake, and settling it can free a pair
+            // behind it.
             let rank = (
                 kind.is_taker_origin(),
                 match kind {
                     CrossKind::BidAggresses => bid.order_ref.order_id,
                     CrossKind::AskAggresses => ask.order_ref.order_id,
-                    // Ordered against the others only by the flag above; among
-                    // maker pairs the heads cross the most, so price decides.
+                    // The flag above orders these against the taker crosses.
+                    // Among maker pairs the deepest cross goes first.
                     CrossKind::ProtocolMiddles => bid.price.saturating_sub(ask.price),
                 },
             );
@@ -227,8 +227,8 @@ fn classify(bid: &RestingOrder, ask: &RestingOrder) -> Option<CrossKind> {
         return None;
     }
     Some(match (bid.taker_origin, ask.taker_origin) {
-        // Price-time: the later to rest arrived into a book already showing the
-        // other, so the earlier one's price stands.
+        // The later order to rest arrived into a book that already showed the
+        // other, so the earlier price stands.
         (true, true) => {
             if bid.order_ref.order_id > ask.order_ref.order_id {
                 CrossKind::BidAggresses
@@ -236,8 +236,8 @@ fn classify(bid: &RestingOrder, ask: &RestingOrder) -> Option<CrossKind> {
                 CrossKind::AskAggresses
             }
         }
-        // One side demanded liquidity; rest time does not arbitrate, because a
-        // maker quote is passive by construction.
+        // One side demanded liquidity. Rest time does not arbitrate here,
+        // because a maker quote is passive by construction.
         (true, false) => CrossKind::BidAggresses,
         (false, true) => CrossKind::AskAggresses,
         (false, false) => CrossKind::ProtocolMiddles,

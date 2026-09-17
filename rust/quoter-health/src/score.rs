@@ -1,21 +1,21 @@
 //! Decaying counters, the admission ladder, and the operator's pins.
 //!
-//! Counters decay. A quoter that failed last month must not still be failing
-//! now, and a bad rollout must not hide under a large good history. Decay is
-//! what makes the score describe the code that is running rather than every
+//! Counters decay. A quoter that failed last month must not still count as
+//! failing now, and a bad rollout must not hide under a large good history.
+//! Decay makes the score describe the code that runs now rather than every
 //! version that ever ran.
 //!
 //! The decay is exponential, by half-life. The program's own rolling sums
 //! (`math::stats::calculate_rolling_sum`) decay linearly to zero at the
 //! window edge. Linear decay is cheap on chain, where the alternative costs
-//! compute. Off chain the cliff is the only difference that matters: a rate
-//! that reaches the window edge drops to zero in one step and re-arms a
+//! compute. Off chain the cliff is the difference that matters. A rate that
+//! reaches the window edge drops to zero in one step, and that readmits a
 //! quoter that has not improved.
 //!
-//! Degradation is reversible by construction. Every automatic exclusion
-//! carries an expiry, so doing nothing restores a quoter. The operator's pins
-//! sit in a separate layer the scorer never writes, so clearing a pin returns
-//! a quoter to automatic handling with no state to rebuild.
+//! Every automatic exclusion carries an expiry, so a quoter recovers without
+//! an operator. An operator's pin sits in a separate layer the scorer never
+//! writes, so clearing a pin returns a quoter to automatic handling with no
+//! state to rebuild.
 
 use {
     crate::observe::Observation,
@@ -118,8 +118,8 @@ pub struct Window {
     pub sim_attempts: Decaying,
     pub sim_failures: Decaying,
     /// Contract violations, weighed apart from plain reverts. A quoter that
-    /// answers off its own quote broke a promise; a quoter that reverts only
-    /// wasted a simulation.
+    /// answers off its own quote broke the response contract. A quoter that
+    /// reverts only wasted a simulation.
     pub violations: Decaying,
     pub execute_attempts: Decaying,
     pub execute_failures: Decaying,
@@ -190,8 +190,8 @@ impl Window {
         }
     }
 
-    /// Everything the counters are wiped for. Used when a quoter's program is
-    /// redeployed: the old numbers describe code that no longer runs.
+    /// Wipe every counter. A redeploy of the quoter's program calls this,
+    /// because the old numbers describe code that no longer runs.
     pub fn reset(&mut self) {
         *self = Self::default();
     }
@@ -249,8 +249,8 @@ impl Window {
     }
 }
 
-/// Thresholds. Held apart from the code because what counts as misbehaviour
-/// changes, and changing it must not need a release.
+/// Thresholds. They sit apart from the code because what counts as
+/// misbehaviour changes, and changing it must not need a release.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Policy {
@@ -260,7 +260,7 @@ pub struct Policy {
     pub execute_failure_rate: f64,
     pub execute_min_attempts: f64,
     /// A quoter reaching this many contract violations is quarantined even if
-    /// its rate looks fine. These are broken promises, not bad luck.
+    /// its rate looks fine.
     pub violation_count: f64,
     pub cu_share: f64,
     pub cu_budget: u64,
@@ -500,10 +500,10 @@ pub fn advance(now_ms: u64, state: &mut State, window: &Window, policy: &Policy)
 /// Note that a quoter's program was redeployed.
 ///
 /// The counters describe code that no longer runs, so they are dropped. The
-/// quoter enters probation rather than full flow: a fresh deploy has proved
-/// nothing yet, and a broken rollout is exactly the case this catches. For a
-/// program serving many entries this fires for all of them, which is right.
-/// The upgrade changed every tenant's behaviour.
+/// quoter enters probation rather than full flow. A fresh deploy has proved
+/// nothing yet, and a broken rollout is the case this catches. A program
+/// serving many entries moves all of them, because the upgrade changed every
+/// tenant's behaviour.
 pub fn on_program_upgrade(
     now_ms: u64,
     slot: u64,
@@ -535,7 +535,7 @@ pub fn on_program_upgrade(
 ///
 /// Pins live outside the scorer. The scorer never writes one and never moves
 /// a quoter that has one, so clearing a pin restores automatic handling with
-/// nothing to rebuild. That is the rollback.
+/// nothing to rebuild.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Pin {
     pub admission: Admission,
@@ -554,8 +554,8 @@ impl Pin {
 /// One entry in the audit trail.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Transition {
-    /// Base58 of the registry entry. Held as text because a transition is an
-    /// audit record that is read and shipped, not a hot-path key.
+    /// Base58 of the registry entry. A transition is an audit record that is
+    /// read and shipped, not a hot-path key, so text costs nothing here.
     pub quoter: String,
     pub at_ms: u64,
     pub from: Admission,
@@ -633,8 +633,8 @@ mod tests {
 
     #[test]
     fn three_contract_violations_are_enough_on_their_own() {
-        // A quoter answering off its own quote broke a promise. It does not
-        // get the benefit of a large clean denominator.
+        // A quoter that answers off its own quote broke the response
+        // contract. A large clean denominator does not excuse it.
         let policy = Policy::default();
         let mut window = Window::default();
         clean_sims(&mut window, &policy, 0, 1_000);

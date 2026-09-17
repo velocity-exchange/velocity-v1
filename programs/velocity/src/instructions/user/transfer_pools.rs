@@ -22,7 +22,7 @@ struct RequestedPoolAmounts {
     borrow: Option<u64>,
 }
 
-/// What the transfer actually moved on each leg.
+/// What the transfer moved on each leg.
 struct PoolAmountsMoved {
     deposit: u64,
     borrow: u64,
@@ -164,8 +164,8 @@ fn validate_pool_legs(
     Ok(())
 }
 
-/// Accrue interest on all four markets, but do NOT advance their *oracle*
-/// TWAPs (OtterSec #134 — the same shape as #110/#111).
+/// Accrue interest on all four markets, but do not advance their oracle TWAPs
+/// (OtterSec #134, the same shape as #110 and #111).
 ///
 /// The margin checks at the end of this transfer run with `Initial`, which
 /// enables strict pricing. `StrictOraclePrice` bounds are the min and max of

@@ -2,8 +2,8 @@
 //!
 //! Force-cancelling a failing account's orders, flagging it idle, resyncing
 //! counters that drifted, and tripping the authority-wide equity breaker.
-//! Every handler here is permissionless: the proof is the calculation, not the
-//! caller.
+//! Anyone may call every handler here. Each one proves its own case by
+//! calculation, so the caller's identity does not matter.
 
 use super::*;
 
@@ -67,19 +67,20 @@ pub fn handle_trip_equity_floor_breaker<'c: 'info, 'info>(
         Some(state.oracle_guard_rails),
     )?;
 
-    // The trip threshold is real net equity (unweighted assets and pnl minus
-    // unweighted spot liabilities), not the margin numerator: weighted
-    // collateral overstates equity when borrows exist and understates it via
-    // asset weights, strict pricing and the positive-pnl clamp. The walk is
-    // the trip's own upper bound: invalid-oracle liabilities and shorts count
-    // at zero, while invalid-oracle assets and longs block the proof.
+    // The trip threshold is real net equity, which is unweighted assets and pnl
+    // minus unweighted spot liabilities. The margin numerator does not serve
+    // here. Weighted collateral overstates equity when borrows exist, and asset
+    // weights, strict pricing and the positive-pnl clamp make it understate
+    // equity. The walk returns the trip's own upper bound. Invalid-oracle
+    // liabilities and shorts count at zero, and invalid-oracle assets and longs
+    // block the proof.
     let trip_equity = calculate_user_equity_for_trip(&user, &mut maps)?;
 
     // An authority-wide freeze must not arm over exposure the program cannot
-    // value: any invalid-oracle asset or long blocks the proof. The floor
-    // gates on withdrawals/fills still hold independently of the breaker. The two
-    // validates decompose `TripNetEquity::proves_breach` so each failure
-    // keeps its error code.
+    // value. Any invalid-oracle asset or long blocks the proof. The floor gates
+    // on withdrawals and fills hold whether or not the breaker is armed. The two
+    // validates decompose `TripNetEquity::proves_breach`, so each failure keeps
+    // its own error code.
     validate!(
         trip_equity.provable,
         ErrorCode::InvalidOracle,
@@ -258,18 +259,16 @@ pub struct UserOpenOrderCounts {
 
 /// Recount an account's open orders and open auctions from its own state.
 ///
-/// An order rests in one of two places, and the count must cover both.
-/// A DLOB order holds an `Order` row. A plain CLOB order holds no row at
-/// all, and only the position's `open_orders` reservation records it. A
-/// count of rows alone therefore wipes the count for every order that rests
-/// on a book, and it desyncs the count from the per-position reservations
-/// that this instruction does not touch.
+/// An order rests in one of two places, and the count must cover both. A DLOB
+/// order holds an `Order` row. A plain CLOB order holds no row, and only the
+/// position's `open_orders` reservation records it. A count of rows alone
+/// therefore drops every order that rests on a book. It also desyncs the count
+/// from the per-position reservations that this instruction does not touch.
 ///
-/// A fired trigger order is the one order that appears in both places. It
-/// keeps its `Order` row `Open` with `PlacedOnClob` set, and its book
-/// reservation reuses the `open_orders` slot that row already holds. The row
-/// pass skips it because `clob_resident_open_orders` counts it, so it counts
-/// exactly once.
+/// A fired trigger order is the one order that appears in both places. It keeps
+/// its `Order` row `Open` with `PlacedOnClob` set, and its book reservation
+/// reuses the `open_orders` slot that row already holds. The row pass skips it
+/// because `clob_resident_open_orders` counts it, so it counts exactly once.
 pub fn count_user_open_orders(user: &User) -> UserOpenOrderCounts {
     let mut open_orders = 0_u8;
     let mut open_auctions = 0_u8;
@@ -330,7 +329,7 @@ pub struct UpdateUserIdle<'info> {
 #[derive(Accounts)]
 pub struct TripEquityFloorBreaker<'info> {
     pub state: AccountLoader<'info, State>,
-    /// Any signer may trip the breaker; the proof is the margin calculation.
+    /// Any signer may trip the breaker. The margin calculation is the proof.
     pub keeper: Signer<'info>,
     pub user: AccountLoader<'info, User>,
     #[account(

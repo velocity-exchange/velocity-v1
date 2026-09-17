@@ -243,10 +243,10 @@ const getRedisChannelFromMessage = (message: any): string => {
 	const channel = message.channel;
 
 	// A user's resting orders span every market, so this channel names a user
-	// rather than a market and resolves before the market lookup below.
-	// Resting orders are public on-chain state, so no authorization is
-	// involved; the publisher republishes only when the user's own set
-	// changes, so a subscriber that hears nothing is resting what it was.
+	// rather than a market and resolves before the market lookup below. Resting
+	// orders are public on-chain state, so the channel needs no authorization.
+	// The publisher republishes only when the user's own set changes, so a
+	// subscriber that hears nothing still rests what it rested before.
 	if (channel?.toLowerCase() === 'user_orders') {
 		const user = message.user;
 		if (!user || typeof user !== 'string') {

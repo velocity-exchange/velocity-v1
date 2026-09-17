@@ -1,20 +1,18 @@
 //! The one scratch account every relay resolver stages into.
 //!
-//! A resolver's output — the executor's account list and args — is written
-//! somewhere a turner can read it back out of the simulation, and until
-//! now that somewhere was a region on each conditions account. That is
-//! kilobytes per account of space whose contents are meaningless on chain:
-//! resolvers run *only* under simulation, so a staged payload is never
-//! committed, and two turners simulating at the same time cannot collide
-//! because neither one's writes exist outside its own simulation.
+//! A resolver writes its output, the executor's account list and arguments,
+//! where a turner can read it back out of the simulation. A resolver runs only
+//! under simulation, so a staged payload is never committed. Two turners that
+//! simulate at the same time cannot collide, because neither one's writes
+//! exist outside its own simulation.
 //!
-//! So it does not need to be per account, and per account is expensive —
-//! 2KB on every user's conditions account is rent every user pays for
-//! scratch space. One account, shared by every block in the program,
-//! serves the same purpose.
+//! The region therefore does not have to sit on each conditions account, and
+//! per-account scratch is expensive. Two kilobytes on every user's conditions
+//! account is rent every user pays. One account shared by every block in the
+//! program serves the same purpose.
 //!
-//! It is a normal writable account in each resolver's account list, always
-//! at index 0, which is what a [`relay_spec::ResponsePointerV0`] means by
+//! It is an ordinary writable account in each resolver's account list, always
+//! at index 0. That index is what a [`relay_spec::ResponsePointerV0`] means by
 //! `account_index`.
 
 use {
@@ -26,17 +24,16 @@ use {
 /// PDA seed: `["relay_scratch"]`. One per program.
 pub const RELAY_SCRATCH_PDA_SEED: &[u8] = b"relay_scratch";
 
-/// Big enough for the largest executor any resolver stages: the
-/// liquidation fill's account list runs to the user's full margin map
-/// plus the maker side.
+/// Large enough for the biggest executor any resolver stages. The liquidation
+/// fill's account list covers the user's full margin map and the maker side.
 pub const RELAY_SCRATCH_LEN: usize = 4096;
 
-/// Index of the scratch account in every resolver's account list. Fixed
-/// by convention rather than per resolver, so the pointer a resolver
-/// returns means the same thing everywhere.
+/// Index of the scratch account in every resolver's account list. The index is
+/// the same for every resolver, so the pointer a resolver returns means the
+/// same thing everywhere.
 pub const RELAY_SCRATCH_ACCOUNT_INDEX: u8 = 0;
 
-/// Account-data offset of the scratch region (past anchor's discriminator).
+/// Account-data offset of the scratch region, past anchor's discriminator.
 pub const RELAY_SCRATCH_OFFSET: u32 = 8;
 
 #[account(zero_copy(unsafe))]
@@ -80,8 +77,8 @@ const _: () = assert!(RelayScratchV0::SIZE <= 10_240);
 mod tests {
     use super::*;
 
-    /// Deploy-time sizes live in `deploy-scripts/migrate.ts` too, so they
-    /// are printed here rather than looked up by hand.
+    /// `deploy-scripts/migrate.ts` holds these sizes too. This test prints
+    /// them so that nobody has to look them up by hand.
     #[test]
     fn sizes_for_the_migration_script() {
         println!(

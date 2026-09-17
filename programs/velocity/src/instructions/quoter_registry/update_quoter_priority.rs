@@ -1,7 +1,8 @@
-//! Admin-set routing priority (lower fills first, pro rata within a tier).
-//! Admin-only — a maker choosing their own priority could jump the vAMM and
-//! CLOB in the fill waterfall. Writes through to the approved copy in the
-//! market's slab, so the new tier applies without a re-approval.
+//! Admin-set routing priority. A lower priority fills first. Quoters in one
+//! tier fill pro rata. Only the admin may set it, because a maker that chose
+//! its own priority could fill ahead of the vAMM and the CLOB. The value
+//! writes through to the approved copy in the market's slab, so the new tier
+//! applies with no new approval.
 
 use {
     crate::{
@@ -37,7 +38,7 @@ pub struct UpdateQuoterPriority<'info> {
 
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
 pub struct UpdateQuoterPriorityArgs {
-    /// Routing tier at a shared price: lower fills first, pro rata within.
+    /// Routing tier at a shared price. A lower value fills first.
     pub priority: u8,
 }
 

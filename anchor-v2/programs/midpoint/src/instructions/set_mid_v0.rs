@@ -1,9 +1,10 @@
-//! THE hot path. A maker calls this thousands of times a day to track fair
-//! value, so it is kept to the bare minimum the account model allows: one
-//! owner/discriminator-checked zero-copy account, one address-matched
-//! signer, a clock read, three u64 stores. No PDA re-derivation (the
-//! hot-authority match already binds the write to this quoter), no event,
-//! no allocation. The CU budget is pinned by a litesvm test.
+//! The hot path. A maker calls this thousands of times a day to track fair
+//! value, so the instruction holds the least the account model allows. It takes
+//! one zero-copy account with an owner check and a discriminator check, one
+//! address-matched signer, one clock read, and three u64 stores. It re-derives
+//! no PDA, because the hot-authority match already binds the write to this
+//! quoter. It emits no event and allocates nothing. A litesvm test pins the
+//! compute budget.
 
 use {
     crate::{error::MidpointError, state::MidpointQuoterV0},
@@ -23,9 +24,10 @@ pub struct SetMidV0 {
 pub struct SetMidArgsV0 {
     /// PRICE_PRECISION. 0 stops quoting.
     pub mid: u64,
-    /// Opt-in monotonic guard for racing writers: nonzero must strictly
-    /// increase; zero skips the check. A mid of 0 is a withdrawal, so it
-    /// skips the guard whatever the sequence says.
+    /// An optional monotonic guard for racing writers. A nonzero sequence must
+    /// strictly increase. A sequence of 0 skips the check only while no writer
+    /// has stamped a sequence yet. A mid of 0 is a withdrawal, so it skips the
+    /// guard whatever the sequence holds.
     pub sequence: u64,
 }
 

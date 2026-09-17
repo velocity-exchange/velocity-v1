@@ -1,24 +1,26 @@
-//! The quoted route of a router fill: which of the market's approved quoters
-//! this transaction consults, and what each of them quoted.
+//! The quoted route of a router fill. It names which of the market's
+//! approved quoters this transaction consults, and what each one quoted.
 //!
-//! Every router fill ends with the same account tail — the market's
-//! [`QuoterSlabV0`] plus, per consulted quoter, the union of its registered
-//! CPI accounts (its program, its response account; the slab itself is the
-//! CPI signer).
-//! The slab holds every approved config; the transaction names the slots it
-//! consults by *carrying their response accounts* — a slot whose response
-//! account is absent is simply not consulted, and carrying one is the intent
-//! to consult it (its remaining registered accounts must then be present, as
-//! a CPI with a partial list would answer about the wrong thing). Quoting is
-//! the same work whoever sent the transaction, a keeper cranking someone
-//! else's order or a taker routing their own, so it lives here rather than in
-//! one entrypoint the other cannot reach.
+//! Every router fill ends with the same account tail. The tail holds the
+//! market's [`QuoterSlabV0`], and then the registered CPI accounts of each
+//! consulted quoter. Those are the quoter program and its response account.
+//! The slab is the CPI signer.
 //!
-//! The result is owned because the fill borrows from it: the executor holds
-//! the quoted slots and the account tail, and the router's books point at the
-//! levels each quote returned. A function that built the executor itself would
-//! be returning references to its own locals, so the caller keeps the route
-//! alive and takes the fill's books from it ([`RouteQuote::books`]).
+//! The slab holds every approved config. The transaction names the slots it
+//! consults by carrying their response accounts. A slot whose response
+//! account is absent is not consulted. A slot whose response account is
+//! present is consulted, and its other registered accounts must be present
+//! too. A CPI with a partial account list answers about the wrong thing.
+//!
+//! Quoting is the same work for a keeper who cranks another user's order and
+//! for a taker who routes its own. It lives here so that both entrypoints
+//! reach it.
+//!
+//! The route is owned because the fill borrows from it. The executor holds
+//! the quoted slots and the account tail. The router's books point at the
+//! levels each quote returned. A function that built the executor would
+//! return references to its own locals. The caller keeps the route alive and
+//! takes the fill's books from it with [`RouteQuote::books`].
 
 use {
     super::{cpi_executor::CpiQuoterExecutor, user_caps::SizedQuote},
@@ -48,21 +50,21 @@ fn is_quoter_slab(info: &AccountInfo) -> bool {
 
 /// Cut a custom quoter's ladder to the depth this fill will settle against.
 ///
-/// Two bounds, both the quoter's own. Its declared oracle band drops the
-/// levels that price outside it, and the base its account can carry
+/// Two bounds apply, and both are the quoter's own. The declared oracle band
+/// drops the levels that price outside it. The base its account can carry
 /// truncates what is left. The band always cuts the taker-favourable end of
-/// the ladder, because that is the end that prices against the maker.
+/// the ladder, because that end prices against the maker.
 ///
-/// A book is never trimmed here. Its makers rest depth that was
-/// margin-reserved at placement and are sized one per user in the caps the
-/// call carries, and the book passes over an owner out of room mid-walk. So
-/// the depth behind that owner stays quoted and stays fillable, where a trim
-/// out here would cut every order behind them.
+/// A book is never trimmed here. Its makers rest depth that was margin
+/// reserved at placement, and the caps the call carries size them one per
+/// user. The book itself skips an owner that has no room left during the
+/// walk. The depth behind that owner stays quoted and stays fillable. A trim
+/// here would instead cut every order behind that owner.
 ///
-/// Compacted in place, which the pool's own layout allows: the run is its
-/// tail, so the kept levels move down over the dropped ones and the pool
-/// shortens. No second list exists to disagree with this one, and no earlier
-/// quoter's run moves.
+/// The compaction happens in place, which the pool's layout allows. The run
+/// is the tail of the pool, so the kept levels move down over the dropped
+/// ones and the pool shortens. No second list exists to disagree with this
+/// one, and no earlier quoter's run moves.
 fn trim_to_quoter_room(
     levels: &mut Vec<PriceLevel>,
     run: std::ops::Range<usize>,
@@ -101,13 +103,13 @@ fn trim_to_quoter_room(
 
 /// The market's slab, found on the account tail.
 ///
-/// `None` when the tail carries none, which is a fill that consults nothing
-/// external. A slab for another market is refused rather than passed over:
-/// the caller named it, so it meant to route on it.
+/// Returns `None` when the tail carries no slab, which is a fill that
+/// consults nothing external. A slab for another market is refused rather
+/// than skipped, because the caller named it and so meant to route on it.
 ///
-/// One finder, because the sizing that runs before a quote and the route
-/// that takes the quote must agree on which account they mean. Two rules
-/// would let a tail size one slab and quote another.
+/// One finder exists, because the sizing that runs before a quote and the
+/// route that takes the quote must agree on which account they mean. Two
+/// rules would let a tail size one slab and quote another.
 pub fn route_slab<'info>(
     tail: &'info [AccountInfo<'info>],
     market_index: u16,
@@ -132,18 +134,18 @@ pub fn route_slab<'info>(
 
 /// Whether a claimed route entry is one the fill wrongly left out.
 ///
-/// `slot` is what the slab says about the entry: the slot it sits in and
-/// whether that slot can quote, or `None` when the entry was never approved.
+/// `slot` is what the slab says about the entry. It gives the slot the entry
+/// sits in and whether that slot can quote. It is `None` when the slab never
+/// approved the entry.
 ///
-/// Three of the four answers are "no", each for its own reason. An entry the
+/// Three of the four answers are no, each for its own reason. An entry the
 /// route consulted was carried. An entry the slab never approved cannot be
 /// consulted and never could have been, so a route signed against a quoter
-/// that was later revoked still fills. An entry whose slot cannot quote
-/// would have offered nothing had it been carried, which is the same reason:
-/// a route signed before an admin pulled a quoter must not brick the fill.
+/// that an admin later revoked still fills. An entry whose slot cannot quote
+/// would have offered nothing if the fill carried it, for the same reason.
 ///
-/// What is left — approved, able to quote, and left out — is the omission
-/// this rule exists to catch.
+/// The remaining answer is the omission this rule catches. The entry is
+/// approved, it can quote, and the fill left it out.
 fn claimed_entry_is_omitted(slot: Option<(usize, bool)>, consulted: &[usize]) -> bool {
     match slot {
         None => false,
@@ -163,8 +165,8 @@ struct SlotQuote {
 
 /// What a router fill needs beyond the quoted route itself.
 pub struct FillerStanding {
-    /// `State::signer`, the authority of the protocol `User`, which no quoter
-    /// may name as a fill subject.
+    /// `State::signer`, the authority of the protocol `User`. No quoter may
+    /// name it as a fill subject.
     pub protocol_authority: Pubkey,
     /// What the fill knows about the party that built the transaction.
     pub obligation: crate::math::router::FillerObligation,
@@ -177,8 +179,8 @@ impl<'info> RouteQuote<'_, 'info> {
     /// The books this route quoted, in the form the fill reads them, with the
     /// leg that executes what lands on them.
     ///
-    /// A second step rather than part of [`quote_route`], because this
-    /// borrows what quoting returned: the books point at the route's level
+    /// This is a second step rather than part of [`quote_route`], because it
+    /// borrows what quoting returned. The books point at the route's level
     /// pool, and the executor borrows the route and the CPI scratch. One
     /// function cannot return both the route and a value that points into it,
     /// so the caller holds the route and takes the books from it.
@@ -200,12 +202,13 @@ impl<'info> RouteQuote<'_, 'info> {
     }
 }
 
-/// What a router fill executes against: the route's books, reshaped into the
-/// router's own list, and the execute leg for the allocations that land on
-/// them. Books and executor share indexing, so they are one value.
+/// What a router fill executes against. It holds the route's books, reshaped
+/// into the router's own list, and the execute leg for the allocations that
+/// land on them. The books and the executor share indexing, so they are one
+/// value.
 ///
 /// The caller holds it for the length of the fill, because the fill's inputs
-/// borrow it ([`Self::for_fill`]).
+/// borrow it. See [`Self::for_fill`].
 pub struct QuotedBooks<'a, 'info> {
     books: [QuoterBook<'a>; MAX_ROUTE_QUOTERS],
     /// Books the route wrote. The rest of the array is the default book,
@@ -215,13 +218,13 @@ pub struct QuotedBooks<'a, 'info> {
 }
 
 impl<'a, 'info> QuotedBooks<'a, 'info> {
-    /// The router leg the fill runs: these books and their execute leg, plus
-    /// what the fill needs beyond the route itself.
+    /// The router leg the fill runs. It holds these books, their execute leg,
+    /// and what the fill needs beyond the route itself.
     ///
     /// The leg borrows the books rather than taking them, because it points
-    /// into them. They outlive it, and the caller reads
+    /// into them. The books outlive the leg. The caller reads
     /// [`crate::math::router::RouterLeg::worst_fill_price`] back off the leg
-    /// once the fill returns.
+    /// after the fill returns.
     pub fn for_fill<'b>(&'b mut self, standing: FillerStanding) -> RouterLeg<'b, 'a, 'info> {
         RouterLeg {
             books: &self.books[..self.written],
@@ -253,14 +256,14 @@ pub struct RouteQuote<'a, 'info> {
 /// Size every counterparty this fill may settle against, then quote the
 /// route against those numbers.
 ///
-/// The only way to a [`QuotedRoute`]. `QuotedRoute::assemble` is private, so
-/// a route cannot be quoted from inputs whose caps were never priced, nor
-/// used without its baseline and its signer's claim checked — rules six call
-/// sites each had to remember.
+/// This is the only way to a [`QuotedRoute`]. `QuotedRoute::assemble` is
+/// private, so a route cannot be quoted from inputs whose caps were never
+/// priced. A route also cannot be used without its baseline and its signer's
+/// claim checked. Six call sites each had to remember those rules.
 ///
-/// `claim` is an argument rather than part of the inputs because it is not
-/// something a quoter is told. It is read here and not kept, so a caller can
-/// name the order it came from and still mutate that order during the fill.
+/// `claim` is an argument rather than part of the inputs, because a quoter is
+/// never told it. It is read here and not kept, so a caller can name the
+/// order it came from and still mutate that order during the fill.
 pub fn quote_route<'a, 'info>(
     tail: &'info [AccountInfo<'info>],
     inputs: QuoteInputs<'a>,
@@ -292,19 +295,17 @@ pub fn quote_route<'a, 'info>(
 
 /// Why this slot offers no depth to this fill, or `None` when it quotes.
 ///
-/// An empty reason is a slot that is simply not quoting — revoked,
-/// suspended, deactivated — which needs no log line. A route signed before
-/// an admin pulled a quoter must not brick the fill, so these are all
-/// skips.
+/// Every reason here is a skip, not a refusal. A route signed before an admin
+/// revoked, suspended, or deactivated a quoter must still fill.
 fn slot_offers_nothing(slot: &QuoterSlotV0, taker_served_window: bool) -> Option<&'static str> {
     if !slot.quotes() {
         return Some("non quoting slot");
     }
-    // Maker priority: a book with a speed bump quotes no depth to an
-    // unattested taker. The slot stays consulted — the baseline is presence,
-    // and the rest leg still uses it — but it offers nothing to execute, so
-    // unattested aggression rests through the activation window, where a
-    // maker can reprice or cross it first.
+    // Makers take priority. A book with an activation delay quotes no depth
+    // to an unattested taker. The slot stays consulted, because the baseline
+    // is presence and the rest leg still uses it. It offers nothing to
+    // execute, so unattested aggression rests through the activation window.
+    // A maker can reprice or cross it first.
     if matches!(slot.config.quoter_type, QuoterType::Clob)
         && !taker_served_window
         && slot.config.book_default_activation_delay_slots > 0
@@ -315,59 +316,61 @@ fn slot_offers_nothing(slot: &QuoterSlotV0, taker_served_window: bool) -> Option
 }
 
 pub struct QuotedRoute<'info> {
-    /// The account tail, borrowed straight from the instruction's remaining
-    /// accounts. A quoter's registered account list is resolved against this by
-    /// scanning it — nothing is cloned and no index is built.
+    /// The account tail, borrowed from the instruction's remaining accounts.
+    /// A quoter's registered account list is resolved against this by scanning
+    /// it. Nothing is cloned and no index is built.
     pub accounts: &'info [AccountInfo<'info>],
-    /// The slab slots that quoted, by index, in slab order. Slots that quote
-    /// nothing (suspended, deactivated, skipped) are absent.
+    /// The slab slots that quoted, by index, in slab order. A slot that quotes
+    /// nothing is absent. It may be suspended, deactivated, or skipped.
     pub quoted_slots: Vec<usize>,
-    /// What each quoted slot answered, aligned with `quoted_slots`: the
-    /// slot's run in `levels`, and the depth it withheld.
+    /// What each quoted slot answered, aligned with `quoted_slots`. It holds
+    /// the slot's run in `levels` and the depth it withheld.
     ladders: Vec<crate::state::prop_amm::QuotedLadderV0>,
-    /// Every slot's quoted levels, one run after another; each ladder's
-    /// range indexes into this. A run is always the tail of the pool at the
-    /// moment its quote returns, because a quote appends.
+    /// Every slot's quoted levels, one run after another. Each ladder's range
+    /// indexes into this. A run is always the tail of the pool at the moment
+    /// its quote returns, because a quote appends.
     ///
-    /// One pool, not one list per book. The ladders have to outlive the
-    /// borrow each quoter wrote them in — the split reads every book at once
-    /// and the execute leg then writes the very accounts the levels sit in —
-    /// and velocity's heap is 32 KB and never reclaims, so a list per book
-    /// is an allocation per book for the rest of the instruction. A fixed
-    /// array is not an option either: the ceiling is
-    /// `MAX_ROUTE_QUOTERS * MAX_LEVELS_PER_BOOK` levels, 16 KB, and the
-    /// stack frame is 4 KB.
+    /// One pool, not one list per book. The ladders must outlive the borrow
+    /// each quoter wrote them in, because the split reads every book at once
+    /// and the execute leg then writes the accounts the levels sit in.
+    /// Velocity's heap is 32 KB and never reclaims, so a list per book costs
+    /// an allocation per book for the rest of the instruction. A fixed array
+    /// is not an option either. Its ceiling is
+    /// `MAX_ROUTE_QUOTERS * MAX_LEVELS_PER_BOOK` levels, which is 16 KB, and
+    /// the stack frame is 4 KB.
     ///
-    /// Grown rather than reserved, which is deliberate and was measured. A
+    /// The pool grows rather than reserves, and that choice was measured. A
     /// reservation would have to be the ceiling, because nothing says how
-    /// deep a quoter will answer until its CPI returns, and 16 KB reserved
-    /// costs more than doubling on every route that is not at the ceiling:
-    /// a book quoting 128 levels ahead of seven four-rung quoters holds
-    /// 2,496 bytes and doubling allocates 6,144 against the ceiling's
-    /// 16,384. Sizing the pool from the first ladder instead is worse again
-    /// on that shape, which is the common one. What doubling costs is the
-    /// ceiling itself: eight books at 128 levels allocate 30,720 bytes to
-    /// hold 16,384, and the 14,336 left behind are not given back. Reserve
-    /// the ceiling only if that shape becomes reachable in practice.
+    /// deep a quoter answers until its CPI returns. 16 KB reserved costs more
+    /// than doubling on every route below the ceiling. A book quoting 128
+    /// levels ahead of seven four-rung quoters holds 2,496 bytes, and
+    /// doubling allocates 6,144 against the ceiling's 16,384. Sizing the pool
+    /// from the first ladder is worse again on that shape, which is the
+    /// common one.
+    ///
+    /// Doubling costs the most at the ceiling itself. Eight books at 128
+    /// levels allocate 30,720 bytes to hold 16,384, and the 14,336 left over
+    /// are not given back. Reserve the ceiling only if that shape becomes
+    /// reachable in practice.
     levels: Vec<PriceLevel>,
     /// The market's slab, when the transaction carried one. The mandatory
-    /// baseline and the signed route are answered from it: whether an absent
-    /// quoter *could* have quoted is a fact about the approved set.
+    /// baseline and the signed route are answered from it. Whether an absent
+    /// quoter could have quoted is a fact about the approved set.
     slab: Option<AccountLoader<'info, QuoterSlabV0>>,
-    /// Every consulted slab slot, quoting or not: a slot that was skipped
-    /// (dead, reading another's response, speed-bumped) still counts as
-    /// consulted for the
-    /// signed route and the baseline, which is what separates this from
-    /// [`Self::quoted_slots`].
+    /// Every consulted slab slot, whether it quoted or not. A skipped slot
+    /// still counts as consulted for the signed route and the baseline, which
+    /// is what separates this from [`Self::quoted_slots`]. A slot is skipped
+    /// when it is dead, when it reads another slot's response, or when its
+    /// activation delay holds it back.
     ///
     /// Slot indexes rather than entry keys. `consulted_slots` allocates this
-    /// list to find them, so keeping it costs nothing, where a list of the
-    /// entries behind them is a second copy of what the slab already holds.
+    /// list to find them, so keeping it costs nothing. A list of the entries
+    /// behind them would be a second copy of what the slab already holds.
     consulted: Vec<usize>,
 }
 
-/// What quoting needs: the taker's side and size, plus the identities
-/// forwarded on the wire.
+/// What quoting needs. It holds the taker's side and size, plus the
+/// identities forwarded on the wire.
 pub struct QuoteInputs<'a> {
     pub market_index: u16,
     pub direction: Direction,
@@ -375,24 +378,26 @@ pub struct QuoteInputs<'a> {
     /// The loaded-user set quoters must not fill outside of.
     pub users: &'a [ClobUserRefV0],
     /// The mark a quoter prices a capped maker's loss against. The quote and
-    /// the execute must be handed the same one, or a quoter that spends
-    /// budgets passes over a different set of orders than it quoted.
+    /// the execute must receive the same value. A quoter that spends budgets
+    /// would otherwise skip a different set of orders than it quoted.
     pub reference_price: i64,
     pub taker: ClobUserRefV0,
-    /// The worst price this fill will accept, or zero for no bound. A quoter
-    /// that honours it stops its walk where the router would have discarded
-    /// the rest. Advisory: see [`QuoteArgsV0::limit_price`].
+    /// The worst price this fill accepts, or zero for no bound. A quoter that
+    /// honours it stops its walk where the router would have discarded the
+    /// rest. It is advisory. See [`QuoteArgsV0::limit_price`].
     pub limit_price: u64,
-    /// Whether the taker's flow served a protection window: the swift hold
-    /// (the flow authority signed a swift-built transaction as a named
-    /// account, or signed a detached attestation over the order's own
-    /// signature for a keeper-built fill), or the book's
-    /// activation delay (a protocol crank fills an order that rested
-    /// through it, so the cranks pass `true`). Forwarded to every quoter on
-    /// the wire — a quoter that only serves protected flow trusts this the
-    /// way it trusts `users` and `caps`. It also drives the maker-priority
-    /// skip in [`QuotedRoute::assemble`]: a book with a nonzero default
-    /// activation delay quotes no depth when this is false.
+    /// Whether the taker's flow served a protection window. The window is
+    /// either the swift hold or the book's activation delay. The swift hold
+    /// applies when the flow authority signed a swift-built transaction as a
+    /// named account, or signed a detached attestation over the order's own
+    /// signature for a keeper-built fill. The activation delay applies when a
+    /// protocol crank fills an order that rested through it, so the cranks
+    /// pass `true`.
+    ///
+    /// Every quoter receives this on the wire. A quoter that only serves
+    /// protected flow trusts it the way it trusts `users` and `caps`. It also
+    /// drives the skip that gives makers priority: a book with a nonzero
+    /// default activation delay quotes no depth when this is false.
     pub taker_served_window: bool,
     /// The market's initial margin ratio, which a quoter's declared oracle
     /// band defaults to when it sets none.
@@ -403,8 +408,8 @@ pub struct QuoteInputs<'a> {
     /// A remainder claims the depth it crosses, and that depth leaves the
     /// matchable set for everyone else. Only the crank that owes the taker its
     /// improvement may take it, so only that crank passes `true`. Every other
-    /// route must pass `false`, or a caller could fill the cover a remainder is
-    /// waiting on and take the improvement itself.
+    /// route must pass `false`. Otherwise a caller could fill the cover a
+    /// remainder waits on and take the improvement itself.
     pub consume_reservation: bool,
 }
 
@@ -422,8 +427,8 @@ impl<'info> QuotedRoute<'info> {
     /// Find the market's slab among the leftover accounts, then quote every
     /// consulted slot on it.
     ///
-    /// Suspended or deactivated slots are skipped rather than rejected: a
-    /// route signed before an admin pulled a quoter must not brick the fill.
+    /// A suspended or deactivated slot is skipped rather than refused. A route
+    /// signed before an admin pulled a quoter must still fill.
     fn assemble(
         tail: &'info [AccountInfo<'info>],
         sized: &SizedQuote<'_, 'info>,
@@ -431,17 +436,18 @@ impl<'info> QuotedRoute<'info> {
     ) -> Result<QuotedRoute<'info>> {
         let mut route = QuotedRoute {
             accounts: tail,
-            // The one heap holder left, deliberately: a fixed array of these
-            // is about a kilobyte, and this fill's stack frame is four — the
-            // program has overflowed it before on a struct this size.
+            // The one heap holder left, and that is deliberate. A fixed array
+            // of these is about a kilobyte, and this fill's stack frame is
+            // four. The program has overflowed that frame before on a struct
+            // this size.
             quoted_slots: Vec::with_capacity(MAX_ROUTE_QUOTERS),
             ladders: Vec::with_capacity(MAX_ROUTE_QUOTERS),
             levels: Vec::new(),
             slab: None,
             consulted: Vec::new(),
         };
-        // Handed in rather than found again: the caller located it to size
-        // this fill's counterparties, and the scan is over the whole tail.
+        // Handed in rather than found again. The caller located it to size
+        // this fill's counterparties, and the scan covers the whole tail.
         route.slab = sized.slab.clone();
         let Some(slab) = sized.slab.clone() else {
             return Ok(route);
@@ -449,9 +455,9 @@ impl<'info> QuotedRoute<'info> {
 
         route.consulted = slab.consulted_slots(tail)?;
 
-        // By position, because `consulted` stays on the route for the
-        // baseline and signed-route rules and cannot be borrowed across a
-        // call that takes the route mutably.
+        // Indexed by position, because `consulted` stays on the route for the
+        // baseline and signed-route rules. It cannot be borrowed across a call
+        // that takes the route mutably.
         for position in 0..route.consulted.len() {
             let index = route.consulted[position];
             route.quote_slot(&slab, index, sized, scratch)?;
@@ -461,7 +467,7 @@ impl<'info> QuotedRoute<'info> {
 
     /// Quote one consulted slot and record what it answered.
     ///
-    /// A slot that offers nothing is passed over, not refused: the route
+    /// A slot that offers nothing is skipped rather than refused. The route
     /// still counts it as consulted, so the baseline and the signed-route
     /// rules see it, and the fill's other sources stand.
     fn quote_slot(
@@ -479,9 +485,10 @@ impl<'info> QuotedRoute<'info> {
 
     /// CPI the slot's quoter, or `None` when the slot offers nothing.
     ///
-    /// The levels land in [`Self::levels`], as the run `SlotQuote::ladder`
-    /// names. Nothing else is written until [`Self::record_quote`] accepts
-    /// them, so a slot that errors leaves the route as it found it.
+    /// The levels land in [`Self::levels`], in the run that
+    /// `SlotQuote::ladder` names. Nothing else is written until
+    /// [`Self::record_quote`] accepts them, so a slot that errors leaves the
+    /// route as it found it.
     fn take_quote(
         &mut self,
         slab: &AccountLoader<'info, QuoterSlabV0>,
@@ -520,9 +527,9 @@ impl<'info> QuotedRoute<'info> {
         drop(slots);
 
         // The copy this fill earns, made where the pool lives. The split
-        // reads every book at once and the execute leg then writes the very
-        // account these levels sit in, so the ladder cannot stay where the
-        // quoter wrote it.
+        // reads every book at once, and the execute leg then writes the very
+        // account these levels sit in. The ladder cannot stay where the quoter
+        // wrote it.
         let data = located.borrow()?;
         let response = located.checked_quote_response(&data, inputs.direction)?;
         let ladder = self.append_ladder(usable_levels(response.levels), response.withheld);
@@ -535,8 +542,9 @@ impl<'info> QuotedRoute<'info> {
 
     /// Cut one custom quoter's run down to what this fill will settle.
     ///
-    /// The rule is [`trim_to_quoter_room`], which stays a free function so it
-    /// can be tested without a route; this binds it to the pool it rewrites.
+    /// The rule is [`trim_to_quoter_room`], which stays a free function so a
+    /// test can call it without a route. This method binds it to the pool it
+    /// rewrites.
     fn trim_ladder(
         &mut self,
         run: std::ops::Range<usize>,
@@ -582,24 +590,24 @@ impl<'info> QuotedRoute<'info> {
         } = quoted;
 
         // A custom quoter's ladder is cut before anything else reads it. One
-        // trim, one ladder: the split allocates and the settle checks
-        // against the same levels, which two lists cannot promise.
+        // trim and one ladder: the split allocates against the same levels the
+        // settle checks against. Two lists cannot promise that.
         let levels = if quoter_type == QuoterType::Custom {
             self.trim_ladder(ladder.levels, sized, oracle_band, index)?
         } else {
             ladder.levels
         };
 
-        // Only a book can withhold. A book walks the orders of many owners
-        // and stops at one this transaction cannot settle for. Every other
-        // quoter fills from the single `user` in its own registry slot,
-        // which a fill either carries or does not quote at all, so there is
-        // no owner for it to stop at.
+        // Only a book can withhold. A book walks the orders of many owners and
+        // stops at one this transaction cannot settle for. Every other quoter
+        // fills from the single `user` in its own registry slot. A fill either
+        // carries that user or does not quote the slot at all, so there is no
+        // owner to stop at.
         //
-        // Dropped here rather than trusted and checked later: the report
-        // arms the filler obligation, so a quoter that set it would fail
-        // fills that carried it and the error would name the filler. Zeroing
-        // it at the source leaves nothing to report and no consumer to
+        // The report is dropped here rather than trusted and checked later. It
+        // arms the filler obligation, so a quoter that set it would fail fills
+        // that carried it, and the error would name the filler. Zeroing it at
+        // the source leaves nothing to report and no consumer that must
         // remember the rule.
         let withheld = if quoter_type == QuoterType::Clob {
             ladder.withheld
@@ -612,19 +620,19 @@ impl<'info> QuotedRoute<'info> {
         Ok(())
     }
 
-    /// A route can't exclude the public book: when the market names a
+    /// A route cannot exclude the public book. When the market names a
     /// canonical CLOB entry whose slab slot can quote, the transaction must
-    /// consult it — which also means carrying the slab at all. A suspended or
-    /// deactivated slot satisfies this without being consulted, so killing a
-    /// book never bricks fills. The vAMM half of the baseline is inherent:
-    /// it's in-program, gated only by oracle validity.
+    /// consult it, and so must carry the slab. A suspended or deactivated slot
+    /// satisfies this rule without being consulted, so an admin who kills a
+    /// book does not stop fills. The vAMM half of the baseline is inherent,
+    /// because the vAMM is in-program and gated only by oracle validity.
     pub fn require_baseline(&self, required_clob: Pubkey) -> Result<()> {
         if required_clob == Pubkey::default() {
             return Ok(());
         }
-        // Without the slab a filler could dodge the book (and its withheld-
-        // depth protections) by omitting one account, so naming a book makes
-        // the slab mandatory.
+        // Without the slab a filler could avoid the book by omitting one
+        // account, and the withheld-depth protections with it. Naming a book
+        // makes the slab mandatory.
         let Some(slab) = &self.slab else {
             msg!(
                 "the market names CLOB quoter {}; the fill must carry the quoter slab",
@@ -633,16 +641,16 @@ impl<'info> QuotedRoute<'info> {
             return Err(ErrorCode::DefaultError.into());
         };
         let slots = slab.slots()?;
-        // The market names its book by the account the book answers on, which
-        // approval holds equal to that entry's response account. The slab is
-        // keyed by entry, and a route reports the entries it consulted, so the
-        // lookup goes through the response account to learn which entry is the
-        // book. Matching the book's address against entry keys finds nothing
-        // and quietly excuses every fill from the baseline.
+        // The market names its book by the account the book answers on.
+        // Approval holds that account equal to the entry's response account.
+        // The slab is keyed by entry, and a route reports the entries it
+        // consulted, so the lookup goes through the response account to learn
+        // which entry is the book. Matching the book's address against entry
+        // keys finds nothing and excuses every fill from the baseline.
         let book = crate::state::prop_amm::occupied_slots(&slots)
             .find(|(_, slot)| slot.config.response_account == required_clob);
-        // No slot at all is a book that was never approved or was revoked,
-        // which is the dead-book case: nothing to consult.
+        // No slot at all means the book was never approved or was revoked.
+        // There is nothing to consult.
         let Some((index, slot)) = book else {
             return Ok(());
         };
@@ -657,12 +665,12 @@ impl<'info> QuotedRoute<'info> {
 
     /// Consulted quoters the signed route did not name.
     ///
-    /// Zero when no route was signed: the taker named nothing, so nothing is
-    /// uninvited. `require_signed_route` has already refused a claimed set
-    /// that does not digest to the order's, so `claimed` here is the taker's
-    /// own list.
+    /// Zero when no route was signed. The taker named nothing, so nothing is
+    /// uninvited. [`Self::require_signed_route`] has already refused a claimed
+    /// set that does not digest to the order's, so `claimed` here is the
+    /// taker's own list.
     ///
-    /// The count, not a boolean, so the error can say how many.
+    /// Returns a count rather than a boolean, so the error can say how many.
     ///
     /// The slab resolves each consulted slot to the entry the claim names it
     /// by. A route with no slab consulted nothing, so it has nothing
@@ -684,19 +692,20 @@ impl<'info> QuotedRoute<'info> {
 
     /// Hold the transaction to the route the order's signer chose.
     ///
-    /// `claimed` is what the filler says the signer picked; `digest` is what
+    /// `claimed` is what the filler says the signer picked. `digest` is what
     /// the order carries. The digest check means a filler cannot substitute a
-    /// route, and it covers the unrouted case for free — an empty route
-    /// digests to zero, which is what a directly-placed order holds.
+    /// route. It also covers the unrouted case, because an empty route digests
+    /// to zero, which is what a directly placed order holds.
     ///
-    /// Then every claimed entry must be **consulted**, unless its slab slot
-    /// cannot quote anyway (revoked, suspended, deactivated, or never
-    /// approved) — a route signed before an admin pulled a quoter must not
-    /// brick the fill, and whether a dead quoter *should* have won is a
-    /// question about prices, not accounts. Extra consulted quoters beyond
-    /// the route are fine — the router allocates by price and an execute is
-    /// bound to its own quote, so an uninvited quoter can only lose. Omitting
-    /// one the taker asked for is the actual attack.
+    /// Every claimed entry must then be consulted, unless its slab slot cannot
+    /// quote anyway. A slot cannot quote when it is revoked, suspended,
+    /// deactivated, or never approved. A route signed before an admin pulled a
+    /// quoter must still fill, and whether a dead quoter should have won is a
+    /// question about prices, not accounts. Consulted quoters the route did
+    /// not name are allowed, because the router allocates by price and an
+    /// execute is bound to its own quote, so an uninvited quoter can only
+    /// lose. Omitting a quoter the taker asked for is the case this rule
+    /// refuses.
     pub fn require_signed_route(&self, claimed: &[Pubkey], digest: RouteDigest) -> Result<()> {
         validate!(
             crate::state::order_params::route_digest(claimed) == digest,
@@ -704,9 +713,9 @@ impl<'info> QuotedRoute<'info> {
             "claimed route does not digest to the one the order was signed with"
         )?;
         for entry in claimed {
-            // One lookup answers both halves: whether the route consulted
-            // this entry, and — when it did not — whether the entry could
-            // have quoted at all.
+            // One lookup answers both halves. It says whether the route
+            // consulted this entry, and, when it did not, whether the entry
+            // could have quoted at all.
             let omitted = match &self.slab {
                 Some(slab) => {
                     let slots = slab.slots()?;
@@ -714,9 +723,9 @@ impl<'info> QuotedRoute<'info> {
                         slot_for_entry(&slots, entry).map(|index| (index, slots[index].quotes()));
                     claimed_entry_is_omitted(slot, &self.consulted)
                 }
-                // No slab in the tail: liveness cannot be answered, and a
-                // fill that omits the slab omits every quoter on it — treat
-                // the named quoter as live and refuse.
+                // No slab in the tail. Liveness cannot be answered, and a fill
+                // that omits the slab omits every quoter on it. Treat the
+                // named quoter as live and refuse.
                 None => true,
             };
             validate!(
@@ -733,9 +742,9 @@ impl<'info> QuotedRoute<'info> {
     /// Reports how many books it wrote, which is the length of the prefix the
     /// fill reads.
     ///
-    /// Takes a buffer rather than returning one: the books are a reshape of
-    /// what this struct already holds, and allocating a second list to say the
-    /// same thing is the kind of cost that only looks free.
+    /// Takes a buffer rather than returning one. The books are a reshape of
+    /// what this struct already holds, so a second list to say the same thing
+    /// costs an allocation for nothing.
     pub fn write_books<'a>(
         &'a self,
         into: &mut [QuoterBook<'a>; MAX_ROUTE_QUOTERS],
@@ -786,18 +795,18 @@ impl<'info> QuotedRoute<'info> {
 /// What the trim leaves of a custom quoter's ladder.
 ///
 /// The run is always the tail of the level pool, because a quote appends its
-/// ladder there. A leading run stands in these cases for the earlier quoter's
-/// levels, and every case asserts it survives untouched.
+/// ladder there. A leading run stands for an earlier quoter's levels in these
+/// cases, and every case asserts that it survives untouched.
 #[cfg(test)]
 mod trim_tests {
     use super::*;
 
     const PRICE: u64 = crate::math::constants::PRICE_PRECISION_U64;
     const BASE: u64 = crate::math::constants::BASE_PRECISION_U64;
-    /// Wide enough that no level in these cases breaches it, which is what
-    /// isolates the cases that are about the room. A zero band admits
-    /// nothing, and production never passes one: a quoter that declares no
-    /// band falls back to the market's initial margin ratio.
+    /// Wide enough that no level in these cases breaches it, which isolates
+    /// the cases that are about the room. A zero band admits nothing, and
+    /// production never passes one. A quoter that declares no band falls back
+    /// to the market's initial margin ratio.
     const WIDE: u32 = crate::math::constants::MARGIN_PRECISION / 10;
 
     /// One level of an earlier quoter, which no trim may reach.
@@ -851,9 +860,9 @@ mod trim_tests {
 
     #[test]
     fn the_room_truncates_the_far_end() {
-        // Four base quoted, three afforded: the best level survives whole and
-        // the next is cut to what is left. A prefix, so what the quoter keeps
-        // is its own best depth.
+        // Four base quoted and three afforded. The best level survives whole
+        // and the next is cut to what is left. The trim keeps a prefix, so
+        // the quoter keeps its own best depth.
         assert_eq!(
             trim(
                 &[(99, 2), (98, 2)],
@@ -874,9 +883,9 @@ mod trim_tests {
 
     #[test]
     fn the_band_cuts_the_end_that_prices_against_the_maker() {
-        // A maker selling at 100 with a 5% band may not sell below 95. The
-        // cheap ask is the taker-favourable one, and it is the one dropped;
-        // the levels behind it keep their sizes and their order.
+        // A maker that sells at 100 with a 5% band may not sell below 95. The
+        // cheap ask is the taker-favourable one, and the trim drops it. The
+        // levels behind it keep their sizes and their order.
         let band = crate::math::constants::MARGIN_PRECISION / 20;
         assert_eq!(
             trim(
@@ -891,8 +900,8 @@ mod trim_tests {
 
     #[test]
     fn a_banded_out_level_does_not_spend_the_room() {
-        // The band runs first, so a level the fill would refuse anyway costs
-        // the quoter no allocation.
+        // The band applies first, so a level the fill would refuse anyway
+        // costs the quoter no allocation.
         let band = crate::math::constants::MARGIN_PRECISION / 20;
         assert_eq!(
             trim(
@@ -918,8 +927,8 @@ mod claimed_entry_tests {
 
     #[test]
     fn an_entry_the_slab_never_approved_is_not_an_omission() {
-        // Signed against a quoter that was later revoked. Refusing here would
-        // brick every fill of that order.
+        // Signed against a quoter that an admin later revoked. Refusing here
+        // would stop every fill of that order.
         assert!(!claimed_entry_is_omitted(None, &[1, 3, 5]));
     }
 

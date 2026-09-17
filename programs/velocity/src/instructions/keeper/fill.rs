@@ -1,23 +1,25 @@
 //! Filling a resting perp order through the router.
 //!
-//! One quote, split, then an execute sweep across the vAMM ladder, any DLOB
-//! makers, and any external quoters. The remainder of a v1 route migrates to
-//! the market's book instead of staying in `User.orders`.
+//! One quote, then a split, then an execute sweep across the vAMM ladder, any
+//! DLOB makers, and any external quoters. The remainder of a v1 route migrates
+//! to the market's book instead of staying in `User.orders`.
 
 use super::*;
 
-/// The router fill: one quote → split → execute sweep across the vAMM
-/// ladder (with last look over the rival books), any DLOB makers, and any
-/// external quoters.
+/// The router fill. One quote, then a split, then an execute sweep across the
+/// vAMM ladder, any DLOB makers, and any external quoters. The vAMM ladder
+/// takes a last look over the rival books.
 ///
-/// `remaining_accounts`, beyond the usual market/oracle/user-map section:
-/// the market's `QuoterSlabV0` plus the union of the consulted quoters'
-/// registered CPI accounts (including the quoter programs and the velocity
-/// signer PDA). A slab slot is consulted when its response account rides the
-/// call; each live consulted slot is quoted via CPI into a book, and
-/// allocations that land on a book execute through the same slot's
-/// `execute_v0`. No slab = vAMM + DLOB routing only —
-/// allowed only while the market names no canonical book (`clob_market`).
+/// Past the usual market, oracle and user-map section, `remaining_accounts`
+/// holds the market's `QuoterSlabV0` and the union of the consulted quoters'
+/// registered CPI accounts. That union includes the quoter programs and the
+/// velocity signer PDA. A slab slot is consulted when its response account
+/// rides the call. Each live consulted slot is quoted by CPI into a book, and
+/// an allocation that lands on a book executes through the same slot's
+/// `execute_v0`.
+///
+/// A call with no slab routes to the vAMM and the DLOB only. That is allowed
+/// while the market names no canonical book in `clob_market`.
 #[access_control(
     fill_not_paused(&ctx.accounts.state)
 )]
@@ -74,12 +76,12 @@ pub fn handle_legacy_fill_perp_order<'c: 'info, 'info>(
             market_index,
             signed_route,
             obligation,
-            // A keeper fill is never attested flow: the attestation transports
-            // are the flow authority signing a swift-built transaction, or a
-            // detached attestation bound to a signed-message order — a legacy
-            // slot order has neither. On a bumped book the route quotes the
-            // book as empty and the restable remainder migrates into the
-            // auction.
+            // A keeper fill is never attested flow. The two attestation
+            // transports are the flow authority signing a swift-built
+            // transaction, and a detached attestation bound to a
+            // signed-message order. A legacy slot order has neither. On a
+            // bumped book the route quotes the book as empty, and the restable
+            // remainder migrates into the auction.
             taker_served_window: false,
             clob: None,
         },
@@ -96,9 +98,9 @@ pub fn handle_legacy_fill_perp_order<'c: 'info, 'info>(
     Ok(())
 }
 
-/// The accounts a fill needs, borrowed so `fill_perp_order` and
-/// `fill_legacy_dlob_order` — which have different `#[derive(Accounts)]`
-/// shapes — share one body.
+/// The accounts a fill needs. They are borrowed so that `fill_perp_order` and
+/// `fill_legacy_dlob_order` share one body. The two have different
+/// `#[derive(Accounts)]` shapes.
 pub struct FillAccounts<'a, 'info> {
     pub state: &'a AccountLoader<'info, State>,
     pub filler: &'a AccountLoader<'info, User>,
@@ -228,17 +230,17 @@ fn route_and_fill<'info>(
 
 /// Migrate what the route could not fill onto the market's book.
 ///
-/// v1 route only: a restable remainder belongs on the book, not in
-/// `User.orders`. Without this a signed-message taker order's leftover rests
-/// on the DLOB forever, because such an order cannot be IOC, and the DLOB is
-/// not where a restable order lives any more.
+/// A v1 route only. A restable remainder belongs on the book and not in
+/// `User.orders`. Without this migration a signed-message taker order's
+/// leftover rests on the DLOB forever, because such an order cannot be
+/// immediate-or-cancel, and the DLOB is no longer where a restable order lives.
 ///
-/// Restable means the same thing it means on the place-and-take route: a
-/// fixed price, no oracle offset, not reduce-only, since the CLOB has neither
-/// oracle-floating nor reduce-only semantics. A market order rests at its
-/// `auction_end_price`. `restable_remainder_price` is the whole rule, shared
-/// with the place-and-take route so a remainder's fate does not depend on
-/// which one reached it.
+/// Restable means the same thing it means on the place-and-take route. The
+/// order needs a fixed price, no oracle offset, and no reduce-only flag,
+/// because the CLOB has neither oracle-floating nor reduce-only semantics. A
+/// market order rests at its `auction_end_price`. `restable_remainder_price` is
+/// the whole rule. The place-and-take route shares it, so a remainder's fate
+/// does not depend on which route reached it.
 fn rest_slot_remainder<'info>(
     user_loader: &AccountLoader<'info, User>,
     request: &RouterFillRequest<'_, 'info>,
@@ -252,13 +254,14 @@ fn rest_slot_remainder<'info>(
     let remainder = {
         let user = load!(user_loader)?;
         // Only the taker's own remainder migrates. A keeper fills any user's
-        // order, so without this a keeper could cancel a resting order that
-        // did not cross and re-place it on the book as taker_origin. Two
-        // gates bound it to a genuine taker remainder: the fill must have
-        // made progress or the order must be a taker-class order (one with
-        // an auction — a market or auction-limit taker), and the owner must
-        // not be under liquidation. `restable_remainder_price` (post-only,
-        // reduce-only, oracle-offset) carries the rest.
+        // order, so without this gate a keeper could cancel a resting order
+        // that did not cross and re-place it on the book as taker_origin. Two
+        // gates bind the migration to a genuine taker remainder. The fill must
+        // have made progress, or the order must be a taker-class order, which
+        // is a market or auction-limit taker with an auction. The owner must
+        // also not be under liquidation. `restable_remainder_price` carries
+        // the rest, which is the post-only, reduce-only and oracle-offset
+        // cases.
         if user.is_being_liquidated() {
             return Ok(());
         }

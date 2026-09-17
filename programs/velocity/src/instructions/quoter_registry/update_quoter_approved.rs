@@ -1,50 +1,50 @@
-//! Admin vetting gate: copy a staging entry's config into the market's slab
-//! (or pull it back out). The slab copy is the only config fills read, so a
-//! maker edit to the staging entry never reaches flow until the admin copies
-//! it in again — and until then the previously vetted copy keeps serving.
+//! The admin approval gate. It copies a staging entry's config into the
+//! market's slab, or it pulls that copy back out. The slab copy is the only
+//! config fills read. A maker edit to the staging entry reaches no flow until
+//! the admin copies it in again. The approved copy keeps serving until then.
 //!
 //! The slab account stays right-sized here. Approval grows it by exactly the
-//! slot it needs (the admin pays the added rent), and revocation gives
-//! trailing vacancy back to the admin. Every reader pays compute per declared
-//! slot, so capacity tracks the roster instead of a guess made at creation.
+//! slot it needs, and the admin pays the added rent. Revocation returns trailing
+//! vacancy to the admin. Every reader pays compute per declared slot, so
+//! capacity tracks the roster and not a guess made at creation.
 //!
-//! Approval validates the config is coherent enough to CPI: non-empty index
-//! lists on both legs, each naming the response account (the router reads
-//! responses from it, so it must be forwarded), and no reserved key on the
-//! registered list. No entry but the book may name the market's book, which
-//! closes the window between the book's designation and its own approval.
-//! A `Clob` approval also asks the book for its placement rules, so a slot
-//! that would fail every fill is refused instead of approved.
+//! Approval checks that the config is coherent enough to call. Both legs need a
+//! non-empty index list, and each list must forward the response account. The
+//! router reads responses from that account. No reserved key may sit on the
+//! registered list. Only the book's own entry may name the market's book, which
+//! closes the window between the book's designation and its own approval. A
+//! `Clob` approval also asks the book for its placement rules, so approval
+//! refuses a slot that would fail every fill.
 //!
-//! Approval does not require a frozen program, and does not freeze one. A maker
-//! may upgrade the program behind an approved entry. Three things make that
-//! acceptable, and the first is the one that matters:
+//! Approval does not require a frozen program, and it does not freeze one. A
+//! maker may upgrade the program behind an approved entry. Three things make
+//! that acceptable, and the first one matters most.
 //!
-//! 1. A `Custom` entry can move only its own registered user, at a price held
-//!    to its own quote and to the taker's limit price, sized inside its own
-//!    margin, with every touched account margin-checked after the fill. An
-//!    upgrade can therefore lose the maker's money and cannot take anyone
-//!    else's.
-//! 2. An entry that quotes and does not deliver stops being routed to: fillers
+//! 1. A `Custom` entry can move only its own registered user. The price is held
+//!    to the entry's own quote and to the taker's limit price. The size stays
+//!    inside the entry's own margin. Every touched account is margin-checked
+//!    after the fill. An upgrade can therefore lose the maker's money, and it
+//!    cannot take anyone else's.
+//! 2. An entry that quotes and does not deliver stops receiving flow. Fillers
 //!    choose which entries to carry, and a taker's signed route names its own.
 //! 3. The admin can pull the copy at any time, and the maker holds
 //!    `is_active` as well.
 //!
-//! Requiring a frozen program would buy little against that. It closes only
-//! "honest at approval, hostile later", while the same behaviour can ship in
-//! the binary that gets approved — and no practical review of a compiled
-//! program catches a quoter that sometimes returns nothing. It would cost a
-//! maker every bug fix, because a redeploy is a new program id and therefore a
-//! new registry entry.
+//! A frozen program would add little to that. It closes only the case of a
+//! program that is honest at approval and hostile later. The same behaviour can
+//! ship in the binary that gets approved, and no practical review of a compiled
+//! program catches a quoter that sometimes returns nothing. A frozen program
+//! would also cost a maker every bug fix, because a redeploy is a new program id
+//! and therefore a new registry entry.
 //!
-//! What approval does instead is record the slot the program was deployed at.
-//! An upgrade then shows up as a changed slot, so a reader knows the code moved
-//! without having to infer it from behaviour.
+//! Approval records the slot the program was deployed at. An upgrade then shows
+//! as a changed slot, so a reader sees that the code moved and does not have to
+//! infer it from behaviour.
 //!
-//! Revocation splits by type. A `Custom` slot is cleared — it has no resting
-//! state to unwind. A `Clob` slot is suspended instead: it quotes nothing,
-//! but its config stays so the removal paths keep working, because a maker
-//! must always be able to pull orders off a killed book.
+//! Revocation depends on the type. Revocation clears a `Custom` slot, which has
+//! no resting state to unwind. Revocation suspends a `Clob` slot instead. A
+//! suspended slot quotes nothing, and its config stays so the removal paths keep
+//! working. A maker must always be able to pull orders off a killed book.
 
 use {
     crate::{
@@ -63,23 +63,23 @@ use {
     anchor_lang::{prelude::*, solana_program::bpf_loader_upgradeable},
 };
 
-/// Ceiling on a slab's capacity. Far above any plausible roster; it exists so
-/// the account cannot be grown without bound.
+/// Ceiling on a slab's capacity. It is far above any plausible roster. It
+/// exists so the account cannot grow without bound.
 const MAX_TOTAL_CAPACITY: u16 = 128;
 
 #[derive(Accounts)]
 pub struct UpdateQuoterApproved<'info> {
-    /// Mutable: approval growth takes the added rent from the admin, and
-    /// revocation shrink refunds it there.
+    /// Mutable, because approval growth takes the added rent from the admin
+    /// and revocation refunds it there.
     #[account(mut, constraint = check_warm(&admin.key(), &state)?)]
     pub admin: Signer<'info>,
     pub state: AccountLoader<'info, State>,
-    /// The staging entry whose config is copied in (or whose copy is pulled).
+    /// The staging entry whose config is copied in, or whose copy is pulled.
     pub quoter: AccountLoader<'info, QuoterV0>,
-    /// The market the entry serves. A `Clob` approval is held to the book
-    /// this market designated at registration: the staging entry's response
-    /// account is maker-editable, so without the pin an edited entry could
-    /// put a different book into slot 0 than the one the market names.
+    /// The market the entry serves. A `Clob` approval is held to the book this
+    /// market designated at registration. The staging entry's response account
+    /// is maker-editable. Without that pin an edited entry could put a different
+    /// book into slot 0 than the one the market names.
     #[account(
         seeds = [b"perp_market", quoter.load()?.config.market.to_le_bytes().as_ref()],
         bump,
@@ -92,43 +92,40 @@ pub struct UpdateQuoterApproved<'info> {
     /// which says whether a deploy slot exists to record.
     #[account(address = quoter.load()?.config.program_id)]
     pub quoter_program: UncheckedAccount<'info>,
-    /// CHECK: validated as `quoter_program`'s program-data account in the
-    /// handler. Read for the slot the program was last deployed at. Optional
-    /// because revoking approval needs none of this, and a program on a loader
-    /// that cannot redeploy has no such account.
+    /// CHECK: the handler validates it as `quoter_program`'s program-data
+    /// account. It is read for the slot the program was last deployed at. It is
+    /// optional, because revoking approval needs none of this, and a program on
+    /// a loader that cannot redeploy has no such account.
     pub quoter_program_data: Option<UncheckedAccount<'info>>,
     /// CHECK: the book the market designated at registration, bound by that
-    /// designation. Required to approve a `Clob` entry, because the handler
-    /// asks it for its own placement rules. Absent for every other entry.
+    /// designation. A `Clob` approval needs it, because the handler asks the
+    /// book for its own placement rules. Every other entry omits it.
     #[account(address = perp_market.load()?.clob_market)]
     pub clob_market: Option<UncheckedAccount<'info>>,
     pub system_program: Program<'info, System>,
 }
 
-/// Offsets into a `ProgramData` account: a four-byte enum tag, then the slot
-/// the program was last deployed at.
+/// Layout of a `ProgramData` account. A four-byte enum tag comes first, then
+/// the slot the program was last deployed at.
 const PROGRAM_DATA_TAG: [u8; 4] = [3, 0, 0, 0];
 const DEPLOY_SLOT_OFFSET: usize = 4;
 
 /// The slot `program` was last deployed at, or zero when this code cannot
 /// read one.
 ///
-/// Recorded rather than enforced. A later upgrade moves this slot, so an
-/// off-chain reader that holds the approved figure can see that the code
-/// changed and act on it.
+/// The slot is recorded and not enforced. A later upgrade moves the slot, so
+/// an off-chain reader that holds the approved figure sees that the code
+/// changed, and can act on it.
 ///
-/// Zero means unknown, not immutable. Only the upgradeable loader is read
-/// here, and a program on a later loader is redeployable while reporting
-/// zero, so a reader must not take zero as proof that the code is fixed. A
-/// reader that needs that proof compares the program's own bytes.
+/// Zero means unknown. It does not mean immutable. Only the upgradeable loader
+/// is read here, and a program on a later loader can redeploy while it reports
+/// zero. A reader must not take zero as proof that the code is fixed. A reader
+/// that needs that proof compares the program's own bytes.
 fn deployed_slot(
     program: &UncheckedAccount,
     program_data: Option<&UncheckedAccount>,
 ) -> Result<u64> {
     if program.owner != &bpf_loader_upgradeable::ID {
-        // Only the upgradeable loader's record is read. A program on any
-        // other loader reports zero, which says this code read no slot. It
-        // does not say the program cannot be redeployed.
         return Ok(0);
     }
     let program_data = program_data.ok_or_else(|| {
@@ -164,10 +161,10 @@ fn deployed_slot(
 
 /// Resize the slab to hold exactly `capacity` slots.
 ///
-/// Growth takes the rent shortfall from the admin and zero-fills the new
-/// tail, which is what vacant slots are. Shrink writes the header first, so
-/// the declared capacity never exceeds what the account holds, and refunds
-/// the freed rent to the admin — only velocity can debit a velocity-owned
+/// Growth takes the rent shortfall from the admin and zero-fills the new tail,
+/// which is what a vacant slot is. Shrink writes the header first, so the
+/// declared capacity never exceeds what the account holds. Shrink then refunds
+/// the freed rent to the admin. Only velocity can debit a velocity-owned
 /// account, so the refund is a direct lamport move.
 fn resize_slab<'info>(
     slab: &AccountLoader<'info, QuoterSlabV0>,
@@ -183,8 +180,8 @@ fn resize_slab<'info>(
     let new_space = QuoterSlabV0::space(capacity as usize);
     let required = Rent::get()?.minimum_balance(new_space);
     if capacity > current {
-        // Rent first: a resize that leaves the account under the new minimum
-        // fails the transaction at its end.
+        // Transfer the rent first. A resize that leaves the account under the
+        // new minimum fails the transaction at its end.
         let shortfall = required.saturating_sub(info.lamports());
         if shortfall > 0 {
             anchor_lang::system_program::transfer(
@@ -213,7 +210,7 @@ fn resize_slab<'info>(
 }
 
 /// The smallest capacity that still holds every occupied slot. Never below
-/// one: slot 0 stays allocated for the market's book.
+/// one, because slot 0 stays allocated for the market's book.
 fn fitted_capacity(slab: &AccountLoader<QuoterSlabV0>) -> Result<u16> {
     let slots = slab.slots()?;
     Ok(slots
@@ -225,7 +222,7 @@ fn fitted_capacity(slab: &AccountLoader<QuoterSlabV0>) -> Result<u16> {
 
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
 pub struct UpdateQuoterApprovedArgs {
-    /// True copies the staged config into the slab; false pulls the copy.
+    /// True copies the staged config into the slab. False pulls the copy.
     pub approved: bool,
 }
 
@@ -272,8 +269,8 @@ pub fn handle_update_quoter_approved(
         &ctx.accounts.quoter_program,
         ctx.accounts.quoter_program_data.as_ref(),
     )?;
-    // Grow to fit the chosen slot; never shrink here (a Clob approval into
-    // slot 0 must not take allocated slots away).
+    // Grow to fit the chosen slot, and never shrink here. A `Clob` approval
+    // into slot 0 must not take allocated slots away.
     let current = ctx.accounts.quoter_slab.load()?.capacity;
     if index as u16 >= current {
         resize_slab(
@@ -295,16 +292,16 @@ pub fn handle_update_quoter_approved(
 /// Ask the book the market designated whether it is a book, and whether
 /// velocity may place on it.
 ///
-/// A `Clob` slot is every router fill's mandatory baseline. A slot whose
-/// account is not a CLOB market, or whose `place_authority` is not the
-/// market's slab, fails its `execute_v0` on every fill, so the market stops
-/// filling until an admin revokes the slot. The attach
-/// (`update_perp_market_clob_quoter`) runs the same two checks, but it runs
-/// after approval and cannot run before it, so approval asks for itself.
+/// Every router fill needs the `Clob` slot. A slot whose account is not a CLOB
+/// market fails its `execute_v0` on every fill. So does a slot whose
+/// `place_authority` is not the market's slab. The market then stops filling
+/// until an admin revokes the slot. `update_perp_market_clob_quoter` runs the
+/// same two checks, but it can only run after approval, so approval asks for
+/// itself.
 ///
 /// The question is `order_rules_v0`, a read-only CPI that signs nothing. An
-/// account that is not this program's market answers nothing and the
-/// approval fails.
+/// account that is not this program's market answers nothing, and the approval
+/// fails.
 fn validate_book_identity<'info>(
     clob_market: Option<&UncheckedAccount<'info>>,
     clob_program: &UncheckedAccount<'info>,
@@ -329,8 +326,8 @@ fn validate_book_identity<'info>(
 }
 
 /// Pull the entry's copy out of the slab, then give the freed tail back. An
-/// entry that holds no slot is not an error, so a repeated revocation is a
-/// no-op.
+/// entry that holds no slot is not an error, so a repeated revocation does
+/// nothing.
 fn revoke_slab_slot<'info>(
     slab: &AccountLoader<'info, QuoterSlabV0>,
     admin: &AccountInfo<'info>,
@@ -344,8 +341,8 @@ fn revoke_slab_slot<'info>(
             return Ok(());
         };
         if slots[index].config.quoter_type == QuoterType::Clob {
-            // The config stays so the removal paths keep working on the
-            // dead book; the slot just quotes nothing.
+            // The config stays so the removal paths keep working on the dead
+            // book. The slot quotes nothing.
             slots[index].suspended = true;
         } else {
             slots[index].clear();
@@ -357,9 +354,9 @@ fn revoke_slab_slot<'info>(
     resize_slab(slab, admin, system_program, fitted)
 }
 
-/// Check the config is coherent enough to CPI: both legs name accounts, every
-/// index points into the registered list, both legs forward the response
-/// account, and no reserved key sits on the registered list.
+/// Check that the config is coherent enough to call. Both legs name accounts.
+/// Every index points into the registered list. Both legs forward the response
+/// account. No reserved key sits on the registered list.
 fn validate_approvable_config(config: &QuoterConfigV0) -> Result<()> {
     validate!(
         config.quoter_type != QuoterType::Vamm,
@@ -393,7 +390,7 @@ fn validate_approvable_config(config: &QuoterConfigV0) -> Result<()> {
             "response account must be forwarded on both CPI legs"
         )?;
     }
-    // Re-checked here, not only at write time: a list stored before the
+    // The check runs here as well as at write time. A list stored before the
     // reserved-key check existed is still on chain, and approval is the gate
     // that lets a config take flow.
     validate_quoter_accounts(
@@ -406,14 +403,14 @@ fn validate_approvable_config(config: &QuoterConfigV0) -> Result<()> {
 
 /// Whether two approved quoters keep out of each other's response account.
 ///
-/// Checked in both directions, so approval order does not decide which of a
-/// pair is refused, and so the rule holds for a quoter approved before the
-/// one being approved now.
+/// The caller checks both directions. Approval order then does not decide which
+/// of a pair is refused, and the rule holds for a quoter approved before the one
+/// being approved now.
 ///
 /// This is the whole of the signing model's first fact, and velocity's only
-/// enforcement of it. A fill re-checks nothing: the property is about the
-/// approved roster, which one transaction sees only a part of, and the slab
-/// grows with the roster so a per-fill sweep would cost compute without a
+/// enforcement of it. A fill re-checks nothing. The property is about the
+/// approved roster, and one transaction sees only a part of that roster. The
+/// slab grows with the roster, so a per-fill sweep would cost compute with no
 /// bound. See [`crate::signer`].
 fn response_accounts_stay_apart<'a>(
     mut left_list: impl Iterator<Item = &'a Pubkey>,
@@ -444,23 +441,25 @@ fn approved_slot_index(
         "another approved quoter already uses response account {}",
         config.response_account
     )?;
-    // Nor may the registered lists overlap the response accounts: a list
-    // that names another slot's response account would force that slot
-    // into every fill this one rides in, and a consulted slot with an
-    // incomplete account list fails the fill. Checked in both directions,
-    // so approval order does not decide which pair is refused.
+    // A registered list may not name another slot's response account either.
+    // Such a list would force that slot into every fill this one rides in, and
+    // a consulted slot with an incomplete account list fails the fill. The
+    // check runs in both directions, so approval order does not decide which
+    // of a pair is refused.
     //
-    // This exclusion also carries the signing model. Every quoter CPI
-    // signs as the market's slab, so a quoter holds, inside its own
-    // execute, the same signature that authenticates velocity at every
-    // other quoter on the market — the book included. A CPI can only name
-    // accounts the caller received, and every authority-trusting
-    // instruction on a callee requires its response account, so a
-    // registered list that cannot name another slot's response account
-    // cannot complete a forwarded call. See `crate::signer`. The matching
-    // obligation on this instruction's caller: before approving a
-    // third-party quoter program, check that every instruction it gates
-    // on the slab signer also requires its response account.
+    // This exclusion also carries the signing model. Every quoter CPI signs as
+    // the market's slab, so a quoter holds inside its own execute the same
+    // signature that authenticates velocity at every other quoter on the
+    // market, the book included. A CPI can only name accounts the caller
+    // received, and every authority-trusting instruction on a callee requires
+    // its response account. A registered list that cannot name another slot's
+    // response account therefore cannot complete a forwarded call. See
+    // `crate::signer`.
+    //
+    // This instruction's caller carries the matching obligation. Before it
+    // approves a third-party quoter program, it must check that every
+    // instruction the program gates on the slab signer also requires that
+    // program's response account.
     validate!(
         occupied_slots(&slots).all(|(_, slot)| slot.entry == *entry_key
             || response_accounts_stay_apart(
@@ -475,12 +474,12 @@ fn approved_slot_index(
         ErrorCode::InvalidQuoterConfig,
         "a registered account list may not name another approved quoter's response account"
     )?;
-    // The market's own book is excluded by name, not only by slot. A market
-    // designates its book at registration (`initialize_quoter`) and the book
-    // reaches slot 0 only at its own approval, so the sweep above sees
-    // nothing while slot 0 is vacant. The book gates every one of its
-    // authority instructions on the market's slab and on no response
-    // account, so a quoter that holds the book account can place, cancel,
+    // The market's own book is excluded by name, and not only by slot. A
+    // market designates its book at registration in `initialize_quoter`, and
+    // the book reaches slot 0 only at its own approval. The sweep above
+    // therefore sees nothing while slot 0 is vacant. The book gates every one
+    // of its authority instructions on the market's slab and on no response
+    // account. A quoter that holds the book account could then place, cancel,
     // evict and fill on it with the signature its own execute receives.
     if config.quoter_type != QuoterType::Clob {
         let book = perp_market.load()?.clob_market;
@@ -491,18 +490,18 @@ fn approved_slot_index(
             book
         )?;
     }
-    // Slot 0 is the book's, by convention, so every book-touching
-    // instruction reads it without a scan. One book per market: a second
-    // Clob approval must be the same entry re-approved.
+    // Slot 0 is the book's by convention, so every book-touching instruction
+    // reads it without a scan. A market holds one book, so a second `Clob`
+    // approval must be the same entry approved again.
     if config.quoter_type == QuoterType::Clob {
         validate!(
             slots[0].is_vacant() || slots[0].entry == *entry_key,
             ErrorCode::InvalidQuoterConfig,
             "the slab already holds a book slot"
         )?;
-        // The book the market designated at registration. The staging
-        // response account is maker-editable, so this is where an edit
-        // that points elsewhere is refused.
+        // The book the market designated at registration. The staging response
+        // account is maker-editable, so this check refuses an edit that points
+        // elsewhere.
         validate!(
             perp_market.load()?.clob_market == config.response_account,
             ErrorCode::InvalidQuoterConfig,
@@ -513,8 +512,8 @@ fn approved_slot_index(
     } else {
         Ok(match slot_for_entry(&slots, entry_key) {
             Some(index) => index,
-            // No vacancy: the slot past the current tail, which the
-            // resize below allocates.
+            // With no vacancy, take the slot past the current tail. The
+            // resize below allocates it.
             None => vacant_slot_index(&slots).unwrap_or(slots.len()),
         })
     }
@@ -530,8 +529,9 @@ fn write_approved_slot(
     approved_program_slot: u64,
 ) -> Result<()> {
     // The header mirrors the book's account so accounts structs can bind a
-    // slab to its book with `has_one = clob_market`. Kept through a book
-    // suspension: the removal paths must keep reaching a killed book.
+    // slab to its book with `has_one = clob_market`. The header keeps that key
+    // through a book suspension, because the removal paths must keep reaching
+    // a killed book.
     if config.quoter_type == QuoterType::Clob {
         slab.load_mut()?.clob_market = config.response_account;
     }
@@ -579,9 +579,9 @@ mod response_exclusion_tests {
 
     #[test]
     fn an_approved_list_naming_the_new_response_account_is_refused() {
-        // The other direction: the quoter already on the slab reaches the one
-        // being approved. Checked too, so approval order does not decide
-        // which of a pair is refused.
+        // The other direction. The quoter already on the slab reaches the one
+        // being approved. The check runs here too, so approval order does not
+        // decide which of a pair is refused.
         let (a, b) = (Pubkey::new_unique(), Pubkey::new_unique());
         assert!(!apart(&[a], &a, &[b, a], &b));
     }

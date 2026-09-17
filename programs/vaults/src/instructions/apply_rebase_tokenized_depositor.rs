@@ -11,10 +11,10 @@ use {
 pub fn apply_rebase_tokenized_depositor<'info>(
     ctx: Context<'info, ApplyRebaseTokenizedDepositor<'info>>,
 ) -> Result<()> {
-    // Book the lending interest of every market that prices NAV BEFORE any account
-    // is borrowed and before NAV is snapshotted (OtterSec #136/#137). Must precede
-    // `load_mut`/`load_maps`: `invoke` rejects a CPI whose writable accounts still
-    // have live borrows, and the maps must read post-refresh data.
+    // Book the lending interest of every market that prices NAV before any
+    // account is borrowed and before NAV is snapshotted (OtterSec #136/#137). The refresh must run
+    // before `load_mut` and `load_maps`. `invoke` rejects a CPI whose writable
+    // accounts still have live borrows, and the maps must read refreshed data.
     refresh_velocity_spot_market!(ctx);
 
     let clock = &Clock::get()?;
@@ -39,8 +39,9 @@ pub fn apply_rebase_tokenized_depositor<'info>(
 
     let vault_equity = vault.calculate_equity(&user, &mut maps)?;
 
-    // #122: the guarded variant. This instruction carries no signer, so it must not
-    // be able to floor the shared backing for a live token supply to zero.
+    // This instruction carries no signer, so it calls the guarded rebase.
+    // A permissionless caller must not floor the backing shares of a live
+    // token supply to zero (OtterSec #122).
     ctx.accounts
         .tokenized_vault_depositor
         .load_mut()?

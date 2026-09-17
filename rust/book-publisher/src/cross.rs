@@ -1,24 +1,24 @@
-//! Cross-detection fast path: the publisher already recomputes every
-//! source's verified book on each tick (and, under a feed, on every
-//! registered quote-account change), so it sees a PropAMM quoting through
-//! the CLOB — or an internally crossed CLOB — the moment it lands. This
-//! module turns that sight into a `crank_cross_match` submission.
+//! The cross-detection fast path. The publisher already recomputes every
+//! source's verified book on each tick, and under a feed on every registered
+//! quote-account change. It therefore sees a PropAMM quoting through the CLOB,
+//! or an internally crossed CLOB, the moment it lands. This module turns that
+//! observation into a `crank_cross_match` submission.
 //!
-//! The publisher is the *fast* path, not the only one: the relay cross
-//! conditions (an `OnAccountChange` watch over the book's bests plus an
-//! `EverySlots` poll) remain the liveness floor for CLOB×CLOB, and the
-//! executor is its own predicate either way — it reverts unless the legs
-//! balance, every unit of the size crossed, and the spread nets positive
-//! after both legs' taker fees, so a submission raced by a fill just fails a
+//! The publisher is the fast path, not the only one. The relay cross
+//! conditions, an `OnAccountChange` watch over the book's bests plus an
+//! `EverySlots` poll, remain the liveness floor for CLOB against CLOB. The
+//! executor is its own predicate either way. It reverts unless the legs
+//! balance, every unit of the size crossed, and the spread nets positive after
+//! both legs' taker fees, so a submission that a fill races only fails a
 //! simulation. The size a plan carries is therefore the crossing depth and
-//! never more: a bigger one runs its tail through levels that do not cross,
-//! and the crank refuses it. PropAMM×CLOB is *only* discoverable here: a
-//! fixed four-account relay resolver cannot quote a PropAMM.
+//! never more. A larger size runs its tail through levels that do not cross,
+//! and the crank refuses it. A PropAMM against a CLOB is discoverable only
+//! here, because a fixed four-account relay resolver cannot quote a PropAMM.
 //!
-//! Maker accounts are derived, never fetched-and-parsed: CLOB nodes carry
-//! `(authority, sub_account_id)`, so both the `User` and `UserStats` PDAs
-//! of every maker in the crossing prefix come straight from book bytes;
-//! a PropAMM leg's pair comes from its registry entry's quoted user.
+//! Maker accounts are derived rather than fetched and parsed. CLOB nodes carry
+//! `(authority, sub_account_id)`, so both the `User` and the `UserStats` PDA of
+//! every maker in the crossing prefix come straight from book bytes. A PropAMM
+//! leg's pair comes from its registry entry's quoted user.
 
 use {
     anyhow::{anyhow, Result},
@@ -73,8 +73,8 @@ fn crank_conditions_pda(velocity: &Pubkey, market_index: u16) -> Pubkey {
     .0
 }
 
-/// The crossing prefix between one book's bids and another's asks:
-/// matchable size and each leg's gross quote.
+/// The crossing prefix between one book's bids and another's asks. It holds
+/// the matchable size and each leg's gross quote.
 struct LevelCross {
     size: u64,
     buy_quote: u128,
@@ -119,10 +119,10 @@ fn cross_levels(bids: &QuotedBook, asks: &QuotedBook, base_precision: u128) -> L
 /// Collect the makers behind a leg's crossing prefix, capped, and report the
 /// size that prefix covers.
 ///
-/// The rows come from the quote view, which is where every source says who
-/// its depth belongs to — a book per order, a quoter that fills from one
-/// account against that account. Nothing here decodes a book: the same
-/// simulation that priced the cross also named the accounts it needs.
+/// The rows come from the quote view, which is where every source says who its
+/// depth belongs to. A book says so per order. A quoter that fills from one
+/// account says so against that account. Nothing here decodes a book, because
+/// the same simulation that priced the cross also named the accounts it needs.
 fn makers_from_rows(book: &QuotedBook, size: u64, makers: &mut Vec<ClobUserRefV0>) -> u64 {
     let mut covered = 0u64;
     for row in &book.rows {
@@ -133,8 +133,8 @@ fn makers_from_rows(book: &QuotedBook, size: u64, makers: &mut Vec<ClobUserRefV0
             makers.push(row.user);
         }
         // A crossed taker-origin remainder is not depth this cross can count
-        // on: the book passes over it while a counterparty crosses it, which
-        // is exactly the situation the crank is resolving.
+        // on. The book passes over it while a counterparty crosses it, and that
+        // is the situation the crank is resolving.
         if !row.is_taker_origin() {
             covered = covered.saturating_add(row.size);
         }
@@ -142,7 +142,7 @@ fn makers_from_rows(book: &QuotedBook, size: u64, makers: &mut Vec<ClobUserRefV0
     covered.min(size)
 }
 
-/// A submittable cross: the executor instruction and the estimate that
+/// A submittable cross. It holds the executor instruction and the estimate that
 /// justified it.
 pub struct CrossPlan {
     pub instruction: Instruction,
@@ -151,9 +151,9 @@ pub struct CrossPlan {
 }
 
 /// Look for the most profitable cross between any two quoter books in the
-/// tick's views and build the `crank_cross_match` call for it. Returns
-/// `None` when nothing crosses net of the (tier-0, conservative) fee
-/// estimate — the common case, and free to check.
+/// tick's views, and build the `crank_cross_match` call for it. Returns `None`
+/// when nothing crosses net of the conservative tier-0 fee estimate. That is
+/// the common case, and the check is free.
 #[allow(clippy::too_many_arguments)]
 pub async fn find_cross_plan<S: ChainSource + ?Sized>(
     source: &S,
@@ -166,8 +166,8 @@ pub async fn find_cross_plan<S: ChainSource + ?Sized>(
     asks: &QuoteView,
     bids: &QuoteView,
 ) -> Result<Option<CrossPlan>> {
-    // Candidate legs are quoter books only (the vAMM reprices continuously
-    // and cannot rest crossed; the executor rejects it as a leg).
+    // Candidate legs are quoter books only. The vAMM reprices continuously and
+    // cannot rest crossed, and the executor rejects it as a leg.
     let bid_books: Vec<&QuotedBook> = bids
         .books
         .iter()
@@ -182,7 +182,7 @@ pub async fn find_cross_plan<S: ChainSource + ?Sized>(
         return Ok(None);
     }
 
-    // Conservative fee estimate: tier-0 taker fee on both legs.
+    // The conservative fee estimate is the tier-0 taker fee on both legs.
     let state_key = state_pda(velocity);
     let state_account = source
         .get_multiple_accounts(&[state_key])
@@ -224,10 +224,10 @@ pub async fn find_cross_plan<S: ChainSource + ?Sized>(
         return Ok(None);
     };
 
-    // Resolve both sides to their slab slots (they may be the same slot: an
-    // internally crossed CLOB). The crank names no legs — each of its two
-    // fills routes across every source the tail carries — so what the slots
-    // are for is the account union below.
+    // Resolve both sides to their slab slots. They may be the same slot, which
+    // is an internally crossed CLOB. The crank names no legs, because each of
+    // its two fills routes across every source the tail carries. The slots are
+    // therefore only for the account union below.
     let slots = quoter_slab_slots(source, velocity, market_index).await?;
     let slot_for = |entry: Pubkey| -> Result<QuoterSlotV0> {
         slots
@@ -243,9 +243,9 @@ pub async fn find_cross_plan<S: ChainSource + ?Sized>(
         vec![slot_for(ask_book.key)?, slot_for(bid_book.key)?]
     };
 
-    // Maker pairs per leg, capped; the cross size shrinks to what the staged
-    // makers cover. Both legs answer the same way, because the view
-    // describes every source the same way.
+    // Maker pairs per leg, capped. The cross size shrinks to what the staged
+    // makers cover. Both legs answer the same way, because the view describes
+    // every source the same way.
     let mut makers: Vec<ClobUserRefV0> = Vec::new();
     let mut size = cross.size;
     for book in [ask_book, bid_book] {
@@ -255,14 +255,14 @@ pub async fn find_cross_plan<S: ChainSource + ?Sized>(
         return Ok(None);
     }
 
-    // Assemble the executor call: named accounts, map section, maker
-    // (User, UserStats) pairs, then the union of the legs' registered CPI
-    // accounts. The whole registered list rides rather than the execute
-    // leg's subset: each leg resolves its accounts by index into the one
-    // list, so carrying the list is what guarantees the resolve. The slab
-    // rides the union as well as being named, because each leg assembles its
-    // route from the tail and a route without the slab consults nothing
-    // external. The perp market is named only.
+    // Assemble the executor call. It carries the named accounts, the map
+    // section, the maker (User, UserStats) pairs, and then the union of the
+    // legs' registered CPI accounts. The whole registered list rides rather
+    // than the execute leg's subset, because each leg resolves its accounts by
+    // index into that one list. The slab rides the union as well as being
+    // named, because each leg assembles its route from the tail and a route
+    // without the slab consults nothing external. The perp market is named
+    // only.
     let signer = velocity_signer_pda(velocity);
     let protocol_user = Pubkey::find_program_address(
         &[b"user", signer.as_ref(), 0u16.to_le_bytes().as_ref()],

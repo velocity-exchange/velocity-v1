@@ -35,10 +35,10 @@ impl<'info, T: anchor_lang::Bumps> AccountMapProvider<'info> for Context<'info, 
         end_index -= has_fee_update as usize;
 
         // Every vault path that loads maps carries velocity's State, so the live
-        // slot clock is always available. Taking it unconditionally keeps a
-        // 400ms baseline fallback unrepresentable: on a faster chain the baseline
-        // shrinks every oracle staleness window, which would fail this
-        // instruction on an oracle the rest of the protocol accepts.
+        // slot clock is always available. The parameter is not optional, so no
+        // path can fall back to a fixed 400ms baseline. On a faster chain that
+        // baseline shrinks every oracle staleness window, and this instruction
+        // would then fail on an oracle the rest of the protocol accepts.
         let slot_clock = velocity::state::state::State::slot_clock_from_account_info(
             velocity_state,
         )

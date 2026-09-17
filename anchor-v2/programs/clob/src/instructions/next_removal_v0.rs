@@ -1,19 +1,19 @@
 //! What removal work the book has, answered by the book.
 //!
-//! Expiry and eviction are the book's own business — a quoter with no resting
-//! orders has neither — but a removal's *consequences* belong to the caller:
-//! a maker's margin reservation, the reward that removal pays, a trigger slot
-//! that follows the order. So the caller does the removing, and asks here
-//! which order to remove.
+//! Expiry and eviction are the book's own business. A quoter with no resting
+//! orders has neither. The consequences of a removal belong to the caller: a
+//! maker's margin reservation, the reward the removal pays, and a trigger slot
+//! that follows the order. The caller does the removing, and asks here which
+//! order to remove.
 //!
-//! Before this existed the caller read the answer out of the market account's
-//! bytes, which meant knowing where a node keeps its expiry and how the free
-//! list is threaded — a book that changed its data structures broke a program
-//! that never called into it. Reading is a question the book can answer, and
-//! answering it here is what lets the arena stay the book's own.
+//! The caller used to read the answer out of the market account's bytes. That
+//! meant knowing where a node keeps its expiry and how the free list is
+//! threaded, so a book that changed its data structures broke a program that
+//! never called into it. The book can answer the question itself, which lets
+//! the arena stay the book's own.
 //!
-//! Read-only, and meant to be simulated: a caller runs this to find work, then
-//! sends the removal it names.
+//! Read-only. A caller simulates this to find work, then sends the removal it
+//! names.
 
 use {
     crate::{
@@ -47,10 +47,10 @@ pub fn handle_next_removal_v0(
 
 /// The first live order past its expiry.
 ///
-/// A walk of the arena rather than of a side: expiry has no ordering on the
-/// book, and the alternative — keeping one — would cost every placement to
-/// serve a crank. The walk is the book's own memory and this call is
-/// simulated, so it is paid in a place nothing lands.
+/// This walks the arena rather than a side. Expiry has no ordering on the
+/// book, and keeping one would cost every placement to serve a crank. The walk
+/// reads the book's own memory, and a caller only simulates this call, so the
+/// compute cost never lands on chain.
 fn expired(market: &ClobMarketV0, now: i64) -> Result<OrderViewV0> {
     for index in 0..market.len() as u32 {
         let node = market.read_node(index)?;
@@ -62,12 +62,12 @@ fn expired(market: &ClobMarketV0, now: i64) -> Result<OrderViewV0> {
     Ok(OrderViewV0::NONE)
 }
 
-/// The worst-priced order on the side that has reached the eviction threshold,
-/// relieving the fuller side first when both have.
+/// The worst-priced order on the side that has reached the eviction threshold.
+/// When both sides have reached it, the fuller side is relieved first.
 ///
-/// The threshold and the choice of side are the book's policy and stay here: a
-/// caller that had to know them would be re-deciding, against numbers it read
-/// out of the header, what the book already decides for itself.
+/// The threshold and the choice of side are the book's policy and stay here. A
+/// caller that had to know them would re-decide, from numbers it read out of
+/// the header, what the book already decides for itself.
 fn evictable(market: &ClobMarketV0) -> OrderViewV0 {
     let bids = market.node_count(Side::Bid);
     let asks = market.node_count(Side::Ask);

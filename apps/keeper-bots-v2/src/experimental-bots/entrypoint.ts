@@ -232,10 +232,10 @@ const runBot = async () => {
 		opts,
 		accountSubscription,
 		env: config.global.velocityEnv,
-		// Leaving perpMarketIndexes/spotMarketIndexes/oracleInfos undefined makes
-		// VelocityClient discover all markets and oracles from on-chain state
-		// (findAllMarketAndOracles) instead of the SDK's static registry, so a
-		// newly listed market needs no bot release to be picked up.
+		// perpMarketIndexes, spotMarketIndexes and oracleInfos are left
+		// undefined, so VelocityClient finds every market and oracle from
+		// on-chain state through findAllMarketAndOracles rather than from the
+		// SDK's static registry. A newly listed market then needs no bot release.
 		txVersion: 0 as TransactionVersion,
 		txSender,
 		marketLookupTables,

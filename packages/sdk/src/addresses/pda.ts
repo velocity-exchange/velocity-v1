@@ -620,19 +620,10 @@ export async function getLpPoolTokenTokenAccountPublicKey(
 }
 
 /**
- * Derives a perp market's `ClobCrankConditionsV0` PDA (the relay crank
- * conditions block + keeper-payment reservoir, created when a CLOB is
- * attached via `updatePerpMarketClobQuoter`) from seeds
- * `["clob_crank_conditions", marketIndex as u16 LE]`.
- * @param programId - Deployed velocity program id.
- * @param marketIndex - Perp market index.
- * @returns The `ClobCrankConditionsV0` account's public key.
- */
-/**
- * Per-user relay conditions: `["user_conditions", user]`. One account per
- * user covering both liquidation thresholds and trigger orders — they were
- * two accounts until they were merged, so a client that still derives a
- * `liq_conditions` or `trigger_conditions` address is looking at nothing.
+ * Per-user relay conditions, from seeds `["user_conditions", user]`. There is
+ * one account per user, and it covers both liquidation thresholds and trigger
+ * orders. No `liq_conditions` or `trigger_conditions` account exists, so a
+ * client that derives one of those addresses finds nothing there.
  */
 export function getUserConditionsPublicKey(
 	programId: PublicKey,
@@ -648,9 +639,9 @@ export function getUserConditionsPublicKey(
 }
 
 /**
- * The program-wide resolver staging account: `["relay_scratch"]`. Every
- * resolver names it at index 0; it holds no durable state (resolvers only
- * ever run under simulation), so it is created once and shared.
+ * The program-wide resolver staging account, from seed `["relay_scratch"]`.
+ * Every resolver names it at index 0. It holds no durable state, because a
+ * resolver only ever runs under simulation, so it is created once and shared.
  */
 export function getRelayScratchPublicKey(programId: PublicKey): PublicKey {
 	return PublicKey.findProgramAddressSync(
@@ -660,9 +651,9 @@ export function getRelayScratchPublicKey(programId: PublicKey): PublicKey {
 }
 
 /**
- * The protocol's single relay crank treasury: `["crank_treasury"]`. Every
- * market's crank reservoir refills from here, so this is the one account an
- * operator funds and watches. Funding it is a plain SOL transfer.
+ * The protocol's single relay crank treasury, from seed `["crank_treasury"]`.
+ * Every market's crank reservoir refills from here, so this is the one account
+ * an operator funds and watches. Funding it is a plain SOL transfer.
  */
 export function getCrankTreasuryPublicKey(programId: PublicKey): PublicKey {
 	return PublicKey.findProgramAddressSync(
@@ -672,14 +663,14 @@ export function getCrankTreasuryPublicKey(programId: PublicKey): PublicKey {
 }
 
 /**
- * A quoter registry entry (`QuoterV0`) — one per
+ * A quoter registry entry, `QuoterV0`. There is one per
  * `(perp market, quoter program, quoted user)`.
  *
- * `user` is the velocity `User` the entry's fills settle against, which is
- * what makes the triple unique: one program can quote for several accounts on
- * the same market, and the same account can be quoted by several programs.
- * For a CLOB entry the quoted user is the default pubkey, since a book settles
- * against whichever maker is resting rather than one margin account.
+ * `user` is the velocity `User` the entry's fills settle against, and it is
+ * what makes the triple unique. One program can quote for several accounts on
+ * the same market, and the same account can be quoted by several programs. For
+ * a CLOB entry the quoted user is the default pubkey, because a book settles
+ * against whichever maker is resting rather than against one margin account.
  */
 export function getQuoterPublicKey(
 	programId: PublicKey,
@@ -699,17 +690,16 @@ export function getQuoterPublicKey(
 }
 
 /**
- * The market's quoter slab (`QuoterSlabV0`) — the one account that holds
- * every approved quoter config for that market. Router fills carry it in
- * place of per-quoter registry entries; the CLOB order instructions read the
+ * The market's quoter slab, `QuoterSlabV0`. It is the one account that holds
+ * every approved quoter config for that market. Router fills carry it in place
+ * of per-quoter registry entries, and the CLOB order instructions read the
  * book's config from its slot 0.
  *
- * The slab is also the identity velocity signs every external quoter CPI as:
- * a book's `place_authority` and a midpoint's `execute_authority` are set to
- * it, and a quoter's registered CPI account list names it where the signer
- * goes. It is deliberately a different key from
- * {@link getVelocitySignerPublicKey}: signer privilege is inherited by a CPI
- * callee, and the velocity signer moves vault funds.
+ * The slab is also the identity velocity signs every external quoter CPI as. A
+ * book's `place_authority` and a midpoint's `execute_authority` are set to it,
+ * and a quoter's registered CPI account list names it where the signer goes. It
+ * is a different key from {@link getVelocitySignerPublicKey}, because a CPI
+ * callee inherits signer privilege and the velocity signer moves vault funds.
  */
 export function getQuoterSlabPublicKey(
 	programId: PublicKey,
@@ -724,6 +714,15 @@ export function getQuoterSlabPublicKey(
 	)[0];
 }
 
+/**
+ * Derives a perp market's `ClobCrankConditionsV0` PDA from seeds
+ * `["clob_crank_conditions", marketIndex as u16 LE]`. The account holds the
+ * relay crank conditions block and the keeper-payment reservoir, and
+ * `updatePerpMarketClobQuoter` creates it when a CLOB is attached.
+ * @param programId - Deployed velocity program id.
+ * @param marketIndex - Perp market index.
+ * @returns The `ClobCrankConditionsV0` account's public key.
+ */
 export function getClobCrankConditionsPublicKey(
 	programId: PublicKey,
 	marketIndex: number

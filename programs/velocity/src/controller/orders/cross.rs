@@ -7,25 +7,22 @@
 use super::*;
 
 /// The oracle state a crossed-book crank checks before it moves a position.
+pub(crate) struct CrankOraclePreflight {
+    pub oracle_price: i64,
+    /// Whether the oracle is too old to price margin.
+    pub stale_for_margin: bool,
+    /// Open interest before the crank. The post-fill rule measures against it.
+    pub open_interest: u128,
+}
+
+/// Hold a crossed-book crank to the oracle rules an ordinary fill runs under.
 ///
-/// A crank matches two resting sources at a price the oracle bounds, so it
-/// holds the oracle to the rules an ordinary fill holds it to. The market
-/// must not be in settlement. Its fills must not be paused. The safe MM
-/// oracle must permit a match fill. The mark must sit inside the market's
-/// price band.
+/// A crank matches two resting sources at a price the oracle bounds, so the
+/// gates are the same ones a fill passes.
 ///
 /// `crank` names the caller in the error message, so a refusal says which
 /// crank refused. The market stays borrowed by the caller, which reads its
 /// own extra fields after this returns.
-pub(crate) struct CrankOraclePreflight {
-    pub oracle_price: i64,
-    /// Whether the oracle is too stale for the margin checks to trust it.
-    pub stale_for_margin: bool,
-    /// Open interest before the crank, which the post-fill rule measures
-    /// against.
-    pub open_interest: u128,
-}
-
 pub(crate) fn crank_oracle_preflight(
     market: &mut PerpMarket,
     state: &State,
@@ -69,21 +66,21 @@ pub(crate) fn crank_oracle_preflight(
 /// The oracle pre-flight and the pricing of one taker-origin cross, before any
 /// of it is committed.
 ///
-/// The caller must run this *before* the CLOB calls that consume the pair: the
+/// The caller must run this before the CLOB calls that consume the pair. The
 /// cross is refused outright when crossing would leave the taker worse off
 /// than the price it was resting at, and a refusal has to leave the book
-/// untouched. Same oracle gates the fill path applies (`FillOrderMatch`
-/// validity, price band, staleness) — the reward's size-vs-oracle multiplier
-/// is derived from the price, so it is a value transfer driven by an oracle
-/// read and gated like one.
+/// untouched. The pre-flight applies the oracle gates the fill path applies:
+/// `FillOrderMatch` validity, the price band, and staleness. The reward's
+/// size-vs-oracle multiplier is derived from the oracle price, so the reward
+/// is a value transfer an oracle read drives.
 ///
-/// Returns the fee split, the mm-oracle price the settlement values fills
-/// against, whether the oracle is stale for margin, and the market's open
-/// interest before the fill. The last three are what a caller that settles the
-/// match itself needs for [`fulfill_perp_order_post_checks`].
+/// Returns the fee split, the mm-oracle price, whether the oracle is stale for
+/// margin, and the market's open interest before the fill. A caller that
+/// settles the match itself passes the last two to
+/// [`TakerRiskLimits::check_after_fill`].
 ///
-/// `rest_price` is the price the taker-origin order rests at,
-/// `counterparty_price` the price the match will settle at, and `order_slot`
+/// `rest_price` is the price the taker-origin order rests at.
+/// `counterparty_price` is the price the match will settle at. `order_slot` is
 /// the slot the taker-origin order was placed on the book.
 #[allow(clippy::too_many_arguments)]
 pub fn price_taker_origin_cross(
@@ -154,9 +151,9 @@ pub fn price_taker_origin_cross(
 
 /// Notional of `base_asset_amount` at `price`, floored.
 ///
-/// The CLOB's own rounding, which is what makes a notional velocity computes
-/// for a remainder it prices itself land in the same units a book-filled leg
-/// would have.
+/// This is the CLOB's own rounding. A notional velocity computes for a
+/// remainder it prices itself then lands in the same units as a book-filled
+/// leg.
 pub fn clob_notional(price: u64, base_asset_amount: u64) -> VelocityResult<u64> {
     price
         .cast::<u128>()?
@@ -168,18 +165,18 @@ pub fn clob_notional(price: u64, base_asset_amount: u64) -> VelocityResult<u64> 
 /// The `Order` a taker-origin remainder is, so the router can fill it the way
 /// it fills anything else.
 ///
-/// It lives nowhere. The fill path takes the order itself, so this never
-/// occupies one of the owner's order slots, and the remainder itself never
-/// leaves the book — what the fill takes is reported to the book afterwards
-/// and the order shrinks in place, against the reservation it already holds.
+/// The order is not stored. The fill path takes the order itself, so this
+/// never occupies one of the owner's order slots. The remainder never leaves
+/// the book. The caller reports what the fill took to the book afterwards, and
+/// the order shrinks in place against the reservation it already holds.
 ///
 /// The order is a limit at the price it rested at. That price is the taker's
-/// own bound, so a routed fill can only fill at or better than it, which is
+/// own bound, so a routed fill can only fill at or better than it. This is
 /// what makes the improvement the auction is for reach the taker.
 ///
 /// The CLOB's order id is wider than a velocity one. Narrowing it keeps the
-/// fill records pointing at the book's order, since ids are sequential per
-/// book, and the full-width id rides the crank's own record.
+/// fill records pointing at the book's order, because ids are sequential per
+/// book. The crank's own record carries the full-width id.
 pub fn taker_origin_order(
     market_index: u16,
     taker_direction: PositionDirection,

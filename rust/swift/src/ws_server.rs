@@ -882,8 +882,7 @@ pub async fn start_server() {
 
     // Metrics
     let registry = Arc::new(registry);
-    // The websocket server holds no route context, so it has no quoter
-    // health to report.
+    // The websocket server has no RouteContext, so it reports no quoter health.
     let server_metrics_state = MetricsServerParams {
         registry,
         quoter_health: None,

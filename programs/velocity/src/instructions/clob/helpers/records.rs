@@ -2,25 +2,25 @@
 //!
 //! A book order has no `User.orders` slot, so nothing in the order-history
 //! stream would name it unless velocity says so. These helpers emit the two
-//! records that stream already carries — `OrderRecord` when an order starts
-//! resting, `OrderActionRecord` with `OrderAction::Cancel` when it stops —
-//! against an `Order` value built from the placement.
+//! records that stream already carries. `OrderRecord` marks an order that
+//! starts resting. `OrderActionRecord` with `OrderAction::Cancel` marks one
+//! that stops. Both are built from an `Order` value made out of the placement.
 //!
 //! The `Order` is synthesized, not stored. Every field in it is a fact about
-//! the placement velocity already holds, and the record is the only thing that
-//! reads it. Three of them carry meaning worth stating:
+//! the placement that velocity already holds, and the record is the only reader
+//! of it. Three fields carry meaning worth stating.
 //!
 //! - `order_id` is the id velocity minted from `User.next_order_id`, the same
-//!   counter its DLOB orders draw from. That is what makes an order's records
-//!   name it the same way wherever the order rests.
-//! - `post_only` is true for an ordinary book order, because that is what it
-//!   is: a resting CLOB order settles at its own price on the maker fee
-//!   schedule in every path that can consume it. A migrated taker remainder is
-//!   the exception — it is the aggressor in a cross — and so reports false.
+//!   counter its DLOB orders draw from. An order's records therefore name it
+//!   the same way wherever the order rests.
+//! - `post_only` is true for an ordinary book order. A resting CLOB order
+//!   settles at its own price on the maker fee schedule in every path that can
+//!   consume it. A migrated taker remainder is the exception, because it is the
+//!   aggressor in a cross, so it reports false.
 //! - `bit_flags` carries `OrderBitFlag::PlacedOnClob`, which is how a reader
-//!   tells a book order from a DLOB order carrying the same id space. It also
-//!   carries `OrderBitFlag::IsIsolatedPosition` when the order belongs to an
-//!   isolated position, the same as a DLOB order does, so a reader learns an
+//!   tells a book order from a DLOB order in the same id space. It also carries
+//!   `OrderBitFlag::IsIsolatedPosition` when the order belongs to an isolated
+//!   position, the same as a DLOB order does. A reader therefore learns an
 //!   order's margin regime from the record that opens it rather than from the
 //!   one that closes it.
 
@@ -43,9 +43,9 @@ use {
 
 /// One resting book order, in the shape the records speak.
 ///
-/// `base_asset_amount` is the order's size as placed and
-/// `base_asset_amount_filled` what it has given up since — the pair a reader
-/// needs to tell a cancelled order from a completed one.
+/// `base_asset_amount` is the order's size as placed.
+/// `base_asset_amount_filled` is how much of it filled since. A reader needs
+/// both to tell a cancelled order from a completed one.
 #[derive(Clone, Copy, Debug)]
 pub struct ClobOrderFacts {
     pub order_id: u32,
@@ -61,10 +61,10 @@ pub struct ClobOrderFacts {
 }
 
 impl ClobOrderFacts {
-    /// The facts of an order the book removed, as its removal reported them.
+    /// The facts of an order the book removed, as the removal reported them.
     /// A removal report carries the order's remaining size, so
-    /// `base_asset_amount_filled` is zero: the record describes what left the
-    /// book, not the order's fill history.
+    /// `base_asset_amount_filled` is zero. The record describes what left the
+    /// book rather than the order's fill history.
     pub fn from_removed(
         removed: &crate::state::prop_amm::ClobRemovedOrderV0,
         market_index: u16,
@@ -114,10 +114,10 @@ impl ClobOrderFacts {
 
 /// Record an order that started resting on a book.
 ///
-/// Emitted by every path that places one — the direct placement, a modify's
-/// replacement, a triggered stop, and a taker remainder migrating onto the
-/// book — because to a reader they are all the same event: this order is now
-/// open at this price for this size.
+/// Every path that places an order emits this record. That covers the direct
+/// placement, a modify's replacement, a triggered stop, and a taker remainder
+/// that migrates onto the book. A reader sees one event in all four cases. The
+/// order is now open at this price for this size.
 pub fn emit_clob_place_record(
     now: i64,
     user_key: &Pubkey,
@@ -133,10 +133,11 @@ pub fn emit_clob_place_record(
 
 /// Record an order that stopped resting on a book.
 ///
-/// `explanation` is what took it off: the owner asking, an eviction, an
-/// expiry, a force-cancel, or a fill leaving a remainder too small to rest.
-/// The order's `status` is `Canceled` for all of them — a book order that
-/// filled to nothing is reported by the fill, not here.
+/// `explanation` says what removed it. The causes are the owner asking, an
+/// eviction, an expiry, a force-cancel, and a fill that leaves a remainder too
+/// small to rest. The order's `status` is `Canceled` for all of them. The fill
+/// reports a book order that filled to nothing, so that case does not reach
+/// here.
 pub fn emit_clob_cancel_record(
     now: i64,
     oracle_price: i64,
@@ -149,10 +150,11 @@ pub fn emit_clob_cancel_record(
 ) -> VelocityResult {
     let order = facts.to_order(OrderStatus::Canceled, is_isolated_position);
     let bit_flags = set_order_bit_flag(0, is_isolated_position, OrderBitFlag::IsIsolatedPosition);
-    // A book order is the maker half of the record for the reason it reports
-    // `post_only`: it is standing liquidity, and a reader that filed it as a
-    // taker would count it against the taker-side volume of a market it never
-    // took from. A migrated remainder is the taker half, being the aggressor.
+    // A book order fills the maker half of the record for the same reason it
+    // reports `post_only`. It is standing liquidity, and a reader that filed it
+    // as a taker would count it against the taker-side volume of a market it
+    // never took from. A migrated remainder is the aggressor, so it fills the
+    // taker half.
     let (taker, taker_order, maker, maker_order) = if order.post_only {
         (None, None, Some(*user_key), Some(order))
     } else {

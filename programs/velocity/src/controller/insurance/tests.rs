@@ -1582,8 +1582,8 @@ pub fn revenue_debit_leaving_vault_preserves_backing() {
 
 #[test]
 pub fn cancel_request_after_rebase_floors_request_to_zero() {
-    // #34: a market-level IF rebase can floor a small pending unstake request to
-    // zero (`last_withdraw_request_shares / rebase_divisor`). Before the fix,
+    // A market-level IF rebase can floor a small pending unstake request to zero,
+    // through `last_withdraw_request_shares / rebase_divisor` (OtterSec #34). Before the fix,
     // cancel re-checked `last_withdraw_request_shares != 0` *after* the rebase and
     // rejected the zeroed request (InvalidIFUnstakeCancel), stranding the stake:
     // `remove` also rejects a zero request, and `add` / re-`request` are blocked

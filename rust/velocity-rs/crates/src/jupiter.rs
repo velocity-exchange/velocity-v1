@@ -1,23 +1,25 @@
 //! Jupiter Swap API v2 helpers
 //!
-//! `GET /swap/v2/build` answers a quote and the instructions that execute it in
-//! one round trip, replacing v1's `GET /quote` -> `POST /swap-instructions` pair.
-//! It also returns each lookup table's addresses inline, so building a swap tx
-//! needs no account fetch at all.
+//! `GET /swap/v2/build` answers a quote and the instructions that execute it
+//! in one round trip. It replaces v1's `GET /quote` and
+//! `POST /swap-instructions` pair. It also returns each lookup table's
+//! addresses inline, so building a swap transaction needs no account fetch.
 //!
-//! The endpoint is **ExactIn-only** — it dropped `swapMode` from its contract and,
-//! sent `ExactOut`, answers 200 having spent the requested amount as the *input*.
-//! There is therefore no swap-mode parameter here: an amount is always an input
-//! amount. Use the `titan` module (feature `titan`) for ExactOut.
+//! The endpoint builds ExactIn routes only. It dropped `swapMode` from its
+//! contract, and an `ExactOut` request answers 200 after spending the
+//! requested amount as the input. This module therefore takes no swap-mode
+//! parameter, and an amount is always an input amount. Use the `titan` module,
+//! behind feature `titan`, for ExactOut.
 //!
 //! v2 also dropped `onlyDirectRoutes` and answers 200 for an unrecognized
-//! parameter, so there is no way to ask it for a single-hop route. `maxAccounts`
-//! is the remaining lever on how large a route may get, and it is always sent.
+//! parameter, so there is no way to ask it for a single-hop route.
+//! `maxAccounts` is the remaining control on how large a route may get, and
+//! this module always sends it.
 //!
-//! The route is built for a named `taker`, so the returned quote is only
-//! executable by the `user_authority` it was quoted for.
+//! The route is built for a named `taker`. The returned quote is executable
+//! only by the `user_authority` it was quoted for.
 //!
-//! Because a 200 is not by itself evidence that the route does what was asked,
+//! A 200 is not by itself evidence that the route does what was asked, so
 //! every build is checked against its request before it is returned.
 use std::{
     collections::BTreeMap,
@@ -46,10 +48,11 @@ const DEFAULT_JUPITER_API_URL: &str = "https://api.jup.ag/swap/v2";
 /// A quote goes stale in seconds, so a hung request is worth less than a retry
 const JUPITER_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Ceiling on the accounts a route may touch, so it still fits in a transaction
-/// alongside the swap bracket (begin/end swap, ATA creation, the caller's own
-/// instructions). Jupiter's own default (64) assumes the swap has the tx to
-/// itself; this matches the TS SDK's `DEFAULT_SWAP_MAX_ACCOUNTS`.
+/// Ceiling on the accounts a route may touch, so it still fits in a
+/// transaction alongside the swap bracket. The bracket is the begin and end
+/// swap instructions, the ATA creation, and the caller's own instructions.
+/// Jupiter's own default of 64 assumes the swap has the transaction to itself.
+/// This value matches the TS SDK's `DEFAULT_SWAP_MAX_ACCOUNTS`.
 const DEFAULT_MAX_ACCOUNTS: usize = 50;
 
 /// Shared so the connection pool survives between quotes. Kept as the builder's
@@ -61,7 +64,8 @@ static JUPITER_HTTP_CLIENT: LazyLock<reqwest::Result<reqwest::Client>> = LazyLoc
         .build()
 });
 
-/// Warned once, not once per quote
+/// Warns once. The quote path runs on every quote, and a keeper quotes in a
+/// loop.
 static MISSING_API_KEY_WARNING: Once = Once::new();
 
 fn jupiter_http_client() -> SdkResult<&'static reqwest::Client> {
@@ -86,12 +90,14 @@ pub struct JupiterQuote {
     pub input_mint: Pubkey,
     #[serde(deserialize_with = "deser_pubkey")]
     pub output_mint: Pubkey,
-    /// Amount spent. Always the requested amount — the endpoint is ExactIn-only.
+    /// Amount spent. The endpoint builds ExactIn routes only, so this is
+    /// always the requested amount.
     #[serde(deserialize_with = "deser_u64")]
     pub in_amount: u64,
     #[serde(deserialize_with = "deser_u64")]
     pub out_amount: u64,
-    /// `out_amount` less the slippage tolerance: the route's minimum received
+    /// `out_amount` less the slippage tolerance. This is the route's minimum
+    /// received.
     #[serde(deserialize_with = "deser_u64")]
     pub other_amount_threshold: u64,
     pub slippage_bps: u16,
@@ -101,15 +107,15 @@ pub struct JupiterQuote {
 
 /// The instructions a `/swap/v2/build` route is made of, in execution order
 ///
-/// A build's `otherInstructions` / `tipInstruction` are not represented: they
-/// belong to Jupiter's own transaction landing, which this SDK never opts into,
-/// and the swap bracket rejects any instruction it does not recognize. A build
-/// carrying either is rejected rather than silently stripped.
+/// This type has no field for a build's `otherInstructions` or
+/// `tipInstruction`. Those belong to Jupiter's own transaction landing, which
+/// this SDK never opts into, and the swap bracket refuses any instruction it
+/// does not recognize. A build that carries either is refused rather than
+/// stripped.
 #[derive(Clone, Debug)]
 pub struct JupiterRouteInstructions {
     pub compute_budget_instructions: Vec<Instruction>,
     pub setup_instructions: Vec<Instruction>,
-    /// Instruction performing the action of swapping
     pub swap_instruction: Instruction,
     pub cleanup_instruction: Option<Instruction>,
 }
@@ -225,7 +231,6 @@ impl JupiterSwapApi for VelocityClient {
             .query(&query);
         match std::env::var("JUPITER_API_KEY") {
             Ok(api_key) => http_request = http_request.header("x-api-key", api_key),
-            // once: this runs on every quote, and a keeper quotes in a loop
             Err(_) => MISSING_API_KEY_WARNING.call_once(|| {
                 log::warn!(
                     "JUPITER_API_KEY not set. Jupiter API requests may fail after Jan 31, 2026. \
@@ -250,10 +255,10 @@ impl JupiterSwapApi for VelocityClient {
 
 /// Reads a `/swap/v2/build` response, or says why it is not one
 ///
-/// v2 reports a failure both as a non-2xx and as a 200 carrying an error body,
-/// so the body is checked before the status. A body that is neither — an HTML
-/// gateway page, say — is reported with its content, since the status alone
-/// does not identify where it came from.
+/// v2 reports a failure as a non-2xx status, and also as a 200 that carries an
+/// error body, so this checks the body before the status. A body that is
+/// neither, such as an HTML gateway page, is reported with its content. The
+/// status alone does not identify where such a body came from.
 fn parse_build(status: u16, body: &str) -> SdkResult<BuildResponse> {
     if let Some(message) = serde_json::from_str::<ErrorBody>(body)
         .ok()
@@ -265,9 +270,9 @@ fn parse_build(status: u16, body: &str) -> SdkResult<BuildResponse> {
         return Err(build_failed(status, truncate(body)));
     }
 
-    // A v2 build carries the route's instructions, so a body missing them is
-    // unusable rather than merely uninteresting — deserializing the whole
-    // response is what rejects it, here instead of on-chain.
+    // A v2 build carries the route's instructions, so a body that omits them
+    // is unusable. Deserializing the whole response rejects such a body here
+    // rather than on-chain.
     serde_json::from_str(body).map_err(|err| {
         build_failed(
             status,
@@ -282,7 +287,7 @@ fn build_failed(status: u16, detail: impl std::fmt::Display) -> SdkError {
     SdkError::Generic(format!("jupiter build failed ({status}): {detail}"))
 }
 
-/// The swap a build was asked for, which it is checked against on the way back
+/// The swap a build was asked for. Every build is checked against it.
 struct SwapRequest {
     input_mint: Pubkey,
     output_mint: Pubkey,
@@ -296,8 +301,9 @@ struct SwapRequest {
 struct BuildResponse {
     #[serde(flatten)]
     quote: JupiterQuote,
-    /// Response-only in v2 — there is no `swapMode` request parameter, so this is
-    /// the only place a non-ExactIn route announces itself.
+    /// v2 sends this in the response only. There is no `swapMode` request
+    /// parameter, so this is the only place a non-ExactIn route declares
+    /// itself.
     #[serde(default)]
     swap_mode: Option<String>,
     compute_budget_instructions: Vec<ApiInstruction>,
@@ -308,26 +314,28 @@ struct BuildResponse {
     other_instructions: Vec<ApiInstruction>,
     #[serde(default)]
     tip_instruction: Option<ApiInstruction>,
-    /// v2 returns each lookup table's addresses inline, which is everything an
-    /// `AddressLookupTableAccount` holds, so the tables need no fetch. The
-    /// trade-off is that a table deactivated between the build and the send is
-    /// no longer noticed here — it surfaces when the tx is simulated instead.
+    /// v2 returns each lookup table's addresses inline. That is everything an
+    /// `AddressLookupTableAccount` holds, so the tables need no fetch. The cost
+    /// is that this no longer notices a table deactivated between the build and
+    /// the send. Such a table surfaces when the transaction is simulated.
     ///
-    /// Null or absent when the route needs no lookup tables. Ordered, so a given
-    /// route always yields the same LUT list.
+    /// Null or absent when the route needs no lookup tables. The map is
+    /// ordered, so one route always yields the same lookup table list.
     #[serde(default)]
     addresses_by_lookup_table_address: Option<BTreeMap<String, Vec<String>>>,
 }
 
 impl BuildResponse {
-    /// Checks that the build executes the swap it was asked for, then converts it
+    /// Checks that the build executes the swap it was asked for, then converts
+    /// it
     ///
-    /// A v2 build is not self-evidently the answer to its request: the endpoint
-    /// ignores parameters it does not recognize, and the amount it reports is
-    /// what `begin_swap` releases from the vault. So the route's own account of
-    /// itself — mints, amount, slippage, swap mode, and the program that executes
-    /// it — is checked against the request here, off-chain, rather than left to
-    /// surface as an `InvalidSwap` (or a correctly-executed wrong swap) on-chain.
+    /// A v2 build does not by itself prove that it answers its request. The
+    /// endpoint ignores parameters it does not recognize, and the amount it
+    /// reports is what `begin_swap` releases from the vault. This checks the
+    /// route's own description of itself against the request off-chain. That
+    /// description is the mints, the amount, the slippage, the swap mode, and
+    /// the program that executes the route. The alternative is an on-chain
+    /// `InvalidSwap`, or a wrong swap that executes correctly.
     fn into_swap_info(self, request: &SwapRequest) -> SdkResult<JupiterSwapInfo> {
         let quote = &self.quote;
         if quote.input_mint != request.input_mint || quote.output_mint != request.output_mint {
@@ -348,7 +356,8 @@ impl BuildResponse {
                 quote.slippage_bps, request.slippage_bps
             )));
         }
-        // Absent is taken as ExactIn: it is the only mode the endpoint builds.
+        // An absent mode means ExactIn. It is the only mode the endpoint
+        // builds.
         if let Some(swap_mode) = self.swap_mode.as_deref().filter(|mode| *mode != "ExactIn") {
             return Err(mismatch(format!("route is {swap_mode}, requested ExactIn")));
         }
@@ -359,10 +368,10 @@ impl BuildResponse {
                 jupiter_mainnet_6::ID
             )));
         }
-        // Neither can be forwarded — the swap bracket rejects any instruction it
-        // does not recognize — and neither should exist, since the SDK opts into
-        // no feature that produces one. Dropping them would build a transaction
-        // missing a step the route needs.
+        // The swap bracket refuses any instruction it does not recognize, so
+        // neither of these can be forwarded. Neither should exist, because the
+        // SDK opts into no feature that produces one. Dropping them would build
+        // a transaction that misses a step the route needs.
         if !self.other_instructions.is_empty() {
             return Err(mismatch(format!(
                 "route carries {} unsupported auxiliary instruction(s)",
@@ -457,10 +466,11 @@ impl From<ApiAccountMeta> for AccountMeta {
 
 /// The error shapes a v2 response can carry
 ///
-/// Three unrelated ones: a Zod validation object (`{ error: { issues, name } }`),
-/// a rate-limit body (`{ code, message }`), and v1's `{ error, errorCode }`.
-/// Every field is optional so a successful body parses into this too, and
-/// [`Self::describe`] answers `None` for it.
+/// There are three unrelated shapes. A Zod validation object is
+/// `{ error: { issues, name } }`. A rate-limit body is `{ code, message }`.
+/// The v1 shape is `{ error, errorCode }`. Every field is optional, so a
+/// successful body also parses into this type. [`Self::describe`] answers
+/// `None` for such a body.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ErrorBody {
@@ -473,8 +483,9 @@ impl ErrorBody {
     /// Renders whatever the body says went wrong, or `None` if it says nothing
     fn describe(&self) -> Option<String> {
         match &self.error {
-            // A validation failure. Rendering the object itself would read as a
-            // serde_json dump, so the issues are unpacked into `path: message`.
+            // A validation failure. Rendering the object itself would read as
+            // a serde_json dump, so this unpacks the issues into
+            // `path: message`.
             Some(serde_json::Value::Object(error)) => {
                 let issues: Vec<String> = error
                     .get("issues")
@@ -512,9 +523,9 @@ impl ErrorBody {
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or("error");
                 Some(match issues.is_empty() {
-                    // No issues to unpack: the object itself is the only detail
-                    // there is, so it is rendered as json (never `[object
-                    // Object]`) and bounded like any other unrecognized body.
+                    // With no issues to unpack, the object itself is the only
+                    // detail. Render it as json, never as `[object Object]`,
+                    // and bound it like any other unrecognized body.
                     true => format!(
                         "{name}: {}",
                         truncate(&serde_json::Value::Object(error.clone()).to_string())
@@ -522,8 +533,9 @@ impl ErrorBody {
                     false => format!("{name}: {}", issues.join("; ")),
                 })
             }
-            // An empty-string `error` is as useless as a missing one, so it falls
-            // through to the next candidate rather than rendering as nothing.
+            // An empty `error` string carries as little as a missing one. It
+            // falls through to the next candidate rather than rendering as
+            // nothing.
             Some(serde_json::Value::String(error)) if !error.is_empty() => Some(error.clone()),
             _ => self
                 .error_code
@@ -559,7 +571,7 @@ fn deser_base64<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D
     STANDARD.decode(value).map_err(serde::de::Error::custom)
 }
 
-/// v2 reports token amounts as JSON strings; a bare number is accepted too.
+/// v2 reports token amounts as JSON strings. A bare number is accepted too.
 fn deser_u64<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
     #[derive(Deserialize)]
     #[serde(untagged)]
@@ -700,7 +712,8 @@ mod tests {
         assert_eq!(info.ixs.setup_instructions.len(), 1);
         assert!(info.ixs.cleanup_instruction.is_some());
 
-        // LUT addresses come inline — no account fetch, and a stable order
+        // LUT addresses come inline. There is no account fetch, and the
+        // order is stable.
         assert_eq!(info.luts.len(), 2);
         assert_eq!(
             info.luts[0].key,
@@ -762,8 +775,8 @@ mod tests {
         assert!(expect_rejected(&body).contains("500bps"));
     }
 
-    /// The endpoint answers 200 to an ExactOut request, spending the amount as
-    /// the input; the mode it reports is the only signal that it did so.
+    /// The endpoint answers 200 to an ExactOut request and spends the amount
+    /// as the input. The mode it reports is the only signal that it did so.
     #[test]
     fn rejects_an_exact_out_build() {
         let body = BUILD_RESPONSE.replace(r#""swapMode": "ExactIn""#, r#""swapMode": "ExactOut""#);
@@ -781,9 +794,9 @@ mod tests {
         assert!(expect_rejected(&body).contains("expected jupiter v6"));
     }
 
-    /// An auxiliary instruction cannot go in the swap bracket, so a build needing
-    /// one has no executable transaction — it must fail here, not silently ship
-    /// a route missing a step.
+    /// An auxiliary instruction cannot go in the swap bracket, so a build that
+    /// needs one has no executable transaction. It must fail here, rather than
+    /// ship a route that misses a step.
     #[test]
     fn rejects_a_build_carrying_other_instructions() {
         let body = BUILD_RESPONSE.replace(
@@ -874,7 +887,7 @@ mod tests {
         assert!(err.contains("Could not find any route"), "{err}");
     }
 
-    /// A gateway's HTML is neither an error body nor a build; the status alone
+    /// A gateway's HTML is neither an error body nor a build. The status alone
     /// does not say who answered, so the body has to survive into the error.
     #[test]
     fn reports_an_unreadable_200_with_its_body() {
@@ -886,7 +899,7 @@ mod tests {
         assert!(err.contains("502 Bad Gateway"), "{err}");
     }
 
-    /// An unrecognized body is bounded so one bad response can't flood the log
+    /// An unrecognized body is bounded, so one bad response cannot fill the log
     #[test]
     fn truncates_an_unrecognized_error_body() {
         let body = "x".repeat(2_000);

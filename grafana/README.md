@@ -1,36 +1,32 @@
 # Quoter health dashboard and alerts
 
-A PropAMM quoter is an arbitrary program the on-chain router invokes by CPI.
-A quoter that reverts fails the whole simulation, so one bad entry stops a
-market's book from publishing and turns a route request into an error. The
-router routes around it and reports what it saw; these files are how that
-report is read.
+A PropAMM quoter is an arbitrary program that the on-chain router invokes by CPI. A quoter that
+reverts fails the whole simulation, so one bad entry stops a market's book from publishing and
+turns a route request into an error. The router routes around such an entry and records what it
+observed. These files read that record.
 
 ## What is measured, and where it comes from
 
-A quoter's failures are mostly invisible to the chain. The router simulates
-before it sends, so a failing quoter fails the simulation and the transaction
-never lands. Nothing is archived and no event fires. The measurement therefore
-happens inside the processes that simulate:
+A quoter's failures are mostly invisible to the chain. The router simulates before it sends, so a
+failing quoter fails the simulation and the transaction never lands. Nothing is archived and no
+event fires. The measurement therefore happens inside the processes that simulate.
 
 | Source | Sees |
 | --- | --- |
 | `book-publisher` | Every registered quoter, every tick, on every market. It simulates whether or not a taker is routing, so it is the health probe. |
 | `swift` `/route` | Quoters carried on real route requests. |
-| `keep-rs` filler | Execute legs that break a real fill. It reports but does not exclude: a signed route is enforced on chain, so dropping an entry the taker named only trades one rejection for another. |
+| `keep-rs` filler | Execute legs that break a real fill. It reports a failure but excludes no entry. A signed route is enforced on chain, so dropping an entry the taker named replaces one rejection with another. |
 
-Attribution is positive. A simulation carrying several quoters fails for
-reasons that belong to nobody — the taker's own margin, a stale oracle, an
-account the builder left out — so a quoter is charged only when the evidence
-names it. What is not named increments
-`quoter_sim_failures_unattributed_total`, which measures the router's blind
-spot rather than a maker's behaviour. Watch it: if it climbs, attribution has
-a hole.
+Attribution is positive. A simulation that carries several quoters can fail for a reason that
+belongs to none of them, such as the taker's own margin, a stale oracle, or an account the builder
+left out. A quoter is therefore charged only when the evidence names it. An unnamed failure
+increments `quoter_sim_failures_unattributed_total`, which measures the router's blind spot rather
+than a maker's behaviour. A rise in that counter means attribution is missing a case.
 
 ## Loading
 
-The dashboard expects a Prometheus data source and reads it from a
-`datasource` variable, so it works against any of them.
+The dashboard expects a Prometheus data source and reads it from a `datasource` variable, so it
+works against any Prometheus instance.
 
 ```
 # Grafana: Dashboards -> New -> Import -> Upload quoter-health.json
@@ -39,54 +35,48 @@ rule_files:
   - quoter-health.rules.yml
 ```
 
-Scrape targets: `book-publisher` serves `/metrics` on `METRICS_ADDR`
-(default `0.0.0.0:9464`); `keep-rs` and `swift` export on the ports they
-already use.
+Scrape targets: `book-publisher` serves `/metrics` on `METRICS_ADDR`, default `0.0.0.0:9464`.
+`keep-rs` and `swift` export on the ports they already use.
 
 ## Runbook
 
-Automatic degradation reverses itself. A quarantine expires into probation,
-clean traffic promotes a quoter back, and the backoff resets after a quiet
-spell. Nothing needs doing for a single quarantine.
+Automatic degradation reverses itself. A quarantine expires into probation, clean traffic promotes
+a quoter back, and the backoff resets after a period with no failure. A single quarantine needs no
+action.
 
-Two things need a person.
+Two cases need a person.
 
-**A repeat offender.** `QuoterBanCandidate` fires when the router quarantined
-the same quoter three times in a day. Automatic handling has already given it
-several chances. Pull the on-chain approval so every router drops it, not just
-this one:
+**A repeat offender.** `QuoterBanCandidate` fires when the router quarantined the same quoter three
+times in a day. Automatic handling has already given it several chances. Pull the on-chain approval
+so every router drops it:
 
 ```
 velocity-admin quoter set-approved <quoter> false
 ```
 
-That takes a warm admin key. To hold a quoter off one router without touching
-the chain, pin it:
+That takes a warm admin key. To hold a quoter off one router without touching the chain, pin it:
 
 ```
 curl -XPOST <publisher>/quoters/<quoter>/pin \
   -d '{"admission":"denied","reason":"broken rollout","expiresInSeconds":86400}'
 ```
 
-**Rolling it back.** A pin sits in a layer the scorer never writes, so the
-computed state is still underneath. Clearing the pin resumes automatic
-handling at once, with nothing to rebuild:
+**Rolling a pin back.** A pin sits in a layer the scorer never writes, so the computed state
+survives underneath it. Clearing the pin resumes automatic handling at once, and rebuilds nothing:
 
 ```
 curl -XDELETE <publisher>/quoters/<quoter>/pin
 ```
 
-Prefer `expiresInSeconds` on every pin. `QuoterPinStale` fires after a week
-because an override with no end is how a temporary decision becomes permanent.
+Set `expiresInSeconds` on every pin. `QuoterPinStale` fires after a week, because an override with
+no end turns a temporary decision into a permanent one.
 
-## A maker who ships a fix
+## When a maker ships a fix
 
-Nothing needs doing. The router watches each quoter's program account. A new
-deploy slot drops the counters, because the old numbers describe code that is
-no longer running, and puts the quoter on probation rather than straight back
-to full flow. Clean traffic promotes it from there. For a program serving many
-registry entries this applies to all of them, which is right: the upgrade
-changed every tenant's behaviour.
+No action is needed. The router watches each quoter's program account. A new deploy slot drops the
+counters, because the old numbers describe code that no longer runs. The quoter then enters
+probation rather than full flow, and clean traffic promotes it from there. A program that serves
+many registry entries moves all of them, because the upgrade changed every tenant's behaviour.
 
 ## Endpoints
 

@@ -898,9 +898,9 @@ mod tests {
         // discriminator = 1224. The protocol-fee redesign then appended
         // `protocol_fee_pool` (32) + `pending_protocol_fee`/`pending_if_fee`
         // (2×16) + `protocol_liquidation_fee` (4) + pad (12) = 80 bytes at the
-        // tail → 1296 content, then clob_market (32) + quoter_slab (32) +
-        // 192 reserved bytes.
-        // The current account is 1552 bytes of content and 1560 with discriminator.
+        // tail → 1296 content. `clob_market` (32), `quoter_slab` (32) and 192
+        // reserved bytes follow, so the account holds 1552 bytes of content and
+        // 1560 with the discriminator.
         assert_eq!(std::mem::size_of::<PerpMarket>(), 1552);
         assert_eq!(PerpMarket::SIZE, 1560);
     }

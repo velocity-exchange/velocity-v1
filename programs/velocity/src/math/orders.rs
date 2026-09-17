@@ -724,11 +724,11 @@ pub fn find_maker_orders(
         if order.status != OrderStatus::Open {
             continue;
         }
-        // A slot shadowing a CLOB order carries no open_bids/open_asks
+        // A slot shadowing a CLOB order carries no open_bids or open_asks
         // reservation, so matching it here would fill size the book still
-        // holds. The trigger filter below happens to exclude these today
-        // only because a placed trigger deliberately stays untriggered —
-        // this does not rely on that.
+        // holds. The trigger filter below also excludes these today, because
+        // a placed trigger stays untriggered. This check does not rely on
+        // that.
         if order.is_placed_on_clob() {
             continue;
         }
@@ -1188,10 +1188,11 @@ pub struct Level {
 
 /// Slots elapsed since an order was posted, from `Order::posted_slot_tail`.
 ///
-/// `posted_slot_tail` holds the low 8 bits of the clock slot at post time
-/// (`get_posted_slot_from_clock_slot`), so this is exact only modulo 256. That error is safe for a
-/// minimum-age check. For a fresh order, where elapsed < 256, the result is exact, so a fresh quote can
-/// never look old. An order older than 256 slots can understate its age and count as fresh.
+/// `posted_slot_tail` holds the low 8 bits of the clock slot at post time. See
+/// `get_posted_slot_from_clock_slot`. The result is therefore exact only modulo 256, and that error
+/// is safe for a minimum-age check. A fresh order has an elapsed count below 256, where the result
+/// is exact, so a fresh quote can never look old. An order older than 256 slots can understate its
+/// age and count as fresh.
 ///
 /// `Order::slot` is not used here. Signed-message orders back-date it to
 /// `min(clock_slot, signed_msg_taker_order_slot)`, so it does not show when the order became visible
@@ -1202,10 +1203,10 @@ pub fn slots_since_order_posted(slot: u64, posted_slot_tail: u8) -> u64 {
 
 /// Collect the resting bid/ask levels for `perp_market` from the supplied `users`.
 ///
-/// `min_quote_rest` drops any quote that has rested for less wall clock time than that
-/// (integrated per slot duration regime). Pass `BID_ASK_TWAP_MIN_QUOTE_REST` when the result
-/// feeds the mark TWAP, and `Millis::ZERO` when the caller needs the true current book.
-/// Arbitrage needs the latter, because a fresh quote is still takeable.
+/// `min_quote_rest` drops any quote that has rested for less wall-clock time than that. The rest
+/// time is integrated per slot-duration regime. Pass `BID_ASK_TWAP_MIN_QUOTE_REST` when the result
+/// feeds the mark TWAP, and `Millis::ZERO` when the caller needs the true current book. Arbitrage
+/// needs the true book, because a fresh quote is still takeable.
 pub fn find_bids_and_asks_from_users(
     perp_market: &PerpMarket,
     oracle_price_date: &OraclePriceData,
@@ -1257,8 +1258,8 @@ pub fn find_bids_and_asks_from_users(
             if order.status != OrderStatus::Open {
                 continue;
             }
-            // Shadows of CLOB-resident orders are not DLOB liquidity: the
-            // size lives on the book, not in a reservation here.
+            // Shadows of CLOB-resident orders are not DLOB liquidity. The
+            // size lives on the book and not in a reservation here.
             if order.is_placed_on_clob() {
                 continue;
             }
@@ -1276,10 +1277,10 @@ pub fn find_bids_and_asks_from_users(
                 continue;
             }
 
-            // OtterSec #146: a quote must rest long enough that a third party could have taken it,
-            // before it can move the mark TWAP. `is_resting_limit_order` admits a post-only order in
-            // its own post slot, so without this the crank's caller can quote, crank and cancel in one
-            // transaction at no risk.
+            // A quote must rest long enough that a third party could have taken it, before it can
+            // move the mark TWAP (OtterSec #146). `is_resting_limit_order` admits a post-only order
+            // in its own post slot, so without this the crank's caller can quote, crank and cancel
+            // in one transaction at no risk.
             if min_quote_rest > Millis::ZERO
                 && slot_clock.elapsed_slot_delta(
                     slots_since_order_posted(slot, order.posted_slot_tail),

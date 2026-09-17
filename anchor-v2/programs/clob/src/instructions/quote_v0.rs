@@ -8,7 +8,7 @@ use {
 
 #[derive(Accounts)]
 pub struct QuoteV0 {
-    /// mut only for the response tail — the book itself is not touched.
+    /// Mutable only for the response tail. The book itself is not changed.
     #[account(mut)]
     pub market: ClobMarketV0,
 }
@@ -17,9 +17,9 @@ pub struct QuoteV0 {
 /// reads them, so the shape lives in the crate both compile against.
 pub use quoter_spec::QuoteArgsV0;
 
-/// Quoter interface: price levels for a taker of `direction`/`size`, streamed
-/// into the market's response tail as they are aggregated; the returned
-/// pointer locates them.
+/// Quoter interface. Reports price levels for a taker of `direction` and
+/// `size`. The book streams the levels into the market's response tail as it
+/// aggregates them. The returned pointer locates them.
 pub fn handle_quote_v0(ctx: &mut Context<QuoteV0>, args: QuoteArgsV0) -> Result<ResponsePointerV0> {
     let clock = Clock::get()?;
     ctx.accounts.market.quote(

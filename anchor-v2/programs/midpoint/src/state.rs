@@ -1,36 +1,34 @@
-//! Midpoint quoter state: one account per instantiation. A maker doesn't
-//! deploy a program — they create a [`MidpointQuoterV0`] PDA of this one and
-//! register it as a Custom quoter in velocity's registry.
+//! Midpoint quoter state. One account holds one instantiation. A maker does
+//! not deploy a program. The maker creates a [`MidpointQuoterV0`] PDA and
+//! registers it as a Custom quoter in velocity's registry.
 //!
-//! The quoting model is a *spline around a midpoint*: the maker maintains a
-//! shape — per-side ladders of `(offset from mid, size)` — that moves rarely,
-//! and a mid price that moves constantly. The hot path is therefore
-//! [`MidpointQuoterV0::set_mid`]: a single stamped u64 write, kept as close to
-//! free as the runtime allows, so a maker can track fair value tick-by-tick at
-//! negligible compute cost. Quote prices are computed from `mid ± offset` at
-//! quote time; nothing reprices on a mid write.
+//! The quoting model is a spline around a midpoint. The maker keeps a
+//! per-side ladder of offsets from mid and sizes. The ladder moves rarely and
+//! the mid moves constantly. The hot path is therefore
+//! [`MidpointQuoterV0::set_mid`], which writes one stamped u64 at a small
+//! compute cost. Quote prices come from `mid ± offset` at quote time, so a mid
+//! write reprices nothing.
 //!
-//! Fills deplete per-level `filled` counters (the ladder is standing intent,
-//! not an order book — a consumed level stays consumed until the maker
-//! rewrites the side). Safety is the mid-staleness gate: a maker whose feed
-//! died stops quoting once `mid_slot` falls `max_mid_staleness_slots` behind.
+//! Fills deplete per-level `filled` counters. The ladder is standing intent
+//! and not an order book, so a consumed level stays consumed until the maker
+//! rewrites the side. The mid-staleness gate is the safety. A maker whose feed
+//! dies stops quoting once `mid_slot` falls `max_mid_staleness_slots` behind.
 //!
-//! Two identities live on the instance and they are deliberately separate:
-//! `authority` is the maker's *config* key (pause, rotate, reshape) and
-//! `user_authority` is the wallet half of the quoted velocity `User`. Nothing
-//! derives one from the other — a desk can run its config key cold while the
-//! quoted sub-account belongs to a different wallet.
+//! The instance holds two separate identities. `authority` is the maker's
+//! config key for pause, reconfigure and rotate. `user_authority` is the
+//! wallet half of the quoted velocity `User`. Nothing derives one from the
+//! other, so a desk can hold the config key cold while the quoted sub-account
+//! belongs to a different wallet.
 //!
-//! Responses are written *in place*: `quote_v0`/`execute_v0` stream borsh
-//! straight into the `response` tail of this account (a zero-copy view of
-//! account data) and return a [`ResponsePointerV0`] to it. No intermediate
-//! `Vec` is built and no bytes are copied twice.
+//! `quote_v0` and `execute_v0` write their response in place. They stream
+//! borsh into the `response` tail of this account and return a
+//! [`ResponsePointerV0`] to it. No intermediate `Vec` is built and no bytes
+//! are copied twice.
 
-/// Base units in one whole base asset. Declared by `quoter-spec`, which owns
-/// every shape and scale on this wire, and fixed rather than per instance:
-/// the caller's exact-notional check on a routed fill divides by this
-/// constant, so an instance on any other denominator prices its quotes on one
-/// scale and is settled on another.
+/// Base units in one whole base asset. `quoter-spec` declares it, and it is
+/// fixed rather than per instance. The caller's exact-notional check on a
+/// routed fill divides by this constant. An instance on another denominator
+/// would price its quotes on one scale and settle on another.
 pub use quoter_spec::BASE_PRECISION;
 use {
     crate::error::MidpointError,
@@ -39,39 +37,38 @@ use {
     static_assertions::const_assert_eq,
 };
 
-/// Offsets are parts-per-million of mid (velocity's PERCENTAGE_PRECISION).
+/// Offsets are parts per million of mid. Velocity calls this scale
+/// PERCENTAGE_PRECISION.
 pub const PERCENTAGE_PRECISION_U64: u64 = 1_000_000;
 pub const PERCENTAGE_PRECISION: u128 = PERCENTAGE_PRECISION_U64 as u128;
 
 /// Ladder capacity per side.
 pub const MAX_SPLINE_LEVELS: usize = 64;
 
-/// Response region size. A full-ladder quote response is `4 + 64 × 16`
-/// bytes and the execute response is one balance change, so this leaves
-/// ample headroom.
+/// Response region size. A full-ladder quote response is `4 + 64 × 16` bytes.
+/// The execute response is one balance change. Both fit with room to spare.
 pub const RESPONSE_BUFFER_BYTES: usize = 2048;
 
 pub const ZERO_ADDRESS: Address = Address::new_from_array([0u8; 32]);
 
-/// Which sides a `cancel_all_v0` withdraws. The same wire enum (and the same
-/// borsh tags) as the CLOB's, so a client speaks one shape to either quoter
-/// type. Named sides rather than a pair of bools because the wire must not be
-/// able to express "neither" — that is a maker believing their quotes are gone
-/// when nothing happened.
+/// Which sides a `cancel_all_v0` withdraws. This is the same wire enum and
+/// the same borsh tags the CLOB uses, so a client speaks one shape to either
+/// quoter type. Named sides replace a pair of bools because the wire must not
+/// express "neither". A maker would then believe the quotes are gone when
+/// nothing happened.
 pub use quoter_spec::CancelSidesV0;
-/// Taker direction, as passed through the quoter interface. Declared once by
-/// `quoter-spec`, which owns every shape on this wire.
+/// Taker direction on the quoter interface. `quoter-spec` declares it once.
 pub use quoter_spec::DirectionV0 as Direction;
 
-/// What the wire's named sides mean to a spline, which holds no orders and
-/// reads them as the flow that would consume its rungs.
+/// What the wire's named sides mean to a spline. The spline holds no orders,
+/// so it reads a side as the flow that consumes its rungs.
 pub trait CancelSidesExt {
     fn directions(self) -> &'static [Direction];
 }
 
 impl CancelSidesExt for CancelSidesV0 {
-    /// The taker directions that consume the named sides. A bid is what a
-    /// `Short` taker hits, an ask what a `Long` taker hits.
+    /// The taker directions that consume the named sides. A `Short` taker
+    /// hits a bid. A `Long` taker hits an ask.
     fn directions(self) -> &'static [Direction] {
         match self {
             CancelSidesV0::Bids => &[Direction::Short],
@@ -83,13 +80,14 @@ impl CancelSidesExt for CancelSidesV0 {
 
 /// What a `cancel_all_v0` withdrew.
 ///
-/// Rung counts and nothing more, deliberately. Unlike the CLOB's, this sweep
-/// reserves nothing on velocity's side — spline depth is standing intent,
-/// margin-clamped at execute — so no caller has aggregates to unwind and the
-/// response is informational. Totalling the withdrawn intent as well would mean
-/// reading every rung back before zeroing it, which costs more per rung than
-/// the withdrawal itself and reports a number the maker (who wrote the shape)
-/// already knows.
+/// The outcome carries rung counts and nothing more. Unlike the CLOB sweep,
+/// this one reserves nothing on velocity's side. Spline depth is standing
+/// intent, and velocity clamps it to margin at execute. No caller has
+/// aggregates to unwind, so the response is informational.
+///
+/// A total of the withdrawn intent would mean reading every rung back before
+/// zeroing it. That costs more per rung than the withdrawal, and it reports a
+/// number the maker already knows.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, wincode::SchemaRead, wincode::SchemaWrite)]
 #[cfg_attr(feature = "idl-build", derive(anchor_lang::IdlType))]
 pub struct CancelAllOutcomeV0 {
@@ -101,57 +99,59 @@ pub struct CancelAllOutcomeV0 {
 }
 
 /// Per-user budgets, also declared by `quoter-spec`. The midpoint does not
-/// spend them — it settles against one standing-intent user and holds no
-/// orders to skip — but the args carry them, and the args are one layout.
+/// spend them, because it settles against one standing-intent user and holds
+/// no orders to skip. The args carry them because the args are one layout.
 pub use quoter_spec::UserCapsV0;
-/// A velocity user in its derivable form — see the CLOB's `UserRefV0` for
-/// why identity is stored as `(authority, sub_account_id)` rather than the
-/// `User` account key.
+/// A velocity user in its derivable form. Identity is
+/// `(authority, sub_account_id)` rather than the `User` account key. The
+/// CLOB's `UserRefV0` says why.
 pub use quoter_spec::UserRefV0;
-/// The caller's settleable-user set: its capacity, the check a reader owes
-/// it, and its widest encoded form, as `quoter-spec` declares them. Every
-/// program on this wire reads the one declaration: a mirror that drifts by a
-/// field decodes the args wrong and reports it as nothing at all.
+/// The caller's settleable-user set. `quoter-spec` declares its capacity, the
+/// check a reader owes it, and its widest encoded form. Every program on this
+/// wire reads that one declaration. A mirror that drifts by a field decodes
+/// the args wrong and reports nothing at all.
 pub use quoter_spec::{user_set_within_capacity, USER_SET_CAPACITY, USER_SET_MAX_BYTES};
 
-/// Declared by `quoter-spec`; the alias keeps this program's name for it.
+/// `quoter-spec` declares this type. The alias keeps this program's name for
+/// it.
 pub type PriceLevel = quoter_spec::PriceLevelV0;
 
-/// Sub-min cancelled remainder — wire compatibility with the quoter
-/// interface; the midpoint never emits one (spline intent has no orders to
-/// cancel, a dusty level is simply not quoted).
+/// Sub-minimum cancelled remainder, present for wire compatibility with the
+/// quoter interface. The midpoint never emits one. Spline intent has no orders
+/// to cancel, and a level below the minimum is not quoted.
 pub use quoter_spec::CancelledRemainderV0;
-/// Where in the quoter account the borsh response was written. Declared by
-/// `quoter-spec`, which owns every shape on this wire.
+/// Where in the quoter account the program wrote the borsh response.
+/// `quoter-spec` declares it.
 pub use quoter_spec::ResponsePointerV0;
-/// One user's share of an executed fill. Mirrors velocity's quoter-interface
-/// `UserBalanceChangeV0`; the midpoint always has exactly one (the quoted
-/// user) and never completes orders (the ladder has none).
+/// One user's share of an executed fill. It mirrors velocity's
+/// quoter-interface `UserBalanceChangeV0`. The midpoint always has exactly
+/// one, the quoted user, and never completes an order because the ladder
+/// holds none.
 ///
-/// This is the wire *definition* — the program writes the same bytes field by
-/// field (see [`MidpointQuoterV0::write_execute_response`]) rather than
-/// building one of these, and a unit test pins the two encodings equal.
+/// This is the wire definition. The program writes the same bytes field by
+/// field in [`MidpointQuoterV0::write_execute_response`] rather than building
+/// one of these. A unit test pins the two encodings equal.
 pub use quoter_spec::UserBalanceChangeV0;
 pub use quoter_spec::{ExecuteResponseV0, QuoteResponseV0};
 
-/// One rung of the spline: standing intent `size` at `mid ± offset`, with
-/// `filled` tracking what executes have consumed since the side was written.
+/// One rung of the spline. It holds standing intent `size` at `mid ± offset`.
+/// `filled` counts what executes consumed since the maker wrote the side.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, bytemuck::Pod, bytemuck::Zeroable)]
 #[cfg_attr(feature = "idl-build", derive(anchor_lang::IdlType))]
 pub struct SplineLevelV0 {
-    /// Distance from mid toward this side, parts-per-million of mid.
-    /// Strictly ascending within a side; 0 quotes at mid itself.
+    /// Distance from mid toward this side, in parts per million of mid.
+    /// Offsets ascend strictly within a side. Zero quotes at mid itself.
     pub offset_ppm: u64,
     /// Intent size, in the market's base precision.
     pub size: u64,
-    /// Consumed since the side was last written.
+    /// Base consumed since the maker last wrote the side.
     pub filled: u64,
 }
 
 const_assert_eq!(core::mem::size_of::<SplineLevelV0>(), 24);
 
-/// A maker's spline-level input on the wire: `filled` is program-owned, so
+/// A maker's spline-level input on the wire. The program owns `filled`, so
 /// the setter takes only the shape.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
 #[cfg_attr(feature = "idl-build", derive(anchor_lang::IdlType))]
@@ -162,91 +162,95 @@ pub struct SplineLevelInputV0 {
 
 #[account]
 pub struct MidpointQuoterV0 {
-    /// The maker's config key: pause, reconfigure, rotate the hot key. Signs
-    /// creation. Never reassigned — the maker's kill switch stays theirs.
-    /// Independent of `user_authority`: a desk can hold this cold.
+    /// The maker's config key. It pauses, reconfigures and rotates the hot
+    /// key, and it signs creation. Nothing reassigns it, so the maker keeps
+    /// the kill switch. It is independent of `user_authority`, so a desk can
+    /// hold it cold.
     pub authority: Address,
-    /// Hot key allowed to write mid/levels. Rotatable by `authority`, so the
-    /// key that signs thousands of mid updates a day carries no other power.
+    /// The key allowed to write the mid and the levels. `authority` rotates
+    /// it. The key that signs thousands of mid updates a day carries no other
+    /// power.
     pub hot_authority: Address,
-    /// Only signer allowed to execute (velocity's quoter CPI signer PDA —
-    /// velocity clamps size to the quoted user's margin before CPI'ing here).
-    /// Immutable after init.
+    /// The only signer allowed to execute. It is velocity's quoter CPI signer
+    /// PDA. Velocity clamps size to the quoted user's margin before it calls
+    /// here. The field never changes after init.
     pub execute_authority: Address,
-    /// Wallet half of the quoted velocity `User` — fills settle against
-    /// `(user_authority, user_sub_account_id)`. It signs creation (consent)
-    /// and rides the PDA seeds, so it is fixed for the life of the instance;
-    /// quoting a different wallet means a new instance that wallet signs for.
+    /// Wallet half of the quoted velocity `User`. Fills settle against
+    /// `(user_authority, user_sub_account_id)`. It signs creation to give
+    /// consent, and it is part of the PDA seeds, so it is fixed for the life
+    /// of the instance. Quoting a different wallet needs a new instance that
+    /// the wallet signs for.
     pub user_authority: Address,
-    /// Mid price, in the market's price precision (velocity perps:
-    /// PRICE_PRECISION = 1e6). 0 = not quoting.
+    /// Mid price, in the market's price precision. Velocity perps use a
+    /// PRICE_PRECISION of 1e6. Zero means the instance does not quote.
     pub mid_price: u64,
-    /// Slot of the last mid write — the staleness gate's input.
+    /// Slot of the last mid write. The staleness gate reads it.
     pub mid_slot: u64,
-    /// Monotonic guard for racing mid writers (see
-    /// [`MidpointQuoterV0::set_mid`]).
+    /// Monotonic guard for racing mid writers. See
+    /// [`MidpointQuoterV0::set_mid`].
     pub mid_sequence: u64,
     /// Quotes go empty once `mid_slot` falls this many slots behind.
     pub max_mid_staleness_slots: u64,
-    /// Quote prices round to a multiple of this, away from mid (same price
-    /// precision as `mid_price`).
+    /// Quote prices round to a multiple of this, away from mid. It uses the
+    /// same price precision as `mid_price`.
     pub price_tick_size: u64,
     /// Quoted sizes floor to a multiple of this (base precision).
     pub size_step: u64,
-    /// Level remainders below this are not quoted. Base precision — a floor
-    /// on the *base* size of a rung, despite the name.
+    /// The quoter does not quote a level remainder below this. The value is
+    /// in base precision. It floors the base size of a rung despite the name.
     pub min_quote_size: u64,
-    /// Base units per whole unit. Always [`BASE_PRECISION`]; see there for why
-    /// an instance cannot choose another one.
+    /// Base units per whole unit. It is always [`BASE_PRECISION`]. See there
+    /// for why an instance cannot choose another value.
     pub base_precision: u64,
-    /// Sub-account half of the quoted user's identity (`user_authority`
-    /// above is the wallet half).
+    /// Sub-account half of the quoted user's identity. `user_authority` is
+    /// the wallet half.
     pub user_sub_account_id: u16,
     /// Velocity perp market index this quoter serves.
     pub market_index: u16,
-    /// Maker kill switch (config path; the registry's `is_active` is the
-    /// velocity-side one).
+    /// The maker's kill switch on the config path. The registry's `is_active`
+    /// is the velocity-side one.
     pub is_paused: u8,
-    /// Quote only protected flow: takers whose flow served a window before
-    /// the call — the swift hold, or the book's activation delay. Velocity
-    /// asserts the fact on the wire (`taker_served_window`), and this
-    /// program trusts its caller for it as it does for `users` and `caps`.
+    /// Quote only protected flow. The taker's flow must serve a window before
+    /// the call, either the swift hold or the book's activation delay.
+    /// Velocity asserts the fact on the wire as `taker_served_window`. This
+    /// program trusts its caller for it, as it does for `users` and `caps`.
     pub require_attested_flow: u8,
     pub bid_count: u8,
     pub ask_count: u8,
-    /// Max `|mid − reference_price| / reference_price` the quoter fills at,
-    /// parts per million. 0 disables the bound. Owned by the config key, not
-    /// the hot key. A compromised hot key cannot move mid past this band of
-    /// velocity's oracle, so a bad mid quotes and fills nothing rather than
-    /// draining the maker's collateral at an off-market price.
+    /// The largest `|mid − reference_price| / reference_price` the quoter
+    /// fills at, in parts per million. Zero disables the bound. The config key
+    /// owns the field. A compromised hot key cannot move the mid past this
+    /// band around velocity's oracle. A bad mid then quotes and fills nothing
+    /// rather than draining the maker's collateral at an off-market price.
     pub max_mid_deviation_ppm: u64,
-    /// Room for two more pubkeys plus a scalar or two, so a future field
-    /// lands without moving the ladders or the response tail.
+    /// Room for two more pubkeys and a scalar or two. A future field lands
+    /// here without moving the ladders or the response tail.
     pub padding: [u8; 64],
     pub bids: [SplineLevelV0; MAX_SPLINE_LEVELS],
     pub asks: [SplineLevelV0; MAX_SPLINE_LEVELS],
-    /// Scratch region `quote_v0`/`execute_v0` stream their borsh response
-    /// into; return data carries a [`ResponsePointerV0`] locating it.
+    /// The region `quote_v0` and `execute_v0` stream their borsh response
+    /// into. Return data carries a [`ResponsePointerV0`] to it.
     pub response: [u8; RESPONSE_BUFFER_BYTES],
 }
 
 const_assert_eq!(core::mem::size_of::<MidpointQuoterV0>(), 5392);
-// The header (everything before the ladders) stays 8-aligned and hole-free —
-// `#[account]` is Pod, which rejects padding bytes.
+// The header, which is everything before the ladders, stays 8-aligned and
+// free of holes.
 const_assert_eq!(4 * 32 + 8 * 8 + 8 + 8 + 64, 272);
 
 /// Account-data offset of the `response` region.
 pub const RESPONSE_OFFSET: usize =
     8 + core::mem::size_of::<MidpointQuoterV0>() - RESPONSE_BUFFER_BYTES;
 
-// Both programs cast the response records onto these bytes, so the region has
-// to start on the step they are read at. Solana gives account data an 8-byte
-// start, and every record's alignment divides 8, so this offset is the whole
-// condition.
+// Both programs cast the response records onto these bytes, so the region
+// must start on the step they are read at. Solana gives account data an
+// 8-byte start, and every record's alignment divides 8. This offset is
+// therefore the whole condition.
 const_assert_eq!(RESPONSE_OFFSET % quoter_spec::LEN_BYTES, 0);
 
-/// Immutable + rarely-changed config, set at init (the addresses ride the
-/// accounts list — duplicated accounts cost one index byte in the tx).
+/// Config that init sets and that changes rarely. The addresses ride the
+/// accounts list, because a duplicated account costs one index byte in the
+/// transaction.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
 #[cfg_attr(feature = "idl-build", derive(anchor_lang::IdlType))]
 pub struct QuoterConfigV0 {
@@ -258,28 +262,28 @@ pub struct QuoterConfigV0 {
     pub size_step: u64,
     pub min_quote_size: u64,
     pub require_attested_flow: bool,
-    /// Max `|mid - reference_price| / reference_price` the instance fills at,
-    /// parts per million. Must be nonzero at creation.
+    /// The largest `|mid - reference_price| / reference_price` the instance
+    /// fills at, in parts per million. It must be nonzero at creation.
     ///
-    /// This band is what stops a compromised hot key from filling the maker
-    /// at an off-market mid, so an instance must not start without one. The
-    /// config key can set it to zero later through `update_quoter_v0`, which
-    /// is a maker deciding to run unbounded rather than a maker who never
-    /// learned the field exists.
+    /// This band stops a compromised hot key from filling the maker at an
+    /// off-market mid, so an instance must not start without one. The config
+    /// key can set it to zero later through `update_quoter_v0`. That is a
+    /// maker who decides to run unbounded, not a maker who never learned the
+    /// field exists.
     pub max_mid_deviation_ppm: u64,
 }
 
-/// The consumed prefix of one side of the spline for a taker of `size`:
-/// what execute commits and quote previews.
+/// The consumed prefix of one side of the spline for a taker of `size`.
+/// Execute commits it and quote previews it.
 pub struct SplineFill {
     pub base: u64,
     pub quote: u64,
-    /// `filled` deltas per level index, applied only by execute.
+    /// `filled` deltas per level index. Only execute applies them.
     pub consumed: [u64; MAX_SPLINE_LEVELS],
 }
 
-/// The scalars a spline walk needs, copied out of the account so the walk can
-/// borrow the ladders and the response tail at the same time.
+/// The scalars a spline walk needs. They are copied out of the account. The
+/// walk can then borrow the ladders and the response tail at the same time.
 #[derive(Clone, Copy, Debug)]
 pub struct SplineParams {
     pub mid_price: u64,
@@ -290,16 +294,16 @@ pub struct SplineParams {
 }
 
 impl SplineParams {
-    /// A level's price at the current mid: `mid ± mid × offset / 1e6`,
-    /// rounded *away* from mid to the tick (maker-conservative). `None` if
-    /// the price would leave u64 or the bid side would cross zero.
+    /// A level's price at the current mid, which is `mid ± mid × offset / 1e6`.
+    /// It rounds away from mid to the tick, which favors the maker. It returns
+    /// `None` if the price leaves u64 or the bid side crosses zero.
     ///
-    /// This runs once per rung per quote, so it stays in u64: SBF has no
-    /// 128-bit divide and each `u128 / u128` costs hundreds of compute units,
-    /// which a 64-rung ladder would pay 128 times over. `mid × offset_ppm`
-    /// fits u64 for any plausible market (1e8 price × 1e6 ppm = 1e14); the
-    /// u128 path exists only for the inputs where it doesn't, and returns
-    /// exactly what the all-u128 form would (pinned by a unit test).
+    /// This runs once per rung per quote, so it stays in u64. SBF has no
+    /// 128-bit divide, and each `u128 / u128` costs hundreds of compute units.
+    /// A 64-rung ladder would pay that 128 times over. `mid × offset_ppm` fits
+    /// u64 for any plausible market, because a 1e8 price times 1e6 ppm is
+    /// 1e14. The u128 path covers the inputs where it does not fit, and a unit
+    /// test pins it equal to the all-u128 form.
     pub fn level_price(&self, direction: Direction, offset_ppm: u64) -> Option<u64> {
         let mid = self.mid_price;
         let delta = match mid.checked_mul(offset_ppm) {
@@ -319,8 +323,8 @@ impl SplineParams {
         (price != 0).then_some(price)
     }
 
-    /// A level's quotable remainder: intent minus consumed, floored to the
-    /// step, zero when below the min-quote floor.
+    /// A level's quotable remainder. It is intent minus consumed, floored to
+    /// the step. It is zero when it falls below the minimum quote size.
     pub fn level_remaining(&self, level: &SplineLevelV0) -> u64 {
         let step = self.size_step.max(1);
         let remaining = level.size.saturating_sub(level.filled) / step * step;
@@ -331,15 +335,17 @@ impl SplineParams {
         }
     }
 
-    /// Quote amount for `base` at `price`, mirroring the CLOB:
-    /// `price × base / base_precision`, floored, with `carry` — the previous
-    /// rung's sub-unit remainder — folded in and the new remainder handed
-    /// back. Carrying rather than truncating per rung is what makes a
-    /// multi-rung fill's total the floor of the whole walk's notional, which
-    /// is the one rounding velocity admits when it holds the fill to the
-    /// prices this quoter published. u64 while the product fits (see
-    /// [`SplineParams::level_price`] on why the divide is worth avoiding),
-    /// widening only when it must.
+    /// Quote amount for `base` at `price`, which mirrors the CLOB. It is
+    /// `price × base / base_precision`, floored. `carry` is the previous
+    /// rung's sub-unit remainder. This function folds it in and returns the
+    /// new remainder.
+    ///
+    /// A carry rather than a truncation per rung makes a multi-rung fill total
+    /// the floor of the whole walk's notional. That is the one rounding
+    /// velocity admits when it holds the fill to the prices this quoter
+    /// published. The math stays in u64 while the product fits and widens only
+    /// when it must. See [`SplineParams::level_price`] for why the divide is
+    /// worth avoiding.
     pub fn quote_amount(&self, price: u64, base: u64, carry: u64) -> Result<(u64, u64)> {
         let base_precision = self.base_precision.max(1);
         if let Some(scaled) = price.checked_mul(base).and_then(|p| p.checked_add(carry)) {
@@ -388,9 +394,10 @@ impl MidpointQuoterV0 {
         }
     }
 
-    /// Whether this quoter quotes at all right now — pause, unset mid, and
-    /// the staleness gate. Attestation and self-trade gating live with the
-    /// callers, which read `taker_served_window` and `taker` off the wire.
+    /// Whether this quoter quotes right now. It checks the pause flag, an
+    /// unset mid, and the staleness gate. The callers hold the attestation and
+    /// self-trade gates, because they read `taker_served_window` and `taker`
+    /// off the wire.
     pub fn is_quoting(&self, slot: u64) -> bool {
         self.is_paused == 0
             && self.mid_price != 0
@@ -399,7 +406,7 @@ impl MidpointQuoterV0 {
 
     /// Whether the current mid sits within the configured band of the caller's
     /// reference price. The reference is velocity's oracle. A zero bound, a
-    /// zero mid, or a non-positive reference disables the check — a crank path
+    /// zero mid, or a non-positive reference disables the check. A crank path
     /// that passes no reference must not be blocked here.
     pub fn mid_within_deviation(&self, reference_price: i64) -> bool {
         if self.max_mid_deviation_ppm == 0 || self.mid_price == 0 || reference_price <= 0 {
@@ -412,8 +419,8 @@ impl MidpointQuoterV0 {
             <= (self.max_mid_deviation_ppm as u128).saturating_mul(reference)
     }
 
-    /// Walk the consumed prefix for a fill of `size`, without mutating —
-    /// execute applies `consumed` after the walk.
+    /// Walk the consumed prefix for a fill of `size`. The walk mutates
+    /// nothing. Execute applies `consumed` after the walk.
     pub fn fill(&self, direction: Direction, size: u64, slot: u64) -> Result<SplineFill> {
         let mut fill = SplineFill {
             base: 0,
@@ -454,9 +461,9 @@ impl MidpointQuoterV0 {
         Ok(fill)
     }
 
-    /// Apply a walked fill's consumption to the side's `filled` counters, then
-    /// assert the post-state invariants of a consuming walk (see
-    /// [`MidpointQuoterV0::validate_consumption`]).
+    /// Apply a walked fill's consumption to the side's `filled` counters. It
+    /// then asserts the post-state invariants in
+    /// [`MidpointQuoterV0::validate_consumption`].
     pub fn apply_fill(&mut self, direction: Direction, fill: &SplineFill) -> Result<()> {
         let count = self.side_count(direction) as usize;
         let levels = match direction {
@@ -469,8 +476,9 @@ impl MidpointQuoterV0 {
         self.validate_consumption(direction, fill)
     }
 
-    /// Replace one side's ladder: offsets strictly ascending (best rung
-    /// closest to mid first), sizes nonzero, `filled` reset.
+    /// Replace one side's ladder. Offsets must ascend strictly, so the rung
+    /// closest to mid comes first. Sizes must be nonzero. The write resets
+    /// `filled`.
     pub fn write_side(
         &mut self,
         direction: Direction,
@@ -511,14 +519,15 @@ impl MidpointQuoterV0 {
         Ok(())
     }
 
-    /// Withdraw one side's standing intent: zero its live rungs and drop the
-    /// count to nothing. Returns the rungs cleared.
+    /// Withdraw one side's standing intent. It zeroes the live rungs and
+    /// drops the count to zero. It returns the number of rungs it cleared.
     ///
-    /// Only the live prefix is written. The tail past `count` is already zero
-    /// by the ladder invariant, so a maker running eight rungs pays for eight
-    /// rather than for the ladder's capacity — which is what makes this cheaper
-    /// than `set_levels_v0` with an empty side, and it is a straight `fill` so
-    /// the write lowers to a memset rather than a per-rung loop.
+    /// The write covers only the live prefix. The tail past `count` is already
+    /// zero by the ladder invariant, so a maker who runs eight rungs pays for
+    /// eight rather than for the ladder's capacity. That is what makes this
+    /// cheaper than `set_levels_v0` with an empty side. The write is a
+    /// straight `fill`, so it lowers to a memset rather than a per-rung
+    /// loop.
     pub fn clear_side(&mut self, direction: Direction) -> u8 {
         let count = self.side_count(direction) as usize;
         let (levels, stored) = match direction {
@@ -534,17 +543,18 @@ impl MidpointQuoterV0 {
         count as u8
     }
 
-    /// Post-condition of [`Self::clear_side`]: the side's count is gone and
-    /// every rung the withdrawal wrote is zeroed, so nothing on it can quote.
+    /// Post-condition of [`Self::clear_side`]. The side's count is zero and
+    /// every rung the withdrawal wrote is zeroed, so nothing on the side can
+    /// quote.
     ///
-    /// Scoped to the `cleared` rungs rather than the whole ladder, and that
-    /// scope is the point. The tail past the old count was already zero by the
-    /// ladder invariant and a withdrawal never writes there, so scanning it
-    /// would be compute spent proving something this operation cannot break —
-    /// on a path a maker takes under time pressure. Every other mutating
-    /// instruction still runs the full [`Self::validate`], so a tail corrupted
-    /// by anything else is still caught there. Same trade [`Self::set_mid`]
-    /// makes for the same reason.
+    /// The check covers the `cleared` rungs rather than the whole ladder. The
+    /// tail past the old count was already zero by the ladder invariant, and a
+    /// withdrawal never writes there. A scan of the tail would spend compute
+    /// to prove something this operation cannot break, on a path a maker takes
+    /// under time pressure. Every other mutating instruction still runs the
+    /// full [`Self::validate`], which catches a tail that anything else
+    /// corrupted. [`Self::set_mid`] makes the same trade for the same
+    /// reason.
     pub fn validate_cleared_side(&self, direction: Direction, cleared: u8) -> Result<()> {
         require!(
             self.side_count(direction) == 0,
@@ -563,24 +573,24 @@ impl MidpointQuoterV0 {
         Ok(())
     }
 
-    /// Stamp a new mid. `sequence` is an opt-in monotonic guard for racing
-    /// writers: nonzero sequences must strictly increase (a delayed relay
-    /// can't clobber a fresher mid); zero skips the check (single-writer
-    /// setups don't pay for coordination they don't need).
+    /// Stamp a new mid. `sequence` is an optional monotonic guard for racing
+    /// writers. A nonzero sequence must increase strictly, so a delayed relay
+    /// cannot overwrite a fresher mid. A zero sequence skips the check, so a
+    /// single-writer setup does not pay for coordination it does not need.
     ///
-    /// A mid of zero is a withdrawal, not a price. It routes to
-    /// [`Self::clear_mid`] and never fails on the guard.
+    /// A mid of zero is a withdrawal. It routes to [`Self::clear_mid`] and
+    /// never fails on the guard.
     ///
-    /// The post-write assertion is deliberately O(1): this is the CU-pinned
-    /// hot path, so it checks only what it just wrote, never the ladders.
+    /// The post-write assertion is O(1) by design. This is the compute-pinned
+    /// hot path, so it checks only what it wrote and never the ladders.
     pub fn set_mid(&mut self, mid: u64, sequence: u64, slot: u64) -> Result<()> {
         if mid == 0 {
             return self.clear_mid();
         }
         // Once a writer uses sequences, every later write must carry a higher
-        // one. A sequence of 0 skips the monotonic check but still refreshes
-        // the slot, so allowing it after a real sequence would let a replayed
-        // set_mid (through a durable nonce) re-stamp a stale mid as fresh. A
+        // one. A sequence of 0 skips the monotonic check and still refreshes
+        // the slot. Allowing it after a real sequence would let a set_mid
+        // replayed through a durable nonce re-stamp a stale mid as fresh. A
         // writer that never sequences keeps opting out with 0.
         if sequence != 0 || self.mid_sequence != 0 {
             require!(
@@ -603,11 +613,11 @@ impl MidpointQuoterV0 {
     ///
     /// This write skips the monotonic guard and leaves `mid_sequence` and
     /// `mid_slot` alone. The guard exists so a delayed or replayed write
-    /// cannot publish a stale price as fresh. A zero mid publishes no price
-    /// at all, so it cannot do that, and a later real mid must still beat the
-    /// last real sequence. A withdrawal must also never be the write that
-    /// loses a race: it is the maker's panic button, and a maker who fires it
-    /// with a compromised hot key gets the quotes down rather than an error.
+    /// cannot publish a stale price as fresh. A zero mid publishes no price,
+    /// so it cannot do that, and a later real mid must still beat the last
+    /// real sequence. A withdrawal must also never lose a race. It is the
+    /// maker's kill switch, so a maker who fires it with a compromised hot key
+    /// gets the quotes down rather than an error.
     pub fn clear_mid(&mut self) -> Result<()> {
         self.mid_price = 0;
         require!(self.mid_price == 0, MidpointError::InvariantViolated);
@@ -621,10 +631,10 @@ impl MidpointQuoterV0 {
         }
     }
 
-    /// Invariants every non-hot mutating instruction leaves true. Cheap
-    /// enough for config/shape writes (a bounded scan of both ladders);
-    /// deliberately *not* called from `set_mid_v0`, which is compute-pinned
-    /// and cannot touch a rung.
+    /// Invariants every non-hot mutating instruction leaves true. The check is
+    /// a bounded scan of both ladders, which config and shape writes can
+    /// afford. `set_mid_v0` does not call it, because that path is
+    /// compute-pinned and cannot touch a rung.
     pub fn validate(&self) -> Result<()> {
         require!(
             self.base_precision == BASE_PRECISION,
@@ -645,9 +655,10 @@ impl MidpointQuoterV0 {
         Self::validate_side(&self.asks, self.ask_count)
     }
 
-    /// One side is consistent: `count` live rungs with strictly ascending
-    /// offsets, nonzero sizes and `filled <= size`, and a fully zeroed tail
-    /// (so a shrinking rewrite can never leave a stale rung quotable).
+    /// One side is consistent. It holds `count` live rungs with strictly
+    /// ascending offsets, nonzero sizes, and `filled <= size`. The tail past
+    /// the count is zero, so a shrinking rewrite cannot leave a stale rung
+    /// quotable.
     fn validate_side(levels: &[SplineLevelV0; MAX_SPLINE_LEVELS], count: u8) -> Result<()> {
         let count = count as usize;
         require!(count <= MAX_SPLINE_LEVELS, MidpointError::TooManyLevels);
@@ -670,13 +681,13 @@ impl MidpointQuoterV0 {
         Ok(())
     }
 
-    /// Post-execute invariants for the side just consumed:
+    /// Post-execute invariants for the side the walk consumed.
     ///
-    /// - consumption is monotone best-first — a rung is only touched once
-    ///   every better rung is exhausted, so at most the *last* touched rung
-    ///   is left with a quotable remainder;
-    /// - no rung outside the live count was touched;
-    /// - `filled <= size` everywhere, and the per-rung deltas sum to the
+    /// - Consumption runs best first. The walk touches a rung only once every
+    ///   better rung is exhausted, so at most the last touched rung keeps a
+    ///   quotable remainder.
+    /// - The walk touches no rung outside the live count.
+    /// - `filled <= size` on every rung, and the per-rung deltas sum to the
     ///   `base` the response reports.
     fn validate_consumption(&self, direction: Direction, fill: &SplineFill) -> Result<()> {
         let params = self.params();
@@ -693,8 +704,8 @@ impl MidpointQuoterV0 {
                 continue;
             }
             require!(!walk_ended, MidpointError::InvariantViolated);
-            // A take that left the rung quotable means the taker ran out of
-            // size here: nothing beyond this rung may be consumed.
+            // A take that leaves the rung quotable means the taker ran out of
+            // size here. Nothing beyond this rung may be consumed.
             walk_ended = params.level_remaining(level) > 0;
             total = total.checked_add(*taken).ok_or(MidpointError::MathError)?;
         }
@@ -702,11 +713,11 @@ impl MidpointQuoterV0 {
         Ok(())
     }
 
-    /// Stream a `QuoteResponseV0` for a taker of `direction`/`size` straight
-    /// into the response tail, best-first, truncated once the taker's size is
-    /// covered. `open` is the caller gate (settleability / self-trade /
-    /// attestation); a closed gate or a non-quoting spline writes an empty
-    /// level vec, which is the wire's "nothing for you".
+    /// Stream a `QuoteResponseV0` for a taker of `direction` and `size` into
+    /// the response tail. Levels go out best first and stop once the taker's
+    /// size is covered. `open` is the caller's gate for settleability,
+    /// self-trade and attestation. A closed gate or a non-quoting spline
+    /// writes an empty level vec, which the wire reads as no liquidity.
     pub fn write_quote_response(
         &mut self,
         direction: Direction,
@@ -718,7 +729,7 @@ impl MidpointQuoterV0 {
         let params = self.params();
         let live = open && self.is_quoting(slot);
         let count = if live { self.side_count(direction) } else { 0 } as usize;
-        // Disjoint field borrows: the walk reads a ladder while the writer
+        // Disjoint field borrows. The walk reads a ladder while the writer
         // holds the response tail. Both are views into the same account.
         let Self {
             bids,
@@ -744,9 +755,9 @@ impl MidpointQuoterV0 {
             let Some(price) = params.level_price(direction, level.offset_ppm) else {
                 continue;
             };
-            // Past the caller's worst acceptable price. Rungs carry strictly
-            // ascending offsets, so every rung behind this one prices further
-            // from the mid and is worse still.
+            // Past the caller's worst acceptable price. Offsets ascend
+            // strictly, so every later rung prices further from the mid and is
+            // worse.
             if worse_than_limit(direction, price, limit_price) {
                 break;
             }
@@ -762,20 +773,19 @@ impl MidpointQuoterV0 {
                 .map_err(MidpointError::from)?;
             wanted -= quoted;
         }
-        // `finish` backfills the ladder's count and writes the withheld report
-        // behind it. The report is always empty here: the midpoint settles
-        // against one standing-intent user and holds no resting orders, so
-        // there is no liquidity it could be keeping back for want of an
-        // account.
+        // `finish` backfills the ladder's count and writes the withheld
+        // report behind it. The report is always empty here. The midpoint
+        // settles against one standing-intent user and holds no resting
+        // orders, so it withholds no liquidity for want of an account.
         let len = writer
             .finish(&mut response[..], PriceLevel::default())
             .map_err(MidpointError::from)?;
         Ok(response_pointer(len))
     }
 
-    /// Stream an `ExecuteResponseV0` straight into the response tail: at most
-    /// one balance change (the quoted user), never a completed order id,
-    /// never a cancelled remainder.
+    /// Stream an `ExecuteResponseV0` into the response tail. It carries at
+    /// most one balance change, for the quoted user. It never carries a
+    /// completed order id or a cancelled remainder.
     pub fn write_execute_response(
         &mut self,
         change: Option<(u64, u64)>,
@@ -795,9 +805,8 @@ impl MidpointQuoterV0 {
                 )
                 .map_err(MidpointError::from)?;
         }
-        // Never a cancelled remainder, a completed order, or a partial fill:
-        // standing intent has no resting orders to consume, cull or leave
-        // smaller than they were.
+        // Standing intent has no resting orders, so there is never a
+        // cancelled remainder, a completed order, or a partial fill.
         let len = writer
             .finish(&mut self.response[..], &[], &[], &[])
             .map_err(MidpointError::from)?;
@@ -809,7 +818,7 @@ impl MidpointQuoterV0 {
 ///
 /// Zero is no bound. A rung exactly at the limit is acceptable, so the
 /// comparison is strict. A long taker buys the ask ladder and refuses to pay
-/// above its limit; a short taker sells the bid ladder and refuses to receive
+/// above its limit. A short taker sells the bid ladder and refuses to receive
 /// below it.
 fn worse_than_limit(direction: Direction, price: u64, limit_price: u64) -> bool {
     if limit_price == 0 {
@@ -821,9 +830,8 @@ fn worse_than_limit(direction: Direction, price: u64, limit_price: u64) -> bool 
     }
 }
 
-/// Borsh-encode one value at the cursor. The wire config is anchor's
-/// borsh-compatible one, so streaming field by field is byte-identical to
-/// serializing the whole response struct.
+/// Point at the `len` bytes the writer just streamed. The response region
+/// always starts at [`RESPONSE_OFFSET`].
 fn response_pointer(len: usize) -> ResponsePointerV0 {
     ResponsePointerV0 {
         offset: RESPONSE_OFFSET as u32,
@@ -871,7 +879,8 @@ mod tests {
     #[test]
     fn mid_deviation_bound_gates_an_off_market_mid() {
         let mut q = quoter(&[(1_000, UNIT)], &[(1_000, UNIT)]);
-        // Bound disabled: any mid passes, and a zero reference never gates.
+        // The bound is disabled, so any mid passes and a zero reference never
+        // gates.
         assert!(q.mid_within_deviation(MID as i64));
         assert!(q.mid_within_deviation(0));
 
@@ -887,8 +896,8 @@ mod tests {
         assert!(q.mid_within_deviation(-5));
     }
 
-    /// The Vec-building reference encoder the program used to run, kept as
-    /// the oracle for the streaming writer.
+    /// A `Vec`-building encoder, kept as the reference for the streaming
+    /// writer.
     fn reference_quote(quoter: &MidpointQuoterV0, direction: Direction, size: u64) -> Vec<u8> {
         let params = quoter.params();
         let mut levels = Vec::new();
@@ -934,10 +943,9 @@ mod tests {
         .unwrap()
     }
 
-    /// What the writer put in the account has to read back as the response it
-    /// meant to send. Velocity does exactly this parse, so a framing mistake
-    /// here is a fill that cannot be decoded rather than one that settles
-    /// wrong.
+    /// What the writer put in the account must read back as the response it
+    /// meant to send. Velocity runs this same parse, so a framing mistake here
+    /// is a fill that cannot be decoded rather than one that settles wrong.
     #[test]
     fn the_written_response_parses_back() {
         let mut quoter = quoter(&[], &[]);
@@ -951,7 +959,7 @@ mod tests {
         assert_eq!(response.changes[0].base_size, 1_000_000_000);
         assert_eq!(response.changes[0].quote_size, 101_000_000);
         assert_eq!(response.changes[0].user, quoter.user_ref());
-        // Standing intent has no resting orders to cull or consume.
+        // Standing intent has no resting orders to remove or consume.
         assert!(response.cancelled.is_empty());
         assert!(response.completed.is_empty());
     }
@@ -962,7 +970,7 @@ mod tests {
     }
 
     /// The in-place writer must be byte-identical to serializing the wire
-    /// struct — the response is a public wire, not an internal detail.
+    /// struct. The response is a public wire and not an internal detail.
     #[test]
     fn streamed_quote_response_matches_the_wire_struct() {
         for size in [0, UNIT / 4, UNIT, 3 * UNIT, u64::MAX] {
@@ -981,8 +989,8 @@ mod tests {
     }
 
     /// An empty ladder is its length prefix and the withheld report behind
-    /// it. The report is always empty here: the midpoint holds no resting
-    /// orders, so there is no liquidity it could be keeping back.
+    /// it. The report is always empty here, because the midpoint holds no
+    /// resting orders and so withholds no liquidity.
     const EMPTY_QUOTE: usize = quoter_spec::LEN_BYTES + 2 * 8;
 
     #[test]
@@ -992,7 +1000,7 @@ mod tests {
             .write_quote_response(Direction::Long, UNIT, 0, 0, false)
             .unwrap();
         assert_eq!(written(&quoter, closed), vec![0u8; EMPTY_QUOTE]);
-        // A stale mid is the same silence, even with the gate open.
+        // A stale mid quotes nothing, even with the gate open.
         let stale = quoter
             .write_quote_response(Direction::Long, UNIT, 0, 10_000, true)
             .unwrap();
@@ -1018,8 +1026,8 @@ mod tests {
         let bytes = written(&quoter, pointer);
         let response = QuoteResponseV0::parse(&bytes).unwrap();
 
-        // The taker's size runs out inside the second rung, so it is quoted
-        // for the remainder rather than its full standing size.
+        // The taker's size runs out inside the second rung. That rung is
+        // quoted for the remainder rather than for its full standing size.
         assert_eq!(response.levels.len(), 2);
         assert_eq!(response.levels[0].price, 100_100_000);
         assert_eq!(response.levels[0].size, UNIT);
@@ -1029,7 +1037,7 @@ mod tests {
 
     #[test]
     fn the_price_bound_stops_the_ladder_at_the_limit() {
-        // Rungs at +0.1% and +0.3% of a 100.0 mid: 100.1 and 100.3.
+        // Rungs at +0.1% and +0.3% of a 100.0 mid are 100.1 and 100.3.
         let mut quoter = quoter(&[(1_000, UNIT)], &[(1_000, UNIT), (3_000, UNIT)]);
 
         // A long taker paying no more than 100.2 gets the first rung only.
@@ -1055,7 +1063,8 @@ mod tests {
         let bytes = written(&quoter, pointer);
         assert_eq!(QuoteResponseV0::parse(&bytes).unwrap().levels.len(), 2);
 
-        // A short taker sells the bid ladder, so its bound cuts the low side.
+        // A short taker sells the bid ladder, so the bound cuts the low
+        // side.
         let mut bid_side = super::tests::quoter(&[(1_000, UNIT), (3_000, UNIT)], &[(1_000, UNIT)]);
         let pointer = bid_side
             .write_quote_response(Direction::Short, u64::MAX, 99_800_000, 0, true)
@@ -1104,8 +1113,8 @@ mod tests {
     #[test]
     fn consumption_beyond_a_partially_taken_rung_is_rejected() {
         let mut quoter = quoter(&[], &[(1_000, UNIT), (3_000, UNIT)]);
-        // Hand-built impossible walk: half of rung 0 (leaving it quotable)
-        // and half of rung 1.
+        // A walk the fill path cannot produce. It takes half of rung 0, which
+        // leaves rung 0 quotable, and half of rung 1.
         let mut consumed = [0u64; MAX_SPLINE_LEVELS];
         consumed[0] = UNIT / 2;
         consumed[1] = UNIT / 2;
@@ -1121,7 +1130,7 @@ mod tests {
     fn consumption_of_a_dead_rung_is_rejected() {
         let mut quoter = quoter(&[], &[(1_000, UNIT)]);
         let mut consumed = [0u64; MAX_SPLINE_LEVELS];
-        // Rung 1 is past `ask_count` — nothing may touch it.
+        // Rung 1 is past `ask_count`, so nothing may touch it.
         consumed[1] = UNIT;
         let fill = SplineFill {
             base: UNIT,
@@ -1147,7 +1156,8 @@ mod tests {
     #[test]
     fn clear_side_withdraws_one_side_and_leaves_the_other() {
         let mut quoter = quoter(&[(1_000, UNIT), (3_000, UNIT / 2)], &[(500, 2 * UNIT)]);
-        // A partly-consumed rung is withdrawn like any other, `filled` and all.
+        // A partly consumed rung is withdrawn like any other, `filled`
+        // included.
         let fill = quoter.fill(Direction::Short, UNIT / 4, 0).unwrap();
         quoter.apply_fill(Direction::Short, &fill).unwrap();
 
@@ -1170,9 +1180,9 @@ mod tests {
         assert_eq!(quoter.fill(Direction::Long, UNIT, 0).unwrap().base, UNIT);
     }
 
-    /// The mid withdrawal is the maker's panic button, so it must work on an
-    /// instance that already runs sequences. It also consumes no sequence: a
-    /// later real mid still has to beat the last real one.
+    /// The mid withdrawal is the maker's kill switch, so it must work on an
+    /// instance that already runs sequences. It also consumes no sequence, so
+    /// a later real mid must still beat the last real one.
     #[test]
     fn a_mid_withdrawal_ignores_the_sequence_guard() {
         let mut quoter = quoter(&[(1_000, UNIT)], &[(1_000, UNIT)]);
@@ -1198,9 +1208,9 @@ mod tests {
         assert!(quoter.is_quoting(11));
     }
 
-    /// Clearing an empty side is a no-op that still leaves a valid ladder, so
-    /// the instruction is idempotent — a maker can fire it twice without a
-    /// failed transaction telling them nothing was wrong.
+    /// Clearing an empty side changes nothing and still leaves a valid
+    /// ladder. The instruction is therefore idempotent. A maker can send it
+    /// twice without a failed transaction that reports nothing was wrong.
     #[test]
     fn clearing_an_empty_side_is_a_valid_no_op() {
         let mut quoter = quoter(&[], &[(500, UNIT)]);
@@ -1212,10 +1222,10 @@ mod tests {
     }
 
     /// The withdrawal post-check covers the rungs the withdrawal wrote and a
-    /// count that failed to drop — and deliberately not the tail beyond them,
-    /// which is the trade that keeps it proportional to the shape being pulled.
-    /// The full [`MidpointQuoterV0::validate`] every other mutating instruction
-    /// runs is what covers the tail.
+    /// count that failed to drop. It does not cover the tail beyond them,
+    /// which keeps its cost proportional to the shape being withdrawn. The
+    /// full [`MidpointQuoterV0::validate`] that every other mutating
+    /// instruction runs covers the tail.
     #[test]
     fn the_withdrawal_post_check_covers_what_the_withdrawal_wrote() {
         let mut quoter = quoter(&[(1_000, UNIT), (3_000, UNIT)], &[(500, UNIT)]);
@@ -1224,7 +1234,7 @@ mod tests {
             .validate_cleared_side(Direction::Short, cleared)
             .unwrap();
 
-        // A rung the withdrawal should have zeroed but didn't.
+        // A rung the withdrawal should have zeroed and did not.
         quoter.bids[1].size = UNIT;
         assert!(quoter
             .validate_cleared_side(Direction::Short, cleared)
@@ -1238,14 +1248,14 @@ mod tests {
             .is_err());
         quoter.bid_count = 0;
 
-        // Scoped to the side it was asked about: the ask side is still live and
-        // that is not an error.
+        // The check covers only the side it was asked about. The ask side is
+        // still live and that is not an error.
         quoter
             .validate_cleared_side(Direction::Short, cleared)
             .unwrap();
         assert_eq!(quoter.ask_count, 1);
 
-        // Stale tail rungs are out of scope here, and caught by `validate`.
+        // Stale tail rungs are out of scope here. `validate` catches them.
         quoter.bids[7].size = UNIT;
         quoter
             .validate_cleared_side(Direction::Short, cleared)
@@ -1276,8 +1286,8 @@ mod tests {
         assert!(no_precision.validate().is_err());
     }
 
-    /// The all-u128 form of `level_price`, kept as the oracle for the u64 fast
-    /// path the program actually runs.
+    /// The all-u128 form of `level_price`, kept as the reference for the u64
+    /// fast path the program runs.
     fn reference_level_price(
         params: &SplineParams,
         direction: Direction,
@@ -1317,8 +1327,8 @@ mod tests {
         ))
     }
 
-    /// The u64 fast paths must be exactly the u128 math, including where they
-    /// give up — a rounding difference here is a mispriced fill.
+    /// The u64 fast paths must match the u128 math exactly, including where
+    /// they give up. A rounding difference here is a mispriced fill.
     #[test]
     fn the_u64_price_math_matches_the_u128_form() {
         let mids = [0, 1, 99, 100_000_000, u64::MAX / 2, u64::MAX - 1, u64::MAX];
@@ -1375,7 +1385,7 @@ mod tests {
         assert!(quoter.set_mid(MID + 1, 5, 11).is_err());
         assert!(quoter.set_mid(MID + 1, 4, 11).is_err());
         quoter.set_mid(MID + 1, 6, 11).unwrap();
-        // A writer that used a sequence cannot fall back to zero: that would
+        // A writer that used a sequence cannot fall back to zero. That would
         // let a replay re-stamp a stale mid as fresh.
         assert!(quoter.set_mid(MID + 2, 0, 12).is_err());
         assert_eq!(quoter.mid_price, MID + 1);

@@ -3,8 +3,8 @@
 //! A quoter fails most often during simulation. The router simulates before
 //! it sends, so a quoter that reverts fails the simulation and the router
 //! drops the transaction. Nothing lands. No log is archived and no event
-//! fires. The only process that can see the failure is the one that held the
-//! simulate call, which is why observations start here and not on chain.
+//! fires. Only the process that held the simulate call can see the failure,
+//! so observation starts there and not on chain.
 
 use {
     serde::{Deserialize, Serialize},
@@ -14,14 +14,14 @@ use {
 /// Why a quoter's leg failed.
 ///
 /// The velocity codes come from the program's `ErrorCode` enum. They are
-/// contract violations: the quoter answered, and the answer broke a rule the
+/// contract violations. The quoter answered, and the answer broke a rule the
 /// router checks. `Cpi` and `ComputeExhausted` mean the quoter never returned
 /// a usable answer at all.
 ///
-/// A variant's number is its position in that enum, so a variant added above
-/// one of these renumbers it. This crate takes no velocity dependency, so the
-/// numbers below are a copy: re-read them from `error.rs` whenever the enum
-/// gains a variant anywhere but the end.
+/// A code follows the variant's position in that enum, so a variant added
+/// above one of these renumbers it. This crate takes no velocity dependency,
+/// so the numbers below are a copy. Re-read them from `error.rs` whenever the
+/// enum gains a variant anywhere but the end.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum FailReason {
     /// The quoter's CPI returned an error.
@@ -45,9 +45,8 @@ pub enum FailReason {
 impl FailReason {
     /// Map a velocity anchor error code onto a reason.
     ///
-    /// Codes outside the quoter range return `None`. That distinction
-    /// matters: a failure the router caused must never be charged to a
-    /// quoter.
+    /// Codes outside the quoter range return `None`. A failure the router
+    /// caused must never be charged to a quoter.
     pub fn from_velocity_code(code: u32) -> Option<Self> {
         match code {
             6375 | 6376 => Some(Self::Config),
@@ -59,11 +58,11 @@ impl FailReason {
         }
     }
 
-    /// True when the reason is a broken promise rather than bad luck.
+    /// True when the quoter broke the response contract.
     ///
     /// A quoter that answers off its own quote, overfills, or moves a user it
-    /// does not own has violated the response contract. One of these is worth
-    /// more than many plain reverts, so the policy weighs them apart.
+    /// does not own broke the contract. The policy weighs one of these
+    /// heavier than many plain reverts.
     pub fn is_contract_violation(self) -> bool {
         matches!(
             self,
@@ -87,16 +86,16 @@ impl FailReason {
 
 /// How the router decided which quoter caused a failure.
 ///
-/// Attribution must be positive. A simulation that carries several quoters
-/// fails for many reasons that belong to nobody: the taker's own margin, a
-/// stale oracle, an account the builder left out. A router that blames a
-/// quoter by default charges makers for its own bugs, so an unproven failure
-/// stays unattributed and is counted against the router instead.
+/// A simulation carries several quoters, and it fails for many reasons that
+/// belong to no quoter. The taker's own margin, a stale oracle, and an
+/// account the builder left out are three of them. A router that blames a
+/// quoter by default charges makers for its own bugs. An unproven failure
+/// therefore stays unattributed and counts against the router.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum Attribution {
-    /// Velocity named the entry in its own log line. Available for answers
-    /// velocity refused, not for quoters whose CPI reverted: a failed CPI
-    /// ends the calling instruction before velocity can log.
+    /// Velocity named the entry in its own log line. A failed CPI ends the
+    /// calling instruction before velocity can log, so this covers only the
+    /// answers velocity refused.
     Named,
     /// The runtime's CPI brackets named the program, and the route's entry
     /// order resolved which entry on that program it was.
@@ -120,10 +119,10 @@ impl Attribution {
     /// True when the evidence is strong enough to move a quoter's state.
     ///
     /// A named line and a re-simulation both identify one entry. A CPI
-    /// bracket only identifies one program, and it resolves to an entry
-    /// through the route's order. That inference breaks if the on-chain entry
-    /// set moved after the route was built, so a bracket stays a hypothesis.
-    /// Re-simulate without the suspect to settle it.
+    /// bracket identifies one program, and it resolves to an entry through
+    /// the route's order. That inference breaks if the on-chain entry set
+    /// moved after the route was built, so a bracket stays a hypothesis. A
+    /// re-simulation without the suspect settles it.
     pub fn is_actionable(self) -> bool {
         matches!(self, Self::Named | Self::Resim | Self::Bisect)
     }
@@ -164,7 +163,7 @@ pub enum Observation {
 
 /// A failure no quoter was proven to have caused.
 ///
-/// This is a measure of the router's own blind spot. A rising count means
+/// This measures what the router failed to attribute. A rising count means
 /// attribution has a hole, not that makers got worse.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Unattributed {

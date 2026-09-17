@@ -33,8 +33,8 @@ impl FillMode {
             }
             FillMode::PlaceAndTake(_, auction_duration_percentage) => {
                 if order.has_auction() {
-                    // price the auction at the requested fraction of its
-                    // wall clock length, not at a synthetic chain slot
+                    // The auction is priced at the requested fraction of its
+                    // wall-clock length rather than at a synthetic chain slot.
                     let progress = auction_progress_at_fraction(
                         order,
                         auction_duration_percentage.min(&100).cast()?,
@@ -60,13 +60,13 @@ impl FillMode {
     /// spends compute on, and a transaction is billed for the compute limit it
     /// requests, so a level the fill would never take is paid for twice over.
     ///
-    /// This is [`Self::get_limit_price`] resolved without the oracle. The
-    /// oracle-relative branches — an oracle-offset limit and an oracle-offset
-    /// auction — need a price this early in the fill does not have yet, so they
-    /// return no bound rather than a guess. Every other branch reads only the
-    /// order and the slot, so the bound it gives is exactly the one the fill
-    /// applies later. A bound tighter than the fill's would hide depth the fill
-    /// would have taken, which is why nothing is estimated here.
+    /// This is [`Self::get_limit_price`] resolved without the oracle. The two
+    /// oracle-relative branches are an oracle-offset limit and an
+    /// oracle-offset auction. Both need a price the fill does not hold this
+    /// early, so they return no bound rather than a guess. Every other branch
+    /// reads only the order and the slot, so the bound it gives is the one the
+    /// fill applies later. Nothing is estimated here, because a bound tighter
+    /// than the fill's would hide depth the fill would have taken.
     pub fn quote_limit_price(
         &self,
         order: &Order,

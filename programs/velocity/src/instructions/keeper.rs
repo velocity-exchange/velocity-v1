@@ -174,9 +174,9 @@ struct FillSections<'info> {
     /// The quoter section: the market's `QuoterSlabV0` plus the union of the
     /// consulted quoters' registered CPI accounts.
     ///
-    /// A subslice rather than a collected list. What the sections above
-    /// consumed is the difference in the iterator's remaining length, and
-    /// borrowing from there costs nothing where cloning every account did.
+    /// A subslice rather than a collected list. The iterator's remaining length
+    /// tells how much the sections above consumed, and borrowing from there
+    /// avoids cloning every account.
     tail: &'info [AccountInfo<'info>],
 }
 
@@ -214,7 +214,7 @@ impl<'info> FillSections<'info> {
         })
     }
 
-    /// The loaded-user set a quoter must not fill outside of.
+    /// The set of loaded users. A quoter must not fill outside it.
     fn wire_users(&self) -> Result<Vec<crate::state::prop_amm::ClobUserRefV0>> {
         Ok(crate::state::prop_amm::quoter_wire_users(
             self.makers_and_referrer.user_ref_index()?.into_keys().map(
@@ -226,9 +226,9 @@ impl<'info> FillSections<'info> {
         )?)
     }
 
-    /// Price the room of every counterparty the quote may stand on.
+    /// Size every counterparty the quote may use, then quote the route.
     ///
-    /// Sizing runs before the quote, so a quoter never publishes depth this
+    /// The sizing runs before the quote, so a quoter never publishes depth this
     /// fill would refuse to settle against.
     fn quote_route<'a>(
         &mut self,
@@ -381,7 +381,7 @@ impl RoutedOrder {
 /// sibling subaccount. PnL-settlement liquidations stay allowed. They are
 /// protocol-protective and acquire no new risk.
 ///
-/// `liquidate_perp_with_fill` is also exempt: its liquidator routes the
+/// `liquidate_perp_with_fill` is also exempt. Its liquidator routes the
 /// position to the book and never acquires a balance.
 fn require_liquidator_not_frozen(liquidator_stats: &UserStats) -> Result<()> {
     validate!(

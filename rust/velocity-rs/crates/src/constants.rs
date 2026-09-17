@@ -20,17 +20,17 @@ pub const SYSVAR_RENT_PUBKEY: Pubkey =
 
 /// Default ceiling on the account data one transaction may load, in bytes.
 ///
-/// A transaction is charged for the limit it requests, not for what it loads,
-/// and the limit it gets without asking is 64 MiB. Every velocity transaction
-/// is charged for that 64 MiB today while loading a few megabytes of it — the
-/// velocity program and its program data, which count because the transaction
-/// names the program, plus its accounts.
+/// A transaction is charged for the limit it requests, not for the data it
+/// loads. A transaction that requests no limit gets 64 MiB. A velocity
+/// transaction loads a few megabytes of that: the velocity program and its
+/// program data, which count because the transaction names the program, plus
+/// its accounts.
 ///
-/// 12 MiB is roughly twice what the program and a full account list come to,
-/// so it leaves room for the program to grow and for a caller to bundle
-/// another program's instruction alongside. A transaction that loads more than
-/// this is refused before it runs, so a caller assembling something unusually
-/// wide should raise it rather than find out.
+/// 12 MiB is about twice what the program and a full account list come to. It
+/// leaves room for the program to grow, and for a caller to add another
+/// program's instruction. The runtime refuses a transaction that loads more
+/// than the limit before the transaction runs. A caller that assembles an
+/// unusually wide account list must raise this value.
 pub const LOADED_ACCOUNTS_DATA_SIZE_DEFAULT: u32 = 12 * 1024 * 1024;
 
 /// Velocity program address
@@ -130,18 +130,18 @@ pub fn derive_velocity_signer() -> Pubkey {
     account
 }
 
-/// The market's quoter slab: one account that holds every approved quoter
+/// The market's quoter slab, the one account that holds every approved quoter
 /// config. Router fills and every CLOB order-flow instruction name it in
 /// place of per-quoter registry entries.
 ///
 /// The slab is also the one signer for every external quoter CPI on its
-/// market — the book's `place_authority` and each midpoint quoter's
-/// `execute_authority`. Deliberately not [`derive_velocity_signer`], which is
-/// the token authority on every vault: signer privilege is inherited by a CPI
-/// callee. One shared key per market is safe because approval excludes other
-/// quoters' response accounts from a registered list, so a forwarded
-/// signature has no instruction it can complete. The canonical account of
-/// this model is `programs/velocity/src/signer.rs`.
+/// market. It is the book's `place_authority` and each midpoint quoter's
+/// `execute_authority`. It is not [`derive_velocity_signer`], the token
+/// authority on every vault, because a CPI callee inherits signer privilege.
+/// One shared key per market is safe because approval excludes other quoters'
+/// response accounts from a registered list. A forwarded signature then has
+/// no instruction it can complete. `programs/velocity/src/signer.rs`
+/// documents this model.
 pub fn derive_quoter_slab(market_index: u16) -> Pubkey {
     let (account, _seed) = Pubkey::find_program_address(
         &[&b"quoter_slab"[..], &market_index.to_le_bytes()],

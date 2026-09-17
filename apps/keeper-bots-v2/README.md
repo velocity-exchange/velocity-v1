@@ -1,7 +1,7 @@
 <div align="center">
   <img height="120x" src="https://uploads-ssl.webflow.com/611580035ad59b20437eb024/616f97a42f5637c4517d0193_Logo%20(1)%20(1).png" />
 
-  <h1 style="margin-top:20px;">Keeper Bots for Drift Protocol v2</h1>
+  <h1 style="margin-top:20px;">Keeper bots for Velocity Protocol v1</h1>
 
   <p>
     <a href="https://docs.velocity.exchange/developers/trading-automation/keeper-bots"><img alt="Docs" src="https://img.shields.io/badge/docs-developers-blueviolet" /></a>
@@ -12,24 +12,23 @@
 
 # Setting up
 
-
 This repo has two main branches:
 
-* `master`: bleeding edge, may be unstable, currently running on the `devnet` cluster
-* `mainnet-beta`: stable, currently running on the `mainnet-beta` cluster
+* `master`: active development. It may be unstable, and it runs on the `devnet` cluster
+* `mainnet-beta`: stable, and it runs on the `mainnet-beta` cluster
 
-## Setup Environment
+## Set up the environment
 
-### yaml Config file:
+### YAML config file
 
-A `.yaml` file can be used to configure the bot setup now. See `example.config.yaml` for a commented example.
+A `.yaml` file configures the bot setup. `example.config.yaml` is a commented example.
 
-Then you can run the bot by loading the config file:
+Run a bot by loading the config file:
 ```shell
-yarn run dev --config-file=example.config.yaml
+bun run dev --config-file=example.config.yaml
 ```
 
-Here is a table defining the various fields and their usage/defaults:
+The fields, their meanings, and their defaults:
 
 | Field             | Type   | Description | Default |
 | ----------------- | ------ | --- | --- |
@@ -49,101 +48,99 @@ Here is a table defining the various fields and their usage/defaults:
 
 ### Install dependencies
 
-Run from repo root to install all npm dependencies:
+Run this once at the repo root. It installs every workspace dependency:
 ```shell
-yarn install
-yarn build
+bun install
+bun run build
 ```
 
+## Initialize a user
 
-## Initialize User
-
-A `ClearingHouseUser` must be created before interacting with the `ClearingHouse` program.
+A `User` account must exist before the bot interacts with the velocity program.
 
 ```shell
-yarn run dev --init-user
+bun run dev --init-user
 ```
 
-Alternatively, you can put the private key into a browser wallet and use the UI at https://app.velocity.exchange to initialize the user.
+You can also load the private key into a browser wallet and initialize the user through the UI at https://app.velocity.exchange.
 
 ## Collateral
 
-Some bots (i.e. trading and liquidator bots) require collateral in order to keep positions open, a helper function is included to help with depositing collateral.
-A user must be initialized first before collateral may be deposited.
+Some bots, such as the trading and liquidator bots, need collateral to keep positions open. A helper deposits it.
+Initialize the user before you deposit collateral.
 
 ```shell
-# deposit 10,000 USDC
-yarn run dev --force-deposit 10000
+# deposit 10,000 of spot market 0's token
+bun run dev --force-deposit 10000
 ```
 
-Alternatively, you can put the private key into a browser wallet and use the UI at https://app.velocity.exchange to deposit collateral.
+You can also load the private key into a browser wallet and deposit collateral through the UI at https://app.velocity.exchange.
 
-Free collateral is what is determines the size of borrows and perp positions that an account can have. Free collateral = total collateral - initial margin requirement. Total collateral is the value of the spot assets in your account + unrealized perp pnl. The initial margin requirement is the total weighted value of the perp positions and spot liabilities in your account. The initial margin requirement weights are determined in the [margin documentation](https://docs.velocity.exchange/protocol/trading/margin). In simple terms, free collateral is essentially the amount of total collateral that is not being used up by borrows and existing perp positions and open orders.
+Free collateral determines the size of the borrows and perp positions an account can hold. Free collateral is total collateral minus the initial margin requirement. Total collateral is the value of the spot assets in the account plus the unrealized perp PnL. The initial margin requirement is the total weighted value of the perp positions and spot liabilities in the account. The [margin documentation](https://docs.velocity.exchange/protocol/trading/margin) gives the initial margin requirement weights. In short, free collateral is the part of total collateral that the borrows, the existing perp positions and the open orders do not use up.
 
+# Run the bots
 
-# Run Bots
+After you create the `config.yaml` file above, run:
 
-After creating your `config.yaml` file as above, run with:
-  
 ```shell
-yarn run dev --config-file=config.yaml
+bun run dev --config-file=config.yaml
 ```
 
-By default, some [Prometheus](https://prometheus.io/) metrics are exposed on `localhost:9464/metrics`.
+By default some [Prometheus](https://prometheus.io/) metrics are exposed on `localhost:9464/metrics`.
 
 # Notes on some bots
 
-## Filler Bot
+## Filler bot
 
-Include `filler` and/or `spotFiller` under `.enabledBots` in `config.yaml`. For a lightweight version
-of a filler bot for perp markets, include `fillerLite` rather than `filler` in `config.yaml`. The lighter 
-version of the filler can be run on public RPCs for testing, but is not as stable.
+Include `filler`, `spotFiller`, or both under `.enabledBots` in `config.yaml`. For a lightweight
+filler for perp markets, include `fillerLite` rather than `filler`. The lighter filler runs on public
+RPCs for testing, but it is less stable.
 
-Read the docs: https://docs.velocity.exchange/protocol/how-it-works/orderbook-and-keepers
+Read [the orderbook and keepers documentation](https://docs.velocity.exchange/protocol/how-it-works/orderbook-and-keepers).
 
-Fills (matches) crossing orders on the exchange for a small cut of the taker fees. Fillers maintain a copy of the DLOB to look
-for orders that cross. Fillers will also attempt to execute triggerable orders. 
+A filler matches crossing orders on the exchange for a small cut of the taker fees. Fillers keep a
+copy of the DLOB so they can find orders that cross. A filler also tries to execute triggerable
+orders.
 
 ### Common errors
 
-When running the filler bots, you might see the following error codes in the transaction logs on a failed in pre-flight simulation:
+A filler bot can log these error codes in the transaction logs when pre-flight simulation fails:
 
 #### For perps
 
-| Error             | Description |   
+| Error             | Description |
 | ----------------- | ------ |
-| OrderDoesNotExist | Outcompeted: Order was already filled by someone else|
-| OrderNotTriggerable | Outcompeted: order was already triggered by someone else |
-| RevertFill |  Outcompeted: order was already filled by someone else|
+| OrderDoesNotExist | Outcompeted. Someone else already filled the order |
+| OrderNotTriggerable | Outcompeted. Someone else already triggered the order |
+| RevertFill | Outcompeted. Someone else already filled the order |
 
 
 #### Other messages
 
 | Message | Description |
 | --------|--------------|
-| filler last active slot != current slot | You might see this when outcompeted on a fill. The *filler last active slot* was the last slot that the filler had a successful fill in, so it may diverge *current slot* if the filler has not placed a successful order.
+| filler last active slot != current slot | This can appear when another filler wins the fill. The *filler last active slot* is the last slot in which the filler filled an order, so it diverges from the *current slot* when the filler has not landed one since. |
 
 
-## Liquidator Bot
+## Liquidator bot
 
 The liquidator bot monitors spot and perp markets for bankrupt accounts, and attempts to liquidate positions according to the protocol's [liquidation process](https://docs.velocity.exchange/protocol/trading/liquidations).
 
 ### Notes on derisking
-You may also set `disableAutoDerisking` to `true`, to disable the derisking loop. You may want to do this as part of a larger strategy
-where you are ok with taking on risk at a favorable to market price (liquidation fee applied).
 
-### Notes on configuring subaccount
+Set `disableAutoDerisking` to `true` to turn off the derisking loop. That suits a larger strategy
+that accepts the risk at a price better than market, because the liquidation fee applies.
 
-By default the liquidator will attempt to liqudate (inherit the risk of)
-endangered positions in all markets. Set `botConfigs.liquidator.perpMarketIndicies` and/or `botConfigs.liquidator.spotMarketIndicies`
-in the config file to restrict which markets you want to liquidate. The
-account specified in `global.subaccounts` will be used as the active
-account.
+### Notes on configuring a subaccount
 
-`perpSubaccountConfig` and `spotSubaccountConfig` can be used instead
-of `perpMarketIndicies` and `spotMarketIndicies` to specify a mapping
-from subaccount to list of market indicies. The value of these 2 fields
-are json strings:
+By default the liquidator tries to liquidate, and so inherit the risk of, endangered positions in
+every market. Set `botConfigs.liquidator.perpMarketIndicies`,
+`botConfigs.liquidator.spotMarketIndicies`, or both in the config file to restrict which markets it
+liquidates. The account named in `global.subaccounts` is the active account.
+
+`perpSubaccountConfig` and `spotSubaccountConfig` replace `perpMarketIndicies` and
+`spotMarketIndicies`. They map a subaccount to a list of market indexes. Both fields take a JSON
+string:
 
 ### An example `config.yaml`
 ```
@@ -173,7 +170,7 @@ botConfigs:
         - 1
         - 2
 ```
-Means the liquidator will liquidate perp markets 0-2 using subaccount 0, perp markets 3-12 using subaccount 1, and spot markets 0-2 using subaccount 0. It will also use jupiter to derisk spot assets into USDC. Make sure that for all subaccounts specified in the botConfigs, that they are also listed in the global configs. So for the above example config:
+That config liquidates perp markets 0 to 2 on subaccount 0, perp markets 3 to 12 on subaccount 1, and spot markets 0 to 2 on subaccount 0. It also uses Jupiter to derisk spot assets into USDC. Every subaccount named in `botConfigs` must also appear in the global config. For the example above:
 
 ```
 global:
@@ -183,10 +180,10 @@ global:
 
 ### Common errors
 
-When running the liquidator, you might see the following error codes in the transaction logs on a failed in pre-flight simulation:
+The liquidator can log these error codes in the transaction logs when pre-flight simulation fails:
 
-| Error             | Description |   
+| Error             | Description |
 | ----------------- | ------ |
-| SufficientCollateral | The account you're trying to liquidate has sufficient collateral and can't be liquidated |
-| InvalidSpotPosition | Outcompeted: the liqudated account's spot position was already liquidated. |
-| InvalidPerpPosition | Outcompeted: the liqudated account's perp position was already liquidated. |
+| SufficientCollateral | The target account holds enough collateral, so it cannot be liquidated |
+| InvalidSpotPosition | Outcompeted. Someone else already liquidated that account's spot position |
+| InvalidPerpPosition | Outcompeted. Someone else already liquidated that account's perp position |

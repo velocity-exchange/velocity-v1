@@ -116,13 +116,13 @@ impl<const N: usize> anchor_lang::Space for Padding<N> {
     const INIT_SPACE: usize = 8 * N;
 }
 
-/// Fixed-size array wrapper for lengths serde's derives don't cover.
+/// A fixed-size array wrapper for lengths serde's derives do not cover.
 ///
-/// serde implements `Serialize`/`Deserialize` for `[T; N]` only up to N = 32,
-/// so a generated account holding a longer array (a quote buffer's level
-/// slots, say) would fail to compile the moment it entered the IDL. The
-/// wrapper carries the array and serializes it as a sequence, which is what
-/// serde would have done anyway.
+/// serde implements `Serialize` and `Deserialize` for `[T; N]` only up to
+/// N = 32. A generated account that holds a longer array, such as a quote
+/// buffer's level slots, would fail to compile the moment it entered the IDL.
+/// The wrapper carries the array and serializes it as a sequence, which is what
+/// serde would have done.
 #[derive(AnchorSerialize, AnchorDeserialize, Copy, Clone, PartialEq, Debug)]
 pub struct BigArray<T: Copy, const N: usize>(pub [T; N]);
 
@@ -173,11 +173,11 @@ impl<T: Copy + anchor_lang::Space, const N: usize> anchor_lang::Space for BigArr
 
 /// [`BigArray`] specialized to bytes.
 ///
-/// `BigArray<u8, N>` cannot satisfy anchor's `Space` — the `InitSpace` derive
-/// inlines primitive sizes rather than implementing `Space` for `u8`, and
-/// coherence forbids a local `u8` specialization next to the generic impl —
-/// so byte regions past serde's 32-element derive limit (a condition block,
-/// a staging buffer) get their own wrapper with the obvious byte count.
+/// `BigArray<u8, N>` cannot satisfy anchor's `Space`. The `InitSpace` derive
+/// inlines primitive sizes instead of implementing `Space` for `u8`, and
+/// coherence forbids a local `u8` specialization next to the generic impl. A
+/// byte region past serde's 32-element derive limit, such as a condition block
+/// or a staging buffer, therefore gets its own wrapper with a plain byte count.
 #[derive(AnchorSerialize, AnchorDeserialize, Copy, Clone, PartialEq, Debug)]
 pub struct ByteArray<const N: usize>(pub [u8; N]);
 

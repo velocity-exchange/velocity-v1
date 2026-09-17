@@ -7555,8 +7555,8 @@ pub mod liquidate_perp_pnl_for_deposit {
         (result, user.spot_positions[0].scaled_balance)
     }
 
-    // Audit #25: the seizure premium scales with the deposit's asset weight, so
-    // whether the transfer helps or hurts depends on that weight. At a 2%
+    // The seizure premium scales with the deposit's asset weight, so whether the
+    // transfer helps or hurts depends on that weight (OtterSec #25). At a 2%
     // liquidation buffer against a 2% perp and 0.1% deposit liquidator fee, the
     // premium outgrows the buffer at a weight of about 0.9986. Collateral weighted
     // below that is safe to seize; full-weight collateral is not, because the
@@ -7744,9 +7744,9 @@ pub mod liquidate_perp_pnl_for_deposit {
         assert_eq!(liquidator.perp_positions[0].quote_asset_amount, -50000000);
     }
 
-    // Audit #25: when the perp + asset liquidator fees exceed the liquidation
-    // margin buffer, transferring pnl-for-deposit *worsens* the account's
-    // (buffered) margin shortage — the asset premium the liquidator collects
+    // When the perp + asset liquidator fees exceed the liquidation margin buffer,
+    // transferring pnl-for-deposit *worsens* the account's (buffered) margin
+    // shortage (OtterSec #25) — the asset premium the liquidator collects
     // outweighs the collateral relief from cancelling the negative pnl. The
     // postcondition must reject rather than silently strip the deposit.
     #[test]
@@ -7894,7 +7894,7 @@ pub mod liquidate_perp_pnl_for_deposit {
         assert_eq!(result, Err(ErrorCode::LiquidationWorsensAccountHealth));
     }
 
-    // Audit #25 follow-up: a degradation of less than a dollar must revert too.
+    // A degradation of less than a dollar must revert too (OtterSec #25).
     // The liquidator picks `liquidator_max_pnl_transfer`, so any tolerance on this
     // guard is an amount the liquidator can stay under and repeat until the
     // deposit is gone. The guard holds no tolerance.
@@ -10012,7 +10012,7 @@ pub mod resolve_perp_bankruptcy {
             expected_market.cumulative_funding_rate_short as i64;
         // Model the production invariant: update_funding_rate keeps the AMM
         // funding stamp in sync with the market cum rates, so on entry the stamp
-        // is not lagging and the #89 settle-first is a no-op (without this the
+        // is not lagging and the OtterSec #89 settle-first is a no-op (without this the
         // harness's default-zero stamp would make the settle realize a spurious
         // payment and shift total_fee_minus_distributions).
         {
@@ -10665,7 +10665,7 @@ pub mod resolve_perp_bankruptcy {
         expected_market.amm.last_cumulative_funding_rate_short =
             expected_market.cumulative_funding_rate_short as i64;
         // Model the production invariant (see successful_resolve_perp_bankruptcy):
-        // the AMM stamp is not lagging at entry, so #89's settle-first is a no-op.
+        // the AMM stamp is not lagging at entry, so OtterSec #89's settle-first is a no-op.
         {
             let mut m = maps.perp_market_map.get_ref_mut(&0).unwrap();
             m.amm.last_cumulative_funding_rate_long = m.cumulative_funding_rate_long as i64;
@@ -10924,7 +10924,7 @@ pub mod resolve_perp_bankruptcy {
         expected_market.amm.last_cumulative_funding_rate_short =
             expected_market.cumulative_funding_rate_short as i64;
         // Model the production invariant (see successful_resolve_perp_bankruptcy):
-        // the AMM stamp is not lagging at entry, so #89's settle-first is a no-op.
+        // the AMM stamp is not lagging at entry, so OtterSec #89's settle-first is a no-op.
         {
             let mut m = maps.perp_market_map.get_ref_mut(&0).unwrap();
             m.amm.last_cumulative_funding_rate_long = m.cumulative_funding_rate_long as i64;
@@ -11869,7 +11869,7 @@ pub mod resolve_perp_bankruptcy {
         expected_market.amm.last_cumulative_funding_rate_short =
             expected_market.cumulative_funding_rate_short as i64;
         // Model the production invariant (see successful_resolve_perp_bankruptcy):
-        // the AMM stamp is not lagging at entry, so #89's settle-first is a no-op.
+        // the AMM stamp is not lagging at entry, so OtterSec #89's settle-first is a no-op.
         {
             let mut m = maps.perp_market_map.get_ref_mut(&0).unwrap();
             m.amm.last_cumulative_funding_rate_long = m.cumulative_funding_rate_long as i64;
@@ -12725,9 +12725,9 @@ pub mod resolve_spot_bankruptcy {
         assert_eq!(deposit_token_amount, 900 * QUOTE_PRECISION);
     }
 
-    // Audit #52: resolve_spot_bankruptcy must refuse to run while the user still
-    // has a pending cross-margin perp bankruptcy (a non-isolated perp position
-    // with bad debt). Both resolvers draw from the shared quote insurance fund,
+    // resolve_spot_bankruptcy must refuse to run while the user still has a
+    // pending cross-margin perp bankruptcy, meaning a non-isolated perp position
+    // with bad debt (OtterSec #52). Both resolvers draw from the shared quote insurance fund,
     // so a fixed perp-before-spot precedence (matching the keeper bots) keeps the
     // socialized-loss split deterministic and unforgeable by the public caller.
     #[test]
@@ -13938,9 +13938,9 @@ pub mod liquidate_spot_with_swap {
                 .unwrap(),
             40661800
         );
-        // Audit #51: the insurance-side fee is now capped by the account's margin
-        // shortage (~$7 here) exactly like the direct `liquidate_spot` path, so it
-        // charges ~0.098% instead of the raw 1% if_liquidation_fee. The user keeps
+        // The insurance-side fee is capped by the account's margin shortage (~$7
+        // here) exactly like the direct `liquidate_spot` path, so it charges ~0.098%
+        // instead of the raw 1% if_liquidation_fee (OtterSec #51). The user keeps
         // more borrow relief (-357251 -> -357249, i.e. less residual borrow) and
         // only ~631 (vs 6433 at the raw rate) routes into the revenue pool.
         assert_eq!(

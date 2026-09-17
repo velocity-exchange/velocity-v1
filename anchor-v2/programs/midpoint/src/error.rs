@@ -18,34 +18,34 @@ pub enum MidpointError {
     MathError,
     #[msg("Response exceeds the response buffer")]
     ResponseTooLarge,
-    /// @deprecated Nothing raises this any more, and the numeric code stays so
-    /// nothing else claims it.
+    /// @deprecated Nothing raises this. The numeric code stays so nothing else
+    /// claims it.
     ///
     /// The protected-flow gate used to read a co-signature off the
     /// instructions sysvar. It now reads `taker_served_window` off the wire,
     /// which the caller asserts, so this program takes no sysvar account.
     #[msg("Deprecated: the protected-flow claim rides the wire, not a sysvar")]
     InvalidInstructionsSysvar,
-    // New variants go at the bottom: on-chain clients match error codes by
-    // number.
-    /// @deprecated Nothing raises this any more, and the numeric code stays so
-    /// nothing else claims it.
+    /// @deprecated Nothing raises this. The numeric code stays so nothing else
+    /// claims it.
     ///
     /// The protected-flow gate used to read velocity's `State` account to find
-    /// the flow authority. It reads nothing of velocity's now.
+    /// the flow authority. It now reads no velocity account.
     #[msg("Deprecated: this program reads no velocity account")]
     InvalidVelocityState,
     #[msg("Post-operation invariant check failed")]
     InvariantViolated,
     #[msg("User set holds more entries than USER_SET_CAPACITY")]
     OversizedUserSet,
+    // A new variant goes at the bottom. On-chain clients match error codes by
+    // number.
 }
 
 impl From<quoter_spec::SpecError> for MidpointError {
-    /// A response this quoter's own region could not hold, or could not be
-    /// read at, is a program bug rather than a caller's: the region size and
-    /// every record stride are fixed at compile time, and
-    /// `state::tests` pins the widest response against the region.
+    /// A response that this quoter's own region cannot hold, or cannot be read
+    /// at, is a program bug and not a caller error. The region size and every
+    /// record stride are fixed at compile time, and `state::tests` pins the
+    /// widest response against the region.
     fn from(error: quoter_spec::SpecError) -> Self {
         match error {
             quoter_spec::SpecError::DanglingCompletedOrder => MidpointError::InvariantViolated,

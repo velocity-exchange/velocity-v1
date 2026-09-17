@@ -1,16 +1,18 @@
-//! `/route` — the router's answer as an HTTP endpoint.
+//! The router's answer as an HTTP endpoint, served at `/route`.
 //!
-//! Runs the same quote-view simulation the book-publisher runs on its tick
-//! (`quote_router` under simulation, per-source verified books out of the
-//! buffer's post-state) and then the program's own `split_across_quoters`
-//! over those books — so the response is the split the chain would produce,
-//! including margin clamps and priority tiers, not an off-chain estimate.
+//! The handler runs the same quote-view simulation the book-publisher runs on
+//! its tick. It simulates `quote_router` and reads the per-source verified
+//! books out of the buffer's post-state. It then runs the program's own
+//! `split_across_quoters` over those books. The response is therefore the
+//! split the chain would produce, with margin clamps and priority tiers, and
+//! not an off-chain estimate.
 //!
-//! Deliberately read-only: quoting is simulation-only and simulation skips
-//! signature verification, so this rides an existing quote buffer
-//! (normally the book-publisher's, discovered by market) naming its stored
-//! authority — swift holds no key and pays no rent for it. No buffer for a
-//! market means the publisher isn't covering it yet: 503, not a fallback.
+//! The endpoint is read-only. Quoting is simulation-only and simulation skips
+//! signature verification, so the handler reuses an existing quote buffer and
+//! names the authority stored on it. That buffer is normally the
+//! book-publisher's, found by market. Swift holds no key for it and pays no
+//! rent. A market with no buffer answers 503. The publisher does not cover
+//! that market yet, and there is no fallback.
 
 use {
     axum::{
@@ -35,14 +37,15 @@ use {
     velocity_rs::program::state::prop_amm::ClobUserRefV0,
 };
 
-/// Everything `/route` needs, independent of the rest of the server: its
-/// own thin RPC source (the simulation transport) and the per-market
+/// Everything `/route` needs, independent of the rest of the server. It holds
+/// its own RPC source, which is the simulation transport, and the per-market
 /// buffer discovery cache.
 pub struct RouteContext {
     source: RpcSource,
     velocity: Pubkey,
-    /// `(buffer, authority, step_size)` per market. Re-discovered when a
-    /// cached buffer stops simulating (closed, republished elsewhere).
+    /// The discovered route per market. A market is discovered again when
+    /// its cached buffer stops simulating, which happens when the buffer is
+    /// closed or republished elsewhere.
     markets: RwLock<HashMap<u16, MarketRoute>>,
     /// Which quoters this endpoint is willing to carry. A quoter that keeps
     /// breaking the simulation is dropped from the route instead of turning
@@ -56,9 +59,9 @@ struct MarketRoute {
     authority: Pubkey,
     step_size: u64,
     /// The market's live quoters, by staging-entry address, so planning the
-    /// view's passes costs no extra read. Refreshed with the rest of the
-    /// route when a buffer stops simulating, which is also when the set is
-    /// most likely stale.
+    /// view's passes costs no extra read. This is refreshed with the rest of
+    /// the route when a buffer stops simulating, which is also when the set
+    /// is most likely stale.
     quoters: Vec<Pubkey>,
 }
 
@@ -83,8 +86,8 @@ impl RouteContext {
         }
     }
 
-    /// The market's live quoters — slab slots that may take flow — so the
-    /// view can be read in as many passes as they need.
+    /// The market's live quoters, meaning the slab slots that may take flow.
+    /// The view is read in as many passes as they need.
     async fn market_quoters(&self, market_index: u16) -> Result<Vec<Pubkey>, RouteError> {
         let slots =
             velocity_router_sim::quoter_slab_slots(&self.source, &self.velocity, market_index)
@@ -143,35 +146,34 @@ impl RouteContext {
 #[serde(rename_all = "camelCase")]
 pub struct RouteQuery {
     market_index: u16,
-    /// "long"/"buy" or "short"/"sell" — the taker's side.
+    /// The taker's side. Accepts "long", "buy", "short", or "sell".
     direction: String,
     /// Taker base size, BASE_PRECISION units.
     size: u64,
     /// The taker's own authority and sub-account, when it has one. A book
     /// never fills a user against itself, so a caller that also rests on the
-    /// book gets a different answer than one that does not. Omitted means "no
-    /// resting liquidity of my own here", which is the common case and is
-    /// safe: the worst it costs is naming one maker the fill will skip.
+    /// book gets a different answer than one that does not. Omitting these
+    /// means the caller has no resting liquidity here, which is the common
+    /// case. At worst the omission names one maker the fill will skip.
     taker_authority: Option<String>,
     #[serde(default)]
     taker_sub_account_id: u16,
     /// `User` accounts of DLOB makers to bridge into the quote, comma
     /// separated.
     ///
-    /// This endpoint cannot find them itself: a DLOB order lives inside a
-    /// `User` account, so knowing which accounts to look at is the whole
-    /// question, and only something holding a DLOB view can answer it —
-    /// dlob-server's `/topMakers`. Pass candidates from there and the split
-    /// reports which of them a fill would actually reach, so a caller can
-    /// leave the rest at home rather than spend two account locks each.
+    /// This endpoint cannot find them itself. A DLOB order lives inside a
+    /// `User` account, so only a process holding a DLOB view can say which
+    /// accounts to read. dlob-server's `/topMakers` is that process. Pass its
+    /// candidates here and the split reports which of them a fill reaches, so
+    /// a caller can drop the rest instead of spending two account locks each.
     ///
-    /// Omitted means "quote without the DLOB", which still covers the CLOB,
+    /// Omitting this quotes without the DLOB, which still covers the CLOB,
     /// every PropAMM and the vAMM.
     dlob_makers: Option<String>,
 }
 
-/// One source's verified book in the response. Prices and sizes are
-/// strings: u64s in the protocol's fixed precisions overflow JS numbers.
+/// One source's verified book in the response. Prices and sizes are strings,
+/// because u64s in the protocol's fixed precisions overflow JS numbers.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct BookOut {
@@ -193,17 +195,17 @@ struct LevelOut {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AllocationOut {
-    /// What `kind` names: the `QuoterV0` entry for `"quoter"`, the maker's
-    /// `User` account for `"dlob"`, the perp market for `"vamm"`.
+    /// What `kind` names. It is the `QuoterV0` entry for `"quoter"`, the
+    /// maker's `User` account for `"dlob"`, and the perp market for `"vamm"`.
     ///
-    /// An allocation is what makes the account set decidable. A `"dlob"` key
-    /// here is a maker the fill actually reaches, so a caller that passed
-    /// candidates in `dlobMakers` carries the pairs for these and leaves the
-    /// rest at home — each one it drops is two account locks back.
+    /// An allocation is what decides the account set. A `"dlob"` key here is
+    /// a maker the fill reaches, so a caller that passed candidates in
+    /// `dlobMakers` carries the pairs for these and drops the rest. Each one
+    /// it drops returns two account locks.
     key: String,
     kind: &'static str,
-    /// Base routed to this source and its quote notional at the quoted
-    /// levels — execute must land at-or-better than this per unit.
+    /// Base routed to this source, and its quote notional at the quoted
+    /// levels. Execute must land at or better than this per unit.
     base: String,
     quote: String,
 }
@@ -218,8 +220,8 @@ struct MakerOut {
     user_stats: String,
     /// This owner rests at least one order that can end a fill walk, so
     /// leaving it out forfeits the depth behind that order. False means
-    /// carrying it wins only its own size. Always true on a book where any
-    /// order can end a walk, which is one that sets no size floor.
+    /// carrying it wins only its own size. It is always true on a book where
+    /// any order can end a walk, which is a book that sets no size floor.
     gates_depth: bool,
 }
 
@@ -229,11 +231,12 @@ struct RouteResponse {
     market_index: u16,
     direction: &'static str,
     size: String,
-    /// Slot the quote simulation ran at — the staleness bound.
+    /// The slot the quote simulation ran at. This bounds how stale the
+    /// answer can be.
     slot: u64,
     step_size: String,
     books: Vec<BookOut>,
-    /// Parallel to `books`; zero-base entries omitted.
+    /// Parallel to `books`. Zero-base entries are omitted.
     allocations: Vec<AllocationOut>,
     filled_base: String,
     filled_quote: String,
@@ -243,27 +246,27 @@ struct RouteResponse {
     ///
     /// A fill settles only for users whose accounts it carries, and a book
     /// stores its makers as an authority and a sub-account rather than an
-    /// account key — so this is the one part of a fill's account set that
-    /// cannot be worked out without reading the book. The list is the
-    /// program's own walk, not an estimate.
+    /// account key. This is therefore the one part of a fill's account set
+    /// that a caller cannot work out without reading the book. The list is
+    /// the program's own walk, not an estimate.
     ///
     /// Carry them in this order and stop where the transaction runs out of
-    /// room: the book stops at the first maker the caller did not bring, so a
+    /// room. The book stops at the first maker the caller did not bring, so a
     /// prefix fills and a gap forfeits everything behind it.
     ///
     /// The order is the book's own walk, best price first, except that every
-    /// owner that gates depth comes ahead of every owner that does not, each
-    /// group still in walk order. The book itself says which of its orders can
+    /// owner that gates depth comes ahead of every owner that does not. Each
+    /// group stays in walk order. The book itself says which of its orders can
     /// end a walk, per row, so this ordering never reimplements that rule. An
-    /// owner whose orders all sit below that floor cannot end a walk, so it
-    /// gates nothing and carrying it buys only its own size — which is what
+    /// owner whose orders all sit below that floor cannot end a walk. It gates
+    /// nothing, and carrying it buys only its own size, which is what
     /// `gatesDepth` reports per maker. Truncating this list at the account
     /// budget therefore drops the makers that cost the least to lose.
     ///
-    /// DLOB makers are not here: the caller names them in `dlobMakers`, and
+    /// DLOB makers are not here. The caller names them in `dlobMakers`, and
     /// `allocations` reports which of those the fill reaches.
     ///
-    /// Between the two, a fill's account set is decided: these makers in this
+    /// The two together decide a fill's account set: these makers in this
     /// order, the `dlobMakers` that drew an allocation, and the quoter
     /// section for each entry in `books`.
     clob_makers: Vec<MakerOut>,
@@ -341,8 +344,8 @@ pub async fn route_quote(
         None => Vec::new(),
     };
 
-    // One retry through rediscovery: the cached buffer may have been closed
-    // or the publisher may have moved markets since we last looked. That
+    // One retry through rediscovery. The cached buffer may have been closed,
+    // or the publisher may have moved markets since the last discovery. The
     // retry rebuilds the same account set, so it only helps when the buffer
     // moved. A quoter that reverts is handled a layer down, by dropping the
     // quoter the logs name and quoting the rest of the market.
@@ -390,7 +393,8 @@ pub async fn route_quote(
     }
     let (view, route) = view.expect("loop either set view or returned");
 
-    // The program's own split over the verified books — no mirror to drift.
+    // The program's own split over the verified books. Nothing here mirrors
+    // it, so nothing can drift from it.
     let level_arrays: Vec<Vec<PriceLevel>> = view
         .books
         .iter()
@@ -422,9 +426,9 @@ pub async fn route_quote(
     let filled_base: u64 = allocations.iter().map(|a| a.base).sum();
     let filled_quote: u64 = allocations.iter().map(|a| a.quote).sum();
     // The users a fill would settle for, out of the view that was already
-    // simulated. They come from the same walk, at the same slot, against the
-    // same book state as the ladders above — which is what a second read of
-    // the book could never promise.
+    // simulated. They come from the same walk, at the same slot, and against
+    // the same book state as the ladders above. A second read of the book
+    // could not promise that.
     let clob_makers: Vec<MakerOut> = view
         .ranked_settleable_users()
         .into_iter()

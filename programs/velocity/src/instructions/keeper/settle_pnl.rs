@@ -1,9 +1,9 @@
 //! Settling a user's perp pnl and funding.
 //!
-//! Both settle entrypoints run the same three steps per market: settle the
+//! Both settle entrypoints run the same three steps per market. They settle the
 //! pnl, discharge the revenue share the settle made payable, and return an
-//! isolated-position deposit that the settle freed. [`PnlSettlement`] holds
-//! that body, so the single-market and batch entrypoints cannot drift apart.
+//! isolated-position deposit that the settle freed. [`PnlSettlement`] holds that
+//! body, so the single-market and batch entrypoints cannot drift apart.
 
 use super::*;
 
@@ -88,7 +88,7 @@ pub fn handle_settle_multiple_pnls<'c: 'info, 'info>(
         clock: &clock,
         user_key,
         authority: ctx.accounts.authority.key,
-        // Walked once for the whole batch rather than per market.
+        // The margin walk runs once for the whole batch, not once per market.
         meets_margin_requirement: Some(meets_settle_pnl_maintenance_margin_requirement(
             user, &mut maps,
         )?),
@@ -135,14 +135,15 @@ impl<'info> RevenueShareSweep<'info> {
 
 /// One user's settle, across one or more markets.
 struct PnlSettlement<'a, 'info> {
-    /// Held alongside the loaded `State` because the settlement branch has to
-    /// run the `amm_not_paused` access control, which takes the loader.
+    /// Held next to the loaded `State` because the settlement branch runs the
+    /// `amm_not_paused` access control, which takes the loader.
     state_loader: &'a AccountLoader<'info, State>,
     state: &'a State,
     clock: &'a Clock,
     user_key: Pubkey,
-    /// Whoever asked for the settle. A settle that cannot pay in full records
-    /// it, so the caller is named.
+    /// The caller that asked for the settle. `settle_pnl` compares it against
+    /// the user's authority and delegate. A third party may not settle some of
+    /// the cases the user may settle.
     authority: &'a Pubkey,
     /// `None` lets `settle_pnl` compute the requirement for itself.
     meets_margin_requirement: Option<bool>,
@@ -163,14 +164,14 @@ impl PnlSettlement<'_, '_> {
         self.return_isolated_deposit(market_index, user, maps)
     }
 
-    /// Settle the market and report whether settlement actually happened.
+    /// Settle the market and report whether the settle happened.
     ///
-    /// Two calls settle nothing. A `settle_pnl` under `TrySettle` turns a
-    /// pause or a degraded oracle into a no-op. A `settle_expired_position`
-    /// for a user with no position returns before the market's SettlePnl pause
-    /// checks. The caller ties the revenue-share sweep to this answer, because
-    /// the sweep moves builder and referrer fees out of the market's pnl pool
-    /// and a market that never settled must not be drained.
+    /// Two paths settle nothing. A `settle_pnl` under `TrySettle` turns a pause
+    /// or a degraded oracle into a no-op. A `settle_expired_position` for a user
+    /// with no position returns before the market's SettlePnl pause checks. The
+    /// caller ties the revenue-share sweep to this answer. The sweep moves
+    /// builder and referrer fees out of the market's pnl pool, and a market that
+    /// never settled must not be drained.
     fn settle_one_market(
         &self,
         market_index: u16,
@@ -232,8 +233,8 @@ impl PnlSettlement<'_, '_> {
         };
         escrow.revoke_completed_orders(user)?;
 
-        // Only sweep the market's pnl pool when settlement actually happened;
-        // a soft-skipped settle must not move builder/referrer fees out of a
+        // Only sweep the market's pnl pool when the settle happened. A
+        // soft-skipped settle must not move builder or referrer fees out of a
         // market that never settled.
         if !settled {
             return Ok(());
@@ -243,9 +244,9 @@ impl PnlSettlement<'_, '_> {
             return Ok(());
         };
 
-        // Oracle price for this market, validity-gated in-slot by the
-        // settle above; used to reserve max(net_user_pnl, 0) so the sweep
-        // can't pay revenue share out of tokens backing a user's positive PnL.
+        // The settle above gated this oracle price for validity in the same
+        // slot. The sweep reserves max(net_user_pnl, 0) with it, so it cannot
+        // pay revenue share out of tokens that back a user's positive pnl.
         let oracle_price = {
             let perp_market = maps.perp_market_map.get_ref(&market_index)?;
             maps.oracle_map

@@ -1,5 +1,6 @@
-//! Router fill for the PropAMM order flow: the CPI-backed execute leg the
-//! fill entrypoint threads into the fill controller.
+//! Router fill for the PropAMM order flow. These modules size a fill's
+//! counterparties, quote the market's approved quoters, and commit what the
+//! router allocates to them through CPI.
 
 pub mod cpi_executor;
 pub mod initialize_router_quote_buffer;

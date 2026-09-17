@@ -1,22 +1,22 @@
-//! Output buffer for [`crate::instructions::router::quote_router`] — the
+//! Output buffer for [`crate::instructions::router::quote_router`], the
 //! router's quote view.
 //!
-//! The books can't come back through return data: the cap is 1024 bytes and a
-//! single CLOB book's response region is 8192, which is why the quoter wire
-//! puts each payload in the quoter's own response account to begin with. A
-//! batch makes that worse in a second way — return data is last-writer-wins
-//! per transaction, so after N CPIs only the final quoter's pointer survives
-//! and a caller could not recover the rest.
+//! The books cannot come back through return data. The return-data cap is
+//! 1024 bytes and one book exceeds it, which is why the quoter wire puts each
+//! payload in the quoter's own response account. A batch adds a second
+//! problem. Return data is last-writer-wins per transaction, so after several
+//! CPIs only the final quoter's pointer survives, and the caller cannot
+//! recover the rest.
 //!
-//! So the view writes every source's book into this account in one uniform
-//! encoding, and the caller reads it out of post-simulation account state
-//! (never landing the transaction). Uniform matters: the vAMM has no response
-//! account, DLOB orders have no program at all, and an external book that
-//! verification clamped no longer matches what sits in its response account.
-//! One buffer, one layout, one code path per source.
+//! The view instead writes every source's book into this account in one
+//! encoding, and the caller reads it out of post-simulation account state.
+//! One encoding is needed because the sources have nothing else in common.
+//! The vAMM has no response account. DLOB orders have no program at all. A
+//! book that verification clamped no longer matches what sits in its response
+//! account.
 //!
 //! This account is only ever written under simulation. Landing the
-//! instruction is harmless — it mutates nothing else — but pointless.
+//! instruction changes nothing else, so it is harmless and useless.
 
 use {
     crate::{
@@ -32,32 +32,32 @@ use {
     static_assertions::const_assert_eq,
 };
 
-/// Sources quotable in one view call. Bounded by what fits in a transaction's
-/// account list anyway (each external quoter brings its own CPI accounts), so
-/// callers batch across several calls for a market with more quoters.
+/// Sources quotable in one view call. A transaction's account list bounds
+/// this anyway, because each external quoter brings its own CPI accounts. A
+/// market with more quoters needs several calls.
 pub const MAX_QUOTED_SOURCES: usize = 16;
 
-/// Levels kept per source, in its own fixed slot — no shared region, so no
-/// offset arithmetic to get wrong.
+/// Levels kept per source. Each source has its own fixed slot, so no code
+/// computes an offset into a shared region.
 ///
-/// Set to [`crate::math::router::MAX_LEVELS_PER_BOOK`] deliberately: that is
-/// the most the split will ever consume from one book, so a deeper slot could
-/// hold levels no fill could route against. Deep for display too — a book
-/// with more than this many distinct prices inside `quoted_size` truncates,
-/// which understates depth, never overstates it.
+/// The value matches [`crate::math::router::MAX_LEVELS_PER_BOOK`], which is
+/// the most the split ever consumes from one book. A deeper slot would hold
+/// levels no fill can route against. A book with more distinct prices than
+/// this inside `quoted_size` truncates, which understates depth and never
+/// overstates it.
 pub const MAX_LEVELS_PER_SOURCE: usize = crate::math::router::MAX_LEVELS_PER_BOOK;
 
-/// Which kind of liquidity a quoted book came from. The router needs this to
-/// know how to *execute* the allocation (a CPI leg, an in-program DLOB order,
-/// or the vAMM), and a UI needs it to label depth honestly — a PropAMM's
-/// levels are a quote at a size, not resting orders.
+/// Which kind of liquidity a quoted book came from. The router needs it to
+/// execute the allocation as a CPI leg, an in-program DLOB order, or the
+/// vAMM. A user interface needs it to label depth, because a PropAMM's levels
+/// are a quote at a size rather than resting orders.
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug, Default)]
 #[repr(u8)]
 pub enum QuotedSourceKind {
     /// The in-program constant-product AMM.
     #[default]
     Vamm,
-    /// A resting `User` order (the DLOB), bridged as a single level.
+    /// A resting `User` order from the DLOB, bridged as a single level.
     DlobOrder,
     /// A registered external quoter: the CLOB or a PropAMM.
     Quoter,
@@ -73,17 +73,17 @@ pub struct QuotedSourceV0 {
     pub key: Pubkey,
     /// Live levels in this source's slot of `levels`.
     pub level_count: u16,
-    /// Routing tier the split will apply (`QuoterV0::priority`, or the
-    /// type default for the in-program sources).
+    /// Routing tier the split applies. It is `QuoterV0::priority`, or the
+    /// type default for the in-program sources.
     pub priority: u8,
     pub kind: QuotedSourceKind,
-    /// Set when verification reduced this book — a Custom quoter advertising
-    /// more depth than its `User`'s margin supports gets truncated here, so
-    /// the caller never routes against or displays phantom depth. The
-    /// difference between what the quoter said and what came back.
+    /// Set when verification cut this book. A Custom quoter can advertise more
+    /// depth than its `User`'s margin supports, and the cut removes the
+    /// excess. The caller then never routes against or displays depth that no
+    /// fill can take.
     pub clamped: bool,
-    /// This source's slice of `rows`: where it starts and how long it is. A
-    /// source with no per-order detail has none.
+    /// Where this source's slice of `rows` starts and how long it is. A source
+    /// with no per-order detail has no slice.
     pub row_start: u8,
     pub row_len: u8,
     pub padding: [u8; 1],
@@ -91,7 +91,7 @@ pub struct QuotedSourceV0 {
 
 const_assert_eq!(std::mem::size_of::<QuotedSourceV0>(), 40);
 
-/// A quoted level, in the buffer's Pod form (the wire `PriceLevel` is borsh).
+/// A quoted level in the buffer's Pod form. The wire `PriceLevel` is borsh.
 #[zero_copy(unsafe)]
 #[derive(Default, Eq, PartialEq, Debug)]
 #[repr(C)]
@@ -103,10 +103,11 @@ pub struct QuotedLevelV0 {
 const_assert_eq!(std::mem::size_of::<QuotedLevelV0>(), 16);
 
 // `zero_copy(unsafe)` emits no bytemuck derives, and the quote view casts a
-// stored book straight to the wire's level type rather than copying it into
-// one. Sound because both are `#[repr(C)]` over the same two `u64`s: no
-// padding, and every bit pattern is a valid value. The asserts are what keeps
-// that true — widen or reorder either type and this stops compiling.
+// stored book straight to the wire's level type instead of copying it. The
+// cast is sound because both types are `#[repr(C)]` over the same two `u64`
+// fields. Neither has padding, and every bit pattern is a valid value. The
+// asserts below keep that true. A widened or reordered field stops the
+// compile.
 const_assert_eq!(
     std::mem::size_of::<QuotedLevelV0>(),
     std::mem::size_of::<PriceLevel>()
@@ -118,14 +119,13 @@ const_assert_eq!(
 unsafe impl bytemuck::Pod for QuotedLevelV0 {}
 unsafe impl bytemuck::Zeroable for QuotedLevelV0 {}
 
-/// One resting order behind a quoted book, in the buffer's Pod form (the wire
-/// `L3RowV0` is the same bytes).
+/// One resting order behind a quoted book, in the buffer's Pod form. The wire
+/// `L3RowV0` holds the same bytes.
 ///
-/// A book's ladder aggregates orders that belong to different people, and a
-/// caller that has to carry those accounts — or draw the book — needs them
-/// apart. Every other quoter fills from the one account its registry entry
-/// names, so its rows say that instead, and a consumer reads one shape either
-/// way.
+/// A book's ladder can aggregate orders that belong to different people. A
+/// caller that must carry those accounts, or draw the book, needs them apart.
+/// Every other quoter fills from the one account its registry entry names, so
+/// its rows report that account. A consumer reads one shape either way.
 #[zero_copy(unsafe)]
 #[derive(Default, Eq, PartialEq, Debug)]
 #[repr(C)]
@@ -159,40 +159,41 @@ unsafe impl bytemuck::Zeroable for QuotedRowV0 {}
 
 /// Rows one call may report, across every source it carried.
 ///
-/// A depth-100 book of one side fits, which is what a display asks for, and
-/// the account is sized once for every market. A pass that fills the region
-/// says so on the buffer rather than dropping rows silently.
+/// A depth-100 book of one side fits, which is what a display asks for. The
+/// account is sized once for every market. A pass that fills the region sets
+/// `rows_truncated` rather than dropping rows without a record.
 pub const MAX_QUOTED_ROWS: usize = 128;
 
 #[account(zero_copy(unsafe))]
 #[derive(Eq, PartialEq, Debug)]
 #[repr(C)]
 pub struct RouterQuoteBufferV0 {
-    /// Only this signer may quote into the buffer, so two routers sharing a
-    /// market don't overwrite each other's reads.
+    /// Only this signer may quote into the buffer, so two routers that share a
+    /// market do not overwrite each other's reads.
     pub authority: Pubkey,
-    /// Taker size the books were quoted at. Meaningful output, not an echo:
-    /// resting books (CLOB, DLOB) are size-independent and merely truncated
-    /// by it, while the vAMM's and a PropAMM's levels genuinely depend on it.
+    /// Taker size the books were quoted at. The size changes the answer rather
+    /// than echoing the request. It only truncates a resting book on the CLOB
+    /// or the DLOB, but the vAMM's levels and a PropAMM's levels depend on it.
     pub quoted_size: u64,
-    /// Slot the quote ran at, so a cached book's staleness is checkable.
+    /// Slot the quote ran at, so a reader can tell how stale a cached book is.
     pub slot: u64,
     pub market: u16,
     /// Live entries in `sources`.
     pub source_count: u8,
     /// Live entries in `rows`.
     pub row_count: u8,
-    /// The rows region filled before every source had been described, so the
-    /// last sources carry fewer rows than their books hold. The ladders are
-    /// unaffected — a row is detail about a level, never the level itself.
+    /// The rows region filled before every source was described, so the last
+    /// sources carry fewer rows than their books hold. The ladders keep every
+    /// level. A row is detail about a level, never the level itself.
     pub rows_truncated: bool,
-    /// Taker direction quoted (`Direction` as u8: 0 = long, 1 = short).
+    /// Taker direction quoted, as a `Direction` cast to u8. 0 is long and 1 is
+    /// short.
     pub direction: u8,
-    /// Pads the header to 128 bytes: 12 bytes of alignment slack (so the
-    /// struct stays a multiple of 16 and `(SIZE - 8) % 16 == 0` holds — see
-    /// docs/alignment-and-native-offsets.md) plus room for two more pubkeys,
-    /// so naming another account in the header doesn't shift `sources` /
-    /// `levels` and break every off-chain decoder of this buffer.
+    /// Pads the header to 128 bytes. The reserve holds two more pubkeys, so
+    /// naming another account in the header does not move `sources` or
+    /// `levels` and break every off-chain decoder of this buffer. The length
+    /// also keeps `(SIZE - 8) % 16 == 0`. See
+    /// docs/alignment-and-native-offsets.md.
     pub padding: [u8; 74],
     pub sources: [QuotedSourceV0; MAX_QUOTED_SOURCES],
     /// One slot per source, parallel to `sources`.
@@ -202,15 +203,16 @@ pub struct RouterQuoteBufferV0 {
     pub rows: [QuotedRowV0; MAX_QUOTED_ROWS],
 }
 
-// Zero-copy layout invariant (docs/alignment-and-native-offsets.md): no u128
-// fields, and size including the 8-byte discriminator is ≡ 8 (mod 16).
+// Zero-copy layout invariant. The struct holds no u128 field, and its size
+// with the 8-byte discriminator is congruent to 8 modulo 16. See
+// docs/alignment-and-native-offsets.md.
 const_assert_eq!(std::mem::size_of::<RouterQuoteBufferV0>(), 42752);
 const_assert_eq!((RouterQuoteBufferV0::SIZE - 8) % 16, 0);
 
 impl Size for RouterQuoteBufferV0 {
-    // Derived, not written down: the struct's own width plus the
-    // discriminator. A hand-copied number here is a buffer a caller allocates
-    // too small the moment a row grows, and the overrun lands at the far end
+    // The size is derived from the struct's own width plus the discriminator.
+    // A hand-written number goes stale the moment a row grows, and a caller
+    // then allocates the buffer too small. The overrun shows up at the far end
     // of a write rather than at the change that caused it.
     const SIZE: usize = 8 + std::mem::size_of::<RouterQuoteBufferV0>();
 }
@@ -226,8 +228,8 @@ impl RouterQuoteBufferV0 {
         self.slot = slot;
     }
 
-    /// Append one source's book. Fails rather than truncating silently: a
-    /// short book reads as thin liquidity, which would make the router route
+    /// Append one source's book. A book that does not fit fails the call. A
+    /// truncated book reads as thin liquidity, and the router then routes
     /// around depth that exists.
     pub fn push(
         &mut self,
@@ -242,15 +244,14 @@ impl RouterQuoteBufferV0 {
 
     /// Append one source's book, cut to `cap` total base, best levels first.
     ///
-    /// The cut is the verification a Custom quoter's book needs: its depth is
+    /// The cut is the verification a Custom quoter's book needs. Its depth is
     /// never margin-reserved, so whatever it advertises past its `User`'s
-    /// margin is depth no fill can take. Cutting while the levels are copied
-    /// is also what keeps the book out of the heap — the caller reads it
-    /// straight from the quoter's response account and never holds a second
-    /// copy.
+    /// margin is depth no fill can take. The cut runs while the levels are
+    /// copied, which keeps the book off the heap. The caller reads it straight
+    /// from the quoter's response account and never holds a second copy.
     ///
-    /// Returns whether the cap bit, which a consumer reads to tell a thin
-    /// quoter from a clamped one.
+    /// Returns the `clamped` bit, which a consumer reads to tell a thin quoter
+    /// from a cut one.
     pub fn push_capped(
         &mut self,
         kind: QuotedSourceKind,
@@ -272,8 +273,8 @@ impl RouterQuoteBufferV0 {
             if remaining == 0 {
                 break;
             }
-            // Checked against what the cap admits rather than what the quoter
-            // offered: a book deeper than the slot is only a problem if the
+            // The check counts what the cap admits, not what the quoter
+            // offered. A book deeper than the slot is a problem only when the
             // cap lets that much of it through.
             validate!(
                 written < MAX_LEVELS_PER_SOURCE,
@@ -311,9 +312,10 @@ impl RouterQuoteBufferV0 {
 
     /// Attach one row to the source most recently pushed.
     ///
-    /// `false` when the region is full. Rows are detail about a ladder that
-    /// stands on its own, so running out of room shortens the detail rather
-    /// than failing the view — and the buffer says it happened.
+    /// Returns `false` when the region is full. A row is detail about a ladder
+    /// that stands on its own, so a full region shortens the detail instead of
+    /// failing the view. The buffer records that it happened in
+    /// `rows_truncated`.
     pub fn push_row(&mut self, row: QuotedRowV0) -> VelocityResult<bool> {
         let index = (self.source_count as usize).checked_sub(1).ok_or_else(|| {
             msg!("a row needs a source to belong to");
@@ -381,9 +383,9 @@ mod tests {
         assert_eq!(buffer.levels_for(0)[1].size, 7);
     }
 
-    /// The cut is what keeps depth a maker's margin cannot carry off the
-    /// published book, so it lands on the rung that crosses the cap rather
-    /// than dropping that rung whole.
+    /// The cut keeps depth a maker's margin cannot carry off the published
+    /// book. It lands inside the rung that crosses the cap instead of dropping
+    /// that rung whole.
     #[test]
     fn a_cap_cuts_the_rung_it_lands_in_and_drops_the_rest() {
         let mut buffer = buffer();
@@ -421,9 +423,9 @@ mod tests {
         assert_eq!(buffer.source_count, 1, "the source is still reported");
     }
 
-    /// A book deeper than one slot fails the call rather than publishing a
-    /// prefix as if it were the whole book — but only when the cap admits
-    /// that much of it.
+    /// A book deeper than one slot fails the call instead of publishing a
+    /// prefix as the whole book. That only happens when the cap admits that
+    /// much of it.
     #[test]
     fn a_book_deeper_than_the_slot_fails_only_when_the_cap_admits_it() {
         let deep: Vec<PriceLevel> = (0..MAX_LEVELS_PER_SOURCE + 1)
@@ -450,8 +452,8 @@ mod tests {
         assert_eq!(buffer.levels_for(0).len(), 3);
     }
 
-    /// The rivals the vAMM is shaded against are read out of the buffer, so
-    /// the two level types have to be the same bytes.
+    /// The router reads the rival books the vAMM is shaded against out of this
+    /// buffer, so the two level types must be the same bytes.
     #[test]
     fn a_stored_book_casts_to_the_wire_levels_without_copying() {
         let mut buffer = buffer();

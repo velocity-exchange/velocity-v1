@@ -153,7 +153,8 @@ export const CONFIRM_TX_RATE_LIMIT_BACKOFF_MS = 5_000; // wait this long until t
 export const CONFIRM_TX_INTERVAL_MS = 5_000;
 const FILL_ORDER_THROTTLE_BACKOFF = 1000; // the time to wait before trying to fill a throttled (error filling) node again
 const CONFIRM_TX_ATTEMPTS = 2;
-// wall-clock lead to build+send before the jito leader window (~4 slots at 400ms)
+// Wall-clock lead to build and send before the jito leader window, which is
+// about 4 slots at 400ms.
 const JITO_LEADER_LEAD_MS = 1_600;
 const SIM_CU_ESTIMATE_MULTIPLIER = 1.15;
 const MAX_ACCOUNTS_PER_TX = 64; // solana limit, track https://github.com/solana-labs/solana/issues/27241
@@ -699,10 +700,10 @@ export class SpotFillerMultithreaded {
 				if (buildForBundle) {
 					ixs.push(this.bundleSender!.getTipIx());
 				} else {
-					// Guard NaN: /batchPriorityFees returns level-less entries for
-					// markets with no published fees (see fundingRateUpdater.ts) —
-					// .high is then undefined and setComputeUnitPrice throws at
-					// BigInt conversion.
+					// Guard against NaN. /batchPriorityFees returns an entry with
+					// no levels for a market with no published fees, as
+					// fundingRateUpdater.ts describes. `.high` is then undefined
+					// and setComputeUnitPrice throws at the BigInt conversion.
 					const pfs = this.priorityFeeSubscriber.getPriorityFees(
 						'spot',
 						nodeToFill.node.order!.marketIndex
@@ -913,7 +914,7 @@ export class SpotFillerMultithreaded {
 		if (buildForBundle) {
 			ixs.push(this.bundleSender!.getTipIx());
 		} else {
-			// Guard NaN — see the comment on the sibling site above.
+			// Guard against NaN. See the comment on the sibling site above.
 			const pfs = this.priorityFeeSubscriber.getPriorityFees(
 				'spot',
 				nodeToFill.node.order!.marketIndex

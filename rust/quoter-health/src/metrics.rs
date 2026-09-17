@@ -5,10 +5,9 @@
 //! underlying counters decay and a decayed value is not a counter.
 //!
 //! Per-quoter series are pruned. A registry can hold far more entries than a
-//! router carries, and a label set that is never removed keeps every quoter
-//! that ever quoted alive in the scrape forever. A quoter is exported while
-//! it is being used, and always while it is degraded, so the series an
-//! operator needs is the one that survives.
+//! router carries, and a label set that is never removed holds every quoter
+//! that ever quoted in the scrape forever. A quoter is exported while a
+//! router uses it, and always while it is degraded.
 
 use {
     crate::{
@@ -305,8 +304,8 @@ impl Metrics {
         *exported = live;
     }
 
-    /// A degraded quoter is always exported. A quiet healthy one is not: the
-    /// series an operator needs is the one that says something is wrong.
+    /// A degraded quoter is always exported. A quiet healthy one is dropped,
+    /// because an operator needs the series that says something is wrong.
     fn should_export(snapshot: &Snapshot, now_ms: u64) -> bool {
         snapshot.admission != Admission::Admit
             || snapshot.pinned
@@ -375,7 +374,7 @@ mod tests {
                 set_at_ms: 0,
             },
         );
-        // Far past the export window: a healthy quoter would be dropped.
+        // Far past the export window, where a healthy quoter is dropped.
         metrics.sync(&health, now_ms() + 10 * EXPORT_TTL_MS);
         let text = rendered(&registry);
         assert!(text.contains("quoter_health_state"));

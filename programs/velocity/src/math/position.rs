@@ -48,17 +48,16 @@ pub fn calculate_base_asset_value_and_pnl_with_oracle_price(
 }
 
 /// Same as [`calculate_base_asset_value_and_pnl_with_oracle_price`], but valued at a
-/// market's committed `expiry_price`, which is allowed to be **negative**.
+/// market's committed `expiry_price`, which may be negative.
 ///
-/// The live-oracle path clamps a non-positive price to zero, because a negative *oracle*
-/// print is nonsense and defaulting it to zero is the safe read. A negative `expiry_price`
-/// is not nonsense: the expiry solver can legitimately commit one. Applying the oracle
-/// clamp to it clipped a long's signed base loss to zero, so margin and equity valued the
-/// position as merely worthless instead of underwater — letting the owner withdraw
-/// collateral — while `settle_expired_position` (via
-/// `calculate_base_asset_value_with_expiry_price`, which never clamped) later booked the
-/// real negative value as an unsecured quote borrow. That divergence between the two
-/// valuations *was* OtterSec #133.
+/// The live-oracle path clamps a non-positive price to zero. A negative oracle print is
+/// nonsense, so zero is the safe read there. The expiry solver can commit a negative
+/// `expiry_price`, and the oracle clamp would clip a long's signed base loss to zero.
+/// Margin and equity would then value the position as worthless rather than underwater,
+/// which lets the owner withdraw collateral.
+/// `calculate_base_asset_value_with_expiry_price` never clamps, so
+/// `settle_expired_position` books the real negative value as an unsecured quote borrow.
+/// This variant keeps the two valuations in agreement (OtterSec #133).
 pub fn calculate_base_asset_value_and_pnl_with_expiry_price(
     market_position: &PerpPosition,
     expiry_price: i64,
@@ -174,15 +173,14 @@ mod negative_expiry_price_tests {
         },
     };
 
-    /// OtterSec #133 — a negative committed `expiry_price` must not be clipped out of the
-    /// margin/equity valuation.
+    /// A negative committed `expiry_price` must not be clipped out of the margin and equity
+    /// valuation (OtterSec #133).
     ///
-    /// The live-oracle helper clamps a non-positive price to zero (a negative *oracle* print
-    /// is nonsense, so zero is the safe read). Applying that clamp to a legitimately
-    /// negative `expiry_price` clipped a long's signed base loss to zero, so margin valued
-    /// the position as merely worthless rather than underwater — letting the owner withdraw
-    /// collateral — while `settle_expired_position` later booked the real negative value as
-    /// an unsecured quote borrow.
+    /// The live-oracle helper clamps a non-positive price to zero, because a negative
+    /// oracle print is nonsense. That clamp applied to a negative `expiry_price` clips a
+    /// long's signed base loss to zero. Margin then values the position as worthless rather
+    /// than underwater, which lets the owner withdraw collateral, while
+    /// `settle_expired_position` books the real negative value as an unsecured quote borrow.
     #[test]
     fn negative_expiry_price_is_not_clipped_and_matches_settlement() {
         // Long 1 base, paid 10 quote for it.
@@ -194,9 +192,8 @@ mod negative_expiry_price_tests {
 
         let expiry_price = -5 * PRICE_PRECISION_I64;
 
-        // The clamping (live-oracle) helper reports zero base value, so the pnl is merely
-        // the cost basis — the position looks worthless, not underwater. This is the
-        // pre-fix reading.
+        // The clamping live-oracle helper reports zero base value, so the pnl is only the
+        // cost basis. The position reads as worthless rather than underwater.
         let (clamped_value, clamped_pnl) =
             calculate_base_asset_value_and_pnl_with_oracle_price(&position, expiry_price).unwrap();
         assert_eq!(clamped_value, 0);
@@ -217,7 +214,7 @@ mod negative_expiry_price_tests {
             clamped_pnl - signed_pnl
         );
 
-        // ...and it now agrees with what settlement actually books.
+        // The signed pnl agrees with what settlement books.
         let settlement_base_value =
             calculate_base_asset_value_with_expiry_price(&position, expiry_price).unwrap();
         assert!(settlement_base_value < 0);

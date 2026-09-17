@@ -36,7 +36,7 @@ pub(crate) type OracleIdentifier = (Pubkey, OracleSource);
 /// TWAP (the `TooVolatile` band), the confidence-interval multiplier, and the staleness
 /// slot-delay overrides — so two markets sharing one oracle can legitimately reach different
 /// verdicts. Keying the cache by the oracle pubkey alone let market B reuse market A's verdict
-/// (#69); this key folds in every per-market validity input so each combination is cached
+/// (OtterSec #69); this key folds in every per-market validity input so each combination is cached
 /// independently. The cached *price* stays keyed by [`OracleIdentifier`] (price is a pure
 /// function of the oracle account and the slot).
 pub(crate) type OracleValidityKey = (
@@ -57,16 +57,16 @@ pub struct OracleMap<'a> {
     validity: BTreeMap<OracleValidityKey, OracleValidity>,
     /// Which (oracle, market) pairs have already written their validity
     /// diagnostics. The validity cache keys on the market's TWAP, which moves
-    /// with every fill, so a transaction that fills against many makers misses
-    /// that cache once per maker and recomputes. Recomputing is cheap; the
-    /// logging is not. A formatted `msg!` allocates, the runtime's bump
-    /// allocator never reclaims, and thirty-odd repeats of the same line
-    /// exhaust the heap. The lines are identical anyway, so the first one is
-    /// the only one worth writing.
+    /// with every fill. A transaction that fills against many makers therefore
+    /// misses that cache once per maker and recomputes. The recompute is
+    /// cheap. The logging is not. A formatted `msg!` allocates, and the
+    /// runtime's bump allocator never reclaims, so about thirty repeats of the
+    /// same line exhaust the heap. The lines are identical, so only the first
+    /// one is written.
     logged_validity: BTreeSet<(Pubkey, u8, u16)>,
     pub slot: u64,
-    /// Full transition archive (from `State::slot_clock()`): scales the
-    /// 400ms baseline staleness thresholds and measures oracle ages and
+    /// The full transition archive, from `State::slot_clock()`. It scales the
+    /// 400ms baseline staleness thresholds. It also measures oracle ages and
     /// cooldowns exactly across IBRL transitions.
     pub slot_clock: SlotClock,
     pub oracle_guard_rails: OracleGuardRails,
@@ -153,8 +153,8 @@ impl<'a> OracleMap<'a> {
             LogMode::ExchangeOracle
         };
 
-        // #69: validity depends on the per-market inputs below, not just the oracle account,
-        // so it is cached per (oracle, market-params) combination rather than per oracle.
+        // Validity depends on the per-market inputs below, not just the oracle account, so it
+        // is cached per (oracle, market-params) combination rather than per oracle (OtterSec #69).
         let validity_key: OracleValidityKey = (
             *oracle_id,
             market_type as u8,
@@ -167,8 +167,8 @@ impl<'a> OracleMap<'a> {
 
         if self.price_data.contains_key(oracle_id) {
             let cached = self.validity.get(&validity_key).copied();
-            // Decided before the price data is borrowed, because recording the
-            // first write needs `&mut self`.
+            // Resolved before the price data is borrowed, because the record
+            // of the first write needs `&mut self`.
             let log_mode = match cached {
                 Some(_) => log_mode,
                 None => self.log_mode_once(oracle_id, market_type as u8, market_index, log_mode),

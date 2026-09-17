@@ -280,18 +280,19 @@ const REDIS_WARN_THROTTLE_MS = 5_000;
 const lastRedisWarnAt: Map<string, number> = new Map();
 
 /**
- * Redis writes in the publish path are fire-and-forget: nothing awaits them and
- * a rejection would otherwise reach Node's unhandled-rejection handler. A write
- * that lands mid-reconnect is expected, so log it and keep publishing.
+ * Nothing awaits a Redis write in the publish path, so a rejection would reach
+ * Node's unhandled-rejection handler. A write that lands during a reconnect is
+ * expected. This function logs such a write and lets the publishing continue.
  *
- * Scope: this catches the rejection of the RedisClient method itself, which is
- * where the "Redis client not connected" throw lives. RedisClient.set/setRaw do
- * not await the underlying ioredis command, so a command-level failure is a
- * separate floating promise that only the process-level unhandledRejection
- * guard can see. publish() awaits, so it is fully covered here.
+ * It catches the rejection of the RedisClient method itself, which is where the
+ * "Redis client not connected" throw lives. `RedisClient.set` and
+ * `RedisClient.setRaw` do not await the underlying ioredis command, so a
+ * command-level failure is a separate floating promise that only the
+ * process-level unhandledRejection guard can see. `publish()` awaits, so this
+ * function covers it fully.
  *
- * Logging is throttled per context: these run per market per update, so an
- * unthrottled warn would turn the outage this handles into a log storm.
+ * The logging is throttled per context. These writes run once per market per
+ * update, so an unthrottled warning would turn the outage into a log storm.
  */
 export function fireAndForgetRedis(
 	write: Promise<unknown>,
@@ -692,13 +693,13 @@ export const selectMostRecentBySlot = (
 
 /**
  * Resolves `'marketBased'` (and undefined) auction fields into concrete values, keyed off the
- * market's tier and the requested params version. Majors start the auction at mark with no
- * offset; everything else starts at the best offer, stepped 0.1 inside it. Version 3+ ignores
- * tier entirely and takes the fast-fill path on all markets.
+ * market's tier and the requested params version. A major market starts the auction at mark
+ * with no offset. Every other market starts at the best offer, stepped 0.1 inside it. Version
+ * 3 and above ignores the tier and takes the fast-fill path on all markets.
  *
- * @param args caller-supplied auction params; `'marketBased'` fields are the ones resolved here
+ * @param args the caller's auction params. The `'marketBased'` fields are the ones resolved here
  * @param overrideDefaults values that win over the market-specific defaults, but not over explicit `args`
- * @param version auction params version; 3+ selects fast-fill behavior
+ * @param version the auction params version. Version 3 and above selects the fast-fill behavior
  * @returns the params with every `'marketBased'` field resolved to a concrete value
  */
 export function createMarketBasedAuctionParams(
@@ -706,13 +707,13 @@ export function createMarketBasedAuctionParams(
 	overrideDefaults?: Partial<AuctionParamArgs>,
 	version: number = 1
 ): AuctionParamArgs {
-	// Determine if this is a major market (PERP: SOL, BTC, ETH)
 	const isMajorMarket =
 		args.marketType?.toLowerCase() === 'perp' &&
 		isMajorPerpMarket(args.marketIndex);
 
-	// Version 3+ weights toward fast fills: start just inside the touch on all
-	// markets and run a short auction, rather than fishing for price improvement
+	// Version 3 and above weights toward a fast fill. It starts just inside the
+	// touch on all markets and runs a short auction, instead of waiting for
+	// price improvement.
 	const isFastFill = version >= 3;
 
 	// Resolve "marketBased" values and undefined values (both should use market-based logic)
@@ -737,9 +738,10 @@ export function createMarketBasedAuctionParams(
 			: args.auctionStartPriceOffset;
 
 	// Set market-specific defaults (only used if values are undefined)
-	// default durations are wall clock ms in the onchain 400ms unit encoding
-	// (`Order.auction_duration`); the program converts elapsed slots to
-	// wall clock at fill time, so no live slot duration is needed here
+	// The default durations are wall clock milliseconds in the on-chain 400ms
+	// unit encoding that `Order.auction_duration` uses. The program converts
+	// elapsed slots to wall clock at fill time, so the live slot duration is not
+	// needed here.
 	const marketSpecificDefaults: Partial<AuctionParamArgs> = {
 		...DEFAULT_AUCTION_PARAMS,
 		auctionDuration: Math.min(
@@ -981,8 +983,9 @@ export const mapToMarketOrderParams = async (
 	selectMostRecentBySlot?: (responses: any[]) => any,
 	fillQualityInfo?: TakerFillVsOracleBpsRedisResult,
 	apiVersion: number = 1,
-	// live chain slot, threaded to the vAMM quote/MM-oracle validity so a staged
-	// slot-duration switch is applied; callers should pass `dlobProvider.getSlot()`
+	// The live chain slot. It reaches the vAMM quote and the MM-oracle validity,
+	// so a staged slot-duration switch applies. Callers pass
+	// `dlobProvider.getSlot()`.
 	currentSlot?: number
 ): Promise<{
 	success: boolean;
@@ -1520,8 +1523,8 @@ export const getVammSideQuoteWithMargin = (
 	velocityClient: VelocityClient,
 	marketIndex: number,
 	direction: PositionDirection,
-	// live chain slot for the staged slot-duration switch; falls back to the MM
-	// oracle publication slot (best-effort) when the caller has none
+	// The live chain slot, for the staged slot-duration switch. It falls back to
+	// the MM oracle publication slot when the caller has no slot.
 	currentSlot?: number
 ): BN | undefined => {
 	try {
@@ -1568,20 +1571,21 @@ export const getVammSideQuoteWithMargin = (
 };
 
 /**
- * Suggests a slippage tolerance for a quote, as a percentage. Sums a tier-based floor with the
- * book's observed spread, widens to cover the distance to the worst fill price when order size
- * is known, scales by a tier multiplier, then clamps to the configured min/max. Every tier
- * constant is env-tunable (`DYNAMIC_BASE_SLIPPAGE_*`, `DYNAMIC_SLIPPAGE_MULTIPLIER_*`,
- * `DYNAMIC_SLIPPAGE_MIN`/`_MAX`).
+ * Suggests a slippage tolerance for a quote, as a percentage. It adds a tier-based floor to
+ * the book's observed spread. It widens the result to cover the distance to the worst fill
+ * price when the order size is known. It then scales the result by a tier multiplier and
+ * clamps it to the configured minimum and maximum. The environment tunes every tier constant
+ * through `DYNAMIC_BASE_SLIPPAGE_*`, `DYNAMIC_SLIPPAGE_MULTIPLIER_*`, `DYNAMIC_SLIPPAGE_MIN`
+ * and `DYNAMIC_SLIPPAGE_MAX`.
  *
- * @param marketIndex market being quoted; tiered via `isMajorPerpMarket` for perps
- * @param marketType `'perp'` or `'spot'`; only perps are tiered
- * @param velocityClient client used to read oracle price data
+ * @param marketIndex the market being quoted. `isMajorPerpMarket` tiers a perp market
+ * @param marketType `'perp'` or `'spot'`. Only a perp market is tiered
+ * @param velocityClient the client that reads the oracle price data
  * @param l2Formatted the L2 book the spread component is measured from
- * @param startPrice best available price for the order
- * @param worstPrice worst price the order would reach, used for the size-adjusted component
- * @param apiVersion when >= 2, scales the result by a further 1.2x, applied after the clamp
- * @returns slippage tolerance as a percentage
+ * @param startPrice the best available price for the order
+ * @param worstPrice the worst price the order would reach, for the size-adjusted component
+ * @param apiVersion at 2 and above, scales the result by a further 1.2, after the clamp
+ * @returns the slippage tolerance as a percentage
  */
 export const calculateDynamicSlippage = (
 	marketIndex: number,
@@ -1592,7 +1596,6 @@ export const calculateDynamicSlippage = (
 	worstPrice: BN,
 	apiVersion?: number
 ): number => {
-	// Determine if this is a major market (PERP: SOL, BTC, ETH)
 	const isPerp = marketType.toLowerCase() === 'perp';
 	const isMajor = isPerp && isMajorPerpMarket(marketIndex);
 	const isMidMajor = isPerp && MID_MAJOR_MARKETS.includes(marketIndex);

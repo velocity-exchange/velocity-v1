@@ -1,24 +1,20 @@
 //! Fill engine.
 //!
-//! One fill path: [`router_take`]. Internal [`RouterQuoter`] books (the vAMM
-//! ladder, DLOB-order bridges) plus externally-quoted CPI books are split by
-//! priority tier; internal allocations settle in place, external ones are
-//! returned for the CPI execute leg.
+//! One fill path: [`router_take`]. It splits the taker size across internal
+//! [`RouterQuoter`] books and externally-quoted CPI books by priority tier.
+//! The internal books are the vAMM ladder and the DLOB-order bridges. An
+//! internal allocation settles in place. An external allocation is returned
+//! for the CPI execute leg.
 //!
-//! There is no general continuous-curve clearing algorithm here — no bisection,
-//! no price-domain search. Every source, the vAMM included, publishes discrete
-//! price levels and the split walks them best-first, distributing the clearing
-//! tier priority-first then pro-rata in whole step quanta. The vAMM's ladder is
-//! built in `vlp::amm::router_adapter::vamm_quote_levels`, so the curve is
-//! reduced to levels before it ever reaches the split.
+//! This module holds no general continuous-curve clearing algorithm. There is
+//! no bisection and no price-domain search. Every source publishes discrete
+//! price levels, the vAMM included, and the split walks them best-first. It
+//! distributes the clearing tier by priority first and then pro rata, in whole
+//! step quanta. `vlp::amm::router_adapter::vamm_quote_levels` builds the vAMM
+//! ladder, so the curve is reduced to levels before it reaches the split.
 //!
-//! Per-quoter fills are validated by [`fill_at_or_better`]: a quoter must
-//! deliver each unit at or better than the price its own book advertised.
-//!
-//! The two legacy engines this module used to hold (a continuous sole-vAMM path
-//! and a discrete maker walk, each driven through a `Quoter` trait) are gone —
-//! the router subsumes both, and the AMM-JIT-inside-a-match mode they existed
-//! to serve no longer exists.
+//! [`fill_at_or_better`] validates each quoter's fill. A quoter must deliver
+//! each unit at or better than the price its own book advertised.
 
 use crate::{
     controller::position::PositionDirection,
@@ -38,25 +34,28 @@ use crate::{
 /// Result of [`router_take`].
 #[derive(Debug)]
 pub struct RouterTakeOutcome {
-    /// One entry per internal quoter, same order as passed; `None` when the
-    /// split allocated it nothing.
+    /// One entry per internal quoter, in the order they were passed. `None`
+    /// when the split allocated that quoter nothing.
     pub internal_fills: Vec<Option<QuoterFill>>,
-    /// One entry per external book, same order as passed: the allocation the
-    /// caller must execute through the registry's CPI leg.
+    /// One entry per external book, in the order they were passed. Each is an
+    /// allocation the caller must execute through the registry's CPI leg.
     pub external_allocations: Vec<QuoterAllocation>,
 }
 
-/// A fill is at-or-better than its allocation when its floored per-unit
-/// price does not lose to the allocation's ceiled per-unit price (reversed
-/// for a short taker), with one quote lamport of absolute notional slack.
-/// The unit-price comparison (rather than a raw notional cross-multiply)
-/// absorbs sub-unit rounding on partial fills; the single-lamport slack
-/// absorbs a quoter's terminal rounding against the taker on an otherwise
-/// exact notional — the AMM's +1 on Remove, a short maker's ceil — which
-/// per-unit math can't hide when the fill is an exact base-precision
-/// multiple. The allocation's quote is itself ceiled per level
-/// (`math::router::quote_notional`), so one lamport is the whole honest
-/// gap, not a tunable tolerance.
+/// True when a fill is at or better than its allocation.
+///
+/// A fill qualifies when its floored per-unit price does not lose to the
+/// allocation's ceiled per-unit price. The comparison is reversed for a short
+/// taker. One quote lamport of absolute notional slack is allowed.
+///
+/// The per-unit comparison absorbs sub-unit rounding on a partial fill, which
+/// a raw notional cross-multiply does not. The one-lamport slack absorbs a
+/// quoter's terminal rounding against the taker on an otherwise exact
+/// notional, such as the AMM's +1 on Remove or a short maker's ceil. Per-unit
+/// math cannot hide that rounding when the fill is an exact base-precision
+/// multiple. `math::router::quote_notional` already ceils the allocation's
+/// quote per level, so one lamport is the whole honest gap and not a tunable
+/// tolerance.
 pub(crate) fn fill_at_or_better(
     side: PositionDirection,
     fill: &QuoterFill,
@@ -101,19 +100,21 @@ pub(crate) fn fill_at_or_better(
     })
 }
 
-/// The router fill engine — the third path. Builds each internal quoter's
-/// book in descending-priority order, so a quoter sees every book built
-/// before it (the external CPI books plus all worse-tier internals) as
-/// rivals — that ordering is what gives the top-tier vAMM last look. The
-/// taker size then splits across the union of books by priority tier
-/// (`math::router::split_across_quoters`), and each internal allocation is
-/// settled through `try_fill_solo`/`commit_fill`, validated at-or-better
-/// against its quoted allocation. External allocations are returned for the
-/// caller to execute through the registry's CPI leg (and hold to the same
-/// at-or-better bar).
+/// Runs the router fill.
 ///
-/// Like [`router_take`], this touches only quoter-side state; taker position
-/// updates and fee accounting stay with the surrounding fill controller.
+/// Builds each internal quoter's book in descending-priority order, so a
+/// quoter sees every book built before it as a rival. Those rivals are the
+/// external CPI books and every worse-tier internal book. That order is what
+/// gives the top-tier vAMM its last look. The taker size then splits across
+/// the union of books by priority tier
+/// (`math::router::split_across_quoters`). Each internal allocation settles
+/// through `try_fill_solo` and `commit_fill`, and is validated at or better
+/// against its quoted allocation. External allocations are returned for the
+/// caller to execute through the registry's CPI leg, which holds to the same
+/// at-or-better bar.
+///
+/// This touches only quoter-side state. Taker position updates and fee
+/// accounting stay with the surrounding fill controller.
 pub fn router_take(
     quoters: &mut [&mut dyn RouterQuoter],
     ctx: &QuoteContext,
@@ -133,9 +134,8 @@ pub fn router_take(
         PositionDirection::Short => Direction::Short,
     };
     // Books are truncated at the taker's limit before the split, so no
-    // allocation can clear past it (the counterpart of the legacy paths'
-    // `cumulative_size` cap / `taker_price_for_match`). Books are
-    // best-first, so cutting at the first out-of-limit level is exact.
+    // allocation can clear past it. Books are best-first, so cutting at the
+    // first out-of-limit level is exact.
     let within_limit = |levels: &[PriceLevel]| -> usize {
         let Some(limit) = taker_limit_price else {
             return levels.len();
@@ -149,8 +149,8 @@ pub fn router_take(
             .unwrap_or(levels.len())
     };
 
-    // Build internal books worst tier first, handing each quoter everything
-    // already quoted as rivals.
+    // Build the internal books worst tier first. Each quoter receives every
+    // book already quoted as a rival.
     let mut build_order: Vec<usize> = (0..quoters.len()).collect();
     build_order.sort_by_key(|&i| core::cmp::Reverse(quoters[i].priority()));
     let mut internal_levels: Vec<Vec<PriceLevel>> = vec![Vec::new(); quoters.len()];
@@ -182,8 +182,8 @@ pub fn router_take(
         internal_levels[i] = levels;
     }
 
-    // Split across the union: external books first, then internals — all
-    // truncated at the taker's limit.
+    // Split across the union of books, external first and then internal. All
+    // of them are truncated at the taker's limit.
     let books: Vec<QuoterBook> = external_books
         .iter()
         .map(|book| QuoterBook {
@@ -205,8 +205,9 @@ pub fn router_take(
     let allocations = split_across_quoters(direction, target_size, &books, ctx.step_size)?;
     let (external_allocations, internal_allocations) = allocations.split_at(external_books.len());
 
-    // Execute each internal allocation against its quoter — the in-program
-    // execute_v0, held to the same at-or-better bar as the CPI leg.
+    // Execute each internal allocation against its quoter. This is the
+    // in-program `execute_v0`, held to the same at-or-better bar as the CPI
+    // leg.
     let mut internal_fills = Vec::with_capacity(quoters.len());
     for (i, allocation) in internal_allocations.iter().enumerate() {
         if allocation.base == 0 {
@@ -253,9 +254,9 @@ mod tests {
         oracle: &'a OraclePriceData,
         tick: u64,
     ) -> QuoteContext<'a> {
-        // Use base_precision = 1 for StepMaker tests (unit-less values) and
-        // BASE_PRECISION for tests that involve real perp markets via
-        // AmmQuoter; individual tests override as needed.
+        // `StepMaker` tests use unit-less values, so they take
+        // `base_precision = 1`. A test that drives a real perp market through
+        // `AmmQuoter` takes `BASE_PRECISION`. A test can override it.
         QuoteContext {
             stats,
             oracle,
@@ -296,8 +297,8 @@ mod tests {
             max_fill_reserve_fraction: 4,
             ..AMM::default()
         };
-        // DLOB ask better than the AMM top; external book between them.
-        // Both cross the AMM's top, so its last look ignores them.
+        // DLOB ask better than the AMM top, with the external book between
+        // them. Both cross the AMM's top, so its last look ignores them.
         let mut dlob = router_test_ask(99 * PEG_PRECISION as u64, 2 * BASE_PRECISION_U64);
         let external_levels = [PriceLevel {
             price: 99 * PEG_PRECISION as u64 + PEG_PRECISION as u64 / 2, // 99.5
@@ -324,8 +325,8 @@ mod tests {
             .unwrap()
         };
 
-        // Best-first: DLOB's 2 @ 99, external's 1 @ 99.5, AMM ladder for the
-        // last 1.
+        // Best-first fills the DLOB's 2 at 99, the external 1 at 99.5, and
+        // the AMM ladder for the last 1.
         let dlob_fill = outcome.internal_fills[1].unwrap();
         assert_eq!(dlob_fill.base_filled, 2 * BASE_PRECISION_U64);
         assert_eq!(outcome.external_allocations[0].base, BASE_PRECISION_U64);
@@ -360,9 +361,9 @@ mod tests {
             max_fill_reserve_fraction: 4,
             ..AMM::default()
         };
-        // DLOB ask 0.5% above the AMM top — inside the last-look band, so
-        // the vAMM shades the slice of curve cheaper than it to exactly this
-        // price and wins the tie by tier.
+        // DLOB ask 0.5% above the AMM top, inside the last-look band. The
+        // vAMM shades the slice of curve cheaper than it to exactly this price
+        // and wins the tie by tier.
         let rival_price = 100 * PEG_PRECISION as u64 + PEG_PRECISION as u64 / 2; // 100.5
         let mut dlob = router_test_ask(rival_price, 5 * BASE_PRECISION_U64);
 
@@ -374,15 +375,15 @@ mod tests {
             router_take(&mut quoters, &ctx, PositionDirection::Long, take, &[], None).unwrap()
         };
 
-        // The vAMM's shaded rung fills first at the rival's price; the DLOB
-        // order gets only what's left at that level.
+        // The vAMM's shaded rung fills first at the rival's price. The DLOB
+        // order gets only the remainder at that level.
         let amm_fill = outcome.internal_fills[0].unwrap();
         let dlob_fill = outcome.internal_fills[1].unwrap();
         assert!(amm_fill.base_filled > 0);
         assert_eq!(amm_fill.base_filled + dlob_fill.base_filled, take);
         assert!(dlob_fill.base_filled < take);
-        // The AMM's actual per-unit cost stays at or under the shaded price
-        // — the gap is LP surplus.
+        // The AMM's actual per-unit cost stays at or under the shaded price.
+        // The gap is LP surplus.
         let per_unit = (amm_fill.quote_filled as u128) * BASE_PRECISION_U64 as u128
             / amm_fill.base_filled as u128;
         assert!(per_unit <= rival_price as u128);
@@ -410,11 +411,11 @@ mod tests {
             max_fill_reserve_fraction: 4,
             ..AMM::default()
         };
-        // Limit below the ladder's tail: only the cheapest rungs are
-        // fillable, so a large take comes up short instead of clearing
-        // through the limit. (Rungs are marginal-end prices of
-        // request-sized chunks — a 20-unit take on 100-unit reserves puts
-        // the first rung near 105.2 and the tail near 110.)
+        // The limit sits below the ladder's tail, so only the cheapest rungs
+        // are fillable and a large take fills short instead of clearing
+        // through the limit. A rung is the marginal-end price of a
+        // request-sized chunk. A 20-unit take on 100-unit reserves puts the
+        // first rung near 105.2 and the tail near 110.
         let limit = 106 * PEG_PRECISION as u64;
         let take = 20 * BASE_PRECISION_U64;
         let outcome = {

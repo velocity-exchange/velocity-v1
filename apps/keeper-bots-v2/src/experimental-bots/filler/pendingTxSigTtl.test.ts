@@ -5,8 +5,8 @@ import { LRUCache } from 'lru-cache';
  * The confirm loop gives up on a signature by walking `entries()` and testing
  * `txAge > TX_TIMEOUT_THRESHOLD_MS`, then emitting the terminal `expired` wide
  * event. lru-cache omits stale entries from `entries()`, so the cache TTL must
- * outlive the threshold — otherwise every entry disappears at the exact moment
- * it becomes eligible and the tx is dropped silently instead of reported.
+ * outlive the threshold. Otherwise every entry disappears at the moment it
+ * becomes eligible, and the transaction is dropped with no report.
  */
 describe('pendingTxSigsToconfirm TTL vs the give-up threshold', () => {
 	const THRESHOLD_MS = 200;

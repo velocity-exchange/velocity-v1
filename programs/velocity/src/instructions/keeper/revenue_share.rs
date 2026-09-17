@@ -15,7 +15,8 @@ fn load_escrow_for_authority<'a, 'info>(
     account_info: &'a AccountInfo<'info>,
     escrow_authority: &Pubkey,
 ) -> Result<RevenueShareEscrowZeroCopyMut<'a>> {
-    // Fully qualified: `ZeroCopyLoader` also defines `load_zc_mut` for account infos.
+    // The call is fully qualified because `ZeroCopyLoader` also defines `load_zc_mut` for
+    // account infos.
     let escrow: RevenueShareEscrowZeroCopyMut =
         crate::state::revenue_share::RevenueShareEscrowLoader::load_zc_mut(account_info)?;
     validate!(
@@ -172,8 +173,9 @@ pub fn handle_settle_revenue_share<'c: 'info, 'info>(
         num_owner_sub_accounts,
     )?;
 
-    // This uses `?`, not `.ok()`. The settle handlers process a batch and must continue. This
-    // instruction has one job, so a bad beneficiary account must fail the transaction.
+    // The settle handlers process a batch and must continue. This instruction has one job, so a
+    // bad beneficiary account must fail the transaction. That is why the call uses `?` and not
+    // `.ok()`.
     let revenue_share_map = load_revenue_share_map(&mut remaining_accounts)?;
 
     let reserve_price = sweep_reserve_price(&mut maps, &state, market_index)?;
@@ -237,9 +239,9 @@ fn complete_owner_rows<'a: 'b, 'b>(
 fn sweep_reserve_price(maps: &mut AccountMaps, state: &State, market_index: u16) -> Result<i64> {
     let perp_market = maps.perp_market_map.get_ref(&market_index)?;
 
-    // A delist requires a zero liability and moves the pnl pool to the revenue pool. A
-    // delisted market therefore owes nothing and holds nothing. Report this. A silent success
-    // would look like a completed settle.
+    // A delist requires a zero liability and moves the pnl pool to the revenue pool. A delisted
+    // market therefore owes nothing and holds nothing. The handler fails instead of returning a
+    // silent success, which would read as a completed settle.
     validate!(
         perp_market.status != MarketStatus::Delisted,
         ErrorCode::MarketDelisted,
@@ -281,10 +283,12 @@ pub struct ForfeitRevenueShareOrder<'info> {
     )]
     pub spot_market: AccountLoader<'info, SpotMarket>,
     /// The owner of the escrow that holds the row.
-    /// CHECK: the PDA seeds below bind this key to the escrow. The handler also compares it with the authority in the escrow header.
+    /// CHECK: the PDA seeds below bind this key to the escrow. The handler also compares it with
+    /// the authority in the escrow header.
     pub escrow_authority: UncheckedAccount<'info>,
     /// The escrow that holds the row to write off.
-    /// CHECK: `load_zc_mut` reads this account and validates the owner and the discriminator. The seeds fix the address.
+    /// CHECK: `load_zc_mut` reads this account and validates the owner and the discriminator. The
+    /// seeds fix the address.
     #[account(
         mut,
         seeds = [REVENUE_SHARE_ESCROW_PDA_SEED.as_bytes(), escrow_authority.key().as_ref()],
@@ -293,7 +297,9 @@ pub struct ForfeitRevenueShareOrder<'info> {
     pub revenue_share_escrow: UncheckedAccount<'info>,
     /// Sub-account 0 of the beneficiary of the row. This is the payout account. The handler proves
     /// that it does not exist.
-    /// CHECK: the handler derives the required address from the beneficiary of the row and rejects any other address. Anchor `seeds` cannot express this, because the address depends on `builder_idx` and on `approved_builders`, which the handler reads at run time.
+    /// CHECK: the handler derives the required address from the beneficiary of the row and rejects
+    /// any other address. Anchor `seeds` cannot express this, because the address depends on
+    /// `builder_idx` and on `approved_builders`, which the handler reads at run time.
     pub beneficiary_user: UncheckedAccount<'info>,
 }
 
@@ -308,10 +314,12 @@ pub struct SettleRevenueShareArgs {
 pub struct SettleRevenueShare<'info> {
     pub state: AccountLoader<'info, State>,
     /// The owner of the escrow to settle.
-    /// CHECK: the PDA seeds below bind this key to the escrow. The handler also compares it with the authority in the escrow header.
+    /// CHECK: the PDA seeds below bind this key to the escrow. The handler also compares it with
+    /// the authority in the escrow header.
     pub escrow_authority: UncheckedAccount<'info>,
     /// The escrow that holds the accrued builder and referrer rows.
-    /// CHECK: `load_zc_mut` reads this account and validates the owner and the discriminator. The seeds fix the address.
+    /// CHECK: `load_zc_mut` reads this account and validates the owner and the discriminator. The
+    /// seeds fix the address.
     #[account(
         mut,
         seeds = [REVENUE_SHARE_ESCROW_PDA_SEED.as_bytes(), escrow_authority.key().as_ref()],

@@ -293,7 +293,7 @@ export class RevenueShareEscrowMap {
 	 * `feesAccrued`.
 	 *
 	 * These rows are the work list for `settleRevenueShare`. Together they sum to the
-	 * `pendingRevenueShare` of the market. That counter reserves pnl-pool value until the program
+	 * market's `pendingRevenueShare`. That counter reserves pnl-pool value until the program
 	 * pays the rows, and `settle_expired_market_pools_to_revenue_pool` requires it to be zero
 	 * before it delists the market. Call `syncAll()` first. This method reads the cache, and a
 	 * partial cache reports too few accounts.

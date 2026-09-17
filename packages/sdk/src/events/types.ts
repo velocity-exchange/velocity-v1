@@ -150,10 +150,10 @@ export type WrappedEvents = WrappedEvent<EventType>[];
  * amounts in `QUOTE_PRECISION`), and `TransferFeeAndPnlPoolRecord` (internal
  * transfer between a market's fee pool and pnl pool, `QUOTE_PRECISION`).
  *
- * Keys are the on-chain struct names verbatim, because that is what an
- * `#[event]`'s discriminator is derived from. Velocity's own events carry a
- * version suffix (`…RecordV0`); a field addition ships as a new `…RecordV1`
- * key rather than changing the shape decoded under an existing one.
+ * Each key is the on-chain struct name exactly, because an `#[event]`
+ * discriminator is derived from that name. A velocity event carries a version
+ * suffix such as `RecordV0`. A field addition ships as a new `RecordV1` key
+ * rather than change the shape decoded under an existing key.
  */
 export type EventMap = {
 	DepositRecord: Event<DepositRecord>;
@@ -185,12 +185,12 @@ export type EventMap = {
 	ProtocolUserWithdrawRecordV0: Event<ProtocolUserWithdrawRecordV0>;
 	/** Builder/referrer fee revenue-share settlement for a market. Fee amounts are quote-token, `QUOTE_PRECISION` (1e6). */
 	RevenueShareSettleRecord: Event<RevenueShareSettleRecord>;
-	/** A taker-origin cross resolved on a CLOB book: the migrated taker remainder settled at the crossing counterparty's price, with the cranker paid out of the improvement. */
+	/** A taker-origin cross resolved on a CLOB book. The migrated taker remainder settled at the crossing counterparty's price, and the cranker was paid out of the improvement. */
 	TakerOriginCrossRecordV0: Event<TakerOriginCrossRecordV0>;
 	TakerOriginCrossRecordV1: Event<TakerOriginCrossRecordV1>;
 	/** Internal transfer of quote token between a perp market's fee pool and pnl pool. */
 	TransferFeeAndPnlPoolRecord: Event<TransferFeeAndPnlPoolRecord>;
-	/** An authority's Accelerated referral status changed, by automatic enrollment or an admin grant/revoke. */
+	/** An authority's Accelerated referral status changed, through automatic enrollment or an admin grant or revoke. */
 	AcceleratedReferralStatusChangedRecordV0: Event<AcceleratedReferralStatusChangedRecordV0>;
 };
 

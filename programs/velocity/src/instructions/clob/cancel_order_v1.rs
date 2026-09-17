@@ -1,9 +1,11 @@
-//! Cancel a resting CLOB order. The CLOB verifies the order belongs to the
-//! passed `User` (velocity has already verified the signer controls that
-//! `User`) and returns the removed order, whose remaining size velocity
-//! unwinds from the open-order aggregates. Deliberately NOT gated on the
-//! quoter entry's active/approved flags — a maker must always be able to
-//! pull their orders off a killed or de-listed book.
+//! Cancel a resting CLOB order. Velocity checks that the signer controls the
+//! passed `User`, and the CLOB checks that the order belongs to it. The CLOB
+//! returns the removed order, and velocity unwinds its remaining size from the
+//! open-order aggregates.
+//!
+//! The handler is not gated on the quoter entry's active or approved flags. A
+//! maker must always be able to remove orders from a killed or de-listed
+//! book.
 
 use {
     crate::{
@@ -31,9 +33,9 @@ pub struct CancelOrderV1<'info> {
     )]
     pub user: AccountLoader<'info, User>,
     pub authority: Signer<'info>,
-    /// Read-only, and read for one thing: the cached oracle price the cancel
-    /// record is stamped with. Deliberately not an oracle account — a maker
-    /// pulling orders off a book must not be able to fail on a stale feed.
+    /// Read-only, and read for one value: the cached oracle price that stamps
+    /// the cancel record. This is not an oracle account. A maker who removes
+    /// orders from a book must not fail on a stale feed.
     #[account(
         constraint = perp_market.load()?.market_index == params.market_index,
         has_one = quoter_slab,
@@ -47,7 +49,7 @@ pub struct CancelOrderV1<'info> {
     #[account(mut)]
     pub clob_market: UncheckedAccount<'info>,
     /// CHECK: a Clob slot's program is pinned to velocity's CLOB at
-    /// registration; the handler re-checks through the slot.
+    /// registration. The handler checks it again through the slot.
     #[account(address = crate::ids::clob_program::id())]
     pub clob_program: UncheckedAccount<'info>,
 }
@@ -55,7 +57,7 @@ pub struct CancelOrderV1<'info> {
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
 pub struct CancelOrderV1Params {
     pub market_index: u16,
-    /// The hint returned at placement; the CLOB fails closed on a stale one.
+    /// The hint returned at placement. The CLOB rejects a stale hint.
     pub order_ref: ClobOrderRefV0,
 }
 
@@ -72,8 +74,8 @@ pub fn handle_cancel_order_v1(
         &ctx.accounts.clob_program,
     )?;
 
-    // CPI cancel; ownership travels in the args in derivable form and the
-    // CLOB verifies it against the node.
+    // Ownership travels in the args in derivable form. The CLOB checks it
+    // against the node.
     let user_ref = {
         let user = crate::load!(ctx.accounts.user)?;
         user.clob_user_ref()
@@ -92,8 +94,8 @@ pub fn handle_cancel_order_v1(
     )?;
 
     // Unwind the removed order's remaining size from the aggregates the
-    // placement reserved. This also frees a placed trigger's shadow slot —
-    // cancelling here is how a user cancels a placed trigger.
+    // placement reserved. This also frees a placed trigger's shadow slot. A
+    // user cancels a placed trigger through this path.
     let mut user = load_mut!(ctx.accounts.user)?;
     user.cleanup_removed_clob_order(
         params.market_index,

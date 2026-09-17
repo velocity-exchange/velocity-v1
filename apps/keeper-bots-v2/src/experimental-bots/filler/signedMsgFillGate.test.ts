@@ -19,13 +19,14 @@ import {
 const BASELINE_STATE: SlotDurationState = {};
 
 // Production-scale slot numbers. Anything derived from them must go through BN
-// comparisons: `BN.gtn`/`BN.lten` assert their argument fits in 26 bits.
+// comparisons, because `BN.gtn` and `BN.lten` assert that their argument fits in
+// 26 bits.
 const CURRENT_SLOT = 443_184_694;
 
 describe('signedMsgOrderSlotReached', () => {
 	it('defers an order stamped ahead of the current slot', () => {
-		// The UI's signing buffer: the incident order was stamped +2 at the moment
-		// the filler evaluated it.
+		// The UI's signing buffer. The incident order was stamped two slots ahead
+		// at the moment the filler evaluated it.
 		expect(signedMsgOrderSlotReached(new BN(CURRENT_SLOT + 2), CURRENT_SLOT)).to
 			.be.false;
 		expect(signedMsgOrderSlotReached(new BN(CURRENT_SLOT + 7), CURRENT_SLOT)).to
@@ -55,8 +56,9 @@ describe('signedMsgOrderPlaceable', () => {
 	});
 
 	it('places a resting limit ahead of its message slot', () => {
-		// The UI stamps a no-auction limit its whole signing budget (~14s) ahead: the
-		// program treats that slot as the placement deadline and places before it.
+		// The UI stamps a no-auction limit its whole signing budget ahead, which is
+		// about 14 seconds. The program treats that slot as the placement deadline
+		// and places the order before it.
 		const restingLimit = {
 			slot: new BN(CURRENT_SLOT + 35),
 			orderType: OrderType.LIMIT,
@@ -64,7 +66,7 @@ describe('signedMsgOrderPlaceable', () => {
 		};
 		expect(signedMsgOrderPlaceable(BASELINE_STATE, restingLimit, CURRENT_SLOT))
 			.to.be.true;
-		// but not one stamped past the program's 30s lead bound (75 baseline slots)
+		// The program bounds the lead at 30 seconds, which is 75 baseline slots.
 		expect(
 			signedMsgOrderPlaceable(
 				BASELINE_STATE,
@@ -77,8 +79,9 @@ describe('signedMsgOrderPlaceable', () => {
 
 describe('signedMsgFillInFlightTtlMs', () => {
 	it('leaves half the remaining validity for a retry', () => {
-		// 20 stored units = 8s of auction, none of it elapsed: expire at 4s so a
-		// rebuilt tx still has 4s of auction to land in.
+		// 20 stored units is 8 seconds of auction, and none of it has elapsed. The
+		// reservation expires at 4 seconds, so a rebuilt transaction still has 4
+		// seconds of auction to land in.
 		expect(
 			signedMsgFillInFlightTtlMs(
 				BASELINE_STATE,
@@ -90,8 +93,8 @@ describe('signedMsgFillInFlightTtlMs', () => {
 	});
 
 	it('counts the auction from the message slot, not from now', () => {
-		// Stamped 7 slots ahead: the window runs to (message slot + 20), so 27
-		// actual slots (10.8s) of validity remain.
+		// The order is stamped 7 slots ahead. The window runs to the message slot
+		// plus 20, so 27 actual slots, or 10.8 seconds, of validity remain.
 		expect(
 			signedMsgFillInFlightTtlMs(
 				BASELINE_STATE,
@@ -116,8 +119,9 @@ describe('signedMsgFillInFlightTtlMs', () => {
 	});
 
 	it('never reserves past the drop-detection window', () => {
-		// Longest encodable auction (u8 stored units, ~102s); half of that is still
-		// far beyond the window a dropped tx is worth waiting out.
+		// The longest encodable auction is a u8 of stored units, about 102 seconds.
+		// Half of that is still far beyond the window a dropped transaction is
+		// worth waiting out.
 		expect(
 			signedMsgFillInFlightTtlMs(
 				BASELINE_STATE,
@@ -145,8 +149,9 @@ describe('signed-msg terminal fill state', () => {
 
 describe('refundedLastAttemptSlot', () => {
 	it('reopens the pacing gate one slot after the failed attempt', () => {
-		// Gate: currentSlot - lastAttemptSlot < pacingSlots. 2000ms at 400ms
-		// baseline = 5 pacing slots; a rewind of 4 makes the very next slot pass.
+		// The gate is currentSlot - lastAttemptSlot < pacingSlots. 2000ms at the
+		// 400ms baseline is 5 pacing slots, so a rewind of 4 makes the next slot
+		// pass.
 		const rewound = refundedLastAttemptSlot(CURRENT_SLOT, 5);
 		expect(rewound).to.equal(CURRENT_SLOT - 4);
 		expect(CURRENT_SLOT - rewound < 5).to.be.true;
@@ -159,8 +164,8 @@ describe('refundedLastAttemptSlot', () => {
 	});
 
 	it('caps refunds so a persistent slot-ahead failure stays bounded', () => {
-		// Not a behavior test (the cap lives in refundFillAttempt); pin the
-		// constant so a change to it is a deliberate diff.
+		// This is not a behavior test, because the cap lives in refundFillAttempt.
+		// It pins the constant so that a change to it shows up in a diff.
 		expect(MAX_SIGNED_MSG_ATTEMPT_REFUNDS).to.equal(5);
 	});
 });

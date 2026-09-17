@@ -135,15 +135,18 @@ export class VaultClient {
 	}
 
 	/**
-	 * The spot markets whose lending-interest index prices the vault's equity: the denomination
-	 * market, every market the vault's velocity user holds a spot position in, and the quote spot
-	 * market of every isolated perp position it holds.
+	 * The spot markets whose lending-interest index prices the vault's equity.
+	 * They are the denomination market, every market the vault's velocity user
+	 * holds a spot position in, and the quote spot market of every isolated perp
+	 * position it holds.
 	 *
-	 * `Vault::calculate_equity` converts each held spot position through its own market's
-	 * cumulative index, and an isolated perp position's collateral through its perp market's quote
-	 * spot market, so every one of these has to be refreshed before shares are priced. The program
-	 * derives the same set on chain from the vault and its velocity user, so a caller cannot leave
-	 * one out — it can only fail to make one writable, which velocity then rejects.
+	 * `Vault::calculate_equity` converts each held spot position through its own
+	 * market's cumulative index. It converts an isolated perp position's
+	 * collateral through that perp market's quote spot market. Every one of
+	 * these markets is refreshed before shares are priced. The program derives
+	 * the same set on chain from the vault and its velocity user, so a caller
+	 * cannot leave one out. A caller can only fail to make one writable, which
+	 * velocity then rejects.
 	 */
 	private getSpotMarketsThatPriceEquity(
 		userAccounts: UserAccount[],
@@ -181,9 +184,10 @@ export class VaultClient {
 		skipVaultProtocol = false,
 		skipFeeUpdate = false
 	) {
-		// The refresh CPI writes to every market that prices equity, so each must travel
-		// writable. A market discovered from the user account is read-only by default, and
-		// velocity fails the load with SpotMarketWrongMutability if it was asked to refresh one.
+		// The refresh CPI writes to every market that prices equity, so each one
+		// travels writable. A market discovered from the user account is
+		// read-only by default, and velocity fails the load with
+		// SpotMarketWrongMutability when it is asked to refresh one.
 		const remainingAccounts = this.velocityClient.getRemainingAccounts({
 			userAccounts,
 			writableSpotMarketIndexes: Array.from(
@@ -411,24 +415,19 @@ export class VaultClient {
 	}
 
 	/**
-	 * The accounts every NAV-snapshotting vault instruction needs so the vaults
-	 * program can CPI velocity's `refresh_spot_market_interest` *before* it prices
-	 * shares.
+	 * The accounts every NAV-snapshotting vault instruction needs, so that the
+	 * vaults program can CPI velocity's `refresh_spot_market_interest` before it
+	 * prices shares.
 	 *
 	 * `Vault::calculate_equity` values every held velocity spot position off that
-	 * market's STORED cumulative index; only velocity may write those accounts, so
-	 * the refresh has to be a CPI. Without it a stale index misprices NAV — entrants
-	 * overmint shares (OtterSec #136) and withdraw requests/cancellations snapshot
-	 * the wrong equity (OtterSec #137).
+	 * market's stored cumulative index. Only velocity may write those accounts,
+	 * so the refresh has to be a CPI. A stale index misprices NAV. An entrant
+	 * then overmints shares (OtterSec #136), and a withdraw request or a
+	 * cancellation snapshots the wrong equity (OtterSec #137).
 	 *
-	 * The markets themselves are not named accounts. They travel in the instruction's
-	 * remaining accounts, which `getRemainingAccountsForUser` marks writable.
-	 *
-	 * ABI note: 19 vault instructions carry only `velocity_state` and
-	 * `velocity_program` for the refresh. `velocity_spot_market` and
-	 * `velocity_oracle` were removed from all of them, and `velocity_spot_market_vault`
-	 * from the thirteen that did not already need it for a deposit or withdraw CPI.
-	 * Callers that hand-roll account lists must drop the removed accounts.
+	 * The markets themselves are not named accounts. They travel in the
+	 * instruction's remaining accounts, which `getRemainingAccountsForUser`
+	 * marks writable.
 	 */
 	private async getSpotMarketRefreshAccounts(): Promise<{
 		velocityState: PublicKey;
@@ -735,8 +734,9 @@ export class VaultClient {
 			velocitySpotMarketMint: spotMarket.mint,
 			velocityUserStats: userStatsKey,
 			velocityUser: userKey,
-			// A vault's velocity user holds positions like any other, so it
-			// carries the same relay liquidation coverage, created with it.
+			// A vault's velocity user holds positions like any other user, so it
+			// carries the same relay liquidation coverage. The coverage account
+			// is created with the user.
 			velocityUserConditions: getUserConditionsPublicKey(
 				this.velocityClient.program.programId,
 				userKey
@@ -3046,12 +3046,14 @@ export class VaultClient {
 	/**
 	 * Adds an amount to an insurance fund stake for the vault.
 	 *
-	 * An IF share is indivisible, so velocity stakes only what prices to whole shares. The
-	 * instruction transfers `amount` from the manager into the vault's IF token account and
-	 * stakes that account's whole balance, so a remainder left behind by an earlier add is
-	 * folded in and the staked amount can exceed `amount`. A balance below the price of one
-	 * share is rejected with `IFDepositMintsZeroShares`. Read the staked amount from the
-	 * `InsuranceFundStakeRecord` event rather than assuming it equals `amount`.
+	 * An IF share is indivisible, so velocity stakes only what prices to whole
+	 * shares. The instruction transfers `amount` from the manager into the
+	 * vault's IF token account and stakes that account's whole balance. A
+	 * remainder left behind by an earlier add is therefore included, and the
+	 * staked amount can exceed `amount`. A balance below the price of one share
+	 * is rejected with `IFDepositMintsZeroShares`. Read the staked amount from
+	 * the `InsuranceFundStakeRecord` event rather than assume it equals
+	 * `amount`.
 	 *
 	 * @param vault vault address to update
 	 * @param spotMarketIndex spot market index of the insurance fund stake
@@ -3226,10 +3228,10 @@ export class VaultClient {
 				vault: vault,
 				manager: vaultAccount.manager,
 				velocityUserStats: vaultAccount.userStats,
-				// The cancel now settles already-due revenue into the IF vault before
-				// pricing the forfeiture (OtterSec #141), so it carries the same accounts as
-				// requestRemove. velocitySpotMarketVault is a PDA and auto-resolves from its
-				// seeds.
+				// The cancel settles already-due revenue into the IF vault before
+				// it prices the forfeiture (OtterSec #141), so it carries the same accounts as
+				// requestRemove. velocitySpotMarketVault is a PDA and resolves
+				// from its seeds.
 				velocityState: await this.velocityClient.getStatePublicKey(),
 				velocitySigner: this.velocityClient.getStateAccount().signer,
 				tokenProgram: TOKEN_PROGRAM_ID,
@@ -3708,9 +3710,11 @@ export class VaultClient {
 		const vaultAccount = await this.program.account.vault.fetch(vault);
 		const feeUpdate = getFeeUpdateAddressSync(this.program.programId, vault);
 
-		// Installing a matured update settles the vault's fee first, which needs vault equity:
-		// pass the spot market and its oracle. Protocol vaults also pass VaultProtocol, so the
-		// queued policy is validated against the live combined manager+protocol fee bounds.
+		// Installing a matured update settles the vault's fee first, and that
+		// needs the vault's equity, so the call passes the spot market and its
+		// oracle. A protocol vault also passes VaultProtocol, so the program
+		// validates the queued policy against the live bounds on the combined
+		// manager and protocol fee.
 		const user = await this.getSubscribedVaultUser(vaultAccount.user);
 		const userStatsKey = getUserStatsAccountPublicKey(
 			this.velocityClient.program.programId,

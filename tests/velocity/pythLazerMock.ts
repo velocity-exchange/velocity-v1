@@ -114,17 +114,19 @@ export function makeFreshLazerMessageHex(
 }
 
 /**
- * Convenience: a fresh SOL (feed 6) message stamped at the *bankrun* clock.
- * Pass `bankrunContextWrapper.connection.getTime()` (on-chain unix seconds) — NOT `Date.now()`:
- * bankrun's clock advances ~1s per processed transaction, so in transaction-heavy tests it runs
- * well ahead of wall-clock; stamping off wall-clock would look stale on-chain.
+ * A fresh SOL message, on feed 6, stamped at the bankrun clock.
  *
- * `leadSeconds` biases the stamp into the future to survive transactions that run between building
- * the message and its post executing. The program rejects a stamp more than
+ * Pass `bankrunContextWrapper.connection.getTime()`, which is on-chain unix seconds. Do not pass
+ * `Date.now()`. The bankrun clock advances about one second per processed transaction, so in a
+ * transaction-heavy test it runs far ahead of the wall clock. A stamp taken from the wall clock
+ * would read as stale on chain.
+ *
+ * `leadSeconds` moves the stamp into the future, so it survives the transactions that run between
+ * building the message and posting it. The program rejects a stamp more than
  * `PYTH_LAZER_MAX_FUTURE_SECONDS` ahead of the clock, so the lead must stay under that bound.
- * Keep it 0 for an immediate post: a future `publish_time` is fine for a fill but can wedge
- * time-delta math in the LP-pool settle/AUM path, so only lead when the post is genuinely
- * deferred (e.g. a crank bundled into a later-sent transaction).
+ * Keep it 0 for an immediate post. A future `publish_time` is safe for a fill, and it can stall
+ * the time-delta math in the LP-pool settle and AUM path. Lead only when the post is deferred,
+ * such as a crank bundled into a transaction sent later.
  */
 export function freshLazerSolHex(
 	nowSeconds: number,

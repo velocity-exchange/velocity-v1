@@ -27,10 +27,10 @@ import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
 import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
 
-// An oracle-floating limit price cannot rest on a CLOB, so the program
-// refuses every limit order that carries an oracle offset
-// (InvalidOrderOracleOffset). An oracle-relative maker quote belongs to a
-// PropAMM quoter instead.
+// An oracle-floating limit price cannot rest on a CLOB. The program therefore
+// refuses every limit order that carries an oracle offset, with
+// InvalidOrderOracleOffset. An oracle-relative maker quote belongs to a PropAMM
+// quoter instead.
 describe('oracle offset limit orders are refused', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
 

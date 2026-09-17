@@ -241,33 +241,31 @@ pub fn handle_delete_user(ctx: Context<DeleteUser>) -> Result<()> {
     // away for good.
     //
     // `revoke_completed_orders` only transitions rows whose `sub_account_id` matches
-    // the `User` it is handed, and `delete_user` retires that id permanently — the
+    // the `User` it is handed, and `delete_user` retires that id for good. The
     // allocation counter (`number_of_sub_accounts_created`) has no decrement site, so
-    // the id is never reissued and no future `User` can ever match those rows again.
-    // A row left `open && !completed` therefore became unreachable: the builder's
-    // accrued fee was stranded and the market's `pending_revenue_share` stayed
-    // inflated for the life of the market.
+    // the id is never reissued and no later `User` matches those rows. A row left
+    // `open && !completed` was therefore unreachable. The builder's accrued fee was
+    // stranded, and the market's `pending_revenue_share` stayed high for the life of
+    // the market.
     //
-    // Note the window is *not* the open-order case — `validate_user_deletion` already
-    // requires every order closed. It is the filled-but-not-yet-revoked row, which is
-    // exactly the state `revoke_completed_orders` exists to resolve.
+    // The window is the filled but not yet revoked row, which is the state
+    // `revoke_completed_orders` resolves. `validate_user_deletion` already requires
+    // every order closed, so an open order never reaches here.
     //
-    // Resolve rather than block: because every order is already closed, each row for
-    // this subaccount transitions to `Completed` (or is cleared when it carries no
-    // fees), which is the state the permissionless sweep pays out of — and the sweep
-    // needs no `User`, so it still pays after the account is gone. Blocking deletion
-    // instead would punish the wrong party, holding a user's rent hostage until a
-    // keeper happened to crank.
+    // Every order is closed by now, so each row for this subaccount moves to
+    // `Completed`, or is cleared when it carries no fees. The permissionless sweep
+    // pays out of that state and needs no `User`, so it still pays after the account
+    // is gone. Blocking deletion instead would hold the user's rent until a keeper
+    // cranked.
     //
     // The escrow is pinned to the authority's PDA by `seeds`, so an empty account
-    // proves this authority has no escrow (nothing to orphan) rather than signalling
-    // an omitted account.
+    // proves this authority has no escrow rather than an omitted account.
     if !ctx.accounts.revenue_share_escrow.data_is_empty() {
         let mut escrow = ctx.accounts.revenue_share_escrow.load_zc_mut()?;
         escrow.revoke_completed_orders(user)?;
 
-        // Belt and braces: after the above, nothing for this subaccount may still be
-        // outstanding. If it somehow is, fail rather than retire the id over it.
+        // Nothing for this subaccount may be outstanding after the revoke. If one
+        // is, fail rather than retire the id over it.
         validate!(
             !escrow.has_outstanding_orders_for_sub_account(user.sub_account_id)?,
             ErrorCode::UserCantBeDeleted,
@@ -337,13 +335,13 @@ pub struct InitializeUser<'info> {
         payer = payer
     )]
     pub user: AccountLoader<'info, User>,
-    /// Relay liquidation coverage, created alongside the account it
-    /// watches. Required: relay can only watch an account that exists, and
-    /// the moment coverage matters is the moment somebody else's transaction
-    /// gave the user a position, where the user signs nothing and no rent can
-    /// be charged to them. `deploy-scripts/migrate.ts` backfills the accounts
-    /// that predate the field. Coming up empty is fine — the first sync
-    /// writes the thresholds.
+    /// Relay liquidation coverage, created alongside the account it watches.
+    /// It is required because relay can only watch an account that exists.
+    /// Coverage first matters when somebody else's transaction gives the user a
+    /// position. The user signs nothing there, so no rent can be charged to
+    /// them. `deploy-scripts/migrate.ts` backfills the accounts that predate
+    /// the field. An empty block is fine, because the first sync writes the
+    /// thresholds.
     #[account(
         init_if_needed,
         seeds = [USER_CONDITIONS_PDA_SEED, user.key().as_ref()],
@@ -404,16 +402,15 @@ pub struct DeleteUser<'info> {
     pub state: AccountLoader<'info, State>,
     #[account(mut)]
     pub authority: Signer<'info>,
-    /// CHECK: the authority's `RevenueShareEscrow`, which may legitimately not exist —
-    /// most users never create one. Deliberately an `UncheckedAccount` **pinned by
-    /// `seeds`** rather than a typed `AccountLoader`: because the address is derived
-    /// and not caller-chosen, absence is *provable* (`data_is_empty()`), so the handler
-    /// can distinguish "this authority has no escrow" from "the caller omitted it to
-    /// skip the check". A typed loader would instead make deletion impossible for the
-    /// majority of users, who have no escrow account to pass.
+    /// CHECK: the authority's `RevenueShareEscrow`, which may not exist. Most users
+    /// never create one. It is an `UncheckedAccount` pinned by `seeds`, not a typed
+    /// `AccountLoader`. The address is derived and not caller-chosen, so
+    /// `data_is_empty()` proves absence. The handler can then tell "this authority has
+    /// no escrow" from "the caller omitted it to skip the check". A typed loader would
+    /// make deletion impossible for the many users who have no escrow account to pass.
     ///
-    /// Required rather than `Option` so a caller holding fee-bearing builder rows
-    /// cannot simply leave it out (OtterSec #128).
+    /// It is required rather than `Option`, so a caller holding fee-bearing builder
+    /// rows cannot leave it out (OtterSec #128).
     #[account(
         mut,
         seeds = [REVENUE_SHARE_ESCROW_PDA_SEED.as_bytes(), authority.key().as_ref()],

@@ -72,7 +72,6 @@ export * from './events/pollingLogProvider';
 export * from './jupiter/jupiterClient';
 // Primary swap client interface - use this for all swap operations
 export * from './swap/UnifiedSwapClient';
-// The SwapProvider contract both providers implement, and the shared route filter
 export * from './swap/types';
 export * from './swap/routeInstructions';
 export * from './math/auction';

@@ -1,7 +1,6 @@
 # velocity-rs
 
-High performance Rust SDK for building offchain clients for the
-[Velocity](https://velocity.exchange) protocol on Solana.
+Rust SDK for offchain clients of the [Velocity](https://velocity.exchange) protocol on Solana.
 
 `velocity-rs` lives in the [velocity-v1](https://github.com/velocity-exchange/velocity-v1)
 monorepo, under `rust/velocity-rs`.
@@ -16,33 +15,32 @@ locates the package inside the monorepo automatically:
 velocity-rs = { git = "https://github.com/velocity-exchange/velocity-v1", rev = "<commit-sha>" }
 ```
 
-Pin a `rev` (or a `tag`, once tagged releases exist) — depending on the default branch
-means every `cargo update` can pull breaking changes.
+Pin a `rev`, or a `tag` once tagged releases exist. A dependency on the default branch lets
+every `cargo update` pull a breaking change.
 
 ### Requirements
 
-- **Rust ≥ 1.89** (Anchor 1.0 MSRV; the monorepo CI builds with recent stable).
-- **Apple Silicon:** use an x86_64 toolchain (`rustup override set stable-x86_64-apple-darwin`,
-  Rosetta required) — see [Setup](#setup). Native aarch64 toolchains are unsupported for
-  code that deserializes the program's zero-copy accounts.
-- velocity-rs is built on the **solana `4.x` RPC/tx crate line** (`solana-rpc-client`,
-  `solana-pubkey`, `solana-transaction`, …), which is what decodes SIMD-0385 transaction v1.
-  A few split crates that never left 3.x (`solana-commitment-config`, `solana-keypair`,
-  `solana-signature`, …) stay there. Apps pinned to the legacy `solana-sdk 1.x/2.x` types
-  will hit type mismatches at the API boundary.
+- **Rust ≥ 1.89**, the Anchor 1.0 MSRV. The monorepo CI builds with recent stable.
+- **Apple Silicon:** use an x86_64 toolchain and Rosetta. See [Setup](#setup). Native aarch64
+  toolchains are unsupported for code that deserializes the program's zero-copy accounts.
+- velocity-rs is built on the **solana `4.x` RPC and transaction crate line**
+  (`solana-rpc-client`, `solana-pubkey`, `solana-transaction`, …). That line decodes SIMD-0385
+  transaction v1. A few split crates that never left 3.x stay there, such as
+  `solana-commitment-config`, `solana-keypair`, and `solana-signature`. An app pinned to the
+  legacy `solana-sdk 1.x/2.x` types hits type mismatches at the API boundary.
 
-No FFI layer, no submodules, no build-time codegen for consumers: the crate depends on
-the `velocity` program crate as a plain host-library path-dep within the repo, and the
-IDL-derived types (`crates/src/velocity_idl.rs`) are committed and kept in sync by CI.
-The build script only regenerates them when building inside the monorepo with the
-canonical IDL present, and never rewrites the file unless its content changed — so
-read-only and vendored checkouts (`cargo vendor`, Nix) build cleanly.
+Consumers need no FFI layer, no submodule, and no build-time codegen. The crate depends on the
+`velocity` program crate as a host-library path-dep inside the repo. The IDL-derived types in
+`crates/src/velocity_idl.rs` are committed, and CI keeps them in sync. The build script
+regenerates them only inside the monorepo, where the canonical IDL is present, and rewrites the
+file only when the content changed. Read-only and vendored checkouts such as `cargo vendor` and
+Nix therefore build cleanly.
 
 ## Use
 
-The `VelocityClient` struct provides methods for reading velocity program accounts and crafting transactions.
-It is built on a subscription model where live account updates are transparently cached and made accessible via accessor methods.
-The client may be subscribed either via Ws or gRPC.
+`VelocityClient` reads velocity program accounts and builds transactions. It caches live account
+updates from a subscription and exposes them through accessor methods. Subscribe over WebSocket or
+over gRPC.
 
 ```rust
 use velocity_rs::{AccountFilter, VelocityClient, Wallet, grpc::GrpcSubscribeOpts};
@@ -102,42 +100,42 @@ rustup toolchain install stable-x86_64-apple-darwin --force-non-host
 rustup override set stable-x86_64-apple-darwin
 ```
 
-⚠️ Native aarch64 toolchains are unsupported: the program's zero-copy account structs
-must match the on-chain (x86_64/SBF) memory layout, and aarch64 builds can fail at
-runtime with deserialization errors like `InvalidSize`.
+Warning: native aarch64 toolchains are unsupported. The program's zero-copy account structs must
+match the on-chain x86_64 SBF memory layout. An aarch64 build can fail at runtime with a
+deserialization error such as `InvalidSize`.
 
 ### Linux
 
-x86_64 with stable Rust ≥ 1.89 — no special setup.
+x86_64 with stable Rust ≥ 1.89. No extra setup is needed.
 
-## Local Development
+## Local development
 
-`velocity-rs` consumes the `velocity` program crate directly as a host-library path-dep
-(`../../programs/velocity`). There is no FFI layer, no `drift-ffi-sys`, and no git submodule.
+`velocity-rs` consumes the `velocity` program crate as a host-library path-dep at
+`../../programs/velocity`. There is no FFI layer, no `drift-ffi-sys`, and no git submodule.
 
-**clone the monorepo**
+Clone the monorepo:
 
 ```bash
 git clone https://github.com/velocity-exchange/velocity-v1 &&\
 cd velocity-v1/rust/velocity-rs
 ```
 
-**build**
+Build:
 
 ```bash
 cargo check
 ```
 
-The `rust/` directory is its own Cargo workspace (separate from the program workspace at
-the repo root) with its own lockfile and `rust/target/` build dir.
+The `rust/` directory is its own Cargo workspace, separate from the program workspace at the repo
+root. It has its own lockfile and its own `rust/target/` build directory.
 
 ## Updating IDL types
 
-`crates/src/velocity_idl.rs` is generated from the canonical program IDL
-`packages/sdk/src/idl/velocity.json` (the same file the TypeScript SDK uses). The
-generated file is **committed**; `build.rs` regenerates it only when the canonical IDL
-is present (i.e. inside the monorepo) and only rewrites it when the content changed.
-CI fails if the committed file is out of sync with the IDL.
+`crates/src/velocity_idl.rs` is generated from the canonical program IDL at
+`packages/sdk/src/idl/velocity.json`, the same file the TypeScript SDK uses. The generated file is
+committed. `build.rs` regenerates it only when the canonical IDL is present, which means inside the
+monorepo, and rewrites it only when the content changed. CI fails if the committed file is out of
+sync with the IDL.
 
 To refresh it after a program change, from the monorepo root:
 

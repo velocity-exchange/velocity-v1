@@ -20,9 +20,9 @@ pub fn handle_liquidate_perp<'c: 'info, 'info>(
     let slot = clock.slot;
     let state = ctx.accounts.state.load()?;
 
-    // A position-acquiring liquidation is inventory the protocol must never
-    // warehouse: the unsigned program-keeper mode exists for the with-fill
-    // flavor only, where the liquidator is just the filler.
+    // The protocol must never warehouse the inventory a position-acquiring
+    // liquidation takes on. The unsigned program-keeper mode therefore exists
+    // for the with-fill flavor only, where the liquidator is only the filler.
     validate!(
         ctx.accounts.liquidator.load()?.authority != state.signer,
         ErrorCode::DefaultError,
@@ -103,8 +103,9 @@ pub fn handle_liquidate_perp_with_fill<'c: 'info, 'info>(
 
     let (makers_and_referrer, makers_and_referrer_stats) =
         load_user_maps(remaining_accounts_iter, true)?;
-    // Whatever the map and user sections did not take is the quoter section:
-    // the market's slab plus the consulted quoters' registered CPI accounts.
+    // Whatever the map and user sections did not take is the quoter section. It
+    // holds the market's slab and the consulted quoters' registered CPI
+    // accounts.
     let tail =
         &ctx.remaining_accounts[ctx.remaining_accounts.len() - remaining_accounts_iter.len()..];
 
@@ -127,9 +128,9 @@ pub fn handle_liquidate_perp_with_fill<'c: 'info, 'info>(
         liquidator_key: &liquidator_key,
     };
 
-    // Three steps, in the order they have to happen: the liquidation sizes
-    // its order and places it, this handler routes the fill against the
-    // accounts only it holds, and the liquidation books the result.
+    // Three steps run in the order they must happen. The liquidation sizes its
+    // order and places it. This handler routes the fill against the accounts
+    // only it holds. The liquidation then books the result.
     let filled_quote = match controller::liquidation::place_liquidation_order(
         market_index,
         parties(),
@@ -151,18 +152,16 @@ pub fn handle_liquidate_perp_with_fill<'c: 'info, 'info>(
         }
     };
 
-    // Program-keeper mode: the caller's payout account earns reservoir
-    // lamports for the crank — the same loop every other relay executor
-    // closes.
+    // In program-keeper mode the caller's payout account earns reservoir
+    // lamports for the crank. Every other relay executor closes the same loop.
     //
-    // Only for a crank that actually liquidated something. Several paths
-    // through the controller succeed without filling: a user who can exit
-    // liquidation exits it, and a shortage that allows no transfer transfers
-    // nothing. Those are correct outcomes rather than errors, but they are
-    // not work, and paying for them would let anyone empty the reservoir by
-    // cranking a healthy account in a loop — which stops the cranks that do
-    // matter. The filled quote is the proof, and it is the same figure the
-    // reimbursement is capped against.
+    // Only a crank that liquidated something is paid. Several paths through the
+    // controller succeed without filling. A user who can exit liquidation exits
+    // it, and a shortage that allows no transfer transfers nothing. Those
+    // outcomes are correct rather than errors, but they are not work. Paying for
+    // them would let anyone empty the reservoir by cranking a healthy account in
+    // a loop, which stops the cranks that do matter. The filled quote is the
+    // proof, and the reimbursement is capped against the same figure.
     if filled_quote > 0 && ctx.accounts.liquidator.load()?.authority == state.signer {
         pay_liquidation_crank(&ctx, &state, &mut maps, market_index, filled_quote)?;
     }
@@ -170,27 +169,28 @@ pub fn handle_liquidate_perp_with_fill<'c: 'info, 'info>(
     Ok(())
 }
 
-/// The liquidity a forced liquidation order fills against: the market's book
-/// and its quoters through the router, the vAMM, and any DLOB makers the
+/// The liquidity a forced liquidation order fills against. That is the market's
+/// book and its quoters through the router, the vAMM, and any DLOB makers the
 /// caller loaded.
 ///
-/// A liquidation is the one taker order velocity writes for somebody else, so
-/// it is also the one route nobody signs for. Everything it needs to answer
-/// for that — who built the transaction, how many locks it holds — is here
-/// rather than on the controller, which knows only the order.
+/// A liquidation is the one taker order velocity writes for somebody else, so it
+/// is also the one route nobody signs for. The facts that answer for it live
+/// here and not on the controller, which knows only the order. Those facts are
+/// who built the transaction and how many locks it holds.
 struct LiquidationBooks<'a, 'info> {
     state: &'a State,
     market_index: u16,
     user: &'a AccountLoader<'info, User>,
     user_stats: &'a AccountLoader<'info, UserStats>,
-    /// The liquidator, which a with-fill liquidation uses only as the filler:
-    /// it routes the position to the book and acquires no balance.
+    /// The liquidator. A with-fill liquidation uses it only as the filler. It
+    /// routes the position to the book and acquires no balance.
     liquidator: &'a AccountLoader<'info, User>,
     liquidator_stats: &'a AccountLoader<'info, UserStats>,
     makers_and_referrer: &'a UserMap<'info>,
     makers_and_referrer_stats: &'a UserStatsMap<'info>,
-    /// The quoter section of the account list: the market's `QuoterSlabV0`
-    /// plus the union of the consulted quoters' registered CPI accounts.
+    /// The quoter section of the account list. It holds the market's
+    /// `QuoterSlabV0` and the union of the consulted quoters' registered CPI
+    /// accounts.
     tail: &'info [AccountInfo<'info>],
     instructions_sysvar: &'a Option<UncheckedAccount<'info>>,
 }
@@ -297,14 +297,13 @@ impl<'info> LiquidationBooks<'_, 'info> {
 
     /// Whether the depth this liquidation can reach has measurably rested.
     ///
-    /// A liquidation carries no attestation: its order is written by the
-    /// program in the same transaction that fills it, so nothing about the
-    /// taker vouches for protected flow. What can be vouched for is the other
-    /// half of the same promise — that the book's makers have had time to
-    /// reprice — and it is measured the way the cross cranks measure it,
-    /// over the side this fill sweeps. Without it a book with a speed bump
-    /// quotes a liquidation nothing at all, and the position it must close
-    /// reaches the vAMM alone.
+    /// A liquidation carries no attestation. The program writes its order in the
+    /// same transaction that fills it, so nothing about the taker vouches for
+    /// protected flow. This function measures the other half of the same
+    /// promise, which is that the book's makers have had time to reprice. It
+    /// measures it the way the cross cranks do, over the side this fill sweeps.
+    /// Without the measure a book with a speed bump quotes a liquidation
+    /// nothing, and the position it must close reaches the vAMM alone.
     fn served_window(
         &self,
         order: &RoutedOrder,
@@ -352,22 +351,21 @@ fn pay_liquidation_crank<'info>(
             conditions.market_index,
             market_index
         )?;
-        // A fill below the dust floor liquidates the position but earns no
-        // flat payment. Paying it per tiny step would let a keeper farm
-        // the flat reward by slicing one liquidation into many.
+        // A fill below the dust floor liquidates the position but earns no flat
+        // payment. Paying for each small step would let a keeper farm the flat
+        // reward by slicing one liquidation into many.
         let flat = if filled_quote >= LIQUIDATION_FLAT_PAYMENT_MIN_FILLED_QUOTE {
             u64::from(conditions.crank_payments.liquidation)
         } else {
             0
         };
-        // The flat payment is not shared between the liquidations batched
-        // into one transaction. A relay crank carries its own payment guard,
-        // which measures what this one instruction paid, so a figure that
-        // fell with the size of the batch would fail the guard and revert a
-        // liquidation that already ran. The condition that arms the crank
-        // also has to name the payment before the batch exists. The priority
-        // fee is a real whole-transaction cost and is still shared, inside
-        // the reimbursement below.
+        // The liquidations batched into one transaction do not share the flat
+        // payment. A relay crank carries its own payment guard, which measures
+        // what this one instruction paid. A figure that fell with the size of
+        // the batch would fail that guard and revert a liquidation that already
+        // ran. The condition that arms the crank must also name the payment
+        // before the batch exists. The priority fee is a whole-transaction cost,
+        // so the reimbursement below does share it.
         flat.saturating_add(liquidation_reimbursement(
             &ctx.accounts.instructions_sysvar,
             state,
@@ -385,19 +383,18 @@ fn pay_liquidation_crank<'info>(
     Ok(())
 }
 
-/// What the protocol adds to a liquidation crank's flat payment: the priority
-/// fee the transaction paid, bounded by a share of what the liquidation
-/// recovered.
+/// What the protocol adds to a liquidation crank's flat payment. It is the
+/// priority fee the transaction paid, bounded by a share of what the
+/// liquidation recovered.
 ///
-/// Reads the fee out of the transaction's own compute-budget instructions,
-/// and prices it against the *stored* cost units rather than the limit the
-/// caller requested — a keeper made whole for a fair crank has no reason to
-/// ask for room it does not use, and cannot inflate the bill by asking
-/// anyway.
+/// This function reads the fee out of the transaction's own compute-budget
+/// instructions. `CrankPaymentsV0::crank_priority_lamports` then prices it on
+/// the lesser of the units the caller requested and the stored cost units. A
+/// caller therefore cannot inflate the bill by asking for room it does not use.
 ///
-/// Every reason to decline pays nothing extra rather than erroring: a crank
-/// that lands is worth more than one that reverts over its own tip, and the
-/// flat payment still stands.
+/// Every reason to decline pays nothing extra instead of failing. A crank that
+/// lands is worth more than one that reverts over its own tip, and the flat
+/// payment still stands.
 fn liquidation_reimbursement<'info>(
     instructions_sysvar: &Option<UncheckedAccount<'info>>,
     state: &State,
@@ -420,9 +417,9 @@ fn liquidation_reimbursement<'info>(
         return Ok(0);
     };
 
-    // The priority fee is a whole-transaction cost, so it is shared between the
-    // liquidations batched into that transaction. Reimbursing each one the full
-    // figure would pay the same fee over again per victim.
+    // The priority fee is a whole-transaction cost, so the liquidations batched
+    // into that transaction share it. Reimbursing each one the full figure would
+    // pay the same fee once per liquidated account.
     let claimants = crate::instructions::optional_accounts::tx_reimbursement_claimants(
         sysvar,
         crate::instruction::LiquidatePerpWithFill::DISCRIMINATOR,
@@ -448,9 +445,9 @@ fn liquidation_reimbursement<'info>(
 
 /// The SOL price that converts a quote reimbursement into lamports.
 ///
-/// `None` declines the reimbursement. This is a value transfer driven by an
-/// oracle, so it takes the same validity gate as any other, and an unusable
-/// price pays the flat figure alone rather than reverting the crank.
+/// `None` declines the reimbursement. An oracle drives this value transfer, so
+/// it takes the same validity gate as any other. An unusable price pays the flat
+/// figure alone and does not revert the crank.
 fn crank_sol_price(
     state: &State,
     spot_market_map: &SpotMarketMap,
@@ -677,10 +674,11 @@ pub fn handle_set_user_status_to_being_liquidated<'c: 'info, 'info>(
 #[derive(Accounts)]
 pub struct LiquidatePerp<'info> {
     pub state: AccountLoader<'info, State>,
-    /// CHECK: in signed-keeper mode this must sign for `liquidator`; in
-    /// program-keeper mode (protocol `User` as liquidator, relay turners —
-    /// `liquidate_perp_with_fill` ONLY, the plain path rejects it) it is
-    /// only the lamport payout target and no signature is required.
+    /// CHECK: in signed-keeper mode this account must sign for `liquidator`. In
+    /// program-keeper mode the liquidator is the protocol `User` and the caller
+    /// is a relay turner. This account is then only the lamport payout target,
+    /// and it needs no signature. Program-keeper mode reaches
+    /// `liquidate_perp_with_fill` alone, because the plain path rejects it.
     #[account(mut)]
     pub authority: UncheckedAccount<'info>,
     #[account(
@@ -700,15 +698,15 @@ pub struct LiquidatePerp<'info> {
         constraint = is_stats_for_user(&user, &user_stats)?
     )]
     pub user_stats: AccountLoader<'info, UserStats>,
-    /// The fired market's crank conditions — the reservoir that pays the
-    /// keeper in program-keeper mode (validated against `market_index` in
-    /// the handler). Required in program-keeper mode.
+    /// The fired market's crank conditions. Its reservoir pays the keeper in
+    /// program-keeper mode, and the handler checks it against `market_index`.
+    /// Program-keeper mode requires the account.
     #[account(mut)]
     pub crank_conditions: Option<AccountLoader<'info, ClobCrankConditionsV0>>,
-    /// CHECK: the instructions sysvar, locked by address. Present only for a
-    /// crank that wants its priority fee reimbursed — the fee is stated in
-    /// the transaction's own compute-budget instructions and read back from
-    /// here. Absent, the crank takes the flat payment.
+    /// CHECK: the instructions sysvar, locked by address. It is present only for
+    /// a crank that wants its priority fee reimbursed. The transaction's own
+    /// compute-budget instructions state the fee, and the handler reads it back
+    /// from here. Without this account the crank takes the flat payment.
     #[account(address = solana_program::sysvar::instructions::ID)]
     pub instructions_sysvar: Option<UncheckedAccount<'info>>,
 }
@@ -716,10 +714,10 @@ pub struct LiquidatePerp<'info> {
 #[derive(Accounts)]
 pub struct LiquidateSpot<'info> {
     pub state: AccountLoader<'info, State>,
-    /// A spot liquidation settles by handing the liquidator the borrow and
-    /// the collateral behind it, so whoever liquidates takes on that inventory
-    /// and its price risk. That rules out a protocol keeper, which has no way
-    /// to unwind it, and therefore rules out relay: an executor may name no
+    /// A spot liquidation settles by handing the liquidator the borrow and the
+    /// collateral behind it, so whoever liquidates takes on that inventory and
+    /// its price risk. A protocol keeper has no way to unwind it, so it cannot
+    /// liquidate here. That rules out relay as well. An executor may name no
     /// signer, so a path that requires one is a signed-keeper path only.
     pub authority: Signer<'info>,
     #[account(

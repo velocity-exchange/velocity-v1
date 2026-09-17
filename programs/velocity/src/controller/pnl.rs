@@ -181,11 +181,11 @@ pub fn settle_pnl(
                     return mode.result(ErrorCode::AMMNotUpdatedInSameSlot, market_index, &msg);
                 }
 
-                // Both cached attestations hold, so the only reason
-                // `healthy_oracle` is false is a sample mismatch: the oracle
-                // account was rewritten after the AMM update within this
-                // slot. The cached verdict does not cover the sample being
-                // consumed; reject on its current validity.
+                // Both cached attestations hold, so `healthy_oracle` can only
+                // be false because the samples do not match. The oracle
+                // account was rewritten after the AMM update in this slot. The
+                // cached verdict does not cover the sample being consumed, so
+                // the current validity decides.
                 let msg = format!(
                     "Market={} oracle rewritten after same-slot AMM update; current sample is invalid ({})",
                     market_index, oracle_validity
@@ -193,14 +193,16 @@ pub fn settle_pnl(
                 return mode.result(oracle_validity.get_error_code(), market_index, &msg);
             }
 
-            // #70: SettlePnl deliberately admits StaleForMargin / InsufficientDataPoints — a
-            // user settling their own pnl through a slightly stale oracle is acceptable, and
-            // the layered last_oracle_valid + is_fresh_at checks above backstop the AMM. But a
-            // *third party* (anyone who is not the user's authority or delegate) must not be
-            // able to push another user's *negative* pnl (a loss debited from that user's
-            // collateral) through such a margin-invalid oracle. Gate that specific combination
-            // on the stricter margin validity, mirroring the existing positive-pnl guard that
-            // forces a user to settle their own positive pnl.
+            // SettlePnl deliberately admits StaleForMargin and
+            // InsufficientDataPoints. A user settling their own pnl through a
+            // slightly stale oracle is acceptable, and the layered
+            // last_oracle_valid and is_fresh_at checks above still guard the AMM.
+            // A third party, meaning anyone who is not the user's authority or
+            // delegate, must not push another user's negative pnl through such a
+            // margin-invalid oracle. Negative pnl debits that user's collateral.
+            // That combination is gated on the stricter margin validity, which
+            // mirrors the positive-pnl guard that forces a user to settle their
+            // own positive pnl (OtterSec #70).
             let settler_can_sign_for_user =
                 user.authority.eq(authority) || user.delegate.eq(authority);
             if unrealized_pnl < 0
@@ -439,18 +441,21 @@ pub fn settle_pnl(
     Ok(true)
 }
 
-/// Close a user's position in an expired (Settlement-status) market against the
-/// market's expiry price and settle the result with the pnl pool.
+/// Close a user's position in an expired market against the market's expiry
+/// price and settle the result with the pnl pool. An expired market has
+/// `MarketStatus::Settlement`.
 ///
-/// Returns `Ok(true)` when settlement actually occurred. Returns `Ok(false)`
-/// when the user holds no position in the market, which makes the call a no-op.
-/// Every other rejection is an `Err`. The no-op returns before the market-scoped
-/// SettlePnl pause checks below. Callers must therefore treat `false` exactly as
-/// they treat a soft-skipped [`settle_pnl`] and skip any follow-on side effect
-/// that assumes settlement happened. The one that matters is
-/// `sweep_completed_revenue_share_for_market`. It moves builder/referrer fees
-/// out of the market's pnl pool. A paused market must not lose those fees to a
-/// call that settled nothing.
+/// Returns `Ok(true)` when settlement happened. Returns `Ok(false)` when the
+/// user holds no position in the market, which makes the call a no-op. Every
+/// other rejection is an `Err`.
+///
+/// The no-op returns before the market-scoped SettlePnl pause checks below. A
+/// caller must therefore treat `false` the same way it treats a soft-skipped
+/// [`settle_pnl`]. It must skip any follow-on side effect that assumes
+/// settlement happened. `sweep_completed_revenue_share_for_market` is the one
+/// that matters. It moves builder and referrer fees out of the market's pnl
+/// pool. A paused market must not lose those fees to a call that settled
+/// nothing.
 pub fn settle_expired_position(
     perp_market_index: u16,
     user: &mut User,

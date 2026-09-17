@@ -15,14 +15,14 @@ use quote::quote;
 use sha2::Digest;
 use syn::{Ident, Type};
 
-/// Lower an `IdlType` to the Rust source string we emit.
-///
-/// Defined references collapse to just `Name` — generics are not currently
-/// surfaced; if velocity starts using generic types this needs revisiting.
-/// Longest array serde's own derives cover; past this a field needs
+/// The longest array serde's own derives cover. A longer field needs
 /// [`custom_types::BigArray`].
 const SERDE_MAX_ARRAY_LEN: usize = 32;
 
+/// Lower an `IdlType` to the Rust source string this crate emits.
+///
+/// A defined reference collapses to just `Name`. Generics are not surfaced. If
+/// velocity starts using generic types, this needs revisiting.
 fn idl_type_to_rust(t: &IdlType) -> String {
     match t {
         IdlType::Bool => "bool".into(),
@@ -52,14 +52,15 @@ fn idl_type_to_rust(t: &IdlType) -> String {
                 if *n == 64 && rust == "u8" {
                     "Signature".into()
                 } else if *n > SERDE_MAX_ARRAY_LEN && rust == "u8" {
-                    // `BigArray<u8, N>` can't satisfy anchor's `Space` (the
-                    // `InitSpace` derive never implements it for primitives),
-                    // so byte regions get their own wrapper.
+                    // `BigArray<u8, N>` cannot satisfy anchor's `Space`, because
+                    // the `InitSpace` derive never implements it for primitives.
+                    // A byte region therefore gets its own wrapper.
                     format!("ByteArray<{n}>")
                 } else if *n > SERDE_MAX_ARRAY_LEN {
-                    // serde only derives for `[T; N]` up to N = 32. Applied at
-                    // every depth, so a nested `[[T; 128]; 16]` has its inner
-                    // array wrapped even though the outer one is short.
+                    // serde only derives for `[T; N]` up to N = 32. This rule
+                    // applies at every depth, so a nested `[[T; 128]; 16]` has
+                    // its inner array wrapped even though the outer one is
+                    // short.
                     format!("BigArray<{rust}, {n}>")
                 } else {
                     format!("[{}; {}]", rust, n)

@@ -1,39 +1,38 @@
 import { BN } from '../isomorphic/anchor';
 
 /**
- * Wall-clock durations and the live slot length — the TypeScript mirror of the
- * program's `math/time.rs`.
+ * Wall-clock durations and the live slot length. This is the TypeScript mirror
+ * of the program's `math/time.rs`.
  *
- * Solana's slot time is dropping from 400ms to 200ms through feature gates
- * (400 -> 350 -> 300 -> 250 -> 200), so slot counts and wall-clock durations
- * are separated by (branded) type:
+ * Solana's slot time drops from 400ms to 200ms through feature gates
+ * (400, 350, 300, 250, 200). Slot counts and wall-clock durations therefore
+ * carry separate branded types:
  *
- * - `Millis` is the only duration unit: every threshold, window, ramp, and
- *   grace period. It cannot be compared against a slot count without
- *   converting through the live slot length.
- * - `SlotDurationMs` is the current slot length from `State.slotDurationMs`
- *   (`slotDurationFromState` resolves the 0-unset sentinel to the 400ms
- *   baseline).
- * - Plain numbers/BN stay the type of actual slot counts.
+ * - `Millis` is the only duration unit. Every threshold, window, ramp and
+ *   grace period is a `Millis`. A comparison against a slot count must convert
+ *   through the live slot length.
+ * - `SlotDurationMs` is the current slot length from `State.slotDurationMs`.
+ *   `slotDurationFromState` reads the 0 sentinel as the 400ms baseline.
+ * - Plain numbers and BN stay the type of actual slot counts.
  *
  * Legacy admin-set onchain fields keep their compact encoding in units of
- * `STORED_UNIT_MS` = 400ms (the historical slot length); decode them with
- * `millisFromStoredUnits`. That factor is a storage codec detail, not a unit
- * to think in; new compact onchain fields should declare their encoding with
- * Rust's `StoredSlotDuration<T, SLOT_MS>` and normalize to `Millis` for math.
+ * `STORED_UNIT_MS`, which is 400ms, the historical slot length. Decode them
+ * with `millisFromStoredUnits`. That factor is a storage codec, not a unit to
+ * think in. A new compact onchain field declares its encoding with Rust's
+ * `StoredSlotDuration<T, SLOT_MS>` and normalizes to `Millis` for math.
  *
- * Rounding matches the program exactly: `millisToSlots` floors (staleness
- * windows marginally tighter, the safe direction), `millisToSlotsCeil` is for
- * user-protection windows, `millisFromSlots` is exact, `divPeriods` floors.
+ * Rounding matches the program exactly. `millisToSlots` floors, which makes a
+ * staleness window marginally tighter. That is the safe direction.
+ * `millisToSlotsCeil` is for user-protection windows. `millisFromSlots` is
+ * exact. `divPeriods` floors.
  *
- * Full design rationale and worked examples: `docs/SLOT-DURATION.md` in the
- * repo root.
+ * `docs/SLOT-DURATION.md` holds the design rationale and worked examples.
  */
 
 /**
- * Storage encoding quantum for pre-gate duration fields: the historical 400ms
- * slot length. Confined to decoding those fields (and the calibration periods
- * of a few legacy per-slot rates).
+ * Storage quantum for pre-gate duration fields, the historical 400ms slot
+ * length. Use it only to decode those fields and the calibration periods of a
+ * few legacy per-slot rates.
  */
 export const STORED_UNIT_MS = 400;
 
@@ -50,34 +49,35 @@ export const SLOT_DURATION_BASELINE = STORED_UNIT_MS as SlotDurationMs;
 
 /**
  * Every slot length in the current gate rollout, longest first. Permissionless
- * synchronization only accepts the four fixed feature keys and never permits
- * the active duration to move backward.
+ * synchronization accepts only the four fixed feature keys. It never lets the
+ * active duration move backward.
  */
 export const SLOT_DURATION_SCHEDULE_MS: readonly SlotDurationMs[] = [
 	400, 350, 300, 250, 200,
 ] as SlotDurationMs[];
 
 /**
- * The shortest scheduled slot length (200ms, fully rolled out). The safe
- * assumption for a **user-protection window** (swift signing budgets, blockhash
- * and auction countdowns) when the slot feed is dead: it under-promises the
- * wall clock the user has instead of doubling it. The opposite direction from
- * {@link SLOT_DURATION_BASELINE} — see `docs/SLOT-DURATION.md`.
+ * The shortest scheduled slot length, 200ms at full rollout. A user-protection
+ * window assumes this length when the slot feed is dead. Swift signing budgets,
+ * blockhash windows and auction countdowns are such windows. The assumption
+ * under-promises the wall clock the user has instead of doubling it.
+ * {@link SLOT_DURATION_BASELINE} is the opposite direction. See
+ * `docs/SLOT-DURATION.md`.
  */
 export const SLOT_DURATION_FLOOR = SLOT_DURATION_SCHEDULE_MS[
 	SLOT_DURATION_SCHEDULE_MS.length - 1
 ] as SlotDurationMs;
 
 /**
- * The historical 400ms calibration period of the legacy per-slot rates
- * (mirrors `Millis::UNIT`).
+ * The historical 400ms calibration period of the legacy per-slot rates. It
+ * mirrors `Millis::UNIT`.
  */
 export const MILLIS_UNIT = new BN(STORED_UNIT_MS) as Millis;
 
 /**
- * Resolve the raw `State.slotDurationMs` (base) field: `0` is what pre-upgrade
- * accounts read out of former padding and means "unset" (the 400ms baseline).
- * This is the value *before* any staged switch — most callers want
+ * Resolve the raw `State.slotDurationMs` base field. A pre-upgrade account
+ * reads `0` out of former padding. That means unset and selects the 400ms
+ * baseline. The result precedes any staged switch. Most callers want
  * {@link activeSlotDurationFromState}, which also applies a staged flip.
  */
 export function slotDurationFromState(raw?: number): SlotDurationMs {
@@ -86,7 +86,7 @@ export function slotDurationFromState(raw?: number): SlotDurationMs {
 }
 
 /**
- * The four post baseline slot lengths in activation order, the mirror of the
+ * The four post baseline slot lengths in activation order. It mirrors the
  * program's `SLOT_DURATION_TRANSITION_MS`. `State.slotDurationTransitionSlots`
  * stores the first slot of each regime at the matching index.
  */
@@ -95,10 +95,10 @@ export const SLOT_DURATION_TRANSITION_MS: readonly SlotDurationMs[] = [
 ] as SlotDurationMs[];
 
 /**
- * The `State` fields the live slot duration is resolved from: the IBRL
- * transition archive plus the legacy staging trio it supersedes.
- * Declared structurally rather than as `Pick<StateAccount, ...>`: importing
- * `StateAccount` closes the cycle `types.ts -> constants/numericConstants.ts ->
+ * The `State` fields that resolve the live slot duration. They are the IBRL
+ * transition archive and the legacy staging trio it supersedes. The shape is
+ * structural rather than `Pick<StateAccount, ...>`. Importing `StateAccount`
+ * closes the cycle `types.ts -> constants/numericConstants.ts ->
  * math/time.ts`, and `numericConstants` calls into this module at load time.
  * `StateAccount` satisfies this shape.
  */
@@ -107,26 +107,26 @@ export type SlotDurationState = {
 	pendingSlotDurationMs?: number;
 	slotDurationEffectiveSlot?: BN;
 	/**
-	 * First slot of each post baseline regime (`[350, 300, 250, 200]`ms). Zero
-	 * means that transition has not been synchronized yet. Once any entry is
-	 * set the archive is authoritative over the legacy staging fields.
+	 * First slot of each post baseline regime, for 350, 300, 250 and 200ms.
+	 * Zero means that transition is not synchronized yet. Once any entry is
+	 * set, the archive is authoritative over the legacy staging fields.
 	 */
 	slotDurationTransitionSlots?: BN[];
 };
 
 /**
- * Anything holding a subscribed `State` account, e.g. `VelocityClient`. Kept
- * duck-typed so `math/time` keeps importing only `BN`.
+ * A holder of a subscribed `State` account, such as `VelocityClient`. The type
+ * stays duck-typed so `math/time` imports only `BN`.
  */
 export type SlotDurationSource = {
 	getStateAccount(): SlotDurationState;
 };
 
 /**
- * The slot length a client should convert with right now, plus whether it came
- * from live chain data. `isLive` is false whenever the fallback was used, so a
- * caller can degrade its UI or logging instead of presenting an assumption as
- * a measurement.
+ * The slot length a client converts with now, and whether it came from live
+ * chain data. `isLive` is false whenever the fallback applied. A caller can
+ * then degrade its UI or its logging instead of presenting an assumption as a
+ * measurement.
  */
 export type SlotClock = {
 	slotDurationMs: SlotDurationMs;
@@ -135,18 +135,18 @@ export type SlotClock = {
 
 /**
  * The live slot duration at `currentSlot`, mirroring
- * `State::active_slot_duration_ms`: the staged `pendingSlotDurationMs` once
- * `currentSlot` reaches `slotDurationEffectiveSlot`, otherwise the base
- * `slotDurationMs`. Use this wherever a prediction must match the on-chain value
- * across a gate flip; `slotDurationFromState` alone would keep returning the
- * pre-switch value.
+ * `State::active_slot_duration_ms`. It returns the staged
+ * `pendingSlotDurationMs` once `currentSlot` reaches
+ * `slotDurationEffectiveSlot`, and the base `slotDurationMs` otherwise. Use it
+ * wherever a prediction must match the on-chain value across a gate flip.
+ * `slotDurationFromState` alone keeps returning the pre-switch value.
  */
 export function activeSlotDurationFromState(
 	state: SlotDurationState,
 	currentSlot: BN
 ): SlotDurationMs {
-	// Once any transition archive entry exists, the archive is authoritative
-	// (mirrors `SlotClock::slot_duration_at`).
+	// Once any transition archive entry exists, the archive is authoritative.
+	// This mirrors `SlotClock::slot_duration_at`.
 	const transitions = validTransitionSlots(state);
 	if (transitions) {
 		let duration = SLOT_DURATION_BASELINE;
@@ -158,10 +158,10 @@ export function activeSlotDurationFromState(
 		return duration;
 	}
 
-	// Tolerate hand-built / older State objects that omit the staging fields:
-	// an absent pending field means nothing is staged, not `undefined !== 0`.
-	// `isBN` rather than `!== undefined` so a null/garbage effective slot reads
-	// as "nothing staged" instead of throwing out of `gte`.
+	// Tolerate a hand-built or older State object that omits the staging
+	// fields. An absent pending field means nothing is staged. The check uses
+	// `isBN` rather than `!== undefined`, so a null or garbage effective slot
+	// reads as nothing staged instead of throwing out of `gte`.
 	const pending = state.pendingSlotDurationMs ?? 0;
 	const effective = state.slotDurationEffectiveSlot;
 	if (pending !== 0 && BN.isBN(effective) && currentSlot.gte(effective)) {
@@ -170,16 +170,16 @@ export function activeSlotDurationFromState(
 	return slotDurationFromState(state.slotDurationMs);
 }
 
-/**
- * The transition archive when it is present, well formed, and non empty;
- * `undefined` otherwise (hand built / pre upgrade State objects, or no
- * transition synchronized yet; the legacy staging fields then apply).
- */
 const transitionSlotsCache = new WeakMap<
 	SlotDurationState,
 	{ source: BN[] | undefined; value: BN[] | undefined }
 >();
 
+/**
+ * The transition archive when it is present, well formed and non empty.
+ * Returns `undefined` for a hand built or pre upgrade State object, and when
+ * no transition is synchronized yet. The legacy staging fields then apply.
+ */
 function validTransitionSlots(state: SlotDurationState): BN[] | undefined {
 	const transitions = state.slotDurationTransitionSlots;
 	const cached = transitionSlotsCache.get(state);
@@ -204,10 +204,10 @@ function validTransitionSlots(state: SlotDurationState): BN[] | undefined {
 
 /**
  * Exact elapsed wall clock time from the start of `startSlot` to the start of
- * `endSlot`, integrating every crossed slot duration regime separately,
- * the mirror of the program's `SlotClock::elapsed`. Without a synchronized
- * transition archive, the whole delta is priced at the end slot duration
- * (the legacy staging behavior).
+ * `endSlot`. It integrates every crossed slot duration regime separately and
+ * mirrors the program's `SlotClock::elapsed`. Without a synchronized transition
+ * archive, it prices the whole delta at the end slot duration. That is the
+ * legacy staging behavior.
  */
 export function elapsedMillis(
 	state: SlotDurationState,
@@ -247,8 +247,8 @@ export function elapsedMillis(
 }
 
 /**
- * Elapsed wall clock time represented by `slotDelta`, ending at `endSlot`,
- * the mirror of `SlotClock::elapsed_slot_delta`.
+ * Elapsed wall clock time represented by `slotDelta`, ending at `endSlot`. It
+ * mirrors `SlotClock::elapsed_slot_delta`.
  */
 export function elapsedMillisFromSlotDelta(
 	state: SlotDurationState,
@@ -263,8 +263,8 @@ export function elapsedMillisFromSlotDelta(
 }
 
 /**
- * First slot whose start is at least `duration` after `startSlot`, integrating
- * known future transition boundaries. Mirrors
+ * First slot whose start is at least `duration` after `startSlot`. It
+ * integrates known future transition boundaries. It mirrors
  * `SlotClock::slot_at_or_after_duration`.
  */
 export function slotAtOrAfterDuration(
@@ -300,25 +300,27 @@ export function slotAtOrAfterDuration(
 }
 
 /**
- * Resolve the slot clock an off-chain client should convert with: the live
- * duration from `source`'s subscribed `State` at `currentSlot`, or the 400ms
- * {@link SLOT_DURATION_BASELINE} when state/slot is unavailable.
+ * Resolve the slot clock an off-chain client converts with. It returns the live
+ * duration from the subscribed `State` of `source` at `currentSlot`, or the
+ * 400ms {@link SLOT_DURATION_BASELINE} when the state or the slot is
+ * unavailable.
  *
- * `currentSlot` must be the live chain slot (e.g. `slotSubscriber.getSlot()`),
- * NOT the slot `State` was last written at. `State` does not change at the gate
- * boundary, so a cached State slot would never trigger the staged switch.
- * A missing or `0` slot is treated as a dead feed rather than as slot zero: a
- * failed slot subscription reports `0`, and slot zero precedes every effective
- * slot, so it would resolve to the pre-flip base while looking live.
+ * `currentSlot` must be the live chain slot, such as
+ * `slotSubscriber.getSlot()`. It must not be the slot `State` was last written
+ * at. `State` does not change at the gate boundary, so a cached State slot
+ * never triggers the staged switch. A missing or `0` slot counts as a dead feed
+ * and not as slot zero. A failed slot subscription reports `0`, and slot zero
+ * precedes every effective slot, so it would resolve to the pre-flip base while
+ * it looks live.
  *
- * The fallback is the longest scheduled slot (400ms). Which direction that is
- * safe in depends on the conversion, not on the caller: converting **ms into
- * slots** (a staleness threshold, a rate limit, an auction duration) tightens,
- * converting **slots into ms** (a countdown, a cache TTL, a signing budget)
- * widens — up to 2x once the chain reaches 200ms. Callers in the widening
- * direction, and user-protection windows generally, should branch on `isLive`
- * and substitute {@link SLOT_DURATION_FLOOR} rather than consume
- * `slotDurationMs` blindly.
+ * The fallback is the longest scheduled slot, 400ms. The direction that is safe
+ * in depends on the conversion, not on the caller. A conversion of ms into
+ * slots tightens a staleness threshold, a rate limit or an auction duration. A
+ * conversion of slots into ms widens a countdown, a cache TTL or a signing
+ * budget, by up to 2x once the chain reaches 200ms. A caller in the widening
+ * direction, and a user-protection window generally, should branch on `isLive`
+ * and substitute {@link SLOT_DURATION_FLOOR} instead of reading
+ * `slotDurationMs` directly.
  */
 export function currentSlotClock(
 	source: SlotDurationSource,
@@ -329,8 +331,8 @@ export function currentSlotClock(
 		isLive: false,
 	};
 
-	// `0`, NaN, undefined, negatives and fractions are all dead feeds rather
-	// than slot numbers. `isSafeInteger` also keeps a garbage magnitude out of
+	// `0`, NaN, undefined, a negative and a fraction are dead feeds rather than
+	// slot numbers. `isSafeInteger` also keeps a garbage magnitude out of
 	// `new BN`, which asserts above 2^53 rather than returning anything.
 	if (!currentSlot || !Number.isSafeInteger(currentSlot) || currentSlot < 0) {
 		return dead;
@@ -340,20 +342,22 @@ export function currentSlotClock(
 	try {
 		state = source?.getStateAccount();
 	} catch {
-		// Not subscribed yet: the client throws rather than returning undefined.
+		// The client throws rather than returning undefined when it is not
+		// subscribed yet.
 		return dead;
 	}
 
-	// Validate, don't just test for presence. A duration only ever reaches this
-	// module through Anchor decoding, but the staging fields are optional and
-	// hand-built State is a supported input, so a partial object must not be
-	// reported as a measurement: a NaN duration propagates silently through
-	// every threshold comparison, and a non-BN effective slot throws out of
-	// `BN.gte`. Both would surface deep in a filler loop instead of here.
-	// The duration itself is deliberately NOT checked against
-	// SLOT_DURATION_SCHEDULE_MS: the program's reader takes any u16 and only
-	// its setter enforces the schedule, so rejecting an off-schedule value here
-	// would return 400ms where the chain returns the stored one.
+	// Validate the fields instead of testing for presence. A duration reaches
+	// this module through Anchor decoding, but the staging fields are optional
+	// and hand-built State is a supported input. A partial object must not be
+	// reported as a measurement. A NaN duration propagates through every
+	// threshold comparison. A non-BN effective slot throws out of `BN.gte`.
+	// Both would surface deep in a filler loop instead of here.
+	//
+	// The duration itself is not checked against
+	// SLOT_DURATION_SCHEDULE_MS. The program's reader takes any u16 and only
+	// its setter enforces the schedule. A rejection here would return 400ms
+	// where the chain returns the stored value.
 	if (
 		!state ||
 		!isPlainSlotDuration(state.slotDurationMs) ||
@@ -370,13 +374,13 @@ export function currentSlotClock(
 	};
 }
 
-/** A decoded `u16` duration field: a non-negative integer (`0` = unset). */
+/** A decoded `u16` duration field. It is a non-negative integer, `0` for unset. */
 function isPlainSlotDuration(raw: number | undefined): raw is number {
 	return raw !== undefined && Number.isInteger(raw) && raw >= 0;
 }
 
 /**
- * The slot duration half of {@link currentSlotClock}, for call sites that do
+ * The slot duration half of {@link currentSlotClock}, for a call site that does
  * not branch on liveness. See that function for the `currentSlot` rules.
  */
 export function currentSlotDuration(
@@ -395,8 +399,8 @@ export function millisFromSecs(secs: number): Millis {
 }
 
 /**
- * Decode a legacy stored value denominated in `STORED_UNIT_MS` units.
- * Storage codec only; never use for new values.
+ * Decode a stored value denominated in `STORED_UNIT_MS` units. This is a
+ * storage codec. Never use it for a new value.
  */
 export function millisFromStoredUnits(units: BN | number): Millis {
 	return new BN(units).muln(STORED_UNIT_MS) as Millis;
@@ -404,23 +408,23 @@ export function millisFromStoredUnits(units: BN | number): Millis {
 
 /**
  * The exact wall-clock time a measured slot delta represents at the current
- * slot duration. Mirrors `Millis::from_slots`.
+ * slot duration. It mirrors `Millis::from_slots`.
  */
 export function millisFromSlots(slots: BN, d: SlotDurationMs): Millis {
 	return slots.muln(d) as Millis;
 }
 
 /**
- * A duration expressed in actual slots, rounding down (mirrors
- * `Millis::to_slots`). Default for staleness windows.
+ * A duration expressed in actual slots, rounded down. It mirrors
+ * `Millis::to_slots`. This is the default for a staleness window.
  */
 export function millisToSlots(m: Millis, d: SlotDurationMs): BN {
 	return m.divn(Math.max(1, d));
 }
 
 /**
- * A duration expressed in actual slots, rounding up (mirrors
- * `Millis::to_slots_ceil`). For user-protection windows.
+ * A duration expressed in actual slots, rounded up. It mirrors
+ * `Millis::to_slots_ceil`. Use it for a user-protection window.
  */
 export function millisToSlotsCeil(m: Millis, d: SlotDurationMs): BN {
 	const dd = Math.max(1, d);
@@ -428,28 +432,28 @@ export function millisToSlotsCeil(m: Millis, d: SlotDurationMs): BN {
 }
 
 /**
- * How many whole `period`s fit in a duration, rounding down (mirrors
- * `Millis::div_periods`). For legacy per-period rates.
+ * How many whole `period`s fit in a duration, rounded down. It mirrors
+ * `Millis::div_periods`. Use it for a legacy per-period rate.
  */
 export function divPeriods(m: Millis, period: Millis): BN {
 	return m.div(BN.max(new BN(1), period));
 }
 
-/** `millisToSlots` for plain numbers (off-chain pacing/threshold code). */
+/** `millisToSlots` for plain numbers, used by off-chain pacing and thresholds. */
 export function msToSlotsNum(ms: number, d: SlotDurationMs): number {
 	return Math.floor(ms / Math.max(1, d));
 }
 
 /**
- * `millisToSlotsCeil` for plain numbers. Use for durations/intervals the value
- * must not fall below (auction lengths, minimum pacing/cooldowns): flooring
- * would shorten them below the intended wall-clock time.
+ * `millisToSlotsCeil` for plain numbers. Use it for a duration the value must
+ * not fall below, such as an auction length or a minimum cooldown. Flooring
+ * would shorten it below the intended wall-clock time.
  */
 export function msToSlotsCeilNum(ms: number, d: SlotDurationMs): number {
 	return Math.ceil(ms / Math.max(1, d));
 }
 
-/** `millisFromSlots` for plain numbers (off-chain pacing/threshold code). */
+/** `millisFromSlots` for plain numbers, used by off-chain pacing and thresholds. */
 export function slotsToMsNum(slots: number, d: SlotDurationMs): number {
 	return slots * d;
 }

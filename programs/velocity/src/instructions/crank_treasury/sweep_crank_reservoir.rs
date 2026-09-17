@@ -1,13 +1,13 @@
 //! Move lamports from a market's crank reservoir back to the treasury.
 //!
 //! Lamports reach a reservoir through the refill and leave it as crank
-//! payments, so without this they only travel one way. A market that was
-//! over-provisioned, or one whose book has been retired, would hold them for
+//! payments. Without this instruction they travel one way only. A market that
+//! was over-provisioned, or one whose book is retired, would hold them for
 //! good.
 //!
-//! Admin-gated, unlike the refill: taking funds out of a reservoir is not work
-//! anyone should be paid to do, and a reservoir swept below its watermark
-//! simply refills itself.
+//! Only the admin may sweep, unlike the refill. Taking funds out of a reservoir
+//! is not work anyone should be paid to do. A reservoir swept below its
+//! watermark refills itself.
 
 use {
     crate::{
@@ -64,9 +64,9 @@ pub fn handle_sweep_crank_reservoir(
         lamports,
         rent_minimum,
     )?;
-    // `pay_keeper_lamports` already restated the mirror, so the refill
-    // condition sees the swept balance and tops the reservoir back up if the
-    // sweep took it below the watermark.
+    // `pay_keeper_lamports` already wrote the spendable mirror, so the refill
+    // condition sees the swept balance. The refill tops the reservoir back up
+    // when the sweep took it below the watermark.
     let mut treasury = ctx.accounts.treasury.load_mut()?;
     treasury.total_refilled = treasury.total_refilled.saturating_sub(swept);
     msg!(

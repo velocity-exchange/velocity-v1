@@ -3,9 +3,10 @@
 //! A quoter cannot hand a whole response type to `wincode::serialize`. It
 //! produces the records while it walks, and does not know a section's count
 //! until the walk ends. Counting first needs a `Vec` per section, which is the
-//! cost this wire exists to avoid. So the framing goes down record by record.
+//! cost this wire exists to avoid. So a writer writes the framing record by
+//! record.
 //!
-//! It goes down here, once, rather than once per quoter. A section a quoter
+//! It is written here, once, rather than once per quoter. A section a quoter
 //! forgets to write is the same disagreement as a field read at the wrong
 //! offset, and a hand-rolled writer per program is a second declaration of the
 //! framing that nothing holds against the first. Here the sections are
@@ -16,27 +17,26 @@
 //!
 //! Every record is [`bytemuck::Pod`], a response region starts on an 8-byte
 //! step, and every section stride is a multiple of 8. A record therefore maps
-//! onto its bytes and goes in as one store. The reader needs the same
+//! onto its bytes and is written as one store. The reader needs the same
 //! property, because [`crate::ExecuteResponseV0::parse`] borrows
 //! `&[UserBalanceChangeV0]` out of these bytes. A writer that assembles a
 //! record field by field keeps a second set of field offsets that can drift
 //! from the declaration.
 //!
-//! # The region is a parameter, not state
+//! # The region is a parameter
 //!
 //! A writer holds only its offsets, and every operation names the region it
-//! writes into. That is the CLOB's constraint: its walk re-lends the market
+//! writes into. That is the CLOB's constraint. Its walk re-lends the market
 //! account to a callback on every order it visits, and the callback removes
-//! orders and rewrites nodes through it, so a writer that held a borrow of the
+//! orders and rewrites nodes through it. A writer that held a borrow of the
 //! response region would be a second mutable borrow of the same account. A
 //! writer therefore cannot own its region, and one that took it only at
 //! construction would let a caller name two different regions.
 //!
 //! Every step of a walk goes through here, so the hot methods are marked
-//! `#[inline]`. It is not decoration. These are cross-crate generics over a
-//! `&mut [u8]`, and without the hint a record reaches the region through a
-//! stack copy; the CLOB's own compute benchmarks move by a few percent on the
-//! attribute alone.
+//! `#[inline]`. These are cross-crate generics over a `&mut [u8]`, and without
+//! the hint a record reaches the region through a stack copy. The CLOB's own
+//! compute benchmarks move by a few percent on the attribute alone.
 
 use {
     crate::{
@@ -61,8 +61,8 @@ impl Cursor {
     /// A cursor positioned past the response's leading length prefix.
     ///
     /// The prefix is not written here. Its count is unknown until the walk
-    /// ends, and [`Self::patch_len`] writes all eight bytes once it is known,
-    /// so laying a zero down first is a store that is always overwritten.
+    /// ends, and [`Self::patch_len`] writes all eight bytes once it is known.
+    /// A zero written first is therefore a store that is always overwritten.
     const fn new() -> Self {
         Self { len: LEN_BYTES }
     }
@@ -93,7 +93,7 @@ impl Cursor {
         let slot = region
             .get_mut(start..end)
             .ok_or(SpecError::RegionTooSmall)?;
-        // Cast rather than copy bytes: the reader casts this section in place,
+        // Cast rather than copy bytes. The reader casts this section in place,
         // so a start the records cannot be read at must fail here.
         bytemuck::try_cast_slice_mut::<u8, T>(slot)
             .map_err(|_| SpecError::RegionMisaligned)?
@@ -275,10 +275,10 @@ const CHANGES_START: usize = LEN_BYTES;
 
 /// Writes a [`crate::ExecuteResponseV0`] as the fill is produced.
 ///
-/// The balance changes are streamed and the other two sections are passed to
-/// [`Self::finish`] whole. That follows what a fill does with each. A change is
-/// revisited, because a maker filled twice has one record and the second fill
-/// adds into it through [`Self::change_mut`]. A cancelled remainder and a
+/// The balance changes are streamed and the other sections are passed to
+/// [`Self::finish`] whole. That follows what a fill does with each. A fill
+/// revisits a change, because a maker filled twice has one record and the second
+/// fill adds into it through [`Self::change_mut`]. A cancelled remainder and a
 /// completed order are written once and never read again.
 pub struct ExecuteWriter {
     cursor: Cursor,

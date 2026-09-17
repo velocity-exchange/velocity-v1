@@ -22,11 +22,12 @@ pub fn add_insurance_fund_stake<'info>(
 ) -> Result<()> {
     ctx.token_transfer(amount)?;
 
-    // Velocity stakes only the portion of the request that prices to whole IF shares. It
-    // leaves the remainder in `vault_if_token_account`, and no instruction sweeps that
-    // account: `remove_insurance_fund_stake` pays out only the balance the removal added.
-    // Stake the whole balance so any remainder from an earlier add folds into this one.
-    // Velocity floors the request to whole shares again, so this never over-stakes.
+    // Velocity stakes only the part of the request that prices to whole IF shares.
+    // It leaves the remainder in `vault_if_token_account`. No instruction sweeps
+    // that account, because `remove_insurance_fund_stake` pays out only the balance
+    // the removal added. Stake the whole balance so a remainder from an earlier add
+    // folds into this one. Velocity floors the request to whole shares again, so
+    // this never stakes too much.
     ctx.accounts.vault_if_token_account.reload()?;
     let amount_to_stake = ctx.accounts.vault_if_token_account.amount;
 

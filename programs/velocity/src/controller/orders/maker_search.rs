@@ -2,8 +2,8 @@
 //!
 //! Discovery walks every loaded maker, judges each of its resting orders
 //! against the market and the taker, and returns what is matchable, best price
-//! first. It also cleans up as it walks: a stale resting order is cancelled
-//! here and the keeper earns the flat reward for it.
+//! first. It also cleans up as it walks. It cancels a stale resting order, and
+//! the keeper earns the flat reward for it.
 
 use super::*;
 
@@ -11,10 +11,10 @@ use super::*;
 /// One matchable maker order: which loaded maker holds it, where it sits in
 /// that maker's orders, and the price it rests at.
 ///
-/// The maker is its position in the loaded set rather than its key. A maker
-/// contributes a row per order slot it holds, and a key on every row is
-/// thirty-two bytes repeated — on a heap the runtime never reclaims, and a
-/// fill against a full book carries dozens of rows.
+/// The maker is its position in the loaded set rather than its key. A key on
+/// every row is thirty-two bytes repeated, on a heap the runtime never
+/// reclaims. A maker contributes one row per order slot it holds, and a fill
+/// against a full book carries dozens of rows.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct MakerOrderInfo {
     pub maker: u16,
@@ -46,8 +46,8 @@ pub(crate) struct MakerSearch<'a> {
     pub maker_direction: PositionDirection,
     /// The keeper that earns the flat reward for each stale order it cleans up.
     pub filler_key: &'a Pubkey,
-    /// `FeeStructure::flat_filler_fee`, which the schedule charges as a fee and
-    /// `pay_keeper_flat_reward_for_perps` pays out as a reward.
+    /// `FeeStructure::flat_filler_fee`. The schedule charges it as a fee, and
+    /// `pay_keeper_flat_reward_for_perps` pays it as a reward.
     pub filler_reward: u64,
     pub oracle_price: i64,
     /// Whether the raw exchange oracle admits a match fill at all.
@@ -71,9 +71,9 @@ struct MakerMarketFacts {
     margin_ratio_initial: u32,
     order_step_size: u64,
     /// A `ReduceOnly` market forces resting maker orders risk-reducing too,
-    /// regardless of the flag they were placed with. Stamped onto each maker
-    /// order so the reduce-only cancel check and the position-capped fill size
-    /// both apply.
+    /// regardless of the flag they were placed with. Discovery writes the flag
+    /// onto each maker order, so the reduce-only cancel check and the
+    /// position-capped fill size both apply.
     reduce_only: bool,
 }
 
@@ -89,8 +89,9 @@ struct MakerCandidate<'a> {
 enum MakerAdmission {
     /// The order is not matchable, or discovery cancelled it.
     Skip,
-    /// The order is matchable. `unfilled` is what it still has to give, which
-    /// is what the reducing-set judgement measures a floored maker's orders by.
+    /// The order is matchable. `unfilled` is what the order still has to
+    /// give. The reducing-set judgement measures a floored maker's orders by
+    /// it.
     Matchable { unfilled: u64 },
 }
 
@@ -110,9 +111,9 @@ pub(super) fn get_maker_orders_info(
     filler: &mut Option<&mut User>,
     search: &MakerSearch,
 ) -> VelocityResult<Vec<MakerOrderInfo>> {
-    // One entry per matchable maker order. Sized so a full book of makers does
-    // not grow the buffer part way through: a doubling abandons the old one on
-    // an allocator that never reclaims.
+    // One entry per matchable maker order. A full book of makers fits, so the
+    // buffer does not grow part way through. A doubling abandons the old
+    // buffer on an allocator that never reclaims it.
     let mut maker_orders_info = Vec::with_capacity(
         makers_and_referrer.0.len() * crate::math::constants::MAX_OPEN_ORDERS as usize,
     );
@@ -157,10 +158,10 @@ fn collect_maker_orders(
     let floor_unverifiable = maker_can_match && maker_floor_unverifiable(&user, maps)?;
 
     // Candidates of an unverifiable floored maker that survive the cleanup, as
-    // (order index, price, unfilled base). The admit-or-prune decision is made
-    // on the whole set afterwards, in `admit_reducing_maker_orders`. Sized to
-    // the most a user can hold: growing inside the loop doubles the buffer,
-    // and the runtime's allocator never reclaims the one it grew out of.
+    // (order index, price, unfilled base). `admit_reducing_maker_orders`
+    // decides on the whole set afterwards. The capacity is the most orders a
+    // user can hold. Growing inside the loop doubles the buffer, and the
+    // allocator never reclaims the old one.
     let mut deferred: Vec<(usize, u64, u64)> =
         Vec::with_capacity(crate::math::constants::MAX_OPEN_ORDERS as usize);
 
@@ -177,7 +178,7 @@ fn collect_maker_orders(
         };
         // A selected MM oracle may be fresh enough to quote while the raw
         // exchange oracle the equity floor reads is not valid for margin. The
-        // cleanup above stays live, but a floored maker does not execute a
+        // cleanup above still runs, but a floored maker does not execute a
         // DLOB leg its floor check cannot cover.
         if !maker_can_match {
             continue;
@@ -206,12 +207,15 @@ fn collect_maker_orders(
 /// Whether this maker's buffered floor cannot be verified for this fill.
 ///
 /// A floored maker with any invalid oracle cannot prove it clears its buffered
-/// floor, so the fill-time gate would reject its risk-increasing fills — and
-/// by then the maker's leg has executed, so the rejection poisons the taker's
-/// whole transaction. Oracle validity cannot change across the fill, so it is
-/// resolved here instead: such a maker's risk-increasing orders are pruned,
-/// and its provably reducing orders stay matchable because the gate exempts
-/// them. Read once per maker, and free when no floor is set.
+/// floor. The fill-time gate would then reject its risk-increasing fills. The
+/// maker's leg has already executed by then, so the rejection fails the
+/// taker's whole transaction. Oracle validity cannot change across the fill,
+/// so discovery resolves it here. It prunes such a maker's risk-increasing
+/// orders. Its provably reducing orders stay matchable, because the gate
+/// exempts them.
+///
+/// The check runs once per maker. A maker with no equity floor returns at
+/// once.
 fn maker_floor_unverifiable(maker: &User, maps: &mut AccountMaps) -> VelocityResult<bool> {
     Ok(match calculate_net_equity_for_floor(maker, maps)? {
         Some(net_equity) => !net_equity.all_oracles_valid,
@@ -222,8 +226,8 @@ fn maker_floor_unverifiable(maker: &User, maps: &mut AccountMaps) -> VelocityRes
 /// The maker's orders that rest on the side this fill needs, and the market
 /// facts every one of them is judged against.
 ///
-/// `None` when the maker has nothing resting on that side, which is the
-/// common case and the one worth leaving early for.
+/// `None` when the maker has nothing resting on that side. That is the common
+/// case, so the walk leaves early.
 fn open_maker_orders(
     maker: &mut User,
     maker_key: &Pubkey,
@@ -350,7 +354,7 @@ fn cancel_stale_maker_order(
 /// Admit the deferred orders of an unverifiable floored maker that are
 /// reducing as a set.
 ///
-/// Admission is deferred so the candidates are judged together: the reducing
+/// Admission is deferred so the candidates are judged together. The reducing
 /// budget then goes to the best-priced orders instead of the lowest order
 /// slots.
 fn admit_deferred_maker_orders(
@@ -380,11 +384,12 @@ fn admit_deferred_maker_orders(
     Ok(())
 }
 
-/// The exchange oracle is the canonical valuation source for the equity floor.
-/// An MM oracle may still quote the AMM, but it cannot authorize a floored user
-/// to participate in a DLOB match while the exchange oracle is invalid for the
-/// match/margin policy.
-/// This rule only applies to DLOB matches. Existing AMM gates remain unchanged.
+/// Whether a floored user may take part in a DLOB match.
+///
+/// The exchange oracle is the valuation source for the equity floor. An MM
+/// oracle may still quote the AMM, but it cannot authorize a floored user to
+/// match on the DLOB while the exchange oracle is invalid for the match and
+/// margin policy. The rule applies to DLOB matches only, not to AMM fills.
 #[inline(always)]
 pub(super) fn can_floored_user_match_with_exchange_oracle(
     user: &User,
@@ -393,18 +398,23 @@ pub(super) fn can_floored_user_match_with_exchange_oracle(
     user.equity_floor == 0 || exchange_match_fills_allowed
 }
 
-/// The subset of an unverifiable floored maker's candidate orders
-/// `(order index, price, unfilled base)` that is reducing as a set against
-/// the maker's resting position, judged best price for the taker first
-/// (ascending for maker sells, descending for maker buys). Reducing is a
-/// property of the admitted set, not of one order: a maker long 1 with two
-/// resting sells of 0.75 has each order reducing against the resting
-/// position while the pair flips it short, so each candidate is judged
-/// against the position the previously admitted orders would leave behind.
-/// Judging best price first spends that budget on the orders the taker
-/// wants matched. Every admitted order's fill is exempt at the fill-time
-/// floor gate (`is_order_position_reducing` is the shared predicate), so a
-/// pruned maker can never revert the taker's transaction.
+/// The subset of an unverifiable floored maker's candidate orders that is
+/// reducing as a set against the maker's resting position.
+///
+/// A candidate is `(order index, price, unfilled base)`. Candidates are judged
+/// best price for the taker first. That is ascending for maker sells and
+/// descending for maker buys.
+///
+/// Reducing is a property of the admitted set, not of one order. A maker long
+/// 1 with two resting sells of 0.75 has each order reducing against the
+/// resting position, while the pair flips the position short. So each
+/// candidate is judged against the position the previously admitted orders
+/// would leave behind. Judging best price first spends that budget on the
+/// orders the taker wants matched.
+///
+/// Every admitted order's fill is exempt at the fill-time floor gate, which
+/// shares the `is_order_position_reducing` predicate. A pruned maker can never
+/// revert the taker's transaction.
 pub(super) fn admit_reducing_maker_orders(
     mut candidates: Vec<(usize, u64, u64)>,
     maker_direction: PositionDirection,
@@ -423,8 +433,8 @@ pub(super) fn admit_reducing_maker_orders(
             continue;
         }
 
-        // admitted, so the next candidate is judged against what this one
-        // would leave behind
+        // The next candidate is judged against what this admitted order
+        // would leave behind.
         let signed = match maker_direction {
             PositionDirection::Long => unfilled.cast::<i64>()?,
             PositionDirection::Short => -unfilled.cast::<i64>()?,

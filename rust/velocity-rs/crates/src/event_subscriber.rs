@@ -219,7 +219,9 @@ impl LogEventStream {
             "log extracting events, slot: {slot}, tx: {signature:?}"
         );
         for event in parse_velocity_logs(response.logs.iter().map(String::as_str), &signature) {
-            // unrelated events from same tx should not be emitted e.g. a filler tx which produces other fill events
+            // One transaction can carry events for other accounts. A filler
+            // transaction produces fill events for users this stream does not
+            // follow.
             if event.pertains_to(self.sub_account) && self.event_tx.send(event).await.is_err() {
                 warn!("event receiver closed");
                 return;
@@ -301,7 +303,9 @@ impl GrpcLogEventStream {
         );
         let logs = &event.meta.log_messages;
         for event in parse_velocity_logs(logs.iter().map(String::as_str), &signature.to_string()) {
-            // unrelated events from same tx should not be emitted e.g. a filler tx which produces other fill events
+            // One transaction can carry events for other accounts. A filler
+            // transaction produces fill events for users this stream does not
+            // follow.
             if event.pertains_to(self.sub_account) && self.event_tx.send(event).await.is_err() {
                 warn!("event receiver closed");
                 return;
@@ -385,13 +389,13 @@ async fn grpc_log_stream(
 
 /// Whether a polled tx should have its logs walked for Velocity events.
 ///
-/// Prefer the decoded message's static account keys as a cheap skip when
-/// `PROGRAM_ID` is absent. A payload these crates cannot deserialize at all
-/// (`decode()` is `None`: corrupt, or a wire version newer than this crate
-/// stack) still has its logs walked, so Velocity events are not dropped.
-/// Walking is not enough on its own: `parse_velocity_logs` only decodes
-/// payloads while `PROGRAM_ID` is the executing program in the invocation
-/// stack.
+/// The decoded message's static account keys are a cheap skip when
+/// `PROGRAM_ID` is absent. A payload these crates cannot deserialize still
+/// has its logs walked, so Velocity events are not dropped. `decode()`
+/// returns `None` for a corrupt payload, and for a wire version newer than
+/// this crate stack. Walking alone is not enough. `parse_velocity_logs`
+/// decodes a payload only while `PROGRAM_ID` is the executing program in the
+/// invocation stack.
 fn poll_should_parse_velocity_logs(transaction: &EncodedTransaction, signature: &str) -> bool {
     match transaction.decode() {
         Some(VersionedTransaction { message, .. }) => message
@@ -399,8 +403,7 @@ fn poll_should_parse_velocity_logs(transaction: &EncodedTransaction, signature: 
             .iter()
             .any(|k| k == &PROGRAM_ID),
         None => {
-            // A corrupt payload, or a wire version newer than these crates. Keep it at
-            // debug like the other per-tx poll messages.
+            // Log at debug, like the other per-transaction poll messages.
             debug!(
                 target: LOG_TARGET,
                 "poll undecodable tx, walking logs without account-keys check: {signature}"
@@ -417,9 +420,10 @@ pub struct PolledEventStream<T: EventRpcProvider> {
     sub_account: Pubkey,
 }
 
-/// How often the poller re-reads signatures. A flat throttle to avoid spamming the
-/// RPC, not a slot count: mainnet slot time keeps falling and this poll does not
-/// track it, so each tick just returns more signatures.
+/// How often the poller re-reads signatures. The interval is wall clock time,
+/// and it bounds the load on the RPC. Mainnet slot time keeps falling, and
+/// this poll does not follow it. A faster chain returns more signatures per
+/// tick.
 const POLL_INTERVAL: Duration = Duration::from_millis(400);
 
 impl<T: EventRpcProvider> PolledEventStream<T> {
@@ -508,10 +512,6 @@ impl<T: EventRpcProvider> PolledEventStream<T> {
                 }
                 let meta = meta.unwrap();
 
-                // Prefer the account-keys cheap-skip. A payload that does not
-                // deserialize (corrupt, or a wire version newer than these
-                // crates) still has its logs walked rather than dropping
-                // Velocity events. Parsing itself is invocation-gated.
                 if !poll_should_parse_velocity_logs(&transaction, signature.as_str()) {
                     continue;
                 }
@@ -525,8 +525,8 @@ impl<T: EventRpcProvider> PolledEventStream<T> {
                         parse_velocity_logs(logs.iter().map(String::as_str), signature.as_str())
                     {
                         if event.pertains_to(self.sub_account) {
-                            // A full channel or a closed receiver must not take the
-                            // poll task down with it.
+                            // A full channel or a closed receiver must not
+                            // stop the poll task.
                             if let Err(err) = self.event_tx.try_send(event) {
                                 warn!(target: LOG_TARGET, "poll dropping event: {err}");
                             }
@@ -572,8 +572,8 @@ impl Stream for VelocityEventStream {
 const PROGRAM_LOG: &str = "Program log: ";
 const PROGRAM_DATA: &str = "Program data: ";
 
-/// CPI invocation stack while walking a transaction's log lines.
-/// `true` frames are `PROGRAM_ID`; `false` frames are any other program.
+/// CPI invocation stack while walking a transaction's log lines. A `true`
+/// frame is `PROGRAM_ID`. A `false` frame is any other program.
 #[derive(Default)]
 pub struct ProgramInvocationStack {
     stack: Vec<bool>,
@@ -605,9 +605,9 @@ fn velocity_program_invoke_prefix() -> &'static str {
 
 /// Parse Velocity events from a transaction's logs.
 ///
-/// Only `Program log:` / `Program data:` lines emitted while `PROGRAM_ID` is
-/// the currently executing program (including nested CPI) are decoded. This
-/// keeps unrelated programs' matching discriminators away from
+/// Decodes a `Program log:` or `Program data:` line only while `PROGRAM_ID`
+/// is the executing program, nested CPI included. An unrelated program with a
+/// matching discriminator therefore never reaches
 /// [`VelocityEvent::from_discriminant`].
 pub fn parse_velocity_logs<'a>(
     logs: impl IntoIterator<Item = &'a str>,
@@ -629,9 +629,10 @@ pub fn parse_velocity_logs<'a>(
 /// Try deserialize a velocity event type from raw log string
 /// https://github.com/coral-xyz/anchor/blob/9d947cb26b693e85e1fd26072bb046ff8f95bdcf/client/src/lib.rs#L552
 ///
-/// Updates `invocation` from invoke/success/failed lines and only decodes a
-/// payload while `PROGRAM_ID` is executing. Callers walking a full tx log
-/// should reuse the same stack across lines (see [`parse_velocity_logs`]).
+/// Updates `invocation` from invoke, success and failed lines. Decodes a
+/// payload only while `PROGRAM_ID` is executing. A caller that walks a full
+/// transaction log must reuse one stack across the lines. See
+/// [`parse_velocity_logs`].
 pub fn try_parse_log(
     invocation: &mut ProgramInvocationStack,
     raw: &str,
@@ -1014,11 +1015,11 @@ mod test {
     fn parses_nested_cpi_logs() {
         let _ = env_logger::try_init();
 
-        // When another program CPIs into velocity, the velocity events
-        // (OrderRecord place + OrderActionRecord fill) are emitted as
-        // `Program log:`/`Program data:` lines nested under the outer program's
-        // invocation. Synthesize those events from the current types and
-        // confirm they parse out of the interleaved outer-program logs.
+        // When another program CPIs into velocity, velocity emits its events
+        // as `Program log:` and `Program data:` lines nested under the outer
+        // program's invocation. Build an OrderRecord place and an
+        // OrderActionRecord fill, then confirm both parse out of the
+        // interleaved outer-program logs.
         let taker = Pubkey::new_unique();
         let maker = Pubkey::new_unique();
 
@@ -1326,11 +1327,12 @@ mod test {
         assert!(poll_should_parse_velocity_logs(&undecodable_tx(), "sig"));
     }
 
-    /// A transaction v1 wire payload (SIMD-0385), laid out byte by byte: the
-    /// `0x81` version byte, then the message whose compute budget lives in a
-    /// config mask instead of instructions, then the signatures at the END with
-    /// no length prefix. Assembled byte by byte rather than through the crate API
-    /// so the test pins the wire layout, not whatever the crates round-trip.
+    /// A transaction v1 wire payload, defined by SIMD-0385. The layout is the
+    /// `0x81` version byte, then the message, then the signatures at the end
+    /// with no length prefix. The message carries its compute budget in a
+    /// config mask rather than in instructions. This builds the bytes by hand
+    /// instead of through the crate API, so the test pins the wire layout and
+    /// not whatever the crates round-trip.
     fn v1_wire_transaction(signature: &Signature, payer: &Pubkey) -> EncodedTransaction {
         let mut bytes = vec![0x81];
         // header: 1 required signature, 0 readonly signed, 1 readonly unsigned
@@ -1377,8 +1379,9 @@ mod test {
                 _after: Option<Signature>,
                 limit: Option<usize>,
             ) -> BoxFuture<SdkResult<Vec<String>>> {
-                // the limited call is the initial cursor fetch; serve the tx to the
-                // poll loop only, so it is processed exactly once
+                // The call with a limit is the initial cursor fetch. Serve
+                // the transaction to the poll loop only, so it is processed
+                // once.
                 let signatures = if limit.is_some() {
                     Vec::new()
                 } else {
@@ -1409,11 +1412,12 @@ mod test {
                 format!("Program {PROGRAM_ID} success"),
             ]),
         );
-        // the only difference from a v0 poll: the RPC hands back a v1 payload.
+        // The RPC returns a v1 payload. Nothing else differs from a v0 poll.
         tx.transaction = v1_wire_transaction(&signature, &sub_account);
-        // Assert the decode itself, not just the outcome: the log-walk fallback in
-        // `poll_should_parse_velocity_logs` returns true for an UNDECODABLE tx too, so
-        // without this the test passes on a crate stack that cannot read v1 at all.
+        // Assert the decode as well as the outcome. The log-walk fallback in
+        // `poll_should_parse_velocity_logs` also returns true for an
+        // undecodable transaction. Without this assertion the test passes on a
+        // crate stack that cannot read v1 at all.
         assert!(
             matches!(
                 tx.transaction.decode().map(|t| t.message),

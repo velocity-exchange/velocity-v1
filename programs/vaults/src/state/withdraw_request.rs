@@ -44,18 +44,21 @@ impl WithdrawRequest {
     pub fn calculate_shares_lost(&self, vault: &Vault, vault_equity: u64) -> VaultResult<u128> {
         let n_shares = self.shares;
 
-        // A pending request covering the *entire* share supply forfeits nothing: the
+        // A pending request that covers the entire share supply forfeits nothing. The
         // redeem-period forfeiture accrues to the depositors who stay, and here there are
-        // none. This has to be decided BEFORE the conservation guard below, because the
-        // restake leg prices `self.value` against a post-removal pool of
-        // `total_shares - n_shares == 0` shares, so `new_n_shares` floors to 0 and the guard
-        // rejects the cancel outright — permanently, since re-requesting and depositing are
-        // both blocked while a request is pending. That left a 100% depositor no exit but
-        // `withdraw` at the stale frozen value, forfeiting every subsequent gain to
-        // synthesized manager shares (finding #126, a regression introduced by the #93
-        // guard). `cancel_withdraw_request`'s `user_owns_entire_vault` check stays: it covers
-        // the wider case of owning 100% while requesting only part of it, where the math
-        // below still computes a (self-directed) forfeiture.
+        // none.
+        //
+        // This case must return before the guard below. The guard prices `self.value` against
+        // a post-removal pool of `total_shares - n_shares`, which is 0 shares here. So
+        // `new_n_shares` floors to 0 and the guard rejects the cancel. That rejection is
+        // permanent, because a pending request blocks both a new request and a deposit. The
+        // depositor would have no exit except `withdraw` at the stale frozen value, which
+        // forfeits every later gain to newly issued manager shares (OtterSec #126, a
+        // regression introduced by the OtterSec #93 guard).
+        //
+        // `cancel_withdraw_request` keeps its `user_owns_entire_vault` check. That check
+        // covers the wider case of owning every share while requesting only part of them,
+        // where the math below still computes a forfeiture to the depositor itself.
         if n_shares >= vault.total_shares {
             return Ok(0);
         }
@@ -77,17 +80,15 @@ impl WithdrawRequest {
                 n_shares
             )?;
 
-            // Conservation-aware guard: a positive frozen request value must not
-            // floor the retained shares to zero. When equity rises far enough
-            // that `self.value` rounds to <1 share of the post-removal pool,
-            // `new_n_shares` floors to 0 and the depositor would forfeit its
-            // ENTIRE stake on cancel — not just the gain the redeem-period
-            // forfeiture is meant to claw back. The block on vault-owned
-            // revenue-share sweeps removes the donation vector that made this
-            // reachable cheaply (OtterSec #93), but reject the transition
-            // outright so no equity increase (donated or genuine) can burn a
-            // positive claim. The depositor can still `withdraw` at its frozen
-            // value instead.
+            // A positive frozen request value must not floor the retained shares
+            // to zero. When equity rises far enough that `self.value` rounds to
+            // less than one share of the post-removal pool, `new_n_shares` floors
+            // to 0. The depositor would then forfeit its whole stake on cancel,
+            // and not only the gain that the redeem-period forfeiture recovers.
+            // Blocking vault-owned revenue-share sweeps removes the cheap way to
+            // donate equity into this state (OtterSec #93). Reject the transition
+            // anyway, so no equity increase can burn a positive claim. The
+            // depositor can still `withdraw` at its frozen value.
             validate!(
                 new_n_shares > 0 || self.value == 0,
                 ErrorCode::InvalidVaultSharesDetected,
@@ -169,11 +170,11 @@ impl WithdrawRequest {
 mod tests {
     use super::*;
 
-    /// OtterSec #93 (defense-in-depth): when equity rises far enough that a
-    /// pending request's frozen value rounds to < 1 share of the post-removal
-    /// pool, the retained-share calc floors to zero and cancel would burn the
-    /// depositor's ENTIRE stake. That transition must revert, not silently
-    /// forfeit a positive claim.
+    /// When equity rises far enough that a pending request's frozen value rounds
+    /// to less than one share of the post-removal pool, the retained-share
+    /// calculation floors to zero. A cancel would then burn the depositor's whole
+    /// stake. That transition must revert rather than forfeit a positive claim
+    /// (OtterSec #93).
     #[test]
     fn calculate_shares_lost_rejects_full_claim_burn() {
         let mut vault = Vault::default();
@@ -183,8 +184,8 @@ mod tests {
             value: 100, // small frozen request value
             ts: 0,
         };
-        // Huge equity: the 1 frozen share is worth ~equity/2 (>> 100), and the
-        // shares worth `value` at the post-removal pool floor to 0.
+        // The one frozen share is worth about half the equity, far more than 100.
+        // The shares that `value` buys in the post-removal pool floor to 0.
         let vault_equity: u64 = 1_000_000_000_000;
         assert!(
             req.calculate_shares_lost(&vault, vault_equity).is_err(),
@@ -192,11 +193,12 @@ mod tests {
         );
     }
 
-    /// OtterSec #126: the #93 guard above must not fire for a depositor whose pending
-    /// request covers 100% of `total_shares`. There the post-removal pool has zero shares,
-    /// so `new_n_shares` floors to 0 for a structural reason rather than a rounding one, and
-    /// rejecting the cancel stranded the depositor: re-request and deposit are both blocked
-    /// while a request is pending, leaving only a `withdraw` at the stale frozen value.
+    /// The guard above must not fire for a depositor whose pending request covers every
+    /// share in `total_shares` (OtterSec #126, on the OtterSec #93 guard). The post-removal
+    /// pool then holds zero shares, so `new_n_shares` floors to 0 for a structural reason
+    /// and not a rounding one. Rejecting that cancel strands the depositor. A pending
+    /// request blocks both a new request and a deposit, which leaves only a `withdraw` at
+    /// the stale frozen value.
     #[test]
     fn calculate_shares_lost_sole_depositor_full_request_can_cancel() {
         let mut vault = Vault::default();
@@ -211,7 +213,7 @@ mod tests {
         assert_eq!(req.calculate_shares_lost(&vault, 110).unwrap(), 0);
     }
 
-    /// Sanity: an ordinary cancel with no equity gain forfeits nothing.
+    /// An ordinary cancel with no equity gain forfeits nothing.
     #[test]
     fn calculate_shares_lost_no_gain_forfeits_nothing() {
         let mut vault = Vault::default();
@@ -221,7 +223,7 @@ mod tests {
             value: 100,
             ts: 0,
         };
-        // amount == value (no gain) -> else branch -> zero shares lost.
+        // amount equals value, so there is no gain and the else branch loses no shares.
         assert_eq!(req.calculate_shares_lost(&vault, 200).unwrap(), 0);
     }
 }

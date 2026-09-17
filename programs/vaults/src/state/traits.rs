@@ -54,9 +54,9 @@ pub trait VaultDepositorBase {
     /// A fee policy installs for the whole vault at one instant, but the vault cannot settle every
     /// depositor at that instant. A raised rate would therefore price gain that was earned before
     /// the raise existed. The depositor keeps the policy that was in force when its high-water
-    /// mark was last set, until it realizes that gain. The manager advances a depositor to a new
-    /// policy with the `apply_profit_share` instruction, which realizes the gain at the old
-    /// policy first.
+    /// mark was last set. That policy holds until the depositor realizes the gain. The manager
+    /// moves a depositor onto a new policy with the `apply_profit_share` instruction, which
+    /// realizes the gain at the old policy first.
     ///
     /// A policy that is better for the depositor applies at once. `update_vault` therefore keeps
     /// its immediate effect, because it can only lower the profit share and only raise the hurdle
@@ -177,9 +177,9 @@ pub trait VaultDepositorBase {
             vault_equity,
         )?;
 
-        // #104: calculate_profit_share_and_update advances the depositor's high-water mark and
-        // profit_share_fee_paid by the computed fee. Snapshot both first so we can undo that
-        // advance if the fee is too small to move a whole share (see the defer branch below).
+        // calculate_profit_share_and_update advances the depositor's high-water mark and
+        // profit_share_fee_paid by the computed fee. Save both first, so the defer branch below
+        // can undo that advance when the fee is too small to move a whole share (OtterSec #104).
         let cumulative_profit_share_before = self.get_cumulative_profit_share_amount();
         let profit_share_fee_paid_before = self.get_profit_share_fee_paid();
 
@@ -194,14 +194,16 @@ pub trait VaultDepositorBase {
         let profit_share_shares: u128 =
             vault_amount_to_depositor_shares(profit_share, vault.total_shares, vault_equity)?;
 
-        // #104: shares are indivisible. A fee worth less than one share must not be crystallized:
-        // moving zero shares would record the fee as paid while nothing transfers, and rounding
-        // up to one whole share would confiscate value far exceeding the fee owed — at a high
-        // share price (e.g. after a rebase-then-recovery cycle) a manager-cranked apply_profit_share
-        // could take a full share of near-unbounded value per small gain, capturing ~100% of a
-        // depositor's profit instead of the contracted rate. Defer instead: transfer nothing and
-        // roll back the high-water mark / fee-paid advance, so this profit is charged later once it
-        // has grown enough that the fee is worth at least one share.
+        // Shares are indivisible, so a fee worth less than one share must not settle. Moving zero
+        // shares records the fee as paid while nothing transfers. Rounding up to one whole share
+        // takes far more value than the fee owes. At a high share price, which a rebase followed
+        // by a recovery can produce, a manager who cranks apply_profit_share takes a full share
+        // for each small gain. That captures close to all of a depositor's profit instead of the
+        // contracted rate.
+        //
+        // Defer instead. Transfer nothing and roll back the high-water mark and the fee-paid
+        // advance. The profit is charged later, once it has grown enough that the fee is worth at
+        // least one share (OtterSec #104).
         if profit_share > 0 && profit_share_shares == 0 {
             self.set_cumulative_profit_share_amount(cumulative_profit_share_before);
             self.set_profit_share_fee_paid(profit_share_fee_paid_before);
@@ -235,14 +237,14 @@ pub trait VaultDepositorBase {
             msg!("vp shares after: {}", vp.protocol_profit_and_fee_shares);
         }
 
-        // Switch depositor to the vault's new profit share/hurdle rate only when we passed the hurdle
-        // and took fees.
-        // Temptation here is to do profit_share > 0 but on markets where profit share is always 0
-        // the hurdle rate never actually changes. Instead, compare the high water mark value to the basis,
-        // if they're equal that means we raised the basis to the watermark.
-        // Tradeoff here: this is built to protect depositors, but may be annoying for vault managers,
-        // as now the hurdle can't be lowered until you pass the previous hurdle. If this becomes an issue we can add
-        // a new endpoint that allows managers to forfeit profit in order to put everyone on the same new basis
+        // Move the depositor onto the vault's current profit share and hurdle rate only after the
+        // gain is realized at the old policy. A `profit_share > 0` test fails on a vault whose
+        // profit share is always 0, because the hurdle rate would then never advance. Compare the
+        // remaining value against the basis instead. A value at or below the basis means the basis
+        // rose to the high-water mark.
+        //
+        // The rule protects depositors and costs managers. A lowered hurdle rate does not reach a
+        // depositor until that depositor passes the old hurdle.
         let basis = self
             .get_net_deposits()
             .safe_add(self.get_cumulative_profit_share_amount())?;
@@ -337,10 +339,10 @@ pub trait VaultDepositorBase {
             protocol_fee_shares,
         } = vault.apply_fee(vault_protocol, fee_update, vault_equity, now)?;
 
-        // #107: apply_fee may induce a further vault rebase. Re-sync both depositors before the
-        // base-checked apply_profit_share / share-transfer ops, and fold any extra divisor into
-        // from_rebase_divisor so a Shares-unit transfer converts the caller's original-base share
-        // count correctly.
+        // apply_fee can cause a further vault rebase. Re-sync both depositors before the
+        // base-checked apply_profit_share call and the share transfer. Fold any extra divisor into
+        // from_rebase_divisor, so a Shares-unit transfer converts the caller's original-base share
+        // count correctly (OtterSec #107).
         let from_extra = self.apply_rebase(vault, vault_protocol, vault_equity)?;
         let to_extra = to.apply_rebase(vault, vault_protocol, vault_equity)?;
         validate!(
@@ -371,17 +373,16 @@ pub trait VaultDepositorBase {
             "Requested n_shares = 0"
         )?;
 
-        // #138: move cost basis by the value of the shares actually transferred, not by
-        // the caller's raw request.
+        // Move the cost basis by the value of the shares that transfer, not by the caller's
+        // raw request (OtterSec #138).
         //
         // For `WithdrawUnit::Token`, `get_withdraw_value_and_shares` returns
-        // `withdraw_value = withdraw_amount` verbatim while flooring `n_shares` out of it.
-        // Crediting the recipient with the un-floored request therefore hands them more
-        // cost basis than the shares they received are worth, which shelters that much
-        // future profit from the manager and protocol performance fees — and symmetrically
-        // over-debits the sender. The `Shares` and `SharesPercent` units already derive
-        // their value *from* `n_shares`, so re-deriving here simply makes all three units
-        // agree.
+        // `withdraw_value = withdraw_amount` unchanged, and it floors `n_shares` out of that
+        // amount. Crediting the recipient with the unfloored request hands them more cost
+        // basis than their shares are worth. That shelters the same amount of future profit
+        // from the manager fee and the protocol performance fee, and it debits the sender by
+        // too much. The `Shares` and `SharesPercent` units already derive their value from
+        // `n_shares`, so deriving it here puts all three units in agreement.
         let transferred_value: u64 =
             depositor_shares_to_vault_amount(n_shares, vault.total_shares, vault_equity)?
                 .min(vault_equity);

@@ -71,7 +71,7 @@ fn admit_perp_position_transfer(
 /// Read the market a transfer moves a position in, and prove it may take one.
 ///
 /// Transfers are rejected once the market is expired or in settlement. The
-/// transfer prices its deltas at the LIVE oracle, but expired positions settle
+/// transfer prices its deltas at the live oracle, but expired positions settle
 /// at the market's fixed `expiry_price`. A post-expiry transfer would let an
 /// authority split a live-oracle gain from the matching fixed-expiry loss
 /// across two of its own subaccounts, leaving the source a positive zero-base

@@ -11,26 +11,29 @@ use {
 pub struct InitializeQuoterV0 {
     #[account(mut)]
     pub payer: Signer,
-    /// The maker's config key: pause, reconfigure, rotate the hot key. Free of
-    /// the quoted user — a desk can run this cold, or share one operator key
-    /// across the wallets it quotes for.
+    /// The maker's config key. It pauses the instance, reconfigures it, and
+    /// rotates the hot key. It is independent of the quoted user, so a desk can
+    /// hold it cold, or share one operator key across the wallets it quotes
+    /// for.
     pub authority: Signer,
     /// The quoted wallet. Its signature is the consent to quote for its
-    /// sub-account — the same rule the velocity registry enforces on
-    /// Custom-entry creation — and it rides the seeds, so one instance exists
-    /// per (market, quoted wallet, sub-account) and nobody can squat another
-    /// maker's address. Consent survives the split from `authority` precisely
-    /// because it is *this* key, not the config key, that seeds the PDA and
-    /// signs here: an operator who wants to quote a wallet's sub-account must
-    /// get that wallet to sign creation, and the binding is immutable
-    /// afterwards (a different quoted user means a new instance, signed for
-    /// again).
+    /// sub-account, which is the rule the velocity registry enforces on
+    /// Custom-entry creation. The address rides the seeds, so one instance
+    /// exists per market, quoted wallet and sub-account, and no one can claim
+    /// another maker's address.
+    ///
+    /// The consent survives the split from `authority` because this key seeds
+    /// the PDA and signs here, and the config key does not. An operator who
+    /// wants to quote a wallet's sub-account must get that wallet to sign
+    /// creation. The binding is immutable afterwards. A different quoted user
+    /// means a new instance, signed for again.
     pub user_authority: Signer,
-    /// The only signer `execute_v0` accepts (velocity's quoter CPI signer PDA).
-    /// Immutable after init. Accounts, not args: duplicated accounts cost
-    /// one index byte in the tx.
+    /// The only signer `execute_v0` accepts. It is velocity's quoter CPI signer
+    /// PDA, and it is immutable after creation. It arrives as an account and
+    /// not as an argument, because a duplicated account costs one index byte in
+    /// the transaction.
     pub execute_authority: UncheckedAccount,
-    /// Hot key for mid/level writes; rotatable by `authority`.
+    /// The hot key for mid and level writes. `authority` can rotate it.
     pub hot_authority: UncheckedAccount,
     #[account(
         init,
@@ -78,7 +81,7 @@ pub fn handle_initialize_quoter_v0(
     quoter.market_index = config.market_index;
     quoter.require_attested_flow = config.require_attested_flow as u8;
     quoter.max_mid_deviation_ppm = config.max_mid_deviation_ppm;
-    // mid/levels start unset: the quoter is live but quotes nothing until
-    // the hot key writes a mid and at least one side.
+    // The mid and the levels start unset. The quoter exists but quotes nothing
+    // until the hot key writes a mid and at least one side.
     quoter.validate()
 }

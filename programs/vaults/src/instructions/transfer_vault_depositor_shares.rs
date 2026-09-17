@@ -17,10 +17,10 @@ pub fn transfer_vault_depositor_shares<'info>(
     amount: u64,
     withdraw_unit: WithdrawUnit,
 ) -> Result<()> {
-    // Book the lending interest of every market that prices NAV BEFORE any account
-    // is borrowed and before NAV is snapshotted (OtterSec #136/#137). Must precede
-    // `load_mut`/`load_maps`: `invoke` rejects a CPI whose writable accounts still
-    // have live borrows, and the maps must read post-refresh data.
+    // Book the lending interest of every market that prices NAV before any
+    // account is borrowed and before NAV is snapshotted (OtterSec #136/#137). The refresh must run
+    // before `load_mut` and `load_maps`. `invoke` rejects a CPI whose writable
+    // accounts still have live borrows, and the maps must read refreshed data.
     refresh_velocity_spot_market!(ctx);
 
     let clock = &Clock::get()?;
@@ -49,9 +49,9 @@ pub fn transfer_vault_depositor_shares<'info>(
     vault.validate_vault_protocol(&vp)?;
     let mut vp = vp.as_mut().map(|vp| vp.load_mut()).transpose()?;
 
-    // #101: apply a matured fee update on this share-movement path (mirrors deposit/withdraw), so
-    // a queued profit-share/management-fee increase can't be escaped by moving shares and resetting
-    // the recipient's cost basis under stale fee terms.
+    // A matured fee update applies on every path that moves shares. Otherwise a
+    // queued profit share or management fee increase escapes: the shares move and
+    // the recipient cost basis resets under the old fee terms (OtterSec #101).
     let has_fee_update = FeeUpdateStatus::has_pending_fee_update(vault.fee_update_status);
     let mut fee_update = ctx.fee_update(vp.is_some(), has_fee_update);
     vault.validate_fee_update(&fee_update)?;

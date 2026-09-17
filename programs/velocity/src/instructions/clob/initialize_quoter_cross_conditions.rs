@@ -1,11 +1,13 @@
-//! Stand up (or re-price) a Custom quoter's relay cross-discovery
-//! conditions. Permissionless — every input is validated against the
-//! registry and the market, and the only thing the caller "gains" is
-//! paying the rent: attach requires the entry active + approved, the
-//! market's canonical CLOB attached, and the conditions PDA derives from
-//! the entry key. Re-running re-prices (a new keeper payment, a changed
-//! watch declaration, a rotated CLOB) — the same idempotent shape as the
-//! market attach.
+//! Create a Custom quoter's relay cross-discovery conditions, or re-price
+//! conditions that already exist.
+//!
+//! The instruction is permissionless. Every input is checked against the
+//! registry and the market, and the caller only pays the rent. An attach
+//! requires the entry to be active and approved, and requires the market's
+//! canonical CLOB to be attached. The conditions PDA derives from the entry
+//! key. A repeat call re-prices in place, which covers a new keeper payment, a
+//! changed watch declaration, and a rotated CLOB. The market attach is
+//! idempotent in the same way.
 
 use {
     crate::{
@@ -34,8 +36,8 @@ pub struct InitializeQuoterCrossConditions<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
     pub state: AccountLoader<'info, State>,
-    /// The Custom entry to discover crosses for — the conditions PDA derives
-    /// from it. Its live config is read from the slab, not from here.
+    /// The Custom entry to discover crosses for. The conditions PDA derives
+    /// from it. Its live config comes from the slab rather than from here.
     pub quoter: AccountLoader<'info, QuoterV0>,
     #[account(
         seeds = [b"perp_market", quoter.load()?.config.market.to_le_bytes().as_ref()],
@@ -43,13 +45,14 @@ pub struct InitializeQuoterCrossConditions<'info> {
         has_one = quoter_slab
     )]
     pub perp_market: AccountLoader<'info, PerpMarket>,
-    /// The market's slab: the entry's approved config, and the book's — the
-    /// other leg of every staged cross — at slot 0. Bound by the market's
-    /// `has_one`, which is a memcmp where a seeds constraint pays a PDA
-    /// derivation.
+    /// The market's slab. It holds the entry's approved config, and the
+    /// book's config at slot 0. The book is the other leg of every staged
+    /// cross. The market's `has_one` binds the slab, which costs a memcmp where
+    /// a seeds constraint would pay for a PDA derivation.
     #[account()]
     pub quoter_slab: AccountLoader<'info, QuoterSlabV0>,
-    /// The market's crank conditions: the keeper-payment source of truth.
+    /// The market's crank conditions, which are the source of truth for the
+    /// keeper payment.
     #[account(
         seeds = [
             CLOB_CRANK_CONDITIONS_PDA_SEED,
@@ -72,8 +75,8 @@ pub struct InitializeQuoterCrossConditions<'info> {
 
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
 pub struct InitializeQuoterCrossConditionsArgs {
-    /// The poll interval behind the reprice watch — the discovery floor when
-    /// the maker's declared watch misses a reprice.
+    /// The poll interval behind the reprice watch. It is the discovery floor
+    /// when the maker's declared watch misses a reprice.
     pub expire_fallback_slots: u64,
 }
 
@@ -116,10 +119,10 @@ pub fn handle_initialize_quoter_cross_conditions(
         "the slab's book is not the market's canonical book"
     )?;
 
-    // Its resolver stages `crank_cross_match` and nothing else, so the floor
-    // is exactly that crank's payment out of the market's reservoir. The
-    // watched region comes from the same account: the book reported it when
-    // the market attached, so nothing here derives where its heads sit.
+    // The resolver stages `crank_cross_match` and nothing else, so the floor
+    // is that crank's payment out of the market's reservoir. The watched region
+    // comes from the same account. The book reported it when the market
+    // attached, so nothing here derives where the book's heads sit.
     let (keeper_payment_lamports, top_of_book_offset, top_of_book_len) = {
         let market_conditions = ctx.accounts.market_conditions.load()?;
         (
@@ -139,13 +142,15 @@ pub fn handle_initialize_quoter_cross_conditions(
     };
     let clob_market = clob.response_account;
 
-    // The resolver's account list: the shared scratch (index 0 — where the
-    // response pointer says the payload lives), the conditions, the CLOB book,
-    // the state, the market's quoter slab (both legs' approved configs), the
-    // entry's quoted user and the CLOB program, then the entry's registered
-    // quote surface and program — everything the two generic quote CPIs need.
-    // Stored ONCE next to the block; each condition points at it with relay's
-    // resolver-list indirection instead of inlining a copy.
+    // The resolver's account list, in order: the shared scratch at index 0,
+    // which is where the response pointer says the payload lives, the
+    // conditions, the CLOB book, the state, the market's quoter slab holding
+    // both legs' approved configs, the entry's quoted user, the CLOB program,
+    // then the entry's registered quote surface and its program. That is
+    // everything the two generic quote CPIs need.
+    //
+    // The list is stored once next to the block. Each condition points at it
+    // through relay's resolver-list indirection rather than inlining a copy.
     //
     // The book is writable because the resolver quotes it through
     // `quote_l3_v0`, which streams its answer into the market account's own
@@ -178,7 +183,7 @@ pub fn handle_initialize_quoter_cross_conditions(
     };
 
     let mut conditions = ctx.accounts.cross_conditions.load_init().or_else(|_| {
-        // Re-attach: the account already exists; re-price in place.
+        // The account already exists on a re-attach, so re-price in place.
         ctx.accounts.cross_conditions.load_mut()
     })?;
     conditions.quoter = ctx.accounts.quoter.key();
@@ -190,8 +195,9 @@ pub fn handle_initialize_quoter_cross_conditions(
     conditions.init_block()?;
     let resolvers = conditions.write_resolver_list(&resolver_accounts)?;
 
-    // The maker-declared reprice watch; inactive when nothing is declared
-    // (the fallback poll is then the only wake for this side).
+    // The maker-declared reprice watch. It stays inactive when the maker
+    // declares nothing. The fallback poll is then the only wake for this
+    // side.
     if quoter.watch_len > 0 {
         conditions.set_condition(
             QUOTER_CROSS_WATCH,
@@ -213,8 +219,8 @@ pub fn handle_initialize_quoter_cross_conditions(
     }
     conditions.set_condition(
         QUOTER_CROSS_CLOB,
-        // The book's own top-of-book region — a crossing order is always a
-        // new best, so a change there is every cross this entry could take.
+        // The book's own top-of-book region. A crossing order is always a new
+        // best, so a change there covers every cross this entry could take.
         &(ConditionV0::on_account_change(
             relay_spec::WatchedRegion::new(
                 clob_market.to_bytes(),

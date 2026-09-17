@@ -91,10 +91,10 @@ pub fn initialize_vault_with_protocol<'info>(
 
     ctx.velocity_initialize_user_stats(params.name, bump)?;
     ctx.velocity_initialize_user(params.name, bump)?;
-    // Flag the velocity User as vault-owned so the revenue-share sweep never
-    // credits builder/referral rewards into a NAV-priced protocol vault
-    // (OtterSec #91/#92/#93). Missing here, a protocol vault's User could be
-    // made a referrer/builder beneficiary and diluted against a timed sweep.
+    // Flag the new velocity User as vault-owned, so the revenue-share sweep
+    // never credits builder or referral rewards into a NAV-priced protocol
+    // vault. Without the flag, a protocol vault User can be named a referrer
+    // or a builder beneficiary and diluted against a timed sweep (OtterSec #91/#92/#93).
     ctx.velocity_set_user_vault_owned(params.name, bump)?;
 
     Ok(())
@@ -196,8 +196,6 @@ impl<'info> InitializeUserCPI for Context<'info, InitializeVaultWithProtocol<'in
             payer: self.accounts.payer.to_account_info().clone(),
             rent: self.accounts.rent.to_account_info().clone(),
             system_program: self.accounts.system_program.to_account_info().clone(),
-            // A vault's velocity user can be liquidated like any other, so
-            // it carries the same conditions account, on the same payer.
             user_conditions: self.accounts.velocity_user_conditions.clone(),
         };
         let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, signers);

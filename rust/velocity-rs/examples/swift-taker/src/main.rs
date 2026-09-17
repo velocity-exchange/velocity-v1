@@ -148,8 +148,8 @@ async fn swift_deposit_trade(
         );
 
     // The placement routes the order and rests what it cannot fill on the
-    // market's book, so it carries the book's accounts — read from the
-    // market's quoter slab, the book at slot 0.
+    // market's book, so it carries the book's accounts. The book is slot 0 of
+    // the market's quoter slab.
     let perp_market_index = signed_order_info.order_params().market_index;
     let slab_slots = velocity
         .get_quoter_slab_slots(perp_market_index)

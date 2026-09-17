@@ -218,17 +218,17 @@ pub fn is_oracle_valid_for_action(
                     | OracleValidity::InsufficientDataPoints
                     | OracleValidity::StaleForMargin
             ),
-            // Same admitted set as `MarginCalc`, deliberately. A DLOB match
-            // prices off resting limit orders rather than the oracle, so the
-            // looser rule reads reasonable in isolation, but a fill it lets
-            // through at a stale-for-margin oracle is a fill whose margin
-            // consequences the program cannot evaluate: an exact close by both
-            // sides classifies as reducing, which skips the equity-floor gate,
-            // and the lazy breaker cannot arm because it requires `MarginCalc`
-            // validity. A temporary mark loss then crystallizes permanently at
-            // a price the protocol itself treats as unusable, and the
-            // counterparty's matching gain settles out of the pnl pool once the
-            // feed recovers (OtterSec #142).
+            // The admitted set matches `MarginCalc` on purpose. A DLOB match
+            // prices off resting limit orders rather than the oracle, so a
+            // looser rule reads reasonable in isolation. A fill it lets through
+            // at a stale-for-margin oracle still has margin consequences the
+            // program cannot evaluate. An exact close by both sides classifies
+            // as reducing, which skips the equity-floor gate, and the lazy
+            // breaker cannot arm because it requires `MarginCalc` validity. A
+            // temporary mark loss then crystallizes permanently at a price the
+            // protocol itself treats as unusable, and the counterparty's
+            // matching gain settles out of the pnl pool once the feed recovers
+            // (OtterSec #142).
             VelocityAction::FillOrderMatch => !matches!(
                 oracle_validity,
                 OracleValidity::NonPositive
@@ -293,11 +293,11 @@ pub fn block_operation(
 
     let funding_paused_on_market = market.is_operation_paused(PerpOperation::UpdateFunding);
 
-    // Block if the amm has been stale for more than ~40% of the funding period.
-    // `funding_period` is seconds; `* 400` = 0.4 * 1000ms, the historical
-    // behavior (the pre-scaling gate compared a raw slot count against
-    // `funding_period`, i.e. elapsed slots at 400ms = 0.4 * period seconds).
-    // Comparing wall-clock ms on both sides keeps that width at any slot duration.
+    // Block when the amm has been stale for more than 40% of the funding period.
+    // `funding_period` is in seconds, and `* 400` is 0.4 * 1000ms. An earlier gate
+    // compared a raw slot count against `funding_period`, which at 400ms slots is the
+    // same 40% of the period. Comparing wall-clock milliseconds on both sides keeps
+    // that width at any slot duration.
     let amm_stale_ms = slot_clock
         .elapsed_slot_delta(slots_since_amm_update, slot)
         .as_ms();
@@ -417,37 +417,34 @@ pub fn oracle_validity(
 
     // Immediate (JIT / auction-skipping) AMM fills.
     //
-    // Three cases. `0` is the explicit "never allow immediate AMM fills on this
-    // market" sentinel. A positive value is an explicit admin threshold and is
-    // used as-is.
+    // There are three cases. `0` is the explicit sentinel for never allowing an
+    // immediate AMM fill on this market. A positive value is an explicit admin
+    // threshold and is used as it stands.
     //
-    // A negative value means unset, and what it resolves to depends on where
-    // the price being classified came from. It previously clamped to
-    // `max(override, 0)`, i.e. a threshold of zero, requiring the price to have
-    // been written in this exact slot. That is unsatisfiable for an MM-oracle-
-    // sourced price by construction: the program refuses any MM-oracle write
-    // closer than `MM_ORACLE_MIN_WRITE_GAP` to the previous one, so such a
-    // price is at best zero slots old on alternating slots and can never be
-    // fresher than that on the rest. A market left at the init default
-    // therefore could not pass this gate on roughly half of all slots no matter
-    // how aggressively it was cranked — an arithmetic contradiction between two
-    // independent constants, so unset resolves to `MM_ORACLE_MIN_WRITE_GAP` for
-    // an MM-sourced price: the tightest window the crank can actually satisfy.
+    // A negative value means unset, and what it resolves to depends on where the price
+    // being classified came from. A threshold of zero requires the price to have been
+    // written in this exact slot. An MM-oracle-sourced price cannot satisfy that by
+    // construction. The program refuses any MM-oracle write closer than
+    // `MM_ORACLE_MIN_WRITE_GAP` to the previous one, so such a price is at best zero
+    // slots old on alternating slots and is older on the rest. A market left at the
+    // init default would fail this gate on roughly half of all slots however hard it
+    // was cranked. Unset therefore resolves to `MM_ORACLE_MIN_WRITE_GAP` for an
+    // MM-sourced price, which is the tightest window the crank can satisfy.
     //
-    // An exchange-oracle price has no such floor — it can be same-slot fresh
-    // every slot — so unset keeps the strict zero threshold there. Widening it
-    // too would tolerate extra staleness on immediate fills exactly when the
-    // safe-price path has fallen back to the exchange oracle (MM oracle stale
-    // or diverged), which is when latency arbitrage against the vAMM pays most.
+    // An exchange-oracle price has no such floor and can be same-slot fresh every
+    // slot, so unset keeps the strict zero threshold there. Widening it would tolerate
+    // extra staleness on immediate fills exactly when the safe-price path has fallen
+    // back to the exchange oracle, which happens when the MM oracle is stale or
+    // diverged. That is when latency arbitrage against the vAMM pays most.
     //
-    // Note `oracle_delay` for an MM price measures from the *landing* slot, and
-    // the write path accepts observations up to `MM_ORACLE_MAX_SOURCE_AGE`
-    // older than their landing, so the true observation age this gate admits is
-    // up to the sum of the two. A `const_assert!` in `math/constants.rs` pins
-    // that bound to at most `MM_ORACLE_MIN_WRITE_GAP`, i.e. twice the gap.
+    // `oracle_delay` for an MM price measures from the landing slot, and the write path
+    // accepts observations up to `MM_ORACLE_MAX_SOURCE_AGE` older than their landing.
+    // The true observation age this gate admits is therefore up to the sum of the two.
+    // A `const_assert!` in `math/constants.rs` holds that bound at or below
+    // `MM_ORACLE_MIN_WRITE_GAP`, so the sum is twice the gap, to within one slot.
     //
-    // An explicit override still wins in both directions on both paths, so this
-    // only affects markets that never had one set.
+    // An explicit override still wins in both directions on both paths, so this only
+    // affects markets that never had one set.
     let is_stale_for_amm_immediate =
         match DelayOverride::from_immediate(slots_before_stale_for_amm_immdiate_override) {
             DelayOverride::Never => true,
@@ -455,7 +452,7 @@ pub fn oracle_validity(
                 let unset_threshold: Millis = if immediate_price_is_mm_sourced {
                     // The MM write gate rounds its minimum interval up to a
                     // whole number of slots. Measure that same accepted slot
-                    // window through the clock, otherwise 3 x 350ms is marked
+                    // window through the clock. Otherwise 3 x 350ms reads as
                     // stale even though the crank cannot legally write at 2.
                     slot_clock.elapsed_slot_delta(
                         MM_ORACLE_MIN_WRITE_GAP

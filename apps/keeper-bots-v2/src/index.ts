@@ -469,9 +469,9 @@ const runBot = async () => {
 		);
 	}
 
-	// Self-heal a websocket that stops delivering slots. Every signed-msg fill is
-	// gated on this slot being current, so a silently frozen subscription would
-	// stall those fills indefinitely rather than degrade.
+	// Resubscribe when the websocket stops delivering slots. Every signed-message
+	// fill is gated on this slot being current, so a frozen subscription stalls
+	// those fills for as long as it stays frozen.
 	const slotSubscriber = new SlotSubscriber(connection, {
 		resubTimeoutMs: 10_000,
 	});

@@ -1,30 +1,30 @@
-//! vAMM leg of the router's quoter interface: turn the AMM curve into
-//! discrete [`PriceLevel`]s for the router split. In-program — the vAMM
-//! never goes through the CPI legs, which is what makes last look possible:
-//! the router quotes every CPI book first and hands them here, and rival
-//! prices become ladder rungs. The slice of curve that is cheaper than a
-//! rival's price is quoted AT the rival's price — the vAMM wins the tie by
-//! tier priority and captures the difference for the LPs instead of
-//! donating it as taker price improvement.
+//! vAMM leg of the router's quoter interface. It turns the AMM curve into
+//! discrete [`PriceLevel`]s for the router split.
 //!
-//! A rung shades no more base than the rivals at that price actually offer.
-//! The price a taker pays without the vAMM is the rival price only for the
-//! size the rival holds, and the rest of the demand falls back to the curve.
-//! An unbounded rung would let one dust order reprice the whole slice, and
-//! resting that order costs nothing because the vAMM wins the tie and the
-//! order never trades.
+//! The vAMM runs in this program and never goes through a CPI leg, which is
+//! what makes last look possible. The router quotes every CPI book first and
+//! hands those books here, and rival prices become ladder rungs. A slice of
+//! curve that is cheaper than a rival's price is quoted at the rival's price.
+//! The vAMM wins the tie by tier priority and keeps the difference for the LPs
+//! instead of giving it to the taker as price improvement.
 //!
-//! Every checkpoint's price comes from the swap math the execute leg will
-//! run (`calculate_base_swap_output`, spread reserves and all): a rung's
+//! A rung shades no more base than the rivals at that price offer. Without the
+//! vAMM, a taker pays the rival price only for the size the rival holds, and
+//! the rest of the demand falls back to the curve. An unbounded rung would let
+//! one dust order reprice the whole slice. Resting that order costs nothing,
+//! because the vAMM wins the tie and the order never trades.
+//!
+//! Every checkpoint's price comes from the swap math the execute leg runs,
+//! which is `calculate_base_swap_output` over the spread reserves. A rung's
 //! price is the exact per-unit cost of its own slice, rounded against the
-//! taker. So each level upper-bounds (long) / lower-bounds (short) what the
-//! AMM will actually charge for it, and at-or-better holds by construction
-//! rather than by tolerance. A running bound keeps the book monotone when a
-//! shading rung would otherwise exceed the next honest slice. Rival rungs
-//! are only honored
-//! within [`LAST_LOOK_BAND`] of the vAMM's top — a garbage price from a
-//! malicious-but-approved quoter can't inflate this book; beyond the band
-//! the curve is priced honestly by equal-size checkpoints.
+//! taker. Each level therefore bounds what the AMM charges for it, above for a
+//! long and below for a short. At-or-better holds by construction rather than
+//! by tolerance. A running bound keeps the book monotone where a shading rung
+//! would otherwise exceed the next honest slice.
+//!
+//! Rival rungs are honored only within [`LAST_LOOK_BAND`] of the vAMM's top, so
+//! a bad price from an approved quoter cannot inflate this book. Beyond the
+//! band the curve is priced by equal-size checkpoints.
 
 use {
     super::{
@@ -52,28 +52,29 @@ use {
     },
 };
 
-/// Ladder checkpoints per quote (rival rungs + equal-size filler).
+/// Ladder checkpoints per quote. The count covers the rival rungs and the
+/// equal-size filler together.
 pub const VAMM_QUOTE_CHECKPOINTS: usize = 8;
 
-/// Rival prices are honored as shading rungs only within this fraction of
-/// the vAMM's top price (PERCENTAGE_PRECISION): 5%.
+/// Rival prices are honored as shading rungs only within this fraction of the
+/// vAMM's top price. The value is 5% in `PERCENTAGE_PRECISION`.
 pub const LAST_LOOK_BAND: u64 = PERCENTAGE_PRECISION_U64 / 20;
 
-/// Quote the vAMM: best-first ladder levels covering `min(size, available)`,
-/// shaded toward `rival_books` within the last-look band and only for the
-/// depth those books offer.
+/// Quote the vAMM as best-first ladder levels covering `min(size, available)`.
+/// The levels are shaded toward `rival_books` within the last-look band, and
+/// only for the depth those books offer.
 ///
-/// `taker_limit` bounds the ladder honestly: the curve inversion finds the
-/// cumulative where the marginal price reaches the limit and the total is
-/// capped there, so every rung's true cost is inside the limit (a slice's
-/// average never exceeds its end marginal). This is the taker's own price —
-/// no shading-band question.
+/// `taker_limit` bounds the ladder. The curve inversion finds the cumulative
+/// where the marginal price reaches the limit, and the total is capped there.
+/// Every rung's true cost is then inside the limit, because a slice's average
+/// never exceeds its end marginal. The limit is the taker's own price, so the
+/// shading band does not apply to it.
 ///
-/// Because the cap happens here, the ladder's book is authoritative for the
-/// limit and callers must NOT re-truncate it by comparing rung prices to the
-/// limit: a dust rung's notional rounds up to a whole lamport, which inflates
-/// its quoted per-unit price past the very limit that admitted it, and
-/// dropping it would cost the taker liquidity they can afford.
+/// The cap happens here, so the ladder's book is authoritative for the limit. A
+/// caller must not truncate it again by comparing rung prices to the limit. A
+/// dust rung's notional rounds up to a whole lamport, which pushes its quoted
+/// per-unit price past the limit that admitted it. Dropping that rung would
+/// cost the taker liquidity they can afford.
 pub fn vamm_quote_levels(
     amm: &AMM,
     direction: Direction,
@@ -128,28 +129,27 @@ pub fn vamm_quote_levels(
         }
     };
 
-    // Last look: rival prices beyond our top (but within the band and the
-    // taker's limit) become shading rungs, best-first. Always on — the vAMM
-    // was winning this flow at its honest price anyway (price priority), so
-    // filling at the rival's price instead is strictly LP surplus with no
-    // cost to any maker. What each rung may reprice is bounded by the depth
-    // behind it, below. A rung past the taker's limit would price its whole
-    // slice unfillable, so those are dropped here rather than truncated
-    // downstream.
+    // Last look. A rival price beyond the vAMM's top becomes a shading rung
+    // when it stays within the band and the taker's limit, best price first.
+    // It applies on every quote. The vAMM wins this flow at its honest price by
+    // price priority, so a fill at the rival's price instead is LP surplus and
+    // costs no maker anything. The depth behind each rung bounds what it
+    // reprices, below. A rung past the taker's limit prices its whole slice
+    // unfillable, so it is dropped here rather than truncated downstream.
     let rung_edge = match (taker_limit, direction) {
         (Some(limit), Direction::Long) => band_edge.min(limit),
         (Some(limit), Direction::Short) => band_edge.max(limit),
         (None, _) => band_edge,
     };
-    // The best [`VAMM_QUOTE_CHECKPOINTS`] rival rungs, best first and deduped,
-    // each carrying the depth the rivals offer at its price.
+    // The best `VAMM_QUOTE_CHECKPOINTS` rival rungs, best first and deduped.
+    // Each one carries the depth the rivals offer at its price.
     //
-    // Held in a fixed array and insert-sorted rather than collected and then
-    // truncated. Only this many are ever read, and the collected form grows by
-    // doubling over every level of every rival book — a set carrying many
-    // makers abandons a buffer per doubling, on an allocator that never
-    // reclaims. Insert-sorting into the array is also the cheaper walk: it is
-    // linear in the rungs kept rather than sorting the whole set.
+    // A fixed array with an insert sort, rather than a collect and a truncate.
+    // Only this many rungs are ever read, and the collected form grows by
+    // doubling over every level of every rival book. A set that carries many
+    // makers abandons one buffer per doubling, on an allocator that never
+    // reclaims. The insert sort is also the cheaper walk. It is linear in the
+    // rungs kept rather than a sort of the whole set.
     let mut rival_rungs = [PriceLevel::default(); VAMM_QUOTE_CHECKPOINTS];
     let mut rung_count = 0usize;
     let ranks_before = |a: u64, b: u64| match direction {
@@ -177,7 +177,7 @@ pub fn vamm_quote_levels(
         if at >= VAMM_QUOTE_CHECKPOINTS {
             continue;
         }
-        // Shift the worse rungs down one, dropping the worst when full.
+        // Shift the worse rungs down one. A full array drops its worst rung.
         let end = if rung_count < VAMM_QUOTE_CHECKPOINTS {
             rung_count
         } else {
@@ -193,13 +193,14 @@ pub fn vamm_quote_levels(
         rung_count = (rung_count + 1).min(VAMM_QUOTE_CHECKPOINTS);
     }
 
-    // Checkpoints: (cumulative base, shading price if this is a rival rung).
+    // Each checkpoint holds a cumulative base and, for a rival rung, its
+    // shading price.
     //
     // A rung shades only as far as the rivals at that price or better can
     // supply. `rival_depth` is that running total. Past it the taker's
-    // alternative is not this rung but a worse one, so the curve is priced
-    // honestly there and a later rung shades it if one carries the depth.
-    // Both totals only grow down the ladder, so the checkpoints stay ordered.
+    // alternative is a worse rung, so the curve is priced honestly there, and a
+    // later rung shades it when one carries the depth. Both totals only grow
+    // down the ladder, so the checkpoints stay ordered.
     let mut checkpoints: Vec<(u64, Option<u64>)> = Vec::with_capacity(VAMM_QUOTE_CHECKPOINTS + 1);
     let mut rival_depth = 0u64;
     for rung in rival_rungs[..rung_count].iter() {
@@ -215,8 +216,8 @@ pub fn vamm_quote_levels(
             break;
         }
     }
-    // Beyond the last rival rung the curve is priced honestly: equal-size
-    // checkpoints, priced below from the swap math itself.
+    // Beyond the last rival rung the curve is priced honestly. The checkpoints
+    // are equal-size, and the loop below prices them from the swap math.
     let covered = checkpoints.last().map(|c| c.0).unwrap_or(0);
     if covered < total {
         let filler = VAMM_QUOTE_CHECKPOINTS
@@ -236,21 +237,21 @@ pub fn vamm_quote_levels(
         }
     }
 
-    // Emit step-aligned rungs priced off the swap math that will actually
-    // execute. Two invariants have to hold together:
+    // Emit step-aligned rungs priced off the swap math that executes. Two
+    // invariants hold together.
     //
-    //  * `size` is an `order_step_size` multiple — the split allocates in
-    //    step quanta, so a rung's sub-step tail would be floored away and
-    //    the vAMM would silently under-quote its depth.
-    //  * `price` is a true per-unit bound on its own slice. The slice's
-    //    exact notional comes from `calculate_base_swap_output` (the same
-    //    call the execute leg makes, spread reserves and all) rather than
-    //    the raw-invariant marginal price, which diverges from what the AMM
-    //    charges because the spread quote reserve isn't the invariant's.
-    //    Rival rungs keep their shading price when it's the taker-worse of
-    //    the two, and a running bound keeps the book monotone (a rival rung
-    //    can otherwise exceed the next honest slice price, and the split
-    //    truncates a book at its first non-monotone level).
+    //  * `size` is a multiple of `order_step_size`. The split allocates in step
+    //    quanta, so a rung's sub-step tail is floored away, and the vAMM then
+    //    under-quotes its depth.
+    //  * `price` is a true per-unit bound on its own slice. The slice's exact
+    //    notional comes from `calculate_base_swap_output`, the same call the
+    //    execute leg makes over the spread reserves. The raw-invariant marginal
+    //    price diverges from what the AMM charges, because the spread quote
+    //    reserve is not the invariant's. A rival rung keeps its shading price
+    //    when that price is the worse of the two for the taker. A running bound
+    //    keeps the book monotone. A rival rung can otherwise exceed the next
+    //    honest slice price, and the split truncates a book at its first
+    //    non-monotone level.
     let step = step_size.max(1);
     let mut levels = Vec::with_capacity(checkpoints.len());
     let mut previous = 0u64;
@@ -295,9 +296,9 @@ impl RouterQuoter for AmmQuoter<'_> {
         QuoterType::Vamm.default_priority()
     }
 
-    /// The vAMM's router quote is the shaded ladder — `rival_books` is the
-    /// last look. The AMM's per-fill refresh happens in its own `setup`
-    /// step, which the fill controller runs before the router quotes.
+    /// The vAMM's router quote is the shaded ladder, and `rival_books` is the
+    /// last look. The AMM's per-fill refresh happens in `AmmQuoter::refresh`,
+    /// which the fill controller runs before the router quotes.
     fn quote(
         &self,
         ctx: &QuoteContext,
@@ -380,8 +381,8 @@ mod tests {
         assert!(levels.windows(2).all(|w| w[0].price <= w[1].price));
         assert!(levels[0].price >= TOP);
 
-        // Marginal-end pricing upper-bounds each slice's true average cost,
-        // so the quoted (floored) notional covers the exact one-shot swap.
+        // Marginal-end pricing bounds each slice's true average cost from
+        // above, so the floored quoted notional covers the exact one-shot swap.
         let exact = calculate_base_swap_output(&amm, size, SwapDirection::Remove)
             .unwrap()
             .quote_asset_amount;
@@ -423,14 +424,14 @@ mod tests {
         )
         .unwrap();
 
-        // The slice of curve cheaper than the rival is quoted AT the rival's
-        // price (winning the tie by tier priority), and it comes first.
+        // The slice of curve cheaper than the rival is quoted at the rival's
+        // price, because the vAMM wins the tie by tier priority. It comes first.
         assert_eq!(levels[0].price, rival_price);
         assert!(levels[0].size > 0);
         assert_eq!(levels.iter().map(|l| l.size).sum::<u64>(), size);
         assert!(levels.windows(2).all(|w| w[0].price <= w[1].price));
 
-        // Shading only raises quoted notional: still at-or-better.
+        // Shading only raises the quoted notional, so at-or-better still holds.
         let exact = calculate_base_swap_output(&amm, size, SwapDirection::Remove)
             .unwrap()
             .quote_asset_amount;
@@ -464,7 +465,7 @@ mod tests {
         assert!(shaded_by_depth[0].size > shaded_by_dust[0].size);
 
         // The dust order moves the taker's bill by no more than the rung it
-        // paid for, where real depth at the same price reprices far more.
+        // paid for. Real depth at the same price reprices far more.
         let dust_cost = split_notional(&shaded_by_dust) - split_notional(&honest);
         let depth_cost = split_notional(&shaded_by_depth) - split_notional(&honest);
         assert!(
@@ -479,22 +480,22 @@ mod tests {
     fn taker_limit_caps_the_ladder_at_an_honest_final_rung() {
         let amm = amm_fixture();
         let size = 10 * BASE_PRECISION_U64;
-        // +0.5% — far tighter than the curve impact of a 10-unit take.
+        // +0.5%, far tighter than the curve impact of a 10-unit take.
         let limit = TOP + TOP / 200;
         let levels = vamm_quote_levels(&amm, Direction::Long, size, 1, &[], Some(limit)).unwrap();
 
-        // The ladder quotes exactly the reachable slice: nonzero, smaller
-        // than the request, every rung within the limit. Rungs are priced at
-        // their slice's true average cost, so the deepest one sits at-or-
-        // under the limit (the limit bounds where the curve was cut, not
-        // what the last slice costs).
+        // The ladder quotes the reachable slice. It is nonzero, it is smaller
+        // than the request, and every rung stays within the limit. A rung is
+        // priced at its slice's true average cost, so the deepest one sits at
+        // or under the limit. The limit bounds where the curve was cut, not
+        // what the last slice costs.
         let quoted: u64 = levels.iter().map(|l| l.size).sum();
         assert!(quoted > 0);
         assert!(quoted < size);
         assert!(levels.iter().all(|l| l.price <= limit));
 
-        // Same slice, no limit: identical pricing for the shared prefix
-        // cumulative — the limit only truncates, never reprices.
+        // The same slice without a limit prices the shared prefix cumulative
+        // identically. The limit only truncates, it never reprices.
         let exact = calculate_base_swap_output(&amm, quoted, SwapDirection::Remove)
             .unwrap()
             .quote_asset_amount;
@@ -505,7 +506,7 @@ mod tests {
     fn taker_limit_crossing_the_top_empties_the_book() {
         let amm = amm_fixture();
         let size = 10 * BASE_PRECISION_U64;
-        // Below the ask top: the vAMM can't fill a buyer within this limit.
+        // Below the ask top. The vAMM cannot fill a buyer within this limit.
         let limit = TOP - TOP / 100;
         assert!(
             vamm_quote_levels(&amm, Direction::Long, size, 1, &[], Some(limit))
@@ -520,7 +521,7 @@ mod tests {
         let size = 10 * BASE_PRECISION_U64;
         let limit = TOP + TOP / 100; // +1%
         let rival_levels = [PriceLevel {
-            price: TOP + TOP / 50, // +2%: in band, but past the limit
+            price: TOP + TOP / 50, // +2%, in band but past the limit
             size: BASE_PRECISION_U64,
         }];
         let levels = vamm_quote_levels(
@@ -532,8 +533,8 @@ mod tests {
             Some(limit),
         )
         .unwrap();
-        // No rung priced past the limit — the unfillable rival never becomes
-        // a rung that would drag a fillable slice out of the book.
+        // No rung is priced past the limit. The unfillable rival never becomes
+        // a rung that would pull a fillable slice out of the book.
         assert!(levels.iter().all(|l| l.price <= limit));
         assert!(levels.iter().map(|l| l.size).sum::<u64>() > 0);
     }
@@ -543,12 +544,12 @@ mod tests {
         let amm = amm_fixture();
         let size = 10 * BASE_PRECISION_U64;
         let garbage = [
-            // 10x the top: outside the band — must not inflate the book.
+            // 10x the top, outside the band. It must not inflate the book.
             PriceLevel {
                 price: TOP * 10,
                 size: BASE_PRECISION_U64,
             },
-            // Below our top (crossing): not a shading target.
+            // Below the vAMM's top, so it crosses and is not a shading target.
             PriceLevel {
                 price: TOP - TOP / 100,
                 size: BASE_PRECISION_U64,
@@ -580,10 +581,10 @@ mod tests {
 
 #[cfg(test)]
 mod ts_mirror_fixture {
-    //! Emits a ladder for a fixed AMM so the TypeScript mirror
-    //! (`packages/sdk/src/math/vammLadder.ts`) can be checked against the
-    //! program's own numbers rather than against a reading of this file.
-    //! Run: `cargo test -p velocity --lib ts_mirror_fixture -- --nocapture`
+    //! Emits a ladder for a fixed AMM so the TypeScript mirror in
+    //! `packages/sdk/src/math/vammLadder.ts` can be checked against the
+    //! program's own numbers rather than against a reading of this file. Run it
+    //! with `cargo test -p velocity --lib ts_mirror_fixture -- --nocapture`.
     use {
         super::*,
         crate::math::constants::{AMM_RESERVE_PRECISION, BASE_PRECISION_U64, PEG_PRECISION},

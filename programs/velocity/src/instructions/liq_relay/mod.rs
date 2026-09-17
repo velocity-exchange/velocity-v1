@@ -1,7 +1,7 @@
-//! Relay plumbing for liquidations: the per-user condition block
-//! (`state::user_conditions`), its self-maintaining sync, and the resolver
-//! that stages `liquidate_perp_with_fill` with the protocol `User` as the
-//! (inventory-free) liquidator.
+//! Relay plumbing for liquidations. It holds the per-user condition block in
+//! `state::user_conditions`, the sync that maintains that block, and the
+//! resolver that stages `liquidate_perp_with_fill`. The resolver names the
+//! protocol `User` as the liquidator, which takes no inventory.
 
 pub mod resolve_liquidate_perp_with_fill;
 pub mod resync_liq_conditions;

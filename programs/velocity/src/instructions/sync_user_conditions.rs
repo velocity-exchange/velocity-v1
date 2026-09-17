@@ -1,14 +1,14 @@
 //! Derive a user's whole relay condition block in one instruction.
 //!
-//! Liquidation thresholds and trigger-order watches live in one account
-//! and are invalidated by the same event — the user's positions or orders
-//! changing — so syncing them separately meant two transactions, two
-//! classifications of the same `remaining_accounts`, and two writes of the
-//! same margin-map list, to end up at one account's contents.
+//! The liquidation conditions and the trigger-order watches live in one
+//! account, and the same event invalidates both. That event is a change to the
+//! user's positions or orders. Syncing them separately cost two transactions,
+//! two classifications of the same `remaining_accounts`, and two writes of the
+//! same margin-map list, for one account's contents.
 //!
 //! The two passes stay separate functions because they compute unrelated
-//! things; what they share is the account list, which the liquidation pass
-//! stores and the trigger pass then reuses instead of rewriting.
+//! things. They share the account list. The liquidation pass stores it and the
+//! trigger pass reuses it instead of rewriting it.
 
 use {
     crate::{
@@ -48,12 +48,12 @@ pub fn handle_sync_user_conditions<'c: 'info, 'info>(
     ctx: Context<'info, SyncUserConditions<'info>>,
     args: SyncLiqConditionsArgs,
 ) -> Result<()> {
-    // Priced through the one shared helper, so this entry point and the
+    // One shared helper prices the sync, so this entry point and the
     // liquidation-only one cannot disagree about what a sync costs.
     let state_rails = ctx.accounts.state.load()?.transaction_fee_rails;
     let terms = price_sync_terms(&state_rails, &args)?;
-    // Liquidation first: it is the pass that stores the shared resolver
-    // account list, so the trigger pass can skip writing it.
+    // The liquidation pass runs first because it stores the shared resolver
+    // account list. The trigger pass can then skip writing it.
     rewrite_liq_conditions(
         &ctx.accounts.user_conditions,
         &ctx.accounts.user,

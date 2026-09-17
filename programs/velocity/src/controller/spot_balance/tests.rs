@@ -917,7 +917,7 @@ fn check_fee_collection() {
     // This is a $1 market with `if_fee_factor = 1000`, so the IF's 0.1% cut of 100 seconds of
     // lending gain converts to zero tokens. The whole interval is therefore deferred — clock
     // unmoved, nothing added to either cumulative index — rather than committed with the cut
-    // silently dropped (finding #127). Same for the 7500-second crank below; the cut only
+    // silently dropped (OtterSec #127). Same for the 7500-second crank below; the cut only
     // clears a token once the un-stamped span reaches hours, which is what the third crank
     // settles. TWAP stats still advance on every call.
     update_spot_market_cumulative_interest(&mut spot_market, None, now + 100, false).unwrap();
@@ -2216,7 +2216,7 @@ fn interest_test_market() -> SpotMarket {
     }
 }
 
-/// finding #117: a zero-borrow epoch must not stay on `last_interest_ts`. While utilization is
+/// OtterSec #117: a zero-borrow epoch must not stay on `last_interest_ts`. While utilization is
 /// zero no interest is owed, but the interval was left on the clock, so the first accrual after
 /// a borrow appeared billed that whole epoch at the newly non-zero rate. Any lender could farm
 /// it: deposit into an idle market, wait for the first borrower, crank, collect.
@@ -2268,7 +2268,7 @@ fn idle_zero_utilization_epoch_is_not_billed_to_the_first_borrower() {
     );
 }
 
-/// finding #115: while interest updates are paused, deposits and withdrawals stay callable, so
+/// OtterSec #115: while interest updates are paused, deposits and withdrawals stay callable, so
 /// leaving the paused span on `last_interest_ts` meant the first accrual after resume applied
 /// the entire window to whatever balances existed at that moment — a deposit made just before
 /// the unpause earned interest for time it was not deposited. A pause stops accrual for the
@@ -2371,7 +2371,7 @@ fn if_carveout_under_one_token_is_carried_as_dust() {
     // each cut floored to zero. Lenders gave up the value, nobody received it, and the clock
     // advanced, so no later crank could retry the interval. Any caller could hold every cut
     // below the floor forever with frequent cranks of this permissionless accrual.
-    // Finding #127 describes this.
+    // OtterSec #127 describes this.
     for i in 1..=60_i64 {
         update_spot_market_cumulative_interest(&mut market, None, i, false).unwrap();
 
@@ -2578,8 +2578,8 @@ fn carveout_dust_never_defers_across_a_balance_change() {
     // index credits every balance that exists at that moment.
     //
     // Balances move between cranks. Every spot instruction that changes balances cranks this
-    // function first. A delayed interval therefore settles against later balances. Findings
-    // #115 and #117 describe this. Each span below must bill against the balances that existed
+    // function first. A delayed interval therefore settles against later balances
+    // (OtterSec #115, #117). Each span below must bill against the balances that existed
     // during it, although neither span's carveout reaches a whole token on its own.
     let mut market = carveout_test_market(1000, 1000);
 
@@ -2650,7 +2650,7 @@ fn zero_deposit_balance_still_accrues_with_a_configured_carveout() {
 #[test]
 fn deposit_credit_never_exceeds_borrow_charge() {
     // The `check_fee_collection` regime — a $1 market at a 2000% optimal rate — with the
-    // carveouts off, so this isolates the conservation clamp from the #127 deferral. Utilization
+    // carveouts off, so this isolates the conservation clamp from the OtterSec #127 deferral. Utilization
     // is sampled once at the start of an interval from rounded token amounts and applied across
     // the whole span; multiplied by a long interval's rate factor, that sub-token overstatement
     // used to credit depositors whole tokens no borrower was charged for. Settling a year in two
@@ -2807,7 +2807,7 @@ fn spot_market_init_stamps_oracle_twap_ts_so_the_first_price_band_survives() {
 /// OtterSec #110 / #111 — the swap-backed spot lanes must not advance the very
 /// oracle TWAP they then gate on.
 ///
-/// `begin_swap` (#110) and `liquidate_spot_with_swap_begin` (#111) both used to
+/// `begin_swap` (OtterSec #110) and `liquidate_spot_with_swap_begin` (OtterSec #111) both used to
 /// pass `Some(oracle_price_data)` here, refreshing `last_oracle_price_twap_5min`
 /// before the price-band / divergence check that reads it. Passing `None` is the
 /// fix, so pin the contract it depends on: `None` must still accrue interest and
@@ -2915,7 +2915,7 @@ fn spot_cumulative_interest_with_no_oracle_leaves_oracle_twaps_alone() {
 /// protection is a bound against an independent reference, and the refresh makes the
 /// reference a copy of the thing being bounded.
 ///
-/// Unlike #110/#111, the refresh itself stays: liquidation legitimately advances these
+/// Unlike OtterSec #110/#111, the refresh itself stays: liquidation legitimately advances these
 /// TWAPs. Moving it after the gate is the fix.
 #[test]
 fn update_and_check_validity_judges_and_snapshots_before_refreshing() {

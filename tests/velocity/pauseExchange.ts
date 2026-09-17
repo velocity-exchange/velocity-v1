@@ -124,8 +124,8 @@ describe('Pause exchange', () => {
 	it('Pause exchange', async () => {
 		await velocityClient.updateExchangeStatus(ExchangeStatus.PAUSED);
 		// `updateExchangeStatus` sends the transaction and returns. `getStateAccount` reads the
-		// cached account, which the subscriber updates on its own schedule, so the assert below
-		// races the poll under load. Fetch first, as the same assert in `admin.ts` does.
+		// cached account, and the subscriber updates that cache on its own schedule. Under load
+		// the assert below races the poll. Fetch first, as the same assert in `admin.ts` does.
 		await velocityClient.fetchAccounts();
 		const state = velocityClient.getStateAccount();
 		assert(

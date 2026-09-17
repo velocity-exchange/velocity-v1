@@ -1,43 +1,26 @@
 //! Rewrite a user's relay liquidation-condition block from their live
-//! positions — the "which bucket is this user in" question the keeper bot
-//! answers in memory, precomputed as thresholds instead.
+//! positions.
 //!
-//! Permissionless and idempotent. This is the **opt-in** entry point: it
-//! creates the account, so it takes a `payer: Signer`. Relay's
-//! self-maintenance path is a separate instruction —
-//! [`super::resync_liq_conditions`] — which names no signer at all,
-//! because a staged executor is submitted unsigned (relay's turner marks
-//! every meta non-signing and outright refuses to sign a transaction whose
-//! executor names a signer). Both share [`rewrite_liq_conditions`].
+//! Writing the block is permissionless and idempotent. This is the opt-in
+//! entry point. It creates the account, so it takes a `payer: Signer`. Relay's
+//! self-maintenance path is a separate instruction,
+//! [`super::resync_liq_conditions`], which names no signer at all. A staged
+//! executor is submitted unsigned, because relay's turner marks every meta
+//! non-signing and refuses to sign a transaction whose executor names a
+//! signer. Both entry points share [`rewrite_liq_conditions`].
 //!
-//! ## The threshold math
+//! ## What the block arms
 //!
-//! Liquidatability is `maintenance_margin > total_collateral` over every
-//! position and deposit at once. Locally, though, health is linear in each
-//! individual price: moving one oracle by `Δp` moves free collateral by
-//! roughly `−(∂margin/∂p − ∂collateral/∂p) · Δp`. So per exposure we solve
-//! the ceteris-paribus price at which free collateral hits zero, and watch
-//! *that* — with a haircut so it fires while buffer remains.
+//! A liveness poll wakes `ResolveLiquidatePerpWithFill` on a fixed slot
+//! interval. The poll predicts nothing. The resolver runs the full
+//! maintenance-margin calculation and reports no work while the account is
+//! healthy.
 //!
-//! Slopes (free collateral per unit of that market's raw price, carried in
-//! BASE_PRECISION fixed-point so both exposure kinds share one distance
-//! formula):
-//!
-//! - a perp position of size `b`: collateral moves `+b` (unrealized PnL),
-//!   maintenance moves `+|b|·mmr`. Net free-collateral slope is
-//!   `b − |b|·mmr` — long positions lose as price falls, shorts as it
-//!   rises. `b` is already BASE_PRECISION-scaled.
-//! - a spot deposit of `a` tokens with maintenance asset weight `w`:
-//!   collateral moves `+a·w`, so free collateral falls as the price falls.
-//!   (Spot *borrows* raise the requirement as their price rises; both
-//!   directions are covered by the sign of the slope.) The token amount is
-//!   scaled up to the same fixed-point.
-//!
-//! Because the estimate holds other prices fixed, a correlated move can
-//! reach liquidatability before any single threshold trips — which is what
-//! the haircut and the coarse fallback poll are for. Hints fire early or
-//! bounded-late; the staged `liquidate_perp_with_fill` is the exact
-//! predicate.
+//! The block also arms its own maintenance. A watch over the user's position
+//! bytes re-runs the sync when a trade, a deposit or a settlement changes
+//! them. A coarse fallback poll catches whatever the watch misses. Both keep
+//! the stored account list current, because that list is the margin map the
+//! resolver loads.
 
 use {
     crate::{
@@ -65,10 +48,10 @@ use {
     std::collections::{BTreeMap, BTreeSet},
 };
 
-/// The user's account region a sync watch covers: `perp_positions` through
-/// `spot_positions`, i.e. everything whose change alters the thresholds.
-/// A trade, deposit, or settlement lands here; unrelated writes (last
-/// active slot, order bookkeeping) mostly do not.
+/// The region of the user account a sync watch covers. It runs from
+/// `spot_positions` to the start of `orders`, so it holds both position
+/// arrays. A trade, a deposit or a settlement writes here. Most unrelated
+/// writes, such as the last active slot, do not.
 pub fn user_positions_watch_region() -> (u32, u32) {
     let start = 8 + core::mem::offset_of!(User, spot_positions);
     let end = 8 + core::mem::offset_of!(User, orders);
@@ -77,9 +60,8 @@ pub fn user_positions_watch_region() -> (u32, u32) {
 
 #[derive(Accounts)]
 pub struct SyncLiqConditions<'info> {
-    /// CHECK: in a manual sync this is whoever pays; when relay stages the
-    /// sync it is the keeper payout target (paid from the conditions
-    /// account's own lamports). Writable for both roles.
+    /// Whoever runs the sync. It pays the rent when this call creates the
+    /// conditions account, so it is writable.
     #[account(mut)]
     pub payer: Signer<'info>,
     /// Read for the fee rails the sync's own keeper payment is priced from.
@@ -97,25 +79,25 @@ pub struct SyncLiqConditions<'info> {
     pub system_program: Program<'info, System>,
 }
 
-/// What the caller asks for; the terms the account ends up holding are
-/// [`SyncLiqConditionsTerms`], derived from these.
+/// What the caller asks for. [`SyncLiqConditionsTerms`] holds the terms the
+/// account ends up with, derived from these.
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
 pub struct SyncLiqConditionsArgs {
     /// Cost units the staged self-sync requests, measured by simulating it.
-    /// Priced against `State.transaction_fee_rails`. 0 keeps the watch/poll
-    /// conditions inactive (manual syncs only) — turners have no signal to
-    /// take unpaid work.
+    /// Priced against `State.transaction_fee_rails`. Zero leaves the watch and
+    /// the fallback poll inactive, so only a manual sync updates the block. A
+    /// turner has no signal to take unpaid work.
     pub sync_cost_units: u32,
-    /// Coarse fallback interval, in slots. 0 = use the previous value.
+    /// Coarse fallback interval, in slots. Zero keeps the previous value.
     pub sync_fallback_slots: u64,
 }
 
-/// The terms a block is written with: a lamport fee and a poll interval.
+/// The terms a block is written with, a lamport fee and a poll interval.
 ///
-/// Separate from [`SyncLiqConditionsArgs`] because the two callers reach them
-/// differently. The opt-in sync prices its cost units against the live rails.
-/// The staged resync re-reads what the account already holds — re-deriving
-/// would let a staged executor re-price its own work.
+/// These are separate from [`SyncLiqConditionsArgs`] because the two callers
+/// reach them differently. The opt-in sync prices its cost units against the
+/// live rails. The staged resync re-reads what the account already holds.
+/// Re-deriving would let a staged executor re-price its own work.
 #[derive(Clone, Copy)]
 pub struct SyncLiqConditionsTerms {
     pub sync_payment_lamports: u64,
@@ -127,10 +109,10 @@ impl SyncLiqConditionsTerms {
     ///
     /// The interval is the rate limit on what the treasury pays for one
     /// account, so the two fields are only sound together. A payment with a
-    /// one-slot interval is a paid loop: anyone opts an account in, cranks the
-    /// resync every slot, and collects the fee every slot. The rule is stated
-    /// over the terms rather than over the cost units they were priced from,
-    /// so a later change to the pricing cannot pass a paid block through it.
+    /// one-slot interval is a paid loop. Anyone opts an account in, cranks the
+    /// resync every slot, and collects the fee every slot. The rule reads the
+    /// terms rather than the cost units they were priced from, so a later
+    /// change to the pricing cannot pass a paid block through it.
     pub fn interval_is_sound(&self) -> bool {
         self.sync_payment_lamports == 0 || self.sync_fallback_slots >= LIQ_SYNC_MIN_FALLBACK_SLOTS
     }
@@ -138,8 +120,8 @@ impl SyncLiqConditionsTerms {
     /// What the treasury may pay for a block holding these terms.
     ///
     /// Terms that break the interval floor pay nothing. A block armed with
-    /// such terms cannot be milked, and the next rewrite stores the zero and
-    /// silences the conditions that advertised it.
+    /// such terms cannot drain the treasury. The next rewrite stores the zero
+    /// and silences the conditions that advertised the payment.
     pub fn payable_lamports(&self) -> u64 {
         if self.interval_is_sound() {
             self.sync_payment_lamports
@@ -164,11 +146,12 @@ impl SyncLiqConditionsTerms {
 
 /// Turn a caller's arguments into the terms a block holds.
 ///
-/// The one place either opt-in entry point prices a self-sync. Zero cost units
-/// is a genuinely unpaid opt-in. `transaction_cost(0, 1)` is not zero. It is
-/// the signature fee. Pricing zero units through the rails arms the fallback
-/// poll to pay a signature for an account that named no work, and the treasury
-/// pays that fee every interval, on every account a caller cares to opt in.
+/// This is the one place either opt-in entry point prices a self-sync. Zero
+/// cost units means an unpaid opt-in. `transaction_cost(0, 1)` is not zero,
+/// because it is the signature fee. Pricing zero units through the rails would
+/// arm the fallback poll to pay a signature for an account that named no work.
+/// The treasury would then pay that fee every interval, on every account a
+/// caller cares to opt in.
 pub fn price_sync_terms(
     rails: &TransactionFeeRails,
     args: &SyncLiqConditionsArgs,
@@ -203,17 +186,18 @@ struct MarketInputs {
     /// crank conditions account, and is the only kind of market the staged
     /// liquidation can fill against.
     has_clob: bool,
-    /// Where a raw-price watch reads this market's oracle, when its source
-    /// has a registered layout. `None` leaves the market keeper-only.
+    /// Where a raw-price watch reads this market's oracle, when the oracle
+    /// source has a registered layout.
     watch: Option<OracleWatchV0>,
     oracle_source: Option<OracleSource>,
-    /// Maintenance margin ratio (perp) / maintenance asset weight (spot).
+    /// The maintenance margin ratio for a perp, or the maintenance asset
+    /// weight for a spot market.
     maintenance_ratio: u32,
-    /// The same at the initial tier — what the force-cancel gate answers to,
-    /// and always the earlier crossing of the two.
+    /// The same ratio at the initial tier, which the force-cancel gate answers
+    /// to.
     initial_ratio: u32,
-    /// The oracle price in `PRICE_PRECISION` — not the raw field, which is
-    /// only the same thing on a six-decimal feed.
+    /// The oracle price in `PRICE_PRECISION`. The raw oracle field matches it
+    /// only on a six-decimal feed.
     price: i128,
     /// What this market's conditions account pays. `None` when that account
     /// did not ride along.
@@ -228,14 +212,15 @@ pub fn handle_sync_liq_conditions<'c: 'info, 'info>(
 ) -> Result<()> {
     let state_rails = ctx.accounts.state.load()?.transaction_fee_rails;
     let terms = price_sync_terms(&state_rails, &args)?;
-    // The opt-in caller pays its own way: it submitted the transaction, so
-    // there is no keeper to reward. The fee belongs to the relay path, where
-    // somebody else does the work, and the protocol treasury pays it.
-    // `stamp_sync_slot`: this sync brings the block up to date, so the next
-    // resync the treasury pays for is an interval away. It also stops a fresh
-    // account reading as overdue from slot zero. Stamped inside the rewrite
-    // because a newly initialized account's discriminator is not visible to a
-    // second load in the same instruction.
+    // The opt-in caller submitted the transaction itself, so there is no
+    // keeper to reward. The fee belongs to the relay path, where somebody else
+    // does the work and the protocol treasury pays for it.
+    //
+    // `stamp_sync_slot` is true because this sync brings the block up to date.
+    // The next resync the treasury pays for is then an interval away, and a
+    // fresh account does not read as overdue from slot zero. The rewrite
+    // stamps the slot itself, because a second load in the same instruction
+    // cannot see a newly initialized account's discriminator.
     rewrite_liq_conditions(
         &ctx.accounts.liq_conditions,
         &ctx.accounts.user,
@@ -256,7 +241,7 @@ pub fn rewrite_liq_conditions<'info>(
 ) -> Result<()> {
     // A block written before the interval floor existed can still hold a
     // payment with a one-slot interval. Such terms are stored and armed as
-    // unpaid, so the block heals itself the first time it is rewritten.
+    // unpaid, so the first rewrite repairs the block.
     let args = SyncLiqConditionsTerms {
         sync_payment_lamports: args.payable_lamports(),
         sync_fallback_slots: args.sync_fallback_slots,
@@ -283,14 +268,13 @@ pub fn rewrite_liq_conditions<'info>(
     }
     let fallback_slots = conditions.sync_fallback_slots.max(1);
     conditions.init_block()?;
-    // What the threshold conditions point relay at (prefix + margin map).
-    // Every condition on this account points at the one stored list.
+    // The resolver prefix and the margin map every condition on this account
+    // points relay at. There is one stored list for all of them.
     let resolvers = conditions.write_sync_accounts(&sync_accounts)?;
 
-    // Free collateral now — the distance each threshold is measured from.
     let user = crate::load!(user_loader)?;
-    // Stamped before the thresholds so a sync that legitimately writes none
-    // still converges — the resolver compares digests, not slot contents.
+    // Stamped before the conditions are armed, so a sync that arms none still
+    // converges. The resolver compares digests rather than slot contents.
     conditions.positions_digest = UserConditionsV0::digest_positions(&user);
     if stamp_sync_slot {
         conditions.last_paid_sync_slot = Clock::get()?.slot;
@@ -299,8 +283,8 @@ pub fn rewrite_liq_conditions<'info>(
     arm_self_maintenance(&mut conditions, user_key, args, fallback_slots, resolvers)
 }
 
-/// The classified `remaining_accounts`: the market inputs the thresholds
-/// come from, and the account references a staged executor reuses.
+/// The classified `remaining_accounts`. It holds the per-market inputs and the
+/// account references a staged executor reuses.
 struct SyncInputs<'info> {
     perps: BTreeMap<u16, MarketInputs>,
     spots: BTreeMap<u16, MarketInputs>,
@@ -395,23 +379,22 @@ fn collect_sync_inputs<'info>(
                 tail_refs.push(AccountRefV0::readonly(info.key.to_bytes()));
                 continue;
             }
-            // Quoter slabs are the trigger pass's input, not this one's —
-            // but this pass writes the shared account list both passes'
-            // staged executors reuse, so they must be kept out of the map
-            // section: `load_maps` stops at the first non-map account, and
-            // a slab filed among the oracles cuts the markets off from
-            // every staged executor (the localnet harness hit exactly that
-            // as `PerpMarketNotFound`). Stored after the markets, where the
-            // parser never reaches, so a staged resync still carries them.
+            // A quoter slab is the trigger pass's input rather than this
+            // pass's. This pass writes the shared account list that both
+            // passes' staged executors reuse, so a slab must stay out of the
+            // map section. `load_maps` stops at the first non-map account, so
+            // a slab filed among the oracles cuts the markets off from every
+            // staged executor. Storing slabs after the markets, where the
+            // parser never reaches, keeps them available to a staged resync.
             if let Ok(loader) = AccountLoader::<QuoterSlabV0>::try_from(info) {
                 let _ = loader.load()?;
                 tail_refs.push(AccountRefV0::readonly(info.key.to_bytes()));
                 // The book and its program ride with the slab. A liquidation
                 // fills through the market's book, and the resolver reads that
                 // book to name the makers the fill settles against. Neither
-                // can reach an account the stored list does not carry, and
-                // both are named by the slab rather than by the caller, so a
-                // sync that carries the slab carries the book by construction.
+                // can reach an account the stored list does not carry. The
+                // slab names both, rather than the caller, so a sync that
+                // carries the slab always carries the book.
                 let slots = loader.slots()?;
                 if let Some(index) = crate::state::prop_amm::clob_slot_index(&slots) {
                     tail_refs.push(AccountRefV0::writable(
@@ -423,10 +406,10 @@ fn collect_sync_inputs<'info>(
                 }
                 continue;
             }
-            // Anything else velocity-owned falls through with the oracle
-            // candidates below — deliberately: velocity hosts its own
-            // oracle accounts (PythLazer, prelaunch), and they must land
-            // in the map section.
+            // Anything else velocity-owned falls through to the oracle
+            // candidates below. Velocity hosts its own oracle accounts, such
+            // as PythLazer and prelaunch, and those must land in the map
+            // section.
         }
         oracle_infos.insert(*info.key, info);
     }
@@ -441,37 +424,37 @@ fn collect_sync_inputs<'info>(
     })
 }
 
-/// Every market the user is actually exposed in has to be present.
+/// Every market the user has exposure in has to be present.
 ///
-/// The map above is built from whatever accounts the caller passed, and both
-/// entry points are permissionless — the resync names no signer at all. A
-/// caller that passes fewer markets than the user holds would otherwise
-/// write a block whose thresholds were derived from part of the account, and
-/// one that passes none writes an empty map. The staged resolvers read their
-/// account list back out of that map, so an emptied map means the
-/// liquidation resolver loads no markets and fails, and the staged repair
+/// The maps above come from whatever accounts the caller passed, and both
+/// entry points are permissionless. The resync names no signer at all. A
+/// caller that passes fewer markets than the user holds would otherwise write
+/// a stored account list that covers part of the account, and a caller that
+/// passes none would write an empty one. The staged resolvers read their
+/// account list back out of that stored list. An empty list makes the
+/// liquidation resolver load no markets and fail, and the staged repair
 /// inherits the same empty list and cannot recover it.
 ///
-/// The emptiness test is the margin engine's own `is_available`, not "holds
-/// a base amount": a position carrying only open orders, unsettled PnL or an
-/// isolated balance is one the margin walk still visits.
-/// A market entry is only usable if its oracle account rode along too. The
+/// The emptiness test is the margin engine's own `is_available` rather than a
+/// non-zero base amount. A position that carries only open orders, unsettled
+/// PnL or an isolated balance is one the margin walk still visits.
+///
+/// A market entry is usable only if its oracle account rode along too. The
 /// market carries its oracle's pubkey, but the resolver reads the price off
-/// the oracle *account*; without it every wake fails and the block reads
-/// healthy while the user is never liquidated. A perp entry filed only from a
-/// ClobCrankConditionsV0 (which sets no oracle) fails this too, so the
-/// PerpMarket itself must be present. The quote market's default oracle needs
-/// no account. Both entry points are permissionless, so a caller cannot omit
-/// an oracle to shield a user.
+/// the oracle account. Without that account every wake fails, and the block
+/// reads healthy while the user is never liquidated. A perp entry filed only
+/// from a `ClobCrankConditionsV0` sets no oracle, so the `PerpMarket` itself
+/// must be present. The quote market's default oracle needs no account.
+/// Opting in is permissionless, so this check also stops a caller from
+/// omitting an oracle to shield a user.
 ///
-/// A market with a CLOB must also bring its crank conditions account. That
-/// account is where the liveness poll reads what a liquidation crank pays, and
-/// a poll priced from a missing account advertises nothing. Markets without a
-/// CLOB have no conditions account and no staged liquidation, so they are
-/// exempt.
+/// A market with a CLOB must also bring its crank conditions account. The
+/// liveness poll reads what a liquidation crank pays from that account, and a
+/// poll priced from a missing account advertises nothing. A market without a
+/// CLOB has no conditions account and no staged liquidation, so it is exempt.
 ///
-/// Returns the perp markets the user is exposed in. The liveness poll is
-/// priced over those markets, and the walk that finds them is this one.
+/// Returns the perp markets the user has exposure in. This walk is what finds
+/// them, and the liveness poll is priced over them.
 pub fn validate_market_coverage(
     user_loader: &AccountLoader<'_, User>,
     coverage: &MarketCoverage,
@@ -546,9 +529,9 @@ pub struct MarketCoverage {
     pub oracles: BTreeSet<Pubkey>,
 }
 
-/// Oracle prices (readonly, first in map order). The watch layout is
-/// resolved off each oracle's bytes once, here, and carries both the
-/// current price and where a threshold condition should read it.
+/// The oracle references, readonly and first in map order. Each oracle's
+/// watch layout is resolved off its bytes once, here. The layout carries the
+/// current price and the offset a raw-price condition reads it from.
 fn resolve_oracle_watches(inputs: &mut SyncInputs<'_>) -> Vec<AccountRefV0> {
     let mut oracle_refs: Vec<AccountRefV0> = Vec::new();
     for (key, info) in &inputs.oracle_infos {
@@ -576,10 +559,11 @@ fn resolve_oracle_watches(inputs: &mut SyncInputs<'_>) -> Vec<AccountRefV0> {
     oracle_refs
 }
 
-/// The account list staged executors reuse, in load_maps order.
-/// The stored list is also the threshold conditions' indirect resolver
-/// list, so it leads with the accounts `ResolveLiquidatePerpWithFill`
-/// names, in its declaration order. `read_sync_accounts` skips them.
+/// The account list staged executors reuse, in `load_maps` order.
+///
+/// The stored list is also the conditions' indirect resolver list, so it leads
+/// with the accounts `ResolveLiquidatePerpWithFill` names, in that struct's
+/// declaration order. `read_sync_accounts` skips them.
 fn build_sync_accounts(
     conditions_key: Pubkey,
     user_key: Pubkey,
@@ -599,32 +583,20 @@ fn build_sync_accounts(
     sync_accounts
 }
 
-/// The threshold is priced at whichever stage this account is in.
+/// Arm the poll that wakes `ResolveLiquidatePerpWithFill`.
 ///
-/// Cancelling always comes before liquidating: `force_cancel_clob_orders`
-/// answers to the initial requirement and liquidation to the maintenance
-/// one, so anything liquidatable was already cancellable and the two are
-/// stages of one ladder rather than separate watches. While the account
-/// rests orders on a book, the earlier crossing is the one worth waking
-/// at; once they are gone there is nothing to cancel and the watch belongs
-/// back at the liquidation price.
-///
-/// Nothing has to move it. The self-maintenance watch covers
-/// `[spot_positions, orders)`, which is where `open_orders` / `open_bids` /
-/// `open_asks` live, so the cancel that empties the book and the placement
-/// that refills it both re-run this sync and re-derive the stage.
-/// The whole of velocity's liquidation coverage for this account. It
-/// predicts nothing: it wakes on a clock and lets the resolver run the real
+/// This poll is the whole of velocity's liquidation coverage for this account.
+/// It predicts nothing. It wakes on a clock and lets the resolver run the real
 /// maintenance-margin calculation, the same code the executor runs, which
-/// reports no work when the account is healthy.
+/// reports no work while the account is healthy.
 ///
-/// What this account carries for the resolver is the margin map — the
-/// markets and oracles that calculation needs — and keeping that list
-/// current is what the watch and the fallback are for.
+/// What this account carries for the resolver is the margin map, the markets
+/// and oracles that calculation needs. Keeping that list current is what the
+/// watch and the fallback poll are for.
 ///
-/// Priced at the cheapest crank any market the user is exposed in pays.
-/// Relay holds a keeper's balance growth to the floor a condition advertises,
-/// so a floor above what the market actually pays fails the crank it asked
+/// The poll is priced at the cheapest crank any market the user has exposure
+/// in pays. Relay holds a keeper's balance growth to the floor a condition
+/// advertises, so a floor above what the market pays fails the crank it asked
 /// for. Two rules follow.
 ///
 /// The price covers both cranks the resolver may stage. A force cancel comes
@@ -632,8 +604,8 @@ fn build_sync_accounts(
 /// force-cancel figure rather than its liquidation figure, so the lower of the
 /// two is the floor either crank meets.
 ///
-/// The price reads only the markets the user is exposed in. Markets the caller
-/// passed for some other reason say nothing about what this account's
+/// The price reads only the markets the user has exposure in. A market the
+/// caller passed for some other reason says nothing about what this account's
 /// liquidation pays.
 fn arm_liveness_poll(
     conditions: &mut UserConditionsV0,
@@ -648,11 +620,11 @@ fn arm_liveness_poll(
         .min()
         .unwrap_or(0);
     if poll_payment == 0 {
-        // No market the user is exposed in has a reservoir to pay from, so the
-        // poll would advertise work nobody is paid for. A condition that pays
-        // nothing is one a turner filters out, and an account is better
-        // described as uncovered than as covered by a crank nobody runs. The
-        // signed keeper path still liquidates this account.
+        // No market the user has exposure in has a reservoir to pay from, so
+        // the poll would advertise work nobody is paid for. A turner filters
+        // out a condition that pays nothing. An account reads better as
+        // uncovered than as covered by a crank nobody runs. The signed keeper
+        // path still liquidates this account.
         return conditions
             .set_condition(LIQ_LIVENESS_POLL, &relay_spec::bytemuck::Zeroable::zeroed());
     }
@@ -672,8 +644,8 @@ fn arm_liveness_poll(
     )
 }
 
-/// Self-maintenance: the user's own position bytes changing re-derives
-/// the thresholds, and a coarse poll catches whatever that misses.
+/// Arm the block's self-maintenance. A change to the user's own position bytes
+/// rewrites the block, and a coarse poll catches whatever that watch misses.
 fn arm_self_maintenance(
     conditions: &mut UserConditionsV0,
     user_key: Pubkey,
@@ -709,7 +681,8 @@ fn arm_self_maintenance(
     Ok(())
 }
 
-// Referenced by the doc comment's precision notes.
+// Keeps the `PRICE_PRECISION_I128` import live for the precision note on
+// `MarketInputs::price`.
 const _: () = {
     let _ = PRICE_PRECISION_I128;
 };
@@ -730,9 +703,9 @@ pub fn validate_sync_args(args: &SyncLiqConditionsArgs) -> Result<()> {
         args.sync_cost_units,
         crate::state::user_conditions::LIQ_SYNC_MAX_COST_UNITS
     )?;
-    // And not one so long that the poll stops being a safety net. Opting in is
-    // permissionless, so this bounds what a third party can do to an account it
-    // does not control.
+    // The interval must also stay short enough for the poll to be a safety
+    // net. Opting in is permissionless, so this bounds what a third party can
+    // do to an account it does not control.
     validate!(
         args.sync_fallback_slots <= crate::state::user_conditions::LIQ_SYNC_MAX_FALLBACK_SLOTS,
         ErrorCode::DefaultError,

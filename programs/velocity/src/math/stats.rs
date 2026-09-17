@@ -6,16 +6,18 @@ use {
     std::cmp::max,
 };
 
-/// Leaky-integrator rolling sum: decays the stored sum by the fraction of
-/// the window elapsed since the last update, then adds the new datum:
-/// `data1 * max(0, denom - numer)/denom + data2`. With `numer` = seconds
-/// since last update and `denom` = the window (e.g. 30 days), this
-/// approximates a trailing-window SUM (not an average): steady flows
-/// converge to the true window total, while a burst is haircut once, by the
-/// whole gap, on the next update. Decay happens only at update time; the
-/// stored value never decays while idle, so point-in-time readers must
-/// project the remaining gap themselves (see
-/// `UserStats::get_total_30d_volume_at`).
+/// Leaky-integrator rolling sum. It decays the stored sum by the fraction of the window
+/// elapsed since the last update, then adds the new datum. The result is
+/// `data1 * max(0, denom - numer) / denom + data2`, where `numer` is the seconds since
+/// the last update and `denom` is the window, such as 30 days.
+///
+/// The value approximates a trailing-window sum rather than an average. A steady flow
+/// converges to the true window total. A burst is cut once, by the whole gap, on the
+/// next update.
+///
+/// The decay happens only at update time. The stored value does not decay while the
+/// account is idle, so a point-in-time reader must project the remaining gap itself. See
+/// `UserStats::get_total_30d_volume_at`.
 pub fn calculate_rolling_sum(
     data1: u64,
     data2: u64,

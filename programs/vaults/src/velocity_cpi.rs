@@ -11,20 +11,21 @@ use {
 /// The spot markets whose lending-interest index prices [`crate::Vault::calculate_equity`].
 ///
 /// Equity comes from velocity's `calculate_user_equity`, which reads a cumulative index in two
-/// places. It converts every held spot position through that position's own market index, and it
+/// places. It converts every held spot position through that position's own market index. It also
 /// converts an isolated perp position's collateral through the perp market's quote spot market.
-/// One market is therefore not enough: a vault that also lends or borrows elsewhere prices those
+///
+/// One market is therefore not enough. A vault that also lends or borrows elsewhere prices those
 /// positions off whatever index the last unrelated crank left behind. A stale deposit index reads
-/// the asset low, and a stale borrow index reads the liability low, which reads NAV high and
-/// overpays a withdrawer.
+/// the asset low. A stale borrow index reads the liability low, which reads NAV high and overpays
+/// a withdrawer.
 ///
 /// The denomination market is always included. It holds the vault's own deposit, and it divides
 /// the final equity.
 ///
-/// The quote market of an isolated perp position is named by the perp market, not by the position,
-/// so finding it needs the perp market accounts. They arrive in `remaining_accounts` already,
-/// because equity reads those markets too. That walk runs only when the user holds an isolated
-/// position, so an ordinary vault pays nothing for it.
+/// The quote market of an isolated perp position is named by the perp market, not by the position.
+/// Finding it needs the perp market accounts. They arrive in `remaining_accounts` already, because
+/// equity reads those markets too. That walk runs only when the user holds an isolated position,
+/// so an ordinary vault pays nothing for it.
 pub fn spot_markets_that_price_equity<'info>(
     vault: &Vault,
     user: &User,
@@ -79,32 +80,32 @@ pub fn spot_markets_that_price_equity<'info>(
 /// Book the lending interest of every market that prices the vault's NAV, before the handler
 /// snapshots it.
 ///
-/// `calculate_equity` prices a position off its market's STORED cumulative index. Solana lets only
+/// `calculate_equity` prices a position off its market's stored cumulative index. Solana lets only
 /// the owning program mutate an account, so the vaults program cannot advance those indexes. It
 /// must CPI velocity.
 ///
-/// OtterSec #136: `deposit` refreshed the market only afterwards, as a side effect of the deposit
-/// CPI. An entrant therefore minted shares against an index that had not yet absorbed lender
-/// interest the incumbents had earned, and captured part of it.
+/// `deposit` refreshed the market only afterwards, as a side effect of the deposit CPI. An entrant
+/// then minted shares against an index without the lender interest the incumbents earned, and
+/// captured part of it (OtterSec #136).
 ///
-/// OtterSec #137: the withdraw-request and cancel paths never refreshed. Request understated the
-/// frozen request value, and cancel let request-window interest escape the share-forfeiture rule.
+/// The withdraw-request and cancel paths never refreshed. Request understated the frozen request
+/// value, and cancel let request-window interest escape the share-forfeiture rule (OtterSec #137).
 ///
-/// Call this FIRST in any handler that snapshots NAV. It must run before `load_maps`, which has to
-/// read post-refresh data, and before any `load_mut` of an account this call forwards.
+/// Call this first in any handler that snapshots NAV. It must run before `load_maps`, which must
+/// read the refreshed data, and before any `load_mut` of an account this call forwards.
 ///
 /// The markets travel as writable accounts inside `remaining_accounts`, the same slice the handler
 /// later hands to `load_maps`. Velocity keys each account by the market index stored in the account
 /// itself, so it refreshes market `i` only when market `i`'s own account is passed.
 ///
 /// The refresh is idempotent within a slot. Velocity's accrual does nothing once
-/// `last_interest_ts` has reached the current time, so a handler that later CPIs `deposit` or
+/// `last_interest_ts` reaches the current time, so a handler that later CPIs `deposit` or
 /// `withdraw` pays nothing extra.
 ///
-/// Velocity books the interest but does not always advance the index. A carveout too small to
-/// convert to one token defers the whole interval, leaving the index where it was and the call
-/// still successful. The unbooked amount is under one token of the carveout divided by its factor,
-/// and it cannot build up, because the deferred interval keeps growing until it clears.
+/// Velocity books the interest but does not always advance the index. An interval whose interest
+/// does not reach a whole index unit on both the deposit side and the borrow side defers to the
+/// next crank. The index stays where it is and the call still succeeds. The deferred interval
+/// keeps growing, so it commits on the first crank that clears both floors.
 pub fn refresh_spot_markets_that_price_equity<'info>(
     velocity_program: &AccountInfo<'info>,
     state: &AccountInfo<'info>,
@@ -132,7 +133,7 @@ pub trait InitializeUserCPI {
 
 pub trait SetUserVaultOwnedCPI {
     /// Flag the vault-owned velocity User so the revenue-share sweep never
-    /// credits it (OtterSec #91/#92/#93). Called once at vault init.
+    /// credits it (OtterSec #91/#92/#93). Vault initialization calls it once.
     fn velocity_set_user_vault_owned(&self, name: [u8; 32], bump: u8) -> Result<()>;
 }
 

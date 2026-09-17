@@ -180,7 +180,8 @@ pub enum DLOBEvent {
         deltas: Vec<OrderDelta>,
         slot: u64,
     },
-    /// cluster slot clock changed (an IBRL transition was synchronized)
+    /// the cluster slot clock changed, because an IBRL transition was
+    /// synchronized
     SlotClockUpdate { slot_clock: SlotClock },
 }
 
@@ -425,10 +426,10 @@ impl TriggerOrder {
                         has_sufficient_number_of_data_points: true,
                         sequence_id: None,
                     },
-                    // This estimator simulates triggering and filling in the same
-                    // slot, so it always evaluates the auction start price. The
-                    // minimum duration cannot affect that price; it matters only
-                    // after elapsed time becomes nonzero.
+                    // This estimator simulates triggering and filling in the
+                    // same slot, so it always evaluates the auction start
+                    // price. The minimum duration cannot affect that price. It
+                    // matters only after elapsed time becomes nonzero.
                     20,
                     Some(market),
                 )
@@ -441,8 +442,8 @@ impl TriggerOrder {
                 order.bit_flags |= OrderBitFlag::OracleTriggerMarket as u8;
             }
 
-            // same slot simulation: auction progress is zero, so the clock
-            // cannot influence the price
+            // The simulation stays inside one slot. Auction progress is zero,
+            // so the clock cannot change the price.
             return calculate_auction_price(
                 &order,
                 slot,
@@ -480,7 +481,8 @@ impl DynamicPrice for MarketOrder {
                 Some(self.price)
             };
         }
-        // elapsed wall clock over the auction's wall clock length (400ms units)
+        // elapsed wall clock over the auction's wall clock length, which is
+        // stored in 400ms units
         let duration_ms = Millis::from_stored_units(self.duration as u64).as_ms() as i64;
         let elapsed_ms = slot_clock.elapsed(self.slot, slot).as_ms() as i64;
         let delta_denominator = duration_ms;
@@ -542,7 +544,8 @@ impl DynamicPrice for OracleOrder {
         tick_size: u64,
         slot_clock: SlotClock,
     ) -> Option<u64> {
-        // elapsed wall clock over the auction's wall clock length (400ms units)
+        // elapsed wall clock over the auction's wall clock length, which is
+        // stored in 400ms units
         let duration_ms = Millis::from_stored_units(self.duration as u64).as_ms() as i64;
         let elapsed_ms = slot_clock.elapsed(self.slot, slot).as_ms() as i64;
         // limit price after auction end
@@ -877,7 +880,7 @@ pub fn order_is_expired(max_ts: u64, now_unix_seconds: u64) -> bool {
     max_ts != 0 && max_ts < now_unix_seconds
 }
 /// Check if order's auction is complete. `auction_duration` is in wall clock
-/// 400ms units; elapsed time integrates per slot duration regime.
+/// 400ms units. Elapsed time integrates per slot duration regime.
 pub fn order_is_auction_complete(
     current_slot: u64,
     order_slot: u64,

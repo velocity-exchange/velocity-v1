@@ -175,8 +175,8 @@ impl FillerBot {
             )
             .expect("pyth price feed connects");
             let feed = crate::util::subscribe_price_feeds(pyth_feed_cli, &market_ids, &[], &[]);
-            // start the liveness clock at subscription time so a feed that never
-            // delivers a single update still trips the health check
+            // Start the liveness clock at subscription time, so a feed that never
+            // delivers an update still fails the health check.
             feed_health.touch_pyth();
             log::info!(target: TARGET, "subscribed pyth price feeds");
             Some(feed)
@@ -207,9 +207,8 @@ impl FillerBot {
         let mut slot_rx = self.slot_rx;
         let mut limiter = self.limiter;
         let velocity: &'static VelocityClient = Box::leak(Box::new(self.velocity));
-        // Attested flow: only when the chain names a flow authority and a
-        // swift endpoint is reachable. Absent either, fills run unattested
-        // exactly as before.
+        // Attested flow runs only when the chain names a flow authority and a
+        // swift endpoint is reachable. Without either one, fills run unattested.
         let attest: Option<&'static crate::attest::AttestClient> = velocity
             .state_account()
             .ok()
@@ -227,24 +226,24 @@ impl FillerBot {
         let feed_health = Arc::clone(&self.feed_health);
         // reused per-slot scratch buffer for triggerable order ids (avoids per-slot allocation)
         let mut triggerable_buf: Vec<(Pubkey, u32)> = Vec::new();
-        // refresh state config on elapsed slots, not `slot % N == 0`: a skipped
-        // exact multiple would otherwise stall the refresh for another window.
+        // Refresh the state config on elapsed slots and not on `slot % N == 0`. A
+        // skipped exact multiple would stall the refresh for another window.
         const CONFIG_REFRESH_SLOTS: u64 = 300;
         let mut last_config_refresh_slot: u64 = 0;
         let mut use_median_trigger_price = velocity
             .state_account()
             .map(|s| s.has_median_trigger_price_feature())
             .unwrap_or(false);
-        // seed with the real chain slot so a bot started after a gate switch
-        // reflects it immediately, not only after the first config refresh
+        // Seed with the real chain slot, so a bot started after a gate switch reads
+        // the new value at once and not only after the first config refresh.
         let startup_slot = velocity.get_slot().await;
         let mut slot = startup_slot.unwrap_or(0);
         let mut slot_is_known = startup_slot.is_some();
         let mut slot_clock = velocity.slot_clock();
         dlob.update_slot_clock(slot_clock);
-        // AMM staleness window as wall clock: the onchain value is in 400ms
-        // baseline units; oracle age is integrated across slot duration
-        // regimes at the comparison sites, mirroring `oracle_validity`
+        // The AMM staleness window as wall clock. The on-chain value is in 400ms
+        // baseline units. The comparison sites integrate oracle age across slot
+        // duration regimes, which mirrors `oracle_validity`.
         let mut stale_for_amm_threshold = velocity
             .state_account()
             .map(|s| {
@@ -271,20 +270,20 @@ impl FillerBot {
         let (_dummy_tx, dummy_rx) = tokio::sync::mpsc::channel::<PythPriceUpdate>(1);
         let mut pyth_price_feed = self.pyth_price_feed.unwrap_or(dummy_rx);
 
-        // Wall-clock age gate for cached pyth prices: a frozen feed leaves this cache
-        // holding a price that's arbitrarily old with no signal of that in the update
-        // itself, so a per-market timestamp check on every read is the only way to
-        // catch it. Must stay strictly tighter than the program's
-        // `PYTH_LAZER_MAX_STALENESS_SECONDS` (15s) so the bot stops trusting a price
-        // before the program would reject it on-chain.
+        // The wall-clock age gate for a cached pyth price. A frozen feed leaves this
+        // cache holding a price of any age, and the update itself carries no sign of
+        // that, so a per-market timestamp check on every read is the only way to catch
+        // it. This value must stay below the program's
+        // `PYTH_LAZER_MAX_STALENESS_SECONDS`, which is 15 seconds, so the bot stops
+        // trusting a price before the program would reject it on chain.
         const PYTH_PRICE_MAX_AGE_US: u64 = 10_000_000;
 
         // Swift reconnect backoff state (reset on successful resubscribe / first order)
         let mut retries = 0u32;
-        // A disconnected stream stays immediately ready forever and this select is
-        // `biased`, so polling it would starve every arm below it, slots included, for
-        // as long as the feed stayed down. Gate the arm on liveness instead and drive
-        // the retry from its own timer.
+        // A disconnected stream stays ready forever, and this select is `biased`, so
+        // polling it would block every arm below it, slots included, for as long as the
+        // feed stayed down. Gate the arm on liveness instead, and drive the retry from
+        // its own timer.
         let mut swift_feed_live = true;
         let mut swift_reconnect_at = tokio::time::Instant::now();
 
@@ -312,17 +311,17 @@ impl FillerBot {
         let mut deferred_swift_orders: Vec<SignedOrderInfo> = Vec::new();
         // Cap so a stuck slot feed cannot grow the queue without bound.
         const MAX_DEFERRED_SWIFT_ORDERS: usize = 1_024;
-        // An auction order stamped further ahead than this is not a signing buffer (the
-        // UI's is a few slots); refuse to hold it rather than trust an unbounded future
-        // slot. A resting limit is never held: see `swift_slot_wait`.
+        // An auction order stamped further ahead than this is not a signing buffer. The
+        // UI's buffer is a few slots. Refuse to hold such an order rather than trust an
+        // unbounded future slot. A resting limit is never held. See `swift_slot_wait`.
         const MAX_SWIFT_ORDER_DEFERRAL: Millis = Millis::from_secs(10);
         // Swift orders to run the arrival path on: whatever the feed delivered, plus any
         // deferral whose slot has arrived. Outlives the iteration, so an arm that
         // short-circuits before the processing pass cannot lose an order.
         let mut swift_orders: Vec<SignedOrderInfo> = Vec::new();
-        // On contention between an already-buffered slot and an already-ready Swift
-        // order, alternate which stream the biased select lets win. Without this,
-        // either a busy Swift feed or a permanent slot backlog can starve the other.
+        // When a buffered slot and a ready Swift order both wait, alternate which
+        // stream the biased select lets win. Without this, a busy Swift feed or a
+        // permanent slot backlog blocks the other stream.
         let mut prefer_slot_on_contention = true;
         loop {
             // Non-blocking because consuming here would skip the per-slot fill work in
@@ -364,14 +363,14 @@ impl FillerBot {
                             // reset
                             retries = 0;
                             last_swift_msg = std::time::Instant::now();
-                            // handled after the select, together with matured deferrals
+                            // Handled after the select, together with matured deferrals.
                             swift_orders.push(signed_order);
                         }
                         None => {
-                            // Reconnect forever with capped backoff. Giving up after N
-                            // retries left the bot permanently deaf to swift flow while
-                            // reporting healthy: a swift-server outage longer than the
-                            // retry budget must not require a manual restart.
+                            // Reconnect forever with a capped backoff. A retry limit
+                            // leaves the bot unable to see swift flow while it still
+                            // reports healthy. A swift-server outage longer than the
+                            // retry budget must not need a manual restart.
                             feed_health.set_swift_connected(false);
                             swift_feed_live = false;
                             retries += 1;
@@ -382,8 +381,8 @@ impl FillerBot {
                     }
                 }
                 _ = tokio::time::sleep_until(swift_reconnect_at), if !swift_feed_live => {
-                    // keep the same ws url override as the initial subscription,
-                    // otherwise a reconnect silently switches to the default host
+                    // Keep the same websocket URL override as the first subscription.
+                    // Otherwise a reconnect switches to the default host.
                     match velocity
                         .subscribe_swift_orders(&market_ids, Some(true), None, std::env::var("SWIFT_WS_URL").ok())
                         .await
@@ -420,18 +419,19 @@ impl FillerBot {
                     let t0 = std::time::SystemTime::now();
                     let unix_now = t0.duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_secs() as i64;
 
-                    // check state config every ~1-2 minutes depending on the slot
-                    // duration (elapsed-slot based), before any
-                    // market decision this tick so one refresh cannot split a slot's
-                    // fill decisions across two clocks or thresholds
+                    // Check the state config every 1 to 2 minutes, depending on the
+                    // slot duration, and count elapsed slots rather than wall clock.
+                    // The check runs before any market decision this tick, so one
+                    // refresh cannot split a slot's fill decisions across two clocks
+                    // or two thresholds.
                     if slot.saturating_sub(last_config_refresh_slot) >= CONFIG_REFRESH_SLOTS {
                         last_config_refresh_slot = slot;
-                        // state_account() is a full Borsh parse of State, so refresh the
-                        // clock here rather than per slot: the cached clock already
+                        // state_account() is a full Borsh parse of State, so the clock
+                        // refreshes here and not on every slot. The cached clock already
                         // integrates every scheduled transition by slot, and only a newly
-                        // staged transition needs the re-read. On a transient cache miss
-                        // keep the previous clock; slot_clock() would substitute the
-                        // 400ms baseline until the next refresh
+                        // staged transition needs the re-read. Keep the previous clock on
+                        // a transient cache miss. slot_clock() would substitute the 400ms
+                        // baseline until the next refresh.
                         if let Ok(state) = velocity.state_account() {
                             slot_clock = slot_clock_from_state(&state);
                             dlob.update_slot_clock(slot_clock);
@@ -498,9 +498,10 @@ impl FillerBot {
                         let trigger_price = perp_market.get_trigger_price(oracle_price as i64, unix_now, use_median_trigger_price).unwrap_or(oracle_price);
                         let mut pyth_update = None;
                         if let Some(p) = pyth_oracle_prices.get(&market_index) {
-                            // capture the clock per market, not per slot: earlier markets in
-                            // this loop await fill txs, so a slot-start timestamp can be
-                            // seconds behind by the time later markets are evaluated
+                            // Read the clock per market and not per slot. Earlier markets
+                            // in this loop await fill transactions, so a slot-start
+                            // timestamp can be seconds behind by the time later markets
+                            // are evaluated.
                             let now_us = TimestampUs::now();
                             let age_us = now_us.saturating_us_since(p.ts);
                             let is_stale = !pyth_update_is_fresh(p.ts, now_us, PYTH_PRICE_MAX_AGE_US);
@@ -720,10 +721,11 @@ impl FillerBot {
             }
 
             for signed_order in std::mem::take(&mut swift_orders) {
-                // Until the stamped message slot arrives the program accepts neither a
-                // fill nor a bare placement of an auction order, so acting now burns a tx
-                // and, for a fill, the order's one place+fill attempt. A resting limit is
-                // the exception: its stamp is a deadline, and it is placed right away.
+                // Until the stamped message slot arrives, the program accepts neither a
+                // fill nor a bare placement of an auction order. Acting now spends a
+                // transaction, and for a fill it spends the order's one place-and-fill
+                // attempt. A resting limit is the exception. Its stamp is a deadline, so
+                // it is placed at once.
                 let order_slot = signed_order.slot();
                 match swift_slot_wait_if_known(
                     order_slot,
@@ -771,17 +773,17 @@ impl FillerBot {
                 let market_index = order_params.market_index;
                 log::info!(target: TARGET, "new swift order. uuid={}, market={}", signed_order.order_uuid_str(), market_index);
                 log::debug!(target: TARGET, "details: {signed_order:?}");
-                // transient cache misses must not kill the fill loop; drop this
-                // order (the swift feed keeps flowing) rather than panic
+                // A transient cache miss must not stop the fill loop. Drop this order
+                // rather than panic, because the swift feed keeps flowing.
                 let Ok(perp_market) = velocity.try_get_perp_market_account(market_index) else {
                     log::warn!(target: TARGET, "no perp market {market_index} for swift order, skipping. uuid={}", signed_order.order_uuid_str());
                     continue;
                 };
-                // a fill tx sent now lands ~1 slot ahead (per tx_event
-                // latency_slots telemetry); evaluate fillability at landing, on the
-                // state the program will actually see. Overestimating here assumes a
-                // higher auction price than the program will compute and sends fill
-                // legs that no-op on-chain, so stay at the observed latency.
+                // A fill transaction sent now lands about 1 slot ahead, which the
+                // tx_event latency_slots telemetry shows. Evaluate fillability at the
+                // landing slot, on the state the program sees. A higher estimate
+                // assumes a higher auction price than the program computes and sends
+                // fill legs that do nothing on chain, so stay at the observed latency.
                 let landing_slot = slot + 1;
                 let Ok(oracle_price_data) =
                     velocity.try_get_mmoracle_for_perp_market(market_index, landing_slot)
@@ -789,10 +791,10 @@ impl FillerBot {
                     log::warn!(target: TARGET, "no oracle price for market {market_index}, skipping swift order. uuid={}", signed_order.order_uuid_str());
                     continue;
                 };
-                // Project the AMM to the state the program quotes at fill time
-                // (`AmmQuoter::setup`: curve snap + spread refresh). No oracle
-                // override: swift fill txs don't post the pyth price, so the
-                // program sees the chain oracle as-is.
+                // Project the AMM to the state the program quotes at fill time.
+                // `AmmQuoter::setup` snaps the curve and refreshes the spread. No
+                // oracle override applies. A swift fill transaction does not post the
+                // pyth price, so the program reads the chain oracle as it stands.
                 let perp_market = velocity
                     .try_get_projected_perp_market(market_index, landing_slot, None)
                     .unwrap_or(perp_market);
@@ -826,9 +828,9 @@ impl FillerBot {
                         .await;
                     }
                     SwiftEval::NotFillable(reason) => {
-                        // Well-formed but not marketable against the crosses this bot
-                        // found. Place it anyway: the placement routes the order
-                        // itself, and whatever it cannot fill rests on the market's
+                        // The order is well formed but does not cross the liquidity
+                        // this bot found. Place it anyway. The placement routes the
+                        // order itself, and what it cannot fill rests on the market's
                         // book as a taker-origin remainder, where the activation-slot
                         // auction reaches it.
                         log::info!(target: TARGET, "swift order not fillable yet ({reason}), placing on-chain. uuid={}", signed_order.order_uuid_str());
@@ -875,8 +877,9 @@ fn on_transaction_update_fn(
 /// thread panic doesn't stop the process — the bot would keep running with a frozen book
 /// (zombie). A transient miss is skipped and retried next slot; a persistent one exits the
 /// process so the supervisor restarts it with fresh subscriptions.
-// ~2min of slot ticks at 400ms (shrinks in wall-clock as slot time drops —
-// deliberate: this is a dead-feed restart tripwire, firing sooner is fine)
+// About 2 minutes of slot ticks at 400ms. The wall-clock window shrinks as slot
+// time drops. That is acceptable, because this counter only restarts a bot whose
+// feed is dead, and firing sooner is safe.
 const MAX_CONSECUTIVE_ORACLE_MISSES: u32 = 300;
 
 fn on_slot_update_fn(
@@ -1011,11 +1014,11 @@ fn evaluate_swift_crosses(
         order_params.auction_end_price.unwrap_or_default(),
         order_params.auction_duration.unwrap_or_default(),
     );
-    // On-chain the order slot is `min(clock.slot, message slot)` (`get_order_slot`), so
-    // the auction clock starts at the message slot, never before. Callers defer an auction
-    // order whose message slot has not arrived (`swift_slot_wait`), but a resting limit is
-    // forwarded early, so `min` mirrors that clamp as well as guarding
-    // `calculate_auction_price`'s elapsed-slot underflow.
+    // On chain the order slot is `min(clock.slot, message slot)`. See `get_order_slot`.
+    // The auction clock therefore starts at the message slot and never before. A caller
+    // defers an auction order whose message slot has not arrived. See `swift_slot_wait`.
+    // A resting limit is forwarded early, so `min` mirrors that clamp. It also guards
+    // the elapsed-slot underflow in `calculate_auction_price`.
     let order_slot = signed_order.slot().min(landing_slot);
     let order = Order {
         slot: order_slot,
@@ -1209,21 +1212,21 @@ async fn try_trigger_order(
 
 /// How many of a book's makers one fill carries.
 ///
-/// A transaction locks 64 accounts and a maker costs two, so this is a budget,
-/// not a limit on what the book holds. The book stops at the first maker the
-/// transaction did not bring, so the ones worth carrying are the best-priced
-/// ones in order — and the depth behind them is not lost, it stays resting for
-/// the next fill rather than being handed to a worse price.
+/// A transaction locks 64 accounts and a maker costs two, so this number is a
+/// budget and not a limit on what the book holds. The book stops at the first
+/// maker the transaction did not bring, so the makers worth carrying are the
+/// best-priced ones in order. The depth behind them is not lost. It stays
+/// resting for the next fill instead of going to a worse price.
 const CLOB_MAKERS_PER_FILL: usize = 6;
 
 /// The `User` accounts of the makers a fill would sweep off the book.
 ///
-/// The DLOB cross cannot name these. Its orders live in `User.orders`, which
-/// is why finding them is a matter of reading loaded accounts; a book order
-/// lives on the book, and the only record of who owns it is an authority and
-/// a sub-account on the order. The book answers for itself through its
-/// `quote_l3_v0` leg, simulated — so this keeper never decodes a book, and
-/// the book may change its data structures without breaking it.
+/// The DLOB cross cannot name these. Its orders live in `User.orders`, so
+/// finding them means reading loaded accounts. A book order lives on the book,
+/// and the only record of its owner is an authority and a sub-account on the
+/// order. The book answers for itself through a simulated `quote_l3_v0` leg.
+/// This keeper therefore never decodes a book, and the book can change its data
+/// structures without breaking it.
 async fn clob_makers(
     velocity: &'static VelocityClient,
     config: &QuoterConfigV0,
@@ -1233,10 +1236,9 @@ async fn clob_makers(
     metrics: &Metrics,
 ) -> Vec<User> {
     let source = relay_chain_source::RpcSource::new(velocity.rpc().url());
-    // Asked for without a budget first, so what the budget leaves behind is
-    // countable. A book stops at the first maker the transaction did not
-    // bring, so every one dropped here is depth the taker did not get, and
-    // whether that is worth designing around turns on how often it happens.
+    // Ask without a budget first, so the makers the budget leaves behind can be
+    // counted. A book stops at the first maker the transaction did not bring, so
+    // every maker dropped here is depth the taker did not get.
     let reachable = match velocity_router_sim::l3::resting_makers(
         &source,
         config,
@@ -1271,9 +1273,9 @@ async fn clob_makers(
         );
     }
     let makers = &reachable[..carried];
-    // A maker missing from the cache is dropped rather than fatal, the same
-    // way a DLOB maker is: the book simply stops there and the fill takes
-    // what it can reach.
+    // A maker missing from the cache is dropped and is not an error, the same
+    // way a DLOB maker is. The book stops there and the fill takes what it can
+    // reach.
     makers
         .iter()
         .filter_map(|maker| {
@@ -1356,7 +1358,7 @@ async fn try_swift_fill(
     // market's CLOB rather than in `User.orders`. A signed-message order
     // cannot be IOC, so without this its leftover stays on the DLOB, where
     // nothing but another keeper's fill can reach it. The book's accounts
-    // come from its approved slab slot — slot 0 by convention.
+    // come from its approved slab slot, which is slot 0 by convention.
     let book_config = velocity
         .get_quoter_slab_slots(taker_order.market_index)
         .await
@@ -1377,12 +1379,11 @@ async fn try_swift_fill(
         return;
     };
 
-    // The book's own makers. The DLOB cross above cannot name them: its
-    // orders live in `User.orders`, and a book order lives on the book. A
-    // fill only settles for users it carries, so a book maker left out is
-    // liquidity the fill walks straight past — and the book stops at the
-    // first one missing, so leaving out the best maker forfeits the rest of
-    // it too.
+    // The book's own makers. The DLOB cross above cannot name them. Its orders
+    // live in `User.orders`, and a book order lives on the book. A fill settles
+    // only for the users it carries, so a book maker left out is liquidity the
+    // fill passes over. The book also stops at the first maker it does not
+    // carry, so leaving out the best maker gives up the rest of the book too.
     let mut maker_accounts = maker_accounts;
     if let Some(book_config) = book_config.as_ref() {
         maker_accounts.extend(
@@ -1403,11 +1404,11 @@ async fn try_swift_fill(
         );
     }
 
-    // The attestation binds to the order alone, so swift releases it before
-    // the fill exists. Ask for it first and build the fill around it. A fill
-    // that carries it reaches the quoters that gate on attested flow, and on
-    // a book with a speed bump the order fills at once instead of only
-    // resting. Attestation failing is degradation, not failure: the fill goes
+    // The attestation binds to the order alone, so swift releases it before the
+    // fill exists. Ask for it first and build the fill around it. A fill that
+    // carries it reaches the quoters that gate on attested flow. On a book with
+    // an activation delay the order then fills at once instead of only resting.
+    // A failed attestation degrades the fill and does not stop it. The fill goes
     // out unattested and takes whatever quotes without the marker.
     let flow_attestation: Option<FlowAttestationV0> = match attest {
         Some(client) => match client.attest(swift_order.order_uuid_str()).await {
@@ -1450,17 +1451,17 @@ async fn try_swift_fill(
                 None, // Some(taker_order_id), // assuming we're fast enough that its the taker_order_id, should be ok for retail
                 maker_accounts.as_slice(),
                 Some(swift_order.has_builder()),
-                // The taker's own choice of quoters, straight off the message
-                // they signed. The program checks it against the digest it
-                // stamped on the order, so this cannot be substituted.
+                // The taker's own choice of quoters, read from the message the
+                // taker signed. The program checks it against the digest it
+                // stamped on the order, so no other route can replace it.
                 swift_order.route().unwrap_or(&[]),
                 clob_fill,
             );
 
-    // The quoter section rides the fill instruction's remaining accounts:
-    // the program reads everything past the map/user/escrow sections as
-    // registry entries plus their CPI accounts. Appended before the CU
-    // bump below so the bump sees the real account count.
+    // The quoter section rides the fill instruction's remaining accounts. The
+    // program reads everything past the map, user and escrow sections as registry
+    // entries plus their CPI accounts. It is appended before the compute bump
+    // below, so the bump sees the real account count.
     if !quoter_metas.is_empty() {
         let last = tx_builder.ixs().len() - 1;
         let mut fill_ix = tx_builder.ixs()[last].clone();
@@ -1468,11 +1469,10 @@ async fn try_swift_fill(
         tx_builder = tx_builder.set_ix(last, fill_ix);
     }
 
-    // Ask for the ceiling here and let the send path size it down. It
-    // simulates before it signs, so the limit that gets signed comes from
-    // what the transaction burned rather than from a guess about the shape
-    // of its account list — and the limit that gets signed is the one the
-    // network bills.
+    // Ask for the ceiling here and let the send path size it down. The send
+    // path simulates before it signs, so the limit it signs comes from what
+    // the transaction burned and not from a guess about the shape of its
+    // account list. The limit that gets signed is the one the network bills.
     let effective_cu_limit = MAX_COMPUTE_UNITS as u32;
     tx_builder = tx_builder.set_ix(
         1,
@@ -1490,33 +1490,13 @@ async fn try_swift_fill(
         .await;
 }
 
-/// The quoter section a router fill carries: the market's quoter slab, then
-/// the union of the consulted slots' CPI accounts (each slot's registered
-/// accounts, its response account, its program). A slab slot is consulted by
-/// carrying its response account, so this list is also the selection.
-///
-/// Two quoters go in, for two different reasons:
-///
-/// - The market's canonical CLOB is **mandatory**. `fill_perp_order` rejects
-///   any fill on a market with a book attached that does not consult its
-///   slab slot ("router fill must include the market's CLOB quoter") — the
-///   public book is a baseline a route can't exclude. A suspended or killed
-///   slot satisfies the check without being consulted.
-/// - The quoters the taker's signed route names
-///   ([`SignedOrderInfo::route`]) are **enforced**: the program refuses a
-///   fill that omits a named quoter whose slot can still quote, so each one
-///   must be consulted.
-///
-/// A named quoter whose slot is gone or cannot quote is dropped rather than
-/// failing the fill, exactly as the program drops it: a route signed before
-/// an admin pulled a quoter must not brick the fill.
 /// Charge a failed simulation to the quoters the program named in its logs.
 ///
-/// Only named failures are charged. A simulation carrying several quoters
-/// fails for reasons that belong to nobody, and the CPI-bracket inference
-/// that resolves the rest needs the route's entry order, which the fill path
-/// does not assemble. Charging a maker for an unproven failure would be
-/// worse than missing one, so what is not named is counted against this bot.
+/// Only a named failure is charged. A simulation that carries several quoters
+/// fails for reasons that belong to no one, and the CPI-bracket inference that
+/// resolves the rest needs the route's entry order, which the fill path does
+/// not assemble. Charging a maker for an unproven failure is worse than missing
+/// one, so anything the logs do not name is counted against this bot.
 fn charge_quoter_failures(
     metrics: &Metrics,
     logs: &[String],
@@ -1548,6 +1528,26 @@ fn charge_quoter_failures(
     }
 }
 
+/// The quoter section that a router fill carries. It holds the market's quoter
+/// slab, then the union of the consulted slots' CPI accounts. Each slot
+/// contributes its registered accounts, its response account and its program. A
+/// slab slot is consulted when the fill carries its response account, so this
+/// list is also the selection.
+///
+/// Two quoters go in, for two different reasons.
+///
+/// - The market's canonical CLOB is mandatory. `fill_perp_order` rejects any
+///   fill on a market with a book attached that does not consult its slab slot,
+///   with "router fill must include the market's CLOB quoter". The public book
+///   is a baseline that a route cannot exclude. A suspended or killed slot
+///   satisfies the check without being consulted.
+/// - The quoters that the taker's signed route names are enforced. See
+///   [`SignedOrderInfo::route`]. The program refuses a fill that omits a named
+///   quoter whose slot can still quote, so the fill must consult each one.
+///
+/// A named quoter whose slot is gone, or that cannot quote, is dropped rather
+/// than failing the fill. The program drops it the same way. A route signed
+/// before an admin removed a quoter must still fill.
 async fn route_quoter_metas(
     velocity: &VelocityClient,
     market_index: u16,
@@ -1560,11 +1560,11 @@ async fn route_quoter_metas(
         return Some(Vec::new());
     }
 
-    // An unreadable slab abandons the attempt. The signed route is enforced
-    // on chain — every live entry the taker named must be consulted, and the
-    // market's canonical CLOB is a mandatory baseline — so a fill missing the
-    // slab is rejected, and building it only spends a transaction to discover
-    // that.
+    // An unreadable slab abandons the attempt. The signed route is enforced on
+    // chain. Every live entry the taker named must be consulted, and the
+    // market's canonical CLOB is a mandatory baseline. A fill missing the slab
+    // is therefore rejected, and building it only spends a transaction to
+    // discover that.
     let slots = match velocity.get_quoter_slab_slots(market_index).await {
         Ok(slots) => slots,
         Err(err) => {
@@ -1577,11 +1577,10 @@ async fn route_quoter_metas(
         }
     };
 
-    // A slot is consulted when the taker's route names its entry, or when
-    // it is the market's book. `PerpMarket.clob_market` stores the book
-    // account itself, so the book slot matches by its response account. A
-    // named entry with no live slot is dropped, exactly as the program
-    // drops it.
+    // A slot is consulted when the taker's route names its entry, or when it is
+    // the market's book. `PerpMarket.clob_market` stores the book account itself,
+    // so the book slot matches by its response account. A named entry with no
+    // live slot is dropped, the same way the program drops it.
     let consulted: Vec<&QuoterSlotV0> = slots
         .iter()
         .filter(|slot| {
@@ -1591,12 +1590,12 @@ async fn route_quoter_metas(
         .filter(|slot| slot.quotes())
         .collect();
 
-    // Writability ORs across slots. The union is a BTreeMap, so a key two
-    // slots register rides once and the same fill built twice emits the same
-    // account list. The whole registered list rides rather than one leg's
-    // subset: each leg resolves its accounts by index into the one list, so
-    // carrying the list is what guarantees the resolve. A signer a quoter
-    // registered is in it by construction.
+    // Writability is the OR across slots. The union is a BTreeMap, so a key that
+    // two slots register appears once, and the same fill built twice emits the
+    // same account list. The whole registered list rides, and not one leg's
+    // subset. Each leg resolves its accounts by index into that one list, so
+    // carrying the whole list is what makes the resolve work. A signer that a
+    // quoter registered is in the list by construction.
     let mut cpi_union: BTreeMap<Pubkey, bool> = BTreeMap::new();
     for slot in &consulted {
         for meta in slot.config.registered_accounts() {
@@ -1624,16 +1623,16 @@ async fn route_quoter_metas(
 
 /// Place a swift order on-chain when this bot found no resting cross for it.
 ///
-/// The placement routes the order as it places it, so it is not a fill-free
-/// path: whatever it cannot fill rests on the market's book as a taker-origin
-/// remainder, where the activation-slot auction reaches it. Emits a
-/// `swift_place` wide event at tx confirmation so the gas spent on placements
-/// can be measured against the fills they yield.
+/// The placement routes the order as it places it, so the path can fill. What
+/// it cannot fill rests on the market's book as a taker-origin remainder, where
+/// the activation-slot auction reaches it. The path emits a `swift_place` wide
+/// event at transaction confirmation, so the gas spent on placements can be
+/// measured against the fills they yield.
 ///
-/// It carries the attestation for the same reason a fill does. This bot
-/// searched only the resting liquidity it can see, so the quoters that gate on
-/// attested flow are exactly the ones it did not search. Placing unattested
-/// would route past them and rest an order they would have filled.
+/// It carries the attestation for the same reason a fill does. This bot searched
+/// only the resting liquidity it can see, so the quoters that gate on attested
+/// flow are the ones it did not search. Placing unattested would route past them
+/// and rest an order they would have filled.
 async fn try_swift_place(
     velocity: &'static VelocityClient,
     priority_fee: u64,
@@ -1724,12 +1723,12 @@ async fn try_swift_place(
 /// Add the interest cranks a fill needs, ahead of the fill instruction.
 ///
 /// The program refuses a fill when the taker, or any maker, carries a borrow in a
-/// spot market whose interest has not accrued recently enough
-/// (`SpotMarketInterestStaleForMargin`): the margin check values that borrow
-/// through a stale index and understates the debt. `fill_perp_order`
-/// receives those markets read-only and cannot refresh them, so the permissionless
-/// crank rides in the same transaction. Call this before `fill_perp_order`, which
-/// also keeps the fill as the last instruction for the account-count check.
+/// spot market whose interest has not accrued recently enough. The error is
+/// `SpotMarketInterestStaleForMargin`. The margin check values that borrow through
+/// a stale index and understates the debt. `fill_perp_order` receives those markets
+/// read-only and cannot refresh them, so the permissionless crank rides in the same
+/// transaction. Call this before `fill_perp_order`, which also keeps the fill as the
+/// last instruction for the account-count check.
 ///
 /// A market this misses only costs a reverted fill.
 fn with_spot_interest_cranks<'a>(
@@ -1756,11 +1755,11 @@ fn with_spot_interest_cranks<'a>(
 
 /// Build the broadcast transaction and, when needed, a guarded simulation variant.
 ///
-/// The worker requires a matching nonzero `OrderFill` event from this simulation because
-/// `RevertFill` only proves that the filler was active sometime in the current slot; activity from
-/// an earlier transaction can otherwise produce a false positive. Ordinary fills strip
-/// `RevertFill` after simulation to reduce transaction size and compute. Pyth-update transactions
-/// retain it as an additional execution-time rollback guard.
+/// The worker requires a matching nonzero `OrderFill` event from this simulation.
+/// `RevertFill` proves only that the filler was active somewhere in the current slot, so
+/// activity from an earlier transaction can otherwise produce a false positive. An ordinary
+/// fill strips `RevertFill` after simulation, which cuts transaction size and compute. A
+/// pyth-update transaction keeps it as an extra rollback guard at execution time.
 fn build_fill_tx(
     tx_builder: TransactionBuilder<'_>,
     retain_revert_fill: bool,
@@ -2049,21 +2048,20 @@ async fn try_auction_fill(
                     Some(taker_order.order_id),
                     maker_accounts.as_slice(),
                     None,
-                    // No signed route: these paths fill orders off the DLOB and do
+                    // No signed route. These paths fill orders off the DLOB and do
                     // not hold the message a swift order was signed with. A rested
-                    // order that carries a route digest will reject this fill until
-                    // the route is threaded through from the swift subscription.
+                    // order that carries a route digest rejects this fill until the
+                    // route reaches here from the swift subscription.
                     &[],
-                    // v0: these fill orders discovered on the DLOB, and a rested
-                    // order's remainder is already where it is going to stay.
+                    // v0, because these paths fill orders found on the DLOB, and a
+                    // rested order's remainder already sits where it stays.
                     None,
                 );
 
-        // Ask for the ceiling here and let the send path size it down. It
-        // simulates before it signs, so the limit that gets signed comes from
-        // what the transaction burned rather than from a guess about the shape
-        // of its account list — and the limit that gets signed is the one the
-        // network bills.
+        // Ask for the ceiling here and let the send path size it down. The send
+        // path simulates before it signs, so the limit it signs comes from what
+        // the transaction burned and not from a guess about the shape of its
+        // account list. The limit that gets signed is the one the network bills.
         let effective_cu_limit = MAX_COMPUTE_UNITS as u32;
         tx_builder = tx_builder.set_ix(
             1,
@@ -2216,21 +2214,20 @@ async fn try_uncross(
                 Some(taker_order_id),
                 makers.as_slice(),
                 None,
-                // No signed route: these paths fill orders off the DLOB and do
-                // not hold the message a swift order was signed with. A rested
-                // order that carries a route digest will reject this fill until
-                // the route is threaded through from the swift subscription.
+                // No signed route. These paths fill orders off the DLOB and do not
+                // hold the message a swift order was signed with. A rested order
+                // that carries a route digest rejects this fill until the route
+                // reaches here from the swift subscription.
                 &[],
-                // v0: these fill orders discovered on the DLOB, and a rested
-                // order's remainder is already where it is going to stay.
+                // v0, because these paths fill orders found on the DLOB, and a
+                // rested order's remainder already sits where it stays.
                 None,
             );
 
-        // Ask for the ceiling here and let the send path size it down. It
-        // simulates before it signs, so the limit that gets signed comes from
-        // what the transaction burned rather than from a guess about the shape
-        // of its account list — and the limit that gets signed is the one the
-        // network bills.
+        // Ask for the ceiling here and let the send path size it down. The send
+        // path simulates before it signs, so the limit it signs comes from what
+        // the transaction burned and not from a guess about the shape of its
+        // account list. The limit that gets signed is the one the network bills.
         let effective_cu_limit = MAX_COMPUTE_UNITS as u32;
         tx_builder = tx_builder.set_ix(
             1,
@@ -2449,21 +2446,20 @@ async fn try_vamm_taker_fill(
                     Some(l3_order.order_id),
                     maker_accounts.as_slice(),
                     None,
-                    // No signed route: these paths fill orders off the DLOB and do
+                    // No signed route. These paths fill orders off the DLOB and do
                     // not hold the message a swift order was signed with. A rested
-                    // order that carries a route digest will reject this fill until
-                    // the route is threaded through from the swift subscription.
+                    // order that carries a route digest rejects this fill until the
+                    // route reaches here from the swift subscription.
                     &[],
-                    // v0: these fill orders discovered on the DLOB, and a rested
-                    // order's remainder is already where it is going to stay.
+                    // v0, because these paths fill orders found on the DLOB, and a
+                    // rested order's remainder already sits where it stays.
                     None,
                 );
 
-        // Ask for the ceiling here and let the send path size it down. It
-        // simulates before it signs, so the limit that gets signed comes from
-        // what the transaction burned rather than from a guess about the shape
-        // of its account list — and the limit that gets signed is the one the
-        // network bills.
+        // Ask for the ceiling here and let the send path size it down. The send
+        // path simulates before it signs, so the limit it signs comes from what
+        // the transaction burned and not from a guess about the shape of its
+        // account list. The limit that gets signed is the one the network bills.
         let effective_cu_limit = MAX_COMPUTE_UNITS as u32;
         tx_builder = tx_builder.set_ix(
             1,
@@ -2549,14 +2545,17 @@ fn vamm_can_fill_taker(
         && (order_low_risk || (amm_wants_to_jit_make && !mm_stale_immediate))
 }
 
-/// MM-oracle staleness for the *immediate* (JIT) AMM-fill leg, mirroring the program's
-/// `is_stale_for_amm_immediate` (`math/oracle.rs`) with the per-market
-/// `oracle_slot_delay_override`: a positive override is used as-is; `override == 0` disables
-/// the immediate leg entirely (always stale); negative means unset and resolves to
-/// `MM_ORACLE_MIN_WRITE_GAP` for an MM-sourced price (the program refuses MM-oracle writes
-/// closer together than that, so a tighter threshold is unsatisfiable). Delay is measured
-/// against the *MM* oracle slot (`market_stats.mm_oracle_slot`) at the expected landing slot,
-/// since that — not the exchange oracle — is what the JIT leg validates.
+/// MM-oracle staleness for the immediate JIT AMM-fill leg. This mirrors the program's
+/// `is_stale_for_amm_immediate` in `math/oracle.rs`, including the per-market
+/// `oracle_slot_delay_override`.
+///
+/// A positive override is used as it stands. An override of 0 disables the immediate leg,
+/// because the price then always reads stale. A negative override means unset. For an
+/// MM-sourced price it resolves to `MM_ORACLE_MIN_WRITE_GAP`, because the program refuses
+/// MM-oracle writes closer together than that, and a tighter threshold cannot be met.
+///
+/// The delay is measured against the MM oracle slot, `market_stats.mm_oracle_slot`, at the
+/// expected landing slot. The JIT leg validates that slot and not the exchange oracle slot.
 fn mm_oracle_stale_for_amm_immediate(
     perp_market: &PerpMarket,
     landing_slot: u64,
@@ -2819,9 +2818,9 @@ async fn subscribe_grpc(
 pub enum TxWork {
     Send {
         tx: VersionedTransaction,
-        /// The verdict `queue_tx` already got, so the worker does not ask
-        /// twice. It simulates to size the compute limit, and the answer to
-        /// "is this transaction good" comes back in the same reply.
+        /// The verdict `queue_tx` already received, so the worker does not ask
+        /// twice. `queue_tx` simulates to size the compute limit, and the same
+        /// reply says whether the transaction is worth sending.
         presimulated: Option<SdkResult<RpcSimulateTransactionResult>>,
         simulation_tx: Option<VersionedMessage>,
         require_fill_event: bool,
@@ -2987,10 +2986,10 @@ impl TxWorker {
                             intent.liquidatee(),
                             intent.slot()
                         );
-                        // The program names the quoter it could not use, so
-                        // a simulation that a maker broke is separable from
-                        // one this bot broke. Nothing lands, so these logs
-                        // are the only record this failure ever leaves.
+                        // The program names the quoter it could not use, so a
+                        // simulation that a maker broke can be told apart from
+                        // one this bot broke. Nothing lands, so these logs are
+                        // the only record of the failure.
                         if let Some(logs) = sim_result.logs.as_deref() {
                             charge_quoter_failures(
                                 &metrics,
@@ -3327,9 +3326,10 @@ impl TxWorker {
                                         }
                                     }
                                 }
-                                // tx failed with error. CU exhaustion lands here: the VM
-                                // reports it as ProgramFailedToComplete, which it shares with
-                                // other faults, so the log line is what identifies it.
+                                // The transaction failed with an error. Compute exhaustion
+                                // lands here too. The VM reports it as
+                                // ProgramFailedToComplete, which it shares with other
+                                // faults, so the log line is what identifies it.
                                 let reason = if logs
                                     .as_ref()
                                     .is_some_and(|logs| logs.iter().any(|l| l.contains("exceeded CUs meter")))
@@ -3733,19 +3733,19 @@ impl TxSender {
         intent: TxIntent,
         cu_limit: u64,
     ) -> Option<Signature> {
-        // The compute limit is what the network bills, so it is set from what
-        // the transaction burns rather than from a guess with headroom on top.
-        // Simulating here rather than in the worker keeps it to one call: the
-        // same reply sizes the limit and answers whether the transaction is
-        // worth sending, and the worker takes that answer as an input.
+        // The compute limit is what the network bills, so it comes from what the
+        // transaction burns and not from a guess with headroom on top. Simulating
+        // here rather than in the worker keeps it to one call. The same reply
+        // sizes the limit and answers whether the transaction is worth sending,
+        // and the worker takes that answer as an input.
         //
         // Sized before signing, because the limit is inside the message the
         // signature covers.
         //
-        // A fill path hands its own message to simulate — the same fill with
-        // `revert_fill` appended, so a fill that produces nothing fails the
-        // simulation instead of landing empty. That variant is what the worker
-        // judges by, and its compute is this fill's plus one marker
+        // A fill path hands its own message to simulate. That message is the
+        // same fill with `revert_fill` appended, so a fill that produces nothing
+        // fails the simulation instead of landing empty. The worker judges that
+        // variant. Its compute is this fill's compute plus one marker
         // instruction, so it sizes the real transaction as well.
         let mut tx = tx;
         let probe = simulation_tx.clone().unwrap_or_else(|| tx.clone());
@@ -3801,10 +3801,10 @@ pub const MAX_COMPUTE_UNITS: u64 = 1_400_000;
 
 /// The compute limit to request for a transaction that burned `units`.
 ///
-/// Twenty percent over, which is what covers a fill whose on-chain path
-/// diverges slightly from the simulated one — a maker account that moved, an
-/// extra oracle branch. The floor keeps a trivial transaction from asking for
-/// less than it takes to start.
+/// Twenty percent over. That covers a fill whose on-chain path differs a little
+/// from the simulated one, such as a maker account that moved or an extra oracle
+/// branch. The floor keeps a small transaction from asking for less than it
+/// takes to start.
 fn size_compute_limit(units: u64) -> u32 {
     let sized = units.saturating_mul(12) / 10;
     sized.clamp(1_000, MAX_COMPUTE_UNITS) as u32
@@ -3812,10 +3812,10 @@ fn size_compute_limit(units: u64) -> u32 {
 
 /// Rewrite the `SetComputeUnitLimit` instruction in place.
 ///
-/// The limit is four bytes of instruction data, so the message keeps its
-/// shape: no account moves, nothing is re-indexed, and the transaction that
-/// gets signed is the one that was simulated except for the number it asks
-/// for. Does nothing when the message carries no such instruction.
+/// The limit is four bytes of instruction data, so the message keeps its shape.
+/// No account moves and nothing is re-indexed. The transaction that gets signed
+/// is the one that was simulated, except for the number it asks for. This does
+/// nothing when the message carries no such instruction.
 fn set_compute_unit_limit(message: &mut VersionedMessage, units: u32) {
     let compute_budget = compute_budget_id();
     let keys = message.static_account_keys().to_vec();
@@ -3855,10 +3855,10 @@ mod tests {
         },
     };
 
-    // The unset (override < 0) MM-sourced immediate threshold compares the
-    // wall clock MM-oracle age against MM_ORACLE_MIN_WRITE_GAP, matching the
-    // program's `oracle_validity`. The age integrates per slot duration
-    // regime, so the effective slot count scales with the clock.
+    // An unset override, below 0, makes the MM-sourced immediate threshold compare
+    // the wall clock MM-oracle age against MM_ORACLE_MIN_WRITE_GAP. That matches the
+    // program's `oracle_validity`. The age integrates per slot duration regime, so the
+    // effective slot count scales with the clock.
     #[test]
     fn unset_mm_immediate_threshold_scales_per_gate() {
         use velocity_rs::program::math::time::SlotClock;
@@ -3947,9 +3947,9 @@ mod tests {
             Cow::Owned(User::default()),
             false,
         );
-        // Both messages carry the loaded-accounts data size limit the builder
-        // adds, so the counts are compared to each other rather than to zero:
-        // what this pins is where `revert_fill` ends up.
+        // Both messages carry the loaded-accounts data size limit that the builder
+        // adds, so the test compares the counts to each other and not to zero. What
+        // it pins is where `revert_fill` ends up.
         let (send_tx, simulation_tx) = build_fill_tx(builder, false);
         let baseline = send_tx.instructions().len();
         assert_eq!(

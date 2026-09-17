@@ -23,13 +23,14 @@ use crate::{
     VelocityClient, Wallet,
 };
 
-/// The network tag every signed order must carry, for the program build this
-/// crate links against (`SignedMsgOrderParamsMessage::network`).
+/// The network tag every signed order must carry. The value comes from the
+/// program build this crate links against, and it fills
+/// `SignedMsgOrderParamsMessage::network`.
 ///
-/// A signature covers the order and not the chain it was meant for. The
-/// program therefore refuses an order that names the other cluster, and one
-/// that names no cluster at all, because an untagged order replays either
-/// way. Every producer stamps this value.
+/// A signature covers the order and not the cluster it was meant for. The
+/// program therefore refuses an order that names the other cluster. It also
+/// refuses an order that names no cluster, because an untagged order replays
+/// either way. Every producer stamps this value.
 pub const fn expected_network_tag() -> u8 {
     program::state::order_params::expected_signed_msg_network()
 }
@@ -97,18 +98,18 @@ impl SignedOrderType {
     pub fn is_delegated(&self) -> bool {
         matches!(self, Self::Delegated { .. })
     }
-    /// Cluster the taker signed for (`b'm'`/`b'd'`). The program refuses an
-    /// order that names the other cluster, and one that names none. `None`
-    /// therefore describes a message the program will reject. See
-    /// [`expected_network_tag`].
+    /// Cluster the taker signed for, `b'm'` for mainnet or `b'd'` for devnet.
+    /// The program refuses an order that names the other cluster, and one that
+    /// names none. `None` therefore describes a message the program rejects.
+    /// See [`expected_network_tag`].
     pub fn network(&self) -> Option<u8> {
         match self {
             Self::Authority { inner, .. } => inner.network,
             Self::Delegated { inner, .. } => inner.network,
         }
     }
-    /// Custom quoters (PropAMMs) the taker's route names, if any. The CLOB
-    /// and vAMM baseline is implicit and never listed; a keeper honoring a
+    /// Custom quoters, the PropAMMs, that the taker's route names. The CLOB
+    /// and vAMM baseline is implicit and never listed. A keeper that honors a
     /// route passes these entries in its fill.
     pub fn route(&self) -> Option<&[Pubkey]> {
         match self {
@@ -304,10 +305,10 @@ impl SignedOrderInfo {
         self.order.is_delegated()
     }
 
-    /// Custom quoter entries the taker's route names — see
-    /// [`SignedOrderType::route`]. Advisory: the program enforces nothing
-    /// about it, but a keeper filling this order should pass these entries so
-    /// the taker gets the liquidity they asked for.
+    /// Custom quoter entries the taker's route names. See
+    /// [`SignedOrderType::route`]. The route is advisory. The program enforces
+    /// nothing about it. A keeper that fills this order should pass these
+    /// entries, so the taker reaches the liquidity it asked for.
     pub fn route(&self) -> Option<&[Pubkey]> {
         self.order.route()
     }

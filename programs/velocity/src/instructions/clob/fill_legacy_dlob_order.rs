@@ -1,34 +1,35 @@
-//! `fill_legacy_dlob_order` — the keeper fill for live orders in
-//! `User.orders`.
+//! `fill_legacy_dlob_order`, the keeper fill for live orders in `User.orders`.
 //!
-//! Same fill as `fill_perp_order`, plus the market's CLOB accounts: the
-//! router prices the book beside the vAMM and the DLOB makers, and a
+//! This is the same fill as `fill_perp_order` plus the market's CLOB accounts.
+//! The router prices the book beside the vAMM and the DLOB makers, and a
 //! restable remainder migrates to the book instead of resting in
 //! `User.orders`.
 //!
-//! Only the legacy endpoints still create live orders in `User.orders`:
-//! v0 `place_perp_order` rests and auctions, and stops that v0
+//! Only the legacy endpoints still create live orders in `User.orders`. v0
+//! `place_perp_order` rests and auctions, and so do the stops that v0
 //! `trigger_order` fired. The v1 taker flows fill ephemeral orders and rest
 //! remainders on the book directly, so their orders never need this crank.
-//! Each fill here moves a remainder off the DLOB, so this instruction
-//! drains the legacy book. It is deleted together with the legacy placement
-//! and trigger endpoints.
+//! Each fill here moves a remainder off the DLOB, so this instruction drains
+//! the legacy book.
 //!
-//! Cheap in accounts, which is what makes it viable on the most
-//! account-pressured instruction in the program: a router fill already
-//! carries the quoter slab, the book, the clob program and the quoter signer,
-//! because the market's canonical CLOB is a mandatory baseline.
+//! The endpoint adds no accounts beyond the ones a router fill already carries,
+//! which is what makes it viable on the most account-pressured instruction in
+//! the program. A router fill already carries the quoter slab, the book, the
+//! clob program and the quoter signer, because the market's canonical CLOB is a
+//! mandatory baseline.
 //!
-//! A market-order remainder migrates too, resting at `auction_end_price` —
-//! the worst fill it already agreed to, and the only price it has. That is
-//! only safe because a migrated remainder is taker-origin: it cannot be taken
-//! while a live counterparty crosses it, and a cross settles at the
-//! counterparty's price, so a maker arriving during the activation window
-//! competes on price instead of on transaction landing. Resting at a slippage
-//! bound without that is a free option written at the taker's worst price.
+//! A market-order remainder migrates too, and rests at `auction_end_price`.
+//! That is the worst fill it already agreed to, and the only price it has. It
+//! is safe only because a migrated remainder is taker-origin. Such a remainder
+//! cannot be taken while a live counterparty crosses it, and a cross settles at
+//! the counterparty's price. A maker that arrives during the activation window
+//! therefore competes on price instead of on transaction landing. Without that,
+//! resting at a slippage bound is a free option written at the taker's worst
+//! price.
 //!
-//! An `OrderType::Oracle` remainder does not migrate — an oracle-floating
-//! price has nothing fixed to rest at. See `docs/taker-remainder-auction.md`.
+//! An `OrderType::Oracle` remainder does not migrate, because an
+//! oracle-floating price has nothing fixed to rest at. See
+//! `docs/taker-remainder-auction.md`.
 
 use {
     crate::{
@@ -67,25 +68,26 @@ pub struct FillLegacyDlobOrder<'info> {
         constraint = is_stats_for_user(&user, &user_stats)?
     )]
     pub user_stats: AccountLoader<'info, UserStats>,
-    /// The market's quoter slab — a remainder only ever rests on the vetted
-    /// book its `Clob` slot names.
+    /// The market's quoter slab. A remainder only ever rests on the vetted
+    /// book that its `Clob` slot names.
     #[account(
         has_one = clob_market,
         constraint = quoter_slab.load()?.market == args.market_index,
     )]
     pub quoter_slab: AccountLoader<'info, QuoterSlabV0>,
-    /// CHECK: validated against the book slot's registered response account
-    /// (`ClobMarket::from_slab`), so a valid slot cannot be pointed at an
+    /// CHECK: `ClobMarket::from_slab` checks this against the book slot's
+    /// registered response account. A valid slot cannot be pointed at an
     /// arbitrary account.
     #[account(mut)]
     pub clob_market: UncheckedAccount<'info>,
     /// CHECK: a Clob slot's program is pinned to velocity's CLOB at
-    /// registration; the handler re-checks through the slot.
+    /// registration. The handler checks it again through the slot.
     #[account(address = crate::ids::clob_program::id())]
     pub clob_program: UncheckedAccount<'info>,
-    /// CHECK: address-locked to the instructions sysvar. Read for two facts a
-    /// fill cannot get anywhere else: whether the taker signed this
-    /// transaction, and how many accounts the transaction locks.
+    /// CHECK: address-locked to the instructions sysvar. It supplies two facts
+    /// a fill cannot get anywhere else. The first is whether the taker signed
+    /// this transaction. The second is how many accounts the transaction
+    /// locks.
     ///
     /// Optional, and it costs one of those locks. A fill needs it only when a
     /// book withholds depth for an owner the transaction does not carry, and
@@ -140,7 +142,8 @@ pub fn handle_fill_legacy_dlob_order<'c: 'info, 'info>(
     )?;
 
     // Who built this transaction, and what room it had. A taker that signs
-    // chose its own account list; a taker that does not is trusting the filler.
+    // chose its own account list. A taker that does not sign trusts the
+    // filler.
     let obligation = {
         let taker = load!(ctx.accounts.user)?;
         crate::math::router::FillerObligation {
@@ -155,8 +158,8 @@ pub fn handle_fill_legacy_dlob_order<'c: 'info, 'info>(
                     crate::instructions::optional_accounts::tx_writable_lock_count(sysvar)
                 })
                 .transpose()?,
-            // Set after the route is assembled: only then is it known which
-            // entries the transaction carried.
+            // Set after the route is assembled. Only then does the caller
+            // know which entries the transaction carried.
             unrouted_quoters: 0,
         }
     };
@@ -176,12 +179,12 @@ pub fn handle_fill_legacy_dlob_order<'c: 'info, 'info>(
             market_index,
             signed_route,
             obligation,
-            // A keeper fill is never attested flow: the attestation transports
-            // are the flow authority signing a swift-built transaction, or a
-            // detached attestation bound to a signed-message order — a legacy
-            // slot order has neither. On a bumped book the route quotes the
-            // book as empty and the restable remainder migrates into the
-            // auction.
+            // A keeper fill is never attested flow. The two attestation
+            // transports are the flow authority signing a swift-built
+            // transaction, and a detached attestation bound to a signed-message
+            // order. A legacy slot order has neither. On a bumped book the
+            // route quotes the book as empty, and the restable remainder
+            // migrates into the auction.
             taker_served_window: false,
             clob: Some(ClobRemainderRoute {
                 quoter_slab: &ctx.accounts.quoter_slab,

@@ -38,11 +38,12 @@ import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunCon
 // EquityBelowFloor
 const EQUITY_BELOW_FLOOR_HEX = '0x18d6';
 
-// Lazy breaker trip: a taker holds 200 USDC and owes 1 SOL (tokens spent
-// externally), so net equity (100) sits below the floor (150) while nobody
-// has sent the permissionless trip. The strictly reducing swap that repays
-// the borrow is allowed, and its success must arm the authority-wide breaker
-// inline because the account is still below its raw floor afterwards.
+// The lazy breaker trip. A taker holds 200 USDC and owes 1 SOL, and the
+// borrowed tokens left the protocol. Net equity of 100 therefore sits below the
+// floor of 150 while nobody has sent the permissionless trip. The program allows
+// the strictly reducing swap that repays the borrow. That swap must arm the
+// authority-wide breaker itself, because the account stays below its raw floor
+// afterwards.
 describe('equity floor lazy trip', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
 
@@ -187,7 +188,7 @@ describe('equity floor lazy trip', () => {
 	});
 
 	it('taker drops below the floor with the breaker unarmed', async () => {
-		// borrow 1 SOL against the 200 USDC deposit; tokens leave the protocol
+		// Borrow 1 SOL against the 200 USDC deposit. The tokens leave the protocol.
 		await takerVelocityClient.withdraw(
 			new BN(LAMPORTS_PER_SOL),
 			1,
@@ -206,7 +207,7 @@ describe('equity floor lazy trip', () => {
 		assert(takerUser.getNetUsdValue().lt(floor));
 		assert(takerUser.isBelowEquityFloor());
 
-		// nobody sent the permissionless trip
+		// Nobody sent the permissionless trip.
 		assert((await fetchBreakerTripped()) === 0);
 	});
 
@@ -248,12 +249,12 @@ describe('equity floor lazy trip', () => {
 		await takerVelocityClient.fetchAccounts();
 		await takerUser.fetchAccounts();
 
-		// the swap went through: usdc consumed, sol debt cleared
+		// The swap landed. It consumed the usdc and cleared the sol debt.
 		const solPosition = takerUser.getTokenAmount(1);
 		assert(solPosition.abs().lt(new BN(LAMPORTS_PER_SOL).div(new BN(100))));
 
-		// still below the raw floor afterwards, so the swap's success armed
-		// the authority-wide breaker without a keeper trip transaction
+		// The account stays below the raw floor, so the swap armed the
+		// authority-wide breaker without a keeper trip transaction.
 		assert(takerUser.getNetUsdValue().lt(floor));
 		assert((await fetchBreakerTripped()) !== 0);
 	});

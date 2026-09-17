@@ -137,8 +137,8 @@ impl<'a> DLOBBuilder<'a> {
     ) -> impl Fn(u64) + Send + Sync + 'static {
         let notifier = self.notifier.clone();
         move |new_slot| {
-            // keep the DLOB's slot clock in sync with `State` (no-op unless
-            // an IBRL transition was synchronized since the last slot)
+            // Keep the DLOB's slot clock in sync with `State`. The clock only
+            // changes when an IBRL transition is synchronized.
             notifier.slot_clock_update(velocity.slot_clock());
             for market in markets.iter() {
                 let oracle_price_data = velocity

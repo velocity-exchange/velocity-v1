@@ -10,11 +10,11 @@ use {
 pub struct CancelAllV0 {
     #[account(mut)]
     pub quoter: Account<MidpointQuoterV0>,
-    /// Either of the maker's keys — matched in the handler, since anchor's
-    /// `address =` locks to one. The hot key because withdrawing quotes is part
-    /// of the quoting loop and must not need the cold key; the config key
-    /// because a maker's panic button must work when the hot key is exactly
-    /// what they no longer trust.
+    /// Either of the maker's keys. The handler matches them, because anchor's
+    /// `address =` locks to one key. The hot key works because withdrawing
+    /// quotes is part of the quoting loop and must not need the cold key. The
+    /// config key works because a withdrawal must still succeed when the maker
+    /// no longer trusts the hot key.
     pub authority: Signer,
 }
 
@@ -22,27 +22,27 @@ pub struct CancelAllV0 {
 #[cfg_attr(feature = "idl-build", derive(anchor_lang::IdlType))]
 pub struct CancelAllArgsV0 {
     pub sides: CancelSidesV0,
-    /// Also zero the mid, which stops *every* side quoting regardless of what
-    /// the ladders hold (see `MidpointQuoterV0::is_quoting`). Cheap belt to the
-    /// braces when withdrawing both sides.
+    /// Also zero the mid, which stops every side from quoting whatever the
+    /// ladders hold. See `MidpointQuoterV0::is_quoting`.
     ///
-    /// Not a durable kill: the hot key can stamp a new mid straight after. The
-    /// durable one is `update_quoter_v0 { is_paused: true }`, which only the
-    /// config key can set and only the config key can undo.
+    /// The stop is not durable. The hot key can stamp a new mid at once. The
+    /// durable stop is `update_quoter_v0 { is_paused: true }`. Only the config
+    /// key can set it, and only the config key can clear it.
     pub clear_mid: bool,
 }
 
-/// Withdraw a maker's standing intent on one side (or both) in one instruction.
+/// Withdraw a maker's standing intent on one side, or on both sides, in one
+/// instruction.
 ///
-/// The spline has no orders to cancel, so this is the equivalent operation:
-/// zero the live rungs so the side quotes nothing until the maker reshapes it.
-/// `set_levels_v0` with an empty side already did this, but it pays to
-/// deserialize two `Option<Vec<_>>` args and then re-scans both ladders on the
-/// way out; this writes only the rungs that were live and re-checks only the
-/// sides it touched.
+/// The spline holds no orders to cancel, so the equivalent operation zeroes the
+/// live rungs. The side then quotes nothing until the maker writes a new shape.
+/// `set_levels_v0` with an empty side does the same thing, but it deserializes
+/// two `Option<Vec<_>>` arguments and rescans both ladders on the way out. This
+/// instruction writes only the rungs that were live and rechecks only the sides
+/// it touched.
 ///
-/// Emits nothing, for the same reason mid and level writes don't: a maker's
-/// shape writes are their own business until a fill makes them the exchange's.
+/// It emits nothing, for the reason mid and level writes emit nothing. A
+/// maker's shape write is the maker's own record. A fill is the exchange's.
 pub fn handle_cancel_all_v0(
     ctx: &mut Context<CancelAllV0>,
     args: CancelAllArgsV0,
@@ -66,8 +66,8 @@ pub fn handle_cancel_all_v0(
 
     if args.clear_mid {
         // The withdrawal carries no sequence and consumes none. The monotonic
-        // guard is for racing *price* writers, and a withdrawal must never be
-        // the write that loses a race.
+        // guard exists for racing price writers, and a withdrawal must never
+        // lose that race.
         quoter.clear_mid()?;
         outcome.mid_cleared = true;
     }

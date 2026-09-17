@@ -96,18 +96,11 @@ function clobMarketConfig(marketIndex: number, flags: ClobConfigFlags): Buffer {
 }
 
 /**
- * Instructions registering one condition block as a relay `WatchV0`: create
- * the zeroed watch account, then `register_watch_v0` pointing at the block's
- * account-data offset. Registration is permissionless on relay's side — the
- * registrar only gains the right to close the watch and reclaim its rent.
- *
- * A market has two blocks, and both need a watch. Velocity's conditions
- * account holds the cross fallback poll, at offset 8 (the block is its first
- * field). The CLOB market account holds the four conditions that describe the
- * book itself — an expired order, a side at its eviction threshold, a crossed
- * book, an order reaching its activation slot — at whatever offset
- * `updatePerpMarketClobQuoter` reported when it registered velocity's
- * resolvers there. Watch only the first and the book's own cranks never fire.
+ * Instructions that register one condition block as a relay `WatchV0`. The
+ * first creates the zeroed watch account. The second calls `register_watch_v0`
+ * with the block's account-data offset. Relay makes registration
+ * permissionless, and the registrar only gains the right to close the watch
+ * and reclaim its rent.
  */
 async function watchRegistrationIxs(
 	connection: { getMinimumBalanceForRentExemption(n: number): Promise<number> },
@@ -160,9 +153,9 @@ type AccountDecoder = {
  * The account-data offset of the book's own condition block, as the market's
  * attach recorded it.
  *
- * Read rather than derived: `updatePerpMarketClobQuoter` gets it back from
- * the book when it registers velocity's resolvers there, so nothing off chain
- * has to know the market account's layout.
+ * The offset is read, not derived. `updatePerpMarketClobQuoter` gets it back
+ * from the book when it registers velocity's resolvers there, so no off-chain
+ * code needs to know the market account's layout.
  */
 async function clobBlockOffset(
 	client: AccountDecoder,
@@ -186,11 +179,12 @@ async function clobBlockOffset(
 }
 
 /**
- * Both of a market's condition blocks, registered as relay watches: velocity's
- * conditions account (its block is the first field, at offset 8) and the CLOB
- * market account (the four conditions describing the book). Watching only the
- * first leaves the book's own cranks — expiry, eviction, a crossed book, an
- * activation coming due — with nothing to wake a turner.
+ * Relay watches for both of a market's condition blocks. Velocity's conditions
+ * account holds the cross fallback poll in its first field, at offset 8. The
+ * CLOB market account holds the four conditions that describe the book: an
+ * expired order, a side at its eviction threshold, a crossed book, and an
+ * order reaching its activation slot. A watch on the velocity account alone
+ * leaves the book's own cranks with nothing to wake a turner.
  */
 async function marketWatchIxs(
 	client: AccountDecoder,
@@ -239,12 +233,13 @@ type ClobUpdateFlags = {
 };
 
 /**
- * Borsh wire of the CLOB's `UpdateMarketArgsV0`: twelve options in the order
- * the book declares them, each a presence byte followed by the value when
- * present. An absent field leaves the book's current setting alone.
+ * Borsh wire of the CLOB's `UpdateMarketArgsV0`. It holds twelve options in
+ * the order the book declares them. Each option is a presence byte, followed
+ * by the value when present. An absent field leaves the book's current setting
+ * unchanged.
  *
- * Returns `undefined` when no field is set, since that call would write
- * nothing and still pay a transaction.
+ * Returns `undefined` when no field is set, because that call would write
+ * nothing and still pay for a transaction.
  */
 function clobUpdateMarketArgs(flags: ClobUpdateFlags): Buffer | undefined {
 	const opt = (width: number, value?: string) => {
@@ -276,8 +271,9 @@ function clobUpdateMarketArgs(flags: ClobUpdateFlags): Buffer | undefined {
 /**
  * The book a perp market names, and the program that owns it.
  *
- * Both are read on chain rather than passed: the market stores its book, and
- * the book account's owner is the CLOB program deployment it lives on.
+ * Both come from chain rather than from the caller. The market stores its
+ * book, and the book account's owner is the CLOB program deployment it lives
+ * on.
  */
 async function marketBook(
 	client: AccountDecoder,
@@ -313,17 +309,17 @@ async function marketBook(
 }
 
 /**
- * CLOB market bring-up. One command stands a market's whole CLOB up: the
- * book account on the CLOB program, the market's quoter slab when it does
- * not exist yet, the book's velocity quoter-registry entry (registered CPI
- * surface + admin approval into the slab), the canonical-CLOB attach
- * (which also creates the relay crank conditions + reservoir), and
- * optionally the relay watch + reservoir funding.
+ * CLOB market bring-up. One command creates a market's whole CLOB. It creates
+ * the book account on the CLOB program, the market's quoter slab when that
+ * does not exist yet, and the book's velocity quoter-registry entry with its
+ * registered CPI surface and its admin approval into the slab. It then runs
+ * the canonical-CLOB attach, which also creates the relay crank conditions and
+ * the reservoir. It can also register the relay watch and fund the reservoir.
  *
- * Direct-send only: the book and watch accounts are fresh keypairs that
- * must co-sign, which a Squads proposal cannot do. Multisig setups run the
- * admin-gated legs individually (`quoter set-approved`,
- * `quoter set-market-clob`).
+ * This command sends directly and cannot propose. The book and watch accounts
+ * are fresh keypairs that must co-sign, and a Squads proposal cannot co-sign.
+ * A multisig setup runs the admin-gated legs one at a time with
+ * `quoter set-approved` and `quoter set-market-clob`.
  */
 export function registerClobMarket(parent: Command): void {
 	const clobMarket = parent
@@ -337,7 +333,7 @@ export function registerClobMarket(parent: Command): void {
 			clobMarket
 				.command('init <market>')
 				.description(
-					"Stand up a perp market's CLOB in one command: create the book account, initialize it on the CLOB program (place_authority = the market's quoter slab), create the market's quoter slab when missing, register its quoter entry and approve it into the slab, attach it as the market's canonical CLOB (creating the crank conditions + reservoir), and optionally register the relay watch and fund the reservoir. Signer must hold warm/cold admin (approval + attach). Direct-send only — fresh account keypairs must co-sign, so --multisig is rejected."
+					"Create a perp market's CLOB in one command. It creates the book account and initializes it on the CLOB program with the market's quoter slab as the place authority. It creates the market's quoter slab when that is missing, registers the quoter entry and approves it into the slab, then attaches it as the market's canonical CLOB, which also creates the crank conditions and the reservoir. It can also register the relay watch and fund the reservoir. The signer must hold the warm or cold admin role, which the approval and the attach require. This command sends directly and rejects --multisig, because fresh account keypairs must co-sign."
 				)
 		)
 			.requiredOption('--clob-program <pubkey>', 'deployed CLOB program id')
@@ -357,7 +353,7 @@ export function registerClobMarket(parent: Command): void {
 			)
 			.option(
 				'--blocking-min-size <n>',
-				'floor on the size of an order that may end a fill walk when its owner is not carried; 0 disables',
+				'floor on the size of an order that may end a fill walk when its owner is not carried. 0 disables the floor',
 				'0'
 			)
 			.option(
@@ -368,7 +364,7 @@ export function registerClobMarket(parent: Command): void {
 			.option('--max-activation-delay <slots>', 'max caller-chosen delay', '20')
 			.option(
 				'--unknown-user-grace-slots <n>',
-				'grace window for an order whose owner a caller does not carry: a fill walk skips such an order for this many slots after it becomes matchable, and stops on it after that. Named for the header field it writes, so it is not confused with --reservation-grace-slots on update-config',
+				'grace window for an order whose owner a caller does not carry. A fill walk skips such an order for this many slots after it becomes matchable, and stops on it after that. Named for the header field it writes, so it is not confused with --reservation-grace-slots on update-config',
 				'2'
 			)
 			.option(
@@ -386,12 +382,12 @@ export function registerClobMarket(parent: Command): void {
 			)
 			.option(
 				'--min-cross-surplus <quote>',
-				"floor on what the protocol must net from a cross-match crank, QUOTE_PRECISION (1e6). Cranking a cross pays the reservoir's keeper fee, so a cross that clears by a cent is one the protocol pays to run — and one anyone can manufacture. Must be above zero; set it to cover the cross payout with margin",
+				"floor on what the protocol must net from a cross-match crank, QUOTE_PRECISION (1e6). Cranking a cross pays the reservoir's keeper fee, so a cross that clears by a cent costs the protocol more than it earns, and anyone can create one. Must be above zero. Set it high enough to cover the cross payout with margin",
 				'10000'
 			)
 			.option(
 				'--relay-program <pubkey>',
-				`register a relay WatchV0 over the conditions block (default relay id ${DEFAULT_RELAY_PROGRAM}; pass "none" to skip)`,
+				`register a relay WatchV0 over the conditions block. The default relay id is ${DEFAULT_RELAY_PROGRAM}. Pass "none" to skip the registration`,
 				DEFAULT_RELAY_PROGRAM
 			)
 	).action(
@@ -437,11 +433,11 @@ export function registerClobMarket(parent: Command): void {
 				);
 				const wallet = provider.wallet.publicKey;
 
-				// 1. The book: a fresh account on the CLOB program, initialized
-				// with the market's quoter slab as its place authority — the one
-				// identity velocity signs every external quoter CPI as.
-				// Deliberately not the vault authority: signer privilege is
-				// inherited by a callee, and the vault authority moves funds.
+				// The book is a fresh account on the CLOB program. Its place
+				// authority is the market's quoter slab, the one identity velocity
+				// signs every external quoter CPI as. The vault authority is not
+				// used here, because a callee inherits signer privilege and the
+				// vault authority moves funds.
 				const book = Keypair.generate();
 				const space = clobMarketSpace(Number.parseInt(flags.capacity, 10));
 				const bookRent =
@@ -473,7 +469,6 @@ export function registerClobMarket(parent: Command): void {
 					`book ${book.publicKey.toBase58()} initialized (${space} bytes)`
 				);
 
-				// 2. Registry entry: init, register the CPI surface, approve.
 				const quoterPda = PublicKey.findProgramAddressSync(
 					[
 						Buffer.from('quoter'),
@@ -501,9 +496,9 @@ export function registerClobMarket(parent: Command): void {
 							authority: wallet,
 							quoter: quoterPda,
 							perpMarket,
-							// Designating the book is refused when an approved quoter's
-							// account list already names it, so registration reads the
-							// slab as well.
+							// The program refuses a book registration when an approved
+							// quoter's account list already names that book, so the
+							// registration reads the slab as well.
 							quoterSlab,
 							quoterProgram: clobProgram,
 							user: quoterUser,
@@ -512,9 +507,10 @@ export function registerClobMarket(parent: Command): void {
 						},
 					}
 				);
-				// One unified account list; each leg names its slice by index.
-				// The quote leg reads the book; the execute leg also carries the
-				// quoter slab the book checks velocity's CPI signature against.
+				// One unified account list, and each leg names its slice by index.
+				// The quote leg reads the book. The execute leg also carries the
+				// quoter slab, which the book checks velocity's CPI signature
+				// against.
 				const registerAccounts =
 					client.program.instruction.updateQuoterAccounts(
 						{
@@ -536,9 +532,9 @@ export function registerClobMarket(parent: Command): void {
 						}
 					);
 				// Registration reads the slab and approval writes it, so the slab
-				// has to exist before either. It is permissionless and shared by
-				// every quoter on the market, so create it only when missing. The
-				// creation leads the transaction below.
+				// must exist before either one. It is permissionless and shared by
+				// every quoter on the market, so it is created only when missing.
+				// The creation comes first in the transaction below.
 				const slabIxs = (await provider.connection.getAccountInfo(quoterSlab))
 					? []
 					: [
@@ -556,9 +552,9 @@ export function registerClobMarket(parent: Command): void {
 							),
 					  ];
 				// Approving an entry approves the binary behind it, so the CLOB
-				// program has to be frozen and its program-data account is the
-				// proof. A program on a loader that cannot upgrade in place has
-				// no such account and the program is inherently fixed.
+				// program must be frozen. Its program-data account records that.
+				// A program on a loader that cannot upgrade in place has no such
+				// account, and that program can never change.
 				const [clobProgramData] = PublicKey.findProgramAddressSync(
 					[clobProgram.toBuffer()],
 					BPF_LOADER_UPGRADEABLE_ID
@@ -577,7 +573,7 @@ export function registerClobMarket(parent: Command): void {
 							// Approval asks the book for its own placement rules, so a
 							// slot that would fail every fill is refused here.
 							clobMarket: book.publicKey,
-							// Approval right-sizes the slab account.
+							// Approval can grow the slab account.
 							systemProgram: SystemProgram.programId,
 						},
 					}
@@ -594,8 +590,8 @@ export function registerClobMarket(parent: Command): void {
 					`quoter ${quoterPda.toBase58()} registered + approved into slab ${quoterSlab.toBase58()}`
 				);
 
-				// 3. Attach: names the canonical CLOB and stands up the crank
-				// conditions + reservoir; optionally fund the reservoir.
+				// The attach names the canonical CLOB and creates the crank
+				// conditions and the reservoir.
 				const attach = client.program.instruction.updatePerpMarketClobQuoter(
 					{
 						crankCostUnits,
@@ -619,15 +615,15 @@ export function registerClobMarket(parent: Command): void {
 					}
 				);
 				await provider.sendAndConfirm(new Transaction().add(attach));
-				// The reservoir is left holding rent alone on purpose. A market
-				// funds itself from the crank treasury through the refill crank,
-				// and a hand transfer here would only leave the reservoir's
-				// mirrored balance behind what it really holds.
+				// The reservoir deliberately holds rent and nothing more. A market
+				// funds itself from the crank treasury through the refill crank.
+				// A manual transfer here would leave the reservoir's mirrored
+				// balance behind the lamports it really holds.
 				console.log(
 					`attached as perp-market[${marketIndex}].clob_quoter; conditions ${conditions.toBase58()}; the crank treasury refills it`
 				);
 
-				// 4. Relay watches, so turners discover both condition blocks:
+				// The relay watches let turners discover both condition blocks,
 				// velocity's and the book's own.
 				if (flags.relayProgram.toLowerCase() !== 'none') {
 					const relayProgram = new PublicKey(flags.relayProgram);
@@ -662,7 +658,7 @@ export function registerClobMarket(parent: Command): void {
 		clobMarket
 			.command('register-watch <market>')
 			.description(
-				"Register a relay WatchV0 over an existing market's crank-conditions block, so relay turners discover its CLOB crank work. Permissionless on relay's side; the signing wallet becomes the registrar (and can later close the watch to reclaim rent). Direct-send only."
+				"Register a relay WatchV0 over an existing market's crank-conditions block, so relay turners discover its CLOB crank work. Relay makes registration permissionless. The signing wallet becomes the registrar and can later close the watch to reclaim its rent. This command sends directly and cannot propose."
 			)
 			.option(
 				'--relay-program <pubkey>',
@@ -735,14 +731,14 @@ export function registerClobMarket(parent: Command): void {
 		clobMarket
 			.command('update-config <market>')
 			.description(
-				"Retune an existing book's mutable config through the CLOB's update_market_v0 (the book's authority signs). Only the flags passed are written; the rest keep their current setting. base_precision, market_index and place_authority are immutable and are not offered. The book and its program are read off the perp market, so no program id is needed."
+				"Change an existing book's mutable config through the CLOB's update_market_v0. The book's authority signs. Only the flags passed are written, and the rest keep their current setting. base_precision, market_index and place_authority are immutable, so this command does not offer them. The book and its program come from the perp market, so no program id is needed."
 			)
 			.option('--tick-size <n>', 'price tick (PRICE_PRECISION)')
 			.option('--step-size <n>', 'size step (base precision)')
 			.option('--min-order-size <n>', 'minimum order size (base precision)')
 			.option(
 				'--blocking-min-size <n>',
-				'floor on the size of an order that may end a fill walk when its owner is not carried; 0 disables'
+				'floor on the size of an order that may end a fill walk when its owner is not carried. 0 disables the floor'
 			)
 			.option('--default-activation-delay <slots>', 'default taker speed bump')
 			.option('--max-activation-delay <slots>', 'max caller-chosen delay')
@@ -759,7 +755,7 @@ export function registerClobMarket(parent: Command): void {
 			.option('--max-execute-users <n>', 'execute user-set cap')
 			.option(
 				'--reservation-grace-slots <n>',
-				"slots past its activation slot for which a taker remainder's claim on the depth it crosses is still honoured. A claim hides that depth from every caller but the crank that owes the taker its improvement, so this is what bounds a crank that never lands. 0 ends a claim the slot its remainder activates; 150 slots is the ceiling, which is how long a transaction stays valid after its blockhash"
+				"slots past its activation slot for which a taker remainder's claim on the depth it crosses still holds. A claim hides that depth from every caller except the crank that owes the taker its improvement, so this value bounds a crank that never lands. 0 ends a claim in the slot its remainder activates. 150 slots is the ceiling, which is how long a transaction stays valid after its blockhash"
 			)
 	).action(async (market: string, flags: ClobUpdateFlags, cmd: Command) => {
 		const marketIndex = Number.parseInt(market, 10);

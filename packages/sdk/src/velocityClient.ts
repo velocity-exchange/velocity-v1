@@ -106,18 +106,18 @@ export type MmOracleBatchUpdate = {
 	oracleSequenceId: BN;
 	/**
 	 * Slot the price was observed at. The program skips the entry when the
-	 * landing slot is more than `MM_ORACLE_MAX_SOURCE_AGE` away from this
-	 * in either direction: behind, so a late-landing transaction cannot make an
-	 * old observation read as fresh; ahead, so a wrong-unit value cannot
-	 * silently disable the check.
+	 * landing slot is more than `MM_ORACLE_MAX_SOURCE_AGE` from this slot in
+	 * either direction. The behind bound stops a late-landing transaction from
+	 * making an old observation read as fresh. The ahead bound stops a value in
+	 * the wrong unit from turning the check off without an error.
 	 */
 	oracleSourceSlot: BN;
 };
 
 /**
  * Maximum markets per `updateMmOracleBatchNative` call, mirroring the program's
- * `MM_ORACLE_BATCH_MAX_MARKETS`. Not reachable in practice: the transaction packet size and the
- * runtime's 64 account-lock ceiling both bind well before this does.
+ * `MM_ORACLE_BATCH_MAX_MARKETS`. A caller does not reach it. The transaction packet size and
+ * the runtime's 64 account-lock ceiling both bind well before this does.
  */
 export const MM_ORACLE_BATCH_MAX_MARKETS = 64;
 
@@ -125,32 +125,33 @@ export const MM_ORACLE_BATCH_MAX_MARKETS = 64;
 const MM_ORACLE_BATCH_ENTRY_LEN = 26;
 
 // Default compute budget for `updateMmOracleBatchNative`. `bun run bench:native-cu`
-// decomposes the handler into: a ~1109 CU fixed authentication prologue, ~518 CU
-// per accepted market, ~460 CU per skipped market, and ~453 CU for the reject-mask
-// log, which is emitted at most once and only when something was skipped. The
-// prologue being charged once instead of once per market is the whole reason
-// batching pays.
+// splits the handler into a fixed authentication prologue of about 1109 CU, about
+// 518 CU per accepted market, about 460 CU per skipped market, and about 453 CU
+// for the reject-mask log. The log is emitted at most once, and only when the
+// handler skipped something. The prologue is charged once per batch rather than
+// once per market, which is what makes batching cheaper.
 //
-// The worst case is a *partially* rejected batch (~1504 + 518n): it pays for the
-// writes and the log. All-accepted is cheaper (no log, 3181 CU at 4 markets) and
-// all-rejected is cheaper still (no writes, 3402 CU), so neither bounds the
-// budget. Measured 4-market figures: 3181 accepted, 3402 rejected, 3576 mixed.
+// A partly rejected batch is the worst case, at about 1504 + 518n, because it pays
+// for both the writes and the log. An all-accepted batch is cheaper at 3181 CU for
+// 4 markets, because it emits no log. An all-rejected batch is cheaper still at
+// 3402 CU, because it performs no writes. Neither bounds the budget. The measured
+// 4-market figures are 3181 accepted, 3402 rejected and 3576 mixed.
 //
-// Rounded up from the mixed case for ~31% headroom, which also covers the
-// ComputeBudget instructions' own 150 CU and the hot-key compare the bench build
-// compiles out. Priority fee is charged on the requested limit rather than on
-// consumption, so a cranker at production cadence should pass its own measured
-// `txParams.computeUnits` rather than rely on this.
+// The constants below round the mixed case up for about 31% headroom, which also
+// covers the ComputeBudget instructions' own 150 CU and the hot-key compare that
+// the bench build leaves out. The priority fee is charged on the requested limit
+// rather than on consumption, so a cranker at production cadence should pass its
+// own measured `txParams.computeUnits` instead of these.
 const MM_ORACLE_BATCH_BASE_CU = 1_900;
 const MM_ORACLE_BATCH_PER_MARKET_CU = 700;
 
 /**
  * Validates one MM-oracle update's fields before serialization. BN's
- * little-endian serialization drops the sign and truncates nothing itself, so
- * without these checks a negative price would reach the program as its
- * magnitude and an oversized value would throw deep inside `toArrayLike` (or,
- * for a value above `i64::MAX` but within 8 bytes, arrive on chain as a
- * negative price). Reject at the API boundary so the caller sees the bug.
+ * little-endian serialization drops the sign and truncates nothing itself.
+ * Without these checks a negative price reaches the program as its magnitude,
+ * and an oversized value throws deep inside `toArrayLike`. A value above
+ * `i64::MAX` that still fits in 8 bytes arrives on chain as a negative price.
+ * Rejecting at the API boundary shows the caller the bug instead.
  */
 function validateMmOracleUpdate(
 	context: string,
@@ -449,11 +450,11 @@ export class VelocityClient {
 	 *     passing more than one throws. `subAccountIds` is shorthand for
 	 *     `authoritySubAccountMap = { [authority]: subAccountIds }`.
 	 *   - `txVersion` defaults based on whether `config.wallet` supports versioned transactions.
-	 *   - `txParams.useSimulatedComputeUnits` defaults to `true`: the compute limit comes from
-	 *     simulating the transaction. `txParams.computeUnits` (default `600_000`) is the ceiling
-	 *     that clamps it and the fallback when simulation fails; `computeUnitsPrice` defaults to
-	 *     `0` (no priority fee), and `loadedAccountsDataSize` to
-	 *     `LOADED_ACCOUNTS_DATA_SIZE_DEFAULT`.
+	 *   - `txParams.useSimulatedComputeUnits` defaults to `true`, so the compute limit comes
+	 *     from simulating the transaction. `txParams.computeUnits`, default `600_000`, is the
+	 *     ceiling that clamps the simulated limit and the fallback when simulation fails.
+	 *     `computeUnitsPrice` defaults to `0`, which is no priority fee. `loadedAccountsDataSize`
+	 *     defaults to `LOADED_ACCOUNTS_DATA_SIZE_DEFAULT`.
 	 *   - `config.accountSubscription.type` selects `PollingVelocityClientAccountSubscriber`,
 	 *     a grpc subscriber, or (default) `WebSocketVelocityClientAccountSubscriber`.
 	 *   - `config.userStats` (default falsy) additionally constructs a `UserStats` instance for the
@@ -495,19 +496,19 @@ export class VelocityClient {
 			config.txVersion ?? this.getTxVersionForNewWallet(config.wallet);
 		this.txParams = {
 			...config.txParams,
-			// The ceiling a simulation-derived limit is clamped to, and the limit
-			// requested when simulation is off or fails. Kept generous for that
-			// reason; it is not meant to be what a transaction normally asks for.
+			// The ceiling a simulated limit is clamped to, and the limit requested
+			// when simulation is off or fails. It is generous for that reason. It
+			// is not what a transaction normally asks for.
 			computeUnits: config.txParams?.computeUnits ?? 600_000,
 			computeUnitsPrice: config.txParams?.computeUnitsPrice ?? 0,
 			loadedAccountsDataSize:
 				config.txParams?.loadedAccountsDataSize ??
 				LOADED_ACCOUNTS_DATA_SIZE_DEFAULT,
-			// A transaction is charged for the compute limit it requests, so
-			// asking for a flat ceiling on every transaction pays for room almost
-			// none of them use. Simulating costs one RPC round trip and is worth
-			// it. A failed simulation falls back to the ceiling above rather than
-			// throwing, so the worst case is what a static limit gave.
+			// A transaction is charged for the compute limit it requests, so a flat
+			// ceiling on every transaction pays for room almost none of them use.
+			// Simulating costs one RPC round trip. A failed simulation falls back
+			// to the ceiling above instead of throwing, so the worst case matches
+			// what a static limit gave.
 			useSimulatedComputeUnits:
 				config.txParams?.useSimulatedComputeUnits ?? true,
 		};
@@ -808,7 +809,7 @@ export class VelocityClient {
 	/**
 	 * Returns the program's PDA signer (used as the authority for vault CPIs), computing and caching
 	 * it on first call. Synchronous — the signer PDA has no seeds that require an on-chain lookup.
-	 * Not the key external-program CPIs sign as — that is the market's quoter slab; see
+	 * A CPI into an external program signs as the market's quoter slab instead. See
 	 * {@link getQuoterSlabPublicKey}.
 	 * @returns The velocity signer public key.
 	 */
@@ -1429,9 +1430,9 @@ export class VelocityClient {
 		/**
 		 * Build for an authority other than this client's. `initialize_user_stats`
 		 * does not require the authority to sign, so a `UserStats` can be created
-		 * for any key — which is the only way to stand up the protocol-owned
-		 * account, whose authority is velocity's signer PDA and therefore never a
-		 * wallet. Defaults to this client's authority.
+		 * for any key. That is the only way to create the protocol-owned account,
+		 * whose authority is velocity's signer PDA and never a wallet. Defaults to
+		 * this client's authority.
 		 */
 		authority?: PublicKey;
 	}): Promise<TransactionInstruction> {
@@ -1572,13 +1573,14 @@ export class VelocityClient {
 
 	/**
 	 * Grows a zero-copy account (User, PerpMarket, SpotMarket, State, ...) to the size the
-	 * deployed program compiles in for its type, as part of an account-size migration after a
-	 * program upgrade that appended fields. Requires `HotRole.AccountExtension` (cold, warm, or
-	 * the configured account-extension hot key) — the wallet must hold that role. The payer
-	 * covers the rent-exempt shortfall and the program zero-fills the new tail. No-op when the
-	 * account is already at size, so cranking is idempotent. See `docs/ACCOUNT-EXTENSION.md`.
+	 * deployed program compiles in for its type. Use it for an account-size migration after a
+	 * program upgrade that appended fields. The signing wallet must hold
+	 * `HotRole.AccountExtension`, which cold, warm, and the configured account-extension hot key
+	 * all satisfy. The payer covers the rent-exempt shortfall and the program zero-fills the new
+	 * tail. It does nothing when the account is already at size, so the crank is idempotent. See
+	 * `docs/ACCOUNT-EXTENSION.md`.
 	 * @param account - The account to extend.
-	 * @param txParams - Optional compute-unit/priority-fee overrides for the transaction.
+	 * @param txParams - Optional compute-unit and priority-fee overrides for the transaction.
 	 * @returns The transaction signature.
 	 */
 	public async extendAccount(
@@ -1765,14 +1767,14 @@ export class VelocityClient {
 	 * Initializes `authority`'s `RevenueShareEscrow` account — the per-user account that tracks
 	 * pending builder-fee orders and the list of builders this user has approved (`approvedBuilders`),
 	 * required to place orders carrying a builder fee. On creation, `escrow.referrer` is copied from
-	 * the authority's existing `UserStats.referrer`, if any, and that copy is never rewritten — so the
-	 * authority's first subaccount must already exist, since `UserStats.referrer` is only set when it
-	 * is created. No instruction re-reads the snapshot later.
+	 * the authority's existing `UserStats.referrer`, if any, and no instruction rewrites that copy
+	 * later. The authority's first subaccount must therefore already exist, because
+	 * `UserStats.referrer` is set only when that subaccount is created.
 	 * @param authority - Authority the escrow is created for.
-	 * @param numOrders - Number of pending-order slots to allocate; determines account rent/size.
-	 * Must be at least 1 — the program rejects a zero-capacity escrow, which could hold neither a
-	 * builder nor a referral row and would silently suppress all revenue share. Can be grown later
-	 * with `resizeRevenueShareEscrowOrders` (never shrunk).
+	 * @param numOrders - Number of pending-order slots to allocate, which decides the account's
+	 * rent and size. Must be at least 1. The program rejects a zero-capacity escrow, which could
+	 * hold neither a builder row nor a referral row and would suppress all revenue share without
+	 * an error. Grow it later with `resizeRevenueShareEscrowOrders`. It never shrinks.
 	 * @param txParams - Optional compute-unit/priority-fee overrides for the transaction.
 	 * @returns The transaction signature.
 	 * @throws (on-chain `UserNotFound`) if `authority` has not created a subaccount yet.
@@ -2108,10 +2110,10 @@ export class VelocityClient {
 					systemProgram: SystemProgram.programId,
 					state: await this.getStatePublicKey(),
 					// Relay liquidation coverage, created with the account it
-					// watches and paid for by the same payer. Not optional:
-					// the moment coverage matters is the moment somebody
-					// else's transaction gave this user a position, and the
-					// user is not a signer on that one.
+					// watches and paid for by the same payer. It is always
+					// created, because coverage starts to matter as soon as
+					// somebody else's transaction gives this user a position,
+					// and the user does not sign that transaction.
 					userConditions: getUserConditionsPublicKey(
 						this.program.programId,
 						userAccountPublicKey
@@ -2902,13 +2904,12 @@ export class VelocityClient {
 	/**
 	 * Builds the `deleteUser` instruction. See `deleteUser` for on-chain preconditions.
 	 *
-	 * The authority's `RevenueShareEscrow` PDA is derived and passed automatically, so
-	 * callers need no change. It is a **required** account even when the authority has
-	 * never created an escrow: the address is pinned by seeds on chain, so an
-	 * uninitialized account proves absence rather than an omitted check. The program
-	 * uses it to settle this sub-account's builder rows before the id is retired
-	 * forever, which is what stops the builder's accrued fee being stranded
-	 * (OtterSec #128).
+	 * This derives and passes the authority's `RevenueShareEscrow` PDA, so a caller needs
+	 * no change. The account is required even when the authority has never created an
+	 * escrow, because seeds pin the address on chain, so an uninitialized account proves
+	 * absence rather than an omitted check. The program uses it to settle this
+	 * sub-account's builder rows before the id is retired for good, which keeps the
+	 * builder's accrued fee from being stranded (OtterSec #128).
 	 * @param userAccountPublicKey - User account PDA to delete.
 	 * @returns The instruction.
 	 */
@@ -2963,11 +2964,12 @@ export class VelocityClient {
 	 * account's non-empty spot positions and every mint/token-program needed for its open spot
 	 * balances. See `forceDeleteUser` for on-chain preconditions.
 	 *
-	 * The authority's `RevenueShareEscrow` PDA is derived and passed as a named account, so callers
-	 * need no change. It is **required** even when the authority has never created an escrow: the
-	 * address is pinned by seeds on chain, so an uninitialized account proves absence rather than an
-	 * omitted check. The program uses it to settle the sub-account's builder rows before the id is
-	 * retired forever, which is what stops the builder's accrued fee being stranded (OtterSec #128).
+	 * This derives and passes the authority's `RevenueShareEscrow` PDA as a named account, so a
+	 * caller needs no change. The account is required even when the authority has never created an
+	 * escrow, because seeds pin the address on chain, so an uninitialized account proves absence
+	 * rather than an omitted check. The program uses it to settle the sub-account's builder rows
+	 * before the id is retired for good, which keeps the builder's accrued fee from being stranded
+	 * (OtterSec #128).
 	 * @param userAccountPublicKey - PDA of the user account to force-delete.
 	 * @param userAccount - The account's current on-chain data.
 	 * @returns The instruction.
@@ -5169,19 +5171,22 @@ export class VelocityClient {
 	 * @param toSubAccountId - Sub-account id to credit.
 	 * @param equityFloorDelta - Equity floor (QUOTE_PRECISION) to move from the debited to the credited
 	 * sub-account along with the funds, keeping the sum of floors constant. A proportional share of
-	 * the debited side's `equityFloorBuffer` travels with the floor (rounded up on the debited side,
-	 * so shedding the whole floor also sheds the whole buffer; no orphan buffer is left on a
-	 * check-disabled sub-account), keeping the sum of buffers constant too. The debited side must not
-	 * already be below the floor being reduced (a below-floor sub-account cannot shed floor to defuse a
-	 * pending equity-breaker trip), must stay at/above its reduced floor plus its reduced buffer,
-	 * and the credited side's net equity (after the transfer lands) must back its increased floor plus
-	 * its increased buffer, else the transfer reverts with `InvalidEquityFloorTransfer`. Pass `'auto'`
-	 * (quote market only) to move the minimal floor needed for the debited side to stay at/above its
-	 * buffered floor: `max(0, amount - max(0, netEquity - (floor + buffer)))`, capped at the debited
-	 * side's floor (see `calculateEquityFloorAutoDelta`). The auto delta never exceeds `amount`, so the
-	 * credited side stays backed whenever it was before. Client-side pricing can differ slightly from
-	 * the onchain check at the exact boundary; retry with an explicit padded delta if an
-	 * `'auto'` transfer reverts. Defaults to zero.
+	 * the debited side's `equityFloorBuffer` travels with the floor. That share rounds up on the
+	 * debited side, so shedding the whole floor also sheds the whole buffer and leaves no orphan
+	 * buffer on a check-disabled sub-account. The sum of buffers stays constant too. Three rules
+	 * apply. The debited side must not already be below the floor it reduces, so a below-floor
+	 * sub-account cannot shed floor to defuse a pending equity-breaker trip, and the program
+	 * reverts with `InvalidEquityFloorTransfer` otherwise. The debited side must stay at or above
+	 * its reduced floor plus its reduced buffer, and the program reverts with `EquityBelowFloor`
+	 * otherwise. The credited side's net equity, measured after the transfer lands, must back its
+	 * increased floor plus its increased buffer, and the program reverts with
+	 * `InvalidEquityFloorTransfer` otherwise. Pass `'auto'`, on the quote market only, to move the
+	 * smallest floor that keeps the debited side at or above its buffered floor:
+	 * `max(0, amount - max(0, netEquity - (floor + buffer)))`, capped at the debited side's floor.
+	 * See `calculateEquityFloorAutoDelta`. The auto delta never exceeds `amount`, so the credited
+	 * side stays backed whenever it was backed before. Client-side pricing can differ from the
+	 * onchain check at the exact boundary. Retry with an explicit padded delta if an `'auto'`
+	 * transfer reverts. Defaults to zero.
 	 * @param txParams - Optional compute-unit/priority-fee overrides for the transaction.
 	 * @returns The transaction signature.
 	 * @throws (on-chain) if `allowDelegateTransfer` is not enabled, if the signer is not the delegate on
@@ -5261,7 +5266,7 @@ export class VelocityClient {
 			const fromUserAccount = fromUserClass.getUserAccountOrThrow();
 			resolvedFloorDelta = calculateEquityFloorAutoDelta(
 				amount,
-				// gate-parity pricing, matching the program-side floor checks
+				// Priced the same way as the program-side floor checks.
 				fromUserClass.getFloorNetEquity().value,
 				fromUserAccount.equityFloor,
 				fromUserAccount.equityFloorBuffer
@@ -5284,10 +5289,10 @@ export class VelocityClient {
 			)) as UserAccount;
 		};
 
-		// the credited side's markets/oracles must be in the remaining accounts
-		// too: a floor delta triggers an onchain margin check of the credited
-		// side, and under a tripped breaker the cure exemption computes the
-		// credited side's net equity even with a zero delta
+		// The credited side's markets and oracles must be in the remaining
+		// accounts too. A floor delta triggers an onchain margin check of the
+		// credited side. Under a tripped breaker the cure exemption computes the
+		// credited side's net equity even when the delta is zero.
 		const userAccounts = [
 			await loadUserAccount(fromSubAccountId, fromUser),
 			await loadUserAccount(toSubAccountId, toUser),
@@ -5925,16 +5930,16 @@ export class VelocityClient {
 	 * realizes less than the claimable PnL (e.g. the market's PnL pool is short), the withdraw can still
 	 * fail on-chain with `InsufficientCollateral`.
 	 *
-	 * The clamp bounds the request by the position's own balance only. The on-chain handler also applies
-	 * the spot market's withdraw circuit breaker to this path, at market level and without the
-	 * small-depositor exception (an isolated position carries its own collateral, so the carve-out for a
-	 * small honest cross depositor does not apply). A withdrawal that would take the market's resulting
-	 * deposits below `minDepositAmount` from `calculateWithdrawLimit` therefore reverts with
-	 * `DailyWithdrawLimit` (6128), whatever the position holds. Read `withdrawLimit` from
-	 * `calculateWithdrawLimit` for the market's remaining room. The same handler applies the market's
-	 * withdraw status and pause gates, so it reverts with `MarketWithdrawPaused` (6149) unless the spot
-	 * market status is `active`, `reduceOnly` or `settlement` and the `Withdraw` operation is unpaused.
-	 * A wound-down market in `settlement` therefore stays exitable.
+	 * The clamp bounds the request by the position's own balance only. The on-chain handler also
+	 * applies the spot market's withdraw circuit breaker to this path, at market level and without
+	 * the small-depositor exception. An isolated position carries its own collateral, so the
+	 * carve-out for a small honest cross depositor does not apply. A withdrawal that would take the
+	 * market's resulting deposits below `minDepositAmount` from `calculateWithdrawLimit` therefore
+	 * reverts with `DailyWithdrawLimit` (6128), whatever the position holds. Read `withdrawLimit`
+	 * from `calculateWithdrawLimit` for the market's remaining room. The same handler applies the
+	 * market's withdraw status and pause gates. It reverts with `MarketWithdrawPaused` (6149)
+	 * unless the spot market status is `active`, `reduceOnly` or `settlement` and the `Withdraw`
+	 * operation is unpaused. A wound-down market in `settlement` therefore stays exitable.
 	 * @param amount - Amount to withdraw, in the position's quote spot market's token precision. Values
 	 * exceeding the withdrawable balance are clamped to it (i.e. pass a huge value to withdraw all).
 	 * @param perpMarketIndex - Perp market index of the isolated position to withdraw from.
@@ -6122,15 +6127,16 @@ export class VelocityClient {
 	}
 
 	/**
-	 * Permissionless batch crank: books the lending interest of several spot markets in one
-	 * instruction. Written for a caller that has to value several markets in one transaction,
+	 * Permissionless batch crank. It books the lending interest of several spot markets in one
+	 * instruction. It exists for a caller that has to value several markets in one transaction,
 	 * such as a program pricing a share against the markets a user holds.
 	 *
-	 * Two differences from `updateSpotMarketCumulativeInterest`, which stays the crank that keeps
-	 * a market's oracle EMA fresh. This one passes no oracle, so it leaves every oracle TWAP
-	 * alone, and it accepts a market whose status is `Delisted`.
+	 * It differs from `updateSpotMarketCumulativeInterest` in two ways. It passes no oracle, so
+	 * it leaves every oracle TWAP alone, and it accepts a market whose status is `Delisted`.
+	 * `updateSpotMarketCumulativeInterest` stays the crank that keeps a market's oracle EMA
+	 * fresh.
 	 * @param marketIndexes - Spot market indexes to book, at most 16.
-	 * @param txParams - Optional compute-unit/priority-fee overrides for the transaction.
+	 * @param txParams - Optional compute-unit and priority-fee overrides for the transaction.
 	 * @returns The transaction signature.
 	 */
 	public async refreshSpotMarketInterest(
@@ -6182,22 +6188,23 @@ export class VelocityClient {
 	 * Lists the spot markets that must be cranked before the given accounts can be
 	 * used on a value-releasing path.
 	 *
-	 * The program refuses to value a spot **borrow** for margin through an index that
-	 * has not accrued recently (`SpotMarketInterestStaleForMargin`). It applies on
-	 * withdraw, transfer deposit, transfer pools, swap, isolated-position withdraw,
-	 * and any perp fill — for the taker and for every maker alike. Only borrow
-	 * positions count; a stale deposit index understates collateral and is allowed.
+	 * The program refuses to value a spot borrow for margin through an index that has
+	 * not accrued recently, and reverts with `SpotMarketInterestStaleForMargin`. The
+	 * rule applies on withdraw, transfer deposit, transfer pools, swap,
+	 * isolated-position withdraw, and any perp fill, for the taker and for every maker
+	 * alike. Only borrow positions count. A stale deposit index understates collateral,
+	 * so the program allows it.
 	 *
-	 * Each market earns its own window from its rate ceiling
-	 * (`maxSpotInterestStalenessForMargin`), so a market that may charge more
-	 * interest must be cranked more often.
+	 * Each market takes its own window from its rate ceiling
+	 * (`maxSpotInterestStalenessForMargin`), so a market that can charge more interest
+	 * must be cranked more often.
 	 *
 	 * The program also exempts a borrow whose un-booked interest is still under one
-	 * token unit, which this does not model, so the result is a superset: cranking
-	 * every market it names always clears the check.
+	 * token unit. This method does not model that exemption, so its result is a
+	 * superset. Cranking every market it names always clears the check.
 	 *
-	 * @param userAccounts - Accounts the transaction values, e.g. a fill's taker and makers.
-	 * @param now - Unix seconds to measure staleness against; defaults to the local clock.
+	 * @param userAccounts - Accounts the transaction values, for example a fill's taker and makers.
+	 * @param now - Unix seconds to measure staleness against. Defaults to the local clock.
 	 * @returns Ascending market indexes, deduplicated.
 	 */
 	public getStaleSpotInterestMarketIndexes(
@@ -6588,18 +6595,18 @@ export class VelocityClient {
 	}
 
 	/**
-	 * Returns the AccountMeta for the taker's RevenueShareEscrow when a fill of the
-	 * taker's order must include it: the order carries a builder code, or the taker
-	 * is referred (their escrow was initialized with a referrer). Returns an empty
-	 * list when neither applies. The
-	 * onchain handlers read this group after the market/oracle/maker accounts;
-	 * a referred taker's referrer UserStats follows the escrow.
+	 * Returns the account metas a fill of the taker's order must carry for revenue share.
+	 * The taker's `RevenueShareEscrow` is needed when the order carries a builder code, or
+	 * when the taker is referred, which means their escrow was initialized with a referrer.
+	 * A referred taker's referrer `UserStats` follows the escrow. Returns an empty list when
+	 * neither applies. The onchain handlers read this group after the market, oracle and
+	 * maker accounts.
 	 *
 	 * Throws when `takerEscrow` does not belong to `takerAuthority`.
 	 *
-	 * A `UserStats` fetch is only issued when nothing local answers whether the taker is
-	 * referred. Pass `takerReferrer` (or a decoded `takerEscrow`) to skip it; the taker's own
-	 * paths read the subscribed `UserStats` for `this.authority`.
+	 * This issues a `UserStats` fetch only when nothing local answers whether the taker is
+	 * referred. Pass `takerReferrer`, or a decoded `takerEscrow`, to skip the fetch. The
+	 * taker's own paths read the subscribed `UserStats` for `this.authority`.
 	 */
 	private async getTakerRevenueShareAccountMetas(
 		takerAuthority: PublicKey,
@@ -6619,24 +6626,24 @@ export class VelocityClient {
 
 		let referrer = takerEscrow?.referrer ?? takerReferrer;
 
-		// The taker is this client's own authority on the place-and-take / place-and-make
-		// paths, where the subscribed UserStats already holds the referrer.
+		// On the place-and-take and place-and-make paths the taker is this client's own
+		// authority, so the subscribed UserStats already holds the referrer.
 		let localStats: UserStatsAccount | undefined;
 		if (!referrer && takerAuthority.equals(this.authority)) {
 			localStats = this.userStats?.getAccount();
 			referrer = localStats?.referrer;
 		}
 
-		// A taker is referred when their escrow was initialized with a referrer.
-		// Resolve this automatically for immediate fill builders so their default
-		// call path cannot omit mandatory referral accounts.
+		// A taker is referred when their escrow was initialized with a referrer. The
+		// immediate fill builders resolve this for themselves, so their default call
+		// path cannot omit a mandatory referral account.
 		let referred =
 			!!takerIsReferred ||
 			(!!takerEscrow && escrowHasReferrer(takerEscrow)) ||
 			(!!localStats && isBuilderReferral(localStats)) ||
 			hasReferrer(takerReferrer);
 
-		// Nothing local settles it, so fetch once and use the result for both the gate below
+		// Nothing local settles it, so fetch once. The result answers both the gate below
 		// and the referrer pubkey.
 		if (
 			!referred &&
@@ -6672,10 +6679,10 @@ export class VelocityClient {
 		];
 
 		// The program reads the referrer's persistent Accelerated status immediately after
-		// the taker's escrow. Keep this account readonly so a popular referrer does
-		// not become a write lock bottleneck for every referee fill.
-		// `takerReferrer` is authoritative when the caller supplied it, including as the default
-		// pubkey to say the referrer's status is not being resolved.
+		// the taker's escrow. The account stays readonly, so a popular referrer does not
+		// become a write-lock bottleneck for every referee fill. A caller-supplied
+		// `takerReferrer` wins, including the default pubkey, which says the referrer's
+		// status is not being resolved.
 		if (referred && !hasReferrer(referrer) && takerReferrer === undefined) {
 			referrer = (
 				await fetchUserStatsAccount(
@@ -6939,9 +6946,10 @@ export class VelocityClient {
 	 * requires an explicit `orderId` (see note above).
 	 * @returns The transaction signature.
 	 * @see `getCancelOrderIx` to obtain the instruction without sending.
-	 * @remarks Cancels an order resting on the DLOB (a `User.orders` slot). An order resting on
-	 * the CLOB has no such slot and is cancelled by its book handle — read its `ClobOrderRefV0`
-	 * from the user-orders feed (`UserClobOrdersClient`) and call `cancelOrderV1` / `cancelOrdersV1`.
+	 * @remarks Cancels an order resting on the DLOB, which is a `User.orders` slot. An order
+	 * resting on the CLOB has no such slot and is cancelled by its book handle. Read its
+	 * `ClobOrderRefV0` from the user-orders feed (`UserClobOrdersClient`), then call
+	 * `cancelOrderV1` or `cancelOrdersV1`.
 	 */
 	public async cancelOrder(
 		orderId?: number,
@@ -7622,8 +7630,8 @@ export class VelocityClient {
 	 * from this authority instead of `this.wallet.publicKey`.
 	 * @param hasBuilderFee - Force-attach the taker's `RevenueShareEscrow` account, bypassing the
 	 * automatic builder-code detection performed by `getFillPerpOrderIx`.
-	 * @param takerEscrow - Optional decoded escrow. Supplying it avoids a UserStats fetch; the SDK
-	 * otherwise discovers referral status and the referrer automatically.
+	 * @param takerEscrow - Optional decoded escrow. Passing it avoids a UserStats fetch. Without
+	 * it, the SDK discovers referral status and the referrer for itself.
 	 * @returns The transaction signature.
 	 */
 	public async fillPerpOrder(
@@ -7680,11 +7688,11 @@ export class VelocityClient {
 	 * @param fillerAuthority - Filler's authority if different from this client's wallet; the
 	 * filler user/user-stats PDAs are derived from this authority.
 	 * @param hasBuilderFee - Force-attach the taker escrow regardless of the detected builder flag.
-	 * @param takerEscrow - Optional decoded escrow. Supplying it avoids a UserStats fetch; referral
-	 * accounts are otherwise discovered automatically.
+	 * @param takerEscrow - Optional decoded escrow. Passing it avoids a UserStats fetch. Without
+	 * it, the SDK discovers the referral accounts for itself.
 	 * @param takerIsReferred - Whether the taker is referred, when already known.
-	 * @param takerReferrer - The taker's referrer authority, when already known. Supplying this
-	 * (or `takerEscrow`) keeps the fill path free of a `UserStats` fetch.
+	 * @param takerReferrer - The taker's referrer authority, when already known. Passing this, or
+	 * `takerEscrow`, keeps the fill path free of a `UserStats` fetch.
 	 * @throws If no order can be resolved to fill, or (for a non-signed-msg fill) `order` is omitted.
 	 * @returns The instruction.
 	 */
@@ -7708,8 +7716,8 @@ export class VelocityClient {
 		// `isBuilderReferral(takerUserStats)`. No escrow account data is needed.
 		takerIsReferred?: boolean,
 		// The taker's referrer authority, when the caller already holds the taker's
-		// UserStats (e.g. pass `takerUserStats.referrer`). Supplying it avoids a
-		// UserStats fetch on the fill hot path.
+		// UserStats. Pass `takerUserStats.referrer`. It avoids a UserStats fetch on the
+		// fill hot path.
 		takerReferrer?: PublicKey
 	): Promise<TransactionInstruction> {
 		const userStatsPublicKey = getUserStatsAccountPublicKey(
@@ -7926,8 +7934,9 @@ export class VelocityClient {
 	 * instructions in a single transaction, so the swap is settled directly against the user's
 	 * deposits/vault balances rather than the wallet's own token accounts. Sends and confirms the
 	 * transaction.
-	 * @param swapClient - Provider used to quote the swap and build its route: a
-	 * `UnifiedSwapClient`, or a `TitanClient`/`JupiterClient` directly. See `getProviderSwapIx`.
+	 * @param swapClient - Provider that quotes the swap and builds its route. Pass a
+	 * `UnifiedSwapClient`, or a `TitanClient` or `JupiterClient` directly. See
+	 * `getProviderSwapIx`.
 	 * @param jupiterClient - @deprecated Use `swapClient` instead. Used only when `swapClient` is
 	 * not passed.
 	 * @param outMarketIndex - Spot market index of the token being bought.
@@ -7936,15 +7945,15 @@ export class VelocityClient {
 	 * idempotently if omitted.
 	 * @param inAssociatedTokenAccount - Token account to source the sold token from; created
 	 * idempotently if omitted.
-	 * @param amount - Amount of the "in" token (or "out" token when the effective mode is
-	 * `ExactOut`, in which case this is the desired output amount), in the token's own mint
-	 * decimals — not a fixed protocol precision.
+	 * @param amount - Amount of the "in" token, in the token's own mint decimals rather than a
+	 * fixed protocol precision. When the effective mode is `ExactOut`, it is the desired output
+	 * amount of the "out" token instead.
 	 * @param slippageBps - Max slippage in basis points passed to the swap provider's routing API.
-	 * @param swapMode - `ExactIn` (default) or `ExactOut`. Ignored when `quote` is passed — the
-	 * quote's own mode wins.
+	 * @param swapMode - `ExactIn` (default) or `ExactOut`. Ignored when `quote` is passed, because
+	 * the quote's own mode wins.
 	 * @param reduceOnly - Whether the in/out token's position on the velocity account must reduce
 	 * (not flip sign); enforced by `endSwap` after the swap completes.
-	 * @param quote - Pre-fetched quote (skips an extra round-trip to the swap provider). Must be
+	 * @param quote - Pre-fetched quote, which skips a round trip to the swap provider. It must be
 	 * for this pair and this `amount`.
 	 * @param txParams - Optional compute-unit/priority-fee overrides.
 	 * @throws If neither `swapClient` nor `jupiterClient` is provided.
@@ -8009,10 +8018,10 @@ export class VelocityClient {
 	}
 
 	/**
-	 * Throws unless a quote swaps exactly the pair the `beginSwap`/`endSwap` pair is being built
-	 * for. A mismatched quote routes and executes normally, but deposits its output into a token
-	 * account `endSwap` isn't watching, so it reverts with `InvalidSwap: amount_out must be
-	 * greater than 0` only after the funds have already moved.
+	 * Throws unless a quote swaps the same pair the `beginSwap` and `endSwap` instructions are
+	 * built for. A mismatched quote routes and executes, but it deposits its output into a token
+	 * account `endSwap` does not watch. `endSwap` then reverts with `InvalidSwap: amount_out must
+	 * be greater than 0`, after the funds have already moved.
 	 */
 	protected assertQuoteMatchesMarkets(
 		quote: { inputMint: string; outputMint: string },
@@ -8060,7 +8069,7 @@ export class VelocityClient {
 
 	/**
 	 * Resolves the wallet's associated token account for a spot market, plus the instruction that
-	 * creates it when it doesn't exist yet.
+	 * creates it when the account does not exist yet.
 	 */
 	private async getOrCreateSwapTokenAccount(
 		market: SpotMarketAccount
@@ -8092,32 +8101,32 @@ export class VelocityClient {
 	}
 
 	/**
-	 * Builds the instruction list for a swap routed through any `SwapProvider` (Jupiter, Titan, or
-	 * a `UnifiedSwapClient` wrapping either): creates any missing associated token accounts and
-	 * wraps the provider's routing instructions between `beginSwap`/`endSwap`.
+	 * Builds the instruction list for a swap routed through any `SwapProvider`, which is Jupiter,
+	 * Titan, or a `UnifiedSwapClient` wrapping either. It creates any missing associated token
+	 * accounts and wraps the provider's routing instructions between `beginSwap` and `endSwap`.
 	 * @param swapProvider - Provider that quotes the swap and builds its route instructions.
 	 * @param outMarketIndex - Spot market index of the token being bought.
 	 * @param inMarketIndex - Spot market index of the token being sold.
-	 * @param outAssociatedTokenAccount - Token account to receive the bought token; created
-	 * idempotently if omitted.
-	 * @param inAssociatedTokenAccount - Token account to source the sold token from; created
-	 * idempotently if omitted.
+	 * @param outAssociatedTokenAccount - Token account to receive the bought token. Created
+	 * idempotently when omitted.
+	 * @param inAssociatedTokenAccount - Token account to source the sold token from. Created
+	 * idempotently when omitted.
 	 * @param amount - Amount in the "in" token's mint decimals, or the "out" token's when the
 	 * effective mode is `ExactOut`.
-	 * @param slippageBps - Max slippage in basis points; only used when a quote has to be fetched.
-	 * @param swapMode - `ExactIn` (default) or `ExactOut`. The mode a quote is fetched at; the
-	 * resulting quote's own mode is what sizes the swap, so it is ignored when `quote` is passed.
+	 * @param slippageBps - Max slippage in basis points. Used only when a quote has to be fetched.
+	 * @param swapMode - `ExactIn` (default) or `ExactOut`. It is the mode a quote is fetched at.
+	 * The resulting quote's own mode sizes the swap, so this is ignored when `quote` is passed.
 	 * @param onlyDirectRoutes - Restricts a fetched quote to single-hop routes.
 	 * @param maxAccounts - Account budget for a fetched route.
-	 * @param reduceOnly - Which side must not increase in magnitude; enforced by `endSwap`.
-	 * @param quote - Pre-fetched quote. Authoritative when passed: its `swapMode` is the effective
-	 * mode, and it must be for this pair and this `amount`.
-	 * @param userAccountPublicKey - Optional user account override (e.g. when the account is being
-	 * created in the same transaction and not yet resolvable via `getUserAccountPublicKey`).
-	 * @throws If the quote — passed in or freshly fetched — is for a different pair or a different
+	 * @param reduceOnly - Which side must not increase in magnitude. `endSwap` enforces it.
+	 * @param quote - Pre-fetched quote. It wins when passed: its `swapMode` is the effective mode,
+	 * and it must be for this pair and this `amount`.
+	 * @param userAccountPublicKey - Optional user account override, for example when the account is
+	 * created in the same transaction and `getUserAccountPublicKey` cannot resolve it yet.
+	 * @throws If the quote, passed in or freshly fetched, is for a different pair or a different
 	 * size than the swap being built.
-	 * @returns `ixs` — ATA creation, `beginSwap`, the route's instructions, `endSwap`, in order —
-	 * and the `lookupTables` needed to fit them in a versioned transaction.
+	 * @returns `ixs`, holding ATA creation, `beginSwap`, the route's instructions and `endSwap` in
+	 * that order, and the `lookupTables` needed to fit them in a versioned transaction.
 	 */
 	public async getProviderSwapIx({
 		swapProvider,
@@ -8168,18 +8177,19 @@ export class VelocityClient {
 				sizeConstraint: DEFAULT_ROUTE_SIZE_CONSTRAINT,
 			}));
 
-		// The quote's own mode decides which side `amount` names and how `beginSwap` is sized, so it
-		// wins over `swapMode` whether the quote was passed in or just fetched — a provider that
-		// answers in the other mode is then caught by the size check rather than sizing the wrong side.
+		// The quote's own mode decides which side `amount` names and how `beginSwap` is sized,
+		// so it wins over `swapMode` whether the quote was passed in or freshly fetched. The size
+		// check below then catches a provider that answers in the other mode, instead of that
+		// provider sizing the wrong side.
 		const effectiveSwapMode = quoteToUse.swapMode ?? swapMode ?? 'ExactIn';
 
-		// Both paths, identically: a freshly fetched quote is no more trustworthy about what it
-		// priced than one handed to us.
+		// Both paths run the same checks. A freshly fetched quote is no more trustworthy about
+		// what it priced than a quote the caller passed in.
 		this.assertQuoteMatchesMarkets(quoteToUse, inMarket, outMarket);
 		this.assertQuoteMatchesAmount(quoteToUse, amount, effectiveSwapMode);
 
-		// Size `beginSwap` off the quote's own input: under ExactOut `amount` is the requested
-		// output, so buffering it would be a guess at what the route consumes.
+		// `beginSwap` is sized off the quote's own input. Under ExactOut, `amount` is the
+		// requested output, so buffering it would guess at what the route consumes.
 		const quotedAmountIn = new BN(quoteToUse.inAmount);
 		const amountIn =
 			effectiveSwapMode === 'ExactOut'
@@ -8543,9 +8553,9 @@ export class VelocityClient {
 	}
 
 	/**
-	 * Fires a resting DLOB stop-market straight to the book: it fills the fired
-	 * order and rests only its remainder as a taker-origin order on the market's
-	 * CLOB, in one instruction. Unlike `triggerOrder`, nothing is left live in
+	 * Fires a resting DLOB stop-market order straight to the book. One instruction
+	 * fills the fired order and rests only its remainder as a taker-origin order on
+	 * the market's CLOB. Unlike `triggerOrder`, it leaves nothing live in
 	 * `User.orders` for a later fill crank. For DLOB trigger-market orders only.
 	 * See `getTriggerMarketOrderV1Ix`.
 	 */
@@ -8589,8 +8599,11 @@ export class VelocityClient {
 	 * @param userAccount - Decoded user account for the order owner.
 	 * @param order - The trigger-market order to fire.
 	 * @param clobAccounts - The market's quoter slab, book and program.
-	 * @param routeAccounts - The maker/referrer and quoter `AccountMeta[]` the fill routes through, appended after the standard market/oracle accounts. The market's quoter slab and its book are mandatory.
-	 * @param fillerPublicKey - Filler's user account public key; defaults to this client's own user account.
+	 * @param routeAccounts - The maker, referrer and quoter `AccountMeta[]` the fill routes through.
+	 * They are appended after the standard market and oracle accounts. The market's quoter slab and
+	 * its book are mandatory.
+	 * @param fillerPublicKey - Filler's user account public key. Defaults to this client's own user
+	 * account.
 	 * @returns The instruction.
 	 */
 	public async getTriggerMarketOrderV1Ix(
@@ -8706,14 +8719,14 @@ export class VelocityClient {
 	/**
 	 * Keeper instruction: reclaims a deteriorated account's risk-increasing CLOB orders.
 	 *
-	 * The CLOB arm of `forceCancelOrders`. Grounds are the same, plus the authority-wide
-	 * equity breaker: the account fails initial margin, is provably below its equity floor,
-	 * or its breaker is latched. Risk-*reducing* orders are passed over — cancelling those
-	 * would only make the account worse.
+	 * The CLOB arm of `forceCancelOrders`. It takes the same grounds, plus the
+	 * authority-wide equity breaker. The account fails initial margin, is provably below
+	 * its equity floor, or its breaker is latched. It leaves risk-reducing orders alone,
+	 * because cancelling those would only make the account worse.
 	 *
-	 * Every "nothing to do" answer is a success, not an error: the account turned out
+	 * Every "nothing to do" outcome succeeds rather than erroring. The account turned out
 	 * healthy, the refs are already gone, or none of them is risk-increasing. That is what
-	 * makes it safe to prefix in front of a fill that would otherwise revert on this maker,
+	 * makes it safe to put in front of a fill that would otherwise revert on this maker,
 	 * while a keeper or relay races to do the same work.
 	 *
 	 * @param marketIndex - Perp market whose CLOB the orders rest on.
@@ -8721,7 +8734,7 @@ export class VelocityClient {
 	 * @param userAccount - Decoded account of the deteriorated user.
 	 * @param orderRefs - The orders to reclaim, each with the side it rests on.
 	 * @param clobAccounts - The market's quoter slab, book and program.
-	 * @param fillerPublicKey - Filler's user account; defaults to this client's own.
+	 * @param fillerPublicKey - Filler's user account. Defaults to this client's own.
 	 * @returns The instruction.
 	 */
 	public async getForceCancelClobOrdersIx(
@@ -8771,13 +8784,15 @@ export class VelocityClient {
 	}
 
 	/**
-	 * Keeper instruction: trips the authority-wide equity floor breaker. Proves on-chain that the
-	 * given subaccount's net equity (unweighted assets and perp PnL minus spot liabilities) is below
-	 * its `equityFloor` (reverts with `SufficientCollateral` otherwise, if no floor is set, or with
-	 * `InvalidOracle` if any of the subaccount's oracles is invalid) and sets `equityBreakerTripped`
-	 * on the authority's `UserStats` — every subaccount of the authority then rejects risk-increasing
-	 * fills, withdrawals and transfers out until the warm admin calls `resetEquityFloorBreaker`.
-	 * Permissionless — any signer may trip it; the equity calculation is the proof.
+	 * Keeper instruction: trips the authority-wide equity floor breaker. It proves on-chain that
+	 * the given subaccount's net equity is below its `equityFloor`, then sets
+	 * `equityBreakerTripped` on the authority's `UserStats`. Net equity is unweighted assets and
+	 * perp PnL minus spot liabilities. The program reverts with `SufficientCollateral` when the
+	 * equity clears the floor or no floor is set, and with `InvalidOracle` when any of the
+	 * subaccount's oracles is invalid. Once the breaker is set, every subaccount of the authority
+	 * rejects risk-increasing fills, withdrawals and transfers out until the warm admin calls
+	 * `resetEquityFloorBreaker`. Permissionless, so any signer can trip it. The equity calculation
+	 * is the proof.
 	 * @param userAccountPublicKey - Public key of the breached subaccount's user account.
 	 * @param user - Decoded user account of the breached subaccount.
 	 * @param txParams - Optional compute-unit/priority-fee overrides.
@@ -10128,7 +10143,8 @@ export class VelocityClient {
 	 * @param subAccountId - Sub-account the order belongs to; defaults to the active sub-account.
 	 * @returns The transaction signature.
 	 * @remarks Modifies an order resting on the DLOB. An order resting on the CLOB is modified by
-	 * its book handle — read its `ClobOrderRefV0` from the user-orders feed and call `modifyOrderV1`.
+	 * its book handle. Read its `ClobOrderRefV0` from the user-orders feed, then call
+	 * `modifyOrderV1`.
 	 */
 	public async modifyOrder(
 		orderParams: {

@@ -22,10 +22,10 @@ pub fn tokenize_shares<'info>(
     amount: u64,
     unit: WithdrawUnit,
 ) -> Result<()> {
-    // Book the lending interest of every market that prices NAV BEFORE any account
-    // is borrowed and before NAV is snapshotted (OtterSec #136/#137). Must precede
-    // `load_mut`/`load_maps`: `invoke` rejects a CPI whose writable accounts still
-    // have live borrows, and the maps must read post-refresh data.
+    // Book the lending interest of every market that prices NAV before any
+    // account is borrowed and before NAV is snapshotted (OtterSec #136/#137). The refresh must run
+    // before `load_mut` and `load_maps`. `invoke` rejects a CPI whose writable
+    // accounts still have live borrows, and the maps must read refreshed data.
     refresh_velocity_spot_market!(ctx);
 
     let clock = &Clock::get()?;
@@ -54,7 +54,8 @@ pub fn tokenize_shares<'info>(
         .get_vault_shares()
         .safe_add(tokenized_vault_depositor.get_vault_shares())?;
 
-    // #101: apply a matured fee update on this share-movement path (mirrors deposit/withdraw).
+    // A matured fee update applies on every path that moves shares
+    // (OtterSec #101).
     let has_fee_update = FeeUpdateStatus::has_pending_fee_update(vault.fee_update_status);
     let mut fee_update = ctx.fee_update(vp.is_some(), has_fee_update);
     vault.validate_fee_update(&fee_update)?;
@@ -82,9 +83,9 @@ pub fn tokenize_shares<'info>(
     let spot_market = maps.spot_market_map.get_ref(&spot_market_index)?;
     let oracle = maps.oracle_map.get_price_data(&spot_market.oracle_id())?;
 
-    // transfer_shares is the first apply_fee on this path, so it applies the matured update.
-    // Keep the VaultProtocol provider alive (capture the returned provider) so the subsequent
-    // tokenize_shares accounting still sees protocol state.
+    // transfer_shares makes the first apply_fee call on this path, so it installs
+    // the matured update. The VaultProtocol provider stays alive so the
+    // tokenize_shares accounting below still sees protocol state.
     let (shares_transferred, mut vp) = vault_depositor.transfer_shares(
         &mut *tokenized_vault_depositor,
         &mut vault,

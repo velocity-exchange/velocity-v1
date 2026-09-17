@@ -1,22 +1,21 @@
-//! Pull every order a maker holds on a CLOB — one side or both — in a single
-//! instruction.
+//! Remove every order a maker holds on a CLOB, on one side or on both, in a
+//! single instruction.
 //!
-//! The per-order [`super::cancel_order_v1`] is what a maker had before, and it
-//! costs a velocity instruction plus a CPI round trip *each*: repricing a
-//! twenty-quote ladder meant twenty of them, which at some point stops fitting
-//! in one transaction at all. Here the sweep is one CPI, and the aggregates come
-//! back as per-side totals — so unwinding twenty orders costs exactly what
-//! unwinding one does.
+//! The per-order [`super::cancel_order_v1`] costs a velocity instruction and a
+//! CPI round trip for each order. Repricing a twenty-quote ladder needs twenty
+//! of them, and a long enough ladder stops fitting in one transaction. This
+//! sweep is one CPI, and the book returns the aggregates as per-side totals.
+//! Unwinding twenty orders therefore costs what unwinding one costs.
 //!
-//! Deliberately NOT gated on the quoter entry's active/approved flags, and not
-//! on `exchange_not_paused`, for the same reason the per-order cancel isn't: a
-//! maker must always be able to get their quotes off a killed, de-listed or
-//! halted book.
+//! The handler is not gated on the quoter entry's active or approved flags, and
+//! not on `exchange_not_paused`. The per-order cancel is ungated for the same
+//! reason. A maker must always be able to remove quotes from a killed,
+//! de-listed or halted book.
 //!
-//! The CLOB caps how many orders one call removes and reports whether it
-//! finished. This handler unwinds by what the call actually removed, never by
-//! what was asked for, so a capped sweep is not a partial failure — it is a
-//! smaller correct one, and repeating the instruction converges.
+//! The CLOB caps how many orders one call removes, and reports whether it
+//! finished. This handler unwinds by what the call removed, never by what the
+//! caller asked for. A capped sweep is a correct unwind over a smaller set, and
+//! a repeat call converges.
 
 use {
     crate::{
@@ -45,7 +44,7 @@ pub struct CancelOrdersV1<'info> {
     )]
     pub user: AccountLoader<'info, User>,
     pub authority: Signer<'info>,
-    /// The market's quoter slab; the book's config is its `Clob` slot.
+    /// The market's quoter slab. The book's configuration is its `Clob` slot.
     #[account(
         has_one = clob_market,
         constraint = quoter_slab.load()?.market == params.market_index,
@@ -55,7 +54,7 @@ pub struct CancelOrdersV1<'info> {
     #[account(mut)]
     pub clob_market: UncheckedAccount<'info>,
     /// CHECK: a Clob slot's program is pinned to velocity's CLOB at
-    /// registration; the handler re-checks through the slot.
+    /// registration. The handler checks it again through the slot.
     #[account(address = crate::ids::clob_program::id())]
     pub clob_program: UncheckedAccount<'info>,
 }
@@ -79,8 +78,9 @@ pub fn handle_cancel_orders_v1(
         &ctx.accounts.clob_program,
     )?;
 
-    // CPI the sweep with no user borrow held; ownership travels in the args in
-    // derivable form and the CLOB verifies it against every node it takes.
+    // The sweep runs with no borrow of `user` held. Ownership travels in the
+    // args in derivable form, and the CLOB checks it against every node it
+    // takes.
     let user_ref = {
         let user = crate::load!(ctx.accounts.user)?;
         user.clob_user_ref()
@@ -98,11 +98,11 @@ pub fn handle_cancel_orders_v1(
         removed.user.sub_account_id
     )?;
 
-    // A side that wasn't asked for must come back empty. The unwind below does
-    // not depend on this — it applies whatever was reported, so velocity stays
-    // consistent with the book either way — but a book reporting removals on a
-    // side it was never asked to walk is a bug worth failing on rather than
-    // absorbing.
+    // A side the caller did not ask for must come back empty. The unwind below
+    // does not depend on this. It applies whatever the book reported, so
+    // velocity stays consistent with the book either way. A book that reports
+    // removals on a side it was not asked to walk is a bug, so fail here rather
+    // than absorb it.
     validate!(
         [PositionDirection::Long, PositionDirection::Short]
             .iter()
@@ -116,10 +116,9 @@ pub fn handle_cancel_orders_v1(
     )?;
 
     if removed.orders() == 0 {
-        // Nothing was resting. Not an error: a maker firing their kill switch
-        // twice must not get a failed transaction that reads as a real problem.
-        // Returning early also skips the wake-hint repair below, which is right
-        // — the book is unchanged, so the hints already describe it.
+        // Nothing was resting. This is not an error. A maker who fires the
+        // kill switch twice must not get a failed transaction that reads as a
+        // real problem.
         msg!(
             "no clob orders to cancel for user {}",
             ctx.accounts.user.key()
@@ -129,8 +128,9 @@ pub fn handle_cancel_orders_v1(
 
     {
         let mut user = load_mut!(ctx.accounts.user)?;
-        // The owner's own exit, so the unwind clamps at the reservation: a
-        // book that reports garbage must not be able to keep its maker on it.
+        // This is the owner's own exit, so the release clamps at the
+        // reservation instead of failing. A book that reports wrong totals must
+        // not be able to keep its maker's margin reserved.
         user.exit_swept_orders(&clob.reader(), params.market_index, params.sides, &removed)?;
         user.update_last_active_slot(clock.slot);
     }

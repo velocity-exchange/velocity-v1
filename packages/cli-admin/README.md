@@ -1,14 +1,14 @@
 # @velocity-exchange/admin-cli
 
-CLI for Velocity v1 admin operations. Sign with the right key (or pass a Squads
-V4 multisig); the on-chain program enforces which tier of authority is
-required for the action.
+CLI for Velocity v1 admin operations. Sign with the right key, or pass a Squads
+V4 multisig. The on-chain program enforces which tier of authority an action
+requires.
 
 ## Install
 
 ```sh
 npm install -g @velocity-exchange/admin-cli
-# or, one-off:
+# or run it once:
 npx @velocity-exchange/admin-cli --help
 ```
 
@@ -20,13 +20,13 @@ velocity-admin --help
 
 ## Profiles
 
-Connection settings can be bundled into named profiles instead of repeated
-flags, stored per-user at `~/.config/velocity-admin/config.json` (override
-with `VELOCITY_ADMIN_CONFIG`). Multisig addresses live only in this local
-config, deliberately not in the repo.
+A named profile bundles the connection settings so you do not repeat the
+flags. Profiles are stored per user at `~/.config/velocity-admin/config.json`.
+Set `VELOCITY_ADMIN_CONFIG` to use another path. Multisig addresses live only
+in this local config and never in the repo.
 
 ```sh
-velocity-admin config init            # interactive; verifies everything against the live cluster
+velocity-admin config init            # interactive. Verifies everything against the live cluster
 velocity-admin config list
 velocity-admin config set-rpc <env> <url>   # shared per-cluster RPC, used by every profile without its own url
 velocity-admin config set-default <name>
@@ -36,26 +36,25 @@ velocity-admin -p mainnet-cold auth set-hot-admin accountExtension <pubkey>
 VELOCITY_ADMIN_PROFILE=devnet velocity-admin extend-account --type state --dry-run
 ```
 
-RPC URLs are shared per cluster (`rpcs` in the config): profiles normally
-carry no url of their own and inherit the shared one for their env, so
-rotating an RPC key is a single `config set-rpc`. A profile can still pin its
-own url to deviate.
+RPC URLs are shared per cluster under `rpcs` in the config. A profile normally
+carries no url of its own and inherits the shared one for its env, so an RPC
+key rotation is one `config set-rpc`. A profile can still pin its own url.
 
-`config init` refuses to save anything it cannot verify: the RPC is
-classified by genesis hash (never by its URL), the keypair must load, and a
-multisig must exist on that cluster; its vault 0 is matched against the
-live State admins and mismatches are called out.
+`config init` refuses to save anything it cannot verify. It classifies the RPC
+by genesis hash and never by its URL. The keypair must load, and a multisig
+must exist on that cluster. It matches the multisig's vault 0 against the live
+State admins and reports a mismatch.
 
-Explicit flags always override the profile. Every command that touches the
-chain prints a one-line context header (cluster, profile, signer, dispatch
-mode), and dies when a declared env contradicts the RPC's actual genesis
-hash. Mainnet direct sends ask for interactive confirmation; pass `--yes`
-(implied when stdin is not a TTY) to skip.
+An explicit flag overrides the profile. Every command that reaches the chain
+prints a one-line context header with the cluster, profile, signer, and
+dispatch mode. A command exits when the declared env contradicts the genesis
+hash the RPC reports. A mainnet direct send asks for interactive confirmation.
+Pass `--yes` to skip it. `--yes` is implied when stdin is not a TTY.
 
 ## Commands
 
 ```
-velocity-admin config init|list|set-rpc|set-default|remove   # connection profiles + shared RPCs (see Profiles below)
+velocity-admin config init|list|set-rpc|set-default|remove   # connection profiles + shared RPCs (see Profiles above)
 velocity-admin whoami                                # which on-chain authorities the signer holds
 
 velocity-admin show config
@@ -99,7 +98,7 @@ velocity-admin feature-flags vamm-maker-rebate <true|false>  # bit 8; enabling r
 velocity-admin fees set-recipient <pubkey> <perp|spot>           # cold admin
 velocity-admin fees set-schedule <t0bp> <t1bp> <t2bp> <t3bp> [--maker-rebate-bp <bp>] [--referrer <pct>] [--referee <pct>] [--amm-split <pct>] [--if-split <pct>] [--dry-run]  # warm/cold admin; rewrite the perp fee schedule in one ix (tier fees in bps; tiers 4-9 mirror tier 3; volume thresholds are program constants)
 velocity-admin fees set-split <ammFeeNumerator> <ifFeeNumerator> # warm/cold admin
-velocity-admin fees set-transaction-rails <inclusionLamports> <signatureLamports> <resourceFeeNum> <resourceFeeDenom> <maxPriorityMicroLamportsPerCu>  # warm/cold admin; what a transaction costs to land. Every relay crank payment is derived from it, so this re-prices them all; the last argument caps the compute-unit price a liquidation crank reimburses (0 disables); markets take the new figures on their next set-market-clob
+velocity-admin fees set-transaction-rails <inclusionLamports> <signatureLamports> <resourceFeeNumerator> <resourceFeeDenominator> <maxPriorityMicroLamportsPerCu>  # warm/cold admin; what a transaction costs to land. Every relay crank payment is derived from it, so this re-prices them all; the last argument caps the compute-unit price a liquidation crank reimburses (0 disables); markets take the new figures on their next set-market-clob
 velocity-admin fees set-liquidation-crank-reimbursement <shareBps> <solSpotMarketIndex>  # cap on what the protocol repays a liquidation cranker (its priority fee, bounded by a share of the recovery), and the market pricing it in SOL; warm/cold admin
 velocity-admin fees init-crank-treasury                                # warm/cold admin; create the one account every market's crank reservoir refills from. Run once, then fund it by sending SOL to the printed address
 velocity-admin fees set-crank-treasury <refillTargetCranks> <refillWatermarkCranks>  # warm/cold admin; the two levels a market's crank reservoir is held between, counted in that market's dearest crank so one setting fits every market. The watermark is when a refill wakes and must cover the refill's own round trip; the target is how full it leaves the reservoir and must exceed it. A new watermark reaches a market on its next set-market-clob
@@ -145,9 +144,10 @@ velocity-admin clob-market update-config <market> [--tick-size <n>] [--step-size
 
 > **Turner scoping.** A market's conditions live on two accounts: velocity's
 > crank-conditions PDA (the cross fallback poll) and the CLOB market itself
-> (expiry, activation, a side at its eviction threshold, a crossed book — all
-> facts about the book's own account, kept current by the book). Both get a
-> relay watch, and a turner must allow both programs:
+> (expiry, activation, a side at its eviction threshold, and a crossed book).
+> Those are all facts about the book's own account, and the book keeps them
+> current. Both accounts get a relay watch, and a turner must allow both
+> programs:
 > `--target-program <velocity-id>,<clob-id>`. Allowing only velocity filters
 > the book's watches out at the registry query, and none of its cranks fire.
 
@@ -155,7 +155,7 @@ velocity-admin clob-market update-config <market> [--tick-size <n>] [--step-size
 velocity-admin if stake <market> <amount> [--authority <pk>] [--user-token-account <pk>]  # inits the stake account if missing
 
 velocity-admin wallet wrap-sol <lamports> [--authority <pk>] [--vault-index <i>] [--min-remaining <sol>] [--dry-run]  # wrap native SOL into the owner's wSOL ATA (created idempotently); one proposal with --multisig
-velocity-admin wallet swap <inputMint> <outputMint> <amount> [--slippage-bps <bps>] [--only-direct-routes] [--vault-index <i>] [--dry-run]  # Jupiter swap from the owner wallet; with --multisig the route is quoted at proposal time — approve + execute promptly or it goes stale
+velocity-admin wallet swap <inputMint> <outputMint> <amount> [--slippage-bps <bps>] [--only-direct-routes] [--vault-index <i>] [--dry-run]  # Jupiter swap from the owner wallet; with --multisig the route is quoted at proposal time, so approve and execute before it goes stale
 velocity-admin wallet transfer <mint> <recipient> <amount> [--authority <pk>] [--vault-index <i>] [--to-token-account] [--dry-run]  # SPL transfer to the recipient's ATA (created idempotently); --to-token-account sends to a raw token account instead (e.g. a program vault donation); raw base units, checked against on-chain mint decimals; one proposal with --multisig
 velocity-admin wallet balances [--authority <pk>] [--vault-index <i>]  # read-only: native SOL + token balances, velocity spot positions per sub-account, IF stakes
 
@@ -182,41 +182,51 @@ velocity-admin batch <payloadFile> [--dry-run] # several instructions in ONE tx 
 
 ## Common flows
 
-Sequences that come up in treasury operations. Each step is a command above; with a
-multisig profile every step is a proposal that members approve and execute in the Squads UI.
+Sequences that come up in treasury operations. Each step is a command above. Under a multisig
+profile every step is a proposal that members approve and execute in the Squads UI.
 
-**Fund a vault authority's trading account**: `wallet swap` (source the right token) →
-`wallet wrap-sol` (if SOL) → `user deposit`. Deposits fail while the market's hard cap has no
-headroom — check with `show spot-markets` first, raise with `spot-market set-max-token-deposits`
-(and raise `set-scale-initial-asset-weight-start` with it, or large depositors get their
-collateral weight derated).
+**Fund a vault authority's trading account**: `wallet swap` to source the right token, then
+`wallet wrap-sol` for SOL, then `user deposit`. A deposit fails while the market's hard cap has
+no headroom. Check the headroom with `show spot-markets`, then raise the cap with
+`spot-market set-max-token-deposits`. Raise `set-scale-initial-asset-weight-start` with it, or a
+large depositor gets a derated collateral weight.
 
-**Seed or top up an insurance fund**: `if stake <market> <amount>` — initializes the stake
-account on first use. Not subject to deposit caps.
+**Seed or top up an insurance fund**: `if stake <market> <amount>`. It initializes the stake
+account on first use. Deposit caps do not apply.
 
-**Fund perp pnl pools**: (1) `wallet transfer <quoteMint> <spotMarketVault> <amount>
---to-token-account` — an unattributed donation to the quote spot vault; (2) after it lands, a
-`batch` of `updatePerpMarketPnlPool` instructions attributing the amounts per market. Order
-matters: the update instruction validates the vault holds the tokens.
+**Fund perp pnl pools**: first `wallet transfer <quoteMint> <spotMarketVault> <amount>
+--to-token-account`, an unattributed donation to the quote spot vault. After it lands, send a
+`batch` of `updatePerpMarketPnlPool` instructions that attribute the amounts per market. The
+order matters, because the update instruction checks that the vault holds the tokens.
 
-**Fund vAMM fee pools (vAMM capital)**: `perp-market deposit-fee-pool <market> <amount>`,
-signed by the VaultDeposit hot role (see `show config`); several markets in one proposal via
-`batch` of `depositIntoPerpMarketFeePool`. This is the cure when a market's
-`total_fee_minus_distributions` has gone negative: the deposit credits it one-for-one. Reach for
-`perp-market sync-amm-summary-stats` first only when you suspect the accounting has drifted from
-the pools' real balances, since it recomputes rather than funds. Reserve resizing is separate:
-`recenterPerpMarketAmm` (peg + sqrt_k in one instruction, warm/cold) with values re-derived at
-the live oracle price — reserves never adjust themselves to new capital.
+**Fund vAMM fee pools**: `perp-market deposit-fee-pool <market> <amount>`, signed by the
+VaultDeposit hot role. `show config` names the current holder. To fund several markets in one
+proposal, send a `batch` of `depositIntoPerpMarketFeePool`. This is the cure when a market's
+`total_fee_minus_distributions` has gone negative, because the deposit credits it one for one.
+Run `perp-market sync-amm-summary-stats` first only when the accounting may have drifted from
+the pools' real balances, since it recomputes rather than funds. Reserve resizing is a separate
+operation. `recenterPerpMarketAmm` sets peg and sqrt_k in one warm or cold instruction, with
+both values re-derived at the live oracle price. Reserves never adjust themselves to new capital.
 
-**Executing heavy proposals**: anything CPI-heavy (Jupiter swaps) exceeds the Squads UI's
-default 200k compute budget. Set ~1M in the UI's execute modal, or use `multisig execute`
-from a machine holding a member key. Inner transactions never carry compute-budget
-instructions (not CPI-able) — a red UI simulation on an unapproved proposal is normal;
-verify with `multisig inspect`.
+**Execute a heavy proposal**: a CPI-heavy inner transaction such as a Jupiter swap exceeds the
+Squads UI default of 200k compute units. Set about 1M in the UI execute modal, or run
+`multisig execute` from a machine that holds a member key. An inner transaction never carries a
+compute-budget instruction, because those cannot be called by CPI. A red UI simulation on an
+unapproved proposal is therefore normal. Verify with `multisig inspect`.
 
-**Reviewing a proposal before you approve it**: `multisig inspect <index>` is read-only and
-needs no member key, so any reviewer can run it from their own machine. It answers the
-questions a signer actually has, in plain terms:
+**Listing a new market**: initialize and parameterise the market, then extend the market address
+lookup table. `lut show` reports what is missing and `lut extend` adds it. Services build
+versioned transactions against that table, so a fill or liquidation that touches a market
+missing from it can exceed the transaction size limit. Extend the table before you redeploy the
+services.
+
+**Reclaim proposal rent**: run `multisig set-rent-collector`, then `multisig close-accounts`.
+`set-rent-collector` is a config transaction, and it marks every still-Active vault proposal
+stale, so choose the moment.
+
+**Review a proposal before you approve it**: `multisig inspect <index>` is read-only and needs
+no member key, so any reviewer can run it from their own machine. It answers the questions a
+signer has, in plain terms:
 
 ```
 ▌ proposal #112                                              ! 3/4 approvals
@@ -243,62 +253,53 @@ questions a signer actually has, in plain terms:
    pending approval
 ```
 
-The "what changes" block is the point: it simulates the proposal's own instructions with the
-vault as signer, so it produces a real before/after field diff at any proposal status, rather
-than waiting for approval the way simulating the Squads execute wrapper does. Both snapshots
-come from simulations issued back to back, so accounts other programs write continuously (a
-perp market's mm-oracle fields) do not show up as changes the proposal makes; if the chain
-moves between them, the output says so. Add `--raw` for the full argument list, raw
-instruction data and complete logs. Non-velocity instructions still show their accounts, with
-SOL transfers decoded to an amount.
+The "what changes on chain" block simulates the proposal's own instructions with the vault as
+the signer. It therefore produces a real before and after field diff at any proposal status.
+Simulating the Squads execute wrapper instead would need the approvals first. Both snapshots
+come from simulations issued back to back. An account that another program writes continuously,
+such as a perp market's mm-oracle fields, therefore does not appear as a change the proposal
+makes. When the chain moves between the two snapshots, the output says so. Add `--raw` for the
+full argument list, the raw instruction data, and the complete logs. A non-velocity instruction
+still shows its accounts, and a SOL transfer is decoded to an amount.
 
-Strings that came off the chain (program logs, decoded instruction arguments, decoded account
-fields, market names) are rendered through `ui.safe`, which turns every control character into
-U+FFFD. A proposal's inner instructions are simulated during review, before approval, so a
-proposer can put any program in a proposal and have its `msg!` output reach the reviewer's
-terminal; without that, an escape sequence in a log could move the cursor and repaint the
-review with forged output. Substituting rather than dropping keeps the tampering visible.
+Every string that came off the chain goes through `ui.safe`, which replaces each control
+character with U+FFFD. That covers program logs, decoded instruction arguments, decoded account
+fields, and market names. Review simulates a proposal's inner instructions before approval, so a
+proposer can put any program in a proposal and reach the reviewer's terminal with its `msg!`
+output. An escape sequence in such a log could move the cursor and repaint the review with
+forged output. Substitution rather than removal keeps the tampering visible.
 
 ## Output conventions
 
-The read-heavy commands (`show`, `whoami`, `multisig proposals|inspect`, and every dry run)
-share the layout in `src/lib/ui.ts`: a `▌` section marker with the verdict for that section
-right-aligned, then `label   value` rows beneath it. Colour is from `picocolors`, which turns
-itself off when stdout is not a TTY or `NO_COLOR` is set, so redirecting to a file or piping
-into Slack gives clean text. Prefer these helpers over bare `console.log` in new commands so
-the tool keeps reading as one thing.
-
-**Listing a new market**: init and parameterise the market, then extend the market
-address lookup table (`lut show` to see what is missing, `lut extend` to add it). Services
-build versioned transactions against that table, so a fill or liquidation touching a market
-missing from it can exceed the transaction size limit. Extend before redeploying the services.
-
-**Reclaim proposal rent**: `multisig set-rent-collector` (config transaction — it marks
-still-Active vault proposals stale, so time it), then `multisig close-accounts`.
+The read-heavy commands share the layout in `src/lib/ui.ts`: a `▌` section marker with that
+section's verdict right-aligned, then `label   value` rows beneath it. Those commands are
+`show`, `whoami`, `multisig proposals`, `multisig inspect`, and every dry run. Colour comes from
+`picocolors`, which disables itself when stdout is not a TTY or `NO_COLOR` is set, so a redirect
+to a file or a paste into Slack stays readable. Use these helpers rather than bare `console.log`
+in a new command, so every command reads the same way.
 
 ## Routing through a Squads V4 multisig
 
-Append `--multisig <multisigPda>` to any subcommand. If the multisig's vault 0
-PDA is a required signer of the action (e.g. it is the cold admin / authority),
-the CLI submits a single transaction that creates a `vault_transaction` +
-`proposal` against the multisig with your wallet as the proposer. Members then
-approve + execute via the Squads UI. If the vault does **not** need to sign
-(e.g. the wallet itself is the required authority), a proposal would be
-pointless — the CLI says so and sends the transaction directly instead.
+Append `--multisig <multisigPda>` to any subcommand. When the multisig's vault 0
+PDA must sign the action, for example because it holds the cold admin role, the
+CLI submits one transaction that creates a `vault_transaction` and a `proposal`
+against the multisig, with your wallet as the proposer. Members then approve and
+execute the proposal in the Squads UI. When the vault does not need to sign, for
+example because the wallet itself holds the required authority, a proposal would
+change nothing. The CLI reports that and sends the transaction directly.
 
-User-scoped commands (`user deposit`, `user withdraw`, `user set-delegate`,
-`if stake`) default the authority to the multisig's vault 0 PDA when
-`--multisig` is passed, since the vault is what signs at execution. The vault
-must be the velocity user / stake authority and own the source token account.
-`user deposit`, `user withdraw` and `user set-delegate` also honor
+The user-scoped commands `user deposit`, `user withdraw`, `user set-delegate`,
+and `if stake` default the authority to the multisig's vault 0 PDA under
+`--multisig`, because the vault is what signs at execution. The vault must be
+the velocity user or stake authority, and it must own the source token account.
+`user deposit`, `user withdraw`, and `user set-delegate` also accept
 `--vault-index` to target and propose against a vault other than 0.
 
-`user init` follows the same pattern on mainnet: the program only allows
-account creation when the authority signs or is the payer, so with `--multisig`
-the create instructions are batched into one proposal and the vault PDA is the
-inner payer — the vault itself must hold enough SOL for the rent. Without
-`--multisig` the local keypair is both authority and payer and the transaction
-is sent directly.
+`user init` follows the same pattern on mainnet. The program allows account
+creation only when the authority signs or pays, so under `--multisig` the create
+instructions go into one proposal and the vault PDA is the inner payer. The
+vault must therefore hold enough SOL for the rent. Without `--multisig` the local
+keypair is both authority and payer, and the CLI sends the transaction directly.
 
 ```sh
 velocity-admin auth set-warm-admin <newWarmAdmin> \
@@ -308,10 +309,10 @@ velocity-admin auth set-warm-admin <newWarmAdmin> \
 
 ## Creating a Squads V4 multisig
 
-`multisig create` provisions a fresh Squads V4 multisig with the current wallet
-as a 1/1 signer (full Initiate/Vote/Execute permissions) plus a proposer member
-that can only Initiate transactions. The on-chain Squads program config supplies
-the treasury; an ephemeral create-key seeds the multisig PDA.
+`multisig create` creates a Squads V4 multisig. The current wallet becomes a 1/1
+signer with Initiate, Vote, and Execute permissions. The proposer member can only
+Initiate. The on-chain Squads program config supplies the treasury. An ephemeral
+create-key seeds the multisig PDA.
 
 ```sh
 velocity-admin multisig create \
@@ -342,12 +343,13 @@ Example payload:
 }
 ```
 
-The dispatcher does no PDA derivation — every account must be supplied.
+The dispatcher derives no PDA. Supply every account.
 
 ### Batching
 
-To land several instructions in ONE transaction / vault proposal (one approval
-round, one timelock — related admin params should ride together):
+`batch` lands several instructions in one transaction, and so in one vault
+proposal. That is one approval round and one timelock, so related admin
+parameters can travel together.
 
 ```sh
 velocity-admin batch <payloadFile.json> [--dry-run]
@@ -378,13 +380,14 @@ instruction name under `ix`:
 }
 ```
 
-Rules, same as `call`: no PDA derivation (supply every account), u64 args as
-JSON strings, pubkeys as base58 strings. Arg and account names are camelCase
-as Anchor's TS client exposes them, not the snake_case of the raw IDL file.
-Field names and types come from the instruction's entry in
-`packages/sdk/src/idl/velocity.json`. All instructions land in one inner
-transaction, so with `--multisig` the whole batch shares a single proposal;
-`--dry-run` prints the built instructions and the expected proposal rent first.
+The rules match `call`. There is no PDA derivation, so supply every account.
+Pass u64 arguments as JSON strings and pubkeys as base58 strings. Argument and
+account names are camelCase, the form Anchor's TypeScript client exposes, rather
+than the snake_case of the raw IDL file. Field names and types come from the
+instruction's entry in `packages/sdk/src/idl/velocity.json`. Every instruction
+lands in one inner transaction, so under `--multisig` the whole batch shares a
+single proposal. `--dry-run` prints the built instructions and the expected
+proposal rent first.
 
 ## Global options
 
@@ -394,32 +397,30 @@ transaction, so with `--multisig` the whole batch shares a single proposal;
 | `-u, --url <url>`         | profile, else `https://api.mainnet-beta.solana.com`                                       |
 | `-k, --keypair <path>`    | profile, else `~/.config/solana/id.json`                                                  |
 | `-e, --env <env>`         | profile, else detected from the RPC's genesis hash                                        |
-| `-m, --multisig <pubkey>` | profile, else none: direct send (`--no-multisig` forces direct under a proposing profile) |
-| `-y, --yes`               | (unset; mainnet direct sends ask for confirmation)                                        |
+| `-m, --multisig <pubkey>` | profile, else none, which is a direct send. `--no-multisig` forces a direct send under a proposing profile |
+| `-y, --yes`               | unset. A mainnet direct send asks for confirmation                                        |
 
 ## Authority introspection
 
 ```sh
-velocity-admin whoami [-p <profile>]      # which State roles the signer holds; multisig membership
+velocity-admin whoami [-p <profile>]      # the State roles the signer holds, and multisig membership
 velocity-admin multisig proposals [-m <pda>] [--limit <n>]  # recent proposals: status, approvals, timelock ETA
 ```
 
 ## Local development
 
-```sh
-cd cli-admin
-bun install
-bun run start --help    # run from src directly via bun
-bun run build           # tsc → lib/
-./lib/index.js --help   # run the compiled binary as the published package would
-```
-
-The committed `package.json` keeps `"@velocity-exchange/sdk": "file:../sdk"` so
-local edits to the SDK are picked up immediately. Publishing rewrites that
-to a real semver range based on `sdk/package.json`'s version (see
-`scripts/prepare-publish.js`) and restores the `file:` ref afterwards. CI
-handles this automatically; for a manual publish:
+Install once at the repo root, then work in this package:
 
 ```sh
-bun run publish-cli
+bun install                       # at the repo root, for the whole workspace
+cd packages/cli-admin
+bun run start --help              # run from src through bun
+bun run build                     # tsc into lib/
+./lib/index.js --help             # run the compiled binary the way the published package does
 ```
+
+The committed `package.json` depends on `"@velocity-exchange/sdk": "workspace:*"`,
+so a local SDK edit takes effect at once. `.github/scripts/rewrite-workspace-deps.mjs`
+rewrites that range to the concrete published version before a publish. Publishing
+runs from CI on an `npm-cli-admin-v<version>` tag. See the repository CLAUDE.md for
+the changeset and tag flow.

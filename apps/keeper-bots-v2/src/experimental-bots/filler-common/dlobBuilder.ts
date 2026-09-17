@@ -91,8 +91,9 @@ class DLOBBuilder {
 		marketIndexes: number[]
 	) {
 		this.dlob = new DLOB();
-		// Same reason as the ClockSubscriber below: a frozen websocket would freeze
-		// this slot, which now decides when a signed-msg order enters the book.
+		// The resubscribe timeout is set for the same reason as the
+		// ClockSubscriber below. A frozen websocket would freeze this slot, and
+		// this slot decides when a signed-msg order enters the book.
 		this.slotSubscriber = new SlotSubscriber(velocityClient.connection, {
 			resubTimeoutMs: 10_000,
 		});
@@ -138,11 +139,12 @@ class DLOBBuilder {
 		);
 		const dlob = new DLOB();
 		try {
-			// auction wall clock math converts elapsed slots through the State
-			// slot clock; unsubscribed state falls back to the 400ms baseline
+			// The auction wall-clock math converts elapsed slots through the
+			// State slot clock. Unsubscribed state falls back to the 400ms
+			// baseline.
 			dlob.slotDurationState = this.velocityClient.getStateAccount();
 		} catch {
-			// not subscribed yet: keep the baseline
+			// The client is not subscribed yet, so keep the baseline.
 		}
 		const slot = this.slotSubscriber.getSlot();
 		let counter = 0;
@@ -159,13 +161,15 @@ class DLOBBuilder {
 			});
 		});
 		for (const signedMsgNode of this.signedMsgOrders.values()) {
-			// Hold back an auction order whose signed message slot has not arrived: the
-			// program starts its auction there and rejects a place before it, so it
-			// cannot fill yet. Inserting it early lets the taking pass match it against
-			// resting liquidity and mark that liquidity filled in this snapshot, hiding
-			// a fill that could have happened. It stays cached and is inserted once its
-			// slot lands. A resting limit (no auction) may be placed ahead of its slot,
-			// though this builder never caches one (insertSignedMsgOrder skips it).
+			// Hold back an auction order whose signed message slot has not
+			// arrived. The program starts its auction at that slot and rejects a
+			// place before it, so the order cannot fill yet. Inserting it early
+			// lets the taking pass match it against resting liquidity and mark
+			// that liquidity filled in this snapshot, which hides a fill that
+			// could have happened. The order stays cached and is inserted once
+			// its slot lands. A resting limit with no auction may be placed ahead
+			// of its slot, but this builder never caches one, because
+			// insertSignedMsgOrder skips it.
 			if (
 				!signedMsgOrderPlaceable(
 					dlob.slotDurationState,
@@ -269,13 +273,14 @@ class DLOBBuilder {
 			status: OrderStatus.OPEN,
 			orderType: signedMsgOrderParams.orderType,
 			orderId: uuid,
-			// The true message slot, which the UI stamps a few slots ahead of signing
-			// (a signing buffer). It must not be clamped to the current slot: the
-			// program starts the auction at it and rejects a place while
-			// `order_slot > clock.slot`, so a clamped slot made a not-yet-valid order
-			// look immediately fillable and burned the filler's single place+fill
-			// attempt. Auction math reads a future slot as 0% progress, and the DLOB
-			// derives its own max-slot eviction from it, so both need the real value.
+			// The true message slot. The UI stamps it a few slots ahead of
+			// signing, which is the signing buffer. It must not be clamped to the
+			// current slot. The program starts the auction at it and rejects a
+			// place while `order_slot > clock.slot`, so a clamped slot makes a
+			// not-yet-valid order look fillable and spends the filler's single
+			// place+fill attempt. Auction math reads a future slot as 0%
+			// progress, and the DLOB derives its own max-slot eviction from it,
+			// so both need the real value.
 			slot: signedMessage.slot,
 			marketIndex: signedMsgOrderParams.marketIndex,
 			marketType: MarketType.PERP,
@@ -311,11 +316,11 @@ class DLOBBuilder {
 			takerUserPubkey.toString()
 		);
 
-		// Cache TTL uses the same piecewise interval, with the historical 25% pad.
-		// Floored at one slot: the admission check above accepts an order whose max
-		// slot is the current slot, whose remaining interval is 0, and lru-cache reads
-		// a ttl of 0 as "never expires" - so a dying order would be emitted until
-		// capacity eviction.
+		// The cache TTL uses the same piecewise interval, with the same 25% pad.
+		// It is floored at one slot. The admission check above accepts an order
+		// whose max slot is the current slot, whose remaining interval is 0, and
+		// lru-cache reads a ttl of 0 as "never expires". A dying order would then
+		// be emitted until capacity eviction.
 		const ttl = Math.max(
 			Math.ceil(
 				elapsedMillis(

@@ -10,9 +10,9 @@ use {
 #[derive(Clone)]
 pub struct MetricsServerParams {
     pub registry: Arc<Registry>,
-    /// Quoter health behind `/route`. Its gauges describe the state as it
-    /// stands, so they are refreshed at scrape time; the counters beside
-    /// them were written as observations arrived.
+    /// Quoter health behind `/route`. The gauges describe the current state,
+    /// so the handler refreshes them from a snapshot at scrape time. The
+    /// counters beside them are written as observations arrive.
     pub quoter_health: Option<Arc<velocity_quoter_health::Health>>,
 }
 
@@ -45,10 +45,9 @@ pub struct SwiftServerMetrics {
     pub taker_orders_counter: Counter,
     pub order_type_counter: CounterVec,
     pub order_notional_usd: CounterVec,
-    /// Accepted orders whose notional could NOT be computed, by market and reason
-    /// (`no_oracle`, `max_leverage`). The denominator that makes
-    /// `swift_order_notional_usd` honest — without it an undercount from a dead
-    /// oracle subscription looks like a drop in demand.
+    /// Accepted orders whose notional is not computed, by market and reason
+    /// (`no_oracle`, `max_leverage`). Without this count, an undercount from a
+    /// dead oracle subscription reads as a drop in demand.
     pub order_notional_skipped: CounterVec,
     pub redis_publish_fail_counter: CounterVec,
     pub redis_publish_success_counter: CounterVec,

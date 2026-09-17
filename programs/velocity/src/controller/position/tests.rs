@@ -3081,7 +3081,7 @@ fn settle_expired_market_prices_against_pnl_pool_only() {
     );
 
     // Aggregate claims at the chosen price fit inside the PnL pool. This is the
-    // conservation invariant #116 broke.
+    // conservation invariant OtterSec #116 broke.
     let claims = calculate_net_user_pnl(
         &m.amm,
         m.expiry_price,
@@ -3232,8 +3232,9 @@ fn expiry_price_cost_basis_includes_unsettled_funding() {
 /// matching builder/referrer payable recorded, so the pool holds them but they are
 /// owed elsewhere. Every ordinary fee sweep reserves the counter, and
 /// `calculate_perp_market_amm_summary_stats` subtracts it; the expiry solver was
-/// the one consumer treating the gross pool as payable. This extends the #116 fix
-/// in the same expression — #116 stopped counting the un-moved fee pool, #147 stops
+/// the one consumer treating the gross pool as payable. This extends the OtterSec #116 fix
+/// in the same expression. OtterSec #116 stopped counting the un-moved fee pool, and
+/// OtterSec #147 stops
 /// counting tokens already owed to third parties.
 #[test]
 fn settle_expired_market_reserves_pending_revenue_share() {
@@ -3272,7 +3273,7 @@ fn settle_expired_market_reserves_pending_revenue_share() {
 
     // $400 pool, of which $150 is already owed to builders/referrers, so only $250
     // actually backs winner claims. No fee-pool transfer in play (tfmd = 0), which
-    // isolates this from #116.
+    // isolates this from OtterSec #116.
     let owed = 150 * (QUOTE_PRECISION as u64);
     let mut market = expired_market_fixture(400, 0, 0, 0);
     market.pending_revenue_share = owed;

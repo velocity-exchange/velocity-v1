@@ -1,37 +1,42 @@
-//! The router's quote view: what a taker of `(direction, size)` can actually
-//! get, per source, right now.
+//! The router's quote view. It reports what a taker of `(direction, size)`
+//! can get from each source right now.
 //!
-//! Quoting every source through *velocity* rather than reading each one
-//! directly is what makes the answer trustworthy and uniform:
+//! Every source is quoted through velocity rather than read directly, which
+//! is what makes the answer verified and uniform.
 //!
-//! - **Verified, not advertised.** A Custom quoter's book is clamped to what
-//!   its `User`'s margin supports before it leaves this instruction (the same
-//!   `calculate_max_perp_order_size` bound the fill applies), so phantom depth
-//!   never reaches a router's selection or a UI's depth chart. CLOB depth
-//!   stands as quoted: it was margin-gated at placement. The fill applies one
-//!   further cut this view does not — see the clamp below.
-//! - **Quoted as the fill will quote.** The sources are not independent: the
-//!   vAMM shades its ladder against rival books (last look), so a vAMM book
-//!   quoted in isolation prices better than the same vAMM inside a real fill.
-//!   This runs them in fill order — externals, then DLOB makers, then the vAMM
-//!   with everything before it as rivals — so published books equal fill-time
-//!   books by construction.
-//! - **Uniform.** CLOB, PropAMM, DLOB and vAMM all come back as
-//!   `(kind, key, priority, levels)` in one buffer, so a consumer has one code
-//!   path instead of a decoder per source.
+//! The view verifies depth rather than repeating an advertisement. A Custom
+//! quoter's book is clamped to what its `User`'s margin supports before it
+//! leaves this instruction. The clamp is the same
+//! `calculate_max_perp_order_size` bound the fill applies, so depth that does
+//! not exist never reaches a router's selection or a depth chart. CLOB depth
+//! stands as quoted, because it was margin-gated at placement. The fill
+//! applies one further cut this view does not. See the clamp in
+//! `quote_externals`.
 //!
-//! Read-only: the vAMM is quoted off a *copy* of the AMM, so `setup`'s
-//! projection doesn't touch the market. The only account written is the
-//! caller's own quote buffer, which is why this is safe to expose as a view —
-//! it is meant to be simulated, and landing it changes nothing that matters.
+//! The view quotes the way the fill will quote. The sources are not
+//! independent, because the vAMM shades its ladder against rival books. A vAMM
+//! book quoted on its own prices better than the same vAMM inside a real fill.
+//! This instruction runs the sources in fill order: the externals, then the
+//! DLOB makers, then the vAMM with every earlier book as a rival. The
+//! published books equal the fill-time books by construction.
 //!
-//! `remaining_accounts`, in order: the oracle/spot/perp map section, then
-//! `(User, UserStats)` pairs for DLOB makers *and* for any quoted Custom
-//! quoter's user (the clamp needs its account), then the market's
-//! `QuoterSlabV0` and the union of the consulted quoters' registered CPI
-//! accounts (response accounts, quoter programs, the velocity signer). As in
-//! a fill, a slab slot is consulted when its response account rides the
-//! call.
+//! The view is uniform. CLOB, PropAMM, DLOB and vAMM all come back as
+//! `(kind, key, priority, levels)` in one buffer, so a consumer needs one code
+//! path rather than a decoder per source.
+//!
+//! The instruction reads state and does not move it. The vAMM is quoted off a
+//! copy of the AMM, so the curve projection does not touch the market. The
+//! only account written is the caller's own quote buffer. That is why this is
+//! safe to expose as a view. It is meant to be simulated, and landing it
+//! changes nothing that matters.
+//!
+//! `remaining_accounts` arrives in this order. First comes the oracle, spot
+//! and perp map section. Then come the `(User, UserStats)` pairs for the DLOB
+//! makers and for any quoted Custom quoter's user, whose account the clamp
+//! needs. Last comes the market's `QuoterSlabV0` and the union of the
+//! consulted quoters' registered CPI accounts, which are the response
+//! accounts, the quoter programs, and the velocity signer. A slab slot is
+//! consulted when its response account rides the call, as in a fill.
 
 use {
     crate::{
@@ -62,7 +67,6 @@ use {
 pub struct QuoteRouter<'info> {
     pub state: AccountLoader<'info, State>,
     pub authority: Signer<'info>,
-    /// `has_one` pins the writer, and the constraint pins the market.
     #[account(
         mut,
         has_one = authority,
@@ -75,25 +79,25 @@ pub struct QuoteRouter<'info> {
 pub struct QuoteRouterArgs {
     pub market_index: u16,
     pub direction: Direction,
-    /// Size to quote up to. The books returned are what's available for a
-    /// taker of this size — resting sources are merely truncated by it, the
-    /// vAMM and PropAMMs genuinely price against it.
+    /// Size to quote up to. The books returned are what a taker of this size
+    /// can get. A resting source is truncated by it. The vAMM and the
+    /// PropAMMs price against it.
     pub size: u64,
-    /// Whether the flow this view prices for served a protection window —
-    /// the swift hold, or the book's activation delay. What the real route
-    /// asks: a bumped book quotes no depth to unprotected flow, and a
-    /// protected-flow quoter (the midpoint's `require_attested_flow`)
-    /// refuses it, so a view for unprotected flow must show the same books
-    /// the fill would get. Swift and the book publisher price protected
-    /// flow and pass `true`.
+    /// Whether the flow this view prices for served a protection window. The
+    /// window is the swift hold or the book's activation delay. The real route
+    /// asks the same question. A book with an activation delay quotes no depth
+    /// to unprotected flow, and a protected-flow quoter refuses it. The
+    /// midpoint's `require_attested_flow` is such a quoter. A view for
+    /// unprotected flow must show the same books the fill would get. Swift and
+    /// the book publisher price protected flow and pass `true`.
     pub taker_served_window: bool,
     /// Quote the vAMM into the buffer as well.
     ///
     /// A market with more quoters than one view can carry is read in several
-    /// passes. The vAMM prices against every other book in the same call, so
-    /// a pass holding a subset would shade it against a subset and each pass
-    /// would return a different vAMM. Exactly one pass sets this, and the
-    /// caller merges the vAMM from that one. The passes that clear it also
+    /// passes. The vAMM prices against every other book in the same call, so a
+    /// pass that holds a subset would shade the vAMM against a subset, and each
+    /// pass would return a different vAMM. Exactly one pass sets this flag, and
+    /// the caller merges the vAMM from that pass. The passes that clear it also
     /// stop paying to compute a ladder they would discard.
     pub include_vamm: bool,
 }
@@ -135,7 +139,6 @@ pub fn handle_quote_router<'c: 'info, 'info>(
         &mut buffer,
     )?;
 
-    // ---- DLOB makers next: one level per crossing resting order. ----
     let (oracle_price, amm_snapshot) = {
         let market = maps.perp_market_map.get_ref(&market_index)?;
         let oracle_pd = *maps.oracle_map.get_price_data(&market.oracle_id())?;
@@ -172,9 +175,9 @@ pub fn handle_quote_router<'c: 'info, 'info>(
 
 /// The market's quoter slab, when the call carries one.
 ///
-/// The slab is found by its discriminator rather than by position, because
-/// the quoter section is a union of account lists whose order the caller
-/// chooses. A slab for another market is refused: it would quote another
+/// The slab is found by its discriminator rather than by position, because the
+/// quoter section is a union of account lists whose order the caller chooses.
+/// A slab for another market is refused, because it would quote another
 /// market's books into this market's view.
 fn find_market_slab<'info>(
     accounts: &[&'info AccountInfo<'info>],
@@ -218,8 +221,8 @@ struct QuotedSlot<'info> {
 
 /// Quote one slab slot and locate the response it wrote.
 ///
-/// `None` when the slot quotes nothing: it is suspended or deactivated, or a
-/// speed bump holds it back.
+/// Returns `None` when the slot quotes nothing. The slot may be suspended or
+/// deactivated, or its activation delay may hold it back.
 fn quote_one_slot<'info>(
     args: &QuoteRouterArgs,
     slab_loader: &AccountLoader<'info, QuoterSlabV0>,
@@ -234,9 +237,9 @@ fn quote_one_slot<'info>(
         return Ok(None);
     }
     let entry_key = slot.entry;
-    // Maker priority, as the fill's route applies it: a book with a
-    // speed bump quotes no depth to unprotected flow, so this view
-    // must not show it any.
+    // Makers take priority, as the fill's route applies it. A book with an
+    // activation delay quotes no depth to unprotected flow, so this view must
+    // not show any.
     if slot.config.quoter_type == QuoterType::Clob
         && !args.taker_served_window
         && slot.config.book_default_activation_delay_slots > 0
@@ -248,20 +251,20 @@ fn quote_one_slot<'info>(
         .quote_in_place(
             market_index,
             QuoteArgsV0 {
-                // The view settles nothing, so it constrains nothing:
-                // it reports the book as it stands.
+                // The view settles nothing, so it constrains nothing. It
+                // reports the book as it stands.
                 caps: crate::state::prop_amm::QuoterUserCapsV0::EMPTY,
                 // No budgets to price, so nothing reads this.
                 reference_price: 0,
                 direction: args.direction,
                 size: args.size,
-                // A view has no settlement, so no loaded-user
-                // restriction: quote everything the book holds.
+                // A view has no settlement, so it applies no loaded-user
+                // restriction. It quotes everything the book holds.
                 users: &[],
                 taker: None,
-                // No taker, so no price to bound the ladder at. A
-                // caller reads this view to decide what to route,
-                // which needs the depth a bound would cut.
+                // No taker, so there is no price to bound the ladder at. A
+                // caller reads this view to decide what to route, which needs
+                // the depth a bound would cut.
                 limit_price: 0,
                 taker_served_window: args.taker_served_window,
                 consume_reservation: false,
@@ -285,10 +288,10 @@ fn quote_one_slot<'info>(
 
 /// Quote every consulted external quoter into the buffer.
 ///
-/// The externals run first because their books are the vAMM's last look. A
-/// book is read straight out of the quoter's response account and copied
-/// once, into the buffer. Nothing holds a second copy: velocity's heap is
-/// 32 KB and never reclaims, and this runs once per quoter.
+/// The externals run first, because their books are the vAMM's last look. A
+/// book is read from the quoter's response account and copied once, into the
+/// buffer. Nothing holds a second copy. Velocity's heap is 32 KB and never
+/// reclaims, and this runs once per quoter.
 fn quote_externals<'info>(
     args: &QuoteRouterArgs,
     slab_loader: Option<&AccountLoader<'info, QuoterSlabV0>>,
@@ -325,20 +328,20 @@ fn quote_externals<'info>(
             located,
         } = quoted;
 
-        // Verification: a Custom quoter's depth is never margin-reserved, so
-        // clamp it to what its user can actually support. CLOB depth was
-        // gated at placement, so it stands as quoted here. The cap is taken
-        // before the response is borrowed, because it reads the maps.
+        // A Custom quoter's depth is never margin reserved, so it is clamped
+        // to what its user can support. CLOB depth was gated at placement, so
+        // it stands as quoted here. The cap is taken before the response is
+        // borrowed, because it reads the maps.
         //
-        // The fill cuts a CLOB book once more, at the first order resting
-        // under a maker whose equity floor it cannot verify
-        // (`clob_unverifiable_floor_depth`). This view does not reproduce
-        // that cut: it would have to load every resting maker's `User`, and
+        // The fill cuts a CLOB book once more, at the first order resting under
+        // a maker whose equity floor it cannot verify. See
+        // `clob_unverifiable_floor_depth`. This view does not reproduce that
+        // cut, because it would have to load every resting maker's `User`, and
         // this instruction carries only the Custom quoters' accounts. The
-        // divergence is bounded — a floor is admin-set and only bites while
-        // one of that maker's oracles is invalid — and it errs by showing
-        // depth the fill routes elsewhere, not by hiding depth that exists.
-        // Loading the makers is what it would take to close it.
+        // divergence is bounded. A floor is admin-set, and it binds only while
+        // one of that maker's oracles is invalid. The view errs by showing
+        // depth the fill routes elsewhere, not by hiding depth that exists. To
+        // close the divergence, load the makers.
         let cap = if quoter_type == QuoterType::Custom {
             margin_cap(
                 makers,
@@ -351,7 +354,7 @@ fn quote_externals<'info>(
             u64::MAX
         };
 
-        // The borrow ends with this block, before the next quoter's CPI: a
+        // The borrow ends with this block, before the next quoter's CPI. A
         // live borrow of a response account would fail the CPI that writes
         // it.
         let admitted = {
@@ -372,15 +375,15 @@ fn quote_externals<'info>(
         };
 
         // Who the ladder stands on. A quoter that holds other people's orders
-        // says so itself, through the optional third leg; every other quoter
+        // says so itself, through the optional third leg. Every other quoter
         // fills from the one account the registry names, so its rows say that
-        // instead. Either way a reader gets one shape and never has to decode
+        // instead. Either way a reader gets one shape, and never has to decode
         // a quoter's account from outside.
         let rows_wanted = buffer.rows_remaining();
         if rows_wanted > 0 {
-            // A Custom entry is bound to the user it registered for; a book
-            // is not bound to anyone velocity can name, which is the same
-            // split settlement makes.
+            // A Custom entry is bound to the user it registered for. A book is
+            // not bound to anyone velocity can name. Settlement makes the same
+            // split.
             let bound_to = (quoter_type == QuoterType::Custom)
                 .then(|| user_ref(makers, &quoter_user))
                 .flatten();
@@ -405,12 +408,12 @@ fn quote_externals<'info>(
     Ok(())
 }
 
-/// Quote the DLOB makers this call carries: one level for every resting
+/// Quote the DLOB makers this call carries, with one level for every resting
 /// order that crosses.
 ///
-/// Uses the fill path's own discovery predicate, so a book never advertises
-/// an order the fill would skip. The predicate refuses a wrong side, a wrong
-/// type, an untriggered order and an order that is not open.
+/// The fill path's own discovery predicate finds them, so a book never
+/// advertises an order the fill would skip. The predicate refuses a wrong
+/// side, a wrong type, an untriggered order, and an order that is not open.
 fn quote_dlob_makers(
     args: &QuoteRouterArgs,
     makers: &crate::state::user_map::UserMap,
@@ -424,8 +427,6 @@ fn quote_dlob_makers(
     let clob_tier = QuoterType::Clob.default_priority();
     let order_tick_size = perp_market_map.get_ref(&market_index)?.order_tick_size;
     let taker_direction = args.direction.to_position_direction();
-    // The fill path's own discovery predicate, so a book never advertises an
-    // order the fill would skip (wrong side/type, untriggered, not open).
     let maker_direction = taker_direction.opposite();
     for (maker_key, _) in makers.0.iter() {
         let maker = makers.get_ref(maker_key)?;
@@ -455,7 +456,8 @@ fn quote_dlob_makers(
                 price,
                 size,
                 order_id: maker.orders[order_index].order_id.into(),
-                // A DLOB order lives in the owner's own array, not an arena.
+                // A DLOB order lives in the owner's own array, not in an
+                // arena.
                 node_index: 0,
                 authority: maker.authority,
                 sub_account_id: maker.sub_account_id,
@@ -471,10 +473,10 @@ fn quote_dlob_makers(
 /// Quote the vAMM into the buffer, with every book already in it as the
 /// vAMM's rivals.
 ///
-/// Only on the pass that asked for it. The shading reads every other book in
-/// this call. A pass that carries a subset returns a vAMM shaded against a
-/// subset, so a caller that reads a market in several passes gets a different
-/// vAMM from each.
+/// This runs only on the pass that asked for it. The shading reads every other
+/// book in this call. A pass that carries a subset returns a vAMM shaded
+/// against a subset, so a caller that reads a market in several passes gets a
+/// different vAMM from each pass.
 fn quote_vamm(
     args: &QuoteRouterArgs,
     perp_market_map: &crate::state::perp_market_map::PerpMarketMap,
@@ -489,7 +491,7 @@ fn quote_vamm(
     }
     let market_index = args.market_index;
     {
-        // Quoted off a copy: `refresh` projects the curve, and this
+        // Quoted off a copy. `AmmQuoter::refresh` projects the curve, and this
         // instruction must not move the market's AMM.
         let mut amm: AMM = amm_snapshot;
         let inputs = {
@@ -503,9 +505,9 @@ fn quote_vamm(
             )?
         };
         // Every book quoted above is already in the buffer, in fill order, so
-        // the rivals are views onto it rather than copies of it. The two
-        // level types are the same 16 bytes — one is the borsh wire's, one is
-        // the buffer's Pod form — which is what makes the cast free.
+        // the rivals are views onto it rather than copies of it. The two level
+        // types are the same 16 bytes. One is the borsh wire form and one is
+        // the buffer's Pod form, which is what makes the cast free.
         let rivals: Vec<QuoterBook> = (0..buffer.source_count as usize)
             .map(|index| QuoterBook {
                 withheld: crate::state::prop_amm::PriceLevel::default(),
@@ -538,7 +540,7 @@ fn quote_vamm(
 
 /// Ask a quoter which orders its ladder stands on, and record them.
 ///
-/// `false` when the entry declares no `quote_l3_v0` leg, which is every
+/// Returns `false` when the entry declares no `quote_l3_v0` leg, which is every
 /// quoter that fills from one account.
 #[allow(clippy::too_many_arguments)]
 fn quoter_rows<'info>(
@@ -551,8 +553,8 @@ fn quoter_rows<'info>(
     entry: &Pubkey,
     accounts: &[AccountInfo<'info>],
     scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
-    // The one user a Custom entry may name, `None` for a book. The same rule
-    // settlement applies, applied to what the entry says about itself.
+    // The one user a Custom entry may name, `None` for a book. This is the
+    // rule settlement applies, applied to what the entry says about itself.
     bound_to: Option<ClobUserRefV0>,
     buffer: &mut RouterQuoteBufferV0,
 ) -> Result<bool> {
@@ -575,18 +577,18 @@ fn quoter_rows<'info>(
         return Ok(false);
     };
     let data = located.borrow()?;
-    // Cut to what the ladder admitted: a book whose depth verification
-    // clamped must not name makers whose orders that clamp took away.
+    // Cut to what the ladder admitted. A book whose depth verification clamped
+    // must not name makers whose orders that clamp took away.
     let mut remaining = admitted;
     for row in located.l3_response(&data)?.rows {
         if remaining == 0 {
             break;
         }
-        // A quoter that fills from one account may only describe that
-        // account. Settlement refuses anything else, so a row naming a
-        // stranger is a quoter asking the caller to carry an account it
-        // could never move — reported rather than quietly corrected, so the
-        // health layer can hold it responsible.
+        // A quoter that fills from one account may only describe that account.
+        // Settlement refuses anything else, so a row that names a stranger is a
+        // quoter that asks the caller to carry an account it could never move.
+        // The row is reported rather than corrected, so the health layer can
+        // hold the quoter responsible.
         if let Some(bound_to) = bound_to {
             validate!(
                 row.user == bound_to,
@@ -625,10 +627,11 @@ fn user_ref(makers: &crate::state::user_map::UserMap, user: &Pubkey) -> Option<C
 
 /// Record a ladder as one row against the user the registry names for it.
 ///
-/// The whole ladder, because that is what a quoter without orders means: it
-/// fills from one account at whatever prices it quoted. The row carries no
-/// order id for the same reason. Nothing is recorded when the user's account
-/// did not ride the call — the identity a caller needs lives inside it.
+/// It records the whole ladder, because that is what a quoter without orders
+/// means. Such a quoter fills from one account at whatever prices it quoted.
+/// The row carries no order id for the same reason. Nothing is recorded when
+/// the user's account did not ride the call, because the identity a caller
+/// needs lives inside that account.
 fn attribute_to_user(
     makers: &crate::state::user_map::UserMap,
     user: &Pubkey,
@@ -652,8 +655,8 @@ fn attribute_to_user(
             price,
             size,
             order_id: 0,
-            // A rung attributed to the quoter's user, not an order: it has no
-            // handle and no placement of its own.
+            // A rung attributed to the quoter's user, not to an order. It has
+            // no handle and no placement of its own.
             node_index: 0,
             authority: user.authority,
             sub_account_id: user.sub_account_id,
@@ -667,14 +670,14 @@ fn attribute_to_user(
     Ok(())
 }
 
-/// The base a maker can support on `direction` given its margin right now —
-/// the same bound the fill's pre-execute clamp uses.
+/// The base a maker can support on `direction` given its margin right now. It
+/// is the same bound the fill's pre-execute clamp uses.
 ///
-/// A fill opens the position slot before it sizes the order, because the
-/// margin walk sizes an order against the position it will settle into. This
-/// view must answer the same number, so it opens the same slot. It is a view,
-/// so it puts the slot back before it returns: a caller must not spend a
-/// third party's position slots by asking what that party could fill.
+/// A fill opens the position slot before it sizes the order, because the margin
+/// walk sizes an order against the position it will settle into. This view must
+/// answer the same number, so it opens the same slot. It is a view, so it puts
+/// the slot back before it returns. A caller must not spend a third party's
+/// position slots by asking what that party could fill.
 fn margin_cap(
     makers: &crate::state::user_map::UserMap,
     user: &Pubkey,
@@ -693,9 +696,9 @@ fn margin_cap(
     };
     let (position_index, borrowed) = match existing {
         Some(index) => (index, None),
-        // The quoter's user has never traded this market. Requires the user
-        // passed writable, as the fill also requires; a read-only view
-        // reports no depth.
+        // The quoter's user has never traded this market. This needs the user
+        // passed writable, as the fill also needs. A read-only view reports no
+        // depth.
         None => {
             let Ok(mut maker) = makers.get_ref_mut(user) else {
                 msg!(

@@ -60,7 +60,7 @@ pub fn handle_settle_revenue_to_insurance_fund<'c: 'info, 'info>(
     Ok(())
 }
 
-/// Prove this market may settle revenue into the insurance fund right now.
+/// Check that this market can settle revenue into the insurance fund now.
 fn require_revenue_settle_due(
     spot_market: &SpotMarket,
     spot_market_index: u16,
@@ -72,9 +72,10 @@ fn require_revenue_settle_due(
         "invalid spot_market passed"
     )?;
 
-    // Moving revenue out of the spot vault into the IF vault is an egress from
-    // the market: gate it on the market-scoped Withdraw pause, not just the
-    // global `withdraw_not_paused` access control.
+    // A settle moves revenue out of the spot market vault into the insurance
+    // fund vault. That is a withdraw from the market, so the market-scoped
+    // Withdraw pause gates it. The global `withdraw_not_paused` access control
+    // alone is not enough.
     validate!(
         !spot_market.is_operation_paused(SpotOperation::Withdraw),
         ErrorCode::MarketWithdrawPaused,

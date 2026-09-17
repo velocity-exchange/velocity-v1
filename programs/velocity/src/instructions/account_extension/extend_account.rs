@@ -1,5 +1,6 @@
 //! Grow a zero-copy account to the size the deployed program compiles in for
-//! its type (auth: `AccountExtension` hot key, or warm/cold admin).
+//! its type. The `AccountExtension` hot key, the warm admin and the cold admin
+//! are all authorised.
 
 use {
     crate::{
@@ -36,8 +37,8 @@ pub struct ExtendAccount<'info> {
     pub payer: Signer<'info>,
     #[account(constraint = check_hot(&authority.key(), &state, HotRole::AccountExtension)?)]
     pub authority: Signer<'info>,
-    /// CHECK: must be velocity-owned; the handler resolves its type (and target
-    /// size) from the account discriminator
+    /// CHECK: must be velocity-owned. The handler resolves the type and the
+    /// target size from the account discriminator.
     #[account(mut, owner = crate::ID)]
     pub account: UncheckedAccount<'info>,
     pub system_program: Program<'info, System>,
@@ -45,15 +46,15 @@ pub struct ExtendAccount<'info> {
 
 /// Grow `account` to `8 + size_of::<T>()` for its discriminator's type `T`.
 ///
-/// Auth: the `AccountExtension` hot key (or warm/cold admin fallback while the
-/// role is unset). Extension is harmless to account contents, but growing
-/// accounts inflates fetch bandwidth and any future per-byte transaction
-/// costs, so when it happens is the protocol's call, not the public's.
+/// The growth leaves the account contents alone. A larger account still
+/// raises fetch bandwidth and any future per-byte transaction cost, so the
+/// protocol gates the crank rather than opening it to the public.
 ///
-/// Grow-only: an account already at (or beyond) the target size is a no-op so
-/// repeated cranking and races are harmless. The payer covers the rent-exempt
-/// shortfall for the new size; `resize` zero-fills the added tail, which every
-/// zero-copy struct treats as padding until a later field claims it.
+/// The handler only grows an account. An account already at the target size or
+/// beyond it is a no-op, so a repeated crank and a race are both harmless. The
+/// payer covers the rent-exempt shortfall for the new size. `resize`
+/// zero-fills the added tail, which every zero-copy struct reads as padding
+/// until a later field claims it.
 pub fn handle_extend_account(ctx: Context<ExtendAccount>) -> Result<()> {
     let account = &ctx.accounts.account;
 
@@ -97,9 +98,9 @@ pub fn handle_extend_account(ctx: Context<ExtendAccount>) -> Result<()> {
 
 /// Full on-chain size (`8 + size_of::<T>()`) for the zero-copy account type
 /// matching `discriminator`, or `None` for anything else. Borsh accounts are
-/// excluded on purpose: their decode is field-by-field, so appending fields is
-/// a deserialization change, not a trailing-bytes change, and gets its own
-/// migration per account type.
+/// excluded on purpose. A borsh decode reads field by field, so appending a
+/// field changes the deserialization rather than the trailing bytes. Each
+/// borsh account type needs its own migration.
 pub fn extension_target_len(discriminator: &[u8]) -> Option<usize> {
     macro_rules! match_target {
         ($($t:ty),+ $(,)?) => {
@@ -123,12 +124,11 @@ pub fn extension_target_len(discriminator: &[u8]) -> Option<usize> {
         RevenueShare,
         LPPool,
         Constituent,
-        // Relay plumbing. The condition blocks grow whenever relay's
-        // `CONDITION_LEN` changes, which is why they belong here rather
-        // than in a bespoke migration. A quoter slab is deliberately absent:
-        // its size is capacity, not layout, and growing one means growing
-        // the account and raising the header's `capacity`, not matching a
-        // struct's `SIZE`.
+        // Relay plumbing. The condition blocks grow whenever
+        // `relay_spec::CONDITION_LEN` changes, so they belong here rather than
+        // in a migration of their own. A quoter slab is absent on purpose. Its
+        // size is capacity rather than layout, so growing one also raises the
+        // header's `capacity` instead of matching a struct's `SIZE`.
         QuoterV0,
         ClobCrankConditionsV0,
         QuoterCrossConditionsV0,

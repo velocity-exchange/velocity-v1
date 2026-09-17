@@ -17,13 +17,13 @@ struct TransferTerms {
     funding_paused: bool,
 }
 
-/// While the equity breaker is tripped, the only delegate transfer allowed is
-/// one that shrinks an existing breach: funds only (no floor movement) into a
-/// subaccount below its buffered floor. The debited side is still gated at its
-/// own floor plus buffer by the withdraw margin check inside
-/// [`transfer_spot_deposit`], so a cure cannot create a new breach. Once the
-/// credited side clears its buffered floor this path closes again. The transfer
-/// never clears the flag; only the admin reset does.
+/// While the equity breaker is tripped, one delegate transfer stays allowed.
+/// It must shrink an existing breach, so it moves funds and no floor into a
+/// subaccount below its buffered floor. The withdraw margin check inside
+/// [`transfer_spot_deposit`] still gates the debited side at its own floor plus
+/// buffer, so a cure cannot create a new breach. Once the credited side clears
+/// its buffered floor, this path closes again. The transfer never clears the
+/// flag. Only the admin reset does.
 fn validate_cure_transfer(
     to_user: &User,
     maps: &mut AccountMaps,
@@ -43,11 +43,11 @@ fn validate_cure_transfer(
 
     let (to_user_net_equity, to_user_oracles_valid) = calculate_user_equity(to_user, maps)?;
 
-    // Cure eligibility must not be decided off an invalid price, matching
-    // the validity the trip and the reset require of the same metric.
-    // Deliberately a blanket reject rather than the bounded metric the
-    // floor gates use: this is a standalone instruction (no innocent
-    // third party to abort), and failing frozen is the right direction.
+    // Cure eligibility must not be decided off an invalid price. The trip and
+    // the reset require the same validity of the same metric. This is a blanket
+    // reject rather than the bounded metric the floor gates use. The
+    // instruction stands alone, so no third party is aborted, and failing
+    // frozen is the safe direction.
     validate!(
         to_user_oracles_valid,
         ErrorCode::InvalidOracle,
@@ -69,15 +69,15 @@ fn validate_cure_transfer(
 /// The to side is validated by [`validate_floor_is_backed`] after the deposit
 /// lands, so its increased floor must be backed by real equity.
 ///
-/// Guard (#55): a delegate must not shed floor off a subaccount that is already
-/// below the floor being reduced. Without this, an owner could shift the floor
-/// off a breached subaccount with a zero-amount transfer and drop it out of
-/// breach before the permissionless breaker trips, defusing the pending trip.
-/// `from_user` is evaluated against its PRE-reduction floor, because the
-/// transfer below reduces it. Deliberately checks the raw floor, not floor plus
-/// buffer: its only job is trip defusal, and a subaccount inside the buffer band
-/// may still rebalance floor away. Measured as net equity, matching the breaker
-/// trip threshold.
+/// A delegate must not shed floor off a subaccount that is already below the
+/// floor being reduced (OtterSec #55). Without that guard, an owner could shift
+/// the floor off a breached subaccount with a zero-amount transfer. The
+/// subaccount leaves breach before the permissionless breaker trips, which
+/// defuses the pending trip. `from_user` is measured against its floor before
+/// the reduction, because the transfer below reduces it. The guard reads the
+/// raw floor and not floor plus buffer, because its only job is trip defusal. A
+/// subaccount inside the buffer band may still move floor away. The metric is
+/// net equity, which is what the breaker trip threshold uses.
 fn move_equity_floor(
     from_user: &mut User,
     to_user: &mut User,
@@ -112,9 +112,9 @@ fn move_equity_floor(
     Ok(())
 }
 
-/// A floor that just grew must be backed by equity that is actually
-/// measurable. A stale-high price would otherwise let a floor land on a
-/// subaccount that cannot back it.
+/// A floor that grew must be backed by equity the program can measure. A
+/// stale-high price would otherwise let a floor land on a subaccount that
+/// cannot back it.
 fn validate_floor_is_backed(to_user: &User, maps: &mut AccountMaps) -> Result<()> {
     let (to_user_net_equity, to_user_oracles_valid) = calculate_user_equity(to_user, maps)?;
 
@@ -274,8 +274,8 @@ pub fn handle_transfer_deposit<'c: 'info, 'info>(
     )
 }
 
-/// Accrue interest on the transferred market, but do NOT advance its *oracle*
-/// TWAPs (OtterSec #134 — the same shape as #110/#111).
+/// Accrue interest on the transferred market, but do not advance its oracle
+/// TWAPs (OtterSec #134, the same shape as #110 and #111).
 ///
 /// `meets_withdraw_margin_requirement` values the source account through
 /// `StrictOraclePrice`, whose bounds are the min and max of the live price and

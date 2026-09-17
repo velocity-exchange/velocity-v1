@@ -81,11 +81,11 @@ export class DLOBSubscriber {
 	async updateDLOB(): Promise<void> {
 		this.dlob = await this.dlobSource.getDLOB(this.slotSource.getSlot());
 		try {
-			// auction wall clock math converts elapsed slots through the State
-			// slot clock; unsubscribed state falls back to the 400ms baseline
+			// Auction wall-clock math converts elapsed slots through the State slot
+			// clock.
 			this.dlob.slotDurationState = this.velocityClient.getStateAccount();
 		} catch {
-			// not subscribed yet: keep the baseline
+			// The client has not subscribed to State yet, so keep the 400ms baseline.
 		}
 	}
 

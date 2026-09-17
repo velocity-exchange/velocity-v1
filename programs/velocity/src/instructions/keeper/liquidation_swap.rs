@@ -43,19 +43,19 @@ pub fn handle_liquidate_spot_with_swap_begin<'c: 'info, 'info>(
     let user = &mut load_mut!(ctx.accounts.user)?;
     let liquidator = &mut load_mut!(ctx.accounts.liquidator)?;
     // A swap-backed liquidation earns the liquidation fee like the other
-    // liquidator routes, even though the tokens flow through the authority's
-    // wallet accounts rather than the liquidator subaccount. The check runs
-    // before any flash-loan state opens; `end` runs in the same transaction,
-    // so checking `begin` covers the pair.
+    // liquidator routes. The tokens flow through the authority's wallet accounts
+    // and not through the liquidator subaccount. This check runs before any
+    // flash-loan state opens. `end` runs in the same transaction, so a check on
+    // `begin` covers the pair.
     //
-    // Only the breaker, deliberately: the four direct routes additionally
-    // require the liquidator subaccount to clear its own buffered floor
-    // (`validate_clears_buffered_floor`), because the liquidation moves the
-    // liquidatee's position onto that subaccount. This route moves nothing
-    // onto it (both `update_spot_balances_and_cumulative_deposits` calls in
-    // `liquidate_spot_with_swap_end` target the liquidatee, and the fees go
-    // to the revenue and protocol pools), so there is no exposure for a
-    // per-subaccount floor to gate.
+    // Only the breaker is checked here. The four direct routes also require the
+    // liquidator subaccount to clear its own buffered floor through
+    // `validate_clears_buffered_floor`, because the liquidation moves the
+    // liquidatee's position onto that subaccount. This route moves nothing onto
+    // it. Both `update_spot_balances_and_cumulative_deposits` calls in
+    // `liquidate_spot_with_swap_end` target the liquidatee, and the fees go to
+    // the revenue and protocol pools. No exposure is left for a per-subaccount
+    // floor to gate.
     let liquidator_stats = load!(ctx.accounts.liquidator_stats)?;
     require_liquidator_not_frozen(&liquidator_stats)?;
 
@@ -105,19 +105,19 @@ pub fn handle_liquidate_spot_with_swap_begin<'c: 'info, 'info>(
 /// Book the lending interest of both markets, and prove neither one already
 /// holds an open flash loan.
 ///
-/// `None` for the oracle deliberately: this accrues interest and advances the
-/// deposit, borrow and utilization TWAPs, but does NOT advance the markets'
-/// *oracle* TWAPs. `liquidate_spot_with_swap_begin` gates itself on
+/// The oracle argument is `None` on purpose. This function accrues interest and
+/// advances the deposit, borrow and utilization TWAPs. It does not advance the
+/// markets' oracle TWAPs. `liquidate_spot_with_swap_begin` gates itself on
 /// `is_oracle_too_divergent_with_twap_5min` against the liability market's
-/// `last_oracle_price_twap_5min`. Refreshing that anchor in the same
-/// instruction pulls it toward the live oracle price and lets a liquidation
-/// the band check would reject proceed and transfer collateral.
+/// `last_oracle_price_twap_5min`. A refresh of that anchor in the same
+/// instruction pulls it toward the live oracle price. A liquidation the band
+/// check would reject could then proceed and transfer collateral.
 ///
-/// The direct `liquidate_spot` lane already runs that same check with no
-/// pre-refresh, so this only brings the swap-backed lane in line with it. A
-/// band-blocked swap liquidation can still be routed through the direct path.
-/// The refresh is moved, not dropped: `liquidate_spot_with_swap_end` advances
-/// both markets' oracle TWAPs once every check in the lane is done.
+/// The direct `liquidate_spot` lane runs that same check with no pre-refresh, so
+/// this only brings the swap-backed lane in line with it. A band-blocked swap
+/// liquidation can still route through the direct path. The refresh moves and is
+/// not dropped. `liquidate_spot_with_swap_end` advances both markets' oracle
+/// TWAPs once every check in the lane is done.
 fn accrue_swap_market_interest(
     maps: &mut AccountMaps,
     state: &State,
@@ -145,11 +145,11 @@ fn accrue_swap_market_interest(
 
 /// Refuse a swap that would move tokens a pause has stopped.
 ///
-/// The swap sends asset-vault tokens out and pulls liability tokens in — the
-/// same egress and ingress the direct spot withdraw and deposit paths gate.
-/// `liq_not_paused` alone does not cover them, so mirror `end_swap`. Gating
-/// the begin instruction is sufficient: a matching end instruction is required
-/// in the same atomic transaction.
+/// The swap sends asset-vault tokens out and pulls liability tokens in. The
+/// direct spot withdraw and deposit paths gate the same two movements.
+/// `liq_not_paused` alone does not cover them, so this mirrors `end_swap`. A
+/// gate on the begin instruction is enough, because the same atomic transaction
+/// must carry a matching end instruction.
 fn validate_swap_not_paused(maps: &AccountMaps, state: &State, legs: &SwapLegs) -> Result<()> {
     validate!(
         !(state.deposit_paused()? || state.withdraw_paused()?),
@@ -348,9 +348,8 @@ fn validate_swap_end_ix<'info>(
         )?;
     }
 
-    // `LiquidateSpotWithSwap` has 12 fixed accounts (indexes 0..=11);
-    // remaining (swap) accounts start at index 12 and must match between
-    // begin and end.
+    // `LiquidateSpotWithSwap` has 12 fixed accounts at indexes 0 to 11. The swap
+    // accounts start at index 12, and they must match between begin and end.
     validate!(
         ctx.remaining_accounts.len() == ix.accounts.len() - 12,
         ErrorCode::InvalidLiquidateSpotWithSwap,
@@ -437,9 +436,9 @@ pub fn handle_liquidate_spot_with_swap_end<'c: 'info, 'info>(
     let user_key = ctx.accounts.user.key();
     let liquidator_key = ctx.accounts.liquidator.key();
 
-    // `State` is deliberately not held across this call. A `Ref` taken from
-    // one field of the accounts struct blocks passing the struct itself, and
-    // the legs need it whole.
+    // The code does not hold `State` across this call. A `Ref` taken from one
+    // field of the accounts struct blocks passing the struct itself, and the
+    // legs need it whole.
     let (amount_in, amount_out) =
         close_flash_loan(ctx.accounts, &mut maps, &legs, &tokens, remaining_accounts)?;
 
@@ -524,8 +523,8 @@ fn close_flash_loan<'info>(
     Ok((amount_in, amount_out))
 }
 
-/// One side of the flash loan: the vault it moves against, the caller's token
-/// account, and how to move between them.
+/// One side of the flash loan. It holds the vault the side moves against, the
+/// caller's token account, and the way to move between them.
 struct SwapSide<'a, 'info> {
     vault: &'a mut InterfaceAccount<'info, TokenAccount>,
     token_account: &'a mut InterfaceAccount<'info, TokenAccount>,
@@ -535,7 +534,7 @@ struct SwapSide<'a, 'info> {
 }
 
 /// Pull back whatever the swap did not spend, and close the asset side of the
-/// loan. Reports how much of the loan the swap actually consumed.
+/// loan. Reports how much of the loan the swap consumed.
 fn close_asset_leg<'info>(
     side: SwapSide<'_, 'info>,
     spot_market: &mut SpotMarket,
@@ -578,7 +577,7 @@ fn close_asset_leg<'info>(
     Ok(amount_in)
 }
 
-/// Bank what the swap bought, and close the liability side of the loan.
+/// Take in what the swap bought, and close the liability side of the loan.
 /// Reports how much of the liability the swap repaid.
 fn close_liability_leg<'info>(
     side: SwapSide<'_, 'info>,
@@ -620,10 +619,11 @@ fn close_liability_leg<'info>(
     Ok(amount_out)
 }
 
-/// Prove both markets came out of the loan clean, and that each vault still
+/// Prove both markets left the loan in a closed state, and that each vault still
 /// covers what its depositors are owed.
-/// `vault_amounts` are the liability and the asset vault balances, in that
-/// order.
+///
+/// `vault_amounts` holds the liability vault balance and then the asset vault
+/// balance.
 fn validate_swap_closed(
     maps: &mut AccountMaps,
     legs: &SwapLegs,
@@ -642,12 +642,12 @@ fn validate_swap_closed(
     Ok(())
 }
 
-/// Advance both markets' oracle TWAPs, last.
+/// Advance both markets' oracle TWAPs. This is the last step of the pair.
 ///
-/// The begin instruction passes `None` so it cannot refresh the anchor its own
-/// divergence check reads, and both this lane's checks are done by here. The
-/// begin instruction left `last_oracle_price_twap_ts` alone, so this update
-/// still weights the full elapsed interval.
+/// The begin instruction passes `None`, so it cannot refresh the anchor its own
+/// divergence check reads. Every check in this lane is done by the time this
+/// runs. The begin instruction left `last_oracle_price_twap_ts` alone, so this
+/// update still weights the full elapsed interval.
 fn advance_swap_oracle_twaps(maps: &mut AccountMaps, legs: &SwapLegs, now: i64) -> Result<()> {
     for market_index in [legs.asset_market_index, legs.liability_market_index] {
         let mut spot_market = maps.spot_market_map.get_ref_mut(&market_index)?;
@@ -710,14 +710,14 @@ pub struct LiquidateSpotWithSwap<'info> {
     /// The liquidator's `UserStats`, read by `begin` to bar an authority whose
     /// equity breaker is tripped.
     ///
-    /// It sits last, not beside `liquidator` where the direct liquidation
-    /// contexts carry it, because this pair is addressed by position rather
-    /// than by name: `begin` introspects the matching `end` and compares the
-    /// two account lists index by index, and the swap accounts both forward
-    /// begin where this fixed block ends. Taking the last slot renumbered
-    /// nothing. Slotting it beside `liquidator` would have moved `user`, both
-    /// vaults and both token accounts down one, silently invalidating every
-    /// hand-built transaction that still filled the old order.
+    /// It sits last instead of beside `liquidator`, where the direct liquidation
+    /// contexts carry it. This pair is addressed by position and not by name.
+    /// `begin` introspects the matching `end` and compares the two account lists
+    /// index by index, and the swap accounts of both instructions start where
+    /// this fixed block ends. The last slot renumbers nothing. A slot beside
+    /// `liquidator` would move `user`, both vaults and both token accounts down
+    /// one, and that breaks every hand-built transaction that still fills the
+    /// old order.
     #[account(
         constraint = is_stats_for_user(&liquidator, &liquidator_stats)?
     )]

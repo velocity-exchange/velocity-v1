@@ -1,8 +1,9 @@
-//! Update a quoter's scalar CPI config (response account, discriminators).
-//! Staging only: the approved copy in the market's slab keeps serving its
-//! vetted config until the admin copies again. A Custom entry answers to the
-//! quoted user's authority, with no handoff, which is what guarantees the
-//! maker's kill switch. A book's entry answers to the State admin roles.
+//! Update a quoter's scalar CPI config, which is the response account and the
+//! leg discriminators. The write is staging only. The approved copy in the
+//! market's slab keeps serving until the admin copies again. A `Custom` entry
+//! answers to the quoted user's authority and offers no handoff, which is what
+//! guarantees the maker's kill switch. A book's entry answers to the State
+//! admin roles.
 
 use {
     crate::{
@@ -17,8 +18,8 @@ pub struct UpdateQuoterConfig<'info> {
     pub authority: Signer<'info>,
     #[account(mut)]
     pub quoter: AccountLoader<'info, QuoterV0>,
-    /// Read for the admin check a non-Custom entry needs. Absent for a
-    /// Custom entry, which answers to its own stored authority.
+    /// Read for the admin check that a non-`Custom` entry needs. A `Custom`
+    /// entry answers to its own stored authority and omits this account.
     pub state: Option<AccountLoader<'info, State>>,
 }
 

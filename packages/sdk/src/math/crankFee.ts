@@ -7,15 +7,15 @@ import {
 /**
  * The block-packing cost model, mirrored from the runtime.
  *
- * A transaction's *requested cost units* are what the network prices it by:
+ * The network prices a transaction by its requested cost units. That figure is
  * the saturating sum of its signatures, its write locks, its instruction-data
  * bytes, the compute limit it requests, and the loaded-accounts data size it
- * requests. The last two are the requested figures, not the consumed ones — a
- * transaction pays for the room it asks for.
+ * requests. The last two are the requested figures and not the consumed ones.
+ * A transaction pays for the room it asks for.
  *
  * These constants are the runtime's, so a change there is a change here. They
- * are exported because sizing a crank payment starts by measuring the crank,
- * and a measurement needs the same arithmetic the network does.
+ * are exported because sizing a crank payment starts with measuring the crank,
+ * and a measurement needs the same arithmetic the network uses.
  */
 export const SIGNATURE_COST_UNITS = 720;
 export const WRITE_LOCK_COST_UNITS = 300;
@@ -58,8 +58,9 @@ export function requestedCostUnits(shape: TransactionShape): number {
 /**
  * Lamports a transaction costs whoever sends it.
  *
- * Mirrors `TransactionFeeRails::transaction_cost`. Rounded up, because this
- * sizes a payment and a payment short by a lamport buys nothing.
+ * This mirrors `TransactionFeeRails::transaction_cost`. The resource term
+ * rounds up, because this sizes a payment and a payment one lamport short buys
+ * nothing.
  *
  * @param rails - the fee model, read off `StateAccount.transactionFeeRails`.
  * @param costUnits - what the transaction requests, see `requestedCostUnits`.
@@ -86,10 +87,10 @@ export function transactionCost(
 /**
  * Price every one of a market's cranks off one measurement each.
  *
- * Mirrors `CrankPaymentsV0::derive`, which is what
- * `updatePerpMarketClobQuoter` runs on chain — so this predicts the payments a
- * given attach will write. A crank transaction carries exactly one signature,
- * the turner's fee payer; executors name no signer at all.
+ * This mirrors `CrankPaymentsV0::derive`, which `updatePerpMarketClobQuoter`
+ * runs on chain. It therefore predicts the payments a given attach writes. A
+ * crank transaction carries exactly one signature, the turner's fee payer. An
+ * executor names no signer at all.
  *
  * @param rails - the fee model, read off `StateAccount.transactionFeeRails`.
  * @param units - cost units each crank requests, measured by simulating it.

@@ -1,24 +1,24 @@
 //! Event emission without a heap allocation.
 //!
 //! Anchor's `emit!` goes through `Event::data()`, which returns a `Vec<u8>` in
-//! both of anchor v2's event flavours: the bytemuck one allocates a buffer of
-//! exactly the right size and memcpys the struct into it, and the wincode one
-//! allocates a 256-byte guess and reallocs its way up whenever the payload is
-//! bigger than that (the execute record is, from ~15 fills on). What reaches
-//! the runtime is just `[discriminator][body]` handed to `sol_log_data` as one
-//! field, so everything here builds exactly that in a stack buffer and calls
-//! the syscall directly.
+//! both of anchor v2's event flavours. The bytemuck flavour allocates a buffer
+//! of the right size and copies the struct into it. The wincode flavour
+//! allocates a 256-byte guess and reallocates upward when the payload is
+//! larger. The execute record is larger from about 15 fills on. What reaches
+//! the runtime is `[discriminator][body]`, handed to `sol_log_data` as one
+//! field. Everything here builds those bytes in a stack buffer and calls the
+//! syscall directly.
 //!
-//! One field, not two: `sol_log_data` base64s each slice it is given
-//! separately into a space-separated list, while decoders (velocity's
-//! `EventSubscriber`, the TypeScript SDK) base64-decode the whole `Program
-//! data:` line as a single blob. The discriminator and body therefore have to
-//! be contiguous, which is why these helpers concatenate rather than pass two
-//! slices.
+//! These helpers pass one field rather than two. `sol_log_data` base64-encodes
+//! each slice it is given into a separate entry of a space-separated list.
+//! Decoders such as velocity's `EventSubscriber` and the TypeScript SDK
+//! base64-decode the whole `Program data:` line as one blob. The discriminator
+//! and the body therefore have to be contiguous, so these helpers concatenate
+//! them.
 //!
-//! The bytes emitted are byte-identical to `Event::data()`'s — that is the
-//! contract with every decoder, and `tests::emit` pins each event against the
-//! trait impl.
+//! The emitted bytes are identical to the bytes `Event::data()` returns. That
+//! is the contract with every decoder, and `tests::emit` pins each event
+//! against the trait implementation.
 
 use {
     crate::{
@@ -33,16 +33,16 @@ use {
 };
 
 /// Anchor derives every event discriminator as the first 8 bytes of
-/// `sha256("event:<TypeName>")`. [`emit_pod`] checks the type it is handed
-/// agrees, so this can be treated as the prefix width.
+/// `sha256("event:<TypeName>")`. [`emit_pod`] checks that the type it is handed
+/// agrees, so this constant is the prefix width.
 pub const DISCRIMINATOR_BYTES: usize = 8;
 
-/// Widest [`ExecuteRecordV0`] log: the discriminator, the fixed prefix, and
-/// both sequences at the widest anything can drive them — at most
-/// `EXECUTE_FILLS_CEILING` fills, and at most `FILL_BATCH_CEILING` culled
-/// orders. `execute_v0` culls at most one (a partial fill only happens once
-/// the taker's size runs out, which ends the walk); `fill_v0` reports a batch,
-/// and every order in it can leave a sub-minimum leftover.
+/// Widest [`ExecuteRecordV0`] log. It holds the discriminator, the fixed
+/// prefix, and both sequences at their widest. That is `EXECUTE_FILLS_CEILING`
+/// fills and `FILL_BATCH_CEILING` culled orders. `execute_v0` culls at most one
+/// order, because a partial fill happens only when the taker's size runs out,
+/// which ends the walk. `fill_v0` reports a batch, and every order in it can
+/// leave a leftover below the minimum.
 pub const EXECUTE_RECORD_LOG_BYTES: usize = DISCRIMINATOR_BYTES
     + core::mem::size_of::<i64>()
     + core::mem::size_of::<u64>()
@@ -53,10 +53,11 @@ pub const EXECUTE_RECORD_LOG_BYTES: usize = DISCRIMINATOR_BYTES
     + COUNT_BYTES
     + crate::state::FILL_BATCH_CEILING * CLIENT_ORDER_ID_BYTES;
 
-/// Widest [`OrdersCancelRecordV0`] log: the discriminator, the fixed prefix
-/// (user ref, ts, both base totals, market index, sides tag, exhaustive flag),
-/// and the id list at [`CANCEL_ALL_ORDERS_CEILING`] — the cap that makes this
-/// bound reachable-but-not-exceedable whatever the book holds.
+/// Widest [`OrdersCancelRecordV0`] log. It holds the discriminator, the fixed
+/// prefix, and the id list at [`CANCEL_ALL_ORDERS_CEILING`]. The prefix is the
+/// authority, the timestamp, both base totals, the market index, the
+/// sub-account id, the sides tag, and the exhaustive flag. The ceiling keeps
+/// this bound reachable and never exceeded, whatever the book holds.
 pub const CANCEL_ALL_RECORD_LOG_BYTES: usize = DISCRIMINATOR_BYTES
     + core::mem::size_of::<Address>()
     + core::mem::size_of::<i64>()
@@ -66,11 +67,11 @@ pub const CANCEL_ALL_RECORD_LOG_BYTES: usize = DISCRIMINATOR_BYTES
     + COUNT_BYTES
     + CANCEL_ALL_ORDERS_CEILING as usize * CLIENT_ORDER_ID_BYTES;
 
-/// `[discriminator][body]` for a fixed-size (`#[event(bytemuck)]`) record.
+/// `[discriminator][body]` for a fixed-size `#[event(bytemuck)]` record.
 ///
 /// `N` is the record's full log width. Call through [`emit_pod`], which
-/// computes `N` from the type and asserts at compile time that the slice math
-/// below is exact — a wrong `N` would otherwise truncate or pad the event.
+/// computes `N` from the type and checks the discriminator width at compile
+/// time. A wrong `N` would truncate or pad the event.
 pub fn pod_log_bytes<E, const N: usize>(record: &E) -> [u8; N]
 where
     E: Discriminator + bytemuck::Pod,
@@ -81,9 +82,9 @@ where
     bytes
 }
 
-/// Emit a fixed-size (`#[event(bytemuck)]`) record: the same bytes `emit!`
-/// would log, built on the stack. Takes the record's struct literal, so call
-/// sites read the way `emit!` did.
+/// Emit a fixed-size `#[event(bytemuck)]` record. It logs the same bytes as
+/// `emit!`, built on the stack. It takes the record's struct literal, so a call
+/// site reads the way an `emit!` call site reads.
 macro_rules! emit_pod {
     ($ty:ident { $($field:tt)* }) => {{
         const LOG_BYTES: usize =
@@ -102,13 +103,14 @@ pub(crate) use emit_pod;
 
 /// Append-only stack buffer holding one `sol_log_data` field.
 ///
-/// Every push bounds-checks, so a payload wider than the buffer is an error
-/// rather than a truncated event. `N` is sized from the config ceilings, which
-/// makes that error unreachable for a market the init/update checks accepted.
+/// Every push checks its bounds, so a payload wider than the buffer is an
+/// error rather than a truncated event. `N` comes from the config ceilings,
+/// which makes that error unreachable for a market the init and update checks
+/// accepted.
 pub struct LogBuf<const N: usize> {
-    /// Uninitialized rather than zeroed: at the fill ceiling this is ~2KB, and
-    /// zeroing it costs more compute than the `Vec` this path exists to avoid.
-    /// Only `..len` is ever read, and [`Self::push`] is the only writer.
+    /// The buffer is uninitialized rather than zeroed. At the fill ceiling it
+    /// is about 2KB, and zeroing it costs more compute than the `Vec` this path
+    /// avoids. Only `..len` is read, and [`Self::push`] is the only writer.
     bytes: [core::mem::MaybeUninit<u8>; N],
     len: usize,
 }
@@ -120,8 +122,8 @@ impl<const N: usize> Default for LogBuf<N> {
 }
 
 impl<const N: usize> LogBuf<N> {
-    /// Always inlined: the buffer is wide enough that a `new()` frame handing
-    /// it back would be a second live copy of it in one SBF stack frame.
+    /// Always inlined. The buffer is wide, so a `new()` frame that returns it
+    /// would put a second live copy in one SBF stack frame.
     #[inline(always)]
     pub fn new() -> Self {
         Self {
@@ -136,9 +138,10 @@ impl<const N: usize> LogBuf<N> {
             .checked_add(bytes.len())
             .ok_or(ClobError::EventTooLarge)?;
         require!(end <= N, ClobError::EventTooLarge);
-        // SAFETY: `MaybeUninit<u8>` has the same layout as `u8`; the write
-        // lands inside the buffer (`end <= N`, just checked) and the source is
-        // initialized. This is what extends the initialized prefix to `end`.
+        // SAFETY: `MaybeUninit<u8>` has the same layout as `u8`. The check
+        // above gives `end <= N`, so the write lands inside the buffer, and the
+        // source is initialized. The write extends the initialized prefix to
+        // `end`.
         unsafe {
             core::ptr::copy_nonoverlapping(
                 bytes.as_ptr(),
@@ -150,20 +153,20 @@ impl<const N: usize> LogBuf<N> {
         Ok(())
     }
 
-    /// Push `len` zero bytes and return their offset, for a field whose value
-    /// isn't known until after later fields have been written (the cancel-all
-    /// record's totals and id count are only settled once its walk ends).
-    /// Zeros rather than a gap so every counted byte stays initialized, which
-    /// is what [`Self::as_slice`] relies on.
+    /// Push `len` zero bytes and return their offset. This holds a field whose
+    /// value is not known until later fields are written. The cancel-all
+    /// record's totals and id count settle only when its walk ends. The bytes
+    /// are zeros rather than a gap, so every counted byte stays initialized,
+    /// which is what [`Self::as_slice`] relies on.
     pub fn reserve(&mut self, len: usize) -> Result<usize> {
         let at = self.len;
         (0..len).try_for_each(|_| self.push(&[0]))?;
         Ok(at)
     }
 
-    /// Overwrite bytes already pushed — only inside the initialized prefix, so
-    /// a reserved field can be filled in but nothing can be written past the
-    /// end.
+    /// Overwrite bytes that were already pushed. The write stays inside the
+    /// initialized prefix, so a reserved field can be filled in and nothing
+    /// lands past the end.
     pub fn patch(&mut self, at: usize, bytes: &[u8]) -> Result<()> {
         let end = at
             .checked_add(bytes.len())
@@ -195,18 +198,17 @@ impl<const N: usize> LogBuf<N> {
 
 /// Borsh-encode an [`ExecuteRecordV0`] payload into `log`.
 ///
-/// This is the one event whose payload is variable-length (per-order fill
-/// detail), so it is written field by field instead of going through the
-/// `emit_pod!` memcpy, and it takes the fields loose rather than an
-/// `ExecuteRecordV0` — building the record would mean a `Vec` for the culled
-/// id, which is exactly what this path exists to avoid. [`ExecuteRecordV0`]
-/// stays the schema of record for the layout; `tests::emit` pins the two
-/// against each other.
+/// The payload is variable-length, because it carries per-order fill detail.
+/// It is written field by field rather than through the `emit_pod!` copy. It
+/// takes the fields loose rather than an `ExecuteRecordV0`, because building
+/// the record would need a `Vec` for the culled ids, which is what this path
+/// avoids. [`ExecuteRecordV0`] stays the schema of record for the layout, and
+/// `tests::emit` pins the two against each other.
 ///
-/// The buffer is borrowed, never returned by value. At the fill ceiling it is
-/// ~2KB, and handing it back means two live copies of it in one SBF stack
-/// frame (the local and the caller's return slot) — 4KB per frame is the hard
-/// limit, and that combination overruns it.
+/// The buffer is borrowed and never returned by value. At the fill ceiling it
+/// is about 2KB. Returning it would put two live copies in one SBF stack
+/// frame, the local and the caller's return slot. The hard limit is 4KB per
+/// frame, and that pair overruns it.
 #[inline(always)]
 pub fn write_execute_record<const N: usize>(
     log: &mut LogBuf<N>,
@@ -223,8 +225,8 @@ pub fn write_execute_record<const N: usize>(
     log.push(&market_index.to_le_bytes())?;
     log.push(&[direction])?;
     log.push(&(fills.len() as u32).to_le_bytes())?;
-    // One push per fill rather than one per field: each push carries a bounds
-    // check, and this is the loop that scales with the batch.
+    // One push per fill rather than one per field. Each push carries a bounds
+    // check, and this loop scales with the batch.
     fills.iter().try_for_each(|fill| {
         let mut entry = [0u8; FILL_SLIM_BYTES];
         entry[..ORDER_ID_BYTES].copy_from_slice(&fill.order_id.to_le_bytes());
@@ -240,13 +242,13 @@ pub fn write_execute_record<const N: usize>(
 
 /// Streaming writer for an [`OrdersCancelRecordV0`].
 ///
-/// The sweep can't know its own totals until it ends — the base amounts, the
-/// `exhaustive` flag and the id count all settle at the last removal — but the
-/// ids have to be written as the walk frees them or they'd need a second
-/// buffer to sit in. So the prefix goes down with those four fields reserved,
-/// ids append during the walk, and [`Self::finish`] patches and emits.
+/// The sweep cannot know its own totals until it ends. The base amounts, the
+/// `exhaustive` flag and the id count all settle at the last removal. The ids
+/// have to be written as the walk frees them, or they would need a second
+/// buffer. The prefix is written with those four fields reserved, the ids are
+/// appended during the walk, and [`Self::finish`] patches and emits.
 ///
-/// [`OrdersCancelRecordV0`] stays the schema of record for the layout;
+/// [`OrdersCancelRecordV0`] stays the schema of record for the layout, and
 /// `tests::emit` pins the two encodings against each other.
 pub struct CancelAllRecord {
     log: LogBuf<CANCEL_ALL_RECORD_LOG_BYTES>,
@@ -258,8 +260,8 @@ pub struct CancelAllRecord {
 }
 
 impl CancelAllRecord {
-    /// Always inlined: the buffer is ~1KB, and a `new()` frame handing it back
-    /// would put two live copies of it in one SBF stack frame.
+    /// Always inlined. The buffer is about 1KB, and a `new()` frame that
+    /// returns it would put two live copies in one SBF stack frame.
     #[inline(always)]
     pub fn new(
         authority: &Address,
@@ -289,10 +291,10 @@ impl CancelAllRecord {
         })
     }
 
-    /// Append one removed order id — the placing caller's, which is what the
-    /// record lists. The bounds check in [`LogBuf::push`] is what makes the
-    /// ceiling enforceable here too: a walk that somehow ran past it fails the
-    /// instruction instead of logging a truncated record.
+    /// Append one removed order id. The record lists the placing caller's ids.
+    /// The bounds check in [`LogBuf::push`] enforces the ceiling here too. A
+    /// walk that ran past it fails the instruction instead of logging a
+    /// truncated record.
     pub fn push_id(&mut self, client_order_id: u32) -> Result<()> {
         self.log.push(&client_order_id.to_le_bytes())?;
         self.ids = self.ids.checked_add(1).ok_or(ClobError::EventTooLarge)?;
@@ -313,9 +315,9 @@ impl CancelAllRecord {
         Ok(self.log.as_slice())
     }
 
-    /// Fill the four fields reserved before the walk. The id count is taken
-    /// from what was actually pushed, and disagreeing with the outcome's count
-    /// is an error rather than a record an indexer would reconcile wrongly.
+    /// Fill the four fields reserved before the walk. The id count comes from
+    /// what the walk pushed. A count that disagrees with the outcome is an
+    /// error, rather than a record an indexer would reconcile wrongly.
     fn patch_totals(&mut self, outcome: &CancelAllOutcome) -> Result<()> {
         require!(self.ids == outcome.orders(), ClobError::EventTooLarge);
         let (bid_base_at, ask_base_at) = (self.bid_base_at, self.ask_base_at);
@@ -332,8 +334,8 @@ impl CancelAllRecord {
 
 /// Emit an [`ExecuteRecordV0`] from the stack.
 ///
-/// `#[inline(never)]` so the buffer gets an SBF stack frame of its own instead
-/// of adding its width to the handler's, which also holds the fill list and
+/// `#[inline(never)]` gives the buffer its own SBF stack frame. Otherwise its
+/// width is added to the handler's frame, which also holds the fill list and
 /// the book's locals.
 #[inline(never)]
 pub fn emit_execute_record(

@@ -68,26 +68,26 @@ pub fn sweep_completed_revenue_share_for_market<'a>(
     // (`controller::perp_pools::sweep_market_fees`):
     //   * `max(net_user_pnl, 0)`: the PnL pool backs users' positive unsettled
     //     PnL, so paying revenue share out of it would leave a third party's
-    //     settlement short (audit #48).
+    //     settlement short (OtterSec #48).
     //   * the floored IF bankruptcy tranche (`min(pending_if_fee,
     //     get_pending_if_fee_floor())`): `resolve_perp_bankruptcy` consumes
     //     `pending_if_fee` counter-only, so a revenue-share payout must not
-    //     drain the tokens that back the tranche either (same class as audit
-    //     #53 on the protocol sweep).
-    // This sweep does NOT reserve `pending_revenue_share` — it is the payer of
-    // that claim, and decrements the counter as it pays below.
+    //     drain the tokens that back the tranche either (same class as
+    //     OtterSec #53 on the protocol sweep).
+    // This sweep does not reserve `pending_revenue_share`. It is the payer of
+    // that claim, and it decrements the counter as it pays below.
 
     // A builder row must be `Completed` before the sweep pays it. Payment clears the row, and
     // `find_builder_order_index` then loses the open order that accrues to it. In Settlement no
-    // fee can accrue, because `fill_perp_order` rejects a market that is not Active or ReduceOnly.
-    // The rule is therefore unnecessary here, and it is dropped. The escrow owner cannot always
-    // complete a row, because the owner can delete the sub-account that holds it.
+    // fee can accrue, because `fill_perp_order` rejects a market that is not Active or
+    // ReduceOnly, so a Settlement market pays an incomplete row too. The escrow owner cannot
+    // always complete a row, because the owner can delete the sub-account that holds it.
     let market_in_settlement = perp_market.status == MarketStatus::Settlement;
 
     // In Settlement, `settle_expired_position` pays users at `expiry_price`. The reserve must use
     // the same price. A live price below `expiry_price` makes the reserve too small on a net-long
     // market. The sweep then pays out value that the expiry claims need, and those claims later
-    // fail with InsufficientPerpPnlPool. `expiry_price` does not change after settlement, so it
+    // fail with `InsufficientPerpPnlPool`. `expiry_price` does not change after settlement, so it
     // needs no validity check. The protocol fee sweep uses the same rule.
     let price_to_use = if perp_market.status == MarketStatus::Settlement {
         perp_market.expiry_price
@@ -171,18 +171,18 @@ pub fn sweep_completed_revenue_share_for_market<'a>(
                 );
                 logged_insufficient_pool = true;
             }
-            // Skip this row only. `reserved_user_claims` is constant for the call, and the loop
-            // reads the pool again for each row. A smaller row after this one is still payable.
-            // The loop must not stop here. Row order does not change between calls, so one row
-            // that the pool cannot pay would stop all later rows forever. The code above this
-            // point changes no state, so the skip is safe.
+            // Skip this row only, and do not stop the loop. `reserved_user_claims` is constant
+            // for the call, and the loop reads the pool again for each row, so a smaller row
+            // after this one is still payable. Row order does not change between calls, so a
+            // stop here would block every later row forever. The code above this point changes
+            // no state, so the skip is safe.
             //
-            // A row pays in full or not at all. A part payment of the largest affordable row would
-            // give the pool remainder to that beneficiary instead of the revenue pool at the
-            // delist. It would also make the payout depend on row order, because the first row
-            // would take the whole pool, and the escrow owner controls that order. Full payment
-            // keeps the outcome independent of order, so a short pool pays the rows that fit and
-            // `forfeit_revenue_share_order` writes off the rest.
+            // A row pays in full or not at all. A part payment of the largest affordable row
+            // would give the pool remainder to that beneficiary instead of to the revenue pool
+            // at the delist. It would also make the payout depend on row order, and the escrow
+            // owner controls that order. Full payment keeps the outcome independent of order. A
+            // short pool pays the rows that fit, and `forfeit_revenue_share_order` writes off
+            // the rest.
             continue;
         }
 
@@ -202,13 +202,13 @@ pub fn sweep_completed_revenue_share_for_market<'a>(
                 (referrer_user, referrer_rev_share)
             {
                 // A vault-owned beneficiary must never receive revenue share into
-                // its NAV-priced User: the reward would enter vault equity at this
-                // attacker-controlled sweep time and mis-split depositor value —
-                // late-entrant dilution, stranded withdrawer, or a donation that
-                // burns a canceller's claim (OtterSec #91/#92/#93). There is no
-                // legitimate flow where a vault earns revenue share, so forfeit the
-                // reward to the market's pnl pool: drain the liability counter and
-                // clear the row without transferring.
+                // its NAV-priced `User`. The reward would enter vault equity at
+                // this attacker-controlled sweep time and mis-split depositor
+                // value. That dilutes a late entrant, strands a withdrawer, or
+                // burns a canceller's claim (OtterSec #91, #92, and #93). No
+                // legitimate flow gives a vault revenue share, so the reward is
+                // forfeited to the market's pnl pool. The liability counter drains
+                // and the row clears with no transfer.
                 if referrer_user.is_vault_owned() {
                     perp_market.settle_pending_revenue_share(fees_accrued)?;
                     swept_total = swept_total.safe_add(fees_accrued)?;
@@ -268,9 +268,10 @@ pub fn sweep_completed_revenue_share_for_market<'a>(
             if let (Ok(mut builder_user), Ok(mut builder_revenue_share)) =
                 (builder_user, builder_rev_share)
             {
-                // See the referral branch: a vault-owned beneficiary is never
-                // credited (OtterSec #91/#92/#93). Forfeit to the pnl pool — drain
-                // the liability counter and clear the row without transferring.
+                // A vault-owned beneficiary is never credited. See the referral
+                // branch above (OtterSec #91, #92, and #93). The reward is
+                // forfeited to the pnl pool. The liability counter drains and the
+                // row clears with no transfer.
                 if builder_user.is_vault_owned() {
                     perp_market.settle_pending_revenue_share(fees_accrued)?;
                     swept_total = swept_total.safe_add(fees_accrued)?;
@@ -330,7 +331,7 @@ pub fn sweep_completed_revenue_share_for_market<'a>(
 /// beneficiary proves nothing, and must not destroy a live claim.
 ///
 /// Two of the reasons cannot become false later, so the forfeit needs no waiting period for them.
-/// `NoBeneficiaryAccount` is different: the beneficiary can create the account at any time, so the
+/// `NoBeneficiaryAccount` is different. The beneficiary can create the account at any time, so the
 /// handler permits that reason only after the escrow window of the market ends.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RevenueShareForfeitReason {

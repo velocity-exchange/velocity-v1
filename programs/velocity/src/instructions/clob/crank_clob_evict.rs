@@ -1,7 +1,7 @@
-//! `crank_clob_evict` and its resolver: reclaim the worst order on a side
-//! that grew past its soft cap, via the CLOB's `evict_worst_v0`. Eviction
-//! re-arms a placed trigger's shadow slot eagerly (in this same tx),
-//! edge-gated on a price recross.
+//! `crank_clob_evict` and its resolver. The crank reclaims the worst order on
+//! a side that grew past its soft cap, through the CLOB's `evict_worst_v0`.
+//! Eviction re-arms a placed trigger's shadow slot in the same transaction,
+//! behind an edge gate on a price recross.
 
 use {
     super::helpers::crank_common::{
@@ -36,10 +36,11 @@ pub fn handle_crank_clob_evict(
     )
 }
 
-/// The capacity slot's answer: the order the book would evict, if any.
+/// The capacity slot's answer. It names the order the book would evict, if
+/// there is one.
 pub(super) fn stage_eviction(ctx: &Context<ResolveClobCrank>) -> Result<Option<StagedCall>> {
-    // The book picks the side and the order: the eviction threshold and
-    // which side to relieve first are its policy, not velocity's.
+    // The book picks the side and the order. The eviction threshold and the
+    // choice of which side to relieve first are the book's policy.
     let found = clob_reader(ctx).next_removal(ClobNextRemovalArgsV0 {
         kind: ClobRemovalKindV0::Evictable,
     })?;

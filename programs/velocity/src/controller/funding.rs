@@ -166,14 +166,16 @@ pub fn settle_funding_payments(
     Ok(())
 }
 
-/// Project the AMM's curve + cached spread state to `slot` *before* the
-/// `block_operation` funding gate runs. The gate rejects funding when the AMM
-/// hasn't been projected this slot (`slots_since_amm_update >
-/// market_stats.funding_period`); with a tiny `funding_period` (e.g. the
-/// bankrun `pyth.ts` tests use 0) a stale `last_update_slot` would lock funding
-/// out for the rest of the slot. Mirrors the legacy `_update_amm` the keeper
-/// ran before funding. The in-branch `AmmQuoter::refresh` reuses this projection
-/// via slot-idempotency, so the curve math only runs once per slot.
+/// Project the AMM's curve and cached spread state to `slot` before the
+/// `block_operation` funding gate runs.
+///
+/// The gate rejects funding when the AMM was not projected this slot
+/// (`slots_since_amm_update > market_stats.funding_period`). With a tiny
+/// `funding_period`, such as the 0 the bankrun `pyth.ts` tests use, a stale
+/// `last_update_slot` would block funding for the rest of the slot. This
+/// mirrors the legacy `_update_amm` the keeper ran before funding.
+/// `AmmQuoter::refresh` is idempotent within a slot and reuses this
+/// projection, so the curve math runs once per slot.
 fn refresh_amm_for_funding_gate(
     market: &mut PerpMarket,
     oracle_map: &mut OracleMap,

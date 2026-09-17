@@ -13,12 +13,12 @@ import { confirmMainnetDirect } from './context';
 import * as ui from './ui';
 
 /**
- * The authority that will actually sign a dispatched instruction: the Squads
- * vault PDA when going through `--multisig`, otherwise the local wallet. Pass
- * this as the `admin` account on instruction builders so the listed authority
- * matches the signer — the on-chain `check_warm`/`check_cold` guard then
- * validates it. Without this, a builder that defaults to a fixed role (e.g.
- * warm admin) produces an instruction the actual signer cannot satisfy.
+ * The authority that signs a dispatched instruction. It is the Squads vault PDA
+ * under `--multisig`, and the local wallet otherwise. Pass it as the `admin`
+ * account on an instruction builder so the listed authority matches the signer.
+ * The on-chain `check_warm` and `check_cold` guards then validate it. Without
+ * it, a builder that defaults to a fixed role such as the warm admin produces
+ * an instruction that the signer cannot satisfy.
  */
 export function resolveAdminAuthority(
 	provider: AnchorProvider,
@@ -82,7 +82,8 @@ export async function sendOrPropose(
 	if (!multisigPda) {
 		await confirmMainnetDirect(memo);
 		if (altAccounts.length > 0) {
-			// Lookup tables require a v0 message; legacy Transaction can't carry them.
+			// A lookup table requires a v0 message. A legacy Transaction cannot
+			// carry one.
 			const { blockhash } = await provider.connection.getLatestBlockhash();
 			const message = new TransactionMessage({
 				payerKey: provider.wallet.publicKey,
@@ -160,8 +161,8 @@ export async function reportDryRun(
 	multisigPda: PublicKey | undefined,
 	vaultIndex = 0,
 	altAccounts: AddressLookupTableAccount[] = [],
-	/** The memo the real `sendOrPropose` will use. It is stored inline in the
-	 * proposal transaction, so the size estimate is only accurate with it. */
+	/** The memo that `sendOrPropose` uses. The proposal transaction stores it
+	 * inline, so the size estimate is only accurate with it. */
 	memo = ''
 ): Promise<void> {
 	ui.header('dry run', pc.dim('nothing sent'));
@@ -209,9 +210,9 @@ export async function reportDryRun(
 		(await provider.connection.getMinimumBalanceForRentExemption(vaultTxSize)) +
 		(await provider.connection.getMinimumBalanceForRentExemption(proposalSize));
 
-	// The proposal-create transaction carries the whole inner message inline,
-	// so a batch that compiles fine can still exceed the 1232-byte transaction
-	// limit at propose time. Size it here rather than letting the send fail.
+	// The proposal-create transaction carries the whole inner message inline, so
+	// a batch that compiles can still exceed the 1232-byte transaction limit at
+	// propose time. Measure the size here rather than let the send fail.
 	const createIx = multisig.instructions.vaultTransactionCreate({
 		multisigPda,
 		transactionIndex,
@@ -230,7 +231,8 @@ export async function reportDryRun(
 	const outer = new Transaction().add(createIx, proposeIx);
 	outer.recentBlockhash = blockhash;
 	outer.feePayer = provider.wallet.publicKey;
-	// serialized message + compact-u16 signature count + one 64-byte signature
+	// The serialized message, plus the compact-u16 signature count, plus one
+	// 64-byte signature.
 	const outerSize = outer.serializeMessage().length + 1 + 64;
 	const TX_LIMIT = 1232;
 

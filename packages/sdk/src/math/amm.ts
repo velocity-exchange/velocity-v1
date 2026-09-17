@@ -753,9 +753,9 @@ export function calculateEffectiveLeverage(
  * Blends the recent mark/oracle standard deviation (`markStd`, `oracleStd`) with oracle
  * confidence, then scales each side independently by that side's recent fill intensity
  * relative to 24h volume (a side that's been trading heavily gets a wider spread on that side).
- * Below the 25bp full-weight threshold the confidence's weight ramps linearly from 1/20 at zero
- * confidence to 1 at the threshold, so tiny confidence noise is damped without a discontinuity
- * at the boundary.
+ * Below the 25bp full-weight threshold, the confidence's weight ramps linearly from 1/20 at
+ * zero confidence to 1 at the threshold. Small confidence noise is damped, and the weight has
+ * no step at the boundary.
  * @param lastOracleConfPct Oracle confidence interval as a fraction of price, PERCENTAGE_PRECISION (1e6).
  * @param reservePrice Current AMM reserve price, PRICE_PRECISION (1e6).
  * @param markStd Recent mark price standard deviation, PRICE_PRECISION (1e6).
@@ -795,9 +795,9 @@ export function calculateVolSpreadBN(
 		clampMax
 	);
 
-	// Mirrors the program's `calculate_spread_conf_component`: below the
-	// full-weight threshold the confidence's weight ramps linearly from 1/D at
-	// zero confidence to 1 at the threshold, rather than stepping off a cliff.
+	// This mirrors the program's `calculate_spread_conf_component`. Below the
+	// full-weight threshold, the confidence's weight ramps linearly from 1/D at
+	// zero confidence to 1 at the threshold, with no step at the threshold.
 	let confComponent = lastOracleConfPct;
 
 	if (lastOracleConfPct.lt(SPREAD_CONF_FULL_WEIGHT_THRESHOLD)) {
@@ -1275,11 +1275,11 @@ export function calculateSpreadBN(
 }
 
 /**
- * Applies the market's manual `ammSpreadAdjustment` (%, grow if positive / shrink if
- * negative, floored at 1) to an already-computed spread pair. Mirrors the tail of
- * `update_spreads` in `vlp/amm/math/spread.rs`, which applies it to the frozen-curve
- * branch as well as the dynamic one, and rounds as integer math (ceil when growing,
- * floor when shrinking).
+ * Applies the market's manual `ammSpreadAdjustment` to an already-computed spread pair. The
+ * adjustment is a percentage. A positive value grows the spread, a negative value shrinks it,
+ * and the result is floored at 1. This mirrors the tail of `update_spreads` in
+ * `vlp/amm/math/spread.rs`, which applies the adjustment to the frozen-curve branch as well as
+ * the dynamic one. The rounding is integer: it rounds up when growing and down when shrinking.
  * @param amm AMM state holding `ammSpreadAdjustment`.
  * @param longSpread Long-side spread before adjustment.
  * @param shortSpread Short-side spread before adjustment.
@@ -1310,10 +1310,11 @@ function applyAmmSpreadAdjustment(
  * Convenience wrapper around `calculateSpreadBN` that derives its lower-level inputs
  * (reserve price, oracle-vs-reserve spread, live oracle std, and confidence interval) from
  * `amm`/`marketStats`/`oraclePriceData` directly, then applies the market's manual
- * `ammSpreadAdjustment` (%, shrink if negative/grow if positive, floored at 1) on top.
- * Mirrors `update_spreads` in `vlp/amm/math/spread.rs`: the dynamic spread is computed
- * whenever `curveUpdateIntensity` is nonzero, and only a zero `curveUpdateIntensity`
- * falls back to `[baseSpread/2, baseSpread/2]` (truncated).
+ * `ammSpreadAdjustment` on top, as a percentage that shrinks the spread when negative, grows
+ * it when positive, and is floored at 1. This mirrors `update_spreads` in
+ * `vlp/amm/math/spread.rs`. The dynamic spread is computed whenever `curveUpdateIntensity` is
+ * nonzero. Only a zero `curveUpdateIntensity` falls back to the truncated
+ * `[baseSpread/2, baseSpread/2]`.
  * @param amm AMM state to price the spread for.
  * @param marketStats Market stats needed for volatility/funding-bias inputs.
  * @param oraclePriceData Current oracle price data; required unless `curveUpdateIntensity` is zero.
@@ -1329,13 +1330,14 @@ export function calculateSpread(
 	now?: BN,
 	reservePrice?: BN
 ): [number, number] {
-	// On chain the dynamic spread is computed whenever curveUpdateIntensity > 0; a
-	// baseSpread of 0 does NOT disable it, it only lowers the floor that the vol
-	// spread is maxed against. Short-circuiting on baseSpread == 0 made the SDK
-	// report a zero-width vAMM spread on markets configured with baseSpread 0,
-	// while the program was quoting an inventory-skewed spread of >10%.
+	// On chain the dynamic spread is computed whenever curveUpdateIntensity is
+	// above 0. A baseSpread of 0 does not disable it. It only lowers the floor
+	// that the volatility spread is maxed against. A short circuit on
+	// baseSpread == 0 would report a zero-width vAMM spread on a market
+	// configured with baseSpread 0, while the program quotes an
+	// inventory-skewed spread there.
 	if (amm.curveUpdateIntensity == 0) {
-		// integer division on chain: `base_spread.safe_div(2)`
+		// The program divides as integers: `base_spread.safe_div(2)`.
 		const halfBaseSpread = Math.floor(amm.baseSpread / 2);
 		return applyAmmSpreadAdjustment(amm, halfBaseSpread, halfBaseSpread);
 	}
@@ -1410,8 +1412,8 @@ export function calculateSpread(
  * raw reserve price when inventory skew and recent/24h funding premium agree in direction; a
  * configurable deadband (`referencePriceOffsetDeadbandPct`) suppresses small offsets, and when
  * the offset's sign flips versus the market's last stored offset, the change is smoothed in
- * gradually over elapsed time (`latestSlot - amm.lastSpreadUpdateSlot`, counted in 400ms periods) rather than snapping
- * instantly, to avoid quote whiplash.
+ * gradually over the time from `amm.lastSpreadUpdateSlot` to `latestSlot`, counted in 400ms
+ * periods, rather than snapping instantly. The smoothing keeps the quote from jumping.
  * @param amm AMM state to derive spread reserves for.
  * @param marketStats Market stats needed for spread and reference-price-offset calculation (including `lastReferencePriceOffset` for smoothing).
  * @param mmOraclePriceData Current MM oracle price data, forwarded to `calculateSpread`.
@@ -1545,8 +1547,8 @@ export function calculateSpreadReserves(
 		amm.curveUpdateIntensity > 100;
 
 	if (doReferencePricOffsetSmooth) {
-		// mirror the program: elapsed milliseconds measured from
-		// lastSpreadUpdateSlot, times the per-400ms budget prorated by that
+		// This mirrors the program. It measures elapsed milliseconds from
+		// lastSpreadUpdateSlot and prorates the per-400ms budget by that
 		// elapsed time. Counting whole periods would floor to zero for any gap
 		// under 400ms and pin the step to the minimum.
 		const elapsedMs = latestSlot

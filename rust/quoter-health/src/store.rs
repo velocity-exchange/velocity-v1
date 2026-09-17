@@ -1,13 +1,13 @@
 //! The state a router keeps about the quoters it carries.
 //!
-//! A router asks one question on the hot path: may this entry ride on this
-//! route. Everything else in this module exists to make that answer correct
-//! and to let an operator see and override how it was reached.
+//! On the hot path a router asks whether one entry may go on one route.
+//! Everything else in this module makes that answer correct, and lets an
+//! operator see and override how it was reached.
 //!
 //! Sampling is deterministic. A throttled quoter appears on one route in N
-//! rather than on a random subset, so two processes reading the same state
-//! carry the same quoter at the same rate, and a report of "it was carried
-//! twice in the last hundred routes" means what it says.
+//! rather than on a random subset. Two processes reading the same state
+//! therefore carry the same quoter at the same rate, and a count of how often
+//! it was carried is exact.
 
 use {
     crate::{
@@ -79,23 +79,23 @@ pub struct Snapshot {
 
 /// Per-process quoter health.
 ///
-/// Cheap to share: every method takes `&self`, so a router wraps it in an
-/// `Arc` and hands it to whichever tasks simulate.
+/// Every method takes `&self`, so a router wraps this in an `Arc` and shares
+/// it with every task that simulates.
 #[derive(Debug)]
 pub struct Health {
     entries: DashMap<Pubkey, Entry>,
     policy: Policy,
     /// Failures no quoter was proven to have caused, by reason. This measures
-    /// the router's own blind spot, not a maker's behaviour.
+    /// what the router failed to attribute, not a maker's behaviour.
     unattributed: DashMap<&'static str, u64>,
     transitions: parking_lot_free::Log,
-    /// Set when the host registered a prometheus surface. Held here rather
-    /// than beside the router so one call records both the decision and the
-    /// series behind it, and the two cannot drift.
+    /// Set when the host registered a prometheus surface. It is held here
+    /// rather than beside the router. One call then records both the decision
+    /// and the series behind it, so the two cannot drift.
     metrics: Option<Arc<Metrics>>,
 }
 
-/// A bounded audit log without pulling in a lock crate.
+/// A bounded audit log that needs no lock crate.
 mod parking_lot_free {
     use {super::Transition, std::sync::Mutex};
 
@@ -138,7 +138,7 @@ impl Health {
         }
     }
 
-    /// Report to prometheus as well as deciding.
+    /// Build a `Health` that reports to prometheus as well as deciding.
     pub fn with_metrics(policy: Policy, metrics: Arc<Metrics>) -> Self {
         Self {
             metrics: Some(metrics),
@@ -156,10 +156,9 @@ impl Health {
 
     /// May this quoter ride on the route being built now.
     ///
-    /// Consumes one step of the quoter's sampler, so call it once per route
-    /// per quoter. An unknown quoter is admitted: absence of evidence is not
-    /// evidence, and refusing a quoter nobody has measured would keep it from
-    /// ever being measured.
+    /// This consumes one step of the quoter's sampler, so call it once per
+    /// route per quoter. An unknown quoter is admitted. Refusing a quoter
+    /// nobody has measured would stop it ever being measured.
     pub fn admits(&self, quoter: &Pubkey) -> bool {
         let now = now_ms();
         let Some(entry) = self.entries.get(quoter) else {
@@ -182,7 +181,7 @@ impl Health {
     ///
     /// A router passes these to the instruction builder so a quarantined or
     /// denied quoter never enters a simulation at all. Throttled quoters are
-    /// not here: they are decided per route by [`Health::admits`].
+    /// not here. [`Health::admits`] decides those once per route.
     pub fn excluded(&self) -> Vec<Pubkey> {
         let now = now_ms();
         self.entries
@@ -323,8 +322,8 @@ impl Health {
 
     /// Note the deploy slot of a quoter's program.
     ///
-    /// A change drops the counters and starts probation: the score described
-    /// code that is no longer running.
+    /// A change drops the counters and starts probation, because the score
+    /// described code that no longer runs.
     pub fn observe_program_slot(&self, quoter: &Pubkey, slot: u64) {
         let now = now_ms();
         let policy = self.policy;
@@ -365,8 +364,8 @@ impl Health {
         });
     }
 
-    /// Drop a pin. This is the rollback: the computed state was kept
-    /// underneath the whole time, so automatic handling resumes at once.
+    /// Drop a pin. The computed state stayed underneath the pin, so automatic
+    /// handling resumes at once.
     pub fn clear_pin(&self, quoter: &Pubkey) {
         let now = now_ms();
         let before = self.admission(quoter);
@@ -387,9 +386,9 @@ impl Health {
 
     /// Advance every ladder and drop quoters nobody has mentioned in a while.
     ///
-    /// Run this on a timer. Without it a quarantine on a quoter no route
-    /// touches would never expire, because expiry is evaluated when the
-    /// quoter is looked at.
+    /// Run this on a timer. Expiry is evaluated when a quoter is read, so
+    /// without the timer a quarantine on a quoter no route touches would
+    /// never expire.
     pub fn sweep(&self) {
         let now = now_ms();
         let policy = self.policy;
@@ -415,8 +414,7 @@ impl Health {
             self.note(transition);
         }
         // A quiet quoter is forgotten, but never one an operator pinned or
-        // one still serving a quarantine. Dropping either would silently
-        // readmit it.
+        // one still serving a quarantine. Dropping either would readmit it.
         self.entries.retain(|_, entry| {
             entry.pin.is_some()
                 || matches!(entry.state.admission, Admission::Quarantined { .. })
@@ -601,7 +599,7 @@ mod tests {
 
     #[test]
     fn the_sweep_never_forgets_a_quarantined_or_pinned_quoter() {
-        // Dropping either would silently readmit it.
+        // Dropping either would readmit it.
         let health = Health::new(Policy {
             entry_ttl_ms: 0,
             ..Policy::default()

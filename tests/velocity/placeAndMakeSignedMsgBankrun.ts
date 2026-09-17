@@ -79,20 +79,20 @@ const PYTH_STORAGE_ACCOUNT_INFO: AccountInfo<Buffer> = {
 /**
  * Signed-message order placement.
  *
- * **Skipped: this harness cannot run the instruction any more.** A
- * signed-message order routes when it is placed and rests what it cannot fill
- * on the market's CLOB, so `place_signed_msg_taker_order` now carries the
- * book's accounts and fails without them. Attaching a book here needs the CLOB
- * program on chain, and `solana-bankrun@0.4.0` cannot execute it: the CLOB is
- * built against `anchor-lang-v2`, whose runtime this bankrun predates, so the
- * program dies at entry with an access violation. The same `.so` runs fine
- * under litesvm.
+ * These tests are skipped, because this harness can no longer run the
+ * instruction. A signed-message order routes when it is placed and rests what
+ * it cannot fill on the market's CLOB. `place_signed_msg_taker_order` therefore
+ * carries the book's accounts and fails without them. Attaching a book here
+ * needs the CLOB program on chain, and `solana-bankrun@0.4.0` cannot execute
+ * it. The CLOB is built against `anchor-lang-v2`, whose runtime this bankrun
+ * predates, so the program fails at entry with an access violation. The same
+ * `.so` runs under litesvm.
  *
- * The routed placement, the migration and the taker-origin auction are covered
- * against a real book in `integration-tests/tests/router_fill.rs`. What is lost
- * here is the signed-message *format* coverage — delegate encoding, parameter
- * sanitization, the malicious-sub-account case. Re-enabling means either
- * upgrading this suite off bankrun 0.4.0 or porting these cases to litesvm.
+ * `integration-tests/tests/router_fill.rs` covers the routed placement, the
+ * migration and the taker-origin auction against a real book. This file's
+ * signed-message format coverage is what is lost. That is the delegate
+ * encoding, the parameter sanitization and the malicious-sub-account case. To
+ * restore it, move this suite off bankrun 0.4.0 or port these cases to litesvm.
  */
 describe.skip('place and make signedMsg order', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
@@ -418,9 +418,9 @@ describe.skip('place and make signedMsg order', () => {
 
 		// Get pyth lazer instruction
 		const pythLazerCrankIxs =
-			// crank rides inside the fill tx sent further below, so lead the stamp to stay fresh
-			// across the transactions in between. The lead must stay under
-			// PYTH_LAZER_MAX_FUTURE_SECONDS, which the program now enforces.
+			// The crank goes inside the fill transaction sent below, so lead the stamp
+			// to keep it fresh across the transactions in between. The lead must stay
+			// under PYTH_LAZER_MAX_FUTURE_SECONDS, which the program enforces.
 			await makerVelocityClient.getPostPythLazerOracleUpdateIxs(
 				[6],
 				freshLazerSolHex(bankrunContextWrapper.connection.getTime(), 10),
@@ -802,7 +802,7 @@ describe.skip('place and make signedMsg order', () => {
 
 		const marketIndex = 0;
 		const baseAssetAmount = BASE_PRECISION;
-		// A bid well under the 84 oracle with no auction: it rests from placement.
+		// A bid far under the 84 oracle, and with no auction. It rests from placement.
 		const takerOrderParams = getLimitOrderParams({
 			marketIndex,
 			direction: PositionDirection.LONG,
@@ -812,8 +812,9 @@ describe.skip('place and make signedMsg order', () => {
 			postOnly: PostOnlyParams.NONE,
 		}) as OrderParams;
 
-		// The client stamps a resting limit its whole signing budget (~14s) ahead;
-		// that slot is the placement deadline, and the program places before it.
+		// The client stamps a resting limit its whole signing budget ahead, which is
+		// about 14 seconds. That slot is the placement deadline, and the program
+		// places the order before it.
 		const signedMsgSlot = slot.addn(35);
 		const uuid = Uint8Array.from(Buffer.from(nanoid(8)));
 		const takerOrderParamsMessage: SignedMsgOrderParamsMessage = {
@@ -960,8 +961,8 @@ describe.skip('place and make signedMsg order', () => {
 			marketType: MarketType.PERP,
 		}) as OrderParams;
 
-		// The UI's signing buffer: a few slots ahead. An auction starts at its
-		// message slot, so the program still refuses to place it before then.
+		// The UI's signing buffer stamps a few slots ahead. An auction starts at its
+		// message slot, so the program refuses to place it before that slot.
 		const uuid = Uint8Array.from(Buffer.from(nanoid(8)));
 		const takerOrderParamsMessage: SignedMsgOrderParamsMessage = {
 			network: SUITE_NETWORK,

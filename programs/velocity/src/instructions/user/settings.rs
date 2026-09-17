@@ -137,9 +137,9 @@ pub fn handle_update_user_vault_owned(
 ) -> Result<()> {
     let mut user = load_mut!(ctx.accounts.user)?;
 
-    // Set-only: a vault-owned User must never be un-flagged, or the
-    // revenue-share sweep would resume crediting it and re-open the NAV-capture
-    // vectors (OtterSec #91/#92/#93). Idempotent — re-marking is a no-op.
+    // The flag is set only and never cleared. Clearing it would let the
+    // revenue-share sweep credit the vault-owned User again and re-open the
+    // NAV-capture vectors (OtterSec #91, #92, and #93). Re-marking does nothing.
     user.add_user_status(crate::state::user::UserStatus::VaultOwned);
     Ok(())
 }

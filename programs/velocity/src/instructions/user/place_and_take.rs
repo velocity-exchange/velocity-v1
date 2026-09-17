@@ -198,8 +198,8 @@ fn place_legacy_take_order<'a>(
         &mut builder_order,
     )?;
 
-    // `builder_order` borrows `escrow`; its borrow ends here at its last use (above), freeing
-    // `escrow` to be re-borrowed for the fill below.
+    // `builder_order` borrows `escrow`. That borrow ends at its last use above, so
+    // `escrow` is free to borrow again for the fill below.
     Ok((user.get_last_order_id(), escrow, referrer_is_accelerated))
 }
 
@@ -285,9 +285,8 @@ pub fn place_and_take_perp_order_legacy<'info>(
 
 /// An unattested taker on a bumped book rests whole and fills through the
 /// activation-slot auction. A shape that demands a synchronous outcome cannot
-/// have one, so it is refused rather than silently rested: an IOC has nothing
-/// to rest, and a success condition measures a fill this transaction will not
-/// perform.
+/// have one, so it is refused rather than rested. An IOC has nothing to rest.
+/// A success condition measures a fill this transaction does not perform.
 fn validate_unattested_take(request: &PlaceAndTakeRequest) -> Result<()> {
     if request.synchronous_take {
         return Ok(());
@@ -308,11 +307,11 @@ fn validate_unattested_take(request: &PlaceAndTakeRequest) -> Result<()> {
     Ok(())
 }
 
-/// Maker priority: the order rests whole and the cross cranks fill it through
-/// the activation-slot auction. An order that cannot rest would silently do
-/// nothing, so it is refused instead. The shape that trips this is an
-/// `OrderType::Oracle` taker: its bound floats with the oracle, so it has no
-/// fixed price to rest at.
+/// Maker priority rests the order whole, and the cross cranks fill it through
+/// the activation-slot auction. An order that cannot rest would do nothing, so
+/// it is refused instead. The shape that trips this is an `OrderType::Oracle`
+/// taker. Its bound floats with the oracle, so it has no fixed price to rest
+/// at.
 fn validate_order_can_rest(order: &Order) -> Result<()> {
     validate!(
         crate::instructions::restable_remainder_price(order, None).is_some(),
@@ -376,8 +375,8 @@ fn create_ephemeral_take<'a>(
         &mut builder_order,
     )?;
 
-    // `builder_order` borrows `escrow`; its borrow ends here at its last use (above), freeing
-    // `escrow` to be re-borrowed for the fill below.
+    // `builder_order` borrows `escrow`. That borrow ends at its last use above, so
+    // `escrow` is free to borrow again for the fill below.
     Ok((order, escrow, referrer_is_accelerated))
 }
 
@@ -414,8 +413,9 @@ fn read_take_shape(
     })
 }
 
-/// Describe the take to the quoters — what it wants, at what bound, and
-/// which loaded users they may fill it against — then size and quote it.
+/// Describe the take to the quoters, then size and quote it. The description
+/// carries what the take wants, at what bound, and which loaded users the
+/// quoters may fill it against.
 fn quote_take_route<'a, 'info>(
     take: &mut EphemeralTake<'_, 'info>,
     users: &'a [crate::state::prop_amm::ClobUserRefV0],
@@ -507,9 +507,9 @@ fn fill_against_route(
 /// Returns the base filled.
 ///
 /// The taker signed a transaction naming the registry entries it wants
-/// consulted, so the accounts it passed *are* its route. There is no third
-/// party whose choice needs constraining; that is the keeper path's problem,
-/// and the signed route's.
+/// consulted, so the accounts it passed are its route. No third party chose
+/// that route, so nothing here needs to constrain one. The keeper path and the
+/// signed route carry that problem.
 fn fill_ephemeral_take(
     take: &mut EphemeralTake<'_, '_>,
     state: &State,
@@ -578,13 +578,12 @@ fn fill_ephemeral_take(
 /// Rest what the take did not fill, then hold the caller's success condition
 /// against the result.
 ///
-/// An unfilled IOC needs no cancel: the order is ephemeral, it never persisted,
-/// so dropping it is enough. A restable remainder lives on the book, not in
-/// `User.orders`, so it is migrated instead of dropped.
-/// `restable_remainder_price` is the whole rule, shared with the keeper fill
-/// route. A remainder that rests on one route and not the other is a remainder
-/// whose fate depends on which one reached it, and once the DLOB is gone the
-/// one that does not rest is an order nothing will fill.
+/// An unfilled IOC needs no cancel. The order is ephemeral and never
+/// persisted, so dropping it is enough. A restable remainder lives on the book
+/// and not in `User.orders`, so it migrates instead. `restable_remainder_price`
+/// is the whole rule, shared with the keeper fill route. Otherwise a
+/// remainder's fate depends on which route reached it. Once the DLOB is gone,
+/// a remainder that does not rest is an order nothing fills.
 ///
 /// Any can't-rest outcome downgrades to a cancel rather than reverting the fill
 /// that already landed. The CLOB's `OrderRef` is left as the transaction's
@@ -688,11 +687,11 @@ pub fn place_and_take_perp_order_v1<'info>(
     )?;
 
     let Some(mut ephemeral_order) = order else {
-        // The one soft-skip reachable on this route: an order whose `max_ts`
-        // already passed builds nothing (the other skip, a failed
-        // try-post-only, cannot reach here — place_and_take refuses every
-        // post-only above). Nothing was placed or filled, so enforce the
-        // success condition against an empty take and stop.
+        // An order whose `max_ts` already passed builds nothing. It is the one
+        // soft skip reachable here. The other skip is a failed try-post-only,
+        // and place_and_take refuses every post-only above. Nothing was placed
+        // or filled, so enforce the success condition against an empty take
+        // and stop.
         return validate_place_and_take_success_condition(success_condition, 0, false);
     };
 
@@ -705,9 +704,9 @@ pub fn place_and_take_perp_order_v1<'info>(
         validate_order_can_rest(&ephemeral_order)?;
         0u64
     } else {
-        // The tail as a subslice rather than a collected list: what the sections
-        // above consumed is the difference in the iterator's remaining length, and
-        // borrowing from there costs nothing where cloning every account did.
+        // The tail is a subslice, not a collected list. What the sections above
+        // consumed is the difference in the iterator's remaining length. A
+        // collected list clones every account, and the subslice clones none.
         let tail_from = accounts.remaining_accounts.len() - remaining_accounts_iter.len();
         fill_ephemeral_take(
             &mut EphemeralTake {

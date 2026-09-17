@@ -697,7 +697,7 @@ mod expired_awaiting_settlement {
         let m = market(MarketStatus::Active, expiry);
         assert!(!expired_awaiting_settlement(&m, expiry - 1));
 
-        // Expired, status not yet flipped: THIS is the window #149 describes. No expiry
+        // Expired, status not yet flipped: THIS is the window OtterSec #149 describes. No expiry
         // price exists, so a live-oracle liquidation must be refused.
         assert!(expired_awaiting_settlement(&m, expiry));
         assert!(expired_awaiting_settlement(&m, expiry + 10_000));

@@ -20,9 +20,19 @@ import type { VelocityProgram } from '../../config';
  * @param args.user - the order owner's `User` account (the taker being filled).
  * @param args.userStats - the taker's `UserStats` PDA.
  * @param args.authority - signer that must own or be a registered delegate of `filler`.
- * @param args.remainingAccounts - writable perp market + oracle `AccountMeta[]` for the order's market, followed by any maker/referrer `(User, UserStats)` account pairs, followed by the taker's `RevenueShareEscrow` account if builder codes are enabled protocol-wide, and, when that taker is referred, the referrer's readonly `UserStats` after the escrow, followed by the quoter section (the market's `QuoterSlabV0` plus the consulted quoters' CPI accounts).
- * @param args.clobAccounts - pass the market's CLOB accounts to use `fillLegacyDlobOrder`, whose restable remainder of the filled order migrates to the book instead of resting in `User.orders`. `marketIndex` is checked against the order's own market on-chain.
- * @param args.signedRoute - must be empty. A DLOB order carries no route: only a signed message names one, and such an order routes at placement and rests any remainder on the market's CLOB, so what a route binds is the fill of that remainder rather than this call. A non-empty claim is rejected on-chain.
+ * @param args.remainingAccounts - the writable perp market and oracle `AccountMeta[]` for
+ * the order's market, then any maker and referrer `(User, UserStats)` account pairs, then the
+ * taker's `RevenueShareEscrow` account if builder codes are enabled protocol-wide, then the
+ * referrer's read-only `UserStats` when that taker is referred, then the quoter section. The
+ * quoter section is the market's `QuoterSlabV0` plus the consulted quoters' CPI accounts.
+ * @param args.clobAccounts - pass the market's CLOB accounts to use
+ * `fillLegacyDlobOrder`. That instruction migrates a restable remainder of the filled order
+ * to the book instead of resting it in `User.orders`. The program checks `marketIndex`
+ * against the order's own market.
+ * @param args.signedRoute - must be empty. A DLOB order carries no route. Only a signed
+ * message names one, and such an order routes at placement and rests any remainder on the
+ * market's CLOB, so a route binds the fill of that remainder rather than this call. The
+ * program rejects a non-empty value.
  * @returns the unsigned `fillPerpOrder` `TransactionInstruction`.
  */
 export async function buildFillPerpOrderInstruction(args: {
@@ -61,10 +71,11 @@ export async function buildFillPerpOrderInstruction(args: {
 					quoterSlab: args.clobAccounts.quoterSlab,
 					clobMarket: args.clobAccounts.clobMarket,
 					clobProgram: args.clobAccounts.clobProgram,
-					// Always named. A fill that leaves a book short of an owner
-					// is refused unless velocity can count the transaction's
-					// accounts, and only this sysvar tells it. It costs one
-					// lock; being refused costs the whole fill.
+					// This account is always named. A fill that leaves a book
+					// short of an owner is refused unless velocity can count
+					// the transaction's accounts, and only this sysvar reports
+					// that count. It costs one lock, and being refused costs
+					// the whole fill.
 					instructionsSysvar: SYSVAR_INSTRUCTIONS_PUBKEY,
 				},
 				remainingAccounts: args.remainingAccounts,
@@ -83,9 +94,10 @@ export async function buildFillPerpOrderInstruction(args: {
 				user: args.user,
 				userStats: args.userStats,
 				authority: args.authority,
-				// Always named, as on the v1 route: a fill that leaves a book
-				// short of an owner is refused unless velocity can count the
-				// transaction's accounts, and only this sysvar tells it.
+				// This account is always named, as on the v1 route. A fill that
+				// leaves a book short of an owner is refused unless velocity can
+				// count the transaction's accounts, and only this sysvar reports
+				// that count.
 				instructionsSysvar: SYSVAR_INSTRUCTIONS_PUBKEY,
 			},
 			remainingAccounts: args.remainingAccounts,

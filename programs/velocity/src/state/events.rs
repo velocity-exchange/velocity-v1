@@ -32,9 +32,10 @@ pub struct NewUserRecord {
     pub referrer: Pubkey,
 }
 
-/// Consumers decode `action` by discriminant, so the order is ABI. `AutoEnrollment` is last
-/// because it is deleted with `ACCELERATED_REFERRAL_ENROLLMENT_ENABLED`; removing a trailing
-/// variant leaves the admin discriminants where they are.
+/// Consumers decode `action` by discriminant, so the variant order is ABI.
+/// `AutoEnrollment` is last because it goes away with
+/// `ACCELERATED_REFERRAL_ENROLLMENT_ENABLED`. Removal of a trailing variant
+/// leaves the admin discriminants where they are.
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq)]
 pub enum AcceleratedReferralStatusChange {
     AdminGrant,
@@ -427,14 +428,14 @@ pub enum OrderActionExplanation {
     OrderFilledWithOpenbookV2,
     TransferPerpPosition,
     OrderFilledWithExternalQuoter,
-    /// A resting CLOB order removed by the eviction crank: the side reached
-    /// its threshold and the worst-priced order came off. Distinct from a
-    /// cancel because nobody asked for it, and because a placed trigger
-    /// re-arms on one rather than dying.
+    /// A resting CLOB order that the eviction crank removed. The side reached
+    /// its threshold and the worst-priced order was removed. This is not a
+    /// cancel: no owner asked for it, and a placed trigger re-arms on it
+    /// rather than ending.
     ClobOrderEvicted,
     /// A resting CLOB order removed because a fill left it under the market's
-    /// minimum order size. The maker was filled in the same transaction, so
-    /// this always accompanies a fill record.
+    /// minimum order size. The maker was filled in the same transaction, so a
+    /// fill record always accompanies this one.
     ClobRemainderCulled,
 }
 
@@ -916,17 +917,17 @@ pub struct PerpMarketFeeSweepRecord {
     pub amm_provision_tokenized: u64,
 }
 
-/// Emitted when the hot fee-withdraw role drains accumulated crank rewards
-/// from the protocol-owned `User` (`withdraw_protocol_user_deposit`).
+/// Emitted when `withdraw_protocol_user_deposit` draws accumulated crank
+/// rewards out of the protocol-owned `User`.
 ///
-/// Versioned in the name, unlike the records inherited from upstream. An
-/// `#[event]`'s discriminator is derived from its struct name, so adding a
-/// field to a `…Record` changes the payload under a discriminator consumers
-/// already decode — the old decoder either truncates or fails, and nothing on
-/// the wire says which shape it got. A field addition here ships as
-/// `ProtocolUserWithdrawRecordV1` instead, with its own discriminator, so an
-/// old subscriber ignores it rather than mis-parsing it. Events velocity adds
-/// from here on follow the same rule.
+/// The name carries a version, unlike the records inherited from upstream. An
+/// `#[event]` derives its discriminator from its struct name. A field added to
+/// a `…Record` therefore changes the payload under a discriminator that
+/// consumers already decode. The old decoder then truncates or fails, and
+/// nothing on the wire says which shape it received. A field addition here
+/// ships as `ProtocolUserWithdrawRecordV1` with its own discriminator, so an
+/// old subscriber ignores it rather than misreading it. Every event velocity
+/// adds follows the same rule.
 #[event]
 pub struct ProtocolUserWithdrawRecordV0 {
     /// unix_timestamp of action
@@ -940,18 +941,18 @@ pub struct ProtocolUserWithdrawRecordV0 {
 }
 
 /// The first shape of the taker-origin resolution record, from when the crank
-/// resolved a cross against exactly one book counterparty. Superseded by
-/// [`TakerOriginCrossRecordV1`]: the crank now routes the remainder, so a
-/// single `maker` no longer describes the match. Kept so a reader of historical
-/// logs still has the type — nothing emits it.
+/// resolved a cross against exactly one book counterparty.
+/// [`TakerOriginCrossRecordV1`] replaces it. The crank now routes the
+/// remainder, so a single `maker` no longer describes the match. Nothing emits
+/// this type. It stays so that a reader of historical logs still has it.
 #[event]
 pub struct TakerOriginCrossRecordV0 {
     /// unix_timestamp of action
     pub ts: i64,
     pub slot: u64,
     pub market_index: u16,
-    /// owner of the taker-origin order that aggressed this match — the later of
-    /// the two to rest when both sides were taker-origin
+    /// owner of the taker-origin order that took liquidity in this match. When
+    /// both sides were taker-origin, this is the later of the two to rest.
     pub taker: Pubkey,
     /// the counterparty, filled at its own price
     pub maker: Pubkey,
@@ -963,47 +964,48 @@ pub struct TakerOriginCrossRecordV0 {
     pub rest_price: u64,
     /// the counterparty's price — what the match settled at
     pub fill_price: u64,
-    /// gross quote the taker gained: |rest_price − fill_price| × base
+    /// gross quote the taker gained, |rest_price - fill_price| times base
     pub improvement: u64,
     /// quote paid to the cranker out of that improvement
     pub crank_reward: u64,
-    /// the counterparty was itself a migrated taker remainder, and won the
-    /// price by resting first — so this match was two remainders clearing
-    /// against each other rather than one against an ordinary maker
+    /// true when the counterparty was itself a migrated taker remainder that
+    /// won the price by resting first. The match was then two remainders
+    /// clearing against each other rather than one against an ordinary maker.
     pub maker_taker_origin: bool,
-    /// size the match was too small to consume, put back on the book still
-    /// taker-origin (0 when the cross consumed both orders outright, or when
-    /// the leftover was below the book's minimum and was dropped)
+    /// size the match was too small to consume, placed back on the book still
+    /// taker-origin. Zero when the cross consumed both orders, or when what
+    /// was left fell below the book's minimum and was dropped.
     pub remainder_base_asset_amount: u64,
-    /// the re-placed remainder's new CLOB order id (0 when nothing was
-    /// re-placed) — the old handle is stale, this is the client's new one
+    /// the re-placed remainder's new CLOB order id. Zero when nothing was
+    /// re-placed. The client's old handle is stale, and this is its new one.
     pub remainder_order_id: u64,
-    /// whose remainder was re-placed: `taker` or `maker` above (the default
-    /// pubkey when nothing was). Only a match between two remainders can leave
-    /// it on the maker, since an ordinary counterparty is consumed to exactly
-    /// the size the cross was priced for
+    /// whose remainder was re-placed, `taker` or `maker` above. The default
+    /// pubkey when nothing was. Only a match between two remainders can leave
+    /// it on the maker, because an ordinary counterparty is consumed to
+    /// exactly the size the cross was priced for.
     pub remainder_owner: Pubkey,
 }
 
-/// Emitted when `crank_taker_origin_cross` resolves a resting taker remainder:
-/// what the taker gained by being routed instead of left at its own price, and
-/// what the cranker took out of that.
+/// Emitted when `crank_taker_origin_cross` resolves a resting taker remainder.
+/// It reports what the taker gained by being routed instead of left at its own
+/// price, and what the cranker took out of that gain.
 ///
-/// The fill itself also emits the ordinary `OrderActionRecord`s for the match —
-/// one per source the router reached, which is where the counterparties are
-/// named. This record carries what those structurally cannot: the price the
-/// order was *resting* at (an `OrderActionRecord` only ever knows the price it
-/// filled at), the improvement between the two, and the crank reward, which is
-/// charged to the taker out of the improvement rather than carved out of the
-/// taker fee, so it never appears as that record's `filler_reward`.
+/// The fill also emits the ordinary `OrderActionRecord`s for the match, one
+/// per source the router reached. Those records name the counterparties. This
+/// record carries three things they cannot. The price the order was resting
+/// at, because an `OrderActionRecord` only knows the price it filled at. The
+/// improvement between the two prices. The crank reward, which is charged to
+/// the taker out of the improvement rather than taken from the taker fee, so
+/// it never appears as that record's `filler_reward`.
 #[event]
 pub struct TakerOriginCrossRecordV1 {
     /// unix_timestamp of action
     pub ts: i64,
     pub slot: u64,
     pub market_index: u16,
-    /// owner of the remainder this crank resolved. When two remainders crossed,
-    /// this is the later of the two to rest — the one demanding liquidity.
+    /// owner of the remainder this crank resolved. When two remainders
+    /// crossed, this is the later of the two to rest, the one that demanded
+    /// liquidity.
     pub taker: Pubkey,
     /// the cranker's `User`, credited `crank_reward` in quote
     pub filler: Pubkey,
@@ -1014,16 +1016,16 @@ pub struct TakerOriginCrossRecordV1 {
     pub rest_price: u64,
     /// what the fill averaged across every source it reached
     pub fill_price: u64,
-    /// gross quote the taker gained: |rest_price − fill_price| × base
+    /// gross quote the taker gained, |rest_price - fill_price| times base
     pub improvement: u64,
     /// quote paid to the cranker out of that improvement
     pub crank_reward: u64,
-    /// size still resting after the fill (0 when the fill took the whole
+    /// size still resting after the fill. Zero when the fill took the whole
     /// remainder, or when what was left fell under the book's minimum and was
-    /// culled)
+    /// culled.
     pub remainder_base_asset_amount: u64,
-    /// the CLOB order this resolved. It keeps its id and its queue position —
-    /// the fill shrinks it in place rather than re-placing it, so a client's
-    /// existing handle stays good.
+    /// the CLOB order this resolved. It keeps its id and its queue position,
+    /// because the fill shrinks it in place rather than re-placing it. A
+    /// client's existing handle stays good.
     pub clob_order_id: u64,
 }

@@ -1,21 +1,21 @@
-// Wire format for velocity's quoter interface: the contract between velocity
-// (the router) and any program registered as a quoter — the CLOB, the
+// Wire format for velocity's quoter interface. It is the contract between
+// velocity (the router) and any program registered as a quoter: the CLOB, the
 // midpoint, and third-party PropAMMs.
 //
 // # One declaration, three programs
 //
-// This crate is the whole interface: the arguments a quoter is called with
-// ([`QuoteArgsV0`], [`ExecuteArgsV0`] and the types they carry) and the
+// This crate is the whole interface. It holds the arguments a quoter is called
+// with ([`QuoteArgsV0`], [`ExecuteArgsV0`] and the types they carry) and the
 // responses it must produce. Reading it should be enough to implement one.
 //
 // `quote_v0` and `execute_v0` answer across a program boundary in bytes.
-// Velocity writes the arguments and reads the responses; the quoter does the
-// reverse. Declaring the shape once per program leaves nothing pinning the
-// declarations against each other, so a
-// field added on one side and forgotten on another gives two self-consistent
-// programs that disagree about the bytes between them — and the disagreement
-// lands on a value transfer, where a misread `base_size` moves the wrong
-// amount of a user's collateral. The types live here and all three use them.
+// Velocity writes the arguments and reads the responses. The quoter does the
+// reverse. One declaration per program pins nothing against the other
+// declarations. A field added on one side and forgotten on another then gives
+// two self-consistent programs that disagree about the bytes between them. The
+// disagreement lands on a value transfer, where a misread `base_size` moves
+// the wrong amount of a user's collateral. The types live here and all three
+// programs use them.
 //
 // # The signer a quoter is called with is shared
 //
@@ -25,21 +25,21 @@
 // live inside its own call, the key velocity authenticates with at every
 // other quoter on that market.
 //
-// **The key's presence does not mean velocity is the immediate caller.**
+// The presence of the key does not mean velocity is the immediate caller.
 // Another quoter on the same market may forward it. That is the one place
 // this interface departs from a dedicated authority, where the inference
 // would be sound.
 //
-// What makes the forwarding useless is that velocity refuses to approve a
-// quoter whose registered account list names another approved quoter's
-// response account, in both directions and across the whole market. A
-// forwarded call therefore cannot name the account its callee needs — as long
+// The forwarding is useless because velocity refuses to approve a quoter whose
+// registered account list names another approved quoter's response account. It
+// applies that check in both directions and across the whole market. A
+// forwarded call therefore cannot name the account its callee needs, as long
 // as the callee needs it.
 //
-// So the rule for an implementer: **keep any authority you gate on this key
-// on the account you write your response to.** An instruction cannot then
+// So the rule for an implementer is to keep any authority gated on this key on
+// the account the quoter writes its response to. An instruction cannot then
 // read the authority without taking the response account, and no other quoter
-// on the market can name it. Velocity's own quoters are built this way: the
+// on the market can name it. Velocity's own quoters are built this way. The
 // book stores `place_authority` on its market account and the midpoint stores
 // `execute_authority` on its quoter account, and each writes its response
 // there. An implementer who stores the authority elsewhere can gate an
@@ -51,60 +51,59 @@
 //
 // # The responses are read in place
 //
-// A response is plain data sitting in the quoter's account, and velocity reads
-// it there: fixed-width records, little-endian, no length-prefixed nesting and
-// no deserialization step. That is not only a CU question. Velocity's heap is
-// 32 KB and never reclaims, and one fill CPIs every registered quoter twice,
-// so a response that decodes into `Vec`s spends heap per quoter per fill that
-// nothing gives back.
+// A response is plain data in the quoter's account, and velocity reads it
+// there: fixed-width records, little-endian, no length-prefixed nesting and no
+// deserialization step. Compute units are not the only reason. Velocity's heap
+// is 32 KB and never reclaims, and one fill CPIs every registered quoter
+// twice. A response that decodes into `Vec`s spends heap per quoter per fill
+// that nothing returns.
 //
 // Every record is `#[repr(C)]` and free of implicit padding, which is what
 // both `bytemuck::Pod` and wincode's zero-copy rules require. The `Pod`
-// derives below are the enforcement: a field reordered into a layout with a
-// padding hole stops compiling rather than silently changing the wire. Field
-// order is therefore load-bearing — the `u64`s lead so the 34-byte
-// [`UserRefV0`] cannot push one out of alignment, and each record carries
-// explicit tail padding to a multiple of its alignment.
+// derives below enforce it. A field reordered into a layout with a padding
+// hole stops compiling rather than changing the wire. Field order is therefore
+// part of the contract. The `u64` fields lead so the 34-byte [`UserRefV0`]
+// cannot push one out of alignment, and each record carries explicit tail
+// padding to a multiple of its alignment.
 //
 // # Framing
 //
-// Each response is a header of counts followed by that many fixed-width
-// records per section, in declaration order. Sections are contiguous; the
+// Each section of a response is a count followed by that many fixed-width
+// records. The sections are contiguous and come in declaration order. The
 // caller owns anything past the last one.
 //
-// A quoter does not serialize a response, it streams one: the records come
-// out of a book walk that does not know a section's count until it ends. The
-// streaming writers are [`QuoteWriter`] and [`ExecuteWriter`], and they live
-// here for the reason the records do. A section a quoter forgets to write is
-// the same disagreement as a field read at the wrong offset. The sections are
-// `finish`'s parameters, so a new one stops every quoter compiling.
+// A quoter streams a response rather than serializing one. The records come
+// out of a book walk that does not know a section's count until the walk ends.
+// The streaming writers are [`QuoteWriter`] and [`ExecuteWriter`], and they
+// live here for the reason the records do. A section a quoter forgets to write
+// is the same disagreement as a field read at the wrong offset. The sections
+// are `finish`'s parameters, so a new one stops every quoter compiling.
 //
-// An execute response is [`ExecuteHeaderV0`], then [`UserBalanceChangeV0`],
-// then [`CancelledRemainderV0`], then [`CompletedOrderV0`], then
-// [`PartiallyFilledOrderV0`]. Completed order
-// ids are their own section rather than a list inside each change: a quoter
-// aggregates repeated fills into one record per user as it goes, so ids for a
-// user arrive interleaved with other users' fills. Naming the change from the
-// id makes appending one an O(1) write at the tail instead of a shift of
-// everything after it.
+// An execute response is [`UserBalanceChangeV0`], then
+// [`CancelledRemainderV0`], then [`CompletedOrderV0`], then
+// [`PartiallyFilledOrderV0`]. Completed order ids are their own section rather
+// than a list inside each change. A quoter aggregates repeated fills into one
+// record per user as it goes, so ids for a user arrive interleaved with other
+// users' fills. Naming the change from the id makes appending one an O(1)
+// write at the tail instead of a shift of everything after it.
 //
 // # Addresses
 //
 // Velocity names the address type `Pubkey` and the v2 programs name it
-// `Address`; it is one type, because solana-pubkey re-exports `Address as
+// `Address`. It is one type, because solana-pubkey re-exports `Address as
 // Pubkey` and solana-address 1.x is a shim over 2.x. It is spelled `Pubkey`
 // here because anchor's IDL derive recognizes it by that token rather than by
 // the type it resolves to, and velocity is the consumer that runs
 // `anchor idl build`.
 
-// Re-exported so a consumer can write a response without taking its own
-// wincode dependency — the framing is this crate's to define, so the encoder
-// is too.
-// The v2 IdlType derive emits `anchor_lang::`; point it at the fork when the
+// The v2 IdlType derive emits `anchor_lang::`. Point it at the fork when the
 // v2 IDL build is on. Inert (feature undefined) in the v1 crate.
 #[cfg(feature = "idl-build-v2")]
 extern crate anchor_lang_v2 as anchor_lang;
 
+// Re-exported so a consumer can write a response without taking its own
+// wincode dependency. The framing is this crate's to define, so the encoder is
+// too.
 pub use wincode;
 pub mod write;
 pub use write::{ExecuteWriter, L3Writer, QuoteWriter};
@@ -123,12 +122,12 @@ use {
 /// A velocity user in derivable form: the wallet and sub-account index that
 /// both the `User` and `UserStats` PDAs derive from.
 ///
-/// Stored rather than the `User` key so an off-chain reader — a relay resolver
-/// staging a crank — can reach every user-derived account from a quoter's
-/// state alone. A stored `User` key is a dead end, because its authority lives
-/// inside account data the reader cannot load. Velocity matches refs against
-/// its loaded users by field, never by derivation, so the hot path pays
-/// nothing for this.
+/// Stored rather than the `User` key so an off-chain reader can reach every
+/// user-derived account from a quoter's state alone. A relay resolver staging a
+/// crank is one such reader. A stored `User` key stops that reader, because its
+/// authority lives inside account data the reader cannot load. Velocity matches
+/// refs against its loaded users by field, never by derivation, so the hot path
+/// pays nothing for this.
 #[repr(C)]
 #[cfg_attr(
     feature = "anchor-derive",
@@ -143,7 +142,7 @@ pub struct UserRefV0 {
 
 // The wincode schema below is written out rather than derived. The derive needs
 // `Address` to carry wincode's own traits, which it does only from
-// solana-address 2.7; litesvm and the agave RPC crates both hold this crate's
+// solana-address 2.7. Litesvm and the agave RPC crates both hold this crate's
 // trees to 2.6. The key is 32 opaque bytes on the wire either way, so the
 // schema delegates to `[u8; 32]` and `u16` and produces the same bytes the
 // derive would. `the_user_ref_schema_matches_its_byte_form` pins that.
@@ -168,9 +167,9 @@ const fn user_ref_type_meta(fields: [TypeMeta; 2]) -> TypeMeta {
 }
 
 // SAFETY: `write` emits the key's 32 bytes then the sub-account index, which is
-// exactly what `TYPE_META` sizes, and `TYPE_META` claims zero-copy only when
-// both fields are zero-copy and their sizes sum to `size_of::<UserRefV0>()` —
-// the derive's own test for padding.
+// what `TYPE_META` sizes. `TYPE_META` claims zero-copy only when both fields are
+// zero-copy and their sizes sum to `size_of::<UserRefV0>()`, which is the
+// derive's own test for padding.
 unsafe impl<C: ConfigCore> SchemaWrite<C> for UserRefV0 {
     type Src = Self;
 
@@ -246,10 +245,10 @@ impl UserRefV0 {
 
 /// One user's share of an executed fill.
 ///
-/// The sign convention is the taker's direction, not this user's: `base_size`
-/// is subtracted from this user when the taker went long — the taker takes
-/// base from them — and added when the taker went short. `quote_size` moves
-/// the opposite way.
+/// The sign convention follows the taker's direction, not this user's.
+/// `base_size` is subtracted from this user when the taker went long, because
+/// the taker takes base from them. It is added when the taker went short.
+/// `quote_size` moves the opposite way.
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Pod, Zeroable, SchemaRead, SchemaWrite)]
 #[wincode(assert_zero_copy)]
@@ -261,12 +260,11 @@ pub struct UserBalanceChangeV0 {
     pub _pad: [u8; 6],
 }
 
-/// One order a quoter removed as a sub-min remainder of a fill.
+/// One order a quoter removed as a sub-minimum remainder of a fill.
 ///
-/// Distinct from a completed order: a completed order was consumed, this one
-/// was culled because what remained of it fell under the market's minimum.
-/// Both unwind the maker's aggregates, but only this one carries a size to
-/// release.
+/// A completed order was consumed. This one was removed because what remained
+/// of it fell under the market's minimum. Both unwind the maker's aggregates,
+/// but only this one carries a size to release.
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Pod, Zeroable, SchemaRead, SchemaWrite)]
 #[wincode(assert_zero_copy)]
@@ -274,9 +272,9 @@ pub struct UserBalanceChangeV0 {
 pub struct CancelledRemainderV0 {
     pub order_id: u64,
     pub base_asset_amount: u64,
-    /// The price the culled order was resting at.
+    /// The price the removed order was resting at.
     ///
-    /// A cull is the one removal on the fill path the caller has to report
+    /// This is the one removal on the fill path the caller has to report
     /// itself, and a removal record that could not state a price would carry a
     /// zero into whatever reads it. There is at most one of these per execute,
     /// so the width is paid once rather than per fill.
@@ -292,8 +290,8 @@ pub struct CancelledRemainderV0 {
 /// belongs to by index.
 ///
 /// The reader decrements that user's open-order count once per entry and
-/// releases any per-order state it keeps against the book, so an id for an
-/// order still live on the book frees a live order's shadow.
+/// releases any per-order state it keeps against the book. An id for an order
+/// that is still on the book therefore releases a live order's state.
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Pod, Zeroable, SchemaRead, SchemaWrite)]
 #[wincode(assert_zero_copy)]
@@ -302,58 +300,55 @@ pub struct CompletedOrderV0 {
     pub order_id: u64,
     /// Which entry of [`ExecuteResponseV0::changes`] this order belongs to.
     ///
-    /// The two lists are not the same length, which is the whole reason this
-    /// field exists. Balance changes merge by user — a maker whose three
-    /// orders a sweep consumed gets *one* change carrying the summed base and
-    /// quote — while a completed entry is per order, so three of them point
-    /// at that one change.
+    /// The two lists are not the same length, which is why this field exists.
+    /// Balance changes merge by user. A maker whose three orders a sweep
+    /// consumed gets one change carrying the summed base and quote, and three
+    /// completed entries point at that one change.
     ///
-    /// An index rather than a [`UserRefV0`] because a ref is 34 bytes and
-    /// this record is 16. Repeating the owner on every consumed order would
-    /// cost more than the orders do.
+    /// An index rather than a [`UserRefV0`], because a ref is 34 bytes and this
+    /// record is 16. Repeating the owner on every consumed order would cost
+    /// more than the orders do.
     ///
-    /// A quoter fills it in as it walks: when an order is consumed whole, the
-    /// index is the position of the change record its owner already has, or
-    /// the position of the one about to be written for them.
+    /// A quoter fills it in as it walks. When an order is consumed whole, the
+    /// index is the position of the change record its owner already has, or the
+    /// position of the one about to be written for them.
     ///
-    /// What a caller does with it is the reason to get it right. The change
-    /// moves the position; these ids do the per-order bookkeeping the change
-    /// cannot express — closing out each order, and freeing whatever the
-    /// caller keeps per order against the book. Velocity also counts them per
-    /// change to widen the rounding it allows: a change merged from N orders
-    /// was priced across N levels, so it is held to N roundings rather than
-    /// one, and under-reporting them prices the maker's fill outside its own
-    /// quote.
+    /// The change moves the position. These ids carry the per-order bookkeeping
+    /// the change cannot express: closing each order, and releasing whatever
+    /// the caller keeps per order against the book. Velocity also counts them
+    /// per change to widen the rounding it allows. A change merged from N
+    /// orders was priced across N levels, so it is held to N roundings rather
+    /// than one. An under-reported count prices the maker's fill outside its
+    /// own quote.
     ///
-    /// [`ExecuteResponseV0::parse`] refuses an index past the end of
-    /// `changes`. It has to: the reader indexes with it, so a dangling one
-    /// unwinds whichever record happens to sit there, which is some other
-    /// user's live margin.
+    /// [`ExecuteResponseV0::parse`] refuses an index past the end of `changes`.
+    /// The reader indexes with it, so a dangling index unwinds whichever record
+    /// sits there, which is some other user's live margin.
     pub change_index: u32,
     /// The caller's own id for this order.
     ///
-    /// A quoter's order id is its own; the caller has one too, minted when it
+    /// A quoter's order id is its own. The caller has one too, minted when it
     /// asked for the placement, and every record it keeps is filed under that
-    /// one. Reporting it here is what lets the caller close its record without
-    /// holding a map from one id space to the other. Zero when the caller
-    /// supplied none.
+    /// one. Reporting it here lets the caller close its record without holding
+    /// a map from one id space to the other. Zero when the caller supplied
+    /// none.
     pub client_order_id: u32,
 }
 
 /// The one order a fill left resting with less size than it found.
 ///
-/// A completed order tells the caller an order is gone. This tells it an
-/// order moved. Both are per-order facts a balance change cannot express: the
-/// change merges every order of one maker into one record, so a caller
-/// holding per-order state has nothing to apply a partial fill to.
+/// A completed order tells the caller an order is gone. This record tells it an
+/// order changed size. Both are per-order facts a balance change cannot
+/// express. The change merges every order of one maker into one record, so a
+/// caller holding per-order state has nothing to apply a partial fill to.
 ///
 /// At most one exists per execute. A best-first walk consumes whole orders
-/// until the taker's size runs out, and running out is what ends the walk —
-/// so only the last order it reached can be partial, and a partial that fell
-/// under the market's minimum is a [`CancelledRemainderV0`] instead.
+/// until the taker's size runs out, and the walk ends when it runs out. Only
+/// the last order the walk reached can be partial. A remainder that fell under
+/// the market's minimum is a [`CancelledRemainderV0`] instead.
 ///
-/// `base_filled` is what this order gave to this fill, not what it has given
-/// in its life. The caller accumulates.
+/// `base_filled` is what this order gave to this fill, not what it gave over
+/// its life. The caller accumulates.
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Pod, Zeroable, SchemaRead, SchemaWrite)]
 #[wincode(assert_zero_copy)]
@@ -389,10 +384,10 @@ pub const PRICE_LEVEL_BYTES: usize = core::mem::size_of::<PriceLevelV0>();
 
 /// Bytes wincode spends on a slice's length prefix.
 ///
-/// A quoter that streams its records — writing them as it walks a book,
-/// rather than gathering them into a slice it could serialize in one call —
-/// has to lay this prefix down itself and backfill the count at the end. The
-/// encoding is wincode's, not a choice this crate makes, so
+/// A quoter that streams its records writes them as it walks a book, rather
+/// than gathering them into a slice it could serialize in one call. It has to
+/// write this prefix itself and backfill the count at the end. The encoding is
+/// wincode's, not a choice this crate makes, so
 /// [`tests::the_length_prefix_is_what_wincode_writes`] pins the two together.
 pub const LEN_BYTES: usize = 8;
 
@@ -403,7 +398,7 @@ pub fn len_prefix(count: usize) -> [u8; LEN_BYTES] {
 }
 
 const _: () = {
-    // The records are the wire; a field reordered or widened must fail here
+    // The records are the wire. A field reordered or widened must fail here
     // rather than change what the other program reads.
     assert!(USER_REF_BYTES == 34);
     assert!(CHANGE_BYTES == 56);
@@ -416,7 +411,7 @@ const _: () = {
 /// What `execute_v0` answers: every balance change the fill produced, every
 /// sub-min remainder it removed, and every resting order it consumed.
 ///
-/// The fields borrow straight out of the quoter's account — reading one
+/// The fields borrow straight out of the quoter's account, so reading one
 /// allocates nothing.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, SchemaRead, SchemaWrite)]
 #[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
@@ -433,12 +428,12 @@ pub struct ExecuteResponseV0<'a> {
 impl<'a> ExecuteResponseV0<'a> {
     /// Read a response out of `bytes`.
     ///
-    /// Validates what makes the bytes readable, and one thing beyond it: every
-    /// completed order must name a balance change that exists, because an
-    /// index past the end would otherwise unwind whichever record happens to
-    /// sit there — a live order's margin. What the numbers *mean* stays the
-    /// caller's to check; this cannot know whether a quoter was entitled to
-    /// move the amounts it reported.
+    /// Validates what makes the bytes readable, and one thing beyond it. Every
+    /// completed order must name a balance change that exists. An index past
+    /// the end would otherwise unwind whichever record sits there, which is a
+    /// live order's margin. What the numbers mean stays the caller's to check.
+    /// This cannot know whether a quoter was entitled to move the amounts it
+    /// reported.
     pub fn parse(bytes: &'a [u8]) -> Result<Self, SpecError> {
         let response: Self = wincode::deserialize(bytes).map_err(|_| SpecError::Read)?;
         if !completed_orders_fit(response.completed, response.changes.len())
@@ -466,10 +461,10 @@ impl<'a> ExecuteResponseV0<'a> {
     /// exactly one.
     ///
     /// A change merges every order of one maker, so most of the time it names
-    /// no single order and this is `None`. When it does name one — one order
-    /// consumed and nothing left resting, or one order left resting and none
-    /// consumed — the change and the order are the same event, and a reader
-    /// can file the fill under that order.
+    /// no single order and this is `None`. It names one when the fill consumed
+    /// one order and left nothing resting, or left one order resting and
+    /// consumed none. The change and the order are then the same event, and a
+    /// reader can file the fill under that order.
     pub fn sole_client_order_id(&self, change_index: usize) -> Option<u32> {
         let index = change_index as u32;
         let mut ids = self
@@ -506,17 +501,16 @@ pub struct QuoteResponseV0<'a> {
     /// stops short of. It also keeps the tail of this response one record, so
     /// a quoter writes it the way it writes a rung.
     ///
-    /// A caller cannot carry every user a book might hold — a transaction
-    /// locks at most 64 accounts and a maker costs two — so a quoter that
-    /// refused to answer at all whenever one was missing would make a
-    /// fragmented book unfillable. It stops instead, and says where it
-    /// stopped.
+    /// A caller cannot carry every user a book might hold. A transaction locks
+    /// at most 64 accounts and a maker costs two. A quoter that refused to
+    /// answer whenever one user was missing would make a fragmented book
+    /// unfillable. It stops instead, and says where it stopped.
     ///
-    /// That turns depth into the caller's own tradeoff: load more users, win
-    /// more of the book. It is also the number that makes the tradeoff
-    /// enforceable. A caller that skipped this liquidity and filled elsewhere
-    /// at a worse price did not run out of room, it routed around a
-    /// competitor, and this field is how its own checks can tell.
+    /// Depth is then the caller's own tradeoff: load more users, win more of
+    /// the book. This number also makes the tradeoff enforceable. A caller that
+    /// skipped this liquidity and filled elsewhere at a worse price routed
+    /// around a competitor rather than running out of room, and its own checks
+    /// read this field to tell.
     pub withheld: PriceLevelV0,
 }
 
@@ -572,28 +566,22 @@ pub(crate) fn partial_orders_fit(partial: &[PartiallyFilledOrderV0], changes: us
             .all(|entry| (entry.change_index as usize) < changes)
 }
 
-/// Users a quote or execute may fill, and how much room each has left.
+/// Most users a call may name.
 ///
-/// The request half of the wire, declared here for the reason the responses
-/// are: velocity writes these bytes and a quoter reads them, and two
-/// hand-mirrored declarations are two programs that can drift into
-/// self-consistent disagreement. A cap misread as a taker, or a side read off
-/// by one, silently turns a skip into a fill.
-///
-/// Most a call may name. The bound is the account-lock quote_cap of the
-/// transaction that carries the set, and it is also what [`UserCapsV0`] can
-/// address: a cap names a user by its index here, and the exclusion bitmap
-/// holds one bit per slot up to this number.
+/// The bound is the account-lock limit of the transaction that carries the set,
+/// and it is also what [`UserCapsV0`] can address. A cap names a user by its
+/// index here, and the exclusion bitmap holds one bit per slot up to this
+/// number.
 pub const USER_SET_CAPACITY: usize = 48;
 
-/// Users that can carry a *partial* cap on one call.
+/// Users that can carry a partial cap on one call.
 ///
-/// Only partials need a slot. A user with no room at all rides
-/// [`UserCapsV0::excluded_bid`] / `excluded_ask`, one bit each, so every user
-/// in the set can be excluded at once — which is what one sharp move
-/// produces, and the moment a book most needs to stay usable. What is left
-/// here is the narrow band with room for some of what they rest, and an
-/// overflow there costs no more than a revert that was already coming.
+/// Only a partial cap needs a slot. A user with no room at all rides
+/// [`UserCapsV0::excluded`], one bit each, so every user in the set can be
+/// excluded at once. One sharp move produces exactly that, and it is the moment
+/// a book most needs to stay usable. The slots are left for the narrow band of
+/// users with room for some of what they rest. An overflow there costs no more
+/// than a revert that was already coming.
 pub const USER_CAPS_CAPACITY: usize = 8;
 
 /// Bytes of bitmap for one bit per user in the set.
@@ -602,8 +590,8 @@ pub const USER_EXCLUSION_BITMAP_BYTES: usize = USER_SET_CAPACITY.div_ceil(8);
 /// Taker direction, from the taker's perspective.
 ///
 /// Encoded as its discriminant, `Long = 0`, and every program on this wire
-/// reads the same declaration — a taker direction inverted across the
-/// boundary would fill the wrong side of a book.
+/// reads the same declaration. A taker direction inverted across the boundary
+/// would fill the wrong side of a book.
 #[cfg_attr(
     feature = "anchor-derive",
     derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
@@ -628,11 +616,10 @@ impl DirectionV0 {
 /// Where in the quoter's response account it wrote the response. Return data
 /// of `quote_v0` and `execute_v0`.
 ///
-/// The one shape a caller reads back from every quoter, whatever it is: the
-/// response itself lives in an account the caller then borrows, and this says
-/// where to look. Declared here rather than per program for the same reason
-/// the rest of the wire is — three copies of two `u32`s are three chances to
-/// disagree about which comes first.
+/// Every quoter answers with this one shape. The response itself lives in an
+/// account the caller then borrows, and this says where to look. Declared here
+/// rather than per program for the same reason the rest of the wire is. Three
+/// copies of two `u32`s are three chances to disagree about which comes first.
 #[repr(C)]
 #[cfg_attr(
     feature = "anchor-derive",
@@ -647,14 +634,14 @@ pub struct ResponsePointerV0 {
 
 /// Which sides a `cancel_all_v0` withdraws.
 ///
-/// Named sides rather than a pair of bools, because the wire must not be able
-/// to express "neither" — that is a maker believing their quotes are gone
-/// when nothing happened.
+/// Named sides rather than a pair of bools, because the wire must not express
+/// "neither". A maker would then believe the quotes are gone when nothing
+/// happened.
 ///
-/// What the sides *mean* differs by who is reading: a book walks them as book
-/// sides, a caller unwinds them as position directions, a spline reads them as
-/// taker directions. Each program adds that reading itself; the tags are the
-/// part that has to agree.
+/// What the sides mean differs by reader. A book walks them as book sides, a
+/// caller unwinds them as position directions, and a spline reads them as taker
+/// directions. Each program adds that reading itself. The tags are the part
+/// that has to agree.
 #[cfg_attr(
     feature = "anchor-derive",
     derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
@@ -679,38 +666,36 @@ pub enum SideV0 {
     Ask,
 }
 
-/// Base units in one whole base asset. The denominator that turns a base
-/// amount and a price difference into a quote amount, and the reason a quote_cap
-/// can be spent identically by every quoter.
+/// Base units in one whole base asset. It is the denominator that turns a base
+/// amount and a price difference into a quote amount, and the reason every
+/// quoter spends a cap the same way.
 pub const BASE_PRECISION: u64 = 1_000_000_000;
 
 /// What one named user may still lose on the side this call sweeps, in quote.
 ///
-/// A quote_cap rather than a base amount, because the caller cannot convert the
-/// one into the other. What a fill costs a maker is collateral, and the
-/// conversion needs the price each order fills at — which the caller does not
-/// have and the quoter does. So the caller sends what it knows and the quoter
-/// spends it:
+/// A quote amount rather than a base amount, because the caller cannot convert
+/// one into the other. A fill costs a maker collateral, and the conversion needs
+/// the price each order fills at. The caller does not have that price and the
+/// quoter does. So the caller sends what it knows and the quoter spends it:
 ///
 /// ```text
 /// cost = base * |price - reference_price| / BASE_PRECISION
 /// ```
 ///
-/// counted only where the fill moves against the owner: an order resting on
-/// the bid side costs its owner when it fills *above* the reference, an ask
-/// when it fills *below*. An order priced in the owner's favour costs nothing
-/// and is filled whole. Once the quote_cap is spent, that user's remaining
-/// orders are passed over and the depth behind them is still filled.
+/// The quoter counts the cost only where the fill moves against the owner. An
+/// order resting on the bid side costs its owner when it fills above the
+/// reference, and an ask when it fills below. An order priced in the owner's
+/// favour costs nothing and is filled whole. Once the cap is spent, the quoter
+/// skips that user's remaining orders and still fills the depth behind them.
 ///
-/// Why this is the cost that matters: a resting order is normally already
+/// This is the cost that matters because a resting order is normally already
 /// collateralized against the position it would become, priced at the
 /// reference. Filling it converts that reservation into the position it stood
-/// for. What the reservation does not price is the owner paying its own limit
-/// price for a position marked at the reference, and that difference scales
-/// with size.
+/// for. The reservation does not price the owner paying its own limit price for
+/// a position marked at the reference, and that difference scales with size.
 ///
-/// One number, not one per side, because a call sweeps one side of the book:
-/// [`QuoteArgsV0::direction`] says which, and the quote_cap is for that side.
+/// One number, not one per side, because a call sweeps one side of the book.
+/// [`QuoteArgsV0::direction`] says which side, and the cap is for that side.
 ///
 /// `u64::MAX` means unbounded. Zero means the user is excluded outright, and
 /// belongs in the bitmap rather than here.
@@ -725,32 +710,32 @@ pub struct UserCapV0 {
     /// Quote this user may lose filling on the swept side. `u64::MAX` means
     /// unbounded.
     ///
-    /// The bound for depth that was margin-reserved before the fill, which
-    /// is a book's resting orders. The base behind such an order was priced
-    /// into its owner's worst case at placement, so filling it does not grow
-    /// that worst case — what moves is collateral, by the gap between the
-    /// order's price and the mark. Base cannot express it: at a price in the
-    /// owner's favour the cost per base is zero and any size is affordable.
+    /// This bounds depth that was margin-reserved before the fill, which is a
+    /// book's resting orders. The base behind such an order was priced into its
+    /// owner's worst case at placement, so filling it does not grow that worst
+    /// case. What moves is collateral, by the gap between the order's price and
+    /// the mark. Base cannot express that bound. At a price in the owner's
+    /// favour the cost per base is zero and any size is affordable.
     pub quote_cap: u64,
     /// The most base this user may give up on the swept side. `u64::MAX`
     /// means unbounded.
     ///
-    /// One axis, two readers, and the caller sends the tighter of what each
-    /// needs — which in all but one shape is exactly one of them, because the
-    /// other is unbounded:
+    /// One axis, two readers. The caller sends the tighter of what each needs,
+    /// which in all but one shape is exactly one of them, because the other is
+    /// unbounded.
     ///
-    /// - A **book** holds its owner's **reduce-only** orders to it. The book
-    ///   is position-blind, so a reduce-only order is safe only if the caller
-    ///   bounds its fill to the position it may reduce. Here that makes this
-    ///   **a trust boundary**, unlike [`Self::quote_cap`]: the book enforces
-    ///   it at match time, and a reduce-only order whose owner carries no cap
-    ///   here is not filled at all.
-    /// - Every **other quoter** holds its own depth to it, reading the entry
-    ///   for the user on its registry slot. That depth was never reserved, so
-    ///   a fill grows its owner's worst case and pays initial margin on the
-    ///   base taken. Quote cannot express that, which is why this figure is
-    ///   in base. Advisory there, like the quote cap: the caller trims the
-    ///   returned ladder to it either way.
+    /// - A book holds its owner's reduce-only orders to it. The book is
+    ///   position-blind, so a reduce-only order is safe only if the caller
+    ///   bounds its fill to the position it may reduce. That makes this field a
+    ///   trust boundary, unlike [`Self::quote_cap`]. The book enforces it at
+    ///   match time, and it does not fill a reduce-only order whose owner
+    ///   carries no cap here.
+    /// - Every other quoter holds its own depth to it, reading the entry for
+    ///   the user on its registry slot. That depth was never reserved, so a
+    ///   fill grows its owner's worst case and pays initial margin on the base
+    ///   taken. Quote cannot express that, which is why this figure is in base.
+    ///   It is advisory there, like the quote cap. The caller trims the returned
+    ///   ladder to it either way.
     pub base_cap: u64,
     /// Index into the accompanying user set.
     pub index: u8,
@@ -758,22 +743,22 @@ pub struct UserCapV0 {
 
 /// Per-user room, parallel to the caller's user set.
 ///
-/// A user absent from all of this is unconstrained. An excluded user has
-/// their orders passed over entirely — the caller has said it cannot settle a
-/// fill against them, so quoting depth standing on their orders would promise
-/// depth the fill declines.
+/// A user absent from all of this is unconstrained. The quoter skips an
+/// excluded user's orders entirely. The caller has said it cannot settle a fill
+/// against them, so quoting depth standing on their orders would promise depth
+/// the fill declines.
 ///
-/// Distinct from membership of the user set: absent from *that* means the
-/// caller's account set is stale and, past the grace window, the whole call
-/// fails. An exclusion is a deliberate constraint, not a mistake, and never
-/// fails the call.
+/// This is distinct from membership of the user set. A user absent from the set
+/// means the caller's account set is stale, and past the grace window the whole
+/// call fails. An exclusion is a deliberate constraint rather than a mistake,
+/// and it never fails the call.
 ///
-/// **Not a trust boundary.** A quoter that ignores these leaves its caller
-/// exactly where it stands without them — the caller's own post-fill checks
-/// still refuse the fill. What honouring them buys is that the honest case
-/// stops reverting. The exclusions are firmer than the budgets: a caller may
-/// also refuse a response that names an excluded user, while a quote_cap it
-/// cannot reprice is left to those post-fill checks.
+/// This is not a trust boundary. A quoter that ignores these leaves its caller
+/// where it stands without them, because the caller's own post-fill checks still
+/// refuse the fill. Honouring them stops the honest case from reverting. The
+/// exclusions are firmer than the budgets. A caller may also refuse a response
+/// that names an excluded user, while it leaves a cap it cannot reprice to
+/// those post-fill checks.
 #[repr(C)]
 #[cfg_attr(
     feature = "anchor-derive",
@@ -785,7 +770,7 @@ pub struct UserCapsV0 {
     /// One bit per index in the set: set means no room on the swept side, so
     /// pass that user's orders over.
     pub excluded: [u8; USER_EXCLUSION_BITMAP_BYTES],
-    /// Live entries at the head of `caps`; the tail is undefined.
+    /// Live entries at the head of `caps`. The tail is undefined.
     pub len: u8,
     pub caps: [UserCapV0; USER_CAPS_CAPACITY],
 }
@@ -832,14 +817,14 @@ impl UserCapsV0 {
         index < USER_SET_CAPACITY && self.excluded[index / 8] & (1 << (index % 8)) != 0
     }
 
-    /// Whether anyone is excluded — the check that keeps an ordinary walk
-    /// from paying for a lookup it never needs.
+    /// Whether anyone is excluded. An ordinary walk reads this first so it
+    /// never pays for a lookup it does not need.
     pub fn any_excluded(&self) -> bool {
         self.excluded.iter().any(|byte| *byte != 0)
     }
 
     /// Build from per-user budgets. No room becomes a bitmap bit, which never
-    /// overflows; the rest take the scarce slots, tightest first, so an
+    /// overflows. The rest take the scarce slots, tightest first, so an
     /// overflow drops the entries with the most room.
     pub fn from_caps(caps: impl IntoIterator<Item = UserCapV0>) -> Self {
         let mut set = Self::EMPTY;
@@ -847,21 +832,20 @@ impl UserCapsV0 {
             [UserCapV0::default(); USER_CAPS_CAPACITY];
         let mut partial_len = 0usize;
         for cap in caps {
-            // An unbounded quote_cap says nothing and an empty one is a bitmap
-            // bit, so neither is worth a slot.
+            // No room at all is a bitmap bit, which costs no slot.
             if cap.quote_cap == 0 {
                 set.exclude(cap.index as usize);
                 continue;
             }
-            // An unbounded quote_cap alone says nothing, but either of the other
-            // two still needs a slot: `base_cap` is the reduce-only clamp
-            // the book cannot reconstruct, and `base_room` is what an
-            // unreserved quoter sizes its own depth from. A cap unbounded on
-            // all three is the only one worth no slot.
+            // An unbounded quote cap alone says nothing, but `base_cap` still
+            // needs a slot. It is the reduce-only clamp the book cannot
+            // reconstruct, and it is what an unreserved quoter sizes its own
+            // depth from. A cap unbounded on both is the only one worth no
+            // slot.
             if cap.quote_cap == u64::MAX && cap.base_cap == u64::MAX {
                 continue;
             }
-            // Insertion sort into a fixed array: the list is eight long and
+            // Insertion sort into a fixed array. The list is eight long and
             // this runs on a frame that cannot afford a heap round trip. The
             // tightest budgets are the ones worth a slot, so a full array
             // evicts its loosest.
@@ -869,11 +853,10 @@ impl UserCapsV0 {
             while slot > 0 && partial[slot - 1].quote_cap > cap.quote_cap {
                 slot -= 1;
             }
-            // A quote_cap that cannot be carried becomes an exclusion rather
-            // than a drop. Dropping it would offer the user its whole resting
-            // depth, which is the reading the quote_cap exists to correct;
-            // excluding it offers none, which costs liquidity and nothing
-            // else.
+            // A cap that cannot be carried becomes an exclusion rather than a
+            // drop. A drop would offer the user its whole resting depth, which
+            // is the reading the cap exists to correct. An exclusion offers
+            // none, which costs liquidity and nothing else.
             if partial_len < USER_CAPS_CAPACITY {
                 let mut index = partial_len;
                 while index > slot {
@@ -903,18 +886,18 @@ impl UserCapsV0 {
 
 /// Encoded width of a user set of `len` entries.
 ///
-/// The set a call may settle against is a sequence, not a padded array:
-/// `len` refs behind a four-byte count, which is what a borsh sequence
-/// writes. Empty means unrestricted, and only a caller that settles nothing
-/// (quote discovery) sends that. Otherwise it is the caller's loaded users,
-/// and liquidity owned by anyone else must be passed over — the caller cannot
-/// settle a balance change for a user it did not load, and refuses the whole
-/// response if one appears.
+/// The set a call may settle against is a sequence rather than a padded array:
+/// `len` refs behind a four-byte count, which is what a borsh sequence writes.
+/// Empty means unrestricted, and only a caller that settles nothing sends that,
+/// such as quote discovery. Otherwise it is the caller's loaded users. A quoter
+/// skips liquidity owned by anyone else, because the caller cannot settle a
+/// balance change for a user it did not load and refuses the whole response if
+/// one appears.
 ///
 /// A padded set cost 1,633 bytes on every call. The caller builds those bytes
-/// on a 32 KB heap that never reclaims, once per quoter, so a quote view —
-/// which names no users at all — paid the full width for a run of zeros, and
-/// a market with five quoters ran out of heap.
+/// on a 32 KB heap that never reclaims, once per quoter. A quote view names no
+/// users at all, so it paid the full width for a run of zeros, and a market
+/// with five quoters ran out of heap.
 pub const fn user_set_bytes(len: usize) -> usize {
     4 + len * UserRefV0::SIZE
 }
@@ -934,12 +917,12 @@ pub fn user_set_within_capacity(users: &[UserRefV0]) -> bool {
 
 /// One resting order behind a quoted book, as `quote_l3_v0` reports it.
 ///
-/// A quoter that holds discrete orders — a book — has more to say than its
-/// aggregated ladder: each rung stands on somebody's order, and a caller that
-/// has to *carry* those users' accounts, or display the book, needs the
-/// attribution. A quoter that has no orders does not implement the leg at
-/// all, and its caller attributes the whole ladder to the one user the
-/// registry names for it.
+/// A quoter that holds discrete orders, such as a book, has more to say than
+/// its aggregated ladder. Each rung stands on somebody's order, and a caller
+/// that must carry those users' accounts, or display the book, needs the
+/// attribution. A quoter that has no orders does not implement the leg, and its
+/// caller attributes the whole ladder to the one user the registry names for
+/// it.
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Pod, Zeroable, SchemaRead, SchemaWrite)]
 #[wincode(assert_zero_copy)]
@@ -951,10 +934,10 @@ pub struct L3RowV0 {
     /// cancel or track it. Zero when the row is not an order.
     pub order_id: u64,
     /// The other half of the handle, beside the id it completes. An id alone
-    /// does not name an order to act on — a cancel or a fill takes both, so a
-    /// row carrying only the id described an order its reader could not then
-    /// touch. Zero when the quoter keeps no arena, as it is for every quoter
-    /// that is not a book.
+    /// does not name an order to act on. A cancel or a fill takes both, so a row
+    /// carrying only the id would describe an order its reader could not then
+    /// act on. Zero when the quoter keeps no arena, which is every quoter that
+    /// is not a book.
     pub node_index: u32,
     /// Who this row settles against.
     pub user: UserRefV0,
@@ -962,10 +945,10 @@ pub struct L3RowV0 {
     /// fact a row has to carry.
     pub flags: u8,
     pub _pad: [u8; 1],
-    /// Slot the order was placed in. Its id already orders it against the
-    /// other rows, which is what price-time needs; this is elapsed time, which
-    /// is what pricing the work of resolving it needs. Zero when the quoter
-    /// keeps no such record.
+    /// Slot the order was placed in. Its id already orders it against the other
+    /// rows, which is what price-time needs. This is elapsed time, which is what
+    /// pricing the work of resolving it needs. Zero when the quoter keeps no
+    /// such record.
     pub placed_slot: u64,
 }
 
@@ -978,24 +961,24 @@ pub const L3_ROW_FLAG_TAKER_ORIGIN: u8 = 1;
 /// the caller's user set, so the depth behind it is unreachable to a caller
 /// that does not carry that owner.
 ///
-/// A row without it gates nothing: a caller short of account locks can leave
-/// its owner out and still reach everything behind. That is what makes the
-/// flag worth carrying — it tells an account-set builder which owners are
-/// load-bearing, which is the only reason it needs to know sizes at all.
+/// A row without it gates nothing. A caller short of account locks can leave
+/// its owner out and still reach everything behind. That is what makes the flag
+/// worth carrying. It tells an account-set builder which owners carry the depth,
+/// which is the only reason that builder needs to know sizes at all.
 ///
-/// The quoter sets it, not the reader. Whatever the rule is — a size floor
-/// today — the program that enforces it is the one that reports it, so a
-/// reader never reimplements the rule and never falls out of step when it
-/// changes. A quoter with one user sets it on every row: its single owner
-/// gates all of its depth.
+/// The quoter sets it, not the reader. The rule today is a size floor. The
+/// program that enforces the rule is the one that reports it, so a reader never
+/// reimplements the rule and never falls out of step when it changes. A quoter
+/// with one user sets it on every row, because its single owner gates all of its
+/// depth.
 ///
-/// It says the order *can* end a walk, not that it will. Age also decides:
-/// an order inside the book's grace window is passed over whatever its size,
-/// and it leaves that window on its own with nothing writing to the book.
+/// It says the order can end a walk, not that it will. Age also decides. The
+/// book skips an order inside its grace window whatever the size, and the order
+/// leaves that window on its own with nothing writing to the book.
 pub const L3_ROW_FLAG_BLOCKS_WALK: u8 = 2;
 
-/// The order is reduce-only: it may fill only up to the owner's position in the
-/// reduce direction, and its owner carries an authoritative `base_cap` cap.
+/// The order is reduce-only. It may fill only up to the owner's position in the
+/// reduce direction, and its owner carries an authoritative `base_cap`.
 ///
 /// A caller that settles a fill against this row must know it is reduce-only,
 /// both to bind the fill to the cover its own accounting reserved and to stop
@@ -1004,8 +987,8 @@ pub const L3_ROW_FLAG_BLOCKS_WALK: u8 = 2;
 pub const L3_ROW_FLAG_REDUCE_ONLY: u8 = 4;
 
 /// Part of this row's size, or all of it, is claimed by a crossing taker
-/// remainder, so the quoter will not sell it to this caller. `size` already
-/// has the claim subtracted; the flag says why it is short of what the order
+/// remainder, so the quoter will not sell it to this caller. `size` already has
+/// the claim subtracted. The flag says why it is short of what the order
 /// holds.
 ///
 /// A book quotes an unfilled taker remainder it was handed like any other
@@ -1031,9 +1014,9 @@ pub const L3_ROW_BYTES: usize = core::mem::size_of::<L3RowV0>();
 #[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub struct L3ResponseV0<'a> {
     pub rows: &'a [L3RowV0],
-    /// The walk stopped on a bound rather than on the end of the book, so
-    /// there is depth behind the last row. A caller displaying a book says
-    /// so; a caller collecting users knows its list is a prefix.
+    /// The walk stopped on a bound rather than on the end of the book, so there
+    /// is depth behind the last row. A caller displaying a book says so. A
+    /// caller collecting users knows its list is a prefix.
     pub more: u8,
 }
 
@@ -1046,9 +1029,9 @@ impl<'a> L3ResponseV0<'a> {
 /// Arguments to `quote_l3_v0`: how much of a side to describe.
 ///
 /// No user set and no caps. The question is what rests on the book, not what
-/// this caller may settle — a caller asks it precisely because it does not
-/// know yet whose accounts to bring — so the filtering a quote applies is the
-/// reader's to apply here.
+/// this caller may settle. A caller asks it because it does not know yet whose
+/// accounts to bring. The filtering a quote applies is therefore the reader's to
+/// apply here.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, SchemaRead, SchemaWrite)]
 #[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub struct L3ArgsV0 {
@@ -1072,17 +1055,17 @@ pub struct L3ArgsV0 {
 /// standing on liquidity the matching execute would decline is a ladder its
 /// reader cannot route against.
 ///
-/// Read in place, like the responses: `users` is a slice into the caller's
+/// Read in place, like the responses. `users` is a slice into the caller's
 /// instruction data, so a quoter walks the set without allocating and without
 /// standing a copy of it in a 4 KB frame. It leads the struct for that to be
-/// sound — the count puts the refs four bytes in, which is the two-byte
-/// alignment a [`UserRefV0`] reference needs. A field added ahead of it must
-/// keep that offset even.
+/// sound. The count puts the refs four bytes in, which is the two-byte alignment
+/// a [`UserRefV0`] reference needs. A field added ahead of it must keep that
+/// offset even.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, SchemaRead, SchemaWrite)]
 #[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub struct QuoteArgsV0<'a> {
-    /// The loaded-user set, at most [`USER_SET_CAPACITY`] entries — which a
-    /// reader checks with [`user_set_within_capacity`], since the count comes
+    /// The loaded-user set, at most [`USER_SET_CAPACITY`] entries. A reader
+    /// checks that with [`user_set_within_capacity`], because the count comes
     /// off the wire.
     pub users: &'a [UserRefV0],
     pub direction: DirectionV0,
@@ -1090,8 +1073,8 @@ pub struct QuoteArgsV0<'a> {
     pub size: u64,
     pub caps: UserCapsV0,
     /// The price the caller marks a filled position at, in PRICE_PRECISION.
-    /// Only [`UserCapV0`] budgets are spent against it; it does not bound
-    /// what a quoter may fill at.
+    /// Only [`UserCapV0`] budgets are spent against it. It does not bound what a
+    /// quoter may fill at.
     pub reference_price: i64,
     /// The taker's own user, whose resting liquidity is skipped
     /// unconditionally (self-trade prevention).
@@ -1105,17 +1088,17 @@ pub struct QuoteArgsV0<'a> {
     /// the compute limit it requests, so a bound the quoter ignores is paid
     /// for by whoever sent the transaction.
     ///
-    /// **Not a trust boundary**, like the caps above. Honouring it saves the
-    /// caller compute; ignoring it wastes the caller's compute and returns
-    /// levels the caller drops. It never widens what a quoter may fill.
+    /// Not a trust boundary, like the caps above. Honouring it saves the caller
+    /// compute. Ignoring it wastes the caller's compute and returns levels the
+    /// caller drops. It never widens what a quoter may fill.
     pub limit_price: u64,
     /// Whether the taker's flow served a protection window before this call:
     /// the swift hold (an attested transaction), or the book's activation
     /// delay (a protocol crank that fills an order which rested through it).
-    /// The caller asserts it, like `users` and `caps` — a quoter already
+    /// The caller asserts it, like `users` and `caps`. A quoter already
     /// authenticates the caller, and the caller is the settlement engine. A
-    /// quoter that only serves protected flow (the midpoint's
-    /// `require_attested_flow`) refuses when this is false.
+    /// quoter that only serves protected flow refuses when this is false, as the
+    /// midpoint does under `require_attested_flow`.
     pub taker_served_window: bool,
     /// Fill the depth a crossing taker remainder claims.
     ///
@@ -1124,19 +1107,19 @@ pub struct QuoteArgsV0<'a> {
     /// rather than whoever lands a transaction first. The crank that settles
     /// the cross is the one caller that must reach it, and it says so here.
     ///
-    /// The caller asserts it, like `users` and `caps`: the quoter
-    /// authenticates the caller, and the caller is the settlement engine. A
-    /// quoter that reserves nothing ignores it.
+    /// The caller asserts it, like `users` and `caps`. The quoter authenticates
+    /// the caller, and the caller is the settlement engine. A quoter that
+    /// reserves nothing ignores it.
     pub consume_reservation: bool,
 }
 
 /// Arguments to `execute_v0`: commit a fill.
 ///
-/// [`QuoteArgsV0`] without the price bound, because it answers the same
-/// question having committed to it: `size` is already only the depth the
-/// caller chose off the ladder, so the walk that fills it visits no level a
-/// bound would have cut. A quoter may fill less than `size`; what it actually
-/// filled is whatever its returned balance changes sum to.
+/// [`QuoteArgsV0`] without the price bound, because the caller already committed
+/// to it. `size` is only the depth the caller chose off the ladder, so the walk
+/// that fills it visits no level a bound would have cut. A quoter may fill less
+/// than `size`. What it filled is whatever its returned balance changes sum
+/// to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, SchemaRead, SchemaWrite)]
 #[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub struct ExecuteArgsV0<'a> {
@@ -1163,10 +1146,10 @@ pub struct ExecuteArgsV0<'a> {
 /// The framing of the request half.
 ///
 /// Borsh-compatible, which is what a v2 program's instruction dispatch reads
-/// (`anchor_lang_v2::BORSH_CONFIG`), and named here so the writer and the
-/// reader agree by declaration rather than by coincidence. The responses use
-/// wincode's own configuration, whose length prefix is eight bytes wide
-/// instead of four — reading one for the other shifts every field behind it.
+/// (`anchor_lang_v2::BORSH_CONFIG`), and named here so the writer and the reader
+/// agree by declaration rather than by coincidence. The responses use wincode's
+/// own configuration, whose length prefix is eight bytes wide instead of four.
+/// Reading one for the other shifts every field behind it.
 pub type ArgsConfig = wincode::config::Configuration<
     false,
     { wincode::config::DEFAULT_PREALLOCATION_SIZE_LIMIT },
@@ -1521,13 +1504,11 @@ mod tests {
         );
     }
 
-    /// The writers lay the prefix down themselves, so what this crate says it
-    /// is has to be what wincode actually writes.
-    /// The request half is read in place, and its framing is not the
-    /// responses': a four-byte count, so a quoter's dispatch decodes it
+    /// The request half is read in place, and its framing carries a four-byte
+    /// count rather than the responses' eight, so a quoter's dispatch decodes it
     /// borsh-compatibly. The offsets are pinned here because velocity writes
-    /// these bytes from another workspace, where the agreement can only be
-    /// held as numbers.
+    /// these bytes from another workspace, where the agreement can only be held
+    /// as numbers.
     #[test]
     fn the_args_put_the_user_set_first_and_count_it_in_four_bytes() {
         let users = [user(1, 0), user(2, 7)];
@@ -1645,7 +1626,7 @@ mod tests {
         );
     }
 
-    /// A row is 64 bytes with no implicit padding — what `Pod` and the
+    /// A row is 72 bytes with no implicit padding, which is what `Pod` and the
     /// in-place read both need.
     #[test]
     fn the_l3_row_is_the_width_the_region_is_sized_from() {
@@ -1680,6 +1661,8 @@ mod tests {
         );
     }
 
+    /// The writers write the prefix themselves, so what this crate says it is
+    /// has to be what wincode writes.
     #[test]
     fn the_length_prefix_is_what_wincode_writes() {
         let levels = [
@@ -1710,10 +1693,10 @@ mod tests {
         assert_eq!(response.withheld, withheld);
     }
 
-    /// Nine constrained users against eight slots. The eight tightest keep
-    /// their exact number; the ninth is excluded rather than dropped, because
-    /// dropping it would read as "unconstrained" — the opposite of what its
-    /// quote_cap says.
+    /// Nine constrained users against eight slots. The eight tightest keep their
+    /// exact number. The ninth is excluded rather than dropped, because a drop
+    /// would read as unconstrained, which is the opposite of what its
+    /// `quote_cap` says.
     #[test]
     fn a_budget_that_does_not_fit_becomes_an_exclusion() {
         let caps = (0..9).map(|index| UserCapV0 {
@@ -1754,8 +1737,8 @@ mod tests {
         }
     }
 
-    /// An unbounded quote_cap is the same as saying nothing, so it costs neither
-    /// a slot nor a bit.
+    /// An unbounded `quote_cap` is the same as saying nothing, so it costs
+    /// neither a slot nor a bit.
     #[test]
     fn an_unbounded_budget_is_not_carried() {
         let set = UserCapsV0::from_caps((0..20).map(|index| UserCapV0 {

@@ -3,15 +3,15 @@ import { Connection, PublicKey } from '@solana/web3.js';
 import pc from 'picocolors';
 
 /**
- * Per-invocation run context: which cluster the RPC actually is (verified by
- * genesis hash, not by reading the URL), who signs, and how the action
- * dispatches. Announced once before any command does work, so every
- * invocation states its blast radius up front, and a mainnet direct send
- * asks for confirmation unless `--yes`.
+ * The run context for one invocation. It holds the cluster the RPC serves, who
+ * signs, and how the action dispatches. The cluster is verified by genesis
+ * hash rather than read from the URL. The context is printed once before any
+ * command does work, so every invocation states what it can affect. A mainnet
+ * direct send asks for confirmation unless `--yes` is passed.
  *
- * Module-level singleton: the CLI is a single-command process, and threading
- * the context through every `sendOrPropose` call site would change dozens of
- * signatures for no behavioral gain.
+ * The context is a module-level singleton. The CLI is a single-command
+ * process, and threading the context through every `sendOrPropose` call site
+ * would change dozens of signatures without changing behavior.
  */
 
 export type Cluster = 'mainnet-beta' | 'devnet' | 'testnet' | 'unknown';
@@ -45,15 +45,15 @@ export async function detectCluster(connection: Connection): Promise<Cluster> {
 }
 
 /**
- * Resolve and print the run context, and return the effective env. Called
- * once from `buildAdminClient`, so every command that talks to the chain
+ * Resolve and print the run context, and return the effective env.
+ * `buildAdminClient` calls this once, so every command that talks to the chain
  * announces itself.
  *
- * Env resolution: an env declared by the user (flag or profile) that
- * contradicts the RPC's genesis hash is fatal; the one mistake this tool
- * must make impossible is "right command, wrong cluster". When env was never
- * declared (`envDeclared: false`, the legacy default), the detected cluster
- * IS the env, so flag-free invocations against devnet keep working.
+ * A declared env comes from a flag or a profile. A declared env that
+ * contradicts the RPC's genesis hash is fatal. The one mistake this tool must
+ * make impossible is the right command against the wrong cluster. When no env
+ * is declared, `envDeclared` is false and the detected cluster becomes the env,
+ * so an invocation with no flags against devnet still works.
  */
 export async function announceContext(
 	connection: Connection,
@@ -90,9 +90,9 @@ export async function announceContext(
 		yes: args.yes ?? false,
 	};
 
-	// One dim line on stderr: which chain, as whom, and whether anything sent
-	// lands directly or as a proposal. Kept to short keys so it reads as a
-	// status bar rather than competing with the command's own output.
+	// One dim line on stderr. It names the chain, the signer, and whether a send
+	// lands directly or as a proposal. The keys stay short so the line reads as
+	// a status bar and does not compete with the command's own output.
 	const clusterLabel =
 		cluster === 'mainnet-beta'
 			? pc.red(pc.bold(cluster))
@@ -114,10 +114,10 @@ export async function announceContext(
 }
 
 /**
- * Gate a mainnet direct send behind an interactive confirmation. No-op for
- * proposals (the multisig is the gate), for other clusters, with `--yes`, or
- * when stdin is not a TTY (scripts must not hang; `--yes` semantics are
- * implied by scripting).
+ * Gate a mainnet direct send behind an interactive confirmation. It does
+ * nothing for a proposal, because the multisig is the gate there. It also does
+ * nothing on another cluster, with `--yes`, or when stdin is not a TTY. A
+ * script must not hang, so running without a TTY implies `--yes`.
  */
 export async function confirmMainnetDirect(memo: string): Promise<void> {
 	const ctx = current;

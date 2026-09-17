@@ -42,9 +42,9 @@ use {
 /// Copy once into an [`AlignedAccountData`] buffer (body at `base + 16`) so the
 /// cast lands on a 16-byte boundary — the same treatment the market/oracle
 /// accounts get in `AccountsListBuilder`. The copy is trimmed to
-/// `8 + size_of::<NativeState>()` first: `from_bytes` also panics on a size
-/// mismatch, so an account extended past the compiled-in struct by a program
-/// upgrade would otherwise take down the sim.
+/// `8 + size_of::<NativeState>()` first. `bytemuck::from_bytes` also panics on
+/// a size mismatch. A program upgrade can extend the account past the
+/// compiled-in struct, and the untrimmed copy would then panic here.
 pub fn simulate_place_perp_order(
     user: &User,
     accounts: &mut VelocityAccounts,

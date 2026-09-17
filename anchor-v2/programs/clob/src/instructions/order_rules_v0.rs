@@ -1,13 +1,13 @@
 //! What the book requires of an order before it will hold one.
 //!
-//! A caller that builds orders has to satisfy these rules, and finding out by
-//! rejection costs it the transaction — so it asks first. It used to read
-//! them out of the market account's header instead, which meant knowing where
-//! each one sits, and left the book unable to move a field without breaking a
-//! program that never called into it.
+//! A caller that builds orders has to satisfy these rules, and a rejection
+//! costs it the transaction, so it asks first. It used to read the rules out of
+//! the market account's header, which meant knowing where each one sits. The
+//! book could then not move a field without breaking a program that never
+//! called into it.
 //!
-//! Read-only, and cheap enough to sit inside a landed transaction: these are
-//! header scalars, not a walk.
+//! Read-only, and cheap enough to sit inside a landed transaction. These are
+//! header scalars, and reading them is not a walk.
 //!
 //! The response also carries the live side counts and the arena capacity. A
 //! side at its cap refuses a placement, and a caller resting a taker's

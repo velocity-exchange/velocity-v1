@@ -203,10 +203,10 @@ export function registerMultisig(parent: Command): void {
 		ms
 			.command('execute <index>')
 			.description(
-				'Execute an approved vault transaction as the signer (must be a multisig member ' +
-					'with Execute permission). Sets a compute-unit limit on the execute transaction — ' +
-					'the Squads UI executes with the 200k default, which CPI-heavy inner transactions ' +
-					'(e.g. Jupiter swaps) exceed.'
+				'Execute an approved vault transaction as the signer. The signer must be a ' +
+					'multisig member with Execute permission. Sets a compute-unit limit on the ' +
+					'execute transaction. The Squads UI executes with the 200k default, which ' +
+					'CPI-heavy inner transactions such as Jupiter swaps exceed.'
 			)
 			.option(
 				'--cu-limit <units>',
@@ -294,8 +294,8 @@ export function registerMultisig(parent: Command): void {
 				'no multisig: pass --multisig <pda> or use a profile that has one'
 			);
 		}
-		// subscribe: false: only the program's coders and the connection are
-		// needed here, never cached account state.
+		// This command reads the program coders and the connection only. It does
+		// not subscribe to account state.
 		const client = await buildAdminClient(opts, false);
 		const connection = client.connection;
 		const program = client.program;
@@ -332,8 +332,8 @@ export function registerMultisig(parent: Command): void {
 			? multisig.accounts.Proposal.fromAccountInfo(proposalAcc)[0]
 			: undefined;
 
-		// Resolve the message's account keys. v0 convention: static keys, then
-		// every table's writable indexes, then every table's readonly indexes.
+		// A v0 message orders its account keys as the static keys, then every
+		// table's writable indexes, then every table's readonly indexes.
 		const combined: string[] = msg.accountKeys.map((k) => k.toBase58());
 		const lookupTableAccounts: AddressLookupTableAccount[] = [];
 		for (const lookup of msg.addressTableLookups) {
@@ -493,11 +493,10 @@ export function registerMultisig(parent: Command): void {
 			}
 		});
 
-		// Effect preview. Simulating the inner instructions directly, with the
-		// vault as fee payer so it is marked a signer, shows what they would do
-		// against current chain state. This works at any proposal status,
-		// unlike simulating the Squads execute wrapper, which is gated on
-		// approval.
+		// The simulation runs the inner instructions directly against current
+		// chain state. The vault is the fee payer, which marks it a signer. A
+		// simulation of the Squads execute wrapper would need approval first,
+		// but this one works at any proposal status.
 		const writable = [
 			...new Set(
 				inner.flatMap((ix) =>
@@ -524,15 +523,15 @@ export function registerMultisig(parent: Command): void {
 					accounts: { encoding: 'base64', addresses: writable },
 				}
 			);
-		// Baseline from a simulation rather than getMultipleAccountsInfo, so
-		// both snapshots come from the same kind of call back to back. Accounts
-		// other programs write constantly (a perp market's mm-oracle fields,
-		// cranked every few hundred ms) would otherwise show up as changes this
-		// proposal makes. `accounts.addresses` may not exceed the number of
-		// accounts in the simulated transaction, so the baseline references
-		// each watched account with a zero-lamport transfer, which touches
-		// nothing: the vault is system-owned and carries no data, and crediting
-		// zero leaves the destination byte-identical.
+		// The baseline comes from a simulation, not getMultipleAccountsInfo, so
+		// both snapshots come from the same kind of call. Other programs write
+		// some watched accounts constantly, such as a perp market's mm-oracle
+		// fields. A plain read shows those writes as changes from this proposal.
+		// The `accounts.addresses` list may not exceed the account count of the
+		// simulated transaction, so the baseline references each watched account
+		// with a zero-lamport transfer. That transfer writes nothing. The vault
+		// is system-owned and carries no data, and a credit of zero leaves the
+		// destination byte-identical.
 		const effect = await simulate(inner);
 		const baseline = await simulate(
 			writable
@@ -552,8 +551,9 @@ export function registerMultisig(parent: Command): void {
 				a ? Buffer.from(a.data[0], 'base64') : undefined
 			);
 		} else {
-			// Some account rejected the no-op reference. Fall back to a plain
-			// read, which is a slot or two off and can show unrelated writes.
+			// Some account rejected the zero-lamport reference, so the baseline
+			// is a plain read. That read is a slot or two behind and can show
+			// unrelated writes.
 			const fetched = await connection.getMultipleAccountsInfo(
 				writable.map((k) => new PublicKey(k))
 			);
@@ -642,8 +642,8 @@ export function registerMultisig(parent: Command): void {
 			ui.header('program logs');
 			let truncated = false;
 			for (const entry of shownLogs) {
-				// Some admin handlers log a whole struct on one line; keep the
-				// screen readable and leave the full text to --raw.
+				// Some admin handlers log a whole struct on one line. The full
+				// text stays behind --raw.
 				const text = ui.safe(entry.replace(/^Program log: /, ''));
 				if (!local.raw && text.length > 160) {
 					ui.line(pc.dim(`${text.slice(0, 160)}…`));
@@ -660,7 +660,8 @@ export function registerMultisig(parent: Command): void {
 			}
 		}
 
-		// Readiness: can a member execute it right now, through Squads?
+		// Simulate the Squads execute wrapper to learn whether a member can
+		// execute the proposal now.
 		const executor =
 			info.members.find((m) =>
 				Permissions.has(m.permissions, Permission.Execute)
@@ -712,11 +713,12 @@ export function registerMultisig(parent: Command): void {
 		ms
 			.command('set-rent-collector <pubkey>')
 			.description(
-				'Propose a config transaction setting the multisig rent collector — the ' +
-					'account paid when settled proposal accounts are closed (`close-accounts` ' +
-					'requires one). WARNING: executing any config transaction marks every ' +
-					'still-Active vault proposal stale (Approved ones survive); do this when ' +
-					'nothing important is pending. Signer must be a member with Initiate.'
+				'Propose a config transaction that sets the multisig rent collector. The rent ' +
+					'collector is the account paid when settled proposal accounts are closed, and ' +
+					'`close-accounts` requires one. WARNING: executing any config transaction marks ' +
+					'every still-Active vault proposal stale. Approved proposals survive. Propose ' +
+					'this when nothing important is pending. The signer must be a member with ' +
+					'Initiate.'
 			)
 	).action(async (pubkey: string, _flags, cmd: Command) => {
 		const opts = readGlobalOpts(cmd);
@@ -773,11 +775,11 @@ export function registerMultisig(parent: Command): void {
 		ms
 			.command('close-accounts')
 			.description(
-				'Reclaim rent from settled proposals: close the VaultTransaction + Proposal ' +
-					'accounts of every Executed / Rejected / Cancelled proposal (and stale ' +
-					'non-approved ones). Permissionless, but the multisig must have a rent ' +
-					'collector configured — rent is paid to it, not to the original proposer. ' +
-					'Approved-but-unexecuted proposals are never touched.'
+				'Reclaim rent from settled proposals. Closes the VaultTransaction and Proposal ' +
+					'accounts of every Executed, Rejected or Cancelled proposal, and of stale ' +
+					'non-approved ones. Permissionless, but the multisig must have a rent ' +
+					'collector configured. The rent goes to the rent collector, not to the ' +
+					'original proposer. An approved proposal that never executed is never closed.'
 			)
 			.option(
 				'--dry-run',
@@ -834,7 +836,8 @@ export function registerMultisig(parent: Command): void {
 				status === 'Executed' ||
 				status === 'Rejected' ||
 				status === 'Cancelled';
-			// A stale approved vault tx is still executable — never close it.
+			// A stale approved vault transaction is still executable, so it is
+			// never closed.
 			const staleClosable =
 				index <= stale && (status === 'Active' || status === 'None');
 			if (!terminal && !staleClosable) {
@@ -863,7 +866,8 @@ export function registerMultisig(parent: Command): void {
 			return;
 		}
 
-		// Batch a few closes per transaction to stay under the tx size limit.
+		// Batch a few closes per transaction to stay under the transaction size
+		// limit.
 		const BATCH = 8;
 		for (let i = 0; i < closable.length; i += BATCH) {
 			const batch = closable.slice(i, i + BATCH);
@@ -886,11 +890,11 @@ export function registerMultisig(parent: Command): void {
 }
 
 /**
- * Signer/writable flags for a compiled multisig message. The header counts
- * describe the static keys only, which are ordered writable signers, read-only
- * signers, writable non-signers, read-only non-signers. Keys loaded from an
- * address lookup table follow, every table's writable indexes first, and are
- * never signers.
+ * Signer and writable flags for a compiled multisig message. The header counts
+ * cover the static keys only. Those keys are ordered writable signers,
+ * read-only signers, writable non-signers, then read-only non-signers. Keys
+ * loaded from an address lookup table follow, every table's writable indexes
+ * first, and are never signers.
  */
 function accountFlags(
 	msg: multisig.generated.VaultTransactionMessage,
@@ -917,9 +921,9 @@ function accountFlags(
 }
 
 /**
- * Render one decoded value as a single line: pubkeys, BNs, anchor enums. The
- * result is sanitized because instruction arguments and account fields are
- * chain data, so a borsh string can carry terminal escapes.
+ * Render one decoded value as a single line. The value can be a pubkey, a BN,
+ * or an anchor enum. Instruction arguments and account fields are chain data,
+ * so a borsh string can carry terminal escapes. The result is sanitized.
  */
 function formatValue(value: unknown): string {
 	return ui.safe(renderValue(value));
@@ -958,7 +962,7 @@ function renderValue(value: unknown): string {
 	return String(value);
 }
 
-/** True for values that render as one line rather than being walked into. */
+/** True for a value that renders as one line instead of being flattened. */
 function isLeaf(value: unknown): boolean {
 	if (value === null || value === undefined) {
 		return true;
@@ -969,7 +973,7 @@ function isLeaf(value: unknown): boolean {
 	if (value instanceof PublicKey || Buffer.isBuffer(value)) {
 		return true;
 	}
-	// BN and friends: objects that stringify to something meaningful.
+	// A BN, or a similar object that stringifies to a meaningful value.
 	return (
 		!Array.isArray(value) &&
 		String(value) !== '[object Object]' &&
@@ -978,7 +982,7 @@ function isLeaf(value: unknown): boolean {
 	);
 }
 
-/** Flatten a decoded struct to `path: value` lines, deepest field last. */
+/** Flatten a decoded struct to `path: value` lines, in field order. */
 function flatten(
 	value: unknown,
 	prefix = ''
@@ -1019,9 +1023,10 @@ function diffFields(
 }
 
 /**
- * The System program instructions a vault realistically proposes. Moving SOL
- * is the common non-velocity case in a treasury multisig, and "raw data (12B):
- * 0200…" tells a reviewer nothing about how much is leaving.
+ * Describe the System program instructions a vault realistically proposes.
+ * Moving SOL is the common non-velocity case in a treasury multisig. Without a
+ * description, a reviewer sees only "raw data (12B): 0200…" and cannot tell how
+ * much SOL leaves the vault.
  */
 function describeSystemIx(
 	ix: TransactionInstruction

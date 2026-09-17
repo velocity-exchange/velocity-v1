@@ -7,14 +7,14 @@ use {
 pub struct UpdateQuoterV0 {
     #[account(mut)]
     pub quoter: Account<MidpointQuoterV0>,
-    /// The maker's config key — the only key allowed to reconfigure.
-    /// Deliberately not reassignable: the maker's kill switch must stay
-    /// theirs. Note this is *not* the quoted wallet: the quoted user is fixed
-    /// at creation (it seeds the PDA), so no config update can redirect fills
-    /// to a different `User`.
+    /// The maker's config key. It is the only key that can reconfigure the
+    /// instance, and no instruction reassigns it, so the maker keeps the pause
+    /// control. It is not the quoted wallet. The quoted user seeds the PDA and
+    /// is fixed at creation, so no config update can send fills to a different
+    /// `User`.
     #[account(address = quoter.authority @ MidpointError::InvalidAuthority)]
     pub authority: Signer,
-    /// Present = becomes the new hot key.
+    /// When present, this account becomes the new hot key.
     pub new_hot_authority: Option<UncheckedAccount>,
 }
 
@@ -25,24 +25,25 @@ pub struct UpdateQuoterArgsV0 {
     pub price_tick_size: Option<u64>,
     pub size_step: Option<u64>,
     pub min_quote_size: Option<u64>,
-    /// Quote only flow that served a protection window. The claim rides the
-    /// wire as `taker_served_window`, and this program trusts its caller for
-    /// it the way it trusts `users` and `caps`. Turning it on takes no local
-    /// key and reads no velocity account.
+    /// Quote only flow that served a protection window. The claim arrives on
+    /// the wire as `taker_served_window`, and this program trusts its caller
+    /// for it the way it trusts `users` and `caps`. Enabling it configures no
+    /// flow key here and reads no velocity account.
     pub require_attested_flow: Option<bool>,
     pub is_paused: Option<bool>,
-    /// Max mid deviation from velocity's oracle, parts per million. 0 disables
-    /// the bound, which only the config key can choose. Creation refuses zero,
-    /// so an instance never starts without the band.
+    /// The maximum mid deviation from velocity's oracle, in parts per million.
+    /// A value of 0 disables the bound, and only the config key can choose
+    /// that. Creation refuses 0, so an instance never starts without the
+    /// bound.
     pub max_mid_deviation_ppm: Option<u64>,
     /// New value for the racing-writer sequence counter. Any value is legal,
     /// including a lower one.
     ///
-    /// The counter only ever rises through `set_mid_v0`, so a writer that
-    /// sends `u64::MAX`, by accident or by a bug, makes every later mid write
-    /// fail for the life of the instance. This field is the recovery, and it
-    /// belongs to the config key alone. A reset re-opens the sequences below
-    /// the old value, so the maker must stop the racing writers first.
+    /// The counter only rises through `set_mid_v0`. A writer that sends
+    /// `u64::MAX` by mistake makes every later mid write fail for the life of
+    /// the instance. This field is the recovery, and only the config key can
+    /// set it. A reset re-opens the sequences below the old value, so the maker
+    /// must stop the racing writers first.
     pub mid_sequence: Option<u64>,
 }
 

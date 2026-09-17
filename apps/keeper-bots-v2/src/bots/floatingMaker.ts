@@ -34,8 +34,8 @@ type State = {
 	openOrders: Map<number, Array<Order>>;
 };
 
-// wait this long before updating market position (expressed in actual slots
-// at the current State.slotDurationMs)
+// Wait this long before updating the market position. The value is converted
+// to slots at the current State.slotDurationMs.
 const MARKET_UPDATE_COOLDOWN_MS = 12_000;
 
 enum METRIC_TYPES {

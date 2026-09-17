@@ -198,7 +198,7 @@ impl User {
 
     /// True when the equity floor is enabled and `net_equity` (unweighted,
     /// QUOTE_PRECISION, from `calculate_user_equity`) is below it. This is the
-    /// breaker trip threshold; action gating uses
+    /// breaker trip threshold. Action gating uses
     /// `is_below_buffered_equity_floor`.
     pub fn is_below_equity_floor(&self, net_equity: i128) -> bool {
         self.equity_floor > 0 && net_equity < self.equity_floor as i128
@@ -687,13 +687,12 @@ impl User {
     /// reduce-only counter it armed, and the placed-trigger shadow if one
     /// shadows it.
     ///
-    /// The reserve release clamps rather than fails
-    /// ([`crate::controller::position::release_reserved_open_base_for_exit`]):
-    /// this is the shape of an exit the owner chose or a keeper forced, and a
-    /// book that reports garbage must not be able to keep a maker on it. The
-    /// crank paths, where the report is the book's own word against margin it
-    /// frees, hold the release to the reservation instead and do not use
-    /// this.
+    /// The reserve release clamps rather than fails. See
+    /// [`crate::controller::position::release_reserved_open_base_for_exit`].
+    /// The owner chose this exit or a keeper forced it, so a book that reports
+    /// a wrong size must not be able to keep a maker on the book. The crank
+    /// paths hold the release to the reservation instead and do not use this.
+    /// There the report is the book's own word against margin it frees.
     pub fn cleanup_removed_clob_order(
         &mut self,
         market_index: u16,
@@ -736,8 +735,8 @@ impl User {
     /// `release_slot` is false when the fill already took the slot. A router
     /// fill releases it as soon as the order it was handed reaches zero
     /// unfilled, so a fully-consumed order arrives here with its slot already
-    /// gone; taking it again would free the slot of some other order the
-    /// owner still has resting.
+    /// gone. Taking it again would free the slot of some other order the owner
+    /// still has resting.
     pub fn unwind_removed_clob_order(
         &mut self,
         market_index: u16,
@@ -772,9 +771,9 @@ impl User {
         Ok(())
     }
 
-    /// The slot shadowing CLOB order `clob_order_id` on `market_index` — a
-    /// placed trigger (see [`OrderBitFlag::PlacedOnClob`]). Order ids are
-    /// unique per book, so at most one slot matches.
+    /// The slot shadowing CLOB order `clob_order_id` on `market_index`. That
+    /// slot is a placed trigger (see [`OrderBitFlag::PlacedOnClob`]). Order
+    /// ids are unique per book, so at most one slot matches.
     pub fn find_placed_trigger_slot(&self, market_index: u16, clob_order_id: u64) -> Option<usize> {
         self.orders.iter().position(|order| {
             order.status == OrderStatus::Open
@@ -785,11 +784,11 @@ impl User {
         })
     }
 
-    /// Free the slot shadowing a CLOB order that left the book for good
-    /// (fill / cull / expiry / cancel). No accounting moves: the CLOB
-    /// removal path already unwound the live order's counts, and the shadow
-    /// never carried its own. Returns whether a slot matched — plain CLOB
-    /// orders have no shadow.
+    /// Free the slot shadowing a CLOB order that left the book for good, by
+    /// fill, cull, expiry or cancel. No accounting moves. The CLOB removal
+    /// path already unwound the live order's counts, and the shadow never
+    /// carried counts of its own. Returns whether a slot matched. A plain CLOB
+    /// order has no shadow.
     pub fn release_placed_trigger_slot(
         &mut self,
         market_index: u16,
@@ -805,13 +804,13 @@ impl User {
         }
     }
 
-    /// Flip the slot shadowing an **evicted** CLOB order back to `Armed`,
-    /// carrying the unfilled remainder. Eager re-arm: the evict crank runs
+    /// Flip the slot shadowing an evicted CLOB order back to `Armed`, carrying
+    /// the unfilled remainder. The re-arm is eager. The evict crank runs
     /// through velocity with this `User` loaded, so the flip happens in the
-    /// same tx as the eviction. Re-triggering is edge-gated via
-    /// [`OrderBitFlag::AwaitingTriggerRecross`] — level-triggered re-arm
-    /// livelocks, since an evicted stop-limit is near the tail by definition
-    /// and immediate re-placement just gets evicted again.
+    /// same transaction as the eviction. Re-triggering is edge-gated through
+    /// [`OrderBitFlag::AwaitingTriggerRecross`]. A level-triggered re-arm
+    /// livelocks. An evicted stop-limit is near the tail by definition, so an
+    /// immediate re-placement is evicted again.
     pub fn re_arm_placed_trigger_slot(
         &mut self,
         market_index: u16,
@@ -825,7 +824,7 @@ impl User {
         // `remaining_base` is the book's report of what the evicted order still
         // held, and it is written straight onto the row below. An order can
         // only shrink while it rests, so a report above the size the row
-        // carries is the book growing someone's order.
+        // carries means the book grew someone's order.
         validate!(
             remaining_base <= self.orders[index].base_asset_amount,
             ErrorCode::QuoterReportExceedsReservation,
@@ -851,9 +850,9 @@ impl User {
             order.quote_asset_amount_filled = 0;
             order.slot = slot;
         }
-        // The armed slot is a live order again: it takes back the
-        // open-order count its CLOB order carried (the evict crank's unwind
-        // just decremented it). Untriggered orders add no bids/asks.
+        // The armed slot is a live order again, so it takes back the
+        // open-order count its CLOB order carried. The evict crank's unwind
+        // decremented that count. An untriggered order adds no bids or asks.
         self.increment_open_orders(false);
         self.get_perp_position_mut(market_index)?.open_orders += 1;
         Ok(true)
@@ -879,18 +878,19 @@ impl User {
         Ok(())
     }
 
-    /// Whether a new `Order` row would fit. Deliberately counts only
-    /// [`Self::orders`]: a plain CLOB order occupies no row, so a maker with a
-    /// full book still has room here — the CLOB's own capacity (and its evict
-    /// crank) bounds that side.
+    /// Whether a new `Order` row would fit. This counts only [`Self::orders`]
+    /// on purpose. A plain CLOB order occupies no row, so a maker with a full
+    /// book still has room here. The CLOB's own capacity and its evict crank
+    /// bound that side.
     pub fn has_room_for_new_order(&self) -> bool {
         self.orders.iter().any(|order| order.is_available())
     }
 
-    /// `strictly_reducing`: the swap consumed an existing deposit and repaid
-    /// an existing borrow (no new liability, no new deposit exposure). Such a
-    /// swap is exempt from the equity-floor gate so a below-floor account can
-    /// still deleverage; the handler bounds its value loss against oracle.
+    /// `strictly_reducing` means the swap consumed an existing deposit and
+    /// repaid an existing borrow. It adds no liability and no deposit
+    /// exposure. Such a swap is exempt from the equity-floor gate, so a
+    /// below-floor account can still deleverage. The handler bounds its value
+    /// loss against the oracle.
     pub fn meets_withdraw_margin_requirement_swap(
         &mut self,
         maps: &mut AccountMaps,
@@ -1426,8 +1426,8 @@ impl PerpPosition {
         self.open_orders != 0 || self.open_bids != 0 || self.open_asks != 0
     }
 
-    /// The unfilled base this position holds resting on `direction` — every
-    /// order on that side, on a book and in [`User::orders`] alike.
+    /// The unfilled base this position holds resting on `direction`. It counts
+    /// every order on that side, on a book and in [`User::orders`] alike.
     ///
     /// Velocity writes this at placement, under the owner's signature, and
     /// takes it back on each fill, cull, cancel, eviction and expiry. An
@@ -2035,9 +2035,9 @@ impl Order {
     }
 
     /// The CLOB `OrderRef` a placed trigger slot shadows. The auction fields
-    /// host it: a trigger-limit resting on the CLOB can never auction, so
-    /// they are dead while [`OrderBitFlag::PlacedOnClob`] is set, and using
-    /// them keeps `Order`'s layout untouched.
+    /// hold it. A trigger-limit resting on the CLOB can never auction, so
+    /// those fields are dead while [`OrderBitFlag::PlacedOnClob`] is set.
+    /// Using them leaves `Order`'s layout untouched.
     pub fn clob_order_ref(&self) -> (u32, u64) {
         (
             self.auction_start_price as u32,
@@ -2180,16 +2180,17 @@ pub enum OrderBitFlag {
     HasBuilder = 0b00010000,
     IsIsolatedPosition = 0b00100000,
     /// A triggered trigger-limit whose live order now rests on the market's
-    /// CLOB. The slot is a shadow keeping the trigger params + the CLOB
-    /// `OrderRef` (see `Order::clob_order_ref`); it frees on fill/cancel/
-    /// expiry and re-arms on eviction. While set, the slot contributes no
-    /// open-order accounting of its own — the CLOB order carries it.
+    /// CLOB. The slot is a shadow that keeps the trigger parameters and the
+    /// CLOB `OrderRef` (see `Order::clob_order_ref`). It frees on a fill, a
+    /// cancel or an expiry, and re-arms on an eviction. While the flag is set
+    /// the slot carries no open-order accounting of its own. The CLOB order
+    /// carries it.
     PlacedOnClob = 0b01000000,
-    /// Set when an evicted trigger re-arms: the trigger may not re-fire
-    /// until a keeper observes the price on the non-trigger side (the
-    /// on-chain approximation of edge-triggering). Level-triggered re-arm
-    /// livelocks — an evicted stop-limit is near the tail by definition, so
-    /// immediate re-placement just gets evicted again.
+    /// Set when an evicted trigger re-arms. The trigger may not re-fire until
+    /// a keeper observes the price on the non-trigger side. This is the
+    /// on-chain approximation of edge-triggering. A level-triggered re-arm
+    /// livelocks. An evicted stop-limit is near the tail by definition, so an
+    /// immediate re-placement is evicted again.
     AwaitingTriggerRecross = 0b10000000,
 }
 
@@ -2265,10 +2266,11 @@ pub struct UserStats {
     /// While set, every subaccount of the authority rejects risk-increasing
     /// fills, withdrawals and transfers out. Cleared only by the warm admin.
     pub equity_breaker_tripped: u8,
-    /// Persistent referral reward status. See [`AcceleratedReferralStatus`]. Kept
-    /// separate from `referrer_status`, which describes whether this authority
-    /// refers or was referred by somebody else. Carved out of former padding so
-    /// preupgrade accounts read `0` (standard, automatic enrollment allowed).
+    /// Persistent referral reward status. See [`AcceleratedReferralStatus`].
+    /// This is separate from `referrer_status`, which says whether this
+    /// authority refers or was referred by somebody else. The field comes out
+    /// of former padding, so an account written before the upgrade reads `0`.
+    /// That value is standard status with automatic enrollment allowed.
     pub accelerated_referral_status: u8,
     pub padding: [u8; 61],
 }
@@ -2323,9 +2325,10 @@ impl ReferrerStatus {
     }
 }
 
-/// Flags stored in [`UserStats::accelerated_referral_status`]. Accelerated status and automatic enrollment
-/// blocking are independent so an admin downgrade remains effective while an
-/// enrollment campaign is still running or is reopened later.
+/// Flags stored in [`UserStats::accelerated_referral_status`]. Accelerated
+/// status and the automatic enrollment block are independent, so an admin
+/// downgrade stays in force while an enrollment campaign still runs or is
+/// reopened later.
 #[derive(Clone, Copy, BorshSerialize, BorshDeserialize, PartialEq, Debug, Eq)]
 #[borsh(use_discriminant = true)]
 #[repr(u8)]
@@ -2348,9 +2351,10 @@ impl UserStats {
             != 0
     }
 
-    /// Permanently grants Accelerated status when enrollment is enabled, unless an admin has
-    /// explicitly revoked and blocked automatic reenrollment. Returns whether
-    /// the stored status changed so callers emit exactly one transition event.
+    /// Grants Accelerated status permanently when enrollment is enabled. An
+    /// admin revocation that blocks automatic reenrollment stops the grant.
+    /// Returns whether the stored status changed, so a caller emits exactly
+    /// one transition event.
     pub fn try_auto_enroll_accelerated_referral(&mut self, enrollment_enabled: bool) -> bool {
         if !enrollment_enabled
             || self.is_accelerated_referrer()
@@ -2363,9 +2367,11 @@ impl UserStats {
         true
     }
 
-    /// `try_auto_enroll_accelerated_referral` plus the transition event, for the eligible
-    /// interactions (user initialization, perp fills, swaps) that all enroll the same way.
-    /// Reads `ACCELERATED_REFERRAL_ENROLLMENT_ENABLED` here so callers do not pass it down.
+    /// `try_auto_enroll_accelerated_referral` plus the transition event. The
+    /// eligible interactions are user initialization, perp fills and swaps,
+    /// and they all enroll the same way. This reads
+    /// `ACCELERATED_REFERRAL_ENROLLMENT_ENABLED` so callers do not pass it
+    /// down.
     pub fn try_auto_enroll_accelerated_referral_and_emit(&mut self, now: i64) {
         let previous_status = self.accelerated_referral_status;
         if self.try_auto_enroll_accelerated_referral(ACCELERATED_REFERRAL_ENROLLMENT_ENABLED) {
@@ -2434,14 +2440,15 @@ impl UserStats {
     }
 
     /// Fold a fill into the trailing-30d maker volume. The `*_volume_30d`
-    /// fields are leaky-integrator SUMS approximating trailing-30d notional:
-    /// each update first decays the stored sum by the fraction of the 30d
-    /// window elapsed since the last update (`sum * (30d - gap)/30d`, wiped
-    /// to zero at gap >= 30d), then adds the fill. For a steady trader the
-    /// sum converges to the true trailing-30d total; a burst decays only
-    /// when the account trades again (lazy decay: the stored value does not
-    /// tick down while idle). Readers that need the live window must project
-    /// the decay themselves: see `get_total_30d_volume_at`.
+    /// fields are decaying sums that approximate trailing-30d notional. Each
+    /// update first decays the stored sum by the fraction of the 30d window
+    /// elapsed since the last update, as `sum * (30d - gap)/30d`, and a gap of
+    /// 30d or more wipes it to zero. The update then adds the fill. For a
+    /// steady trader the sum converges to the true trailing-30d total. The
+    /// decay is lazy, so a burst decays only when the account trades again and
+    /// the stored value does not fall while the account is idle. A reader that
+    /// needs the live window must project the decay itself. See
+    /// `get_total_30d_volume_at`.
     pub fn update_maker_volume_30d(&mut self, quote_asset_amount: u64, now: i64) -> VelocityResult {
         let since_last = max(1_i64, now.safe_sub(self.last_maker_volume_30d_ts)?);
 
@@ -2456,8 +2463,8 @@ impl UserStats {
         Ok(())
     }
 
-    /// Fold a fill into the trailing-30d taker volume. Same leaky-sum
-    /// mechanics as `update_maker_volume_30d`; see its doc comment.
+    /// Fold a fill into the trailing-30d taker volume. The decaying-sum
+    /// mechanics match `update_maker_volume_30d`. See its doc comment.
     pub fn update_taker_volume_30d(&mut self, quote_asset_amount: u64, now: i64) -> VelocityResult {
         let since_last = max(1_i64, now.safe_sub(self.last_taker_volume_30d_ts)?);
 
@@ -2509,13 +2516,13 @@ impl UserStats {
         !self.referrer.eq(&Pubkey::default())
     }
 
-    /// Trailing-30d volume (taker + maker) projected to `now`: applies the
-    /// same linear decay the next write would apply (`sum * (30d - gap)/30d`,
-    /// zero at gap >= 30d) to each component against its own last-update
-    /// timestamp, without mutating the stored values. This is what fee-tier
-    /// determination reads, so demotion tracks the live window at every fill
-    /// while promotion stays instant (the write path already lands each
-    /// fill's volume in the sum immediately).
+    /// Trailing-30d volume, taker plus maker, projected to `now`. It applies
+    /// the same linear decay the next write would apply,
+    /// `sum * (30d - gap)/30d` with zero at a gap of 30d or more. Each
+    /// component decays against its own last-update timestamp, and the stored
+    /// values are not mutated. Fee-tier determination reads this, so demotion
+    /// tracks the live window at every fill. Promotion stays instant, because
+    /// the write path already lands each fill's volume in the sum.
     pub fn get_total_30d_volume_at(&self, now: i64) -> VelocityResult<u64> {
         let project = |volume: u64, last_ts: i64| -> VelocityResult<u64> {
             let gap = max(0_i64, now.saturating_sub(last_ts));
@@ -2602,14 +2609,14 @@ impl UserStatsPausedOperations {
     }
 }
 
-/// Moves `delta` of equity floor from one subaccount to another, carrying a
-/// proportional share of the sender's `equity_floor_buffer` along with it
-/// (rounded up on the from side, so shedding the whole floor also sheds the
-/// whole buffer and no orphan buffer is left behind on a floorless,
-/// check-disabled subaccount). The sums of the floors and of the buffers are
-/// both preserved and the update is atomic: on error neither account is
-/// modified. Errors when `from` holds less floor than `delta` or `to`'s floor
-/// or buffer would overflow.
+/// Moves `delta` of equity floor from one subaccount to another. A
+/// proportional share of the sender's `equity_floor_buffer` moves with it,
+/// rounded up on the `from` side. Shedding the whole floor therefore also
+/// sheds the whole buffer, and no buffer is left on a floorless subaccount
+/// whose check is disabled. The sum of the floors and the sum of the buffers
+/// are both preserved. The update is atomic, so an error modifies neither
+/// account. Errors when `from` holds less floor than `delta`, or when `to`'s
+/// floor or buffer would overflow.
 pub fn transfer_equity_floor(from: &mut User, to: &mut User, delta: u64) -> VelocityResult {
     let new_from_floor = from
         .equity_floor

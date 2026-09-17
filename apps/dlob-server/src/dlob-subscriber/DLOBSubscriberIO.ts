@@ -50,8 +50,8 @@ export type wsMarketArgs = {
 
 require('dotenv').config();
 
-// ~64s of oracle staleness before the vAMM is dropped from the published book
-// (expressed in actual slots at the current slot duration)
+// About 64 seconds of oracle staleness before the vAMM is dropped from the
+// published book. The value is converted to slots at the current slot duration.
 const STALE_ORACLE_REMOVE_VAMM_THRESHOLD_MS = 64_000;
 
 const INDICATIVE_QUOTES_PUBKEY = 'inDNdu3ML4vG5LNExqcwuCQtLcCU8KfK5YM2qYV3JJz';

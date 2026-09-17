@@ -161,10 +161,10 @@ export class ReferrerMap {
 	}
 
 	/**
-	 * The referrer *authority* of `authorityPublicKey`, as opposed to the derived
-	 * addresses `getReferrer` returns. Fill instruction builders need the authority to
-	 * derive the referrer's readonly `UserStats`.
-	 * @returns `undefined` if the authority isn't in the map yet, or has no referrer.
+	 * The referrer authority of `authorityPublicKey`. `getReferrer` returns the derived
+	 * addresses instead. A fill instruction builder needs the authority to derive the
+	 * referrer's read-only `UserStats`.
+	 * @returns `undefined` if the authority is not in the map yet, or has no referrer.
 	 */
 	public getReferrerAuthority(
 		authorityPublicKey: string

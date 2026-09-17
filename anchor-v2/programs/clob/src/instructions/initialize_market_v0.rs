@@ -9,18 +9,20 @@ use {
 #[derive(Accounts)]
 pub struct InitializeMarketV0 {
     pub authority: Signer,
-    /// Registered as the market's place authority (accounts, not args:
-    /// duplicated accounts cost one index byte in the tx).
+    /// Registered as the market's place authority. It is an account rather
+    /// than an argument, because a duplicated account costs one index byte in
+    /// the transaction.
     pub place_authority: UncheckedAccount,
-    /// Pre-created zeroed account of [`ClobMarketV0::space_for`] the wanted
-    /// capacity (~98KB — larger than CPI alloc limits, so the client creates
-    /// it). [`crate::instructions::resize_market_v0`] grows it later.
+    /// Pre-created zeroed account, sized by [`ClobMarketV0::space_for`] for the
+    /// wanted capacity. That is about 98KB, which is above the CPI allocation
+    /// limit, so the client creates the account.
+    /// [`crate::instructions::resize_market_v0`] grows it later.
     ///
-    /// It signs, which is what binds initialization to the account's creator.
-    /// The client creates the account with a keypair, and the System program
+    /// It signs, which binds initialization to the account's creator. The
+    /// client creates the account with a keypair, and the System program
     /// already requires that keypair to sign the allocation, so the signature
     /// costs an honest caller nothing. Without it, creation and initialization
-    /// may land in different transactions and anyone may initialize the
+    /// may land in different transactions. Anyone may then initialize the
     /// account first and name themselves `authority`. The operator's own call
     /// then fails and the rent is stranded.
     #[account(zeroed, signer)]

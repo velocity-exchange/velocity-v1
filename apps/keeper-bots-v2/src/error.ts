@@ -56,8 +56,8 @@ type CustomError = {
 export function getErrorCodeFromSimError(
 	error: TransactionError | string | null
 ): number | null {
-	// A landed-Ok tx has `meta.err === null`, and a string error has no fields,
-	// so neither can be property-accessed.
+	// A landed-Ok transaction has `meta.err === null`, and a string error carries
+	// no fields. Neither value accepts a property read.
 	if (error === null || error === undefined || typeof error !== 'object') {
 		return null;
 	}

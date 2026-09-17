@@ -496,8 +496,8 @@ describe('multiple maker orders', () => {
 			.getEventsArray('OrderActionRecord')
 			.filter((record) => isVariant(record.action, 'fill'));
 		console.log('orderActionRecords.length=', orderActionRecords.length);
-		// The router pass fills every crossing maker order in one sweep (the
-		// legacy loop stopped at its per-ix fulfillment-method cap).
+		// The router pass fills every crossing maker order in one sweep. The older
+		// loop stopped at its per-instruction fulfillment-method cap.
 		assert(orderActionRecords.length === 30);
 
 		const takerPosition = takerVelocityClient.getUser().getPerpPosition(1);
@@ -513,15 +513,15 @@ describe('multiple maker orders', () => {
 			'takerPosition.baseAssetAmount=',
 			takerPosition.baseAssetAmount.toString()
 		);
-		// The base fills against the three maker ladders plus a vAMM leg. The
-		// quote also carries the vAMM's last-look shade, which settlement
-		// charges the taker and books to the AMM; it is confined to that leg,
-		// so the size, the record count and the maker fills stand on the
-		// ladder prices alone.
+		// The base fills against the three maker ladders and a vAMM leg. The quote
+		// also carries the vAMM's last-look shade. Settlement charges that shade to
+		// the taker and books it to the AMM. The shade stays on the vAMM leg, so
+		// the size, the record count and the maker fills rest on the ladder prices
+		// alone.
 		//
-		// The shade reaches only the depth a rival actually offers, so the
-		// curve prices the rest of its slice honestly and the taker receives
-		// less than it would if one rival's price repriced the whole slice.
+		// The shade reaches only the depth a rival offers. The curve prices the
+		// rest of its slice at its own price, so the taker receives less than it
+		// would if one rival's price repriced the whole slice.
 		assert(takerPosition.baseAssetAmount.eq(new BN('-412388600000')));
 		assert(takerPosition.quoteAssetAmount.eq(new BN('279599614')));
 
@@ -570,7 +570,7 @@ describe('multiple maker orders', () => {
 			'dogMarket.amm.baseAssetAmountWithAmm=',
 			dogMarket.amm.baseAssetAmountWithAmm.toString()
 		);
-		// Equals the taker's base less the three maker legs: the makers absorb
+		// This equals the taker's base less the three maker legs. The makers absorb
 		// 17e9 and the curve takes the rest.
 		assert(dogMarket.amm.baseAssetAmountWithAmm.eq(new BN('-395388600000')));
 
@@ -624,10 +624,9 @@ describe('multiple maker orders', () => {
 			'dogMarketAfter.amm.baseAssetAmountWithAmm=',
 			dogMarketAfter.amm.baseAssetAmountWithAmm.toString()
 		);
-		// The close routes by price. The curve competes for it only as far as
-		// the rival depth its shade may reach, so the makers take more of the
-		// close and the curve is left holding more than an unbounded shade
-		// would have left it.
+		// The close routes by price. The curve competes for it only as far as the
+		// rival depth its shade may reach. The makers therefore take more of the
+		// close, and the curve keeps more than an unbounded shade would leave it.
 		assert(
 			dogMarketAfter.amm.baseAssetAmountWithAmm.eq(new BN('-86000000000'))
 		);

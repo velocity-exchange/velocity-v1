@@ -625,9 +625,10 @@ export function registerUser(parent: Command): void {
 			.command('reset-equity-breaker <userStats>')
 			.description(
 				'Clear the authority-wide equity floor breaker on a UserStats account (warm admin). ' +
-					'Unfreezes all subaccounts of the authority after a breach has been reviewed. ' +
-					'Self-verifying onchain: reverts unless every subaccount clears its floor + buffer ' +
-					'at execution time; lower floors first (set-equity-floor) to resume regardless.'
+					'Unfreeze every subaccount of the authority after a review of the breach. ' +
+					'The program verifies the reset itself. It reverts unless every subaccount ' +
+					'clears its floor plus buffer at execution time. To resume in any other case, ' +
+					'lower the floors first with set-equity-floor.'
 			)
 	).action(async (userStatsPk: string, _flags, cmd: Command) => {
 		const opts = readGlobalOpts(cmd);
@@ -691,13 +692,13 @@ export function registerUser(parent: Command): void {
 				}
 				const u = client.getUser(subId, authority);
 				const account = u.getUserAccountOrThrow();
-				// `getEquityFloorLevel` takes NET equity, which is what every onchain
-				// floor gate compares. `getTotalCollateral` is the margin numerator: it
-				// never subtracts spot borrows and it applies asset weights, so it
-				// reported a different quantity than the gate it was describing.
+				// `getEquityFloorLevel` takes net equity, which is what every onchain
+				// floor gate compares against. `getTotalCollateral` is the margin
+				// numerator. It never subtracts a spot borrow and it applies asset
+				// weights, so it reports a different quantity from the gate.
 				//
-				// The gates fail closed on oracle validity, so an invalid oracle
-				// means the account is gate-blocked regardless of the value shown.
+				// A gate fails closed on oracle validity. An invalid oracle therefore
+				// blocks the account whatever value this command shows.
 				const { value: equity, allOraclesValid } = u.getFloorNetEquity(slot);
 				const floor = account.equityFloor;
 				const buffer = account.equityFloorBuffer;

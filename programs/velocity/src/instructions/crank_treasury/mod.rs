@@ -1,13 +1,13 @@
 //! The protocol's single relay crank treasury.
 //!
-//! One account funds every market's crank reservoir. It is created once,
-//! priced by an admin, and topped up by a plain lamport transfer — there is no
-//! deposit instruction, because crediting lamports to an account needs no
-//! program. Reservoirs draw from it through the permissionless refill crank,
-//! so the treasury is the only balance an operator watches.
+//! One account funds every market's crank reservoir. An admin creates it once
+//! and prices it. A plain lamport transfer tops it up. There is no deposit
+//! instruction, because crediting lamports to an account needs no program.
+//! Reservoirs draw from it through the permissionless refill crank, so the
+//! treasury is the only balance an operator watches.
 //!
-//! See [`crate::state::crank_treasury`] for why the cranks are still paid by
-//! their own market's reservoir rather than from here directly.
+//! See [`crate::state::crank_treasury`] for why each market's reservoir still
+//! pays its own cranks, and this account does not pay them directly.
 
 mod initialize_crank_treasury;
 mod sweep_crank_reservoir;

@@ -813,14 +813,15 @@ export interface FillTakerRef {
 }
 
 /**
- * Extracts the (taker subaccount PDA, takerOrderId) pairs a fill tx is
- * attempting or landing, taken straight from the nodes the tx was built from.
+ * Extracts the taker subaccount PDA and takerOrderId pairs that a fill
+ * transaction attempts or lands. It reads them from the nodes the transaction
+ * was built from.
  *
- * A single fill tx can bundle more than one taker node, so this returns *every*
- * pair rather than assuming 1:1 — the nodes themselves are the fillId → taker(s)
- * mapping, so there is no side-map to keep in sync. `taker` is the on-chain User
- * subaccount PDA (matching the `taker` field on the `fill attempt:` line), NOT
- * the wallet authority.
+ * One fill transaction can bundle more than one taker node, so this returns
+ * every pair rather than assume one pair per transaction. The nodes are
+ * themselves the map from fill id to takers, so no side map has to stay in
+ * sync. `taker` is the on-chain User subaccount PDA, and not the wallet
+ * authority. It matches the `taker` field on the `fill attempt:` line.
  */
 export function getFillTakerRefs(
 	nodes: Array<NodeToFill>
@@ -839,16 +840,17 @@ export function getFillTakerRefs(
 }
 
 /**
- * Renders a compact, greppable correlation suffix to append to fill-path log
- * lines (`estimated CUs`, `simError`, `sent tx`, `Tx landed`, …) that otherwise
- * carry only `fillTxId`. Stamping the taker(s) + takerOrderId(s) onto every
- * lifecycle line lets a single Loki query — a line filter on the taker
- * subaccount, or a `taker` field extraction — trace one order across its whole
- * fill lifecycle, instead of only the single `fill attempt:` line.
+ * Renders a short correlation suffix to append to a fill-path log line that
+ * otherwise carries only `fillTxId`. `estimated CUs`, `simError`, `sent tx` and
+ * `Tx landed` are such lines. The suffix stamps the takers and their order ids
+ * onto every lifecycle line. One Loki query can then trace an order across its
+ * whole fill lifecycle rather than the single `fill attempt:` line. A line
+ * filter on the taker subaccount works, and so does a `taker` field extraction.
  *
- * Because a bundled tx carries all of its taker refs here, a filter on one taker
- * still matches a tx that fills several takers at once. Returns '' when there are
- * no taker refs (e.g. settlePnl txs) so non-fill lines are left untouched.
+ * A bundled transaction carries all of its taker refs here, so a filter on one
+ * taker still matches a transaction that fills several takers at once. The
+ * function returns '' when there is no taker ref, which leaves a non-fill line
+ * such as a settlePnl transaction untouched.
  */
 export function fillCorrelationSuffix(nodes: Array<NodeToFill>): string {
 	const takers = getFillTakerRefs(nodes);
@@ -859,24 +861,26 @@ export function fillCorrelationSuffix(nodes: Array<NodeToFill>): string {
 }
 
 /**
- * Emits one "wide event": a single log line whose whole message is one JSON
- * object, `{"event":"<name>", ...}`, with snake_case keys.
+ * Emits one wide event. The whole message of the log line is one JSON object,
+ * `{"event":"<name>", ...}`, with snake_case keys.
  *
- * This is the TypeScript counterpart of keep-rs's `tx_event` wide events
- * (`emit_tx_event` / `emit_cross_decision_event` in `rust/keep-rs/src/filler.rs`).
- * Both bots' payloads are read by the Order Trace Grafana dashboard
- * (infrastructure-v3 `grafana/src/authored/order-history.ts`), which line-filters
- * on `"event":"<name>"`, extracts the JSON with `| regexp "(?P<payload>\{.*\})"`
- * and parses it into table columns. That extraction spans the FIRST `{` to the
- * LAST `}` on the line, so the message must be the JSON and nothing else — the
- * winston prefix (`[<ts>] <level>: `) contributes no braces.
+ * This is the TypeScript counterpart of keep-rs's `tx_event` wide events,
+ * `emit_tx_event` and `emit_cross_decision_event` in
+ * `rust/keep-rs/src/filler.rs`. The Order Trace Grafana dashboard reads both
+ * bots' payloads. That dashboard lives in infrastructure-v3 at
+ * `grafana/src/authored/order-history.ts`. It filters lines on
+ * `"event":"<name>"`, extracts the JSON with `| regexp "(?P<payload>\{.*\})"`,
+ * and parses it into table columns. The extraction spans the first `{` to the
+ * last `}` on the line, so the message must be the JSON and nothing else. The
+ * winston prefix `[<ts>] <level>: ` contributes no braces.
  *
- * Keys are serialized alphabetically to match serde_json's BTreeMap ordering on
- * the rust side, and `undefined` values are dropped so an unknown dimension is
- * an absent column rather than a `null` one.
+ * The keys serialize alphabetically to match serde_json's BTreeMap ordering on
+ * the rust side. An `undefined` value is dropped, so an unknown dimension is an
+ * absent column rather than a `null` one.
  *
- * Never throws. Callers include the tx confirmation loop, where an exception
- * escaping into the surrounding `try` would abort the whole confirmation batch.
+ * This function never throws. The transaction confirmation loop is one of its
+ * callers, and an exception escaping into the surrounding `try` there would
+ * abort the whole confirmation batch.
  */
 export function logWideEvent(
 	event: string,

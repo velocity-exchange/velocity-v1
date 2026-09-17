@@ -1,6 +1,6 @@
-//! The vocabulary the three layers of a perp fill share.
+//! The types the three layers of a perp fill share.
 //!
-//! The account bundles each layer is handed, the exchange rules one fill runs
+//! The account bundles each layer is handed, the conditions one fill runs
 //! under, and what the market oracle says the fill may do.
 
 use {
@@ -34,8 +34,8 @@ pub enum Admission {
 /// The conditions one fill runs under: when it runs, how it was asked to fill,
 /// and what the market oracle lets it do.
 ///
-/// The order layer reads this off the market once, and the two layers below it
-/// are told rather than asked to look again.
+/// The order layer reads this off the market once. The two layers below it
+/// read these values instead of the market.
 #[derive(Clone, Copy)]
 pub struct FillConditions {
     pub mode: FillMode,

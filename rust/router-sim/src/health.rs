@@ -1,20 +1,19 @@
 //! Quote a market without letting one quoter silence it.
 //!
-//! `quote_router` CPIs every registry entry the instruction carries. One
-//! entry that reverts fails the whole simulation, so today a single bad
-//! quoter stops a market's book from publishing and turns a route request
-//! into an error. The market's other sources were fine; nothing reached them.
+//! `quote_router` calls every registry entry the instruction carries. One entry
+//! that reverts fails the whole simulation. A single bad quoter therefore stops
+//! a market's book from publishing and turns a route request into an error. The
+//! market's other sources were fine, and nothing reached them.
 //!
-//! This module closes that. When a simulation fails it reads the logs, works
-//! out which entry caused it, drops that entry, and simulates again. The
-//! caller gets the market minus the bad quoter instead of nothing.
+//! When a simulation fails, this module reads the logs, works out which entry
+//! caused the failure, drops that entry, and simulates again. The caller gets
+//! the market without the bad quoter instead of nothing.
 //!
-//! The retry is also the measurement. A log line naming a quoter is strong
-//! evidence, but a simulation that passes once one entry is removed is proof,
-//! and it costs nothing extra because the retry is the path the router wants
-//! to take anyway. Proof is only claimed when exactly one entry was removed:
-//! dropping two at once and succeeding shows that at least one was at fault,
-//! not which.
+//! The retry is also the measurement. A log line that names a quoter is strong
+//! evidence. A simulation that passes once one entry is removed is proof, and
+//! it costs nothing extra, because the router wants the retry anyway. This
+//! module claims proof only when it removed exactly one entry. Dropping two at
+//! once and succeeding shows that at least one was at fault, not which one.
 
 use {
     crate::quote_view::{
@@ -42,14 +41,14 @@ const DEPLOY_SLOT_OFFSET: usize = 4;
 
 /// Tell the health layer when a quoter's program was last deployed.
 ///
-/// A redeploy makes the score describe code that is no longer running, so the
-/// counters are dropped and the quoter goes on probation rather than keeping
-/// full flow. That is the broken-rollout case: degradation and restoration
-/// both happen without an operator. A program serving many registry entries
-/// moves all of them, which is right — the upgrade changed every tenant.
+/// A redeploy leaves the score describing code that no longer runs. The health
+/// layer therefore drops the counters and puts the quoter on probation instead
+/// of giving it full flow. A broken rollout then degrades and recovers with no
+/// operator. A program that serves many registry entries moves all of them,
+/// because the upgrade changed the code behind every one.
 ///
-/// A program that is not upgradeable has no deploy record, and is skipped:
-/// its code cannot change, so its score cannot go stale.
+/// A program that is not upgradeable has no deploy record, and this function
+/// skips it. Its code cannot change, so its score cannot go stale.
 pub async fn watch_program_deploys<S: ChainSource>(
     source: &S,
     health: &Health,
@@ -107,15 +106,15 @@ pub struct QuoteRequest<'a> {
     pub direction: program::state::prop_amm::Direction,
     pub size: u64,
     pub dlob_makers: &'a [Pubkey],
-    /// Carry only these entries. `None` carries every live entry, which only
-    /// fits while a market has few enough of them.
+    /// Carry only these entries. `None` carries every live entry, which fits
+    /// only while a market has few enough of them.
     pub only: Option<&'a [Pubkey]>,
     /// Quote the vAMM into this pass.
     pub include_vamm: bool,
 }
 
 impl<'a> QuoteRequest<'a> {
-    /// Every field a market needs quoting in one pass.
+    /// The fields that quote a whole market in one pass.
     pub fn whole_market(
         velocity: Pubkey,
         authority: Pubkey,
@@ -150,8 +149,8 @@ impl<'a> QuoteRequest<'a> {
             exclude,
             only: self.only,
             include_vamm: self.include_vamm,
-            // Health probes and the published books price protected flow:
-            // the full view, as an attested taker or a crank would see it.
+            // Health probes and the published books price protected flow.
+            // They show the full view, as an attested taker or a crank sees it.
             taker_served_window: true,
         }
     }
@@ -173,9 +172,9 @@ pub async fn quote_with_health<S: ChainSource>(
     for _ in 0..MAX_ATTEMPTS {
         let built = build_quote_router_ix(source, &request.params(&excluded)).await?;
 
-        // Throttled quoters ride a fraction of routes. Deciding it here, on
-        // the entries this market actually holds, keeps one market's traffic
-        // from spending another market's sampling budget.
+        // A throttled quoter rides a fraction of routes. This decision runs on
+        // the entries this market holds, so one market's traffic does not spend
+        // another market's sampling budget.
         let sampled_out: Vec<Pubkey> = built
             .entries
             .iter()
@@ -198,9 +197,9 @@ pub async fn quote_with_health<S: ChainSource>(
         .await
         {
             Ok((view, units_consumed)) => {
-                // Removing exactly one entry and succeeding proves that entry
-                // caused the failure. Removing several proves only that one of
-                // them did, so the others keep the benefit of the doubt.
+                // A success after exactly one entry was removed proves that
+                // entry caused the failure. A success after several were
+                // removed proves only that one of them did, so none is charged.
                 if let (1, Some(reason)) = (last_dropped.len(), last_reason) {
                     health.record(Report::new(
                         last_dropped[0],
@@ -218,12 +217,11 @@ pub async fn quote_with_health<S: ChainSource>(
                         Observation::SimOk { cu: units_consumed },
                     ));
                 }
-                // The view reports whether margin verification cut a book
-                // below what its source quoted. It reports that a cut
-                // happened, not how deep, so this counts the share of quotes
-                // a quoter had cut rather than the share of base lost. Both
-                // answer the same question: is this quoter offering depth
-                // the account behind it cannot carry.
+                // The view reports whether margin verification cut a book below
+                // what its source quoted. It reports that a cut happened, not
+                // how deep. This therefore counts the share of quotes a quoter
+                // had cut, not the share of base lost. Both measure whether the
+                // quoter offers depth the account behind it cannot carry.
                 for book in &view.books {
                     if built.entries.iter().any(|entry| entry.quoter == book.key) {
                         health.record(Report::new(
@@ -245,7 +243,7 @@ pub async fn quote_with_health<S: ChainSource>(
             }
             Err(err) => {
                 let Some(failure) = err.downcast_ref::<QuoteSimFailure>() else {
-                    // Not a simulation failure. Nothing here is a quoter's.
+                    // Not a simulation failure, so no quoter caused it.
                     return Err(err);
                 };
                 let entry_refs: Vec<EntryRef> = built
@@ -268,8 +266,8 @@ pub async fn quote_with_health<S: ChainSource>(
 
                 if last_dropped.is_empty() {
                     // The logs point at no quoter, so removing one would be a
-                    // guess. Hand the failure back rather than quietly
-                    // stripping the market down.
+                    // guess. Return the failure instead of stripping the
+                    // market down.
                     return Err(err);
                 }
                 excluded.extend(last_dropped.iter().copied());
@@ -291,11 +289,10 @@ struct Retry {
 
 /// Decide what to remove after a failed round.
 ///
-/// Charges and suspects both get dropped: a charge is named by the program,
-/// a suspect is inferred from the CPI brackets, and removing either is how a
-/// suspect becomes proof. Entries already excluded are not re-listed, so a
-/// round that names only what is already gone drops nothing and ends the
-/// loop rather than spinning.
+/// The plan drops charges and suspects alike. The program names a charge. The
+/// CPI brackets imply a suspect. Removing either is how a suspect becomes
+/// proof. The plan does not list an entry that is already excluded, so a round
+/// that names only what is already gone drops nothing and ends the loop.
 fn plan_retry(verdict: &velocity_quoter_health::Verdict, excluded: &[Pubkey]) -> Retry {
     Retry {
         drop: verdict
@@ -353,7 +350,7 @@ mod tests {
     #[test]
     fn a_failure_naming_nobody_strips_nothing() {
         // Removing a quoter here would be a guess, and the market would lose
-        // a source for a failure that was never a quoter's.
+        // a source for a failure that no quoter caused.
         let verdict = Verdict {
             charges: vec![],
             suspects: vec![],
@@ -381,10 +378,10 @@ mod tests {
 mod deploy_record_tests {
     use super::*;
 
-    /// The watcher reads the deploy slot at a fixed offset rather than
-    /// deserializing the whole record. A wrong offset would read garbage,
-    /// change on every check, and hold every quoter in permanent probation,
-    /// so the offset is pinned against the loader's own type.
+    /// The watcher reads the deploy slot at a fixed offset instead of
+    /// deserializing the whole record. A wrong offset reads garbage that
+    /// changes on every check, and it holds every quoter in permanent
+    /// probation. This test pins the offset against the loader's own type.
     #[test]
     fn the_deploy_slot_sits_where_the_watcher_looks_for_it() {
         let state = solana_loader_v3_interface::state::UpgradeableLoaderState::ProgramData {
@@ -401,8 +398,7 @@ mod deploy_record_tests {
     }
 
     /// A quoter's deploy record lives at a PDA of the upgradeable loader. A
-    /// wrong loader address would find no account, and the watcher would
-    /// silently never fire.
+    /// wrong loader address finds no account, and the watcher never fires.
     #[test]
     fn the_loader_address_is_the_upgradeable_loader() {
         assert_eq!(
@@ -429,9 +425,8 @@ pub struct MarketQuote {
     /// Slot of the earliest pass. Passes run at different slots, so this is
     /// the age of the oldest thing in the merged book.
     pub slot: u64,
-    /// Size the books were quoted at. A resting book is truncated by it; a
-    /// PropAMM and the vAMM price against it, so their levels mean nothing
-    /// without it.
+    /// Size the books were quoted at. It truncates a resting book. A PropAMM
+    /// and the vAMM price against it, so their levels mean nothing without it.
     pub quoted_size: u64,
     pub units_consumed: u64,
     pub excluded: Vec<Pubkey>,
@@ -451,29 +446,29 @@ struct Pass {
 /// How a market's quoters divide into passes that fit.
 struct Plan {
     passes: Vec<Pass>,
-    /// DLOB makers the first pass could take. Cutting understates depth;
-    /// overflowing publishes nothing at all.
+    /// DLOB makers the first pass could take. A cut understates depth. An
+    /// overflow publishes nothing.
     carried_dlob: usize,
-    /// Entries no pass can carry even alone, because their own CPI surface
-    /// outgrows a transaction. Reported rather than dropped silently.
+    /// Entries no pass can carry, even alone, because their own CPI surface
+    /// outgrows a transaction. The planner reports them instead of dropping
+    /// them.
     unquotable: Vec<Pubkey>,
 }
 
 /// Split a market's quoters into passes, under both ceilings that bind.
 ///
-/// They bind differently, which is why counting one is not enough. The buffer
-/// holds [`SOURCES_PER_PASS`] sources and refuses a push past it, so a pass
-/// that overruns *it* fails inside velocity and takes that pass's book down.
-/// The transaction holds [`PASS_ACCOUNT_BUDGET`] keys, and a pass that
-/// overruns *that* is rejected by the runtime before velocity runs at all.
+/// The two ceilings bind differently, so counting one is not enough. The buffer
+/// holds [`SOURCES_PER_PASS`] sources and refuses a push past that count. A
+/// pass that overruns the buffer fails inside velocity and takes that pass's
+/// book down. The transaction holds [`PASS_ACCOUNT_BUDGET`] keys. The runtime
+/// rejects a pass that overruns the key budget before velocity runs at all.
 ///
-/// Sources used to be the only ceiling this planner counted. Sixteen of them
-/// is far more than a transaction can address — a quoter with its own user
-/// pair and CPI accounts costs four keys — so a market with a handful of
-/// quoters planned as one pass and then could not be sent.
+/// The source count alone does not bound the key count. A quoter with its own
+/// user pair and CPI accounts costs four keys, so a market of a few quoters can
+/// sit under [`SOURCES_PER_PASS`] and still be too wide to send.
 fn plan_passes(slots: &[QuoterSlotV0], dlob_makers: usize) -> Plan {
-    // The vAMM takes a source slot on the pass that carries it and no
-    // accounts of its own: the perp market it reads is already there.
+    // The vAMM takes a source slot on the pass that carries it. It needs no
+    // accounts of its own, because the perp market it reads is already there.
     let carried_dlob = dlob_makers
         .min(SOURCES_PER_PASS - 1)
         .min((PASS_ACCOUNT_BUDGET.saturating_sub(PASS_FIXED_ACCOUNTS)) / 2);
@@ -483,7 +478,7 @@ fn plan_passes(slots: &[QuoterSlotV0], dlob_makers: usize) -> Plan {
     let mut open: Vec<QuoterSlotV0> = Vec::new();
     let mut first = true;
 
-    // A pass in progress, plus one more quoter: does it still fit?
+    // Whether a pass in progress still fits after one more quoter.
     let fits = |held: &[QuoterSlotV0], first: bool| {
         let dlob = if first { carried_dlob } else { 0 };
         let sources = held.len() + dlob + usize::from(first);
@@ -497,10 +492,10 @@ fn plan_passes(slots: &[QuoterSlotV0], dlob_makers: usize) -> Plan {
         }
         open.pop();
 
-        // It did not fit, so close the pass in progress and try it on a
-        // fresh one. The first pass closes even holding no quoters at all:
-        // the makers and the vAMM can fill it on their own, and it is still
-        // the pass that carries them.
+        // The quoter did not fit, so close the pass in progress and try the
+        // quoter on a fresh pass. The first pass closes even when it holds no
+        // quoters. The makers and the vAMM can fill it on their own, and it is
+        // still the pass that carries them.
         if !open.is_empty() || first {
             passes.push(Pass {
                 entries: open.iter().map(|slot| slot.entry).collect(),
@@ -513,8 +508,9 @@ fn plan_passes(slots: &[QuoterSlotV0], dlob_makers: usize) -> Plan {
 
         open.push(*slot);
         if !fits(&open, first) {
-            // Alone on an empty pass and still too wide: nothing can carry
-            // it, so the market publishes without it rather than not at all.
+            // The quoter is alone on an empty pass and still too wide. No pass
+            // can carry it, so the market publishes without it instead of not
+            // at all.
             open.pop();
             unquotable.push(slot.entry);
         }
@@ -536,26 +532,26 @@ fn plan_passes(slots: &[QuoterSlotV0], dlob_makers: usize) -> Plan {
 
 /// Quote a whole market, in as many passes as its quoters need.
 ///
-/// One pass carries a fixed number of sources and a fixed number of accounts,
-/// so a market with more quoters than that cannot be read at all in a single
-/// call: the buffer refuses the push and the market goes dark rather than
-/// degrading. Reading it in passes removes the ceiling, because the view is a
-/// simulation and nothing about it has to be one transaction.
+/// One pass carries a fixed number of sources and a fixed number of accounts.
+/// A market with more quoters than that cannot be read in a single call. The
+/// buffer refuses the push, and the market then publishes nothing instead of a
+/// smaller book. Several passes remove the ceiling, because the view is a
+/// simulation and it does not have to be one transaction.
 ///
-/// The vAMM rides exactly one pass. It shades against the books carried
-/// alongside it, so a pass holding a subset would return a vAMM shaded
-/// against a subset. The pass that carries it is the one holding the DLOB
-/// makers, which are the rivals the fill will also put in front of it.
+/// The vAMM rides exactly one pass. It shades against the books carried with
+/// it, so a pass holding a subset would return a vAMM shaded against a subset.
+/// The pass that carries the vAMM is the one that holds the DLOB makers,
+/// because the fill puts those same makers in front of it.
 pub async fn quote_market<S: ChainSource>(
     source: &S,
     health: &Health,
     request: &QuoteRequest<'_>,
     entries: &[Pubkey],
 ) -> Result<MarketQuote> {
-    // The planner sizes a pass by what it costs to *send*, so it needs each
-    // quoter's registered CPI surface — read off the market's slab, the same
-    // copy the builder reads again a moment later. The slab keeps slot
-    // order, which is the order the on-chain walk consults.
+    // The planner sizes a pass by what it costs to send, so it needs each
+    // quoter's registered CPI surface. That comes off the market's slab, the
+    // same copy the builder reads next. The slab keeps slot order, which is the
+    // order the on-chain walk consults.
     let slots = crate::quoter_slab_slots(source, &request.velocity, request.market_index).await?;
     let carried: Vec<QuoterSlotV0> = slots
         .into_iter()
@@ -628,10 +624,10 @@ mod pass_tests {
         Pubkey::new_from_array([2; 32])
     }
 
-    /// A quoter shaped like the midpoint: an instance of a shared program,
-    /// filling for its own user. Three unshared keys a pass has to find room
-    /// for — the instance and the user's two accounts — plus the program and
-    /// the sysvar every instance shares.
+    /// A quoter shaped like the midpoint. It is an instance of a shared
+    /// program, and it fills for its own user. A pass must find room for three
+    /// unshared keys: the instance and the user's two accounts. It also carries
+    /// the program and the sysvar that every instance shares.
     fn custom(program: Pubkey) -> QuoterSlotV0 {
         let mut slot: QuoterSlotV0 = bytemuck::Zeroable::zeroed();
         let instance = Pubkey::new_unique();
@@ -713,10 +709,10 @@ mod pass_tests {
         );
     }
 
-    /// The ceiling this planner used to miss. Sixteen sources is far more
-    /// than a transaction can address — a quoter with its own user pair and
-    /// CPI accounts costs four keys — so counting sources alone planned
-    /// passes the runtime rejected before velocity ran.
+    /// The transaction key budget binds before the source count does. A quoter
+    /// with its own user pair and CPI accounts costs four keys, so a plan that
+    /// counts sources alone produces passes the runtime rejects before velocity
+    /// runs.
     #[test]
     fn no_pass_outgrows_the_transaction_that_has_to_carry_it() {
         for (count, dlob) in [(1, 0), (4, 0), (8, 0), (40, 0), (8, 4), (4, 20), (100, 3)] {
@@ -768,11 +764,10 @@ mod pass_tests {
         }
     }
 
-    /// The registered list is capped at `MAX_QUOTER_ACCOUNTS`, and a quoter
-    /// at that cap fits a transaction on its own — so the widest allowed
-    /// surface is planned onto a pass, never reported unquotable. The
-    /// `unquotable` report stays as the guard for a budget change that
-    /// breaks this.
+    /// The registered list is capped at `MAX_QUOTER_ACCOUNTS`, and a quoter at
+    /// that cap fits one transaction on its own. The planner therefore places
+    /// the widest allowed surface on a pass and never reports it unquotable.
+    /// The `unquotable` report guards a budget change that breaks this.
     #[test]
     fn a_quoter_with_the_widest_allowed_surface_still_quotes() {
         let mut entries = market(2);

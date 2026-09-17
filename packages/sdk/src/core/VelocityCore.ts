@@ -265,7 +265,10 @@ export class VelocityCore {
 	 * @param args.user - the order owner's `User` account (the taker being filled).
 	 * @param args.userStats - the taker's `UserStats` PDA.
 	 * @param args.authority - signer that must own or be a registered delegate of `filler`.
-	 * @param args.remainingAccounts - writable perp market + oracle `AccountMeta[]` for the order's market, followed by any maker/referrer `(User, UserStats)` account pairs, followed by the taker's `RevenueShareEscrow` account if builder codes are enabled protocol-wide, and, when that taker is referred, the referrer's readonly `UserStats` after the escrow.
+	 * @param args.remainingAccounts - the writable perp market and oracle `AccountMeta[]`
+	 * for the order's market, then any maker and referrer `(User, UserStats)` account
+	 * pairs, then the taker's `RevenueShareEscrow` account if builder codes are enabled
+	 * protocol-wide, then the referrer's read-only `UserStats` when that taker is referred.
 	 * @returns the unsigned `fillPerpOrder` `TransactionInstruction`.
 	 */
 	static async buildFillPerpOrderInstruction(args: {
@@ -432,8 +435,13 @@ export class VelocityCore {
 	 * @param args.user - the taker's `User` account.
 	 * @param args.userStats - the taker's `UserStats` PDA.
 	 * @param args.authority - signer that must own or be a registered delegate of `user`.
-	 * @param args.remainingAccounts - writable perp market + oracle `AccountMeta[]` for `orderParams.marketIndex`, followed by maker/referrer `(User, UserStats)` pairs, followed by the taker's `RevenueShareEscrow` account if builder codes are enabled, and, when that taker is referred, the referrer's readonly `UserStats` after the escrow.
-	 * @param args.clobAccounts - the market's CLOB accounts (`quoterSlab`, writable `clobMarket`, `clobProgram`); when passed, an unfilled limit remainder rests on the CLOB instead of being cancelled.
+	 * @param args.remainingAccounts - the writable perp market and oracle `AccountMeta[]`
+	 * for `orderParams.marketIndex`, then the maker and referrer `(User, UserStats)` pairs,
+	 * then the taker's `RevenueShareEscrow` account if builder codes are enabled, then the
+	 * referrer's read-only `UserStats` when that taker is referred.
+	 * @param args.clobAccounts - the market's CLOB accounts, which are `quoterSlab`, a
+	 * writable `clobMarket`, and `clobProgram`. When they are passed, an unfilled limit
+	 * remainder rests on the CLOB instead of being cancelled.
 	 * @returns the unsigned `placeAndTakePerpOrder` `TransactionInstruction`.
 	 */
 	static async buildPlaceAndTakePerpOrderInstruction(args: {
@@ -467,7 +475,7 @@ export class VelocityCore {
 	 * @param args.userStats - the maker's `UserStats` PDA.
 	 * @param args.authority - signer that must own or be a registered delegate of `user` (the maker).
 	 * @param args.remainingAccounts - writable perp market + oracle `AccountMeta[]` for `orderParams.marketIndex`.
-	 * @param args.clobAccounts - the market's CLOB accounts; all are required.
+	 * @param args.clobAccounts - the market's CLOB accounts. All of them are required.
 	 * @returns the unsigned `placeAndMakePerpOrderV1` `TransactionInstruction`.
 	 */
 	static async buildPlaceAndMakePerpOrderInstruction(args: {

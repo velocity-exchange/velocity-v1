@@ -340,9 +340,9 @@ describe('liquidate perp (no open orders)', () => {
 		);
 
 		await velocityClient.fetchAccounts();
-		// IsolatedPosition | Bankrupt | BankruptcyClaim: the latch books the
-		// debt against the market, which freezes its IF-fee sweep until the
-		// resolver discharges it
+		// Flag 13 is IsolatedPosition, Bankrupt and BankruptcyClaim together. The
+		// latch books the debt against the market, which freezes the market's IF-fee
+		// sweep until the resolver discharges the debt.
 		assert(
 			velocityClient.getUserAccount().perpPositions[0].positionFlag === 13
 		);
@@ -415,8 +415,8 @@ describe('liquidate perp (no open orders)', () => {
 
 		// assert(!velocityClient.getUserAccount().isBankrupt);
 		// assert(!velocityClient.getUserAccount().isBeingLiquidated);
-		// IsolatedPosition only: resolving the debt released the claim, so the
-		// market's IF-fee sweep is no longer frozen
+		// Flag 1 is IsolatedPosition alone. Resolving the debt released the claim, so
+		// the market's IF-fee sweep is no longer frozen.
 		assert(velocityClient.getUserAccount().perpPositions[0].positionFlag === 1);
 		assert(marketAfterBankruptcy.pendingBankruptcyClaims === 0);
 

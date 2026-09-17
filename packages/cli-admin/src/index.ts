@@ -46,9 +46,10 @@ program
 	.showHelpAfterError()
 	.showSuggestionAfterError();
 
-// Global connection options are declared on every leaf (see options.ts), but
-// also on the root so `velocity-admin -p <profile> <command...>` works;
-// users reasonably put the profile first. `optsWithGlobals` merges both.
+// The global connection options are declared on every leaf command, as
+// options.ts shows, and also on the root, so that
+// `velocity-admin -p <profile> <command...>` works. Users often put the profile
+// first. `optsWithGlobals` merges both sets.
 withGlobalOptions(program);
 
 registerConfig(program);

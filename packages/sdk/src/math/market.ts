@@ -377,7 +377,7 @@ export function calculateBankruptcyIfFloor(perpMarket: PerpMarketAccount): BN {
  * `force` and reserves nothing.
  *
  * @param {PerpMarketAccount} perpMarket - The perp market account
- * @param {boolean} force - Delisting sweep; waives the reservation
+ * @param {boolean} force - True for the delisting sweep, which waives the reservation
  * @return {BN} The reservation, QUOTE_PRECISION (1e6)
  */
 export function calculateBankruptcyIfTrancheReservation(
@@ -409,8 +409,8 @@ export function calculateBankruptcyIfTrancheReservation(
  *
  * @param {PerpMarketAccount} perpMarket - The perp market account
  * @param {SpotMarketAccount} spotMarket - The quote spot market account
- * @param {Pick<OraclePriceData, 'price'>} oraclePriceData - Live oracle price, PRICE_PRECISION (1e6);
- *   ignored while the market is in settlement
+ * @param {Pick<OraclePriceData, 'price'>} oraclePriceData - The live oracle price, in
+ *   PRICE_PRECISION (1e6). It is ignored while the market is in settlement
  * @return {BN} Tokens available to pay revenue share, QUOTE_PRECISION (1e6)
  */
 export function calculateRevenueShareSweepAvailable(

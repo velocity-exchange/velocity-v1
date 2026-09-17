@@ -1,10 +1,10 @@
-//! The maker's own on/off switch. Always available to the entry authority —
-//! for Custom quoters that is the quoted user's authority (enforced at
-//! creation, no handoff), so a maker can always shut their quoter down. A
-//! book's entry answers to the State admin roles instead, because its stored
-//! authority is only the admin key that registered it. Writes through to the
-//! approved copy in the market's slab, so a kill takes effect at once rather
-//! than at the next approval.
+//! The maker's on/off switch. The entry authority can always reach it. For a
+//! `Custom` entry that authority is the quoted user's own key, fixed at
+//! creation, so a maker can always stop their quoter. A book's entry answers
+//! to the State admin roles, because its stored authority is only the admin
+//! key that registered it. The switch writes through to the approved copy in
+//! the market's slab, so a kill takes effect at once instead of at the next
+//! approval.
 
 use {
     crate::{
@@ -24,11 +24,11 @@ pub struct UpdateQuoterActive<'info> {
     pub authority: Signer<'info>,
     #[account(mut)]
     pub quoter: AccountLoader<'info, QuoterV0>,
-    /// The market's slab, so the switch reaches the approved copy. Optional:
-    /// an entry that was never approved has no copy to write. Omitting it on
-    /// an approved entry leaves the live copy as it was — the staging value
-    /// still lands at the next approval — so a maker flipping the live
-    /// switch passes it.
+    /// The market's slab, so the switch reaches the approved copy. It is
+    /// optional because an entry that was never approved has no copy to write.
+    /// An approved entry that omits it keeps the live copy as it was, and the
+    /// staged value lands at the next approval. A maker who wants the switch
+    /// to take effect at once passes the slab.
     #[account(
         mut,
         seeds = [
@@ -38,8 +38,8 @@ pub struct UpdateQuoterActive<'info> {
         bump
     )]
     pub quoter_slab: Option<AccountLoader<'info, QuoterSlabV0>>,
-    /// Read for the admin check a non-Custom entry needs. Absent for a
-    /// Custom entry, which answers to its own stored authority.
+    /// Read for the admin check that a non-`Custom` entry needs. A `Custom`
+    /// entry answers to its own stored authority and omits this account.
     pub state: Option<AccountLoader<'info, State>>,
 }
 

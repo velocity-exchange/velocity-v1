@@ -23,14 +23,14 @@ npm i @velocity-exchange/sdk
 
 ### Requirements
 
-- **Node ≥ 20.**
+- **Node 20.18.0 or later.**
 - **CommonJS only.** The package ships a `module` field, but it points at a
-  browser-shimmed CommonJS build, not ESM. Import it with `require`, or from
-  TypeScript/bundlers configured for interop.
+  browser-shimmed CommonJS build rather than ESM. Import it with `require`, or from
+  TypeScript and bundlers configured for interop.
 - **Anchor and web3.js are bundled, not peer dependencies.** The SDK depends on pinned
-  versions directly (`@coral-xyz/anchor` aliased to `@anchor-lang/core@1.0.1`, a second
-  `@coral-xyz/anchor-29` for legacy paths, and `@solana/web3.js@1.98.4`). If your app
-  installs its own copy of either, expect two copies in the tree and structurally
+  versions directly: `@coral-xyz/anchor` aliased to `@anchor-lang/core@1.0.1`, a second
+  `@coral-xyz/anchor-29` for legacy paths, and `@solana/web3.js@1.99.0`. When your app
+  installs its own copy of either one, expect two copies in the tree and structurally
   identical types that TypeScript treats as distinct.
 
 ## Quickstart
@@ -125,13 +125,13 @@ const txSig = await client.placePerpOrder(
 
 Both examples are typechecked in CI, so they stay in step with the API.
 
-## What's inside
+## What is inside
 
 | Export | Reach for it when |
 | --- | --- |
 | `VelocityClient` | Anything that touches the exchange: reading markets, placing and cancelling orders, deposits and withdrawals. The entry point. |
 | `User` | You need one account's positions, orders, collateral, health, or liquidation price. |
-| `accountSubscription` modes | Choosing how state reaches you: see below. |
+| `accountSubscription` modes | You are choosing how state reaches you. See below. |
 | `dlob/` | You want the order book itself: resting orders, crossing logic, book levels, `DLOBSubscriber`. |
 | `math/` | You need to predict an on-chain result off-chain: margin, funding, fees, AMM pricing, auctions, liquidation. |
 | `events/` | You want to stream or backfill fills, funding payments, liquidations, and other program events. |
@@ -140,22 +140,22 @@ Both examples are typechecked in CI, so they stay in step with the API.
 
 ### Subscription modes
 
-`accountSubscription` accepts three types, and this choice sets both your latency and
-your RPC bill.
+`accountSubscription` accepts three types. The choice sets both your latency and your RPC
+bill.
 
-- **`polling`** — a `BulkAccountLoader` batches `getMultipleAccounts` on an interval.
-  Works against any plain RPC with no extra infrastructure. Start here.
-- **`websocket`** — account subscriptions pushed by the RPC. Lower latency than polling,
-  at the cost of resubscription handling on flaky connections.
-- **`grpc`** — a Yellowstone gRPC stream. Lowest latency, and what keepers and market
-  makers run, but it needs a gRPC endpoint that most public RPCs do not offer.
+- **`polling`**: a `BulkAccountLoader` batches `getMultipleAccounts` on an interval. It
+  works against any plain RPC with no extra infrastructure. Start here.
+- **`websocket`**: account subscriptions pushed by the RPC. Lower latency than polling, at
+  the cost of handling resubscription on an unreliable connection.
+- **`grpc`**: a Yellowstone gRPC stream. The lowest latency, and what keepers and market
+  makers run. It needs a gRPC endpoint that most public RPCs do not offer.
 
 ### Signed-message (Swift) orders
 
-Beyond `placePerpOrder`, which builds and sends a transaction, the SDK can place orders
-by signing an off-chain message that a keeper then lands on chain. You give up direct
-control of the transaction and gain a faster path into the auction without paying for
-your own blockspace, which matters most for takers competing on fill quality. See the
+`placePerpOrder` builds and sends a transaction. The SDK can also place an order by
+signing an off-chain message that a keeper then lands on chain. You give up direct control
+of the transaction and gain a faster path into the auction without paying for your own
+blockspace, which matters most for takers competing on fill quality. See the
 [Swift docs](https://docs.velocity.exchange/developers/velocity-sdk/swift).
 
 ## BN and precision
@@ -181,7 +181,7 @@ silently lose the fractional part. Always use `convertToNumber`:
 ```typescript
 import { BN, convertToNumber } from '@velocity-exchange/sdk';
 
-new BN(10500).div(new BN(1000)).toNumber(); // 10  — wrong
+new BN(10500).div(new BN(1000)).toNumber(); // 10, which is wrong
 convertToNumber(new BN(10500), new BN(1000)); // 10.5
 ```
 
@@ -190,22 +190,22 @@ Keep values as BN for as long as possible and convert only for display. See
 
 ## Relationship to the on-chain program
 
-This SDK is a hand-maintained mirror of the Velocity program: the account layouts in
+This SDK is a hand-maintained mirror of the Velocity program. The account layouts in
 `types.ts` track the program's structs, and `math/` re-implements the program's pricing,
-margin, funding, and fee logic in TypeScript so you can predict on-chain results before
-sending a transaction.
+margin, funding, and fee logic in TypeScript, so you can predict on-chain results before
+you send a transaction.
 
-That mirroring is why the SDK version matters. Running an SDK older than the deployed
-program can leave you with stale layouts or stale math, and the symptom is not an error
-but a wrong answer: mispredicted fills, margin, liquidation prices, or funding. Track
-the current release.
+That mirroring is why the SDK version matters. An SDK older than the deployed program can
+leave you with stale layouts or stale math. The symptom is a wrong answer rather than an
+error: a mispredicted fill, margin, liquidation price, or funding payment. Track the
+current release.
 
 ## Links
 
-- [Developer docs](https://docs.velocity.exchange/developers) — guides, API reference, and the Data API
+- [Developer docs](https://docs.velocity.exchange/developers): guides, API reference, and the Data API
 - [Migrating from Drift](https://docs.velocity.exchange/developers/migrate-from-drift)
-- [Discord](https://discord.com/invite/95kByNnDy5) — `#research-and-dev-chat`
-- Working in Rust instead? See [`velocity-rs`](https://docs.velocity.exchange/developers/velocity-rs).
+- [Discord](https://discord.com/invite/95kByNnDy5): `#research-and-dev-chat`
+- [`velocity-rs`](https://docs.velocity.exchange/developers/velocity-rs), the Rust client
 
 ## Working in this repo
 

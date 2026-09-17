@@ -1,22 +1,20 @@
 //! Off-chain assembly and decoding of velocity's `quote_router` view.
 //!
-//! The view instruction is meant to be *simulated*: it CPIs `quote_v0` on
-//! every registered quoter, bridges DLOB makers, ladders the vAMM against
-//! everything else, and writes the verified books into the caller's quote
-//! buffer. This module is the off-chain half a book publisher (or router)
-//! needs: derive the account list from live chain state, simulate through a
-//! [`ChainSource`], and read the books back out of post-simulation account
-//! state — the same mechanism relay turners use for staged resolver
-//! payloads, so it works identically over RPC, a subscription cache, or a
-//! pooled in-process SVM.
+//! A caller simulates the view instruction. The instruction calls `quote_v0`
+//! on every registered quoter, bridges DLOB makers, ladders the vAMM against
+//! the other sources, and writes the verified books into the caller's quote
+//! buffer. This module is the off-chain half a book publisher or a router
+//! needs. It derives the account list from live chain state, simulates through
+//! a [`ChainSource`], and reads the books back out of post-simulation account
+//! state. Relay turners read staged resolver payloads the same way, so this
+//! works over RPC, a subscription cache, or a pooled in-process SVM alike.
 //!
-//! DLOB makers are the caller's to supply. The view bridges one level per
-//! crossing resting order out of the user map it is handed, and nothing
-//! on-chain can enumerate that map for it — a DLOB order lives in a `User`
-//! account, so knowing which accounts to pass is the whole problem, and only
-//! something holding a DLOB view can answer it. Pass none and the view still
-//! returns the CLOB, every PropAMM (margin-clamped), and the vAMM shaded
-//! against them.
+//! The caller supplies the DLOB makers. The view bridges one level per
+//! crossing resting order out of the user map the caller hands it. No on-chain
+//! code can enumerate that map, because a DLOB order lives in a `User` account.
+//! Only a holder of a DLOB view knows which accounts to pass. With no makers
+//! passed, the view still returns the CLOB, every PropAMM after the margin
+//! clamp, and the vAMM shaded against them.
 
 use {
     crate::{quoter_slab_pda, quoter_slab_slots},
@@ -75,8 +73,8 @@ pub fn user_stats_pda(velocity: &Pubkey, authority: &Pubkey) -> Pubkey {
     Pubkey::find_program_address(&[b"user_stats", authority.as_ref()], velocity).0
 }
 
-/// Read a zero-copy account host-side: discriminator check, then an
-/// unaligned pod copy (account bytes carry no alignment guarantee).
+/// Read a zero-copy account on the host. The function checks the discriminator,
+/// then makes an unaligned pod copy. Account bytes carry no alignment guarantee.
 pub fn read_zero_copy<T: bytemuck::Pod + Discriminator>(data: &[u8]) -> Result<T> {
     let size = core::mem::size_of::<T>();
     if data.len() < 8 + size {
@@ -106,9 +104,10 @@ pub struct QuotedBook {
     pub clamped: bool,
     pub levels: Vec<QuotedLevelV0>,
     /// The orders behind the ladder, best price first, each with the user it
-    /// settles against. A quoter that fills from one account reports its
-    /// ladder as rows against that account; a book reports its orders. Empty
-    /// when the quoter said nothing and the caller has no account for it.
+    /// settles against. A quoter that fills from one account reports its ladder
+    /// as rows against that account. A book reports its own orders. The list is
+    /// empty when the quoter reported nothing and the caller has no account for
+    /// it.
     pub rows: Vec<QuotedRow>,
 }
 
@@ -119,33 +118,34 @@ pub struct QuotedRow {
     pub size: u64,
     /// The quoter's handle for the order, zero when the row is not an order.
     pub order_id: u64,
-    /// Who the row settles against. Both the `User` and its `UserStats`
-    /// derive from this, which is why the book stores identity this way.
+    /// Who the row settles against. The `User` and its `UserStats` both derive
+    /// from this value, so the book stores identity in this form.
     pub user: UserRefV0,
     /// `L3_ROW_FLAG_*`, as the quoter reported them.
     pub flags: u8,
 }
 
 impl QuotedRow {
-    /// The row is a migrated taker remainder: it demands liquidity rather
-    /// than offering it, so a cross cannot count the depth it holds.
+    /// The row is a migrated taker remainder. It demands liquidity instead of
+    /// offering it, so a cross cannot count the depth it holds.
     pub fn is_taker_origin(&self) -> bool {
         self.flags & program::state::prop_amm::L3_ROW_FLAG_TAKER_ORIGIN != 0
     }
 }
 
-/// A decoded quote view: per-source verified books for one taker direction,
-/// in fill order (externals, DLOB makers, vAMM last).
+/// A decoded quote view. It holds the per-source verified books for one taker
+/// direction, in fill order. Externals come first, then DLOB makers, then the
+/// vAMM.
 #[derive(Debug, Clone)]
 pub struct QuoteView {
     pub market: u16,
     /// 0 = long (books are asks), 1 = short (books are bids).
     pub direction: u8,
     pub quoted_size: u64,
-    /// Slot the simulation ran at — the staleness check for consumers.
+    /// Slot the simulation ran at. Consumers use it as the staleness check.
     pub slot: u64,
     pub books: Vec<QuotedBook>,
-    /// The row region filled before every book had been described, so the
+    /// The row region filled before the buffer described every book, so the
     /// last books carry fewer rows than they hold.
     pub rows_truncated: bool,
 }
@@ -154,9 +154,9 @@ impl QuoteView {
     /// The users a fill against these books would settle for, in the order
     /// the books would take them.
     ///
-    /// The order is the answer, not a detail of it: a book stops at the first
-    /// maker the transaction did not carry, so a prefix of this list fills
-    /// and a gap forfeits everything behind it.
+    /// The order matters. A book stops at the first maker the transaction did
+    /// not carry, so a prefix of this list fills and a gap forfeits every maker
+    /// behind it.
     pub fn settleable_users(&self) -> Vec<UserRefV0> {
         self.ranked_settleable_users()
             .into_iter()
@@ -164,31 +164,32 @@ impl QuoteView {
             .collect()
     }
 
-    /// The same owners, ordered by whether carrying one buys *reach* or only
-    /// *depth*, and each tagged with which it is.
+    /// The same owners, each with a flag that says whether the owner gates the
+    /// depth behind it. Gating owners come first.
     ///
     /// A book ends its walk at the first order whose owner the caller did not
-    /// carry, so an owner that can end a walk gates every order behind it:
-    /// leaving that owner out forfeits the depth past it. An owner none of whose
-    /// orders can end a walk gates nothing — carrying it wins that owner's own
-    /// size and nothing more.
+    /// carry. An owner that can end a walk therefore gates every order behind
+    /// it, and leaving that owner out forfeits the depth past it. An owner whose
+    /// orders can never end a walk gates nothing. Carrying it wins that owner's
+    /// own size and no more.
     ///
     /// A caller has room for a bounded number of users, so it wants the gating
-    /// owners first. Within each group the walk order is preserved, because that
-    /// is the order the book stops in: a prefix of gating owners fills, and the
-    /// first gap forfeits what is behind it. Truncating the result at the
-    /// account budget therefore drops the owners that cost the least to lose.
+    /// owners first. The walk order is kept inside each group, because that is
+    /// the order the book stops in. A prefix of gating owners fills, and the
+    /// first gap forfeits what is behind it. A caller that truncates the result
+    /// at its account budget therefore drops the owners that cost the least to
+    /// lose.
     ///
-    /// Which orders can end a walk is the quoter's own answer, carried per row
-    /// as [`L3_ROW_FLAG_BLOCKS_WALK`]. Nothing here reimplements the rule, so a
-    /// book that changes it does not leave this ordering stale.
+    /// The quoter decides which orders can end a walk and reports it per row as
+    /// [`L3_ROW_FLAG_BLOCKS_WALK`]. This function does not reimplement the rule,
+    /// so a book that changes the rule does not leave this ordering stale.
     pub fn ranked_settleable_users(&self) -> Vec<(UserRefV0, bool)> {
         let mut users: Vec<(UserRefV0, bool)> = Vec::new();
         for row in self.books.iter().flat_map(|book| book.rows.iter()) {
             let gates = row.flags & L3_ROW_FLAG_BLOCKS_WALK != 0;
             match users.iter_mut().find(|(user, _)| *user == row.user) {
-                // One gating order is enough to make an owner gating, whichever
-                // of its orders the walk reached first.
+                // One gating order makes the owner gating, whichever of its
+                // orders the walk reached first.
                 Some((_, seen)) => *seen |= gates,
                 None => users.push((row.user, gates)),
             }
@@ -239,13 +240,13 @@ pub fn decode_quote_buffer(data: &[u8]) -> Result<QuoteView> {
 
 /// Static account keys one pass of the view can carry.
 ///
-/// The binding resource is the transaction, not the buffer. A pass is one
-/// legacy message, and a message spends 32 bytes on each key plus the byte
-/// that indexes it in the instruction; what is left of the 1,232-byte packet
-/// after the signature, the header, the blockhash, the compact counts and the
-/// instruction's own data is the budget below. Overrunning it is not a
-/// degraded book — the runtime rejects the transaction before velocity runs,
-/// so the market publishes nothing.
+/// The transaction binds this limit, not the buffer. A pass is one legacy
+/// message. A message spends 32 bytes on each key, plus the byte that indexes
+/// it in the instruction. The budget below is what remains of the 1,232-byte
+/// packet after the signature, the header, the blockhash, the compact counts
+/// and the instruction data. A pass that overruns it does not publish a smaller
+/// book. The runtime rejects the transaction before velocity runs, so the
+/// market publishes nothing.
 pub const PASS_ACCOUNT_BUDGET: usize = {
     // Signature and its count, the three header bytes, the blockhash, the
     // key and account-index counts, the program index, the data length, and
@@ -254,21 +255,22 @@ pub const PASS_ACCOUNT_BUDGET: usize = {
     (PACKET_DATA_SIZE - ENVELOPE) / (32 + 1)
 };
 
-/// What one transaction may weigh: an IPv6 MTU less the UDP and IP headers.
+/// The largest transaction the network carries. It is an IPv6 MTU less the IP
+/// and UDP headers.
 pub const PACKET_DATA_SIZE: usize = 1280 - 40 - 8;
 
-/// Keys every pass carries whatever it quotes: the instruction's own three
-/// accounts, the oracle/spot/perp map, the market's quoter slab, and
-/// velocity itself as the program the message invokes.
+/// Keys every pass carries, whatever it quotes. They are the instruction's own
+/// three accounts, the oracle, spot market and perp market map, the market's
+/// quoter slab, and velocity as the program the message invokes.
 pub const PASS_FIXED_ACCOUNTS: usize = 3 + 3 + 1 + 1;
 
 /// Static account keys a pass carrying `slots` and `dlob_makers` needs.
 ///
-/// The same set [`build_quote_router_ix`] assembles, counted rather than
-/// built: the union of the slots' registered CPI accounts, and two accounts
-/// for every user a book has to load. It rounds up rather than down where
-/// the builder would dedup further — a pass that plans too small is a pass
-/// that publishes nothing.
+/// This counts the same set [`build_quote_router_ix`] assembles, without
+/// building it. The set is the union of the slots' registered CPI accounts,
+/// plus two accounts for every user a book must load. The count rounds up where
+/// the builder would deduplicate further, because a pass planned too small
+/// publishes nothing.
 pub fn pass_account_cost(slots: &[QuoterSlotV0], dlob_makers: usize) -> usize {
     let mut cpi: BTreeSet<Pubkey> = BTreeSet::new();
     let mut users: BTreeSet<Pubkey> = BTreeSet::new();
@@ -285,10 +287,10 @@ pub fn pass_account_cost(slots: &[QuoterSlotV0], dlob_makers: usize) -> usize {
     PASS_FIXED_ACCOUNTS + cpi.len() + 2 * (users.len() + dlob_makers)
 }
 
-/// Instructions creating + initializing a quote buffer for `(authority,
-/// market)`. The account is too large for a CPI allocation, so the caller
-/// funds and creates it directly; `buffer` must sign the create (a fresh
-/// keypair), `authority` signs the init.
+/// The instructions that create and initialize a quote buffer for one authority
+/// and market. The account is too large for a CPI allocation, so the caller
+/// funds and creates it directly. `buffer` must be a fresh keypair and must sign
+/// the create. `authority` signs the init.
 pub fn create_quote_buffer_ixs(
     velocity: &Pubkey,
     payer: &Pubkey,
@@ -322,10 +324,10 @@ pub fn create_quote_buffer_ixs(
 
 /// A built `quote_router` instruction, with the entries it carries.
 ///
-/// The entries are in the order the on-chain router walks them. That order is
-/// what lets a runtime CPI bracket in a failed simulation's logs be matched
-/// back to a registry entry, which is the only attribution available when a
-/// quoter exhausts the compute budget and leaves the router no room to log.
+/// The entries are in the order the on-chain router walks them. That order lets
+/// a caller match a runtime CPI bracket in a failed simulation's logs back to a
+/// registry entry. It is the only attribution left when a quoter exhausts the
+/// compute budget and leaves the router no room to log.
 pub struct QuoteRouterIx {
     pub instruction: Instruction,
     pub entries: Vec<CarriedEntry>,
@@ -334,11 +336,11 @@ pub struct QuoteRouterIx {
 /// A quoter a pass carried, named by its staging entry, with what a consumer
 /// needs to attribute its levels.
 ///
-/// `user` is the account a Custom entry settles against: one maker, named at
-/// registration. A Custom quoter's levels therefore have a maker even though
-/// they have no resting order, which is what lets them appear in an L3 book.
-/// For a CLOB entry it is the registrant, not the makers resting on the book,
-/// so it must not be used to attribute CLOB depth.
+/// `user` is the account a Custom entry settles against. It is one maker, named
+/// at registration. A Custom quoter's levels therefore have a maker even though
+/// they have no resting order, which lets them appear in an L3 book. For a CLOB
+/// entry `user` is the registrant, not a maker resting on the book. Do not use
+/// it to attribute CLOB depth.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CarriedEntry {
     pub quoter: Pubkey,
@@ -370,10 +372,11 @@ pub struct QuoteRouterParams<'a> {
     pub market_index: u16,
     pub direction: Direction,
     pub size: u64,
-    /// `User` accounts of DLOB makers to bridge, from whatever holds the
-    /// caller's DLOB view. Each costs the transaction two accounts and one of
-    /// the buffer's source slots, so a caller passes candidates rather than
-    /// the whole book; the split reports which of them the fill would reach.
+    /// `User` accounts of DLOB makers to bridge, taken from whatever holds the
+    /// caller's DLOB view. Each maker costs the transaction two accounts and one
+    /// of the buffer's source slots. A caller therefore passes candidates
+    /// instead of the whole book. The split reports which of them the fill would
+    /// reach.
     pub dlob_makers: &'a [Pubkey],
     /// Quoters to leave out, by staging-entry address. A quoter proven to
     /// break this market's simulation is dropped here, so the rest of the
@@ -387,13 +390,13 @@ pub struct QuoteRouterParams<'a> {
     /// is read in several passes. This is how a caller says which pass it is
     /// building.
     pub only: Option<&'a [Pubkey]>,
-    /// Quote the vAMM into this pass. Exactly one pass of a market should,
-    /// because the vAMM shades against the books carried alongside it.
+    /// Quote the vAMM into this pass. Exactly one pass of a market sets this,
+    /// because the vAMM shades against the books carried with it.
     pub include_vamm: bool,
-    /// Whether the flow this view prices for served a protection window —
-    /// the swift hold, or the book's activation delay. A bumped book and a
-    /// protected-flow quoter show no depth when this is false, exactly as
-    /// the fill's route would.
+    /// Whether the flow this view prices served a protection window. The window
+    /// is the swift hold or the book's activation delay. A bumped book and a
+    /// protected-flow quoter show no depth when this is false, the same as the
+    /// fill's route.
     pub taker_served_window: bool,
 }
 
@@ -424,10 +427,10 @@ pub async fn build_quote_router_ix<S: ChainSource>(
     let perp_market: PerpMarket = read_zero_copy(&perp_market_account.data)?;
     let quote_spot_market = spot_market_pda(velocity, perp_market.quote_spot_market_index);
 
-    // The slots this pass consults, in slab order — the order the on-chain
-    // walk quotes them in, which is what log attribution aligns against. A
-    // slot is consulted by carrying its response account, so selection here
-    // is selection of what rides the tail.
+    // The slots this pass consults, in slab order. That is the order the
+    // on-chain walk quotes them in, and log attribution aligns against it. A
+    // pass consults a slot by carrying its response account, so this filter
+    // decides what rides the account tail.
     let mut slots: Vec<QuoterSlotV0> = quoter_slab_slots(source, velocity, market_index).await?;
     slots.retain(|slot| {
         slot.quotes()
@@ -435,10 +438,10 @@ pub async fn build_quote_router_ix<S: ChainSource>(
             && only.map(|only| only.contains(&slot.entry)).unwrap_or(true)
     });
 
-    // The user map the view walks: custom quoters' users, which the margin
-    // clamp needs, and the DLOB makers the caller wants bridged. One section,
-    // because the instruction reads one map — a custom quoter that is also a
-    // DLOB maker appears once.
+    // The user map the view walks. It holds the custom quoters' users, which
+    // the margin clamp needs, and the DLOB makers the caller wants bridged. The
+    // instruction reads one map, so this is one section. A custom quoter that is
+    // also a DLOB maker appears once.
     let map_users: Vec<Pubkey> = {
         let mut users: Vec<Pubkey> = slots
             .iter()
@@ -461,12 +464,12 @@ pub async fn build_quote_router_ix<S: ChainSource>(
         })
         .collect::<Result<_>>()?;
 
-    // The union of the consulted slots' registered CPI accounts, plus the
-    // pieces every quoter CPI needs: its response account (written) and its
-    // program. Writability ORs across slots. The whole registered list rides
-    // rather than the quote leg's subset: each leg resolves its accounts by
-    // index into the one list, so carrying the list is what guarantees the
-    // resolve — a signer a quoter registered is in it by construction.
+    // The union of the consulted slots' registered CPI accounts, plus the two
+    // accounts every quoter CPI needs. Those are its response account, which is
+    // writable, and its program. Writability is the OR across slots. The whole
+    // registered list rides, not the quote leg's subset, because each leg
+    // resolves its accounts by index into the one list. Carrying the whole list
+    // guarantees the resolve, and a signer the quoter registered is in it.
     let mut cpi_union: BTreeMap<Pubkey, bool> = BTreeMap::new();
     for slot in &slots {
         for meta in slot.config.registered_accounts() {
@@ -483,21 +486,22 @@ pub async fn build_quote_router_ix<S: ChainSource>(
         quote_buffer: *quote_buffer,
     }
     .to_account_metas(None);
-    // Map section: oracle, quote spot market, the (writable) perp market.
+    // Map section: the oracle, the quote spot market, and the writable perp
+    // market.
     accounts.push(AccountMeta::new_readonly(perp_market.oracle, false));
     accounts.push(AccountMeta::new(quote_spot_market, false));
     accounts.push(AccountMeta::new(perp_market_key, false));
-    // User-map section: the (User, UserStats) pairs above. Writable,
-    // matching the fill's convention — the margin clamp opens a fresh
-    // maker's position slot the way a fill would, and a read-only user
-    // degrades that maker's book to zero.
+    // User-map section: the User and UserStats pairs above. They are writable,
+    // which matches the fill's convention. The margin clamp opens a fresh
+    // maker's position slot the way a fill does, and a read-only user degrades
+    // that maker's book to zero.
     for (user, stats) in &user_pairs {
         accounts.push(AccountMeta::new(*user, false));
         accounts.push(AccountMeta::new(*stats, false));
     }
     // Quoter section: the market's slab, then the CPI union. A slot is
-    // consulted because its response account is in the union — no entry
-    // accounts ride the call.
+    // consulted because its response account is in the union. No entry accounts
+    // ride the call.
     accounts.push(AccountMeta::new_readonly(
         quoter_slab_pda(velocity, market_index),
         false,
@@ -538,8 +542,8 @@ pub async fn build_quote_router_ix<S: ChainSource>(
 }
 
 /// Simulate a built quote view and decode the books out of the buffer's
-/// post-simulation state. Never lands anything: the transaction is unsigned
-/// (simulation skips signature verification on every transport).
+/// post-simulation state. The transaction is unsigned, so nothing can land.
+/// Simulation skips signature verification on every transport.
 pub async fn simulate_quote_view<S: ChainSource>(
     source: &S,
     instruction: Instruction,
@@ -551,13 +555,12 @@ pub async fn simulate_quote_view<S: ChainSource>(
         .map(|(view, _)| view)
 }
 
-/// A simulation that did not succeed, with the evidence needed to say who
-/// caused it.
+/// A simulation that failed, with the evidence that names the cause.
 ///
-/// The logs name the quoter: `quote_router` logs `quoter <key> quote failed`
-/// for every entry whose CPI it could not use. Rendering them into a message
-/// and dropping the vector would leave every caller unable to tell a maker's
-/// failure from its own, so they are carried as data. Reach them with
+/// The logs name the quoter. `quote_router` logs `quoter <key> quote failed`
+/// for every entry whose CPI it could not use. A rendered message alone would
+/// leave a caller unable to tell a maker's failure from its own, so the logs
+/// stay as data. Read them with
 /// `anyhow::Error::downcast_ref::<QuoteSimFailure>`.
 #[derive(Debug, Clone)]
 pub struct QuoteSimFailure {
@@ -580,9 +583,9 @@ impl std::error::Error for QuoteSimFailure {}
 
 /// Simulate a built quote view and report what the simulation cost.
 ///
-/// The compute figure is the whole view's, not one quoter's. It still bounds
-/// a single quoter: a view that costs little cannot hold a quoter that costs
-/// much.
+/// The compute figure covers the whole view, not one quoter. It still bounds a
+/// single quoter, because a view that costs little cannot hold a quoter that
+/// costs much.
 pub async fn simulate_quote_view_with_cost<S: ChainSource>(
     source: &S,
     instruction: Instruction,
@@ -591,10 +594,10 @@ pub async fn simulate_quote_view_with_cost<S: ChainSource>(
 ) -> Result<(QuoteView, u64)> {
     let blockhash = source.latest_blockhash().await?;
     let message = Message::new_with_blockhash(&[instruction], Some(payer), &blockhash.hash);
-    // The planner sizes passes to fit this; measuring the built message is
-    // what keeps a disagreement between the two from reaching the runtime,
-    // which answers an oversized transaction with a panic in its own
-    // sanitization rather than an error a caller can read.
+    // The planner sizes passes to fit this limit. Measuring the built message
+    // keeps a disagreement between the two away from the runtime. The runtime
+    // answers an oversized transaction with a panic inside its own
+    // sanitization, not with an error a caller can read.
     let wire = message.serialize().len() + 1 + 64;
     if wire > PACKET_DATA_SIZE {
         bail!(
@@ -635,8 +638,8 @@ mod tests {
         }
     }
 
-    /// `gates` is the book's own answer about this order, which is what the
-    /// ranking reads — the size is carried only to tell rows apart.
+    /// `gates` is the book's own answer about this order, and the ranking reads
+    /// only that. The size tells rows apart.
     fn row(size: u64, owner: u8, gates: bool) -> QuotedRow {
         QuotedRow {
             price: 100,
@@ -665,9 +668,9 @@ mod tests {
         }
     }
 
-    /// An owner all of whose orders sit below the floor cannot end a walk, so
-    /// it goes last: truncating the list at the account budget then drops the
-    /// makers that cost the least to lose.
+    /// An owner whose orders all sit below the floor cannot end a walk, so it
+    /// goes last. A caller that truncates the list at its account budget then
+    /// drops the makers that cost the least to lose.
     #[test]
     fn ranking_puts_the_owners_that_gate_depth_first() {
         // Walk order: dust(1), gating(2), dust(3), gating(4).
@@ -692,7 +695,7 @@ mod tests {
     }
 
     /// One gating order is enough, whichever of an owner's orders the walk
-    /// reached first — the walk stops at that order either way.
+    /// reached first. The walk stops at that order either way.
     #[test]
     fn one_gating_order_makes_its_owner_gating() {
         let view = view_of(vec![row(1, 1, false), row(2, 2, false), row(50, 1, true)]);
@@ -702,8 +705,7 @@ mod tests {
         );
     }
 
-    /// A book with no floor flags every row, and the order is then the walk's
-    /// own — which is what this endpoint answered before any floor existed.
+    /// A book with no floor flags every row, so the result keeps the walk order.
     #[test]
     fn a_book_that_gates_everything_leaves_walk_order_untouched() {
         let view = view_of(vec![row(1, 3, true), row(50, 1, true), row(2, 2, true)]);
@@ -720,8 +722,9 @@ mod tests {
         buffer.market = 3;
         buffer.begin(1, 500, 42);
         let quoter = Pubkey::new_unique();
-        // Capped below what the book quotes, so the decoder is given a
-        // clamped source to report: 12 base offered, 11 admitted.
+        // The cap sits below what the book quotes, so the decoder gets a
+        // clamped source to report. The book offers 12 base and the cap
+        // admits 11.
         let clamped = buffer
             .push_capped(
                 QuotedSourceKind::Quoter,

@@ -47,11 +47,10 @@ use {
 /// Pinned to the generated value by `end_lp_swap_discriminator_matches` below.
 const END_LP_SWAP_DISCRIMINATOR: &[u8] = &[99, 125, 214, 165, 129, 175, 253, 135];
 
-/// Defensive ceiling for the constituent oracle-staleness window, in its
-/// historical 400ms storage units. This matches the margin-oracle ceiling:
-/// 1,000,000 units is roughly 4.6 days, already far beyond any operational
-/// setting, while preventing a fat-fingered value from making the AUM oracle
-/// freshness gate effectively unbounded.
+/// Ceiling on the constituent oracle staleness window, in 400ms storage units.
+/// 1,000,000 units is about 4.6 days. No real setting reaches that, so the
+/// limit only stops a mistyped value from leaving the AUM oracle freshness
+/// gate unbounded. The margin oracle window uses the same ceiling.
 const MAX_CONSTITUENT_ORACLE_STALENESS_STORED_UNITS: u64 = 1_000_000;
 
 fn validate_oracle_staleness_threshold(oracle_staleness_threshold: u64) -> Result<()> {

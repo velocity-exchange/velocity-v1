@@ -122,9 +122,10 @@ export class IFRevenueSettlerBot implements Bot {
 				'spot',
 				spotMarketIndex
 			);
-			// Guard NaN: /batchPriorityFees returns level-less entries for markets
-			// with no published fees (see fundingRateUpdater.ts) — pfs.medium is
-			// then undefined and Math.floor(NaN) throws at BigInt conversion.
+			// Guard against NaN. /batchPriorityFees returns an entry with no
+			// levels for a market with no published fees, as fundingRateUpdater.ts
+			// describes. pfs.medium is then undefined and Math.floor(NaN) throws at
+			// the BigInt conversion.
 			let microLamports = 10_000;
 			if (pfs && Number.isFinite(pfs.medium)) {
 				microLamports = Math.floor(pfs.medium);

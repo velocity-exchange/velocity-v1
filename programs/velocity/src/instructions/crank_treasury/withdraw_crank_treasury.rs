@@ -1,8 +1,8 @@
 //! Take lamports back out of the treasury.
 //!
-//! Funding is a plain transfer and needs no instruction, but recovering an
-//! overfunded treasury does: the account is program-owned, so only the program
-//! can move its lamports back out.
+//! Funding is a plain transfer and needs no instruction. Recovering an
+//! overfunded treasury does need one. Velocity owns the account, so only
+//! velocity can move its lamports back out.
 
 use {
     crate::{

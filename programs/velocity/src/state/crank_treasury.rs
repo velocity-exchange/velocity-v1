@@ -1,27 +1,27 @@
 //! The protocol's single relay crank treasury.
 //!
 //! Every relay crank is paid from the market reservoir it cranks, and every
-//! reservoir is refilled from here. One account is funded and watched; the
-//! reservoirs top themselves up out of it.
+//! reservoir is refilled from here. One account is funded and watched, and the
+//! reservoirs draw from it.
 //!
-//! The payment stays on the market reservoir rather than moving here because
-//! a crank writes whatever pays it, and a writable account has a fixed compute
-//! budget per block. One account paying every crank would serialize the whole
-//! protocol's cranks into that budget, and the moment that binds is a
-//! market-wide move, when liquidations across many markets must land together.
-//! A per-market reservoir keeps that ceiling per market. This account is
-//! written only when a reservoir refills, which is rare.
+//! The payment stays on the market reservoir rather than moving here. A crank
+//! writes whatever pays it, and a writable account has a fixed compute budget
+//! per block. One account that paid every crank would serialize the whole
+//! protocol's cranks into that budget. That binds during a market-wide move,
+//! when liquidations across many markets must land together. A per-market
+//! reservoir keeps that ceiling per market. This account is written only when
+//! a reservoir refills, which is rare.
 //!
-//! The refill is itself a relay crank, so nobody watches balances. A reservoir
-//! mirrors its spendable lamports into its own account data, a condition on
-//! that value wakes when it falls below the watermark, and the refill crank
-//! moves lamports here to there. See
+//! The refill is itself a relay crank, so no process watches balances. A
+//! reservoir mirrors its spendable lamports into its own account data. A
+//! condition on that value wakes when it falls below the watermark, and the
+//! refill crank moves lamports from here to there. See
 //! [`crate::state::clob_crank::ClobCrankConditionsV0::spendable_mirror`].
 //!
 //! Both levels are stated in cranks rather than lamports. A market's cranks
-//! are priced from what they cost to land, so a market with an expensive cross
-//! carries a proportionally larger float from the same setting, and one figure
-//! serves every market.
+//! are priced from what they cost to land. A market with an expensive cross
+//! then holds a proportionally larger balance from the same setting, so one
+//! figure serves every market.
 
 use {
     crate::{
@@ -52,25 +52,25 @@ pub struct CrankTreasuryV0 {
     pub refill_target_cranks: u16,
     /// Wake the refill when a reservoir can pay fewer than this many.
     ///
-    /// A refill needs two levels or it fills by nothing. This is the low one,
-    /// and unlike the target it is *resolved to lamports at attach* and stored
-    /// on the market, because it is the threshold relay compares the mirrored
-    /// balance against and a condition carries its own threshold. Changing it
-    /// therefore reaches a market on its next attach.
+    /// A refill needs two levels, or it fills by nothing. This is the low one.
+    /// Unlike the target, the attach resolves it to lamports and stores it on
+    /// the market. Relay compares the mirrored balance against it, and a
+    /// condition carries its own threshold. A change to it therefore reaches a
+    /// market on that market's next attach.
     ///
     /// Size it for the refill's own round trip. The refill is itself a relay
-    /// crank — polled for, simulated, then landed — and the reservoir goes on
-    /// paying for ordinary work throughout. Both terms are worst together: a
-    /// market-wide move is when cranks fire fastest and when the network is
-    /// slowest to land one, and a reservoir that runs dry stops cranking at
-    /// exactly that point with nothing else to report it.
+    /// crank, so a turner polls for it, simulates it, and then lands it. The
+    /// reservoir keeps paying for ordinary work throughout. Both terms are at
+    /// their worst together. A market-wide move is when cranks fire fastest
+    /// and when the network is slowest to land one. An empty reservoir stops
+    /// cranking at exactly that point, and nothing else reports it.
     pub refill_watermark_cranks: u16,
     /// Tail reserve, so a later field costs no migration.
     pub padding: [u8; 36],
 }
 
-// `padding` is longer than 32 bytes, which `#[derive(Default)]` does not cover
-// (arrays only derive it up to 32).
+// `#[derive(Default)]` covers arrays up to 32 elements only, and `padding`
+// holds 36.
 impl Default for CrankTreasuryV0 {
     fn default() -> Self {
         Self {
@@ -90,10 +90,10 @@ impl CrankTreasuryV0 {
     /// The balance a refill takes a reservoir to, given the most expensive
     /// crank that reservoir pays.
     ///
-    /// Zero on a treasury nobody has priced yet, which stages no refill at
-    /// all. That is the safe reading: a target at or below the wake level
+    /// Returns zero on a treasury nobody has priced yet, which stages no
+    /// refill. That is the safe answer. A target at or below the wake level
     /// would leave the reservoir still due after a refill, and the condition
-    /// would stay lit forever against an executor that can only revert.
+    /// would stay due against an executor that can only revert.
     /// [`crate::instructions::handle_update_crank_treasury`] refuses a target
     /// that low, so a priced treasury always makes progress.
     pub fn refill_target(&self, max_crank_payment: u64) -> VelocityResult<u64> {
@@ -108,9 +108,9 @@ impl CrankTreasuryV0 {
 
     /// Move lamports out of the treasury, never below its own rent exemption.
     ///
-    /// The treasury is velocity-owned, so this is a direct lamport move rather
-    /// than a system transfer. Both destinations — a market reservoir and a
-    /// refill keeper — are credited the same way.
+    /// Velocity owns the treasury, so this is a direct lamport move rather
+    /// than a system transfer. Both destinations take the same path, a market
+    /// reservoir and a refill keeper.
     pub fn pay_out<'info>(
         treasury: &AccountInfo<'info>,
         recipient: &AccountInfo<'info>,
@@ -164,13 +164,13 @@ mod tests {
             ..CrankTreasuryV0::default()
         };
         assert_eq!(treasury.refill_target(10_000).unwrap(), 640_000);
-        // A market whose cranks cost twice as much carries twice the float
+        // A market whose cranks cost twice as much holds twice the balance
         // from the same setting.
         assert_eq!(treasury.refill_target(20_000).unwrap(), 1_280_000);
     }
 
-    /// Both levels scale with the same market price, so the hysteresis holds
-    /// whatever a market's cranks cost.
+    /// Both levels scale with the same market price, so the target stays
+    /// above the watermark whatever a market's cranks cost.
     #[test]
     fn a_priced_target_clears_the_watermark() {
         let treasury = CrankTreasuryV0 {

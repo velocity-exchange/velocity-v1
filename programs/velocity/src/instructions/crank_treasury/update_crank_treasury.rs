@@ -1,4 +1,5 @@
-//! Price the treasury: what a refill fills to, and what it pays its keeper.
+//! Price the treasury. The two levels say what a refill fills a reservoir up
+//! to, and what balance wakes the refill.
 
 use {
     crate::{
@@ -22,18 +23,19 @@ pub struct UpdateCrankTreasury<'info> {
     pub state: AccountLoader<'info, State>,
 }
 
-/// Both levels are counted in cranks rather than lamports, so one setting
-/// serves every market: a market whose cranks cost more carries a
-/// proportionally larger float.
+/// Both levels are counted in cranks and not in lamports, so one setting serves
+/// every market. A market whose cranks cost more then holds a proportionally
+/// larger balance.
 ///
-/// The target is read at refill time and so reaches every market at once. The
-/// watermark is resolved to lamports and written onto a market at attach,
-/// because it is the threshold that market's wake condition carries, so a new
-/// watermark reaches a market on its next attach.
+/// A refill reads the target, so a new target reaches every market at once. The
+/// attach resolves the watermark to lamports and writes it onto the market,
+/// because the market's wake condition carries that threshold. A new watermark
+/// therefore reaches a market on that market's next attach.
 ///
-/// What a refill *pays* is not set here. It is priced from the network rails
-/// like every other crank and stored on the market whose reservoir it fills,
-/// because that is where the condition advertising it lives.
+/// This instruction does not set what a refill pays. That payment is priced from
+/// the network rails like every other crank. It is stored on the market whose
+/// reservoir the refill fills, because the condition that advertises it lives
+/// there.
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
 pub struct UpdateCrankTreasuryArgs {
     /// Cranks' worth of lamports a refill fills a reservoir up to.
@@ -55,9 +57,10 @@ pub fn handle_update_crank_treasury(
         ErrorCode::DefaultError,
         "a zero watermark never wakes a refill"
     )?;
-    // Strictly above the level that wakes the refill. A target at the
-    // watermark leaves the reservoir still due the moment it is filled, and
-    // the condition would stay lit against an executor that can only revert.
+    // The target must sit strictly above the level that wakes the refill. A
+    // target at the watermark leaves the reservoir still due the moment it is
+    // filled, and the condition would stay due against an executor that can
+    // only revert.
     validate!(
         refill_target_cranks > refill_watermark_cranks,
         ErrorCode::DefaultError,

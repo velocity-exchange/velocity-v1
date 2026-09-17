@@ -25,13 +25,13 @@ import {
 } from '../constants/numericConstants';
 
 /**
- * Mirror of the program's `MarketStats::max_mark_twap_sample_elapsed`: the ceiling on
- * the elapsed time a single bid/ask-crank mark-TWAP sample may be weighted by. The
- * crank folds caller-supplied DLOB depth into the TWAP, so one post-gap sample may
- * claim at most this many seconds of weight. Fills and the funding update's AMM
- * re-blend pass no cap on-chain, so `calculateLiveMarkTwap`, which predicts the
- * funding update, deliberately does not apply it. Use it when predicting the TWAP a
- * bid/ask crank write will produce.
+ * The ceiling on the elapsed time that one bid/ask-crank mark-TWAP sample may be
+ * weighted by. This mirrors the program's `MarketStats::max_mark_twap_sample_elapsed`.
+ * The crank folds caller-supplied DLOB depth into the TWAP, so one sample taken after a
+ * gap claims at most this many seconds of weight. A fill and the funding update's AMM
+ * re-blend pass no cap on chain, so `calculateLiveMarkTwap`, which predicts the funding
+ * update, does not apply the cap either. Apply it when predicting the TWAP that a
+ * bid/ask crank write produces.
  */
 export function getMaxMarkTwapSampleElapsed(fundingPeriod: BN): BN {
 	return BN.max(fundingPeriod.div(new BN(60)), ONE_MINUTE);
@@ -43,9 +43,10 @@ function calculateLiveMarkTwap(
 	markPrice?: BN,
 	now?: BN,
 	period = new BN(3600),
-	// live chain slot + duration for the bid/ask reference-price-offset smoothing;
-	// with no slot the smoothing is inactive (so the duration is moot), but a
-	// slot-aware caller gets it applied at the correct slot length across a gate
+	// The live chain slot and duration, for the bid/ask reference-price-offset
+	// smoothing. Without a slot the smoothing is inactive, so the duration does
+	// not matter. A caller that passes a slot gets the smoothing applied at the
+	// correct slot length across a gate.
 	latestSlot?: BN,
 	slotDurationState?: SlotDurationState
 ): BN {
@@ -56,10 +57,10 @@ function calculateLiveMarkTwap(
 
 	const timeSinceLastMarkChange = now.sub(lastMarkPriceTwapTs);
 
-	// Mirrors `MarketStats::update_mark_twap`: a mark TWAP left unwritten for several
-	// funding periods holds no usable history, so the program discards it and re-seeds
-	// from the oracle TWAP. Projecting a blend of the stored value here would predict a
-	// premium the next on-chain update will not charge.
+	// This mirrors `MarketStats::update_mark_twap`. A mark TWAP left unwritten for
+	// several funding periods holds no usable history, so the program discards it and
+	// re-seeds it from the oracle TWAP. A blend of the stored value here would predict a
+	// premium that the next on-chain update does not charge.
 	const maxStaleness = BN.max(
 		market.marketStats.fundingPeriod.mul(MARK_TWAP_RESEED_FUNDING_PERIODS),
 		ONE_HOUR
@@ -68,10 +69,10 @@ function calculateLiveMarkTwap(
 		return market.marketStats.historicalOracleData.lastOraclePriceTwap;
 	}
 
-	// The sample weight is deliberately NOT capped by `getMaxMarkTwapSampleElapsed`:
-	// this function predicts the funding update's own TWAP write, which goes through
-	// `update_mark_twap_with_amm_bid_ask` with no `max_sample_elapsed` on-chain. The
-	// cap applies only to the bid/ask crank's caller-supplied samples.
+	// `getMaxMarkTwapSampleElapsed` does not cap the sample weight here. This function
+	// predicts the funding update's own TWAP write, which runs through
+	// `update_mark_twap_with_amm_bid_ask` and takes no `max_sample_elapsed` on chain.
+	// The cap applies only to the samples that a bid/ask crank caller supplies.
 	const markTwapTimeSinceLastUpdate = BN.max(
 		period,
 		BN.max(ZERO, period.sub(timeSinceLastMarkChange))
@@ -200,8 +201,9 @@ export function calculateAllEstimatedFundingRate(
 	oraclePriceData?: Pick<OraclePriceData, 'price'>,
 	markPrice?: BN,
 	now?: BN,
-	// live chain slot + duration for the mark bid/ask smoothing (only used when
-	// markPrice is not supplied); omit for the baseline/no-smoothing estimate
+	// The live chain slot and duration, for the mark bid/ask smoothing. They are
+	// used only when `markPrice` is absent. Omit them for the estimate without
+	// smoothing.
 	latestSlot?: BN,
 	slotDurationState?: SlotDurationState
 ): [BN, BN, BN, BN, BN] {

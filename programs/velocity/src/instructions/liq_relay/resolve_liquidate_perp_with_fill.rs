@@ -1,24 +1,22 @@
-//! Resolver for a distress threshold: work out which stage of the ladder
-//! this account is actually in right now, and stage that.
+//! Resolver for a distress threshold. It works out which stage of the ladder
+//! the account is in now, and stages the call that matches.
 //!
-//! Cancelling comes before liquidating. `force_cancel_clob_orders` answers to
-//! the initial margin requirement and liquidation to the maintenance one, so
-//! anything liquidatable was already cancellable — the two are stages of one
-//! ladder, and one watch drives both. The sync prices the threshold at the
-//! stage the account is in; this picks the executor to match, and relay's
-//! level-triggered wake brings it back for the next stage.
+//! A cancel comes before a liquidation. `force_cancel_clob_orders` answers to
+//! the initial margin requirement and a liquidation answers to the maintenance
+//! one, so anything liquidatable was already cancellable. The two are stages
+//! of one ladder, and one watch drives both. The sync prices the threshold at
+//! the stage the account is in. This resolver picks the matching executor, and
+//! relay's level-triggered wake brings the account back for the next stage.
 //!
-//! Orders first, deliberately: a liquidation that leaves risk-increasing
-//! orders resting on a book hands the liquidated account new exposure the
-//! moment one fills.
+//! Orders come first. A liquidation that leaves risk-increasing orders resting
+//! on a book hands the liquidated account new exposure the moment one fills.
 //!
-//! The threshold that woke this is a conservative single-oracle estimate,
-//! so the resolver is where the *real* answer is computed — the full
-//! maintenance-margin calculation over every position and deposit, using
-//! the same code the executor runs. Not liquidatable yet → NoWork, and the
-//! turner's backoff re-checks on the next ticks while the wake stays
-//! level-triggered. That pairing is the relay-native form of the keeper
-//! bot's "recheck the high-risk bucket on every oracle update".
+//! The threshold that woke this is a conservative single-oracle estimate. The
+//! resolver computes the real answer. It runs the full maintenance-margin
+//! calculation over every position and deposit, with the same code the
+//! executor runs. An account that is not liquidatable yet returns NoWork. The
+//! wake stays level-triggered, so the turner's backoff rechecks the account on
+//! the next ticks.
 
 use {
     crate::{
@@ -38,23 +36,23 @@ use {
     anchor_lang::prelude::*,
 };
 
-/// Book makers one staged liquidation carries. Each costs two account locks
-/// in the executor, so the cap is what a transaction holds beside the margin
-/// map and the quoter tail.
+/// Book makers one staged liquidation carries. Each maker costs two account
+/// locks in the executor. The cap is what one transaction holds beside the
+/// margin map and the quoter tail.
 const MAX_LIQUIDATION_MAKERS: usize = 4;
 
-/// Rows read off the swept side to find those makers. Deeper than the cap,
-/// because one owner can hold several of the rows in front.
+/// Rows read off the swept side to find those makers. The count is deeper than
+/// the cap because one owner can hold several of the rows in front.
 const BOOK_MAKER_ROWS: u16 = 32;
 
 #[derive(Accounts)]
 pub struct ResolveLiquidatePerpWithFill<'info> {
-    /// The shared staging account, index 0 by convention — a resolver's
-    /// response pointer is interpreted against it.
+    /// The shared staging account, at index 0 by convention. A resolver's
+    /// response pointer is read against it.
     #[account(mut, seeds = [crate::state::relay_scratch::RELAY_SCRATCH_PDA_SEED], bump)]
     pub scratch: AccountLoader<'info, crate::state::relay_scratch::RelayScratchV0>,
-    /// Read-only: resolvers stage into the shared scratch account, not
-    /// into the block they read.
+    /// Read-only. A resolver stages into the shared scratch account rather
+    /// than into the block it reads.
     #[account(constraint = liq_conditions.load()?.user == user.key())]
     pub liq_conditions: AccountLoader<'info, UserConditionsV0>,
     pub user: AccountLoader<'info, User>,
@@ -104,8 +102,8 @@ pub fn handle_resolve_liquidate_perp_with_fill<'c: 'info, 'info>(
             }
         }
 
-        // Stage two: no orders left in the way, so the question is whether
-        // this is liquidatable.
+        // Stage two of the ladder. No orders are left in the way, so the
+        // question is whether the account is liquidatable.
         let liquidatable = is_liquidatable(
             &ctx.accounts.user,
             &mut maps,
@@ -117,16 +115,15 @@ pub fn handle_resolve_liquidate_perp_with_fill<'c: 'info, 'info>(
 
         let Some(market_index) = largest_perp_position(&ctx.accounts.user)? else {
             // Spot-only distress. The account is liquidatable and the check
-            // above proved it, but there is no crank that can act on it.
+            // above proved it, but no crank can act on it.
             //
             // `liquidate_spot` settles by giving the liquidator the borrow and
-            // the collateral behind it, so a protocol keeper would end up
-            // holding spot inventory and its price risk. The perp path avoids
-            // that by routing the fill through the book; spot has no such
-            // flavor without an external swap venue, which nothing here wires.
-            // A real liquidator carries that inventory on its own balance
-            // sheet and unwinds it elsewhere, so this stays a keeper-bot path
-            // by design rather than by omission.
+            // the collateral behind it, so a protocol keeper would hold spot
+            // inventory and its price risk. The perp path avoids that by
+            // routing the fill through the book. Spot has no such flavor
+            // without an external swap venue, and nothing here wires one. A
+            // real liquidator carries that inventory on its own balance sheet
+            // and unwinds it elsewhere, so this stays a keeper-bot path.
             return Ok(None);
         };
 
@@ -146,11 +143,12 @@ pub fn handle_resolve_liquidate_perp_with_fill<'c: 'info, 'info>(
     })
 }
 
-/// Stage one: a book this account may no longer rest risk-increasing
-/// orders on. The grounds are the executor's own — initial margin, a
-/// provable floor breach, or the authority-wide latch — recomputed
-/// here so the wake's conservative single-oracle estimate is never
-/// what acts.
+/// Stage one of the ladder. Finds a book this account may no longer rest
+/// risk-increasing orders on. The grounds are recomputed here, from the
+/// initial margin requirement and a provable floor breach, so the wake's
+/// conservative single-oracle estimate is never what acts. The executor
+/// accepts a third ground, the authority-wide equity breaker, which this
+/// resolver does not read.
 fn find_cancel_target(
     user_loader: &AccountLoader<'_, User>,
     maps: &mut AccountMaps,
@@ -166,7 +164,7 @@ fn find_cancel_target(
     Ok(if initial.meets_margin_requirement() && !below_floor {
         None
     } else {
-        // One market per wake; relay comes back for the rest while
+        // One market per wake. Relay comes back for the rest while
         // the account still qualifies.
         user.perp_positions
             .iter()
@@ -176,10 +174,11 @@ fn find_cancel_target(
 }
 
 /// Stage the cancel of the account's resting orders on `market_index`.
-/// The book and its program come off the market's slab, which the sync
-/// stored in the list's inert tail alongside the margin map. A slab the
-/// stored list does not carry leaves no work, because the liquidation must
-/// not run while risk-increasing orders rest.
+///
+/// The book and its program come off the market's slab. The sync stored that
+/// slab in the list's inert tail beside the margin map. A slab the stored list
+/// does not carry leaves no work, because the liquidation must not run while
+/// risk-increasing orders rest.
 fn stage_force_cancel<'info>(
     state_key: Pubkey,
     user_loader: &AccountLoader<'_, User>,
@@ -265,11 +264,11 @@ fn largest_perp_position(user_loader: &AccountLoader<'_, User>) -> Result<Option
 /// Whether a liquidation of this position can pay the crank that runs it.
 ///
 /// A fill below [`LIQUIDATION_FLAT_PAYMENT_MIN_FILLED_QUOTE`] earns no flat
-/// payment, and a relay crank that pays nothing fails its own payment guard
-/// after the liquidation has already run. The whole position priced at the
-/// oracle is the most any fill of it can settle, so a position below the
-/// floor can never pay and is not staged. Such an account stays with the
-/// keeper bots, which carry a balance sheet and do not need the reservoir.
+/// payment. A relay crank that pays nothing then fails its own payment guard,
+/// after the liquidation already ran. The whole position priced at the oracle
+/// is the most any fill of it can settle, so a position below the floor can
+/// never pay and is not staged. Such an account stays with the keeper bots,
+/// which carry a balance sheet and do not need the reservoir.
 fn position_can_pay_the_crank(
     user_loader: &AccountLoader<'_, User>,
     maps: &mut AccountMaps,
@@ -289,9 +288,10 @@ fn position_can_pay_the_crank(
 
 /// Stage the liquidation of `market_index`.
 ///
-/// `liquidate_perp_with_fill` shares `liquidate_perp`'s account list, so
-/// the two cannot be paired by name: this is the inventory-free flavor,
-/// and staging the plain one would have the protocol acquire the position.
+/// `liquidate_perp_with_fill` shares `liquidate_perp`'s account list, so the
+/// account struct's name does not name the instruction. This stages the flavor
+/// that takes no inventory. Staging the plain one would make the protocol
+/// acquire the position.
 fn stage_liquidate_perp<'info>(
     state_key: Pubkey,
     user_loader: &AccountLoader<'info, User>,
@@ -331,14 +331,14 @@ fn stage_liquidate_perp<'info>(
 /// The book makers a liquidation of `market_index` would settle against.
 ///
 /// The liquidation closes the account's position, so it sweeps the side
-/// opposite to that position, and a quoter fills nobody the caller did not
-/// load. Owners come off the book best price first and the walk stops at the
-/// cap, which is what one transaction's account locks hold. A position
-/// deeper than that liquidates a stage at a time: relay's level-triggered
-/// wake brings the account back while it still qualifies.
+/// opposite to that position. A quoter fills nobody the caller did not load.
+/// Owners come off the book best price first, and the walk stops at the cap
+/// that one transaction's account locks hold. A position deeper than that
+/// liquidates a stage at a time, because relay's level-triggered wake brings
+/// the account back while it still qualifies.
 ///
 /// An empty list is a market with no book, a book that cannot quote, or a
-/// stored list that carries neither. All three leave the fill the vAMM,
+/// stored list that carries neither. All three leave the fill to the vAMM,
 /// which is what it reached before the book existed.
 fn book_makers<'info>(
     user_loader: &AccountLoader<'info, User>,
@@ -416,7 +416,7 @@ fn sweep_direction(
     };
     Ok(match position.base_asset_amount {
         0 => None,
-        // A long is closed by selling, and a seller sweeps the bids.
+        // Closing a long means selling, and a seller sweeps the bids.
         base if base > 0 => Some(crate::state::prop_amm::Direction::Short),
         _ => Some(crate::state::prop_amm::Direction::Long),
     })

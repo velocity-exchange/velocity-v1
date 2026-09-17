@@ -382,13 +382,16 @@ export function isOrderExpired(
 }
 
 /**
- * The last slot a signed message (swift) order can still be placed on-chain, mirroring
- * `max_slot` in the program's `place_signed_msg_taker_order`: the signed message slot plus
- * the auction duration, integrated across every known slot duration transition. The program
- * starts the auction at the message slot rather than at placement, so this window is anchored
- * there too.
- * @param state `State` fields the live slot duration resolves from.
- * @param orderSlot The order's signed message slot (`Order.slot` on a synthetic signed-msg node).
+ * The last slot at which a signed message (swift) order can still be placed on
+ * chain. This mirrors `max_slot` in the program's
+ * `place_signed_msg_taker_order`. The slot is the signed message slot plus the
+ * auction duration, integrated across every known slot duration transition. The
+ * program starts the auction at the message slot rather than at placement, so
+ * this window is anchored there too.
+ *
+ * @param state The `State` fields the live slot duration resolves from.
+ * @param orderSlot The order's signed message slot. It is `Order.slot` on a
+ *   synthetic signed-msg node.
  * @param auctionDuration `auctionDuration` in 400ms stored units.
  * @returns The last slot at which the order may still be placed.
  */
@@ -405,16 +408,22 @@ export function signedMsgOrderMaxSlot(
 }
 
 /**
- * Whether a signed message (swift) *auction* order can be placed on-chain yet, mirroring the
- * gate in the program's `place_signed_msg_taker_order`: it rejects `order_slot > clock.slot`
- * (`InvalidSignedMsgOrderParam`), and the taker client stamps the message a few slots ahead
- * of its own clock as a signing buffer, so a place launched on arrival fails until the slot
- * arrives. A resting limit (no auction) is exempt from that gate: use signedMsgOrderPlaceable,
- * which covers both. Compared as BNs: real slot numbers are far past `BN.gtn`/`BN.lten`'s
- * 26-bit argument limit.
- * @param orderSlot The order's signed message slot (`Order.slot` on a synthetic signed-msg node).
+ * Whether a signed message (swift) auction order can be placed on chain yet.
+ * This mirrors one gate in the program's `place_signed_msg_taker_order`. The
+ * program rejects `order_slot > clock.slot` with `InvalidSignedMsgOrderParam`.
+ * The taker client stamps the message a few slots ahead of its own clock as a
+ * signing buffer, so a place that runs on arrival fails until the slot arrives.
+ *
+ * A resting limit order carries no auction and is exempt from that gate. Use
+ * `signedMsgOrderPlaceable`, which covers both kinds.
+ *
+ * The comparison runs on BNs. Real slot numbers are far past the 26-bit
+ * argument limit of `BN.gtn` and `BN.lten`.
+ *
+ * @param orderSlot The order's signed message slot. It is `Order.slot` on a
+ *   synthetic signed-msg node.
  * @param currentSlot The current cluster slot.
- * @returns True once the order may be placed on-chain.
+ * @returns True once the order may be placed on chain.
  */
 export function signedMsgOrderSlotReached(
 	orderSlot: BN,
@@ -424,16 +433,18 @@ export function signedMsgOrderSlotReached(
 }
 
 /**
- * How far ahead of the current slot a resting limit's signed message slot may be before
- * `place_signed_msg_taker_order` refuses to place it early (30s; the UI stamps ~14s ahead).
- * Mirrors `max_resting_limit_lead` in the program.
+ * How far ahead of the current slot a resting limit's signed message slot may
+ * be before `place_signed_msg_taker_order` refuses to place it early. The lead
+ * is 30 seconds, and the UI stamps about 14 seconds ahead. This mirrors
+ * `max_resting_limit_lead` in the program.
  */
 export const SIGNED_MSG_RESTING_LIMIT_MAX_LEAD_MS = 30_000;
 
 /**
- * True if a signed message (swift) order is a limit order with no auction. Such an order
- * rests from placement, so the program treats its message slot as a placement deadline
- * (`max_slot` equals it) rather than as an auction start.
+ * True if a signed message (swift) order is a limit order with no auction. Such
+ * an order rests from placement, so the program treats its message slot as a
+ * placement deadline rather than as an auction start. `max_slot` equals that
+ * slot.
  */
 export function isRestingSignedMsgLimitOrder(
 	orderType: OrderType,
@@ -443,16 +454,20 @@ export function isRestingSignedMsgLimitOrder(
 }
 
 /**
- * Whether a signed message (swift) order can be placed on-chain at `currentSlot`, mirroring
- * the slot gates in the program's `place_signed_msg_taker_order`. An auction order must wait
- * for its message slot (see signedMsgOrderSlotReached). A resting limit order (see
- * isRestingSignedMsgLimitOrder) may be placed ahead of its message slot, as long as that slot
- * is within SIGNED_MSG_RESTING_LIMIT_MAX_LEAD_MS of the current one. Expiry (`max_slot`
- * passed) is a separate check: see signedMsgOrderMaxSlot.
- * @param state The State account (or its slot-duration fields), for the wall-clock conversion.
- * @param order The order's message slot, type and auction duration (`Order` fields on a synthetic signed-msg node).
+ * Whether a signed message (swift) order can be placed on chain at
+ * `currentSlot`. This mirrors the slot gates in the program's
+ * `place_signed_msg_taker_order`. An auction order waits for its message slot,
+ * which `signedMsgOrderSlotReached` decides. A resting limit order, which
+ * `isRestingSignedMsgLimitOrder` identifies, may be placed ahead of its message
+ * slot while that slot stays within `SIGNED_MSG_RESTING_LIMIT_MAX_LEAD_MS` of
+ * the current one. Expiry is a separate check. See `signedMsgOrderMaxSlot`.
+ *
+ * @param state The State account, or the slot-duration fields of it, for the
+ *   wall-clock conversion.
+ * @param order The order's message slot, type and auction duration. These are
+ *   `Order` fields on a synthetic signed-msg node.
  * @param currentSlot The current cluster slot.
- * @returns True once the order may be placed on-chain.
+ * @returns True once the order may be placed on chain.
  */
 export function signedMsgOrderPlaceable(
 	state: SlotDurationState,
@@ -621,25 +636,33 @@ export function maxSizeForTargetLiabilityWeightBN(
 }
 
 /**
- * Digest of a signed route: the `QuoterV0` entries a taker chose, reduced to the five bytes an
- * `SignedMsgOrderId` holds. Mirrors the program's `state::order_params::route_digest`.
- *
- * Canonicalised first (sorted, deduped) so the same choice always digests the same way regardless
- * of the order a client listed it in. An empty route digests to all-zero, which is what makes one
- * equality check cover both "no route was signed" and "this is the route that was signed" — and a
- * real route never digests to zero, so the two stay distinguishable.
- *
- * A filler needs this: the fill of a rested taker remainder claims a route, and the program rejects
- * it unless the claim digests to what the taker's signed-message record carries.
- *
- * Eight bytes. A filler picks which entries to carry, so its candidate routes are every subset of
- * the carry limit over a market's registered entries — a set it can precompute. A narrower digest
- * stops covering that as the number of registered entries grows.
- * @param route - The quoter entries the taker signed; empty or absent for an unrouted order.
- * @returns The eight digest bytes, as the `number[]` `SignedMsgOrderId.routeDigest` holds.
+ * Width of a route digest. A filler picks which entries to carry, so its
+ * candidate routes are every subset of the carry limit over a market's
+ * registered entries. That set is public and worth precomputing. A narrower
+ * digest stops covering it as the number of registered entries grows.
  */
 export const ROUTE_DIGEST_LEN = 8;
 
+/**
+ * Digest of a signed route, which is the `QuoterV0` entries a taker chose
+ * reduced to the bytes a `SignedMsgOrderId` holds. This mirrors the program's
+ * `state::order_params::route_digest`.
+ *
+ * The route is sorted and deduped first, so the same choice always digests the
+ * same way whatever order a client listed it in. An empty route digests to all
+ * zero bytes. One equality check therefore covers both "no route was signed"
+ * and "this is the route that was signed". A real route never digests to zero,
+ * so the two stay distinguishable.
+ *
+ * A filler needs this digest. The fill of a rested taker remainder claims a
+ * route, and the program rejects the claim unless it digests to what the
+ * taker's signed-message record carries.
+ *
+ * @param route - The quoter entries the taker signed. It is empty or absent
+ *   for an unrouted order.
+ * @returns The digest bytes, as the `number[]` that
+ *   `SignedMsgOrderId.routeDigest` holds.
+ */
 export function getRouteDigest(route?: PublicKey[] | null): number[] {
 	if (!route || route.length === 0) {
 		return new Array(ROUTE_DIGEST_LEN).fill(0);

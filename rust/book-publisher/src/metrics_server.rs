@@ -2,9 +2,7 @@
 //!
 //! The publisher simulates every market every tick, so it exercises every
 //! registered quoter continuously, including ones no taker is routing to.
-//! That makes it the router stack's health probe. Until now it exported
-//! nothing, so what it already knew about every quoter was thrown away each
-//! tick.
+//! That makes it the router stack's health probe.
 
 use {
     axum::{
@@ -105,11 +103,12 @@ async fn transitions_handler(State(state): State<Exporter>) -> impl IntoResponse
 struct PinRequest {
     /// admit | throttled | probation | denied.
     admission: String,
-    /// Why. Recorded in the audit trail, so a pin explains itself later.
+    /// The reason for the override. It is recorded in the audit trail, so a
+    /// pin explains itself later.
     reason: String,
     sample_rate: Option<f64>,
-    /// How long the override lasts. An override with no end is how a
-    /// temporary decision quietly becomes permanent, so prefer a value.
+    /// How long the override lasts. An override with no end turns a temporary
+    /// decision into a permanent one, so set a value.
     expires_in_seconds: Option<u64>,
     actor: Option<String>,
 }
@@ -158,7 +157,7 @@ async fn pin_handler(
 /// Drop an override.
 ///
 /// The computed state was kept underneath the whole time, so automatic
-/// handling resumes at once. This is the rollback.
+/// handling resumes at once.
 async fn unpin_handler(
     State(state): State<Exporter>,
     Path(quoter): Path<String>,

@@ -7,8 +7,8 @@
 //! `#[derive(Accounts)]` structs are shared with non-AMM perp-market admin
 //! instructions and continue to live in `admin.rs`.
 
-// Edition 2018: `TryInto` is not in the prelude. Used only by the hot-key
-// check that test builds compile out.
+// Edition 2018 does not carry `TryInto` in the prelude. Only the hot-key check
+// uses it, and `anchor-test` builds compile that check out.
 #[cfg(not(feature = "anchor-test"))]
 use std::convert::TryInto;
 use {
@@ -51,8 +51,8 @@ use {
     std::fmt::Display,
 };
 
-// Protocol wide limits for calls made only by the VammQuoteManagement hot role.
-// Warm and cold governance retain the setters' full semantic ranges.
+// Protocol-wide limits that apply when the `VammQuoteManagement` hot role
+// signs. Warm and cold governance keep the full range of each setter.
 pub const VAMM_QUOTE_MIN_CURVE_UPDATE_INTENSITY: u8 = 100;
 pub const VAMM_QUOTE_MAX_CURVE_UPDATE_INTENSITY: u8 = 150;
 pub const VAMM_QUOTE_MIN_REFERENCE_PRICE_OFFSET_DEADBAND_PCT: u8 = 0;
@@ -1326,10 +1326,11 @@ pub fn handle_update_perp_market_funding_bias_sensitivity(
     Ok(())
 }
 
-/// Byte offset of `State::hot_amm_spread_adjust` (32 bytes) from the start of
-/// the account data (including the 8-byte Anchor discriminator). Guarded by
-/// `state/traits/tests.rs::native_instruction_offsets`. Only read outside
-/// `anchor-test`, which compiles the signer check out.
+/// Byte offset of the 32-byte `State::hot_amm_spread_adjust` from the start of
+/// the account data, which includes the 8-byte Anchor discriminator.
+/// `state/traits/tests.rs::native_instruction_offsets` guards the value. Only
+/// builds without `anchor-test` read it, because `anchor-test` compiles the
+/// signer check out.
 #[cfg_attr(feature = "anchor-test", allow(dead_code))]
 const STATE_HOT_AMM_SPREAD_ADJUST_OFFSET: usize = 392;
 
@@ -1340,13 +1341,13 @@ pub fn handle_update_amm_spread_adjustment_native(
     // Pre-Anchor native dispatch: re-establish the ownership + discriminator
     // guarantees Anchor would provide (see `crate::auth::require_native_account`)
     // before trusting any byte. Accounts: [0] perp_market (mut), [1] signer,
-    // [2] state. Payload: i8 spread adjustment (1 byte).
+    // [2] state. The payload is one byte, the i8 spread adjustment.
     //
-    // Every index below is bounds-checked before use: this runs before Anchor,
-    // so a malformed instruction arrives verbatim, and a short account list or
-    // an empty payload used to panic — before the hot-key check, so any caller
-    // could reach it — aborting with no identifiable error after burning the
-    // whole compute budget.
+    // Every index below is bounds-checked first. The handler runs before Anchor,
+    // so a malformed instruction arrives verbatim. Without the checks, a short
+    // account list or an empty payload panics on the indexing and aborts the
+    // transaction with no identifiable error. That indexing sits ahead of the
+    // hot-key check, so any caller reaches it.
     require!(accounts.len() >= 3, ErrorCode::InvalidNativeInstructionData);
     require!(!data.is_empty(), ErrorCode::InvalidNativeInstructionData);
 
@@ -1569,7 +1570,7 @@ pub struct UpdateInitialAmmCacheInfo<'info> {
 
 /// Both handlers on this struct price the perp market from the oracle account
 /// the caller passes. `has_one` binds that account to the market, so a caller
-/// cannot substitute another feed and set the peg from it.
+/// cannot substitute another feed and price the market from it.
 #[derive(Accounts)]
 pub struct AdminUpdatePerpMarketAmmSummaryStats<'info> {
     #[account(constraint = check_hot(&admin.key(), &state, HotRole::AmmCrank)?)]
@@ -1809,9 +1810,9 @@ mod native_auth_tests {
     }
 
     /// The handler runs before Anchor, so a malformed instruction reaches it
-    /// verbatim. A short account list or an empty payload used to panic on the
-    /// indexing — before the hot-key check, so any caller could reach it —
-    /// which aborts the transaction with no identifiable error.
+    /// verbatim. A short account list or an empty payload must return an error
+    /// rather than panic on the indexing. That indexing sits ahead of the
+    /// hot-key check, so any caller reaches it.
     #[test]
     fn spread_native_rejects_malformed_shape_without_panicking() {
         let hot_key = Pubkey::new_unique();
@@ -1829,20 +1830,20 @@ mod native_auth_tests {
 
         let accounts = [perp_market_info, signer, state_info];
 
-        // Too few accounts: none at all, then two where three are required.
+        // Too few accounts. First none at all, then two where three are needed.
         let err = handle_update_amm_spread_adjustment_native(&[], &[7i8 as u8]).unwrap_err();
         assert_eq!(err, ErrorCode::InvalidNativeInstructionData.into());
         let err =
             handle_update_amm_spread_adjustment_native(&accounts[..2], &[7i8 as u8]).unwrap_err();
         assert_eq!(err, ErrorCode::InvalidNativeInstructionData.into());
 
-        // Empty payload: `data[0]` used to panic here.
+        // Empty payload. An unchecked `data[0]` panics here.
         let err = handle_update_amm_spread_adjustment_native(&accounts, &[]).unwrap_err();
         assert_eq!(err, ErrorCode::InvalidNativeInstructionData.into());
     }
 
-    /// Program-owned and correctly discriminated, but too short to hold a
-    /// PerpMarket: the unchecked slice used to panic in the bytemuck cast.
+    /// The account is program-owned and correctly discriminated, but too short
+    /// to hold a `PerpMarket`. An unchecked slice panics in the bytemuck cast.
     #[test]
     fn spread_native_rejects_truncated_market_account() {
         let hot_key = Pubkey::new_unique();

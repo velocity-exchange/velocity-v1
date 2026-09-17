@@ -1,20 +1,21 @@
 //! Relay's self-maintenance path for a user's liquidation conditions, and
 //! its resolver.
 //!
-//! Separate from the opt-in [`super::sync_liq_conditions`] for one hard
-//! reason: **a staged executor may not name a signer.** Relay's turner
-//! builds every executor meta `is_signer: false` and refuses outright to
-//! sign a transaction whose executor account list contains a signer —
-//! executors are permissionless by construction, and a signing account
-//! handed to one is a drain vector. So the instruction relay stages takes
-//! no payer, allocates nothing (the account exists by then — the opt-in
-//! sync created it), and pays its keeper from the protocol crank treasury.
+//! This is separate from the opt-in [`super::sync_liq_conditions`] for one
+//! reason. A staged executor may not name a signer. Relay's turner builds
+//! every executor meta with `is_signer: false`, and it refuses to sign a
+//! transaction whose executor account list holds a signer. An executor is
+//! permissionless, so a signing account handed to one can be drained.
+//!
+//! The instruction relay stages therefore takes no payer and allocates
+//! nothing. The opt-in sync created the account before relay ever stages this.
+//! The keeper is paid from the protocol crank treasury.
 //!
 //! The treasury pays rather than the user's own conditions account, because a
-//! stale threshold is a protocol problem before it is a user's: a resync that
+//! stale threshold is a protocol problem before it is a user's. A resync that
 //! nobody is paid to run leaves the user's liquidation thresholds behind their
 //! real exposure, and the liquidation that should fire does not. Charging that
-//! to the account being watched makes an underfunded user into protocol bad
+//! to the account being watched turns an underfunded user into protocol bad
 //! debt.
 
 use {
@@ -32,9 +33,9 @@ use {
 
 #[derive(Accounts)]
 pub struct ResyncLiqConditions<'info> {
-    /// CHECK: the keeper payout target — relay's `KEEPER_PLACEHOLDER`
-    /// slot. Never a signer (see the module doc); it only receives
-    /// lamports.
+    /// CHECK: the keeper payout target, which fills relay's
+    /// `KEEPER_PLACEHOLDER` slot. It is never a signer, as the module doc
+    /// explains. It only receives lamports.
     #[account(mut)]
     pub keeper: UncheckedAccount<'info>,
     pub user: AccountLoader<'info, User>,
@@ -53,7 +54,7 @@ pub struct ResyncLiqConditions<'info> {
 pub fn handle_resync_liq_conditions<'c: 'info, 'info>(
     ctx: Context<'info, ResyncLiqConditions<'info>>,
 ) -> Result<()> {
-    // The block carries its own terms: re-deriving them from the account
+    // The block carries its own terms. Re-deriving them from the account
     // means a staged resync can never re-price itself.
     let args = {
         let conditions = ctx.accounts.liq_conditions.load()?;
@@ -71,10 +72,11 @@ pub fn handle_resync_liq_conditions<'c: 'info, 'info>(
     )?;
 
     // Terms that break the interval floor pay nothing, whatever the block
-    // holds. A payment with an interval below the floor is a paid loop: the
-    // treasury funds one crank per slot for an account anyone may opt in. The
-    // rewrite above already stored the zero and silenced the conditions that
-    // advertised it, so this covers a block armed before the floor existed.
+    // holds. A payment with an interval below the floor is a paid loop, since
+    // the treasury then funds one crank per slot for an account anyone may opt
+    // in. The rewrite above already stored the zero and silenced the
+    // conditions that advertised it, so this covers a block armed before the
+    // floor existed.
     let payment = args.payable_lamports();
     if payment == 0 {
         return Ok(());
@@ -82,10 +84,10 @@ pub fn handle_resync_liq_conditions<'c: 'info, 'info>(
 
     // Paid at most once per fallback interval. The instruction succeeds
     // whether or not anything moved, opting in is permissionless, and the
-    // payer is the protocol treasury rather than the account being watched —
-    // so without this bound anyone could crank the same account in a loop and
-    // draw the fee every time. The interval is the cadence the fallback poll
-    // already runs at, so honest cranking is unaffected.
+    // protocol treasury pays rather than the account being watched. Without
+    // this bound anyone could crank the same account in a loop and draw the
+    // fee every time. The interval is the cadence the fallback poll already
+    // runs at, so an honest crank still gets paid.
     let slot = Clock::get()?.slot;
     let due_slot = {
         let conditions = ctx.accounts.liq_conditions.load()?;
@@ -104,9 +106,9 @@ pub fn handle_resync_liq_conditions<'c: 'info, 'info>(
 
     let treasury = ctx.accounts.treasury.to_account_info();
     let rent_minimum = Rent::get()?.minimum_balance(treasury.data_len());
-    // Best-effort, as it was when the user's own account paid: an empty
-    // treasury must not fail a resync that has already rewritten the block.
-    // The keeper is protected by relay's own payment guard, which skips work
+    // The payment is best effort, as it was when the user's own account paid.
+    // An empty treasury must not fail a resync that already rewrote the block.
+    // Relay's own payment guard protects the keeper, because it skips work
     // that would not pay.
     let available = treasury.lamports().saturating_sub(rent_minimum);
     let paid = CrankTreasuryV0::pay_out(
@@ -120,23 +122,23 @@ pub fn handle_resync_liq_conditions<'c: 'info, 'info>(
     Ok(())
 }
 
-/// Resolver for the self-sync conditions: report work when the user's
+/// Resolver for the self-sync conditions. It reports work when the user's
 /// positions no longer match the thresholds the block was built from.
 ///
-/// "No longer match" is deliberately cheap and conservative — the resolver
-/// cannot re-derive thresholds without the market/oracle accounts (a
-/// four-account list can't carry them), so it compares the *shape* of the
-/// user's exposures against the recorded slots: a new market, a closed
-/// position, or a first opt-in with no slots yet. The staged executor
-/// recomputes everything from the account list the last sync stored.
+/// The match test is cheap and conservative. The resolver cannot re-derive a
+/// threshold without the market and oracle accounts, which its short account
+/// list cannot carry. It compares the shape of the user's exposures against
+/// the recorded slots instead, so it catches a new market, a closed position,
+/// or a first opt-in with no slots yet. The staged executor recomputes
+/// everything from the account list the last sync stored.
 #[derive(Accounts)]
 pub struct ResolveResyncLiqConditions<'info> {
-    /// The shared staging account, index 0 by convention — a resolver's
-    /// response pointer is interpreted against it.
+    /// The shared staging account, at index 0 by convention. A resolver's
+    /// response pointer is read against it.
     #[account(mut, seeds = [crate::state::relay_scratch::RELAY_SCRATCH_PDA_SEED], bump)]
     pub scratch: AccountLoader<'info, crate::state::relay_scratch::RelayScratchV0>,
-    /// Read-only: resolvers stage into the shared scratch account, not
-    /// into the block they read.
+    /// Read-only. A resolver stages into the shared scratch account rather
+    /// than into the block it reads.
     #[account(constraint = liq_conditions.load()?.user == user.key())]
     pub liq_conditions: AccountLoader<'info, UserConditionsV0>,
     pub user: AccountLoader<'info, User>,
@@ -149,17 +151,17 @@ pub fn handle_resolve_resync_liq_conditions(
         let stale = {
             let conditions = ctx.accounts.liq_conditions.load()?;
             let user = crate::load!(ctx.accounts.user)?;
-            // Digest mismatch = the thresholds were derived from different
-            // exposures. Converges by construction: the sync stamps the digest
-            // it ran against, so a rewrite that produces no watchable
-            // threshold still stops the wake.
+            // A digest mismatch means the thresholds came from different
+            // exposures. The sync stamps the digest it ran against, so a
+            // rewrite that produces no watchable threshold still stops the
+            // wake.
             UserConditionsV0::digest_positions(&user) != conditions.positions_digest
         };
         if !stale {
             return Ok(None);
         }
-        // The no-signer rule this whole instruction exists to satisfy is
-        // enforced by the builder for every resolver.
+        // The builder enforces the no-signer rule for every resolver. That
+        // rule is why this instruction exists.
         Ok(Some(
             crate::staged_call!(ResyncLiqConditions {
                 keeper: crate::state::pdas::keeper_placeholder(),

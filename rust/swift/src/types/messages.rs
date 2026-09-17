@@ -15,13 +15,15 @@ use {
     },
 };
 
-/// Upper bound on an encoded signed message. Hand-computed rather than
-/// `InitSpace`-derived: the message carries a signed route (`Vec<Pubkey>`),
-/// which has no fixed size, so anchor cannot size the type. Bound =
-/// everything before the route + a full-length route.
+/// Upper bound on an encoded signed message.
+///
+/// The bound is hand-computed rather than derived from `InitSpace`. The
+/// message carries a signed route (`Vec<Pubkey>`), which has no fixed size,
+/// so anchor cannot size the type. The bound covers everything before the
+/// route plus a full-length route.
 pub const MAX_SIGNED_MSG_BORSH_LEN: usize = SIGNED_MSG_FIXED_LEN + SIGNED_MSG_ROUTE_MAX_LEN + 8;
 /// Borsh length of the delegate message with every `Option` present and no
-/// route: the widest fixed part either variant can have.
+/// route. This is the widest fixed part either variant can have.
 const SIGNED_MSG_FIXED_LEN: usize = 512;
 /// `Option` tag + vec length prefix + [`MAX_SIGNED_MSG_ROUTE_LEN`] pubkeys.
 const SIGNED_MSG_ROUTE_MAX_LEN: usize =

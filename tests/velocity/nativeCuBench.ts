@@ -97,11 +97,11 @@ describe('compute units', () => {
 	let acceptedMmOracleSequenceId = new BN(1_000_000);
 	let ammSpreadAdjustment = 0;
 
-	// Dedicated market for the fill bench: oracle, MM oracle, and AMM curve all
-	// aligned at price 1 so a taker fills cleanly against the vAMM, with
-	// curve_update_intensity > 0 so the routing projection actually runs (that
-	// is the path the dedup optimized). Kept separate from market 0, whose MM
-	// oracle sits at 100 for the admin noop benches.
+	// Dedicated market for the fill bench. The oracle, the MM oracle, and the AMM
+	// curve all sit at price 1, so a taker fills cleanly against the vAMM.
+	// `curve_update_intensity` stays above 0, so the routing projection runs.
+	// This market stays separate from market 0, whose MM oracle sits at 100 for
+	// the admin noop benches.
 	const fillMarketIndex = 1;
 	const fillMmOraclePrice = new BN(1_000_000); // price 1, PRICE_PRECISION
 	let fillMmOracleSequenceId = new BN(1_000_000);
@@ -245,8 +245,10 @@ describe('compute units', () => {
 		await bankrunContextWrapper.connection.updateSlotAndClock();
 	}
 
-	/** Current bankrun slot as the source-observation slot, so the program's
-	 * `MM_ORACLE_MAX_SOURCE_AGE_SLOTS` freshness gate never skips a write. */
+	/**
+	 * The current bankrun slot, used as the source-observation slot. The program's
+	 * `MM_ORACLE_MAX_SOURCE_AGE_SLOTS` freshness gate then skips no write.
+	 */
 	async function sourceSlot(): Promise<BN> {
 		return new BN(
 			(await bankrunContextWrapper.connection.getSlot()).toString()
@@ -286,14 +288,13 @@ describe('compute units', () => {
 
 	/**
 	 * Sends an `update_mm_oracle_batch_native` covering the first `count` batch
-	 * markets, and asserts every entry was actually accepted on chain.
+	 * markets, and asserts that the chain accepted every entry.
 	 *
-	 * The assertion is the point. A silently-skipped batch still lands, still
-	 * consumes CU, and is *cheaper* than the real path, so without it a
-	 * regression that stops the writes landing (a raised
-	 * `MM_ORACLE_MIN_SLOT_GAP`, a transposed price/sequence-id in the payload,
-	 * a market-index mismatch) would make this bench report a better number
-	 * rather than fail.
+	 * A batch whose entries are all skipped still lands, still consumes CU, and
+	 * costs less than the real path. Without the assertion, a regression that
+	 * stops the writes landing makes this bench report a better number instead of
+	 * failing. A raised `MM_ORACLE_MIN_SLOT_GAP`, a transposed price or
+	 * sequence id in the payload, and a market-index mismatch all do that.
 	 */
 	async function sendAcceptedMmOracleBatch(count: number): Promise<string> {
 		await advancePastMmOracleRateLimit();
@@ -388,8 +389,8 @@ describe('compute units', () => {
 			'step cap clamp',
 			async () => {
 				await advancePastMmOracleRateLimit();
-				// 5% jump, beyond the 1% cap, so the write is clamped to the cap
-				// rather than dropped. Track what actually landed so later benches
+				// A 5% jump, beyond the 1% cap, so the program clamps the write to
+				// the cap and does not drop it. Track what landed, so later benches
 				// keep sending accepted updates.
 				const nextSequenceId = acceptedMmOracleSequenceId.addn(1);
 				const txSig = await velocityClient.updateMmOracleNative(
@@ -417,19 +418,17 @@ describe('compute units', () => {
 			}
 		);
 
-		// Warm-up: markets 2-5 start with `mm_oracle_price == 0`, which takes the
-		// bootstrap branch and skips the step-cap arithmetic entirely. Without
-		// this every measured row would contain some markets on the cheap path
-		// (and progressively fewer as n grows), so the slope would be measuring
-		// bootstrap-vs-steady-state rather than the true marginal cost. Not
-		// measured.
+		// Warm-up, and not measured. Markets 2-5 start with `mm_oracle_price == 0`,
+		// which takes the bootstrap branch and skips the step-cap arithmetic.
+		// Without this call every measured row holds some markets on the cheap
+		// path, and fewer of them as n grows. The slope would then measure
+		// bootstrap against steady state rather than the marginal cost.
 		await sendAcceptedMmOracleBatch(batchMarketIndexes.length);
 
-		// Batch handler at 1, 2 and 4 markets. The n=1 row is the important
-		// control: it isolates the batch framing overhead against the
-		// single-market handler, and the slope between the rows is the true
-		// marginal per-market cost that the fixed prologue is being amortised
-		// over.
+		// Batch handler at 1, 2 and 4 markets. The n=1 row is the control. It
+		// isolates the batch framing overhead against the single-market handler.
+		// The slope between the rows is the marginal per-market cost that the fixed
+		// prologue amortises over.
 		const mmBatchOne = await runBench(
 			'update_mm_oracle_batch_native',
 			'success write, 1 market',
@@ -470,12 +469,12 @@ describe('compute units', () => {
 			}
 		);
 
-		// The actual worst case, and the row the SDK's default compute budget is
-		// fitted to: a partially-rejected batch pays for n-1 writes AND the
-		// reject-mask log, so it costs more than either all-accepted (no log) or
-		// all-rejected (no writes). Set up by cranking one market on its own and
-		// then batching immediately, leaving that market inside
-		// MM_ORACLE_MIN_SLOT_GAP while the rest clear it.
+		// The worst case, and the row the SDK's default compute budget is fitted to.
+		// A partly rejected batch pays for n-1 writes and for the reject-mask log.
+		// It costs more than an all-accepted batch, which writes no log, and more
+		// than an all-rejected batch, which performs no write. The setup cranks one
+		// market on its own and then batches at once, which leaves that market
+		// inside MM_ORACLE_MIN_SLOT_GAP while the rest clear it.
 		const mmBatchPartial = await runBench(
 			'update_mm_oracle_batch_native',
 			'3 of 4 accepted, 4 markets',
@@ -520,10 +519,9 @@ describe('compute units', () => {
 			ammSpread,
 		]);
 
-		// Four separate single-market transactions versus one batch of four.
-		// This is the number the change exists for; assert the direction so a
-		// regression that erases the saving fails the bench instead of quietly
-		// landing.
+		// Four separate single-market transactions against one batch of four. The
+		// assertion pins the direction, so a regression that erases the saving
+		// fails the bench.
 		const fourSingles = mmSuccess.measurement.cu * 4;
 		assert(
 			mmBatchFour.measurement.cu < fourSingles,
@@ -574,12 +572,10 @@ describe('compute units', () => {
 	});
 
 	it('fill perp order against amm', async () => {
-		// Reproduces the production hot path from the CU regression: a taker
-		// order filled against the vAMM alone (`orderFilledWithAmm`), routed
-		// through `fulfill_perp_order`. The AMM has not been cranked this slot,
-		// so routing runs the curve projection before selecting a fulfillment
-		// method. This is the shape the projection dedup targeted; run it on
-		// master and on the optimized branch to read the before/after delta.
+		// Reproduces the production hot path. A taker order fills against the vAMM
+		// alone, which `fulfill_perp_order` reports as `orderFilledWithAmm`. No
+		// crank touched the AMM this slot, so routing runs the curve projection
+		// before it selects a fulfillment method.
 		const fill = await runBench('fill_perp_order', 'amm fill', async () => {
 			// Rest a taker market order (not measured).
 			await velocityClient.placePerpOrder(
@@ -597,11 +593,11 @@ describe('compute units', () => {
 				.orders.filter((o) => o.marketIndex === fillMarketIndex);
 			const order = orders.reduce((a, b) => (b.orderId > a.orderId ? b : a));
 
-			// Advance the slot, then repost the MM oracle so it is fresh at the
-			// fill slot while the AMM curve's `last_update_slot` still lags (no
-			// keeper crank ran on this market). That is the exact production
-			// shape: oracle moved, curve stale, so routing must project before
-			// it can select a fulfillment method.
+			// Advance the slot, then repost the MM oracle so it is fresh at the fill
+			// slot while the AMM curve's `last_update_slot` still lags. No keeper
+			// crank ran on this market. That is the production shape. The oracle
+			// moved and the curve is stale, so routing must project before it can
+			// select a fulfillment method.
 			await advancePastMmOracleRateLimit();
 			fillMmOracleSequenceId = fillMmOracleSequenceId.addn(1);
 			await velocityClient.updateMmOracleNative(
@@ -620,9 +616,9 @@ describe('compute units', () => {
 				{ marketIndex: fillMarketIndex, orderId: order.orderId }
 			);
 
-			// Guard the measurement: a fill that silently zero-fills (a tripped
-			// guardrail, a no-cross) would still consume CU but wouldn't exercise
-			// the routing/settlement path this bench exists to measure.
+			// Guard the measurement. A fill that returns zero base still consumes CU
+			// without exercising the routing and settlement path this bench measures.
+			// A tripped guardrail or a no-cross produces such a fill.
 			await velocityClient.fetchAccounts();
 			const position = velocityClient
 				.getUserAccount()

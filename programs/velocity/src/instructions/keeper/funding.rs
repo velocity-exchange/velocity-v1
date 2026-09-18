@@ -273,10 +273,7 @@ impl<'info> BookSource<'_, 'info> {
         .unwrap_or_default();
         Ok(rows
             .into_iter()
-            .filter(|(_, _, placed_slot)| {
-                slot_clock.elapsed_slot_delta(clock.slot.saturating_sub(*placed_slot), clock.slot)
-                    >= BID_ASK_TWAP_MIN_QUOTE_REST
-            })
+            .filter(|(_, _, placed_slot)| quote_has_rested(*placed_slot, clock.slot, slot_clock))
             .map(|(price, size, _)| Level {
                 price,
                 base_asset_amount: size,
@@ -526,5 +523,60 @@ mod tests {
     fn a_shallow_side_prices_what_it_holds() {
         let side = vec![level(90, 2), level(80, 2)];
         assert_eq!(estimate_price_from_side(&side, 4).unwrap(), Some(85));
+    }
+}
+
+/// Whether a book row has rested long enough to move the mark.
+///
+/// A quote that can be posted and cancelled inside one crank is a quote nobody
+/// had to stand behind, so the mark must not read it. Requiring
+/// [`BID_ASK_TWAP_MIN_QUOTE_REST`] of rest makes a row cost its poster real
+/// exposure before it counts.
+///
+/// The subtraction saturates, so a row stamped at or after the current slot
+/// reports no rest rather than wrapping to a large one. A clock that runs
+/// behind the book therefore excludes a fresh quote instead of admitting it.
+fn quote_has_rested(
+    placed_slot: u64,
+    now_slot: u64,
+    slot_clock: crate::math::time::SlotClock,
+) -> bool {
+    slot_clock.elapsed_slot_delta(now_slot.saturating_sub(placed_slot), now_slot)
+        >= BID_ASK_TWAP_MIN_QUOTE_REST
+}
+
+#[cfg(test)]
+mod quote_rest_tests {
+    use {super::quote_has_rested, crate::math::time::SlotClock};
+
+    /// 9,600ms of rest is 24 slots at the baseline duration.
+    const RESTED_SLOTS: u64 = 24;
+
+    #[test]
+    fn a_quote_that_has_rested_the_window_counts() {
+        assert!(quote_has_rested(
+            1_000,
+            1_000 + RESTED_SLOTS,
+            SlotClock::baseline()
+        ));
+    }
+
+    #[test]
+    fn a_freshly_posted_quote_is_excluded() {
+        let now = 1_000;
+        assert!(!quote_has_rested(now, now, SlotClock::baseline()));
+        assert!(!quote_has_rested(now - 1, now, SlotClock::baseline()));
+        assert!(!quote_has_rested(
+            now + 1 - RESTED_SLOTS,
+            now,
+            SlotClock::baseline()
+        ));
+    }
+
+    /// A row stamped ahead of the reader's clock must read as fresh, not as
+    /// having rested since the beginning of time.
+    #[test]
+    fn a_quote_from_the_future_never_reads_as_rested() {
+        assert!(!quote_has_rested(2_000, 1_000, SlotClock::baseline()));
     }
 }

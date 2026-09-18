@@ -43,10 +43,10 @@ use {
         controller::position::PositionDirection,
         error::ErrorCode,
         instructions::optional_accounts::{load_maps, AccountMaps},
-        math::{orders::calculate_max_perp_order_size, router::QuoterBook},
+        math::router::QuoterBook,
         msg,
         state::{
-            perp_market_map::{get_writable_perp_market_set, MarketSet},
+            perp_market_map::MarketSet,
             prop_amm::{
                 find_account, occupied_slots, ClobUserRefV0, Direction, L3ArgsV0, QuoteArgsV0,
                 QuoterSlabExt, QuoterSlabV0, QuoterType, WireDirectionExt,
@@ -107,13 +107,25 @@ pub fn handle_quote_router<'c: 'info, 'info>(
     args: QuoteRouterArgs,
 ) -> Result<()> {
     let clock = Clock::get()?;
+    // A view writes only its own buffer, which nothing on chain reads back.
+    // Asserting it holds the property against the caller rather than against
+    // review. The quoter tail is governed separately, by what the registry
+    // vetted each quoter to mark writable.
+    crate::instructions::constraints::require_view_accounts(
+        &ctx.accounts.to_account_infos(),
+        &[ctx.accounts.quote_buffer.key()],
+    )?;
     let state = ctx.accounts.state.load()?;
     let market_index = args.market_index;
 
     let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
+    // Nothing here writes the market. Sizing reads it through `get_ref`, and
+    // the only account this instruction writes is its own quote buffer. Asking
+    // for it writable would take a write lock on the market for the length of
+    // the simulation and buy nothing.
     let mut maps: AccountMaps = load_maps(
         remaining_accounts_iter,
-        &get_writable_perp_market_set(market_index),
+        &MarketSet::new(),
         &MarketSet::new(),
         clock.slot,
         state.slot_clock(),
@@ -602,10 +614,16 @@ fn attribute_to_user(
 /// is the same bound the fill's pre-execute clamp uses.
 ///
 /// A fill opens the position slot before it sizes the order, because the margin
-/// walk sizes an order against the position it will settle into. This view must
-/// answer the same number, so it opens the same slot. It is a view, so it puts
-/// the slot back before it returns. A caller must not spend a third party's
-/// position slots by asking what that party could fill.
+/// walk sizes an order against the position it will settle into. This view has
+/// to answer the same number without writing anything: it is a view, and a
+/// caller must not spend a third party's position slot by asking what that
+/// party could fill. So it sizes against the position a fill *would* open
+/// rather than opening one.
+///
+/// The two agree. `add_new_position` writes `market_index` and the margin ratio
+/// a closed position for the same market left behind, and defaults the rest,
+/// which is what is built here. The margin walk skips a vacant slot, and a
+/// freshly opened position contributes nothing to it either.
 fn margin_cap(
     makers: &crate::state::user_map::UserMap,
     user: &Pubkey,
@@ -613,31 +631,23 @@ fn margin_cap(
     maker_direction: PositionDirection,
     maps: &mut AccountMaps,
 ) -> Result<u64> {
-    let existing = {
-        let Ok(maker) = makers.get_ref(user) else {
-            // Without the quoter's user account there is nothing to verify
-            // against, so the book is unusable rather than trusted.
-            msg!("custom quoter user {} not passed; book dropped", user);
-            return Ok(0);
-        };
-        crate::controller::position::get_position_index(&maker.perp_positions, market_index).ok()
+    let Ok(maker) = makers.get_ref(user) else {
+        // Without the quoter's user account there is nothing to verify
+        // against, so the book is unusable rather than trusted.
+        msg!("custom quoter user {} not passed; book dropped", user);
+        return Ok(0);
     };
-    let (position_index, borrowed) = match existing {
-        Some(index) => (index, None),
-        // The quoter's user has never traded this market. This needs the user
-        // passed writable, as the fill also needs. A read-only view reports no
-        // depth.
-        None => {
-            let Ok(mut maker) = makers.get_ref_mut(user) else {
-                msg!(
-                    "custom quoter user {} read-only with no position; book dropped",
-                    user
-                );
-                return Ok(0);
-            };
-            // `add_new_position` takes the first available slot, so this is
-            // the slot it is about to write, and the copy is what goes back.
-            let Some(index) = maker
+
+    // Holds the synthesized position when the maker has none for this market,
+    // so the borrow below outlives the match.
+    let prospective;
+    let position = match crate::controller::position::get_position_index(
+        &maker.perp_positions,
+        market_index,
+    ) {
+        Ok(index) => &maker.perp_positions[index],
+        Err(_) => {
+            let Some(vacant) = maker
                 .perp_positions
                 .iter()
                 .position(|position| position.is_available())
@@ -645,20 +655,30 @@ fn margin_cap(
                 // Every slot is taken, so a fill could not open one either.
                 return Ok(0);
             };
-            let saved = maker.perp_positions[index];
-            let index = crate::controller::position::add_new_position(
-                &mut maker.perp_positions,
+            // `add_new_position` carries the margin ratio over only when the
+            // vacant slot already names this market, which is a position its
+            // owner closed and may reopen.
+            let vacant = &maker.perp_positions[vacant];
+            let max_margin_ratio = if vacant.market_index == market_index {
+                vacant.max_margin_ratio
+            } else {
+                0
+            };
+            prospective = crate::state::user::PerpPosition {
                 market_index,
-            )?;
-            (index, Some(saved))
+                max_margin_ratio,
+                ..crate::state::user::PerpPosition::default()
+            };
+            &prospective
         }
     };
-    let cap = {
-        let maker = makers.get_ref(user)?;
-        calculate_max_perp_order_size(&maker, position_index, market_index, maker_direction, maps)?
-    };
-    if let Some(saved) = borrowed {
-        makers.get_ref_mut(user)?.perp_positions[position_index] = saved;
-    }
-    Ok(cap)
+
+    crate::math::orders::calculate_max_perp_order_size_for_position(
+        &maker,
+        position,
+        market_index,
+        maker_direction,
+        maps,
+    )
+    .map_err(Into::into)
 }

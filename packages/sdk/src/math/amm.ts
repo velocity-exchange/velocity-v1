@@ -487,6 +487,42 @@ export function calculateMarketOpenBidAsk(
 }
 
 /**
+ * The depth one fill may take from the vAMM, mirroring
+ * `calculate_amm_available_liquidity` in
+ * `programs/velocity/src/vlp/amm/math/amm.rs`.
+ *
+ * This is the per-fill reserve throttle, and it is much tighter than the room
+ * to the hard reserve bound that {@link calculateMarketOpenBidAsk} reports. A
+ * client that predicts a router split has to apply it, or it allocates the
+ * vAMM depth the program will refuse.
+ *
+ * `maxFillReserveFraction` is validated above zero on chain. A zero here would
+ * be a malformed account, so the cap falls back to the side's room rather than
+ * dividing by zero.
+ */
+export function calculateAmmAvailableLiquidity(
+	amm: AMM,
+	direction: PositionDirection,
+	orderStepSize: BN
+): BN {
+	const sideRoom = isVariant(direction, 'long')
+		? amm.baseAssetReserve.sub(amm.minBaseAssetReserve)
+		: amm.maxBaseAssetReserve.sub(amm.baseAssetReserve);
+	// One fill can only take up to half of the side's liquidity.
+	const maxBaseAssetAmountOnSide = BN.max(sideRoom, ZERO).div(TWO);
+
+	const maxFillSize =
+		amm.maxFillReserveFraction > 0
+			? amm.baseAssetReserve.div(new BN(amm.maxFillReserveFraction))
+			: maxBaseAssetAmountOnSide;
+
+	return standardizeBaseAssetAmount(
+		BN.min(maxFillSize, maxBaseAssetAmountOnSide),
+		orderStepSize
+	);
+}
+
+/**
  * Measures how skewed the AMM's net inventory is relative to the thinner of its two
  * remaining liquidity sides, as a fraction: `|baseAssetAmountWithAmm| / minSideLiquidity`,
  * capped at 100%. Feeds `calculateInventoryScale`'s spread widening — a fuller inventory

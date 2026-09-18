@@ -2542,3 +2542,77 @@ impl MarketStats {
 }
 
 pub use crate::vlp::{amm::state::AMM, hedge::state::HedgeConfig};
+
+/// The hard gates that suppress every AMM fill.
+///
+/// These replace the DLOB-era check that AMM JIT could not fill inside a match
+/// after the AMM's own gates said unavailable. There is no JIT path any more:
+/// the vAMM is one router leg, and the leg quotes an empty ladder when these
+/// gates fail. The gates themselves are what has to keep refusing.
+#[cfg(test)]
+mod amm_fill_gate_tests {
+    use crate::{
+        math::{constants::PRICE_PRECISION_I64, oracle::OracleValidity},
+        state::{
+            oracle::{MMOraclePriceData, OraclePriceData},
+            paused_operations::PerpOperation,
+            perp_market::PerpMarket,
+        },
+    };
+
+    fn oracle() -> OraclePriceData {
+        OraclePriceData {
+            price: PRICE_PRECISION_I64,
+            confidence: 1,
+            delay: 0,
+            has_sufficient_number_of_data_points: true,
+            sequence_id: None,
+        }
+    }
+
+    /// An MM oracle that is disabled, so the volatility arm of the gate is a
+    /// no-op and each test isolates the gate it names.
+    fn mm_oracle(validity: OracleValidity) -> MMOraclePriceData {
+        MMOraclePriceData::new(0, 0, 0, validity, oracle()).unwrap()
+    }
+
+    fn market() -> PerpMarket {
+        PerpMarket::default_test()
+    }
+
+    #[test]
+    fn a_healthy_market_admits_an_amm_fill() {
+        let market = market();
+        assert!(market
+            .amm_fill_gates_ok(OracleValidity::Valid, &mm_oracle(OracleValidity::Valid))
+            .unwrap());
+    }
+
+    #[test]
+    fn the_amm_fill_pause_suppresses_every_amm_fill() {
+        let mut market = market();
+        market.paused_operations = PerpOperation::AmmFill as u8;
+        assert!(!market
+            .amm_fill_gates_ok(OracleValidity::Valid, &mm_oracle(OracleValidity::Valid))
+            .unwrap());
+    }
+
+    /// `FillOrderAmmLowRisk` needs a valid oracle. A price good enough to match
+    /// two users is not good enough to quote the protocol's own curve against.
+    #[test]
+    fn an_oracle_short_of_low_risk_suppresses_every_amm_fill() {
+        let market = market();
+        for validity in [
+            OracleValidity::StaleForMargin,
+            OracleValidity::TooUncertain,
+            OracleValidity::NonPositive,
+        ] {
+            assert!(
+                !market
+                    .amm_fill_gates_ok(validity, &mm_oracle(validity))
+                    .unwrap(),
+                "{validity:?} must suppress AMM fills"
+            );
+        }
+    }
+}

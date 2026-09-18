@@ -191,7 +191,10 @@ impl<'a> SignedMsgUserOrdersZeroCopyMut<'a> {
     /// An entry that names a live CLOB order is kept even once its `max_slot`
     /// is old. The remainder still rests, and the fill that resolves it reads
     /// the route from here. Only the pressure `add_signed_msg_order_id`
-    /// describes reclaims such an entry.
+    /// describes reclaims such an entry, and only once it is past the buffer.
+    ///
+    /// This is the replay guard. It matches on the uuid, so an entry must
+    /// outlive every slot at which its own message can still be placed.
     pub fn check_exists_and_prune_stale_signed_msg_order_ids(
         &mut self,
         signed_msg_order_id: SignedMsgOrderId,
@@ -212,19 +215,27 @@ impl<'a> SignedMsgUserOrdersZeroCopyMut<'a> {
         uuid_exists
     }
 
-    /// Take the free slot, or the stalest retained one.
+    /// Take the free slot, or reclaim an expired retained one.
     ///
     /// A retained entry describes an order that may rest forever, because a
     /// signed limit order carries no expiry. Without a second pass those
     /// entries fill the account and the user can no longer trade. A full
-    /// account therefore reclaims the entry whose `max_slot` is oldest. That
-    /// costs the order its route, and the fill then treats it as unrouted. The
-    /// taker's own limit price still bounds that fill. The account loses a
-    /// guarantee under pressure, never funds, and the number of orders the
-    /// account holds bounds how often it happens.
+    /// account therefore reclaims the entry whose `max_slot` is oldest, among
+    /// the entries already past the eviction buffer.
+    ///
+    /// The expiry test is what makes the reclaim safe. An entry carries the
+    /// uuid that `check_exists_and_prune_stale_signed_msg_order_ids` matches
+    /// on, so reclaiming a live entry would re-admit its message and fill the
+    /// same signed order a second time. An entry past `max_slot` plus the
+    /// buffer cannot be re-admitted anyway, because placement refuses a
+    /// message whose `max_slot` is behind the current slot. Releasing such an
+    /// entry costs its resting order the route, and the fill then treats the
+    /// order as unrouted. The taker's own limit price still bounds that fill.
     pub fn add_signed_msg_order_id(
         &mut self,
         signed_msg_order_id: SignedMsgOrderId,
+        current_slot: u64,
+        slot_clock: SlotClock,
     ) -> VelocityResult {
         if signed_msg_order_id.max_slot == 0
             || signed_msg_order_id.order_id == 0
@@ -241,7 +252,11 @@ impl<'a> SignedMsgUserOrdersZeroCopyMut<'a> {
         }
 
         let stalest = (0..self.len())
-            .filter(|i| self.get(*i).rests_on_clob())
+            .filter(|i| {
+                let entry = self.get(*i);
+                entry.rests_on_clob()
+                    && slot_clock.elapsed(entry.max_slot, current_slot) > SIGNED_MSG_EVICTION_BUFFER
+            })
             .min_by_key(|i| self.get(*i).max_slot);
         match stalest {
             Some(index) => {
@@ -282,6 +297,12 @@ impl<'a> SignedMsgUserOrdersZeroCopyMut<'a> {
 
     /// Release the entry's hold once its order has left the book, so the stale
     /// sweep can reclaim the slot in the ordinary way.
+    ///
+    /// Nothing calls this yet. It shortens how long a retained entry holds a
+    /// slot; it is not what keeps the reclaim in `add_signed_msg_order_id`
+    /// safe. That rests on the eviction buffer. Wiring it needs the account on
+    /// the cancel and crank instructions that remove a book order, and only
+    /// `crank_taker_origin_cross` carries the account today.
     pub fn clear_resting_route(&mut self, clob_order_id: u64) -> bool {
         if clob_order_id == 0 {
             return false;

@@ -129,6 +129,14 @@ pub fn handle_resolve_clob_crank(
     ctx: Context<ResolveClobCrank>,
     fired: FiredConditionArgV0,
 ) -> Result<()> {
+    // The book's own account rides writable, because `quote_l3_v0` streams the
+    // answer into its response tail. It belongs to the CLOB program rather than
+    // to velocity, so the check passes over it and the staging region stays
+    // just the scratch account.
+    crate::instructions::constraints::require_view_accounts(
+        &ctx.accounts.to_account_infos(),
+        &[ctx.accounts.scratch.key()],
+    )?;
     validate_linkage(&ctx)?;
     let work = fired.work(&ctx)?;
     resolve_into(&ctx.accounts.scratch, || match work {

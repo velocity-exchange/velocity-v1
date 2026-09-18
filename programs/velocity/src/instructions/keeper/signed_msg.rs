@@ -722,7 +722,9 @@ fn place_entry_order(
         .as_deref()
         .map(crate::state::order_params::route_digest)
         .unwrap_or(crate::state::order_params::NO_ROUTE_DIGEST);
-    taker.orders.add_signed_msg_order_id(*order_id)?;
+    taker
+        .orders
+        .add_signed_msg_order_id(*order_id, env.clock.slot, env.state.slot_clock())?;
 
     let mut builder_order = add_builder_order(
         builder.escrow,

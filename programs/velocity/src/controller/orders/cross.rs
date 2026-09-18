@@ -6,13 +6,46 @@
 
 use super::*;
 
-/// The oracle state a crossed-book crank checks before it moves a position.
+/// The market and oracle state a crossed-book crank checks before it moves a
+/// position.
 pub(crate) struct CrankOraclePreflight {
     pub oracle_price: i64,
     /// Whether the oracle is too old to price margin.
     pub stale_for_margin: bool,
     /// Open interest before the crank. The post-fill rule measures against it.
     pub open_interest: u128,
+    /// Whether the market admits only liability-reducing fills. A crank that
+    /// settles a match itself must force this onto both legs, because a row
+    /// that rested while the market was `Active` carries its own stale flag.
+    pub market_is_reduce_only: bool,
+}
+
+/// The market gates a crossed-book crank passes.
+///
+/// These are the gates `admit_perp_market` applies to a routed fill. A crank
+/// that settles a match itself never reaches that function, so it runs them
+/// here. `is_in_settlement` covers only `Settlement` and `Delisted`, so the
+/// status check is what refuses an `Initialized` market.
+pub(crate) fn crank_market_gates(market: &PerpMarket, now: i64) -> VelocityResult {
+    validate!(
+        matches!(
+            market.status,
+            MarketStatus::Active | MarketStatus::ReduceOnly
+        ),
+        ErrorCode::MarketFillOrderPaused,
+        "Market not active",
+    )?;
+    validate!(
+        !market.is_in_settlement(now),
+        ErrorCode::MarketFillOrderPaused,
+        "Market is in settlement mode",
+    )?;
+    validate!(
+        !market.is_operation_paused(PerpOperation::Fill),
+        ErrorCode::MarketFillOrderPaused,
+        "Market fills paused",
+    )?;
+    Ok(())
 }
 
 /// Hold a crossed-book crank to the oracle rules an ordinary fill runs under.
@@ -31,16 +64,7 @@ pub(crate) fn crank_oracle_preflight(
     crank: &str,
 ) -> VelocityResult<CrankOraclePreflight> {
     validation::perp_market::validate_perp_market(market)?;
-    validate!(
-        !market.is_in_settlement(clock.unix_timestamp),
-        ErrorCode::MarketFillOrderPaused,
-        "Market is in settlement mode",
-    )?;
-    validate!(
-        !market.is_operation_paused(PerpOperation::Fill),
-        ErrorCode::MarketFillOrderPaused,
-        "Market fills paused",
-    )?;
+    crank_market_gates(market, clock.unix_timestamp)?;
 
     let oracle_price_data = *oracle_map.get_price_data(&market.oracle_id())?;
     let (mm_oracle_price_data, safe_oracle_validity) =
@@ -60,7 +84,21 @@ pub(crate) fn crank_oracle_preflight(
             .elapsed_slot_delta(mm_oracle_price_data.get_delay().max(0) as u64, clock.slot)
             > state.oracle_guard_rails.validity.stale_for_margin_ms(),
         open_interest: market.get_open_interest(),
+        market_is_reduce_only: market.is_reduce_only()?,
     })
+}
+
+/// What one taker-origin cross costs, and the market facts its post-fill
+/// checks measure against.
+pub struct TakerOriginCrossPricing {
+    pub fee: fees::TakerOriginCrossFee,
+    pub oracle_price: i64,
+    pub oracle_stale_for_margin: bool,
+    /// Open interest before the fill.
+    pub perp_market_oi_before: u128,
+    /// The caller settles the match itself, so it must force this onto both
+    /// legs. See [`CrankOraclePreflight::market_is_reduce_only`].
+    pub market_is_reduce_only: bool,
 }
 
 /// The oracle pre-flight and the pricing of one taker-origin cross, before any
@@ -69,15 +107,10 @@ pub(crate) fn crank_oracle_preflight(
 /// The caller must run this before the CLOB calls that consume the pair. The
 /// cross is refused outright when crossing would leave the taker worse off
 /// than the price it was resting at, and a refusal has to leave the book
-/// untouched. The pre-flight applies the oracle gates the fill path applies:
-/// `FillOrderMatch` validity, the price band, and staleness. The reward's
-/// size-vs-oracle multiplier is derived from the oracle price, so the reward
-/// is a value transfer an oracle read drives.
-///
-/// Returns the fee split, the mm-oracle price, whether the oracle is stale for
-/// margin, and the market's open interest before the fill. A caller that
-/// settles the match itself passes the last two to
-/// [`TakerRiskLimits::check_after_fill`].
+/// untouched. The pre-flight applies the market gates and the oracle gates the
+/// fill path applies: `FillOrderMatch` validity, the price band, and
+/// staleness. The reward's size-vs-oracle multiplier is derived from the
+/// oracle price, so the reward is a value transfer an oracle read drives.
 ///
 /// `rest_price` is the price the taker-origin order rests at.
 /// `counterparty_price` is the price the match will settle at. `order_slot` is
@@ -95,25 +128,18 @@ pub fn price_taker_origin_cross(
     perp_market_map: &PerpMarketMap,
     oracle_map: &mut OracleMap,
     clock: &Clock,
-) -> VelocityResult<(fees::TakerOriginCrossFee, i64, bool, u128)> {
-    let (
-        oracle_price,
-        oracle_stale_for_margin,
-        perp_market_oi_before,
-        fee_adjustment,
-        taker_fee_addon,
-    ) = {
+) -> VelocityResult<TakerOriginCrossPricing> {
+    let (preflight, fee_adjustment, taker_fee_addon) = {
         let market = &mut perp_market_map.get_ref_mut(&market_index)?;
         let preflight =
             crank_oracle_preflight(market, state, oracle_map, clock, "taker-origin cross")?;
         (
-            preflight.oracle_price,
-            preflight.stale_for_margin,
-            preflight.open_interest,
+            preflight,
             market.fee_adjustment,
             market.taker_fee_addon_tenth_bps,
         )
     };
+    let oracle_price = preflight.oracle_price;
 
     // Both notionals at the CLOB's own rounding, so the improvement is
     // measured in the same units the fill will settle in.
@@ -141,12 +167,13 @@ pub fn price_taker_origin_cross(
         )?,
         &state.perp_fee_structure.filler_reward_structure,
     )?;
-    Ok((
+    Ok(TakerOriginCrossPricing {
         fee,
         oracle_price,
-        oracle_stale_for_margin,
-        perp_market_oi_before,
-    ))
+        oracle_stale_for_margin: preflight.stale_for_margin,
+        perp_market_oi_before: preflight.open_interest,
+        market_is_reduce_only: preflight.market_is_reduce_only,
+    })
 }
 
 /// Notional of `base_asset_amount` at `price`, floored.
@@ -195,5 +222,72 @@ pub fn taker_origin_order(
         existing_position_direction: taker_direction,
         reduce_only: resting.reduce_only,
         ..Order::default()
+    }
+}
+
+#[cfg(test)]
+mod gate_tests {
+    use {
+        super::crank_market_gates,
+        crate::{
+            error::ErrorCode,
+            state::{
+                market_status::MarketStatus, paused_operations::PerpOperation,
+                perp_market::PerpMarket,
+            },
+        },
+    };
+
+    fn market_with(status: MarketStatus) -> PerpMarket {
+        PerpMarket {
+            status,
+            ..PerpMarket::default_test()
+        }
+    }
+
+    #[test]
+    fn an_active_market_crosses() {
+        assert!(crank_market_gates(&market_with(MarketStatus::Active), 100).is_ok());
+    }
+
+    /// A wind-down market still crosses. The caller forces `reduce_only` onto
+    /// both legs, so the cross can only shrink positions.
+    #[test]
+    fn a_reduce_only_market_crosses() {
+        let market = market_with(MarketStatus::ReduceOnly);
+        assert!(crank_market_gates(&market, 100).is_ok());
+        assert!(market.is_reduce_only().unwrap());
+    }
+
+    /// Fills are paused during the warm-up period, and `is_in_settlement`
+    /// does not cover it, so the status check is the only refusal.
+    #[test]
+    fn an_initialized_market_is_refused() {
+        assert_eq!(
+            crank_market_gates(&market_with(MarketStatus::Initialized), 100)
+                .err()
+                .unwrap(),
+            ErrorCode::MarketFillOrderPaused
+        );
+    }
+
+    #[test]
+    fn a_settling_market_is_refused() {
+        assert_eq!(
+            crank_market_gates(&market_with(MarketStatus::Settlement), 100)
+                .err()
+                .unwrap(),
+            ErrorCode::MarketFillOrderPaused
+        );
+    }
+
+    #[test]
+    fn a_fill_paused_market_is_refused() {
+        let mut market = market_with(MarketStatus::Active);
+        market.paused_operations = PerpOperation::Fill as u8;
+        assert_eq!(
+            crank_market_gates(&market, 100).err().unwrap(),
+            ErrorCode::MarketFillOrderPaused
+        );
     }
 }

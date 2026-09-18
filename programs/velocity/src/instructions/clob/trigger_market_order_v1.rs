@@ -585,6 +585,10 @@ pub struct ResolveTriggerMarketOrderV1<'info> {
 pub fn handle_resolve_trigger_market_order_v1(
     ctx: Context<ResolveTriggerMarketOrderV1>,
 ) -> Result<()> {
+    crate::instructions::constraints::require_view_accounts(
+        &ctx.accounts.to_account_infos(),
+        &[ctx.accounts.scratch.key()],
+    )?;
     crate::instructions::resolve_into(&ctx.accounts.scratch, || {
         let clock = Clock::get()?;
         let (fired, quote_spot_market_index) = {
@@ -598,6 +602,7 @@ pub fn handle_resolve_trigger_market_order_v1(
                     &market,
                     &ctx.accounts.oracle,
                     clock.slot,
+                    clock.unix_timestamp,
                     super::helpers::crank_common::TriggerResolverKind::ClobFill,
                 )?,
                 market.quote_spot_market_index,

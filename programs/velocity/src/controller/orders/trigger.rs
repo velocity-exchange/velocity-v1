@@ -126,7 +126,7 @@ fn open_trigger(
     maps: &mut AccountMaps,
     now: i64,
 ) -> VelocityResult<Option<FiringOrder>> {
-    let Some(order_index) = find_triggerable_order(user, order_id)? else {
+    let Some(order_index) = find_triggerable_order(user, order_id, now)? else {
         return Ok(None);
     };
     let market_index = user.orders[order_index].market_index;
@@ -152,7 +152,7 @@ fn open_trigger(
 ///
 /// `None` means the order is already triggered, which is not an error. The
 /// caller reports no payable work and leaves the order alone.
-fn find_triggerable_order(user: &User, order_id: u32) -> VelocityResult<Option<usize>> {
+fn find_triggerable_order(user: &User, order_id: u32, now: i64) -> VelocityResult<Option<usize>> {
     let order_index = user
         .orders
         .iter()
@@ -194,6 +194,21 @@ fn find_triggerable_order(user: &User, order_id: u32) -> VelocityResult<Option<u
         return Ok(None);
     }
 
+    // An armed trigger past its own `max_ts` is dead. `should_expire_order`
+    // exempts anything that must be triggered, so the sweep never takes it and
+    // it sits in the slot until its owner cancels. Firing it moves nothing: the
+    // fill finds the order expired and the book refuses to rest it. Paying the
+    // flat reward for that would charge the owner for destroying an order they
+    // could cancel for free.
+    if order.max_ts != 0 && now > order.max_ts {
+        msg!(
+            "Order max_ts {} passed (now {}); nothing to trigger",
+            order.max_ts,
+            now
+        );
+        return Ok(None);
+    }
+
     validate!(
         order.market_type == MarketType::Perp,
         ErrorCode::InvalidOrderMarketType,
@@ -203,25 +218,22 @@ fn find_triggerable_order(user: &User, order_id: u32) -> VelocityResult<Option<u
     Ok(Some(order_index))
 }
 
-/// The market and oracle gates a trigger passes, and the price its condition
-/// is judged at.
+/// The market gates every trigger passes, whichever endpoint fires it.
 ///
 /// Triggering starts the order's auction and pays the keeper reward, so it is
 /// part of the fill lifecycle. It respects the market-scoped fill pause the
-/// same way `fill_perp_order` does. The handler's `fill_not_paused` access
-/// control enforces the exchange-wide `FillPaused` breaker.
+/// same way `fill_perp_order` does. A caller's `fill_not_paused` access
+/// control enforces the exchange-wide `FillPaused` breaker, and
+/// `MarketStatus` is a separate axis each endpoint judges for itself: a fired
+/// market order routes to a fill that admits `ReduceOnly`, while a fired
+/// limit order rests and requires `Active`.
 ///
 /// A trigger is also forbidden once a market is in settlement. Otherwise a
 /// keeper could trigger a dormant order on an expired market. The flat reward
 /// then creates a settleable positive quote claim on a zero-base position, and
 /// that claim consumes PnL-pool headroom that backs legitimate expiry
-/// claimants (OtterSec #86).
-fn trigger_market_preflight(
-    state: &State,
-    perp_market: &PerpMarket,
-    oracle_map: &mut OracleMap,
-    now: i64,
-) -> VelocityResult<(OraclePriceData, u64)> {
+/// claimants.
+pub(crate) fn trigger_market_gates(perp_market: &PerpMarket, now: i64) -> VelocityResult {
     validate!(
         !perp_market.is_operation_paused(PerpOperation::Fill),
         ErrorCode::MarketFillOrderPaused,
@@ -232,6 +244,18 @@ fn trigger_market_preflight(
         ErrorCode::MarketPlaceOrderPaused,
         "Market is in settlement mode",
     )?;
+    Ok(())
+}
+
+/// The market and oracle gates a fired market order passes, and the price its
+/// condition is judged at.
+fn trigger_market_preflight(
+    state: &State,
+    perp_market: &PerpMarket,
+    oracle_map: &mut OracleMap,
+    now: i64,
+) -> VelocityResult<(OraclePriceData, u64)> {
+    trigger_market_gates(perp_market, now)?;
 
     let (oracle_price_data, oracle_validity) = oracle_map.get_price_data_and_validity(
         MarketType::Perp,
@@ -562,4 +586,106 @@ pub(super) fn update_trigger_order_params(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod gate_tests {
+    use {
+        super::{find_triggerable_order, trigger_market_gates},
+        crate::{
+            error::ErrorCode,
+            state::{
+                market_status::MarketStatus,
+                paused_operations::PerpOperation,
+                perp_market::PerpMarket,
+                user::{MarketType, Order, OrderStatus, OrderTriggerCondition, OrderType, User},
+            },
+        },
+    };
+
+    /// A user holding one armed stop-market with the given expiry.
+    fn user_with_armed_trigger(max_ts: i64) -> User {
+        let mut user = User::default();
+        user.orders[0] = Order {
+            order_id: 7,
+            status: OrderStatus::Open,
+            order_type: OrderType::TriggerMarket,
+            market_type: MarketType::Perp,
+            trigger_condition: OrderTriggerCondition::Above,
+            max_ts,
+            ..Order::default()
+        };
+        user
+    }
+
+    /// `should_expire_order` exempts anything that must be triggered, so a
+    /// lapsed stop stays armed in its slot. Firing it moves nothing, and the
+    /// flat reward would charge the owner for destroying an order they could
+    /// cancel for free. It reads as no payable work rather than an error.
+    #[test]
+    fn an_expired_armed_trigger_is_not_payable_work() {
+        let user = user_with_armed_trigger(100);
+        assert!(find_triggerable_order(&user, 7, 101).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_live_armed_trigger_is_payable_work() {
+        let user = user_with_armed_trigger(100);
+        assert_eq!(find_triggerable_order(&user, 7, 99).unwrap(), Some(0));
+    }
+
+    /// Zero means the order never expires, which is the default for a stop.
+    #[test]
+    fn a_trigger_without_an_expiry_never_reads_as_expired() {
+        let user = user_with_armed_trigger(0);
+        assert_eq!(find_triggerable_order(&user, 7, i64::MAX).unwrap(), Some(0));
+    }
+
+    fn active_market() -> PerpMarket {
+        PerpMarket {
+            status: MarketStatus::Active,
+            ..PerpMarket::default_test()
+        }
+    }
+
+    #[test]
+    fn an_active_market_passes() {
+        assert!(trigger_market_gates(&active_market(), 100).is_ok());
+    }
+
+    /// Firing a trigger pays the keeper out of the owner and commits the
+    /// order, so the market-scoped fill pause has to stop it. `MarketStatus`
+    /// carries no fill-paused variant, so a paused market still reads
+    /// `Active` and a status check alone does not cover this.
+    #[test]
+    fn a_fill_paused_market_is_refused() {
+        let mut market = active_market();
+        market.paused_operations = PerpOperation::Fill as u8;
+        assert_eq!(
+            trigger_market_gates(&market, 100).err().unwrap(),
+            ErrorCode::MarketFillOrderPaused
+        );
+    }
+
+    #[test]
+    fn a_market_in_settlement_is_refused() {
+        let mut market = active_market();
+        market.status = MarketStatus::Settlement;
+        assert_eq!(
+            trigger_market_gates(&market, 100).err().unwrap(),
+            ErrorCode::MarketPlaceOrderPaused
+        );
+    }
+
+    /// An expiry already reached puts the market in settlement even while its
+    /// status still reads `Active`.
+    #[test]
+    fn a_market_past_its_expiry_is_refused() {
+        let mut market = active_market();
+        market.expiry_ts = 50;
+        assert_eq!(
+            trigger_market_gates(&market, 100).err().unwrap(),
+            ErrorCode::MarketPlaceOrderPaused
+        );
+    }
 }

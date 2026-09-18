@@ -579,11 +579,22 @@ fn unwind_cancelled_orders(
         }
     }
 
+    // A full exchange halt stops the fee, not the cancel. Reclaiming a failing
+    // account's orders has to stay reachable while the exchange is down, which
+    // is why this instruction carries no `exchange_not_paused` access control.
+    // The fee is the part that moves value, and its `User.orders` twin
+    // `force_cancel_orders` refuses outright under the same halt. Paying it
+    // here while the twin refuses would make the halt mean two different
+    // things for the same work.
+    let exchange_halted = state.get_exchange_status()?.is_all();
+    if exchange_halted && total_fee > 0 {
+        msg!("exchange halted; cancelling without the keeper fee");
+    }
     pay_keeper_flat_reward_for_spot(
         user,
         Some(&mut filler),
         spot_market_map.get_quote_spot_market_mut()?.deref_mut(),
-        total_fee,
+        if exchange_halted { 0 } else { total_fee },
         clock.slot,
     )?;
     user.update_last_active_slot(clock.slot);

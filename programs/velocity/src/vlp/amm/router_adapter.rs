@@ -619,5 +619,22 @@ mod ts_mirror_fixture {
                 .collect();
             println!("TS_MIRROR {} {}", label, encoded.join(","));
         }
+        // A take past the per-fill reserve throttle. The ladder covers
+        // `calculate_amm_available_liquidity` and not the size asked for, so
+        // this is the case that catches a mirror which quotes the room to the
+        // hard reserve bound instead.
+        for (label, direction) in [
+            ("long_capped", Direction::Long),
+            ("short_capped", Direction::Short),
+        ] {
+            let levels =
+                vamm_quote_levels(&amm, direction, 40 * BASE_PRECISION_U64, 1, &[], None).unwrap();
+            let total: u64 = levels.iter().map(|l| l.size).sum();
+            let encoded: Vec<String> = levels
+                .iter()
+                .map(|l| format!("{}:{}", l.price, l.size))
+                .collect();
+            println!("TS_MIRROR {} total={} {}", label, total, encoded.join(","));
+        }
     }
 }

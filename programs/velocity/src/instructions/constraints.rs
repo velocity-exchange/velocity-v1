@@ -296,3 +296,108 @@ mod tests {
         );
     }
 }
+
+/// Hold a resolver to writing only its staging region.
+///
+/// A resolver is a view. A turner simulates it, reads the staged call out of
+/// the simulated post-state, and submits the real instruction separately.
+/// Nothing a resolver writes is ever meant to land, so landing one should
+/// change nothing. That property is worth asserting rather than reviewing,
+/// because it is what makes a resolver safe to expose permissionlessly.
+///
+/// `staging` names the accounts the chain never reads back: the shared relay
+/// scratch account, or a quote buffer.
+///
+/// The check is on velocity-owned accounts, because those are the only ones
+/// this program can write. A fee payer rides writable on every transaction and
+/// the runtime debits it, and a token account belongs to the token program;
+/// neither is something a resolver could dirty. A velocity-owned account
+/// marked writable is the real hazard, and outside the staging region there is
+/// no reason for one.
+///
+/// This governs velocity's own named accounts. The quoter tail in
+/// `remaining_accounts` is governed separately, by what the registry vetted a
+/// quoter to mark writable at approval, because a quoter's CPI streams its
+/// answer into its own response account.
+pub fn require_view_accounts(
+    accounts: &[anchor_lang::prelude::AccountInfo<'_>],
+    staging: &[Pubkey],
+) -> anchor_lang::Result<()> {
+    for account in accounts {
+        if !account.is_writable || account.owner != &crate::ID || staging.contains(account.key) {
+            continue;
+        }
+        msg!(
+            "resolver marked {} writable; a resolver writes only its staging region",
+            account.key
+        );
+        return Err(ErrorCode::DefaultError.into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod view_account_tests {
+    use {
+        super::require_view_accounts,
+        anchor_lang::prelude::{AccountInfo, Pubkey},
+    };
+
+    fn account<'a>(
+        key: &'a Pubkey,
+        owner: &'a Pubkey,
+        lamports: &'a mut u64,
+        data: &'a mut [u8],
+        writable: bool,
+    ) -> AccountInfo<'a> {
+        AccountInfo::new(key, false, writable, lamports, data, owner, false)
+    }
+
+    #[test]
+    fn a_read_only_account_set_passes() {
+        let (k1, k2, owner) = (Pubkey::new_unique(), Pubkey::new_unique(), crate::ID);
+        let (mut l1, mut l2) = (0, 0);
+        let (mut d1, mut d2) = ([0u8; 0], [0u8; 0]);
+        let accounts = [
+            account(&k1, &owner, &mut l1, &mut d1, false),
+            account(&k2, &owner, &mut l2, &mut d2, false),
+        ];
+        assert!(require_view_accounts(&accounts, &[]).is_ok());
+    }
+
+    #[test]
+    fn the_staging_account_may_be_writable() {
+        let (scratch, owner) = (Pubkey::new_unique(), crate::ID);
+        let mut lamports = 0;
+        let mut data = [0u8; 0];
+        let accounts = [account(&scratch, &owner, &mut lamports, &mut data, true)];
+        assert!(require_view_accounts(&accounts, &[scratch]).is_ok());
+    }
+
+    /// The whole point: a caller cannot make a resolver dirty a velocity
+    /// account outside its staging region, so landing one stays inert whatever
+    /// account list it carries.
+    #[test]
+    fn another_writable_velocity_account_is_refused() {
+        let (scratch, other, owner) = (Pubkey::new_unique(), Pubkey::new_unique(), crate::ID);
+        let (mut l1, mut l2) = (0, 0);
+        let (mut d1, mut d2) = ([0u8; 0], [0u8; 0]);
+        let accounts = [
+            account(&scratch, &owner, &mut l1, &mut d1, true),
+            account(&other, &owner, &mut l2, &mut d2, true),
+        ];
+        assert!(require_view_accounts(&accounts, &[scratch]).is_err());
+    }
+
+    /// The fee payer rides writable on every transaction and the runtime
+    /// debits it. It is not velocity's to write, so it is not the hazard this
+    /// guards, and refusing it would refuse every call.
+    #[test]
+    fn a_writable_account_velocity_does_not_own_passes() {
+        let (payer, system) = (Pubkey::new_unique(), Pubkey::default());
+        let mut lamports = 0;
+        let mut data = [0u8; 0];
+        let accounts = [account(&payer, &system, &mut lamports, &mut data, true)];
+        assert!(require_view_accounts(&accounts, &[]).is_ok());
+    }
+}

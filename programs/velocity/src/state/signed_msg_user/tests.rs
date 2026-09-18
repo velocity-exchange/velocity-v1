@@ -26,7 +26,11 @@ mod signed_msg_order_id_eviction {
         };
 
         let new_signed_msg_order_id = SignedMsgOrderId::new([7; 8], 10, 2);
-        let add_result = signed_msg_user.add_signed_msg_order_id(new_signed_msg_order_id);
+        let add_result = signed_msg_user.add_signed_msg_order_id(
+            new_signed_msg_order_id,
+            11,
+            SlotClock::baseline(),
+        );
         assert!(add_result.is_ok());
 
         assert_eq!(
@@ -88,7 +92,11 @@ mod signed_msg_order_id_eviction {
         };
 
         let new_signed_msg_order_id = SignedMsgOrderId::new([7; 8], 10, 2);
-        let add_result = signed_msg_user.add_signed_msg_order_id(new_signed_msg_order_id);
+        let add_result = signed_msg_user.add_signed_msg_order_id(
+            new_signed_msg_order_id,
+            11,
+            SlotClock::baseline(),
+        );
         assert!(add_result.is_err());
         assert_eq!(
             add_result.err().unwrap(),
@@ -121,7 +129,11 @@ mod signed_msg_order_id_eviction {
         };
 
         let new_signed_msg_order_id = SignedMsgOrderId::new([7; 8], 10, 0);
-        let add_result = signed_msg_user.add_signed_msg_order_id(new_signed_msg_order_id);
+        let add_result = signed_msg_user.add_signed_msg_order_id(
+            new_signed_msg_order_id,
+            11,
+            SlotClock::baseline(),
+        );
         assert!(add_result.is_err());
         assert_eq!(
             add_result.err().unwrap(),
@@ -129,7 +141,11 @@ mod signed_msg_order_id_eviction {
         );
 
         let new_signed_msg_order_id = SignedMsgOrderId::new([0; 8], 10, 10);
-        let add_result = signed_msg_user.add_signed_msg_order_id(new_signed_msg_order_id);
+        let add_result = signed_msg_user.add_signed_msg_order_id(
+            new_signed_msg_order_id,
+            11,
+            SlotClock::baseline(),
+        );
         assert!(add_result.is_err());
         assert_eq!(
             add_result.err().unwrap(),
@@ -137,7 +153,11 @@ mod signed_msg_order_id_eviction {
         );
 
         let new_signed_msg_order_id = SignedMsgOrderId::new([7; 8], 0, 10);
-        let add_result = signed_msg_user.add_signed_msg_order_id(new_signed_msg_order_id);
+        let add_result = signed_msg_user.add_signed_msg_order_id(
+            new_signed_msg_order_id,
+            11,
+            SlotClock::baseline(),
+        );
         assert!(add_result.is_err());
         assert_eq!(
             add_result.err().unwrap(),
@@ -310,6 +330,7 @@ mod zero_copy {
 mod resting_route {
     use {
         crate::{
+            error::ErrorCode,
             math::time::SlotClock,
             state::{
                 order_params::NO_ROUTE_DIGEST,
@@ -341,7 +362,11 @@ mod resting_route {
         };
 
         orders
-            .add_signed_msg_order_id(SignedMsgOrderId::new([1; 8], 10, 1))
+            .add_signed_msg_order_id(
+                SignedMsgOrderId::new([1; 8], 10, 1),
+                10,
+                SlotClock::default(),
+            )
             .unwrap();
         assert!(orders.set_resting_route([1; 8], 77, DIGEST));
 
@@ -367,11 +392,27 @@ mod resting_route {
         assert_eq!(orders.get(0), &SignedMsgOrderId::default());
     }
 
-    /// A signed limit order carries no expiry, so retained entries could fill
-    /// the account and stop the user trading. A full account reclaims the
-    /// stalest of them instead of refusing.
+    /// Fill every slot with a resting entry whose `max_slot` is `base_slot`
+    /// plus ten times its index, so index 0 holds the oldest message.
+    fn full_of_resting_entries(orders: &mut SignedMsgUserOrdersZeroCopyMut<'_>, base_slot: u64) {
+        for i in 1..=LEN {
+            let max_slot = base_slot + u64::from(i) * 10;
+            orders
+                .add_signed_msg_order_id(
+                    SignedMsgOrderId::new([i as u8; 8], max_slot, i),
+                    base_slot,
+                    SlotClock::default(),
+                )
+                .unwrap();
+            assert!(orders.set_resting_route([i as u8; 8], u64::from(i), DIGEST));
+        }
+    }
+
+    /// Reclaiming a live entry would drop the uuid the replay guard matches
+    /// on, and the message could then be placed a second time. A full account
+    /// of live entries therefore refuses.
     #[test]
-    fn a_full_account_reclaims_the_stalest_resting_entry() {
+    fn a_full_account_refuses_while_every_entry_is_live() {
         let fixed = RefCell::new(SignedMsgUserOrdersFixed {
             user_pubkey: Pubkey::default(),
             padding: 0,
@@ -383,18 +424,53 @@ mod resting_route {
             data: data.borrow_mut(),
         };
 
-        for i in 1..=LEN {
-            let slot = u64::from(i) * 10;
-            orders
-                .add_signed_msg_order_id(SignedMsgOrderId::new([i as u8; 8], slot, i))
-                .unwrap();
-            assert!(orders.set_resting_route([i as u8; 8], u64::from(i), DIGEST));
-        }
+        full_of_resting_entries(&mut orders, 10_000);
 
-        // Every slot is held by a resting order, so the newcomer takes the one
-        // whose message is oldest.
+        // Every entry's `max_slot` is ahead of the current slot, so every one
+        // of them still guards a message that placement would accept.
+        let result = orders.add_signed_msg_order_id(
+            SignedMsgOrderId::new([0xEE; 8], 20_000, 99),
+            10_000,
+            SlotClock::default(),
+        );
+        assert_eq!(
+            result.err().unwrap(),
+            ErrorCode::SignedMsgUserOrdersAccountFull
+        );
+        // The first entry keeps its uuid and its route.
+        assert_eq!(orders.get(0).uuid, [1; 8]);
+        assert_eq!(orders.get(0).route_digest, DIGEST);
+    }
+
+    /// A signed limit order carries no expiry, so retained entries could fill
+    /// the account and stop the user trading. The reclaim relieves that, but
+    /// only for an entry past the eviction buffer. Such an entry's own message
+    /// is already unplaceable, because placement refuses a `max_slot` behind
+    /// the current slot.
+    #[test]
+    fn a_full_account_reclaims_only_an_expired_resting_entry() {
+        let fixed = RefCell::new(SignedMsgUserOrdersFixed {
+            user_pubkey: Pubkey::default(),
+            padding: 0,
+            len: LEN,
+        });
+        let data = RefCell::new([0u8; 1280]);
+        let mut orders = SignedMsgUserOrdersZeroCopyMut {
+            fixed: fixed.borrow_mut(),
+            data: data.borrow_mut(),
+        };
+
+        full_of_resting_entries(&mut orders, 0);
+
+        // The buffer is 4000ms, which is ten slots at the baseline duration.
+        // At slot 30 only the first entry, whose `max_slot` is 10, is past it.
+        let now = 30;
         orders
-            .add_signed_msg_order_id(SignedMsgOrderId::new([0xEE; 8], 500, 99))
+            .add_signed_msg_order_id(
+                SignedMsgOrderId::new([0xEE; 8], 10_000, 99),
+                now,
+                SlotClock::default(),
+            )
             .unwrap();
         assert_eq!(orders.get(0).uuid, [0xEE; 8]);
         assert_eq!(orders.get(0).clob_order_id, 0);
@@ -403,5 +479,50 @@ mod resting_route {
         assert!(!orders.clear_resting_route(1));
         assert_eq!(orders.get(1).clob_order_id, 2);
         assert_eq!(orders.get(1).route_digest, DIGEST);
+
+        // The entry the reclaim took was unplaceable: its `max_slot` was
+        // behind the slot the add ran at.
+        assert!(10 < now);
+    }
+
+    /// The second-oldest entry becomes reclaimable once it too passes the
+    /// buffer, so the relief is not limited to one slot.
+    #[test]
+    fn the_reclaim_advances_as_entries_expire() {
+        let fixed = RefCell::new(SignedMsgUserOrdersFixed {
+            user_pubkey: Pubkey::default(),
+            padding: 0,
+            len: LEN,
+        });
+        let data = RefCell::new([0u8; 1280]);
+        let mut orders = SignedMsgUserOrdersZeroCopyMut {
+            fixed: fixed.borrow_mut(),
+            data: data.borrow_mut(),
+        };
+
+        full_of_resting_entries(&mut orders, 0);
+
+        // Slot 41 puts the first two entries, at `max_slot` 10 and 20, past
+        // the ten-slot buffer. The reclaim takes the older of the two.
+        orders
+            .add_signed_msg_order_id(
+                SignedMsgOrderId::new([0xEE; 8], 10_000, 99),
+                41,
+                SlotClock::default(),
+            )
+            .unwrap();
+        assert_eq!(orders.get(0).uuid, [0xEE; 8]);
+
+        // The new entry rests nothing, so the next add takes it as a free
+        // slot only after it is itself resting. Mark it, then reclaim again.
+        assert!(orders.set_resting_route([0xEE; 8], 99, DIGEST));
+        orders
+            .add_signed_msg_order_id(
+                SignedMsgOrderId::new([0xEF; 8], 10_000, 100),
+                41,
+                SlotClock::default(),
+            )
+            .unwrap();
+        assert_eq!(orders.get(1).uuid, [0xEF; 8]);
     }
 }

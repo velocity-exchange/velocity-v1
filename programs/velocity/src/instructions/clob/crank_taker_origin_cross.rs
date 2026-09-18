@@ -241,6 +241,26 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
     )?;
     let (makers_and_referrer, makers_and_referrer_stats) =
         load_user_maps(remaining_accounts_iter, true)?;
+    // The taker's escrow, when the caller carries it. A cross settles the
+    // taker's own resting remainder, so the referee discount and the referrer
+    // reward apply the way they would on any other fill of that order. Both are
+    // keyed by market rather than by order id, so they bind here. Without the
+    // account a referred taker's cross fails outright, because the fill
+    // requires it.
+    //
+    // A builder fee does not bind on this path. A builder row is keyed by the
+    // velocity order id, and `L3RowV0` carries the book's own handle instead,
+    // so the reconstructed order cannot name the row. The order also arrives
+    // without `HasBuilder`, so the fill's own escrow requirement does not fire
+    // for it. Paying a builder here needs the row to carry the velocity
+    // `client_order_id`, which is a quoter-spec wire change.
+    let mut rev_share_escrow = {
+        let taker_authority = crate::load!(ctx.accounts.taker)?.authority;
+        crate::instructions::optional_accounts::get_revenue_share_escrow_account(
+            remaining_accounts_iter,
+            &taker_authority,
+        )?
+    };
     validate!(
         !makers_and_referrer
             .0
@@ -299,7 +319,14 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
     // resolution above worked out which. Velocity settles the pair itself and
     // tells the book after.
     if counterparty.taker_origin {
-        return settle_taker_origin_pair(&cx, &subject, &subject_order, &counterparty, &mut maps);
+        return settle_taker_origin_pair(
+            &cx,
+            &subject,
+            &subject_order,
+            &counterparty,
+            &mut maps,
+            &mut rev_share_escrow,
+        );
     }
 
     let route_claim = SignedRouteClaim {
@@ -322,6 +349,7 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
         &route_claim,
         &mut maps,
         &mut cpi_scratch,
+        &mut rev_share_escrow,
     )?;
 
     let fill_price = quote_filled
@@ -332,7 +360,7 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
     // The router fill applies the oracle gates and the shared post-fill checks
     // itself, so this branch only prices the cross. It is measured against the
     // price the fill reached, which is known only after the fill.
-    let (fee, _, _) = price_cross(&cx, &subject_order, fill_price, base_filled, &mut maps)?;
+    let fee = price_cross(&cx, &subject_order, fill_price, base_filled, &mut maps)?.fee;
     let crank_reward = pay_crank_reward(&cx, &fee, quote_filled, &mut maps)?;
 
     let remainder_base_asset_amount = report_fill_to_book(&cx, &subject_order, base_filled)?;
@@ -527,6 +555,7 @@ fn route_and_fill_remainder<'info>(
     route_claim: &SignedRouteClaim<'_>,
     maps: &mut AccountMaps<'info>,
     cpi_scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
+    rev_share_escrow: &mut Option<RevenueShareEscrowZeroCopyMut<'info>>,
 ) -> Result<controller::orders::FillAmounts> {
     // The order is a local. It came off a book and belongs to no `orders` slot,
     // so the fill takes it directly and the taker needs no spare slot. The
@@ -634,7 +663,7 @@ fn route_and_fill_remainder<'info>(
             user_stats: &cx.accounts.taker_stats,
             filler: &cx.accounts.taker,
             filler_stats: &cx.accounts.taker_stats,
-            rev_share_escrow: &mut None,
+            rev_share_escrow: &mut rev_share_escrow.as_mut(),
         },
         &mut controller::orders::FillParties {
             maps,
@@ -661,33 +690,29 @@ fn route_and_fill_remainder<'info>(
 /// oracle, and a price outside the band. A refusal must leave the book as it
 /// was.
 ///
-/// Returns the fee split, whether the oracle is stale for margin, and the
-/// market's open interest before the fill. The last two are inputs to the
-/// post-fill checks. The pre-flight's own mm-oracle price is dropped. The match
-/// and the maker band use the plain oracle price, as the router pass does.
+/// The pre-flight's own mm-oracle price is dropped. The match and the maker
+/// band use the plain oracle price, as the router pass does.
 fn price_cross<'info>(
     cx: &TakerOriginContext<'_, 'info>,
     rested: &RestingOrder,
     fill_price: u64,
     base_filled: u64,
     maps: &mut AccountMaps,
-) -> Result<(crate::math::fees::TakerOriginCrossFee, bool, u128)> {
+) -> Result<controller::orders::TakerOriginCrossPricing> {
     let taker_stats = load!(cx.accounts.taker_stats)?;
-    let (fee, _, oracle_stale_for_margin, perp_market_oi_before) =
-        controller::orders::price_taker_origin_cross(
-            cx.state,
-            cx.market_index,
-            cx.taker_direction,
-            rested.price,
-            fill_price,
-            base_filled,
-            rested.placed_slot,
-            &taker_stats,
-            &maps.perp_market_map,
-            &mut maps.oracle_map,
-            cx.clock,
-        )?;
-    Ok((fee, oracle_stale_for_margin, perp_market_oi_before))
+    Ok(controller::orders::price_taker_origin_cross(
+        cx.state,
+        cx.market_index,
+        cx.taker_direction,
+        rested.price,
+        fill_price,
+        base_filled,
+        rested.placed_slot,
+        &taker_stats,
+        &maps.perp_market_map,
+        &mut maps.oracle_map,
+        cx.clock,
+    )?)
 }
 
 /// The cranker's cut of what the taker gained.
@@ -857,6 +882,7 @@ fn settle_taker_origin_pair<'c: 'info, 'info>(
     aggressor: &RestingOrder,
     counterparty: &RestingOrder,
     maps: &mut AccountMaps<'info>,
+    rev_share_escrow: &mut Option<RevenueShareEscrowZeroCopyMut<'info>>,
 ) -> Result<()> {
     let taker_direction = cx.taker_direction;
     let base_filled = cross.base_asset_amount;
@@ -917,10 +943,22 @@ fn settle_taker_origin_pair<'c: 'info, 'info>(
         oracle_price
     )?;
     // The pre-flight comes first, because a refusal must leave the book as it
-    // was. The two flags it reports are inputs to the post-fill checks below.
-    let (fee, oracle_stale_for_margin, perp_market_oi_before) =
-        price_cross(cx, aggressor, price, base_filled, maps)?;
+    // was. The facts it reports are inputs to the post-fill checks below.
+    let pricing = price_cross(cx, aggressor, price, base_filled, maps)?;
+    let (fee, oracle_stale_for_margin, perp_market_oi_before) = (
+        pricing.fee,
+        pricing.oracle_stale_for_margin,
+        pricing.perp_market_oi_before,
+    );
 
+    // A row that rested while the market was `Active` carries `reduce_only`
+    // false, and the market may have flipped to `ReduceOnly` since. This path
+    // settles the match itself, so it re-derives the flag the way
+    // `admit_perp_market` does for a routed fill. Without it both covers below
+    // fall open and a wind-down market would grow positions.
+    if pricing.market_is_reduce_only {
+        order.reduce_only = true;
+    }
     bind_aggressor_size(
         &cx.accounts.taker,
         cx.market_index,
@@ -928,7 +966,7 @@ fn settle_taker_origin_pair<'c: 'info, 'info>(
         base_filled,
         order.reduce_only,
     )?;
-    bind_counterparty_size(cx, &pair)?;
+    bind_counterparty_size(cx, &pair, pricing.market_is_reduce_only)?;
 
     // The margin type the post-fill checks apply depends on the position the
     // aggressor held before the match, so both facts are read first.
@@ -954,7 +992,15 @@ fn settle_taker_origin_pair<'c: 'info, 'info>(
 
     // The settlement returns evidence that the shared post-fill checks ran on
     // both legs. Nothing outside `post_checks` can build that evidence.
-    let _checked = settle_pair_match(cx, &pair, &mut order, oracle_price, &facts, maps)?;
+    let _checked = settle_pair_match(
+        cx,
+        &pair,
+        &mut order,
+        oracle_price,
+        &facts,
+        maps,
+        rev_share_escrow,
+    )?;
 
     report_pair_fill_to_book(cx, &pair)?;
 
@@ -992,11 +1038,10 @@ fn bind_aggressor_size(
     // long aggressor reduces a short and a short aggressor reduces a long, so
     // the cover is the position held the opposite way.
     let cover = if reduce_only {
-        let base = taker.perp_positions[position_index].base_asset_amount;
-        match taker_direction {
-            PositionDirection::Long => base.min(0).unsigned_abs(),
-            PositionDirection::Short => base.max(0).unsigned_abs(),
-        }
+        crate::math::orders::reduce_only_cover(
+            taker.perp_positions[position_index].base_asset_amount,
+            taker_direction,
+        )
     } else {
         u64::MAX
     };
@@ -1022,17 +1067,17 @@ fn bind_aggressor_size(
 fn bind_counterparty_size<'info>(
     cx: &TakerOriginContext<'_, 'info>,
     pair: &RemainderPair<'_>,
+    market_is_reduce_only: bool,
 ) -> Result<()> {
-    if !pair.counterparty.reduce_only {
+    if !pair.counterparty.reduce_only && !market_is_reduce_only {
         return Ok(());
     }
     let counterparty_user = cx.makers_and_referrer.get_ref(&pair.maker_key)?;
     let cp_index = get_position_index(&counterparty_user.perp_positions, cx.market_index)?;
-    let base = counterparty_user.perp_positions[cp_index].base_asset_amount;
-    let cp_cover = match cx.taker_direction.opposite() {
-        PositionDirection::Long => base.min(0).unsigned_abs(),
-        PositionDirection::Short => base.max(0).unsigned_abs(),
-    };
+    let cp_cover = crate::math::orders::reduce_only_cover(
+        counterparty_user.perp_positions[cp_index].base_asset_amount,
+        cx.taker_direction.opposite(),
+    );
     validate!(
         pair.base_filled <= cp_cover,
         ErrorCode::QuoterReportExceedsReservation,
@@ -1081,6 +1126,7 @@ fn settle_pair_match<'info>(
     oracle_price: i64,
     facts: &PairFillFacts,
     maps: &mut AccountMaps<'info>,
+    rev_share_escrow: &mut Option<RevenueShareEscrowZeroCopyMut<'info>>,
 ) -> Result<post_checks::PairChecked> {
     let taker_direction = cx.taker_direction;
     // The settlement writes the market and the oracle map, and the check below
@@ -1101,7 +1147,7 @@ fn settle_pair_match<'info>(
     let taker_key = cx.accounts.taker.key();
     let mut none_filler: Option<&mut User> = None;
     let mut none_filler_stats: Option<&mut UserStats> = None;
-    let mut no_escrow: Option<&mut RevenueShareEscrowZeroCopyMut> = None;
+    let mut escrow_ref = rev_share_escrow.as_mut();
     let mut filler_reward_paid = 0u64;
     let mut maker_side = controller::orders::MakerSide::bind(
         &mut maker,
@@ -1140,7 +1186,7 @@ fn settle_pair_match<'info>(
             user: &mut none_filler,
             stats: &mut none_filler_stats,
             key: taker_key,
-            rev_share_escrow: &mut no_escrow,
+            rev_share_escrow: &mut escrow_ref,
         },
         &mut controller::orders::SettleContext {
             market: market.deref_mut(),

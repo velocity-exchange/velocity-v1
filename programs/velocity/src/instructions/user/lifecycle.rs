@@ -93,10 +93,23 @@ fn pay_init_user_fee<'info>(
 
 /// A payer that is not the authority must be an allowlisted external
 /// depositor. Only the mainnet build holds an allowlist.
+///
+/// The protocol's own `User` is exempt. Its authority is `State::signer`, a
+/// program address, so it can neither sign nor pay and no allowlist entry can
+/// ever stand for it. Without the exemption the account cannot be created on a
+/// mainnet build at all, and every crank that names it as the filler fails to
+/// load it.
 #[cfg_attr(not(feature = "mainnet-beta"), allow(unused_variables))]
-fn validate_external_payer(authority: &UncheckedAccount<'_>, payer: &Signer<'_>) -> Result<()> {
+fn validate_external_payer(
+    authority: &UncheckedAccount<'_>,
+    payer: &Signer<'_>,
+    protocol_authority: Pubkey,
+) -> Result<()> {
     #[cfg(feature = "mainnet-beta")]
-    if !authority.is_signer && authority.key() != payer.key() {
+    if authority.key() != protocol_authority
+        && !authority.is_signer
+        && authority.key() != payer.key()
+    {
         validate!(
             WHITELISTED_EXTERNAL_DEPOSITORS.contains(&payer.key()),
             ErrorCode::DefaultError,
@@ -188,7 +201,7 @@ pub fn handle_initialize_user<'c: 'info, 'info>(
         state.get_init_user_fee()?,
     )?;
 
-    validate_external_payer(&ctx.accounts.authority, &ctx.accounts.payer)
+    validate_external_payer(&ctx.accounts.authority, &ctx.accounts.payer, state.signer)
 }
 
 pub fn handle_initialize_user_stats<'c: 'info, 'info>(
@@ -223,7 +236,7 @@ pub fn handle_initialize_user_stats<'c: 'info, 'info>(
         ErrorCode::MaxNumberOfUsers
     )?;
 
-    validate_external_payer(&ctx.accounts.authority, &ctx.accounts.payer)
+    validate_external_payer(&ctx.accounts.authority, &ctx.accounts.payer, state.signer)
 }
 
 pub fn handle_delete_user(ctx: Context<DeleteUser>) -> Result<()> {
@@ -434,4 +447,90 @@ pub struct ReclaimRent<'info> {
     pub state: AccountLoader<'info, State>,
     pub authority: Signer<'info>,
     pub rent: Sysvar<'info, Rent>,
+}
+
+#[cfg(test)]
+mod external_payer_tests {
+    use {
+        super::validate_external_payer,
+        anchor_lang::prelude::{AccountInfo, Pubkey, Signer, UncheckedAccount},
+    };
+
+    struct Accounts {
+        authority_key: Pubkey,
+        payer_key: Pubkey,
+        owner: Pubkey,
+        authority_lamports: u64,
+        payer_lamports: u64,
+        authority_data: Vec<u8>,
+        payer_data: Vec<u8>,
+    }
+
+    impl Accounts {
+        fn new(authority_key: Pubkey, payer_key: Pubkey) -> Self {
+            Self {
+                authority_key,
+                payer_key,
+                owner: Pubkey::default(),
+                authority_lamports: 0,
+                payer_lamports: 0,
+                authority_data: vec![],
+                payer_data: vec![],
+            }
+        }
+
+        /// The authority never signs here. That is the case the allowlist
+        /// governs, and it is the case the protocol `User` is always in.
+        fn check(&mut self, protocol_authority: Pubkey) -> anchor_lang::Result<()> {
+            let authority_info = AccountInfo::new(
+                &self.authority_key,
+                false,
+                false,
+                &mut self.authority_lamports,
+                &mut self.authority_data,
+                &self.owner,
+                false,
+            );
+            let payer_info = AccountInfo::new(
+                &self.payer_key,
+                true,
+                true,
+                &mut self.payer_lamports,
+                &mut self.payer_data,
+                &self.owner,
+                false,
+            );
+            validate_external_payer(
+                &UncheckedAccount::try_from(&authority_info),
+                &Signer::try_from(&payer_info)?,
+                protocol_authority,
+            )
+        }
+    }
+
+    /// The protocol `User`'s authority is `State::signer`, a program address.
+    /// It cannot sign and cannot pay, so the deployer creates the account and
+    /// no allowlist entry can ever stand for it.
+    #[test]
+    fn the_protocol_authority_is_exempt() {
+        let protocol_authority = Pubkey::new_unique();
+        let mut accounts = Accounts::new(protocol_authority, Pubkey::new_unique());
+        assert!(accounts.check(protocol_authority).is_ok());
+    }
+
+    /// The exemption is keyed to the protocol authority alone. Any other
+    /// unsigned authority still needs an allowlisted payer on a mainnet build.
+    #[cfg(feature = "mainnet-beta")]
+    #[test]
+    fn a_third_party_authority_still_needs_an_allowlisted_payer() {
+        let mut accounts = Accounts::new(Pubkey::new_unique(), Pubkey::new_unique());
+        assert!(accounts.check(Pubkey::new_unique()).is_err());
+    }
+
+    #[test]
+    fn a_payer_that_is_the_authority_passes() {
+        let key = Pubkey::new_unique();
+        let mut accounts = Accounts::new(key, key);
+        assert!(accounts.check(Pubkey::new_unique()).is_ok());
+    }
 }

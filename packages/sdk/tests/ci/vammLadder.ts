@@ -11,6 +11,7 @@
 import { BN } from '@coral-xyz/anchor';
 import { assert } from 'chai';
 import { vammQuoteLevels } from '../../src/math/vammLadder';
+import { calculateAmmAvailableLiquidity } from '../../src/math/amm';
 import { PositionDirection } from '../../src/types';
 import {
 	AMM_RESERVE_PRECISION,
@@ -23,6 +24,12 @@ import {
 /** `TS_MIRROR long` from the Rust fixture: "price:size" pairs. */
 const RUST_LONG =
 	'50632912:1250000000,51931192:1250000000,53280053:1250000000,54682160:1250000000,56140352:1250000000,57657658:1250000000,59237320:1250000000,60882801:1250000000';
+/**
+ * `TS_MIRROR long_capped` / `short_capped`: a 40-base take against the same
+ * AMM. The program covers only the per-fill reserve throttle, so the ladder
+ * totals 25 base rather than the 40 asked for.
+ */
+const RUST_CAPPED_TOTAL = BASE_PRECISION.muln(25);
 /** `TS_MIRROR short` from the Rust fixture. */
 const RUST_SHORT =
 	'49382716:1250000000,48178259:1250000000,47017337:1250000000,45897877:1250000000,44817927:1250000000,43775649:1250000000,42769312:1250000000,41797283:1250000000';
@@ -102,6 +109,32 @@ describe('vAMM ladder (mirror of vlp/amm/router_adapter.rs)', () => {
 				'short ladder is descending'
 			);
 		}
+	});
+
+	/**
+	 * The per-fill reserve throttle. `calculate_amm_available_liquidity` caps a
+	 * fill at `base_asset_reserve / max_fill_reserve_fraction`, then at half the
+	 * side's room. The room to the hard reserve bound is far wider, so a mirror
+	 * that used it over-allocates the vAMM in every router split it predicts.
+	 *
+	 * The expectation is the program's own `TS_MIRROR long_capped` total.
+	 */
+	it('caps depth at the per-fill reserve throttle, not the reserve bound', () => {
+		const amm = ammFixture();
+		const step = new BN(1);
+		for (const direction of [PositionDirection.LONG, PositionDirection.SHORT]) {
+			assert(
+				calculateAmmAvailableLiquidity(amm as never, direction, step).eq(
+					RUST_CAPPED_TOTAL
+				),
+				'available liquidity matches the program'
+			);
+		}
+
+		// The room to the hard reserve bound is twice that on this AMM, which is
+		// what the mirror used to quote.
+		const sideRoom = amm.baseAssetReserve.sub(amm.minBaseAssetReserve);
+		assert(sideRoom.eq(RUST_CAPPED_TOTAL.muln(2)), 'the wider figure differs');
 	});
 
 	it('exposes the mirror with the same signature the program takes', () => {

@@ -147,6 +147,10 @@ pub struct ResolveResyncLiqConditions<'info> {
 pub fn handle_resolve_resync_liq_conditions(
     ctx: Context<ResolveResyncLiqConditions>,
 ) -> Result<()> {
+    crate::instructions::constraints::require_view_accounts(
+        &ctx.accounts.to_account_infos(),
+        &[ctx.accounts.scratch.key()],
+    )?;
     crate::instructions::resolve_into(&ctx.accounts.scratch, || {
         let stale = {
             let conditions = ctx.accounts.liq_conditions.load()?;

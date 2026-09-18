@@ -42,7 +42,7 @@ use {
         load_mut,
         math::{
             liquidation::validate_user_not_being_liquidated,
-            margin::meets_place_order_margin_requirement, orders::is_order_position_reducing,
+            margin::meets_place_order_margin_requirement, orders::is_new_order_risk_increasing,
         },
         msg,
         state::{
@@ -53,7 +53,7 @@ use {
                 ClobRemovedOrderV0, QuoterSlabExt, QuoterSlabV0, WireDirectionExt,
             },
             state::State,
-            user::User,
+            user::{Order, User},
         },
         validate,
     },
@@ -344,6 +344,9 @@ struct ReplacementTerms {
     price: u64,
     base_asset_amount: u64,
     max_ts: i64,
+    /// Carried from the cancelled order. The replacement cannot change it, and
+    /// a reduce-only order never increases risk.
+    reduce_only: bool,
 }
 
 /// Read the replacement's terms from the parameters and the removed order. A
@@ -376,6 +379,7 @@ fn resolve_replacement_terms(
         price,
         base_asset_amount,
         max_ts,
+        reduce_only: removed.reduce_only,
     })
 }
 
@@ -410,6 +414,27 @@ fn reserve_replacement_margin<'info>(
         cancelled_base_asset_amount,
         true,
     )?;
+    // The same predicate every other placement uses, read at the same point:
+    // the position net of the cancel, before the replacement reserves. It
+    // counts the reservations the account already holds, so an order that
+    // merely fits inside the bare position still reads as risk-increasing
+    // when other orders are resting behind it. The margin type and the
+    // buffered equity floor both turn on this, so a reducing verdict that
+    // ignored those reservations would price the replacement at maintenance
+    // margin with no floor gate.
+    let prospective = Order {
+        direction: terms.direction,
+        base_asset_amount: terms.base_asset_amount,
+        reduce_only: terms.reduce_only,
+        ..Order::default()
+    };
+    let position = &user.perp_positions[position_index];
+    let risk_increasing = is_new_order_risk_increasing(
+        &prospective,
+        position.base_asset_amount,
+        position.open_bids,
+        position.open_asks,
+    )?;
     increase_open_bids_and_asks(
         &mut user.perp_positions[position_index],
         &terms.direction,
@@ -421,11 +446,6 @@ fn reserve_replacement_margin<'info>(
     // placed trigger's shadow slot does not move either. The shadow keeps the
     // trigger parameters, and only its CLOB ref changes, which the re-stamp
     // below writes.
-    let risk_increasing = !is_order_position_reducing(
-        &terms.direction,
-        terms.base_asset_amount,
-        user.perp_positions[position_index].base_asset_amount,
-    )?;
     let isolated_market_index = (risk_increasing
         && user.perp_positions[position_index].is_isolated())
     .then_some(market_index);

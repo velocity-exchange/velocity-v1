@@ -73,10 +73,22 @@ pub struct InitializeQuoterCrossConditions<'info> {
     pub system_program: Program<'info, System>,
 }
 
+/// Ceiling on the cross-discovery poll interval, roughly an hour of slots.
+///
+/// This instruction is permissionless and re-prices an existing account in
+/// place, so anybody may set the interval on anybody's entry. The interval is
+/// the floor under a maker's own reprice watch, and an unbounded value removes
+/// that floor. The ceiling keeps the worst a third party can do to a bounded
+/// delay rather than an indefinite one. For scale, the liquidation liveness
+/// poll is [`crate::state::user_conditions::LIQ_LIVENESS_POLL_SLOTS`], about
+/// two minutes.
+pub const QUOTER_CROSS_FALLBACK_MAX_SLOTS: u64 = 9_000;
+
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
 pub struct InitializeQuoterCrossConditionsArgs {
     /// The poll interval behind the reprice watch. It is the discovery floor
-    /// when the maker's declared watch misses a reprice.
+    /// when the maker's declared watch misses a reprice. Bounded above by
+    /// [`QUOTER_CROSS_FALLBACK_MAX_SLOTS`].
     pub expire_fallback_slots: u64,
 }
 
@@ -91,6 +103,13 @@ pub fn handle_initialize_quoter_cross_conditions(
         expire_fallback_slots > 0,
         ErrorCode::DefaultError,
         "fallback interval must be nonzero"
+    )?;
+    validate!(
+        expire_fallback_slots <= QUOTER_CROSS_FALLBACK_MAX_SLOTS,
+        ErrorCode::DefaultError,
+        "fallback interval {} is past the {} slot ceiling",
+        expire_fallback_slots,
+        QUOTER_CROSS_FALLBACK_MAX_SLOTS
     )?;
     let slots = ctx.accounts.quoter_slab.slots()?;
     let quoter_slot = slot_for_entry(&slots, &ctx.accounts.quoter.key()).ok_or_else(|| {

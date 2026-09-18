@@ -509,6 +509,7 @@ pub fn find_fired_trigger(
     market: &PerpMarket,
     oracle_info: &AccountInfo,
     slot: u64,
+    now: i64,
     want: TriggerResolverKind,
 ) -> Result<Option<crate::state::user_conditions::TriggerSlotMetaV0>> {
     validate!(
@@ -530,11 +531,19 @@ pub fn find_fired_trigger(
         // already resting on the book. `trigger_limit_order_v1` then rejects the
         // staged crank with `OrderPlacedOnClob` every round, which spends turner
         // work and starves armed triggers behind it.
+        //
+        // An order past its own `max_ts` starves the queue the same way.
+        // `should_expire_order` exempts anything that must be triggered, so
+        // the sweep never takes it and it stays armed forever. Both fire paths
+        // treat it as no work, so staging it spends a round and accomplishes
+        // nothing.
+        let expired = order.max_ts != 0 && now > order.max_ts;
         if order.status != crate::state::user::OrderStatus::Open
             || order.market_index != market.market_index
             || order.is_placed_on_clob()
             || !order.must_be_triggered()
             || order.triggered()
+            || expired
         {
             continue;
         }

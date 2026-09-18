@@ -65,6 +65,13 @@ of levels rather than a curve swap. `splitAcrossQuoters` and `vammQuoteLevels` m
 math. `vammQuoteLevels` shades the vAMM ladder only for the depth a rival book offers, so a client
 that prices a fill against rival books gets a different answer than before.
 
+`vammQuoteLevels` caps its ladder at the per-fill reserve throttle, exported as
+`calculateAmmAvailableLiquidity`. The cap is `baseAssetReserve / maxFillReserveFraction`, then at
+most half the side's room to the hard reserve bound, then floored to the step size. It is much
+tighter than the room to that bound: at the default fraction of 100 a client that quoted the room
+would over-allocate the vAMM by more than an order of magnitude, in the split preview, the depth
+chart and any vAMM-versus-maker routing.
+
 `RouterAllocation.scaledQuote` reports the sum of price times base before the division into quote
 units. The program holds a fill to that scalar, so a client that predicts whether a fill is
 accepted needs it.
@@ -103,11 +110,23 @@ instructions. Its depth comes through the same `quote_v0` every other source ans
 relay conditions that watch its state live on the book. Velocity knows the CLOB's instruction wire
 and nothing about its account layout.
 
+`modifyOrderV1` gates the replacement on the same risk test every other placement uses. The test
+counts the `open_bids` and `open_asks` the account already holds, not the bare position, so a
+replacement that fits inside the position still requires initial margin and clears the buffered
+equity floor when other orders rest behind it. A modify that passed before may now fail for a
+caller resting several orders against one position.
+
 `VelocityClient` gains `cancelOrderV1`, `cancelOrdersV1` and `modifyOrderV1` with their `get*Ix`
 builders. A caller names a market and nothing else, because the book's account, its program and the
 PDAs resolve from the market's quoter slab. Those instructions take `quoterSlab`, `clobMarket` and
 `clobProgram`, and `clobProgram` is pinned to velocity's CLOB program id. The keeper arms are
-`force_cancel_clob_orders`, `crank_clob_evict` and `crank_clob_remove_expired`.
+`force_cancel_clob_orders`, `crank_clob_evict` and `crank_clob_remove_expired`. `force_cancel_clob_orders`
+cancels during a full exchange halt but pays no keeper fee, so the halt means the same thing for
+it as for its `User.orders` twin, which refuses outright.
+
+`initialize_quoter_cross_conditions` bounds `expireFallbackSlots` at 9,000 slots. The endpoint is
+permissionless and re-prices in place, so the ceiling limits what a third party can do to another
+maker's discovery floor.
 
 An order's id is minted from `User.next_order_id`, the same counter an armed trigger draws from,
 so a client names an order the same way wherever it rests. A placement returns the order's
@@ -268,6 +287,20 @@ A fired trigger rests taker-origin. It came to trade, so a cross settles at the 
 rather than picking it off at its own. Its owner cannot cancel it inside the activation window.
 Liquidation force-cancel stays exempt and `max_ts` still bounds its life.
 
+An armed trigger past its own `max_ts` is dead, and both endpoints now treat it as no work
+rather than firing it. The expiry sweep exempts anything that must be triggered, so such an order
+sits in its slot until its owner cancels. Firing it moved nothing: the fill found the order
+expired and the book refused to rest it, so the stop-market path paid the keeper for destroying an
+order the owner could cancel for free, and the stop-limit path reverted. Relay's discovery skips
+an expired trigger too, so a dead one no longer starves the armed triggers behind it on the same
+account.
+
+Both trigger endpoints refuse a market whose `PerpOperation::Fill` bit is paused. Firing commits the
+order and pays the keeper out of the owner, so it takes the market gates any other step of the fill
+lifecycle takes. `MarketStatus` carries no fill-paused variant, so a paused market still reads
+`Active`. `trigger_limit_order_v1` keeps the stricter `Active` requirement on top, because its fired
+order rests rather than routing to a fill.
+
 `PerpPosition.reduceOnlyClobOrders` counts the reduce-only orders the owner has resting on the CLOB.
 While it is nonzero the router caps that user's reduce-only fills to the position they reduce, so a
 reduce-only stop can rest its remainder on the book without over-filling.
@@ -290,6 +323,32 @@ another remainder waits on.
 about 328,000 compute units rather than 75,000. That is past one instruction's 200,000 default, so a
 keeper must request a budget for it. Cross cranks are permissionless and revert unless the spread
 clears both takers' fees and the market's `min_cross_surplus` floor.
+
+`crank_taker_origin_cross` takes the taker's `RevenueShareEscrow` when the caller carries it.
+A referred taker's cross previously failed outright, because the fill requires the account
+whenever the taker carries a builder referral. The referee discount and the referrer reward are
+keyed by market, so they bind on this path. A builder fee does not: a builder row is keyed by the
+velocity order id, and the book's row carries its own handle instead.
+
+Every resolver refuses a call that marks an account writable beyond its staging region. A
+resolver is a view: a turner simulates it, reads the staged call out of the simulated post-state,
+and submits the real instruction separately, so landing one has to be inert. The staging region is
+the shared relay scratch account, or `quote_buffer` for `quote_router`, plus the book's own
+account for the two resolvers that ask the book for its resting orders, because `quote_l3_v0`
+streams the answer into that account's response tail. A turner that marked anything else writable
+now fails rather than being trusted not to matter.
+
+`quote_router` no longer needs the perp market passed writable, and it no longer writes to the
+makers it sizes. It was opening a position slot on a third party's account to reproduce the fill's
+clamp and putting it back; it now sizes against the position a fill would open, so the makers ride
+read-only.
+
+A cross crank runs the market gates a routed fill runs. It refuses a market that is not `Active` or
+`ReduceOnly`, in settlement, or fill-paused. When two crossed taker-origin remainders settle against
+each other, velocity settles the pair itself rather than routing it, so it re-derives `reduce_only`
+from the market the way a routed fill does. A row that rested while the market was `Active` carries
+its own stale flag, and a market that has since flipped to `ReduceOnly` must not let that row grow a
+position.
 
 ## Relay cranks and their funding
 

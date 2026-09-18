@@ -62,6 +62,13 @@ pub struct ResolveLiquidatePerpWithFill<'info> {
 pub fn handle_resolve_liquidate_perp_with_fill<'c: 'info, 'info>(
     ctx: Context<'info, ResolveLiquidatePerpWithFill<'info>>,
 ) -> Result<()> {
+    // A resolver is a view: the scratch account is the only thing it writes,
+    // and nothing reads that back on chain. Asserting it here makes landing
+    // this instruction inert against the caller rather than against review.
+    crate::instructions::constraints::require_view_accounts(
+        &ctx.accounts.to_account_infos(),
+        &[ctx.accounts.scratch.key()],
+    )?;
     crate::instructions::resolve_into(&ctx.accounts.scratch, || {
         let clock = Clock::get()?;
         let state = ctx.accounts.state.load()?;

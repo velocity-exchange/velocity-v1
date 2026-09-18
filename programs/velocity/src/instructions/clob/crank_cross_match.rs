@@ -988,6 +988,14 @@ pub struct ResolveCrankCrossMatchQuoter<'info> {
 pub fn handle_resolve_crank_cross_match_quoter<'info>(
     ctx: Context<'info, ResolveCrankCrossMatchQuoter<'info>>,
 ) -> Result<()> {
+    // The book's own account rides writable, because `quote_l3_v0` streams the
+    // answer into its response tail. It belongs to the CLOB program rather than
+    // to velocity, so the check passes over it and the staging region stays
+    // just the scratch account.
+    crate::instructions::constraints::require_view_accounts(
+        &ctx.accounts.to_account_infos(),
+        &[ctx.accounts.scratch.key()],
+    )?;
     resolve_into(&ctx.accounts.scratch, || {
         let quoter_entry_key = ctx.accounts.cross_conditions.load()?.quoter;
         let slots = ctx.accounts.quoter_slab.slots()?;

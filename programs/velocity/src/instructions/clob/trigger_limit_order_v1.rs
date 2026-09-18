@@ -211,6 +211,22 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
 
         let order_index = find_armed_trigger_limit(user, order_id, market_index)?;
 
+        // An armed trigger past its own `max_ts` is dead. `should_expire_order`
+        // exempts anything that must be triggered, so the sweep never takes it.
+        // Firing it would pay the keeper and then revert, because the book
+        // refuses an order whose `max_ts` has passed. Reverting on every relay
+        // round also starves every armed trigger behind it on this account, so
+        // this is a no-op rather than a refusal.
+        let order_max_ts = user.orders[order_index].max_ts;
+        if order_max_ts != 0 && now > order_max_ts {
+            msg!(
+                "Order max_ts {} passed (now {}); nothing to trigger",
+                order_max_ts,
+                now
+            );
+            return Ok(());
+        }
+
         validate_user_not_being_liquidated(user, &mut maps, state.liquidation_margin_buffer_ratio)?;
         validate!(!user.is_bankrupt(), ErrorCode::UserBankrupt)?;
 
@@ -412,9 +428,16 @@ struct TriggerPrices {
 /// Reads the prices for a trigger, and refuses a market or an oracle that
 /// cannot carry one.
 ///
-/// The market must be active and out of settlement. The oracle must be valid
-/// for a trigger, and it must stay near the five-minute TWAP. A stale feed or
-/// a divergent feed can fire a stop that the market never reached.
+/// The market must be active, out of settlement, and not fill-paused. The
+/// oracle must be valid for a trigger, and it must stay near the five-minute
+/// TWAP. A stale feed or a divergent feed can fire a stop that the market
+/// never reached.
+///
+/// Firing rests a live order on the book and pays the keeper out of the
+/// owner, so it takes the same market gates as any other step in the fill
+/// lifecycle. `Active` is stricter than those gates require, because the
+/// fired order rests instead of routing to a fill: a `ReduceOnly` market
+/// admits a reducing fill but must not take a new resting order.
 fn read_trigger_prices(
     perp_market_map: &PerpMarketMap<'_>,
     oracle_map: &mut OracleMap<'_>,
@@ -428,11 +451,7 @@ fn read_trigger_prices(
         ErrorCode::MarketPlaceOrderPaused,
         "market not active"
     )?;
-    validate!(
-        !perp_market.is_in_settlement(now),
-        ErrorCode::MarketPlaceOrderPaused,
-        "Market is in settlement mode",
-    )?;
+    crate::controller::orders::trigger_market_gates(&perp_market, now)?;
 
     let (oracle_price_data, oracle_validity) = oracle_map.get_price_data_and_validity(
         MarketType::Perp,
@@ -710,6 +729,10 @@ pub struct ResolveTriggerLimitOrderV1<'info> {
 pub fn handle_resolve_trigger_limit_order_v1(
     ctx: Context<ResolveTriggerLimitOrderV1>,
 ) -> Result<()> {
+    crate::instructions::constraints::require_view_accounts(
+        &ctx.accounts.to_account_infos(),
+        &[ctx.accounts.scratch.key()],
+    )?;
     crate::instructions::resolve_into(&ctx.accounts.scratch, || {
         let clock = Clock::get()?;
         let fired = {
@@ -722,6 +745,7 @@ pub fn handle_resolve_trigger_limit_order_v1(
                 &market,
                 &ctx.accounts.oracle,
                 clock.slot,
+                clock.unix_timestamp,
                 super::helpers::crank_common::TriggerResolverKind::ClobRest,
             )?
         };

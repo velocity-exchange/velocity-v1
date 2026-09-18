@@ -590,6 +590,26 @@ pub fn is_new_order_risk_increasing(
     }
 }
 
+/// The base a reduce-only order may fill, given the position it reduces.
+///
+/// A short fill sells, so it reduces a long and is covered by the long side of
+/// the position. A long fill buys, so it reduces a short. A position held the
+/// same way as the fill covers nothing, and the order may not fill at all.
+///
+/// Every path that settles a reduce-only fill has to bind the fill to this,
+/// because the order's own size says nothing about how much of it may land. The
+/// router ships it to a book as a cap, and the cranks that settle a match
+/// themselves re-derive it rather than trusting the book.
+pub fn reduce_only_cover(
+    position_base_asset_amount: i64,
+    fill_direction: PositionDirection,
+) -> u64 {
+    match fill_direction {
+        PositionDirection::Long => position_base_asset_amount.min(0).unsigned_abs(),
+        PositionDirection::Short => position_base_asset_amount.max(0).unsigned_abs(),
+    }
+}
+
 pub fn is_order_position_reducing(
     order_direction: &PositionDirection,
     order_base_asset_amount: u64,
@@ -713,6 +733,31 @@ pub fn calculate_max_perp_order_size(
     direction: PositionDirection,
     maps: &mut AccountMaps,
 ) -> VelocityResult<u64> {
+    calculate_max_perp_order_size_for_position(
+        user,
+        &user.perp_positions[position_index],
+        market_index,
+        direction,
+        maps,
+    )
+}
+
+/// The same sizing, against a position the caller supplies rather than one of
+/// the account's own slots.
+///
+/// A caller that is sizing an order for a market the account has never traded
+/// has no slot to name. It passes the position a fill would open instead, and
+/// nothing has to be written to the account to ask the question. The margin
+/// walk reads the account's other positions as it always does, and a vacant
+/// slot contributes nothing to it, which is exactly what a freshly opened
+/// position contributes.
+pub fn calculate_max_perp_order_size_for_position(
+    user: &User,
+    position: &PerpPosition,
+    market_index: u16,
+    direction: PositionDirection,
+    maps: &mut AccountMaps,
+) -> VelocityResult<u64> {
     let margin_context = MarginContext::standard(MarginRequirementType::Initial).strict(true);
     // calculate initial margin requirement
     let margin_calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
@@ -722,9 +767,9 @@ pub fn calculate_max_perp_order_size(
     )?;
 
     let user_custom_margin_ratio = user.max_margin_ratio;
-    let perp_position_margin_ratio = user.perp_positions[position_index].max_margin_ratio as u32;
+    let perp_position_margin_ratio = position.max_margin_ratio as u32;
 
-    let is_isolated_position = user.perp_positions[position_index].is_isolated();
+    let is_isolated_position = position.is_isolated();
     let free_collateral_before = if is_isolated_position {
         margin_calculation
             .get_isolated_free_collateral(market_index)?
@@ -756,7 +801,7 @@ pub fn calculate_max_perp_order_size(
         );
     drop(quote_spot_market);
 
-    let perp_position: &PerpPosition = &user.perp_positions[position_index];
+    let perp_position: &PerpPosition = position;
     let (worst_case_base_asset_amount, worst_case_liability_value) =
         perp_position.worst_case_liability_value(oracle_price_data_price)?;
 

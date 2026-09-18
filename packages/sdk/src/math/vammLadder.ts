@@ -37,8 +37,8 @@ import {
 	ZERO,
 } from '../constants/numericConstants';
 import {
+	calculateAmmAvailableLiquidity,
 	calculateAmmReservesAfterSwap,
-	calculateMarketOpenBidAsk,
 	calculateMaxBaseAssetAmountToTrade,
 	calculateQuoteAssetAmountSwapped,
 	calculateUpdatedAMMSpreadReserves,
@@ -124,13 +124,10 @@ export function vammQuoteLevels(
 	const step = stepSize.gt(ZERO) ? stepSize : new BN(1);
 	const swapDirection = isLong ? SwapDirection.REMOVE : SwapDirection.ADD;
 
-	const [openBids, openAsks] = calculateMarketOpenBidAsk(
-		amm.baseAssetReserve,
-		amm.minBaseAssetReserve,
-		amm.maxBaseAssetReserve,
-		step
-	);
-	const available = isLong ? openAsks.abs() : openBids.abs();
+	// The per-fill reserve throttle, not the room to the hard reserve bound.
+	// `vamm_quote_levels` caps its ladder at this, so a client that used the
+	// wider figure would quote depth the program refuses.
+	const available = calculateAmmAvailableLiquidity(amm, direction, step);
 	let total = BN.min(size, available);
 	if (total.lte(ZERO)) {
 		return [];

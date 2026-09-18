@@ -680,11 +680,15 @@ impl CapInputs<'_, '_> {
         if !position.has_reduce_only_clob() {
             return Ok(u64::MAX);
         }
-        let base = position.base_asset_amount;
-        Ok(match resting_side {
-            ClobSide::Ask => base.max(0).unsigned_abs(),
-            ClobSide::Bid => base.min(0).unsigned_abs(),
-        })
+        // An ask sells, so filling it is a short fill and it reduces a long.
+        let fill_direction = match resting_side {
+            ClobSide::Ask => PositionDirection::Short,
+            ClobSide::Bid => PositionDirection::Long,
+        };
+        Ok(crate::math::orders::reduce_only_cover(
+            position.base_asset_amount,
+            fill_direction,
+        ))
     }
 }
 

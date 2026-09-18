@@ -132,6 +132,21 @@ pub const LIQUIDATION_FLAT_PAYMENT_MIN_FILLED_QUOTE: u64 = 10_000_000;
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CrankCostUnitsV0 {
     /// `evict_worst` / `remove_expired`: one book write and a hint repair.
+    ///
+    /// The removal cranks are the one pair whose payment is not checked against
+    /// what the protocol collects for the same work. A cross crank refuses
+    /// unless the surplus clears its own keeper payment priced in quote
+    /// (`cross_surplus_floor`). A removal collects one `flat_filler_fee` in
+    /// quote from the evictee and pays `removal` plus
+    /// [`EXPIRY_ESCALATION_CEILING`] in lamports from the reservoir, and
+    /// nothing compares the two.
+    ///
+    /// At the shipped rails the fee is worth more than the payment, so the loop
+    /// costs an attacker money. A rails re-pricing that lifts `removal` past
+    /// the fee's value in SOL would turn each market's reservoir into a faucet
+    /// that `refill_crank_reservoir` tops up. Checking the relation needs a SOL
+    /// price, and these cranks carry no SOL oracle account, so the check would
+    /// cost them an account each. Weigh that before re-pricing the rails.
     pub removal: u32,
     /// `crank_cross_match`: two settlement legs through the router.
     pub cross: u32,

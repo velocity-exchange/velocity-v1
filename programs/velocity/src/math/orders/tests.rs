@@ -4207,3 +4207,89 @@ mod order_bit_flags {
         assert_eq!(flags, 8);
     }
 }
+
+/// The distinction the CLOB modify gate turns on.
+///
+/// `is_order_position_reducing` reads the bare position, and
+/// `is_new_order_risk_increasing` also counts the reservations the account
+/// already holds. A "reducing" verdict drops the requirement to maintenance
+/// margin and skips the buffered equity floor, so the two predicates are not
+/// interchangeable on a placement gate.
+mod risk_threshold_counts_open_reservations {
+    use crate::{
+        controller::position::PositionDirection,
+        math::orders::{is_new_order_risk_increasing, is_order_position_reducing},
+        state::user::Order,
+    };
+
+    fn ask(base_asset_amount: u64) -> Order {
+        Order {
+            direction: PositionDirection::Short,
+            base_asset_amount,
+            ..Order::default()
+        }
+    }
+
+    #[test]
+    fn a_first_ask_inside_a_long_reduces_it() {
+        assert!(!is_new_order_risk_increasing(&ask(100), 100, 0, 0).unwrap());
+        assert!(is_order_position_reducing(&PositionDirection::Short, 100, 100).unwrap());
+    }
+
+    /// The account is long 100 with an ask of 100 already resting, so its
+    /// `open_asks` is -100 and the position is fully covered. A second ask
+    /// takes the account net short whatever it adds, so it increases risk even
+    /// though its own size fits inside the bare position. The position-only
+    /// predicate reads the same state as reducing, which is why the modify
+    /// gate could not use it.
+    #[test]
+    fn an_ask_behind_a_resting_ask_increases_risk() {
+        assert!(is_new_order_risk_increasing(&ask(100), 100, 0, -100).unwrap());
+        assert!(is_order_position_reducing(&PositionDirection::Short, 100, 100).unwrap());
+    }
+}
+
+/// The reduce-only cover, which every path that settles a reduce-only fill
+/// binds to. The router ships it to a book as a cap, and the cranks that settle
+/// a match themselves re-derive it rather than trusting the book, so one wrong
+/// answer here would let a reduce-only order grow a position on whichever path
+/// used it.
+mod reduce_only_cover {
+    use crate::{controller::position::PositionDirection, math::orders::reduce_only_cover};
+
+    /// Selling reduces a long, so a long position is the whole cover and the
+    /// order may fill up to it.
+    #[test]
+    fn a_short_fill_is_covered_by_a_long_position() {
+        assert_eq!(reduce_only_cover(100, PositionDirection::Short), 100);
+    }
+
+    /// Buying reduces a short.
+    #[test]
+    fn a_long_fill_is_covered_by_a_short_position() {
+        assert_eq!(reduce_only_cover(-100, PositionDirection::Long), 100);
+    }
+
+    /// A position held the same way as the fill covers nothing. Filling would
+    /// grow it, which is what reduce-only forbids.
+    #[test]
+    fn a_position_on_the_fill_side_covers_nothing() {
+        assert_eq!(reduce_only_cover(100, PositionDirection::Long), 0);
+        assert_eq!(reduce_only_cover(-100, PositionDirection::Short), 0);
+    }
+
+    #[test]
+    fn a_flat_position_covers_nothing() {
+        assert_eq!(reduce_only_cover(0, PositionDirection::Long), 0);
+        assert_eq!(reduce_only_cover(0, PositionDirection::Short), 0);
+    }
+
+    /// The cover is a magnitude, so the most negative position cannot wrap.
+    #[test]
+    fn the_extreme_short_position_does_not_overflow() {
+        assert_eq!(
+            reduce_only_cover(i64::MIN, PositionDirection::Long),
+            i64::MIN.unsigned_abs()
+        );
+    }
+}

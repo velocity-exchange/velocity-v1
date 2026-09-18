@@ -153,7 +153,7 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 [[package]]
 name = "anchor-derive-accounts"
 version = "2.0.0-rc.1"
-source = "git+https://github.com/velocity-exchange/anchor.git?rev=b005890d9351a17a8061811662c44d781a04baf0#b005890d9351a17a8061811662c44d781a04baf0"
+source = "git+https://github.com/otter-sec/anchor.git?rev=abacd0e9362d957e7da779fa81b1a10dd9480b28#abacd0e9362d957e7da779fa81b1a10dd9480b28"
 dependencies = [
  "anchor-lang-idl",
  "bs58",
@@ -169,7 +169,7 @@ dependencies = [
 [[package]]
 name = "anchor-lang"
 version = "2.0.0-rc.1"
-source = "git+https://github.com/velocity-exchange/anchor.git?rev=b005890d9351a17a8061811662c44d781a04baf0#b005890d9351a17a8061811662c44d781a04baf0"
+source = "git+https://github.com/otter-sec/anchor.git?rev=abacd0e9362d957e7da779fa81b1a10dd9480b28#abacd0e9362d957e7da779fa81b1a10dd9480b28"
 dependencies = [
  "anchor-derive-accounts",
  "bytemuck",
@@ -191,7 +191,7 @@ dependencies = [
 [[package]]
 name = "anchor-lang-idl"
 version = "0.2.0"
-source = "git+https://github.com/velocity-exchange/anchor.git?rev=b005890d9351a17a8061811662c44d781a04baf0#b005890d9351a17a8061811662c44d781a04baf0"
+source = "git+https://github.com/otter-sec/anchor.git?rev=abacd0e9362d957e7da779fa81b1a10dd9480b28#abacd0e9362d957e7da779fa81b1a10dd9480b28"
 dependencies = [
  "anchor-lang-idl-spec",
  "anyhow",
@@ -204,7 +204,7 @@ dependencies = [
 [[package]]
 name = "anchor-lang-idl-spec"
 version = "0.1.0"
-source = "git+https://github.com/velocity-exchange/anchor.git?rev=b005890d9351a17a8061811662c44d781a04baf0#b005890d9351a17a8061811662c44d781a04baf0"
+source = "git+https://github.com/otter-sec/anchor.git?rev=abacd0e9362d957e7da779fa81b1a10dd9480b28#abacd0e9362d957e7da779fa81b1a10dd9480b28"
 dependencies = [
  "anyhow",
  "serde",
@@ -213,7 +213,7 @@ dependencies = [
 [[package]]
 name = "anchor-v2-testing"
 version = "0.1.0"
-source = "git+https://github.com/velocity-exchange/anchor.git?rev=b005890d9351a17a8061811662c44d781a04baf0#b005890d9351a17a8061811662c44d781a04baf0"
+source = "git+https://github.com/otter-sec/anchor.git?rev=abacd0e9362d957e7da779fa81b1a10dd9480b28#abacd0e9362d957e7da779fa81b1a10dd9480b28"
 dependencies = [
  "litesvm",
  "solana-keypair",
@@ -2119,7 +2119,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 [[package]]
 name = "relay-spec"
 version = "0.1.0"
-source = "git+https://github.com/velocity-exchange/relay?rev=e4b1115#e4b11156d83ea469041a80d281103de5c8e1797d"
+source = "git+https://github.com/velocity-exchange/relay?rev=a6c958b#a6c958b660491cb1ce893d4cb3256d80e5bb50e6"
 dependencies = [
  "anchor-lang",
  "bytemuck",

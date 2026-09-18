@@ -18,7 +18,7 @@ profile = ["anchor-v2-testing/profile"]
 
 [dependencies]
 # Anchor v2 alpha (anchor-next). Pinned to an exact rev — the alpha branch moves.
-anchor-lang = { git = "https://github.com/velocity-exchange/anchor.git", rev = "b005890d9351a17a8061811662c44d781a04baf0" }
+anchor-lang = { git = "https://github.com/otter-sec/anchor.git", rev = "abacd0e9362d957e7da779fa81b1a10dd9480b28" }
 bytemuck = { version = "1", features = ["derive", "min_const_generics"] }
 static_assertions = "1.1.0"
 wincode = { version = "0.6", features = ["derive"] }
@@ -29,7 +29,7 @@ wincode = { version = "0.6", features = ["derive"] }
 quoter-spec = { package = "quoter-spec-v2", path = "../../../crates/quoter-spec-v2" }
 
 [dev-dependencies]
-anchor-v2-testing = { git = "https://github.com/velocity-exchange/anchor.git", rev = "b005890d9351a17a8061811662c44d781a04baf0" }
+anchor-v2-testing = { git = "https://github.com/otter-sec/anchor.git", rev = "abacd0e9362d957e7da779fa81b1a10dd9480b28" }
 litesvm = "0.13.1"
 solana-clock = "3"
 solana-pubkey = "3.0"

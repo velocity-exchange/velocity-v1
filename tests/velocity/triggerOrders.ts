@@ -34,16 +34,18 @@ import {
 	QUOTE_PRECISION,
 	ZERO,
 } from '../../packages/sdk';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 
 describe('trigger orders', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 
 	let fillerVelocityClient: TestClient;
 	let fillerVelocityClientUser: User;
@@ -69,25 +71,25 @@ describe('trigger orders', () => {
 	let oracleInfos;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = startLiteSVM();
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			1
 		);
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			svmContextWrapper
 		);
 
 		solUsd = await mockOracleNoProgram(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			1,
 			-7,
 			undefined,
@@ -103,8 +105,8 @@ describe('trigger orders', () => {
 		];
 
 		fillerVelocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: svmContextWrapper.connection.toConnection(),
+			wallet: svmContextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -172,7 +174,7 @@ describe('trigger orders', () => {
 			ammInitialBaseAssetReserve,
 			ammInitialQuoteAssetReserve
 		);
-		await setFeedPriceNoProgram(bankrunContextWrapper, 1, solUsd, 10000);
+		await setFeedPriceNoProgram(svmContextWrapper, 1, solUsd, 10000);
 	});
 
 	after(async () => {
@@ -182,16 +184,16 @@ describe('trigger orders', () => {
 
 	it('stop market for long', async () => {
 		const keypair = new Keypair();
-		await bankrunContextWrapper.fundKeypair(keypair, 10 ** 9);
+		await svmContextWrapper.fundKeypair(keypair, 10 ** 9);
 		const wallet = new Wallet(keypair);
 		const userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper,
+			svmContextWrapper,
 			keypair.publicKey
 		);
 		const velocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
+			connection: svmContextWrapper.connection.toConnection(),
 			wallet: wallet,
 			programID: chProgram.programId,
 			opts: {
@@ -262,7 +264,7 @@ describe('trigger orders', () => {
 			new BN(newOraclePrice * PRICE_PRECISION.toNumber())
 		);
 		await setFeedPriceNoProgram(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			newOraclePrice,
 			solUsd,
 			10000
@@ -293,16 +295,16 @@ describe('trigger orders', () => {
 
 	it('stop limit for long', async () => {
 		const keypair = new Keypair();
-		await bankrunContextWrapper.fundKeypair(keypair, 10 ** 9);
+		await svmContextWrapper.fundKeypair(keypair, 10 ** 9);
 		const wallet = new Wallet(keypair);
 		const userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper,
+			svmContextWrapper,
 			keypair.publicKey
 		);
 		const velocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
+			connection: svmContextWrapper.connection.toConnection(),
 			wallet: wallet,
 			programID: chProgram.programId,
 			opts: {
@@ -376,7 +378,7 @@ describe('trigger orders', () => {
 			new BN(newOraclePrice * PRICE_PRECISION.toNumber())
 		);
 		await setFeedPriceNoProgram(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			newOraclePrice,
 			solUsd,
 			10000
@@ -407,16 +409,16 @@ describe('trigger orders', () => {
 
 	it('stop market for short', async () => {
 		const keypair = new Keypair();
-		await bankrunContextWrapper.fundKeypair(keypair, 10 ** 9);
+		await svmContextWrapper.fundKeypair(keypair, 10 ** 9);
 		const wallet = new Wallet(keypair);
 		const userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper,
+			svmContextWrapper,
 			keypair.publicKey
 		);
 		const velocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
+			connection: svmContextWrapper.connection.toConnection(),
 			wallet: wallet,
 			programID: chProgram.programId,
 			opts: {
@@ -487,7 +489,7 @@ describe('trigger orders', () => {
 			new BN(newOraclePrice * PRICE_PRECISION.toNumber())
 		);
 		await setFeedPriceNoProgram(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			newOraclePrice,
 			solUsd,
 			10000
@@ -518,16 +520,16 @@ describe('trigger orders', () => {
 
 	it('stop limit for short', async () => {
 		const keypair = new Keypair();
-		await bankrunContextWrapper.fundKeypair(keypair, 10 ** 9);
+		await svmContextWrapper.fundKeypair(keypair, 10 ** 9);
 		const wallet = new Wallet(keypair);
 		const userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper,
+			svmContextWrapper,
 			keypair.publicKey
 		);
 		const velocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
+			connection: svmContextWrapper.connection.toConnection(),
 			wallet: wallet,
 			programID: chProgram.programId,
 			opts: {
@@ -609,7 +611,7 @@ describe('trigger orders', () => {
 			new BN(newOraclePrice * PRICE_PRECISION.toNumber())
 		);
 		await setFeedPriceNoProgram(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			newOraclePrice,
 			solUsd,
 			10000
@@ -649,16 +651,16 @@ describe('trigger orders', () => {
 
 	it('take profit for long', async () => {
 		const keypair = new Keypair();
-		await bankrunContextWrapper.fundKeypair(keypair, 10 ** 9);
+		await svmContextWrapper.fundKeypair(keypair, 10 ** 9);
 		const wallet = new Wallet(keypair);
 		const userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper,
+			svmContextWrapper,
 			keypair.publicKey
 		);
 		const velocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
+			connection: svmContextWrapper.connection.toConnection(),
 			wallet: wallet,
 			programID: chProgram.programId,
 			opts: {
@@ -728,7 +730,7 @@ describe('trigger orders', () => {
 			ammInitialBaseAssetReserve.div(new BN(2)),
 			ammInitialQuoteAssetReserve
 		);
-		await setFeedPriceNoProgram(bankrunContextWrapper, 2.01, solUsd, 10000);
+		await setFeedPriceNoProgram(svmContextWrapper, 2.01, solUsd, 10000);
 
 		await fillerVelocityClient.triggerOrder(
 			await velocityClientUser.getUserAccountPublicKey(),
@@ -755,16 +757,16 @@ describe('trigger orders', () => {
 
 	it('take profit limit for long', async () => {
 		const keypair = new Keypair();
-		await bankrunContextWrapper.fundKeypair(keypair, 10 ** 9);
+		await svmContextWrapper.fundKeypair(keypair, 10 ** 9);
 		const wallet = new Wallet(keypair);
 		const userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper,
+			svmContextWrapper,
 			keypair.publicKey
 		);
 		const velocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
+			connection: svmContextWrapper.connection.toConnection(),
 			wallet: wallet,
 			programID: chProgram.programId,
 			opts: {
@@ -838,7 +840,7 @@ describe('trigger orders', () => {
 			new BN(newOraclePrice * PRICE_PRECISION.toNumber())
 		);
 		await setFeedPriceNoProgram(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			newOraclePrice,
 			solUsd,
 			10000
@@ -869,16 +871,16 @@ describe('trigger orders', () => {
 
 	it('take profit for short', async () => {
 		const keypair = new Keypair();
-		await bankrunContextWrapper.fundKeypair(keypair, 10 ** 9);
+		await svmContextWrapper.fundKeypair(keypair, 10 ** 9);
 		const wallet = new Wallet(keypair);
 		const userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper,
+			svmContextWrapper,
 			keypair.publicKey
 		);
 		const velocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
+			connection: svmContextWrapper.connection.toConnection(),
 			wallet: wallet,
 			programID: chProgram.programId,
 			opts: {
@@ -948,7 +950,7 @@ describe('trigger orders', () => {
 			ammInitialBaseAssetReserve.mul(new BN(2)),
 			ammInitialQuoteAssetReserve
 		);
-		await setFeedPriceNoProgram(bankrunContextWrapper, 0.49, solUsd, 10000);
+		await setFeedPriceNoProgram(svmContextWrapper, 0.49, solUsd, 10000);
 
 		await fillerVelocityClient.triggerOrder(
 			await velocityClientUser.getUserAccountPublicKey(),
@@ -975,16 +977,16 @@ describe('trigger orders', () => {
 
 	it('take profit limit for short', async () => {
 		const keypair = new Keypair();
-		await bankrunContextWrapper.fundKeypair(keypair, 10 ** 9);
+		await svmContextWrapper.fundKeypair(keypair, 10 ** 9);
 		const wallet = new Wallet(keypair);
 		const userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper,
+			svmContextWrapper,
 			keypair.publicKey
 		);
 		const velocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
+			connection: svmContextWrapper.connection.toConnection(),
 			wallet: wallet,
 			programID: chProgram.programId,
 			opts: {
@@ -1058,7 +1060,7 @@ describe('trigger orders', () => {
 			new BN(newOraclePrice * PRICE_PRECISION.toNumber())
 		);
 		await setFeedPriceNoProgram(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			newOraclePrice,
 			solUsd,
 			10000

@@ -2,7 +2,7 @@
 
 if [ "$1" != "--skip-build" ]
   then
-    anchor build -- --features anchor-test && anchor test --skip-build &&
+    bash deploy-scripts/build-sbf.sh test && bun run program:idl &&
     cp target/idl/velocity.json packages/sdk/src/idl/
 fi
 

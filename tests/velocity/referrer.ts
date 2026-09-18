@@ -39,9 +39,11 @@ import {
 	PositionDirection,
 } from '../../packages/sdk/src';
 import { decodeName } from '../../packages/sdk/src/userName';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 
 // `calculate_taker_fee` ceils the tier fee with `safe_div_ceil`, and each referral
 // proportion then floors. This helper mirrors both. Without that, the expectation
@@ -72,7 +74,7 @@ describe('referrer', () => {
 
 	let escrowMap: RevenueShareEscrowMap;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 
 	let usdcMint;
 	let referrerUSDCAccount;
@@ -91,32 +93,32 @@ describe('referrer', () => {
 	const usdcAmount = new BN(100 * 10 ** 6);
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = startLiteSVM();
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			1
 		);
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			chProgram
 		);
 
 		await eventSubscriber.subscribe();
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
 		referrerUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			svmContextWrapper
 		);
 
 		solOracle = await mockOracleNoProgram(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			100,
 			-7,
 			undefined,
@@ -132,8 +134,8 @@ describe('referrer', () => {
 			},
 		];
 		referrerVelocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: svmContextWrapper.connection.toConnection(),
+			wallet: svmContextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -174,16 +176,16 @@ describe('referrer', () => {
 			referrerUSDCAccount.publicKey
 		);
 
-		refereeKeyPair = await createFundedKeyPair(bankrunContextWrapper);
+		refereeKeyPair = await createFundedKeyPair(svmContextWrapper);
 		refereeUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper,
+			svmContextWrapper,
 			refereeKeyPair.publicKey
 		);
 
 		refereeVelocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
+			connection: svmContextWrapper.connection.toConnection(),
 			wallet: new Wallet(refereeKeyPair),
 			programID: chProgram.programId,
 			opts: {
@@ -203,7 +205,7 @@ describe('referrer', () => {
 		await refereeVelocityClient.subscribe();
 
 		[fillerVelocityClient] = await createUserWithUSDCAccount(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			usdcMint,
 			chProgram,
 			usdcAmount,
@@ -227,7 +229,7 @@ describe('referrer', () => {
 		// ACCELERATED_REFERRAL_ENROLLMENT_ENABLED is a compile-time constant, so the
 		// program enrolls every new account. There is no runtime switch.
 		const [acceleratedClient] = await createUserWithUSDCAccount(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			usdcMint,
 			chProgram,
 			usdcAmount,
@@ -292,7 +294,7 @@ describe('referrer', () => {
 		const newUserRecord = eventSubscriber.getEventsArray('NewUserRecord')[0];
 		assert(
 			newUserRecord.referrer.equals(
-				bankrunContextWrapper.provider.wallet.publicKey
+				svmContextWrapper.provider.wallet.publicKey
 			)
 		);
 
@@ -300,7 +302,7 @@ describe('referrer', () => {
 		const refereeStats = refereeVelocityClient.getUserStats().getAccount();
 		assert(
 			refereeStats.referrer.equals(
-				bankrunContextWrapper.provider.wallet.publicKey
+				svmContextWrapper.provider.wallet.publicKey
 			)
 		);
 		assert((refereeStats.referrerStatus & ReferrerStatus.IsReferred) > 0);
@@ -314,7 +316,7 @@ describe('referrer', () => {
 			referrerVelocityClient.wallet.publicKey
 		);
 
-		const accountInfo = await bankrunContextWrapper.connection.getAccountInfo(
+		const accountInfo = await svmContextWrapper.connection.getAccountInfo(
 			getRevenueShareAccountPublicKey(
 				referrerVelocityClient.program.programId,
 				referrerVelocityClient.wallet.publicKey
@@ -341,9 +343,9 @@ describe('referrer', () => {
 		// forever. That authority then earns no referral reward, and no instruction
 		// repairs the field. Anyone can pay for anyone's escrow, because the
 		// authority does not sign, so the program must close the window itself.
-		const strandedKeyPair = await createFundedKeyPair(bankrunContextWrapper);
+		const strandedKeyPair = await createFundedKeyPair(svmContextWrapper);
 		const strandedClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
+			connection: svmContextWrapper.connection.toConnection(),
 			wallet: new Wallet(strandedKeyPair),
 			programID: chProgram.programId,
 			opts: {
@@ -495,7 +497,7 @@ describe('referrer', () => {
 
 		// Snapshot the referrer's RevenueShare before settle.
 		const revShareBeforeInfo =
-			await bankrunContextWrapper.connection.getAccountInfo(
+			await svmContextWrapper.connection.getAccountInfo(
 				getRevenueShareAccountPublicKey(
 					referrerVelocityClient.program.programId,
 					referrerVelocityClient.wallet.publicKey
@@ -507,7 +509,7 @@ describe('referrer', () => {
 				revShareBeforeInfo.data
 			);
 
-		await bankrunContextWrapper.moveTimeForward(100);
+		await svmContextWrapper.moveTimeForward(100);
 
 		// Settle the referee's pnl; the escrow map drives the SDK to include the
 		// referrer's User + RevenueShare accounts so the sweep can credit them.
@@ -537,7 +539,7 @@ describe('referrer', () => {
 
 		// Referrer's RevenueShare.totalReferrerRewards increased by the reward.
 		const revShareAfterInfo =
-			await bankrunContextWrapper.connection.getAccountInfo(
+			await svmContextWrapper.connection.getAccountInfo(
 				getRevenueShareAccountPublicKey(
 					referrerVelocityClient.program.programId,
 					referrerVelocityClient.wallet.publicKey

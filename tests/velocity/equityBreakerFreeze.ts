@@ -40,9 +40,11 @@ import {
 	mockUserUSDCAccount,
 	setFeedPriceNoProgram,
 } from './testHelpers';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 
 // EquityBelowFloor
 const EQUITY_BELOW_FLOOR_HEX = '0x18d6';
@@ -62,7 +64,7 @@ describe('equity breaker freeze', () => {
 	let eventSubscriber: EventSubscriber;
 
 	let bulkAccountLoader: TestBulkAccountLoader;
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 
 	let usdcMint;
 	let adminUSDCAccount;
@@ -96,31 +98,31 @@ describe('equity breaker freeze', () => {
 	let victimPublicKey: PublicKey;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = startLiteSVM();
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			1
 		);
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			chProgram
 		);
 		await eventSubscriber.subscribe();
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
 		adminUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			svmContextWrapper
 		);
 
-		perpOracle = await mockOracleNoProgram(bankrunContextWrapper, 100);
-		solSpotOracle = await mockOracleNoProgram(bankrunContextWrapper, 100);
+		perpOracle = await mockOracleNoProgram(svmContextWrapper, 100);
+		solSpotOracle = await mockOracleNoProgram(svmContextWrapper, 100);
 
 		marketIndexes = [0];
 		spotMarketIndexes = [0, 1];
@@ -130,8 +132,8 @@ describe('equity breaker freeze', () => {
 		];
 
 		adminVelocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: svmContextWrapper.connection.toConnection(),
+			wallet: svmContextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -176,7 +178,7 @@ describe('equity breaker freeze', () => {
 		let trippedUSDC: PublicKey;
 		[trippedClient, trippedWSOL, trippedUSDC] =
 			await createUserWithUSDCAndWSOLAccount(
-				bankrunContextWrapper,
+				svmContextWrapper,
 				usdcMint,
 				chProgram,
 				solAmount,
@@ -195,7 +197,7 @@ describe('equity breaker freeze', () => {
 		await trippedClient.switchActiveUser(0);
 
 		[victimClient] = await createUserWithUSDCAccount(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			usdcMint,
 			chProgram,
 			usdcAmount,
@@ -428,7 +430,7 @@ describe('equity breaker freeze', () => {
 					const account = await mockUserUSDCAccount(
 						usdcMint,
 						ZERO,
-						bankrunContextWrapper,
+						svmContextWrapper,
 						trippedClient.wallet.publicKey
 					);
 					return account.publicKey;
@@ -487,7 +489,7 @@ describe('equity breaker freeze', () => {
 		// floor. The transfer must reject on the recipient's floor as well as the
 		// sender's (OtterSec #57). This uses a fresh, untripped authority.
 		const [transferClient, transferUSDC] = await createUserWithUSDCAccount(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			usdcMint,
 			chProgram,
 			usdcAmount,
@@ -500,7 +502,7 @@ describe('equity breaker freeze', () => {
 
 		// Re-stamp the perp oracle. Enough slots have passed for it to read
 		// stale-for-amm, which withholds the AMM fill below.
-		await setFeedPriceNoProgram(bankrunContextWrapper, 100, perpOracle);
+		await setFeedPriceNoProgram(svmContextWrapper, 100, perpOracle);
 
 		// sub 0 opens the position to transfer (fills against the AMM)
 		await transferClient.placeAndTakePerpOrder(

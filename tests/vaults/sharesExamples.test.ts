@@ -1,8 +1,11 @@
 import * as anchor from '@coral-xyz/anchor';
 import { BN, Program } from '@coral-xyz/anchor';
 import { expect } from 'chai';
-import { BankrunContextWrapper } from './common/bankrunConnection';
-import { startAnchor } from 'solana-bankrun';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+	LiteSVMProvider,
+} from './common/litesvmConnection';
 import {
 	VaultClient,
 	getVaultAddressSync,
@@ -27,16 +30,15 @@ import {
 } from '@velocity-exchange/sdk';
 import { TestBulkAccountLoader } from './common/testBulkAccountLoader';
 import {
-	bootstrapSignerClientAndUserBankrun,
+	bootstrapSignerClientAndUser,
 	initializeQuoteSpotMarket,
 	initializeSolSpotMarket,
-	mockUSDCMintBankrun,
+	mockUSDCMint,
 	printTxLogs,
 } from './common/testHelpers';
-import { readUnsignedBigInt64LE } from './common/bankrunHelpers';
+import { readUnsignedBigInt64LE } from './common/svmHelpers';
 import { Keypair } from '@solana/web3.js';
-import { mockOracleNoProgram } from './common/bankrunOracle';
-import { BankrunProvider } from 'anchor-bankrun';
+import { mockOracleNoProgram } from './common/svmOracle';
 
 // ammInvariant == k == x * y
 const mantissaSqrtScale = new BN(100_000);
@@ -48,7 +50,7 @@ describe('velocityVaults', () => {
 	const initialSolPerpPrice = 100;
 	let adminVelocityClient: TestClient;
 	let bulkAccountLoader: TestBulkAccountLoader;
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 	let usdcMint: Keypair;
 
 	const vaultName = 'fuel distribution vault';
@@ -79,29 +81,29 @@ describe('velocityVaults', () => {
 	let solPerpOracle: PublicKey;
 
 	beforeEach(async () => {
-		const context = await startAnchor('', [], []);
+		const context = startLiteSVM();
 
 		// wrap the context to use it with the test helpers
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
-		vaultProgram = new Program<Vaults>(IDL, bankrunContextWrapper.provider);
+		vaultProgram = new Program<Vaults>(IDL, svmContextWrapper.provider);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			'processed',
 			1
 		);
 
-		usdcMint = await mockUSDCMintBankrun(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
 
 		solPerpOracle = await mockOracleNoProgram(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			initialSolPerpPrice
 		);
 
 		adminVelocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: svmContextWrapper.connection.toConnection(),
+			wallet: svmContextWrapper.provider.wallet,
 			programID: new PublicKey(VELOCITY_PROGRAM_ID),
 			opts: {
 				commitment: 'confirmed',
@@ -136,8 +138,8 @@ describe('velocityVaults', () => {
 
 		await adminVelocityClient.fetchAccounts();
 
-		const managerBootstrap = await bootstrapSignerClientAndUserBankrun({
-			bankrunContext: bankrunContextWrapper,
+		const managerBootstrap = await bootstrapSignerClientAndUser({
+			svmContext: svmContextWrapper,
 			programId: VAULT_PROGRAM_ID,
 			signer: managerSigner,
 			usdcMint: usdcMint,
@@ -160,8 +162,8 @@ describe('velocityVaults', () => {
 		managerClient = managerBootstrap.vaultClient;
 		managerVelocityClient = managerBootstrap.velocityClient;
 
-		const provider = new BankrunProvider(
-			bankrunContextWrapper.context,
+		const provider = new LiteSVMProvider(
+			svmContextWrapper.context,
 			adminVelocityClient.wallet as anchor.Wallet
 		);
 		const program = new Program(IDL, provider);
@@ -172,8 +174,8 @@ describe('velocityVaults', () => {
 			program,
 		});
 
-		const user1Bootstrap = await bootstrapSignerClientAndUserBankrun({
-			bankrunContext: bankrunContextWrapper,
+		const user1Bootstrap = await bootstrapSignerClientAndUser({
+			svmContext: svmContextWrapper,
 			programId: VAULT_PROGRAM_ID,
 			signer: user1Signer,
 			usdcMint: usdcMint,
@@ -202,8 +204,8 @@ describe('velocityVaults', () => {
 			user1Signer.publicKey
 		);
 
-		const user2Bootstrap = await bootstrapSignerClientAndUserBankrun({
-			bankrunContext: bankrunContextWrapper,
+		const user2Bootstrap = await bootstrapSignerClientAndUser({
+			svmContext: svmContextWrapper,
 			programId: VAULT_PROGRAM_ID,
 			signer: user2Signer,
 			usdcMint: usdcMint,
@@ -280,7 +282,7 @@ describe('velocityVaults', () => {
 			{ noLut: true },
 			user1UserUSDCAccount
 		);
-		await bankrunContextWrapper.moveTimeForward(1000);
+		await svmContextWrapper.moveTimeForward(1000);
 
 		let vault = await user1Client.program.account.vault.fetch(commonVaultKey);
 		// console.log(vault.totalShares.toString());
@@ -308,7 +310,7 @@ describe('velocityVaults', () => {
 			{ noLut: true },
 			user2UserUSDCAccount
 		);
-		await bankrunContextWrapper.moveTimeForward(1000);
+		await svmContextWrapper.moveTimeForward(1000);
 
 		vault = await user2Client.program.account.vault.fetch(commonVaultKey);
 		// console.log('vault total shares', vault.totalShares.toString());
@@ -332,7 +334,7 @@ describe('velocityVaults', () => {
 		// console.log(vault.user);
 
 		const updateVaultUserBalance = async (numerator: BN, denominator: BN) => {
-			const vaultUser = await bankrunContextWrapper.connection.getAccountInfo(
+			const vaultUser = await svmContextWrapper.connection.getAccountInfo(
 				vault.user
 			);
 			const userBuffer = Buffer.from(vaultUser!.data!);
@@ -342,7 +344,7 @@ describe('velocityVaults', () => {
 				104
 			);
 
-			bankrunContextWrapper.context.setAccount(vault.user, {
+			svmContextWrapper.context.setAccount(vault.user, {
 				executable: vaultUser!.executable,
 				owner: vaultUser!.owner,
 				lamports: vaultUser!.lamports,
@@ -418,13 +420,13 @@ describe('velocityVaults', () => {
 			{ noLut: true }
 		);
 		await printTxLogs(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			tx0,
 			true,
 			// @ts-ignore
 			user1Client.program
 		);
-		await bankrunContextWrapper.moveTimeForward(1000);
+		await svmContextWrapper.moveTimeForward(1000);
 
 		// vault -50%
 		await updateVaultUserBalance(new BN(50), new BN(100));
@@ -433,13 +435,13 @@ describe('velocityVaults', () => {
 			address: commonVaultKey,
 		});
 		expect(vaultEquity.toString()).to.equal('163350000000');
-		await bankrunContextWrapper.moveTimeForward(1000);
+		await svmContextWrapper.moveTimeForward(1000);
 
 		await user1Client.syncVaultUsers();
 		await user1VelocityClient.fetchAccounts();
 		const tx = await user1Client.withdraw(user1VaultDepositor, { noLut: true });
 		await printTxLogs(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			tx,
 			true,
 			// @ts-ignore

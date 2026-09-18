@@ -51,9 +51,11 @@ import {
 	mockUserUSDCAccount,
 } from './testHelpers';
 import { PEG_PRECISION, PostOnlyParams } from '../../packages/sdk/src';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 import dotenv from 'dotenv';
 import { nanoid } from 'nanoid';
 import { createHash } from 'crypto';
@@ -83,8 +85,8 @@ const PYTH_STORAGE_ACCOUNT_INFO: AccountInfo<Buffer> = {
  * instruction. A signed-message order routes when it is placed and rests what
  * it cannot fill on the market's CLOB. `place_signed_msg_taker_order` therefore
  * carries the book's accounts and fails without them. Attaching a book here
- * needs the CLOB program on chain, and `solana-bankrun@0.4.0` cannot execute
- * it. The CLOB is built against `anchor-lang-v2`, whose runtime this bankrun
+ * needs the CLOB program on chain, and `solana-LiteSVM@0.4.0` cannot execute
+ * it. The CLOB is built against `anchor-lang-v2`, whose runtime this LiteSVM
  * predates, so the program fails at entry with an access violation. The same
  * `.so` runs under litesvm.
  *
@@ -92,7 +94,7 @@ const PYTH_STORAGE_ACCOUNT_INFO: AccountInfo<Buffer> = {
  * migration and the taker-origin auction against a real book. This file's
  * signed-message format coverage is what is lost. That is the delegate
  * encoding, the parameter sanitization and the malicious-sub-account case. To
- * restore it, move this suite off bankrun 0.4.0 or port these cases to litesvm.
+ * restore it, move this suite off LiteSVM 0.4.0 or port these cases to litesvm.
  */
 describe.skip('place and make signedMsg order', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
@@ -105,7 +107,7 @@ describe.skip('place and make signedMsg order', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 
 	// ammInvariant == k == x * y
 	const mantissaSqrtScale = new BN(Math.sqrt(PRICE_PRECISION.toNumber()));
@@ -128,46 +130,44 @@ describe.skip('place and make signedMsg order', () => {
 	let oracleInfos;
 
 	before(async () => {
-		const context = await startAnchor(
-			'',
-			[],
-			[
+		const context = startLiteSVM({
+			accounts: [
 				{
 					address: PYTH_LAZER_STORAGE_ACCOUNT_KEY,
 					info: PYTH_STORAGE_ACCOUNT_INFO,
 				},
-			]
-		);
+			],
+		});
 
 		// @ts-ignore
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
 		slot = new BN(
-			await bankrunContextWrapper.connection.toConnection().getSlot()
+			await svmContextWrapper.connection.toConnection().getSlot()
 		);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			1
 		);
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			// @ts-ignore
 			chProgram
 		);
 
 		await eventSubscriber.subscribe();
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			svmContextWrapper
 		);
 
-		solUsd = await mockOracleNoProgram(bankrunContextWrapper, 84);
+		solUsd = await mockOracleNoProgram(svmContextWrapper, 84);
 		solUsdLazer = getPythLazerOraclePublicKey(chProgram.programId, 6);
 
 		marketIndexes = [0];
@@ -178,8 +178,8 @@ describe.skip('place and make signedMsg order', () => {
 		];
 
 		makerVelocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: svmContextWrapper.connection.toConnection(),
+			wallet: svmContextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -233,11 +233,11 @@ describe.skip('place and make signedMsg order', () => {
 
 	it('should work with delegates', async () => {
 		const slot = new BN(
-			await bankrunContextWrapper.connection.toConnection().getSlot()
+			await svmContextWrapper.connection.toConnection().getSlot()
 		);
 		const [takerVelocityClient, takerVelocityClientUser] =
 			await initializeNewTakerClientAndUser(
-				bankrunContextWrapper,
+				svmContextWrapper,
 				chProgram,
 				usdcMint,
 				usdcAmount,
@@ -320,19 +320,19 @@ describe.skip('place and make signedMsg order', () => {
 
 	it('should work with pyth lazer crank and filling against vamm in one tx', async () => {
 		const slot = new BN(
-			await bankrunContextWrapper.connection.toConnection().getSlot()
+			await svmContextWrapper.connection.toConnection().getSlot()
 		);
 
 		// Switch the oracle over to using pyth lazer
 		await makerVelocityClient.initializePythLazerOracle(6);
 		await makerVelocityClient.postPythLazerOracleUpdate(
 			[6],
-			freshLazerSolHex(bankrunContextWrapper.connection.getTime())
+			freshLazerSolHex(svmContextWrapper.connection.getTime())
 		);
 
 		await makerVelocityClient.postPythLazerOracleUpdate(
 			[6],
-			freshLazerSolHex(bankrunContextWrapper.connection.getTime())
+			freshLazerSolHex(svmContextWrapper.connection.getTime())
 		);
 		await makerVelocityClient.updatePerpMarketOracle(
 			0,
@@ -377,7 +377,7 @@ describe.skip('place and make signedMsg order', () => {
 
 		const [takerVelocityClient, takerVelocityClientUser] =
 			await initializeNewTakerClientAndUser(
-				bankrunContextWrapper,
+				svmContextWrapper,
 				chProgram,
 				usdcMint,
 				usdcAmount,
@@ -423,7 +423,7 @@ describe.skip('place and make signedMsg order', () => {
 			// under PYTH_LAZER_MAX_FUTURE_SECONDS, which the program enforces.
 			await makerVelocityClient.getPostPythLazerOracleUpdateIxs(
 				[6],
-				freshLazerSolHex(bankrunContextWrapper.connection.getTime(), 10),
+				freshLazerSolHex(svmContextWrapper.connection.getTime(), 10),
 				undefined,
 				1
 			);
@@ -492,7 +492,7 @@ describe.skip('place and make signedMsg order', () => {
 		});
 
 		const lookupTableAccount = (
-			await bankrunContextWrapper.connection.getAddressLookupTable(
+			await svmContextWrapper.connection.getAddressLookupTable(
 				lookupTableAddress
 			)
 		).value;
@@ -514,7 +514,7 @@ describe.skip('place and make signedMsg order', () => {
 
 	it.skip('should not fill against the vamm if the user is toxic', async () => {
 		const slot = new BN(
-			await bankrunContextWrapper.connection.toConnection().getSlot()
+			await svmContextWrapper.connection.toConnection().getSlot()
 		);
 
 		const [lookupTableInst, lookupTableAddress] =
@@ -554,7 +554,7 @@ describe.skip('place and make signedMsg order', () => {
 
 		const [takerVelocityClient, takerVelocityClientUser] =
 			await initializeNewTakerClientAndUser(
-				bankrunContextWrapper,
+				svmContextWrapper,
 				chProgram,
 				usdcMint,
 				usdcAmount,
@@ -574,7 +574,7 @@ describe.skip('place and make signedMsg order', () => {
 			chProgram.programId,
 			takerVelocityClient.wallet.publicKey
 		);
-		const userStatsData = await bankrunContextWrapper.connection.getAccountInfo(
+		const userStatsData = await svmContextWrapper.connection.getAccountInfo(
 			userStatsPubkey
 		);
 		const userStats: UserStatsAccount =
@@ -686,7 +686,7 @@ describe.skip('place and make signedMsg order', () => {
 		});
 
 		const lookupTableAccount = (
-			await bankrunContextWrapper.connection.getAddressLookupTable(
+			await svmContextWrapper.connection.getAddressLookupTable(
 				lookupTableAddress
 			)
 		).value;
@@ -708,11 +708,11 @@ describe.skip('place and make signedMsg order', () => {
 
 	it('should succeed if taker order is a limit order with an auction', async () => {
 		slot = new BN(
-			await bankrunContextWrapper.connection.toConnection().getSlot()
+			await svmContextWrapper.connection.toConnection().getSlot()
 		);
 		const [takerVelocityClient, takerVelocityClientUser] =
 			await initializeNewTakerClientAndUser(
-				bankrunContextWrapper,
+				svmContextWrapper,
 				chProgram,
 				usdcMint,
 				usdcAmount,
@@ -771,7 +771,7 @@ describe.skip('place and make signedMsg order', () => {
 		} catch (e) {
 			assert(e);
 		}
-		await bankrunContextWrapper.moveTimeForward(10);
+		await svmContextWrapper.moveTimeForward(10);
 
 		await takerVelocityClientUser.fetchAccounts();
 		assert(
@@ -785,11 +785,11 @@ describe.skip('place and make signedMsg order', () => {
 
 	it('places a resting limit order (no auction) stamped ahead of the current slot', async () => {
 		slot = new BN(
-			await bankrunContextWrapper.connection.toConnection().getSlot()
+			await svmContextWrapper.connection.toConnection().getSlot()
 		);
 		const [takerVelocityClient, takerVelocityClientUser] =
 			await initializeNewTakerClientAndUser(
-				bankrunContextWrapper,
+				svmContextWrapper,
 				chProgram,
 				usdcMint,
 				usdcAmount,
@@ -858,11 +858,11 @@ describe.skip('place and make signedMsg order', () => {
 
 	it('rejects a resting limit order stamped too far ahead of the current slot', async () => {
 		slot = new BN(
-			await bankrunContextWrapper.connection.toConnection().getSlot()
+			await svmContextWrapper.connection.toConnection().getSlot()
 		);
 		const [takerVelocityClient, takerVelocityClientUser] =
 			await initializeNewTakerClientAndUser(
-				bankrunContextWrapper,
+				svmContextWrapper,
 				chProgram,
 				usdcMint,
 				usdcAmount,
@@ -932,11 +932,11 @@ describe.skip('place and make signedMsg order', () => {
 
 	it('still rejects an auction order stamped ahead of the current slot', async () => {
 		slot = new BN(
-			await bankrunContextWrapper.connection.toConnection().getSlot()
+			await svmContextWrapper.connection.toConnection().getSlot()
 		);
 		const [takerVelocityClient, takerVelocityClientUser] =
 			await initializeNewTakerClientAndUser(
-				bankrunContextWrapper,
+				svmContextWrapper,
 				chProgram,
 				usdcMint,
 				usdcAmount,
@@ -1011,12 +1011,12 @@ describe.skip('place and make signedMsg order', () => {
 
 	it('should work with off-chain auctions', async () => {
 		const slot = new BN(
-			await bankrunContextWrapper.connection.toConnection().getSlot()
+			await svmContextWrapper.connection.toConnection().getSlot()
 		);
 
 		const [takerVelocityClient, takerVelocityClientUser] =
 			await initializeNewTakerClientAndUser(
-				bankrunContextWrapper,
+				svmContextWrapper,
 				chProgram,
 				usdcMint,
 				usdcAmount,
@@ -1104,12 +1104,12 @@ describe.skip('place and make signedMsg order', () => {
 
 	it('should place with high-leverage mode update', async () => {
 		const slot = new BN(
-			await bankrunContextWrapper.connection.toConnection().getSlot()
+			await svmContextWrapper.connection.toConnection().getSlot()
 		);
 
 		const [takerVelocityClient, takerVelocityClientUser] =
 			await initializeNewTakerClientAndUser(
-				bankrunContextWrapper,
+				svmContextWrapper,
 				chProgram,
 				usdcMint,
 				usdcAmount,
@@ -1167,11 +1167,11 @@ describe.skip('place and make signedMsg order', () => {
 
 	it('should fail if auction params are not set', async () => {
 		slot = new BN(
-			await bankrunContextWrapper.connection.toConnection().getSlot()
+			await svmContextWrapper.connection.toConnection().getSlot()
 		);
 		const [takerVelocityClient, takerVelocityClientUser] =
 			await initializeNewTakerClientAndUser(
-				bankrunContextWrapper,
+				svmContextWrapper,
 				chProgram,
 				usdcMint,
 				usdcAmount,
@@ -1232,11 +1232,11 @@ describe.skip('place and make signedMsg order', () => {
 
 	it('should verify that auction params are not sanitized', async () => {
 		const slot = new BN(
-			await bankrunContextWrapper.connection.toConnection().getSlot()
+			await svmContextWrapper.connection.toConnection().getSlot()
 		);
 		const [takerVelocityClient, takerVelocityClientUser] =
 			await initializeNewTakerClientAndUser(
-				bankrunContextWrapper,
+				svmContextWrapper,
 				chProgram,
 				usdcMint,
 				usdcAmount,
@@ -1300,11 +1300,11 @@ describe.skip('place and make signedMsg order', () => {
 
 	it('should fail on malicious subaccount id supplied to custom ix', async () => {
 		const slot = new BN(
-			await bankrunContextWrapper.connection.toConnection().getSlot()
+			await svmContextWrapper.connection.toConnection().getSlot()
 		);
 		const [takerVelocityClient, takerVelocityClientUser] =
 			await initializeNewTakerClientAndUser(
-				bankrunContextWrapper,
+				svmContextWrapper,
 				chProgram,
 				usdcMint,
 				usdcAmount,
@@ -1393,11 +1393,11 @@ describe.skip('place and make signedMsg order', () => {
 
 	it('shouldnt work with improper delegate encoding', async () => {
 		const slot = new BN(
-			await bankrunContextWrapper.connection.toConnection().getSlot()
+			await svmContextWrapper.connection.toConnection().getSlot()
 		);
 		const [takerVelocityClient, takerVelocityClientUser] =
 			await initializeNewTakerClientAndUser(
-				bankrunContextWrapper,
+				svmContextWrapper,
 				chProgram,
 				usdcMint,
 				usdcAmount,
@@ -1497,7 +1497,7 @@ describe.skip('place and make signedMsg order', () => {
 	it('can let user delete their account', async () => {
 		const [takerVelocityClient, takerVelocityClientUser] =
 			await initializeNewTakerClientAndUser(
-				bankrunContextWrapper,
+				svmContextWrapper,
 				chProgram,
 				usdcMint,
 				usdcAmount,

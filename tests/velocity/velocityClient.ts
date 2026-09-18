@@ -31,9 +31,11 @@ import {
 	initializeQuoteSpotMarket,
 	mintUSDCToUser,
 } from './testHelpers';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 
 describe('velocity client', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
@@ -41,7 +43,7 @@ describe('velocity client', () => {
 	let velocityClient: TestClient;
 	let eventSubscriber: EventSubscriber;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
@@ -64,25 +66,25 @@ describe('velocity client', () => {
 	const usdcAmount = new BN(10 * 10 ** 6);
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = startLiteSVM();
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			1
 		);
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			svmContextWrapper
 		);
 
 		solUsd = await mockOracleNoProgram(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			1,
 			-7,
 			undefined,
@@ -90,15 +92,15 @@ describe('velocity client', () => {
 		);
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			chProgram
 		);
 
 		await eventSubscriber.subscribe();
 
 		velocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: svmContextWrapper.connection.toConnection(),
+			wallet: svmContextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -129,7 +131,7 @@ describe('velocity client', () => {
 		await velocityClient.updatePerpAuctionDuration(new BN(0));
 
 		assert.ok(
-			state.coldAdmin.equals(bankrunContextWrapper.provider.wallet.publicKey)
+			state.coldAdmin.equals(svmContextWrapper.provider.wallet.publicKey)
 		);
 
 		const expectedSigner = velocityClient.getSignerPublicKey();
@@ -156,7 +158,7 @@ describe('velocity client', () => {
 			new BN(1)
 		);
 
-		bankrunContextWrapper.connection.printTxLogs(txSig);
+		svmContextWrapper.connection.printTxLogs(txSig);
 
 		const marketPublicKey = await getPerpMarketPublicKey(
 			velocityClient.program.programId,
@@ -200,7 +202,7 @@ describe('velocity client', () => {
 		);
 
 		assert.ok(
-			user.authority.equals(bankrunContextWrapper.provider.wallet.publicKey)
+			user.authority.equals(svmContextWrapper.provider.wallet.publicKey)
 		);
 		const depositTokenAmount = velocityClient.getQuoteAssetTokenAmount();
 		assert(depositTokenAmount.eq(usdcAmount));
@@ -213,7 +215,7 @@ describe('velocity client', () => {
 
 		// Check that velocity collateral account has proper collateral
 		const quoteSpotVault =
-			await bankrunContextWrapper.connection.getTokenAccount(
+			await svmContextWrapper.connection.getTokenAccount(
 				velocityClient.getQuoteSpotMarketAccount().vault
 			);
 
@@ -229,7 +231,7 @@ describe('velocity client', () => {
 
 		assert.ok(
 			depositRecord.userAuthority.equals(
-				bankrunContextWrapper.provider.wallet.publicKey
+				svmContextWrapper.provider.wallet.publicKey
 			)
 		);
 		assert.ok(depositRecord.user.equals(userAccountPublicKey));
@@ -254,14 +256,14 @@ describe('velocity client', () => {
 
 		// Check that velocity collateral account has proper collateral]
 		const quoteSpotVault =
-			await bankrunContextWrapper.connection.getTokenAccount(
+			await svmContextWrapper.connection.getTokenAccount(
 				velocityClient.getQuoteSpotMarketAccount().vault
 			);
 
 		assert.ok(new BN(Number(quoteSpotVault.amount)).eq(ZERO));
 
 		const userUSDCtoken =
-			await bankrunContextWrapper.connection.getTokenAccount(
+			await svmContextWrapper.connection.getTokenAccount(
 				userUSDCAccount.publicKey
 			);
 		assert.ok(new BN(Number(userUSDCtoken.amount)).eq(usdcAmount));
@@ -270,7 +272,7 @@ describe('velocity client', () => {
 
 		assert.ok(
 			depositRecord.userAuthority.equals(
-				bankrunContextWrapper.provider.wallet.publicKey
+				svmContextWrapper.provider.wallet.publicKey
 			)
 		);
 		assert.ok(depositRecord.user.equals(userAccountPublicKey));
@@ -297,11 +299,11 @@ describe('velocity client', () => {
 			baseAssetAmount,
 			marketIndex
 		);
-		bankrunContextWrapper.connection.printTxLogs(txSig);
+		svmContextWrapper.connection.printTxLogs(txSig);
 
 		const marketData = velocityClient.getPerpMarketAccount(0);
 		await setFeedPriceNoProgram(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			1.01,
 			marketData.oracle,
 			10000
@@ -451,7 +453,7 @@ describe('velocity client', () => {
 	it('Reverse long position', async () => {
 		const marketData = velocityClient.getPerpMarketAccount(0);
 		await setFeedPriceNoProgram(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			1.0,
 			marketData.oracle,
 			10000
@@ -628,7 +630,7 @@ describe('velocity client', () => {
 			usdcMint,
 			userUSDCAccount.publicKey,
 			usdcAmount,
-			bankrunContextWrapper
+			svmContextWrapper
 		);
 
 		await bulkAccountLoader.load();

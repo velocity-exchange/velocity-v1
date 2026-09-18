@@ -24,7 +24,7 @@ are migrating from the Drift SDK, [docs/DRIFT-TO-VELOCITY.md](./docs/DRIFT-TO-VE
 | `packages/`       | Publishable npm libraries: `@velocity-exchange/sdk`, `admin-cli`, `vaults-sdk`                                                |
 | `apps/`           | Private deployable services, shipped as Docker images and never to npm: `dlob-server`, `keeper-bots-v2`, `usermap-server`     |
 | `rust/`           | A **second, separate Cargo workspace**: `velocity-rs` (Rust SDK), `keep-rs` (keeper bots), `swift` (tx server)                |
-| `tests/`          | About 70 TypeScript integration tests, on a local validator or bankrun                                                        |
+| `tests/`          | TypeScript integration tests. Nearly all run in-process on LiteSVM; a handful use a local validator                            |
 | `deploy-scripts/` | Devnet build, deploy, wipe and init runbooks. See [deploy-scripts/README.md](./deploy-scripts/README.md)                      |
 | `docs/`           | Reference docs. See [Further reading](#further-reading)                                                                       |
 
@@ -45,7 +45,8 @@ own `rust/target/`, so its split solana 4.2 crate tree never unifies with the SB
 | -------------------------- | ---------------------- | --------------------------------------------------------------------------------------------------------- |
 | Rust                       | **≥ 1.89**             | Anchor 1.0 MSRV. Develop with ≥ 1.77 so the 16-byte `u128` alignment guards are exercised locally          |
 | Rust nightly (rustfmt only) | any recent             | `rustup toolchain install nightly --component rustfmt`. Formatting only. Builds, clippy and tests stay on stable |
-| Solana platform-tools      | **≥ v1.54**            | The cargo bundled with older tools (1.84 and below) cannot parse `edition2024` dependencies. See [Troubleshooting](#troubleshooting) |
+| Solana CLI                 | **≥ 4.3**              | Needed for a `cargo-build-sbf` that can emit SBPFv3. 4.2.2 ships 4.1.0, which cannot |
+| Solana platform-tools      | **≥ v1.56**            | The SBPFv3 minimum; the repo pins v1.57. Older tools also cannot parse `edition2024` dependencies. See [Troubleshooting](#troubleshooting) |
 | Anchor CLI                 | **1.0.2**              | Matches the `anchor-lang` version pinned in the programs                                                    |
 | Bun                        | ≥ 1.x                  | The only supported JavaScript package manager here. Do not use yarn or npm                                  |
 
@@ -63,11 +64,14 @@ macOS also needs the SDK path exported for the platform-tools clang (add to your
 export SDKROOT="$(xcrun --show-sdk-path)"
 ```
 
-And upgrade the platform-tools once:
+And install the platform-tools the repo pins, once:
 
 ```bash
-cargo-build-sbf --tools-version v1.54 --force-tools-install
+cargo-build-sbf --install-only --tools-version v1.57
 ```
+
+`~/.cargo/bin` must come before `/opt/homebrew/bin` on PATH. `cargo-build-sbf` and `anchor idl build`
+both shell out to `cargo +<toolchain>`, which only works when `cargo` is the rustup shim.
 
 ## Quick start
 
@@ -86,9 +90,17 @@ cargo test -p velocity
 # build the whole TypeScript workspace (turbo, dependency order)
 bun run build
 
-# run the full integration suite (~70 files, serial; builds the .so first)
+# run the full integration suite (73 files; builds the .so first)
 bash test-scripts/run-anchor-tests.sh
+
+# same suite in one process instead of one per file: 53s -> 19s
+SINGLE_PROCESS=1 bash test-scripts/run-anchor-tests.sh --skip-build
 ```
+
+The programs build for SBPFv3, which SIMD-0500 makes the only deployable bytecode format from Agave
+v4.4 on. `deploy-scripts/build-sbf.sh` owns the bytecode version, the platform-tools version and the
+per-program feature flags, and every build path routes through it. See
+[`docs/sbpfv3-migration.md`](./docs/sbpfv3-migration.md).
 
 ## Fuzzing
 
@@ -150,8 +162,12 @@ The platform-tools clang has no built-in macOS SDK path. Fix:
 
 **`feature 'edition2024' is required ... not stabilized in this version of Cargo (1.84.0)`.**
 The bundled cargo in older platform-tools can't parse `edition2024` dependencies. Upgrade once with
-`cargo-build-sbf --tools-version v1.54 --force-tools-install`, then verify via
+`cargo-build-sbf --install-only --tools-version v1.57`, then verify via
 `cargo-build-sbf --version`.
+
+**`error: no such command: \`+stable\`` or `+1.95.0-sbpf-solana-v1.57`.**
+A homebrew cargo at `/opt/homebrew/bin/cargo` is ahead of the rustup shim on PATH and does not
+understand `+toolchain`. Put `~/.cargo/bin` first.
 
 **Runtime panic `Access violation in unknown section at address 0x...` on instructions touching
 types you didn't change.**
@@ -160,8 +176,8 @@ switching branches with different lockfiles). The cache key misses some dep-reso
 the resulting `.so` reads wrong offsets. Fix:
 
 ```bash
-rm -rf target/sbpf-solana-solana target/deploy
-cargo-build-sbf --tools-version v1.54 -- --features anchor-test
+rm -rf target/sbpf*-solana-solana target/deploy
+bash deploy-scripts/build-sbf.sh test
 ```
 
 **Weird zero-copy layout/`const_assert_eq!` failures on Apple Silicon.**

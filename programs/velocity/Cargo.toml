@@ -73,7 +73,11 @@ byteorder = "1.4.3"
 # being active on the cluster. Pinned to 0.9.0: its `verify` rejects the eight
 # small-order points inline, matching the native precompile, and later 0.9.x
 # raise their solana-* requirements above this program's tree.
-brine-ed25519 = { version = "=0.9.0", features = ["fast-sha512"] }
+# 0.9.3 is the first release that declares the curve25519 syscall with
+# solana-define-syscall. 0.9.0 used an `extern "C"` block, which SBPFv3 cannot
+# resolve: it has no relocations, so the linker emits `call -1`, which builds
+# and deploys and then traps the first time signature verification runs.
+brine-ed25519 = { version = "=0.9.3", features = ["fast-sha512"] }
 # Optional, activated only by the `fuzz-fixtures` feature so `test_utils` (which
 # returns `bytes::BytesMut` and `pyth::pc::Price`) compiles for external host
 # fuzz crates. Kept in [dev-dependencies] too for the plain `cargo test` path.

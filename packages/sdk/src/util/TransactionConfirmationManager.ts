@@ -14,7 +14,7 @@ import {
 	throwTransactionError,
 } from '../tx/reportTransactionError';
 import { promiseTimeout } from './promiseTimeout';
-import { ClientSubscriptionId } from '../bankrun/bankrunConnection';
+import { ClientSubscriptionId } from '../litesvm/litesvmConnection';
 
 type ResolveReference = {
 	resolve?: () => void;

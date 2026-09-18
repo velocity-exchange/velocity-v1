@@ -1,7 +1,6 @@
 import * as anchor from '@coral-xyz/anchor';
 import { Program } from '@coral-xyz/anchor';
 import { assert } from 'chai';
-import { startAnchor } from 'solana-bankrun';
 import { Keypair, LAMPORTS_PER_SOL } from '@solana/web3.js';
 import {
 	BANKRUPTCY_IF_FLOOR_DISABLED,
@@ -22,7 +21,10 @@ import {
 	ZERO,
 } from '../../packages/sdk/src';
 import { PERCENTAGE_PRECISION, UserStatus } from '../../packages/sdk';
-import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
 import {
 	initializeQuoteSpotMarket,
@@ -48,7 +50,7 @@ describe('bankruptcy IF-fee floor', () => {
 
 	let velocityClient: TestClient;
 	let bulkAccountLoader: TestBulkAccountLoader;
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 
 	let usdcMint: Keypair;
 	let userUSDCAccount: Keypair;
@@ -83,23 +85,23 @@ describe('bankruptcy IF-fee floor', () => {
 		);
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		const context = startLiteSVM();
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			1
 		);
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			svmContextWrapper
 		);
 		oracle = await mockOracleNoProgram(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			1,
 			-7,
 			undefined,
@@ -107,8 +109,8 @@ describe('bankruptcy IF-fee floor', () => {
 		);
 
 		velocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: svmContextWrapper.connection.toConnection(),
+			wallet: svmContextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: { commitment: 'confirmed' },
 			activeSubAccountId: 0,
@@ -177,15 +179,15 @@ describe('bankruptcy IF-fee floor', () => {
 			new BN(0)
 		);
 
-		bankrunContextWrapper.fundKeypair(liquidatorKeyPair, LAMPORTS_PER_SOL);
+		svmContextWrapper.fundKeypair(liquidatorKeyPair, LAMPORTS_PER_SOL);
 		liquidatorUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper,
+			svmContextWrapper,
 			liquidatorKeyPair.publicKey
 		);
 		liquidatorVelocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
+			connection: svmContextWrapper.connection.toConnection(),
 			wallet: new Wallet(liquidatorKeyPair),
 			programID: chProgram.programId,
 			opts: { commitment: 'confirmed' },
@@ -258,7 +260,7 @@ describe('bankruptcy IF-fee floor', () => {
 		);
 
 		// crash the price and drive the user into bankruptcy
-		await setFeedPriceNoProgram(bankrunContextWrapper, 0.1, oracle, 10000);
+		await setFeedPriceNoProgram(svmContextWrapper, 0.1, oracle, 10000);
 		await bulkAccountLoader.load();
 		await velocityClient.fetchAccounts();
 

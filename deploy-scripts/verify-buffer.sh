@@ -21,7 +21,9 @@
 # --buffer is given, all on PATH.
 set -euo pipefail
 
-DEFAULT_IMAGE="solanafoundation/solana-verifiable-build:3.1.14"
+# Must match VERIFIABLE_BUILD_IMAGE in .github/workflows/main.yml, or this
+# reproduces a different hash than the one CI deployed.
+DEFAULT_IMAGE="solanafoundation/solana-verifiable-build:4.1.2"
 
 usage() {
 	cat <<USAGE
@@ -269,14 +271,18 @@ if [ "$skip_build" -eq 0 ]; then
 	# ixs compiled in) and enables the audit-gated features, mirroring
 	# .github/actions/build-program — the flag sets must stay identical or the
 	# hashes diverge.
+	# --arch v3 and the forced platform-tools are part of the recipe: without
+	# them solana-verify defaults to v0 and the hash will not match a v3 buffer.
 	if [ "$program" = "velocity" ] && [ "$devnet" -eq 1 ]; then
 		run_step "solana-verify build" \
 			solana-verify build --library-name "$program" -b "$image" \
+			--arch v3 --cargo-build-sbf-args=--tools-version=v1.57 \
 			-- --no-default-features --features no-entrypoint,isolated-position,vlp-hedge ||
 			die "verifiable build failed"
 	else
 		run_step "solana-verify build" \
-			solana-verify build --library-name "$program" -b "$image" ||
+			solana-verify build --library-name "$program" -b "$image" \
+			--arch v3 --cargo-build-sbf-args=--tools-version=v1.57 ||
 			die "verifiable build failed"
 	fi
 else

@@ -2,7 +2,7 @@ import { Commitment, PublicKey } from '@solana/web3.js';
 import { v4 as uuidv4 } from 'uuid';
 import { BufferAndSlot } from './types';
 import { promiseTimeout } from '../util/promiseTimeout';
-import { Connection } from '../bankrun/bankrunConnection';
+import { Connection } from '../litesvm/litesvmConnection';
 import { GET_MULTIPLE_ACCOUNTS_CHUNK_SIZE } from '../constants/numericConstants';
 import { rpcBatchRequest } from '../util/rpcBatchRequest';
 
@@ -40,7 +40,7 @@ export class BulkAccountLoader {
 	mostRecentSlot = 0;
 
 	/**
-	 * @param connection Connection (or bankrun-compatible shim) used for the batched `getMultipleAccounts` polls.
+	 * @param connection Connection (or LiteSVM-compatible shim) used for the batched `getMultipleAccounts` polls.
 	 * @param commitment Commitment level applied to every poll.
 	 * @param pollingFrequency Poll interval in ms; `0` disables automatic polling (`startPolling` becomes a no-op), useful when the loader is driven manually via `load()`.
 	 */

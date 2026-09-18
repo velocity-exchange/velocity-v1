@@ -107,14 +107,26 @@ jobs:
         run: |
           set -euo pipefail
           want='--no-default-features --features no-entrypoint,isolated-position,vlp-hedge'
-          for f in fuzz/build-bundle.sh .github/workflows/fuzz-nightly.yml \
-                   deploy-scripts/build-devnet.sh; do
-            grep -qF -- "$want" "$f" || {
-              echo "FAIL: $f no longer builds velocity with:" >&2
-              echo "        $want" >&2
+          # deploy-scripts/build-sbf.sh is the single source of the devnet flavor.
+          grep -qF -- "$want" deploy-scripts/build-sbf.sh || {
+            echo "FAIL: deploy-scripts/build-sbf.sh no longer builds velocity with:" >&2
+            echo "        $want" >&2
+            exit 1; }
+          # Everything that builds a devnet-flavor .so must route through it, so
+          # the flags and the SBPF version stay in one place.
+          for f in .github/workflows/fuzz-nightly.yml deploy-scripts/build-devnet.sh; do
+            grep -qF -- 'build-sbf.sh devnet' "$f" || {
+              echo "FAIL: $f no longer routes through build-sbf.sh devnet." >&2
               echo "      All velocity SBF builds outside the mainnet path must agree." >&2
               exit 1; }
           done
+          # fuzz/build-bundle.sh builds an instrumented debug .so inside a
+          # pinned solana-verifiable-build image, so it carries the flags
+          # literally rather than routing through build-sbf.sh.
+          grep -qF -- "$want" fuzz/build-bundle.sh || {
+            echo "FAIL: fuzz/build-bundle.sh no longer builds velocity with:" >&2
+            echo "        $want" >&2
+            exit 1; }
           echo "OK: bundle / nightly / devnet build the same velocity flavor"
 
   fuzz-build:

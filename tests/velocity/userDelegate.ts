@@ -23,9 +23,11 @@ import {
 } from './testHelpers';
 import { assert } from 'chai';
 import { Keypair } from '@solana/web3.js';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 
 describe('user delegate', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
@@ -35,7 +37,7 @@ describe('user delegate', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 
 	let usdcMint;
 
@@ -61,29 +63,29 @@ describe('user delegate', () => {
 	);
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = startLiteSVM();
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			1
 		);
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			chProgram
 		);
 
 		await eventSubscriber.subscribe();
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
 
-		solUsd = await mockOracleNoProgram(bankrunContextWrapper, 1);
+		solUsd = await mockOracleNoProgram(svmContextWrapper, 1);
 		velocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: svmContextWrapper.connection.toConnection(),
+			wallet: svmContextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -126,8 +128,8 @@ describe('user delegate', () => {
 		await velocityClient.initializeUserAccount(1, 'CRISP 1');
 		await velocityClient.switchActiveUser(0);
 
-		delegateKeyPair = await createFundedKeyPair(bankrunContextWrapper);
-		secondDelegateKeyPair = await createFundedKeyPair(bankrunContextWrapper);
+		delegateKeyPair = await createFundedKeyPair(svmContextWrapper);
+		secondDelegateKeyPair = await createFundedKeyPair(svmContextWrapper);
 	});
 
 	after(async () => {
@@ -154,7 +156,7 @@ describe('user delegate', () => {
 		);
 
 		delegateVelocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
+			connection: svmContextWrapper.connection.toConnection(),
 			wallet: new Wallet(delegateKeyPair),
 			programID: chProgram.programId,
 			opts: {
@@ -169,9 +171,9 @@ describe('user delegate', () => {
 					publicKey: solUsd,
 				},
 			],
-			authority: bankrunContextWrapper.provider.wallet.publicKey,
+			authority: svmContextWrapper.provider.wallet.publicKey,
 			authoritySubAccountMap: new Map().set(
-				bankrunContextWrapper.provider.wallet.publicKey,
+				svmContextWrapper.provider.wallet.publicKey,
 				[0, 1]
 			),
 			accountSubscription: {
@@ -186,7 +188,7 @@ describe('user delegate', () => {
 		delegateUsdcAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper,
+			svmContextWrapper,
 			delegateKeyPair.publicKey
 		);
 

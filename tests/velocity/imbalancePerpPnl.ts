@@ -46,9 +46,11 @@ import {
 	sleep,
 } from './testHelpers';
 import { PERCENTAGE_PRECISION } from '../../packages/sdk';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 
 async function depositToFeePoolFromIF(
 	amount: number,
@@ -124,7 +126,7 @@ describe('imbalanced large perp pnl w/ borrow hitting limits', () => {
 	let velocityClient: TestClient;
 	let eventSubscriber: EventSubscriber;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
@@ -163,35 +165,35 @@ describe('imbalanced large perp pnl w/ borrow hitting limits', () => {
 	const userKeypair = new Keypair();
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = startLiteSVM();
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			1
 		);
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			chProgram
 		);
 
 		await eventSubscriber.subscribe();
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount.mul(new BN(10000)),
-			bankrunContextWrapper
+			svmContextWrapper
 		);
 
-		solOracle = await mockOracleNoProgram(bankrunContextWrapper, 43.1337);
+		solOracle = await mockOracleNoProgram(svmContextWrapper, 43.1337);
 
 		velocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: svmContextWrapper.connection.toConnection(),
+			wallet: svmContextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -257,15 +259,15 @@ describe('imbalanced large perp pnl w/ borrow hitting limits', () => {
 			userUSDCAccount.publicKey
 		);
 
-		await bankrunContextWrapper.fundKeypair(userKeypair, 10 ** 9);
+		await svmContextWrapper.fundKeypair(userKeypair, 10 ** 9);
 		userUSDCAccount2 = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper,
+			svmContextWrapper,
 			userKeypair.publicKey
 		);
 		velocityClientLoser = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
+			connection: svmContextWrapper.connection.toConnection(),
 			wallet: new Wallet(userKeypair),
 			programID: chProgram.programId,
 			opts: {
@@ -314,12 +316,12 @@ describe('imbalanced large perp pnl w/ borrow hitting limits', () => {
 		await depositToFeePoolFromIF(1000, velocityClient, userUSDCAccount);
 
 		const newPrice = 42.52;
-		await setFeedPriceNoProgram(bankrunContextWrapper, newPrice, solOracle);
+		await setFeedPriceNoProgram(svmContextWrapper, newPrice, solOracle);
 		console.log('price move to $', newPrice);
 
 		const txSig1 = await velocityClient.updateAMMs([0]);
 
-		bankrunContextWrapper.connection.printTxLogs(txSig1);
+		svmContextWrapper.connection.printTxLogs(txSig1);
 
 		const txSig = await velocityClient.openPosition(
 			PositionDirection.SHORT,
@@ -328,7 +330,7 @@ describe('imbalanced large perp pnl w/ borrow hitting limits', () => {
 			new BN(0)
 		);
 
-		bankrunContextWrapper.connection.printTxLogs(txSig);
+		svmContextWrapper.connection.printTxLogs(txSig);
 
 		await velocityClient.fetchAccounts();
 		const userAccount = velocityClient.getUserAccount();
@@ -342,11 +344,11 @@ describe('imbalanced large perp pnl w/ borrow hitting limits', () => {
 		assert(marketAccount.amm.totalFeeMinusDistributions.gt(ZERO));
 
 		const newPrice2 = 42.5;
-		await setFeedPriceNoProgram(bankrunContextWrapper, newPrice2, solOracle);
+		await setFeedPriceNoProgram(svmContextWrapper, newPrice2, solOracle);
 		console.log('price move to $', newPrice2);
 
 		const txSig2 = await velocityClient.updateAMMs([0]);
-		bankrunContextWrapper.connection.printTxLogs(txSig2);
+		svmContextWrapper.connection.printTxLogs(txSig2);
 	});
 
 	it('put market in big drawdown and net user negative pnl', async () => {
@@ -381,7 +383,7 @@ describe('imbalanced large perp pnl w/ borrow hitting limits', () => {
 				0,
 				new BN(0)
 			);
-			bankrunContextWrapper.connection.printTxLogs(txSig);
+			svmContextWrapper.connection.printTxLogs(txSig);
 		} catch (e) {
 			console.log('failed velocityClientLoserc.openPosition');
 
@@ -458,7 +460,7 @@ describe('imbalanced large perp pnl w/ borrow hitting limits', () => {
 		// 	new BN(0),
 		// 	new BN(260.5 * PRICE_PRECISION.toNumber())
 		// );
-		await setFeedPriceNoProgram(bankrunContextWrapper, 260.5, solOracle);
+		await setFeedPriceNoProgram(svmContextWrapper, 260.5, solOracle);
 		console.log('price move to $260.5');
 		await sleep(1000);
 		await velocityClient.fetchAccounts();
@@ -481,7 +483,7 @@ describe('imbalanced large perp pnl w/ borrow hitting limits', () => {
 		assert(ask0After.eq(new BN(585978468)));
 		try {
 			const txSig = await velocityClient.updateAMMs([0]);
-			bankrunContextWrapper.connection.printTxLogs(txSig);
+			svmContextWrapper.connection.printTxLogs(txSig);
 		} catch (e) {
 			console.error(e);
 		}
@@ -528,7 +530,7 @@ describe('imbalanced large perp pnl w/ borrow hitting limits', () => {
 			liquidatorVelocityClientWSOLAccount,
 			liquidatorVelocityClientWUSDCAccount,
 		] = await createUserWithUSDCAndWSOLAccount(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			usdcMint,
 			chProgram,
 			solAmount,
@@ -618,7 +620,7 @@ describe('imbalanced large perp pnl w/ borrow hitting limits', () => {
 
 			try {
 				const txSig = await velocityClient.updateAMMs([0]);
-				bankrunContextWrapper.connection.printTxLogs(txSig);
+				svmContextWrapper.connection.printTxLogs(txSig);
 			} catch (e) {
 				console.error(e);
 			}
@@ -669,7 +671,7 @@ describe('imbalanced large perp pnl w/ borrow hitting limits', () => {
 
 		try {
 			const txSig = await velocityClient.updateAMMs([0]);
-			bankrunContextWrapper.connection.printTxLogs(txSig);
+			svmContextWrapper.connection.printTxLogs(txSig);
 		} catch (e) {
 			console.error(e);
 		}
@@ -695,7 +697,7 @@ describe('imbalanced large perp pnl w/ borrow hitting limits', () => {
 			QUOTE_PRECISION,
 			QUOTE_PRECISION
 		);
-		bankrunContextWrapper.connection.printTxLogs(tx1);
+		svmContextWrapper.connection.printTxLogs(tx1);
 		// } catch (e) {
 		// 	console.error(e);
 		// }
@@ -823,7 +825,7 @@ describe('imbalanced large perp pnl w/ borrow hitting limits', () => {
 		});
 
 		const txSig = await velocityClientLoser.placeAndTakePerpOrder(orderParams);
-		bankrunContextWrapper.connection.printTxLogs(txSig);
+		svmContextWrapper.connection.printTxLogs(txSig);
 
 		const market1 = velocityClient.getPerpMarketAccount(0);
 
@@ -840,7 +842,7 @@ describe('imbalanced large perp pnl w/ borrow hitting limits', () => {
 		const marketIndex = 0;
 
 		const usdcbalance = (
-			await bankrunContextWrapper.connection.getTokenAccount(
+			await svmContextWrapper.connection.getTokenAccount(
 				userUSDCAccount.publicKey
 			)
 		).amount.toString();
@@ -851,7 +853,7 @@ describe('imbalanced large perp pnl w/ borrow hitting limits', () => {
 
 		const ifStakePublicKey = getInsuranceFundStakeAccountPublicKey(
 			velocityClient.program.programId,
-			bankrunContextWrapper.provider.wallet.publicKey,
+			svmContextWrapper.provider.wallet.publicKey,
 			bankIndex
 		);
 		const ifStakeAccount =
@@ -861,7 +863,7 @@ describe('imbalanced large perp pnl w/ borrow hitting limits', () => {
 		assert(ifStakeAccount.marketIndex === bankIndex);
 		assert(
 			ifStakeAccount.authority.equals(
-				bankrunContextWrapper.provider.wallet.publicKey
+				svmContextWrapper.provider.wallet.publicKey
 			)
 		);
 
@@ -870,7 +872,7 @@ describe('imbalanced large perp pnl w/ borrow hitting limits', () => {
 			amount: QUOTE_PRECISION.add(QUOTE_PRECISION.div(new BN(100))), // $1.01
 			collateralAccountPublicKey: userUSDCAccount.publicKey,
 		});
-		bankrunContextWrapper.connection.printTxLogs(txSig);
+		svmContextWrapper.connection.printTxLogs(txSig);
 
 		const market0 = velocityClient.getPerpMarketAccount(marketIndex);
 
@@ -880,7 +882,7 @@ describe('imbalanced large perp pnl w/ borrow hitting limits', () => {
 				bankIndex,
 				marketIndex
 			);
-			bankrunContextWrapper.connection.printTxLogs(txSig2);
+			svmContextWrapper.connection.printTxLogs(txSig2);
 		} catch (e) {
 			console.error(e);
 		}
@@ -903,7 +905,7 @@ describe('imbalanced large perp pnl w/ borrow hitting limits', () => {
 			bankIndex,
 			marketIndex
 		);
-		bankrunContextWrapper.connection.printTxLogs(txSig2);
+		svmContextWrapper.connection.printTxLogs(txSig2);
 
 		const ifRecord: InsuranceFundRecord = eventSubscriber.getEventsArray(
 			'InsuranceFundRecord'

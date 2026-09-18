@@ -46,9 +46,11 @@ import {
 	TWO,
 	ZERO,
 } from '../../packages/sdk';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 
 const enumsAreEqual = (
 	actual: Record<string, unknown>,
@@ -66,7 +68,7 @@ describe('orders', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 
 	let userAccountPublicKey: PublicKey;
 
@@ -106,46 +108,46 @@ describe('orders', () => {
 	let ethUsd;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = startLiteSVM();
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			1
 		);
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			chProgram
 		);
 
 		await eventSubscriber.subscribe();
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			svmContextWrapper
 		);
 
 		solUsd = await mockOracleNoProgram(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			1,
 			-7,
 			undefined,
 			10000
 		);
 		btcUsd = await mockOracleNoProgram(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			60000,
 			-7,
 			undefined,
 			10000
 		);
 		ethUsd = await mockOracleNoProgram(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			1,
 			-7,
 			undefined,
@@ -162,8 +164,8 @@ describe('orders', () => {
 		];
 
 		velocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: svmContextWrapper.connection.toConnection(),
+			wallet: svmContextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -259,15 +261,15 @@ describe('orders', () => {
 		});
 		await velocityClientUser.subscribe();
 
-		await bankrunContextWrapper.fundKeypair(fillerKeyPair, 10 ** 9);
+		await svmContextWrapper.fundKeypair(fillerKeyPair, 10 ** 9);
 		fillerUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper,
+			svmContextWrapper,
 			fillerKeyPair.publicKey
 		);
 		fillerVelocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
+			connection: svmContextWrapper.connection.toConnection(),
 			wallet: new Wallet(fillerKeyPair),
 			programID: chProgram.programId,
 			opts: {
@@ -301,15 +303,15 @@ describe('orders', () => {
 		});
 		await fillerUser.subscribe();
 
-		await bankrunContextWrapper.fundKeypair(whaleKeyPair, 10 ** 9);
+		await svmContextWrapper.fundKeypair(whaleKeyPair, 10 ** 9);
 		whaleUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmountWhale,
-			bankrunContextWrapper,
+			svmContextWrapper,
 			whaleKeyPair.publicKey
 		);
 		whaleVelocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
+			connection: svmContextWrapper.connection.toConnection(),
 			wallet: new Wallet(whaleKeyPair),
 			programID: chProgram.programId,
 			opts: {
@@ -374,7 +376,7 @@ describe('orders', () => {
 		});
 
 		const txSig = await velocityClient.placePerpOrder(orderParams);
-		bankrunContextWrapper.printTxLogs(txSig);
+		svmContextWrapper.printTxLogs(txSig);
 
 		await velocityClient.fetchAccounts();
 		await velocityClientUser.fetchAccounts();
@@ -597,9 +599,9 @@ describe('orders', () => {
 		);
 
 		const computeUnits =
-			bankrunContextWrapper.connection.findComputeUnitConsumption(txSig);
+			svmContextWrapper.connection.findComputeUnitConsumption(txSig);
 		console.log('compute units', computeUnits);
-		bankrunContextWrapper.printTxLogs(txSig);
+		svmContextWrapper.printTxLogs(txSig);
 
 		await fillerVelocityClient.settlePNLs(
 			[
@@ -904,7 +906,7 @@ describe('orders', () => {
 			PRICE_PRECISION
 		);
 		// move price to make liquidity for order @ $1.05 (5%)
-		await setFeedPriceNoProgram(bankrunContextWrapper, newPrice, solUsd, 10000);
+		await setFeedPriceNoProgram(svmContextWrapper, newPrice, solUsd, 10000);
 		await velocityClient.moveAmmToPrice(
 			marketIndex,
 			new BN(newPrice * PRICE_PRECISION.toNumber())
@@ -1024,7 +1026,7 @@ describe('orders', () => {
 			PRICE_PRECISION
 		);
 		// move price to make liquidity for order @ $1.05 (5%)
-		await setFeedPriceNoProgram(bankrunContextWrapper, newPrice, solUsd, 10000);
+		await setFeedPriceNoProgram(svmContextWrapper, newPrice, solUsd, 10000);
 		await velocityClient.moveAmmToPrice(
 			marketIndex,
 			new BN(newPrice * PRICE_PRECISION.toNumber())
@@ -1180,7 +1182,7 @@ describe('orders', () => {
 			PRICE_PRECISION
 		);
 		// move price to make liquidity for order @ $1.05 (5%)
-		await setFeedPriceNoProgram(bankrunContextWrapper, newPrice, solUsd, 10000);
+		await setFeedPriceNoProgram(svmContextWrapper, newPrice, solUsd, 10000);
 		try {
 			await velocityClient.moveAmmToPrice(
 				marketIndex,
@@ -1371,7 +1373,7 @@ describe('orders', () => {
 				velocityClientUser.getUserAccount(),
 				order
 			);
-			bankrunContextWrapper.printTxLogs(txSig);
+			svmContextWrapper.printTxLogs(txSig);
 		} catch (e) {
 			console.error(e);
 			throw e;
@@ -1464,7 +1466,7 @@ describe('orders', () => {
 			price.mul(new BN(96)).div(new BN(100)),
 			PRICE_PRECISION
 		);
-		await setFeedPriceNoProgram(bankrunContextWrapper, newPrice, solUsd, 10000);
+		await setFeedPriceNoProgram(svmContextWrapper, newPrice, solUsd, 10000);
 		await velocityClient.moveAmmToPrice(
 			marketIndex,
 			new BN(newPrice * PRICE_PRECISION.toNumber())
@@ -1479,7 +1481,7 @@ describe('orders', () => {
 		const txSig = await velocityClient.placeAndTakePerpOrder(orderParams);
 
 		const computeUnits =
-			bankrunContextWrapper.connection.findComputeUnitConsumption(txSig);
+			svmContextWrapper.connection.findComputeUnitConsumption(txSig);
 		console.log('placeAndTake compute units', computeUnits[0]);
 
 		// await velocityClient.settlePNL(
@@ -1529,7 +1531,7 @@ describe('orders', () => {
 		});
 
 		const placeTxSig = await whaleVelocityClient.placePerpOrder(orderParams);
-		bankrunContextWrapper.printTxLogs(placeTxSig);
+		svmContextWrapper.printTxLogs(placeTxSig);
 
 		await whaleVelocityClient.fetchAccounts();
 		await whaleUser.fetchAccounts();

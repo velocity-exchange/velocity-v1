@@ -43,9 +43,11 @@ import {
 	createTransferInstruction,
 } from '@solana/spl-token';
 import { DexInstructions, Market, OpenOrders } from '@project-serum/serum';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 import { VELOCITY_PROGRAM_ID } from '../../packages/sdk/src';
 
 describe('spot swap', () => {
@@ -57,7 +59,7 @@ describe('spot swap', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 
 	let solOracle: PublicKey;
 
@@ -85,9 +87,8 @@ describe('spot swap', () => {
 	let takerKeypair: Keypair;
 
 	before(async () => {
-		const context = await startAnchor(
-			'',
-			[
+		const context = startLiteSVM({
+			extraPrograms: [
 				{
 					name: 'serum_dex',
 					programId: new PublicKey(
@@ -95,46 +96,45 @@ describe('spot swap', () => {
 					),
 				},
 			],
-			[]
-		);
+		});
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			1
 		);
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			chProgram
 		);
 
 		await eventSubscriber.subscribe();
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
 		makerUSDC = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			svmContextWrapper
 		);
 		makerWSOL = await createWSolTokenAccountForUser(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			// @ts-ignore
-			bankrunContextWrapper.provider.wallet,
+			svmContextWrapper.provider.wallet,
 			solAmount
 		);
 
-		solOracle = await mockOracleNoProgram(bankrunContextWrapper, 100);
+		solOracle = await mockOracleNoProgram(svmContextWrapper, 100);
 
 		marketIndexes = [];
 		spotMarketIndexes = [0, 1];
 		oracleInfos = [{ publicKey: solOracle, source: OracleSource.PYTH_LAZER }];
 
 		makerVelocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: svmContextWrapper.connection.toConnection(),
+			wallet: svmContextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -165,7 +165,7 @@ describe('spot swap', () => {
 
 		[takerVelocityClient, takerWSOL, takerUSDC, takerKeypair] =
 			await createUserWithUSDCAndWSOLAccount(
-				bankrunContextWrapper,
+				svmContextWrapper,
 				usdcMint,
 				chProgram,
 				solAmount,
@@ -181,10 +181,7 @@ describe('spot swap', () => {
 				bulkAccountLoader
 			);
 
-		await bankrunContextWrapper.fundKeypair(
-			takerKeypair,
-			10 * LAMPORTS_PER_SOL
-		);
+		await svmContextWrapper.fundKeypair(takerKeypair, 10 * LAMPORTS_PER_SOL);
 		await takerVelocityClient.deposit(usdcAmount, 0, takerUSDC);
 	});
 
@@ -196,8 +193,8 @@ describe('spot swap', () => {
 
 	it('Add Serum Market', async () => {
 		serumMarketPublicKey = await listMarket({
-			context: bankrunContextWrapper,
-			wallet: bankrunContextWrapper.provider.wallet,
+			context: svmContextWrapper,
+			wallet: svmContextWrapper.provider.wallet,
 			baseMint: NATIVE_MINT,
 			quoteMint: usdcMint.publicKey,
 			baseLotSize: 100000000,
@@ -209,7 +206,7 @@ describe('spot swap', () => {
 		console.log('\n\n\n\n\n here \n\n\n\n\n');
 
 		await Market.load(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			serumMarketPublicKey,
 			{ commitment: 'confirmed' },
 			SERUM
@@ -226,7 +223,7 @@ describe('spot swap', () => {
 		console.log('\n\n\n\n\n here \n\n\n\n\n');
 
 		const market = await Market.load(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			serumMarketPublicKey,
 			{ commitment: 'recent' },
 			SERUM
@@ -236,7 +233,7 @@ describe('spot swap', () => {
 
 		const openOrdersAccount = new Account();
 		const createOpenOrdersIx = await OpenOrders.makeCreateAccountTransaction(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			market.address,
 			takerVelocityClient.wallet.publicKey,
 			openOrdersAccount.publicKey,
@@ -256,7 +253,7 @@ describe('spot swap', () => {
 		const openOrdersAccounts = [];
 
 		const market = await Market.load(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			serumMarketPublicKey,
 			{ commitment: 'processed' },
 			SERUM
@@ -276,7 +273,7 @@ describe('spot swap', () => {
 		);
 
 		const consumeEventsTx = new Transaction().add(consumeEventsIx);
-		await bankrunContextWrapper.sendTransaction(consumeEventsTx);
+		await svmContextWrapper.sendTransaction(consumeEventsTx);
 		// await provider.sendAndConfirm(consumeEventsTx, []);
 
 		// Open orders need to be sorted correctly but not sure how to do it in js, so will run this
@@ -287,13 +284,13 @@ describe('spot swap', () => {
 		);
 
 		const consumeEventsTx2 = new Transaction().add(consumeEventsIx2);
-		await bankrunContextWrapper.sendTransaction(consumeEventsTx2);
+		await svmContextWrapper.sendTransaction(consumeEventsTx2);
 		// await provider.sendAndConfirm(consumeEventsTx2, []);
 	};
 
 	it('swap usdc for sol', async () => {
 		const market = await Market.load(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			serumMarketPublicKey,
 			{ commitment: 'recent' },
 			SERUM
@@ -302,11 +299,11 @@ describe('spot swap', () => {
 		// place ask to sell 1 sol for 100 usdc
 		// @ts-ignore
 		const { transaction, signers } = await makePlaceOrderTransaction(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			market,
 			{
 				// @ts-ignore
-				owner: bankrunContextWrapper.provider.wallet,
+				owner: svmContextWrapper.provider.wallet,
 				payer: makerWSOL,
 				side: 'sell',
 				price: 100,
@@ -326,7 +323,7 @@ describe('spot swap', () => {
 			return Keypair.fromSecretKey(signer.secretKey);
 		});
 
-		await bankrunContextWrapper.sendTransaction(transaction, signerKeypairs);
+		await svmContextWrapper.sendTransaction(transaction, signerKeypairs);
 
 		const amountIn = new BN(200).mul(QUOTE_PRECISION);
 		const { beginSwapIx, endSwapIx } = await takerVelocityClient.getSwapIx({
@@ -339,7 +336,7 @@ describe('spot swap', () => {
 
 		// @ts-ignore
 		const serumBidIx = await market.makePlaceOrderInstruction(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			{
 				// @ts-ignore
 				owner: takerVelocityClient.wallet,
@@ -384,7 +381,7 @@ describe('spot swap', () => {
 
 		const { txSig } = await takerVelocityClient.sendTransaction(tx);
 
-		bankrunContextWrapper.printTxLogs(txSig);
+		svmContextWrapper.printTxLogs(txSig);
 		// await printTxLogs(connection, txSig);
 
 		const takerSOLAmount = await takerVelocityClient.getTokenAmount(1);
@@ -401,7 +398,7 @@ describe('spot swap', () => {
 			takerVelocityClient.wallet.publicKey
 		);
 
-		const accountInfo = await bankrunContextWrapper.connection.getAccountInfo(
+		const accountInfo = await svmContextWrapper.connection.getAccountInfo(
 			userStatsPublicKey
 		);
 
@@ -413,7 +410,7 @@ describe('spot swap', () => {
 			: undefined;
 
 		await takerVelocityClient.fetchAccounts();
-		const accountInfo2 = await bankrunContextWrapper.connection.getAccountInfo(
+		const accountInfo2 = await svmContextWrapper.connection.getAccountInfo(
 			userStatsPublicKey
 		);
 		const _userStatsAccount2 = accountInfo2
@@ -425,7 +422,7 @@ describe('spot swap', () => {
 
 		await takerVelocityClient.fetchAccounts();
 
-		const accountInfo3 = await bankrunContextWrapper.connection.getAccountInfo(
+		const accountInfo3 = await svmContextWrapper.connection.getAccountInfo(
 			userStatsPublicKey
 		);
 		const _userStatsAccount3 = accountInfo3
@@ -462,7 +459,7 @@ describe('spot swap', () => {
 
 	it('swap usdc for sol', async () => {
 		const market = await Market.load(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			serumMarketPublicKey,
 			{ commitment: 'recent' },
 			SERUM
@@ -471,11 +468,11 @@ describe('spot swap', () => {
 		// place ask to sell 1 sol for 100 usdc
 		// @ts-ignore
 		const { transaction, signers } = await makePlaceOrderTransaction(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			market,
 			{
 				// @ts-ignore
-				owner: bankrunContextWrapper.provider.wallet,
+				owner: svmContextWrapper.provider.wallet,
 				payer: makerUSDC.publicKey,
 				side: 'buy',
 				price: 100,
@@ -493,7 +490,7 @@ describe('spot swap', () => {
 			return Keypair.fromSecretKey(signer.secretKey);
 		});
 
-		await bankrunContextWrapper.sendTransaction(transaction, signerKeypairs);
+		await svmContextWrapper.sendTransaction(transaction, signerKeypairs);
 
 		const amountIn = new BN(1).mul(new BN(LAMPORTS_PER_SOL));
 		// .mul(new BN(1999))
@@ -508,7 +505,7 @@ describe('spot swap', () => {
 
 		// @ts-ignore
 		const serumAskIx = await market.makePlaceOrderInstruction(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			{
 				// @ts-ignore
 				owner: takerVelocityClient.wallet,
@@ -553,7 +550,7 @@ describe('spot swap', () => {
 
 		const { txSig } = await takerVelocityClient.sendTransaction(tx);
 
-		bankrunContextWrapper.printTxLogs(txSig);
+		svmContextWrapper.printTxLogs(txSig);
 
 		const takerSOLAmount = await takerVelocityClient.getTokenAmount(1);
 		assert(takerSOLAmount.eq(new BN(0)));
@@ -621,13 +618,10 @@ describe('spot swap', () => {
 		failed = false;
 		try {
 			const txO = await takerVelocityClient.sendTransaction(tx);
-			const txL = await bankrunContextWrapper.connection.getTransaction(
-				txO.txSig,
-				{
-					commitment: 'confirmed',
-					maxSupportedTransactionVersion: 1,
-				}
-			);
+			const txL = await svmContextWrapper.connection.getTransaction(txO.txSig, {
+				commitment: 'confirmed',
+				maxSupportedTransactionVersion: 1,
+			});
 			console.log('tx logs', txL.meta.logMessages);
 		} catch (e) {
 			const err = e as Error;
@@ -775,10 +769,10 @@ describe('spot swap', () => {
 			makerVelocityClient.wallet.payer,
 		]);
 
-		bankrunContextWrapper.printTxLogs(txSig);
+		svmContextWrapper.printTxLogs(txSig);
 
 		// Verify the token account is actually closed
-		const accountInfo = await bankrunContextWrapper.connection.getAccountInfo(
+		const accountInfo = await svmContextWrapper.connection.getAccountInfo(
 			takerUSDC
 		);
 		assert(accountInfo === null, 'takerUSDC should be closed');

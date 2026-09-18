@@ -58,9 +58,11 @@ import {
 	overwriteConstituentAccount,
 	sleep,
 } from './testHelpers';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 import dotenv from 'dotenv';
 import { PYTH_STORAGE_DATA } from './pythLazerData';
 import {
@@ -99,7 +101,7 @@ describe('LP Pool', () => {
 	// @ts-ignore
 	program.coder.accounts = new CustomBorshAccountsCoder(program.idl);
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 	let bulkAccountLoader: TestBulkAccountLoader;
 
 	let _userLpTokenAccount: PublicKey;
@@ -139,40 +141,38 @@ describe('LP Pool', () => {
 	const imfFactor = 0;
 
 	before(async () => {
-		const context = await startAnchor(
-			'',
-			[],
-			[
+		const context = startLiteSVM({
+			accounts: [
 				{
 					address: PYTH_LAZER_STORAGE_ACCOUNT_KEY,
 					info: PYTH_STORAGE_ACCOUNT_INFO,
 				},
-			]
-		);
+			],
+		});
 
 		// @ts-ignore
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			1
 		);
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
-		spotTokenMint = await mockUSDCMint(bankrunContextWrapper);
-		spotMarketOracle2 = await mockOracleNoProgram(bankrunContextWrapper, 80);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
+		spotTokenMint = await mockUSDCMint(svmContextWrapper);
+		spotMarketOracle2 = await mockOracleNoProgram(svmContextWrapper, 80);
 
 		const keypair = new Keypair();
 		adminKeypair = keypair;
-		await bankrunContextWrapper.fundKeypair(keypair, 10 ** 12);
+		await svmContextWrapper.fundKeypair(keypair, 10 ** 12);
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
 
-		solUsd = await mockOracleNoProgram(bankrunContextWrapper, 80);
+		solUsd = await mockOracleNoProgram(svmContextWrapper, 80);
 
 		adminClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
+			connection: svmContextWrapper.connection.toConnection(),
 			wallet: new anchor.Wallet(keypair),
 			programID: program.programId,
 			opts: {
@@ -196,7 +196,7 @@ describe('LP Pool', () => {
 		const userUSDCAccount = await mockUserUSDCAccountWithAuthority(
 			usdcMint,
 			new BN(100_000_000).mul(QUOTE_PRECISION),
-			bankrunContextWrapper,
+			svmContextWrapper,
 			keypair
 		);
 
@@ -213,7 +213,7 @@ describe('LP Pool', () => {
 		const whitelistKeypair = Keypair.generate();
 		const transaction = new Transaction().add(
 			SystemProgram.createAccount({
-				fromPubkey: bankrunContextWrapper.provider.wallet.publicKey,
+				fromPubkey: svmContextWrapper.provider.wallet.publicKey,
 				newAccountPubkey: whitelistKeypair.publicKey,
 				space: MINT_SIZE,
 				lamports: 10_000_000_000,
@@ -222,20 +222,17 @@ describe('LP Pool', () => {
 			createInitializeMint2Instruction(
 				whitelistKeypair.publicKey,
 				0,
-				bankrunContextWrapper.provider.wallet.publicKey,
-				bankrunContextWrapper.provider.wallet.publicKey,
+				svmContextWrapper.provider.wallet.publicKey,
+				svmContextWrapper.provider.wallet.publicKey,
 				TOKEN_PROGRAM_ID
 			)
 		);
 
-		await bankrunContextWrapper.sendTransaction(transaction, [
-			whitelistKeypair,
-		]);
+		await svmContextWrapper.sendTransaction(transaction, [whitelistKeypair]);
 
-		const whitelistMintInfo =
-			await bankrunContextWrapper.connection.getAccountInfo(
-				whitelistKeypair.publicKey
-			);
+		const whitelistMintInfo = await svmContextWrapper.connection.getAccountInfo(
+			whitelistKeypair.publicKey
+		);
 		console.log('whitelistMintInfo', whitelistMintInfo);
 	});
 
@@ -263,7 +260,7 @@ describe('LP Pool', () => {
 		)) as LPPoolAccount;
 
 		_userLpTokenAccount = await mockAtaTokenAccountForMint(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			lpPool.mint,
 			new BN(0),
 			adminClient.wallet.publicKey
@@ -295,7 +292,7 @@ describe('LP Pool', () => {
 
 		// check mint created correctly
 		const mintInfo = await getMint(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			lpPool.mint as PublicKey
 		);
 		expect(mintInfo.decimals).to.equal(tokenDecimals);
@@ -337,7 +334,7 @@ describe('LP Pool', () => {
 		}
 		await adminClient.unsubscribe();
 		adminClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
+			connection: svmContextWrapper.connection.toConnection(),
 			wallet: new anchor.Wallet(adminKeypair),
 			programID: program.programId,
 			opts: {
@@ -423,7 +420,7 @@ describe('LP Pool', () => {
 
 		await adminClient.unsubscribe();
 		adminClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
+			connection: svmContextWrapper.connection.toConnection(),
 			wallet: new anchor.Wallet(adminKeypair),
 			programID: program.programId,
 			opts: {
@@ -446,10 +443,10 @@ describe('LP Pool', () => {
 	it('can initialize all the different extra users', async () => {
 		for (let i = 0; i < NUMBER_OF_USERS; i++) {
 			const keypair = new Keypair();
-			await bankrunContextWrapper.fundKeypair(keypair, 10 ** 9);
+			await svmContextWrapper.fundKeypair(keypair, 10 ** 9);
 			await sleep(100);
 			const userClient = new TestClient({
-				connection: bankrunContextWrapper.connection.toConnection(),
+				connection: svmContextWrapper.connection.toConnection(),
 				wallet: new anchor.Wallet(keypair),
 				programID: program.programId,
 				opts: {
@@ -472,7 +469,7 @@ describe('LP Pool', () => {
 			const userUSDCAccount = await mockUserUSDCAccountWithAuthority(
 				usdcMint,
 				new BN(100_000_000).mul(QUOTE_PRECISION),
-				bankrunContextWrapper,
+				svmContextWrapper,
 				keypair
 			);
 			await sleep(100);
@@ -520,7 +517,7 @@ describe('LP Pool', () => {
 
 	it('can add all addresses to lookup tables', async () => {
 		const slot = new BN(
-			await bankrunContextWrapper.connection.toConnection().getSlot()
+			await svmContextWrapper.connection.toConnection().getSlot()
 		);
 
 		const [lookupTableInst, lookupTableAddress] =
@@ -568,7 +565,7 @@ describe('LP Pool', () => {
 		for (const chunk of chunks(PERP_MARKET_INDEXES, 20)) {
 			const txSig = await adminClient.updateAmmCache(chunk);
 			const cus =
-				bankrunContextWrapper.connection.findComputeUnitConsumption(txSig);
+				svmContextWrapper.connection.findComputeUnitConsumption(txSig);
 			console.log(cus);
 			assert(cus < 200_000);
 		}
@@ -610,7 +607,7 @@ describe('LP Pool', () => {
 		});
 
 		const lookupTableAccount = (
-			await bankrunContextWrapper.connection.getAddressLookupTable(lutAddress)
+			await svmContextWrapper.connection.getAddressLookupTable(lutAddress)
 		).value;
 		const message = txMessage.compileToV0Message([lookupTableAccount]);
 
@@ -619,7 +616,7 @@ describe('LP Pool', () => {
 		);
 
 		const cus = Number(
-			bankrunContextWrapper.connection.findComputeUnitConsumption(txSig)
+			svmContextWrapper.connection.findComputeUnitConsumption(txSig)
 		);
 		console.log(cus);
 
@@ -633,7 +630,7 @@ describe('LP Pool', () => {
 
 		for (let i = 0; i < NUMBER_OF_CONSTITUENTS; i++) {
 			await overwriteConstituentAccount(
-				bankrunContextWrapper,
+				svmContextWrapper,
 				adminClient.program,
 				getConstituentPublicKey(program.programId, lpPoolKey, i),
 				[['vaultTokenBalance', QUOTE_PRECISION.muln(1000)]]
@@ -646,7 +643,7 @@ describe('LP Pool', () => {
 		);
 		const txSig = await adminClient.sendTransaction(tx);
 		const cus = Number(
-			bankrunContextWrapper.connection.findComputeUnitConsumption(txSig.txSig)
+			svmContextWrapper.connection.findComputeUnitConsumption(txSig.txSig)
 		);
 		console.log(cus);
 	});

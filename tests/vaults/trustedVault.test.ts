@@ -2,10 +2,11 @@ import * as anchor from '@coral-xyz/anchor';
 import { BN, Program, Wallet } from '@coral-xyz/anchor';
 import { expect } from 'chai';
 import {
-	BankrunContextWrapper,
+	LiteSVMContextWrapper,
 	TEST_ADMIN_KEYPAIR,
-} from './common/bankrunConnection';
-import { startAnchor } from 'solana-bankrun';
+	startLiteSVM,
+	LiteSVMProvider,
+} from './common/litesvmConnection';
 import {
 	VaultClient,
 	getVaultAddressSync,
@@ -31,18 +32,14 @@ import {
 } from '@velocity-exchange/sdk';
 import { TestBulkAccountLoader } from './common/testBulkAccountLoader';
 import {
-	bootstrapSignerClientAndUserBankrun,
+	bootstrapSignerClientAndUser,
 	initializeQuoteSpotMarket,
 	initializeSolSpotMarket,
-	mockUSDCMintBankrun,
+	mockUSDCMint,
 	printTxLogs,
 } from './common/testHelpers';
 import { Keypair, LAMPORTS_PER_SOL } from '@solana/web3.js';
-import {
-	mockOracleNoProgram,
-	setFeedPriceNoProgram,
-} from './common/bankrunOracle';
-import { BankrunProvider } from 'anchor-bankrun';
+import { mockOracleNoProgram, setFeedPriceNoProgram } from './common/svmOracle';
 import { VaultClass } from '@velocity-exchange/vaults-sdk';
 
 // ammInvariant == k == x * y
@@ -57,7 +54,7 @@ describe('TestTrustedVault', () => {
 	const initialSolPerpPrice = 100;
 	let adminVelocityClient: TestClient;
 	let bulkAccountLoader: TestBulkAccountLoader;
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 	let usdcMint: Keypair;
 	let solPerpOracle: PublicKey;
 	const vaultName = 'fuel distribution vault';
@@ -88,23 +85,23 @@ describe('TestTrustedVault', () => {
 	// tests and break those exact-equality assertions. A fresh chain per test is
 	// required for correctness here.
 	beforeEach(async () => {
-		const context = await startAnchor('', [], []);
+		const context = startLiteSVM();
 
 		// wrap the context to use it with the test helpers
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
-		vaultProgram = new Program<Vaults>(IDL, bankrunContextWrapper.provider);
+		vaultProgram = new Program<Vaults>(IDL, svmContextWrapper.provider);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			'processed',
 			1
 		);
 
-		usdcMint = await mockUSDCMintBankrun(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
 
 		solPerpOracle = await mockOracleNoProgram(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			initialSolPerpPrice
 		);
 
@@ -112,13 +109,13 @@ describe('TestTrustedVault', () => {
 			Keypair.fromSecretKey(Buffer.from(TEST_ADMIN_KEYPAIR))
 		);
 
-		await bankrunContextWrapper.fundKeypair(
+		await svmContextWrapper.fundKeypair(
 			adminWallet.payer,
 			100 * LAMPORTS_PER_SOL
 		);
 
 		adminVelocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
+			connection: svmContextWrapper.connection.toConnection(),
 			wallet: adminWallet,
 			programID: new PublicKey(VELOCITY_PROGRAM_ID),
 			opts: {
@@ -154,8 +151,8 @@ describe('TestTrustedVault', () => {
 
 		await adminVelocityClient.fetchAccounts();
 
-		const managerBootstrap = await bootstrapSignerClientAndUserBankrun({
-			bankrunContext: bankrunContextWrapper,
+		const managerBootstrap = await bootstrapSignerClientAndUser({
+			svmContext: svmContextWrapper,
 			programId: VAULT_PROGRAM_ID,
 			signer: managerSigner,
 			usdcMint: usdcMint,
@@ -179,8 +176,8 @@ describe('TestTrustedVault', () => {
 		managerVelocityClient = managerBootstrap.velocityClient;
 		managerUserUSDCAccount = managerBootstrap.userUSDCAccount.publicKey;
 
-		const provider = new BankrunProvider(
-			bankrunContextWrapper.context,
+		const provider = new LiteSVMProvider(
+			svmContextWrapper.context,
 			adminVelocityClient.wallet as anchor.Wallet
 		);
 		const program = new Program(IDL, provider);
@@ -190,8 +187,8 @@ describe('TestTrustedVault', () => {
 			program,
 		});
 
-		const user1Bootstrap = await bootstrapSignerClientAndUserBankrun({
-			bankrunContext: bankrunContextWrapper,
+		const user1Bootstrap = await bootstrapSignerClientAndUser({
+			svmContext: svmContextWrapper,
 			programId: VAULT_PROGRAM_ID,
 			signer: user1Signer,
 			usdcMint: usdcMint,
@@ -288,10 +285,7 @@ describe('TestTrustedVault', () => {
 		expect(isTrustedVaultClass(vaultAcct.vaultClass)).to.deep.equal(true);
 
 		// user1 deposit sol into velocity (for vault to borrow)
-		await bankrunContextWrapper.fundKeypair(
-			user1Signer,
-			100 * LAMPORTS_PER_SOL
-		);
+		await svmContextWrapper.fundKeypair(user1Signer, 100 * LAMPORTS_PER_SOL);
 		await user1VelocityClient.deposit(
 			new BN(100 * LAMPORTS_PER_SOL),
 			1,
@@ -320,10 +314,9 @@ describe('TestTrustedVault', () => {
 			100 * LAMPORTS_PER_SOL
 		);
 
-		const managerSOLBalance0 =
-			await bankrunContextWrapper.connection.getBalance(
-				managerSigner.publicKey
-			);
+		const managerSOLBalance0 = await svmContextWrapper.connection.getBalance(
+			managerSigner.publicKey
+		);
 
 		// manager performs borrow of 50 SOL
 		const b = await managerClient.managerBorrow(
@@ -334,7 +327,7 @@ describe('TestTrustedVault', () => {
 			{ noLut: true, cuPriceMicroLamports: 0 }
 		);
 		const e = await printTxLogs(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			b,
 			false,
 			// @ts-ignore
@@ -348,10 +341,9 @@ describe('TestTrustedVault', () => {
 		expect(e[0].data.borrowSpotMarketIndex).to.deep.equal(1);
 		expect(e[0].data.depositSpotMarketIndex).to.deep.equal(0);
 
-		const managerSOLBalance1 =
-			await bankrunContextWrapper.connection.getBalance(
-				managerSigner.publicKey
-			);
+		const managerSOLBalance1 = await svmContextWrapper.connection.getBalance(
+			managerSigner.publicKey
+		);
 
 		// check spot market recognizes borrows
 		const spotMarket11 = adminVelocityClient.getSpotMarketAccount(1);
@@ -394,7 +386,7 @@ describe('TestTrustedVault', () => {
 			{ noLut: true, cuPriceMicroLamports: 0 }
 		);
 		const repayEvents = await printTxLogs(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			repayTx,
 			false,
 			// @ts-ignore
@@ -442,10 +434,7 @@ describe('TestTrustedVault', () => {
 		);
 
 		// user1 funds market 1 so there is SOL to borrow, then joins the vault.
-		await bankrunContextWrapper.fundKeypair(
-			user1Signer,
-			100 * LAMPORTS_PER_SOL
-		);
+		await svmContextWrapper.fundKeypair(user1Signer, 100 * LAMPORTS_PER_SOL);
 		await user1VelocityClient.deposit(
 			new BN(100 * LAMPORTS_PER_SOL),
 			1,
@@ -483,12 +472,12 @@ describe('TestTrustedVault', () => {
 			).cumulativeBorrowInterest as BN;
 
 		const borrowIndexBefore = await fetchSolBorrowIndex();
-		await bankrunContextWrapper.moveTimeForward(SIX_MONTHS);
+		await svmContextWrapper.moveTimeForward(SIX_MONTHS);
 		// Re-post the same SOL price. The warp leaves the oracle stale, and equity is
 		// gated on oracle validity, so without this the vault refuses to price at all
 		// and the test could not tell a stale index from a stale oracle.
 		await setFeedPriceNoProgram(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			initialSolPerpPrice,
 			solPerpOracle
 		);
@@ -537,10 +526,7 @@ describe('TestTrustedVault', () => {
 		expect(isTrustedVaultClass(vaultAcct.vaultClass)).to.deep.equal(true);
 
 		// user1 deposit sol into velocity (for vault to borrow)
-		await bankrunContextWrapper.fundKeypair(
-			user1Signer,
-			100 * LAMPORTS_PER_SOL
-		);
+		await svmContextWrapper.fundKeypair(user1Signer, 100 * LAMPORTS_PER_SOL);
 		await user1VelocityClient.deposit(
 			new BN(100 * LAMPORTS_PER_SOL),
 			1,
@@ -569,10 +555,9 @@ describe('TestTrustedVault', () => {
 			100 * LAMPORTS_PER_SOL
 		);
 
-		const managerSOLBalance0 =
-			await bankrunContextWrapper.connection.getBalance(
-				managerSigner.publicKey
-			);
+		const managerSOLBalance0 = await svmContextWrapper.connection.getBalance(
+			managerSigner.publicKey
+		);
 
 		// manager performs borrow of 50 SOL
 		const b = await managerClient.managerBorrow(
@@ -583,7 +568,7 @@ describe('TestTrustedVault', () => {
 			{ noLut: true, cuPriceMicroLamports: 0 }
 		);
 		const e = await printTxLogs(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			b,
 			false,
 			// @ts-ignore
@@ -597,10 +582,9 @@ describe('TestTrustedVault', () => {
 		expect(e[0].data.borrowSpotMarketIndex).to.deep.equal(1);
 		expect(e[0].data.depositSpotMarketIndex).to.deep.equal(0);
 
-		const managerSOLBalance1 =
-			await bankrunContextWrapper.connection.getBalance(
-				managerSigner.publicKey
-			);
+		const managerSOLBalance1 = await svmContextWrapper.connection.getBalance(
+			managerSigner.publicKey
+		);
 
 		// check spot market recognizes borrows
 		const spotMarket11 = adminVelocityClient.getSpotMarketAccount(1);

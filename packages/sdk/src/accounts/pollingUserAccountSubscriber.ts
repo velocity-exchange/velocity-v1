@@ -4,7 +4,7 @@ import {
 	UserAccountEvents,
 	UserAccountSubscriber,
 } from './types';
-import { Connection } from '../bankrun/bankrunConnection';
+import { Connection } from '../litesvm/litesvmConnection';
 import StrictEventEmitter from 'strict-event-emitter-types';
 import { EventEmitter } from 'events';
 import { PublicKey } from '@solana/web3.js';
@@ -33,7 +33,7 @@ export class PollingUserAccountSubscriber implements UserAccountSubscriber {
 	user?: DataAndSlot<UserAccount>;
 
 	/**
-	 * @param connection Connection (or bankrun-compatible shim) used for the one-off `fetch()` fallback.
+	 * @param connection Connection (or LiteSVM-compatible shim) used for the one-off `fetch()` fallback.
 	 * @param userAccountPublicKey Address of the `UserAccount` to track.
 	 * @param accountLoader Shared `BulkAccountLoader` this subscriber registers its callback with.
 	 * @param decode Decode function for the raw account buffer (typically the program's Anchor coder).

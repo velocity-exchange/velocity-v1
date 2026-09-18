@@ -371,7 +371,12 @@ if [ "$skip_build" -eq 0 ] && [ "$in_container" != "1" ] && [ "$force_native" -e
   # produced them (comp_dir == "/src"). comp_dir is the right provenance oracle
   # precisely because it is the same property the manifest's SourcesOriginalPath
   # depends on. --recurse-depth=0 keeps this to CU-level DIEs.
-  sbf_img="solanafoundation/solana-verifiable-build:3.1.14"
+  # 4.1.2 ships platform-tools v1.54, below Anza's v1.56 minimum for SBPFv3, so
+  # the build below forces v1.57 with --tools-version. cargo-build-sbf downloads
+  # it on demand, which is why the image tag does not decide the bytecode
+  # version. Bump together with VERIFIABLE_BUILD_IMAGE in
+  # .github/workflows/main.yml once a 4.3.x image ships, and drop the override.
+  sbf_img="solanafoundation/solana-verifiable-build:4.1.2"
   so_path="$repo_root/target/deploy/velocity.so"
   dbg_path="$repo_root/target/deploy/velocity.debug.so"
 
@@ -432,11 +437,11 @@ if [ "$skip_build" -eq 0 ] && [ "$in_container" != "1" ] && [ "$force_native" -e
       -e CARGO_PROFILE_RELEASE_DEBUG=2 \
       -e CARGO_PROFILE_RELEASE_STRIP=false \
       "$sbf_img" bash -c "set -e
-        cargo-build-sbf --debug --sbf-out-dir /src/target/deploy -- --no-default-features --features no-entrypoint,isolated-position,vlp-hedge
+        cargo-build-sbf --arch v3 --tools-version v1.57 --debug --sbf-out-dir /src/target/deploy -- --no-default-features --features no-entrypoint,isolated-position,vlp-hedge
         # The unstripped DWARF .so lands in the cargo target dir. velocity is a workspace member,
         # so cargo uses the WORKSPACE target (/src/target/...), not the crate-local one — take
         # whichever exists.
-        dbg=\$(ls /src/target/sbpf-solana-solana/release/velocity.so /src/target/sbf-solana-solana/release/velocity.so /src/programs/velocity/target/sbpf-solana-solana/release/velocity.so /src/programs/velocity/target/sbf-solana-solana/release/velocity.so 2>/dev/null | head -1)
+        dbg=\$(ls /src/target/sbpfv3-solana-solana/release/velocity.so /src/target/sbpf-solana-solana/release/velocity.so /src/target/sbf-solana-solana/release/velocity.so /src/programs/velocity/target/sbpfv3-solana-solana/release/velocity.so /src/programs/velocity/target/sbpf-solana-solana/release/velocity.so /src/programs/velocity/target/sbf-solana-solana/release/velocity.so 2>/dev/null | head -1)
         [ -n \"\$dbg\" ] || { echo 'unstripped velocity.so not found in any target dir' >&2; exit 1; }
         cp \"\$dbg\" /src/target/deploy/velocity.debug.so
         chown $(id -u):$(id -g) /src/target/deploy/velocity.so /src/target/deploy/velocity.debug.so" >&2

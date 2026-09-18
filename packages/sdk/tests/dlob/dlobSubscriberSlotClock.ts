@@ -25,10 +25,7 @@ describe('DLOBSubscriber vAMM slot-duration consistency', () => {
 		Object.defineProperty(orderBookLevels, 'getVammL2Generator', {
 			configurable: true,
 			writable: true,
-			value: (args: {
-				slotDurationState: StateAccount;
-				latestSlot?: BN;
-			}) => {
+			value: (args: { slotDurationState: StateAccount; latestSlot?: BN }) => {
 				seen = {
 					slotDurationState: args.slotDurationState,
 					latestSlot: args.latestSlot,

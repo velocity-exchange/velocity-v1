@@ -29,9 +29,11 @@ import {
 	initializeSolSpotMarket,
 } from './testHelpers';
 import { OracleSource, ZERO } from '../../packages/sdk';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 
 describe('scale orders', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
@@ -42,7 +44,7 @@ describe('scale orders', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 
 	let _userAccountPublicKey: PublicKey;
 
@@ -66,31 +68,31 @@ describe('scale orders', () => {
 	let solUsd;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = startLiteSVM();
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			1
 		);
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			chProgram
 		);
 
 		await eventSubscriber.subscribe();
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			svmContextWrapper
 		);
 
-		solUsd = await mockOracleNoProgram(bankrunContextWrapper, 100);
+		solUsd = await mockOracleNoProgram(svmContextWrapper, 100);
 
 		const marketIndexes = [perpMarketIndex];
 		const bankIndexes = [0, 1]; // USDC and SOL spot markets
@@ -100,8 +102,8 @@ describe('scale orders', () => {
 		];
 
 		velocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: svmContextWrapper.connection.toConnection(),
+			wallet: svmContextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -187,10 +189,10 @@ describe('scale orders', () => {
 					accounts: {
 						user: getUserAccountPublicKeySync(
 							velocityClient.program.programId,
-							bankrunContextWrapper.provider.wallet.publicKey,
+							svmContextWrapper.provider.wallet.publicKey,
 							0
 						),
-						authority: bankrunContextWrapper.provider.wallet.publicKey,
+						authority: svmContextWrapper.provider.wallet.publicKey,
 						// the low-level `instruction` namespace validates the account
 						// list as given and resolves no PDAs, so `state` is explicit
 						state: await velocityClient.getStatePublicKey(),
@@ -265,7 +267,7 @@ describe('scale orders', () => {
 			maxTs: null,
 		});
 
-		bankrunContextWrapper.printTxLogs(txSig);
+		svmContextWrapper.printTxLogs(txSig);
 
 		await velocityClient.fetchAccounts();
 		await velocityClientUser.fetchAccounts();
@@ -329,7 +331,7 @@ describe('scale orders', () => {
 			maxTs: null,
 		});
 
-		bankrunContextWrapper.printTxLogs(txSig);
+		svmContextWrapper.printTxLogs(txSig);
 
 		await velocityClient.fetchAccounts();
 		await velocityClientUser.fetchAccounts();
@@ -391,7 +393,7 @@ describe('scale orders', () => {
 			maxTs: null,
 		});
 
-		bankrunContextWrapper.printTxLogs(txSig);
+		svmContextWrapper.printTxLogs(txSig);
 
 		await velocityClient.fetchAccounts();
 		await velocityClientUser.fetchAccounts();
@@ -460,7 +462,7 @@ describe('scale orders', () => {
 			maxTs: null,
 		});
 
-		bankrunContextWrapper.printTxLogs(txSig);
+		svmContextWrapper.printTxLogs(txSig);
 
 		await velocityClient.fetchAccounts();
 		await velocityClientUser.fetchAccounts();
@@ -524,7 +526,7 @@ describe('scale orders', () => {
 			maxTs: null,
 		});
 
-		bankrunContextWrapper.printTxLogs(txSig);
+		svmContextWrapper.printTxLogs(txSig);
 
 		await velocityClient.fetchAccounts();
 		await velocityClientUser.fetchAccounts();
@@ -565,7 +567,7 @@ describe('scale orders', () => {
 			maxTs: null,
 		});
 
-		bankrunContextWrapper.printTxLogs(txSig);
+		svmContextWrapper.printTxLogs(txSig);
 
 		await velocityClient.fetchAccounts();
 		await velocityClientUser.fetchAccounts();

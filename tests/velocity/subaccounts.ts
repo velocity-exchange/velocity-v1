@@ -29,9 +29,11 @@ import {
 	SpotBalanceType,
 } from '../../packages/sdk';
 import { PublicKey } from '@solana/web3.js';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 
 describe('subaccounts', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
@@ -41,7 +43,7 @@ describe('subaccounts', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 
 	let solOracle: PublicKey;
 
@@ -51,36 +53,36 @@ describe('subaccounts', () => {
 	const usdcAmount = new BN(10 * 10 ** 6);
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = startLiteSVM();
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			1
 		);
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			chProgram
 		);
 
 		await eventSubscriber.subscribe();
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
 		usdcAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			svmContextWrapper
 		);
 
 		const marketIndexes = [0, 1];
 		const spotMarketIndexes = [0, 1];
 
 		velocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: svmContextWrapper.connection.toConnection(),
+			wallet: svmContextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -96,7 +98,7 @@ describe('subaccounts', () => {
 			},
 		});
 
-		solOracle = await mockOracleNoProgram(bankrunContextWrapper, 100);
+		solOracle = await mockOracleNoProgram(svmContextWrapper, 100);
 
 		await velocityClient.initialize(usdcMint.publicKey, true);
 		await velocityClient.subscribe();
@@ -116,7 +118,7 @@ describe('subaccounts', () => {
 		const name = 'CRISP';
 		await velocityClient.initializeUserAccountAndDepositCollateral(
 			LAMPORTS_PRECISION,
-			bankrunContextWrapper.provider.wallet.publicKey,
+			svmContextWrapper.provider.wallet.publicKey,
 			1,
 			subAccountId,
 			name,
@@ -184,9 +186,9 @@ describe('subaccounts', () => {
 
 	it('Fetch all user account', async () => {
 		const userAccounts = await fetchUserAccounts(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			chProgram,
-			bankrunContextWrapper.provider.wallet.publicKey,
+			svmContextWrapper.provider.wallet.publicKey,
 			2
 		);
 		assert(userAccounts.length === 2);
@@ -208,7 +210,7 @@ describe('subaccounts', () => {
 
 		const toUser = await getUserAccountPublicKey(
 			chProgram.programId,
-			bankrunContextWrapper.provider.wallet.publicKey,
+			svmContextWrapper.provider.wallet.publicKey,
 			0
 		);
 		const withdrawRecord = depositRecords[1];
@@ -217,7 +219,7 @@ describe('subaccounts', () => {
 
 		const fromUser = await getUserAccountPublicKey(
 			chProgram.programId,
-			bankrunContextWrapper.provider.wallet.publicKey,
+			svmContextWrapper.provider.wallet.publicKey,
 			1
 		);
 		const depositRecord = depositRecords[0];
@@ -248,7 +250,7 @@ describe('subaccounts', () => {
 	});
 
 	it('Update delegate', async () => {
-		const delegateKeyPair = await createFundedKeyPair(bankrunContextWrapper);
+		const delegateKeyPair = await createFundedKeyPair(svmContextWrapper);
 		await velocityClient.updateUserDelegate(delegateKeyPair.publicKey);
 
 		await velocityClient.fetchAccounts();
@@ -263,7 +265,7 @@ describe('subaccounts', () => {
 		let deleteFailed = false;
 		try {
 			const txSig = await velocityClient.deleteUser(0);
-			bankrunContextWrapper.printTxLogs(txSig);
+			svmContextWrapper.printTxLogs(txSig);
 		} catch (e) {
 			deleteFailed = true;
 		}

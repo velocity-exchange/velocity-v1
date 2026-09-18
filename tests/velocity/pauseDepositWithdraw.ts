@@ -37,9 +37,11 @@ import {
 	SPOT_MARKET_BALANCE_PRECISION,
 	SpotOperation,
 } from '../../packages/sdk';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 
 describe('spot deposit and withdraw 22', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
@@ -49,7 +51,7 @@ describe('spot deposit and withdraw 22', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 
 	let solOracle: PublicKey;
 
@@ -67,40 +69,40 @@ describe('spot deposit and withdraw 22', () => {
 	let oracleInfos: OracleInfo[];
 
 	before(async () => {
-		const context = (await startAnchor('', [], [])) as any;
+		const context = startLiteSVM() as any;
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			1
 		);
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			chProgram
 		);
 
 		await eventSubscriber.subscribe();
 
 		usdcMint = await mockUSDCMint(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			TOKEN_2022_PROGRAM_ID,
 			true
 		);
 		console.log('testhere');
-		await mockUserUSDCAccount(usdcMint, largeUsdcAmount, bankrunContextWrapper);
+		await mockUserUSDCAccount(usdcMint, largeUsdcAmount, svmContextWrapper);
 
-		solOracle = await mockOracleNoProgram(bankrunContextWrapper, 30);
+		solOracle = await mockOracleNoProgram(svmContextWrapper, 30);
 
 		marketIndexes = [];
 		spotMarketIndexes = [0, 1];
 		oracleInfos = [{ publicKey: solOracle, source: OracleSource.PYTH_LAZER }];
 
 		admin = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: svmContextWrapper.connection.toConnection(),
+			wallet: svmContextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -164,7 +166,7 @@ describe('spot deposit and withdraw 22', () => {
 			0,
 			await getMaxWithdrawGuardThreshold(admin, 0)
 		);
-		bankrunContextWrapper.printTxLogs(txSig);
+		svmContextWrapper.printTxLogs(txSig);
 		await admin.fetchAccounts();
 		const spotMarket = await admin.getSpotMarketAccount(0);
 		assert(spotMarket.marketIndex === 0);
@@ -195,7 +197,7 @@ describe('spot deposit and withdraw 22', () => {
 			firstUserVelocityClientUSDCAccount,
 			firstUserKeyPair,
 		] = await createUserWithUSDCAccount(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			usdcMint,
 			chProgram,
 			usdcAmount,
@@ -213,7 +215,7 @@ describe('spot deposit and withdraw 22', () => {
 			marketIndex,
 			firstUserVelocityClientUSDCAccount
 		);
-		bankrunContextWrapper.printTxLogs(txSig);
+		svmContextWrapper.printTxLogs(txSig);
 
 		// the deposit went through firstUserVelocityClient — refresh admin's cache
 		// before asserting on it
@@ -227,7 +229,7 @@ describe('spot deposit and withdraw 22', () => {
 
 		const vaultAmount = new BN(
 			(
-				await bankrunContextWrapper.connection.getTokenAccount(spotMarket.vault)
+				await svmContextWrapper.connection.getTokenAccount(spotMarket.vault)
 			).amount.toString()
 		);
 		assert(vaultAmount.eq(usdcAmount));
@@ -272,7 +274,7 @@ describe('spot deposit and withdraw 22', () => {
 
 		// Fund a fresh USDC account so a rejection can only be the pause, not lack of funds.
 		const freshUSDCAccount = await createUSDCAccountForUser(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			firstUserKeyPair,
 			usdcMint,
 			usdcAmount

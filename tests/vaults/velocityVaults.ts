@@ -31,7 +31,7 @@ import {
 	OrderParamsBitFlag,
 } from '@velocity-exchange/sdk';
 import {
-	bootstrapSignerClientAndUserBankrun,
+	bootstrapSignerClientAndUser,
 	calculateAllTokenizedVaultPdas,
 	doWashTrading,
 	initializeQuoteSpotMarket,
@@ -43,11 +43,13 @@ import {
 	validateTotalUserShares,
 	assert,
 } from './common/testHelpers';
-import { BankrunContextWrapper } from './common/bankrunConnection';
-import { mockOracleNoProgram } from './common/bankrunOracle';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+	LiteSVMProvider,
+} from './common/litesvmConnection';
+import { mockOracleNoProgram } from './common/svmOracle';
 import { TestBulkAccountLoader } from './common/testBulkAccountLoader';
-import { startAnchor } from 'solana-bankrun';
-import { BankrunProvider } from 'anchor-bankrun';
 import { getMint } from '@solana/spl-token';
 import { Keypair, LAMPORTS_PER_SOL, Signer } from '@solana/web3.js';
 import { expect } from 'chai';
@@ -83,7 +85,7 @@ const perpMarketIndexes = [0];
 const spotMarketIndexes = [0, 1];
 
 /**
- * Adapter for the bankrun connection's getTokenAccountBalance, which returns the
+ * Adapter for the LiteSVM connection's getTokenAccountBalance, which returns the
  * decoded SPL `Account` (with `.amount: bigint`) rather than web3.js's
  * `{ value: { amount, uiAmount, uiAmountString } }`. Reshapes it into the
  * web3.js form the ported tests expect. `uiAmount` is only ever asserted as
@@ -107,13 +109,13 @@ async function getTokenBalance(
 }
 
 /**
- * Spins up a fresh bankrun context with the velocity protocol fully
+ * Spins up a fresh LiteSVM context with the velocity protocol fully
  * bootstrapped (USDC mint, SOL oracle, quote + SOL spot markets, SOL-PERP
  * market) and returns the handles the vault tests need. Each describe block
- * gets its own context because bankrun contexts can't be shared.
+ * gets its own context because LiteSVM contexts can't be shared.
  */
-async function bootstrapBankrun(): Promise<{
-	bankrunContextWrapper: BankrunContextWrapper;
+async function bootstrapVaults(): Promise<{
+	svmContextWrapper: LiteSVMContextWrapper;
 	bulkAccountLoader: TestBulkAccountLoader;
 	adminClient: AdminClient;
 	program: Program<Vaults>;
@@ -122,14 +124,12 @@ async function bootstrapBankrun(): Promise<{
 	metaplex: Metaplex;
 	oracleInfos: OracleInfo[];
 }> {
-	const context = await startAnchor(
-		'',
-		[{ name: 'metaplex', programId: METAPLEX_PROGRAM_ID }],
-		[]
-	);
-	const bankrunContextWrapper = new BankrunContextWrapper(context);
-	const connection = bankrunContextWrapper.connection.toConnection();
-	// The bankrun connection has no real RPC endpoint; Metaplex.make() runs
+	const context = startLiteSVM({
+		extraPrograms: [{ name: 'metaplex', programId: METAPLEX_PROGRAM_ID }],
+	});
+	const svmContextWrapper = new LiteSVMContextWrapper(context);
+	const connection = svmContextWrapper.connection.toConnection();
+	// The LiteSVM connection has no real RPC endpoint; Metaplex.make() runs
 	// `new URL(connection.rpcEndpoint)` at construction, so give it a dummy one.
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	(connection as any).rpcEndpoint = 'http://localhost:8899';
@@ -139,16 +139,16 @@ async function bootstrapBankrun(): Promise<{
 		1
 	);
 
-	const wallet = bankrunContextWrapper.provider.wallet as Wallet;
+	const wallet = svmContextWrapper.provider.wallet as Wallet;
 	const program = new Program<Vaults>(
 		IDL,
-		new BankrunProvider(context, wallet)
+		new LiteSVMProvider(context, wallet)
 	);
 	const metaplex = Metaplex.make(connection);
 
-	const usdcMint = await mockUSDCMint(bankrunContextWrapper);
+	const usdcMint = await mockUSDCMint(svmContextWrapper);
 	const solPerpOracle = await mockOracleNoProgram(
-		bankrunContextWrapper,
+		svmContextWrapper,
 		initialSolPerpPrice
 	);
 	const oracleInfos: OracleInfo[] = [
@@ -202,7 +202,7 @@ async function bootstrapBankrun(): Promise<{
 	await adminClient.fetchAccounts();
 
 	return {
-		bankrunContextWrapper,
+		svmContextWrapper,
 		bulkAccountLoader,
 		adminClient,
 		program,
@@ -214,10 +214,10 @@ async function bootstrapBankrun(): Promise<{
 }
 
 describe('velocityVaults', () => {
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 	let bulkAccountLoader: TestBulkAccountLoader;
 	let connection: ReturnType<
-		BankrunContextWrapper['connection']['toConnection']
+		LiteSVMContextWrapper['connection']['toConnection']
 	>;
 	let adminClient: AdminClient;
 	let program: Program<Vaults>;
@@ -240,10 +240,10 @@ describe('velocityVaults', () => {
 	const usdcAmount = new BN(1_000).mul(QUOTE_PRECISION);
 
 	before(async () => {
-		const bootstrap = await bootstrapBankrun();
-		bankrunContextWrapper = bootstrap.bankrunContextWrapper;
+		const bootstrap = await bootstrapVaults();
+		svmContextWrapper = bootstrap.svmContextWrapper;
 		bulkAccountLoader = bootstrap.bulkAccountLoader;
-		connection = bankrunContextWrapper.connection.toConnection();
+		connection = svmContextWrapper.connection.toConnection();
 		adminClient = bootstrap.adminClient;
 		program = bootstrap.program;
 		usdcMint = bootstrap.usdcMint;
@@ -264,8 +264,8 @@ describe('velocityVaults', () => {
 		};
 
 		// init vault manager
-		const bootstrapManager = await bootstrapSignerClientAndUserBankrun({
-			bankrunContext: bankrunContextWrapper,
+		const bootstrapManager = await bootstrapSignerClientAndUser({
+			svmContext: svmContextWrapper,
 			signer: Keypair.generate(),
 			programId: VAULT_PROGRAM_ID,
 			usdcMint,
@@ -278,8 +278,8 @@ describe('velocityVaults', () => {
 		managerUser = bootstrapManager.user;
 
 		// init delegate who trades with vault funds
-		const bootstrapDelegate = await bootstrapSignerClientAndUserBankrun({
-			bankrunContext: bankrunContextWrapper,
+		const bootstrapDelegate = await bootstrapSignerClientAndUser({
+			svmContext: svmContextWrapper,
 			signer: Keypair.generate(),
 			programId: VAULT_PROGRAM_ID,
 			usdcMint,
@@ -292,8 +292,8 @@ describe('velocityVaults', () => {
 		delegateClient = bootstrapDelegate.vaultClient;
 
 		// the VaultDepositor for the vault
-		const bootstrapVD2 = await bootstrapSignerClientAndUserBankrun({
-			bankrunContext: bankrunContextWrapper,
+		const bootstrapVD2 = await bootstrapSignerClientAndUser({
+			svmContext: svmContextWrapper,
 			signer: Keypair.generate(),
 			programId: VAULT_PROGRAM_ID,
 			usdcMint,
@@ -499,10 +499,10 @@ describe('velocityVaults', () => {
 });
 
 describe('TestProtocolVaults', () => {
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 	let bulkAccountLoader: TestBulkAccountLoader;
 	let connection: ReturnType<
-		BankrunContextWrapper['connection']['toConnection']
+		LiteSVMContextWrapper['connection']['toConnection']
 	>;
 	let adminClient: AdminClient;
 	let program: Program<Vaults>;
@@ -540,10 +540,10 @@ describe('TestProtocolVaults', () => {
 	const baseAssetAmount = new BN(1).mul(BASE_PRECISION);
 
 	before(async () => {
-		const bootstrap = await bootstrapBankrun();
-		bankrunContextWrapper = bootstrap.bankrunContextWrapper;
+		const bootstrap = await bootstrapVaults();
+		svmContextWrapper = bootstrap.svmContextWrapper;
 		bulkAccountLoader = bootstrap.bulkAccountLoader;
-		connection = bankrunContextWrapper.connection.toConnection();
+		connection = svmContextWrapper.connection.toConnection();
 		adminClient = bootstrap.adminClient;
 		program = bootstrap.program;
 		usdcMint = bootstrap.usdcMint;
@@ -568,8 +568,8 @@ describe('TestProtocolVaults', () => {
 		};
 
 		// init vault manager
-		const bootstrapManager = await bootstrapSignerClientAndUserBankrun({
-			bankrunContext: bankrunContextWrapper,
+		const bootstrapManager = await bootstrapSignerClientAndUser({
+			svmContext: svmContextWrapper,
 			signer: Keypair.generate(),
 			programId: VAULT_PROGRAM_ID,
 			usdcMint,
@@ -582,8 +582,8 @@ describe('TestProtocolVaults', () => {
 		managerUser = bootstrapManager.user;
 
 		// init delegate who trades with vault funds
-		const bootstrapDelegate = await bootstrapSignerClientAndUserBankrun({
-			bankrunContext: bankrunContextWrapper,
+		const bootstrapDelegate = await bootstrapSignerClientAndUser({
+			svmContext: svmContextWrapper,
 			signer: Keypair.generate(),
 			programId: VAULT_PROGRAM_ID,
 			usdcMint,
@@ -596,8 +596,8 @@ describe('TestProtocolVaults', () => {
 		delegateClient = bootstrapDelegate.vaultClient;
 
 		// init a market filler for manager to trade against
-		const bootstrapFiller = await bootstrapSignerClientAndUserBankrun({
-			bankrunContext: bankrunContextWrapper,
+		const bootstrapFiller = await bootstrapSignerClientAndUser({
+			svmContext: svmContextWrapper,
 			signer: Keypair.generate(),
 			programId: VAULT_PROGRAM_ID,
 			usdcMint,
@@ -610,8 +610,8 @@ describe('TestProtocolVaults', () => {
 		fillerUser = bootstrapFiller.user;
 
 		// the VaultDepositor for the protocol vault
-		const bootstrapVD = await bootstrapSignerClientAndUserBankrun({
-			bankrunContext: bankrunContextWrapper,
+		const bootstrapVD = await bootstrapSignerClientAndUser({
+			svmContext: svmContextWrapper,
 			signer: Keypair.generate(),
 			programId: VAULT_PROGRAM_ID,
 			usdcMint,
@@ -625,8 +625,8 @@ describe('TestProtocolVaults', () => {
 		vdUserUSDCAccount = bootstrapVD.userUSDCAccount.publicKey;
 
 		// the VaultDepositor for the vault
-		const bootstrapVD2 = await bootstrapSignerClientAndUserBankrun({
-			bankrunContext: bankrunContextWrapper,
+		const bootstrapVD2 = await bootstrapSignerClientAndUser({
+			svmContext: svmContextWrapper,
 			signer: Keypair.generate(),
 			programId: VAULT_PROGRAM_ID,
 			usdcMint,
@@ -639,8 +639,8 @@ describe('TestProtocolVaults', () => {
 		vd2Client = bootstrapVD2.vaultClient;
 
 		// init protocol
-		const bootstrapProtocol = await bootstrapSignerClientAndUserBankrun({
-			bankrunContext: bankrunContextWrapper,
+		const bootstrapProtocol = await bootstrapSignerClientAndUser({
+			svmContext: svmContextWrapper,
 			signer: Keypair.generate(),
 			programId: VAULT_PROGRAM_ID,
 			usdcMint,
@@ -794,7 +794,7 @@ describe('TestProtocolVaults', () => {
 
 	// vault enters long
 	it('Long SOL-PERP', async () => {
-		// vault user account is delegated to "delegate". On bankrun we cannot
+		// vault user account is delegated to "delegate". On LiteSVM we cannot
 		// use getUserAccountsForDelegate (getProgramAccounts) — fetch the known
 		// vault user PDA directly instead.
 		const vaultUserKey = await getUserAccountPublicKey(
@@ -956,11 +956,7 @@ describe('TestProtocolVaults', () => {
 
 		try {
 			// increase oracle
-			await setFeedPrice(
-				bankrunContextWrapper,
-				finalSolPerpPrice,
-				solPerpOracle
-			);
+			await setFeedPrice(svmContextWrapper, finalSolPerpPrice, solPerpOracle);
 		} catch (e) {
 			console.error('failed to set feed price:', e);
 			assert(false, 'failed to set feed price');
@@ -1138,7 +1134,7 @@ describe('TestProtocolVaults', () => {
 
 		try {
 			// settle_pnl requires the AMM to have been updated in the same slot
-			// (AMMNotUpdatedInSameSlot guard). On bankrun every transaction
+			// (AMMNotUpdatedInSameSlot guard). On LiteSVM every transaction
 			// advances the clock by exactly one slot, so calling updateAMMs in a
 			// separate tx would leave the AMM stale by the time settle runs.
 			// Instead prepend the AMM-update ix into the SAME transaction as each
@@ -1216,7 +1212,7 @@ describe('TestProtocolVaults', () => {
 			});
 		}
 
-		// On bankrun the vault's velocity user is subscribed over a websocket that
+		// On LiteSVM the vault's velocity user is subscribed over a websocket that
 		// never receives updates, so its cached equity is stale after the perp
 		// round trip. Force a one-time fetch of the known vault user before
 		// computing equity.
@@ -1457,10 +1453,10 @@ describe('TestProtocolVaults', () => {
 });
 
 describe('TestTokenizedVaults', () => {
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 	let bulkAccountLoader: TestBulkAccountLoader;
 	let connection: ReturnType<
-		BankrunContextWrapper['connection']['toConnection']
+		LiteSVMContextWrapper['connection']['toConnection']
 	>;
 	let adminClient: AdminClient;
 	let program: Program<Vaults>;
@@ -1483,10 +1479,10 @@ describe('TestTokenizedVaults', () => {
 	let commonVaultKey: PublicKey;
 
 	before(async () => {
-		const bootstrap = await bootstrapBankrun();
-		bankrunContextWrapper = bootstrap.bankrunContextWrapper;
+		const bootstrap = await bootstrapVaults();
+		svmContextWrapper = bootstrap.svmContextWrapper;
 		bulkAccountLoader = bootstrap.bulkAccountLoader;
-		connection = bankrunContextWrapper.connection.toConnection();
+		connection = svmContextWrapper.connection.toConnection();
 		adminClient = bootstrap.adminClient;
 		program = bootstrap.program;
 		usdcMint = bootstrap.usdcMint;
@@ -1510,8 +1506,8 @@ describe('TestTokenizedVaults', () => {
 			oracleInfos,
 		};
 
-		const bootstrapManager = await bootstrapSignerClientAndUserBankrun({
-			bankrunContext: bankrunContextWrapper,
+		const bootstrapManager = await bootstrapSignerClientAndUser({
+			svmContext: svmContextWrapper,
 			signer: Keypair.generate(),
 			programId: VAULT_PROGRAM_ID,
 			usdcMint,
@@ -1523,8 +1519,8 @@ describe('TestTokenizedVaults', () => {
 		managerClient = bootstrapManager.vaultClient;
 		managerVelocityClient = bootstrapManager.velocityClient;
 
-		const vd0Bootstrap = await bootstrapSignerClientAndUserBankrun({
-			bankrunContext: bankrunContextWrapper,
+		const vd0Bootstrap = await bootstrapSignerClientAndUser({
+			svmContext: svmContextWrapper,
 			signer: Keypair.generate(),
 			programId: VAULT_PROGRAM_ID,
 			usdcMint,
@@ -1535,8 +1531,8 @@ describe('TestTokenizedVaults', () => {
 		});
 		vd0Client = vd0Bootstrap.vaultClient;
 		vd0VelocityClient = vd0Bootstrap.velocityClient;
-		const vd1Bootstrap = await bootstrapSignerClientAndUserBankrun({
-			bankrunContext: bankrunContextWrapper,
+		const vd1Bootstrap = await bootstrapSignerClientAndUser({
+			svmContext: svmContextWrapper,
 			signer: Keypair.generate(),
 			programId: VAULT_PROGRAM_ID,
 			usdcMint,
@@ -1644,7 +1640,7 @@ describe('TestTokenizedVaults', () => {
 		const { tokenizedVaultDepositor } = calculateAllTokenizedVaultPdas(
 			program.programId,
 			commonVaultKey,
-			bankrunContextWrapper.provider.wallet.publicKey,
+			svmContextWrapper.provider.wallet.publicKey,
 			0
 		);
 		const tvdAccount = await connection.getAccountInfo(tokenizedVaultDepositor);
@@ -1672,8 +1668,8 @@ describe('TestTokenizedVaults', () => {
 	});
 
 	it('Tokenize and redeem vault shares', async () => {
-		const bootstrapVd = await bootstrapSignerClientAndUserBankrun({
-			bankrunContext: bankrunContextWrapper,
+		const bootstrapVd = await bootstrapSignerClientAndUser({
+			svmContext: svmContextWrapper,
 			signer: Keypair.generate(),
 			programId: VAULT_PROGRAM_ID,
 			usdcMint,
@@ -1931,7 +1927,7 @@ describe('TestTokenizedVaults', () => {
 	// (validate_spot_dlob_trading_enabled_for_market_type always rejects
 	// MarketType::Spot -> SpotDlobTradingDisabled / 0x18ce), so there is no way
 	// to drive the vault into the profit/loss/rebase states these tests assert,
-	// on bankrun or any other harness. Left as skipped stubs.
+	// on LiteSVM or any other harness. Left as skipped stubs.
 	it.skip('Redeem vault tokens with profit share, profitable', async () => {
 		// blocked: requires spot DLOB trading, which velocity removed (SpotDlobTradingDisabled)
 	});
@@ -1946,10 +1942,10 @@ describe('TestTokenizedVaults', () => {
 });
 
 describe('TestInsuranceFundStake', () => {
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 	let bulkAccountLoader: TestBulkAccountLoader;
 	let connection: ReturnType<
-		BankrunContextWrapper['connection']['toConnection']
+		LiteSVMContextWrapper['connection']['toConnection']
 	>;
 	let adminClient: AdminClient;
 	let program: Program<Vaults>;
@@ -1974,10 +1970,10 @@ describe('TestInsuranceFundStake', () => {
 	const commonVaultName = 'vault with IF';
 
 	before(async () => {
-		const bootstrap = await bootstrapBankrun();
-		bankrunContextWrapper = bootstrap.bankrunContextWrapper;
+		const bootstrap = await bootstrapVaults();
+		svmContextWrapper = bootstrap.svmContextWrapper;
 		bulkAccountLoader = bootstrap.bulkAccountLoader;
-		connection = bankrunContextWrapper.connection.toConnection();
+		connection = svmContextWrapper.connection.toConnection();
 		adminClient = bootstrap.adminClient;
 		program = bootstrap.program;
 		usdcMint = bootstrap.usdcMint;
@@ -1996,8 +1992,8 @@ describe('TestInsuranceFundStake', () => {
 			oracleInfos,
 		};
 
-		const bootstrapManager = await bootstrapSignerClientAndUserBankrun({
-			bankrunContext: bankrunContextWrapper,
+		const bootstrapManager = await bootstrapSignerClientAndUser({
+			svmContext: svmContextWrapper,
 			signer: Keypair.generate(),
 			programId: VAULT_PROGRAM_ID,
 			usdcMint,
@@ -2011,8 +2007,8 @@ describe('TestInsuranceFundStake', () => {
 		managerVelocityClient = bootstrapManager.velocityClient;
 		managerUsdcAccount = bootstrapManager.userUSDCAccount.publicKey;
 		managerWSOLAccount = bootstrapManager.userWSOLAccount;
-		const vd0Bootstrap = await bootstrapSignerClientAndUserBankrun({
-			bankrunContext: bankrunContextWrapper,
+		const vd0Bootstrap = await bootstrapSignerClientAndUser({
+			svmContext: svmContextWrapper,
 			signer: Keypair.generate(),
 			programId: VAULT_PROGRAM_ID,
 			usdcMint,
@@ -2026,8 +2022,8 @@ describe('TestInsuranceFundStake', () => {
 		vd0VelocityClient = vd0Bootstrap.velocityClient;
 		vd0UsdcAccount = vd0Bootstrap.userUSDCAccount.publicKey;
 		vd0WSOLAccount = vd0Bootstrap.userWSOLAccount;
-		const vd1Bootstrap = await bootstrapSignerClientAndUserBankrun({
-			bankrunContext: bankrunContextWrapper,
+		const vd1Bootstrap = await bootstrapSignerClientAndUser({
+			svmContext: svmContextWrapper,
 			signer: Keypair.generate(),
 			programId: VAULT_PROGRAM_ID,
 			usdcMint,
@@ -2101,7 +2097,7 @@ describe('TestInsuranceFundStake', () => {
 		);
 
 		// Shrink the IF unstaking escrow so the remove-stake step only needs a
-		// short bankrun clock advance (default is THIRTEEN_DAY).
+		// short LiteSVM clock advance (default is THIRTEEN_DAY).
 		await adminClient.updateInsuranceFundUnstakingPeriod(
 			marketIndex,
 			new BN(1)
@@ -2250,8 +2246,8 @@ describe('TestInsuranceFundStake', () => {
 			{ noLut: true }
 		);
 
-		// Advance the bankrun clock past the unstake period.
-		await bankrunContextWrapper.moveTimeForward(1000);
+		// Advance the LiteSVM clock past the unstake period.
+		await svmContextWrapper.moveTimeForward(1000);
 
 		await managerClient.removeInsuranceFundStake(
 			vault,
@@ -2280,7 +2276,7 @@ describe('TestInsuranceFundStake', () => {
 });
 
 describe('TestSOLDenomindatedVault', () => {
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 	let bulkAccountLoader: TestBulkAccountLoader;
 	let adminClient: AdminClient;
 	let program: Program<Vaults>;
@@ -2299,8 +2295,8 @@ describe('TestSOLDenomindatedVault', () => {
 	let commonVaultKey: PublicKey;
 
 	before(async () => {
-		const bootstrap = await bootstrapBankrun();
-		bankrunContextWrapper = bootstrap.bankrunContextWrapper;
+		const bootstrap = await bootstrapVaults();
+		svmContextWrapper = bootstrap.svmContextWrapper;
 		bulkAccountLoader = bootstrap.bulkAccountLoader;
 		adminClient = bootstrap.adminClient;
 		program = bootstrap.program;
@@ -2325,8 +2321,8 @@ describe('TestSOLDenomindatedVault', () => {
 			oracleInfos,
 		};
 
-		const bootstrapManager = await bootstrapSignerClientAndUserBankrun({
-			bankrunContext: bankrunContextWrapper,
+		const bootstrapManager = await bootstrapSignerClientAndUser({
+			svmContext: svmContextWrapper,
 			signer: Keypair.generate(),
 			programId: VAULT_PROGRAM_ID,
 			usdcMint,
@@ -2338,8 +2334,8 @@ describe('TestSOLDenomindatedVault', () => {
 		managerClient = bootstrapManager.vaultClient;
 		managerVelocityClient = bootstrapManager.velocityClient;
 
-		const vd0Bootstrap = await bootstrapSignerClientAndUserBankrun({
-			bankrunContext: bankrunContextWrapper,
+		const vd0Bootstrap = await bootstrapSignerClientAndUser({
+			svmContext: svmContextWrapper,
 			signer: Keypair.generate(),
 			programId: VAULT_PROGRAM_ID,
 			usdcMint,
@@ -2471,10 +2467,10 @@ describe('TestSOLDenomindatedVault', () => {
 });
 
 describe('TestWithdrawFromVaults', () => {
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 	let bulkAccountLoader: TestBulkAccountLoader;
 	let connection: ReturnType<
-		BankrunContextWrapper['connection']['toConnection']
+		LiteSVMContextWrapper['connection']['toConnection']
 	>;
 	let adminClient: AdminClient;
 	let program: Program<Vaults>;
@@ -2504,10 +2500,10 @@ describe('TestWithdrawFromVaults', () => {
 	const VAULT_PROTOCOL_DISCRIM: number[] = [106, 130, 5, 195, 126, 82, 249, 53];
 
 	before(async () => {
-		const bootstrap = await bootstrapBankrun();
-		bankrunContextWrapper = bootstrap.bankrunContextWrapper;
+		const bootstrap = await bootstrapVaults();
+		svmContextWrapper = bootstrap.svmContextWrapper;
 		bulkAccountLoader = bootstrap.bulkAccountLoader;
-		connection = bankrunContextWrapper.connection.toConnection();
+		connection = svmContextWrapper.connection.toConnection();
 		adminClient = bootstrap.adminClient;
 		program = bootstrap.program;
 		usdcMint = bootstrap.usdcMint;
@@ -2532,8 +2528,8 @@ describe('TestWithdrawFromVaults', () => {
 			oracleInfos,
 		};
 
-		const bootstrapManager = await bootstrapSignerClientAndUserBankrun({
-			bankrunContext: bankrunContextWrapper,
+		const bootstrapManager = await bootstrapSignerClientAndUser({
+			svmContext: svmContextWrapper,
 			signer: Keypair.generate(),
 			programId: VAULT_PROGRAM_ID,
 			usdcMint,
@@ -2547,8 +2543,8 @@ describe('TestWithdrawFromVaults', () => {
 		managerVelocityClient = bootstrapManager.velocityClient;
 		managerUsdcAccount = bootstrapManager.userUSDCAccount.publicKey;
 
-		const vd0Bootstrap = await bootstrapSignerClientAndUserBankrun({
-			bankrunContext: bankrunContextWrapper,
+		const vd0Bootstrap = await bootstrapSignerClientAndUser({
+			svmContext: svmContextWrapper,
 			signer: Keypair.generate(),
 			programId: VAULT_PROGRAM_ID,
 			usdcMint,
@@ -2562,8 +2558,8 @@ describe('TestWithdrawFromVaults', () => {
 		vd0VelocityClient = vd0Bootstrap.velocityClient;
 		vd0UsdcAccount = vd0Bootstrap.userUSDCAccount.publicKey;
 
-		const bootstrapProtocol = await bootstrapSignerClientAndUserBankrun({
-			bankrunContext: bankrunContextWrapper,
+		const bootstrapProtocol = await bootstrapSignerClientAndUser({
+			svmContext: svmContextWrapper,
 			signer: Keypair.generate(),
 			programId: VAULT_PROGRAM_ID,
 			usdcMint,
@@ -2807,7 +2803,7 @@ describe('TestWithdrawFromVaults', () => {
 
 		// calculateVaultEquity reads the vault's velocity user through the
 		// websocket-subscribed vaultUsers map, which never receives updates on
-		// bankrun. Force a one-time fetch of the known vault user so equity
+		// LiteSVM. Force a one-time fetch of the known vault user so equity
 		// reflects the post-withdraw (drained) state.
 		await managerClient.velocityClient.fetchAccounts();
 		const vaultVelocityUser = await managerClient.getSubscribedVaultUser(
@@ -2839,17 +2835,17 @@ describe('TestWithdrawFromVaults', () => {
 	});
 
 	// Drives an MM wash-trading loop (place-and-take spot orders against a
-	// live maker) plus vault delegate control; does not run on bankrun.
+	// live maker) plus vault delegate control; does not run on LiteSVM.
 	// Skipped: this test moves vault equity via an MM wash-trading loop that
 	// places SPOT DLOB orders, but velocity disabled spot DLOB trading entirely
 	// (validate_spot_dlob_trading_enabled_for_market_type always rejects
-	// MarketType::Spot -> SpotDlobTradingDisabled / 0x18ce). The bankrun port is
+	// MarketType::Spot -> SpotDlobTradingDisabled / 0x18ce). The LiteSVM port is
 	// otherwise complete (vault-user PDA fetch + equity refresh); it cannot pass
 	// against the velocity program regardless of harness.
 	it.skip('Test manager cancel withdraw owning 100% of vault', async () => {
 		const { velocityClient: mmVelocityClient, requoteFunc } =
 			await initializeSolSpotMarketMaker(
-				bankrunContextWrapper,
+				svmContextWrapper,
 				usdcMint,
 				managerVelocityClient.program,
 				[
@@ -2897,7 +2893,7 @@ describe('TestWithdrawFromVaults', () => {
 				{ noLut: true }
 			);
 			// addAndSubscribeToUsers uses getProgramAccounts (unavailable on
-			// bankrun); assume control of the vault user by fetching its known
+			// LiteSVM); assume control of the vault user by fetching its known
 			// PDA directly and adding it to the manager (delegate) client.
 			const vaultUserKey = await getUserAccountPublicKey(
 				managerVelocityClient.program.programId,
@@ -2943,11 +2939,7 @@ describe('TestWithdrawFromVaults', () => {
 					oracle0.price
 				)} -> ${newOraclePrice}`
 			);
-			await setFeedPrice(
-				bankrunContextWrapper,
-				newOraclePrice,
-				solMarket.oracle
-			);
+			await setFeedPrice(svmContextWrapper, newOraclePrice, solMarket.oracle);
 
 			await managerVelocityClient.fetchAccounts();
 			await washVaultUser.fetchAccounts();

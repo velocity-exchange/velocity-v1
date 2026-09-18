@@ -27,16 +27,18 @@ import {
 	mockUSDCMint,
 	mockUserUSDCAccount,
 } from './testHelpers';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 
 describe('whitelist', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 
 	let velocityClient: TestClient;
 
@@ -59,29 +61,29 @@ describe('whitelist', () => {
 	let whitelistMint: PublicKey;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = startLiteSVM();
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			1
 		);
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			svmContextWrapper
 		);
 
-		const solUsd = await mockOracleNoProgram(bankrunContextWrapper, 1);
+		const solUsd = await mockOracleNoProgram(svmContextWrapper, 1);
 		const periodicity = new BN(60 * 60); // 1 HOUR
 
 		velocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: svmContextWrapper.connection.toConnection(),
+			wallet: svmContextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -112,7 +114,7 @@ describe('whitelist', () => {
 		const keypair = Keypair.generate();
 		const transaction = new Transaction().add(
 			SystemProgram.createAccount({
-				fromPubkey: bankrunContextWrapper.provider.wallet.publicKey,
+				fromPubkey: svmContextWrapper.provider.wallet.publicKey,
 				newAccountPubkey: keypair.publicKey,
 				space: MINT_SIZE,
 				lamports: 10_000_000_000,
@@ -121,13 +123,13 @@ describe('whitelist', () => {
 			createInitializeMint2Instruction(
 				keypair.publicKey,
 				0,
-				bankrunContextWrapper.provider.wallet.publicKey,
-				bankrunContextWrapper.provider.wallet.publicKey,
+				svmContextWrapper.provider.wallet.publicKey,
+				svmContextWrapper.provider.wallet.publicKey,
 				TOKEN_PROGRAM_ID
 			)
 		);
 
-		await bankrunContextWrapper.sendTransaction(transaction, [keypair]);
+		await svmContextWrapper.sendTransaction(transaction, [keypair]);
 
 		whitelistMint = keypair.publicKey;
 	});
@@ -164,21 +166,21 @@ describe('whitelist', () => {
 	it('successful initialize user', async () => {
 		const whitelistMintAta = getAssociatedTokenAddressSync(
 			whitelistMint,
-			bankrunContextWrapper.provider.wallet.publicKey
+			svmContextWrapper.provider.wallet.publicKey
 		);
 		const ix = createAssociatedTokenAccountIdempotentInstruction(
-			bankrunContextWrapper.context.payer.publicKey,
+			svmContextWrapper.context.payer.publicKey,
 			whitelistMintAta,
-			bankrunContextWrapper.provider.wallet.publicKey,
+			svmContextWrapper.provider.wallet.publicKey,
 			whitelistMint
 		);
 		const mintToIx = createMintToInstruction(
 			whitelistMint,
 			whitelistMintAta,
-			bankrunContextWrapper.provider.wallet.publicKey,
+			svmContextWrapper.provider.wallet.publicKey,
 			1
 		);
-		await bankrunContextWrapper.sendTransaction(
+		await svmContextWrapper.sendTransaction(
 			new Transaction().add(ix, mintToIx)
 		);
 
@@ -193,7 +195,7 @@ describe('whitelist', () => {
 		);
 
 		assert.ok(
-			user.authority.equals(bankrunContextWrapper.provider.wallet.publicKey)
+			user.authority.equals(svmContextWrapper.provider.wallet.publicKey)
 		);
 	});
 

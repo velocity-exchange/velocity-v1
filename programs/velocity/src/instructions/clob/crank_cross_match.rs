@@ -424,18 +424,13 @@ fn run_cross_leg<'info>(
                 },
             ),
         )?;
-    // A quoter that prices on demand ends the claim before a book is read. The
-    // book reads below cost a CPI each, so the cheap test runs first.
+    // Cheap test first. If we're doing custom quoter v custom quoter, no window was served.
+    // Since propamms have no wait.
     let taker_served_window = if consults_custom_quoter(&cx.accounts.quoter_slab, cx.tail)? {
         false
     } else {
-        // A cross is one event on two sides, so one verdict covers both legs. A
-        // leg that read only the side it sweeps would call the flow protected
-        // whenever the fresh order sat on the other side. The cross would then
-        // reach liquidity that serves protected flow only, which passes an order
-        // that never rested through the leg that does not settle it. Both
-        // directions are read, bounded by the size this cross takes, so depth
-        // the cross never touches does not count against it.
+        // Since this is not servicing taker-origin trades, both sides must have served the window
+        // to get the `taker_served_window` set.
         [Direction::Long, Direction::Short]
             .iter()
             .copied()

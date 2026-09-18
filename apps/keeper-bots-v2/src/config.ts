@@ -50,14 +50,6 @@ export type MakerBidAskTwapCrankConfig = BaseBotConfig & {
 	 * Default 1500.
 	 */
 	ifStakeTargetQuote?: number;
-	/**
-	 * dlob-server base URL. The crank passes the book's best resting owners to
-	 * `update_perp_bid_ask_twap`, because the program reads the book's depth
-	 * itself but can only credit an owner the transaction carries, and it reads
-	 * them from the server's `/topMakers`. A market that names a book refuses
-	 * the crank without them.
-	 */
-	dlobServerHttpUrl?: string;
 };
 
 export type SubaccountConfig = {

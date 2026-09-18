@@ -749,38 +749,6 @@ fn place_clob_ask_from(
     }
 }
 
-/// The keeper's own `User` and `UserStats`, which a crank names as the filler.
-fn set_filler(fixture: &mut Fixture) -> (Pubkey, Pubkey) {
-    let user = Pubkey::new_unique();
-    let stats = Pubkey::new_unique();
-    set_user_account(
-        &mut fixture.svm,
-        user,
-        &trading_user(&fixture.keeper.pubkey(), 0, None),
-    );
-    set_user_stats_account(&mut fixture.svm, stats, &fixture.keeper.pubkey());
-    (user, stats)
-}
-
-/// A buy-stop armed below the oracle, so a crank at oracle 100 fires it into a
-/// live market order.
-fn armed_buy_stop(fixture: &Fixture, size: u64) -> Order {
-    let mut order = Order::default();
-    order.order_id = 1;
-    order.status = OrderStatus::Open;
-    order.order_type = OrderType::TriggerMarket;
-    order.market_type = MarketType::Perp;
-    order.market_index = 0;
-    order.direction = PositionDirection::Long;
-    order.base_asset_amount = size;
-    order.price = 0;
-    order.trigger_price = 99 * PRICE;
-    order.trigger_condition = velocity::state::user::OrderTriggerCondition::Above;
-    let clock: solana_clock::Clock = fixture.svm.get_sysvar();
-    order.max_ts = clock.unix_timestamp + 1_000;
-    order
-}
-
 /// `set_user_stats_account` with the authority-wide equity breaker latched.
 fn set_tripped_user_stats(svm: &mut litesvm::LiteSVM, address: Pubkey, authority: &Pubkey) {
     let mut stats: UserStats = Zeroable::zeroed();
@@ -6447,7 +6415,7 @@ fn trigger_market_fires_to_the_book_through_its_resolver() {
     );
 
     // Crossed: the resolver stages the fire-to-book executor, and it lands
-    // unsigned. The order leaves the DLOB and rests on the book.
+    // unsigned. The order leaves its slot and rests on the book.
     fixture.svm.warp_to_slot(13);
     set_oracle(
         &mut fixture.svm,
@@ -6459,11 +6427,34 @@ fn trigger_market_fires_to_the_book_through_its_resolver() {
         .expect("crossed threshold stages the fire-to-book executor");
     let payout = Pubkey::new_unique();
     fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
+    let payout_before = fixture.svm.get_balance(&payout).unwrap();
     run_staged_executor(
         &mut fixture,
         &resolved,
         velocity::instruction::TriggerMarketOrderV1::DISCRIMINATOR,
         payout,
+    );
+
+    // The crank is unsigned, so the market's reservoir pays whoever turned it.
+    // Without this the turner works for nothing and stops turning.
+    assert_eq!(
+        fixture.svm.get_balance(&payout).unwrap(),
+        payout_before + PAYMENT,
+        "the reservoir pays the turner that fired the trigger"
+    );
+
+    // The watch is level-triggered, so a slot left armed re-fires on every
+    // block while the price stays across the threshold. The executor releases
+    // it, and the released slot names no order.
+    let after: UserConditionsV0 = read_zero_copy(&fixture.svm, &conditions);
+    let (_, block) = velocity::relay_spec::read_block(after.block(), 0).unwrap();
+    assert!(
+        !block[TRIGGER_SLOT_BASE].is_active(),
+        "the fired slot goes quiet rather than re-firing every block"
+    );
+    assert_eq!(
+        after.trigger_slots[0].order_id, 0,
+        "the released slot names no order"
     );
 
     let triggered: User = read_zero_copy(&fixture.svm, &user);
@@ -6472,7 +6463,7 @@ fn trigger_market_fires_to_the_book_through_its_resolver() {
             .orders
             .iter()
             .all(|order| order.status != OrderStatus::Open),
-        "the armed slot is freed: nothing lingers live on the DLOB"
+        "the armed slot is freed: nothing lingers live in `User.orders`"
     );
     assert_eq!(
         triggered.perp_positions[0].base_asset_amount, 0,
@@ -7997,7 +7988,7 @@ fn taker_origin_cross_settles_at_the_best_counterpartys_price() {
     let keeper = party(&mut fixture.svm, 0);
 
     // The remainder: a whole unfilled unit resting at its limit of 101.
-    let subject = rest_taker_origin_order(
+    let _subject = rest_taker_origin_order(
         &mut fixture,
         &taker,
         PositionDirection::Long,
@@ -8563,7 +8554,7 @@ fn a_dust_improvement_resolves_without_paying_the_cranker() {
     let maker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
     let keeper = party(&mut fixture.svm, 0);
 
-    let subject = rest_taker_origin_order(
+    let _subject = rest_taker_origin_order(
         &mut fixture,
         &taker,
         PositionDirection::Long,
@@ -8709,7 +8700,7 @@ fn two_crossed_remainders_settle_at_the_one_that_rested_first() {
     let blocker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
     let keeper = party(&mut fixture.svm, 0);
 
-    let subject = rest_crossing_remainders(
+    let _subject = rest_crossing_remainders(
         &mut fixture,
         &blocker,
         (&early, PositionDirection::Long, 101 * PRICE, UNIT),
@@ -8848,7 +8839,7 @@ fn the_aggressors_own_leftover_goes_back_on_its_side() {
 
     // The earlier remainder is the *ask* this time, so the aggressor is a buyer
     // and the settlement price is the ask's 99 — the mirror of the case above.
-    let subject = rest_crossing_remainders(
+    let _subject = rest_crossing_remainders(
         &mut fixture,
         &blocker,
         (&early, PositionDirection::Short, 99 * PRICE, UNIT / 2),
@@ -8934,7 +8925,7 @@ fn cross_conditions_stage_the_taker_origin_crank_for_a_crossed_remainder() {
 
     let taker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
     let maker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
-    let subject = rest_taker_origin_order(
+    let _subject = rest_taker_origin_order(
         &mut fixture,
         &taker,
         PositionDirection::Long,
@@ -9075,7 +9066,7 @@ fn cross_conditions_stage_the_pair_branch_with_the_later_remainder_as_taker() {
     let early = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
     let late = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
     let blocker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
-    let subject = rest_crossing_remainders(
+    let _subject = rest_crossing_remainders(
         &mut fixture,
         &blocker,
         (&early, PositionDirection::Long, 101 * PRICE, UNIT),
@@ -9156,7 +9147,7 @@ fn a_claim_outranks_a_better_priced_maker_and_holds_the_front_until_it_lapses() 
     // A remainder at 101, a whole unit of asks at 99 crossing it, and a maker
     // bidding 102 in front of it — so the top of the book is maker×maker and the
     // remainder is the second-best bid.
-    let subject = rest_taker_origin_order(
+    let _subject = rest_taker_origin_order(
         &mut fixture,
         &taker,
         PositionDirection::Long,
@@ -9455,7 +9446,7 @@ fn the_arb_crank_cannot_reach_a_crossed_taker_remainders_cover() {
     let taker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
     let maker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
     // A migrated remainder bidding 101, crossed by a maker ask at 99.
-    let subject = rest_taker_origin_order(
+    let _subject = rest_taker_origin_order(
         &mut fixture,
         &taker,
         PositionDirection::Long,

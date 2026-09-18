@@ -6,16 +6,18 @@
 //! one `OnValueCross` condition on the market oracle's raw price at the trigger
 //! threshold, so relay turners pay nothing while the price is away from the trigger.
 //!
-//! Three kinds of order stay on the keeper-bot path, which is the correctness floor
-//! either way: orders past the slot cap, orders on markets with no crank conditions,
-//! and orders on oracle sources with no raw-price watch layout. A market with no
-//! reservoir has no keeper fee to express.
+//! Four kinds of order are not staged: orders past the slot cap, orders on markets
+//! with no crank conditions, orders on oracle sources with no raw-price watch
+//! layout, and orders on markets with no CLOB. A market with no reservoir has no
+//! keeper fee to express, and a market with no CLOB has nowhere to fire a trigger.
+//! Relay is the only thing that fires a trigger now, so an order this pass skips
+//! is one nothing fires until its market gains what it lacks. The keeper bot that
+//! used to be the floor is gone with `trigger_order`. Each skip is silent by
+//! design: one unstageable order must not stop the rest of the user's from arming.
 //!
-//! Each fired trigger routes to one of three executors by order type and by whether
-//! the market has a CLOB. A trigger-limit rests whole on the book
-//! (`trigger_limit_order_v1`). A stop-market fires and fills against the book
-//! (`trigger_market_order_v1`). Anything on a market without a CLOB stays on the
-//! plain trigger crank (`trigger_order`) for a keeper bot.
+//! Each fired trigger routes to one of two executors by order type. A trigger-limit
+//! rests whole on the book (`trigger_limit_order_v1`). A stop-market fires and
+//! fills against the book (`trigger_market_order_v1`).
 //!
 //! `remaining_accounts` carry these accounts in any order: the perp markets of the
 //! user's trigger orders, their oracle accounts, their `ClobCrankConditionsV0` for
@@ -81,7 +83,7 @@ struct MarketInputs {
     /// crank conditions account.
     has_clob: bool,
     /// Where a raw-price watch reads this market's oracle, when its source
-    /// has a registered layout. `None` leaves the order keeper-only.
+    /// has a registered layout. `None` leaves the order unstaged.
     watch: Option<OracleWatchV0>,
     keeper_payment_lamports: Option<u64>,
     /// (quoter slab, book, program) when a vetted CLOB is attached.
@@ -362,13 +364,13 @@ struct TriggerWatch {
     threshold: i64,
     /// The comparison byte `ConditionV0::on_value_cross` fires on.
     cmp: u8,
-    /// (quoter slab, book, program) when a vetted CLOB is attached.
-    clob: Option<(Pubkey, Pubkey, Pubkey)>,
+    /// (quoter slab, book, program) of the market's vetted CLOB.
+    clob: (Pubkey, Pubkey, Pubkey),
 }
 
-/// Derive the watch that arms one order. `None` leaves the order on the keeper-bot
-/// path. That happens when the order does not trigger, when its market is absent, or
-/// when the market gives no oracle, no watch layout, or no keeper payment.
+/// Derive the watch that arms one order. `None` leaves the order unstaged. That
+/// happens when the order does not trigger, when its market is absent, or when the
+/// market gives no oracle, no watch layout, no keeper payment, or no CLOB.
 fn trigger_watch_for_order(
     order: &crate::state::user::Order,
     markets: &BTreeMap<u16, MarketInputs>,
@@ -384,7 +386,7 @@ fn trigger_watch_for_order(
         return None;
     }
     let inputs = markets.get(&order.market_index)?;
-    // Everything a watch needs, or the order stays keeper-only.
+    // Everything a watch needs, or the order is not staged.
     let (Some(oracle), Some(watch), Some(min_payment)) =
         (inputs.oracle, inputs.watch, inputs.keeper_payment_lamports)
     else {
@@ -395,6 +397,11 @@ fn trigger_watch_for_order(
         crate::state::user::OrderTriggerCondition::Below => WatchDirection::AtOrBelow,
         _ => return None,
     };
+    // Every fired trigger goes to the market's book, so a market with no CLOB
+    // has nowhere to fire one. Skipping it here rather than failing keeps one
+    // such order from stopping the sync, which would leave this user's other
+    // triggers un-armed.
+    let clob = inputs.clob?;
     let threshold = watch.raw_threshold(i128::from(order.trigger_price), direction)?;
     Some(TriggerWatch {
         oracle,
@@ -402,7 +409,7 @@ fn trigger_watch_for_order(
         min_payment,
         threshold,
         cmp: direction.cmp(),
-        clob: inputs.clob,
+        clob,
     })
 }
 
@@ -410,24 +417,16 @@ fn trigger_watch_for_order(
 /// whole on the book (`trigger_limit_order_v1`). A stop-market fires and fills
 /// against the book (`trigger_market_order_v1`).
 ///
-/// Both need the market's CLOB, which is where every fired order goes. A market
-/// with no CLOB attached can arm a trigger but has nowhere to fire it, so the
-/// sync refuses to stage one rather than arming a crank that must fail. An
-/// oracle-offset trigger cannot rest at a fixed price, and placement already
-/// refuses one (`validate_order` -> `InvalidOrderOracleOffset`), so a slot never
-/// holds one.
+/// Both need the market's CLOB, which is where every fired order goes.
+/// `trigger_watch_for_order` has already dropped an order whose market has
+/// none, so this is reached with the book in hand. An oracle-offset trigger
+/// cannot rest at a fixed price, and placement already refuses one
+/// (`validate_order` -> `InvalidOrderOracleOffset`), so a slot never holds one.
 fn route_trigger_resolver(
     order: &crate::state::user::Order,
-    clob: Option<(Pubkey, Pubkey, Pubkey)>,
+    clob: (Pubkey, Pubkey, Pubkey),
 ) -> Result<([u8; 8], TriggerSlotMetaV0)> {
-    let (slab, book, program) = clob.ok_or_else(|| {
-        msg!(
-            "perp market {} has no CLOB, so trigger {} has nowhere to fire",
-            order.market_index,
-            order.order_id
-        );
-        ErrorCode::ClobRestUnavailable
-    })?;
+    let (slab, book, program) = clob;
     let disc = match order.order_type {
         OrderType::TriggerLimit => crate::instruction::ResolveTriggerLimitOrderV1::DISCRIMINATOR,
         OrderType::TriggerMarket => crate::instruction::ResolveTriggerMarketOrderV1::DISCRIMINATOR,

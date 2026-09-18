@@ -28,6 +28,14 @@
 //! A user who held orders and now has none still gets one write, an empty list.
 //! A subscriber that heard nothing cannot tell an empty book from a quiet
 //! one.
+//!
+//! # Why a restart reads Redis first
+//!
+//! The index lives in memory, so a new process starts with no record of what
+//! the last one wrote. A user whose last order left while no process ran is
+//! invisible to that sweep, and their stored document would be served forever.
+//! [`adopt_stored_users`] reads the stored keys once at startup, and each
+//! market's first tick clears the ones the book no longer backs.
 
 use {
     anyhow::{Context, Result},
@@ -53,6 +61,10 @@ pub struct UserOrdersIndex {
     /// A user drops out of here once their empty list has been published, so
     /// the emptying is written exactly once.
     users: HashMap<(Pubkey, u16), u64>,
+    /// Per market, the users a previous process left a stored document for.
+    /// [`adopt_stored_users`] fills it at startup and the market's first tick
+    /// consumes it.
+    carried_over: HashMap<u16, HashSet<Pubkey>>,
 }
 
 /// One resting order, as a subscriber reads it.
@@ -153,7 +165,81 @@ pub fn changed_users(
         index.users.remove(&(user, market_index));
         changed.push((user, Value::Array(Vec::new())));
     }
+
+    // Documents a previous process stored. Their users rested orders when that
+    // process stopped. A user who rests none now is not in `index.users`, which
+    // this process built from scratch, so the sweep above cannot reach them and
+    // their document would be served forever. The first tick that sees the
+    // market clears them. A user who does still rest is written by the normal
+    // path above, because their fingerprint is unknown to this process too.
+    if let Some(carried_over) = index.carried_over.remove(&market_index) {
+        for user in carried_over {
+            if !still_resting.contains(&user) {
+                changed.push((user, Value::Array(Vec::new())));
+            }
+        }
+    }
     Some(changed)
+}
+
+/// Adopt the user documents a previous process stored, so the first tick of
+/// each market can clear the ones that no longer have orders behind them.
+///
+/// This covers only the markets this process publishes. A document for any
+/// other market belongs to whichever process publishes that market, so it is
+/// left alone.
+///
+/// Returns how many documents were adopted.
+pub async fn adopt_stored_users(
+    index: &mut UserOrdersIndex,
+    redis: &mut redis::aio::MultiplexedConnection,
+    prefix: &str,
+    markets: &[u16],
+) -> Result<usize> {
+    let pattern = format!("{prefix}last_update_user_orders_*");
+    let mut cursor = 0u64;
+    let mut adopted = 0usize;
+    loop {
+        let (next, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+            .arg(cursor)
+            .arg("MATCH")
+            .arg(&pattern)
+            .arg("COUNT")
+            .arg(500)
+            .query_async(redis)
+            .await
+            .context("scan stored user orders")?;
+        for key in &keys {
+            let Some((user, market_index)) = parse_user_key(prefix, key) else {
+                continue;
+            };
+            if !markets.contains(&market_index) {
+                continue;
+            }
+            index
+                .carried_over
+                .entry(market_index)
+                .or_default()
+                .insert(user);
+            adopted += 1;
+        }
+        if next == 0 {
+            return Ok(adopted);
+        }
+        cursor = next;
+    }
+}
+
+/// The user and market a stored document's key names. `None` for a key that
+/// does not parse, which is a key this module did not write.
+fn parse_user_key(prefix: &str, key: &str) -> Option<(Pubkey, u16)> {
+    let tail = key
+        .strip_prefix(prefix)?
+        .strip_prefix("last_update_user_orders_")?;
+    // A base58 pubkey holds no underscore, so the last one separates the two
+    // fields.
+    let (user, market_index) = tail.rsplit_once('_')?;
+    Some((user.parse().ok()?, market_index.parse().ok()?))
 }
 
 /// Index one market's book and write what changed.
@@ -334,6 +420,48 @@ mod tests {
         assert_eq!(changed.len(), 1);
         assert_eq!(changed[0].1, Value::Array(Vec::new()));
         assert!(changed_users(&mut index, &velocity(), 0, &empty).is_none());
+    }
+
+    /// A document a previous process stored for a user who now rests nothing.
+    /// The sweep cannot reach it, because this process never indexed that user,
+    /// so the first tick has to clear it from what Redis held.
+    #[test]
+    fn a_carried_over_document_is_cleared_on_the_first_tick() {
+        let mut index = UserOrdersIndex::default();
+        let gone = user_pda(&velocity(), &node(1, 10, 5).user_ref());
+        let resting = user_pda(&velocity(), &node(2, 20, 7).user_ref());
+        index.carried_over.insert(0, HashSet::from([gone, resting]));
+
+        let changed =
+            changed_users(&mut index, &velocity(), 0, &market(&[node(2, 20, 7)])).unwrap();
+        let cleared: Vec<&(Pubkey, Value)> = changed
+            .iter()
+            .filter(|(_, rows)| *rows == Value::Array(Vec::new()))
+            .collect();
+        assert_eq!(cleared.len(), 1);
+        assert_eq!(cleared[0].0, gone);
+        // The user who still rests is written with their rows, not cleared.
+        assert!(changed
+            .iter()
+            .any(|(user, rows)| *user == resting && rows.as_array().unwrap().len() == 1));
+
+        // Reconciliation runs once. The next tick is the ordinary quiet one.
+        assert!(changed_users(&mut index, &velocity(), 0, &market(&[node(2, 20, 7)])).is_none());
+    }
+
+    #[test]
+    fn a_stored_key_names_its_user_and_market() {
+        let user = Pubkey::new_from_array([3u8; 32]);
+        assert_eq!(
+            parse_user_key("dlob:", &user_key("dlob:", &user, 7)),
+            Some((user, 7))
+        );
+        assert_eq!(parse_user_key("", &user_key("", &user, 0)), Some((user, 0)));
+        // Another key under the same prefix is not this module's.
+        assert_eq!(
+            parse_user_key("dlob:", "dlob:last_update_orderbook_perp_0"),
+            None
+        );
     }
 
     /// Markets are indexed independently. One book that moves must not reprint

@@ -1122,7 +1122,7 @@ pub async fn setup_grpc(
 
     let _ = tokio::try_join!(
         sync_stats_accounts(&velocity),
-        sync_user_accounts(&velocity, &dlob_notifier),
+        sync_user_accounts(&velocity, Some(&dlob_notifier)),
     );
 
     let (slot_tx, slot_rx) = tokio::sync::mpsc::channel(64);
@@ -1180,9 +1180,14 @@ pub async fn sync_stats_accounts(
     }
 }
 
+/// Load every non-idle `User` into the account map.
+///
+/// `dlob_notifier` is the filler's book, which is seeded from the same pass.
+/// The liquidator keeps no book and passes `None`, so it pays for the account
+/// map alone.
 pub async fn sync_user_accounts(
     velocity: &VelocityClient,
-    dlob_notifier: &DLOBNotifier,
+    dlob_notifier: Option<&DLOBNotifier>,
 ) -> Result<(), solana_rpc_client_api::client_error::Error> {
     let sync_result = get_program_accounts_decoded(
         velocity,
@@ -1204,7 +1209,9 @@ pub async fn sync_user_accounts(
         Ok(accounts) => {
             for (pubkey, account) in accounts {
                 let user = velocity_rs::utils::deser_zero_copy::<User>(&account.data);
-                dlob_notifier.user_update(pubkey, None, &user, 0);
+                if let Some(dlob_notifier) = dlob_notifier {
+                    dlob_notifier.user_update(pubkey, None, &user, 0);
+                }
                 velocity.backend().account_map().on_account_fn()(&AccountUpdate {
                     pubkey,
                     data: &account.data,

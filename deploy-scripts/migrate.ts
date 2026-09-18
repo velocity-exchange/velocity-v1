@@ -102,11 +102,36 @@ function parseArgs(): Args {
 	};
 }
 
+/**
+ * An account's anchor discriminator, hashed from its Rust type name. The name
+ * has to match the IDL exactly: a name that does not match hashes to a prefix
+ * no account carries, `getProgramAccounts` returns nothing, and the step
+ * reports zero accounts and moves on. `assertNamesAreReal` is the guard.
+ */
 function discriminator(name: string): Buffer {
 	return createHash('sha256')
 		.update(`account:${name}`)
 		.digest()
 		.subarray(0, 8);
+}
+
+/**
+ * Fail before sending anything when a name does not appear in the IDL. A
+ * mistyped name has no symptom otherwise: the resize silently covers no
+ * accounts, and the upgrade lands against accounts too small for the layout
+ * that now reads them.
+ */
+function assertNamesAreReal(idl: any, names: string[]): void {
+	const known = new Set<string>(
+		(idl?.accounts ?? []).map((account: any) => account.name)
+	);
+	const unknown = names.filter((name) => !known.has(name));
+	if (unknown.length > 0) {
+		throw new Error(
+			`these account names are not in the IDL: ${unknown.join(', ')}. ` +
+				`The name must be the Rust type name, which is what the discriminator hashes.`
+		);
+	}
 }
 
 function ixDiscriminator(name: string): Buffer {
@@ -118,15 +143,15 @@ function ixDiscriminator(name: string): Buffer {
  * type that never grew is harmless to list. */
 const RESIZABLE: { name: string; size: number }[] = [
 	{ name: 'User', size: 8 + 4496 },
-	{ name: 'perpMarket', size: 8 + 1328 },
-	{ name: 'quoterV0', size: 8 + 784 },
+	{ name: 'PerpMarket', size: 8 + 1328 },
+	{ name: 'QuoterV0', size: 8 + 784 },
 	// Relay condition hosts. The `sizes_for_the_migration_script` test in
 	// `state/relay_scratch.rs` prints these sizes. Run it and paste the output
 	// rather than working the sizes out by hand:
 	// `cargo test -p velocity --lib sizes_for_the_migration_script -- --show-output`.
 	// A type that is missing or stale here has no symptom until an account is
 	// read at the wrong offset.
-	{ name: 'clobCrankConditionsV0', size: 808 },
+	{ name: 'ClobCrankConditionsV0', size: 808 },
 	{ name: 'QuoterCrossConditionsV0', size: 2424 },
 	{ name: 'UserConditionsV0', size: 6040 },
 ];
@@ -161,6 +186,10 @@ async function main() {
 	console.log(args.dryRun ? '(dry run — nothing will be sent)\n' : '');
 
 	// 1. resize
+	assertNamesAreReal(
+		program.idl,
+		RESIZABLE.map(({ name }) => name)
+	);
 	const state = PublicKey.findProgramAddressSync(
 		[Buffer.from('velocity_state')],
 		velocity

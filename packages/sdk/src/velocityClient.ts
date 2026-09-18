@@ -3917,9 +3917,11 @@ export class VelocityClient {
 	 * @param takerAssociatedTokenAccount - Source token account for the deposit.
 	 * @param initSwiftAccount - If `true`, initializes the taker's `SignedMsgUserOrders` account first
 	 * when it doesn't already exist; defaults to `false`.
-	 * @returns Nothing — currently discards the built transaction rather than returning or sending it
-	 * (likely a bug: the built `VersionedTransaction`/`Transaction` from `buildTransaction` is neither
-	 * returned nor passed to `sendTransaction`).
+	 * @param makerInfo - The book's resting owners the placement may settle against. The placement
+	 * fills in the same instruction, and a fill reaches only the users the transaction carries, so a
+	 * placement that leaves out an owner the book could have reached is refused with
+	 * `FillerOmittedReachableMaker`. The dlob-server's `/topMakers` names them.
+	 * @returns The built transaction.
 	 */
 	public async buildSwiftDepositTx(
 		signedOrderParams: SignedMsgOrderParams,
@@ -3934,7 +3936,8 @@ export class VelocityClient {
 		tradePerpMarketIndex: number,
 		subAccountId: number,
 		takerAssociatedTokenAccount: PublicKey,
-		initSwiftAccount = false
+		initSwiftAccount = false,
+		makerInfo?: MakerInfo | MakerInfo[]
 	) {
 		const instructions = await this.getDepositTxnIx(
 			depositAmount,
@@ -3965,10 +3968,15 @@ export class VelocityClient {
 			signedOrderParams,
 			tradePerpMarketIndex,
 			takerInfo,
-			instructions
+			instructions,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			makerInfo
 		);
 
-		await this.buildTransaction(ixsWithPlace, {
+		return await this.buildTransaction(ixsWithPlace, {
 			computeUnitsPrice: 1_000,
 			computeUnits: 100_000,
 		});
@@ -11331,30 +11339,28 @@ export class VelocityClient {
 	 * `canUpdateBidAskTwap` set and at least 1000 USDC (`QUOTE_PRECISION`, 1e6) staked in the
 	 * insurance fund (`ifStakedQuoteAssetAmount`), or the instruction reverts.
 	 *
-	 * Two sources, merged per side. The market's CLOB is read on-chain through the book's own
-	 * `quoteL3V0` leg, so the caller supplies no book depth; the `makers` are sampled for whatever
-	 * still rests in `User.orders`. A market that names a book must be cranked with it — the
-	 * instruction is built with the book accounts automatically and reverts without them.
+	 * One source. The market's CLOB is read on-chain through the book's own `quoteL3V0` leg, so the
+	 * caller supplies no depth and names no counterparties. A market that names a book must be
+	 * cranked with it — the instruction is built with the book accounts automatically and reverts
+	 * without them. A market that names no book yields no estimate.
 	 *
 	 * Only orders that have rested on-chain for at least `BID_ASK_TWAP_MIN_QUOTE_REST`
 	 * (24 baseline slots, ~10s, inflated to actual slots at the current slot duration) are sampled — a quote must have been takeable by someone else before it may
-	 * move the TWAP. Orders newer than that are silently skipped on both sources, so a market whose
+	 * move the TWAP. Orders newer than that are silently skipped, so a market whose
 	 * depth was all placed this slot yields no estimate and the crank falls back to the AMM's
 	 * quote. Note this is measured from the order's on-chain post slot, not from `order.slot`
 	 * (which signed-message orders back-date).
 	 * @param perpMarketIndex - Perp market index to update.
-	 * @param makers - `(maker, makerStats)` pairs whose resting orders are sampled for the estimate.
 	 * @param txParams - Optional compute-unit/priority-fee overrides.
 	 * @returns The transaction signature.
 	 */
 	public async updatePerpBidAskTwap(
 		perpMarketIndex: number,
-		makers: [PublicKey, PublicKey][],
 		txParams?: TxParams
 	): Promise<TransactionSignature> {
 		const { txSig } = await this.sendTransaction(
 			await this.buildTransaction(
-				await this.getUpdatePerpBidAskTwapIx(perpMarketIndex, makers),
+				await this.getUpdatePerpBidAskTwapIx(perpMarketIndex),
 				txParams
 			),
 			[],
@@ -11370,28 +11376,13 @@ export class VelocityClient {
 	 * @returns The instruction.
 	 */
 	public async getUpdatePerpBidAskTwapIx(
-		perpMarketIndex: number,
-		makers: [PublicKey, PublicKey][]
+		perpMarketIndex: number
 	): Promise<TransactionInstruction> {
 		const perpMarket = this.getPerpMarketAccountOrThrow(perpMarketIndex);
 
-		const remainingAccounts = [];
-		for (const [maker, makerStats] of makers) {
-			remainingAccounts.push({
-				pubkey: maker,
-				isWritable: false,
-				isSigner: false,
-			});
-			remainingAccounts.push({
-				pubkey: makerStats,
-				isWritable: false,
-				isSigner: false,
-			});
-		}
-
 		// The market names its book, so the caller does not. Absent it, the
-		// three accounts are anchor's `None` (the program id) and the estimate
-		// reads the passed makers alone.
+		// three accounts are anchor's `None` (the program id) and the crank
+		// estimates nothing from resting depth.
 		const clob = perpMarket.clobMarket.equals(PublicKey.default)
 			? undefined
 			: await this.getClobAccounts(perpMarketIndex);
@@ -11407,7 +11398,7 @@ export class VelocityClient {
 				clobMarket: clob?.clobMarket ?? this.program.programId,
 				clobProgram: clob?.clobProgram ?? this.program.programId,
 			},
-			remainingAccounts,
+			remainingAccounts: [],
 		});
 	}
 

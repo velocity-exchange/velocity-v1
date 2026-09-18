@@ -725,7 +725,11 @@ export function calculateEstimatedPerpEntryPrice(
 				break;
 			}
 
-			if (levelRemaining.lte(ZERO)) {
+			// Both conversions round down, so a level can keep a residual whose
+			// notional is worth zero quote. Such a residual fills no base and
+			// leaves the level unchanged. Move on to the next level, or the walk
+			// repeats this level forever.
+			if (levelRemaining.lte(ZERO) || baseFilled.isZero()) {
 				nextLevel();
 			}
 		}

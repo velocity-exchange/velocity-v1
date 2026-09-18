@@ -24,13 +24,14 @@ import {
 	getLimitOrderParams,
 	PERCENTAGE_PRECISION,
 	calculateEstimatedPerpEntryPrice,
-	deriveOracleAuctionParams,
 	getOrderParams,
 	OrderType,
 	getTokenValue,
 	WRAPPED_SOL_MINT,
 	findDirectionToClose,
 	calculateMarketAvailablePNL,
+	MakerInfo,
+	getUserStatsAccountPublicKey,
 	RECOMMENDED_JUPITER_API,
 	msToSlotsCeilNum,
 	SLOT_DURATION_BASELINE,
@@ -38,6 +39,7 @@ import {
 import {
 	ComputeBudgetProgram,
 	AddressLookupTableAccount,
+	PublicKey,
 	TransactionInstruction,
 } from '@solana/web3.js';
 import {
@@ -45,6 +47,7 @@ import {
 	createCloseAccountInstruction,
 	getAssociatedTokenAddress,
 } from '@solana/spl-token';
+import axios from 'axios';
 import { logger } from '../logger';
 import { LiquidatorConfig } from '../config';
 import { PriorityFeeSubscriber } from '@velocity-exchange/sdk';
@@ -56,6 +59,13 @@ import {
 } from '../utils';
 
 const BPS_PRECISION = 10000;
+
+/**
+ * How many of the book's resting owners a derisk carries. Each costs two
+ * writable locks, and the remainder rests for the cross cranks either way.
+ */
+const DERISK_MAKERS = 2;
+const TOP_MAKERS_TIMEOUT_MS = 2_000;
 
 export type SpotDeriskMethod = 'jupiter' | 'velocity';
 export type PerpDeriskMethod = 'swift' | 'on-chain';
@@ -561,17 +571,15 @@ export class LiquidatorDerisk {
 			throw e;
 		}
 		const limitPrice = this.calculateOrderLimitPrice(entryPrice, direction);
-		const { auctionStartPrice, auctionEndPrice, oraclePriceOffset } =
-			deriveOracleAuctionParams({
-				direction,
-				oraclePrice: oracle.price,
-				auctionStartPrice: bestPrice,
-				auctionEndPrice: limitPrice,
-				limitPrice,
-			});
 
+		// A market order, not an oracle-offset one. `place_and_take_perp_order_v1`
+		// refuses an order that cannot rest whenever the book runs a speed bump,
+		// and an oracle-offset order has no fixed price to rest at, so
+		// `restable_remainder_price` returns nothing for it. A market order rests
+		// at its auction end price, which is the worst fill this derisk already
+		// agreed to.
 		return getOrderParams({
-			orderType: OrderType.ORACLE,
+			orderType: OrderType.MARKET,
 			direction,
 			baseAssetAmount,
 			reduceOnly: true,
@@ -585,10 +593,73 @@ export class LiquidatorDerisk {
 					SLOT_DURATION_BASELINE
 				)
 			),
-			auctionStartPrice,
-			auctionEndPrice,
-			oraclePriceOffset,
+			auctionStartPrice: bestPrice,
+			auctionEndPrice: limitPrice,
+			price: limitPrice,
 		});
+	}
+
+	/**
+	 * The book's best resting owners on the side this derisk sweeps.
+	 *
+	 * A fill settles only for users the transaction carries, so an order that
+	 * names none takes the vAMM and the PropAMMs and rests the rest. The
+	 * dlob-server indexes the book and names them.
+	 */
+	private async getBookMakers(
+		marketIndex: number,
+		direction: PositionDirection
+	): Promise<MakerInfo[]> {
+		if (!this.config.dlobServerHttpUrl) {
+			return [];
+		}
+		// A long sweeps the asks.
+		const side = isVariant(direction, 'long') ? 'ask' : 'bid';
+		let keys: string[];
+		try {
+			const response = await axios.get(
+				`${this.config.dlobServerHttpUrl.replace(
+					/\/$/,
+					''
+				)}/topMakers?marketType=perp&marketIndex=${marketIndex}&side=${side}&limit=${DERISK_MAKERS}`,
+				{ timeout: TOP_MAKERS_TIMEOUT_MS, validateStatus: () => true }
+			);
+			if (response.status !== 200 || !Array.isArray(response.data)) {
+				logger.warn(
+					`topMakers for market ${marketIndex} ${side} returned status ${response.status}`
+				);
+				return [];
+			}
+			keys = response.data as string[];
+		} catch (e) {
+			logger.warn(
+				`Error loading topMakers for market ${marketIndex} ${side}: ${e}`
+			);
+			return [];
+		}
+
+		const makers: MakerInfo[] = [];
+		for (const key of keys) {
+			try {
+				const makerUserAccount = (
+					await this.userMap.mustGet(key)
+				).getUserAccountOrThrow();
+				makers.push({
+					maker: new PublicKey(key),
+					makerStats: getUserStatsAccountPublicKey(
+						this.velocityClient.program.programId,
+						makerUserAccount.authority
+					),
+					makerUserAccount,
+				});
+			} catch (e) {
+				// One maker this keeper cannot load costs that maker's depth.
+				// The rest of the derisk still goes out, and the remainder rests
+				// for the cross cranks.
+				logger.warn(`Skipping book maker ${key}: ${e}`);
+			}
+		}
+		return makers;
 	}
 
 	private async deriskPerpPositions(
@@ -617,24 +688,44 @@ export class LiquidatorDerisk {
 				// and the market's PropAMMs, and whatever it cannot fill rests on
 				// the book as a taker-origin remainder, so one instruction both
 				// closes what it can and leaves the rest working.
-				const cancelOrdersIx = await this.velocityClient.getCancelOrdersV1Ix(
-					{
-						marketIndex: position.marketIndex,
-						sides: isVariant(orderParams.direction, 'long')
-							? CancelSidesV0.BIDS
-							: CancelSidesV0.ASKS,
-					},
-					userAccount.subAccountId
-				);
-				const placeOrderIx =
-					await this.velocityClient.getPlaceAndTakePerpOrderIx(
+				//
+				// A market with no CLOB attached has no accounts to build these
+				// two instructions from, and the builders throw. Catching it here
+				// keeps one such market from ending the whole cycle, which would
+				// leave every position behind it unwound.
+				let cancelOrdersIx: TransactionInstruction;
+				let placeOrderIx: TransactionInstruction;
+				try {
+					cancelOrdersIx = await this.velocityClient.getCancelOrdersV1Ix(
+						{
+							marketIndex: position.marketIndex,
+							sides: isVariant(orderParams.direction, 'long')
+								? CancelSidesV0.BIDS
+								: CancelSidesV0.ASKS,
+						},
+						userAccount.subAccountId
+					);
+					placeOrderIx = await this.velocityClient.getPlaceAndTakePerpOrderIx(
 						orderParams,
 						undefined,
-						undefined,
+						await this.getBookMakers(
+							position.marketIndex,
+							orderParams.direction
+						),
 						undefined,
 						undefined,
 						userAccount.subAccountId
 					);
+				} catch (e) {
+					logger.error(
+						`Could not build the derisk for market ${
+							position.marketIndex
+						} on subaccount ${userAccount.subAccountId}: ${
+							(e as Error).message
+						}`
+					);
+					continue;
+				}
 
 				const simResult = await this.buildVersionedTransactionWithSimulatedCus(
 					[cancelOrdersIx, placeOrderIx],

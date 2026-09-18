@@ -326,6 +326,23 @@ async fn main() -> Result<()> {
     // What the per-user index published last, so a tick that changed no user's
     // orders writes nothing. Most ticks change no user's orders.
     let mut user_orders = user_orders::UserOrdersIndex::default();
+    // The index starts empty, so it cannot tell that a user stopped resting
+    // while no process ran. Reading what the last process stored lets each
+    // market's first tick clear the documents the book no longer backs.
+    match user_orders::adopt_stored_users(
+        &mut user_orders,
+        &mut redis,
+        &config.redis_prefix,
+        &markets,
+    )
+    .await
+    {
+        Ok(adopted) => info!(adopted, "adopted stored user order documents"),
+        Err(err) => warn!(
+            error = %format!("{err:#}"),
+            "could not read stored user orders; a user who stopped resting while this was down keeps their document until they rest again"
+        ),
+    }
 
     let mut tick = tokio::time::interval(Duration::from_millis(config.tick_ms));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);

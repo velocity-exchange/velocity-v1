@@ -75,8 +75,9 @@ To properly configure the DLOB server, set the following environment variables i
 | `METRICS_PORT`                | The port number for Prometheus metrics.                         | `9465`                              |
 | `PRIVATE_KEY`                 | Path to the Solana private key file.                            | `/path/to/keypair.json`             |
 | `RATE_LIMIT_CALLS_PER_SECOND` | Maximum number of API calls per second.                         | `100`                               |
-| `PERP_MARKETS_TO_LOAD`        | Number of perpetual markets to load at startup.                 | `0`                                 |
-| `SPOT_MARKETS_TO_LOAD`        | Number of spot markets to load at startup.                      | `5`                                 |
+| `MAX_BOOK_SLOT_LAG`           | How far a published book may trail the chain before it counts as behind. | `150`                      |
+| `BOOK_FRESHNESS_INTERVAL_MS`  | How often to sample the published books for staleness.          | `5000`                              |
+| `ENABLE_FILL_QUALITY_ANALYTICS` | Poll Athena for taker fill quality, which `/auctionParams` v2+ reads. Needs Athena credentials. | `false` |
 | `ELASTICACHE_HOST`            | (for websocket server) Redis host endpoint.                     | `localhost`                         |
 | `ELASTICACHE_PORT`            | (for websocket server) Redis port.                              | `6379`                              |
 | `REDIS_CLIENT`                | (for websocket server) Redis client type (DLOB/DLOB_HELIUS).    | `DLOB`                              |
@@ -115,11 +116,16 @@ bash redisCluster.sh start
 bash redisCluster.sh create
 ```
 
-In second terminal, run the publisher from the repo root:
+In second terminal, run the publisher. `rust/` is its own cargo workspace, which
+the root one excludes, so it is reached by manifest path:
 
 ```
-cargo run -p book-publisher
+cargo run --manifest-path rust/Cargo.toml -p book-publisher
 ```
+
+Its `REDIS_KEY_PREFIX` must equal the prefix the server's Redis client applies,
+which is `dlob:` for `REDIS_CLIENT=DLOB`. The publisher defaults to no prefix, so
+every read misses until it is set.
 
 In a third terminal, run:
 

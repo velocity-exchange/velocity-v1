@@ -5,8 +5,8 @@
 //! refreshes its own anchor can clear its own gate.
 //!
 //! The bid/ask crank measures the market from the market's own book, read
-//! through `quote_l3_v0`, plus whatever still rests in the `User` accounts the
-//! caller passes.
+//! through `quote_l3_v0`. It reads no account the caller chooses, so the caller
+//! chooses no part of what moves the mark.
 
 use super::*;
 
@@ -132,13 +132,13 @@ pub fn handle_update_perp_bid_ask_twap<'c: 'info, 'info>(
     // Stop this crank while the market's funding is paused. The `funding_not_paused`
     // access control already blocks the exchange-wide pause.
     //
-    // The crank estimates the book from the market's CLOB and from `User` accounts
-    // that the caller supplies. The estimate moves the bid, ask and mark TWAPs.
+    // The crank estimates the book from the market's CLOB. The estimate moves the
+    // bid, ask and mark TWAPs.
     // `OrderParams::get_perp_baseline_start_price_offset` reads those TWAPs to set the
     // auction band for a different user's triggered stop-loss order.
-    // A paused market is one the administrator does not trust, so the caller-supplied
-    // input stops here. Perp fills still write the same TWAPs, because a fill is a
-    // trade with capital at risk.
+    // A paused market is one the administrator does not trust, so the crank stops
+    // here. Perp fills still write the same TWAPs, because a fill is a trade with
+    // capital at risk.
     if perp_market.is_operation_paused(PerpOperation::UpdateFunding) {
         return Ok(());
     }
@@ -163,8 +163,8 @@ pub fn handle_update_perp_bid_ask_twap<'c: 'info, 'info>(
         state.slot_clock(),
     )?;
     // This crank writes `PerpMarket`-level oracle stats only. It reads the book
-    // and the passed makers to estimate the bid and ask TWAP. It reads neither
-    // the AMM peg nor the AMM reserves. `update_oracle_derived_stats` below
+    // to estimate the bid and ask TWAP. It reads neither the AMM peg nor the
+    // AMM reserves. `update_oracle_derived_stats` below
     // keeps the oracle TWAP and the reference price offset current.
     let validity = crate::vlp::amm::refresh::compute_amm_refresh_validity(
         perp_market,

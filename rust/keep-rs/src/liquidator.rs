@@ -31,7 +31,6 @@ use {
     tokio::sync::mpsc::error::TryRecvError,
     velocity_rs::{
         constants::{derive_clob_crank_conditions, derive_quoter_slab},
-        dlob::{DLOBNotifier, DLOB},
         grpc::{
             grpc_subscriber::{AccountFilter, GrpcConnectionOpts},
             TransactionUpdate,
@@ -504,7 +503,6 @@ pub enum GrpcEvent {
 
 pub struct LiquidatorBot {
     velocity: VelocityClient,
-    dlob_notifier: DLOBNotifier,
     config: Config,
     /// stores velocity perp+spot market metadata and oracle prices
     market_state: Arc<RwLock<MarketState>>,
@@ -536,8 +534,6 @@ impl LiquidatorBot {
         metrics: Arc<Metrics>,
         dashboard_state: DashboardStateRef,
     ) -> Self {
-        let dlob: &'static DLOB = Box::leak(Box::new(DLOB::default()));
-
         let mut perp_market_ids = match config.use_markets() {
             UseMarkets::All => velocity.get_all_perp_market_ids(),
             UseMarkets::Subset(m) => m,
@@ -626,14 +622,8 @@ impl LiquidatorBot {
         let rt = tokio::runtime::Handle::current();
         let tx_sender = tx_worker.run(rt);
 
-        let dlob_notifier = dlob.spawn_notifier();
-        let events_rx = setup_grpc(
-            velocity.clone(),
-            dlob_notifier.clone(),
-            tx_sender.clone(),
-            perp_market_ids.clone(),
-        )
-        .await;
+        let events_rx =
+            setup_grpc(velocity.clone(), tx_sender.clone(), perp_market_ids.clone()).await;
         log::info!(target: TARGET, "subscribed gRPC");
 
         // populate market data
@@ -702,7 +692,6 @@ impl LiquidatorBot {
         spawn_liquidation_worker(
             tx_sender.clone(),
             Arc::new(PrimaryLiquidationStrategy {
-                dlob,
                 velocity: velocity.clone(),
                 market_state: Arc::clone(&market_state),
                 subaccounts: subaccounts.clone(),
@@ -753,7 +742,6 @@ impl LiquidatorBot {
 
         LiquidatorBot {
             velocity,
-            dlob_notifier,
             events_rx,
             config,
             market_state,
@@ -773,7 +761,6 @@ impl LiquidatorBot {
         let mut events_rx = self.events_rx;
         let velocity: &'static VelocityClient = Box::leak(Box::new(self.velocity));
         let config = self.config.clone();
-        let dlob_notifier = self.dlob_notifier;
         let mut current_slot = 0;
         let mut users = BTreeMap::<Pubkey, UserAccountMetadata>::new();
         let mut oracle_prices = HashMap::<MarketId, OraclePriceMetadata>::new();
@@ -1002,8 +989,6 @@ impl LiquidatorBot {
                             }
                         }
 
-                        let old_user = users.get(&pubkey).map(|m| &m.user);
-                        dlob_notifier.user_update(pubkey, old_user, &user, update_slot);
                         let now_ms = current_time_millis();
                         users.insert(
                             pubkey,
@@ -1574,27 +1559,23 @@ fn on_transaction_update_fn(
     }
 }
 
+/// Watch the mm oracle every slot. Nothing here consumes the price: the
+/// liquidator reads the oracle again when it values an account. A lookup that
+/// fails for `GRPC_CALLBACK_FAILURE_LIMIT` slots in a row means this process
+/// can no longer price the markets it is watching, and restarting is the only
+/// repair, so this is where that is noticed.
 fn on_slot_update_fn(
-    dlob_notifier: DLOBNotifier,
     velocity: VelocityClient,
     market_ids: &[MarketId],
 ) -> impl Fn(u64) + Send + Sync + 'static {
     let market_ids: Vec<MarketId> = market_ids.to_vec();
     let consecutive_failures = std::sync::atomic::AtomicU32::new(0);
     move |new_slot| {
-        // Keep the DLOB's slot clock in step with `State`. This does nothing unless
-        // an IBRL transition was synchronized since the last slot.
-        dlob_notifier.slot_clock_update(velocity.slot_clock());
         for market in market_ids.iter() {
             // tolerate transient failures; panic (=> service restart) if persistent
             match velocity.try_get_mmoracle_for_perp_market(market.index(), new_slot) {
-                Ok(oracle_price_data) => {
+                Ok(_) => {
                     consecutive_failures.store(0, std::sync::atomic::Ordering::Relaxed);
-                    dlob_notifier.slot_and_oracle_update(
-                        *market,
-                        new_slot,
-                        oracle_price_data.price as u64,
-                    );
                 }
                 Err(e) => {
                     let fails =
@@ -1615,7 +1596,6 @@ fn on_slot_update_fn(
 
 async fn setup_grpc(
     velocity: VelocityClient,
-    dlob_notifier: DLOBNotifier,
     transaction_tx: TxSender,
     market_ids: Vec<MarketId>,
 ) -> tokio::sync::mpsc::Receiver<GrpcEvent> {
@@ -1623,7 +1603,7 @@ async fn setup_grpc(
 
     let _ = tokio::try_join!(
         crate::filler::sync_stats_accounts(&velocity),
-        crate::filler::sync_user_accounts(&velocity, &dlob_notifier),
+        crate::filler::sync_user_accounts(&velocity, None),
     );
 
     let mut oracle_to_market = HashMap::<Pubkey, Vec<(MarketId, OracleSource)>>::default();
@@ -1649,7 +1629,6 @@ async fn setup_grpc(
                 .transaction_include_accounts(vec![velocity.wallet().default_sub_account()])
                 .on_transaction(on_transaction_update_fn(transaction_tx.clone()))
                 .on_slot(on_slot_update_fn(
-                    dlob_notifier,
                     velocity.clone(),
                     market_ids.as_ref(),
                 ))
@@ -2015,7 +1994,6 @@ fn peek_perp_fill_fallback(
 /// Primary liquidation strategy
 pub struct PrimaryLiquidationStrategy {
     pub velocity: VelocityClient,
-    pub dlob: &'static DLOB,
     pub market_state: Arc<RwLock<MarketState>>,
     pub subaccounts: Vec<Pubkey>,
     pub metrics: Arc<Metrics>,
@@ -3026,7 +3004,6 @@ impl PrimaryLiquidationStrategy {
     async fn try_liquidate_perp_position(
         &self,
         velocity: &VelocityClient,
-        dlob: &'static DLOB,
         market_state: Arc<RwLock<MarketState>>,
         metrics: Arc<Metrics>,
         subaccounts: &[Pubkey],
@@ -3175,7 +3152,6 @@ impl PrimaryLiquidationStrategy {
     async fn liquidate_perp(
         &self,
         velocity: &VelocityClient,
-        dlob: &'static DLOB,
         market_state: Arc<RwLock<MarketState>>,
         metrics: Arc<Metrics>,
         subaccounts: &[Pubkey],
@@ -3203,7 +3179,6 @@ impl PrimaryLiquidationStrategy {
             let outcome = self
                 .try_liquidate_perp_position(
                     velocity,
-                    dlob,
                     Arc::clone(&market_state),
                     Arc::clone(&metrics),
                     subaccounts,
@@ -3245,7 +3220,6 @@ impl PrimaryLiquidationStrategy {
 
         self.try_liquidate_perp_position(
             velocity,
-            dlob,
             market_state,
             metrics,
             subaccounts,
@@ -3974,7 +3948,6 @@ impl LiquidationStrategy for PrimaryLiquidationStrategy {
             return async move {
                 self.liquidate_perp(
                     &self.velocity,
-                    self.dlob,
                     Arc::clone(&self.market_state),
                     Arc::clone(&self.metrics),
                     self.subaccounts.as_slice(),
@@ -4019,7 +3992,6 @@ impl LiquidationStrategy for PrimaryLiquidationStrategy {
                 LiquidationType::PerpTakeover | LiquidationType::PerpWithFill => {
                     self.liquidate_perp(
                         &self.velocity,
-                        self.dlob,
                         Arc::clone(&self.market_state),
                         Arc::clone(&self.metrics),
                         self.subaccounts.as_slice(),

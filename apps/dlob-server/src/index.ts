@@ -32,6 +32,8 @@ import { logger, setLogLevel } from './utils/logger';
 import * as http from 'http';
 import { Metrics } from './core/metricsV2';
 import { handleHealthCheck } from './core/middleware';
+import { startBookFreshnessWatch } from './core/bookFreshness';
+import { startFillQualityPublisher } from './publishers/fillQualityPublisher';
 import {
 	errorHandler,
 	normalizeBatchQueryParams,
@@ -235,6 +237,24 @@ const main = async (): Promise<void> => {
 	app.get('/health', handleHealthCheck(slotSubscriber, healthStatusGauge));
 	app.get('/startup', handleStartup);
 	app.get('/', handleHealthCheck(slotSubscriber, healthStatusGauge));
+
+	// The server holds no order state, so its own liveness says nothing about
+	// whether the books it serves are still being written. This watches them and
+	// latches the restart the health check already honours.
+	startBookFreshnessWatch(
+		PerpMarkets[velocityEnv].map((market) => ({
+			marketIndex: market.marketIndex,
+			marketName: market.symbol,
+		})),
+		slotSubscriber,
+		fetchFromRedis,
+		selectMostRecentBySlot
+	);
+
+	// `/auctionParams` at version 2 and above reads these. Nothing else writes
+	// them, and a missing answer is invisible at the endpoint, which just falls
+	// back to its static offsets.
+	startFillQualityPublisher(redisClients);
 
 	app.get('/priorityFees', async (req, res, next) => {
 		try {

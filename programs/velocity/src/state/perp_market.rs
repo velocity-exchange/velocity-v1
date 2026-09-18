@@ -2108,10 +2108,10 @@ impl MarketStats {
     /// where `elapsed` is the time since the TWAP was last advanced. That weight
     /// is correct only while `elapsed` is time during which whoever profits from
     /// the sample could not choose it. The bid/ask crank does not meet that
-    /// condition. It folds caller-supplied book depth into the TWAP and can run
-    /// after a gap of any length. One caller-chosen snapshot would then claim a
-    /// weight near the full period and move the TWAP, and the funding rate it
-    /// feeds, in a single instruction.
+    /// condition. Its caller picks the moment it runs, and it can run after a
+    /// gap of any length. One caller-chosen snapshot would then claim a weight
+    /// near the full period and move the TWAP, and the funding rate it feeds,
+    /// in a single instruction.
     ///
     /// The cap bounds a single sample's move to
     /// `sample_deviation * cap / funding_period` no matter how large the gap, so
@@ -2140,8 +2140,9 @@ impl MarketStats {
     /// `max_sample_elapsed` caps the elapsed time credited to this sample. See
     /// [`MarketStats::max_mark_twap_sample_elapsed`]. Fills and the AMM re-blend
     /// pass `None`, because their samples come from the AMM and from trades and
-    /// no caller curates them. The bid/ask crank passes `Some(..)`, so
-    /// caller-supplied book depth cannot claim a full-period weight after a gap.
+    /// no caller times them. The bid/ask crank passes `Some(..)`, so a sample
+    /// taken at a moment its caller chose cannot claim a full-period weight
+    /// after a gap.
     /// The cap bounds only the new sample's weight. The stale-TWAP shrink below
     /// still keys off the real last-update timestamp.
     pub fn update_mark_twap(
@@ -2401,8 +2402,8 @@ impl MarketStats {
     /// bid/ask). Used by the explicit mark-twap crank to fold book liquidity
     /// into the on-chain TWAP estimate.
     ///
-    /// The book side is caller-supplied, so this is the one path whose sample
-    /// the caller curates. It caps the sample's elapsed weight with
+    /// A caller picks the moment this runs, so it is the one path whose sample
+    /// is timed by whoever profits from it. It caps the sample's elapsed weight with
     /// [`MarketStats::max_mark_twap_sample_elapsed`], so a single crank after a
     /// gap cannot set the funding input. Funding and fills stay uncapped.
     pub fn update_mark_twap_crank(

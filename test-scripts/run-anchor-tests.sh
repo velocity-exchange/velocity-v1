@@ -101,6 +101,16 @@ test_files=(
   # programs/velocity/src/vlp/amm/; what is missing is its integration with a
   # fill.
   #
+  # Also not yet moved, and larger: the liquidation suites (liquidatePerp,
+  # liquidatePerpWithFill, liquidatePerpPnlForDeposit, liquidateBorrowForPerpPnl,
+  # bankruptcyIfFloor), the margin and isolated-position suites, and the
+  # protocol-fee, referrer, pause and delegate suites. Each opens a perp
+  # position to reach what it measures, which is why it stopped running here.
+  # integration-tests/ covers a liquidation through the book
+  # (`a_liquidation_fills_through_the_book`) and the distress ladder, and the
+  # rest is unit-tested under programs/velocity/src/; what is missing is the
+  # end-to-end wiring these files held. Moving them is the outstanding work.
+  #
   # An entry that carries its own reason is commented for that reason instead.
   # builderCodes.ts
   decodeUser.ts

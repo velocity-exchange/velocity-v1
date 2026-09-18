@@ -307,7 +307,8 @@ pub const BID_ASK_TWAP_MAX_ORACLE_DIVERGENCE_PERCENT: u64 = 15;
 /// Minimum wall-clock time a quote must rest onchain before it can move the
 /// bid/ask/mark TWAP (OtterSec #146).
 ///
-/// `update_perp_bid_ask_twap` samples the book from caller-supplied `User` accounts.
+/// `update_perp_bid_ask_twap` samples the market's book, and its caller chooses when
+/// to run it.
 /// Nothing else in the program checks how long an order has existed. A post-only limit
 /// order, or any order with `auction_duration == 0`, counts as resting in the slot it
 /// was placed. The crank's caller could therefore place a self-crossed pair of quotes,

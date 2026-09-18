@@ -2,7 +2,6 @@ import {
 	VelocityClient,
 	UserMap,
 	SlotSubscriber,
-	getUserStatsAccountPublicKey,
 	promiseTimeout,
 	isVariant,
 	PriorityFeeSubscriberMap,
@@ -17,7 +16,6 @@ import {
 	QUOTE_SPOT_MARKET_INDEX,
 	getInsuranceFundStakeAccountPublicKey,
 } from '@velocity-exchange/sdk';
-import axios from 'axios';
 import { Mutex } from 'async-mutex';
 
 import { logger } from '../logger';
@@ -27,7 +25,6 @@ import {
 	TransactionSignature,
 	VersionedTransaction,
 	AddressLookupTableAccount,
-	PublicKey,
 	ComputeBudgetProgram,
 	TransactionInstruction,
 	TransactionExpiredBlockheightExceededError,
@@ -58,7 +55,6 @@ const CACHED_BLOCKHASH_OFFSET = 5;
 const TX_LAND_RATE_THRESHOLD = process.env.TX_LAND_RATE_THRESHOLD
 	? parseFloat(process.env.TX_LAND_RATE_THRESHOLD) || 0.5
 	: 0.5;
-const NUM_MAKERS_TO_LOOK_AT_FOR_TWAP_CRANK = 2;
 const TX_PER_JITO_BUNDLE = 3;
 
 const CONCURRENCY_LIMIT = 3;
@@ -72,7 +68,6 @@ const DEFAULT_IF_STAKE_TARGET_QUOTE = 1500;
 const SIM_TIMEOUT_MS = 10_000;
 const TX_SEND_TIMEOUT_MS = 20_000;
 const BUNDLE_SEND_TIMEOUT_MS = 15_000;
-const RPC_TIMEOUT_MS = 10_000;
 const STUCK_INTERVAL_MULTIPLIER = 4; // consider stuck if run time > 4x interval
 
 function getStuckThresholdMs(intervalGroup: number): number {
@@ -231,7 +226,6 @@ export class MakerBidAskTwapCrank implements Bot {
 	private intervalIds: Array<NodeJS.Timer> = [];
 	private userMap?: UserMap;
 
-	private dlobServerHttpUrl?: string;
 	private priorityFeeSubscriberMap?: PriorityFeeSubscriberMap;
 
 	private watchdogTimerMutex = new Mutex();
@@ -272,12 +266,6 @@ export class MakerBidAskTwapCrank implements Bot {
 		this.crankIntervalToMarketIndicies = config.crankIntervalToMarketIndicies;
 		this.blockhashSubscriber = blockhashSubscriber;
 		this.autoStakeIfBelowMin = config.autoStakeIfBelowMin ?? false;
-		this.dlobServerHttpUrl = config.dlobServerHttpUrl;
-		if (!this.dlobServerHttpUrl) {
-			logger.warn(
-				`[${this.name}] no dlobServerHttpUrl configured; the crank will carry no book makers, and a market that names a book refuses it`
-			);
-		}
 		this.ifStakeTargetQuote =
 			config.ifStakeTargetQuote ?? DEFAULT_IF_STAKE_TARGET_QUOTE;
 
@@ -520,66 +508,6 @@ export class MakerBidAskTwapCrank implements Bot {
 		return healthy && this.pythHealthy && this.txSendHealthy;
 	}
 
-	/**
-	 * The book's best resting owners on one side of a market.
-	 *
-	 * The program reads the book's own depth through its `quoteL3V0` leg, so
-	 * this is not the depth. It is the set of `User` accounts the crank has to
-	 * carry, because the program credits a quote only to an owner the
-	 * transaction loads.
-	 */
-	private async getBookMakers(
-		marketIndex: number,
-		side: 'bid' | 'ask'
-	): Promise<PublicKey[]> {
-		if (!this.dlobServerHttpUrl) {
-			return [];
-		}
-		try {
-			const response = await axios.get(
-				`${this.dlobServerHttpUrl}/topMakers?marketType=perp&marketIndex=${marketIndex}&side=${side}&limit=${NUM_MAKERS_TO_LOOK_AT_FOR_TWAP_CRANK}`,
-				{ timeout: RPC_TIMEOUT_MS, validateStatus: () => true }
-			);
-			if (response.status !== 200 || !Array.isArray(response.data)) {
-				logger.warn(
-					`[${this.name}] topMakers for market ${marketIndex} ${side} returned status ${response.status}`
-				);
-				return [];
-			}
-			return (response.data as string[]).map((key) => new PublicKey(key));
-		} catch (e) {
-			logger.error(
-				`[${this.name}] Error loading topMakers for market ${marketIndex} ${side}: ${e}`
-			);
-			return [];
-		}
-	}
-
-	private getCombinedList(makersArray: PublicKey[]) {
-		const combinedList = [];
-
-		for (const maker of makersArray) {
-			const uA = this.userMap!.getUserAuthority(maker.toString());
-			if (uA !== undefined) {
-				const uStats = getUserStatsAccountPublicKey(
-					this.velocityClient.program.programId,
-					uA
-				);
-
-				// Combine maker and uStats into a list and add it to the combinedList
-				const combinedItem = [maker, uStats];
-				combinedList.push(combinedItem);
-			} else {
-				logger.warn(
-					'[${this.name}] skipping maker... cannot find authority for userAccount=',
-					maker.toString()
-				);
-			}
-		}
-
-		return combinedList;
-	}
-
 	private async sendSingleTx(
 		marketIndex: number,
 		tx: VersionedTransaction
@@ -803,14 +731,6 @@ export class MakerBidAskTwapCrank implements Bot {
 				forceUseJito: boolean,
 				addTipIx: boolean
 			): Promise<{ jitoTx?: VersionedTransaction; restartSignal: boolean }> => {
-				const [bidMakers, askMakers] = await Promise.all([
-					this.getBookMakers(mi, 'bid'),
-					this.getBookMakers(mi, 'ask'),
-				]);
-				logger.info(
-					`[${this.name}] loaded makers for market ${mi}: ${bidMakers.length} bids, ${askMakers.length} asks`
-				);
-
 				const ixs = [];
 				ixs.push(
 					ComputeBudgetProgram.setComputeUnitLimit({
@@ -856,21 +776,11 @@ export class MakerBidAskTwapCrank implements Bot {
 					ixs.push(...pythIxs);
 				}
 
-				const concatenatedList = [
-					...this.getCombinedList(bidMakers),
-					...this.getCombinedList(askMakers),
-				];
-
 				// The program reads the market's book on chain through its own
 				// `quoteL3V0` leg, so the crank carries the book accounts rather
-				// than the book's depth. The SDK resolves those accounts from the
-				// market.
-				ixs.push(
-					await this.velocityClient.getUpdatePerpBidAskTwapIx(
-						mi,
-						concatenatedList as [PublicKey, PublicKey][]
-					)
-				);
+				// than the book's depth, and names no counterparties. The SDK
+				// resolves those accounts from the market.
+				ixs.push(await this.velocityClient.getUpdatePerpBidAskTwapIx(mi));
 
 				if (
 					isVariant(

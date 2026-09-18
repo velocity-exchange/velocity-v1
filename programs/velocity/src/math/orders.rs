@@ -1141,9 +1141,8 @@ pub struct Level {
 /// `max_divergence_percent` in either direction. A level is kept only when its
 /// price lies within `[oracle * (100 - d) / 100, oracle * (100 + d) / 100]`.
 /// The band is symmetric on both sides for both books: a bid above the upper
-/// bound and an ask below the lower bound are excluded too, so caller-supplied
-/// book depth cannot drive the mark TWAP past the oracle band in either
-/// direction.
+/// bound and an ask below the lower bound are excluded too, so book depth
+/// cannot drive the mark TWAP past the oracle band in either direction.
 pub fn filter_bids_asks_by_oracle_divergence(
     bids: Vec<Level>,
     asks: Vec<Level>,

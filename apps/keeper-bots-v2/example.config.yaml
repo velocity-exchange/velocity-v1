@@ -172,12 +172,6 @@ botConfigs:
     botId: 'mark-twap-cranker'
     dryRun: false
     metricsPort: 9465
-    # dlob-server base URL. update_perp_bid_ask_twap reads the book's depth on
-    # chain but credits a quote only to an owner the transaction carries, so the
-    # crank passes the book's best resting owners and reads them from this
-    # server's /topMakers. A market that names a book refuses the crank without
-    # them.
-    dlobServerHttpUrl: 'https://dlob.velocity.exchange'
     # update_perp_bid_ask_twap requires the keeper to hold >= 1000 whole quote
     # tokens of insurance-fund stake (else CantUpdatePerpBidAskTwap). When true,
     # on init the bot tops the stake up to ifStakeTargetQuote whole quote tokens

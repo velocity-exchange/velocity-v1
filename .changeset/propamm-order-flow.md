@@ -50,7 +50,8 @@ a given size would actually get across every source. `calculateEstimatedPerpEntr
 `L2OrderBook` in place of a `DLOB`, so a caller passes the `/l2` answer and gets a vAMM-only
 estimate from an empty one. `SlotSource` moves to `slot/SlotSubscriber`.
 
-`placeSignedMsgTakerOrder` and `getPlaceSignedMsgTakerPerpOrderIxs` gain a trailing `makerInfo`.
+`placeSignedMsgTakerOrder`, `getPlaceSignedMsgTakerPerpOrderIxs` and `buildSwiftDepositTx` gain a
+trailing `makerInfo`, and `buildSwiftDepositTx` now returns the transaction it builds.
 The placement fills in the same instruction, and a fill reaches only the users the transaction
 carries, so a keeper passes the book's resting owners there.
 
@@ -407,10 +408,12 @@ without that section, and book depth is reachable only for owners the transactio
 the book's resting owners in `makerInfos`.
 
 `updatePerpBidAskTwap` takes `quoterSlab`, `clobMarket` and `clobProgram`, and estimates each side of
-the market from the book merged with the `User` accounts the caller passes.
-`getUpdatePerpBidAskTwapIx` resolves those three from the market, so a caller supplies only the
-makers. A market that names a book refuses the crank without them, a suspended book moves no mark,
-and both sources still drop a quote that has not rested for `BID_ASK_TWAP_MIN_QUOTE_REST`.
+the market from the book alone. It names no counterparties, and both it and
+`getUpdatePerpBidAskTwapIx` lost their `makers` argument: the program reads the book over CPI and
+never looked at a passed `User`. `getUpdatePerpBidAskTwapIx` resolves the three book accounts from
+the market, so a caller supplies only the market index. A market that names a book refuses the crank
+without that section, a suspended book moves no mark, and a quote that has not rested for
+`BID_ASK_TWAP_MIN_QUOTE_REST` is dropped.
 
 ## Other surface changes
 

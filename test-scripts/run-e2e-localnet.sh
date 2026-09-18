@@ -52,6 +52,24 @@ fi
 export SDKROOT="${SDKROOT:-$(xcrun --show-sdk-path 2>/dev/null || true)}"
 
 command -v "$SOLANA_TEST_VALIDATOR" >/dev/null || { echo "$SOLANA_TEST_VALIDATOR not found (set SOLANA_TEST_VALIDATOR)" >&2; exit 1; }
+# Resolve the name to the binary it points at right now, and launch that one.
+# `solana-test-validator` on PATH is usually agave's `active_release` symlink,
+# and `cargo-build-sbf` moves that symlink when it installs platform-tools.
+# The build step below runs it, so a name checked here can be a different
+# binary by the time the validator starts. That swap is silent and costs a
+# whole run: the version gate passes, an older validator starts, and every
+# turner submission is rejected twenty minutes later.
+SOLANA_TEST_VALIDATOR="$(command -v "$SOLANA_TEST_VALIDATOR")"
+while [ -L "$SOLANA_TEST_VALIDATOR" ]; do
+  link_target="$(readlink "$SOLANA_TEST_VALIDATOR")"
+  case "$link_target" in
+    /*) SOLANA_TEST_VALIDATOR="$link_target" ;;
+    *) SOLANA_TEST_VALIDATOR="$(dirname "$SOLANA_TEST_VALIDATOR")/$link_target" ;;
+  esac
+done
+# `active_release` is a symlinked *directory*, so the line above does not reach
+# it. `pwd -P` resolves every component.
+SOLANA_TEST_VALIDATOR="$(cd "$(dirname "$SOLANA_TEST_VALIDATOR")" && pwd -P)/$(basename "$SOLANA_TEST_VALIDATOR")"
 # The relay revision this harness builds signs transaction v1 (SIMD-0385), and
 # only agave 4.2 and later can parse the 0x81 version prefix. An older
 # validator takes the turner's submissions and fails them at the RPC with
@@ -70,6 +88,7 @@ if [ "$validator_major" -lt 4 ] || { [ "$validator_major" -eq 4 ] && [ "$validat
   echo "       SOLANA_TEST_VALIDATOR=<path> names a different binary without moving the global one" >&2
   exit 1
 fi
+echo "== validator $validator_version ($SOLANA_TEST_VALIDATOR) =="
 command -v redis-server >/dev/null || { echo "redis-server not on PATH (brew install redis)" >&2; exit 1; }
 
 VELOCITY_ID="vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P"

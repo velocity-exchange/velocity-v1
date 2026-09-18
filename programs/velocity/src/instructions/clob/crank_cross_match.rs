@@ -425,7 +425,7 @@ fn run_cross_leg<'info>(
             ),
         )?;
     // Cheap test first. If we're doing custom quoter v custom quoter, no window was served.
-    // Since propamms have no wait.
+    // Since propamms have no wait. Saves us from doing an expensive CPI to quote a book when not needed.
     let taker_served_window = if consults_custom_quoter(&cx.accounts.quoter_slab, cx.tail)? {
         false
     } else {

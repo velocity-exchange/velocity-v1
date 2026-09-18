@@ -584,26 +584,10 @@ pub(crate) const RESTED_ROWS_PER_SIDE: u16 = 32;
 
 /// Whether every book order a fill could consume has measurably rested.
 ///
-/// This is how a crank vouches for protected flow (`taker_served_window`) when
-/// nothing about the taker can. A crank cannot vouch by construction. On a
-/// zero-delay book, place-then-crank is two transactions in a row, so fresh
-/// informed flow would wear the protected flag into a quoter that serves
-/// protected flow only. The crank measures the other half of the same promise
-/// instead, which is that the makers have had time to reprice, over the depth
-/// the fill can reach. That depth is the first `size` base of the side the fill
-/// sweeps, so a fresh order deeper than the fill reaches defers nothing.
-///
-/// One side is measured per fill. A fill transmits only the flow it sweeps, so
-/// a fresh order on the other side of the book has no bearing on it.
+/// This is how a crank vouches for protected flow (`taker_served_window`)
 ///
 /// This measures book slots and nothing else. A `Custom` quoter prices during
-/// the call and keeps no resting order, so it has no rest to measure and this
-/// function passes over it. A caller whose crossing side can be such a quoter
-/// must test for that itself. Without the test it reports protected flow for a
-/// quoter that repriced in the same slot, and a book with a speed bump then
-/// serves a cross that gave its makers no time to answer.
-/// `crank_cross_match::consults_custom_quoter` is that test. A liquidation needs
-/// no test, because its own order is the crossing side.
+/// the call and keeps no resting order, so it will always be false.
 pub(crate) fn book_side_rested<'info>(
     quoter_slab: &AccountLoader<'info, QuoterSlabV0>,
     tail: &'info [AccountInfo<'info>],
@@ -620,22 +604,25 @@ pub(crate) fn book_side_rested<'info>(
             // Copy the config out so that no slab borrow lives across the book
             // CPI.
             let config = quoter_slab.slots()?[slot_index].config;
-            if config.quoter_type != QuoterType::Clob {
-                return Ok(served);
+            match config.quoter_type {
+                QuoterType::Vamm => Ok(served),
+                QuoterType::Custom => Ok(false),
+                QuoterType::Clob => {
+                    let rows = book_l3_side(
+                        &config,
+                        quoter_slab,
+                        market_index,
+                        direction,
+                        RESTED_ROWS_PER_SIDE,
+                        tail,
+                        cpi_scratch,
+                        false,
+                        |row| (row.size, row.placed_slot),
+                    )?
+                    .unwrap_or_default();
+                    Ok(served && rows_rested(&rows, size, slot))
+                }
             }
-            let rows = book_l3_side(
-                &config,
-                quoter_slab,
-                market_index,
-                direction,
-                RESTED_ROWS_PER_SIDE,
-                tail,
-                cpi_scratch,
-                false,
-                |row| (row.size, row.placed_slot),
-            )?
-            .unwrap_or_default();
-            Ok(served && rows_rested(&rows, size, slot))
         })
 }
 

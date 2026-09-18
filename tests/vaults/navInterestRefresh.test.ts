@@ -23,8 +23,11 @@
 import * as anchor from '@coral-xyz/anchor';
 import { BN, Program } from '@coral-xyz/anchor';
 import { expect } from 'chai';
-import { BankrunContextWrapper } from './common/bankrunConnection';
-import { startAnchor } from 'solana-bankrun';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+	LiteSVMProvider,
+} from './common/litesvmConnection';
 import {
 	VaultClient,
 	getVaultAddressSync,
@@ -48,14 +51,13 @@ import {
 } from '@velocity-exchange/sdk';
 import { TestBulkAccountLoader } from './common/testBulkAccountLoader';
 import {
-	bootstrapSignerClientAndUserBankrun,
+	bootstrapSignerClientAndUser,
 	initializeQuoteSpotMarket,
 	initializeSolSpotMarket,
-	mockUSDCMintBankrun,
+	mockUSDCMint,
 } from './common/testHelpers';
 import { Keypair, LAMPORTS_PER_SOL } from '@solana/web3.js';
-import { mockOracleNoProgram } from './common/bankrunOracle';
-import { BankrunProvider } from 'anchor-bankrun';
+import { mockOracleNoProgram } from './common/svmOracle';
 
 // ammInvariant == k == x * y
 const mantissaSqrtScale = new BN(100_000);
@@ -69,7 +71,7 @@ describe('vault NAV interest refresh (OtterSec #136/#137)', () => {
 
 	let adminVelocityClient: TestClient;
 	let bulkAccountLoader: TestBulkAccountLoader;
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 	let usdcMint: Keypair;
 	let solPerpOracle: PublicKey;
 	let usdcSpotMarketKey: PublicKey;
@@ -152,24 +154,24 @@ describe('vault NAV interest refresh (OtterSec #136/#137)', () => {
 	};
 
 	beforeEach(async () => {
-		const context = await startAnchor('', [], []);
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		const context = startLiteSVM();
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			'processed',
 			1
 		);
 
-		usdcMint = await mockUSDCMintBankrun(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
 		solPerpOracle = await mockOracleNoProgram(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			initialSolPerpPrice
 		);
 
 		adminVelocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: svmContextWrapper.connection.toConnection(),
+			wallet: svmContextWrapper.provider.wallet,
 			programID: new PublicKey(VELOCITY_PROGRAM_ID),
 			opts: { commitment: 'confirmed' },
 			...velocityClientConfig(),
@@ -193,8 +195,8 @@ describe('vault NAV interest refresh (OtterSec #136/#137)', () => {
 		await adminVelocityClient.fetchAccounts();
 		usdcSpotMarketKey = adminVelocityClient.getSpotMarketAccount(0)!.pubkey;
 
-		const managerBootstrap = await bootstrapSignerClientAndUserBankrun({
-			bankrunContext: bankrunContextWrapper,
+		const managerBootstrap = await bootstrapSignerClientAndUser({
+			svmContext: svmContextWrapper,
 			programId: VAULT_PROGRAM_ID,
 			signer: managerSigner,
 			usdcMint,
@@ -205,8 +207,8 @@ describe('vault NAV interest refresh (OtterSec #136/#137)', () => {
 		managerClient = managerBootstrap.vaultClient;
 		managerVelocityClient = managerBootstrap.velocityClient;
 
-		const user1Bootstrap = await bootstrapSignerClientAndUserBankrun({
-			bankrunContext: bankrunContextWrapper,
+		const user1Bootstrap = await bootstrapSignerClientAndUser({
+			svmContext: svmContextWrapper,
 			programId: VAULT_PROGRAM_ID,
 			signer: user1Signer,
 			usdcMint,
@@ -223,8 +225,8 @@ describe('vault NAV interest refresh (OtterSec #136/#137)', () => {
 			user1Signer.publicKey
 		);
 
-		const user2Bootstrap = await bootstrapSignerClientAndUserBankrun({
-			bankrunContext: bankrunContextWrapper,
+		const user2Bootstrap = await bootstrapSignerClientAndUser({
+			svmContext: svmContextWrapper,
 			programId: VAULT_PROGRAM_ID,
 			signer: user2Signer,
 			usdcMint,
@@ -243,8 +245,8 @@ describe('vault NAV interest refresh (OtterSec #136/#137)', () => {
 
 		// The borrower never touches the vault. It only creates utilization on the
 		// vault's denomination market, which is what pays lender interest.
-		const borrowerBootstrap = await bootstrapSignerClientAndUserBankrun({
-			bankrunContext: bankrunContextWrapper,
+		const borrowerBootstrap = await bootstrapSignerClientAndUser({
+			svmContext: svmContextWrapper,
 			programId: VAULT_PROGRAM_ID,
 			signer: borrowerSigner,
 			usdcMint,
@@ -256,8 +258,8 @@ describe('vault NAV interest refresh (OtterSec #136/#137)', () => {
 		borrowerClient = borrowerBootstrap.vaultClient;
 		borrowerUSDCAccount = borrowerBootstrap.userUSDCAccount.publicKey;
 
-		const provider = new BankrunProvider(
-			bankrunContextWrapper.context,
+		const provider = new LiteSVMProvider(
+			svmContextWrapper.context,
 			adminVelocityClient.wallet as anchor.Wallet
 		);
 		const program = new Program(IDL, provider);
@@ -284,7 +286,7 @@ describe('vault NAV interest refresh (OtterSec #136/#137)', () => {
 		);
 
 		// Fund the borrower with SOL collateral so it can borrow USDC.
-		await bankrunContextWrapper.fundKeypair(
+		await svmContextWrapper.fundKeypair(
 			borrowerSigner,
 			1_000 * LAMPORTS_PER_SOL
 		);
@@ -325,7 +327,7 @@ describe('vault NAV interest refresh (OtterSec #136/#137)', () => {
 		await openBorrow();
 
 		const indexBeforeWarp = await fetchDepositInterestIndex();
-		await bankrunContextWrapper.moveTimeForward(SIX_MONTHS);
+		await svmContextWrapper.moveTimeForward(SIX_MONTHS);
 
 		// Nothing cranked the market, so the stored index is provably stale. This is
 		// the state in which the old `deposit` priced shares.
@@ -411,7 +413,7 @@ describe('vault NAV interest refresh (OtterSec #136/#137)', () => {
 		await openBorrow();
 
 		const indexBeforeWarp = await fetchDepositInterestIndex();
-		await bankrunContextWrapper.moveTimeForward(SIX_MONTHS);
+		await svmContextWrapper.moveTimeForward(SIX_MONTHS);
 		expect((await fetchDepositInterestIndex()).eq(indexBeforeWarp)).to.equal(
 			true
 		);
@@ -486,7 +488,7 @@ describe('vault NAV interest refresh (OtterSec #136/#137)', () => {
 			.value;
 
 		const indexBeforeWarp = await fetchDepositInterestIndex();
-		await bankrunContextWrapper.moveTimeForward(SIX_MONTHS);
+		await svmContextWrapper.moveTimeForward(SIX_MONTHS);
 		expect((await fetchDepositInterestIndex()).eq(indexBeforeWarp)).to.equal(
 			true
 		);
@@ -594,7 +596,7 @@ describe('vault NAV interest refresh (OtterSec #136/#137)', () => {
 		// Delisting does not stop the accrual. `deposit` and `force_delete_user` book
 		// interest there too, so refusing here only ever blocked the caller.
 		const indexBefore = await fetchDepositInterestIndex();
-		await bankrunContextWrapper.moveTimeForward(SIX_MONTHS);
+		await svmContextWrapper.moveTimeForward(SIX_MONTHS);
 		await user1Client.syncVaultUsers();
 		await user1Client.requestWithdraw(
 			user1VaultDepositor,

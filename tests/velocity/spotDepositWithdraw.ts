@@ -41,9 +41,11 @@ import {
 	SPOT_MARKET_BALANCE_PRECISION,
 	PRICE_PRECISION,
 } from '../../packages/sdk';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 
 describe('spot deposit and withdraw', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
@@ -53,7 +55,7 @@ describe('spot deposit and withdraw', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 
 	let solOracle: PublicKey;
 
@@ -76,35 +78,35 @@ describe('spot deposit and withdraw', () => {
 	let oracleInfos: OracleInfo[];
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = startLiteSVM();
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			1
 		);
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			chProgram
 		);
 
 		await eventSubscriber.subscribe();
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
-		await mockUserUSDCAccount(usdcMint, largeUsdcAmount, bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
+		await mockUserUSDCAccount(usdcMint, largeUsdcAmount, svmContextWrapper);
 
-		solOracle = await mockOracleNoProgram(bankrunContextWrapper, 30);
+		solOracle = await mockOracleNoProgram(svmContextWrapper, 30);
 
 		marketIndexes = [];
 		spotMarketIndexes = [0, 1];
 		oracleInfos = [{ publicKey: solOracle, source: OracleSource.PYTH_LAZER }];
 
 		admin = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: svmContextWrapper.connection.toConnection(),
+			wallet: svmContextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -157,7 +159,7 @@ describe('spot deposit and withdraw', () => {
 			0,
 			await getMaxWithdrawGuardThreshold(admin, 0)
 		);
-		bankrunContextWrapper.printTxLogs(txSig);
+		svmContextWrapper.printTxLogs(txSig);
 		await admin.fetchAccounts();
 		const spotMarket = await admin.getSpotMarketAccount(0);
 		assert(spotMarket.marketIndex === 0);
@@ -220,7 +222,7 @@ describe('spot deposit and withdraw', () => {
 			1,
 			await getMaxWithdrawGuardThreshold(admin, 1)
 		);
-		bankrunContextWrapper.printTxLogs(txSig);
+		svmContextWrapper.printTxLogs(txSig);
 		await admin.fetchAccounts();
 		const spotMarket = await admin.getSpotMarketAccount(1);
 		assert(spotMarket.marketIndex === 1);
@@ -279,7 +281,7 @@ describe('spot deposit and withdraw', () => {
 	it('First User Deposit USDC', async () => {
 		[firstUserVelocityClient, firstUserVelocityClientUSDCAccount] =
 			await createUserWithUSDCAccount(
-				bankrunContextWrapper,
+				svmContextWrapper,
 				usdcMint,
 				chProgram,
 				usdcAmount,
@@ -297,7 +299,7 @@ describe('spot deposit and withdraw', () => {
 			marketIndex,
 			firstUserVelocityClientUSDCAccount
 		);
-		bankrunContextWrapper.printTxLogs(txSig);
+		svmContextWrapper.printTxLogs(txSig);
 
 		const spotMarket = await admin.getSpotMarketAccount(marketIndex);
 		assert(
@@ -308,7 +310,7 @@ describe('spot deposit and withdraw', () => {
 
 		const vaultAmount = new BN(
 			(
-				await bankrunContextWrapper.connection.getTokenAccount(spotMarket.vault)
+				await svmContextWrapper.connection.getTokenAccount(spotMarket.vault)
 			).amount.toString()
 		);
 		assert(vaultAmount.eq(usdcAmount));
@@ -334,7 +336,7 @@ describe('spot deposit and withdraw', () => {
 			secondUserVelocityClientWSOLAccount,
 			secondUserVelocityClientUSDCAccount,
 		] = await createUserWithUSDCAndWSOLAccount(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			usdcMint,
 			chProgram,
 			solAmount,
@@ -351,7 +353,7 @@ describe('spot deposit and withdraw', () => {
 			marketIndex,
 			secondUserVelocityClientWSOLAccount
 		);
-		bankrunContextWrapper.printTxLogs(txSig);
+		svmContextWrapper.printTxLogs(txSig);
 
 		const spotMarket = await admin.getSpotMarketAccount(marketIndex);
 		assert(spotMarket.depositBalance.eq(SPOT_MARKET_BALANCE_PRECISION));
@@ -387,7 +389,7 @@ describe('spot deposit and withdraw', () => {
 
 		const vaultAmount = new BN(
 			(
-				await bankrunContextWrapper.connection.getTokenAccount(spotMarket.vault)
+				await svmContextWrapper.connection.getTokenAccount(spotMarket.vault)
 			).amount.toString()
 		);
 		assert(vaultAmount.eq(solAmount));
@@ -417,7 +419,7 @@ describe('spot deposit and withdraw', () => {
 			marketIndex,
 			secondUserVelocityClientUSDCAccount
 		);
-		bankrunContextWrapper.printTxLogs(txSig);
+		svmContextWrapper.printTxLogs(txSig);
 
 		const spotMarket = await admin.getSpotMarketAccount(marketIndex);
 		const expectedBorrowBalance = new BN(5000000001);
@@ -425,7 +427,7 @@ describe('spot deposit and withdraw', () => {
 
 		const vaultAmount = new BN(
 			(
-				await bankrunContextWrapper.connection.getTokenAccount(spotMarket.vault)
+				await svmContextWrapper.connection.getTokenAccount(spotMarket.vault)
 			).amount.toString()
 		);
 		const expectedVaultAmount = usdcAmount.sub(withdrawAmount);
@@ -444,7 +446,7 @@ describe('spot deposit and withdraw', () => {
 
 		const actualAmountWithdrawn = new BN(
 			(
-				await bankrunContextWrapper.connection.getTokenAccount(
+				await svmContextWrapper.connection.getTokenAccount(
 					secondUserVelocityClientUSDCAccount
 				)
 			).amount.toString()
@@ -470,7 +472,7 @@ describe('spot deposit and withdraw', () => {
 			await firstUserVelocityClient.updateSpotMarketCumulativeInterest(
 				usdcmarketIndex
 			);
-		bankrunContextWrapper.printTxLogs(txSig);
+		svmContextWrapper.printTxLogs(txSig);
 
 		await firstUserVelocityClient.fetchAccounts();
 		const newSpotMarketAccount =
@@ -519,7 +521,7 @@ describe('spot deposit and withdraw', () => {
 
 		const userUSDCAmountBefore = new BN(
 			(
-				await bankrunContextWrapper.connection.getTokenAccount(
+				await svmContextWrapper.connection.getTokenAccount(
 					secondUserVelocityClientUSDCAccount
 				)
 			).amount.toString()
@@ -537,7 +539,7 @@ describe('spot deposit and withdraw', () => {
 			marketIndex,
 			secondUserVelocityClientUSDCAccount
 		);
-		bankrunContextWrapper.printTxLogs(txSig);
+		svmContextWrapper.printTxLogs(txSig);
 
 		await secondUserVelocityClient.fetchAccounts();
 		spotMarketAccount =
@@ -559,7 +561,7 @@ describe('spot deposit and withdraw', () => {
 		const expectedUserUSDCAmount = userUSDCAmountBefore.add(withdrawAmount);
 		const userUSDCAmountAfter = new BN(
 			(
-				await bankrunContextWrapper.connection.getTokenAccount(
+				await svmContextWrapper.connection.getTokenAccount(
 					secondUserVelocityClientUSDCAccount
 				)
 			).amount.toString()
@@ -582,7 +584,7 @@ describe('spot deposit and withdraw', () => {
 		const expectedVaultBalance = usdcAmount.sub(expectedUserUSDCAmount);
 		const vaultUSDCAmountAfter = new BN(
 			(
-				await bankrunContextWrapper.connection.getTokenAccount(
+				await svmContextWrapper.connection.getTokenAccount(
 					spotMarketAccount.vault
 				)
 			).amount.toString()
@@ -626,7 +628,7 @@ describe('spot deposit and withdraw', () => {
 			await firstUserVelocityClient.updateSpotMarketCumulativeInterest(
 				usdcmarketIndex
 			);
-		bankrunContextWrapper.printTxLogs(txSig);
+		svmContextWrapper.printTxLogs(txSig);
 
 		await firstUserVelocityClient.fetchAccounts();
 		const newSpotMarketAccount =
@@ -671,7 +673,7 @@ describe('spot deposit and withdraw', () => {
 		const mintAmount = new BN(2 * 10 ** 6); // $2
 		const userUSDCAmountBefore = new BN(
 			(
-				await bankrunContextWrapper.connection.getTokenAccount(
+				await svmContextWrapper.connection.getTokenAccount(
 					secondUserVelocityClientUSDCAccount
 				)
 			).amount.toString()
@@ -681,7 +683,7 @@ describe('spot deposit and withdraw', () => {
 			usdcMint,
 			secondUserVelocityClientUSDCAccount,
 			mintAmount,
-			bankrunContextWrapper
+			svmContextWrapper
 		);
 
 		const userBorrowBalanceBefore =
@@ -695,7 +697,7 @@ describe('spot deposit and withdraw', () => {
 			marketIndex,
 			secondUserVelocityClientUSDCAccount
 		);
-		bankrunContextWrapper.printTxLogs(txSig);
+		svmContextWrapper.printTxLogs(txSig);
 
 		await secondUserVelocityClient.fetchAccounts();
 		const spotMarketAccount =
@@ -758,7 +760,7 @@ describe('spot deposit and withdraw', () => {
 			marketIndex,
 			secondUserVelocityClientUSDCAccount
 		);
-		bankrunContextWrapper.printTxLogs(txSig);
+		svmContextWrapper.printTxLogs(txSig);
 
 		await secondUserVelocityClient.fetchAccounts();
 		const spotMarketAccount =
@@ -794,7 +796,7 @@ describe('spot deposit and withdraw', () => {
 		const marketIndex = 0;
 		const userUSDCAmountBefore = new BN(
 			(
-				await bankrunContextWrapper.connection.getTokenAccount(
+				await svmContextWrapper.connection.getTokenAccount(
 					secondUserVelocityClientUSDCAccount
 				)
 			).amount.toString()
@@ -813,7 +815,7 @@ describe('spot deposit and withdraw', () => {
 			undefined,
 			true
 		);
-		bankrunContextWrapper.printTxLogs(txSig);
+		svmContextWrapper.printTxLogs(txSig);
 
 		const spotMarketAccountAfter =
 			secondUserVelocityClient.getSpotMarketAccount(marketIndex);
@@ -825,7 +827,7 @@ describe('spot deposit and withdraw', () => {
 
 		const userUSDCAmountAfter = new BN(
 			(
-				await bankrunContextWrapper.connection.getTokenAccount(
+				await svmContextWrapper.connection.getTokenAccount(
 					secondUserVelocityClientUSDCAccount
 				)
 			).amount.toString()
@@ -852,7 +854,7 @@ describe('spot deposit and withdraw', () => {
 		const marketIndex = 1;
 		const userWSOLAmountBefore = new BN(
 			(
-				await bankrunContextWrapper.connection.getTokenAccount(
+				await svmContextWrapper.connection.getTokenAccount(
 					secondUserVelocityClientWSOLAccount
 				)
 			).amount.toString()
@@ -868,7 +870,7 @@ describe('spot deposit and withdraw', () => {
 			secondUserVelocityClientWSOLAccount,
 			true
 		);
-		bankrunContextWrapper.printTxLogs(txSig);
+		svmContextWrapper.printTxLogs(txSig);
 
 		const spotMarketAccountAfter =
 			secondUserVelocityClient.getSpotMarketAccount(marketIndex);
@@ -880,7 +882,7 @@ describe('spot deposit and withdraw', () => {
 
 		const userWSOLAmountAfter = new BN(
 			(
-				await bankrunContextWrapper.connection.getTokenAccount(
+				await svmContextWrapper.connection.getTokenAccount(
 					secondUserVelocityClientWSOLAccount
 				)
 			).amount.toString()
@@ -905,7 +907,7 @@ describe('spot deposit and withdraw', () => {
 			_thirdUserVelocityClientWSOLAccount,
 			thirdUserVelocityClientUSDCAccount,
 		] = await createUserWithUSDCAndWSOLAccount(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			usdcMint,
 			chProgram,
 			solAmount,
@@ -946,7 +948,7 @@ describe('spot deposit and withdraw', () => {
 			marketIndex,
 			thirdUserVelocityClientUSDCAccount
 		);
-		bankrunContextWrapper.printTxLogs(txSig);
+		svmContextWrapper.printTxLogs(txSig);
 
 		const spotPositionAfter =
 			thirdUserVelocityClient.getSpotPosition(marketIndex);

@@ -21,16 +21,18 @@ import {
 	mockUSDCMint,
 	mockUserUSDCAccount,
 } from './testHelpers';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 
 describe('round in favor', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 
 	let usdcMint;
 
@@ -51,20 +53,20 @@ describe('round in favor', () => {
 	let oracleInfos;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = startLiteSVM();
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			1
 		);
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
 
 		const solUsd = await mockOracleNoProgram(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			63000,
 			-7,
 			undefined,
@@ -76,8 +78,8 @@ describe('round in favor', () => {
 		oracleInfos = [{ publicKey: solUsd, source: OracleSource.PYTH_LAZER }];
 
 		primaryVelocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: svmContextWrapper.connection.toConnection(),
+			wallet: svmContextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -117,16 +119,16 @@ describe('round in favor', () => {
 
 	it('short', async () => {
 		const keypair = new Keypair();
-		await bankrunContextWrapper.fundKeypair(keypair, 10 ** 9);
+		await svmContextWrapper.fundKeypair(keypair, 10 ** 9);
 		const wallet = new Wallet(keypair);
 		const userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper,
+			svmContextWrapper,
 			keypair.publicKey
 		);
 		const velocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
+			connection: svmContextWrapper.connection.toConnection(),
 			wallet,
 			programID: chProgram.programId,
 			opts: {
@@ -183,16 +185,16 @@ describe('round in favor', () => {
 
 	it('long', async () => {
 		const keypair = new Keypair();
-		await bankrunContextWrapper.fundKeypair(keypair, 10 ** 9);
+		await svmContextWrapper.fundKeypair(keypair, 10 ** 9);
 		const wallet = new Wallet(keypair);
 		const userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper,
+			svmContextWrapper,
 			keypair.publicKey
 		);
 		const velocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
+			connection: svmContextWrapper.connection.toConnection(),
 			wallet,
 			programID: chProgram.programId,
 			opts: {

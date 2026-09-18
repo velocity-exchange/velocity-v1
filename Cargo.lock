@@ -519,13 +519,14 @@ dependencies = [
 
 [[package]]
 name = "brine-ed25519"
-version = "0.9.0"
+version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "521613852b9ff057440780f968789cae80e9f81756078cd4b74a19b2f0ccf1e2"
+checksum = "fb50edc4cf7a2eb8bdd300e2c370724c1fb8772666734f6ef79c2873152e52c6"
 dependencies = [
  "curve25519-dalek",
  "sha2",
  "solana-address 2.7.0",
+ "solana-define-syscall 5.2.0",
  "solana-program-error",
 ]
 

@@ -30,9 +30,11 @@ import {
 	PerpOperation,
 	PostOnlyParams,
 } from '../../packages/sdk';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 
 describe('oracle fill guardrails', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
@@ -42,7 +44,7 @@ describe('oracle fill guardrails', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 
 	let usdcMint;
 	let userUSDCAccount;
@@ -64,39 +66,39 @@ describe('oracle fill guardrails', () => {
 	let oracleInfos;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = startLiteSVM();
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			1
 		);
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			chProgram
 		);
 
 		await eventSubscriber.subscribe();
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			svmContextWrapper
 		);
 
-		solUsd = await mockOracleNoProgram(bankrunContextWrapper, 20);
+		solUsd = await mockOracleNoProgram(svmContextWrapper, 20);
 
 		marketIndexes = [0, 1];
 		spotMarketIndexes = [0];
 		oracleInfos = [{ publicKey: solUsd, source: OracleSource.PYTH_LAZER }];
 
 		fillerVelocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: svmContextWrapper.connection.toConnection(),
+			wallet: svmContextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -172,7 +174,7 @@ describe('oracle fill guardrails', () => {
 	it('taker long solUsd', async () => {
 		const [takerVelocityClient, takerUSDCAccount] =
 			await createUserWithUSDCAccount(
-				bankrunContextWrapper,
+				svmContextWrapper,
 				usdcMint,
 				chProgram,
 				usdcAmount,
@@ -186,7 +188,7 @@ describe('oracle fill guardrails', () => {
 
 		const [makerVelocityClient, makerUSDCAccount] =
 			await createUserWithUSDCAccount(
-				bankrunContextWrapper,
+				svmContextWrapper,
 				usdcMint,
 				chProgram,
 				usdcAmount,
@@ -198,7 +200,7 @@ describe('oracle fill guardrails', () => {
 
 		await makerVelocityClient.deposit(usdcAmount, 0, makerUSDCAccount);
 
-		await setFeedPriceNoProgram(bankrunContextWrapper, 14, solUsd);
+		await setFeedPriceNoProgram(svmContextWrapper, 14, solUsd);
 		await makerVelocityClient.placePerpOrder({
 			marketIndex: 0,
 			direction: PositionDirection.SHORT,
@@ -207,7 +209,7 @@ describe('oracle fill guardrails', () => {
 			baseAssetAmount: BASE_PRECISION,
 		});
 
-		await setFeedPriceNoProgram(bankrunContextWrapper, 31, solUsd);
+		await setFeedPriceNoProgram(svmContextWrapper, 31, solUsd);
 
 		await takerVelocityClient.placePerpOrder({
 			marketIndex: 0,
@@ -221,7 +223,7 @@ describe('oracle fill guardrails', () => {
 		});
 
 		// move price to $30
-		await setFeedPriceNoProgram(bankrunContextWrapper, 30, solUsd);
+		await setFeedPriceNoProgram(svmContextWrapper, 30, solUsd);
 
 		const makerInfo = [
 			{
@@ -236,7 +238,7 @@ describe('oracle fill guardrails', () => {
 			takerVelocityClient.getOrder(1),
 			makerInfo
 		);
-		bankrunContextWrapper.printTxLogs(firstFillTxSig);
+		svmContextWrapper.printTxLogs(firstFillTxSig);
 
 		// assert that the
 		const orderActionRecord =
@@ -261,7 +263,7 @@ describe('oracle fill guardrails', () => {
 				takerVelocityClient.getOrder(1),
 				makerInfo
 			);
-			bankrunContextWrapper.printTxLogs(txSig);
+			svmContextWrapper.printTxLogs(txSig);
 		} catch (e) {
 			error = true;
 			assert(e.message.includes('0x1787'));

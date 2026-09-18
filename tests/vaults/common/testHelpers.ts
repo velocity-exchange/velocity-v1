@@ -15,7 +15,6 @@ import {
 	TransactionSignature,
 } from '@solana/web3.js';
 import { getAssociatedTokenAddressSync, getMint } from '@solana/spl-token';
-import { BankrunProvider } from 'anchor-bankrun';
 import { Metaplex } from '@metaplex-foundation/js';
 import {
 	TestClient,
@@ -49,7 +48,10 @@ import {
 	getTokenizedVaultAddressSync,
 	getTokenizedVaultMintAddressSync,
 } from '@velocity-exchange/vaults-sdk';
-import { BankrunContextWrapper } from './bankrunConnection';
+import {
+	LiteSVMContextWrapper,
+	LiteSVMProvider,
+} from './litesvmConnection';
 import {
 	mockUserUSDCAccount,
 	createWSolTokenAccountForUser,
@@ -63,13 +65,10 @@ export {
 	initializeQuoteSpotMarket,
 	initializeSolSpotMarket,
 	mockUSDCMint,
-	// velocity-vaults named the bankrun mint/ata helpers with a `Bankrun` suffix;
-	// the velocity helpers are already bankrun-only, so alias them.
-	mockUSDCMint as mockUSDCMintBankrun,
-	mockUserUSDCAccount as mockUserUSDCAccountBankrun,
+	mockUserUSDCAccount,
 	mockOracle,
 	mockOracleNoProgram,
-	// velocity-vaults' tests call `setFeedPrice`; on bankrun the price feed is a
+	// velocity-vaults' tests call `setFeedPrice`; on LiteSVM the price feed is a
 	// PythLazer account written directly, so map it onto the no-program variant.
 	setFeedPriceNoProgram as setFeedPrice,
 	setFeedPriceNoProgram,
@@ -95,7 +94,7 @@ export async function printTxLogs(
 		maxSupportedTransactionVersion: 1,
 	});
 	const events = [];
-	// On bankrun a tx is only retrievable from the BankrunConnection it was sent
+	// On LiteSVM a tx is only retrievable from the LiteSVMConnection it was sent
 	// through. Raw `program.methods.*().rpc()` calls route through a different
 	// provider connection than the one passed here, so the tx may be null. The
 	// callers that assert on events send through the same connection; the rest
@@ -121,8 +120,8 @@ export async function printTxLogs(
  * delegated) initializes a user sub-account. Ported from velocity-vaults; `usdcMint`
  * is the velocity mint Keypair (velocity's mockUSDCMint returns a Keypair).
  */
-export async function bootstrapSignerClientAndUserBankrun(params: {
-	bankrunContext: BankrunContextWrapper;
+export async function bootstrapSignerClientAndUser(params: {
+	svmContext: LiteSVMContextWrapper;
 	signer: Keypair;
 	usdcMint: Keypair;
 	usdcAmount: BN;
@@ -157,15 +156,15 @@ export async function bootstrapSignerClientAndUserBankrun(params: {
 		depositCollateral,
 		solAmount,
 		velocityClientConfig,
-		bankrunContext,
+		svmContext,
 	} = params;
 
-	await bankrunContext.fundKeypair(signer, LAMPORTS_PER_SOL);
+	await svmContext.fundKeypair(signer, LAMPORTS_PER_SOL);
 
 	const wallet = new Wallet(signer);
 
 	const velocityClient = new TestClient({
-		connection: bankrunContext.connection.toConnection(),
+		connection: svmContext.connection.toConnection(),
 		wallet: new Wallet(signer),
 		txVersion: 'legacy',
 		activeSubAccountId: velocityClientConfig?.activeSubAccountId,
@@ -177,8 +176,8 @@ export async function bootstrapSignerClientAndUserBankrun(params: {
 		authority: velocityClientConfig?.authority,
 	});
 
-	const provider = new BankrunProvider(
-		bankrunContext.context,
+	const provider = new LiteSVMProvider(
+		svmContext.context,
 		wallet as anchor.Wallet
 	);
 	const program = new Program(IDL, provider);
@@ -194,7 +193,7 @@ export async function bootstrapSignerClientAndUserBankrun(params: {
 	const userUSDCAccount = await mockUserUSDCAccount(
 		usdcMint,
 		usdcAmount,
-		bankrunContext,
+		svmContext,
 		signer.publicKey
 	);
 
@@ -204,7 +203,7 @@ export async function bootstrapSignerClientAndUserBankrun(params: {
 	let userWSOLAccount: PublicKey | undefined;
 	if (solAmount !== undefined) {
 		userWSOLAccount = await createWSolTokenAccountForUser(
-			bankrunContext,
+			svmContext,
 			signer,
 			solAmount
 		);
@@ -232,13 +231,13 @@ export async function bootstrapSignerClientAndUserBankrun(params: {
 }
 
 /**
- * Initializes a SOL spot-market maker on bankrun: a velocity user with USDC + WSOL
+ * Initializes a SOL spot-market maker on LiteSVM: a velocity user with USDC + WSOL
  * collateral that requotes a bid/ask around the SOL oracle. Ported from
- * velocity-vaults, adapted to the velocity bankrun harness (takes the
- * BankrunContextWrapper + a TestBulkAccountLoader instead of an AnchorProvider).
+ * velocity-vaults, adapted to the velocity LiteSVM harness (takes the
+ * LiteSVMContextWrapper + a TestBulkAccountLoader instead of an AnchorProvider).
  */
 export async function initializeSolSpotMarketMaker(
-	bankrunContext: BankrunContextWrapper,
+	svmContext: LiteSVMContextWrapper,
 	usdcMint: Keypair,
 	chProgram: Program,
 	oracleInfos: OracleInfo[] = [],
@@ -257,7 +256,7 @@ export async function initializeSolSpotMarketMaker(
 
 	const [velocityClient, solAccount, usdcAccount, userKeyPair] =
 		await createUserWithUSDCAndWSOLAccount(
-			bankrunContext,
+			svmContext,
 			usdcMint,
 			chProgram,
 			solDepositAmount,
@@ -568,10 +567,10 @@ export function calculateAllTokenizedVaultPdas(
  * equals the vault's `userShares`.
  *
  * Upstream velocity enumerated the depositors via `program.account.*.all()`
- * (getProgramAccounts), which the bankrun connection does not implement. On
- * bankrun every account address is derivable, so callers pass the explicit
+ * (getProgramAccounts), which the LiteSVM connection does not implement. On
+ * LiteSVM every account address is derivable, so callers pass the explicit
  * depositor PDA lists they created; each is fetched individually (a single
- * getAccountInfo, which bankrun supports). PDAs that don't exist yet are
+ * getAccountInfo, which LiteSVM supports). PDAs that don't exist yet are
  * skipped, so over-listing is safe.
  */
 export async function validateTotalUserShares(

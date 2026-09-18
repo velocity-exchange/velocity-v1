@@ -1,5 +1,5 @@
 #!/bin/bash
-# Runs the vaults integration suite (tests/vaults/) under ts-mocha + bankrun.
+# Runs the vaults integration suite (tests/vaults/) under ts-mocha + LiteSVM.
 #
 # Unlike the velocity suite (run-anchor-tests.sh), the velocity program is built
 # WITHOUT the mainnet-beta feature here. The vault program creates a drift user +
@@ -8,7 +8,7 @@
 # external-depositor whitelist (programs/velocity/src/instructions/user.rs), so a
 # mainnet-beta .so rejects every vault initialize. Dropping the default features
 # compiles the gate out (it is `#[cfg(feature = "mainnet-beta")]`). The vaults +
-# fixture programs build with their defaults; bankrun loads all of them from
+# fixture programs build with their defaults; LiteSVM loads all of them from
 # target/deploy via the localnet entries in Anchor.toml.
 #
 # Build/run modes (mirrors run-anchor-tests.sh so CI can cache the compiled .so):
@@ -27,23 +27,16 @@ build_programs() {
   # .rlibs can emit a .so with wrong offsets after a Cargo.lock change (see
   # CLAUDE.md "Access violation" note). The program cache reuses the final .so on
   # a hit; on a miss we always build fresh.
-  rm -rf target/sbpf-solana-solana target/deploy
-  # Build velocity ALONE with the no-default-features flags (drops mainnet-beta so
-  # the external-depositor whitelist gate is compiled out — see header).
-  anchor build --ignore-keys --skip-lint -p velocity -- --no-default-features --features no-entrypoint,anchor-test
-  cp target/idl/velocity.json packages/sdk/src/idl/
-  cp target/types/velocity.ts packages/sdk/src/idl/
-  # vaults: build with its DEFAULT features (keep the entrypoint) PLUS anchor-test.
-  # Two reasons the original single workspace build was wrong:
-  #   1. velocity's `--no-default-features` stripped vaults' own entrypoint, producing
-  #      an 896-byte stub .so → bankrun "Program is not deployed" → "invalid account
-  #      data for instruction" in every vault test's before hook.
-  #   2. `anchor-test` selects the test admin id (constants.rs `admin::ID`) that the
-  #      suite signs fee-update ix with; without it `is_admin` fails with 0x7d3.
-  anchor build --ignore-keys --skip-lint -p vaults -- --features anchor-test
-  # fixture programs: plain defaults.
-  anchor build --ignore-keys --skip-lint -p pyth
-  anchor build --ignore-keys --skip-lint -p token_faucet
+  rm -rf target/sbpf*-solana-solana target/deploy
+  # build-sbf.sh gives each program its own feature flags. Applying velocity's
+  # --no-default-features to the others strips their entrypoints and produces
+  # 896-byte stub .so files, which LiteSVM rejects as "Program is not deployed"
+  # and every vault before-hook then fails with "invalid account data for
+  # instruction". vaults additionally needs `anchor-test` for the test admin id
+  # (constants.rs `admin::ID`) the fee-update suite signs with; without it
+  # `is_admin` fails with 0x7d3.
+  bash deploy-scripts/build-sbf.sh test velocity vaults pyth token_faucet
+  bun run program:idl
 }
 
 if [ "$MODE" = "--build-only" ]; then
@@ -55,7 +48,7 @@ if [ "$MODE" != "--skip-build" ]; then
   build_programs
 else
   # --skip-build still needs the bundled SDK IDL/types to match the deployed
-  # program, otherwise tx instructions target a layout bankrun never loaded. With
+  # program, otherwise tx instructions target a layout LiteSVM never loaded. With
   # the CI program cache target/idl is always populated (restored on a hit, freshly
   # built on a miss), so a missing IDL means the caller skipped the build by
   # mistake — fail loudly rather than silently testing against a stale bundled IDL.
@@ -89,7 +82,7 @@ test_files=(
   velocityVaults.ts
 )
 
-# Run up to PARALLEL test files concurrently. bankrun is fully in-process, so each
+# Run up to PARALLEL test files concurrently. LiteSVM is fully in-process, so each
 # ts-mocha is an independent node process with its own SVM — files don't share
 # chain state and can run in parallel. Output is buffered per file and only printed
 # on failure so interleaved stdout from concurrent processes stays legible. Same

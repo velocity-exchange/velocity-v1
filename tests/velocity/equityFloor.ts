@@ -24,9 +24,11 @@ import {
 	mockUserUSDCAccount,
 } from './testHelpers';
 import { AMM_RESERVE_PRECISION, OracleSource, ZERO } from '../../packages/sdk';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 
 // EquityBelowFloor
 const EQUITY_BELOW_FLOOR_HEX = '0x18d6';
@@ -44,7 +46,7 @@ describe('equity floor', () => {
 	let velocityClientUser: User;
 	let eventSubscriber: EventSubscriber;
 	let bulkAccountLoader: TestBulkAccountLoader;
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 
 	let usdcMint;
 	let userUSDCAccount;
@@ -64,31 +66,31 @@ describe('equity floor', () => {
 	let solUsd;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = startLiteSVM();
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			1
 		);
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			svmContextWrapper
 		);
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			chProgram
 		);
 		await eventSubscriber.subscribe();
 
 		solUsd = await mockOracleNoProgram(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			1,
 			-7,
 			undefined,
@@ -102,8 +104,8 @@ describe('equity floor', () => {
 		];
 
 		velocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: svmContextWrapper.connection.toConnection(),
+			wallet: svmContextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -272,7 +274,7 @@ describe('equity floor', () => {
 
 		// Clear the breaker so the tests below start from an unarmed authority. The
 		// reset verifies that every subaccount clears its floor plus buffer, so the
-		// 20 of floor that sub 0 cannot back comes down first. Bankrun has no
+		// 20 of floor that sub 0 cannot back comes down first. LiteSVM has no
 		// getProgramAccounts, so this test passes the subaccounts by hand.
 		await velocityClient.updateUserEquityFloor(
 			userAccountPublicKey,
@@ -328,7 +330,7 @@ describe('equity floor', () => {
 		await velocityClient.initializeUserAccount(1);
 		await velocityClient.switchActiveUser(0);
 
-		const delegateKeyPair = await createFundedKeyPair(bankrunContextWrapper);
+		const delegateKeyPair = await createFundedKeyPair(svmContextWrapper);
 		await velocityClient.updateUserDelegate(delegateKeyPair.publicKey);
 		await velocityClient.switchActiveUser(1);
 		await velocityClient.updateUserDelegate(delegateKeyPair.publicKey, 1);
@@ -336,7 +338,7 @@ describe('equity floor', () => {
 		await velocityClient.updateUserAllowDelegateTransfer(true);
 
 		delegateVelocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
+			connection: svmContextWrapper.connection.toConnection(),
 			wallet: new Wallet(delegateKeyPair),
 			programID: chProgram.programId,
 			opts: {
@@ -346,9 +348,9 @@ describe('equity floor', () => {
 			perpMarketIndexes: [0],
 			spotMarketIndexes: [0],
 			oracleInfos: [{ publicKey: solUsd, source: OracleSource.PYTH_LAZER }],
-			authority: bankrunContextWrapper.provider.wallet.publicKey,
+			authority: svmContextWrapper.provider.wallet.publicKey,
 			authoritySubAccountMap: new Map().set(
-				bankrunContextWrapper.provider.wallet.publicKey,
+				svmContextWrapper.provider.wallet.publicKey,
 				[0, 1]
 			),
 			accountSubscription: {

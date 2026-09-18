@@ -37,9 +37,11 @@ import {
 	createMintToInstruction,
 	getAssociatedTokenAddressSync,
 } from '@solana/spl-token';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 
 describe('stop limit', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
@@ -50,7 +52,7 @@ describe('stop limit', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 
 	let userAccountPublicKey: PublicKey;
 
@@ -80,39 +82,39 @@ describe('stop limit', () => {
 	let btcUsd;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = startLiteSVM();
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			1
 		);
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			chProgram
 		);
 
 		await eventSubscriber.subscribe();
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			svmContextWrapper
 		);
 
 		solUsd = await mockOracleNoProgram(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			1,
 			-7,
 			undefined,
 			10000
 		);
 		btcUsd = await mockOracleNoProgram(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			60000,
 			-7,
 			undefined,
@@ -133,8 +135,8 @@ describe('stop limit', () => {
 		];
 
 		velocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: svmContextWrapper.connection.toConnection(),
+			wallet: svmContextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -191,7 +193,7 @@ describe('stop limit', () => {
 		});
 		await velocityClientUser.subscribe();
 
-		const discountMintKeypair = await mockUSDCMint(bankrunContextWrapper);
+		const discountMintKeypair = await mockUSDCMint(svmContextWrapper);
 
 		discountMint = discountMintKeypair.publicKey;
 
@@ -199,33 +201,33 @@ describe('stop limit', () => {
 
 		const discountMintAta = getAssociatedTokenAddressSync(
 			discountMint,
-			bankrunContextWrapper.provider.wallet.publicKey
+			svmContextWrapper.provider.wallet.publicKey
 		);
 		const ix = createAssociatedTokenAccountIdempotentInstruction(
-			bankrunContextWrapper.context.payer.publicKey,
+			svmContextWrapper.context.payer.publicKey,
 			discountMintAta,
-			bankrunContextWrapper.provider.wallet.publicKey,
+			svmContextWrapper.provider.wallet.publicKey,
 			discountMint
 		);
 		const mintToIx = createMintToInstruction(
 			discountMint,
 			discountMintAta,
-			bankrunContextWrapper.provider.wallet.publicKey,
+			svmContextWrapper.provider.wallet.publicKey,
 			1000 * 10 ** 6
 		);
-		await bankrunContextWrapper.sendTransaction(
+		await svmContextWrapper.sendTransaction(
 			new Transaction().add(ix, mintToIx)
 		);
 
-		await bankrunContextWrapper.fundKeypair(fillerKeyPair, 10 ** 9);
+		await svmContextWrapper.fundKeypair(fillerKeyPair, 10 ** 9);
 		fillerUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper,
+			svmContextWrapper,
 			fillerKeyPair.publicKey
 		);
 		fillerVelocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
+			connection: svmContextWrapper.connection.toConnection(),
 			wallet: new Wallet(fillerKeyPair),
 			programID: chProgram.programId,
 			opts: {
@@ -300,7 +302,7 @@ describe('stop limit', () => {
 		await velocityClientUser.fetchAccounts();
 		let order = velocityClientUser.getOrder(orderId);
 
-		await setFeedPriceNoProgram(bankrunContextWrapper, 1.01, solUsd, 10000);
+		await setFeedPriceNoProgram(svmContextWrapper, 1.01, solUsd, 10000);
 		await velocityClient.moveAmmToPrice(
 			marketIndex,
 			new BN(1.01 * PRICE_PRECISION.toNumber())
@@ -388,7 +390,7 @@ describe('stop limit', () => {
 		velocityClientUser.getUserAccount();
 		let order = velocityClientUser.getOrder(orderId);
 
-		await setFeedPriceNoProgram(bankrunContextWrapper, 0.99, solUsd, 10000);
+		await setFeedPriceNoProgram(svmContextWrapper, 0.99, solUsd, 10000);
 		await velocityClient.moveAmmToPrice(
 			marketIndex,
 			new BN(0.99 * PRICE_PRECISION.toNumber())

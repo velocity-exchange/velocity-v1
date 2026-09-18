@@ -28,9 +28,11 @@ import {
 	createCloseAccountInstruction,
 	createTransferInstruction,
 } from '@solana/spl-token';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 
 // `begin_swap` introspects every instruction that follows it. An instruction
 // after `end_swap` must hold no writable account, and the one exception closes
@@ -43,7 +45,7 @@ describe('swap post-end instructions', () => {
 	let makerWSOL: PublicKey;
 
 	let bulkAccountLoader: TestBulkAccountLoader;
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 
 	let solOracle: PublicKey;
 
@@ -63,38 +65,38 @@ describe('swap post-end instructions', () => {
 	let oracleInfos: OracleInfo[];
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = startLiteSVM();
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			1
 		);
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
 		makerUSDC = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			svmContextWrapper
 		);
 		makerWSOL = await createWSolTokenAccountForUser(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			// @ts-ignore
-			bankrunContextWrapper.provider.wallet,
+			svmContextWrapper.provider.wallet,
 			solAmount
 		);
 
-		solOracle = await mockOracleNoProgram(bankrunContextWrapper, 100);
+		solOracle = await mockOracleNoProgram(svmContextWrapper, 100);
 
 		marketIndexes = [];
 		spotMarketIndexes = [0, 1];
 		oracleInfos = [{ publicKey: solOracle, source: OracleSource.PYTH_LAZER }];
 
 		makerVelocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: svmContextWrapper.connection.toConnection(),
+			wallet: svmContextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -125,7 +127,7 @@ describe('swap post-end instructions', () => {
 
 		[takerVelocityClient, takerWSOL, takerUSDC, takerKeypair] =
 			await createUserWithUSDCAndWSOLAccount(
-				bankrunContextWrapper,
+				svmContextWrapper,
 				usdcMint,
 				chProgram,
 				solAmount,
@@ -141,7 +143,7 @@ describe('swap post-end instructions', () => {
 				bulkAccountLoader
 			);
 
-		await bankrunContextWrapper.fundKeypair(
+		await svmContextWrapper.fundKeypair(
 			takerKeypair,
 			10 * LAMPORTS_PER_SOL
 		);
@@ -242,7 +244,7 @@ describe('swap post-end instructions', () => {
 			makerVelocityClient.wallet.payer,
 		]);
 
-		const txLogs = await bankrunContextWrapper.connection.getTransaction(
+		const txLogs = await svmContextWrapper.connection.getTransaction(
 			txSig,
 			{ commitment: 'confirmed', maxSupportedTransactionVersion: 1 }
 		);
@@ -255,7 +257,7 @@ describe('swap post-end instructions', () => {
 			'begin_swap must not exhaust the heap walking past end_swap'
 		);
 
-		const accountInfo = await bankrunContextWrapper.connection.getAccountInfo(
+		const accountInfo = await svmContextWrapper.connection.getAccountInfo(
 			takerUSDC
 		);
 		assert(accountInfo === null, 'takerUSDC should be closed');

@@ -1,7 +1,6 @@
 import * as anchor from '@coral-xyz/anchor';
 import { Program } from '@coral-xyz/anchor';
 import { assert } from 'chai';
-import { startAnchor } from 'solana-bankrun';
 import {
 	BN,
 	getTokenAmount,
@@ -9,7 +8,10 @@ import {
 	TestClient,
 	TransferFeeAndPnlPoolDirection,
 } from '../../packages/sdk/src';
-import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
 import {
 	initializeQuoteSpotMarket,
@@ -25,7 +27,7 @@ describe('transfer fee and pnl pool', () => {
 
 	let velocityClient: TestClient;
 	let bulkAccountLoader: TestBulkAccountLoader;
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 
 	let usdcMint: Keypair;
 
@@ -57,20 +59,20 @@ describe('transfer fee and pnl pool', () => {
 	};
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
-		bankrunContextWrapper = new BankrunContextWrapper(context as any);
+		const context = startLiteSVM();
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			1
 		);
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
 
 		velocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: svmContextWrapper.connection.toConnection(),
+			wallet: svmContextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: { commitment: 'confirmed' },
 			activeSubAccountId: 0,
@@ -88,12 +90,12 @@ describe('transfer fee and pnl pool', () => {
 
 		await initializeQuoteSpotMarket(velocityClient, usdcMint.publicKey);
 
-		const solOracle = await mockOracleNoProgram(bankrunContextWrapper, 150);
+		const solOracle = await mockOracleNoProgram(svmContextWrapper, 150);
 		const placeholderOracle = await mockOracleNoProgram(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			1
 		);
-		const ethOracle = await mockOracleNoProgram(bankrunContextWrapper, 2500);
+		const ethOracle = await mockOracleNoProgram(svmContextWrapper, 2500);
 
 		const periodicity = new BN(3600);
 		await velocityClient.initializePerpMarket(
@@ -124,7 +126,7 @@ describe('transfer fee and pnl pool', () => {
 		const userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			fundAmount.muln(10),
-			bankrunContextWrapper,
+			svmContextWrapper,
 			velocityClient.wallet.publicKey
 		);
 

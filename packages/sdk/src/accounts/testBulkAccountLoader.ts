@@ -3,7 +3,7 @@ import { AccountToLoad, BulkAccountLoader } from './bulkAccountLoader';
 /**
  * Test-only `BulkAccountLoader` that overrides `loadChunk` to fetch each account individually via
  * `connection.getAccountInfoAndContext` instead of batching through `getMultipleAccounts`. Used
- * against test validator and bankrun connections that do not implement the JSON-RPC batch path
+ * against test validator and LiteSVM connections that do not implement the JSON-RPC batch path
  * the base class relies on. It keeps the base class's per-account slot and buffer dedup rule. It
  * dispatches an update only when the new slot is not older and the buffer changed.
  */

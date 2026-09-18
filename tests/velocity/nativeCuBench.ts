@@ -1,7 +1,6 @@
 import * as anchor from '@coral-xyz/anchor';
 import { Program } from '@coral-xyz/anchor';
 import { assert } from 'chai';
-import { startAnchor } from 'solana-bankrun';
 import {
 	BN,
 	BASE_PRECISION,
@@ -17,7 +16,10 @@ import {
 	mockUSDCMint,
 	mockUserUSDCAccount,
 } from './testHelpers';
-import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
 import { VelocityCore } from '../../packages/sdk/src/core/VelocityCore';
 import { findComputeUnitConsumption } from '../../packages/sdk/src/util/computeUnits';
@@ -89,7 +91,7 @@ function printComputeUnitTable(
 describe('compute units', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 	let velocityClient: TestClient;
 	let originalConsoleLog: typeof console.log;
 
@@ -122,8 +124,8 @@ describe('compute units', () => {
 			originalConsoleLog(...args);
 		};
 
-		const context = await startAnchor('', [], []);
-		bankrunContextWrapper = new BankrunContextWrapper(context as any);
+		const context = startLiteSVM();
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 		const defaultIdl = VelocityCore.defaultIdl();
 		(VelocityCore as any).defaultIdl = () => ({
 			...defaultIdl,
@@ -131,17 +133,17 @@ describe('compute units', () => {
 		});
 
 		const bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			0
 		);
 
-		const usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		const usdcMint = await mockUSDCMint(svmContextWrapper);
 		const wallet = new Wallet(loadKeypair(process.env.ANCHOR_WALLET));
-		await bankrunContextWrapper.fundKeypair(wallet, 10 ** 9);
+		await svmContextWrapper.fundKeypair(wallet, 10 ** 9);
 
 		velocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
+			connection: svmContextWrapper.connection.toConnection(),
 			wallet,
 			programID: chProgram.programId,
 			opts: {
@@ -160,7 +162,7 @@ describe('compute units', () => {
 		const userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			new BN(10 * 10 ** 6),
-			bankrunContextWrapper,
+			svmContextWrapper,
 			velocityClient.wallet.publicKey
 		);
 
@@ -172,7 +174,7 @@ describe('compute units', () => {
 		await velocityClient.updatePerpAuctionDuration(new BN(0));
 		await velocityClient.fetchAccounts();
 
-		const solUsd = await mockOracleNoProgram(bankrunContextWrapper, 1);
+		const solUsd = await mockOracleNoProgram(svmContextWrapper, 1);
 		await velocityClient.initializePerpMarket(
 			0,
 			solUsd,
@@ -187,7 +189,7 @@ describe('compute units', () => {
 			0,
 			acceptedMmOraclePrice,
 			acceptedMmOracleSequenceId,
-			new BN((await bankrunContextWrapper.connection.getSlot()).toString())
+			new BN((await svmContextWrapper.connection.getSlot()).toString())
 		);
 
 		// Fill-bench market: real AMM depth, oracle/MM-oracle/curve aligned at 1,
@@ -209,7 +211,7 @@ describe('compute units', () => {
 			fillMarketIndex,
 			fillMmOraclePrice,
 			fillMmOracleSequenceId,
-			new BN((await bankrunContextWrapper.connection.getSlot()).toString())
+			new BN((await svmContextWrapper.connection.getSlot()).toString())
 		);
 		// Batch-bench markets. No AMM depth or curve work needed: the batch
 		// handler only touches `market_stats`, so a bare initialized market
@@ -242,16 +244,16 @@ describe('compute units', () => {
 	});
 
 	async function advancePastMmOracleRateLimit(): Promise<void> {
-		await bankrunContextWrapper.connection.updateSlotAndClock();
+		await svmContextWrapper.connection.updateSlotAndClock();
 	}
 
 	/**
-	 * The current bankrun slot, used as the source-observation slot. The program's
+	 * The current LiteSVM slot, used as the source-observation slot. The program's
 	 * `MM_ORACLE_MAX_SOURCE_AGE_SLOTS` freshness gate then skips no write.
 	 */
 	async function sourceSlot(): Promise<BN> {
 		return new BN(
-			(await bankrunContextWrapper.connection.getSlot()).toString()
+			(await svmContextWrapper.connection.getSlot()).toString()
 		);
 	}
 
@@ -260,7 +262,7 @@ describe('compute units', () => {
 	): Promise<number> {
 		const computeUnits = await findComputeUnitConsumption(
 			chProgram.programId,
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			txSig
 		);
 		assert.strictEqual(

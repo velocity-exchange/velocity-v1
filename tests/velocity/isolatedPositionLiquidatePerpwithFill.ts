@@ -31,9 +31,11 @@ import {
 	PERCENTAGE_PRECISION,
 	PerpOperation,
 } from '../../packages/sdk';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 
 describe('liquidate perp (no open orders)', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
@@ -43,7 +45,7 @@ describe('liquidate perp (no open orders)', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 
 	let usdcMint;
 	let userUSDCAccount;
@@ -70,33 +72,33 @@ describe('liquidate perp (no open orders)', () => {
 	let oracle: PublicKey;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = startLiteSVM();
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			1
 		);
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			//@ts-ignore
 			chProgram
 		);
 
 		await eventSubscriber.subscribe();
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			svmContextWrapper
 		);
 
 		oracle = await mockOracleNoProgram(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			1,
 			-7,
 			undefined,
@@ -104,8 +106,8 @@ describe('liquidate perp (no open orders)', () => {
 		);
 
 		velocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: svmContextWrapper.connection.toConnection(),
+			wallet: svmContextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -182,15 +184,15 @@ describe('liquidate perp (no open orders)', () => {
 			new BN(0)
 		);
 
-		bankrunContextWrapper.fundKeypair(liquidatorKeyPair, LAMPORTS_PER_SOL);
+		svmContextWrapper.fundKeypair(liquidatorKeyPair, LAMPORTS_PER_SOL);
 		liquidatorUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper,
+			svmContextWrapper,
 			liquidatorKeyPair.publicKey
 		);
 		liquidatorVelocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
+			connection: svmContextWrapper.connection.toConnection(),
 			wallet: new Wallet(liquidatorKeyPair),
 			programID: chProgram.programId,
 			opts: {
@@ -219,7 +221,7 @@ describe('liquidate perp (no open orders)', () => {
 		);
 
 		[makerVelocityClient, makerUSDCAccount] = await createUserWithUSDCAccount(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			usdcMint,
 			chProgram,
 			makerUsdcAmount,
@@ -245,7 +247,7 @@ describe('liquidate perp (no open orders)', () => {
 	});
 
 	it('liquidate', async () => {
-		await setFeedPriceNoProgram(bankrunContextWrapper, 0.1, oracle, 10000);
+		await setFeedPriceNoProgram(svmContextWrapper, 0.1, oracle, 10000);
 		await velocityClient.updatePerpMarketPausedOperations(
 			0,
 			PerpOperation.AMM_FILL
@@ -260,7 +262,7 @@ describe('liquidate perp (no open orders)', () => {
 				reduceOnly: true,
 				marketIndex: 0,
 			});
-			bankrunContextWrapper.connection.printTxLogs(failToPlaceTxSig);
+			svmContextWrapper.connection.printTxLogs(failToPlaceTxSig);
 			throw new Error('Expected placePerpOrder to throw an error');
 		} catch (error) {
 			if (
@@ -294,7 +296,7 @@ describe('liquidate perp (no open orders)', () => {
 			makerInfos
 		);
 
-		bankrunContextWrapper.connection.printTxLogs(txSig);
+		svmContextWrapper.connection.printTxLogs(txSig);
 
 		for (let i = 0; i < 32; i++) {
 			assert(

@@ -1,7 +1,6 @@
 import * as anchor from '@coral-xyz/anchor';
 import { Program } from '@coral-xyz/anchor';
 import { assert, expect } from 'chai';
-import { startAnchor } from 'solana-bankrun';
 import {
 	BN,
 	ExchangeStatus,
@@ -29,9 +28,10 @@ import {
 } from './testHelpers';
 import { Keypair, PublicKey } from '@solana/web3.js';
 import {
-	BankrunContextWrapper,
+	LiteSVMContextWrapper,
 	Connection,
-} from '../../packages/sdk/src/bankrun/bankrunConnection';
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
 import { createTransferCheckedInstruction } from '@solana/spl-token';
 
@@ -48,27 +48,27 @@ describe('admin', () => {
 
 	const usdcAmount = new BN(10 * 10 ** 6);
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = startLiteSVM();
 
-		bankrunContextWrapper = new BankrunContextWrapper(context as any);
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			1
 		);
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
 
 		const wallet = new Wallet(loadKeypair(process.env.ANCHOR_WALLET));
 		//@ts-ignore
-		await bankrunContextWrapper.fundKeypair(wallet, 10 ** 9);
+		await svmContextWrapper.fundKeypair(wallet, 10 ** 9);
 
 		velocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(), // ugh.
+			connection: svmContextWrapper.connection.toConnection(), // ugh.
 			wallet,
 			programID: chProgram.programId,
 			opts: {
@@ -87,7 +87,7 @@ describe('admin', () => {
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper,
+			svmContextWrapper,
 			velocityClient.wallet.publicKey
 		);
 
@@ -102,7 +102,7 @@ describe('admin', () => {
 
 		const periodicity = new BN(60 * 60); // 1 HOUR
 
-		const solUsd = await mockOracleNoProgram(bankrunContextWrapper, 1);
+		const solUsd = await mockOracleNoProgram(svmContextWrapper, 1);
 		await velocityClient.initializePerpMarket(
 			0,
 			solUsd,
@@ -162,10 +162,10 @@ describe('admin', () => {
 
 	it('allows the vAMM active-management role without granting broad admin', async () => {
 		const activeManagementKey = Keypair.generate();
-		await bankrunContextWrapper.fundKeypair(activeManagementKey, 10 ** 9);
+		await svmContextWrapper.fundKeypair(activeManagementKey, 10 ** 9);
 
 		const activeManagementClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
+			connection: svmContextWrapper.connection.toConnection(),
 			wallet: new Wallet(activeManagementKey),
 			programID: chProgram.programId,
 			opts: { commitment: 'confirmed' },
@@ -601,7 +601,7 @@ describe('admin', () => {
 		const oraclePrice = new BN(100_000_000);
 		const oracleTS = new BN(Date.now());
 		const sourceSlot = async () =>
-			new BN((await bankrunContextWrapper.connection.getSlot()).toString());
+			new BN((await svmContextWrapper.connection.getSlot()).toString());
 		await velocityClient.updateFeatureBitFlagsMMOracle(true);
 		await velocityClient.updateMmOracleNative(
 			0,
@@ -613,7 +613,7 @@ describe('admin', () => {
 
 		let perpMarket = velocityClient.getPerpMarketAccount(0);
 		assert(perpMarket.marketStats.mmOraclePrice.eq(oraclePrice));
-		const slot = (await bankrunContextWrapper.connection.getSlot()).toString();
+		const slot = (await svmContextWrapper.connection.getSlot()).toString();
 		expect(perpMarket.marketStats.mmOracleSlot.toNumber()).to.be.approximately(
 			+slot,
 			1
@@ -661,8 +661,8 @@ describe('admin', () => {
 		// The program skips the write, and does not error, when the source slot is
 		// too old. The update landed more than MM_ORACLE_MAX_SOURCE_AGE_SLOTS after
 		// the observation.
-		await bankrunContextWrapper.connection.updateSlotAndClock();
-		await bankrunContextWrapper.connection.updateSlotAndClock();
+		await svmContextWrapper.connection.updateSlotAndClock();
+		await svmContextWrapper.connection.updateSlotAndClock();
 		const staleSource = (await sourceSlot()).subn(3);
 		await velocityClient.updateMmOracleNative(
 			0,
@@ -709,11 +709,11 @@ describe('admin', () => {
 	});
 
 	it('mm oracle step cap clamps a too-large jump and converges', async () => {
-		// Each send advances the bankrun slot by one. A second advance clears the
+		// Each send advances the LiteSVM slot by one. A second advance clears the
 		// program's MM_ORACLE_MIN_SLOT_GAP of 2, so the write reaches the step cap
 		// and the rate limit does not skip it.
 		const advancePastRateLimit = () =>
-			bankrunContextWrapper.connection.updateSlotAndClock();
+			svmContextWrapper.connection.updateSlotAndClock();
 
 		await velocityClient.fetchAccounts();
 		const before = velocityClient.getPerpMarketAccount(0);
@@ -729,7 +729,7 @@ describe('admin', () => {
 		const expectedFirstStep = baselinePrice.muln(101).divn(100);
 
 		const sourceSlot = async () =>
-			new BN((await bankrunContextWrapper.connection.getSlot()).toString());
+			new BN((await svmContextWrapper.connection.getSlot()).toString());
 		await advancePastRateLimit();
 		await velocityClient.updateMmOracleNative(
 			0,

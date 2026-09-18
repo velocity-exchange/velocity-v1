@@ -20,9 +20,11 @@ import {
 	mockUSDCMint,
 	mockUserUSDCAccount,
 } from './testHelpers';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 import dotenv from 'dotenv';
 dotenv.config();
 
@@ -39,7 +41,7 @@ dotenv.config();
 // `size_of` bytes.
 describe('account extension', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 	let bulkAccountLoader: TestBulkAccountLoader;
 
 	let velocityClient: TestClient;
@@ -57,27 +59,27 @@ describe('account extension', () => {
 	let originalUserAccountSize: number;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = startLiteSVM();
 
 		// @ts-ignore
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			1
 		);
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
 		usdcAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			svmContextWrapper
 		);
 
 		velocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: svmContextWrapper.connection.toConnection(),
+			wallet: svmContextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -101,9 +103,9 @@ describe('account extension', () => {
 				usdcAccount.publicKey
 			);
 
-		hotKeyPair = await createFundedKeyPair(bankrunContextWrapper);
+		hotKeyPair = await createFundedKeyPair(svmContextWrapper);
 		hotVelocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
+			connection: svmContextWrapper.connection.toConnection(),
 			wallet: new Wallet(hotKeyPair),
 			programID: chProgram.programId,
 			opts: {
@@ -128,7 +130,7 @@ describe('account extension', () => {
 	});
 
 	it('extend_account_devnet grows a user account and zero-fills the tail', async () => {
-		const before = await bankrunContextWrapper.connection.getAccountInfo(
+		const before = await svmContextWrapper.connection.getAccountInfo(
 			userAccountPublicKey
 		);
 		originalUserAccountSize = before.data.length;
@@ -138,7 +140,7 @@ describe('account extension', () => {
 			originalUserAccountSize + EXTRA_BYTES
 		);
 
-		const after = await bankrunContextWrapper.connection.getAccountInfo(
+		const after = await svmContextWrapper.connection.getAccountInfo(
 			userAccountPublicKey
 		);
 		expect(after.data.length).to.equal(originalUserAccountSize + EXTRA_BYTES);
@@ -155,7 +157,7 @@ describe('account extension', () => {
 	});
 
 	it('clients decode the extended account', async () => {
-		const info = await bankrunContextWrapper.connection.getAccountInfo(
+		const info = await svmContextWrapper.connection.getAccountInfo(
 			userAccountPublicKey
 		);
 
@@ -177,7 +179,7 @@ describe('account extension', () => {
 		// grow the spot market too, so the deposit loads two extended accounts
 		const spotMarketPublicKey = velocityClient.getSpotMarketAccount(0).pubkey;
 		const spotMarketInfo =
-			await bankrunContextWrapper.connection.getAccountInfo(
+			await svmContextWrapper.connection.getAccountInfo(
 				spotMarketPublicKey
 			);
 		await velocityClient.extendAccountDevnet(
@@ -202,11 +204,11 @@ describe('account extension', () => {
 	});
 
 	it('extend_account is a no-op for an account at (or beyond) target size', async () => {
-		const before = await bankrunContextWrapper.connection.getAccountInfo(
+		const before = await svmContextWrapper.connection.getAccountInfo(
 			userAccountPublicKey
 		);
 		await velocityClient.extendAccount(userAccountPublicKey);
-		const after = await bankrunContextWrapper.connection.getAccountInfo(
+		const after = await svmContextWrapper.connection.getAccountInfo(
 			userAccountPublicKey
 		);
 		expect(after.data.length).to.equal(before.data.length);

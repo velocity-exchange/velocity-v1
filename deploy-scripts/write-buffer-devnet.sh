@@ -24,6 +24,10 @@ SOLANA_RPC="${SOLANA_RPC:-${RPC_URL:-https://api.devnet.solana.com}}"
 
 resolve_upgrade_keypair UPGRADE_KEYPAIR
 
+# The buffer is what actually reaches the cluster, so gate on the bytecode
+# version here rather than trusting whoever produced the .so.
+bash "$(dirname "$0")/assert-sbpf-version.sh" "$PROGRAM_SO"
+
 BUFFER_AUTHORITY="${BUFFER_AUTHORITY:-$UPGRADE_KEYPAIR}"
 FEE_PAYER="${FEE_PAYER:-$UPGRADE_KEYPAIR}"
 BUFFER_ACCOUNT_KEYPAIR="${BUFFER_ACCOUNT_KEYPAIR:-deploy-scripts/out/velocity-so-write-buffer-keypair.json}"

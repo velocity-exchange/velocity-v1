@@ -1,11 +1,14 @@
-// Shim over the velocity SDK's bankrun helpers. The vendored vaults suite was
+// Shim over the velocity SDK's LiteSVM helpers. The vendored vaults suite was
 // written against velocity-vaults' own copy of these helpers; the velocity SDK
-// already ships an adapted BankrunContextWrapper that writes velocity's account
+// already ships an adapted LiteSVMContextWrapper that writes velocity's account
 // layouts, so we re-export that instead of duplicating it here.
 export {
-	BankrunContextWrapper,
-	BankrunConnection,
-} from '../../../packages/sdk/src/bankrun/bankrunConnection';
+	LiteSVMContextWrapper,
+	LiteSVMConnection,
+	LiteSVMContext,
+	LiteSVMProvider,
+	startLiteSVM,
+} from '../../../packages/sdk/src/litesvm/litesvmConnection';
 
 // Fixed admin keypair the trusted-vault / fee-update suites fund and use as the
 // protocol admin. Copied verbatim from velocity-vaults' tests/common so the derived

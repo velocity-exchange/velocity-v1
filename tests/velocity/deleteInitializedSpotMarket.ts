@@ -22,16 +22,18 @@ import {
 	getSpotMarketVaultPublicKey,
 } from '../../packages/sdk';
 import { PublicKey } from '@solana/web3.js';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 
 describe('max deposit', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
 
 	let velocityClient: TestClient;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
@@ -41,28 +43,28 @@ describe('max deposit', () => {
 	const usdcAmount = new BN(10 * 10 ** 6);
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = startLiteSVM();
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			1
 		);
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
 		_userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			svmContextWrapper
 		);
 
-		const solUsd = await mockOracleNoProgram(bankrunContextWrapper, 1);
+		const solUsd = await mockOracleNoProgram(svmContextWrapper, 1);
 
 		velocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: svmContextWrapper.connection.toConnection(),
+			wallet: svmContextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -117,18 +119,17 @@ describe('max deposit', () => {
 	it('delete', async () => {
 		const txSig = await velocityClient.deleteInitializedSpotMarket(0);
 
-		bankrunContextWrapper.connection.printTxLogs(txSig);
+		svmContextWrapper.connection.printTxLogs(txSig);
 
 		const spotMarketKey = await getSpotMarketPublicKey(
 			velocityClient.program.programId,
 			0
 		);
 
-		let result =
-			await bankrunContextWrapper.connection.getAccountInfoAndContext(
-				spotMarketKey,
-				'processed'
-			);
+		let result = await svmContextWrapper.connection.getAccountInfoAndContext(
+			spotMarketKey,
+			'processed'
+		);
 		assert(result.value === null);
 
 		const spotMarketVaultKey = await getSpotMarketVaultPublicKey(
@@ -136,7 +137,7 @@ describe('max deposit', () => {
 			0
 		);
 
-		result = await bankrunContextWrapper.connection.getAccountInfoAndContext(
+		result = await svmContextWrapper.connection.getAccountInfoAndContext(
 			spotMarketVaultKey,
 			'processed'
 		);
@@ -147,7 +148,7 @@ describe('max deposit', () => {
 			0
 		);
 
-		result = await bankrunContextWrapper.connection.getAccountInfoAndContext(
+		result = await svmContextWrapper.connection.getAccountInfoAndContext(
 			ifVaultKey,
 			'processed'
 		);

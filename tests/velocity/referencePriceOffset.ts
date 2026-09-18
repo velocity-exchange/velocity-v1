@@ -29,9 +29,11 @@ import {
 	overWritePerpMarket,
 	placeAndFillVammTrade,
 } from './testHelpers';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 import dotenv from 'dotenv';
 import {
 	CustomBorshAccountsCoder,
@@ -59,7 +61,7 @@ describe('Reference Price Offset E2E', () => {
 	const program = anchor.workspace.Velocity as Program;
 	// @ts-ignore
 	program.coder.accounts = new CustomBorshAccountsCoder(program.idl);
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 	let bulkAccountLoader: TestBulkAccountLoader;
 
 	let eventSubscriber: EventSubscriber;
@@ -71,10 +73,8 @@ describe('Reference Price Offset E2E', () => {
 	let userUSDCAccount: Keypair;
 
 	beforeEach(async () => {
-		const context = await startAnchor(
-			'',
-			[],
-			[
+		const context = startLiteSVM({
+			accounts: [
 				{
 					address: marketPubkey,
 					info: {
@@ -93,35 +93,35 @@ describe('Reference Price Offset E2E', () => {
 						data: Buffer.from(oracleSnapshotBytes, 'hex'),
 					},
 				},
-			]
-		);
+			],
+		});
 
 		// @ts-ignore
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			1
 		);
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			// @ts-ignore
 			program
 		);
 		await eventSubscriber.subscribe();
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
 
 		// seed SOL-PERP market and oracle accounts
-		// bankrunContextWrapper.context.setAccount(marketPubkey, {
+		// svmContextWrapper.context.setAccount(marketPubkey, {
 		// 	executable: false,
 		// 	owner: program.programId,
 		// 	lamports: LAMPORTS_PER_SOL,
 		// 	data: Buffer.from(marketSnapshotBytes, 'hex'),
 		// });
-		// bankrunContextWrapper.context.setAccount(oraclePubkey, {
+		// svmContextWrapper.context.setAccount(oraclePubkey, {
 		// 	executable: false,
 		// 	owner: program.programId,
 		// 	lamports: LAMPORTS_PER_SOL,
@@ -129,10 +129,10 @@ describe('Reference Price Offset E2E', () => {
 		// });
 
 		const keypair = new Keypair();
-		await bankrunContextWrapper.fundKeypair(keypair, 50 * LAMPORTS_PER_SOL);
+		await svmContextWrapper.fundKeypair(keypair, 50 * LAMPORTS_PER_SOL);
 
 		adminClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
+			connection: svmContextWrapper.connection.toConnection(),
 			wallet: new anchor.Wallet(keypair),
 			programID: program.programId,
 			opts: {
@@ -162,7 +162,7 @@ describe('Reference Price Offset E2E', () => {
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcMintAmount,
-			bankrunContextWrapper,
+			svmContextWrapper,
 			keypair.publicKey
 		);
 
@@ -180,9 +180,9 @@ describe('Reference Price Offset E2E', () => {
 		await adminClient.accountSubscriber.setPerpOracleMap();
 
 		const keypair2 = new Keypair();
-		await bankrunContextWrapper.fundKeypair(keypair2, 50 * LAMPORTS_PER_SOL);
+		await svmContextWrapper.fundKeypair(keypair2, 50 * LAMPORTS_PER_SOL);
 		fillerVelocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
+			connection: svmContextWrapper.connection.toConnection(),
 			wallet: new anchor.Wallet(keypair2),
 			programID: program.programId,
 			opts: {
@@ -251,7 +251,7 @@ describe('Reference Price Offset E2E', () => {
 		perpMarket0.amm.curveUpdateIntensity = 200;
 		await overWritePerpMarket(
 			adminClient,
-			bankrunContextWrapper,
+			svmContextWrapper,
 			perpMarket0.pubkey,
 			perpMarket0
 		);
@@ -358,7 +358,7 @@ describe('Reference Price Offset E2E', () => {
 
 		await overWritePerpMarket(
 			adminClient,
-			bankrunContextWrapper,
+			svmContextWrapper,
 			perpMarket2.pubkey,
 			perpMarket2
 		);
@@ -421,7 +421,7 @@ describe('Reference Price Offset E2E', () => {
 		perpMarket0.amm.curveUpdateIntensity = 200;
 		await overWritePerpMarket(
 			adminClient,
-			bankrunContextWrapper,
+			svmContextWrapper,
 			perpMarket0.pubkey,
 			perpMarket0
 		);
@@ -430,7 +430,7 @@ describe('Reference Price Offset E2E', () => {
 
 		const direction = PositionDirection.LONG;
 		for (let i = 0; i < 1; i++) {
-			const now = bankrunContextWrapper.connection.getTime();
+			const now = svmContextWrapper.connection.getTime();
 			await adminClient.fetchAccounts();
 			const perpMarket = adminClient.getPerpMarketAccount(marketIndex);
 			const [vBid, vAsk] = calculateBidAskPrice(
@@ -453,7 +453,7 @@ describe('Reference Price Offset E2E', () => {
 				? vAsk.muln(10000 + priceAgg).divn(10000)
 				: vBid.muln(10000 - priceAgg).divn(10000);
 			await placeAndFillVammTrade({
-				bankrunContextWrapper,
+				svmContextWrapper,
 				orderClient: adminClient,
 				// @ts-ignore
 				fillerClient: fillerVelocityClient,
@@ -467,7 +467,7 @@ describe('Reference Price Offset E2E', () => {
 				maxTs: new BN(now + 60),
 			});
 			await adminClient.cancelOrders();
-			await bankrunContextWrapper.moveTimeForward(10);
+			await svmContextWrapper.moveTimeForward(10);
 		}
 
 		const perpMarket3 = adminClient.getPerpMarketAccount(marketIndex);
@@ -528,7 +528,7 @@ describe('Reference Price Offset E2E', () => {
 		perpMarketPre.amm.referencePriceOffset = 20000; // 0.1%
 		await overWritePerpMarket(
 			adminClient,
-			bankrunContextWrapper,
+			svmContextWrapper,
 			perpMarketPre.pubkey,
 			perpMarketPre
 		);
@@ -563,7 +563,7 @@ describe('Reference Price Offset E2E', () => {
 		perpMarket0.marketStats.mmOracleSlot = currentOracleSlot;
 		await overWritePerpMarket(
 			adminClient,
-			bankrunContextWrapper,
+			svmContextWrapper,
 			perpMarket0.pubkey,
 			perpMarket0
 		);
@@ -595,9 +595,9 @@ describe('Reference Price Offset E2E', () => {
 		expect(vAskNumAfter).to.gt(vAskNum);
 
 		// Try and fill against the vamm
-		const now = bankrunContextWrapper.connection.getTime();
+		const now = svmContextWrapper.connection.getTime();
 		const txSig = await placeAndFillVammTrade({
-			bankrunContextWrapper,
+			svmContextWrapper,
 			orderClient: adminClient,
 			// @ts-ignore
 			fillerClient: fillerVelocityClient,

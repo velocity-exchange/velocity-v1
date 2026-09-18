@@ -8,7 +8,7 @@ import {
 	AccountToLoad,
 	BulkAccountLoader,
 } from '../../src/accounts/bulkAccountLoader';
-import { Connection } from '../../src/bankrun/bankrunConnection';
+import { Connection } from '../../src/litesvm/litesvmConnection';
 import { stubRpcClient } from '../util/stubRpcClient';
 
 const KEY_A = new PublicKey(Keypair.generate().publicKey);

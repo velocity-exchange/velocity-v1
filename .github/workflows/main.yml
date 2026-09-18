@@ -30,7 +30,11 @@ env:
   # Pinned nightly for `cargo fmt` only (rustfmt.toml uses the nightly-only
   # imports_granularity/group_imports options). Builds/clippy stay on stable.
   RUST_NIGHTLY_TOOLCHAIN: nightly-2026-07-25
-  SOLANA_VERSION: 2.3.11
+  # 4.3.0-rc.1 is the earliest release whose cargo-build-sbf (4.3.0, platform-
+  # tools v1.57) can emit SBPFv3; SIMD-0500 makes that the only deployable
+  # format from Agave v4.4 on. 4.2.2 ships cargo-build-sbf 4.1.0 / v1.54, under
+  # the v1.56 minimum. Move to 4.3.0 final when it ships.
+  SOLANA_VERSION: 4.3.0-rc.1
   ANCHOR_VERSION: 1.0.2
   NODE_VERSION: '24.x.x'
   # Disable Turborepo anonymous telemetry in CI (these runners handle deploy
@@ -41,12 +45,11 @@ env:
   # solanafoundation/solana-verifiable-build tags lag behind agave releases;
   # check https://hub.docker.com/r/solanafoundation/solana-verifiable-build/tags
   # for the latest available tag before bumping SOLANA_VERSION above.
-  # Image picks the SBF platform-tools toolchain used by `cargo build-sbf`.
-  # 2.3.x images ship platform-tools v1.48 (rustc 1.84) which cannot parse
-  # edition2024 crates pulled in transitively by Anchor 1.0; 3.1.x ships
-  # v1.52 (rustc 1.89) which matches the Anchor 1.0 MSRV. The SBF byte code
-  # remains compatible with the agave 2.3.11 runtime targeted by SOLANA_VERSION.
-  VERIFIABLE_BUILD_IMAGE: solanafoundation/solana-verifiable-build:3.1.14
+  # 4.1.2 is the newest published tag. It ships platform-tools v1.54, but the
+  # verified-build job forces v1.57 via --cargo-build-sbf-args, so the image's
+  # own version does not decide the bytecode version. Bumping the tag is still
+  # worthwhile when a 4.3.x lands, to drop the override.
+  VERIFIABLE_BUILD_IMAGE: solanafoundation/solana-verifiable-build:4.1.2
 
 jobs:
   # Single change-detection pass. Heavy rust/anchor jobs gate on these outputs so
@@ -732,7 +735,7 @@ jobs:
         with:
           cache-on-failure: 'true'
           # Cache only the cargo registry/git, NOT the workspace target dir.
-          # Reusing SBF artifacts (target/sbpf-solana-solana) across runs is the
+          # Reusing SBF artifacts (target/sbpf*-solana-solana) across runs is the
           # documented corruption hazard in this repo — the incremental build
           # key doesn't catch every dep-resolution change, so the resulting .so
           # loads but reads/writes wrong offsets ("Program failed to complete"
@@ -819,11 +822,11 @@ jobs:
             target/deploy
             target/idl/velocity.json
             target/types/velocity.ts
-          key: ${{ runner.os }}-velocity-program-anchortest-ltothin-cu16-anchor${{ env.ANCHOR_VERSION }}-rust${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('programs/**', 'Cargo.toml', 'Cargo.lock', 'Anchor.toml') }}
+          key: ${{ runner.os }}-velocity-program-anchortest-ltothin-cu16-anchor${{ env.ANCHOR_VERSION }}-rust${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('programs/**', 'Cargo.toml', 'Cargo.lock', 'Anchor.toml', 'deploy-scripts/build-sbf.sh') }}
 
-      # Only recompile when the program sources changed (cache miss). bankrun's
-      # startAnchor loads velocity/pyth/token_faucet from target/deploy, so the
-      # whole dir is the cached unit.
+      # Only recompile when the program sources changed (cache miss).
+      # startLiteSVM loads every Anchor.toml localnet program plus jit-proxy from
+      # target/deploy, so the whole dir is the cached unit.
       - name: Build program
         if: steps.cache-program.outputs.cache-hit != 'true'
         env:
@@ -838,8 +841,9 @@ jobs:
         # of them can emit a .so with wrong offsets (see CLAUDE.md). The program
         # cache reuses the *final* .so on a hit; on a miss we always build fresh.
         run: |
-          rm -rf target/sbpf-solana-solana target/deploy
-          anchor build --ignore-keys --skip-lint -- --features anchor-test
+          rm -rf target/sbpf*-solana-solana target/deploy
+          bash deploy-scripts/build-sbf.sh test
+          bun run program:idl
 
       # Save the compiled program cache only on a cache miss AND only when the
       # build succeeded — prevents a partial build (e.g. IDL gen failed after
@@ -852,7 +856,7 @@ jobs:
             target/deploy
             target/idl/velocity.json
             target/types/velocity.ts
-          key: ${{ runner.os }}-velocity-program-anchortest-ltothin-cu16-anchor${{ env.ANCHOR_VERSION }}-rust${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('programs/**', 'Cargo.toml', 'Cargo.lock', 'Anchor.toml') }}
+          key: ${{ runner.os }}-velocity-program-anchortest-ltothin-cu16-anchor${{ env.ANCHOR_VERSION }}-rust${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('programs/**', 'Cargo.toml', 'Cargo.lock', 'Anchor.toml', 'deploy-scripts/build-sbf.sh') }}
 
       # run-anchor-tests.sh --skip-build syncs the freshly built/restored IDL
       # into packages/sdk/src/idl and builds the SDK before running the suites:
@@ -946,7 +950,7 @@ jobs:
             target/deploy
             target/idl/velocity.json
             target/types/velocity.ts
-          key: ${{ runner.os }}-velocity-program-vaulttest-nomainnet-thin-cu16-anchor${{ env.ANCHOR_VERSION }}-rust${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('programs/**', 'Cargo.toml', 'Cargo.lock', 'Anchor.toml') }}
+          key: ${{ runner.os }}-velocity-program-vaulttest-nomainnet-thin-cu16-anchor${{ env.ANCHOR_VERSION }}-rust${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('programs/**', 'Cargo.toml', 'Cargo.lock', 'Anchor.toml', 'deploy-scripts/build-sbf.sh') }}
 
       # Only recompile when the program sources changed (cache miss). The thin-LTO
       # override matches anchor-tests: the committed release profile uses fat LTO +
@@ -969,7 +973,7 @@ jobs:
             target/deploy
             target/idl/velocity.json
             target/types/velocity.ts
-          key: ${{ runner.os }}-velocity-program-vaulttest-nomainnet-thin-cu16-anchor${{ env.ANCHOR_VERSION }}-rust${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('programs/**', 'Cargo.toml', 'Cargo.lock', 'Anchor.toml') }}
+          key: ${{ runner.os }}-velocity-program-vaulttest-nomainnet-thin-cu16-anchor${{ env.ANCHOR_VERSION }}-rust${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('programs/**', 'Cargo.toml', 'Cargo.lock', 'Anchor.toml', 'deploy-scripts/build-sbf.sh') }}
 
       # --skip-build syncs the freshly built/restored IDL into packages/sdk/src/idl,
       # builds the SDKs, and runs the suite (programs already built/restored above).
@@ -1033,11 +1037,26 @@ jobs:
       - name: Install Solana Verify CLI
         run: |
           sudo apt update -y && sudo apt install libudev-dev
-          cargo install solana-verify --version 0.4.11 --locked
+          cargo install solana-verify --version 0.5.1 --locked
 
+      # The image's own platform-tools version does not gate the bytecode version.
+      # cargo-build-sbf downloads whatever --tools-version asks for, so forcing
+      # v1.57 inside the 4.1.2 image (which ships v1.54, under Anza's v1.56
+      # minimum) produces a compliant SBPFv3 artifact. Verified by building
+      # token_faucet this way and checking the ELF e_flags.
+      #
+      # Anyone reproducing this hash has to pass the same two flags, so keep them
+      # together with the image tag in whatever verification instructions ship
+      # alongside a release.
       - name: Verifiable Build
         run: |
-          solana-verify build --library-name velocity -b ${{ env.VERIFIABLE_BUILD_IMAGE }}
+          solana-verify build --library-name velocity \
+            -b ${{ env.VERIFIABLE_BUILD_IMAGE }} \
+            --arch v3 \
+            --cargo-build-sbf-args=--tools-version=v1.57
+
+      - name: Artifact is SBPFv3
+        run: bash deploy-scripts/assert-sbpf-version.sh target/deploy/velocity.so
 
       - name: Upload Artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

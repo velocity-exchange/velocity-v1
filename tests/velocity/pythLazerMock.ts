@@ -1,4 +1,4 @@
-// Runtime generator for Pyth Lazer oracle messages, so the bankrun tests don't depend on
+// Runtime generator for Pyth Lazer oracle messages, so the LiteSVM tests don't depend on
 // frozen, pre-signed fixtures (which go stale against the on-chain wall-clock max-age check,
 // PYTH_LAZER_MAX_STALENESS_SECONDS). We mint a throwaway Ed25519 signer, make the injected
 // Pyth Lazer storage trust it (in addition to Pyth's real signer, so the remaining frozen
@@ -18,7 +18,7 @@ const PROP_EXPONENT = 4;
 const PROP_FEED_UPDATE_TS = 12;
 
 // Throwaway Ed25519 signer. It is only ever trusted by the mock storage `mockLazerStorageData`
-// injects into the (test-only) bankrun ledger, so it is not a sensitive key.
+// injects into the (test-only) LiteSVM ledger, so it is not a sensitive key.
 const TEST_LAZER_SEED = new Uint8Array(32).fill(7);
 export const testLazerKeypair = nacl.sign.keyPair.fromSeed(TEST_LAZER_SEED);
 
@@ -114,9 +114,9 @@ export function makeFreshLazerMessageHex(
 }
 
 /**
- * Convenience: a fresh SOL (feed 6) message stamped at the *bankrun* clock.
- * Pass `bankrunContextWrapper.connection.getTime()` (on-chain unix seconds) — NOT `Date.now()`:
- * bankrun's clock advances ~1s per processed transaction, so in transaction-heavy tests it runs
+ * Convenience: a fresh SOL (feed 6) message stamped at the *LiteSVM* clock.
+ * Pass `svmContextWrapper.connection.getTime()` (on-chain unix seconds), NOT `Date.now()`:
+ * LiteSVM's clock advances ~1s per processed transaction, so in transaction-heavy tests it runs
  * well ahead of wall-clock; stamping off wall-clock would look stale on-chain.
  *
  * `leadSeconds` biases the stamp into the future to survive transactions that run between building

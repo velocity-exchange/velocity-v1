@@ -50,13 +50,14 @@ has the full invariant rules and covers adding fields to zero-copy structs.
 correct feature flags so you do not have to remember them.
 
 ```bash
-bun run program:build           # program + IDL/types synced into packages/sdk/src/idl/ (devnet/test flavor)
+bun run program:build           # all five test programs + IDL/types synced into packages/sdk/src/idl/
 bun run program:idl             # IDL/types only, no SBF build. Fast path for layout/name changes
 bun run program:build:devnet    # deployable devnet .so (wraps deploy-scripts/build-devnet.sh)
 bun run program:build:mainnet   # mainnet .so (default features: production gates on, devnet ixs compiled out)
 ```
 
-`program:build` and `program:idl` use `--no-default-features --features no-entrypoint,anchor-test`.
+`program:build` and `program:idl` use `--no-default-features --features no-entrypoint,anchor-test`
+for velocity; `program:build` gives the other four programs their own flags (see build-sbf.sh).
 That is required even though `declare_id!` is now unconditional, because default features include
 `mainnet-beta`. `mainnet-beta` compiles out the devnet-only instructions, including
 `force_wipe_accounts_devnet`, which `wipe-devnet.ts` calls through the SDK IDL, and it switches
@@ -90,6 +91,39 @@ in place. When you touch either subsystem, check that both flavors compile:
 `cargo check -p velocity` for the gated build, and
 `cargo check -p velocity --no-default-features --features no-entrypoint,anchor-test` for the
 enabled one.
+
+### SBPFv3
+
+The programs build for SBPFv3, which SIMD-0500 makes the only deployable bytecode format from Agave
+v4.4 on. `deploy-scripts/build-sbf.sh` owns the bytecode version (`--arch v3`), the platform-tools
+version, and each program's feature flags, and every build path routes through it. It calls
+`cargo-build-sbf` directly instead of `anchor build`, because Anchor 1.0.2 passes its own
+`--tools-version` pinned to a platform-tools with no sbpfv3 sysroot, so `anchor build -- --arch v3`
+fails with ``can't find crate for `core` ``. The IDL still comes from `anchor idl build`
+(`bun run program:idl`).
+
+Two things to keep:
+
+- The build passes `-z defs`. Without it an unresolved syscall links as `call -1`, which builds,
+  deploys, and only traps when that path runs on chain. Never remove it.
+- SBF artifacts now land in `target/sbpfv3-solana-solana/`, not `target/sbpf-solana-solana/`. The
+  cache-wipe commands use `target/sbpf*-solana-solana` so they cover both.
+
+`deploy-scripts/assert-sbpf-version.sh` fails unless a `.so` carries the expected version. It runs
+at the end of every build and again in the devnet buffer and jit-proxy deploy scripts, because a v0
+artifact builds and deploys fine today and becomes un-upgradable the day SIMD-0500 activates.
+
+The verifiable build emits v3 as well. The image tag does not decide the bytecode version:
+`cargo-build-sbf` downloads whatever `--tools-version` asks for, so the `verified-build` job forces
+v1.57 inside the 4.1.2 image, which ships v1.54. Anyone reproducing a release hash has to pass the
+same flags, so keep them next to the image tag in any verification instructions.
+
+```bash
+solana-verify build --library-name velocity -b <image> \
+  --arch v3 --cargo-build-sbf-args=--tools-version=v1.57
+```
+
+[`docs/sbpfv3-migration.md`](./docs/sbpfv3-migration.md) has the measurements and what is left.
 
 **SDK:**
 
@@ -180,29 +214,38 @@ export SDKROOT="$(xcrun --show-sdk-path)"
 (or prefix the build command with it). Add it to your shell profile so future sessions inherit it.
 
 **Symptom: `feature 'edition2024' is required ... not stabilized in this version of Cargo (1.84.0)`** when downloading `toml_datetime` / `wincode` / `toml_parser`.
-The bundled cargo in older platform-tools (v1.51 ships cargo 1.84) cannot parse `edition2024` deps. Fix it by upgrading platform-tools. The Anchor 1.0 branches need v1.54 or newer:
+The bundled cargo in older platform-tools (v1.51 ships cargo 1.84) cannot parse `edition2024` deps. Fix it by upgrading platform-tools. SBPFv3 needs v1.56 or newer; the repo pins v1.57:
 
 ```bash
-cargo-build-sbf --tools-version v1.54 --force-tools-install
+cargo-build-sbf --install-only --tools-version v1.57
 ```
 
 Run that once; subsequent `anchor build` invocations will use the new toolchain. Check with `cargo-build-sbf --version`.
 
 **Symptom: `could not execute process .../1.89.0-sbpf-solana-v1.52/bin/rustc (never executed)`** during an SBF build.
-The platform-tools payload is present under `~/.cache/solana/<version>/` but its rustup toolchain link is missing, and `cargo-build-sbf` picks its own default version rather than whichever one you last installed, so having v1.54 linked does not help when it wants v1.52. Link the version it is asking for:
+The platform-tools payload is present under `~/.cache/solana/<version>/` but its rustup toolchain link is missing, and `cargo-build-sbf` picks its own default version rather than whichever one you last installed, so having v1.57 linked does not help when it wants v1.52. Link the version it is asking for:
 
 ```bash
-rustup toolchain link 1.89.0-sbpf-solana-v1.52 ~/.cache/solana/v1.52/platform-tools/rust
+rustup toolchain link 1.95.0-sbpf-solana-v1.57 ~/.cache/solana/v1.57/platform-tools/rust
 ```
 
 Substitute the version from the error path. This is machine-level state, not repo state, so it recurs on any fresh worktree or new machine until linked.
 
-**Symptom: program panics with `Access violation in unknown section at address 0x80 of size 8`** (or similar address) at runtime, on instructions that touch types you didn't change.
-This is almost always stale SBF build artifacts after a Cargo.lock dep change. SBF caches compiled `.rlib`s under `target/sbpf-solana-solana/`, and the cache key does not catch every dep-resolution change, so the resulting `.so` loads but reads and writes wrong offsets. Whenever Cargo.lock dep versions change (e.g. after `cargo update`, or after switching branches with different lockfiles), do:
+**Symptom: `no such command: +1.95.0-sbpf-solana-v1.57`** (or any `+<toolchain>` name) during an SBF build.
+`cargo-build-sbf` invokes `cargo +<toolchain>`, which works only when `cargo` is the rustup shim. A
+homebrew-installed cargo at `/opt/homebrew/bin/cargo` earlier on PATH does not understand the
+directive and reports it as an unknown subcommand. Put `~/.cargo/bin` ahead of `/opt/homebrew/bin`:
 
 ```bash
-rm -rf target/sbpf-solana-solana target/deploy
-cargo-build-sbf --tools-version v1.54 -- --features anchor-test
+export PATH="$HOME/.cargo/bin:$PATH"
+```
+
+**Symptom: program panics with `Access violation in unknown section at address 0x80 of size 8`** (or similar address) at runtime, on instructions that touch types you didn't change.
+This is almost always stale SBF build artifacts after a Cargo.lock dep change. SBF caches compiled `.rlib`s under `target/sbpfv3-solana-solana/`, and the cache key does not catch every dep-resolution change, so the resulting `.so` loads but reads and writes wrong offsets. Whenever Cargo.lock dep versions change (e.g. after `cargo update`, or after switching branches with different lockfiles), do:
+
+```bash
+rm -rf target/sbpf*-solana-solana target/deploy
+bash deploy-scripts/build-sbf.sh test
 ```
 
 ## Testing
@@ -214,7 +257,7 @@ in sync with the CI workflow**: whenever a gating job in `.github/workflows/main
 added, removed, or its command changes, mirror the change in `ci-local.sh` in the same PR.
 The script also encodes two local-only traps CI never hits:
 - the SBF cache-poisoning guard (see the access-violation runbook entry above): it wipes
-`target/sbpf-solana-solana` before the integration-suite build, since `.so` files built on a
+`target/sbpf*-solana-solana` before the integration-suite build, since `.so` files built on a
 cache that mixed feature flavors die at entry with `Access violation in unknown section`;
 - the IDL-flavor restore: the anchor suite's own build (default features = `mainnet-beta` ON)
 syncs an IDL with devnet-only instructions compiled out into `packages/sdk/src/idl/`
@@ -258,13 +301,45 @@ cargo test -p velocity -- --show-output  # with stdout
 ts-mocha -t 300000 ./tests/<test_file>.ts
 ```
 
-**Full TypeScript integration test suite** (builds first, then runs all ~70 test files serially):
+**Full TypeScript integration test suite** (builds first, then runs all 73 velocity test files):
 
 ```bash
 bash test-scripts/run-anchor-tests.sh
 # Skip rebuild if .so is already built:
 bash test-scripts/run-anchor-tests.sh --skip-build
+# One mocha process for every file instead of one per file: 53s -> 19s.
+SINGLE_PROCESS=1 bash test-scripts/run-anchor-tests.sh --skip-build
 ```
+
+`bash test-scripts/run-anchor-tests.sh --help` lists the flags and the environment variables.
+
+The SDK build the runner does before the suite (`packages/sdk` builds to `lib/`, which the test
+files import through the package root) starts with `rm -rf lib`, so it is a full tsc every time,
+about seven seconds. The runner skips it when nothing under `packages/sdk/src` is newer than the
+built entrypoint, and shows a progress line when it does run. Both matter, because a silent
+multi-second pause before the first test reads as a hang.
+
+Those setup lines are printed in the same shape the reporter uses for test files, so the run reads
+as one column of results. `deploy-scripts/_ui.sh` is deliberately not reused for them: its
+`run_step` indents six spaces to sit under a `header`, and there is no header in this output.
+
+`SINGLE_PROCESS=1` exists because ~1.6s of each file's ~1.8s is importing
+`packages/sdk/src`, paid once per process. Each file still gets its own LiteSVM (~40ms), so the
+isolation that matters is kept. It is not the default. One process means module-level state is
+shared across files, and the risk that introduces is order-dependent flakiness. Use it locally,
+leave CI on the per-file gate until it has been boring for a while.
+
+Both modes render through `test-scripts/mocha-file-reporter.cjs`, which prints one line per test
+file plus any failures. Mocha's own reporters group by describe block, which reads as several
+hundred flat lines across a suite this size. In per-file mode each child reports its own file and
+the runner adds the totals up, so the two modes print the same thing and differ only in speed.
+
+The reporter prefixes its output with U+0001 so the runner can show the report while sending every
+test log to a file it prints only on failure, and emits its totals on a U+0002 line the per-file
+runner consumes without displaying. The markers are there because tests write to both stdout and
+stderr, and a spare file descriptor is not available, since ts-mocha spawns mocha as a child and
+passes through only fds 0, 1 and 2. Colors follow the same gate as `deploy-scripts/_ui.sh`, so
+`--no-color` and `NO_COLOR` behave as they do in the deploy CLIs.
 
 The integration tests in `tests/` import the SDK by relative path (`../packages/sdk/src/...`) and resolve `@coral-xyz/anchor` and friends from the repo-root `node_modules`. The single root `bun install` provides both. There is no separate per-package install. If deps are missing, run `bun install` at the repo root.
 
@@ -419,7 +494,7 @@ TypeScript library (`@velocity-exchange/sdk`). Key modules in `src/`:
 
 ### Tests (`tests/`)
 
-~70 TypeScript integration tests using ts-mocha + Anchor's local validator (bankrun for some). Each test spins up a local validator with the program deployed. Tests are run serially by `run-anchor-tests.sh`.
+~120 TypeScript integration test files using ts-mocha. Nearly all run in-process on LiteSVM through `packages/sdk/src/litesvm/litesvmConnection.ts`, which presents the SVM to the SDK as a web3.js `Connection`; a handful use Anchor's local validator instead. Run serially by `run-anchor-tests.sh`.
 
 ### Program internals
 

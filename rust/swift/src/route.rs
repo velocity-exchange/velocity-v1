@@ -158,18 +158,6 @@ pub struct RouteQuery {
     taker_authority: Option<String>,
     #[serde(default)]
     taker_sub_account_id: u16,
-    /// `User` accounts of DLOB makers to bridge into the quote, comma
-    /// separated.
-    ///
-    /// This endpoint cannot find them itself. A DLOB order lives inside a
-    /// `User` account, so only a process holding a DLOB view can say which
-    /// accounts to read. dlob-server's `/topMakers` is that process. Pass its
-    /// candidates here and the split reports which of them a fill reaches, so
-    /// a caller can drop the rest instead of spending two account locks each.
-    ///
-    /// Omitting this quotes without the DLOB, which still covers the CLOB,
-    /// every PropAMM and the vAMM.
-    dlob_makers: Option<String>,
 }
 
 /// One source's verified book in the response. Prices and sizes are strings,
@@ -195,13 +183,8 @@ struct LevelOut {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AllocationOut {
-    /// What `kind` names. It is the `QuoterV0` entry for `"quoter"`, the
-    /// maker's `User` account for `"dlob"`, and the perp market for `"vamm"`.
-    ///
-    /// An allocation is what decides the account set. A `"dlob"` key here is
-    /// a maker the fill reaches, so a caller that passed candidates in
-    /// `dlobMakers` carries the pairs for these and drops the rest. Each one
-    /// it drops returns two account locks.
+    /// What `kind` names. It is the `QuoterV0` entry for `"quoter"` and the
+    /// perp market for `"vamm"`.
     key: String,
     kind: &'static str,
     /// Base routed to this source, and its quote notional at the quoted
@@ -263,12 +246,8 @@ struct RouteResponse {
     /// `gatesDepth` reports per maker. Truncating this list at the account
     /// budget therefore drops the makers that cost the least to lose.
     ///
-    /// DLOB makers are not here. The caller names them in `dlobMakers`, and
-    /// `allocations` reports which of those the fill reaches.
-    ///
-    /// The two together decide a fill's account set: these makers in this
-    /// order, the `dlobMakers` that drew an allocation, and the quoter
-    /// section for each entry in `books`.
+    /// These and `books` together decide a fill's account set: these makers in
+    /// this order, and the quoter section for each entry in `books`.
     clob_makers: Vec<MakerOut>,
 }
 
@@ -331,19 +310,6 @@ pub async fn route_quote(
     if query.size == 0 {
         return Err(RouteError::BadRequest("size must be nonzero".into()));
     }
-    let dlob_makers: Vec<Pubkey> = match query.dlob_makers.as_deref() {
-        Some(list) => list
-            .split(',')
-            .map(str::trim)
-            .filter(|text| !text.is_empty())
-            .map(|text| {
-                text.parse::<Pubkey>()
-                    .map_err(|err| RouteError::BadRequest(format!("dlobMakers: {err}")))
-            })
-            .collect::<Result<_, _>>()?,
-        None => Vec::new(),
-    };
-
     // One retry through rediscovery. The cached buffer may have been closed,
     // or the publisher may have moved markets since the last discovery. The
     // retry rebuilds the same account set, so it only helps when the buffer
@@ -359,7 +325,6 @@ pub async fn route_quote(
             query.market_index,
             direction,
             query.size,
-            &dlob_makers,
         );
         match quote_market(&ctx.source, &ctx.health, &request, &route.quoters).await {
             Ok(quoted) => {

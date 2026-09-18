@@ -12,7 +12,7 @@ import {
 	calculateSpreadReserves,
 	calculateVolSpreadBN,
 } from '../../src';
-import { mockPerpMarkets } from '../dlob/helpers';
+import { mockPerpMarkets } from '../fixtures/mockAccounts';
 
 // `update_spreads` (vlp/amm/math/spread.rs) computes the dynamic spread whenever
 // `curve_update_intensity > 0`. A `base_spread` of 0 does NOT disable it — it only

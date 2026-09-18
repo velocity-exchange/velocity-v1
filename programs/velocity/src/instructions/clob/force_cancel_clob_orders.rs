@@ -1,9 +1,9 @@
 //! Force-cancel a deteriorated account's CLOB orders. This is the CLOB arm of
 //! the `force_cancel_orders` keeper flow. It is also how a failing account's
-//! placed-trigger shadows are reclaimed. The DLOB-side sweep skips those
+//! placed-trigger shadows are reclaimed. The slot-side sweep skips those
 //! shadows, because their live orders rest on the book.
 //!
-//! The gates are the gates of the DLOB force-cancel. The account must fail
+//! The gates are the gates of `force_cancel_orders`. The account must fail
 //! initial margin or sit below its equity floor, which is the cleanup before a
 //! liquidation. Risk-reducing orders are skipped, because cancelling one would
 //! only make the account worse. The keeper reads the user's orders off the book
@@ -178,7 +178,7 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
         &get_writable_spot_market_set(QUOTE_SPOT_MARKET_INDEX),
         clock.slot,
         state.slot_clock(),
-        // The State's rails, as in the DLOB force-cancel. The oracle decides
+        // The State's rails, as in `force_cancel_orders`. The oracle decides
         // whether this account is failing, so it answers to the configured
         // staleness and confidence bounds rather than to the defaults.
         Some(state.oracle_guard_rails),
@@ -191,7 +191,7 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
         &ctx.accounts.clob_program,
     )?;
 
-    // The gate. The account must be failing, as in the DLOB force-cancel, and
+    // The gate. The account must be failing, as in `force_cancel_orders`, and
     // the refs must name this user's risk-increasing orders.
     let plan = {
         let user = &mut load_mut!(ctx.accounts.user)?;
@@ -226,8 +226,8 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
     // The orders this crank reclaimed. The reservoir pays for work, and
     // reaching this point does not prove any work was done. `plan.refs` may be
     // empty, and the sweep is decided from `open_bids` and `open_asks`, which
-    // count DLOB orders too. A user holding only DLOB orders therefore sweeps a
-    // book that holds nothing of theirs, and `cancel_all_v0` removes zero
+    // count a user's slot orders too. A user holding only those therefore
+    // sweeps a book that holds nothing of theirs, and `cancel_all_v0` removes zero
     // without an error. Paying for that would let anyone with a failing account
     // drain the market's reservoir in a loop, which stops every other crank on
     // the market. Liquidations stop with them.
@@ -336,7 +336,7 @@ fn has_force_cancel_grounds(
         msg!("account meets its requirements; nothing to force-cancel");
         return Ok(false);
     }
-    // The per-market arm of the DLOB sweep's skip logic. An isolated position
+    // The per-market arm of `force_cancel_orders`' skip logic. An isolated position
     // answers to its own requirement. A cross position answers to the cross
     // requirement. The breaker outranks both, because it freezes every
     // subaccount whatever this one market looks like.
@@ -384,7 +384,7 @@ fn decide_sweep(user: &User, market_index: u16) -> SweepDecision {
         core::cmp::Ordering::Equal => (true, true),
     };
     // A zero aggregate proves this side rests nothing on the book. The
-    // aggregate counts DLOB orders too, so only a zero is conclusive. Skipping
+    // aggregate counts a user's slot orders too, so only a zero is conclusive. Skipping
     // the call keeps a one-sided account from paying for a CPI that can remove
     // nothing.
     let bids_swept = bids_swept && position.is_some_and(|p| p.open_bids != 0);

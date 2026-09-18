@@ -1,5 +1,13 @@
 # AMM Decoupling and Quoter Interface
 
+> Written on `feat/decouple-amm`, while orders still rested in `User.orders` and
+> the vAMM could JIT inside a match. Both of those are gone: `feat/propamm`
+> moved matching onto an on-chain CLOB and removed the old venue and AMM JIT
+> with it. The design this doc argues for is what shipped — one quoter
+> interface, one matcher, the vAMM as one source among several. Read the
+> "DLOB order" and "JIT participant" examples as the sources of the day, not as
+> sources the program still has.
+
 ## Implementation status (resumption guide for in-flight work)
 
 **Branch:** `feat/decouple-amm`. Single-PR refactor; not incremental.
@@ -239,7 +247,7 @@ pub trait Quoter {
 
     fn is_prio(&self) -> bool { false }
     fn is_fee_exempt(&self) -> bool { false }
-    fn fee_policy(&self) -> FillFeePolicy { FillFeePolicy::DlobMatch }
+    fn fee_policy(&self) -> FillFeePolicy { FillFeePolicy::MakerMatch }
 
     /// Closed-form fill of `target_size` base at this maker's price.
     fn try_fill_solo(
@@ -266,7 +274,7 @@ Quote methods are pure functions of `(self, ctx)`. `commit_fill` is the only mut
 
 **`is_prio` semantics.** Priority makers take their full level capacity at the clearing price before pro-rata distributes the remainder to non-priority makers. Priority does *not* override price priority — a better `best_price` still wins regardless of `is_prio`. The JIT vAMM is prio; DLOB orders are not.
 
-**`is_fee_exempt` / `fee_policy` semantics.** Fee-exempt makers don't pay/receive maker fees (the vAMM earns from spread, not rebates). `fee_policy` selects the fill controller's fee path (`AmmHouse` for AMM-side fills, `DlobMatch` for DLOB). Both are copied into each `QuoterFill`.
+**`is_fee_exempt` / `fee_policy` semantics.** Fee-exempt makers don't pay/receive maker fees (the vAMM earns from spread, not rebates). `fee_policy` selects the fill controller's fee path (`AmmHouse` for AMM-side fills, `MakerMatch` for a maker order). Both are copied into each `QuoterFill`.
 
 **`try_fill_solo`** computes a maker's closed-form fill at its price. `fill_amm_only` calls it to fill the whole take; the discrete walk calls it per winning maker on its allocated base. Every `Quoter` in the crate implements it.
 

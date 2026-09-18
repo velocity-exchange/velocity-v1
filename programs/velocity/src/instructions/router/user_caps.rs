@@ -540,7 +540,7 @@ impl CapInputs<'_, '_> {
 
         // The most base this maker can give up, which bounds everything below.
         // Some users rest nothing on a book: a referrer, a maker that only
-        // quotes the DLOB, a maker that quotes the other way. This fill cannot
+        // quotes one side, a maker that quotes the other way. This fill cannot
         // cost them anything, and they are answered before any walk is spent on
         // them.
         let position = maker.get_perp_position(market_index).ok();
@@ -692,13 +692,13 @@ impl CapInputs<'_, '_> {
 /// the taker sweeps.
 ///
 /// `open_bids` and `open_asks` reserve for every open order the maker has on
-/// the market, whichever book it rests on. The DLOB's share of that is on the
-/// account, in `orders`, so what is left is on a CLOB. That remainder is the
-/// only base a budget can be spent against.
+/// the market, wherever it rests. An order still in a `User.orders` slot holds
+/// its share on the account, in `orders`, so what is left is on a CLOB. That
+/// remainder is the only base a budget can be spent against.
 ///
-/// Reading it here keeps the cost of this module down. A maker that only
-/// quotes the DLOB is answered from its own account, and never costs a margin
-/// walk on a heap that cannot give the memory back.
+/// Reading it here keeps the cost of this module down. A maker whose
+/// reservations are all in slots is answered from its own account, and never
+/// costs a margin walk on a heap that cannot give the memory back.
 fn clob_resting_base(
     maker: &crate::state::user::User,
     market_index: u16,
@@ -711,7 +711,7 @@ fn clob_resting_base(
         ClobSide::Bid => (position.open_bids.unsigned_abs(), PositionDirection::Long),
         ClobSide::Ask => (position.open_asks.unsigned_abs(), PositionDirection::Short),
     };
-    let on_the_dlob = maker
+    let in_slots = maker
         .orders
         .iter()
         .filter(|order| {
@@ -728,7 +728,7 @@ fn clob_resting_base(
                     .saturating_sub(order.base_asset_amount_filled),
             )
         })?;
-    Ok(reserved.saturating_sub(on_the_dlob))
+    Ok(reserved.saturating_sub(in_slots))
 }
 
 #[cfg(test)]

@@ -16,11 +16,11 @@
 //! The view quotes the way the fill will quote. The sources are not
 //! independent, because the vAMM shades its ladder against rival books. A vAMM
 //! book quoted on its own prices better than the same vAMM inside a real fill.
-//! This instruction runs the sources in fill order: the externals, then the
-//! DLOB makers, then the vAMM with every earlier book as a rival. The
-//! published books equal the fill-time books by construction.
+//! This instruction runs the sources in fill order: the external books, then
+//! the vAMM with every earlier book as a rival. The published books equal the
+//! fill-time books by construction.
 //!
-//! The view is uniform. CLOB, PropAMM, DLOB and vAMM all come back as
+//! The view is uniform. CLOB, PropAMM and vAMM all come back as
 //! `(kind, key, priority, levels)` in one buffer, so a consumer needs one code
 //! path rather than a decoder per source.
 //!
@@ -31,9 +31,9 @@
 //! changes nothing that matters.
 //!
 //! `remaining_accounts` arrives in this order. First comes the oracle, spot
-//! and perp map section. Then come the `(User, UserStats)` pairs for the DLOB
-//! makers and for any quoted Custom quoter's user, whose account the clamp
-//! needs. Last comes the market's `QuoterSlabV0` and the union of the
+//! and perp map section. Then come the `(User, UserStats)` pairs for the
+//! makers the books name and for any quoted Custom quoter's user, whose
+//! account the clamp needs. Last comes the market's `QuoterSlabV0` and the union of the
 //! consulted quoters' registered CPI accounts, which are the response
 //! accounts, the quoter programs, and the velocity signer. A slab slot is
 //! consulted when its response account rides the call, as in a fill.

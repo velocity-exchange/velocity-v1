@@ -1,7 +1,7 @@
 //! Settling one filled allocation.
 //!
 //! A fill is a set of allocations, and each one settles through this module:
-//! the vAMM house, a DLOB match, or an external quoter match. Each leg prices
+//! the vAMM house, a maker match, or an external quoter match. Each leg prices
 //! on its own fee schedule. Then the three walk one spine. The spine accrues
 //! the market's share, charges the taker, pays the maker and the keeper,
 //! accrues the revenue share, and advances the taker's order.

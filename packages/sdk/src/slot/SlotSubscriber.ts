@@ -8,6 +8,12 @@ type SlotSubscriberConfig = {
 }; // for future customization
 
 /** Events emitted on `SlotSubscriber.eventEmitter`. */
+/** Supplies the current slot, e.g. backed by a `SlotSubscriber`. */
+export interface SlotSource {
+	/** @returns the most recently observed slot. */
+	getSlot(): number;
+}
+
 export interface SlotSubscriberEvents {
 	/** Fired whenever a new, strictly-greater slot is observed (including the initial slot fetched by `subscribe()`). */
 	newSlot: (newSlot: number) => void;

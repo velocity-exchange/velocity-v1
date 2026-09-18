@@ -28,7 +28,7 @@ velocity-rs = { path = "../velocity-rs" }
 # as an HTTP endpoint.
 velocity-router-sim = { path = "../router-sim" }
 velocity-quoter-health = { path = "../quoter-health" }
-relay-chain-source = { git = "https://github.com/velocity-exchange/relay", rev = "ee69eb7" }
+relay-chain-source = { git = "https://github.com/velocity-exchange/relay", rev = "e4b1115" }
 solana-account-info = "3.1"
 solana-clock = "3"
 ed25519-dalek = "1.0.1"

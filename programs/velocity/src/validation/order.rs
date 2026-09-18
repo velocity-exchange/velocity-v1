@@ -130,10 +130,10 @@ fn validate_limit_order(
         order.reduce_only || order.is_jit_maker(),
     )?;
 
-    // A limit order must carry a fixed price. An oracle-floating limit
-    // cannot rest on a CLOB, so it would strand in `User.orders` as the last
-    // live occupant of the legacy DLOB. A maker that wants an oracle-relative
-    // quote uses a PropAMM quoter instead.
+    // A limit order must carry a fixed price. An oracle-floating limit cannot
+    // rest on a CLOB, so it would strand in a `User.orders` slot where nothing
+    // fills it. A maker that wants an oracle-relative quote uses a PropAMM
+    // quoter instead.
     if order.has_oracle_price_offset() {
         msg!("Limit order can not have oracle offset");
         return Err(ErrorCode::InvalidOrderOracleOffset);

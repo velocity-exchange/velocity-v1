@@ -17,7 +17,7 @@ dotenv = "0.15.0"
 velocity-rs = { path = "../velocity-rs", features = ["unsafe_pub", "titan"] }
 # Simulation lives here, and asking a book who rests on it is a simulation.
 velocity-router-sim = { path = "../router-sim" }
-relay-chain-source = { git = "https://github.com/velocity-exchange/relay", rev = "ee69eb7" }
+relay-chain-source = { git = "https://github.com/velocity-exchange/relay", rev = "e4b1115" }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 base64 = "0.22"
 # Program internals are reached via `velocity_rs::program::…`; no direct path-dep on

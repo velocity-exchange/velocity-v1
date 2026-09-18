@@ -161,7 +161,6 @@ if [ "$MODE" != "fast" ]; then
     cd packages/sdk &&
     bun run test &&
     bun run test:parity &&
-    bun run test:dlob &&
     bun run test:bignum &&
     bun run test:events &&
     bun run test:velocitycore

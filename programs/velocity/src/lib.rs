@@ -330,7 +330,7 @@ pub mod velocity {
     /// taker's signature, places the order, routes it through the market's
     /// quoters and books for whatever fills at or better than the order's
     /// auction start price, and rests what is left on the market's CLOB as a
-    /// taker-origin remainder. A signed-message order never rests on the DLOB.
+    /// taker-origin remainder. A signed-message order never rests in a slot.
     ///
     /// The keeper that builds the transaction is a filler. The taker signed a
     /// message and not a transaction, so the keeper answers for the account
@@ -490,7 +490,7 @@ pub mod velocity {
 
     // Keeper Instructions
 
-    /// Fire a DLOB trigger order straight to the book. It fills the fired
+    /// Fire an armed trigger order straight to the book. It fills the fired
     /// order in the same instruction and rests only the remainder as a
     /// taker-origin order, so nothing stays live in `User.orders`.
     pub fn trigger_market_order_v1<'c: 'info, 'info>(

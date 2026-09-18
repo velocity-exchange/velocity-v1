@@ -22,7 +22,7 @@ import {
 	Keypair,
 	TransactionInstruction,
 } from '@solana/web3.js';
-import { getPriorityFeeInstruction } from '../filler-common/utils';
+import { getPriorityFeeInstruction } from '../../utils';
 import { sha256 } from '@noble/hashes/sha256';
 
 export class SwiftMaker {

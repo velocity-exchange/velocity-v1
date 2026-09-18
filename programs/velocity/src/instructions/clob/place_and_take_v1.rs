@@ -1,19 +1,14 @@
 //! `place_and_take_perp_order_v1`, the CLOB-aware taker route.
 //!
 //! The taker's order is ephemeral. The handler builds it on the stack, checks
-//! margin, and fills it through the router across the vAMM, the quoter books,
-//! and the passed DLOB makers. It never writes the order into `User.orders`.
-//! The restable remainder rests on the market's CLOB taker-origin, because an
-//! order that can rest and be matched belongs on the CLOB.
+//! margin, and fills it through the router across the vAMM and the quoter
+//! books. It never writes the order into `User.orders`. The restable remainder
+//! rests on the market's CLOB taker-origin, because an order that can rest and
+//! be matched belongs on the CLOB.
 //!
-//! This is a separate endpoint rather than optional accounts on v0. Appending
-//! optional accounts to a shipped `#[derive(Accounts)]` changes the account
-//! list every existing client builds. So v0 keeps its exact `master` shape, and
-//! a caller opts into the book by naming this endpoint. The two paths have
-//! separate bodies. v0 runs the legacy slot-order fill
-//! ([`crate::instructions::place_and_take_perp_order_legacy`]). This endpoint
-//! runs the ephemeral routed fill
-//! ([`crate::instructions::place_and_take_perp_order_v1`]).
+//! The transaction carries the `(User, UserStats)` pair of every maker the
+//! books name, because a fill settles only for users it can reach. The caller
+//! does not choose those counterparties: the books do.
 
 use {
     crate::{

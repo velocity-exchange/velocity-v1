@@ -571,7 +571,7 @@ impl TakerOriginCrossFee {
 /// `rest_quote` is the notional at the price the taker-origin order was resting at.
 /// `counterparty_quote` is the notional at the counterparty's price, which the match
 /// settles at. `order_slot` is the slot the taker-origin order was placed. Its age
-/// drives the time-based half of the reward, as an `Order.slot` does on the DLOB.
+/// drives the time-based half of the reward, the way an `Order.slot` does.
 #[allow(clippy::too_many_arguments)]
 pub fn calculate_taker_origin_cross_fee(
     taker_direction: PositionDirection,

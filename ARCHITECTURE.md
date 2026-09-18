@@ -87,7 +87,7 @@ Keeper instructions (`fill_perp_order`, `update_funding_rate`, etc.) use a custo
 Variable-length account lists are passed via `remaining_accounts` to avoid fixed Anchor context sizes:
 - **Oracles**: one oracle account per market referenced in the instruction
 - **Spot markets**: for instructions touching multiple spot positions
-- **Maker accounts**: `(User, UserStats)` pairs for each DLOB maker in a fill
+- **Maker accounts**: `(User, UserStats)` pairs for every maker a fill settles against. A fill settles only for users the transaction carries, so a book stops at the first maker it was not handed
 - **Referrer**: optional `(User, UserStats)` pair at the end of remaining_accounts
 
 ### Zero-Copy Account Loading
@@ -120,7 +120,7 @@ Variable-length account lists are passed via `remaining_accounts` to avoid fixed
 | `accounts/` | Account subscription infrastructure: websocket, polling, bulk loaders. |
 | `addresses/` | `pda.ts`, which holds every PDA derivation helper. |
 | `clob/` | The user-orders feed client for orders resting on a CLOB. |
-| `dlob/` | Decentralized limit order book: order matching, price levels, maker selection. |
+| `orderBookLevels.ts` | The `L2`/`L3` book shapes the dlob-server serves, plus `groupL2` and `uncrossL2`. Velocity builds no book off chain; the rust `book-publisher` quotes every source through the program's router view. |
 | `math/` | TypeScript mirrors of the on-chain math (margin, funding, AMM pricing). |
 | `oracles/` | Oracle client adapters (Pyth, Pyth Lazer, Prelaunch, QuoteAsset). |
 | `events/` | Event parsing and subscription from program logs. |

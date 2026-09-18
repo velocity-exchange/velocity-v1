@@ -7,13 +7,13 @@ import type {
 import type { VelocityProgram } from '../../config';
 
 /**
- * Builds a `triggerMarketOrderV1` instruction, which fires a resting DLOB
+ * Builds a `triggerMarketOrderV1` instruction, which fires an armed
  * stop-market straight to the book. It fills the fired order in the same
  * instruction and rests any restable remainder as a taker-origin order on the
  * market's CLOB, so nothing stays live in `User.orders`. `triggerOrder` does
  * neither. The instruction is permissionless. `user`, the order owner, does not
  * sign, and only `authority`, the owner or delegate of `filler`, signs. It
- * handles DLOB trigger-market orders only. A trigger-limit uses
+ * handles trigger-market orders only. A trigger-limit uses
  * `triggerLimitOrderV1`.
  * @param args.program - Anchor `Program<Velocity>` used to build the instruction.
  * @param args.marketIndex - the order's perp market. It is checked on chain and is
@@ -35,7 +35,7 @@ import type { VelocityProgram } from '../../config';
  *   are enabled, then the referrer's read-only `UserStats` when the taker is referred,
  *   then the quoter section. The quoter section is the market's `QuoterSlabV0` plus the
  *   consulted quoters' CPI accounts.
- * @param args.signedRoute - must be empty. A DLOB trigger carries no signed route.
+ * @param args.signedRoute - must be empty. A trigger carries no signed route.
  *   The keeper answers for its account list through the filler obligation.
  * @param args.crankConditions - the market's crank-conditions PDA, which holds the
  *   wake hint. Omit it to pass the program id as a placeholder.

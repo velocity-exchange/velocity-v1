@@ -365,8 +365,8 @@ pub fn check_withdraw_limits(
         // breaker trips, because every path that can shrink a position below the
         // per-account allowance runs this same check. `transfer_deposit`,
         // `transfer_pools` and `end_swap` all go through
-        // `update_spot_balances_and_cumulative_deposits_with_limits`, and spot DLOB
-        // fills are disabled.
+        // `update_spot_balances_and_cumulative_deposits_with_limits`, and spot
+        // order-book fills are disabled.
         let exception_floor =
             min_deposit_token.saturating_sub(spot_market.withdraw_guard_threshold.cast::<u128>()?);
 

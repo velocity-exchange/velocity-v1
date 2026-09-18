@@ -8,7 +8,7 @@ import {
 	ZERO,
 } from '../../src';
 import { assert } from '../../src/assert/assert';
-import { mockPerpMarkets, mockSpotMarkets } from '../dlob/helpers';
+import { mockPerpMarkets, mockSpotMarkets } from '../fixtures/mockAccounts';
 import {
 	mockUserAccount,
 	makeMockUser as makeMockUserFromHelpers,

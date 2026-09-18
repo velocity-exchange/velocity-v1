@@ -484,8 +484,11 @@ pub fn assert_velocity_error(
 ) {
     let code = u32::from(expected);
     let text = format!("{:?}", err.err);
+    // The program logs say which check fired. A bare code is not enough to
+    // tell a `DefaultError` raised by one `validate!` from another.
     assert!(
         text.contains(&code.to_string()),
-        "expected {expected:?} ({code}), got {text}"
+        "expected {expected:?} ({code}), got {text}\nlogs: {:#?}",
+        err.meta.logs
     );
 }

@@ -11,16 +11,16 @@
 //! of it. Three fields carry meaning worth stating.
 //!
 //! - `order_id` is the id velocity minted from `User.next_order_id`, the same
-//!   counter its DLOB orders draw from. An order's records therefore name it
-//!   the same way wherever the order rests.
+//!   counter a slot order draws from. An order's records therefore name it the
+//!   same way wherever the order rests.
 //! - `post_only` is true for an ordinary book order. A resting CLOB order
 //!   settles at its own price on the maker fee schedule in every path that can
 //!   consume it. A migrated taker remainder is the exception, because it is the
 //!   aggressor in a cross, so it reports false.
 //! - `bit_flags` carries `OrderBitFlag::PlacedOnClob`, which is how a reader
-//!   tells a book order from a DLOB order in the same id space. It also carries
+//!   tells a book order from a slot order in the same id space. It also carries
 //!   `OrderBitFlag::IsIsolatedPosition` when the order belongs to an isolated
-//!   position, the same as a DLOB order does. A reader therefore learns an
+//!   position, the same as a slot order does. A reader therefore learns an
 //!   order's margin regime from the record that opens it rather than from the
 //!   one that closes it.
 

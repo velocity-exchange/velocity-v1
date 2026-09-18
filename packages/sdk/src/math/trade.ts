@@ -1,5 +1,4 @@
 import {
-	MarketType,
 	PerpMarketAccount,
 	PositionDirection,
 	UserStatsAccount,
@@ -32,9 +31,7 @@ import { squareRootBN } from './utils';
 import { SlotDurationState } from './time';
 import { isVariant } from '../types';
 import { MMOraclePriceData } from '../oracles/types';
-import { DLOB } from '../dlob/DLOB';
-import { PublicKey } from '@solana/web3.js';
-import { L2OrderBook } from '../dlob/orderBookLevels';
+import { L2OrderBook } from '../orderBookLevels';
 
 const MAXPCT = new BN(1000); //percentage units are [0,1000] => [0,1]
 
@@ -59,7 +56,7 @@ export type PriceImpactUnit =
 /**
  * Calculates avg/max slippage (price impact) for a hypothetical AMM-only trade.
  *
- * @deprecated Use `calculateEstimatedPerpEntryPrice` instead (this ignores DLOB liquidity and
+ * @deprecated Use `calculateEstimatedPerpEntryPrice` instead (this ignores book liquidity and
  *   only swaps against the vAMM).
  *
  * @param {PositionDirection} direction - Taker's trade direction
@@ -244,7 +241,7 @@ export function calculateTradeAcquiredAmounts(
  * Calculates the AMM-only trade (direction + size) required to push the market's reserve price
  * to (or `pct` of the way to) `targetPrice` — a simple arbitrage-sizing helper.
  *
- * @deprecated No longer actively maintained; ignores DLOB liquidity.
+ * @deprecated No longer actively maintained; ignores book liquidity.
  *
  * @param {PerpMarketAccount} market - The perp market account
  * @param {BN} targetPrice - The price to arbitrage toward, PRICE_PRECISION (1e6)
@@ -429,22 +426,25 @@ export function calculateTargetPriceTrade(
 }
 
 /**
- * Simulates walking the combined DLOB + vAMM liquidity to estimate the entry price and price
- * impact of a hypothetical taker order, filling against resting limit orders and the AMM's
- * spread-adjusted reserves in whichever is cheaper at each step. Price impact is the difference
- * between the estimated entry price and the best available price (top of book/AMM) before any
- * fill.
+ * Simulates walking `dlob` + vAMM liquidity to estimate the entry price and price impact of a
+ * hypothetical taker order, filling against resting limit orders and the AMM's spread-adjusted
+ * reserves in whichever is cheaper at each step. Price impact is the difference between the
+ * estimated entry price and the best available price (top of book/AMM) before any fill.
+ *
+ * The levels come from the published book rather than from `User` accounts, because no order
+ * rests in a `User.orders` slot any more. An empty book gives a vAMM-only estimate. For an answer
+ * taken from the real fill path rather than reproduced off chain, simulate `quote_router`, which
+ * prices the same question across every source velocity would actually route to.
  *
  * @param {AssetType} assetType - Whether `amount` denominates base or quote
  * @param {BN} amount - Order size, `assetType === 'base'`: BASE_PRECISION (1e9); `'quote'`: QUOTE_PRECISION (1e6)
  * @param {PositionDirection} direction - Taker's trade direction
  * @param {PerpMarketAccount} market - The perp market account
- * @param {MMOraclePriceData} mmOraclePriceData - MM oracle price data used to price both the DLOB
+ * @param {MMOraclePriceData} mmOraclePriceData - MM oracle price data used to price both the book's
  *   resting orders and the AMM's spread-adjusted reserves
- * @param {DLOB} dlob - The order book to walk for resting limit orders
- * @param {number} slot - Current slot, used to resolve oracle-pegged/auction limit order prices
- * @param {Map<PublicKey, boolean>} [usersToSkip] - Maker user accounts to exclude from the fill
- *   simulation (e.g. the taker's own resting orders); defaults to none
+ * @param {L2OrderBook} book - Aggregated levels to walk for resting liquidity, as the
+ *   dlob-server publishes them on `/l2`. Pass `{ asks: [], bids: [] }` for a vAMM-only estimate.
+ * @param {number} slot - Current slot, used to resolve the AMM's spread reserves
  * @return {{ entryPrice: BN; priceImpact: BN; bestPrice: BN; worstPrice: BN; baseFilled: BN;
  *   quoteFilled: BN }} `entryPrice`/`bestPrice`/`worstPrice` are PRICE_PRECISION (1e6);
  *   `priceImpact` is `|entryPrice - bestPrice| / bestPrice`, also scaled by PRICE_PRECISION
@@ -459,9 +459,8 @@ export function calculateEstimatedPerpEntryPrice(
 	direction: PositionDirection,
 	market: PerpMarketAccount,
 	mmOraclePriceData: MMOraclePriceData,
-	dlob: DLOB,
+	book: L2OrderBook,
 	slot: number,
-	usersToSkip = new Map<PublicKey, boolean>(),
 	slotDurationState?: SlotDurationState
 ): {
 	entryPrice: BN;
@@ -483,16 +482,20 @@ export function calculateEstimatedPerpEntryPrice(
 	}
 
 	const takerIsLong = isVariant(direction, 'long');
-	const limitOrders = dlob[
-		takerIsLong ? 'getRestingLimitAsks' : 'getRestingLimitBids'
-	](
-		market.marketIndex,
-		slot,
-		MarketType.PERP,
-		mmOraclePriceData,
-		undefined,
-		market.orderTickSize
-	);
+	// The published book is already aggregated per price and sorted best-first
+	// on each side, which is the order this walk consumes it in.
+	const levels = takerIsLong ? book.asks : book.bids;
+	let levelIndex = 0;
+	// Size left on the level being consumed. A level is only partly taken when
+	// the order finishes inside it.
+	let levelRemaining: BN = levels.length > 0 ? levels[0].size : ZERO;
+	const levelPrice = (): BN | undefined =>
+		levelIndex < levels.length ? levels[levelIndex].price : undefined;
+	const nextLevel = () => {
+		levelIndex += 1;
+		levelRemaining =
+			levelIndex < levels.length ? levels[levelIndex].size : ZERO;
+	};
 
 	const swapDirection = getSwapDirection(assetType, direction);
 
@@ -548,17 +551,11 @@ export function calculateEstimatedPerpEntryPrice(
 	let cumulativeBaseFilled = ZERO;
 	let cumulativeQuoteFilled = ZERO;
 
-	let limitOrder = limitOrders.next().value;
-	if (limitOrder) {
-		const limitOrderPrice = limitOrder.getPriceOrThrow(
-			mmOraclePriceData,
-			slot,
-			market.orderTickSize,
-			slotDurationState ?? dlob.slotDurationState
-		);
+	const topOfBook = levelPrice();
+	if (topOfBook) {
 		bestPrice = takerIsLong
-			? BN.min(limitOrderPrice, bestPrice)
-			: BN.max(limitOrderPrice, bestPrice);
+			? BN.min(topOfBook, bestPrice)
+			: BN.max(topOfBook, bestPrice);
 	}
 
 	let worstPrice = bestPrice;
@@ -566,13 +563,9 @@ export function calculateEstimatedPerpEntryPrice(
 	if (assetType === 'base') {
 		while (
 			!cumulativeBaseFilled.eq(amount) &&
-			(ammLiquidity.gt(ZERO) || limitOrder)
+			(ammLiquidity.gt(ZERO) || levelPrice())
 		) {
-			const limitOrderPrice = limitOrder?.getPrice(
-				mmOraclePriceData,
-				slot,
-				market.orderTickSize
-			);
+			const limitOrderPrice = levelPrice();
 
 			let maxAmmFill: BN;
 			if (limitOrderPrice) {
@@ -624,24 +617,19 @@ export function calculateEstimatedPerpEntryPrice(
 				}
 			}
 
-			if (!limitOrder) {
-				continue;
-			}
-
-			if (usersToSkip.has(limitOrder.userAccount)) {
+			if (!limitOrderPrice) {
 				continue;
 			}
 
 			const baseFilled = BN.min(
-				limitOrder.order.baseAssetAmount.sub(
-					limitOrder.order.baseAssetAmountFilled
-				),
+				levelRemaining,
 				amount.sub(cumulativeBaseFilled)
 			);
 			const quoteFilled = baseFilled.mul(limitOrderPrice).div(BASE_PRECISION);
 
 			cumulativeBaseFilled = cumulativeBaseFilled.add(baseFilled);
 			cumulativeQuoteFilled = cumulativeQuoteFilled.add(quoteFilled);
+			levelRemaining = levelRemaining.sub(baseFilled);
 
 			worstPrice = limitOrderPrice;
 
@@ -649,18 +637,16 @@ export function calculateEstimatedPerpEntryPrice(
 				break;
 			}
 
-			limitOrder = limitOrders.next().value;
+			if (levelRemaining.lte(ZERO)) {
+				nextLevel();
+			}
 		}
 	} else {
 		while (
 			!cumulativeQuoteFilled.eq(amount) &&
-			(ammLiquidity.gt(ZERO) || limitOrder)
+			(ammLiquidity.gt(ZERO) || levelPrice())
 		) {
-			const limitOrderPrice = limitOrder?.getPrice(
-				mmOraclePriceData,
-				slot,
-				market.orderTickSize
-			);
+			const limitOrderPrice = levelPrice();
 
 			let maxAmmFill: BN;
 			if (limitOrderPrice) {
@@ -718,19 +704,12 @@ export function calculateEstimatedPerpEntryPrice(
 				}
 			}
 
-			if (!limitOrder) {
-				continue;
-			}
-
-			if (usersToSkip.has(limitOrder.userAccount)) {
+			if (!limitOrderPrice) {
 				continue;
 			}
 
 			const quoteFilled = BN.min(
-				limitOrder.order.baseAssetAmount
-					.sub(limitOrder.order.baseAssetAmountFilled)
-					.mul(limitOrderPrice)
-					.div(BASE_PRECISION),
+				levelRemaining.mul(limitOrderPrice).div(BASE_PRECISION),
 				amount.sub(cumulativeQuoteFilled)
 			);
 
@@ -738,6 +717,7 @@ export function calculateEstimatedPerpEntryPrice(
 
 			cumulativeBaseFilled = cumulativeBaseFilled.add(baseFilled);
 			cumulativeQuoteFilled = cumulativeQuoteFilled.add(quoteFilled);
+			levelRemaining = levelRemaining.sub(baseFilled);
 
 			worstPrice = limitOrderPrice;
 
@@ -745,7 +725,9 @@ export function calculateEstimatedPerpEntryPrice(
 				break;
 			}
 
-			limitOrder = limitOrders.next().value;
+			if (levelRemaining.lte(ZERO)) {
+				nextLevel();
+			}
 		}
 	}
 
@@ -771,8 +753,8 @@ export function calculateEstimatedPerpEntryPrice(
 
 /**
  * Estimates entry price and price impact of a hypothetical taker order by walking a pre-built L2
- * order book snapshot (asks for a long taker, bids for a short taker), rather than the live DLOB.
- * Useful when an L2 snapshot is already available and a fresh DLOB walk isn't needed.
+ * order book snapshot (asks for a long taker, bids for a short taker).
+ * Useful when an L2 snapshot is already available.
  *
  * @param {AssetType} assetType - Whether `amount` denominates base or quote
  * @param {BN} amount - Order size, `basePrecision` for `'base'`; QUOTE_PRECISION (1e6) for `'quote'`

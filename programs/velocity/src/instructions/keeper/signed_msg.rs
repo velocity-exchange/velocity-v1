@@ -267,7 +267,7 @@ fn fill_accounts<'a, 'info>(
 
 /// Rest what the route could not fill, on the market's book.
 ///
-/// A signed-message order never rests on the DLOB. Either it is
+/// A signed-message order never rests in a `User.orders` slot. Either it is
 /// immediate-or-cancel and its residual is cancelled, or the residual migrates
 /// to the CLOB as a taker-origin order and competes for price inside its
 /// activation window. `restable_remainder_price` is the shared rule for which

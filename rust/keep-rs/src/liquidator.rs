@@ -31,7 +31,7 @@ use {
     tokio::sync::mpsc::error::TryRecvError,
     velocity_rs::{
         constants::{derive_clob_crank_conditions, derive_quoter_slab},
-        dlob::{DLOBNotifier, L3Order, DLOB},
+        dlob::{DLOBNotifier, DLOB},
         grpc::{
             grpc_subscriber::{AccountFilter, GrpcConnectionOpts},
             TransactionUpdate,
@@ -2665,91 +2665,23 @@ impl PrimaryLiquidationStrategy {
         Some(candidates[0].0)
     }
 
-    /// Find top makers for a perp position
-    /// Scan one side of the book until it yields three loaded, unique, eligible
-    /// makers. The scan applies eligibility as it goes, and not after a cap. A run
-    /// of duplicate, unloadable or floored-ineligible entries at the top must not
-    /// hide an eligible maker further down the book.
-    fn collect_top_makers(
-        velocity: &VelocityClient,
-        orders: impl Iterator<Item = L3Order>,
-        exchange_match_allowed: bool,
-    ) -> Vec<User> {
-        let mut seen = HashSet::new();
-        let mut makers: Vec<User> = Vec::with_capacity(3);
-        for order in orders {
-            if !order.is_maker() || !seen.insert(order.user) {
-                continue;
-            }
-            let Ok(maker) = velocity.try_get_account::<User>(&order.user) else {
-                continue;
-            };
-            if !Self::maker_matchable(&maker, exchange_match_allowed) {
-                continue;
-            }
-            makers.push(maker);
-            if makers.len() == 3 {
-                break;
-            }
-        }
-        makers
-    }
-
-    /// The DLOB makers this liquidation can settle against, from the local
-    /// order book. Empty when the snapshot or the oracle is unusable, which
-    /// leaves the book as the only source.
-    fn find_dlob_makers(
-        velocity: &VelocityClient,
-        dlob: &'static DLOB,
-        market_state: Arc<RwLock<MarketState>>,
-        market_index: u16,
-        base_asset_amount: i64,
-        exchange_match_allowed: bool,
-    ) -> Vec<User> {
-        let Some(l3_book) = dlob.get_l3_snapshot_safe(market_index, MarketType::Perp) else {
-            return Vec::new();
-        };
-
-        let oracle_price = {
-            let state = market_state.read().unwrap();
-            match state.get_perp_oracle_price(market_index) {
-                Some(data) if data.price > 0 => data.price as u64,
-                _ => return Vec::new(),
-            }
-        };
-
-        // Only maker orders are wanted, so pass no vamm price and no trigger price.
-        if Self::liquidation_makers_are_bids(base_asset_amount) {
-            Self::collect_top_makers(
-                velocity,
-                l3_book.bids(Some(oracle_price), None, None),
-                exchange_match_allowed,
-            )
-        } else {
-            Self::collect_top_makers(
-                velocity,
-                l3_book.asks(Some(oracle_price), None, None),
-                exchange_match_allowed,
-            )
-        }
-    }
-
     /// The book makers this liquidation can settle against.
     ///
-    /// A DLOB maker's order lives in `User.orders`, so finding it means reading
-    /// loaded accounts. A book order lives on the book, and the only record of
-    /// its owner is an authority and a sub-account on the order. So the book
-    /// reports its own resting owners through a simulated `quote_l3_v0` leg.
-    /// This keeper never decodes a book, and the book can change its data
-    /// structures without breaking it.
+    /// A book order's only record of its owner is an authority and a
+    /// sub-account on the order itself, so the book reports its own resting
+    /// owners through a simulated `quote_l3_v0` leg. This keeper never decodes
+    /// a book, and the book can change its data structures without breaking it.
     ///
     /// The fill stops at the first owner the transaction did not carry, so these
-    /// come off the side the liquidation sweeps, best price first.
+    /// come off the side the liquidation sweeps, best price first. A maker the
+    /// fill would skip for its own equity floor is dropped here, because
+    /// carrying it spends two account locks the fill cannot use.
     async fn find_book_makers(
         velocity: &VelocityClient,
         book: &QuoterConfigV0,
         market_index: u16,
         base_asset_amount: i64,
+        exchange_match_allowed: bool,
         liquidatee: &User,
     ) -> Vec<User> {
         let direction = if Self::liquidation_makers_are_bids(base_asset_amount) {
@@ -2786,6 +2718,7 @@ impl PrimaryLiquidationStrategy {
                 let key = Wallet::derive_user_account(&maker.authority, maker.sub_account_id);
                 velocity.try_get_account::<User>(&key).ok()
             })
+            .filter(|maker| Self::maker_matchable(maker, exchange_match_allowed))
             .collect()
     }
 
@@ -2797,21 +2730,12 @@ impl PrimaryLiquidationStrategy {
     /// takeover path instead.
     async fn find_top_makers(
         velocity: &VelocityClient,
-        dlob: &'static DLOB,
-        market_state: Arc<RwLock<MarketState>>,
         market_index: u16,
         base_asset_amount: i64,
         exchange_match_allowed: bool,
         liquidatee: &User,
     ) -> Option<LiquidationMatch> {
-        let mut makers = Self::find_dlob_makers(
-            velocity,
-            dlob,
-            market_state,
-            market_index,
-            base_asset_amount,
-            exchange_match_allowed,
-        );
+        let mut makers: Vec<User> = Vec::new();
 
         // An unreadable slab abandons the attempt rather than filling without the
         // book. The market's canonical CLOB is a mandatory baseline, so a fill that
@@ -2832,6 +2756,7 @@ impl PrimaryLiquidationStrategy {
                         &book,
                         market_index,
                         base_asset_amount,
+                        exchange_match_allowed,
                         liquidatee,
                     )
                     .await,
@@ -2845,7 +2770,7 @@ impl PrimaryLiquidationStrategy {
             None => Vec::new(),
         };
 
-        // Both sources can name the same account. A duplicate maker pair costs
+        // A book can name the same account twice. A duplicate maker pair costs
         // account locks that the fill cannot use.
         let mut seen = HashSet::new();
         makers.retain(|maker| {
@@ -3146,8 +3071,6 @@ impl PrimaryLiquidationStrategy {
         let makers = if Self::match_participation_allowed(user_account, policy) {
             Self::find_top_makers(
                 velocity,
-                dlob,
-                Arc::clone(&market_state),
                 position.market_index,
                 position.base_asset_amount,
                 policy.exchange_match_allowed,

@@ -7,10 +7,30 @@
  * The topology is the production one and no account is synthesized. Protocol
  * init goes through the admin instructions. CLOB bring-up matches the admin
  * CLI: book, registry entry, canonical attach, and conditions reservoir. A
- * midpoint spline instance quotes around a hot-key mid, DLOB maker orders
- * rest, and the protocol User pays for cranks. The Rust book-publisher ticks
+ * midpoint spline instance quotes around a hot-key mid, makers rest orders on
+ * the book, and the protocol User pays for cranks. The Rust book-publisher ticks
  * against the validator over RPC and writes the Redis wire, and its cross
  * fast path watches for crossed books.
+ *
+ * A spec here waits for something to happen rather than making it happen, so
+ * it can pass by waiting for a state it was already in. Two rules keep that
+ * from turning a green run into a proof of nothing.
+ *
+ * Assert the precondition, not only the outcome. A poll that exits on "the
+ * order is gone" also exits on an order that never rested, so a spec that
+ * rests one asserts it rested before it starts waiting. `place_and_make` is
+ * why the placement's own success is not enough: it lands and succeeds whether
+ * the order rests or fills, so landing and resting are different events here.
+ *
+ * Assert who did the work. A relay-cranked outcome can arrive from the
+ * publisher, from another spec, or from a crank nobody meant to fire, and the
+ * account state looks the same either way. Every relay-cranked spec snapshots
+ * `relayPayoutBalance()` and asserts it rose, which is the only evidence that
+ * discovery reached the crank under test. A new one that leaves that out
+ * still passes on a market where relay never ran.
+ *
+ * Read balances as deltas. An account here is shared across specs, so an
+ * absolute is true for a position some earlier spec opened.
  *
  * Velocity instructions go through the SDK. The CLOB and midpoint ship no TS
  * client, so anchor-v2/scripts/gen-quoter-idls.sh generates their IDLs from
@@ -200,6 +220,17 @@ const clobIx = {
 	 */
 	space(capacity: number): number {
 		return 32 * 1024 + capacity * CLOB_NODE_LEN;
+	},
+	/**
+	 * A soft eviction cap for a book sized by `space(capacity)`.
+	 *
+	 * Both sides share one arena, so `initialize_market_v0` requires the cap to
+	 * be under half the capacity it derived: two sides at the cap have to fit.
+	 * A quarter leaves the suite far more headroom than it ever uses and stays
+	 * valid however the header grows.
+	 */
+	evictThreshold(capacity: number): number {
+		return Math.floor(capacity / 4);
 	},
 };
 
@@ -650,8 +681,12 @@ describe('e2e localnet: programs + publisher + redis', function () {
 							// Designating the book is refused when an approved
 							// quoter's account list already names it, so a book
 							// registration reads the slab. No other type does.
+							// Anchor's client reads a null as a missing account even
+							// for an optional one, so an omitted slab is passed
+							// as the program id, which the program decodes as
+							// `None`.
 							quoterSlab:
-								args.quoterType === QuoterType.CLOB ? quoterSlab : null,
+								args.quoterType === QuoterType.CLOB ? quoterSlab : VELOCITY_ID,
 							quoterProgram: args.quoterProgram,
 							user: args.user,
 							rent: SYSVAR_RENT_PUBKEY,
@@ -700,10 +735,13 @@ describe('e2e localnet: programs + publisher + redis', function () {
 							// A book approval asks the book for its own placement
 							// rules, so a slot that would fail every fill is
 							// refused here. No other type reads a book.
+							// As above: an omitted optional account travels as the
+							// program id, because anchor's client reads a null as
+							// missing.
 							clobMarket:
 								args.quoterType === QuoterType.CLOB
 									? args.responseAccount
-									: null,
+									: VELOCITY_ID,
 							systemProgram: SystemProgram.programId,
 						},
 					}
@@ -714,7 +752,8 @@ describe('e2e localnet: programs + publisher + redis', function () {
 
 	/** CLOB bring-up, exactly as `admin-cli clob-market init` does it. */
 	const clobBringUp = async () => {
-		const space = clobIx.space(1024);
+		const clobCapacity = 1024;
+		const space = clobIx.space(clobCapacity);
 		clobBook = Keypair.generate();
 		// The market is already initialized. The book must use the market's grid.
 		await admin.fetchAccounts();
@@ -733,7 +772,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 						defaultActivationDelaySlots: 0,
 						maxActivationDelaySlots: 20,
 						unknownUserGraceSlots: 2,
-						evictThresholdPerSide: 768,
+						evictThresholdPerSide: clobIx.evictThreshold(clobCapacity),
 						maxQuoteLevels: 128,
 						maxExecuteFills: 64,
 						maxExecuteUsers: 32,
@@ -850,6 +889,12 @@ describe('e2e localnet: programs + publisher + redis', function () {
 						sizeStep: new BN(100000),
 						minQuoteSize: new BN(100000),
 						requireAttestedFlow: false,
+						// The oracle-deviation band, which a fresh instance must
+						// carry: without it the instance quotes unprotected. The
+						// suite runs it wide, because some cases move the oracle
+						// far from the mid on purpose and the band is not what
+						// they are testing.
+						maxMidDeviationPpm: new BN(300_000),
 					})
 					.accountsStrict({
 						payer: payer.publicKey,
@@ -1234,7 +1279,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 	const placeAndTakeIx = async (
 		takerAuthority: PublicKey,
 		orderParams: OptionalOrderParams,
-		makerKps: Keypair[] = [clobMakerKp, midMakerKp]
+		makerKps: Keypair[] = [clobMakerKp, bookMaker2Kp, midMakerKp]
 	) =>
 		admin.program.instruction.placeAndTakePerpOrderV1(
 			{
@@ -1263,7 +1308,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 	const placeAndTake = async (
 		kp: Keypair,
 		orderParams: OptionalOrderParams,
-		makerKps: Keypair[] = [clobMakerKp, midMakerKp]
+		makerKps: Keypair[] = [clobMakerKp, bookMaker2Kp, midMakerKp]
 	) =>
 		sendFill(await placeAndTakeIx(kp.publicKey, orderParams, makerKps), [kp]);
 
@@ -1701,11 +1746,11 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		}
 	});
 
-	it('keeper fill splits the taker across CLOB + midpoint + vAMM', async function () {
+	it('a take splits across the midpoint and both book makers', async function () {
 		this.timeout(120_000);
-		// Long 3.5: midpoint 100.1 (2.0), CLOB 100.5 (1.0), and the vAMM covers
-		// the rest. Its ask sits about 1% out, so it yields to both books and
-		// takes only what they leave.
+		// Long 3.5: midpoint 100.1 (2.0), then the book's 100.5 (1.0) and its
+		// 100.6 (0.5). The vAMM ask sits about 1% out and yields to all three,
+		// so it takes nothing.
 		const size = UNIT.muln(35).divn(10);
 		await placeAndTake(
 			takerKp,
@@ -1715,16 +1760,17 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				baseAssetAmount: size,
 				price: usd(102),
 			}),
-			[clobMakerKp, midMakerKp]
+			[clobMakerKp, bookMaker2Kp, midMakerKp]
 		);
 
 		await taker.fetchAccounts();
 		const position = taker.getUser().getPerpPosition(0)!;
 		assert.equal(position.baseAssetAmount.toString(), size.toString());
 
-		// The CLOB ask is gone and the midpoint's first rung is consumed.
+		// The 100.5 ask is gone and half of the 100.6 ask remains, so the book
+		// still carries one. The midpoint's first rung is consumed.
 		const book = await readClob();
-		assert.equal(book.askCount, 0);
+		assert.equal(book.askCount, 1);
 		await midMaker.fetchAccounts();
 		const midPosition = midMaker.getUser().getPerpPosition(0)!;
 		assert.equal(
@@ -1737,9 +1783,11 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			clobMaker.getUser().getPerpPosition(0)!.baseAssetAmount.toString(),
 			UNIT.neg().toString()
 		);
-		// What the books did not cover came from the vAMM. The taker's own
-		// total above is what pins that; the curve's share is not asserted as a
-		// figure, because it moves with the reserves the suite happens to be at.
+		await bookMaker2.fetchAccounts();
+		assert.equal(
+			bookMaker2.getUser().getPerpPosition(0)!.baseAssetAmount.toString(),
+			UNIT.divn(2).neg().toString()
+		);
 	});
 
 	it('place-and-take rests the unfilled limit remainder on the CLOB', async function () {
@@ -1760,12 +1808,6 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				baseAssetAmount: UNIT,
 				price: usd(100),
 			}),
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
 			{
 				quoterSlab,
 				clobMarket: clobBook.publicKey,
@@ -1777,7 +1819,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		const after = await readClob();
 		assert.equal(after.bidCount, before.bidCount + 1);
 		assert.equal(after.bestBidPrice!.toString(), usd(100).toString());
-		// The taker's DLOB order slot is not resting open, because the order
+		// The taker holds no open order slot, because the order
 		// moved to the book. The filter is scoped to this order's price so
 		// that leftovers from other specs do not count.
 		await taker.fetchAccounts();
@@ -1792,6 +1834,12 @@ describe('e2e localnet: programs + publisher + redis', function () {
 	it('the publisher detects a crossed book and submits the cross match', async function () {
 		this.timeout(120_000);
 		const protocolBefore = (await connection.getAccountInfo(protocolUser))!;
+		await crosser.fetchAccounts();
+		// The crosser has no position in this market until this spec opens one,
+		// and `getPerpPosition` returns undefined rather than a zeroed position
+		// for a market a user has never traded. Read it as zero.
+		const crosserBase0 =
+			crosser.getUser().getPerpPosition(0)?.baseAssetAmount ?? new BN(0);
 
 		// Cross the book outright. A 101.0 bid against the midpoint's 100.1 ask
 		// clears the two-legged taker fees with about 90bps of spread. A
@@ -1802,6 +1850,16 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			PositionDirection.LONG,
 			usd(101),
 			UNIT
+		);
+
+		// The bid is on the book and the book is crossed. The poll below exits
+		// on that bid being gone, and an order that never rested is also gone,
+		// so without this the spec would pass on a placement that failed.
+		const crossed = await readClob();
+		assert.equal(
+			crossed.bestBidPrice!.toString(),
+			usd(101).toString(),
+			'the crossing bid rested, so there is a cross for the publisher to find'
 		);
 
 		// The publisher's next tick sees the cross and submits
@@ -1819,11 +1877,18 @@ describe('e2e localnet: programs + publisher + redis', function () {
 
 		// The crossed bid filled, so the crosser is long and the midpoint maker
 		// is shorter. The protocol user stayed flat and took the after-fee
-		// surplus as quote balance.
+		// surplus as quote balance. The check is a delta: an absolute would
+		// hold on a position this spec did not open, and every later spec that
+		// touches this account already reads it as one.
 		await crosser.fetchAccounts();
-		assert.isAbove(
-			crosser.getUser().getPerpPosition(0)!.baseAssetAmount.toNumber(),
-			0
+		assert.equal(
+			crosser
+				.getUser()
+				.getPerpPosition(0)!
+				.baseAssetAmount.sub(crosserBase0)
+				.toString(),
+			UNIT.toString(),
+			'the crosser bought the unit it bid for'
 		);
 		const protocolAfter = (await connection.getAccountInfo(protocolUser))!;
 		assert.notDeepEqual(
@@ -1894,12 +1959,6 @@ describe('e2e localnet: programs + publisher + redis', function () {
 					baseAssetAmount: UNIT,
 					price: usd(104),
 				}),
-				undefined,
-				undefined,
-				undefined,
-				undefined,
-				undefined,
-				undefined,
 				{
 					quoterSlab,
 					clobMarket: clobBook.publicKey,
@@ -2201,7 +2260,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 					return !stillArmed && rested ? true : undefined;
 				}
 			);
-			// The DLOB slot is freed and the order rests on the book unfilled. A
+			// The slot is freed and the order rests on the book unfilled. A
 			// fire to the book stops here. The v0 flip left the order live
 			// instead.
 			await stopper.fetchAccounts();
@@ -2288,7 +2347,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		// `resolve_trigger_limit_order_v1`, which rests the whole order on the
 		// book.
 		await setOraclePrice(97);
-		// The DLOB slot degrades to a placed-on-clob shadow that still reads
+		// The slot degrades to a placed-on-clob shadow that still reads
 		// status Open, so the slot never empties. Leftover bids from earlier
 		// specs share this book, so the fired order is not always the best bid.
 		// The book gaining a bid is therefore the signal to wait on.
@@ -2421,6 +2480,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 						requireAttestedFlow: true,
 						isPaused: null,
 						maxMidDeviationPpm: null,
+						midSequence: null,
 					})
 					.accountsStrict({
 						quoter: midInstance,

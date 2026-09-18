@@ -13,15 +13,15 @@
 # DLOB Server
 
 The backend server that provides a REST API for the Velocity
-[DLOB](https://docs.velocity.exchange/protocol/how-it-works/orderbook-and-keepers).
+[order book](https://docs.velocity.exchange/protocol/how-it-works/orderbook-and-keepers).
+Book production lives in the rust `book-publisher`, which writes each market's book to
+Redis. This server reads those keys and serves them; it holds no order state itself.
 
 ## Features
 
-- Real-time DLOB data publishing
-- Support for both perp and spot markets
-- Multiple subscription methods (WebSocket, gRPC, polling)
+- Serves each perp market's book, published to Redis by the rust `book-publisher`
+- REST endpoints and a websocket fan-out over the same Redis keys
 - Health checks and metrics
-- **TOB (Top of Book) monitoring for stuck orders** (see [TOB Monitoring Configuration](#tob-monitoring-configuration))
 
 # Run the server
 
@@ -70,9 +70,6 @@ To properly configure the DLOB server, set the following environment variables i
 | ----------------------------- | --------------------------------------------------------------- | ----------------------------------- |
 | `ENDPOINT`                    | The Solana RPC node http endpoint.                              | `https://your-private-rpc-node.com` |
 | `WS_ENDPOINT`                 | The Solana RPC node websocket endpoint.                         | `wss://your-private-rpc-node.com`   |
-| `USE_WEBSOCKET`               | Flag to enable WebSocket connection.                            | `true`                              |
-| `USE_ORDER_SUBSCRIBER`        | Flag to enable order subscriber DLOB source.                    | `true`                              |
-| `DISABLE_GPA_REFRESH`         | Flag to disable periodic refresh using `getProgramAccounts`.    | `true`                              |
 | `ENV`                         | The network environment the server is connecting to.            | `mainnet-beta`                      |
 | `PORT`                        | The port number the HTTP server listens on.                     | `6969`                              |
 | `METRICS_PORT`                | The port number for Prometheus metrics.                         | `9465`                              |
@@ -99,7 +96,11 @@ bun run dev
 
 ## Websocket mode
 
-The websocket server has 2 components, the `dlob-publisher` that takes frequent snapshots of the DLOB and publishes them to Redis, and `ws-manager` listens for new connections and sends the latest DLOB to ws clients, the two components communicate through Redis pub-sub.
+The websocket server has 2 components. The rust `book-publisher` (`rust/book-publisher`)
+quotes every source through velocity's router view and writes each market's book to
+Redis, and `ws-manager` listens for new connections and sends the latest book to ws
+clients. The two components communicate through Redis pub-sub, so this server holds no
+order state of its own.
 
 To run the websocket server, a Redis cache is required, and the following environment variables must be set:
 
@@ -114,10 +115,10 @@ bash redisCluster.sh start
 bash redisCluster.sh create
 ```
 
-In second terminal, run:
+In second terminal, run the publisher from the repo root:
 
 ```
-yarn run dlob-publish
+cargo run -p book-publisher
 ```
 
 In a third terminal, run:
@@ -141,33 +142,3 @@ two with `bun run example` and `bun run exampleWithSlot`. The
 [orderbook and websocket docs](https://docs.velocity.exchange/developers/ecosystem-builders/orderbook-and-ws)
 describe the protocol they speak.
 
-## Top of book monitoring
-
-## TOB (Top of Book) Monitoring [#tob-monitoring]
-
-The server includes a TOB monitoring feature that detects when order books become stuck due to ghost/stuck orders. This is particularly useful for gRPC connections that may miss updates.
-
-### Configuration
-
-Set the following environment variables to enable and configure TOB monitoring:
-
-- `ENABLE_TOB_MONITORING=true` - Enable TOB monitoring (default: false)
-- `TOB_CHECK_INTERVAL=60000` - How often to check TOB (default: 60 seconds)
-- `TOB_STUCK_THRESHOLD=60000` - How long TOB can be stuck before resubscribing (default: 60 seconds)
-- `TOP_MONITORING_ENABLED_PERP_MARKETS=0,1,2` - Comma-separated list of perp market indexes to monitor for TOB (default: 0,1,2 for SOL-PERP, BTC-PERP, ETH-PERP)
-
-### How it works
-
-1. Checks if the current node is configured to handle any TOB monitoring markets
-2. Only enables monitoring if the node has TOB monitoring markets configured
-3. Monitors the top bid/ask prices for TOB monitoring perp markets on this node
-4. If TOB hasn't changed for the configured threshold time, triggers a resubscribe
-5. Performs unsubscribe → subscribe → fetch sequence on the OrderSubscriber instance
-6. Logs warnings and updates metrics for monitoring
-
-### Metrics
-
-The following metrics are available for TOB monitoring:
-
-- `tob_resubscribe` - Counter for resubscribe attempts (with success/failure labels)
-- `tob_stuck_duration` - Gauge showing how long TOB has been stuck for each market

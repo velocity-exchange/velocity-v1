@@ -5,17 +5,13 @@
 //! stays in the TypeScript dlob-server, which holds the HTTP endpoints, the
 //! websocket fan-out and the auth, and reads the same Redis keys this writes.
 //! The payload is the existing L2 wire shape, with `clob` and `propamm` joining
-//! `vamm` and `dlob` in the per-level `sources` breakdown, so consumers do not
-//! move.
+//! `vamm` in the per-level `sources` breakdown, so consumers do not move.
 //!
 //! Simulation is the design rather than an optimization. A Custom quoter is an
 //! arbitrary program with no off-chain decoder, so running `quote_v0` is the
 //! only way to price it. The view also runs sources in fill order, so a
 //! published book equals the fill-time book by construction, margin-clamped
 //! PropAMMs and vAMM last-look shading included.
-//!
-//! The TypeScript publisher keeps DLOB maker books until the DLOB is removed.
-//! This quote view is built without `(User, UserStats)` maker pairs.
 
 mod cross;
 mod metrics_server;
@@ -41,6 +37,7 @@ use {
     tracing::{info, warn},
     velocity_quoter_health::{metrics::Metrics, EntryRef, Health, Policy},
     velocity_router_sim::{
+        as_versioned,
         health::{quote_market, watch_program_deploys, QuoteRequest},
         quote_view::{
             create_quote_buffer_ixs, perp_market_pda, read_zero_copy, state_pda, QuoteView,
@@ -196,7 +193,9 @@ async fn ensure_buffer(
         &[payer, buffer],
         blockhash.hash,
     );
-    let signature = source.send_transaction(&tx).await?;
+    // A legacy message, versioned only because that is what the source takes.
+    // Nothing here needs an address table or a v1 message.
+    let signature = source.send_transaction(&as_versioned(&tx)?).await?;
     info!(%signature, market_index, buffer = %buffer.pubkey(), "creating quote buffer");
     for _ in 0..30 {
         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -435,9 +434,6 @@ async fn publish_market(
             market_index,
             direction,
             quote_size,
-            // The publisher holds no DLOB view. Those books come from the
-            // TypeScript publisher until the DLOB is removed.
-            &[],
         )
     };
     // Read in as many passes as the market's quoters need. One pass holds a
@@ -626,6 +622,7 @@ async fn publish_market(
                 &[payer],
                 blockhash.hash,
             );
+            let tx = as_versioned(&tx)?;
             let sim = source.simulate_transaction(&tx, &[]).await?;
             match sim.err {
                 None => {

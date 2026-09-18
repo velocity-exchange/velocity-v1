@@ -218,7 +218,7 @@ pub fn is_oracle_valid_for_action(
                     | OracleValidity::InsufficientDataPoints
                     | OracleValidity::StaleForMargin
             ),
-            // The admitted set matches `MarginCalc` on purpose. A DLOB match
+            // The admitted set matches `MarginCalc` on purpose. A maker match
             // prices off resting limit orders rather than the oracle, so a
             // looser rule reads reasonable in isolation. A fill it lets through
             // at a stale-for-margin oracle still has margin consequences the

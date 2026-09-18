@@ -1,10 +1,7 @@
 import {
-	DLOB,
 	VelocityClient,
 	UserMap,
 	SlotSubscriber,
-	MarketType,
-	PositionDirection,
 	getUserStatsAccountPublicKey,
 	promiseTimeout,
 	isVariant,
@@ -20,6 +17,7 @@ import {
 	QUOTE_SPOT_MARKET_INDEX,
 	getInsuranceFundStakeAccountPublicKey,
 } from '@velocity-exchange/sdk';
+import axios from 'axios';
 import { Mutex } from 'async-mutex';
 
 import { logger } from '../logger';
@@ -233,8 +231,7 @@ export class MakerBidAskTwapCrank implements Bot {
 	private intervalIds: Array<NodeJS.Timer> = [];
 	private userMap?: UserMap;
 
-	private dlob?: DLOB;
-	private latestDlobSlot?: number;
+	private dlobServerHttpUrl?: string;
 	private priorityFeeSubscriberMap?: PriorityFeeSubscriberMap;
 
 	private watchdogTimerMutex = new Mutex();
@@ -275,6 +272,12 @@ export class MakerBidAskTwapCrank implements Bot {
 		this.crankIntervalToMarketIndicies = config.crankIntervalToMarketIndicies;
 		this.blockhashSubscriber = blockhashSubscriber;
 		this.autoStakeIfBelowMin = config.autoStakeIfBelowMin ?? false;
+		this.dlobServerHttpUrl = config.dlobServerHttpUrl;
+		if (!this.dlobServerHttpUrl) {
+			logger.warn(
+				`[${this.name}] no dlobServerHttpUrl configured; the crank will carry no book makers, and a market that names a book refuses it`
+			);
+		}
 		this.ifStakeTargetQuote =
 			config.ifStakeTargetQuote ?? DEFAULT_IF_STAKE_TARGET_QUOTE;
 
@@ -517,23 +520,38 @@ export class MakerBidAskTwapCrank implements Bot {
 		return healthy && this.pythHealthy && this.txSendHealthy;
 	}
 
-	private async initDlob() {
+	/**
+	 * The book's best resting owners on one side of a market.
+	 *
+	 * The program reads the book's own depth through its `quoteL3V0` leg, so
+	 * this is not the depth. It is the set of `User` accounts the crank has to
+	 * carry, because the program credits a quote only to an owner the
+	 * transaction loads.
+	 */
+	private async getBookMakers(
+		marketIndex: number,
+		side: 'bid' | 'ask'
+	): Promise<PublicKey[]> {
+		if (!this.dlobServerHttpUrl) {
+			return [];
+		}
 		try {
-			this.latestDlobSlot = this.slotSubscriber.currentSlot;
-			const dlob = await promiseTimeout(
-				this.userMap!.getDLOB(this.slotSubscriber.currentSlot),
-				RPC_TIMEOUT_MS
+			const response = await axios.get(
+				`${this.dlobServerHttpUrl}/topMakers?marketType=perp&marketIndex=${marketIndex}&side=${side}&limit=${NUM_MAKERS_TO_LOOK_AT_FOR_TWAP_CRANK}`,
+				{ timeout: RPC_TIMEOUT_MS, validateStatus: () => true }
 			);
-			if (dlob) {
-				this.dlob = dlob;
-			} else {
-				this.dlob = undefined;
+			if (response.status !== 200 || !Array.isArray(response.data)) {
 				logger.warn(
-					`[${this.name}] getDLOB timed out after ${RPC_TIMEOUT_MS}ms`
+					`[${this.name}] topMakers for market ${marketIndex} ${side} returned status ${response.status}`
 				);
+				return [];
 			}
+			return (response.data as string[]).map((key) => new PublicKey(key));
 		} catch (e) {
-			logger.error(`[${this.name}] Error loading dlob: ${e}`);
+			logger.error(
+				`[${this.name}] Error loading topMakers for market ${marketIndex} ${side}: ${e}`
+			);
+			return [];
 		}
 	}
 
@@ -771,7 +789,6 @@ export class MakerBidAskTwapCrank implements Bot {
 		try {
 			this.crankIntervalInProgress![intervalGroup] = true;
 			this.crankIntervalStartTime![intervalGroup] = Date.now();
-			await this.initDlob();
 
 			logger.info(
 				`[${this.name}] Cranking interval group ${intervalGroup}: ${crankMarkets}`
@@ -786,26 +803,10 @@ export class MakerBidAskTwapCrank implements Bot {
 				forceUseJito: boolean,
 				addTipIx: boolean
 			): Promise<{ jitoTx?: VersionedTransaction; restartSignal: boolean }> => {
-				const mmOraclePriceData =
-					this.velocityClient.getMMOracleDataForPerpMarket(mi);
-
-				const bidMakers = this.dlob!.getBestMakers({
-					marketIndex: mi,
-					marketType: MarketType.PERP,
-					direction: PositionDirection.LONG,
-					slot: this.latestDlobSlot!,
-					oraclePriceData: mmOraclePriceData,
-					numMakers: NUM_MAKERS_TO_LOOK_AT_FOR_TWAP_CRANK,
-				});
-
-				const askMakers = this.dlob!.getBestMakers({
-					marketIndex: mi,
-					marketType: MarketType.PERP,
-					direction: PositionDirection.SHORT,
-					slot: this.latestDlobSlot!,
-					oraclePriceData: mmOraclePriceData,
-					numMakers: NUM_MAKERS_TO_LOOK_AT_FOR_TWAP_CRANK,
-				});
+				const [bidMakers, askMakers] = await Promise.all([
+					this.getBookMakers(mi, 'bid'),
+					this.getBookMakers(mi, 'ask'),
+				]);
 				logger.info(
 					`[${this.name}] loaded makers for market ${mi}: ${bidMakers.length} bids, ${askMakers.length} asks`
 				);
@@ -860,10 +861,10 @@ export class MakerBidAskTwapCrank implements Bot {
 					...this.getCombinedList(askMakers),
 				];
 
-				// Only the DLOB half is gathered here. The program reads the
-				// market's book on chain through its own `quoteL3V0` leg, so the
-				// crank carries the book accounts rather than the book's depth.
-				// The SDK resolves those accounts from the market.
+				// The program reads the market's book on chain through its own
+				// `quoteL3V0` leg, so the crank carries the book accounts rather
+				// than the book's depth. The SDK resolves those accounts from the
+				// market.
 				ixs.push(
 					await this.velocityClient.getUpdatePerpBidAskTwapIx(
 						mi,

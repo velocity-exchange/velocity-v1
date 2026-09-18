@@ -10,47 +10,23 @@ describe('VelocityCore perp order instruction builders', () => {
 		data: Buffer.alloc(0),
 	};
 
-	test('buildPlacePerpOrderInstruction', async () => {
-		const called: any[] = [];
-		const program = {
-			instruction: {
-				placePerpOrder: async (...args: any[]) => {
-					called.push(args);
-					return fakeIx;
-				},
-			},
-		};
-		const ix = await VelocityCore.buildPlacePerpOrderInstruction({
-			program,
-			orderParams: { x: 1 },
-			state: pk(),
-			user: pk(),
-			userStats: pk(),
-			authority: pk(),
-			remainingAccounts: [],
-		});
-		expect(ix).toBe(fakeIx as any);
-		expect(called[0][0]).toEqual({ x: 1 });
-	});
-
 	test('buildPlaceAndTakePerpOrderInstruction', async () => {
 		const called: any[] = [];
 		const programId = pk();
 		const program = {
 			programId,
 			instruction: {
-				placeAndTakePerpOrder: async (...args: any[]) => {
-					called.push(['v0', ...args]);
-					return fakeIx;
-				},
 				placeAndTakePerpOrderV1: async (...args: any[]) => {
-					called.push(['v1', ...args]);
+					called.push(args);
 					return fakeIx;
 				},
 			},
 		};
-		// Omitted CLOB accounts select the v0 route, whose account list carries
-		// no CLOB accounts at all.
+		const clobAccounts = {
+			quoterSlab: pk(),
+			clobMarket: pk(),
+			clobProgram: pk(),
+		};
 		const ix = await VelocityCore.buildPlaceAndTakePerpOrderInstruction({
 			program,
 			orderParams: { m: 0 },
@@ -60,39 +36,20 @@ describe('VelocityCore perp order instruction builders', () => {
 			userStats: pk(),
 			authority: pk(),
 			remainingAccounts: [],
-		});
-		expect(ix).toBe(fakeIx as any);
-		expect(called[0][0]).toBe('v0');
-		expect(called[0][2]).toBe(256);
-
-		// CLOB accounts select the v1 route, whose args ride one struct.
-		const clobAccounts = {
-			quoterSlab: pk(),
-			clobMarket: pk(),
-			clobProgram: pk(),
-		};
-		await VelocityCore.buildPlaceAndTakePerpOrderInstruction({
-			program,
-			orderParams: { m: 0 },
-			optionalParams: null,
-			state: pk(),
-			user: pk(),
-			userStats: pk(),
-			authority: pk(),
-			remainingAccounts: [],
 			clobAccounts,
 		});
-		expect(called[1][0]).toBe('v1');
-		expect(called[1][1]).toEqual({
+		expect(ix).toBe(fakeIx as any);
+		// The args ride one struct.
+		expect(called[0][0]).toEqual({
 			params: { m: 0 },
-			successCondition: null,
+			successCondition: 256,
 		});
-		const withClob = called[1][2].accounts;
-		expect(withClob.quoterSlab).toBe(clobAccounts.quoterSlab);
-		expect(withClob.clobMarket).toBe(clobAccounts.clobMarket);
-		expect(withClob.clobProgram).toBe(clobAccounts.clobProgram);
+		const accounts = called[0][1].accounts;
+		expect(accounts.quoterSlab).toBe(clobAccounts.quoterSlab);
+		expect(accounts.clobMarket).toBe(clobAccounts.clobMarket);
+		expect(accounts.clobProgram).toBe(clobAccounts.clobProgram);
 		// An omitted flow authority encodes as the program id (anchor's `None`).
-		expect(withClob.flowAuthority).toBe(programId);
+		expect(accounts.flowAuthority).toBe(programId);
 	});
 
 	test('buildPlaceAndMakePerpOrderInstruction', async () => {

@@ -7,7 +7,7 @@ edition = "2021"
 quoter-spec = { package = "quoter-spec-v2", path = "../quoter-spec-v2" }
 bytemuck = { version = "1.14", features = ["derive"] }
 solana-address = { version = "2.6", features = ["bytemuck", "copy"] }
-anchor-lang-v2 = { package = "anchor-lang", git = "https://github.com/velocity-exchange/anchor.git", rev = "444c6205fd3aa54006cf9d0c232d43471b74b071", optional = true }
+anchor-lang-v2 = { package = "anchor-lang", git = "https://github.com/velocity-exchange/anchor.git", rev = "b005890d9351a17a8061811662c44d781a04baf0", optional = true }
 [features]
 default = []
 idl-build = []

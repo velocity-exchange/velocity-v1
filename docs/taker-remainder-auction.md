@@ -324,10 +324,7 @@ landing race. Attested retail flow, the flow makers want, keeps its synchronous 
 
 Enforced velocity-side, in layers. The taker routes (`place_signed_msg_taker_order`,
 `place_and_take_perp_order_v1`, `trigger_market_order_v1`'s staged tail) skip their fill leg
-entirely for an unattested transaction and rest the whole order. The keeper fills
-(`fill_perp_order`, `fill_legacy_dlob_order`) still run, because they are how legacy DLOB orders
-progress, but the route quotes the book as empty for an unattested transaction, so the fill reaches
-the vAMM and the DLOB makers only and the restable remainder migrates into the auction. A
+entirely for an unattested transaction and rest the whole order. A
 `place_and_take` shape that demands a synchronous outcome an unattested transaction cannot have,
 such as an IOC or a success condition, is refused with `UnattestedSynchronousTake` rather than
 rested without an error. The protocol cranks (`crank_cross_match`, `crank_taker_origin_cross`) do not vouch for
@@ -336,8 +333,8 @@ remainder it settles, and `crank_cross_match` reads both sides it sweeps and tak
 answer, bounded by the size the cross takes. One verdict covers both of its legs, because a cross
 is one event on two sides: a leg that judged only the side it sweeps would call the flow
 protected whenever the fresh order sat on the other side, and the cross would then reach
-liquidity that serves protected flow only. Liquidation fills need no verdict. They route the vAMM
-and the passed DLOB makers only and never execute the book.
+liquidity that serves protected flow only. Liquidation fills vouch by measurement too: they check
+that the depth the fill can reach has rested, the way the cross cranks do.
 
 Velocity verifies the attestation once, at its own boundary, and forwards the verdict to every
 quoter on the wire: `QuoteArgsV0.taker_served_window` says the taker's flow served a protection
@@ -426,10 +423,9 @@ took first.
 - No cross matching and no pricing: R3 lives in velocity.
 
 **velocity (`programs/velocity`)**
-- `fill_legacy_dlob_order`: the CLOB accounts plus the migration step. It costs no extra accounts.
-  A router fill already carries the quoter slab, the book, the clob program and the quoter signer,
+- The migration reuses `try_place_remainder_on_clob`, with the taker-origin flag set. It costs no
+  extra accounts: a router fill already carries the quoter slab, the book and the clob program,
   because the CLOB baseline is mandatory, so the route adds nothing new.
-- The migration itself reuses `try_place_remainder_on_clob`, with the taker-origin flag set.
 - `crank_taker_origin_cross` resolves one cross, and it resolves it as an ordinary fill. The
   remainder is the taker of a router pass: the market's baseline book and the routed quoters
   compete on price, `require_baseline` holds the call to carrying the CLOB entry, and the filler
@@ -480,11 +476,10 @@ took first.
   compose instead of the arb one being staged for a cross it cannot run.
 
 **SDK / keepers**
-- `getFillPerpOrderIx` gains the CLOB accounts (v1 route), mirroring the take builder.
 - keep-rs stops needing the signed route on its auction/uncross/vAMM paths: once taker remainders
-  live on the book, a routed order never rests on the DLOB, so those paths only ever see
-  v0-route orders, whose route digest is zero. That closes the open item in `notes.md` by
-  removing the case rather than plumbing it.
+  live on the book, a routed order never rests in a `User.orders` slot, so those paths only ever
+  see slot orders, whose route digest is zero. That closes the open item in `notes.md` by removing
+  the case rather than plumbing it.
 
 ## Decisions
 

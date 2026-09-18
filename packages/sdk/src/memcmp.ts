@@ -31,7 +31,7 @@ export function getUserFilter(): MemcmpFilter {
  * (idle@4350, hasOpenOrder@4352, ...). After Velocity added fields to
  * `PerpPosition`, the account grew by 120 bytes and these flags shifted, but
  * the filters were not updated — so `getUserWithOrderFilter()` matched zero
- * accounts and the DLOB order book never populated. Keep these in sync with
+ * accounts and the user map never populated. Keep these in sync with
  * `decode/user.ts` if the `User` layout changes again.
  */
 const USER_IDLE_OFFSET = 4470;
@@ -56,7 +56,7 @@ export function getNonIdleUserFilter(): MemcmpFilter {
 
 /**
  * Builds a memcmp filter matching `User` accounts with `hasOpenOrder` (offset 4472) set to `true`
- * — i.e. at least one live order. Used by the DLOB to fetch only accounts that can populate the
+ * — i.e. at least one live order. Fetches only accounts that can populate the
  * order book.
  * @returns A memcmp filter for `User` accounts with at least one open order.
  */

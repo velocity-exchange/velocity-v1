@@ -27,7 +27,7 @@ import {
 /**
  * The ceiling on the elapsed time that one bid/ask-crank mark-TWAP sample may be
  * weighted by. This mirrors the program's `MarketStats::max_mark_twap_sample_elapsed`.
- * The crank folds caller-supplied DLOB depth into the TWAP, so one sample taken after a
+ * The crank folds the book's depth into the TWAP, so one sample taken after a
  * gap claims at most this many seconds of weight. A fill and the funding update's AMM
  * re-blend pass no cap on chain, so `calculateLiveMarkTwap`, which predicts the funding
  * update, does not apply the cap either. Apply it when predicting the TWAP that a

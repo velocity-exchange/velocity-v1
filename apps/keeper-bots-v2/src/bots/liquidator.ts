@@ -832,10 +832,8 @@ export class LiquidatorBot implements Bot {
 			return false;
 		}
 		this.setState(BOT_STATE.DERISKING);
-		const dlob = await this.userMap.getDLOB(this.userMap.getSlot());
 		try {
 			const didWork = await this.deriskHelper!.deriskAllSubaccounts(
-				dlob,
 				Array.from(this.allSubaccounts)
 			);
 			return didWork;

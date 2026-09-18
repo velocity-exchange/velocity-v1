@@ -4,7 +4,7 @@
 //! until a keeper cranks this instruction with the trigger condition met.
 //! Velocity then places the order on the CLOB, and the slot becomes a shadow
 //! that holds the trigger parameters and the CLOB `OrderRef`. The shadow stays
-//! untriggered, so every DLOB matching path ignores it the way it ignores an
+//! untriggered, so every discovery path ignores it the way it ignores an
 //! armed order. Only the [`OrderBitFlag::PlacedOnClob`] bit marks it, and the
 //! CLOB order carries the slot's open-order count from that point on.
 //!
@@ -659,7 +659,7 @@ fn pay_trigger_keeper(
 /// Marks the armed slot as the shadow of the order that now rests on the book.
 ///
 /// The slot keeps the trigger parameters and takes the CLOB handle. It stays
-/// untriggered, so every DLOB matching path ignores it.
+/// untriggered, so every discovery path ignores it.
 fn mark_slot_placed(
     user_loader: &AccountLoader<'_, User>,
     order_id: u32,

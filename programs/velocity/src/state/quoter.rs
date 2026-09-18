@@ -1,9 +1,9 @@
 //! # Quoter interfaces for the shared orderbook
 //!
-//! Velocity matches across several liquidity sources. They are DLOB maker
-//! orders, the vAMM, and external quoter programs such as the CLOB and
-//! PropAMMs, which velocity reaches over CPI. Every source publishes discrete
-//! price levels and the router splits a take across them.
+//! Velocity matches across several liquidity sources. They are the vAMM and
+//! external quoter programs such as the CLOB and PropAMMs, which velocity
+//! reaches over CPI. Every source publishes discrete price levels and the
+//! router splits a take across them.
 //!
 //! The interface is [`RouterQuoter`]. `quote` returns a source's book as
 //! [`PriceLevel`]s. `execute` fills an allocation against the source and
@@ -12,11 +12,10 @@
 //! `priority` places it in a tier. At a shared price, a lower priority number
 //! fills first, and a tie inside one tier splits pro rata.
 //!
-//! Two implementations live in this program. [`DlobOrderQuoter`] bridges one
-//! resting DLOB order as a single discrete level. `AmmQuoter` has its ladder
-//! built by `vlp::amm::router_adapter::vamm_quote_levels`, so the continuous
-//! curve is reduced to levels before the router sees it. An external quoter is
-//! not a `RouterQuoter` implementation. It is quoted and executed over CPI
+//! One implementation lives in this program. `AmmQuoter` has its ladder built
+//! by `vlp::amm::router_adapter::vamm_quote_levels`, so the continuous curve is
+//! reduced to levels before the router sees it. An external quoter is not a
+//! `RouterQuoter` implementation. It is quoted and executed over CPI
 //! through [`crate::state::prop_amm::QuoterConfigV0`].
 //!
 //! [`QuoteContext`] is the snapshot every source quotes against. A quote
@@ -26,8 +25,8 @@
 //! fill controller to apply to the `PerpMarket`.
 //!
 //! Each source picks its own fee handling. [`FillFeePolicy`] selects the
-//! schedule a fill settles on. A resting order uses `DlobMatch` and the vAMM
-//! uses `AmmHouse`. The vAMM is exempt from the maker schedule, because it
+//! schedule a fill settles on. A resting maker order uses `MakerMatch` and the
+//! vAMM uses `AmmHouse`. The vAMM is exempt from the maker schedule, because it
 //! earns from the spread it quotes rather than from a rebate.
 //!
 //! See `docs/amm-decoupling-and-maker-interface.md` for the full design,
@@ -59,7 +58,7 @@ pub struct QuoteContext<'a> {
     /// MM-wrapped oracle reading. Required for makers whose `setup` derives
     /// post-refresh state from the same MM oracle the orchestrator's keeper
     /// crank uses (the AMM); `None` for callers that only need the plain
-    /// `OraclePriceData` (DLOB, JIT) or that aren't invoking setup.
+    /// `OraclePriceData` or that aren't invoking setup.
     pub mm_oracle: Option<&'a MMOraclePriceData>,
     /// Oracle validity classification, computed by the orchestrator. Threaded
     /// here so `setup` can decide whether to apply a curve update (AMM) or
@@ -78,7 +77,7 @@ pub struct QuoteContext<'a> {
     /// limit cap) to standardise its analytic-inverse output into valid lot
     /// sizes. Sourced from `PerpMarket::order_step_size`.
     pub step_size: u64,
-    /// Current slot. Used by DLOB-order makers to determine auction state
+    /// Current slot. Used by order-backed makers to determine auction state
     /// (an order in active auction prices differently than the same order
     /// resting post-auction).
     pub slot: u64,
@@ -91,7 +90,7 @@ pub struct QuoteContext<'a> {
     /// base amount filled at a price, the formula is
     /// `quote = base * price / base_precision` to convert from raw base
     /// units to QUOTE_PRECISION-scaled quote. For perps this is `1e9`
-    /// (BASE_PRECISION). Step makers (DLOB orders) and the matcher's
+    /// (BASE_PRECISION). Step makers and the matcher's
     /// credit/marginal accumulation steps use this to keep precision
     /// consistent. AMM-style makers using try_fill_solo bypass this since
     /// they compute quote via the AMM's own swap math, which is already
@@ -130,23 +129,23 @@ pub struct QuoterFill {
     /// is the cost of a conditional repeg / k-update that fired as part of
     /// the quote. Summed across the match by the fill controller and
     /// deducted from the appropriate place. Zero for makers without such
-    /// costs (DLOB orders, JIT participants).
+    /// costs.
     pub refresh_cost: u64,
     /// Maker's fee-exempt flag at fill time, copied from `Quoter::is_fee_exempt`.
     /// The fill controller reads this to decide whether to apply the
-    /// protocol's maker-fee schedule. AMM = true; DLOB/JIT = false.
+    /// protocol's maker-fee schedule. AMM = true; a maker order = false.
     pub is_fee_exempt: bool,
     /// Per-fill fee schedule selector, copied from `Quoter::fee_policy()`.
     /// The unified fulfill orchestrator switches on this to apply the right
     /// fee-calculation path (`calculate_fee_for_fulfillment_with_amm` for
     /// AMM-side fills; `calculate_fee_for_fulfillment_with_match` for
-    /// DLOB-side fills) without inspecting the quoter's concrete type.
+    /// maker-side fills) without inspecting the quoter's concrete type.
     pub fee_policy: FillFeePolicy,
     /// Maker-specific quote surplus (or deficit, if negative). For the AMM,
     /// this is the gap between the spread-adjusted swap result and the
     /// no-spread swap result — the bid/ask spread profit the AMM captured
     /// (or lost) on this fill. Zero for makers without such a concept
-    /// (DLOB orders quote a single price; there is no spread to capture).
+    /// (a maker order quotes a single price; there is no spread to capture).
     pub quote_asset_amount_surplus: i64,
 }
 
@@ -158,7 +157,7 @@ impl QuoterFill {
         clearing_price: 0,
         refresh_cost: 0,
         is_fee_exempt: false,
-        fee_policy: FillFeePolicy::DlobMatch,
+        fee_policy: FillFeePolicy::MakerMatch,
         quote_asset_amount_surplus: 0,
     };
 }
@@ -172,14 +171,14 @@ impl QuoterFill {
 ///   The AMM's `total_fee` / `total_fee_minus_distributions` /
 ///   `net_revenue_since_last_funding` get credited via
 ///   `AmmContract::apply_fill_fees`.
-/// - `DlobMatch` — a DLOB resting order is the counterparty. Taker pays the
+/// - `MakerMatch` — a resting maker order is the counterparty. Taker pays the
 ///   match fee schedule (`calculate_fee_for_fulfillment_with_match`); the
 ///   maker receives a rebate. AMM-side counters are NOT touched (the AMM
 ///   was not party to this fill).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FillFeePolicy {
     AmmHouse,
-    DlobMatch,
+    MakerMatch,
 }
 
 /// A market-level signal a maker may want to react to.
@@ -284,7 +283,7 @@ pub trait RouterQuoter {
 //
 // `AmmQuoter` exposes the existing `AMM` struct as a router quoter so the
 // matcher can drive it. It reports `is_prio = true` and `is_fee_exempt =
-// true`. The AMM fills ahead of the DLOB at a tied price and pays no maker
+// true`. The AMM fills ahead of a maker book at a tied price and pays no maker
 // fee.
 //
 // **Design choice: repeg / k-update happens via `_update_amm`, not inside

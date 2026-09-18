@@ -16,6 +16,18 @@
  *      above discoverable. Those are the market crank conditions, the
  *      per-quoter cross conditions, and the per-user liquidation conditions
  *      from step 2.
+ *   4. legacy orders: report every order still resting in a `User.orders`
+ *      slot that is not an unfired trigger and not a book shadow. Those are
+ *      orders from the removed matching venue. Nothing matches them any more,
+ *      but each one still holds an `open_bids`/`open_asks` reservation
+ *      against its owner's margin, so the sooner the owner cancels it the
+ *      sooner that margin comes back.
+ *
+ *      This step reports and does not cancel. Only the owner or their
+ *      delegate can cancel an order, and the keeper sweep
+ *      (`force_cancel_orders`) reaches an account only while it is below its
+ *      initial margin requirement. A healthy owner's stale order is therefore
+ *      theirs to pull.
  *
  * Every step reads on-chain state first and skips what is already correct. A
  * run that stops part way is resumed by running it again.
@@ -50,6 +62,8 @@ const RELAY_PROGRAM = new PublicKey(
 	process.env.RELAY_PROGRAM_ID ?? '4D5tPhw9sqkdkR5CpmP427TH6y9p9AMuKUukUEHn3Mpu'
 );
 const WATCH_V0_LEN = 112;
+/** `OrderBitFlag::PlacedOnClob`: the slot shadows an order resting on the book. */
+const PLACED_ON_CLOB_BIT = 0b0100_0000;
 /** Offset of the relay block in every velocity conditions account, past the
  * anchor discriminator. */
 const BLOCK_OFFSET = 8;
@@ -384,6 +398,9 @@ async function main() {
 		await ensureWatch(connection, provider, payer, crossConditions, act);
 	}
 
+	// 4. legacy orders
+	reportLegacyOrders(users, program);
+
 	console.log(`\n${args.dryRun ? 'would run' : 'ran'} ${plan.length} steps`);
 	for (const line of plan.slice(0, 40)) console.log(`  ${line}`);
 	if (plan.length > 40) console.log(`  … ${plan.length - 40} more`);
@@ -474,6 +491,50 @@ function bs58(buffer: Buffer): string {
 	// eslint-disable-next-line @typescript-eslint/no-var-requires
 	const bs58lib = require('bs58');
 	return bs58lib.default ? bs58lib.default.encode(buffer) : bs58lib.encode(buffer);
+}
+
+/**
+ * Orders left in `User.orders` that the removed matching venue placed.
+ *
+ * An unfired trigger belongs in a slot: that is what the array is for now. A
+ * book shadow belongs there too, because the slot is how a resting book order
+ * is cancelled and how its reservation is released. Everything else that is
+ * still open is a legacy order that nothing will fill.
+ */
+function reportLegacyOrders(
+	users: readonly { pubkey: PublicKey; account: { data: Buffer } }[],
+	program: { coder: { accounts: { decode(name: string, data: Buffer): any } } }
+): void {
+	const stranded: { user: PublicKey; count: number }[] = [];
+	let total = 0;
+	for (const { pubkey, account } of users) {
+		const decoded = program.coder.accounts.decode('user', account.data);
+		const count = (decoded.orders ?? []).filter((order: any) => {
+			if (!order.status?.open) return false;
+			const type = order.orderType ?? {};
+			const isTrigger = type.triggerMarket || type.triggerLimit;
+			// `triggered()` on chain: either of the two fired bits is set.
+			const fired =
+				order.triggerCondition?.triggeredAbove ||
+				order.triggerCondition?.triggeredBelow;
+			if (isTrigger && !fired) return false;
+			// A book shadow keeps its slot so the owner can still cancel it.
+			return !order.bitFlags || (order.bitFlags & PLACED_ON_CLOB_BIT) === 0;
+		}).length;
+		if (count === 0) continue;
+		stranded.push({ user: pubkey, count });
+		total += count;
+	}
+
+	console.log(`\nlegacy orders: ${total} across ${stranded.length} accounts`);
+	if (total === 0) return;
+	console.log('  each still reserves margin until its owner cancels it');
+	for (const { user, count } of stranded.slice(0, 40)) {
+		console.log(`  ${user.toBase58()}: ${count}`);
+	}
+	if (stranded.length > 40) {
+		console.log(`  … ${stranded.length - 40} more accounts`);
+	}
 }
 
 /** Perp markets the user has a live position in. */

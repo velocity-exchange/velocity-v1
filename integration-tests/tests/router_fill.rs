@@ -23,11 +23,11 @@ use {
         instructions::{
             CancelOrderV1Params, CancelOrdersV1Params, CrankClobEvictArgs,
             CrankClobRemoveExpiredArgs, CrankCrossMatchArgs, CrankTakerOriginCrossArgs,
-            FillLegacyDlobOrderArgs, ForceCancelClobOrdersArgs, InitializeQuoterArgs,
-            InitializeQuoterCrossConditionsArgs, InitializeRouterQuoteBufferArgs,
-            PlaceAndMakePerpOrderV1Args, PlaceAndTakePerpOrderV1Args, QuoterAccountMetaArg,
-            RefillCrankReservoirArgs, TriggerLimitOrderV1Args, TriggerMarketOrderV1Args,
-            UpdatePerpMarketClobQuoterArgs, UpdateQuoterAccountsArgs, UpdateQuoterApprovedArgs,
+            ForceCancelClobOrdersArgs, InitializeQuoterArgs, InitializeQuoterCrossConditionsArgs,
+            InitializeRouterQuoteBufferArgs, PlaceAndMakePerpOrderV1Args,
+            PlaceAndTakePerpOrderV1Args, QuoterAccountMetaArg, RefillCrankReservoirArgs,
+            TriggerLimitOrderV1Args, TriggerMarketOrderV1Args, UpdatePerpMarketClobQuoterArgs,
+            UpdateQuoterAccountsArgs, UpdateQuoterApprovedArgs,
         },
         math::constants::{
             AMM_RESERVE_PRECISION, PEG_PRECISION, PRICE_PRECISION, QUOTE_PRECISION_I64,
@@ -675,6 +675,112 @@ fn maker_stats_address(fixture: &Fixture) -> Pubkey {
     .0
 }
 
+/// A second maker on the book, beside the fixture's own.
+///
+/// The `User` sits at its real PDA, because a resolver derives a maker's
+/// address from the node's (authority, sub-account) identity rather than
+/// reading it off the node.
+struct ClobMaker {
+    authority: Keypair,
+    user: Pubkey,
+}
+
+fn add_clob_maker(fixture: &mut Fixture) -> ClobMaker {
+    let authority = Keypair::new();
+    fixture
+        .svm
+        .airdrop(&authority.pubkey(), 10_000_000_000)
+        .unwrap();
+    let user = Pubkey::find_program_address(
+        &[
+            b"user",
+            authority.pubkey().as_ref(),
+            0u16.to_le_bytes().as_ref(),
+        ],
+        &velocity_id(),
+    )
+    .0;
+    let stats = Pubkey::find_program_address(
+        &[b"user_stats", authority.pubkey().as_ref()],
+        &velocity_id(),
+    )
+    .0;
+    set_user_account(
+        &mut fixture.svm,
+        user,
+        &trading_user(
+            &authority.pubkey(),
+            10_000 * SPOT_BALANCE_PRECISION_U64,
+            None,
+        ),
+    );
+    set_user_stats_account(&mut fixture.svm, stats, &authority.pubkey());
+    ClobMaker { authority, user }
+}
+
+/// `place_clob_ask`, resting from a maker other than the fixture's own.
+fn place_clob_ask_from(
+    fixture: &mut Fixture,
+    maker: &ClobMaker,
+    price: u64,
+    size: u64,
+) -> ClobOrderRefV0 {
+    let ix = place_clob_order_ix(
+        maker.user,
+        &maker.authority,
+        fixture.quoter_slab,
+        fixture.clob_market,
+        fixture.oracle,
+        PlaceClobOrderParams {
+            market_index: 0,
+            direction: PositionDirection::Short,
+            price,
+            base_asset_amount: size,
+            max_ts: 0,
+            activation_delay_slots: Some(0),
+            reject_if_crossed: false,
+        },
+    );
+    let meta = send(&mut fixture.svm, &maker.authority, ix, &[]).unwrap();
+    let data = &meta.return_data.data;
+    ClobOrderRefV0 {
+        node_index: u32::from_le_bytes(data[..4].try_into().unwrap()),
+        order_id: u64::from_le_bytes(data[4..12].try_into().unwrap()),
+    }
+}
+
+/// The keeper's own `User` and `UserStats`, which a crank names as the filler.
+fn set_filler(fixture: &mut Fixture) -> (Pubkey, Pubkey) {
+    let user = Pubkey::new_unique();
+    let stats = Pubkey::new_unique();
+    set_user_account(
+        &mut fixture.svm,
+        user,
+        &trading_user(&fixture.keeper.pubkey(), 0, None),
+    );
+    set_user_stats_account(&mut fixture.svm, stats, &fixture.keeper.pubkey());
+    (user, stats)
+}
+
+/// A buy-stop armed below the oracle, so a crank at oracle 100 fires it into a
+/// live market order.
+fn armed_buy_stop(fixture: &Fixture, size: u64) -> Order {
+    let mut order = Order::default();
+    order.order_id = 1;
+    order.status = OrderStatus::Open;
+    order.order_type = OrderType::TriggerMarket;
+    order.market_type = MarketType::Perp;
+    order.market_index = 0;
+    order.direction = PositionDirection::Long;
+    order.base_asset_amount = size;
+    order.price = 0;
+    order.trigger_price = 99 * PRICE;
+    order.trigger_condition = velocity::state::user::OrderTriggerCondition::Above;
+    let clock: solana_clock::Clock = fixture.svm.get_sysvar();
+    order.max_ts = clock.unix_timestamp + 1_000;
+    order
+}
+
 /// `set_user_stats_account` with the authority-wide equity breaker latched.
 fn set_tripped_user_stats(svm: &mut litesvm::LiteSVM, address: Pubkey, authority: &Pubkey) {
     let mut stats: UserStats = Zeroable::zeroed();
@@ -889,94 +995,47 @@ fn fast_activation_requires_the_flow_authority_attestation() {
     send(&mut fixture.svm, &keeper, attested_ix, &[&flow]).unwrap();
 }
 
-/// A keeper cannot route around the book by leaving its makers' accounts at
+/// A keeper cannot route around the book by leaving its maker's accounts at
 /// home.
 ///
 /// This is the shape of the attack: whoever assembles the transaction also
-/// runs liquidity of their own — a registered quoter, or a maker on the DLOB —
-/// and wants the flow the book would have taken. Carrying the CLOB's registry
+/// wants the flow the book would have taken. Carrying the CLOB's registry
 /// entry satisfies both `require_baseline` and the signed route, because both
 /// check that an entry is *present*. Presence is not what decides whether a
 /// book can trade: its liquidity is only reachable for users the transaction
 /// loaded, so a live book with no maker accounts would otherwise be
 /// indistinguishable from a dead one.
 ///
-/// What stops it is the filler's obligation. The book reports the depth it was
-/// holding, the taker did not sign this transaction, and the transaction had
-/// room for the two accounts that maker needed. So the fill is refused, and the
-/// assembler gets nothing rather than a smaller share.
+/// What stops it is the filler's obligation. The book reports the depth it
+/// withheld, the taker did not sign this transaction, and the transaction had
+/// room for the two accounts that maker needed. So the whole fill is refused,
+/// including the part that would have settled, and the assembler gets nothing
+/// rather than leaving the taker short.
+///
+/// A signed-message order drives it because that is the taker route a keeper
+/// assembles: the taker signs the message and the keeper signs the
+/// transaction. A taker that signs its own transaction chose its account list
+/// and is owed no obligation.
 #[test]
 fn a_fill_that_leaves_out_a_reachable_book_maker_is_refused() {
+    use {
+        anchor_lang::AnchorSerialize,
+        velocity::state::order_params::{OrderParams, PostOnlyParam, SignedMsgOrderParamsMessage},
+    };
+
     let mut fixture = setup();
+    // Two makers on the book. The carried one is the better price, so the
+    // walk fills it and then reaches the one the transaction left at home.
+    let carried_stats = maker_stats_address(&fixture);
+    place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 2);
+    let withheld = add_clob_maker(&mut fixture);
+    place_clob_ask_from(&mut fixture, &withheld, 100 * PRICE, UNIT / 2);
+    assert_eq!(clob_ask_count(&fixture), 2);
 
-    // The book: 1.0 @ 99, aged well past the grace window by fill time.
-    place_clob_ask(&mut fixture, 99 * PRICE, UNIT);
-    assert_eq!(clob_ask_count(&fixture), 1);
-
-    // The assembler's own liquidity, priced worse than the book.
-    let dlob_maker_authority = Keypair::new();
-    let dlob_maker_user = Pubkey::new_unique();
-    let dlob_maker_stats = Pubkey::new_unique();
-    let mut dlob_order = Order::default();
-    dlob_order.order_id = 1;
-    dlob_order.status = OrderStatus::Open;
-    dlob_order.order_type = OrderType::Limit;
-    dlob_order.market_type = MarketType::Perp;
-    dlob_order.market_index = 0;
-    dlob_order.direction = PositionDirection::Short;
-    dlob_order.post_only = true;
-    dlob_order.base_asset_amount = UNIT;
-    dlob_order.price = 100 * PRICE;
-    set_user_account(
-        &mut fixture.svm,
-        dlob_maker_user,
-        &trading_user(
-            &dlob_maker_authority.pubkey(),
-            10_000 * SPOT_BALANCE_PRECISION_U64,
-            Some(dlob_order),
-        ),
-    );
-    set_user_stats_account(
-        &mut fixture.svm,
-        dlob_maker_stats,
-        &dlob_maker_authority.pubkey(),
-    );
-
-    // A limit taker, so its remainder can rest rather than cancel.
-    let taker_authority = Keypair::new();
-    let taker_user = Pubkey::new_unique();
-    let taker_stats = Pubkey::new_unique();
-    let mut taker_order = Order::default();
-    taker_order.order_id = 1;
-    taker_order.status = OrderStatus::Open;
-    taker_order.order_type = OrderType::Limit;
-    taker_order.market_type = MarketType::Perp;
-    taker_order.market_index = 0;
-    taker_order.direction = PositionDirection::Long;
-    taker_order.base_asset_amount = UNIT;
-    taker_order.price = 105 * PRICE;
-    set_user_account(
-        &mut fixture.svm,
-        taker_user,
-        &trading_user(
-            &taker_authority.pubkey(),
-            100 * SPOT_BALANCE_PRECISION_U64,
-            Some(taker_order),
-        ),
-    );
-    set_user_stats_account(&mut fixture.svm, taker_stats, &taker_authority.pubkey());
-
-    let filler_user = Pubkey::new_unique();
-    let filler_stats = Pubkey::new_unique();
-    set_user_account(
-        &mut fixture.svm,
-        filler_user,
-        &trading_user(&fixture.keeper.pubkey(), 0, None),
-    );
-    set_user_stats_account(&mut fixture.svm, filler_stats, &fixture.keeper.pubkey());
-
-    // Well past the grace window: the book order went on at slot 10, so by
-    // now no keeper can claim it had not heard about it.
+    // Well past the book's grace window: the ask went on at slot 10, so by now
+    // no keeper can claim it had not heard about it. Inside the window the
+    // book skips an uncarried maker instead of reporting it withheld, and the
+    // obligation has nothing to answer for.
     fixture.svm.warp_to_slot(30);
     set_oracle(
         &mut fixture.svm,
@@ -985,23 +1044,74 @@ fn a_fill_that_leaves_out_a_reachable_book_maker_is_refused() {
         30,
     );
 
-    let mut accounts = velocity::accounts::FillOrder {
+    let taker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let keeper = party(&mut fixture.svm, 0);
+    set_signed_msg_user_orders(&mut fixture.svm, &taker.authority.pubkey(), 8);
+
+    let order = OrderParams {
+        order_type: OrderType::Market,
+        market_type: MarketType::Perp,
+        direction: PositionDirection::Long,
+        base_asset_amount: UNIT,
+        price: 0,
+        market_index: 0,
+        post_only: PostOnlyParam::None,
+        // No auction left to run, so both book levels are inside the taker's
+        // limit from the first slot and the walk reaches the deeper one.
+        auction_duration: Some(0),
+        auction_start_price: Some((101 * PRICE) as i64),
+        auction_end_price: Some((101 * PRICE) as i64),
+        ..OrderParams::default()
+    };
+    let message = SignedMsgOrderParamsMessage {
+        signed_msg_order_params: order,
+        sub_account_id: 0,
+        slot: 30,
+        uuid: *b"omitmakr",
+        take_profit_order_params: None,
+        stop_loss_order_params: None,
+        max_margin_ratio: None,
+        builder_idx: None,
+        builder_fee_tenth_bps: None,
+        isolated_position_deposit: None,
+        // The anchor-test build carries no mainnet feature, so it names the
+        // devnet cluster and refuses a message that names none.
+        network: Some(velocity::state::order_params::expected_signed_msg_network()),
+        route: None,
+    };
+    let mut borsh_body = vec![0u8; 8];
+    message.serialize(&mut borsh_body).unwrap();
+    let hex_msg = hex_lower(&borsh_body);
+    let signature = taker.authority.sign_message(hex_msg.as_bytes());
+    let mut envelope = Vec::new();
+    envelope.extend_from_slice(signature.as_ref());
+    envelope.extend_from_slice(&taker.authority.pubkey().to_bytes());
+    envelope.extend_from_slice(&(hex_msg.len() as u16).to_le_bytes());
+    envelope.extend_from_slice(hex_msg.as_bytes());
+
+    let mut accounts = velocity::accounts::PlaceSignedMsgTakerOrder {
         state: state_pda(),
-        authority: fixture.keeper.pubkey(),
-        filler: filler_user,
-        filler_stats,
-        user: taker_user,
-        user_stats: taker_stats,
-        instructions_sysvar: Some(instructions_sysvar()),
+        user: taker.user,
+        user_stats: taker.stats,
+        signed_msg_user_orders: signed_msg_user_orders_pda(&taker.authority.pubkey()),
+        authority: keeper.authority.pubkey(),
+        ix_sysvar: instructions_sysvar(),
+        filler: keeper.user,
+        filler_stats: keeper.stats,
+        quoter_slab: fixture.quoter_slab,
+        clob_market: fixture.clob_market,
+        clob_program: clob_id(),
     }
     .to_account_metas(None);
     accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
     accounts.push(AccountMeta::new(spot_market_pda(0), false));
     accounts.push(AccountMeta::new(perp_market_pda(0), false));
-    // The whole attack: the DLOB maker is loaded, the book's maker is not.
-    accounts.push(AccountMeta::new(dlob_maker_user, false));
-    accounts.push(AccountMeta::new(dlob_maker_stats, false));
-    // Carried, exactly as `require_baseline` and a signed route demand.
+    // The whole attack: the deeper maker is left at home, so the taker gets
+    // half a fill and the assembler keeps the other half for a source of its
+    // own. The quoter section is carried exactly as `require_baseline` and a
+    // signed route demand.
+    accounts.push(AccountMeta::new(fixture.clob_maker_user, false));
+    accounts.push(AccountMeta::new(carried_stats, false));
     accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
     accounts.push(AccountMeta::new(fixture.clob_market, false));
     accounts.push(AccountMeta::new_readonly(clob_id(), false));
@@ -1009,22 +1119,31 @@ fn a_fill_that_leaves_out_a_reachable_book_maker_is_refused() {
     let ix = Instruction {
         program_id: velocity_id(),
         accounts,
-        data: velocity::instruction::FillPerpOrder {
-            order_id: Some(1),
-            _maker_order_id: None,
-            signed_route: vec![],
+        data: velocity::instruction::PlaceSignedMsgTakerOrder {
+            signed_msg_order_params_message_bytes: envelope,
+            is_delegate_signer: false,
+            flow_attestation: None,
         }
         .data(),
     };
-    let err = send(&mut fixture.svm, &fixture.keeper, ix, &[]).unwrap_err();
+    let err = send_with_ixs(
+        &mut fixture.svm,
+        &keeper.authority,
+        &[compute_unit_limit_ix(600_000), ix],
+        &[],
+    )
+    .unwrap_err();
     assert_velocity_error(&err, ErrorCode::FillerOmittedReachableMaker);
 
     // Nothing moved, and the book still holds what it was holding.
-    let dlob_maker: User = read_zero_copy(&fixture.svm, &dlob_maker_user);
-    assert_eq!(dlob_maker.perp_positions[0].base_asset_amount, 0);
-    let taker: User = read_zero_copy(&fixture.svm, &taker_user);
-    assert_eq!(taker.perp_positions[0].base_asset_amount, 0);
-    assert_eq!(clob_ask_count(&fixture), 1);
+    let taker_state: User = read_zero_copy(&fixture.svm, &taker.user);
+    assert_eq!(taker_state.perp_positions[0].base_asset_amount, 0);
+    let carried: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+    assert_eq!(
+        carried.perp_positions[0].base_asset_amount, 0,
+        "the carried maker got nothing either: the whole fill is refused"
+    );
+    assert_eq!(clob_ask_count(&fixture), 2);
 }
 
 /// A taker that signs its own transaction chose the account list, so no filler
@@ -1037,75 +1156,33 @@ fn a_fill_that_leaves_out_a_reachable_book_maker_is_refused() {
 /// would leave the taker short of a fill it could have had.
 #[test]
 fn a_taker_that_signs_fills_in_full_at_the_price_present() {
-    let mut fixture = setup();
-    place_clob_ask(&mut fixture, 99 * PRICE, UNIT);
+    use velocity::state::order_params::{OrderParams, PostOnlyParam};
 
-    let dlob_maker_authority = Keypair::new();
-    let dlob_maker_user = Pubkey::new_unique();
-    let dlob_maker_stats = Pubkey::new_unique();
-    let mut dlob_order = Order::default();
-    dlob_order.order_id = 1;
-    dlob_order.status = OrderStatus::Open;
-    dlob_order.order_type = OrderType::Limit;
-    dlob_order.market_type = MarketType::Perp;
-    dlob_order.market_index = 0;
-    dlob_order.direction = PositionDirection::Short;
-    dlob_order.post_only = true;
-    dlob_order.base_asset_amount = UNIT;
-    dlob_order.price = 100 * PRICE;
-    set_user_account(
-        &mut fixture.svm,
-        dlob_maker_user,
-        &trading_user(
-            &dlob_maker_authority.pubkey(),
-            10_000 * SPOT_BALANCE_PRECISION_U64,
-            Some(dlob_order),
-        ),
-    );
-    set_user_stats_account(
-        &mut fixture.svm,
-        dlob_maker_stats,
-        &dlob_maker_authority.pubkey(),
-    );
+    let mut fixture = setup();
+
+    // Two makers on the book. The carried one is the better price, so the
+    // book reaches the withheld one only after the first is exhausted.
+    let carried_stats = maker_stats_address(&fixture);
+    place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 2);
+    let withheld = add_clob_maker(&mut fixture);
+    place_clob_ask_from(&mut fixture, &withheld, 100 * PRICE, UNIT / 2);
+    assert_eq!(clob_ask_count(&fixture), 2);
 
     let taker_authority = Keypair::new();
-    let taker_user = Pubkey::new_unique();
-    let taker_stats = Pubkey::new_unique();
-    let mut taker_order = Order::default();
-    taker_order.order_id = 1;
-    taker_order.status = OrderStatus::Open;
-    taker_order.order_type = OrderType::Limit;
-    taker_order.market_type = MarketType::Perp;
-    taker_order.market_index = 0;
-    taker_order.direction = PositionDirection::Long;
-    taker_order.base_asset_amount = UNIT;
-    taker_order.price = 105 * PRICE;
-    set_user_account(
-        &mut fixture.svm,
-        taker_user,
-        &trading_user(
-            &taker_authority.pubkey(),
-            100 * SPOT_BALANCE_PRECISION_U64,
-            Some(taker_order),
-        ),
-    );
-    set_user_stats_account(&mut fixture.svm, taker_stats, &taker_authority.pubkey());
-
-    // The one difference from the case above: the taker's own authority signs,
-    // and so it is also the filler's authority. A taker that signs chose the
-    // account list, and no filler owes it anything.
     fixture
         .svm
         .airdrop(&taker_authority.pubkey(), 10_000_000_000)
         .unwrap();
-    let filler_user = Pubkey::new_unique();
-    let filler_stats = Pubkey::new_unique();
-    set_user_account(
-        &mut fixture.svm,
-        filler_user,
-        &trading_user(&taker_authority.pubkey(), 0, None),
+    let taker_user = Pubkey::new_unique();
+    let taker_stats = Pubkey::new_unique();
+    let mut taker_state = trading_user(
+        &taker_authority.pubkey(),
+        10_000 * SPOT_BALANCE_PRECISION_U64,
+        None,
     );
-    set_user_stats_account(&mut fixture.svm, filler_stats, &taker_authority.pubkey());
+    taker_state.next_order_id = 1;
+    set_user_account(&mut fixture.svm, taker_user, &taker_state);
+    set_user_stats_account(&mut fixture.svm, taker_stats, &taker_authority.pubkey());
 
     fixture.svm.warp_to_slot(30);
     set_oracle(
@@ -1115,21 +1192,23 @@ fn a_taker_that_signs_fills_in_full_at_the_price_present() {
         30,
     );
 
-    let mut accounts = velocity::accounts::FillOrder {
+    let mut accounts = velocity::accounts::PlaceAndTakeV1 {
         state: state_pda(),
-        authority: taker_authority.pubkey(),
-        filler: filler_user,
-        filler_stats,
         user: taker_user,
         user_stats: taker_stats,
-        instructions_sysvar: Some(instructions_sysvar()),
+        authority: taker_authority.pubkey(),
+        quoter_slab: fixture.quoter_slab,
+        clob_market: fixture.clob_market,
+        clob_program: clob_id(),
+        flow_authority: None,
     }
     .to_account_metas(None);
     accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
     accounts.push(AccountMeta::new(spot_market_pda(0), false));
     accounts.push(AccountMeta::new(perp_market_pda(0), false));
-    accounts.push(AccountMeta::new(dlob_maker_user, false));
-    accounts.push(AccountMeta::new(dlob_maker_stats, false));
+    // Only the better-priced maker is carried.
+    accounts.push(AccountMeta::new(fixture.clob_maker_user, false));
+    accounts.push(AccountMeta::new(carried_stats, false));
     accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
     accounts.push(AccountMeta::new(fixture.clob_market, false));
     accounts.push(AccountMeta::new_readonly(clob_id(), false));
@@ -1137,452 +1216,54 @@ fn a_taker_that_signs_fills_in_full_at_the_price_present() {
     let ix = Instruction {
         program_id: velocity_id(),
         accounts,
-        data: velocity::instruction::FillPerpOrder {
-            order_id: Some(1),
-            _maker_order_id: None,
-            signed_route: vec![],
+        data: velocity::instruction::PlaceAndTakePerpOrderV1 {
+            args: PlaceAndTakePerpOrderV1Args {
+                params: OrderParams {
+                    order_type: OrderType::Market,
+                    market_type: MarketType::Perp,
+                    direction: PositionDirection::Long,
+                    base_asset_amount: UNIT,
+                    price: 105 * PRICE,
+                    auction_end_price: Some((105 * PRICE) as i64),
+                    market_index: 0,
+                    post_only: PostOnlyParam::None,
+                    ..OrderParams::default()
+                },
+                success_condition: None,
+            },
         }
         .data(),
     };
-    send(&mut fixture.svm, &taker_authority, ix, &[]).unwrap();
+    send_with_ixs(
+        &mut fixture.svm,
+        &taker_authority,
+        &[compute_unit_limit_ix(400_000), ix],
+        &[],
+    )
+    .unwrap();
 
+    // The taker is filled in full: the carried maker's half, and the vAMM for
+    // the rest. The withheld maker took no part.
     let taker: User = read_zero_copy(&fixture.svm, &taker_user);
     assert_eq!(
         taker.perp_positions[0].base_asset_amount, UNIT as i64,
-        "a taker that signs fills in full at the price present"
+        "filled in full"
     );
-}
-
-/// The keeper fill is how a legacy order progresses, so it still runs
-/// unattested — but on a book with a speed bump the route quotes the book
-/// as empty. The fill reaches the vAMM and the DLOB maker only, and the
-/// book's resting quote stands: maker priority holds on the path that
-/// cannot rest its taker.
-#[test]
-fn an_unattested_keeper_fill_gets_no_book_depth_on_a_bumped_book() {
-    let mut fixture = setup();
-    place_clob_ask(&mut fixture, 99 * PRICE, UNIT);
-    set_clob_default_activation_delay(&mut fixture, 5);
-
-    let dlob_maker_authority = Keypair::new();
-    let dlob_maker_user = Pubkey::new_unique();
-    let dlob_maker_stats = Pubkey::new_unique();
-    let mut dlob_order = Order::default();
-    dlob_order.order_id = 1;
-    dlob_order.status = OrderStatus::Open;
-    dlob_order.order_type = OrderType::Limit;
-    dlob_order.market_type = MarketType::Perp;
-    dlob_order.market_index = 0;
-    dlob_order.direction = PositionDirection::Short;
-    dlob_order.post_only = true;
-    dlob_order.base_asset_amount = UNIT;
-    dlob_order.price = 100 * PRICE;
-    set_user_account(
-        &mut fixture.svm,
-        dlob_maker_user,
-        &trading_user(
-            &dlob_maker_authority.pubkey(),
-            10_000 * SPOT_BALANCE_PRECISION_U64,
-            Some(dlob_order),
-        ),
-    );
-    set_user_stats_account(
-        &mut fixture.svm,
-        dlob_maker_stats,
-        &dlob_maker_authority.pubkey(),
-    );
-
-    let taker_authority = Keypair::new();
-    let taker_user = Pubkey::new_unique();
-    let taker_stats = Pubkey::new_unique();
-    let mut taker_order = Order::default();
-    taker_order.order_id = 1;
-    taker_order.status = OrderStatus::Open;
-    taker_order.order_type = OrderType::Limit;
-    taker_order.market_type = MarketType::Perp;
-    taker_order.market_index = 0;
-    taker_order.direction = PositionDirection::Long;
-    taker_order.base_asset_amount = UNIT;
-    taker_order.price = 105 * PRICE;
-    set_user_account(
-        &mut fixture.svm,
-        taker_user,
-        &trading_user(
-            &taker_authority.pubkey(),
-            100 * SPOT_BALANCE_PRECISION_U64,
-            Some(taker_order),
-        ),
-    );
-    set_user_stats_account(&mut fixture.svm, taker_stats, &taker_authority.pubkey());
-
-    // The one difference from the case above: the taker's own authority signs,
-    // and so it is also the filler's authority. A taker that signs chose the
-    // account list, and no filler owes it anything.
-    fixture
-        .svm
-        .airdrop(&taker_authority.pubkey(), 10_000_000_000)
-        .unwrap();
-    let filler_user = Pubkey::new_unique();
-    let filler_stats = Pubkey::new_unique();
-    set_user_account(
-        &mut fixture.svm,
-        filler_user,
-        &trading_user(&taker_authority.pubkey(), 0, None),
-    );
-    set_user_stats_account(&mut fixture.svm, filler_stats, &taker_authority.pubkey());
-
-    fixture.svm.warp_to_slot(30);
-    set_oracle(
-        &mut fixture.svm,
-        fixture.oracle,
-        (100 * PRICE_PRECISION) as i64,
-        30,
-    );
-
-    let mut accounts = velocity::accounts::FillOrder {
-        state: state_pda(),
-        authority: taker_authority.pubkey(),
-        filler: filler_user,
-        filler_stats,
-        user: taker_user,
-        user_stats: taker_stats,
-        instructions_sysvar: Some(instructions_sysvar()),
-    }
-    .to_account_metas(None);
-    accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
-    accounts.push(AccountMeta::new(spot_market_pda(0), false));
-    accounts.push(AccountMeta::new(perp_market_pda(0), false));
-    accounts.push(AccountMeta::new(dlob_maker_user, false));
-    accounts.push(AccountMeta::new(dlob_maker_stats, false));
-    accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
-    accounts.push(AccountMeta::new(fixture.clob_market, false));
-    accounts.push(AccountMeta::new_readonly(clob_id(), false));
-
-    let ix = Instruction {
-        program_id: velocity_id(),
-        accounts,
-        data: velocity::instruction::FillPerpOrder {
-            order_id: Some(1),
-            _maker_order_id: None,
-            signed_route: vec![],
-        }
-        .data(),
-    };
-    send(&mut fixture.svm, &taker_authority, ix, &[]).unwrap();
-
-    let taker: User = read_zero_copy(&fixture.svm, &taker_user);
+    let carried: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
     assert_eq!(
-        taker.perp_positions[0].base_asset_amount, UNIT as i64,
-        "the fill still lands, off the sources that are not bumped"
+        carried.perp_positions[0].base_asset_amount,
+        -((UNIT / 2) as i64),
+        "the carried maker is short its half"
+    );
+    let held: User = read_zero_copy(&fixture.svm, &withheld.user);
+    assert_eq!(
+        held.perp_positions[0].base_asset_amount, 0,
+        "the withheld maker took no part"
     );
     assert_eq!(
         clob_ask_count(&fixture),
         1,
-        "the book's quote was not taken"
-    );
-    let book_maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
-    assert_eq!(
-        book_maker.perp_positions[0].base_asset_amount, 0,
-        "the book's maker traded nothing"
-    );
-}
-
-/// A full transaction still owes the taker every maker it could have carried.
-///
-/// The filler here pads the account list with a user that fills nothing, which
-/// is the way to reach the account cap without carrying the maker the book
-/// wanted. Counting accounts alone would call that transaction full and let it
-/// through, so the fill also asks whether every loaded user did something.
-#[test]
-fn a_padded_account_list_does_not_excuse_the_missing_maker() {
-    let mut fixture = setup();
-    place_clob_ask(&mut fixture, 99 * PRICE, UNIT);
-
-    // A DLOB maker the assembler owns, priced worse than the book.
-    let dlob_maker_authority = Keypair::new();
-    let dlob_maker_user = Pubkey::new_unique();
-    let dlob_maker_stats = Pubkey::new_unique();
-    let mut dlob_order = Order::default();
-    dlob_order.order_id = 1;
-    dlob_order.status = OrderStatus::Open;
-    dlob_order.order_type = OrderType::Limit;
-    dlob_order.market_type = MarketType::Perp;
-    dlob_order.market_index = 0;
-    dlob_order.direction = PositionDirection::Short;
-    dlob_order.base_asset_amount = UNIT;
-    dlob_order.price = 101 * PRICE;
-    dlob_order.post_only = true;
-    set_user_account(
-        &mut fixture.svm,
-        dlob_maker_user,
-        &trading_user(
-            &dlob_maker_authority.pubkey(),
-            100 * SPOT_BALANCE_PRECISION_U64,
-            Some(dlob_order),
-        ),
-    );
-    set_user_stats_account(
-        &mut fixture.svm,
-        dlob_maker_stats,
-        &dlob_maker_authority.pubkey(),
-    );
-
-    // The padding: a loaded user with no orders at all.
-    let idle_authority = Keypair::new();
-    let idle_user = Pubkey::new_unique();
-    let idle_stats = Pubkey::new_unique();
-    set_user_account(
-        &mut fixture.svm,
-        idle_user,
-        &trading_user(
-            &idle_authority.pubkey(),
-            100 * SPOT_BALANCE_PRECISION_U64,
-            None,
-        ),
-    );
-    set_user_stats_account(&mut fixture.svm, idle_stats, &idle_authority.pubkey());
-
-    let taker_authority = Keypair::new();
-    let taker_user = Pubkey::new_unique();
-    let taker_stats = Pubkey::new_unique();
-    let mut taker_order = Order::default();
-    taker_order.order_id = 1;
-    taker_order.status = OrderStatus::Open;
-    taker_order.order_type = OrderType::Limit;
-    taker_order.market_type = MarketType::Perp;
-    taker_order.market_index = 0;
-    taker_order.direction = PositionDirection::Long;
-    taker_order.base_asset_amount = UNIT;
-    taker_order.price = 102 * PRICE;
-    set_user_account(
-        &mut fixture.svm,
-        taker_user,
-        &trading_user(
-            &taker_authority.pubkey(),
-            100 * SPOT_BALANCE_PRECISION_U64,
-            Some(taker_order),
-        ),
-    );
-    set_user_stats_account(&mut fixture.svm, taker_stats, &taker_authority.pubkey());
-
-    let filler_user = Pubkey::new_unique();
-    let filler_stats = Pubkey::new_unique();
-    set_user_account(
-        &mut fixture.svm,
-        filler_user,
-        &trading_user(&fixture.keeper.pubkey(), 0, None),
-    );
-    set_user_stats_account(&mut fixture.svm, filler_stats, &fixture.keeper.pubkey());
-
-    fixture.svm.warp_to_slot(30);
-    set_oracle(
-        &mut fixture.svm,
-        fixture.oracle,
-        (100 * PRICE_PRECISION) as i64,
-        30,
-    );
-
-    let mut accounts = velocity::accounts::FillOrder {
-        state: state_pda(),
-        authority: fixture.keeper.pubkey(),
-        filler: filler_user,
-        filler_stats,
-        user: taker_user,
-        user_stats: taker_stats,
-        instructions_sysvar: Some(instructions_sysvar()),
-    }
-    .to_account_metas(None);
-    accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
-    accounts.push(AccountMeta::new(spot_market_pda(0), false));
-    accounts.push(AccountMeta::new(perp_market_pda(0), false));
-    accounts.push(AccountMeta::new(dlob_maker_user, false));
-    accounts.push(AccountMeta::new(dlob_maker_stats, false));
-    accounts.push(AccountMeta::new(idle_user, false));
-    accounts.push(AccountMeta::new(idle_stats, false));
-    accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
-    accounts.push(AccountMeta::new(fixture.clob_market, false));
-    accounts.push(AccountMeta::new_readonly(clob_id(), false));
-
-    let ix = Instruction {
-        program_id: velocity_id(),
-        accounts,
-        data: velocity::instruction::FillPerpOrder {
-            order_id: Some(1),
-            _maker_order_id: None,
-            signed_route: vec![],
-        }
-        .data(),
-    };
-    // This transaction is nowhere near the account cap, so it fails on the
-    // count first. The padding rule is what catches the same list once the cap
-    // is reached, and `math::router` pins that arm directly.
-    let err = send(&mut fixture.svm, &fixture.keeper, ix, &[]).unwrap_err();
-    assert_velocity_error(&err, ErrorCode::FillerOmittedReachableMaker);
-    let idle: User = read_zero_copy(&fixture.svm, &idle_user);
-    assert_eq!(idle.perp_positions[0].base_asset_amount, 0);
-}
-
-#[test]
-fn router_fill_splits_across_clob_dlob_and_vamm_sources() {
-    let mut fixture = setup();
-
-    // CLOB ask 0.5 @ 99 through the adapter: aggregates reserved + margin
-    // gated by velocity, book state on the CLOB.
-    place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 2);
-    let clob_maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
-    assert_eq!(clob_maker.perp_positions[0].open_asks, -((UNIT / 2) as i64));
-    assert_eq!(clob_maker.perp_positions[0].open_orders, 1);
-    assert_eq!(clob_maker.open_orders, 1);
-    assert_eq!(clob_ask_count(&fixture), 1);
-
-    // DLOB maker: post-only ask 0.5 @ 100.
-    let dlob_maker_authority = Keypair::new();
-    let dlob_maker_user = Pubkey::new_unique();
-    let dlob_maker_stats = Pubkey::new_unique();
-    let mut dlob_order = Order::default();
-    dlob_order.order_id = 1;
-    dlob_order.status = OrderStatus::Open;
-    dlob_order.order_type = OrderType::Limit;
-    dlob_order.market_type = MarketType::Perp;
-    dlob_order.market_index = 0;
-    dlob_order.direction = PositionDirection::Short;
-    dlob_order.post_only = true;
-    dlob_order.base_asset_amount = UNIT / 2;
-    dlob_order.price = 100 * PRICE;
-    set_user_account(
-        &mut fixture.svm,
-        dlob_maker_user,
-        &trading_user(
-            &dlob_maker_authority.pubkey(),
-            10_000 * SPOT_BALANCE_PRECISION_U64,
-            Some(dlob_order),
-        ),
-    );
-    set_user_stats_account(
-        &mut fixture.svm,
-        dlob_maker_stats,
-        &dlob_maker_authority.pubkey(),
-    );
-
-    // Taker: market long 1.0, limit 105.
-    let taker_authority = Keypair::new();
-    let taker_user = Pubkey::new_unique();
-    let taker_stats = Pubkey::new_unique();
-    let mut taker_order = Order::default();
-    taker_order.order_id = 1;
-    taker_order.status = OrderStatus::Open;
-    taker_order.order_type = OrderType::Market;
-    taker_order.market_type = MarketType::Perp;
-    taker_order.market_index = 0;
-    taker_order.direction = PositionDirection::Long;
-    taker_order.base_asset_amount = UNIT;
-    taker_order.price = 105 * PRICE;
-    taker_order.auction_end_price = (105 * PRICE) as i64;
-    set_user_account(
-        &mut fixture.svm,
-        taker_user,
-        &trading_user(
-            &taker_authority.pubkey(),
-            100 * SPOT_BALANCE_PRECISION_U64,
-            Some(taker_order),
-        ),
-    );
-    set_user_stats_account(&mut fixture.svm, taker_stats, &taker_authority.pubkey());
-
-    // Keeper's filler user.
-    let filler_user = Pubkey::new_unique();
-    let filler_stats = Pubkey::new_unique();
-    set_user_account(
-        &mut fixture.svm,
-        filler_user,
-        &trading_user(&fixture.keeper.pubkey(), 0, None),
-    );
-    set_user_stats_account(&mut fixture.svm, filler_stats, &fixture.keeper.pubkey());
-
-    // Stats for the clob maker (loaded as part of the maker map).
-    let clob_maker_stats = Pubkey::new_unique();
-    set_user_stats_account(
-        &mut fixture.svm,
-        clob_maker_stats,
-        &fixture.clob_maker_authority.pubkey(),
-    );
-
-    // Fresh oracle + a couple of slots for the CLOB order to be past
-    // placement.
-    fixture.svm.warp_to_slot(12);
-    set_oracle(
-        &mut fixture.svm,
-        fixture.oracle,
-        (100 * PRICE_PRECISION) as i64,
-        12,
-    );
-
-    let mut accounts = velocity::accounts::FillOrder {
-        state: state_pda(),
-        authority: fixture.keeper.pubkey(),
-        filler: filler_user,
-        filler_stats,
-        user: taker_user,
-        user_stats: taker_stats,
-        instructions_sysvar: Some(instructions_sysvar()),
-    }
-    .to_account_metas(None);
-    // Maps: oracle, spot, perp.
-    accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
-    accounts.push(AccountMeta::new(spot_market_pda(0), false));
-    accounts.push(AccountMeta::new(perp_market_pda(0), false));
-    // Maker section: (user, stats) pairs.
-    accounts.push(AccountMeta::new(dlob_maker_user, false));
-    accounts.push(AccountMeta::new(dlob_maker_stats, false));
-    accounts.push(AccountMeta::new(fixture.clob_maker_user, false));
-    accounts.push(AccountMeta::new(clob_maker_stats, false));
-    // Quoter section: the market's slab + the book's CPI accounts + program.
-    accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
-    accounts.push(AccountMeta::new(fixture.clob_market, false));
-    accounts.push(AccountMeta::new_readonly(clob_id(), false));
-
-    let ix = Instruction {
-        program_id: velocity_id(),
-        accounts,
-        data: velocity::instruction::FillPerpOrder {
-            order_id: Some(1),
-            _maker_order_id: None,
-            signed_route: vec![],
-        }
-        .data(),
-    };
-    let meta = send(&mut fixture.svm, &fixture.keeper, ix, &[]).unwrap();
-
-    // Taker fully filled: 0.5 @ 99 from the CLOB, 0.5 @ 100 from the DLOB
-    // maker (the vAMM ask sits above 100 and gets nothing).
-    let taker: User = read_zero_copy(&fixture.svm, &taker_user);
-    assert_eq!(taker.perp_positions[0].base_asset_amount, UNIT as i64);
-    assert_eq!(taker.perp_positions[0].open_bids, 0);
-    assert_eq!(taker.orders[0].status, OrderStatus::Filled);
-
-    // CLOB maker: short 0.5, aggregates fully unwound (fill + completed
-    // order reported on the execute response).
-    let clob_maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
-    assert_eq!(
-        clob_maker.perp_positions[0].base_asset_amount,
-        -((UNIT / 2) as i64)
-    );
-    assert_eq!(clob_maker.perp_positions[0].open_asks, 0);
-    assert_eq!(clob_maker.perp_positions[0].open_orders, 0);
-    assert_eq!(clob_maker.open_orders, 0);
-    assert_eq!(clob_ask_count(&fixture), 0);
-
-    // DLOB maker: short 0.5, order fully filled.
-    let dlob_maker: User = read_zero_copy(&fixture.svm, &dlob_maker_user);
-    assert_eq!(
-        dlob_maker.perp_positions[0].base_asset_amount,
-        -((UNIT / 2) as i64)
-    );
-    assert_eq!(dlob_maker.orders[0].base_asset_amount_filled, UNIT / 2);
-
-    println!(
-        "CU — router fill across CLOB + DLOB + vAMM sources: {}",
-        meta.compute_units_consumed
+        "the withheld maker keeps its place in the queue"
     );
 }
 
@@ -2048,44 +1729,35 @@ fn a_clob_orders_records_name_it_by_the_users_own_order_id() {
     assert_eq!(cancelled[0].taker, None);
 }
 
-/// The mandatory baseline: a router fill that omits the market's named CLOB
-/// quoter entry fails, even though the vAMM alone could fill the order.
+/// The mandatory baseline: a router fill that omits the market's CLOB quoter
+/// from its account tail fails, even though the vAMM alone could fill the
+/// order.
+///
+/// The named `quoter_slab` and `clob_market` accounts are not the baseline.
+/// The route is assembled from the remaining accounts, and a quoter's
+/// registered CPI accounts are resolved out of that tail — so a tail without
+/// them is a fill that consulted no book.
 #[test]
 fn router_fill_without_the_markets_clob_quoter_fails() {
     let mut fixture = setup();
 
+    use velocity::state::order_params::{OrderParams, PostOnlyParam};
+
     let taker_authority = Keypair::new();
+    fixture
+        .svm
+        .airdrop(&taker_authority.pubkey(), 10_000_000_000)
+        .unwrap();
     let taker_user = Pubkey::new_unique();
     let taker_stats = Pubkey::new_unique();
-    let mut taker_order = Order::default();
-    taker_order.order_id = 1;
-    taker_order.status = OrderStatus::Open;
-    taker_order.order_type = OrderType::Market;
-    taker_order.market_type = MarketType::Perp;
-    taker_order.market_index = 0;
-    taker_order.direction = PositionDirection::Long;
-    taker_order.base_asset_amount = UNIT;
-    taker_order.price = 105 * PRICE;
-    taker_order.auction_end_price = (105 * PRICE) as i64;
-    set_user_account(
-        &mut fixture.svm,
-        taker_user,
-        &trading_user(
-            &taker_authority.pubkey(),
-            100 * SPOT_BALANCE_PRECISION_U64,
-            Some(taker_order),
-        ),
+    let mut taker_state = trading_user(
+        &taker_authority.pubkey(),
+        10_000 * SPOT_BALANCE_PRECISION_U64,
+        None,
     );
+    taker_state.next_order_id = 1;
+    set_user_account(&mut fixture.svm, taker_user, &taker_state);
     set_user_stats_account(&mut fixture.svm, taker_stats, &taker_authority.pubkey());
-
-    let filler_user = Pubkey::new_unique();
-    let filler_stats = Pubkey::new_unique();
-    set_user_account(
-        &mut fixture.svm,
-        filler_user,
-        &trading_user(&fixture.keeper.pubkey(), 0, None),
-    );
-    set_user_stats_account(&mut fixture.svm, filler_stats, &fixture.keeper.pubkey());
 
     fixture.svm.warp_to_slot(12);
     set_oracle(
@@ -2095,17 +1767,16 @@ fn router_fill_without_the_markets_clob_quoter_fails() {
         12,
     );
 
-    // No quoter section at all: without the slab the baseline cannot even be
-    // answered, so the fill must fail.
     let base_accounts = |fixture: &Fixture| {
-        let mut accounts = velocity::accounts::FillOrder {
+        let mut accounts = velocity::accounts::PlaceAndTakeV1 {
             state: state_pda(),
-            authority: fixture.keeper.pubkey(),
-            filler: filler_user,
-            filler_stats,
             user: taker_user,
             user_stats: taker_stats,
-            instructions_sysvar: Some(instructions_sysvar()),
+            authority: taker_authority.pubkey(),
+            quoter_slab: fixture.quoter_slab,
+            clob_market: fixture.clob_market,
+            clob_program: clob_id(),
+            flow_authority: None,
         }
         .to_account_metas(None);
         accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
@@ -2116,15 +1787,35 @@ fn router_fill_without_the_markets_clob_quoter_fails() {
     let fill_ix = |accounts: Vec<AccountMeta>| Instruction {
         program_id: velocity_id(),
         accounts,
-        data: velocity::instruction::FillPerpOrder {
-            order_id: Some(1),
-            _maker_order_id: None,
-            signed_route: vec![],
+        data: velocity::instruction::PlaceAndTakePerpOrderV1 {
+            args: PlaceAndTakePerpOrderV1Args {
+                params: OrderParams {
+                    order_type: OrderType::Market,
+                    market_type: MarketType::Perp,
+                    direction: PositionDirection::Long,
+                    base_asset_amount: UNIT,
+                    price: 105 * PRICE,
+                    auction_end_price: Some((105 * PRICE) as i64),
+                    market_index: 0,
+                    post_only: PostOnlyParam::None,
+                    ..OrderParams::default()
+                },
+                success_condition: None,
+            },
         }
         .data(),
     };
+
+    // No quoter section at all: without the slab the baseline cannot even be
+    // answered, so the fill must fail.
     let ix = fill_ix(base_accounts(&fixture));
-    let err = send(&mut fixture.svm, &fixture.keeper, ix, &[]).expect_err("baseline must fail");
+    let err = send_with_ixs(
+        &mut fixture.svm,
+        &taker_authority,
+        &[compute_unit_limit_ix(400_000), ix],
+        &[],
+    )
+    .expect_err("baseline must fail");
     let logs = format!("{:?}", err.meta.logs);
     assert!(
         logs.contains("the fill must carry the quoter slab"),
@@ -2135,8 +1826,13 @@ fn router_fill_without_the_markets_clob_quoter_fails() {
     // fill must also carry its response account to consult it.
     let mut accounts = base_accounts(&fixture);
     accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
-    let err = send(&mut fixture.svm, &fixture.keeper, fill_ix(accounts), &[])
-        .expect_err("baseline must fail");
+    let err = send_with_ixs(
+        &mut fixture.svm,
+        &taker_authority,
+        &[compute_unit_limit_ix(400_000), fill_ix(accounts)],
+        &[],
+    )
+    .expect_err("baseline must fail");
     let logs = format!("{:?}", err.meta.logs);
     assert!(
         logs.contains("must include the market's CLOB quoter"),
@@ -2272,9 +1968,9 @@ fn crank_evict_unwinds_the_tails_aggregates() {
 }
 
 /// The quote view, end to end: one simulated instruction returns verified
-/// books for every source — the CLOB (via a real `quote_v0` CPI), the DLOB
-/// maker (bridged in-program), and the vAMM (quoted off a copy) — in fill
-/// order, so the vAMM's last-look shading is already applied.
+/// books for every source — the CLOB and a midpoint spline (each via a real
+/// `quote_v0` CPI) and the vAMM (quoted off a copy) — in fill order, so the
+/// vAMM's last-look shading is already applied.
 #[test]
 fn quote_router_returns_verified_books_for_every_source() {
     let mut fixture = setup();
@@ -2282,34 +1978,9 @@ fn quote_router_returns_verified_books_for_every_source() {
     // CLOB ask 0.5 @ 99 through the adapter.
     place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 2);
 
-    // DLOB maker: post-only ask 0.5 @ 100.
-    let dlob_maker_authority = Keypair::new();
-    let dlob_maker_user = Pubkey::new_unique();
-    let dlob_maker_stats = Pubkey::new_unique();
-    let mut dlob_order = Order::default();
-    dlob_order.order_id = 1;
-    dlob_order.status = OrderStatus::Open;
-    dlob_order.order_type = OrderType::Limit;
-    dlob_order.market_type = MarketType::Perp;
-    dlob_order.market_index = 0;
-    dlob_order.direction = PositionDirection::Short;
-    dlob_order.post_only = true;
-    dlob_order.base_asset_amount = UNIT / 2;
-    dlob_order.price = 100 * PRICE;
-    set_user_account(
-        &mut fixture.svm,
-        dlob_maker_user,
-        &trading_user(
-            &dlob_maker_authority.pubkey(),
-            10_000 * SPOT_BALANCE_PRECISION_U64,
-            Some(dlob_order),
-        ),
-    );
-    set_user_stats_account(
-        &mut fixture.svm,
-        dlob_maker_stats,
-        &dlob_maker_authority.pubkey(),
-    );
+    // A midpoint spline quoting 0.5 at mid + 10bps = 100.1.
+    let midpoint =
+        setup_midpoint_maker(&mut fixture, 10_000 * SPOT_BALANCE_PRECISION_U64, UNIT / 2);
 
     fixture.svm.warp_to_slot(12);
     set_oracle(
@@ -2364,13 +2035,16 @@ fn quote_router_returns_verified_books_for_every_source() {
     accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
     accounts.push(AccountMeta::new(spot_market_pda(0), false));
     accounts.push(AccountMeta::new(perp_market_pda(0), false));
-    // Maker section: the DLOB maker (read-only is fine for a quote).
-    accounts.push(AccountMeta::new_readonly(dlob_maker_user, false));
-    accounts.push(AccountMeta::new_readonly(dlob_maker_stats, false));
-    // Quoter section: the market's slab + the book's CPI accounts.
+    // Maker section: the midpoint's quoted user, whose account the clamp
+    // needs (read-only is fine for a quote).
+    accounts.push(AccountMeta::new(midpoint.user, false));
+    accounts.push(AccountMeta::new(midpoint.stats, false));
+    // Quoter section: the market's slab + both quoters' CPI accounts.
     accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
     accounts.push(AccountMeta::new(fixture.clob_market, false));
     accounts.push(AccountMeta::new_readonly(clob_id(), false));
+    accounts.push(AccountMeta::new(midpoint.instance, false));
+    accounts.push(AccountMeta::new_readonly(midpoint_id(), false));
 
     let ix = Instruction {
         program_id: velocity_id(),
@@ -2394,14 +2068,14 @@ fn quote_router_returns_verified_books_for_every_source() {
     assert_eq!(buffer.quoted_size, 2 * UNIT);
     assert_eq!(buffer.direction, 0, "long");
 
-    // Three sources, in fill order: CLOB quoter, DLOB order, vAMM last.
-    assert_eq!(buffer.source_count, 3, "clob + dlob + vamm");
+    // Three sources, in fill order: CLOB quoter, midpoint quoter, vAMM last.
+    assert_eq!(buffer.source_count, 3, "clob + midpoint + vamm");
     let sources = &buffer.sources[..3];
     use velocity::state::router_quote::QuotedSourceKind;
     assert_eq!(sources[0].kind, QuotedSourceKind::Quoter);
     assert_eq!(sources[0].key, fixture.quoter);
-    assert_eq!(sources[1].kind, QuotedSourceKind::DlobOrder);
-    assert_eq!(sources[1].key, dlob_maker_user);
+    assert_eq!(sources[1].kind, QuotedSourceKind::Quoter);
+    assert_eq!(sources[1].key, midpoint.entry);
     assert_eq!(sources[2].kind, QuotedSourceKind::Vamm);
 
     // The CLOB's book came back through a real quote_v0 CPI: 0.5 @ 99.
@@ -2410,11 +2084,11 @@ fn quote_router_returns_verified_books_for_every_source() {
     assert_eq!(clob_levels[0].price, 99 * PRICE);
     assert_eq!(clob_levels[0].size, UNIT / 2);
 
-    // The DLOB maker's resting order: 0.5 @ 100.
-    let dlob_levels = &buffer.levels[1][..sources[1].level_count as usize];
-    assert_eq!(dlob_levels.len(), 1);
-    assert_eq!(dlob_levels[0].price, 100 * PRICE);
-    assert_eq!(dlob_levels[0].size, UNIT / 2);
+    // The midpoint's spline rung: 0.5 at mid + 10bps.
+    let mid_levels = &buffer.levels[1][..sources[1].level_count as usize];
+    assert_eq!(mid_levels.len(), 1);
+    assert_eq!(mid_levels[0].price, 100 * PRICE + PRICE / 10);
+    assert_eq!(mid_levels[0].size, UNIT / 2);
 
     // The vAMM ladder priced against both as rivals, and every rung is
     // monotone at or above its top.
@@ -2437,12 +2111,12 @@ fn quote_router_returns_verified_books_for_every_source() {
     assert_eq!(clob_rows[0].sub_account_id, 0);
     assert_ne!(clob_rows[0].order_id, 0, "a book row is an order");
 
-    // A DLOB order is one row against its maker, and velocity knows that
-    // without asking anyone.
-    let dlob_rows = &buffer.rows[sources[1].row_start as usize..][..sources[1].row_len as usize];
-    assert_eq!(dlob_rows.len(), 1);
-    assert_eq!(dlob_rows[0].authority, dlob_maker_authority.pubkey());
-    assert_eq!(dlob_rows[0].order_id, 1);
+    // A quoter without an `l3` leg stands on its own quoted user, so the row
+    // names that user and carries no order id of its own.
+    let mid_rows = &buffer.rows[sources[1].row_start as usize..][..sources[1].row_len as usize];
+    assert_eq!(mid_rows.len(), 1);
+    assert_eq!(mid_rows[0].authority, midpoint.authority.pubkey());
+    assert_eq!(mid_rows[0].order_id, 0);
 
     // The vAMM stands on nobody.
     assert_eq!(sources[2].row_len, 0);
@@ -5249,44 +4923,20 @@ fn a_maker_fills_as_far_as_its_collateral_reaches() {
     );
 }
 
-/// A partially-filled place-and-take limit rests its remainder on the CLOB
-/// when the caller passes the CLOB accounts: the taker fills half against a
-/// DLOB maker, the leftover half leaves `User.orders` and becomes a resting
-/// book bid, aggregates reserved.
+/// A partially-filled place-and-take limit rests its remainder on the CLOB:
+/// the taker fills half against the book's maker, and the leftover half
+/// becomes a resting book bid with its aggregates reserved. Nothing is written
+/// into `User.orders`.
 #[test]
 fn place_and_take_rests_the_remainder_on_the_clob() {
     use velocity::state::order_params::{OrderParams, PostOnlyParam};
 
     let mut fixture = setup();
 
-    // A DLOB maker with a post-only ask 0.5 @ 99 for the take leg.
-    let dlob_maker_authority = Keypair::new();
-    let dlob_maker_user = Pubkey::new_unique();
-    let dlob_maker_stats = Pubkey::new_unique();
-    let mut dlob_order = Order::default();
-    dlob_order.order_id = 1;
-    dlob_order.status = OrderStatus::Open;
-    dlob_order.order_type = OrderType::Limit;
-    dlob_order.market_type = MarketType::Perp;
-    dlob_order.market_index = 0;
-    dlob_order.direction = PositionDirection::Short;
-    dlob_order.post_only = true;
-    dlob_order.base_asset_amount = UNIT / 2;
-    dlob_order.price = 99 * PRICE;
-    set_user_account(
-        &mut fixture.svm,
-        dlob_maker_user,
-        &trading_user(
-            &dlob_maker_authority.pubkey(),
-            10_000 * SPOT_BALANCE_PRECISION_U64,
-            Some(dlob_order),
-        ),
-    );
-    set_user_stats_account(
-        &mut fixture.svm,
-        dlob_maker_stats,
-        &dlob_maker_authority.pubkey(),
-    );
+    // The book's maker, with an ask 0.5 @ 99 for the take leg. The pair has to
+    // be in the transaction for the fill to settle against it.
+    let maker_stats = maker_stats_address(&fixture);
+    place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 2);
 
     // The taker.
     let taker_authority = Keypair::new();
@@ -5314,9 +4964,6 @@ fn place_and_take_rests_the_remainder_on_the_clob() {
         12,
     );
 
-    // The V1 route: v0's account list is frozen at its pre-CLOB shape, so
-    // resting the remainder on the book is a distinct endpoint whose CLOB
-    // accounts are required.
     let mut accounts = velocity::accounts::PlaceAndTakeV1 {
         state: state_pda(),
         user: taker_user,
@@ -5331,8 +4978,8 @@ fn place_and_take_rests_the_remainder_on_the_clob() {
     accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
     accounts.push(AccountMeta::new(spot_market_pda(0), false));
     accounts.push(AccountMeta::new(perp_market_pda(0), false));
-    accounts.push(AccountMeta::new(dlob_maker_user, false));
-    accounts.push(AccountMeta::new(dlob_maker_stats, false));
+    accounts.push(AccountMeta::new(fixture.clob_maker_user, false));
+    accounts.push(AccountMeta::new(maker_stats, false));
     // The quoter section: v1 routes, so the taker names the entries it wants
     // consulted. The market's canonical CLOB is mandatory, and its registered
     // CPI accounts have to be resolvable from this list even though the
@@ -5370,7 +5017,7 @@ fn place_and_take_rests_the_remainder_on_the_clob() {
     assert_eq!(
         taker.perp_positions[0].base_asset_amount,
         (UNIT / 2) as i64,
-        "took the maker's half"
+        "took the book maker's half"
     );
     assert!(
         taker
@@ -5475,8 +5122,12 @@ fn place_and_take_rests_a_market_order_remainder_on_the_clob() {
                     direction: PositionDirection::Long,
                     base_asset_amount: UNIT,
                     // A market order's bound: the worst fill it agreed to, and
-                    // the only price its remainder can rest at.
+                    // the only price its remainder can rest at. The auction is
+                    // over before the order is placed, so the bound is also
+                    // the price the order is standing at when it rests.
+                    auction_start_price: Some((101 * PRICE) as i64),
                     auction_end_price: Some((101 * PRICE) as i64),
+                    auction_duration: Some(0),
                     market_index: 0,
                     post_only: PostOnlyParam::None,
                     ..OrderParams::default()
@@ -5506,6 +5157,11 @@ fn place_and_take_rests_a_market_order_remainder_on_the_clob() {
         clob_bid_count(&fixture),
         1,
         "the remainder rests on the book instead"
+    );
+    assert_eq!(
+        clob_best_bid_price(&fixture),
+        Some(101 * PRICE),
+        "it rests at the bound it already agreed to, and no better"
     );
 }
 
@@ -5757,38 +5413,23 @@ fn fill_long_through_midpoint(
     maker: &MidpointMaker,
     size: u64,
 ) -> (Pubkey, litesvm::types::TransactionMetadata) {
+    use velocity::state::order_params::{OrderParams, PostOnlyParam};
+
     let taker_authority = Keypair::new();
+    fixture
+        .svm
+        .airdrop(&taker_authority.pubkey(), 10_000_000_000)
+        .unwrap();
     let taker_user = Pubkey::new_unique();
     let taker_stats = Pubkey::new_unique();
-    let mut taker_order = Order::default();
-    taker_order.order_id = 1;
-    taker_order.status = OrderStatus::Open;
-    taker_order.order_type = OrderType::Market;
-    taker_order.market_type = MarketType::Perp;
-    taker_order.market_index = 0;
-    taker_order.direction = PositionDirection::Long;
-    taker_order.base_asset_amount = size;
-    taker_order.price = 105 * PRICE;
-    taker_order.auction_end_price = (105 * PRICE) as i64;
-    set_user_account(
-        &mut fixture.svm,
-        taker_user,
-        &trading_user(
-            &taker_authority.pubkey(),
-            10_000 * SPOT_BALANCE_PRECISION_U64,
-            Some(taker_order),
-        ),
+    let mut taker_state = trading_user(
+        &taker_authority.pubkey(),
+        10_000 * SPOT_BALANCE_PRECISION_U64,
+        None,
     );
+    taker_state.next_order_id = 1;
+    set_user_account(&mut fixture.svm, taker_user, &taker_state);
     set_user_stats_account(&mut fixture.svm, taker_stats, &taker_authority.pubkey());
-
-    let filler_user = Pubkey::new_unique();
-    let filler_stats = Pubkey::new_unique();
-    set_user_account(
-        &mut fixture.svm,
-        filler_user,
-        &trading_user(&fixture.keeper.pubkey(), 0, None),
-    );
-    set_user_stats_account(&mut fixture.svm, filler_stats, &fixture.keeper.pubkey());
 
     fixture.svm.warp_to_slot(12);
     set_oracle(
@@ -5798,14 +5439,15 @@ fn fill_long_through_midpoint(
         12,
     );
 
-    let mut accounts = velocity::accounts::FillOrder {
+    let mut accounts = velocity::accounts::PlaceAndTakeV1 {
         state: state_pda(),
-        authority: fixture.keeper.pubkey(),
-        filler: filler_user,
-        filler_stats,
         user: taker_user,
         user_stats: taker_stats,
-        instructions_sysvar: Some(instructions_sysvar()),
+        authority: taker_authority.pubkey(),
+        quoter_slab: fixture.quoter_slab,
+        clob_market: fixture.clob_market,
+        clob_program: clob_id(),
+        flow_authority: None,
     }
     .to_account_metas(None);
     accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
@@ -5826,17 +5468,28 @@ fn fill_long_through_midpoint(
     let ix = Instruction {
         program_id: velocity_id(),
         accounts,
-        data: velocity::instruction::FillPerpOrder {
-            order_id: Some(1),
-            _maker_order_id: None,
-            signed_route: vec![],
+        data: velocity::instruction::PlaceAndTakePerpOrderV1 {
+            args: PlaceAndTakePerpOrderV1Args {
+                params: OrderParams {
+                    order_type: OrderType::Market,
+                    market_type: MarketType::Perp,
+                    direction: PositionDirection::Long,
+                    base_asset_amount: size,
+                    price: 105 * PRICE,
+                    auction_end_price: Some((105 * PRICE) as i64),
+                    market_index: 0,
+                    post_only: PostOnlyParam::None,
+                    ..OrderParams::default()
+                },
+                success_condition: None,
+            },
         }
         .data(),
     };
     // Three quoter CPI legs + the vAMM outgrow the 200k default.
     let meta = send_with_ixs(
         &mut fixture.svm,
-        &fixture.keeper,
+        &taker_authority,
         &[compute_unit_limit_ix(400_000), ix],
         &[],
     )
@@ -5871,7 +5524,13 @@ fn router_fill_routes_through_a_midpoint_spline_quoter() {
     // Taker fully filled: 0.5 from the spline, the remainder from the vAMM.
     let taker: User = read_zero_copy(&fixture.svm, &taker_user);
     assert_eq!(taker.perp_positions[0].base_asset_amount, UNIT as i64);
-    assert_eq!(taker.orders[0].status, OrderStatus::Filled);
+    assert!(
+        taker
+            .orders
+            .iter()
+            .all(|order| order.status != OrderStatus::Open),
+        "the take is ephemeral: nothing rests in a slot"
+    );
 
     // The quoted user went short the spline's slice at the rung price —
     // 0.5 @ 100.1 = 50.05 quote (before fees, floored like the CLOB).
@@ -5926,45 +5585,23 @@ fn router_fill_splits_across_clob_midpoint_and_vamm() {
     let maker = setup_midpoint_maker(&mut fixture, 10_000 * SPOT_BALANCE_PRECISION_U64, UNIT / 2);
 
     // The CLOB maker's stats ride the maker map alongside the midpoint's.
-    let clob_maker_stats = Pubkey::new_unique();
-    set_user_stats_account(
-        &mut fixture.svm,
-        clob_maker_stats,
-        &fixture.clob_maker_authority.pubkey(),
-    );
+    let clob_maker_stats = maker_stats_address(&fixture);
 
     let taker_authority = Keypair::new();
+    fixture
+        .svm
+        .airdrop(&taker_authority.pubkey(), 10_000_000_000)
+        .unwrap();
     let taker_user = Pubkey::new_unique();
     let taker_stats = Pubkey::new_unique();
-    let mut taker_order = Order::default();
-    taker_order.order_id = 1;
-    taker_order.status = OrderStatus::Open;
-    taker_order.order_type = OrderType::Market;
-    taker_order.market_type = MarketType::Perp;
-    taker_order.market_index = 0;
-    taker_order.direction = PositionDirection::Long;
-    taker_order.base_asset_amount = UNIT + UNIT / 2;
-    taker_order.price = 105 * PRICE;
-    taker_order.auction_end_price = (105 * PRICE) as i64;
-    set_user_account(
-        &mut fixture.svm,
-        taker_user,
-        &trading_user(
-            &taker_authority.pubkey(),
-            10_000 * SPOT_BALANCE_PRECISION_U64,
-            Some(taker_order),
-        ),
+    let mut taker_state = trading_user(
+        &taker_authority.pubkey(),
+        10_000 * SPOT_BALANCE_PRECISION_U64,
+        None,
     );
+    taker_state.next_order_id = 1;
+    set_user_account(&mut fixture.svm, taker_user, &taker_state);
     set_user_stats_account(&mut fixture.svm, taker_stats, &taker_authority.pubkey());
-
-    let filler_user = Pubkey::new_unique();
-    let filler_stats = Pubkey::new_unique();
-    set_user_account(
-        &mut fixture.svm,
-        filler_user,
-        &trading_user(&fixture.keeper.pubkey(), 0, None),
-    );
-    set_user_stats_account(&mut fixture.svm, filler_stats, &fixture.keeper.pubkey());
 
     fixture.svm.warp_to_slot(12);
     set_oracle(
@@ -5974,14 +5611,15 @@ fn router_fill_splits_across_clob_midpoint_and_vamm() {
         12,
     );
 
-    let mut accounts = velocity::accounts::FillOrder {
+    let mut accounts = velocity::accounts::PlaceAndTakeV1 {
         state: state_pda(),
-        authority: fixture.keeper.pubkey(),
-        filler: filler_user,
-        filler_stats,
         user: taker_user,
         user_stats: taker_stats,
-        instructions_sysvar: Some(instructions_sysvar()),
+        authority: taker_authority.pubkey(),
+        quoter_slab: fixture.quoter_slab,
+        clob_market: fixture.clob_market,
+        clob_program: clob_id(),
+        flow_authority: None,
     }
     .to_account_metas(None);
     accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
@@ -6003,16 +5641,27 @@ fn router_fill_splits_across_clob_midpoint_and_vamm() {
     let ix = Instruction {
         program_id: velocity_id(),
         accounts,
-        data: velocity::instruction::FillPerpOrder {
-            order_id: Some(1),
-            _maker_order_id: None,
-            signed_route: vec![],
+        data: velocity::instruction::PlaceAndTakePerpOrderV1 {
+            args: PlaceAndTakePerpOrderV1Args {
+                params: velocity::state::order_params::OrderParams {
+                    order_type: OrderType::Market,
+                    market_type: MarketType::Perp,
+                    direction: PositionDirection::Long,
+                    base_asset_amount: UNIT + UNIT / 2,
+                    price: 105 * PRICE,
+                    auction_end_price: Some((105 * PRICE) as i64),
+                    market_index: 0,
+                    post_only: velocity::state::order_params::PostOnlyParam::None,
+                    ..velocity::state::order_params::OrderParams::default()
+                },
+                success_condition: None,
+            },
         }
         .data(),
     };
     let meta = send_with_ixs(
         &mut fixture.svm,
-        &fixture.keeper,
+        &taker_authority,
         &[compute_unit_limit_ix(400_000), ix],
         &[],
     )
@@ -6025,7 +5674,13 @@ fn router_fill_splits_across_clob_midpoint_and_vamm() {
         taker.perp_positions[0].base_asset_amount,
         (UNIT + UNIT / 2) as i64
     );
-    assert_eq!(taker.orders[0].status, OrderStatus::Filled);
+    assert!(
+        taker
+            .orders
+            .iter()
+            .all(|order| order.status != OrderStatus::Open),
+        "the take is ephemeral: nothing rests in a slot"
+    );
 
     let clob_maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
     assert_eq!(
@@ -6602,27 +6257,17 @@ fn sync_trigger_conditions(
     send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
 }
 
-/// Which trigger resolver the turner runs. All three share one account set;
-/// only the instruction discriminator differs.
-#[derive(Clone, Copy)]
-enum TrigResolver {
-    /// `resolve_trigger_order` — the plain DLOB flip.
-    Flip,
-    /// `resolve_trigger_limit_order_v1` — rest a trigger-limit on the book.
-    ClobRest,
-    /// `resolve_trigger_market_order_v1` — fire a stop-market to the book.
-    ClobFill,
-}
-
-fn run_trigger_resolver(
+/// Run `resolve_trigger_market_order_v1` the way a turner does, and read back
+/// whatever it staged.
+///
+/// The trigger-limit resolver takes the same account set and differs only in
+/// its discriminator, so a test for it belongs here beside this one.
+fn run_trigger_market_resolver(
     fixture: &mut Fixture,
     user: Pubkey,
-    which: TrigResolver,
 ) -> Option<velocity::relay_spec::ResolvedCrankV0> {
     let conditions = user_conditions_pda(&user);
-    // All three trigger resolvers share one account set; only the instruction
-    // discriminator picks which one runs.
-    let accounts = velocity::accounts::ResolveTriggerOrder {
+    let accounts = velocity::accounts::ResolveTriggerMarketOrderV1 {
         scratch: relay_scratch_pda(),
         trigger_conditions: conditions,
         user,
@@ -6633,11 +6278,7 @@ fn run_trigger_resolver(
     let ix = Instruction {
         program_id: velocity_id(),
         accounts,
-        data: match which {
-            TrigResolver::Flip => velocity::instruction::ResolveTriggerOrder {}.data(),
-            TrigResolver::ClobRest => velocity::instruction::ResolveTriggerLimitOrderV1 {}.data(),
-            TrigResolver::ClobFill => velocity::instruction::ResolveTriggerMarketOrderV1 {}.data(),
-        },
+        data: velocity::instruction::ResolveTriggerMarketOrderV1 {}.data(),
     };
     let keeper = fixture.keeper.insecure_clone();
     let meta = send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
@@ -6650,140 +6291,11 @@ fn run_trigger_resolver(
     Some(velocity::relay_spec::ResolvedCrankV0::read(staged).unwrap())
 }
 
-/// The whole loop, turner-shaped: sync writes an OnValueCross condition at
-/// the trigger's raw-oracle threshold, the resolver reports no work while
-/// the price sits short, stages the dual-mode `trigger_order` once it
-/// crosses, and the staged executor lands unsigned — order triggered,
-/// keeper paid from the market reservoir, the fired slot released so the
-/// level-triggered wake goes quiet.
-#[test]
-fn trigger_relay_conditions_fire_an_armed_trigger_unsigned() {
-    use velocity::state::user_conditions::{UserConditionsV0, TRIGGER_SLOT_BASE, USER_CONDITIONS};
-
-    let mut fixture = setup();
-    const PAYMENT: u64 = 25_000;
-    let market_conditions = init_crank_conditions(&mut fixture, PAYMENT);
-    set_protocol_user(&mut fixture.svm);
-    fixture
-        .svm
-        .airdrop(&market_conditions, 1_000_000_000)
-        .unwrap();
-
-    // A user with an armed stop: trigger-market sell 1.0 when the oracle
-    // climbs to 105.
-    let authority = Keypair::new();
-    fixture
-        .svm
-        .airdrop(&authority.pubkey(), 1_000_000_000)
-        .unwrap();
-    let user = Pubkey::find_program_address(
-        &[
-            b"user",
-            authority.pubkey().as_ref(),
-            0u16.to_le_bytes().as_ref(),
-        ],
-        &velocity_id(),
-    )
-    .0;
-    let mut order = Order::default();
-    order.order_id = 7;
-    order.status = OrderStatus::Open;
-    order.order_type = OrderType::TriggerMarket;
-    order.market_type = MarketType::Perp;
-    order.market_index = 0;
-    order.direction = PositionDirection::Short;
-    order.base_asset_amount = UNIT;
-    order.trigger_price = 105 * PRICE;
-    order.trigger_condition = velocity::state::user::OrderTriggerCondition::Above;
-    set_user_account(
-        &mut fixture.svm,
-        user,
-        &trading_user(
-            &authority.pubkey(),
-            10_000 * SPOT_BALANCE_PRECISION_U64,
-            Some(order),
-        ),
-    );
-    let user_stats = Pubkey::find_program_address(
-        &[b"user_stats", authority.pubkey().as_ref()],
-        &velocity_id(),
-    )
-    .0;
-    set_user_stats_account(&mut fixture.svm, user_stats, &authority.pubkey());
-
-    sync_trigger_conditions(&mut fixture, user, market_conditions, false);
-
-    // The sync wrote a value watch at the trigger threshold (lazer exponent
-    // 6 = PRICE_PRECISION, so raw == trigger) with the plain trigger
-    // executor, and captured the margin-map section.
-    let conditions = user_conditions_pda(&user);
-    let acct: UserConditionsV0 = read_zero_copy(&fixture.svm, &conditions);
-    let (header, block) = velocity::relay_spec::read_block(acct.block(), 0).unwrap();
-    // One block per user: liquidation slots first, then the trigger slots.
-    assert_eq!(header.num_conditions as usize, USER_CONDITIONS);
-    let trig = &block[TRIGGER_SLOT_BASE..];
-    assert_eq!(
-        value_cross(&trig[0]),
-        (fixture.oracle.to_bytes(), 8, 8, (105 * PRICE) as i64, 0)
-    );
-    assert_eq!(trig[0].min_payment(), PAYMENT);
-    assert!(!trig[1].is_active(), "one armed trigger, one live slot");
-    assert_eq!(acct.trigger_slots[0].order_id, 7);
-    // The shared list: the resolver's four named accounts (scratch first),
-    // then the map, then the tail. Both syncs write the same shape, because
-    // the list is the account's whole liquidation coverage and a trigger sync
-    // that dropped the tail would leave the liquidation resolver short.
-    assert_eq!(acct.relay.resolver_refs().len(), 4 + 3 + 1);
-
-    // Below the trigger: the resolver reports no work.
-    fixture.svm.warp_to_slot(12);
-    set_oracle(
-        &mut fixture.svm,
-        fixture.oracle,
-        (100 * PRICE_PRECISION) as i64,
-        12,
-    );
-    assert!(run_trigger_resolver(&mut fixture, user, TrigResolver::Flip).is_none());
-
-    // Crossed: the resolver stages the executor; a turner-shaped unsigned
-    // submission triggers the order and pays the keeper from the reservoir.
-    fixture.svm.warp_to_slot(13);
-    set_oracle(
-        &mut fixture.svm,
-        fixture.oracle,
-        (106 * PRICE_PRECISION) as i64,
-        13,
-    );
-    let resolved = run_trigger_resolver(&mut fixture, user, TrigResolver::Flip)
-        .expect("crossed threshold stages");
-    let payout = Pubkey::new_unique();
-    fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
-    let payout_before = fixture.svm.get_balance(&payout).unwrap();
-    run_staged_executor(
-        &mut fixture,
-        &resolved,
-        velocity::instruction::TriggerOrder::DISCRIMINATOR,
-        payout,
-    );
-
-    let triggered: User = read_zero_copy(&fixture.svm, &user);
-    assert!(triggered.orders[0].triggered());
-    assert_eq!(
-        fixture.svm.get_balance(&payout).unwrap(),
-        payout_before + PAYMENT
-    );
-    // The fired slot went quiet — the level-triggered wake must not spin.
-    let acct: UserConditionsV0 = read_zero_copy(&fixture.svm, &conditions);
-    let (_, block) = velocity::relay_spec::read_block(acct.block(), 0).unwrap();
-    assert!(!block[0].is_active());
-    assert_eq!(acct.trigger_slots[0].order_id, 0);
-}
-
 /// A trigger-limit on a market with a vetted CLOB syncs to the
 /// `trigger_limit_order_v1` executor path.
 #[test]
 fn trigger_limit_sync_targets_the_clob_executor() {
-    use velocity::state::user_conditions::{UserConditionsV0, TRIGGER_SLOT_BASE, USER_CONDITIONS};
+    use velocity::state::user_conditions::{UserConditionsV0, TRIGGER_SLOT_BASE};
 
     let mut fixture = setup();
     let market_conditions = init_crank_conditions(&mut fixture, 10_000);
@@ -6943,7 +6455,7 @@ fn trigger_market_fires_to_the_book_through_its_resolver() {
         (100 * PRICE_PRECISION) as i64,
         13,
     );
-    let resolved = run_trigger_resolver(&mut fixture, user, TrigResolver::ClobFill)
+    let resolved = run_trigger_market_resolver(&mut fixture, user)
         .expect("crossed threshold stages the fire-to-book executor");
     let payout = Pubkey::new_unique();
     fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
@@ -7100,8 +6612,8 @@ fn merged_sync_keeps_the_stored_map_section_parseable() {
         (106 * PRICE_PRECISION) as i64,
         13,
     );
-    let resolved = run_trigger_resolver(&mut fixture, user, TrigResolver::ClobFill)
-        .expect("crossed threshold stages");
+    let resolved =
+        run_trigger_market_resolver(&mut fixture, user).expect("crossed threshold stages");
     let payout = Pubkey::new_unique();
     fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
     run_staged_executor(
@@ -7650,8 +7162,6 @@ fn plain_liquidation_rejects_the_protocol_user() {
 /// the keeper from the conditions account's own lamports.
 #[test]
 fn liq_self_sync_stages_an_unsigned_executor_and_pays_from_the_treasury() {
-    use velocity::state::user_conditions::{UserConditionsV0, TRIGGER_SLOT_BASE, USER_CONDITIONS};
-
     let mut fixture = setup();
     let market_conditions = init_crank_conditions(&mut fixture, 10_000);
     set_protocol_user(&mut fixture.svm);
@@ -7771,119 +7281,6 @@ fn liq_self_sync_stages_an_unsigned_executor_and_pays_from_the_treasury() {
     );
 }
 
-/// A DLOB order carries no route, and a fill may not claim one for it.
-///
-/// Only a signed message names a route, and such an order routes at placement
-/// and rests any remainder on the book — so what a route binds is the fill of
-/// that remainder, not this call. A claim here is refused whatever it names,
-/// which is what stops a filler inventing one.
-///
-/// The property this used to pin — a filler cannot drop a quoter the taker
-/// signed for — now belongs to `place_signed_msg_taker_order`, which checks the
-/// message's own route against what the transaction carries. That case wants a
-/// signed message to drive it and is not covered here yet.
-#[test]
-fn a_dlob_fill_may_not_claim_a_route() {
-    let mut fixture = setup();
-    let maker = setup_midpoint_maker(&mut fixture, 10_000 * SPOT_BALANCE_PRECISION_U64, UNIT);
-
-    let taker_authority = Keypair::new();
-    let taker_user = Pubkey::new_unique();
-    let taker_stats = Pubkey::new_unique();
-    let mut taker_order = Order::default();
-    taker_order.order_id = 1;
-    taker_order.status = OrderStatus::Open;
-    taker_order.order_type = OrderType::Market;
-    taker_order.market_type = MarketType::Perp;
-    taker_order.market_index = 0;
-    taker_order.direction = PositionDirection::Long;
-    taker_order.base_asset_amount = UNIT;
-    taker_order.price = 105 * PRICE;
-    taker_order.auction_end_price = (105 * PRICE) as i64;
-    let route = vec![maker.entry];
-    set_user_account(
-        &mut fixture.svm,
-        taker_user,
-        &trading_user(
-            &taker_authority.pubkey(),
-            10_000 * SPOT_BALANCE_PRECISION_U64,
-            Some(taker_order),
-        ),
-    );
-    set_user_stats_account(&mut fixture.svm, taker_stats, &taker_authority.pubkey());
-
-    let filler_user = Pubkey::new_unique();
-    let filler_stats = Pubkey::new_unique();
-    set_user_account(
-        &mut fixture.svm,
-        filler_user,
-        &trading_user(&fixture.keeper.pubkey(), 0, None),
-    );
-    set_user_stats_account(&mut fixture.svm, filler_stats, &fixture.keeper.pubkey());
-    fixture.svm.warp_to_slot(12);
-    set_oracle(
-        &mut fixture.svm,
-        fixture.oracle,
-        (100 * PRICE_PRECISION) as i64,
-        12,
-    );
-
-    // A fill that carries only the mandatory CLOB baseline: the signed
-    // midpoint entry is nowhere in the transaction.
-    let fill_ix = |claimed: Vec<Pubkey>| {
-        let mut accounts = velocity::accounts::FillOrder {
-            state: state_pda(),
-            authority: fixture.keeper.pubkey(),
-            filler: filler_user,
-            filler_stats,
-            user: taker_user,
-            user_stats: taker_stats,
-            instructions_sysvar: Some(instructions_sysvar()),
-        }
-        .to_account_metas(None);
-        accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
-        accounts.push(AccountMeta::new(spot_market_pda(0), false));
-        accounts.push(AccountMeta::new(perp_market_pda(0), false));
-        accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
-        accounts.push(AccountMeta::new(fixture.clob_market, false));
-        accounts.push(AccountMeta::new_readonly(clob_id(), false));
-        Instruction {
-            program_id: velocity_id(),
-            accounts,
-            data: velocity::instruction::FillPerpOrder {
-                order_id: Some(1),
-                _maker_order_id: None,
-                signed_route: claimed,
-            }
-            .data(),
-        }
-    };
-
-    // Any claim at all is refused: the order carries no route to match it.
-    let err = send_with_ixs(
-        &mut fixture.svm,
-        &fixture.keeper,
-        &[compute_unit_limit_ix(400_000), fill_ix(route.clone())],
-        &[],
-    )
-    .expect_err("a DLOB order has no route for a claim to digest to");
-    assert!(
-        format!("{:?}", err.meta.logs).contains("SignedRouteMismatch"),
-        "unexpected: {:?}",
-        err.meta.logs
-    );
-
-    // Claiming nothing is the honest answer, and the fill proceeds on the
-    // baseline the transaction carries.
-    send_with_ixs(
-        &mut fixture.svm,
-        &fixture.keeper,
-        &[compute_unit_limit_ix(400_000), fill_ix(vec![])],
-        &[],
-    )
-    .expect("an unrouted order fills against the carried baseline");
-}
-
 /// The maker route's remainder lives on the book.
 ///
 /// `place_and_make` is IOC post-only, and v0 has no choice but to cancel
@@ -7993,139 +7390,6 @@ fn place_and_make_v1_rests_a_maker_order_on_the_book() {
     );
     assert_eq!(maker.open_orders, 1);
     assert_eq!(clob_ask_count(&fixture), 1);
-}
-
-/// A keeper fill's restable remainder migrates to the book.
-///
-/// This is the case `place_and_take_v1` could not reach: a signed-message
-/// taker order cannot be IOC, so its leftover rests — and a keeper-driven fill
-/// held no CLOB accounts, so it rested on the DLOB. v1 gives the fill those
-/// accounts and the remainder lands on the book, where the activation window
-/// and the cross give it counterparties.
-#[test]
-fn fill_legacy_dlob_order_migrates_a_restable_remainder_to_the_book() {
-    use velocity::state::order_params::PostOnlyParam;
-
-    let mut fixture = setup();
-    let _ = PostOnlyParam::None;
-
-    // A taker resting a limit long for a full unit at $100, with only half a
-    // unit of CLOB liquidity to take.
-    let maker_stats = Pubkey::find_program_address(
-        &[
-            b"user_stats",
-            fixture.clob_maker_authority.pubkey().as_ref(),
-        ],
-        &velocity_id(),
-    )
-    .0;
-    set_user_stats_account(
-        &mut fixture.svm,
-        maker_stats,
-        &fixture.clob_maker_authority.pubkey(),
-    );
-    place_clob_ask(&mut fixture, 100 * PRICE, UNIT / 2);
-
-    let taker_authority = Keypair::new();
-    let taker_user = Pubkey::new_unique();
-    let taker_stats = Pubkey::new_unique();
-    let mut taker_order = Order::default();
-    taker_order.order_id = 1;
-    taker_order.status = OrderStatus::Open;
-    taker_order.order_type = OrderType::Limit;
-    taker_order.market_type = MarketType::Perp;
-    taker_order.market_index = 0;
-    taker_order.direction = PositionDirection::Long;
-    taker_order.base_asset_amount = UNIT;
-    taker_order.price = 100 * PRICE;
-    let mut taker_state = trading_user(
-        &taker_authority.pubkey(),
-        10_000 * SPOT_BALANCE_PRECISION_U64,
-        Some(taker_order),
-    );
-    taker_state.next_order_id = 2;
-    set_user_account(&mut fixture.svm, taker_user, &taker_state);
-    set_user_stats_account(&mut fixture.svm, taker_stats, &taker_authority.pubkey());
-
-    let filler_user = Pubkey::new_unique();
-    let filler_stats = Pubkey::new_unique();
-    set_user_account(
-        &mut fixture.svm,
-        filler_user,
-        &trading_user(&fixture.keeper.pubkey(), 0, None),
-    );
-    set_user_stats_account(&mut fixture.svm, filler_stats, &fixture.keeper.pubkey());
-
-    fixture.svm.warp_to_slot(12);
-    set_oracle(
-        &mut fixture.svm,
-        fixture.oracle,
-        (100 * PRICE_PRECISION) as i64,
-        12,
-    );
-
-    let mut accounts = velocity::accounts::FillLegacyDlobOrder {
-        state: state_pda(),
-        authority: fixture.keeper.pubkey(),
-        filler: filler_user,
-        filler_stats,
-        user: taker_user,
-        user_stats: taker_stats,
-        quoter_slab: fixture.quoter_slab,
-        clob_market: fixture.clob_market,
-        clob_program: clob_id(),
-        instructions_sysvar: Some(instructions_sysvar()),
-    }
-    .to_account_metas(None);
-    accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
-    accounts.push(AccountMeta::new(spot_market_pda(0), false));
-    accounts.push(AccountMeta::new(perp_market_pda(0), false));
-    accounts.push(AccountMeta::new(fixture.clob_maker_user, false));
-    accounts.push(AccountMeta::new(maker_stats, false));
-    // The quoter section: the mandatory CLOB baseline and its CPI accounts.
-    accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
-    accounts.push(AccountMeta::new(fixture.clob_market, false));
-    accounts.push(AccountMeta::new_readonly(clob_id(), false));
-
-    let ix = Instruction {
-        program_id: velocity_id(),
-        accounts,
-        data: velocity::instruction::FillLegacyDlobOrder {
-            args: FillLegacyDlobOrderArgs {
-                order_id: Some(1),
-                signed_route: vec![],
-                market_index: 0,
-            },
-        }
-        .data(),
-    };
-    send_with_ixs(
-        &mut fixture.svm,
-        &fixture.keeper,
-        &[compute_unit_limit_ix(400_000), ix],
-        &[],
-    )
-    .unwrap();
-
-    let taker: User = read_zero_copy(&fixture.svm, &taker_user);
-    assert_eq!(
-        taker.perp_positions[0].base_asset_amount,
-        (UNIT / 2) as i64,
-        "took the book's half"
-    );
-    assert!(
-        taker
-            .orders
-            .iter()
-            .all(|order| order.status != OrderStatus::Open),
-        "no remainder rests on the DLOB"
-    );
-    assert_eq!(
-        taker.perp_positions[0].open_bids,
-        (UNIT / 2) as i64,
-        "the remainder is reserved against the book"
-    );
-    assert_eq!(clob_bid_count(&fixture), 1, "and rests there as a bid");
 }
 
 // ---------------------------------------------------------------------------
@@ -10021,150 +9285,6 @@ fn a_claim_outranks_a_better_priced_maker_and_holds_the_front_until_it_lapses() 
     );
 }
 
-/// A market order's remainder rests at the bound it already accepted.
-///
-/// Its own `price` is zero, so `auction_end_price` — the worst fill it agreed
-/// to — is the only price it can rest at. Resting there is safe only because
-/// the migrated order is taker-origin: a maker arriving during the activation
-/// window has to beat it on price, and the cross pays the taker the
-/// difference, rather than the order being a free option for whoever lands
-/// first.
-#[test]
-fn fill_legacy_dlob_order_rests_a_market_remainder_at_its_auction_bound() {
-    let mut fixture = setup();
-
-    let maker_stats = Pubkey::find_program_address(
-        &[
-            b"user_stats",
-            fixture.clob_maker_authority.pubkey().as_ref(),
-        ],
-        &velocity_id(),
-    )
-    .0;
-    set_user_stats_account(
-        &mut fixture.svm,
-        maker_stats,
-        &fixture.clob_maker_authority.pubkey(),
-    );
-    // The vAMM is in every fill's mandatory baseline and quotes deep enough to
-    // absorb a market order outright, so there is no remainder to migrate
-    // unless it is out of the picture — which is the real-world case too: a
-    // market remainder survives only when the taker's bound is tighter than
-    // the curve.
-    pause_amm_fill(&mut fixture.svm);
-    // Half a unit of book liquidity against a one-unit market order.
-    place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 2);
-
-    let taker_authority = Keypair::new();
-    let taker_user = Pubkey::new_unique();
-    let taker_stats = Pubkey::new_unique();
-    let mut taker_order = Order::default();
-    taker_order.order_id = 1;
-    taker_order.status = OrderStatus::Open;
-    taker_order.order_type = OrderType::Market;
-    taker_order.market_type = MarketType::Perp;
-    taker_order.market_index = 0;
-    taker_order.direction = PositionDirection::Long;
-    taker_order.base_asset_amount = UNIT;
-    // A market order carries no price of its own; the auction end is its bound.
-    taker_order.price = 0;
-    taker_order.auction_start_price = (99 * PRICE) as i64;
-    // Under the oracle, so the vAMM cannot fill and the remainder survives.
-    taker_order.auction_end_price = (99 * PRICE + PRICE / 2) as i64;
-    let mut taker_state = trading_user(
-        &taker_authority.pubkey(),
-        10_000 * SPOT_BALANCE_PRECISION_U64,
-        Some(taker_order),
-    );
-    taker_state.next_order_id = 2;
-    set_user_account(&mut fixture.svm, taker_user, &taker_state);
-    set_user_stats_account(&mut fixture.svm, taker_stats, &taker_authority.pubkey());
-
-    let filler_user = Pubkey::new_unique();
-    let filler_stats = Pubkey::new_unique();
-    set_user_account(
-        &mut fixture.svm,
-        filler_user,
-        &trading_user(&fixture.keeper.pubkey(), 0, None),
-    );
-    set_user_stats_account(&mut fixture.svm, filler_stats, &fixture.keeper.pubkey());
-    fixture.svm.warp_to_slot(12);
-    set_oracle(
-        &mut fixture.svm,
-        fixture.oracle,
-        (100 * PRICE_PRECISION) as i64,
-        12,
-    );
-
-    let mut accounts = velocity::accounts::FillLegacyDlobOrder {
-        state: state_pda(),
-        authority: fixture.keeper.pubkey(),
-        filler: filler_user,
-        filler_stats,
-        user: taker_user,
-        user_stats: taker_stats,
-        quoter_slab: fixture.quoter_slab,
-        clob_market: fixture.clob_market,
-        clob_program: clob_id(),
-        instructions_sysvar: Some(instructions_sysvar()),
-    }
-    .to_account_metas(None);
-    accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
-    accounts.push(AccountMeta::new(spot_market_pda(0), false));
-    accounts.push(AccountMeta::new(perp_market_pda(0), false));
-    accounts.push(AccountMeta::new(fixture.clob_maker_user, false));
-    accounts.push(AccountMeta::new(maker_stats, false));
-    accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
-    accounts.push(AccountMeta::new(fixture.clob_market, false));
-    accounts.push(AccountMeta::new_readonly(clob_id(), false));
-
-    let ix = Instruction {
-        program_id: velocity_id(),
-        accounts,
-        data: velocity::instruction::FillLegacyDlobOrder {
-            args: FillLegacyDlobOrderArgs {
-                order_id: Some(1),
-                signed_route: vec![],
-                market_index: 0,
-            },
-        }
-        .data(),
-    };
-    send_with_ixs(
-        &mut fixture.svm,
-        &fixture.keeper,
-        &[compute_unit_limit_ix(400_000), ix],
-        &[],
-    )
-    .unwrap();
-
-    let taker: User = read_zero_copy(&fixture.svm, &taker_user);
-    assert_eq!(
-        taker.perp_positions[0].base_asset_amount,
-        (UNIT / 2) as i64,
-        "took the book's half"
-    );
-    assert!(
-        taker
-            .orders
-            .iter()
-            .all(|order| order.status != OrderStatus::Open),
-        "nothing left on the DLOB"
-    );
-    assert_eq!(
-        taker.perp_positions[0].open_bids,
-        (UNIT / 2) as i64,
-        "the remainder is reserved against the book"
-    );
-    let (bid_count, best_bid) = (clob_bid_count(&fixture), clob_best_bid_price(&fixture));
-    assert_eq!(bid_count, 1, "and rests there");
-    assert_eq!(
-        best_bid,
-        Some(99 * PRICE + PRICE / 2),
-        "at the auction bound, not at a zero price"
-    );
-}
-
 /// A fired DLOB stop-market fills straight to the book and rests only its
 /// remainder, leaving nothing live in `User.orders`.
 ///
@@ -11116,4 +10236,271 @@ fn a_taker_origin_row_is_flagged_for_whoever_reads_it() {
     );
     // Rows are best-first, which is the order a fill would take them in.
     assert!(rows.windows(2).all(|w| w[0].price <= w[1].price));
+}
+
+/// A taker order routed with an empty book, so the vAMM is the only source.
+///
+/// Returns the taker's `User` after the fill. The book stays empty because the
+/// fixture rests nothing on it, and `require_baseline` is satisfied by carrying
+/// the market's CLOB accounts whether or not the book has depth.
+fn vamm_take(
+    fixture: &mut Fixture,
+    taker: &Party,
+    direction: PositionDirection,
+    base: u64,
+    limit: u64,
+) -> Result<litesvm::types::TransactionMetadata, litesvm::types::FailedTransactionMetadata> {
+    use velocity::state::order_params::{OrderParams, PostOnlyParam};
+
+    let mut accounts = velocity::accounts::PlaceAndTakeV1 {
+        state: state_pda(),
+        user: taker.user,
+        user_stats: taker.stats,
+        authority: taker.authority.pubkey(),
+        quoter_slab: fixture.quoter_slab,
+        clob_market: fixture.clob_market,
+        clob_program: clob_id(),
+        flow_authority: None,
+    }
+    .to_account_metas(None);
+    accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+    accounts.push(AccountMeta::new(spot_market_pda(0), false));
+    accounts.push(AccountMeta::new(perp_market_pda(0), false));
+    accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
+    accounts.push(AccountMeta::new(fixture.clob_market, false));
+    accounts.push(AccountMeta::new_readonly(clob_id(), false));
+
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: velocity::instruction::PlaceAndTakePerpOrderV1 {
+            args: PlaceAndTakePerpOrderV1Args {
+                params: OrderParams {
+                    order_type: OrderType::Market,
+                    market_type: MarketType::Perp,
+                    direction,
+                    base_asset_amount: base,
+                    price: limit,
+                    auction_end_price: Some(limit as i64),
+                    market_index: 0,
+                    post_only: PostOnlyParam::None,
+                    ..OrderParams::default()
+                },
+                success_condition: None,
+            },
+        }
+        .data(),
+    };
+    let authority = taker.authority.insecure_clone();
+    send_with_ixs(
+        &mut fixture.svm,
+        &authority,
+        &[compute_unit_limit_ix(400_000), ix],
+        &[],
+    )
+}
+
+/// The vAMM prices a take at its ask, and the spread is inside that price.
+///
+/// This is the end-to-end pin on the vAMM's own pricing: the reserves move by
+/// the constant product, and the taker pays the spread and the fee on top. A
+/// change to the spread formula moves `entry` here even though the reserve
+/// math is untouched, which is the failure this exists to catch — a spread
+/// that silently narrows costs the AMM the width it was quoting.
+#[test]
+fn a_vamm_take_pays_the_spread_inside_its_entry_price() {
+    let mut fixture = setup();
+    let taker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    fixture.svm.warp_to_slot(12);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        12,
+    );
+
+    vamm_take(
+        &mut fixture,
+        &taker,
+        PositionDirection::Long,
+        UNIT,
+        105 * PRICE,
+    )
+    .unwrap();
+
+    let market: PerpMarket = read_zero_copy(&fixture.svm, &perp_market_pda(0));
+    // The constant product alone: k / (100 - 1) base reserves. The fixture
+    // starts balanced at 100/100, so the no-spread cost of one unit is the
+    // reserve move, 101.0101 quote.
+    assert_eq!(market.amm.base_asset_reserve, 99 * AMM_RESERVE_PRECISION);
+    assert_eq!(market.amm.quote_asset_reserve, 101_010_101_010);
+    // The AMM took the other side: it was long 0.5 and is long 1.5.
+    assert_eq!(
+        market.amm.base_asset_amount_with_amm,
+        (3 * AMM_RESERVE_PRECISION / 2) as i128
+    );
+
+    let taker_state: User = read_zero_copy(&fixture.svm, &taker.user);
+    let position = taker_state.perp_positions[0];
+    assert_eq!(position.base_asset_amount, UNIT as i64);
+    // All-in, so the spread and the taker fee are both inside it. It must sit
+    // above the 101.0101 the reserves alone imply, because the taker lifted an
+    // ask rather than trading at the mark.
+    let entry = -(position.quote_asset_amount as i128) * AMM_RESERVE_PRECISION as i128
+        / position.base_asset_amount as i128;
+    assert_eq!(entry, 102_068_693);
+    assert!(
+        entry > 101_010_101,
+        "a take at the mark would mean the AMM quoted no spread"
+    );
+}
+
+/// A position opens, reduces, reverses and closes against the vAMM alone.
+///
+/// The vAMM is the counterparty at every step, so its inventory is the mirror
+/// of the taker's position and the two must stay equal and opposite through a
+/// reversal, which is the step that writes both a close and an open in one
+/// fill. A position that closes must free its slot rather than linger at zero.
+#[test]
+fn a_vamm_position_opens_reduces_reverses_and_closes() {
+    let mut fixture = setup();
+    let taker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    fixture.svm.warp_to_slot(12);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        12,
+    );
+    // The AMM starts long half a unit, so every check below is against that
+    // baseline rather than against zero.
+    let amm_base0 = {
+        let market: PerpMarket = read_zero_copy(&fixture.svm, &perp_market_pda(0));
+        market.amm.base_asset_amount_with_amm
+    };
+
+    let taker_base = |fixture: &Fixture| {
+        let state: User = read_zero_copy(&fixture.svm, &taker.user);
+        state.perp_positions[0].base_asset_amount
+    };
+    // `base_asset_amount_with_amm` tracks the users' net position that the AMM
+    // is the counterparty to, not the AMM's own inventory, so it moves with the
+    // taker rather than against it. The AMM is the only source here, so every
+    // unit this taker holds is a unit that counter went up by.
+    let amm_tracks = |fixture: &Fixture, taker_position: i64| {
+        let market: PerpMarket = read_zero_copy(&fixture.svm, &perp_market_pda(0));
+        assert_eq!(
+            market.amm.base_asset_amount_with_amm,
+            amm_base0 + taker_position as i128,
+            "the vAMM counted the other side of the taker's position"
+        );
+    };
+
+    // Open long 1.0.
+    vamm_take(
+        &mut fixture,
+        &taker,
+        PositionDirection::Long,
+        UNIT,
+        105 * PRICE,
+    )
+    .unwrap();
+    assert_eq!(taker_base(&fixture), UNIT as i64);
+    amm_tracks(&fixture, UNIT as i64);
+
+    // Reduce by 0.4, leaving 0.6 long.
+    vamm_take(
+        &mut fixture,
+        &taker,
+        PositionDirection::Short,
+        2 * UNIT / 5,
+        95 * PRICE,
+    )
+    .unwrap();
+    assert_eq!(taker_base(&fixture), (3 * UNIT / 5) as i64);
+    amm_tracks(&fixture, (3 * UNIT / 5) as i64);
+
+    // Reverse: sell 1.0 against a 0.6 long. One fill closes the long and opens
+    // the short, and `max_fill_reserve_fraction` caps what one fill may take
+    // from the reserves at a hundredth of them. Two takes have moved the base
+    // reserve to 99.4, so the cap is 0.994 and the sell is short of its full
+    // size by the remainder. The position still crosses zero in one fill,
+    // which is the step being tested; the cap is why it lands at -0.394 rather
+    // than -0.4.
+    let reserve_before_reversal = {
+        let market: PerpMarket = read_zero_copy(&fixture.svm, &perp_market_pda(0));
+        market.amm.base_asset_reserve
+    };
+    assert_eq!(reserve_before_reversal, 99_400_000_000);
+    let capped = (reserve_before_reversal / 100) as i64;
+    vamm_take(
+        &mut fixture,
+        &taker,
+        PositionDirection::Short,
+        UNIT,
+        95 * PRICE,
+    )
+    .unwrap();
+    let reversed = (3 * UNIT / 5) as i64 - capped;
+    assert_eq!(
+        reversed, -394_000_000,
+        "the reversal is capped, not refused"
+    );
+    assert_eq!(taker_base(&fixture), reversed);
+    amm_tracks(&fixture, reversed);
+
+    // The walk stops at the reversal because the fixture cannot carry a fourth
+    // fill, not because the close is uninteresting. `set_trading_perp_market`
+    // writes `terminal_quote_asset_reserve` as a constant, and only the repeg
+    // and k-update paths recompute it — never a fill. The value it writes is
+    // consistent with the inventory it starts at, and by here the reserves have
+    // moved far enough that `validate_amm` rejects the next instruction with
+    // `InvalidAmmDetected`. A spec that wants the close needs a fixture whose
+    // terminal reserve is derived rather than pinned.
+}
+
+/// A bid between the mark and the ask takes nothing from the vAMM.
+///
+/// The spread is what makes this true: the AMM sells at its ask, not at its
+/// mark, so a buyer who will not pay the ask gets no fill. A narrower spread
+/// would let this order through, which is the same regression the entry-price
+/// spec above pins from the other side — here it changes a fill into no fill
+/// rather than moving a number.
+#[test]
+fn a_bid_between_the_mark_and_the_ask_takes_nothing_from_the_vamm() {
+    let mut fixture = setup();
+    let taker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    fixture.svm.warp_to_slot(12);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        12,
+    );
+
+    // The fixture's reserves are balanced, so the mark is exactly 100. A bid a
+    // basis point above it is above the mark and far below the ask.
+    let between = 100 * PRICE + PRICE / 10_000;
+    vamm_take(&mut fixture, &taker, PositionDirection::Long, UNIT, between).unwrap();
+
+    let taker_state: User = read_zero_copy(&fixture.svm, &taker.user);
+    assert_eq!(
+        taker_state.perp_positions[0].base_asset_amount, 0,
+        "a bid under the ask must not trade against the vAMM"
+    );
+    let market: PerpMarket = read_zero_copy(&fixture.svm, &perp_market_pda(0));
+    assert_eq!(
+        market.amm.base_asset_reserve,
+        100 * AMM_RESERVE_PRECISION,
+        "the reserves did not move, so nothing was filled"
+    );
+    // The order was live and routed; it simply found no depth it would pay
+    // for. Without this the spec would also pass on an order that never
+    // reached the vAMM at all, which is a different bug wearing the same
+    // result.
+    assert_eq!(
+        clob_bid_count(&fixture),
+        1,
+        "the unfilled order rested, so the route ran and declined the ask"
+    );
 }

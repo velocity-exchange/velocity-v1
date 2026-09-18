@@ -2289,7 +2289,7 @@ export class AdminClient extends VelocityClient {
 
 	/**
 	 * Sets how aggressively the AMM just-in-time-fills incoming taker orders against its own
-	 * inventory before routing to the DLOB. Gated the same as
+	 * inventory before routing to the book. Gated the same as
 	 * `updatePerpMarketCurveUpdateIntensity`, so it takes `HotRole.VammQuoteManagement`, warm,
 	 * or cold. Throws `DefaultError` on-chain if the value is outside `0..=100`. A signer that
 	 * holds only the hot role must stay inside the protocol-wide hot-role bounds.

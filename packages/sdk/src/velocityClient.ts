@@ -6283,6 +6283,7 @@ export class VelocityClient {
 			undefined,
 			undefined,
 			undefined,
+			undefined,
 			subAccountId
 		);
 	}
@@ -6743,7 +6744,7 @@ export class VelocityClient {
 	 * requires an explicit `orderId` (see note above).
 	 * @returns The transaction signature.
 	 * @see `getCancelOrderIx` to obtain the instruction without sending.
-	 * @remarks Cancels an order resting on the DLOB, which is a `User.orders` slot. An order
+	 * @remarks Cancels an order in a `User.orders` slot. An order
 	 * resting on the CLOB has no such slot and is cancelled by its book handle. Read its
 	 * `ClobOrderRefV0` from the user-orders feed (`UserClobOrdersClient`), then call
 	 * `cancelOrderV1` or `cancelOrdersV1`.
@@ -7660,11 +7661,10 @@ export class VelocityClient {
 	}
 
 	/**
-	 * Fires a resting DLOB stop-market order straight to the book. One instruction
-	 * fills the fired order and rests only its remainder as a taker-origin order on
-	 * the market's CLOB. Unlike `triggerOrder`, it leaves nothing live in
-	 * `User.orders` for a later fill crank. For DLOB trigger-market orders only.
-	 * See `getTriggerMarketOrderV1Ix`.
+	 * Fires an armed stop-market order straight to the book. One instruction fills
+	 * the fired order and rests only its remainder as a taker-origin order on the
+	 * market's CLOB, so nothing is left live in `User.orders` for a later crank.
+	 * For trigger-market orders only. See `getTriggerMarketOrderV1Ix`.
 	 */
 	public async triggerMarketOrderV1(
 		marketIndex: number,
@@ -8170,15 +8170,20 @@ export class VelocityClient {
 	}
 
 	/**
-	 * Places a perp order and immediately attempts to fill it in the same instruction against the
-	 * AMM and/or the supplied `makerInfo`. `orderParams.postOnly` must be `PostOnlyParams.NONE` —
-	 * the onchain handler rejects post only orders here (use `placeAndMakePerpOrder` instead for a
-	 * post-only maker order). If the order is immediate-or-cancel (or `successCondition`/
-	 * `auctionDurationPercentage` is set) and still open after the fill attempt, it is cancelled
-	 * in the same instruction.
+	 * Places a perp order and routes it in the same instruction across every liquidity source the
+	 * market has. `orderParams.postOnly` must be `PostOnlyParams.NONE` — the onchain handler
+	 * rejects post only orders here (use `placeAndMakePerpOrder` instead for a post-only maker
+	 * order). A restable remainder rests on the market's CLOB. If the order is
+	 * immediate-or-cancel (or `successCondition`/`auctionDurationPercentage` is set) and still
+	 * open after the fill attempt, it is cancelled in the same instruction.
 	 * @param orderParams - Order to place; `baseAssetAmount` is BASE_PRECISION (1e9), `price`/
 	 * `triggerPrice`/`oraclePriceOffset` (signed) are PRICE_PRECISION (1e6).
-	 * @param makerInfo - Maker account(s) to include as fill counterparties, if any.
+	 * @param clobAccounts - The market's quoter slab, book and CLOB program. The route reaches
+	 * book and PropAMM liquidity through them, and the remainder rests on them. Omit them and
+	 * they are read off the market.
+	 * @param makerInfo - The `(User, UserStats)` pairs the fill settles against. A fill settles
+	 * only for users the transaction carries, so a book that names a maker this list omits stops
+	 * at that maker.
 	 * @param successCondition - Require the fill to be a `PartialFill` or `FullFill`; the
 	 * instruction reverts with `PlaceAndTakeOrderSuccessConditionFailed` if not met. Omit for no check.
 	 * @param auctionDurationPercentage - Percent (0-100, default 100) of the order's auction that
@@ -8191,6 +8196,11 @@ export class VelocityClient {
 	 */
 	public async placeAndTakePerpOrder(
 		orderParams: OptionalOrderParams,
+		clobAccounts?: {
+			quoterSlab: PublicKey;
+			clobMarket: PublicKey;
+			clobProgram: PublicKey;
+		},
 		makerInfo?: MakerInfo | MakerInfo[],
 		successCondition?: PlaceAndTakeOrderSuccessCondition,
 		auctionDurationPercentage?: number,
@@ -8202,6 +8212,7 @@ export class VelocityClient {
 			await this.buildTransaction(
 				await this.getPlaceAndTakePerpOrderIx(
 					orderParams,
+					clobAccounts,
 					makerInfo,
 					successCondition,
 					auctionDurationPercentage,
@@ -8244,6 +8255,11 @@ export class VelocityClient {
 	 */
 	public async preparePlaceAndTakePerpOrderWithAdditionalOrders(
 		orderParams: OptionalOrderParams,
+		clobAccounts?: {
+			quoterSlab: PublicKey;
+			clobMarket: PublicKey;
+			clobProgram: PublicKey;
+		},
 		makerInfo?: MakerInfo | MakerInfo[],
 		bracketOrdersParams = new Array<OptionalOrderParams>(),
 		txParams?: TxParams,
@@ -8283,6 +8299,7 @@ export class VelocityClient {
 		const prepPlaceAndTakeTx = async () => {
 			const placeAndTakeIx = await this.getPlaceAndTakePerpOrderIx(
 				orderParams,
+				clobAccounts,
 				makerInfo,
 				undefined,
 				auctionDurationPercentage,
@@ -8464,6 +8481,11 @@ export class VelocityClient {
 	 */
 	public async placeAndTakePerpWithAdditionalOrders(
 		orderParams: OptionalOrderParams,
+		clobAccounts?: {
+			quoterSlab: PublicKey;
+			clobMarket: PublicKey;
+			clobProgram: PublicKey;
+		},
 		makerInfo?: MakerInfo | MakerInfo[],
 		bracketOrdersParams = new Array<OptionalOrderParams>(),
 		txParams?: TxParams,
@@ -8479,6 +8501,7 @@ export class VelocityClient {
 		const txsToSign =
 			await this.preparePlaceAndTakePerpOrderWithAdditionalOrders(
 				orderParams,
+				clobAccounts,
 				makerInfo,
 				bracketOrdersParams,
 				txParams,
@@ -8524,16 +8547,27 @@ export class VelocityClient {
 	/**
 	 * Builds the `placeAndTakePerpOrder` instruction. See `placeAndTakePerpOrder` for semantics.
 	 * @param orderParams - Order to place; see `placeAndTakePerpOrder` for field precisions.
-	 * @param makerInfo - Maker account(s) to include as fill counterparties, if any.
+	 * @param clobAccounts - The market's CLOB accounts. The order routes through them, so the
+	 * taker reaches book and PropAMM liquidity and not only the vAMM, and an unfilled limit
+	 * remainder rests on the book. The quoter section they imply is appended to the remaining
+	 * accounts for you. Omit them and they are read off the market.
+	 * @param makerInfo - See `placeAndTakePerpOrder`.
 	 * @param successCondition - See `placeAndTakePerpOrder`.
 	 * @param auctionDurationPercentage - See `placeAndTakePerpOrder`.
 	 * @param subAccountId - Sub-account to place the order for; defaults to the active sub-account.
 	 * @param overrides - `authority` overrides the signing authority (defaults to `this.wallet.publicKey`).
 	 * @param takerEscrow - See `placeAndTakePerpOrder`.
+	 * @param extraQuoterAccounts - Additional quoter entries and their registered CPI accounts,
+	 * for a taker routing across PropAMMs beyond the mandatory CLOB + vAMM baseline.
 	 * @returns The instruction.
 	 */
 	public async getPlaceAndTakePerpOrderIx(
 		orderParams: OptionalOrderParams,
+		clobAccounts?: {
+			quoterSlab: PublicKey;
+			clobMarket: PublicKey;
+			clobProgram: PublicKey;
+		},
 		makerInfo?: MakerInfo | MakerInfo[],
 		successCondition?: PlaceAndTakeOrderSuccessCondition,
 		auctionDurationPercentage?: number,
@@ -8547,24 +8581,16 @@ export class VelocityClient {
 		// decoded escrow (e.g. from a RevenueShareEscrowMap) to cover the referred case.
 		// Referral accounts are discovered automatically when no decoded escrow is supplied.
 		takerEscrow?: RevenueShareEscrowAccount,
-		// The market's CLOB accounts. The order routes through them, so the taker
-		// reaches book and PropAMM liquidity and not only the vAMM, and an
-		// unfilled limit remainder rests on the book. The quoter section they
-		// imply is appended to the remaining accounts for you. Optional only to
-		// keep this positional signature stable; the call throws without them.
-		clobAccounts?: {
-			quoterSlab: PublicKey;
-			clobMarket: PublicKey;
-			clobProgram: PublicKey;
-		},
-		// Additional quoter entries and their registered CPI accounts, for a
-		// taker routing across PropAMMs beyond the mandatory CLOB + vAMM
-		// baseline. Only meaningful alongside `clobAccounts`.
 		extraQuoterAccounts?: AccountMeta[]
 	): Promise<TransactionInstruction> {
 		orderParams = getOrderParams(orderParams, { marketType: MarketType.PERP });
 		const userStatsPublicKey = await this.getUserStatsAccountPublicKey();
 		const user = await this.getUserAccountPublicKey(subAccountId);
+		// A caller that names only a market gets the market's own book. The
+		// slab is a PDA and its slot 0 names the book, so there is nothing for
+		// a client to carry and get wrong.
+		const clob =
+			clobAccounts ?? (await this.getClobAccounts(orderParams.marketIndex));
 
 		makerInfo = Array.isArray(makerInfo)
 			? makerInfo
@@ -8602,25 +8628,19 @@ export class VelocityClient {
 			takerEscrow
 		);
 		remainingAccounts.push(...takerRevenueShareMetas);
-		if (clobAccounts) {
-			// v1 routes, so its tail carries the quoter section, and the
-			// market's canonical CLOB is mandatory there. These are the same
-			// accounts `clobAccounts` already names for the remainder leg —
-			// the program resolves a quoter's registered CPI accounts from the
-			// remaining accounts, which its named ones are not part of.
-			remainingAccounts.push(
-				{ pubkey: clobAccounts.quoterSlab, isWritable: false, isSigner: false },
-				{ pubkey: clobAccounts.clobMarket, isWritable: true, isSigner: false },
-				{
-					pubkey: clobAccounts.clobProgram,
-					isWritable: false,
-					isSigner: false,
-				}
-			);
-			// Any further quoters the taker wants competing for this fill.
-			if (extraQuoterAccounts) {
-				remainingAccounts.push(...extraQuoterAccounts);
-			}
+		// v1 routes, so its tail carries the quoter section, and the market's
+		// canonical CLOB is mandatory there. These are the same accounts the
+		// remainder leg already names — the program resolves a quoter's
+		// registered CPI accounts from the remaining accounts, which its named
+		// ones are not part of.
+		remainingAccounts.push(
+			{ pubkey: clob.quoterSlab, isWritable: false, isSigner: false },
+			{ pubkey: clob.clobMarket, isWritable: true, isSigner: false },
+			{ pubkey: clob.clobProgram, isWritable: false, isSigner: false }
+		);
+		// Any further quoters the taker wants competing for this fill.
+		if (extraQuoterAccounts) {
+			remainingAccounts.push(...extraQuoterAccounts);
 		}
 
 		let optionalParams = null;
@@ -8631,12 +8651,6 @@ export class VelocityClient {
 
 		const authority = overrides?.authority ?? this.wallet.publicKey;
 
-		if (!clobAccounts) {
-			throw new Error(
-				'placeAndTakePerpOrder requires the market CLOB accounts: the order routes through the book'
-			);
-		}
-
 		return await VelocityCore.buildPlaceAndTakePerpOrderInstruction({
 			program: this.program,
 			orderParams,
@@ -8646,7 +8660,7 @@ export class VelocityClient {
 			userStats: userStatsPublicKey,
 			authority,
 			remainingAccounts,
-			clobAccounts,
+			clobAccounts: clob,
 		});
 	}
 
@@ -8886,7 +8900,7 @@ export class VelocityClient {
 	 * records the order in the taker's `SignedMsgUserOrders` account (see
 	 * `initializeSignedMsgUserOrders`, required beforehand), routes it through the market's quoters
 	 * and books for whatever fills at or better than its auction start price, and rests the
-	 * remainder on the market's CLOB. A signed-message order never rests on the DLOB.
+	 * remainder on the market's CLOB. A signed-message order never takes a `User.orders` slot.
 	 *
 	 * The caller is a filler, not the taker: it must carry every quoter the signed message named,
 	 * and it owes the taker every maker it had room for. Pass those quoter entries and their
@@ -8905,6 +8919,8 @@ export class VelocityClient {
 	 * index these once computed.
 	 * @param _overrideCustomIxIndex - Retained for call-site compatibility; no effect.
 	 * @param txParams - Optional compute-unit/priority-fee overrides.
+	 * @param makerInfo - The book's resting owners this placement may settle against. See
+	 * `getPlaceSignedMsgTakerPerpOrderIxs`.
 	 * @returns The transaction signature.
 	 */
 	public async placeSignedMsgTakerOrder(
@@ -8928,7 +8944,8 @@ export class VelocityClient {
 			clobMarket: PublicKey;
 			clobProgram: PublicKey;
 		},
-		flowAttestation?: FlowAttestationV0
+		flowAttestation?: FlowAttestationV0,
+		makerInfo?: MakerInfo | MakerInfo[]
 	): Promise<TransactionSignature> {
 		const ixs = await this.getPlaceSignedMsgTakerPerpOrderIxs(
 			signedSignedMsgOrderParams,
@@ -8938,7 +8955,8 @@ export class VelocityClient {
 			overrideCustomIxIndex,
 			fillerInfo,
 			clobAccounts,
-			flowAttestation
+			flowAttestation,
+			makerInfo
 		);
 		const { txSig } = await this.sendTransaction(
 			await this.buildTransaction(ixs, txParams),
@@ -8983,7 +9001,16 @@ export class VelocityClient {
 			clobProgram: PublicKey;
 		},
 		/** Swift's detached attestation (`/attest`) for this order; absent rests the whole order on a bumped book. */
-		flowAttestation?: FlowAttestationV0
+		flowAttestation?: FlowAttestationV0,
+		/**
+		 * The book's resting owners this placement may settle against. A fill
+		 * reaches only the users the transaction carries, and a placement that
+		 * leaves out an owner the book could have reached is refused with
+		 * `FillerOmittedReachableMaker`. The dlob-server's `/topMakers` names
+		 * them. Pass none and the order rests as a taker-origin remainder for
+		 * the cross cranks.
+		 */
+		makerInfo?: MakerInfo | MakerInfo[]
 	): Promise<TransactionInstruction[]> {
 		// Both default to what the client can derive: the caller's own margin
 		// account is the filler, and the market's registry entry names its own
@@ -9013,14 +9040,36 @@ export class VelocityClient {
 			? [QUOTE_SPOT_MARKET_INDEX]
 			: undefined;
 
+		const makerInfos = Array.isArray(makerInfo)
+			? makerInfo
+			: makerInfo
+			? [makerInfo]
+			: [];
+
 		// The market is writable: this instruction fills as well as places, so
 		// the fill mutates the market it routes through.
 		const remainingAccounts = this.getRemainingAccounts({
-			userAccounts: [takerInfo.takerUserAccount],
+			userAccounts: [
+				takerInfo.takerUserAccount,
+				...makerInfos.map((maker) => maker.makerUserAccount),
+			],
 			useMarketLastSlotCache: false,
 			writablePerpMarketIndexes: [marketIndex],
 			writableSpotMarketIndexes,
 		});
+
+		for (const maker of makerInfos) {
+			remainingAccounts.push({
+				pubkey: maker.maker,
+				isWritable: true,
+				isSigner: false,
+			});
+			remainingAccounts.push({
+				pubkey: maker.makerStats,
+				isWritable: true,
+				isSigner: false,
+			});
+		}
 
 		if (hasBuilderParams(signedMessage)) {
 			remainingAccounts.push({
@@ -9184,6 +9233,7 @@ export class VelocityClient {
 			undefined,
 			undefined,
 			undefined,
+			undefined,
 			subAccountId
 		);
 	}
@@ -9255,7 +9305,7 @@ export class VelocityClient {
 	 * @param txParams - Optional compute-unit/priority-fee overrides.
 	 * @param subAccountId - Sub-account the order belongs to; defaults to the active sub-account.
 	 * @returns The transaction signature.
-	 * @remarks Modifies an order resting on the DLOB. An order resting on the CLOB is modified by
+	 * @remarks Modifies an order in a `User.orders` slot. An order resting on the CLOB is modified by
 	 * its book handle. Read its `ClobOrderRefV0` from the user-orders feed, then call
 	 * `modifyOrderV1`.
 	 */
@@ -10211,7 +10261,7 @@ export class VelocityClient {
 	 * @param userAccountPublicKey - Public key of the user account being liquidated.
 	 * @param userAccount - Decoded user account being liquidated.
 	 * @param marketIndex - Perp market index of the position to liquidate.
-	 * @param makerInfos - Maker(s) the fill may settle against, on the book or the DLOB.
+	 * @param makerInfos - Maker(s) the fill may settle against on the book.
 	 * @param txParams - Optional compute-unit/priority-fee overrides.
 	 * @param liquidatorSubAccountId - Liquidator's sub-account to credit; defaults to the active sub-account.
 	 * @param extraQuoterAccounts - Further quoter entries and their registered CPI accounts, beyond
@@ -13811,7 +13861,7 @@ export class VelocityClient {
 
 	/**
 	 * Swaps `inMarketIndex` tokens for `outMarketIndex` tokens directly against an LP pool's
-	 * constituent vaults (not the DLOB/AMM), paying a fee priced off each constituent's deviation
+	 * constituent vaults (not the book or the AMM), paying a fee priced off each constituent's deviation
 	 * from its target-base weight. Reverts if pool swaps are disabled, `inMarketIndex` equals
 	 * `outMarketIndex`, or `updateLpPoolAum` has not run within `LP_POOL_SWAP_AUM_UPDATE_DELAY` slots
 	 * (see `getAllLpPoolSwapIxs` for a wrapper that prepends the required AUM refresh).

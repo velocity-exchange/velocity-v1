@@ -255,7 +255,7 @@ pub fn calculate_user_safest_position_tiers(
 /// paths refreshes the market. `handle_withdraw` cranks only the market being
 /// withdrawn, the perp-fill handler cranks none, and the user's other borrow markets
 /// arrive read-only (OtterSec #135 / #148). A borrower can therefore release tokens, or take an adverse
-/// in-band DLOB fill, against debt the check never fully saw. That leaves bad debt
+/// in-band maker fill, against debt the check never fully saw. That leaves bad debt
 /// once the market is finally cranked.
 ///
 /// Only borrow positions are gated. A stale deposit index understates collateral,

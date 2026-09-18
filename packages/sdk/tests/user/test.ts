@@ -21,7 +21,11 @@ import {
 	MARGIN_PRECISION,
 	getSpotAssetValue,
 } from '../../src';
-import { MockUserMap, mockPerpMarkets, mockSpotMarkets } from '../dlob/helpers';
+import {
+	MockUserMap,
+	mockPerpMarkets,
+	mockSpotMarkets,
+} from '../fixtures/mockAccounts';
 import { assert } from '../../src/assert/assert';
 import {
 	mockUserAccount,

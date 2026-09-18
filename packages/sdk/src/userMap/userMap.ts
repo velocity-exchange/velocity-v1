@@ -13,7 +13,6 @@ import {
 	StateAccount,
 } from '../types';
 import { WrappedEvent } from '../events/types';
-import { DLOB } from '../dlob/DLOB';
 import { UserSubscriptionConfig } from '../userConfig';
 import { DataAndSlot, UserEvents } from '../accounts/types';
 import { OneShotUserAccountSubscriber } from '../accounts/oneShotUserAccountSubscriber';
@@ -354,25 +353,6 @@ export class UserMap implements UserMapInterface {
 			return undefined;
 		}
 		return user.data.getUserAccount()?.authority;
-	}
-
-	/**
-	 * Implements the `DLOBSource` interface: builds a `DLOB` from every
-	 * subscribed user's open orders.
-	 * @param slot Slot to consider orders "current" as of (auction/trigger timing).
-	 */
-	public async getDLOB(slot: number): Promise<DLOB> {
-		const dlob = new DLOB();
-		try {
-			// The auction wall-clock math converts elapsed slots through the
-			// State slot clock. Unsubscribed state falls back to the 400ms
-			// baseline.
-			dlob.slotDurationState = this.velocityClient.getStateAccount();
-		} catch {
-			// The client is not subscribed yet, so keep the baseline.
-		}
-		await dlob.initFromUserMap(this, slot);
-		return dlob;
 	}
 
 	/** Ensures an entry exists in the map for `record.user`, adding it via `addPubkey` if not already present. */

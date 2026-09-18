@@ -110,7 +110,7 @@ pub fn get_amm_is_available(
         .unwrap()
 }
 /// Router inputs with no external quoters — the fill routes across the vAMM
-/// and whatever DLOB makers were passed. Two locals rather than a helper
+/// alone. Two locals rather than a helper
 /// because `RouterLeg` borrows its executor.
 macro_rules! no_router {
     ($name:ident) => {
@@ -1654,8 +1654,8 @@ pub mod fulfill_order {
     //     assert_eq!(taker.orders[0], Order::default());
     // }
     // `fulfill_with_amm_when_maker_is_filler` with a hard gate firing: the AMM
-    // would JIT the residual, but must not. Only the DLOB maker's half fills;
-    // AMM reserves untouched.
+    // would JIT the residual, but must not. Only the maker's half fills; AMM
+    // reserves untouched.
     #[test]
     fn paused_operations_blocks_amm_fill() {
         let now = 0_i64;

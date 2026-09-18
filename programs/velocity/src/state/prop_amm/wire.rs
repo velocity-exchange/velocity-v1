@@ -454,8 +454,8 @@ pub enum QuoterSubjects {
     /// not price, so an order a user did place can still be filled anywhere
     /// inside the oracle band. The exposure is the band's width across the size
     /// they posted. `open_bids` also does not separate a book's reservation
-    /// from the DLOB's on the same market and side, so a book's report can
-    /// consume reservation a DLOB order made. Splitting them needs sixteen more
+    /// from a slot order's on the same market and side, so a book's report can
+    /// consume reservation a slot order made. Splitting them needs sixteen more
     /// bytes on [`crate::state::user::PerpPosition`], which has no spare bytes.
     Book,
 }

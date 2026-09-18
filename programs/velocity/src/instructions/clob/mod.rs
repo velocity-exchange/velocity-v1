@@ -10,10 +10,9 @@
 //! - [`place_and_make_v1`]: the maker route. A post-only limit rests straight
 //!   on the book as a maker quote. It names no taker and matches nothing on
 //!   placement.
-//! - [`place_and_take_v1`]: the taker route. The router fills across the vAMM,
-//!   the quoter books, and the passed DLOB makers. The restable remainder then
-//!   rests on the book taker-origin. The v0 instruction's account list is
-//!   frozen, so this is a separate endpoint.
+//! - [`place_and_take_v1`]: the taker route. The router fills across the vAMM
+//!   and the quoter books. The restable remainder then rests on the book
+//!   taker-origin.
 //! - [`cancel_order_v1`]: cancel by CPI, then unwind the removed order's
 //!   remaining size from the aggregates.
 //! - [`cancel_orders_v1`]: the same for a maker's whole side, or for both

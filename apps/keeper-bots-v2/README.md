@@ -94,37 +94,13 @@ By default, some [Prometheus](https://prometheus.io/) metrics are exposed on `lo
 
 # Notes on some bots
 
-## Filler Bot
+## Order filling
 
-Include `filler`, `spotFiller`, or both under `.enabledBots` in `config.yaml`. For a lightweight
-filler for perp markets, include `fillerLite` rather than `filler`. The lighter filler runs on public
-RPCs for testing, but it is less stable.
-
-Read [the orderbook and keepers documentation](https://docs.velocity.exchange/protocol/how-it-works/orderbook-and-keepers).
-
-A filler matches crossing orders on the exchange for a small cut of the taker fees. Fillers keep a
-copy of the DLOB so they can find orders that cross. A filler also tries to execute triggerable
-orders.
-
-### Common errors
-
-When running the filler bots, you might see the following error codes in the transaction logs on a failed in pre-flight simulation:
-
-#### For perps
-
-| Error             | Description |   
-| ----------------- | ------ |
-| OrderDoesNotExist | Outcompeted: Order was already filled by someone else|
-| OrderNotTriggerable | Outcompeted: order was already triggered by someone else |
-| RevertFill |  Outcompeted: order was already filled by someone else|
-
-
-#### Other messages
-
-| Message | Description |
-| --------|--------------|
-| filler last active slot != current slot | You might see this when outcompeted on a fill. The *filler last active slot* was the last slot that the filler had a successful fill in, so it may diverge *current slot* if the filler has not placed a successful order.
-
+There is no filler bot. Velocity's matching venue is an on-chain CLOB reached through a
+router, so a taker's counterparties come from the books rather than from whoever assembles
+the transaction. A crossed book is closed by the permissionless cross cranks
+(`crank_cross_match`, `settle_taker_origin_cross`), and an armed trigger order is fired by
+relay's trigger resolvers. Both land without anybody submitting them.
 
 ## Liquidator bot
 

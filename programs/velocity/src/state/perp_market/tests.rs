@@ -932,7 +932,7 @@ mod mark_twap_reseed {
     }
 }
 
-/// The bid/ask crank folds caller-supplied DLOB depth into the mark TWAP that
+/// The bid/ask crank folds caller-supplied book depth into the mark TWAP that
 /// funding later reads. A TWAP update weights the new sample by
 /// `elapsed / funding_period`, so after a long gap one caller-chosen sample can
 /// claim a near-full-period weight and set the funding input in a single crank.

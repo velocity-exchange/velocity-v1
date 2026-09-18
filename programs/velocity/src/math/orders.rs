@@ -89,7 +89,7 @@ pub fn calculate_base_asset_amount_for_amm_to_fulfill(
 
 /// Apply the post-only maker-rebate buffer and the one-tick walk-inside-
 /// limit to a taker's order limit, then intersect with any `override` price
-/// (used by the AMM-after-DLOB chained fill where the AMM is capped at the
+/// (used by the AMM-after-maker chained fill where the AMM is capped at the
 /// crossing maker price). Returns the effective price ceiling to hand the
 /// matcher as `taker_limit_price`. `None` for unbounded market orders with
 /// no override.
@@ -1142,7 +1142,7 @@ pub struct Level {
 /// price lies within `[oracle * (100 - d) / 100, oracle * (100 + d) / 100]`.
 /// The band is symmetric on both sides for both books: a bid above the upper
 /// bound and an ask below the lower bound are excluded too, so caller-supplied
-/// DLOB depth cannot drive the mark TWAP past the oracle band in either
+/// book depth cannot drive the mark TWAP past the oracle band in either
 /// direction.
 pub fn filter_bids_asks_by_oracle_divergence(
     bids: Vec<Level>,

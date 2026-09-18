@@ -31,7 +31,7 @@ function readSignedBigInt64LE(buffer: Buffer, offset: number): BN {
 
 /**
  * Hand-rolled, offset-based decoder for the `User` account, used as a fast path instead of
- * Anchor's generic Borsh decoder in hot paths (e.g. bulk DLOB/account-map refreshes). Byte offsets
+ * Anchor's generic Borsh decoder in hot paths (e.g. bulk account-map refreshes). Byte offsets
  * here are hardcoded to the current on-chain `User` layout and must be kept in sync with any
  * change to `programs/velocity/src/state/user.rs` — see the offset notes in `../memcmp.ts`
  * (`USER_IDLE_OFFSET` etc.), which mirror this same layout and will silently return zero matches

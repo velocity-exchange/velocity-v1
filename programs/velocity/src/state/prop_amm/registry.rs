@@ -27,8 +27,7 @@ pub enum QuoterType {
 
 impl QuoterType {
     /// Default routing priority at registration. A lower priority fills first.
-    /// The gaps leave room for later kinds, such as the DLOB migration bridge
-    /// or a promoted quoter. The admin can adjust the value afterwards.
+    /// The gaps leave room for later kinds, such as a promoted quoter. The admin can adjust the value afterwards.
     pub fn default_priority(self) -> u8 {
         match self {
             QuoterType::Vamm => 0,

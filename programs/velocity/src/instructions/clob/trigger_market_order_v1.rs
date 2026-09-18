@@ -1,11 +1,10 @@
-//! `trigger_market_order_v1`, which fires a DLOB trigger straight to the book.
+//! `trigger_market_order_v1`, which fires an armed trigger straight to the
+//! book.
 //!
-//! A stop-market on the DLOB rests as an armed trigger in `User.orders`. The v0
-//! `trigger_order` crank makes it live and leaves it there for a later
-//! `fill_legacy_dlob_order` crank to fill. This crank fires it and rests it on
-//! the book in one instruction. It validates the trigger, turns the slot's
-//! order into a live market order, frees the slot, and rests the order
-//! taker-origin. Nothing stays live in `User.orders`.
+//! A stop-market rests as an armed trigger in `User.orders`. This crank fires
+//! it and rests it on the book in one instruction. It validates the trigger,
+//! turns the slot's order into a live market order, frees the slot, and rests
+//! the order taker-origin. Nothing stays live in `User.orders`.
 //!
 //! The account tail decides whether the order fills here first. A caller that
 //! staged a quoter tail, such as a keeper that read the book, routes the fill
@@ -14,10 +13,10 @@
 //! worse price than the full router. It rests the whole order instead, and the
 //! cross crank fills it across every source at the best price.
 //!
-//! The account set is the v0 trigger keeper set plus the market's CLOB accounts
-//! the rest needs. `trigger_limit_order_v1` and `fill_legacy_dlob_order` carry
-//! the same superset. CLOB trigger-limits keep their own path. They rest their
-//! whole order and never take a fill here.
+//! The account set is the trigger keeper set plus the market's CLOB accounts
+//! the rest needs. `trigger_limit_order_v1` carries the same superset. CLOB
+//! trigger-limits keep their own path. They rest their whole order and never
+//! take a fill here.
 
 use {
     crate::{
@@ -116,8 +115,8 @@ pub struct TriggerMarketOrderV1<'info> {
         Option<AccountLoader<'info, crate::state::user_conditions::UserConditionsV0>>,
     /// CHECK: address-locked to the instructions sysvar. It supplies whether
     /// the owner signed the transaction and how many accounts it locks, which
-    /// are the filler-obligation facts `fill_legacy_dlob_order` needs. It is
-    /// optional and costs one lock. A fill needs it only when a book withholds
+    /// are the filler-obligation facts a fill needs. It is optional and costs
+    /// one lock. A fill needs it only when a book withholds
     /// depth for an owner the transaction does not carry, and the owner did not
     /// sign. A trigger crank's owner never signs, so a fill that reaches a
     /// withheld order and passes `None` here is refused.
@@ -556,7 +555,7 @@ fn rest_fired_remainder<'info>(
 }
 
 /// The relay resolver for `trigger_market_order_v1`. It is simulation-only and
-/// is staged from the user's synced trigger conditions. It fires a DLOB
+/// is staged from the user's synced trigger conditions. It fires an armed
 /// stop-market to the book.
 ///
 /// The staged executor carries no quoter tail, so it does not fill. The whole
@@ -564,7 +563,7 @@ fn rest_fired_remainder<'info>(
 /// source at the best price. A resolver sees only the book and not the
 /// propAMMs, so a fill it staged would take a worse price than the full router.
 /// The executor still names the market's CLOB accounts, which the rest places
-/// behind. A DLOB trigger carries no signed route, so the staged call claims
+/// behind. An armed trigger carries no signed route, so the staged call claims
 /// none.
 #[derive(Accounts)]
 pub struct ResolveTriggerMarketOrderV1<'info> {

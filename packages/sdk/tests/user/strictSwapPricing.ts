@@ -9,7 +9,7 @@ import {
 	SpotBalanceType,
 	ZERO,
 } from '../../src';
-import { mockPerpMarkets, mockSpotMarkets } from '../dlob/helpers';
+import { mockPerpMarkets, mockSpotMarkets } from '../fixtures/mockAccounts';
 import { assert } from '../../src/assert/assert';
 import {
 	mockUserAccount as baseMockUserAccount,

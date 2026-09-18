@@ -123,7 +123,7 @@ pub enum MarketConfigFlag {
 /// Pure counters — token claims live in the pools
 /// (`protocol_fee_pool`, the quote `revenue_pool`, `AMM.fee_pool`).
 /// Convention: gross-fee counters record what the taker actually paid
-/// (post referee discount, pre carve-outs) on BOTH the AMM and DLOB-match
+/// (post referee discount, pre carve-outs) on both the AMM and the maker-match
 /// paths.
 #[zero_copy(unsafe)]
 #[derive(Default, Eq, PartialEq, Debug)]
@@ -533,7 +533,7 @@ pub struct PerpMarket {
     /// The automated market maker. Last field so future quoter modules can
     /// land in the trailing region without disturbing earlier byte offsets
     /// — in the target architecture this account holds back-to-back
-    /// per-quoter state slices (AMM, DLOB-maker state, future propAMM-style
+    /// per-quoter state slices (AMM, book state, future propAMM-style
     /// participants, …) and each module owns a contiguous span starting at
     /// a known offset.
     pub amm: AMM,
@@ -1500,7 +1500,7 @@ impl PerpMarket {
     /// Auction-timing / order-risk half of [`Self::amm_can_fill_order`], run
     /// after [`Self::amm_fill_gates_ok`]. A low-risk order fills; otherwise the
     /// AMM only fills immediately (JIT) when it wants to make, has room, and
-    /// can skip the auction. JIT inside a DLOB match bypasses this by design.
+    /// can skip the auction.
     fn amm_fill_timing_ok(
         &self,
         order: &Order,
@@ -1761,8 +1761,8 @@ impl SpotBalance for PoolBalance {
 }
 
 /// Historic market data shared across all makers, updated on every fill
-/// regardless of which maker filled (vAMM, DLOB resting order, JIT participant,
-/// future quoter types). Holds mark/oracle TWAPs, rolling std, volume,
+/// regardless of which maker filled (vAMM, a resting book order, future quoter
+/// types). Holds mark/oracle TWAPs, rolling std, volume,
 /// intensity, mm-oracle snapshot, `historical_oracle_data`,
 /// `last_oracle_normalised_price`, `last_oracle_valid`.
 ///
@@ -2108,7 +2108,7 @@ impl MarketStats {
     /// where `elapsed` is the time since the TWAP was last advanced. That weight
     /// is correct only while `elapsed` is time during which whoever profits from
     /// the sample could not choose it. The bid/ask crank does not meet that
-    /// condition. It folds caller-supplied DLOB depth into the TWAP and can run
+    /// condition. It folds caller-supplied book depth into the TWAP and can run
     /// after a gap of any length. One caller-chosen snapshot would then claim a
     /// weight near the full period and move the TWAP, and the funding rate it
     /// feeds, in a single instruction.
@@ -2131,8 +2131,7 @@ impl MarketStats {
     /// Update the bid/ask/mid mark-price TWAPs (funding-period and 5-minute)
     /// from a freshly-observed bid/ask pair. This mutates `MarketStats` only.
     /// Callers compute `bid_price` and `ask_price` from whichever liquidity
-    /// source produced the fill, such as the vAMM quote, the DLOB, or a JIT
-    /// participant.
+    /// source produced the fill, such as the vAMM quote or the book.
     ///
     /// A market that does not write these TWAPs for several funding periods keeps no
     /// usable history. [`Self::reseed_mark_twap_from_oracle_if_stale`] then re-seeds
@@ -2142,7 +2141,7 @@ impl MarketStats {
     /// [`MarketStats::max_mark_twap_sample_elapsed`]. Fills and the AMM re-blend
     /// pass `None`, because their samples come from the AMM and from trades and
     /// no caller curates them. The bid/ask crank passes `Some(..)`, so
-    /// caller-supplied DLOB depth cannot claim a full-period weight after a gap.
+    /// caller-supplied book depth cannot claim a full-period weight after a gap.
     /// The cap bounds only the new sample's weight. The stale-TWAP shrink below
     /// still keys off the real last-update timestamp.
     pub fn update_mark_twap(
@@ -2398,11 +2397,11 @@ impl MarketStats {
         )
     }
 
-    /// Update the mark-price TWAP using the *best* of (vAMM bid/ask, DLOB
-    /// bid/ask). Used by the explicit mark-twap crank to fold DLOB liquidity
+    /// Update the mark-price TWAP using the *best* of (vAMM bid/ask, book
+    /// bid/ask). Used by the explicit mark-twap crank to fold book liquidity
     /// into the on-chain TWAP estimate.
     ///
-    /// The DLOB side is caller-supplied, so this is the one path whose sample
+    /// The book side is caller-supplied, so this is the one path whose sample
     /// the caller curates. It caps the sample's elapsed weight with
     /// [`MarketStats::max_mark_twap_sample_elapsed`], so a single crank after a
     /// gap cannot set the funding input. Funding and fills stay uncapped.
@@ -2411,8 +2410,8 @@ impl MarketStats {
         amm: &AMM,
         now: i64,
         oracle_price_data: &crate::state::oracle::OraclePriceData,
-        best_dlob_bid_price: Option<u64>,
-        best_dlob_ask_price: Option<u64>,
+        best_book_bid_price: Option<u64>,
+        best_book_ask_price: Option<u64>,
         sanitize_clamp: Option<i64>,
     ) -> crate::error::VelocityResult<()> {
         let amm_reserve_price = amm.reserve_price()?;
@@ -2423,12 +2422,12 @@ impl MarketStats {
             amm.reference_price_offset,
         )?;
 
-        let mut best_bid_price = match best_dlob_bid_price {
-            Some(best_dlob_bid_price) => best_dlob_bid_price.max(amm_bid_price),
+        let mut best_bid_price = match best_book_bid_price {
+            Some(best_book_bid_price) => best_book_bid_price.max(amm_bid_price),
             None => amm_bid_price,
         };
-        let mut best_ask_price = match best_dlob_ask_price {
-            Some(best_dlob_ask_price) => best_dlob_ask_price.min(amm_ask_price),
+        let mut best_ask_price = match best_book_ask_price {
+            Some(best_book_ask_price) => best_book_ask_price.min(amm_ask_price),
             None => amm_ask_price,
         };
 

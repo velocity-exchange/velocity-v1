@@ -18,7 +18,7 @@ profile = ["anchor-v2-testing/profile"]
 
 [dependencies]
 # Anchor v2 alpha (anchor-next). Pinned to an exact rev — the alpha branch moves.
-anchor-lang = { git = "https://github.com/velocity-exchange/anchor.git", rev = "444c6205fd3aa54006cf9d0c232d43471b74b071" }
+anchor-lang = { git = "https://github.com/velocity-exchange/anchor.git", rev = "b005890d9351a17a8061811662c44d781a04baf0" }
 bytemuck = { version = "1", features = ["derive", "min_const_generics"] }
 static_assertions = "1.1.0"
 wincode = { version = "0.6", features = ["derive"] }
@@ -34,16 +34,16 @@ clob-state = { package = "clob-state-v2", path = "../../../crates/clob-state-v2"
 # a crossed book are facts about this account, so the wakes that watch for them
 # live on it. bytemuck-only, so no framework reaches this binary; the resolver
 # each condition names is registered by the program that owns the book's flow.
-relay-spec = { git = "https://github.com/velocity-exchange/relay", rev = "ee69eb7" }
+relay-spec = { git = "https://github.com/velocity-exchange/relay", rev = "e4b1115" }
 
 [dev-dependencies]
 # `testing` adds the stack-backed AccountBuffer the src/tests/ unit tests
 # build a real ClobMarketV0 over. Dev-only: with resolver 2 the feature is
 # not enabled for the SBF build of the program itself.
-anchor-lang = { git = "https://github.com/velocity-exchange/anchor.git", rev = "444c6205fd3aa54006cf9d0c232d43471b74b071", features = [
+anchor-lang = { git = "https://github.com/velocity-exchange/anchor.git", rev = "b005890d9351a17a8061811662c44d781a04baf0", features = [
     "testing",
 ] }
-anchor-v2-testing = { git = "https://github.com/velocity-exchange/anchor.git", rev = "444c6205fd3aa54006cf9d0c232d43471b74b071" }
+anchor-v2-testing = { git = "https://github.com/velocity-exchange/anchor.git", rev = "b005890d9351a17a8061811662c44d781a04baf0" }
 litesvm = "0.13.1"
 solana-account = "3.2.0"
 solana-clock = "3"

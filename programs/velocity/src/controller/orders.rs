@@ -9,7 +9,7 @@
 //! * [`trigger`] fires a dormant trigger order into a live market order.
 //! * [`perp_fill`] fills one perp order in three layers: the order, the
 //!   taker's risk limits, and liquidity.
-//! * [`settle`] settles one filled allocation against the vAMM, a DLOB maker,
+//! * [`settle`] settles one filled allocation against the vAMM, a maker,
 //!   or an external quoter.
 //! * [`cross`] prices a crank that crosses two resting sources.
 //! * [`keeper`] holds the keeper's work on other users' orders, and the flat

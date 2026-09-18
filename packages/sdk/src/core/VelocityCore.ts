@@ -222,7 +222,7 @@ export class VelocityCore {
 	}
 
 	/**
-	 * Builds a `triggerMarketOrderV1` instruction, firing a DLOB stop-market straight
+	 * Builds a `triggerMarketOrderV1` instruction, firing an armed stop-market straight
 	 * to the book. See `buildTriggerMarketOrderV1Instruction`.
 	 */
 	static async buildTriggerMarketOrderV1Instruction(args: {

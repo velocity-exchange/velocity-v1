@@ -29,7 +29,7 @@ use crate::{
 ///
 /// In the target architecture, the vAMM is one of several quoter modules
 /// that share a perp-market account's bytes — sitting alongside other
-/// quoter-state regions (DLOB maker state, future propAMM-style
+/// quoter-state regions (book state, future propAMM-style
 /// participants, etc.) within the same program. Each module owns its own
 /// state slice and exposes a contract trait; Velocity's general logic mutates
 /// the AMM's state slice *only* through `AmmContract` methods, never by

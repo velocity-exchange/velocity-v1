@@ -630,8 +630,8 @@ impl User {
         }
     }
 
-    /// How many of this market's open perp orders rest on a CLOB instead of
-    /// on the DLOB.
+    /// How many of this market's open perp orders rest on a CLOB instead of in
+    /// a `User.orders` slot.
     ///
     /// Two kinds of order rest on a book. A plain CLOB placement reserves the
     /// position's `open_orders` slot and writes no `Order` row. A fired
@@ -671,7 +671,7 @@ impl User {
     ///
     /// A book-resident order reserves `open_bids` and `open_asks`. The
     /// reservation inflates the worst-case margin a liquidation reads. The
-    /// DLOB cancel that a liquidation runs cannot remove a book order, so the
+    /// slot cancel that a liquidation runs cannot remove a book order, so the
     /// liquidation proceeds on the inflated figure. A keeper reclaims these
     /// orders with `force_cancel_clob_orders` before it liquidates.
     pub fn first_market_with_clob_resident_orders(&self) -> Option<u16> {
@@ -1781,7 +1781,7 @@ pub struct Order {
     /// 0: is_signed_message
     pub bit_flags: u8,
     /// Free bytes. These held a route digest while a signed-message order
-    /// could rest on the DLOB. Such an order now routes at placement and rests
+    /// could rest in a slot. Such an order now routes at placement and rests
     /// any remainder on the market's CLOB, so the route travels with the
     /// message, on
     /// [`crate::state::signed_msg_user::SignedMsgOrderId::route_digest`].
@@ -2882,7 +2882,7 @@ mod clob_resident_open_orders_tests {
 
     const MARKET: u16 = 3;
 
-    fn dlob_row() -> Order {
+    fn slot_row() -> Order {
         Order {
             status: OrderStatus::Open,
             market_type: MarketType::Perp,
@@ -2892,7 +2892,7 @@ mod clob_resident_open_orders_tests {
     }
 
     fn placed_trigger_shadow() -> Order {
-        let mut order = dlob_row();
+        let mut order = slot_row();
         order.add_bit_flag(OrderBitFlag::PlacedOnClob);
         order
     }
@@ -2913,8 +2913,8 @@ mod clob_resident_open_orders_tests {
 
     /// A fired trigger order rests on the book and reuses the row's
     /// `open_orders` slot. The liquidation guard must still see it, because
-    /// its reserved base inflates the worst-case margin and no DLOB cancel
-    /// can release it.
+    /// its reserved base inflates the worst-case margin and no slot cancel can
+    /// release it.
     #[test]
     fn placed_trigger_shadow_is_book_resident() {
         let user = user_with(1, vec![placed_trigger_shadow()]);
@@ -2923,8 +2923,8 @@ mod clob_resident_open_orders_tests {
     }
 
     #[test]
-    fn dlob_row_is_not_book_resident() {
-        let user = user_with(1, vec![dlob_row()]);
+    fn slot_row_is_not_book_resident() {
+        let user = user_with(1, vec![slot_row()]);
         assert_eq!(user.clob_resident_open_orders(MARKET), 0);
         assert_eq!(user.first_market_with_clob_resident_orders(), None);
     }
@@ -2937,11 +2937,11 @@ mod clob_resident_open_orders_tests {
         assert_eq!(user.first_market_with_clob_resident_orders(), Some(MARKET));
     }
 
-    /// Three reservations against one DLOB row and one shadow leave one plain
+    /// Three reservations against one slot row and one shadow leave one plain
     /// CLOB order. The shadow and the plain order are both book resident.
     #[test]
     fn mixed_orders_report_both_book_residents() {
-        let user = user_with(3, vec![dlob_row(), placed_trigger_shadow()]);
+        let user = user_with(3, vec![slot_row(), placed_trigger_shadow()]);
         assert_eq!(user.clob_resident_open_orders(MARKET), 2);
         assert_eq!(user.first_market_with_clob_resident_orders(), Some(MARKET));
     }

@@ -8,7 +8,7 @@ publish = false
 # Chain access + in-process simulation, extracted from relay's crank turner.
 # Pinned by rev rather than tracking a branch: this crate decides what a fill
 # would do, so the simulation layer under it should only move deliberately.
-relay-chain-source = { git = "https://github.com/velocity-exchange/relay", rev = "ee69eb7" }
+relay-chain-source = { git = "https://github.com/velocity-exchange/relay", rev = "e4b1115" }
 # The program as a host library, same flavor velocity-rs uses — so account
 # layout constants are derived from the struct rather than transcribed.
 program = { package = "velocity", path = "../../programs/velocity", default-features = false, features = [
@@ -28,6 +28,14 @@ solana-system-interface = "3"
 anyhow = "1"
 async-trait = "0.1"
 solana-sdk = "3"
+# The account type relay-chain-source hands back. That crate is on the solana
+# 4.x line while this workspace stays on 3.x, because anchor 1.0 needs
+# solana-program 3. Naming the 4.x `Account` here keeps the mismatch at this
+# one boundary instead of converting every simulation result.
+solana-account = "4"
+# Same boundary: chain-source takes a 4.x `VersionedTransaction`.
+solana-transaction = { version = "4", features = ["serde"] }
+bincode = "1"
 tracing = "0.1"
 
 [dev-dependencies]

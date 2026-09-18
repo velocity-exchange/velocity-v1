@@ -196,7 +196,11 @@ pub struct RouterQuote {
     /// Post-simulation state of the accounts the caller asked for, in the same
     /// order. A taker's `User` shows the position and the fees the fill would
     /// produce, with nothing landed on chain.
-    pub accounts: Vec<Option<solana_sdk::account::Account>>,
+    /// This is the 4.x `solana_account::Account`, which is what
+    /// relay-chain-source returns. It is not `solana_sdk::account::Account`:
+    /// the workspace holds solana-sdk at 3.x for anchor, so the two are
+    /// distinct types even though they describe the same account.
+    pub accounts: Vec<Option<solana_account::Account>>,
 }
 
 impl From<SimOutcome> for RouterQuote {
@@ -226,10 +230,28 @@ pub async fn simulate_router_fill<S: ChainSource>(
     read_accounts: &[Pubkey],
 ) -> Result<RouterQuote> {
     let outcome = source
-        .simulate_transaction(fill, read_accounts)
+        .simulate_transaction(&as_versioned(fill)?, read_accounts)
         .await
         .context("simulate router fill")?;
     Ok(outcome.into())
+}
+
+/// A legacy transaction in the 4.x envelope chain-source takes.
+///
+/// This workspace builds transactions with solana-sdk 3, because anchor 1.0
+/// holds solana-program at 3 and the instruction and pubkey types have to
+/// match the program's. chain-source is on the 4.x line, so its
+/// `VersionedTransaction` is a different type from anything here, and no
+/// `From` impl spans the two. The bytes do span them: a legacy transaction's
+/// wire form is the same in both, and a `VersionedTransaction` reads a message
+/// with no version prefix as legacy, which is how one comes off the network.
+/// So the bridge is the encoding rather than a conversion, and it is here in
+/// one place rather than at each call site.
+pub fn as_versioned(
+    tx: &Transaction,
+) -> Result<solana_transaction::versioned::VersionedTransaction> {
+    let bytes = bincode::serialize(tx).context("serialize transaction")?;
+    bincode::deserialize(&bytes).context("read transaction back as versioned")
 }
 
 #[cfg(test)]
@@ -362,7 +384,9 @@ pub mod l3 {
         ));
         // The rows land in the book's own account and return data carries only
         // the pointer, so the simulation has to hand back the account too.
-        let outcome = source.simulate_transaction(&tx, &[book]).await?;
+        let outcome = source
+            .simulate_transaction(&crate::as_versioned(&tx)?, &[book])
+            .await?;
         if let Some(err) = outcome.err {
             bail!("l3 simulation failed: {err}");
         }

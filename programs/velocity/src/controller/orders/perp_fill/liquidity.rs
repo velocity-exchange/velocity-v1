@@ -312,7 +312,7 @@ struct PerpFill<'a, 'o, 'm, 's> {
     tally: FillTally,
     rules: &'a PricingRules<'a>,
     /// How many external books the route carries. It is where the external
-    /// allocations end and the DLOB maker allocations begin.
+    /// allocations end and the vAMM's allocation begins.
     external_book_count: usize,
     taker: TakerSide<'a>,
     setup: FillMarketSetup,
@@ -605,7 +605,8 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
 
     /// Settle the vAMM's fill against the house.
     ///
-    /// Runs after the DLOB legs, which have released their borrows by here.
+    /// Runs after the external book legs, which have released their borrows by
+    /// here.
     fn settle_vamm_allocation(
         &mut self,
         market: &mut PerpMarket,
@@ -905,8 +906,8 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         // a change against the quoter's own quote and the blended average,
         // but a single maker can still sit far from oracle while the blend
         // passes. That is value moved onto that maker at a price the average
-        // hides. Bound each maker's fill price the way the DLOB match path
-        // bounds a resting maker order.
+        // hides. Bound each maker's fill price the way a maker match bounds a
+        // resting maker order.
         //
         // The band is one-sided because it is the only bound the maker side
         // has. The taker side already carries a per-change bound of its own:
@@ -1336,8 +1337,8 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
 /// back. It measures no risk of its own: the caller sets the limits it runs
 /// inside.
 ///
-/// Quote (sanitized DLOB makers as single-level books, external CPI books,
-/// the vAMM ladder last with everything else as its last look), split the
+/// Quote (external CPI books, then the vAMM ladder last with everything else
+/// as its last look), split the
 /// taker's unfilled size across the union by priority tier, then execute and
 /// settle each allocation through the fee-policy-keyed settle functions.
 ///
@@ -1350,10 +1351,9 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
 /// External books are priced into the split. An allocation that lands on one
 /// executes through `RouterLeg::executor`, which is the CPI leg the fill
 /// entrypoint supplies. It settles per returned balance change against the
-/// loaded makers. Maker prices are the sanitized frozen prices from discovery.
-/// `DlobOrderQuoter::execute` requotes off the same oracle, slot and tick, so
-/// the two agree by construction, and `settle_dlob_match_fill`'s
-/// `validate_fill_price` enforces it.
+/// loaded makers. A quoter requotes off the same oracle, slot and tick it was
+/// quoted against, so the quote and the execute agree by construction, and the
+/// settle pass's `validate_fill_price` enforces it.
 ///
 /// The steps run in the order they are written below. [`PerpFill`] carries
 /// what they share.

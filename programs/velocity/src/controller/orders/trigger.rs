@@ -18,7 +18,7 @@ pub struct TriggerAccounts<'a, 'info> {
     pub filler: &'a AccountLoader<'info, User>,
 }
 
-/// Fire a DLOB trigger order and hand back the now-live order for the caller to
+/// Fire an armed trigger order and hand back the now-live order for the caller to
 /// route straight to the book.
 ///
 /// This is the v1 trigger path. [`trigger_order`] leaves the fired order
@@ -171,7 +171,7 @@ fn find_triggerable_order(user: &User, order_id: u32) -> VelocityResult<Option<u
         "Order is not triggerable"
     )?;
     // A placed trigger's slot reads as untriggered, which keeps it out of
-    // every DLOB matching path. Its live order already rests on the CLOB, so
+    // every discovery path. Its live order already rests on the CLOB, so
     // this guards against it explicitly.
     validate!(
         !order.is_placed_on_clob(),

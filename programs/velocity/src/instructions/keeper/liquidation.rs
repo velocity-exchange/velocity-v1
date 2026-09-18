@@ -170,7 +170,7 @@ pub fn handle_liquidate_perp_with_fill<'c: 'info, 'info>(
 }
 
 /// The liquidity a forced liquidation order fills against. That is the market's
-/// book and its quoters through the router, the vAMM, and any DLOB makers the
+/// book and its quoters through the router, the vAMM, and any makers the
 /// caller loaded.
 ///
 /// A liquidation is the one taker order velocity writes for somebody else, so it

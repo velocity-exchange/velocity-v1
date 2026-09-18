@@ -8,8 +8,6 @@ import morgan from 'morgan';
 import { Commitment, Connection, Keypair, PublicKey } from '@solana/web3.js';
 
 import {
-	DLOBNode,
-	DLOBSubscriber,
 	VelocityClient,
 	VelocityEnv,
 	SlotSubscriber,
@@ -17,13 +15,11 @@ import {
 	getVariant,
 	initialize,
 	isVariant,
-	OrderSubscriber,
 	DelistedMarketSetting,
 	BigNum,
 	PRICE_PRECISION_EXP,
 	MarketTypeStr,
 	AssetType,
-	MarketType,
 	PerpMarkets,
 } from '@velocity-exchange/sdk';
 import {
@@ -41,7 +37,6 @@ import {
 	normalizeBatchQueryParams,
 	sleep,
 	validateDlobQuery,
-	getAccountFromId,
 	getRawAccountFromId,
 	selectMostRecentBySlot,
 	createMarketBasedAuctionParams,
@@ -51,8 +46,6 @@ import {
 	formatAuctionParamsForResponse,
 	fetchL2FromRedis,
 } from './utils/utils';
-import FEATURE_FLAGS from './utils/featureFlags';
-import { getDLOBProviderFromOrderSubscriber } from './dlobProvider';
 import { setGlobalDispatcher, Agent } from 'undici';
 import { deriveMarketOrderParams, ENUM_UTILS } from '@velocity-exchange/common';
 import { AuctionParamArgs } from './utils/types';
@@ -87,8 +80,6 @@ const stateCommitment: Commitment = 'confirmed';
 const serverPort = process.env.PORT || 6969;
 export const ORDERBOOK_UPDATE_INTERVAL =
 	parseInt(process.env.ORDERBOOK_UPDATE_INTERVAL) || 400;
-const WS_FALLBACK_FETCH_INTERVAL = ORDERBOOK_UPDATE_INTERVAL * 60;
-const useWebsocket = process.env.USE_WEBSOCKET?.toLowerCase() === 'true';
 const pythLazerVelocityToken = process.env.PYTH_LAZER_DRIFT_TOKEN;
 const pythLazerEndpoint = process.env.PYTH_LAZER_ENDPOINT;
 
@@ -122,17 +113,9 @@ const healthStatusGauge = metricsV2.addGauge(
 	'health_status',
 	'Health check status'
 );
-const accountUpdatesCounter = metricsV2.addCounter(
-	'account_updates_count',
-	'Total accounts update'
-);
 const cacheHitCounter = metricsV2.addCounter(
 	'cache_hit_count',
 	'Total cache hit'
-);
-const lastWsReceivedTsGauge = metricsV2.addGauge(
-	'last_ws_message_received_ts',
-	'Timestamp of last received websocket message'
 );
 const incomingRequestsCounter = metricsV2.addCounter(
 	'incoming_requests_count',
@@ -177,7 +160,6 @@ const endpoint = process.env.ENDPOINT;
 const wsEndpoint = process.env.WS_ENDPOINT;
 logger.info(`RPC endpoint:       ${endpoint}`);
 logger.info(`WS endpoint:        ${wsEndpoint}`);
-logger.info(`useWebsocket:       ${useWebsocket}`);
 logger.info(`VelocityEnv:           ${velocityEnv}`);
 logger.info(`Commit:             ${commitHash}`);
 
@@ -190,6 +172,9 @@ const main = async (): Promise<void> => {
 		commitment: stateCommitment,
 	});
 
+	// Every book this server serves is published into redis by the rust
+	// book-publisher, which reads the CLOB. The server holds no order state of
+	// its own, so a slot is all it needs to say how fresh a cached book is.
 	const slotSubscriber = new SlotSubscriber(connection, {
 		resubTimeoutMs: 5000,
 	});
@@ -208,55 +193,11 @@ const main = async (): Promise<void> => {
 		delistedMarketSetting: DelistedMarketSetting.Discard,
 	});
 
-	const orderSubscriber = new OrderSubscriber({
-		velocityClient,
-		subscriptionConfig: {
-			type: 'websocket',
-			commitment: stateCommitment,
-			resubTimeoutMs: 10_000,
-			resyncIntervalMs: WS_FALLBACK_FETCH_INTERVAL,
-		},
-	});
-	orderSubscriber.eventEmitter.on(
-		'updateReceived',
-		(_pubkey: PublicKey, _slot: number, _dataType: 'raw' | 'decoded') => {
-			lastWsReceivedTsGauge.setLatestValue(Date.now(), {});
-			accountUpdatesCounter.add(1, {});
-		}
-	);
-
-	const dlobProvider = getDLOBProviderFromOrderSubscriber(orderSubscriber);
-
 	await velocityClient.subscribe();
 	velocityClient.eventEmitter.on('error', (e) => {
 		logger.info('clearing house error');
 		logger.error(e);
 	});
-
-	logger.info(`Initializing DLOB Provider...`);
-	const initDLOBProviderStart = Date.now();
-	await dlobProvider.subscribe();
-	logger.info(
-		`dlob provider initialized in ${Date.now() - initDLOBProviderStart} ms`
-	);
-	logger.info(`dlob provider size ${dlobProvider.size()}`);
-
-	logger.info(
-		`GPA refresh?: ${useWebsocket && !FEATURE_FLAGS.DISABLE_GPA_REFRESH}`
-	);
-
-	logger.info(`Initializing DLOBSubscriber...`);
-	const initDlobSubscriberStart = Date.now();
-	const dlobSubscriber = new DLOBSubscriber({
-		velocityClient,
-		dlobSource: dlobProvider,
-		slotSource: dlobProvider,
-		updateFrequency: ORDERBOOK_UPDATE_INTERVAL,
-	});
-	await dlobSubscriber.subscribe();
-	logger.info(
-		`DLOBSubscriber initialized in ${Date.now() - initDlobSubscriberStart} ms`
-	);
 
 	// Handle redis client initialization and rotation maps
 	const redisClients: Array<RedisClient> = [];
@@ -282,7 +223,7 @@ const main = async (): Promise<void> => {
 	});
 
 	const handleStartup = async (_req, res, _next) => {
-		if (velocityClient.isSubscribed && dlobProvider.size() > 0) {
+		if (velocityClient.isSubscribed && slotSubscriber.currentSlot) {
 			res.writeHead(200);
 			res.end('OK');
 		} else {
@@ -291,9 +232,9 @@ const main = async (): Promise<void> => {
 		}
 	};
 
-	app.get('/health', handleHealthCheck(dlobProvider, healthStatusGauge));
+	app.get('/health', handleHealthCheck(slotSubscriber, healthStatusGauge));
 	app.get('/startup', handleStartup);
-	app.get('/', handleHealthCheck(dlobProvider, healthStatusGauge));
+	app.get('/', handleHealthCheck(slotSubscriber, healthStatusGauge));
 
 	app.get('/priorityFees', async (req, res, next) => {
 		try {
@@ -402,9 +343,6 @@ const main = async (): Promise<void> => {
 				res.status(400).send('Bad Request: side must be either bid or ask');
 				return;
 			}
-			const normedSide = (side as string).toLowerCase();
-			const oracle =
-				velocityClient.getMMOracleDataForPerpMarket(normedMarketIndex);
 
 			let normedLimit = undefined;
 			if (limit) {
@@ -429,15 +367,13 @@ const main = async (): Promise<void> => {
 			const redisResponse = await fetchFromRedis(
 				`last_update_orderbook_best_makers_${getVariant(
 					normedMarketType
-				)}_${marketIndex}`,
+				)}_${normedMarketIndex}`,
 				selectMostRecentBySlot
 			);
 			if (redisResponse) {
-				if (side === 'bid') {
-					topMakers = redisResponse['bids'];
-				} else {
-					topMakers = redisResponse['asks'];
-				}
+				const makers =
+					side === 'bid' ? redisResponse['bids'] : redisResponse['asks'];
+				topMakers = makers?.slice(0, normedLimit);
 			}
 
 			if (topMakers) {
@@ -461,68 +397,15 @@ const main = async (): Promise<void> => {
 				return;
 			}
 
-			const topMakersSet = new Set<string>();
-			let foundMakers = 0;
-			const findMakers = async (sideGenerator: Generator<DLOBNode>) => {
-				for (const side of sideGenerator) {
-					if (limit && foundMakers >= normedLimit) {
-						break;
-					}
-					if (side.userAccount) {
-						const maker = side.userAccount;
-						if (topMakersSet.has(maker)) {
-							continue;
-						} else {
-							topMakersSet.add(side.userAccount);
-							foundMakers++;
-						}
-					} else {
-						continue;
-					}
-				}
-			};
-
-			if (normedSide === 'bid') {
-				await findMakers(
-					dlobSubscriber
-						.getDLOB()
-						.getRestingLimitBids(
-							normedMarketIndex,
-							dlobProvider.getSlot(),
-							isVariant(normedMarketType, 'perp')
-								? MarketType.PERP
-								: MarketType.SPOT,
-							oracle
-						)
-				);
-			} else {
-				await findMakers(
-					dlobSubscriber
-						.getDLOB()
-						.getRestingLimitAsks(
-							normedMarketIndex,
-							dlobProvider.getSlot(),
-							isVariant(normedMarketType, 'perp')
-								? MarketType.PERP
-								: MarketType.SPOT,
-							oracle
-						)
-				);
-			}
-			topMakers = [...topMakersSet];
+			// The book publisher is the only source of the best-makers document.
+			// An empty answer means the publisher has not written one for this
+			// market yet, not that the book holds no orders.
 			cacheHitCounter.add(1, {
 				miss: true,
 				path: req.baseUrl + req.path,
 			});
 			res.writeHead(200);
-
-			if (accountFlag) {
-				const topAccounts = await getAccountFromId(userMapClient, topMakers);
-				res.end(JSON.stringify(topAccounts));
-				return;
-			}
-
-			res.end(JSON.stringify(topMakers));
+			res.end(JSON.stringify([]));
 		} catch (err) {
 			next(err);
 		}
@@ -565,8 +448,7 @@ const main = async (): Promise<void> => {
 
 	app.get('/l2', async (req, res, next) => {
 		try {
-			const { marketName, marketIndex, marketType, depth, includeIndicative } =
-				req.query;
+			const { marketName, marketIndex, marketType, depth } = req.query;
 
 			const { normedMarketType, normedMarketIndex, error } = validateDlobQuery(
 				velocityClient,
@@ -581,8 +463,6 @@ const main = async (): Promise<void> => {
 			}
 
 			const isSpot = isVariant(normedMarketType, 'spot');
-			const includeIndicativeStr =
-				(includeIndicative as string)?.toLowerCase() === 'true';
 			const adjustedDepth = depth ?? '100';
 
 			let l2Formatted: any;
@@ -590,8 +470,7 @@ const main = async (): Promise<void> => {
 				fetchFromRedis,
 				selectMostRecentBySlot,
 				normedMarketType,
-				normedMarketIndex,
-				includeIndicativeStr
+				normedMarketIndex
 			);
 			const depthToUse = Math.min(parseInt(adjustedDepth as string) ?? 1, 100);
 			let cacheMiss = true;
@@ -616,7 +495,7 @@ const main = async (): Promise<void> => {
 					marketType: normedMarketType,
 					marketIndex: normedMarketIndex,
 					marketName: undefined,
-					slot: dlobProvider.getSlot(),
+					slot: slotSubscriber.getSlot(),
 					oracle: oracleData.price.toNumber(),
 					oracleData: {
 						price: oracleData.price.toNumber(),
@@ -627,7 +506,7 @@ const main = async (): Promise<void> => {
 						twapConfidence: oracleData.twapConfidence?.toNumber(),
 					},
 					ts: Date.now(),
-					marketSlot: dlobProvider.getSlot(),
+					marketSlot: slotSubscriber.getSlot(),
 				};
 			}
 			cacheHitCounter.add(1, {
@@ -653,7 +532,6 @@ const main = async (): Promise<void> => {
 				includePhoenix,
 				includeOpenbook,
 				includeOracle,
-				includeIndicative,
 			} = req.query;
 
 			const normedParams = normalizeBatchQueryParams({
@@ -665,7 +543,6 @@ const main = async (): Promise<void> => {
 				includePhoenix: includePhoenix as string | undefined,
 				includeOpenbook: includeOpenbook as string | undefined,
 				includeOracle: includeOracle as string | undefined,
-				includeIndicative: includeIndicative as string | undefined,
 			});
 
 			if (normedParams === undefined) {
@@ -696,8 +573,6 @@ const main = async (): Promise<void> => {
 					}
 
 					const isSpot = isVariant(normedMarketType, 'spot');
-					const normedIncludeIndicative =
-						normedParam['includeIndicative'] == 'true';
 
 					const adjustedDepth = normedParam['depth'] ?? '100';
 					let l2Formatted: any;
@@ -705,8 +580,7 @@ const main = async (): Promise<void> => {
 						fetchFromRedis,
 						selectMostRecentBySlot,
 						normedMarketType,
-						normedMarketIndex,
-						normedIncludeIndicative
+						normedMarketIndex
 					);
 					const depth = Math.min(parseInt(adjustedDepth as string) ?? 1, 100);
 					let cacheMiss = true;
@@ -730,7 +604,7 @@ const main = async (): Promise<void> => {
 							marketType: normedMarketType,
 							marketIndex: normedMarketIndex,
 							marketName: undefined,
-							slot: dlobProvider.getSlot(),
+							slot: slotSubscriber.getSlot(),
 							oracle: oracleData.price.toNumber(),
 							oracleData: {
 								price: oracleData.price.toNumber(),
@@ -741,7 +615,7 @@ const main = async (): Promise<void> => {
 								twapConfidence: oracleData.twapConfidence?.toNumber(),
 							},
 							ts: Date.now(),
-							marketSlot: dlobProvider.getSlot(),
+							marketSlot: slotSubscriber.getSlot(),
 						};
 					}
 
@@ -775,8 +649,7 @@ const main = async (): Promise<void> => {
 
 	app.get('/l3', async (req, res, next) => {
 		try {
-			const { marketName, marketIndex, marketType, includeIndicative } =
-				req.query;
+			const { marketName, marketIndex, marketType } = req.query;
 
 			const { normedMarketType, normedMarketIndex, error } = validateDlobQuery(
 				velocityClient,
@@ -791,13 +664,9 @@ const main = async (): Promise<void> => {
 			}
 
 			const marketTypeStr = getVariant(normedMarketType);
-			const normedIncludeIndicative =
-				(includeIndicative as string)?.toLowerCase() === 'true';
 
 			const redisL3 = await fetchFromRedis(
-				`last_update_orderbook_l3_${marketTypeStr}_${normedMarketIndex}${
-					normedIncludeIndicative ? '_indicative' : ''
-				}`,
+				`last_update_orderbook_l3_${marketTypeStr}_${normedMarketIndex}`,
 				selectMostRecentBySlot
 			);
 			if (redisL3) {
@@ -1081,7 +950,7 @@ const main = async (): Promise<void> => {
 				selectMostRecentBySlot,
 				redisFillQualityInfo,
 				apiVersion,
-				dlobProvider.getSlot()
+				slotSubscriber.getSlot()
 			);
 
 			if (!result.success) {

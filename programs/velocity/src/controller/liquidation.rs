@@ -99,7 +99,7 @@ mod tests;
 ///
 /// A book-resident order reserves `open_bids` and `open_asks`. The
 /// reservation inflates the worst-case margin that a liquidation entry
-/// reads. The DLOB cancel that a liquidation runs cannot remove a book
+/// reads. The slot cancel that a liquidation runs cannot remove a book
 /// order, so the entry acts on the inflated figure and the book order keeps
 /// resting through the liquidation. `force_cancel_clob_orders` reclaims the
 /// order and releases the reservation, so a keeper runs it first.
@@ -5144,7 +5144,7 @@ mod clob_guard_tests {
     }
 
     #[test]
-    fn a_dlob_order_alone_allows_a_fresh_liquidation() {
+    fn a_slot_order_alone_allows_a_fresh_liquidation() {
         let mut user = user_with_shadow();
         user.orders[0].remove_bit_flag(OrderBitFlag::PlacedOnClob);
         assert_eq!(validate_no_clob_resident_orders(&user), Ok(()));

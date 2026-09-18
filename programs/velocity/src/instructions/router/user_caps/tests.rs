@@ -43,9 +43,9 @@ struct Case {
     /// sweeps in every case here.
     open_bids: i64,
     stale_oracle: bool,
-    /// Base of `open_bids` that belongs to an order resting on the DLOB
+    /// Base of `open_bids` that belongs to an order resting in a `User.orders`
     /// rather than a book.
-    dlob_bid: u64,
+    slot_bid: u64,
     taker_size: u64,
     books: u32,
     /// Quote held by the market's own isolated position, in whole dollars.
@@ -62,7 +62,7 @@ impl Default for Case {
             position_base: BASE_PRECISION_I64,
             open_bids: 0,
             stale_oracle: false,
-            dlob_bid: 0,
+            slot_bid: 0,
             taker_size: BASE_PRECISION_I64 as u64,
             books: 1,
             isolated: None,
@@ -114,7 +114,7 @@ fn measure(case: Case, measure: Measure) -> u64 {
         position_base,
         open_bids,
         stale_oracle,
-        dlob_bid,
+        slot_bid,
         taker_size,
         books,
         isolated,
@@ -181,14 +181,14 @@ fn measure(case: Case, measure: Measure) -> u64 {
 
     let authority = Pubkey::from_str(AUTHORITY).unwrap();
     let mut orders = [Order::default(); 32];
-    if dlob_bid > 0 {
+    if slot_bid > 0 {
         orders[0] = Order {
             status: OrderStatus::Open,
             order_type: OrderType::Limit,
             market_type: MarketType::Perp,
             market_index: 0,
             direction: PositionDirection::Long,
-            base_asset_amount: dlob_bid,
+            base_asset_amount: slot_bid,
             ..Order::default()
         };
     }
@@ -366,24 +366,24 @@ fn what_is_already_reserved_is_not_charged_twice() {
 }
 
 #[test]
-fn a_dlob_order_is_not_mistaken_for_book_depth() {
-    // `open_bids` reserves for every open order on the market, so the DLOB's
+fn a_slot_order_is_not_mistaken_for_book_depth() {
+    // `open_bids` reserves for every open order on the market, so a slot
     // share has to come off before what is left reads as depth on a book. A
-    // maker whose bids are all on the DLOB is unreachable by a book budget,
+    // maker whose bids are all in slots is unreachable by a book budget,
     // and answering that from the account is what keeps a margin walk off a
     // heap that cannot give the memory back.
     assert_eq!(
         budget(Case {
-            dlob_bid: 200 * BASE_PRECISION_I64 as u64,
+            slot_bid: 200 * BASE_PRECISION_I64 as u64,
             ..thin_maker()
         }),
         u64::MAX,
-        "every reserved bid is accounted for on the DLOB, so none is on a book"
+        "every reserved bid is accounted for in a slot, so none is on a book"
     );
     // Half on each: the book's half is still worth pricing.
     assert_eq!(
         budget(Case {
-            dlob_bid: 100 * BASE_PRECISION_I64 as u64,
+            slot_bid: 100 * BASE_PRECISION_I64 as u64,
             ..thin_maker()
         }),
         45 * QUOTE

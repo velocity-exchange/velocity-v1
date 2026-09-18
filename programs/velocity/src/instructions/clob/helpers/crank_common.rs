@@ -10,7 +10,7 @@
 //! The cranks have two modes. The `filler` the caller passes selects one.
 //!
 //! - Signed keeper. The caller signs for its own filler `User` and earns the
-//!   flat removal reward from the maker, the way DLOB order-expiry cranks do.
+//!   flat removal reward from the maker.
 //!   No lamports move.
 //! - Program keeper, used by relay. The filler is the protocol-owned `User`,
 //!   whose authority is the velocity signer PDA that nobody can sign for. No
@@ -178,8 +178,7 @@ pub fn crank_clob_removal(
     }
 
     // Both removals charge the maker the flat removal reward before they
-    // unwind. It is the same reward DLOB order expiry pays, and in
-    // program-keeper mode the filler is the protocol `User`. Unwinding an
+    // unwind. In program-keeper mode the filler is the protocol `User`. Unwinding an
     // otherwise-empty position frees its slot, and the reward needs that slot
     // to resolve.
     //
@@ -466,17 +465,12 @@ pub fn finish_trigger_crank<'info>(
 /// Which resolver a fired trigger slot belongs to.
 ///
 /// A user can hold several fired triggers on one market at once, and each
-/// resolver runs for its own slots only. The slot's stored meta and the order
-/// type name the resolver. An empty `quoter_slab` is the plain DLOB flip,
-/// `trigger_order`. A populated `quoter_slab` on a trigger-limit rests the whole
-/// order on the book, `trigger_limit_order_v1`. A populated `quoter_slab` on any
-/// other trigger fires and fills it against the book,
-/// `trigger_market_order_v1`. Without this split, a resolver would stage the
-/// first fired order that shares only the coarse CLOB-or-not distinction.
+/// resolver runs for its own slots only. The order type names the resolver: a
+/// trigger-limit rests whole on the book, and every other trigger fires and
+/// fills against it. Without this split, a resolver would stage the first
+/// fired order of either kind and its executor would then reject it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TriggerResolverKind {
-    /// `trigger_order` flips the DLOB order live and leaves it for a filler.
-    Flip,
     /// `trigger_limit_order_v1` rests the whole trigger-limit on the book.
     ClobRest,
     /// `trigger_market_order_v1` fires the trigger and fills it against the
@@ -531,9 +525,8 @@ pub fn find_fired_trigger(
 
     for order in user.orders.iter() {
         // A trigger slot already placed on the CLOB is a shadow, not armed
-        // work. It reads as untriggered so that every DLOB matching path
-        // ignores it, which means the `triggered()` test below does not exclude
-        // it. Without this test, discovery keeps re-firing an order that is
+        // work. It reads as untriggered, which means the `triggered()` test
+        // below does not exclude it. Without this test, discovery keeps re-firing an order that is
         // already resting on the book. `trigger_limit_order_v1` then rejects the
         // staged crank with `OrderPlacedOnClob` every round, which spends turner
         // work and starves armed triggers behind it.
@@ -556,9 +549,13 @@ pub fn find_fired_trigger(
         else {
             continue;
         };
-        let kind = if meta.quoter_slab == Pubkey::default() {
-            TriggerResolverKind::Flip
-        } else if order.order_type == crate::state::user::OrderType::TriggerLimit {
+        // A synced slot always names a book: `sync_trigger_conditions` refuses
+        // to stage a trigger on a market with no CLOB, because such a trigger
+        // has nowhere to fire.
+        if meta.quoter_slab == Pubkey::default() {
+            continue;
+        }
+        let kind = if order.order_type == crate::state::user::OrderType::TriggerLimit {
             TriggerResolverKind::ClobRest
         } else {
             TriggerResolverKind::ClobFill

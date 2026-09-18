@@ -264,14 +264,14 @@ pub const PACKET_DATA_SIZE: usize = 1280 - 40 - 8;
 /// quoter slab, and velocity as the program the message invokes.
 pub const PASS_FIXED_ACCOUNTS: usize = 3 + 3 + 1 + 1;
 
-/// Static account keys a pass carrying `slots` and `dlob_makers` needs.
+/// Static account keys a pass carrying `slots` needs.
 ///
 /// This counts the same set [`build_quote_router_ix`] assembles, without
 /// building it. The set is the union of the slots' registered CPI accounts,
-/// plus two accounts for every user a book must load. The count rounds up where
-/// the builder would deduplicate further, because a pass planned too small
-/// publishes nothing.
-pub fn pass_account_cost(slots: &[QuoterSlotV0], dlob_makers: usize) -> usize {
+/// plus two accounts for every user a quoter must load. The count rounds up
+/// where the builder would deduplicate further, because a pass planned too
+/// small publishes nothing.
+pub fn pass_account_cost(slots: &[QuoterSlotV0]) -> usize {
     let mut cpi: BTreeSet<Pubkey> = BTreeSet::new();
     let mut users: BTreeSet<Pubkey> = BTreeSet::new();
     for slot in slots {
@@ -284,7 +284,7 @@ pub fn pass_account_cost(slots: &[QuoterSlotV0], dlob_makers: usize) -> usize {
             users.insert(slot.config.user);
         }
     }
-    PASS_FIXED_ACCOUNTS + cpi.len() + 2 * (users.len() + dlob_makers)
+    PASS_FIXED_ACCOUNTS + cpi.len() + 2 * users.len()
 }
 
 /// The instructions that create and initialize a quote buffer for one authority
@@ -372,12 +372,6 @@ pub struct QuoteRouterParams<'a> {
     pub market_index: u16,
     pub direction: Direction,
     pub size: u64,
-    /// `User` accounts of DLOB makers to bridge, taken from whatever holds the
-    /// caller's DLOB view. Each maker costs the transaction two accounts and one
-    /// of the buffer's source slots. A caller therefore passes candidates
-    /// instead of the whole book. The split reports which of them the fill would
-    /// reach.
-    pub dlob_makers: &'a [Pubkey],
     /// Quoters to leave out, by staging-entry address. A quoter proven to
     /// break this market's simulation is dropped here, so the rest of the
     /// market still quotes. Without this the only way to route around a bad
@@ -411,7 +405,6 @@ pub async fn build_quote_router_ix<S: ChainSource>(
         market_index,
         direction,
         size,
-        dlob_makers,
         exclude,
         only,
         include_vamm,
@@ -439,15 +432,13 @@ pub async fn build_quote_router_ix<S: ChainSource>(
     });
 
     // The user map the view walks. It holds the custom quoters' users, which
-    // the margin clamp needs, and the DLOB makers the caller wants bridged. The
-    // instruction reads one map, so this is one section. A custom quoter that is
-    // also a DLOB maker appears once.
+    // the margin clamp needs. The instruction reads one map, so this is one
+    // section, and a user named by two quoters appears once.
     let map_users: Vec<Pubkey> = {
         let mut users: Vec<Pubkey> = slots
             .iter()
             .filter(|slot| slot.config.quoter_type == QuoterType::Custom)
             .map(|slot| slot.config.user)
-            .chain(dlob_makers.iter().copied())
             .collect();
         users.sort();
         users.dedup();
@@ -608,7 +599,7 @@ pub async fn simulate_quote_view_with_cost<S: ChainSource>(
     }
     let tx = Transaction::new_unsigned(message);
     let outcome = source
-        .simulate_transaction(&tx, &[*quote_buffer])
+        .simulate_transaction(&crate::as_versioned(&tx)?, &[*quote_buffer])
         .await
         .context("simulate quote_router")?;
     if let Some(err) = outcome.err {

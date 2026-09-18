@@ -259,9 +259,9 @@ pub struct UserOpenOrderCounts {
 
 /// Recount an account's open orders and open auctions from its own state.
 ///
-/// An order rests in one of two places, and the count must cover both. A DLOB
-/// order holds an `Order` row. A plain CLOB order holds no row, and only the
-/// position's `open_orders` reservation records it. A count of rows alone
+/// An order rests in one of two places, and the count must cover both. An
+/// order in a `User.orders` slot holds an `Order` row. A plain CLOB order holds
+/// no row, and only the position's `open_orders` reservation records it. A count of rows alone
 /// therefore drops every order that rests on a book. It also desyncs the count
 /// from the per-position reservations that this instruction does not touch.
 ///
@@ -364,7 +364,7 @@ mod open_order_count_tests {
 
     const MARKET: u16 = 4;
 
-    fn dlob_row() -> Order {
+    fn slot_row() -> Order {
         Order {
             status: OrderStatus::Open,
             market_type: MarketType::Perp,
@@ -374,7 +374,7 @@ mod open_order_count_tests {
     }
 
     fn placed_trigger_shadow() -> Order {
-        let mut order = dlob_row();
+        let mut order = slot_row();
         order.add_bit_flag(OrderBitFlag::PlacedOnClob);
         order
     }
@@ -402,8 +402,8 @@ mod open_order_count_tests {
     }
 
     #[test]
-    fn dlob_row_counts_once() {
-        let user = user_with(1, vec![dlob_row()]);
+    fn slot_row_counts_once() {
+        let user = user_with(1, vec![slot_row()]);
         assert_eq!(count_user_open_orders(&user).open_orders, 1);
     }
 
@@ -417,17 +417,17 @@ mod open_order_count_tests {
     /// One order of each kind reserves three slots and writes two rows.
     #[test]
     fn mixed_orders_count_once_each() {
-        let user = user_with(3, vec![dlob_row(), placed_trigger_shadow()]);
+        let user = user_with(3, vec![slot_row(), placed_trigger_shadow()]);
         assert_eq!(count_user_open_orders(&user).open_orders, 3);
     }
 
     /// A spot row has no perp reservation, so it counts by its row alone.
     #[test]
     fn spot_row_counts_once() {
-        let mut spot_row = dlob_row();
+        let mut spot_row = slot_row();
         spot_row.market_type = MarketType::Spot;
         spot_row.market_index = 0;
-        let user = user_with(1, vec![dlob_row(), spot_row]);
+        let user = user_with(1, vec![slot_row(), spot_row]);
         assert_eq!(count_user_open_orders(&user).open_orders, 2);
     }
 }

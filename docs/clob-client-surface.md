@@ -20,7 +20,7 @@ are out of scope.
 
 ## The contract this creates
 
-A client gets a resting order the same way it gets a DLOB order today.
+A client gets a resting order the way it used to get one out of `User.orders`.
 
 - One `u32` order id, minted from `User.next_order_id`, unique per user across both venues.
 - An `OrderRecord` at placement and an `OrderActionRecord` at every terminal event, on the streams
@@ -31,7 +31,7 @@ A client gets a resting order the same way it gets a DLOB order today.
 ## Order identity
 
 Velocity mints the id. Placement takes it from `User.next_order_id`, the same counter that numbers
-DLOB orders, and passes it to the book.
+an account's armed triggers, and passes it to the book.
 
 - `PlaceOrderArgsV0` carries `client_order_id: u32`.
 - `OrderNodeV0` carries it in a field of its own. The node is 104 bytes.
@@ -135,9 +135,9 @@ One order carries: `orderId` (the client order id), `clobOrderId`, `nodeIndex`, 
 `direction`, `price`, `baseAssetAmount` remaining, `maxTs`, `activationSlot`, `placedSlot`,
 `takerOrigin`, and a `venue` tag.
 
-The `venue` tag is what merges the two order books into one list. Oracle-offset limits and
-reduce-only limits stay on the DLOB, so a user's open orders come from two places for as long as the
-DLOB lives. The client renders one list, and the tag tells it which cancel path an order takes.
+The `venue` tag says where an order lives, and so which cancel path it takes. Every live order
+rests on the book now; what is left in `User.orders` is unfired conditionals, which a client shows
+as armed triggers rather than as resting depth.
 
 ### Server
 
@@ -161,7 +161,7 @@ on-chain state, so the endpoint needs no auth.
 - Every new type is mirrored in `types.ts`, with a changeset and the §4 and §6 rows in
   `DRIFT-TO-VELOCITY.md`.
 
-## Post-only, and what stays on the DLOB
+## Post-only
 
 Post-only needed no fee work. A resting CLOB order settles at its own price on the match-fee
 schedule in every path that can consume it. A router taker fills it through
@@ -179,8 +179,11 @@ caller asking not to cross does not want to cross that either.
 A refused modify leaves the maker with no order, because the original is already off the book when
 the replacement is refused. That is what a maker repricing into a crossed book is asking for.
 
-Oracle-offset limits and reduce-only limits stay on the DLOB. Both are enforced at placement against
-state the book does not hold. The feed's `venue` tag is what makes this invisible to a client.
+An oracle-offset limit is refused outright (`InvalidOrderOracleOffset`): it cannot rest at a fixed
+price on a book, and there is no longer anywhere else for it to rest. A maker that wants an
+oracle-relative quote runs a PropAMM quoter. A reduce-only limit does rest on the book; velocity
+counts those on `PerpPosition.reduce_only_clob_orders` and caps that user's reduce-only fills to the
+position they reduce, which is the state the book does not hold.
 
 ## Tests
 

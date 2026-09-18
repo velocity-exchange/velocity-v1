@@ -42,11 +42,7 @@ import { promiseTimeout } from '@velocity-exchange/sdk';
 
 import { logger, setLogLevel } from './logger';
 import { constants } from './types';
-import { FillerBot } from './bots/filler';
-import { SpotFillerBot } from './bots/spotFiller';
-import { TriggerBot } from './bots/trigger';
 import { LiquidatorBot } from './bots/liquidator';
-import { FloatingPerpMakerBot } from './bots/floatingMaker';
 import { Bot } from './types';
 import { IFRevenueSettlerBot } from './bots/ifRevenueSettler';
 import { ProtocolFeeCollectorBot } from './bots/protocolFeeCollector';
@@ -68,7 +64,6 @@ import {
 	loadConfigFromOpts,
 } from './config';
 import { FundingRateUpdaterBot } from './bots/fundingRateUpdater';
-import { FillerLiteBot } from './bots/fillerLite';
 import { MakerBidAskTwapCrank } from './bots/makerBidAskTwapCrank';
 import { BundleSender } from './bundleSender';
 import { VelocityStateWatcher, StateChecks } from './velocityStateWatcher';
@@ -91,11 +86,6 @@ program
 		'--init-user',
 		'calls velocityClient.initializeUserAccount if no user account exists'
 	)
-	.option('--filler', 'Enable filler bot')
-	.option('--filler-lite', 'Enable filler lite bot')
-	.option('--spot-filler', 'Enable spot filler bot')
-	.option('--trigger', 'Enable trigger bot')
-	.option('--floating-maker', 'Enable floating maker bot')
 	.option('--liquidator', 'Enable liquidator bot')
 	.option(
 		'--if-revenue-settler',
@@ -391,16 +381,13 @@ const runBot = async () => {
 		});
 	} else {
 		const skipConfirmation =
-			configHasBot(config, 'fillerLite') ||
-			configHasBot(config, 'filler') ||
-			configHasBot(config, 'spotFiller') ||
 			configHasBot(config, 'liquidator') ||
 			configHasBot(config, 'pythLazerCranker');
 		txSender = new FastSingleTxSender({
 			connection: sendTxConnection,
 			// Disable the background blockhash refresh loop: FastSingleTxSender's
 			// `recentBlockhash` cache is never consumed by `sendRawTransaction`, and
-			// the fillers build txs from their own BlockhashSubscriber. The loop was
+			// each bot builds txs from its own BlockhashSubscriber. The loop was
 			// pure redundant getLatestBlockhash traffic.
 			blockhashRefreshInterval: 0,
 			wallet,
@@ -601,120 +588,6 @@ const runBot = async () => {
 			)
 		);
 	}
-	if (configHasBot(config, 'filler')) {
-		needPythPriceSubscriber = true;
-		needCheckVelocityUser = true;
-		needUserMapSubscribe = true;
-		needPriorityFeeSubscriber = true;
-		needBlockhashSubscriber = true;
-		needVelocityStateWatcher = true;
-
-		bots.push(
-			new FillerBot(
-				slotSubscriber,
-				bulkAccountLoader,
-				velocityClient,
-				userMap,
-				{
-					rpcEndpoint: endpoint,
-					commit: commitHash,
-					velocityEnv: config.global.velocityEnv!,
-					velocityPid: velocityPublicKey.toBase58(),
-					walletAuthority: wallet.publicKey.toBase58(),
-				},
-				config.global,
-				config.botConfigs!.filler!,
-				priorityFeeSubscriber,
-				blockhashSubscriber,
-				bundleSender,
-				[]
-			)
-		);
-	}
-
-	if (configHasBot(config, 'fillerLite')) {
-		needPythPriceSubscriber = true;
-		needCheckVelocityUser = true;
-		needPriorityFeeSubscriber = true;
-		needBlockhashSubscriber = true;
-		needVelocityStateWatcher = true;
-
-		logger.info(`Starting filler lite bot`);
-		bots.push(
-			new FillerLiteBot(
-				slotSubscriber,
-				velocityClient,
-				{
-					rpcEndpoint: endpoint,
-					commit: commitHash,
-					velocityEnv: config.global.velocityEnv!,
-					velocityPid: velocityPublicKey.toBase58(),
-					walletAuthority: wallet.publicKey.toBase58(),
-				},
-				config.global,
-				config.botConfigs!.fillerLite!,
-				priorityFeeSubscriber,
-				blockhashSubscriber,
-				bundleSender,
-				[]
-			)
-		);
-	}
-
-	if (configHasBot(config, 'spotFiller')) {
-		needCheckVelocityUser = true;
-		// to avoid long startup, spotFiller will fetch userAccounts as needed and build the map over time
-		needUserMapSubscribe = false;
-		needPriorityFeeSubscriber = true;
-		needBlockhashSubscriber = true;
-		needVelocityStateWatcher = true;
-
-		bots.push(
-			new SpotFillerBot(
-				velocityClient,
-				userMap,
-				{
-					rpcEndpoint: endpoint,
-					commit: commitHash,
-					velocityEnv: config.global.velocityEnv!,
-					velocityPid: velocityPublicKey.toBase58(),
-					walletAuthority: wallet.publicKey.toBase58(),
-				},
-				config.global,
-				config.botConfigs!.spotFiller!,
-				priorityFeeSubscriber,
-				blockhashSubscriber,
-				bundleSender,
-				[]
-			)
-		);
-	}
-
-	if (configHasBot(config, 'trigger')) {
-		needUserMapSubscribe = true;
-		needVelocityStateWatcher = true;
-		needBlockhashSubscriber = true;
-
-		bots.push(
-			new TriggerBot(
-				velocityClient,
-				slotSubscriber,
-				blockhashSubscriber,
-				userMap,
-				{
-					rpcEndpoint: endpoint,
-					commit: commitHash,
-					velocityEnv: config.global.velocityEnv!,
-					velocityPid: velocityPublicKey.toBase58(),
-					walletAuthority: wallet.publicKey.toBase58(),
-				},
-				config.botConfigs!.trigger!,
-				config.global,
-				priorityFeeSubscriber
-			)
-		);
-	}
-
 	if (configHasBot(config, 'liquidator')) {
 		needCheckVelocityUser = true;
 		needUserMapSubscribe = true;
@@ -739,24 +612,6 @@ const runBot = async () => {
 				sdkConfig.MARKET_LOOKUP_TABLE
 					? new PublicKey(sdkConfig.MARKET_LOOKUP_TABLE as string)
 					: undefined
-			)
-		);
-	}
-
-	if (configHasBot(config, 'floatingMaker')) {
-		needCheckVelocityUser = true;
-		bots.push(
-			new FloatingPerpMakerBot(
-				velocityClient,
-				slotSubscriber,
-				{
-					rpcEndpoint: endpoint,
-					commit: commitHash,
-					velocityEnv: config.global.velocityEnv!,
-					velocityPid: velocityPublicKey.toBase58(),
-					walletAuthority: wallet.publicKey.toBase58(),
-				},
-				config.botConfigs!.floatingMaker!
 			)
 		);
 	}

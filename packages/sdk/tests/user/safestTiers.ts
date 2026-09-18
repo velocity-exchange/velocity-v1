@@ -2,7 +2,7 @@ import { assert } from 'chai';
 import _ from 'lodash';
 import { BN, ContractTier } from '../../src';
 import { QUOTE_PRECISION } from '../../src/constants/numericConstants';
-import { mockPerpMarkets, mockSpotMarkets } from '../dlob/helpers';
+import { mockPerpMarkets, mockSpotMarkets } from '../fixtures/mockAccounts';
 import {
 	mockUserAccount as baseMockUserAccount,
 	makeMockUser,

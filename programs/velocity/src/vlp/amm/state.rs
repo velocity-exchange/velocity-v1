@@ -37,7 +37,7 @@ use {
 ///
 /// In the target architecture the vAMM is one of several quoter modules that
 /// share a perp-market account's bytes. Its state slice sits next to other
-/// quoter slices, such as DLOB makers and future propAMM-style participants, in
+/// quoter slices, such as book state and future propAMM-style participants, in
 /// the same program. No external code reaches into AMM fields directly. Every
 /// mutation goes through a method on the AMM module. The type system enforces
 /// the contract boundary in-process rather than a CPI, and today's code follows

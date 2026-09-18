@@ -2,7 +2,7 @@
 //!
 //! Velocity owns the placement policy. It checks the `User` authority, reserves
 //! the order's worst-case open-order aggregates, and gates margin the way a
-//! DLOB placement does. The CLOB trusts its `place_authority`, which is the
+//! a slot placement does. The CLOB trusts its `place_authority`, which is the
 //! CLOB place authority PDA. The CLOB enforces only book-level rules: the tick,
 //! the step, the minimum order size, the capacity, and the activation delay.
 
@@ -70,8 +70,8 @@ pub fn restable_remainder(
 ///
 /// Both fill routes apply this one rule. A remainder that rests on one route
 /// and not on the other is a remainder whose fate depends on which keeper
-/// reached it. An order the DLOB keeps is an order nothing will fill again once
-/// the DLOB is gone.
+/// reached it. An order left in a `User.orders` slot is an order nothing will
+/// fill, because nothing matches slots any more.
 ///
 /// A `Market` order's own `price` is zero. Its bound lives in
 /// `auction_end_price`, which is the worst fill it already agreed to. That is
@@ -355,7 +355,7 @@ pub fn rest_admission(
 ///
 /// The routes that hold CLOB accounts call this:
 /// `place_and_take_perp_order_v1`, `place_and_make_perp_order_v1`,
-/// `fill_legacy_dlob_order`, and `place_signed_msg_taker_order`.
+/// and `place_signed_msg_taker_order`.
 #[allow(clippy::too_many_arguments)]
 pub fn try_place_remainder_on_clob<'info>(
     user_loader: &AccountLoader<'info, User>,
@@ -452,7 +452,7 @@ pub fn try_place_remainder_on_clob<'info>(
             && user.perp_positions[position_index].is_isolated())
         .then_some(market_index);
         // A reducing or reduce-only remainder skips the gate, as it does on
-        // the DLOB trigger path. Refusing one can only leave the account more
+        // the trigger path. Refusing one can only leave the account more
         // exposed, because it removes the order that shrinks the position. A
         // stop-loss on an account that has slipped under maintenance is the
         // order the account most needs to keep. The exposure the remainder

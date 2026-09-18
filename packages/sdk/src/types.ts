@@ -328,7 +328,7 @@ export class OrderBitFlag {
 	static readonly NewTriggerReduceOnly = 8;
 	static readonly HasBuilder = 16;
 	static readonly IsIsolatedPosition = 32;
-	/** the slot is a shadow of a trigger-limit order resting on the CLOB (`triggerLimitOrderV1`). It keeps the trigger params and the CLOB order ref in the auction price fields. It reads as untriggered, so DLOB matching ignores it */
+	/** the slot is a shadow of a trigger-limit order resting on the CLOB (`triggerLimitOrderV1`). It keeps the trigger params and the CLOB order ref in the auction price fields. It reads as untriggered, so a trigger crank ignores it */
 	static readonly PlacedOnClob = 64;
 	/** set when an evicted placed trigger re-arms. It may not fire again until a crank observes the price back on the non-trigger side */
 	static readonly AwaitingTriggerRecross = 128;
@@ -399,7 +399,7 @@ export class OrderActionExplanation {
 	};
 }
 
-/** Which kind of liquidity a quoted book came from (`QuotedSourceKind` on-chain). A `quoter` source executes through a CPI leg, a `dlobOrder` in-program, and `vamm` off the curve. A PropAMM's levels are a quote at a size rather than resting orders, so a UI needs the distinction. */
+/** Which kind of liquidity a quoted book came from (`QuotedSourceKind` on-chain). A `quoter` source executes through a CPI leg and `vamm` off the curve. A PropAMM's levels are a quote at a size rather than resting orders, so a UI needs the distinction. `dlobOrder` is deprecated: no source publishes it, and the variant stays so the wire layout does not shift. */
 export class QuotedSourceKind {
 	static readonly VAMM = { vamm: {} };
 	static readonly DLOB_ORDER = { dlobOrder: {} };
@@ -416,7 +416,7 @@ export type QuotedLevelV0 = {
 
 /** One source's entry in a `RouterQuoteBufferV0`, parallel to its `levels` slot. */
 export type QuotedSourceV0 = {
-	/** the `QuoterV0` entry for a quoter, the maker's `User` for a DLOB order, the perp market for the vAMM */
+	/** the `QuoterV0` entry for a quoter, the perp market for the vAMM */
 	key: PublicKey;
 	levelCount: number;
 	/** routing tier the split applies (lower fills first at a price) */
@@ -459,8 +459,8 @@ export type QuotedRowV0 = {
  * taker of `(direction, quotedSize)`. It is written only under simulation. Read
  * it out of post-simulation account state, never by landing the instruction.
  *
- * `quotedSize` shapes the answer. It truncates a resting source (CLOB, DLOB),
- * and the vAMM's and a PropAMM's levels price against it. `slot` makes a cached
+ * `quotedSize` shapes the answer. It truncates a resting source (the CLOB), and
+ * the vAMM's and a PropAMM's levels price against it. `slot` makes a cached
  * book's staleness checkable.
  */
 export type RouterQuoteBufferV0Account = {
@@ -698,8 +698,8 @@ export type CancelOrdersV1Params = {
  * One resting order on the user-orders feed.
  *
  * A CLOB order has no `User.orders` slot, so this is where a client learns what
- * it is resting. `orderId` is velocity's, from the same counter its DLOB orders
- * draw from. `nodeIndex` and `clobOrderId` are the book's handle for the same
+ * it is resting. `orderId` is velocity's, from the same counter an armed trigger
+ * draws from. `nodeIndex` and `clobOrderId` are the book's handle for the same
  * order, and together they form the `ClobOrderRefV0` a cancel takes.
  */
 export type UserClobOrder = {
@@ -733,7 +733,7 @@ export type ForceCancelClobRefV0 = {
 	side: ClobSide;
 };
 
-/** The order a `UserConditionsV0` trigger slot watches, plus the CLOB it goes onto when it fires. All three CLOB keys are the default pubkey for a trigger that cranks onto the DLOB instead. */
+/** The order a `UserConditionsV0` trigger slot watches, plus the CLOB it goes onto when it fires. All three CLOB keys are the default pubkey for an empty slot. */
 export type TriggerSlotMetaV0 = {
 	quoter: PublicKey;
 	clobMarket: PublicKey;
@@ -2027,7 +2027,7 @@ export type AMM = {
 	fundingBiasSensitivity: number;
 };
 
-/** Market-wide stats shared across all makers (vAMM, DLOB resting orders, JIT participants), updated on every fill regardless of which maker filled. */
+/** Market-wide stats shared across every source a fill routes through (the vAMM, the book, PropAMM quoters), updated on every fill regardless of which one filled. */
 export type MarketStats = {
 	/** average (bid+ask)/2 price over `fundingPeriod`, PRICE_PRECISION (1e6) */
 	lastMarkPriceTwap: BN;

@@ -1,11 +1,58 @@
 ---
-'@velocity-exchange/sdk': minor
+'@velocity-exchange/sdk': major
 '@velocity-exchange/admin-cli': minor
 ---
 
 PropAMM order flow. A perp order fills through one router that spans the vAMM, a standalone CLOB
 book and external quoter programs. `docs/DRIFT-TO-VELOCITY.md` is the migration reference. This
 note is the surface.
+
+## The DLOB is gone
+
+Velocity's original matching venue rested limit orders in the on-chain `User.orders` array and let
+a keeper pick a taker's counterparties by choosing which maker accounts to pass. That venue is
+removed. Every live order is on the book, one fill path serves every market, and no caller names a
+counterparty: the books do.
+
+These instructions are deleted, and a transaction that names one fails as an unknown instruction:
+`place_perp_order`, `place_orders`, `place_scale_orders`, `place_and_take_perp_order` (v0),
+`fill_perp_order`, `fill_legacy_dlob_order`, `revert_fill`, `trigger_order`,
+`resolve_trigger_order`, and `place_and_make_perp_order` (v0). `place_trigger_orders_v1` replaces
+the arming half of `place_orders`. The v1 endpoints replace the rest.
+
+`User.orders` now holds unfired conditionals only: armed triggers, the SL/TP sidecars a
+signed-message order writes, and the shadow a triggered trigger-limit keeps while its live order
+rests on the book. The cancel and modify endpoints are unchanged, so an order left over from the
+old venue is inert but still cancellable, and `release_order_reservation` returns its
+`open_bids`/`open_asks` correctly. There is no deadline to clear one, but each still reserves
+margin until its owner does.
+
+The SDK follows. `VelocityClient.placePerpOrder` is now `placeTriggerOrders`, which takes an array
+and refuses any order type that is not `TriggerMarket` or `TriggerLimit`; the rename is deliberate,
+so a call that meant to rest a maker order fails at the type checker rather than on chain.
+`fillPerpOrder`, `revertFill`, `placeOrders` and `placeScaleOrders`, with their `get*Ix` builders,
+are removed. `placeAndTakePerpOrder` takes the market's CLOB accounts as its second argument, or
+reads them off the market when they are omitted. Rest a maker order with `placeAndMakePerpOrder`
+and take with `placeAndTakePerpOrder`.
+
+The `DLOB` class and its subscribers are removed with the venue they served. `DLOB`, `DLOBNode`,
+`NodeList`, `DLOBSubscriber`, `OrderSubscriber`, `AuctionSubscriber` and `UserMap.getDLOB` are gone,
+as are the vAMM ladder generators that fed them (`getVammL2Generator`, `createL2Levels`,
+`mergeL2LevelGenerators`, `getL2GeneratorFromDLOBNodes`, `L2OrderBookGenerator` and the
+top-of-book quote amounts). `L2Level`, `L2OrderBook`, `L3Level`, `L3OrderBook`, `groupL2` and
+`uncrossL2` move from `dlob/orderBookLevels` to `orderBookLevels`; the package barrel re-exports
+them from the same names, so an import from `@velocity-exchange/sdk` does not move. A level's
+`sources` now reports `'vamm'`, `'clob'` or `'propamm'` — `'dlob'` and `'indicative'` are gone.
+
+Read resting liquidity from the book instead — `UserClobOrdersClient` for a user's own orders, the
+dlob-server's `/l2`, `/l3` and `/userOrders` for the market's, and `quoteRouter` for what a taker of
+a given size would actually get across every source. `calculateEstimatedPerpEntryPrice` takes an
+`L2OrderBook` in place of a `DLOB`, so a caller passes the `/l2` answer and gets a vAMM-only
+estimate from an empty one. `SlotSource` moves to `slot/SlotSubscriber`.
+
+`placeSignedMsgTakerOrder` and `getPlaceSignedMsgTakerPerpOrderIxs` gain a trailing `makerInfo`.
+The placement fills in the same instruction, and a fill reaches only the users the transaction
+carries, so a keeper passes the book's resting owners there.
 
 ## Router fills
 
@@ -22,12 +69,14 @@ units. The program holds a fill to that scalar, so a client that predicts whethe
 accepted needs it.
 
 A quoter reports depth it could not reach in `withheldPrice` and `withheldBase`. When a book
-withholds depth and the taker did not sign, `fill_perp_order` and `fill_legacy_dlob_order` require
-that the transaction was full and that every loaded user did something. `FillerOmittedReachableMaker`
-(6396), `FillerPaddedTheUserSet` (6397) and `FillerObligationUncountable` (6398) say which rule
-failed. Both fill instructions take an optional `instructions_sysvar` account. A fill needs it only
-to be counted, so a taker filling its own order can omit it, but a filler that omits it is refused
-whenever a book withholds. The SDK and `velocity-rs` builders always pass it.
+withholds depth and the taker did not sign the transaction, the fill requires that the transaction
+was full and that every loaded user did something. `FillerOmittedReachableMaker` (6396),
+`FillerPaddedTheUserSet` (6397) and `FillerObligationUncountable` (6398) say which rule failed. The
+rule binds every path a keeper assembles — a signed-message placement, a trigger crank, a
+liquidation — and not `place_and_take_perp_order_v1`, where the taker signs and chose its own
+account list. Those instructions take an optional `instructions_sysvar` account. A fill needs it
+only to be counted, so a taker filling its own order can omit it, but a keeper that omits it is
+refused whenever a book withholds. The SDK and `velocity-rs` builders always pass it.
 
 A quoter must deliver every unit it won. A quoter that returns less than its allocation, or nothing
 at all, fails with `QuoterFilledShort` (6399).
@@ -59,8 +108,8 @@ PDAs resolve from the market's quoter slab. Those instructions take `quoterSlab`
 `clobProgram`, and `clobProgram` is pinned to velocity's CLOB program id. The keeper arms are
 `force_cancel_clob_orders`, `crank_clob_evict` and `crank_clob_remove_expired`.
 
-An order's id is minted from `User.next_order_id`, the same counter the account's DLOB orders draw
-from, so a client names an order the same way wherever it rests. A placement returns the order's
+An order's id is minted from `User.next_order_id`, the same counter an armed trigger draws from,
+so a client names an order the same way wherever it rests. A placement returns the order's
 `ClobOrderRefV0`, which is what a cancel or a modify takes. The book verifies the ref against the
 order id and fails closed on a stale one. A modify keeps the id and loses the queue position. A
 partly filled order keeps both: the book exposes `fill_v0`, so velocity reports the base it settled
@@ -81,8 +130,8 @@ bytes. `ClobRestUnavailable` is a new error.
 A limit order can no longer carry an oracle price offset. The program refuses any `OrderType.LIMIT`
 order whose `oraclePriceOffset` is nonzero with `InvalidOrderOracleOffset` (6055). An
 oracle-floating limit cannot rest on a CLOB, so such an order could only strand in `User.orders` on
-the legacy DLOB. Use a PropAMM quoter for an oracle-relative maker quote, or a repriced fixed-price
-limit. `OrderType.ORACLE` market orders keep their oracle-relative auctions, and the
+the old venue, where nothing would fill it. Use a PropAMM quoter for an oracle-relative maker
+quote, or a repriced fixed-price limit. `OrderType.ORACLE` market orders keep their oracle-relative auctions, and the
 `Order.oraclePriceOffset` field and the order params shape are unchanged.
 
 ## Quoters and the slab
@@ -168,8 +217,7 @@ a transaction not co-signed by the flow authority cannot fill against the book i
 transaction. `placeAndTakePerpOrder` (v1) and signed-message orders rest the whole order
 taker-origin through the default window instead, and the cross cranks fill it. An immediate-or-cancel
 order or a success condition on such a take is refused with `UnattestedSynchronousTake` (6404).
-Keeper fills still run, but the book quotes them no depth, so they reach the vAMM and DLOB makers
-only. Cancels are never delayed, so a maker can always reprice ahead of unattested aggression. A book
+Cancels are never delayed, so a maker can always reprice ahead of unattested aggression. A book
 with a zero default delay is unaffected.
 
 Attestation has two transports. `placeAndTakePerpOrderV1`, `placeAndMakePerpOrderV1` and
@@ -189,7 +237,7 @@ unprotected flow shows no depth from a bumped book or a protected quoter, matchi
 ## Signed-message orders
 
 A signed-message order is routed when it is placed, and whatever it cannot fill rests on the market's
-book as a taker-origin remainder rather than on the DLOB. The activation-slot auction then decides
+book as a taker-origin remainder rather than in a slot. The activation-slot auction then decides
 who fills it on price rather than on who lands a transaction first.
 `place_and_make_signed_msg_perp_order` is removed, because it existed only to match a signed-message
 order already resting in `User.orders`.
@@ -211,10 +259,9 @@ devnet without setting `env` signs a tag devnet refuses.
 A trigger order becomes a book order through `trigger_limit_order_v1`, leaving a shadow in
 `User.orders` that frees on fill, cull, expiry or cancel and re-arms on eviction.
 `VelocityClient.triggerMarketOrderV1` and `getTriggerMarketOrderV1Ix`, plus
-`VelocityCore.buildTriggerMarketOrderV1Instruction`, fire a DLOB trigger-market order and fill it
-against the book in the same instruction, resting only the remainder as a taker-origin order. Nothing
-lingers live in `User.orders`. `triggerOrder` still flips a resting trigger live and leaves it for a
-later fill crank.
+`VelocityCore.buildTriggerMarketOrderV1Instruction`, fire an armed trigger-market order and fill
+it against the book in the same instruction, resting only the remainder as a taker-origin order.
+Nothing lingers live in `User.orders`.
 
 A fired trigger rests taker-origin. It came to trade, so a cross settles at the counterparty's price
 rather than picking it off at its own. Its owner cannot cancel it inside the activation window.
@@ -372,7 +419,7 @@ Velocity's own events are versioned. `ProtocolUserWithdrawRecordV0` and
 reserved tail space.
 
 New endpoints take a single args struct (`PlaceAndTakePerpOrderV1Args`, `TriggerMarketOrderV1Args`,
-`UpdateQuoterApprovedArgs` and the rest). `fillLegacyDlobOrder` takes `marketIndex` first.
+`PlaceTriggerOrdersV1Args`, `UpdateQuoterApprovedArgs` and the rest).
 
 The admin CLI gains the `quoter` and `clob-market` command groups plus `fees withdraw-protocol-user`.
 `clob-market update-config` retunes a live book's mutable config. The CLI creates a market's slab

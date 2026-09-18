@@ -1,15 +1,14 @@
 //! Placing an order and filling it in one instruction.
 //!
-//! Two bodies share this file because they share a wire shape and a success
-//! condition. The v0 body writes the order into `User.orders` and fills it
-//! against the vAMM and the DLOB makers the caller passed. The v1 body keeps
-//! the order on the stack, fills it through the router, and rests whatever is
-//! left on the market's CLOB.
+//! The order stays on the stack. The router fills it against every liquidity
+//! source the market has, and whatever is left rests on the market's CLOB.
+//! The caller passes no counterparties: the book names the makers a fill
+//! settles against, and the transaction carries those user accounts so the
+//! settlement can reach them.
 
 use super::*;
 
-/// The accounts a place-and-take route acts on. Both bodies take the same set,
-/// so a caller that switches routes does not rebuild its account list.
+/// The accounts a place-and-take route acts on.
 pub struct PlaceAndTakeAccounts<'a, 'info> {
     pub state: &'a AccountLoader<'info, State>,
     pub user: &'a AccountLoader<'info, User>,
@@ -25,7 +24,6 @@ pub struct PlaceAndTakeAccounts<'a, 'info> {
 /// which is maker priority.
 pub struct PlaceAndTakeRequest {
     pub params: OrderParams,
-    /// A `u32` for wire compatibility with v0.
     pub optional_params: Option<u32>,
     pub taker_served_window: bool,
     pub synchronous_take: bool,
@@ -34,7 +32,7 @@ pub struct PlaceAndTakeRequest {
 /// The CLOB accounts a V1 taker route carries, so an unfilled restable
 /// remainder can migrate onto the book instead of being cancelled. Built by
 /// `instructions::clob::place_and_take_v1` and the keeper's
-/// `fill_legacy_dlob_order` route.
+/// keeper route.
 pub struct ClobRemainderRoute<'a, 'info> {
     pub quoter_slab: &'a AccountLoader<'info, crate::state::prop_amm::QuoterSlabV0>,
     pub clob_market: &'a AccountInfo<'info>,
@@ -437,9 +435,9 @@ fn fill_ephemeral_take(
 /// An unfilled IOC needs no cancel. The order is ephemeral and never
 /// persisted, so dropping it is enough. A restable remainder lives on the book
 /// and not in `User.orders`, so it migrates instead. `restable_remainder_price`
-/// is the whole rule, shared with the keeper fill route. Otherwise a
-/// remainder's fate depends on which route reached it. Once the DLOB is gone,
-/// a remainder that does not rest is an order nothing fills.
+/// is the whole rule, shared with every keeper route. Otherwise a remainder's
+/// fate depends on which route reached it, and a remainder left in a slot is
+/// an order nothing fills.
 ///
 /// Any can't-rest outcome downgrades to a cancel rather than reverting the fill
 /// that already landed. The CLOB's `OrderRef` is left as the transaction's

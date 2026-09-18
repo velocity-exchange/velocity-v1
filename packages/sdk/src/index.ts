@@ -6,7 +6,7 @@
  *   {@link VelocityClient}  — trading and keeper instruction builders (velocityClient.ts)
  *   {@link AdminClient}  — governance/admin instruction builders (adminClient.ts)
  *   {@link User}         — user account abstraction: margin queries, position accessors (user.ts)
- *   {@link DLOB}         — decentralized limit order book (dlob/DLOB.ts)
+ *   {@link UserClobOrdersClient} — a user's resting CLOB orders (clob/userOrdersClient.ts)
  *
  * Key re-exported namespaces: types, addresses/pda, accounts (subscribers), math, events, oracles, constants.
  */
@@ -131,22 +131,13 @@ export * from './util/promiseTimeout';
 export * from './math/spotBalance';
 export * from './velocityClientConfig';
 export * from './clob/userOrdersClient';
-export * from './dlob/DLOB';
-export * from './dlob/DLOBNode';
-export * from './dlob/NodeList';
-export * from './dlob/DLOBSubscriber';
-export * from './dlob/types';
-export * from './dlob/orderBookLevels';
+export * from './orderBookLevels';
 export * from './userMap/userMap';
 export * from './userMap/referrerMap';
 export * from './userMap/userStatsMap';
 export * from './userMap/revenueShareEscrowMap';
 export * from './userMap/userMapConfig';
 export * from './math/bankruptcy';
-export * from './orderSubscriber';
-export * from './orderSubscriber/types';
-export * from './auctionSubscriber';
-export * from './auctionSubscriber/types';
 export * from './memcmp';
 export * from './decode/user';
 export * from './blockhashSubscriber';

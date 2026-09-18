@@ -3,6 +3,7 @@ import {
 	BN,
 	VelocityClient,
 	isVariant,
+	CancelSidesV0,
 	PRICE_PRECISION,
 	PerpPosition,
 	SpotPosition,
@@ -22,7 +23,6 @@ import {
 	JupiterSwapQuote,
 	getLimitOrderParams,
 	PERCENTAGE_PRECISION,
-	DLOB,
 	calculateEstimatedPerpEntryPrice,
 	deriveOracleAuctionParams,
 	getOrderParams,
@@ -388,22 +388,6 @@ export class LiquidatorDerisk {
 		}
 		const oraclePriceData =
 			this.velocityClient.getOracleDataForSpotMarket(spotMarketIndex);
-		const dlob = await this.userMap!.getDLOB(oraclePriceData.slot.toNumber());
-		if (!dlob) {
-			logger.error('failed to load DLOB');
-		}
-
-		let dlobFillQuoteAmount: BN | undefined;
-		if (dlob) {
-			dlobFillQuoteAmount = dlob.estimateFillWithExactBaseAmount({
-				marketIndex: spotMarketIndex,
-				marketType: MarketType.SPOT,
-				baseAmount: baseAmountIn,
-				orderDirection,
-				slot: oraclePriceData.slot.toNumber(),
-				oraclePriceData,
-			});
-		}
 
 		let outMarket: SpotMarketAccount | undefined;
 		let inMarket: SpotMarketAccount | undefined;
@@ -492,71 +476,27 @@ export class LiquidatorDerisk {
 			return undefined;
 		}
 
+		// Jupiter is the only venue a spot position unwinds on. Velocity has no
+		// spot order book, so there is no second quote to compare this one to.
 		logger.info(
-			`Jupiter quote found for spot market ${spotMarketIndex}, direction: ${getVariant(
+			`Using Jupiter route for spot market ${spotMarketIndex}, direction: ${getVariant(
 				orderDirection
-			)}, inAmount: ${quote.inAmount}, outAmount: ${
+			)}, inMarket: ${inMarket.marketIndex}, outMarket: ${
+				outMarket.marketIndex
+			}, inAmount: ${quote.inAmount}, outAmount: ${
 				quote.outAmount
 			}, routePlan length: ${quote.routePlan.length}`
 		);
-
-		if (isVariant(orderDirection, 'long')) {
-			const jupAmountIn = new BN(quote.inAmount);
-
-			if (
-				dlobFillQuoteAmount?.gt(ZERO) &&
-				dlobFillQuoteAmount?.lt(jupAmountIn)
-			) {
-				logger.info(
-					`Want to long spot market ${spotMarketIndex}, dlob fill amount ${dlobFillQuoteAmount} < jup amount in ${jupAmountIn}, dont trade on jup`
-				);
-				return undefined;
-			} else {
-				logger.info(
-					`Using Jupiter route for LONG spot market ${spotMarketIndex}, inMarket: ${
-						inMarket.marketIndex
-					}, outMarket: ${outMarket.marketIndex}, inAmount: ${
-						quote.inAmount
-					}, outAmount: ${quote.outAmount}, dlobFillQuoteAmount: ${
-						dlobFillQuoteAmount?.toString() ?? 'undefined'
-					}`
-				);
-				return {
-					quote,
-					inMarketIndex: inMarket.marketIndex,
-					outMarketIndex: outMarket.marketIndex,
-				};
-			}
-		} else {
-			const jupAmountOut = new BN(quote.outAmount);
-			if (dlobFillQuoteAmount?.gt(jupAmountOut)) {
-				logger.info(
-					`Want to short spot market ${spotMarketIndex}, dlob fill amount ${dlobFillQuoteAmount} > jup amount out ${jupAmountOut}, dont trade on jup`
-				);
-				return undefined;
-			} else {
-				logger.info(
-					`Using Jupiter route for SHORT spot market ${spotMarketIndex}, inMarket: ${
-						inMarket.marketIndex
-					}, outMarket: ${outMarket.marketIndex}, inAmount: ${
-						quote.inAmount
-					}, outAmount: ${quote.outAmount}, dlobFillQuoteAmount: ${
-						dlobFillQuoteAmount?.toString() ?? 'undefined'
-					}`
-				);
-				return {
-					quote,
-					inMarketIndex: inMarket.marketIndex,
-					outMarketIndex: outMarket.marketIndex,
-				};
-			}
-		}
+		return {
+			quote,
+			inMarketIndex: inMarket.marketIndex,
+			outMarketIndex: outMarket.marketIndex,
+		};
 	}
 
 	private getOrderParamsForPerpDerisk(
 		subaccountId: number,
-		position: PerpPosition,
-		dlob: DLOB
+		position: PerpPosition
 	): OptionalOrderParams | undefined {
 		let baseAssetAmount = position.baseAssetAmount;
 
@@ -602,9 +542,11 @@ export class LiquidatorDerisk {
 				direction,
 				this.velocityClient.getPerpMarketAccount(position.marketIndex)!,
 				oracle,
-				dlob,
+				// An empty book, so this is a vAMM-only estimate. Give it the
+				// dlob-server's `/l2` for the market to price against the book
+				// and the PropAMMs as well.
+				{ asks: [], bids: [] },
 				this.userMap.getSlot(),
-				undefined,
 				this.velocityClient.getStateAccount()
 			));
 		} catch (e) {
@@ -650,8 +592,7 @@ export class LiquidatorDerisk {
 	}
 
 	private async deriskPerpPositions(
-		userAccount: UserAccount,
-		dlob: DLOB
+		userAccount: UserAccount
 	): Promise<boolean> {
 		let didWork = false;
 		for (const position of userAccount.perpPositions) {
@@ -667,22 +608,33 @@ export class LiquidatorDerisk {
 
 				const orderParams = this.getOrderParamsForPerpDerisk(
 					userAccount.subAccountId,
-					position,
-					dlob
+					position
 				);
 				if (orderParams === undefined) {
 					continue;
 				}
-				const cancelOrdersIx = await this.velocityClient.getCancelOrdersIx(
-					MarketType.PERP,
-					position.marketIndex,
-					orderParams.direction,
+				// The derisk order is a taker. It routes across the vAMM, the book
+				// and the market's PropAMMs, and whatever it cannot fill rests on
+				// the book as a taker-origin remainder, so one instruction both
+				// closes what it can and leaves the rest working.
+				const cancelOrdersIx = await this.velocityClient.getCancelOrdersV1Ix(
+					{
+						marketIndex: position.marketIndex,
+						sides: isVariant(orderParams.direction, 'long')
+							? CancelSidesV0.BIDS
+							: CancelSidesV0.ASKS,
+					},
 					userAccount.subAccountId
 				);
-				const placeOrderIx = await this.velocityClient.getPlacePerpOrderIx(
-					orderParams,
-					userAccount.subAccountId
-				);
+				const placeOrderIx =
+					await this.velocityClient.getPlaceAndTakePerpOrderIx(
+						orderParams,
+						undefined,
+						undefined,
+						undefined,
+						undefined,
+						userAccount.subAccountId
+					);
 
 				const simResult = await this.buildVersionedTransactionWithSimulatedCus(
 					[cancelOrdersIx, placeOrderIx],
@@ -692,7 +644,7 @@ export class LiquidatorDerisk {
 
 				if (simResult.simError !== null) {
 					logger.error(
-						`Error in placePerpOrder in market: ${
+						`Error in placeAndTakePerpOrder in market: ${
 							position.marketIndex
 						}, simError: ${JSON.stringify(simResult.simError)}`
 					);
@@ -1035,10 +987,7 @@ export class LiquidatorDerisk {
 		return didWork;
 	}
 
-	public async deriskForSubaccount(
-		subaccountId: number,
-		dlob: DLOB
-	): Promise<boolean> {
+	public async deriskForSubaccount(subaccountId: number): Promise<boolean> {
 		this.velocityClient.switchActiveUser(
 			subaccountId,
 			this.velocityClient.authority
@@ -1053,21 +1002,15 @@ export class LiquidatorDerisk {
 			return false;
 		}
 
-		const perp = await this.deriskPerpPositions(userAccount, dlob);
+		const perp = await this.deriskPerpPositions(userAccount);
 		const spot = await this.deriskSpotPositions(userAccount);
 		return perp || spot;
 	}
 
-	public async deriskAllSubaccounts(
-		dlob: DLOB,
-		subaccountIds: number[]
-	): Promise<boolean> {
+	public async deriskAllSubaccounts(subaccountIds: number[]): Promise<boolean> {
 		let didWork = false;
 		for (const subAccountId of subaccountIds) {
-			const subDidWork: boolean = await this.deriskForSubaccount(
-				subAccountId,
-				dlob
-			);
+			const subDidWork: boolean = await this.deriskForSubaccount(subAccountId);
 			if (subDidWork) didWork = true;
 		}
 		return didWork;

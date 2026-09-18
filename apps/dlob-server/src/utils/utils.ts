@@ -30,7 +30,6 @@ import { logger } from './logger';
 import { NextFunction, Request, Response } from 'express';
 import FEATURE_FLAGS from './featureFlags';
 import { Connection } from '@solana/web3.js';
-import { wsMarketArgs } from 'src/dlob-subscriber/DLOBSubscriberIO';
 import {
 	DEFAULT_AUCTION_PARAMS,
 	DEFAULT_MARKET_AUCTION_DURATION_MS,
@@ -306,103 +305,6 @@ export function fireAndForgetRedis(
 		}
 		lastRedisWarnAt.set(context, now);
 		logger.warn(`Redis write failed (${context}): ${String(e)}`);
-	});
-}
-
-export function publishGroupings(
-	l2Formatted,
-	marketArgs: wsMarketArgs,
-	redisClient: RedisClient,
-	clientPrefix: string,
-	marketType: string,
-	indicativeQuotesRedisClient: RedisClient
-) {
-	const groupingResults = new Map();
-
-	GROUPING_OPTIONS.forEach((group) => {
-		const pricePrecision = BigNum.from(group).mul(marketArgs.tickSize).toNum();
-		const dependency = GROUPING_DEPENDENCIES[group];
-
-		let fullAggregatedBids, fullAggregatedAsks;
-
-		if (dependency && groupingResults.has(dependency)) {
-			const previousResults = groupingResults.get(dependency);
-
-			fullAggregatedBids = aggregatePrices(
-				previousResults.bids,
-				'bid',
-				pricePrecision
-			).sort((a, b) => b[0] - a[0]);
-
-			fullAggregatedAsks = aggregatePrices(
-				previousResults.asks,
-				'ask',
-				pricePrecision
-			).sort((a, b) => a[0] - b[0]);
-		} else {
-			fullAggregatedBids = aggregatePrices(
-				l2Formatted.bids,
-				'bid',
-				pricePrecision
-			).sort((a, b) => b[0] - a[0]);
-
-			fullAggregatedAsks = aggregatePrices(
-				l2Formatted.asks,
-				'ask',
-				pricePrecision
-			).sort((a, b) => a[0] - b[0]);
-		}
-
-		groupingResults.set(group, {
-			bids: fullAggregatedBids,
-			asks: fullAggregatedAsks,
-		});
-
-		// Count crossed levels at the beginning
-		let crossedBids = 0;
-		const bestAsk = fullAggregatedAsks[0]?.price;
-		if (bestAsk !== undefined) {
-			for (const bid of fullAggregatedBids) {
-				if (bid.price >= bestAsk) {
-					crossedBids++;
-				} else {
-					break;
-				}
-			}
-		}
-
-		let crossedAsks = 0;
-		const bestBid = fullAggregatedBids[0]?.price;
-		if (bestBid !== undefined) {
-			for (const ask of fullAggregatedAsks) {
-				if (ask.price <= bestBid) {
-					crossedAsks++;
-				} else {
-					break;
-				}
-			}
-		}
-
-		const maxCrossed = Math.max(crossedBids, crossedAsks);
-		const levelsToTake = 20 + maxCrossed;
-
-		const aggregatedBids = fullAggregatedBids.slice(0, levelsToTake);
-		const aggregatedAsks = fullAggregatedAsks.slice(0, levelsToTake);
-
-		const l2Formatted_grouped20 = Object.assign({}, l2Formatted, {
-			bids: aggregatedBids,
-			asks: aggregatedAsks,
-		});
-
-		fireAndForgetRedis(
-			redisClient.publish(
-				`${clientPrefix}orderbook_${marketType}_${
-					marketArgs.marketIndex
-				}_grouped_${group}${indicativeQuotesRedisClient ? '_indicative' : ''}`,
-				l2Formatted_grouped20
-			),
-			'orderbook grouped publish'
-		);
 	});
 }
 
@@ -1469,7 +1371,6 @@ export const formatAuctionParamsForResponse = (auctionParams: any) => {
  * @param selectMostRecentBySlot - Slot selection function
  * @param marketType - MarketType enum (spot or perp)
  * @param marketIndex - Market index number
- * @param includeIndicative - Whether to include indicative orders (optional)
  * @returns Promise<any> - Raw L2 data from Redis or null if not found
  */
 export const fetchL2FromRedis = async (
@@ -1479,15 +1380,13 @@ export const fetchL2FromRedis = async (
 	) => Promise<any>,
 	selectMostRecentBySlot: (responses: any[]) => any,
 	marketType: MarketType,
-	marketIndex: number,
-	includeIndicative?: boolean
+	marketIndex: number
 ): Promise<any> => {
 	const isSpot = isVariant(marketType, 'spot');
 	const marketTypeStr = isSpot ? 'spot' : 'perp';
-	const indicativeSuffix = includeIndicative ? '_indicative' : '';
 
 	return await fetchFromRedis(
-		`last_update_orderbook_${marketTypeStr}_${marketIndex}${indicativeSuffix}`,
+		`last_update_orderbook_${marketTypeStr}_${marketIndex}`,
 		selectMostRecentBySlot
 	);
 };

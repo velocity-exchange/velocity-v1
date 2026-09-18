@@ -7639,7 +7639,7 @@ export type Velocity = {
         "taker's signature, places the order, routes it through the market's",
         "quoters and books for whatever fills at or better than the order's",
         "auction start price, and rests what is left on the market's CLOB as a",
-        "taker-origin remainder. A signed-message order never rests on the DLOB.",
+        "taker-origin remainder. A signed-message order never rests in a slot.",
         "",
         "The keeper that builds the transaction is a filler. The taker signed a",
         "message and not a transaction, so the keeper answers for the account",
@@ -11593,7 +11593,7 @@ export type Velocity = {
     {
       "name": "triggerMarketOrderV1",
       "docs": [
-        "Fire a DLOB trigger order straight to the book. It fills the fired",
+        "Fire an armed trigger order straight to the book. It fills the fired",
         "order in the same instruction and rests only the remainder as a",
         "taker-origin order, so nothing stays live in `User.orders`."
       ],
@@ -11745,8 +11745,8 @@ export type Velocity = {
           "name": "ixSysvar",
           "docs": [
             "the owner signed the transaction and how many accounts it locks, which",
-            "are the filler-obligation facts `fill_legacy_dlob_order` needs. It is",
-            "optional and costs one lock. A fill needs it only when a book withholds",
+            "are the filler-obligation facts a fill needs. It is optional and costs",
+            "one lock. A fill needs it only when a book withholds",
             "depth for an owner the transaction does not carry, and the owner did not",
             "sign. A trigger crank's owner never signs, so a fill that reaches a",
             "withheld order and passes `None` here is refused."
@@ -23491,7 +23491,7 @@ export type Velocity = {
         "Pure counters — token claims live in the pools",
         "(`protocol_fee_pool`, the quote `revenue_pool`, `AMM.fee_pool`).",
         "Convention: gross-fee counters record what the taker actually paid",
-        "(post referee discount, pre carve-outs) on BOTH the AMM and DLOB-match",
+        "(post referee discount, pre carve-outs) on both the AMM and the maker-match",
         "paths."
       ],
       "serialization": "bytemuckunsafe",
@@ -25432,8 +25432,8 @@ export type Velocity = {
       "name": "marketStats",
       "docs": [
         "Historic market data shared across all makers, updated on every fill",
-        "regardless of which maker filled (vAMM, DLOB resting order, JIT participant,",
-        "future quoter types). Holds mark/oracle TWAPs, rolling std, volume,",
+        "regardless of which maker filled (vAMM, a resting book order, future quoter",
+        "types). Holds mark/oracle TWAPs, rolling std, volume,",
         "intensity, mm-oracle snapshot, `historical_oracle_data`,",
         "`last_oracle_normalised_price`, `last_oracle_valid`.",
         "",
@@ -26228,7 +26228,7 @@ export type Velocity = {
             "name": "padding",
             "docs": [
               "Free bytes. These held a route digest while a signed-message order",
-              "could rest on the DLOB. Such an order now routes at placement and rests",
+              "could rest in a slot. Such an order now routes at placement and rests",
               "any remainder on the market's CLOB, so the route travels with the",
               "message, on",
               "[`crate::state::signed_msg_user::SignedMsgOrderId::route_digest`].",
@@ -27664,7 +27664,7 @@ export type Velocity = {
               "The automated market maker. Last field so future quoter modules can",
               "land in the trailing region without disturbing earlier byte offsets",
               "— in the target architecture this account holds back-to-back",
-              "per-quoter state slices (AMM, DLOB-maker state, future propAMM-style",
+              "per-quoter state slices (AMM, book state, future propAMM-style",
               "participants, …) and each module owns a contiguous span starting at",
               "a known offset."
             ],
@@ -28487,9 +28487,9 @@ export type Velocity = {
       "name": "quotedSourceKind",
       "docs": [
         "Which kind of liquidity a quoted book came from. The router needs it to",
-        "execute the allocation as a CPI leg, an in-program DLOB order, or the",
-        "vAMM. A user interface needs it to label depth, because a PropAMM's levels",
-        "are a quote at a size rather than resting orders."
+        "execute the allocation as a CPI leg or as the vAMM. A user interface needs",
+        "it to label depth, because a PropAMM's levels are a quote at a size rather",
+        "than resting orders."
       ],
       "repr": {
         "kind": "rust"
@@ -29528,8 +29528,8 @@ export type Velocity = {
             "name": "quotedSize",
             "docs": [
               "Taker size the books were quoted at. The size changes the answer rather",
-              "than echoing the request. It only truncates a resting book on the CLOB",
-              "or the DLOB, but the vAMM's levels and a PropAMM's levels depend on it."
+              "than echoing the request. It only truncates a resting book on the CLOB,",
+              "but the vAMM's levels and a PropAMM's levels depend on it."
             ],
             "type": "u64"
           },

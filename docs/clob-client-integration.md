@@ -12,7 +12,7 @@ return it, and never will. Everything below follows from that.
 
 ## Order identity
 
-A book order's id is minted from `User.next_order_id`, the same counter the account's DLOB orders
+A book order's id is minted from `User.next_order_id`, the same counter the account's slot orders
 draw from. So:
 
 - ids are unique per user across both venues, and a client keeps one `orderId: number` handle;
@@ -186,30 +186,31 @@ The path from publisher tick to websocket has not been run end to end against a 
 two sides are unit-tested and the row shape is pinned across them, but the whole loop is unproven.
 Expect to shake it out rather than to find it working first time.
 
-## Merging the two venues in one list
+## Merging the two lists
 
-Not every order can rest on a book. These stay in `User.orders` on the DLOB, and will for as long as
-the DLOB lives:
+Every live order rests on the book. What stays in `User.orders` is unfired conditionals, which are
+not matchable and should not render as depth:
 
 | Order | Where it rests |
 | --- | --- |
 | Limit, fixed price | CLOB |
-| Limit with an oracle offset | DLOB. There is no fixed price to rest at |
-| Reduce-only limit | DLOB. Enforced at placement against state the book does not hold |
+| Reduce-only limit | CLOB. Velocity counts it on `PerpPosition.reduce_only_clob_orders` and caps the owner's reduce-only fills to the position they reduce |
+| Limit with an oracle offset | Refused at placement (`InvalidOrderOracleOffset`). There is no fixed price to rest at, so use a PropAMM quoter |
 | Trigger-limit, armed | `User.orders`, not matchable until it fires |
 | Trigger-limit, fired | CLOB, with a shadow slot left behind (see below) |
 | Trigger-market | `User.orders`, then the taker flow |
 | Market or signed-msg taker | Not resting. An unfilled restable remainder migrates to the CLOB |
 
-So the open-orders view is the union of `user.getOpenOrders()` and the feed. The row's `venue` field
-tells them apart, and it decides which cancel path an order takes: `cancelOrder(orderId)` for a DLOB
-order, `cancelOrderV1({ marketIndex, orderRef })` for a book one.
+So the open-orders view is the feed, plus whatever armed triggers `user.getOpenOrders()` reports.
+The row's `venue` field tells them apart, and it decides which cancel path an order takes:
+`cancelOrder(orderId)` for a slot order, `cancelOrderV1({ marketIndex, orderRef })` for a book
+one.
 
 ### Placed triggers are the trap
 
 When a trigger-limit fires, its live order goes onto the book and its `User.orders` slot becomes a
 shadow. The shadow keeps the trigger parameters and the book handle, and it reads as untriggered so
-that DLOB matching ignores it. Two consequences:
+that trigger discovery ignores it. Two consequences:
 
 - the shadow appears in `user.getOpenOrders()` output. Filter on `OrderBitFlag.PlacedOnClob` (`64`)
   and do not render it as a second open order beside the feed row;
@@ -221,7 +222,7 @@ crossing the trigger again.
 
 ## Order states a UI has to name
 
-Beyond open, filled and cancelled, a book order has states the DLOB never had:
+Beyond open, filled and cancelled, a book order has states a slot order never had:
 
 - **Pending activation.** Placed, not yet matchable (`activationSlot > current slot`).
 - **Evicted.** The side hit its capacity threshold and the worst-priced order was cranked off.
@@ -238,7 +239,7 @@ Beyond open, filled and cancelled, a book order has states the DLOB never had:
 Velocity emits the records the history pipeline already reads: `OrderRecord` when an order starts
 resting, `OrderActionRecord` with `OrderAction::Cancel` when it stops. A book order's `OrderRecord`
 carries a synthesized `Order` whose `bitFlags` include `PlacedOnClob`, which is how a reader tells it
-from a DLOB order in the same id space.
+from a slot order in the same id space.
 
 Two gaps the client should know are gaps rather than bugs:
 

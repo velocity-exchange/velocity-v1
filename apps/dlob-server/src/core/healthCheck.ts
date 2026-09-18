@@ -155,9 +155,9 @@ function evaluateHealth(currentSlot: number): {
  * sample. A stalled publisher is the case that samples least often, so that gap
  * is real rather than hypothetical.
  *
- * The window is process-wide. dlob-publisher runs a normal and an indicative
- * DLOBSubscriberIO over the same markets, and they share one window per market.
- * They read the same slot source and oracle data, so they agree in practice.
+ * The window is process-wide, so two publishers over the same market share one
+ * window. They read the same slot source and oracle data, so they agree in
+ * practice.
  */
 type SlotDiffWindow = { since: number; lastSeen: number };
 const slotDiffWindows: Map<string, SlotDiffWindow> = new Map();

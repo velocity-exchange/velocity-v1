@@ -9,7 +9,7 @@ import {
 	PositionDirection,
 	PRICE_PRECISION,
 } from '../../src';
-import { mockPerpMarkets } from '../dlob/helpers';
+import { mockPerpMarkets } from '../fixtures/mockAccounts';
 import { assert } from '../../src/assert/assert';
 
 // Mirrors the OtterSec #146 clamp in OrderParams::get_perp_baseline_start_price_offset

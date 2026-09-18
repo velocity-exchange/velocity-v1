@@ -348,8 +348,8 @@ impl TakerRiskLimits {
 
         // A spot deposit whose oracle is invalid for margin contributes zero
         // collateral instead of its stale weighted value. Crediting it lets
-        // collateral the program cannot price buy an in-band losing DLOB
-        // trade, whose counterparty then settles a real profit out of the PnL
+        // collateral the program cannot price buy an in-band losing trade,
+        // whose counterparty then settles a real profit out of the PnL
         // pool. Every other value-releasing path drops such a deposit.
         // `meets_withdraw_margin_requirement` and its two siblings all set
         // this, and a fill is the same decision.
@@ -623,7 +623,7 @@ fn reject_margin_breach(
 /// transaction.
 ///
 /// Both apply whichever direction the fill moves the position. The two-account
-/// DLOB transfer this closes works with both seats reducing. One seat closes
+/// transfer this closes works with both seats reducing. One seat closes
 /// into the worst in-band price and leaves bad debt, and the other settles the
 /// matching profit out of the PnL pool. `meets_withdraw_margin_requirement`
 /// draws the same line and exempts no direction.

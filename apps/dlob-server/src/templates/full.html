@@ -510,7 +510,7 @@
 				if (socket && socket.readyState === WebSocket.OPEN) {
 					socket.send(
 						JSON.stringify({
-							channel: 'orderbook_indicative',
+							channel: 'orderbook',
 							market: 'SOL-PERP',
 							marketType: 'perp',
 							type: 'subscribe',
@@ -525,7 +525,7 @@
 				if (socket && socket.readyState === WebSocket.OPEN) {
 					socket.send(
 						JSON.stringify({
-							channel: 'orderbook_indicative',
+							channel: 'orderbook',
 							market: 'SOL-PERP',
 							marketType: 'perp',
 							type: 'unsubscribe',

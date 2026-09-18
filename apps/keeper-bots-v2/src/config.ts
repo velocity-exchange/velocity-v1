@@ -23,10 +23,6 @@ export type BaseBotConfig = {
 	runOnce?: boolean;
 };
 
-export type TriggerConfig = BaseBotConfig & {
-	triggerPriorityFeeMultiplier?: number;
-};
-
 export type UserPnlSettlerConfig = BaseBotConfig & {
 	/// perp market indexes to filter for settling pnl
 	perpMarketIndicies?: Array<number>;
@@ -35,39 +31,6 @@ export type UserPnlSettlerConfig = BaseBotConfig & {
 	settlePnlThresholdUsdc?: number;
 	/// max number of users to consider for settling pnl on each iteration
 	maxUsersToConsider?: number;
-};
-
-export type FillerMultiThreadedConfig = BaseBotConfig & {
-	marketType: string;
-	marketIndexes: Array<number[]>;
-	simulateTxForCUEstimate?: boolean;
-	revertOnFailure?: boolean;
-	subaccount?: number;
-
-	rebalanceFiller?: boolean;
-	rebalanceSettledPnlThreshold?: number;
-	minGasBalanceToFill?: number;
-	bidToFillerReward?: boolean;
-	pythLazerChunkSize?: number;
-
-	triggerPriorityFeeMultiplier?: number;
-
-	/// Wall-clock ms between fill attempts for one order. It paces re-attempts
-	/// against the DLOB builder's re-emit, which runs about every 200ms. The bot
-	/// converts it to slots at the current slot duration. Defaults to 2000.
-	fillAttemptIntervalMs?: number;
-};
-
-export type FillerConfig = BaseBotConfig & {
-	fillerPollingInterval?: number;
-	revertOnFailure?: boolean;
-	simulateTxForCUEstimate?: boolean;
-
-	rebalanceFiller?: boolean;
-	rebalanceSettledPnlThreshold?: number;
-	minGasBalanceToFill?: number;
-
-	triggerPriorityFeeMultiplier?: number;
 };
 
 export type MakerBidAskTwapCrankConfig = BaseBotConfig & {
@@ -87,6 +50,14 @@ export type MakerBidAskTwapCrankConfig = BaseBotConfig & {
 	 * Default 1500.
 	 */
 	ifStakeTargetQuote?: number;
+	/**
+	 * dlob-server base URL. The crank passes the book's best resting owners to
+	 * `update_perp_bid_ask_twap`, because the program reads the book's depth
+	 * itself but can only credit an owner the transaction carries, and it reads
+	 * them from the server's `/topMakers`. A market that names a book refuses
+	 * the crank without them.
+	 */
+	dlobServerHttpUrl?: string;
 };
 
 export type SubaccountConfig = {
@@ -163,14 +134,7 @@ export type LpPoolTargetBaseCrankerConfig = BaseBotConfig & {
 };
 
 export type BotConfigMap = {
-	fillerMultithreaded?: FillerMultiThreadedConfig;
-	spotFillerMultithreaded?: FillerMultiThreadedConfig;
-	filler?: FillerConfig;
-	fillerLite?: FillerConfig;
-	spotFiller?: FillerConfig;
-	trigger?: TriggerConfig;
 	liquidator?: LiquidatorConfig;
-	floatingMaker?: BaseBotConfig;
 	ifRevenueSettler?: BaseBotConfig;
 	protocolFeeCollector?: BaseBotConfig;
 	fundingRateUpdater?: BaseBotConfig;
@@ -255,8 +219,6 @@ export interface GlobalConfig {
 	trackTxLandRate?: boolean;
 	jetTxEndpoints?: string[];
 
-	rebalanceFiller?: boolean;
-
 	lutPubkey?: string;
 }
 
@@ -320,8 +282,6 @@ const defaultConfig: Partial<Config> = {
 
 		metricsPort: 9464,
 		disableMetrics: false,
-
-		rebalanceFiller: false,
 	},
 	enabledBots: [],
 	botConfigs: {},
@@ -376,16 +336,6 @@ function mergeDefaults<T>(defaults: T, data: Partial<T>): T {
 function migrateDeprecatedSlotConfigs(config: Partial<Config>): void {
 	const BASELINE_MS = 400;
 	const renames = [
-		{
-			bot: 'fillerMultithreaded',
-			oldKey: 'fillAttemptSlotInterval',
-			newKey: 'fillAttemptIntervalMs',
-		},
-		{
-			bot: 'spotFillerMultithreaded',
-			oldKey: 'fillAttemptSlotInterval',
-			newKey: 'fillAttemptIntervalMs',
-		},
 		{
 			bot: 'liquidator',
 			oldKey: 'deriskAuctionDurationSlots',
@@ -498,52 +448,11 @@ export function loadConfigFromOpts(opts: any): Config {
 
 			metricsPort: opts.metricsPort ?? 9464,
 			disableMetrics: opts.disableMetrics ?? false,
-
-			rebalanceFiller: opts.rebalanceFiller ?? false,
 		},
 		enabledBots: [],
 		botConfigs: {},
 	};
 
-	if (opts.filler) {
-		config.enabledBots.push('filler');
-		config.botConfigs!.filler = {
-			dryRun: opts.dryRun ?? false,
-			botId: process.env.BOT_ID ?? 'filler',
-			fillerPollingInterval: 5000,
-			metricsPort: 9464,
-			runOnce: opts.runOnce ?? false,
-			simulateTxForCUEstimate: opts.simulateTxForCUEstimate ?? true,
-			rebalanceFiller: opts.rebalanceFiller ?? false,
-			triggerPriorityFeeMultiplier: opts.triggerPriorityFeeMultiplier ?? 1.5,
-		};
-	}
-	if (opts.fillerLite) {
-		config.enabledBots.push('fillerLite');
-		config.botConfigs!.fillerLite = {
-			dryRun: opts.dryRun ?? false,
-			botId: process.env.BOT_ID ?? 'fillerLite',
-			fillerPollingInterval: 5000,
-			metricsPort: 9464,
-			runOnce: opts.runOnce ?? false,
-			simulateTxForCUEstimate: opts.simulateTxForCUEstimate ?? true,
-			rebalanceFiller: opts.rebalanceFiller ?? false,
-			triggerPriorityFeeMultiplier: opts.triggerPriorityFeeMultiplier ?? 1.5,
-		};
-	}
-	if (opts.spotFiller) {
-		config.enabledBots.push('spotFiller');
-		config.botConfigs!.spotFiller = {
-			dryRun: opts.dryRun ?? false,
-			botId: process.env.BOT_ID ?? 'filler',
-			fillerPollingInterval: 5000,
-			metricsPort: 9464,
-			runOnce: opts.runOnce ?? false,
-			simulateTxForCUEstimate: opts.simulateTxForCUEstimate ?? true,
-			rebalanceFiller: opts.rebalanceFiller ?? false,
-			triggerPriorityFeeMultiplier: opts.triggerPriorityFeeMultiplier ?? 1.5,
-		};
-	}
 	if (opts.liquidator) {
 		config.enabledBots.push('liquidator');
 		config.botConfigs!.liquidator = {
@@ -575,16 +484,6 @@ export function loadConfigFromOpts(opts: any): Config {
 			})(),
 			twapDurationSec: parseInt(opts.twapDurationSec ?? '300'),
 			notifyOnLiquidation: opts.notifyOnLiquidation ?? false,
-		};
-	}
-	if (opts.trigger) {
-		config.enabledBots.push('trigger');
-		config.botConfigs!.trigger = {
-			dryRun: opts.dryRun ?? false,
-			botId: process.env.BOT_ID ?? 'trigger',
-			metricsPort: 9464,
-			runOnce: opts.runOnce ?? false,
-			triggerPriorityFeeMultiplier: opts.triggerPriorityFeeMultiplier ?? 1.5,
 		};
 	}
 	if (opts.ifRevenueSettler) {

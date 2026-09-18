@@ -11,9 +11,8 @@
 //! The view instead writes every source's book into this account in one
 //! encoding, and the caller reads it out of post-simulation account state.
 //! One encoding is needed because the sources have nothing else in common.
-//! The vAMM has no response account. DLOB orders have no program at all. A
-//! book that verification clamped no longer matches what sits in its response
-//! account.
+//! The vAMM has no response account, and a book that verification clamped no
+//! longer matches what sits in its response account.
 //!
 //! This account is only ever written under simulation. Landing the
 //! instruction changes nothing else, so it is harmless and useless.
@@ -48,16 +47,16 @@ pub const MAX_QUOTED_SOURCES: usize = 16;
 pub const MAX_LEVELS_PER_SOURCE: usize = crate::math::router::MAX_LEVELS_PER_BOOK;
 
 /// Which kind of liquidity a quoted book came from. The router needs it to
-/// execute the allocation as a CPI leg, an in-program DLOB order, or the
-/// vAMM. A user interface needs it to label depth, because a PropAMM's levels
-/// are a quote at a size rather than resting orders.
+/// execute the allocation as a CPI leg or as the vAMM. A user interface needs
+/// it to label depth, because a PropAMM's levels are a quote at a size rather
+/// than resting orders.
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug, Default)]
 #[repr(u8)]
 pub enum QuotedSourceKind {
     /// The in-program constant-product AMM.
     #[default]
     Vamm,
-    /// A resting `User` order from the DLOB, bridged as a single level.
+    /// A resting `User` order, bridged as a single level.
     /// @deprecated No source publishes this. The discriminant stays so the
     /// wire layout of `QuotedSourceV0.kind` does not shift.
     DlobOrder,
@@ -174,8 +173,8 @@ pub struct RouterQuoteBufferV0 {
     /// market do not overwrite each other's reads.
     pub authority: Pubkey,
     /// Taker size the books were quoted at. The size changes the answer rather
-    /// than echoing the request. It only truncates a resting book on the CLOB
-    /// or the DLOB, but the vAMM's levels and a PropAMM's levels depend on it.
+    /// than echoing the request. It only truncates a resting book on the CLOB,
+    /// but the vAMM's levels and a PropAMM's levels depend on it.
     pub quoted_size: u64,
     /// Slot the quote ran at, so a reader can tell how stale a cached book is.
     pub slot: u64,

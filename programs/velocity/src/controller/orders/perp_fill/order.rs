@@ -39,7 +39,7 @@ use {
 
 /// [`fill_perp_order`] with no external quoter books.
 ///
-/// The route still runs over the vAMM ladder and the passed DLOB makers. The
+/// The route still runs over the vAMM ladder and the quoter books. The
 /// split has no CPI book to price in. Every fill entrypoint that carries no
 /// quoter accounts arrives here.
 #[cfg(test)]
@@ -229,7 +229,7 @@ impl<'a> WorkingOrder<'a> {
 ///
 /// This layer governs the order. It finds the order, admits or refuses the
 /// fill, refreshes the market oracle statistics, binds the keeper and collects
-/// the DLOB maker orders the fill may match. [`OrderUnderFill`] carries all of
+/// the makers the fill may settle against. [`OrderUnderFill`] carries all of
 /// that through the fill and the bookkeeping it leaves behind.
 pub fn fill_perp_order(
     request: FillRequest<'_>,
@@ -827,7 +827,7 @@ fn limit_price_oracle(
 
 /// The raw exchange oracle's own validity, which only the order layer reads.
 ///
-/// A DLOB maker match is gated on the raw feed as well as on the safe one.
+/// A maker match is gated on the raw feed as well as on the safe one.
 fn exchange_oracle_validity(
     market: &PerpMarket,
     state: &State,

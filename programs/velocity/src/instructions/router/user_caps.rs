@@ -512,16 +512,18 @@ impl CapInputs<'_, '_> {
 
         let maker = self.makers_and_referrer.get_ref(key)?;
 
-        // The most base this maker can give up, which bounds everything below. Some users rest nothing on a
-        // book. Examples are a referrer, a maker that quotes only one side, and a maker that quotes the other
-        // way. This fill cannot cost them anything, so they are answered before any walk is spent on them.
+        // The most base this maker can be filled for, which bounds everything below. Some users rest
+        // nothing on a book. Examples are a referrer, a maker that quotes only one side, and a maker that
+        // quotes the other way. This fill cannot cost them anything, so they are answered before any walk
+        // is spent on them.
         let position = maker.get_perp_position(market_index).ok();
         let resting = clob_resting_base(&maker, market_index, resting_side)?.min(taker_size);
         if resting == 0 {
             return Ok(u64::MAX);
         }
 
-        // And the most it can cost them, which is that base sold for nothing.
+        // And the most it can cost them. The maker can end up with nothing for that base, so the bound
+        // is its whole value at reference.
         let worst_loss = resting
             .cast::<i128>()?
             .safe_mul(reference_price.max(0).cast()?)?

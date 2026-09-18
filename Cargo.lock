@@ -150,7 +150,7 @@ dependencies = [
 [[package]]
 name = "anchor-derive-accounts"
 version = "2.0.0-rc.1"
-source = "git+https://github.com/velocity-exchange/anchor.git?rev=b005890d9351a17a8061811662c44d781a04baf0#b005890d9351a17a8061811662c44d781a04baf0"
+source = "git+https://github.com/otter-sec/anchor.git?rev=abacd0e9362d957e7da779fa81b1a10dd9480b28#abacd0e9362d957e7da779fa81b1a10dd9480b28"
 dependencies = [
  "anchor-lang-idl 0.2.0",
  "bs58",
@@ -235,7 +235,7 @@ dependencies = [
 [[package]]
 name = "anchor-lang"
 version = "2.0.0-rc.1"
-source = "git+https://github.com/velocity-exchange/anchor.git?rev=b005890d9351a17a8061811662c44d781a04baf0#b005890d9351a17a8061811662c44d781a04baf0"
+source = "git+https://github.com/otter-sec/anchor.git?rev=abacd0e9362d957e7da779fa81b1a10dd9480b28#abacd0e9362d957e7da779fa81b1a10dd9480b28"
 dependencies = [
  "anchor-derive-accounts 2.0.0-rc.1",
  "bytemuck",
@@ -271,9 +271,9 @@ dependencies = [
 [[package]]
 name = "anchor-lang-idl"
 version = "0.2.0"
-source = "git+https://github.com/velocity-exchange/anchor.git?rev=b005890d9351a17a8061811662c44d781a04baf0#b005890d9351a17a8061811662c44d781a04baf0"
+source = "git+https://github.com/otter-sec/anchor.git?rev=abacd0e9362d957e7da779fa81b1a10dd9480b28#abacd0e9362d957e7da779fa81b1a10dd9480b28"
 dependencies = [
- "anchor-lang-idl-spec 0.1.0 (git+https://github.com/velocity-exchange/anchor.git?rev=b005890d9351a17a8061811662c44d781a04baf0)",
+ "anchor-lang-idl-spec 0.1.0 (git+https://github.com/otter-sec/anchor.git?rev=abacd0e9362d957e7da779fa81b1a10dd9480b28)",
  "anyhow",
  "heck 0.3.3",
  "serde",
@@ -294,7 +294,7 @@ dependencies = [
 [[package]]
 name = "anchor-lang-idl-spec"
 version = "0.1.0"
-source = "git+https://github.com/velocity-exchange/anchor.git?rev=b005890d9351a17a8061811662c44d781a04baf0#b005890d9351a17a8061811662c44d781a04baf0"
+source = "git+https://github.com/otter-sec/anchor.git?rev=abacd0e9362d957e7da779fa81b1a10dd9480b28#abacd0e9362d957e7da779fa81b1a10dd9480b28"
 dependencies = [
  "anyhow",
  "serde",
@@ -1734,7 +1734,7 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 [[package]]
 name = "relay-anchor"
 version = "0.1.0"
-source = "git+https://github.com/velocity-exchange/relay?rev=e4b1115#e4b11156d83ea469041a80d281103de5c8e1797d"
+source = "git+https://github.com/velocity-exchange/relay?rev=a6c958b#a6c958b660491cb1ce893d4cb3256d80e5bb50e6"
 dependencies = [
  "anchor-lang 1.0.2",
  "relay-spec",
@@ -1743,7 +1743,7 @@ dependencies = [
 [[package]]
 name = "relay-spec"
 version = "0.1.0"
-source = "git+https://github.com/velocity-exchange/relay?rev=e4b1115#e4b11156d83ea469041a80d281103de5c8e1797d"
+source = "git+https://github.com/velocity-exchange/relay?rev=a6c958b#a6c958b660491cb1ce893d4cb3256d80e5bb50e6"
 dependencies = [
  "bytemuck",
 ]

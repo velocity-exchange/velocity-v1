@@ -2,10 +2,11 @@ import * as anchor from '@coral-xyz/anchor';
 import { BN, Program, Wallet } from '@coral-xyz/anchor';
 import { expect } from 'chai';
 import {
-	BankrunContextWrapper,
+	LiteSVMContextWrapper,
 	TEST_ADMIN_KEYPAIR,
-} from './common/bankrunConnection';
-import { startAnchor } from 'solana-bankrun';
+	startLiteSVM,
+	LiteSVMProvider,
+} from './common/litesvmConnection';
 import {
 	VaultClient,
 	getVaultAddressSync,
@@ -32,15 +33,14 @@ import {
 } from '@velocity-exchange/sdk';
 import { TestBulkAccountLoader } from './common/testBulkAccountLoader';
 import {
-	bootstrapSignerClientAndUserBankrun,
+	bootstrapSignerClientAndUser,
 	initializeQuoteSpotMarket,
 	initializeSolSpotMarket,
-	mockUSDCMintBankrun,
+	mockUSDCMint,
 	printTxLogs,
 } from './common/testHelpers';
 import { Keypair, LAMPORTS_PER_SOL } from '@solana/web3.js';
-import { mockOracleNoProgram } from './common/bankrunOracle';
-import { BankrunProvider } from 'anchor-bankrun';
+import { mockOracleNoProgram } from './common/svmOracle';
 
 // ammInvariant == k == x * y
 const mantissaSqrtScale = new BN(100_000);
@@ -60,7 +60,7 @@ describe('feeUpdate', () => {
 	const initialSolPerpPrice = 100;
 	let adminVelocityClient: TestClient;
 	let bulkAccountLoader: TestBulkAccountLoader;
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 	let usdcMint: Keypair;
 	let solPerpOracle: PublicKey;
 	// Each test gets a fresh, uniquely-named vault (the vault PDA derives from the
@@ -91,23 +91,23 @@ describe('feeUpdate', () => {
 	let user3VelocityClient: VelocityClient;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = startLiteSVM();
 
 		// wrap the context to use it with the test helpers
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
-		vaultProgram = new Program<Vaults>(IDL, bankrunContextWrapper.provider);
+		vaultProgram = new Program<Vaults>(IDL, svmContextWrapper.provider);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			'processed',
 			1
 		);
 
-		usdcMint = await mockUSDCMintBankrun(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
 
 		solPerpOracle = await mockOracleNoProgram(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			initialSolPerpPrice
 		);
 
@@ -116,13 +116,13 @@ describe('feeUpdate', () => {
 			// Keypair.generate()
 		);
 
-		await bankrunContextWrapper.fundKeypair(
+		await svmContextWrapper.fundKeypair(
 			adminWallet.payer,
 			100 * LAMPORTS_PER_SOL
 		);
 
 		adminVelocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
+			connection: svmContextWrapper.connection.toConnection(),
 			wallet: adminWallet,
 			programID: new PublicKey(VELOCITY_PROGRAM_ID),
 			opts: {
@@ -158,8 +158,8 @@ describe('feeUpdate', () => {
 
 		await adminVelocityClient.fetchAccounts();
 
-		const managerBootstrap = await bootstrapSignerClientAndUserBankrun({
-			bankrunContext: bankrunContextWrapper,
+		const managerBootstrap = await bootstrapSignerClientAndUser({
+			svmContext: svmContextWrapper,
 			programId: VAULT_PROGRAM_ID,
 			signer: managerSigner,
 			usdcMint: usdcMint,
@@ -182,8 +182,8 @@ describe('feeUpdate', () => {
 		managerClient = managerBootstrap.vaultClient;
 		managerVelocityClient = managerBootstrap.velocityClient;
 
-		const provider = new BankrunProvider(
-			bankrunContextWrapper.context,
+		const provider = new LiteSVMProvider(
+			svmContextWrapper.context,
 			adminVelocityClient.wallet as anchor.Wallet
 		);
 		const program = new Program(IDL, provider);
@@ -193,8 +193,8 @@ describe('feeUpdate', () => {
 			program,
 		});
 
-		const user1Bootstrap = await bootstrapSignerClientAndUserBankrun({
-			bankrunContext: bankrunContextWrapper,
+		const user1Bootstrap = await bootstrapSignerClientAndUser({
+			svmContext: svmContextWrapper,
 			programId: VAULT_PROGRAM_ID,
 			signer: user1Signer,
 			usdcMint: usdcMint,
@@ -217,8 +217,8 @@ describe('feeUpdate', () => {
 		user1Client = user1Bootstrap.vaultClient;
 		user1VelocityClient = user1Bootstrap.velocityClient;
 
-		const user2Bootstrap = await bootstrapSignerClientAndUserBankrun({
-			bankrunContext: bankrunContextWrapper,
+		const user2Bootstrap = await bootstrapSignerClientAndUser({
+			svmContext: svmContextWrapper,
 			programId: VAULT_PROGRAM_ID,
 			signer: user2Signer,
 			usdcMint: usdcMint,
@@ -241,8 +241,8 @@ describe('feeUpdate', () => {
 		user2Client = user2Bootstrap.vaultClient;
 		user2VelocityClient = user2Bootstrap.velocityClient;
 
-		const user3Bootstrap = await bootstrapSignerClientAndUserBankrun({
-			bankrunContext: bankrunContextWrapper,
+		const user3Bootstrap = await bootstrapSignerClientAndUser({
+			svmContext: svmContextWrapper,
 			programId: VAULT_PROGRAM_ID,
 			signer: user3Signer,
 			usdcMint: usdcMint,
@@ -268,15 +268,15 @@ describe('feeUpdate', () => {
 		// `before` runs once but each test below initializes its own vault +
 		// depositor accounts (rent paid by manager/users), so top these reused
 		// signers up to cover the whole suite's worth of account creation.
-		await bankrunContextWrapper.fundKeypair(
+		await svmContextWrapper.fundKeypair(
 			managerSigner,
 			100 * LAMPORTS_PER_SOL
 		);
-		await bankrunContextWrapper.fundKeypair(
+		await svmContextWrapper.fundKeypair(
 			user1Signer,
 			100 * LAMPORTS_PER_SOL
 		);
-		await bankrunContextWrapper.fundKeypair(
+		await svmContextWrapper.fundKeypair(
 			user2Signer,
 			100 * LAMPORTS_PER_SOL
 		);
@@ -367,7 +367,7 @@ describe('feeUpdate', () => {
 			vaultProgram.programId,
 			commonVaultKey
 		);
-		expect(await bankrunContextWrapper.connection.getAccountInfo(feeUpdate)).to
+		expect(await svmContextWrapper.connection.getAccountInfo(feeUpdate)).to
 			.be.null;
 
 		// manager cannot init their own FeeUpdate account
@@ -384,7 +384,7 @@ describe('feeUpdate', () => {
 		vaultAcct = await vaultProgram.account.vault.fetch(commonVaultKey);
 		expect(vaultAcct.feeUpdateStatus).to.deep.equal(FeeUpdateStatus.None);
 
-		expect(await bankrunContextWrapper.connection.getAccountInfo(feeUpdate)).not
+		expect(await svmContextWrapper.connection.getAccountInfo(feeUpdate)).not
 			.to.be.null;
 	});
 
@@ -503,7 +503,7 @@ describe('feeUpdate', () => {
 			{ noLut: true }
 		);
 		const events = await printTxLogs(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			tx,
 			false,
 			// @ts-ignore
@@ -529,7 +529,7 @@ describe('feeUpdate', () => {
 		);
 
 		// user deposits after 1 day, new fee should come into effect
-		await bankrunContextWrapper.moveTimeForward(ONE_WEEK_S.toNumber());
+		await svmContextWrapper.moveTimeForward(ONE_WEEK_S.toNumber());
 
 		// trigger the fee upduate
 		const tx1 = await managerClient.managerUpdateFees(
@@ -543,7 +543,7 @@ describe('feeUpdate', () => {
 			{ noLut: true }
 		);
 		const events1 = await printTxLogs(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			tx1,
 			false,
 			// @ts-ignore

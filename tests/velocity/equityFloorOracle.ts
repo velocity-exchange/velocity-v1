@@ -29,9 +29,11 @@ import {
 	mockUserUSDCAccount,
 	setFeedPriceNoProgram,
 } from './testHelpers';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 
 // InvalidOracle
 const INVALID_ORACLE_HEX = '0x1793';
@@ -58,7 +60,7 @@ describe('equity floor oracle validity', () => {
 	let eventSubscriber: EventSubscriber;
 
 	let bulkAccountLoader: TestBulkAccountLoader;
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 
 	let solOracle: PublicKey;
 	let usdcMint;
@@ -90,49 +92,49 @@ describe('equity floor oracle validity', () => {
 	// stays near the price the market was initialized at, which is what gives
 	// the two bounds room to differ.
 	const staleSolOracleAt = async (price: number) => {
-		await setFeedPriceNoProgram(bankrunContextWrapper, price, solOracle);
-		await bankrunContextWrapper.moveTimeForward(400);
+		await setFeedPriceNoProgram(svmContextWrapper, price, solOracle);
+		await svmContextWrapper.moveTimeForward(400);
 	};
 
 	const refreshSolOracle = async (price: number) => {
-		await setFeedPriceNoProgram(bankrunContextWrapper, price, solOracle);
+		await setFeedPriceNoProgram(svmContextWrapper, price, solOracle);
 	};
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = startLiteSVM();
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			1
 		);
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			chProgram
 		);
 		await eventSubscriber.subscribe();
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
-		await mockUserUSDCAccount(usdcMint, usdcAmount, bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
+		await mockUserUSDCAccount(usdcMint, usdcAmount, svmContextWrapper);
 		adminWSOL = await createWSolTokenAccountForUser(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			// @ts-ignore
-			bankrunContextWrapper.provider.wallet,
+			svmContextWrapper.provider.wallet,
 			solAmount
 		);
 
-		solOracle = await mockOracleNoProgram(bankrunContextWrapper, 100);
+		solOracle = await mockOracleNoProgram(svmContextWrapper, 100);
 
 		marketIndexes = [];
 		spotMarketIndexes = [0, 1];
 		oracleInfos = [{ publicKey: solOracle, source: OracleSource.PYTH_LAZER }];
 
 		adminVelocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: svmContextWrapper.connection.toConnection(),
+			wallet: svmContextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -164,7 +166,7 @@ describe('equity floor oracle validity', () => {
 
 		[takerVelocityClient, takerWSOL, takerUSDC, takerKeypair] =
 			await createUserWithUSDCAndWSOLAccount(
-				bankrunContextWrapper,
+				svmContextWrapper,
 				usdcMint,
 				chProgram,
 				new BN(2).mul(new BN(LAMPORTS_PER_SOL)),
@@ -175,7 +177,7 @@ describe('equity floor oracle validity', () => {
 				bulkAccountLoader
 			);
 
-		await bankrunContextWrapper.fundKeypair(
+		await svmContextWrapper.fundKeypair(
 			takerKeypair,
 			10 * LAMPORTS_PER_SOL
 		);
@@ -201,7 +203,7 @@ describe('equity floor oracle validity', () => {
 		await takerVelocityClient.initializeUserAccount(1);
 		await takerVelocityClient.switchActiveUser(0);
 
-		const delegateKeyPair = await createFundedKeyPair(bankrunContextWrapper);
+		const delegateKeyPair = await createFundedKeyPair(svmContextWrapper);
 		await takerVelocityClient.updateUserDelegate(delegateKeyPair.publicKey);
 		await takerVelocityClient.switchActiveUser(1);
 		await takerVelocityClient.updateUserDelegate(delegateKeyPair.publicKey, 1);
@@ -209,7 +211,7 @@ describe('equity floor oracle validity', () => {
 		await takerVelocityClient.updateUserAllowDelegateTransfer(true);
 
 		delegateVelocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
+			connection: svmContextWrapper.connection.toConnection(),
 			wallet: new Wallet(delegateKeyPair),
 			programID: chProgram.programId,
 			opts: {
@@ -234,7 +236,7 @@ describe('equity floor oracle validity', () => {
 		// a separate dust account for force_delete_user; it holds only a sol
 		// position, so its equity depends entirely on the sol oracle
 		const [dustClient, dustWSOL] = await createUserWithUSDCAndWSOLAccount(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			usdcMint,
 			chProgram,
 			new BN(LAMPORTS_PER_SOL),
@@ -272,7 +274,7 @@ describe('equity floor oracle validity', () => {
 
 		assert(takerUser.getNetUsdValue().gt(floor));
 
-		const before = await bankrunContextWrapper.connection.getTokenAccount(
+		const before = await svmContextWrapper.connection.getTokenAccount(
 			takerUSDC
 		);
 
@@ -282,7 +284,7 @@ describe('equity floor oracle validity', () => {
 			takerUSDC
 		);
 
-		const after = await bankrunContextWrapper.connection.getTokenAccount(
+		const after = await svmContextWrapper.connection.getTokenAccount(
 			takerUSDC
 		);
 		assert(
@@ -297,7 +299,7 @@ describe('equity floor oracle validity', () => {
 		// now fails closed on the invalid oracle and refuses outright.
 		await staleSolOracleAt(500);
 
-		const before = await bankrunContextWrapper.connection.getTokenAccount(
+		const before = await svmContextWrapper.connection.getTokenAccount(
 			takerUSDC
 		);
 
@@ -318,7 +320,7 @@ describe('equity floor oracle validity', () => {
 			`expected InvalidOracle, got: ${err.message}`
 		);
 
-		const after = await bankrunContextWrapper.connection.getTokenAccount(
+		const after = await svmContextWrapper.connection.getTokenAccount(
 			takerUSDC
 		);
 		assert(
@@ -421,7 +423,7 @@ describe('equity floor oracle validity', () => {
 			`expected InvalidOracle, got: ${err.message}`
 		);
 
-		const stillThere = await bankrunContextWrapper.connection.getAccountInfo(
+		const stillThere = await svmContextWrapper.connection.getAccountInfo(
 			dustUserPublicKey
 		);
 		assert(stillThere !== null, 'the user account should still exist');
@@ -488,7 +490,7 @@ describe('equity floor oracle validity', () => {
 			dustVelocityClient.getUserAccount()
 		);
 
-		const deleted = await bankrunContextWrapper.connection.getAccountInfo(
+		const deleted = await svmContextWrapper.connection.getAccountInfo(
 			dustUserPublicKey
 		);
 		assert(deleted === null, 'the user account should have been deleted');

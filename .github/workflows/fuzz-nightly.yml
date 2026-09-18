@@ -195,8 +195,9 @@ jobs:
       # workspace-wide form worked.) It also skips four SBF builds this job does
       # not need.
       #
-      # Keep the `anchor build` line on ONE line: the flavor-consistency check in
-      # .github/workflows/fuzz.yml greps for the flag string literally.
+      # build-sbf.sh owns the devnet feature flags and the pinned bytecode
+      # version; the flavor-consistency check in .github/workflows/fuzz.yml
+      # asserts this job routes through it.
       - name: Build program (.so, bundle/devnet flavor)
         env:
           CARGO_PROFILE_RELEASE_LTO: 'thin'
@@ -206,8 +207,8 @@ jobs:
           # is only for the host harness *binary* link, not the on-chain .so).
           RUSTFLAGS: ''
         run: |
-          rm -rf target/sbpf-solana-solana target/deploy
-          anchor build --ignore-keys --skip-lint -p velocity -- --no-default-features --features no-entrypoint,isolated-position,vlp-hedge
+          rm -rf target/sbpf*-solana-solana target/deploy
+          bash deploy-scripts/build-sbf.sh devnet velocity
           ls -la target/deploy/velocity.so
 
       - name: Install crucible CLI (pinned)

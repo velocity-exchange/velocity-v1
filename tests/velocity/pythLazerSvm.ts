@@ -13,8 +13,10 @@ import {
 	isVariant,
 } from '../../packages/sdk/src';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
-import { startAnchor } from 'solana-bankrun';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 import { AccountInfo, LAMPORTS_PER_SOL, PublicKey } from '@solana/web3.js';
 import { initializeQuoteSpotMarket, mockUSDCMint } from './testHelpers';
 import { PYTH_LAZER_HEX_STRING_MULTI } from './pythLazerData';
@@ -36,7 +38,7 @@ describe('pyth lazer oracles', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 	let usdcMint;
 
 	const feedId = 6;
@@ -44,34 +46,32 @@ describe('pyth lazer oracles', () => {
 	let feedAddress: PublicKey;
 
 	before(async () => {
-		// use bankrun builtin function to start solana program test
-		const context = await startAnchor(
-			'',
-			[],
-			[
+		// use LiteSVM builtin function to start solana program test
+		const context = startLiteSVM({
+			accounts: [
 				{
 					address: PYTH_LAZER_STORAGE_ACCOUNT_KEY,
 					info: PYTH_STORAGE_ACCOUNT_INFO,
 				},
-			]
-		);
+			],
+		});
 
 		// wrap the context to use it with the test helpers
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
 		// don't use regular bulk account loader, use test
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			1
 		);
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
 		feedAddress = getPythLazerOraclePublicKey(chProgram.programId, feedId);
 
 		velocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: svmContextWrapper.connection.toConnection(),
+			wallet: svmContextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -98,7 +98,7 @@ describe('pyth lazer oracles', () => {
 		await velocityClient.initializePythLazerOracle(feedId);
 		await velocityClient.postPythLazerOracleUpdate(
 			[feedId],
-			freshLazerSolHex(bankrunContextWrapper.connection.getTime())
+			freshLazerSolHex(svmContextWrapper.connection.getTime())
 		);
 
 		const mantissaSqrtScale = new BN(Math.sqrt(PRICE_PRECISION.toNumber()));
@@ -136,7 +136,7 @@ describe('pyth lazer oracles', () => {
 	it('crank single', async () => {
 		await velocityClient.postPythLazerOracleUpdate(
 			[6],
-			freshLazerSolHex(bankrunContextWrapper.connection.getTime())
+			freshLazerSolHex(svmContextWrapper.connection.getTime())
 		);
 		await velocityClient.updatePerpMarketOracle(
 			0,
@@ -166,7 +166,7 @@ describe('pyth lazer oracles', () => {
 		// later message until real time reached that stamp.
 		await velocityClient.postPythLazerOracleUpdate(
 			[6],
-			freshLazerSolHex(bankrunContextWrapper.connection.getTime(), 3600)
+			freshLazerSolHex(svmContextWrapper.connection.getTime(), 3600)
 		);
 
 		const after = (await velocityClient.program.account.pythLazerOracle.fetch(
@@ -192,7 +192,7 @@ describe('pyth lazer oracles', () => {
 		)) as any;
 		// The lead keeps the stamp above the stored publish_time, so the first post lands. It
 		// stays under PYTH_LAZER_MAX_FUTURE_SECONDS, so the future bound does not reject it.
-		const hex = freshLazerSolHex(bankrunContextWrapper.connection.getTime(), 5);
+		const hex = freshLazerSolHex(svmContextWrapper.connection.getTime(), 5);
 
 		await velocityClient.postPythLazerOracleUpdate([6], hex);
 		const first = (await velocityClient.program.account.pythLazerOracle.fetch(

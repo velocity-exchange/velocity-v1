@@ -1,10 +1,8 @@
 #!/bin/sh
-# Builds both the velocity program (no default features, no mainnet-beta gate)
-# and the token_faucet program used to distribute devnet USDT.
+# Builds the deployable devnet artifacts: velocity with the post-audit features
+# live (mainnet builds compile them out) plus the token_faucet used to hand out
+# devnet USDT. The feature flags, the SBPF bytecode version and the platform-
+# tools version all live in build-sbf.sh.
 set -eu
-# --ignore-keys: velocity's declare_id!() is cfg-gated (mainnet-beta vs not), but
-# anchor's pre-build keypair sync only sees the mainnet-beta arm and trips on
-# devnet builds where target/deploy/velocity-keypair.json holds the devnet pubkey.
-# isolated-position + vlp-hedge stay live on devnet; mainnet builds compile them out.
-anchor build --ignore-keys -p velocity -- --no-default-features --features no-entrypoint,isolated-position,vlp-hedge
-anchor build --ignore-keys -p token_faucet
+cd "$(dirname "$0")/.."
+bash deploy-scripts/build-sbf.sh devnet velocity token_faucet

@@ -22,6 +22,12 @@ type TransactionBuildingProps = {
  * transaction with a max compute-unit budget, simulate it, and replace the compute-unit limit
  * (and optionally the compute-unit price) with values derived from actual simulated usage.
  */
+/**
+ * Headroom for the ComputeBudget instructions the SDK prepends. Each costs
+ * 150 CU, which `simulateTransaction` does not include in `unitsConsumed`.
+ */
+const COMPUTE_BUDGET_IX_OVERHEAD_CU = 300;
+
 export class TransactionParamProcessor {
 	private static async getComputeUnitsFromSim(
 		txSim: RpcResponseAndContext<SimulatedTransactionResponse>
@@ -85,9 +91,22 @@ export class TransactionParamProcessor {
 				);
 			}
 
-			// Apply the buffer, but round down to the MAX_COMPUTE_UNITS, and round up to the nearest whole number
+			// Apply the buffer, but round down to the MAX_COMPUTE_UNITS, and round up to the nearest whole number.
+			//
+			// The floor matters: a ComputeBudget instruction costs 150 CU that
+			// simulation does not report, so execution always lands a fixed amount
+			// above the simulated figure. A percentage buffer covers that on a large
+			// transaction and not on a small one, where 20% of 255 is less than the
+			// 150 the limit instruction alone adds, and the transaction dies with
+			// ComputationalBudgetExceeded.
 			let bufferedComputeUnits = Math.ceil(
-				Math.min(computeUnits * bufferMultiplier, MAX_COMPUTE_UNITS)
+				Math.min(
+					Math.max(
+						computeUnits * bufferMultiplier,
+						computeUnits + COMPUTE_BUDGET_IX_OVERHEAD_CU
+					),
+					MAX_COMPUTE_UNITS
+				)
 			);
 
 			// If a lower bound CU is passed then enforce it

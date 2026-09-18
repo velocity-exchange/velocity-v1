@@ -32,9 +32,11 @@ import {
 	setFeedPriceNoProgram,
 } from './testHelpers';
 import { createTransferInstruction } from '@solana/spl-token';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 
 // EquityBelowFloor
 const EQUITY_BELOW_FLOOR_HEX = '0x18d6';
@@ -60,7 +62,7 @@ describe('equity floor swap', () => {
 	let eventSubscriber: EventSubscriber;
 
 	let bulkAccountLoader: TestBulkAccountLoader;
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 
 	let solOracle: PublicKey;
 	let usdcMint;
@@ -89,44 +91,44 @@ describe('equity floor swap', () => {
 	};
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = startLiteSVM();
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			1
 		);
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			chProgram
 		);
 		await eventSubscriber.subscribe();
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
 		adminUSDC = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			svmContextWrapper
 		);
 		adminWSOL = await createWSolTokenAccountForUser(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			// @ts-ignore
-			bankrunContextWrapper.provider.wallet,
+			svmContextWrapper.provider.wallet,
 			solAmount
 		);
 
-		solOracle = await mockOracleNoProgram(bankrunContextWrapper, 100);
+		solOracle = await mockOracleNoProgram(svmContextWrapper, 100);
 
 		marketIndexes = [];
 		spotMarketIndexes = [0, 1];
 		oracleInfos = [{ publicKey: solOracle, source: OracleSource.PYTH_LAZER }];
 
 		adminVelocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: svmContextWrapper.connection.toConnection(),
+			wallet: svmContextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -158,7 +160,7 @@ describe('equity floor swap', () => {
 
 		[takerVelocityClient, takerWSOL, takerUSDC, takerKeypair] =
 			await createUserWithUSDCAndWSOLAccount(
-				bankrunContextWrapper,
+				svmContextWrapper,
 				usdcMint,
 				chProgram,
 				ZERO,
@@ -169,7 +171,7 @@ describe('equity floor swap', () => {
 				bulkAccountLoader
 			);
 
-		await bankrunContextWrapper.fundKeypair(
+		await svmContextWrapper.fundKeypair(
 			takerKeypair,
 			10 * LAMPORTS_PER_SOL
 		);
@@ -345,7 +347,7 @@ describe('equity floor swap', () => {
 		// Make the sol oracle stale past the margin guard rails. The exemption's
 		// value bound cannot price against it, so the program refuses the swap even
 		// at a fair rate.
-		await bankrunContextWrapper.moveTimeForward(400);
+		await svmContextWrapper.moveTimeForward(400);
 
 		const amountIn = new BN(100).mul(QUOTE_PRECISION);
 		const { beginSwapIx, endSwapIx } = await takerVelocityClient.getSwapIx({
@@ -388,7 +390,7 @@ describe('equity floor swap', () => {
 		assert(err.message.includes(INVALID_ORACLE_HEX));
 
 		// Refresh the oracle so the exemption works again below.
-		await setFeedPriceNoProgram(bankrunContextWrapper, 100, solOracle);
+		await setFeedPriceNoProgram(svmContextWrapper, 100, solOracle);
 	});
 
 	it('reducing swap repays the borrow while tripped', async () => {
@@ -424,7 +426,7 @@ describe('equity floor swap', () => {
 			// @ts-ignore
 			adminVelocityClient.wallet.payer,
 		]);
-		bankrunContextWrapper.printTxLogs(txSig);
+		svmContextWrapper.printTxLogs(txSig);
 
 		await takerVelocityClient.fetchAccounts();
 		await takerUser.fetchAccounts();
@@ -442,7 +444,7 @@ describe('equity floor swap', () => {
 	it('warm admin resets the breaker and withdrawals resume', async () => {
 		// The reset verifies that every subaccount clears its floor plus buffer, so
 		// the floor the taker cannot back comes down first. That also clears the
-		// withdraw gate below. Bankrun has no getProgramAccounts, so this test
+		// withdraw gate below. LiteSVM has no getProgramAccounts, so this test
 		// passes the subaccounts by hand.
 		await adminVelocityClient.updateUserEquityFloor(
 			takerUserPublicKey,

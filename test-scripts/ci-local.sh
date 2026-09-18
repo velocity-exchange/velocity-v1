@@ -177,7 +177,7 @@ if [ "$MODE" = "full" ]; then
   # die with "Access violation in unknown section" at entry. Always clean
   # before the suite build; CI builds from scratch so it never hits this.
   echo "==> cleaning SBF cache (flavor-poisoning guard)"
-  rm -rf target/sbpf-solana-solana target/deploy
+  rm -rf target/sbpf*-solana-solana target/deploy
 
   # The quoter programs, and the litesvm suite that drives them alongside
   # velocity. Both need the anchor-v2 fixtures, so they build them first.

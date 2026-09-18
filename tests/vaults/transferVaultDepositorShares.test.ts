@@ -1,7 +1,9 @@
 import { BN, Program } from '@coral-xyz/anchor';
 import { expect } from 'chai';
-import { BankrunContextWrapper } from './common/bankrunConnection';
-import { startAnchor } from 'solana-bankrun';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from './common/litesvmConnection';
 import {
 	VaultClient,
 	getVaultAddressSync,
@@ -25,14 +27,14 @@ import {
 } from '@velocity-exchange/sdk';
 import { TestBulkAccountLoader } from './common/testBulkAccountLoader';
 import {
-	bootstrapSignerClientAndUserBankrun,
+	bootstrapSignerClientAndUser,
 	initializeQuoteSpotMarket,
 	initializeSolSpotMarket,
-	mockUSDCMintBankrun,
-	mockUserUSDCAccountBankrun,
+	mockUSDCMint,
+	mockUserUSDCAccount,
 } from './common/testHelpers';
 import { Keypair, LAMPORTS_PER_SOL } from '@solana/web3.js';
-import { mockOracleNoProgram } from './common/bankrunOracle';
+import { mockOracleNoProgram } from './common/svmOracle';
 
 const mantissaSqrtScale = new BN(100_000);
 const ammInitialQuoteAssetReserve = new BN(5 * 10 ** 13).mul(mantissaSqrtScale);
@@ -43,7 +45,7 @@ describe('transferVaultDepositorShares', () => {
 	const initialSolPerpPrice = 100;
 	let adminVelocityClient: TestClient;
 	let bulkAccountLoader: TestBulkAccountLoader;
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 	let usdcMint: Keypair;
 	let solPerpOracle: PublicKey;
 	// Fresh, uniquely-named vault per test (the vault PDA derives from the name)
@@ -88,28 +90,28 @@ describe('transferVaultDepositorShares', () => {
 	});
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = startLiteSVM();
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
-		vaultProgram = new Program<Vaults>(IDL, bankrunContextWrapper.provider);
+		vaultProgram = new Program<Vaults>(IDL, svmContextWrapper.provider);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			'processed',
 			1
 		);
 
-		usdcMint = await mockUSDCMintBankrun(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
 
 		solPerpOracle = await mockOracleNoProgram(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			initialSolPerpPrice
 		);
 
 		adminVelocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: svmContextWrapper.connection.toConnection(),
+			wallet: svmContextWrapper.provider.wallet,
 			programID: new PublicKey(VELOCITY_PROGRAM_ID),
 			opts: {
 				commitment: 'confirmed',
@@ -144,8 +146,8 @@ describe('transferVaultDepositorShares', () => {
 
 		await adminVelocityClient.fetchAccounts();
 
-		const managerBootstrap = await bootstrapSignerClientAndUserBankrun({
-			bankrunContext: bankrunContextWrapper,
+		const managerBootstrap = await bootstrapSignerClientAndUser({
+			svmContext: svmContextWrapper,
 			programId: VAULT_PROGRAM_ID,
 			signer: managerSigner,
 			usdcMint: usdcMint,
@@ -159,8 +161,8 @@ describe('transferVaultDepositorShares', () => {
 		managerClient = managerBootstrap.vaultClient;
 		managerVelocityClient = managerBootstrap.velocityClient;
 
-		const user1Bootstrap = await bootstrapSignerClientAndUserBankrun({
-			bankrunContext: bankrunContextWrapper,
+		const user1Bootstrap = await bootstrapSignerClientAndUser({
+			svmContext: svmContextWrapper,
 			programId: VAULT_PROGRAM_ID,
 			signer: user1Signer,
 			usdcMint: usdcMint,
@@ -174,8 +176,8 @@ describe('transferVaultDepositorShares', () => {
 		user1Client = user1Bootstrap.vaultClient;
 		user1VelocityClient = user1Bootstrap.velocityClient;
 
-		const user2Bootstrap = await bootstrapSignerClientAndUserBankrun({
-			bankrunContext: bankrunContextWrapper,
+		const user2Bootstrap = await bootstrapSignerClientAndUser({
+			svmContext: svmContextWrapper,
 			programId: VAULT_PROGRAM_ID,
 			signer: user2Signer,
 			usdcMint: usdcMint,
@@ -191,15 +193,15 @@ describe('transferVaultDepositorShares', () => {
 
 		// `before` runs once; each test re-mints USDC and builds its own vault +
 		// depositors below, so top the reused signers up for the whole suite.
-		await bankrunContextWrapper.fundKeypair(
+		await svmContextWrapper.fundKeypair(
 			managerSigner,
 			100 * LAMPORTS_PER_SOL
 		);
-		await bankrunContextWrapper.fundKeypair(
+		await svmContextWrapper.fundKeypair(
 			user1Signer,
 			100 * LAMPORTS_PER_SOL
 		);
-		await bankrunContextWrapper.fundKeypair(
+		await svmContextWrapper.fundKeypair(
 			user2Signer,
 			100 * LAMPORTS_PER_SOL
 		);
@@ -229,18 +231,18 @@ describe('transferVaultDepositorShares', () => {
 
 		// fresh USDC for each depositor
 		user1UserUSDCAccount = (
-			await mockUserUSDCAccountBankrun(
+			await mockUserUSDCAccount(
 				usdcMint,
 				usdcAmount,
-				bankrunContextWrapper,
+				svmContextWrapper,
 				user1Signer.publicKey
 			)
 		).publicKey;
 		user2UserUSDCAccount = (
-			await mockUserUSDCAccountBankrun(
+			await mockUserUSDCAccount(
 				usdcMint,
 				usdcAmount,
-				bankrunContextWrapper,
+				svmContextWrapper,
 				user2Signer.publicKey
 			)
 		).publicKey;

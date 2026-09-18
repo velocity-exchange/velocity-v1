@@ -30,9 +30,11 @@ import {
 	mockUserUSDCAccount,
 	setFeedPriceNoProgram,
 } from './testHelpers';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 
 // Regression guard for `liquidate_spot_with_swap`. The begin handler introspects
 // the matching end instruction and binds accounts by hard-coded index. It
@@ -56,7 +58,7 @@ describe('liquidate spot with swap account bindings', () => {
 
 	let liquidatorClient: TestClient;
 	let bulkAccountLoader: TestBulkAccountLoader;
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 
 	let solOracle: PublicKey;
 	let usdcMint;
@@ -92,38 +94,38 @@ describe('liquidate spot with swap account bindings', () => {
 	const NUM_FIXED_ACCOUNTS = 12;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = startLiteSVM();
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			1
 		);
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			svmContextWrapper
 		);
 		userWSOLAccount = await createWSolTokenAccountForUser(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			// @ts-ignore
-			bankrunContextWrapper.provider.wallet,
+			svmContextWrapper.provider.wallet,
 			solAmount
 		);
 
-		solOracle = await mockOracleNoProgram(bankrunContextWrapper, 100);
+		solOracle = await mockOracleNoProgram(svmContextWrapper, 100);
 
 		const oracleInfos: OracleInfo[] = [
 			{ publicKey: solOracle, source: OracleSource.PYTH_LAZER },
 		];
 
 		userClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: svmContextWrapper.connection.toConnection(),
+			wallet: svmContextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -156,7 +158,7 @@ describe('liquidate spot with swap account bindings', () => {
 
 		[liquidatorClient, liquidatorWSOL, liquidatorUSDC, liquidatorKeypair] =
 			await createUserWithUSDCAndWSOLAccount(
-				bankrunContextWrapper,
+				svmContextWrapper,
 				usdcMint,
 				chProgram,
 				solAmount,
@@ -167,7 +169,7 @@ describe('liquidate spot with swap account bindings', () => {
 				bulkAccountLoader
 			);
 
-		await bankrunContextWrapper.fundKeypair(
+		await svmContextWrapper.fundKeypair(
 			liquidatorKeypair,
 			10 * LAMPORTS_PER_SOL
 		);
@@ -180,7 +182,7 @@ describe('liquidate spot with swap account bindings', () => {
 		await userClient.withdraw(new BN(95 * 10 ** 8), 1, userWSOLAccount);
 
 		// sol doubles: the borrow outgrows the usdc collateral backing it
-		await setFeedPriceNoProgram(bankrunContextWrapper, 200, solOracle);
+		await setFeedPriceNoProgram(svmContextWrapper, 200, solOracle);
 	});
 
 	after(async () => {

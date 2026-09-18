@@ -50,9 +50,11 @@ import {
 	getExtraAccountMetaAddress,
 	resolveExtraAccountMeta,
 } from '@solana/spl-token';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 import { initializeExtraAccountMetaList } from './splTransferHookClient';
 
 const transferHookProgramId = new PublicKey(
@@ -68,7 +70,7 @@ describe('spot deposit and withdraw 22', () => {
 
 	let admin: TestClient;
 	let bulkAccountLoader: TestBulkAccountLoader;
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 
 	let solOracle: PublicKey;
 	let usdcMint;
@@ -89,38 +91,36 @@ describe('spot deposit and withdraw 22', () => {
 	let mintOracle: PublicKey;
 
 	before(async () => {
-		const context = await startAnchor(
-			'',
-			[
+		const context = startLiteSVM({
+			extraPrograms: [
 				{
 					name: 'spl_transfer_hook_example',
 					programId: transferHookProgramId,
 				},
 			],
-			[]
-		);
+		});
 
 		// @ts-ignore
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			1
 		);
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper, TOKEN_2022_PROGRAM_ID);
-		await mockUserUSDCAccount(usdcMint, largeUsdcAmount, bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper, TOKEN_2022_PROGRAM_ID);
+		await mockUserUSDCAccount(usdcMint, largeUsdcAmount, svmContextWrapper);
 
-		solOracle = await mockOracleNoProgram(bankrunContextWrapper, 30);
+		solOracle = await mockOracleNoProgram(svmContextWrapper, 30);
 
 		marketIndexes = [];
 		spotMarketIndexes = [0, 1];
 		oracleInfos = [{ publicKey: solOracle, source: OracleSource.PYTH_LAZER }];
 
 		admin = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: svmContextWrapper.connection.toConnection(),
+			wallet: svmContextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -147,7 +147,7 @@ describe('spot deposit and withdraw 22', () => {
 			_firstUserVelocityClientUSDCAccount,
 			firstUserKeypair,
 		] = await createUserWithUSDCAccount(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			usdcMint,
 			chProgram,
 			usdcAmount,
@@ -162,13 +162,13 @@ describe('spot deposit and withdraw 22', () => {
 		mintKeypair = Keypair.generate();
 		mint = mintKeypair.publicKey;
 
-		mintOracle = await mockOracleNoProgram(bankrunContextWrapper, 0.05); // a future we all need to believe in
+		mintOracle = await mockOracleNoProgram(svmContextWrapper, 0.05); // a future we all need to believe in
 
 		const extensions = [ExtensionType.TransferHook];
 		const mintLen = getMintLen(extensions);
 		const decimals = 6;
 
-		const payer = bankrunContextWrapper.provider.wallet.publicKey;
+		const payer = svmContextWrapper.provider.wallet.publicKey;
 		const mintTransaction = new Transaction().add(
 			SystemProgram.createAccount({
 				fromPubkey: payer,
@@ -191,8 +191,8 @@ describe('spot deposit and withdraw 22', () => {
 				TOKEN_2022_PROGRAM_ID
 			)
 		);
-		await bankrunContextWrapper.sendTransaction(mintTransaction, [
-			bankrunContextWrapper.provider.wallet.payer,
+		await svmContextWrapper.sendTransaction(mintTransaction, [
+			svmContextWrapper.provider.wallet.payer,
 			mintKeypair,
 		]);
 
@@ -203,11 +203,11 @@ describe('spot deposit and withdraw 22', () => {
 		)[0];
 
 		await initializeExtraAccountMetaList(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			transferHookProgramId,
 			mint,
 			mintAuthority,
-			bankrunContextWrapper.provider.wallet.payer,
+			svmContextWrapper.provider.wallet.payer,
 			[
 				{
 					addressConfig: extraAccountPda,
@@ -217,7 +217,7 @@ describe('spot deposit and withdraw 22', () => {
 			]
 		);
 
-		await bankrunContextWrapper.moveTimeForward(100);
+		await svmContextWrapper.moveTimeForward(100);
 	});
 
 	after(async () => {
@@ -227,7 +227,7 @@ describe('spot deposit and withdraw 22', () => {
 
 	it('Initialize TransferHookToken', async () => {
 		const mintAcc = await getMint(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			mint,
 			'confirmed',
 			TOKEN_2022_PROGRAM_ID
@@ -237,7 +237,7 @@ describe('spot deposit and withdraw 22', () => {
 		assert.isTrue(hookAcc!.programId.equals(transferHookProgramId));
 
 		const metasAddress = getExtraAccountMetaAddress(mint, hookAcc!.programId);
-		const metasAcc = await bankrunContextWrapper.connection.getAccountInfo(
+		const metasAcc = await svmContextWrapper.connection.getAccountInfo(
 			metasAddress
 		);
 		assert.isNotNull(metasAcc);
@@ -248,13 +248,13 @@ describe('spot deposit and withdraw 22', () => {
 		assert.equal(extraAccountMetas.length, 1);
 		for (const meta of extraAccountMetas) {
 			const r = await resolveExtraAccountMeta(
-				bankrunContextWrapper.connection.toConnection(),
+				svmContextWrapper.connection.toConnection(),
 				meta,
 				[],
 				Buffer.from([]),
 				hookAcc!.programId
 			);
-			const extraAcc = await bankrunContextWrapper.connection.getAccountInfo(
+			const extraAcc = await svmContextWrapper.connection.getAccountInfo(
 				r.pubkey
 			);
 			assert.isNotNull(extraAcc);
@@ -272,21 +272,21 @@ describe('spot deposit and withdraw 22', () => {
 		firstUserTokenAccount = user1TokenAccountKeypair.publicKey;
 
 		const mintState = await getMint(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			mint,
 			'confirmed',
 			TOKEN_2022_PROGRAM_ID
 		);
 		const space = getAccountLenForMint(mintState);
 		const lamports =
-			await bankrunContextWrapper.connection.getMinimumBalanceForRentExemption(
+			await svmContextWrapper.connection.getMinimumBalanceForRentExemption(
 				space
 			);
 
 		// Create user1's token account
 		const createUser1AccountTx = new Transaction().add(
 			SystemProgram.createAccount({
-				fromPubkey: bankrunContextWrapper.provider.wallet.payer.publicKey,
+				fromPubkey: svmContextWrapper.provider.wallet.payer.publicKey,
 				newAccountPubkey: user1TokenAccountKeypair.publicKey,
 				space,
 				lamports,
@@ -300,15 +300,15 @@ describe('spot deposit and withdraw 22', () => {
 			)
 		);
 
-		await bankrunContextWrapper.sendTransaction(createUser1AccountTx, [
-			bankrunContextWrapper.provider.wallet.payer,
+		await svmContextWrapper.sendTransaction(createUser1AccountTx, [
+			svmContextWrapper.provider.wallet.payer,
 			user1TokenAccountKeypair,
 		]);
 
 		// Create user2's token account
 		const createUser2AccountTx = new Transaction().add(
 			SystemProgram.createAccount({
-				fromPubkey: bankrunContextWrapper.provider.wallet.payer.publicKey,
+				fromPubkey: svmContextWrapper.provider.wallet.payer.publicKey,
 				newAccountPubkey: user2TokenAccountKeypair.publicKey,
 				space,
 				lamports,
@@ -322,8 +322,8 @@ describe('spot deposit and withdraw 22', () => {
 			)
 		);
 
-		await bankrunContextWrapper.sendTransaction(createUser2AccountTx, [
-			bankrunContextWrapper.provider.wallet.payer,
+		await svmContextWrapper.sendTransaction(createUser2AccountTx, [
+			svmContextWrapper.provider.wallet.payer,
 			user2TokenAccountKeypair,
 		]);
 
@@ -346,20 +346,20 @@ describe('spot deposit and withdraw 22', () => {
 			)
 		);
 
-		await bankrunContextWrapper.sendTransaction(mintTransaction, [
-			bankrunContextWrapper.provider.wallet.payer,
+		await svmContextWrapper.sendTransaction(mintTransaction, [
+			svmContextWrapper.provider.wallet.payer,
 			mintAuthority,
 		]);
 
 		// Check initial balances
 		const user1BalanceBefore = await getAccount(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			user1TokenAccountKeypair.publicKey,
 			'confirmed',
 			TOKEN_2022_PROGRAM_ID
 		);
 		const user2BalanceBefore = await getAccount(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			user2TokenAccountKeypair.publicKey,
 			'confirmed',
 			TOKEN_2022_PROGRAM_ID
@@ -387,7 +387,7 @@ describe('spot deposit and withdraw 22', () => {
 
 		// Get mint info for decimals
 		const mintInfo = await getMint(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			mint,
 			'confirmed',
 			TOKEN_2022_PROGRAM_ID
@@ -407,7 +407,7 @@ describe('spot deposit and withdraw 22', () => {
 
 		// Add extra account metas for the transfer hook
 		await addExtraAccountMetasForExecute(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			transferInstruction,
 			transferHookProgramId,
 			user1TokenAccountKeypair.publicKey,
@@ -419,20 +419,20 @@ describe('spot deposit and withdraw 22', () => {
 
 		const transferTransaction = new Transaction().add(transferInstruction);
 
-		await bankrunContextWrapper.sendTransaction(transferTransaction, [
-			bankrunContextWrapper.provider.wallet.payer,
+		await svmContextWrapper.sendTransaction(transferTransaction, [
+			svmContextWrapper.provider.wallet.payer,
 			firstUserKeypair,
 		]);
 
 		// Check final balances
 		const user1BalanceAfter = await getAccount(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			user1TokenAccountKeypair.publicKey,
 			'confirmed',
 			TOKEN_2022_PROGRAM_ID
 		);
 		const user2BalanceAfter = await getAccount(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			user2TokenAccountKeypair.publicKey,
 			'confirmed',
 			TOKEN_2022_PROGRAM_ID
@@ -511,7 +511,7 @@ describe('spot deposit and withdraw 22', () => {
 
 	async function doDepositWithdrawTest() {
 		const userTokenBalanceBefore = await getAccount(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			firstUserTokenAccount,
 			'confirmed',
 			TOKEN_2022_PROGRAM_ID
@@ -560,19 +560,19 @@ describe('spot deposit and withdraw 22', () => {
 	});
 
 	it('Test can still deposit/withdraw undefined transfer hook program', async () => {
-		const payer = bankrunContextWrapper.provider.wallet.publicKey;
+		const payer = svmContextWrapper.provider.wallet.publicKey;
 		const updateTransferHookInstruction = new Transaction().add(
 			createUpdateTransferHookInstruction(mint, payer, PublicKey.default)
 		);
-		await bankrunContextWrapper.sendTransaction(updateTransferHookInstruction, [
-			bankrunContextWrapper.provider.wallet.payer,
+		await svmContextWrapper.sendTransaction(updateTransferHookInstruction, [
+			svmContextWrapper.provider.wallet.payer,
 			mintKeypair,
 		]);
 
-		await bankrunContextWrapper.moveTimeForward(100);
+		await svmContextWrapper.moveTimeForward(100);
 
 		const mintAcc = await getMint(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			mint,
 			'confirmed',
 			TOKEN_2022_PROGRAM_ID

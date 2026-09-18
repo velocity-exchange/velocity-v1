@@ -27,14 +27,8 @@ import { loadKeypair } from '../lib/provider';
 import { fetchStateAdmins } from '../lib/state';
 
 /**
- * Profile management. `config init` builds a profile interactively and verifies
- * every part of it against the live cluster before it writes anything. It
- * verifies the RPC by genesis hash, the keypair by loading it, and the multisig
- * by deriving its vault and matching that vault against the onchain State
- * admins. A profile that saves therefore works.
- *
- * Multisig addresses stay in this per-user config alone. They are derivable on
- * chain, and the repo deliberately does not carry them.
+ * Profile management. `config init` verifies the RPC (genesis hash), keypair, and multisig
+ * (vault vs onchain State admins) before writing. Multisig addresses live only in this per-user config.
  */
 
 function die(message: string): never {
@@ -46,6 +40,7 @@ function unwrap<T>(value: T | symbol): T {
 	if (isCancel(value)) {
 		die('aborted, nothing saved');
 	}
+
 	// Pasted prompt input often carries stray whitespace. A trailing space in an
 	// RPC URL makes the connection fail with an unclear error.
 	return (typeof value === 'string' ? value.trim() : value) as T;

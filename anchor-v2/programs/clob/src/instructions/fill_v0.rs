@@ -45,6 +45,7 @@ pub fn handle_fill_v0(ctx: &mut Context<FillV0>, args: FillArgsV0) -> Result<Fil
         !args.fills.is_empty() && args.fills.len() <= crate::state::FILL_BATCH_CEILING,
         ClobError::InvalidOrderParams
     );
+
     let filled = args
         .fills
         .iter()

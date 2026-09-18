@@ -138,17 +138,7 @@ export type WrappedEvents = WrappedEvent<EventType>[];
 /**
  * Maps each on-chain event name (as declared in `state/events.rs` and emitted
  * via Anchor's `emit!`) to its decoded, transaction-augmented shape. See
- * `../types.ts` for each record's field-level precisions. Five entries were
- * newly wired in this parity pass: `LPBorrowLendDepositRecord` (LP pool
- * borrow/lend deposit or withdraw against a constituent, token-amount
- * precision per the constituent's spot market), `PerpMarketFeeSweepRecord`
- * (streaming fee-sweep drains from a perp market's pnl pool — insurance,
- * protocol, and AMM-provision cuts — quote-token amounts, `QUOTE_PRECISION`),
- * `ProtocolFeeWithdrawRecord` (admin withdrawal from a perp or spot market's
- * protocol fee pool, token-amount precision of the source spot market),
- * `RevenueShareSettleRecord` (builder/referrer revenue-share settlement, fee
- * amounts in `QUOTE_PRECISION`), and `TransferFeeAndPnlPoolRecord` (internal
- * transfer between a market's fee pool and pnl pool, `QUOTE_PRECISION`).
+ * `../types.ts` for each record's field-level precisions.
  *
  * Each key is the on-chain struct name exactly, because an `#[event]`
  * discriminator is derived from that name. A velocity event carries a version

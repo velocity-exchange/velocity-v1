@@ -60,6 +60,7 @@ pub fn deposit_into_isolated_perp_position<'c: 'info, 'info>(
         perp_market.quote_spot_market_index,
         spot_market_index
     )?;
+
     drop(perp_market);
 
     let mut spot_market = maps.spot_market_map.get_ref_mut(&spot_market_index)?;
@@ -236,15 +237,10 @@ pub fn transfer_isolated_perp_position_deposit<'c: 'info, 'info>(
             spot_market.pool_id
         )?;
 
-        // Accrue interest, but do not advance the market's oracle TWAPs
-        // (OtterSec #134, the same shape as #110 and #111).
-        //
-        // The `MarginRequirementType::Initial` gate later in this flow enables
-        // strict pricing. `StrictOraclePrice` bounds are the min and max of the
-        // live price and `last_oracle_price_twap_5min`, and a liability is
-        // priced at the upper bound. Refreshing that TWAP here drags it toward
-        // a temporarily depressed live price and under-values the debt the gate
-        // must catch.
+        // Accrue interest here, but do not advance the market's oracle TWAPs (OtterSec
+        // #134, same shape as #110 and #111). The margin gate that follows prices a
+        // liability at the higher of the live price and the 5-minute TWAP. Refreshing
+        // that TWAP here would under-value the debt.
         controller::spot_balance::update_spot_market_cumulative_interest(
             spot_market,
             None,
@@ -412,15 +408,10 @@ pub fn withdraw_from_isolated_perp_position<'c: 'info, 'info>(
         let spot_market = &mut maps.spot_market_map.get_ref_mut(&spot_market_index)?;
         let oracle_price_data = maps.oracle_map.get_price_data(&spot_market.oracle_id())?;
 
-        // Accrue interest, but do not advance the market's oracle TWAPs
-        // (OtterSec #134, the same shape as #110 and #111).
-        //
-        // The `MarginRequirementType::Initial` gate later in this flow enables
-        // strict pricing. `StrictOraclePrice` bounds are the min and max of the
-        // live price and `last_oracle_price_twap_5min`, and a liability is
-        // priced at the upper bound. Refreshing that TWAP here drags it toward
-        // a temporarily depressed live price and under-values the debt the gate
-        // must catch.
+        // Accrue interest here, but do not advance the market's oracle TWAPs (OtterSec
+        // #134, same shape as #110 and #111). The margin gate that follows prices a
+        // liability at the higher of the live price and the 5-minute TWAP. Refreshing
+        // that TWAP here would under-value the debt.
         controller::spot_balance::update_spot_market_cumulative_interest(
             spot_market,
             None,
@@ -459,24 +450,10 @@ pub fn withdraw_from_isolated_perp_position<'c: 'info, 'info>(
             )?;
         }
 
-        // This withdrawal sends real tokens out of the spot market vault, so it
-        // must respect the withdraw circuit breaker. The cross-margin withdraw
-        // path gets the check from
-        // `update_spot_balances_and_cumulative_deposits_with_limits`. This path
-        // debits balances directly, so the check is explicit here. Without it,
-        // one account of any size defeats the breaker for the whole market.
-        //
-        // The `user` argument is `None`, which asks for a market-level verdict
-        // and denies the small-depositor exception here. There are two reasons.
-        // The exception reads the account's cross-margin spot position in this
-        // market. That balance is not the balance being withdrawn, so a tiny
-        // cross deposit would excuse an arbitrarily large isolated withdrawal.
-        // `check_withdraw_limits` also reads the cross position with
-        // `get_spot_position_index`, which errors when the account has no cross
-        // position in the market. An isolated-only depositor would get
-        // `CouldNotFindSpotPosition` instead of a limit verdict. An isolated
-        // position carries its own collateral, so it is not the small depositor
-        // the exception exists for.
+        // This path debits balances directly, so it checks the withdraw breaker rather
+        // than through the cross path's shared call. Skipping this check would let one
+        // account of any size defeat the breaker for the whole market. `user` is
+        // `None` to deny the small-depositor exception, which does not apply to isolated collateral.
         validate!(
             check_withdraw_limits(spot_market, None, None)?,
             ErrorCode::DailyWithdrawLimit,
@@ -486,24 +463,14 @@ pub fn withdraw_from_isolated_perp_position<'c: 'info, 'info>(
             user.authority
         )?;
 
-        // The admin can stop withdrawals per market, by market status or by the
-        // `Withdraw` paused-operation bit. The cross-margin withdraw path
-        // applies both gates inside
-        // `update_spot_balances_and_cumulative_deposits_with_limits`. This path
-        // debits balances directly, so both gates are explicit here. A market
-        // that is closed for withdrawals must be closed on every route out of
-        // the vault.
+        // The admin can stop withdrawals per market by status or by the `Withdraw`
+        // paused-operation bit. The cross path applies both gates inside the shared
+        // limits call. This path debits directly, so both are explicit here.
         //
-        // The admitted status set is the same as the cross path. It admits
-        // `Settlement`, so a wound-down market stays exitable, and it rejects
-        // `Initialized` and `Delisted`. This traps no isolated collateral. An
-        // admin can move a market out of `Delisted` again, because
-        // `update_spot_market_status` writes any status without restriction. The
-        // holder also keeps a second exit at every status.
-        // `transfer_isolated_perp_position_deposit` has no per-market status
-        // gate, so the isolated balance can always move to the cross-margin
-        // position and then face these same rules. The isolated holder therefore
-        // never has fewer exits than a cross-margin holder in the same market.
+        // The admitted status set matches the cross path: `Active`, `ReduceOnly` and `Settlement`.
+        // A wound-down market stays exitable, and `Initialized` and `Delisted` are rejected.
+        // This traps no collateral. An admin can reactivate a delisted market, and
+        // `transfer_isolated_perp_position_deposit` gives a second exit to cross-margin at any status.
         validate!(
             matches!(
                 spot_market.status,

@@ -40,9 +40,7 @@ export class BulkAccountLoader {
 	mostRecentSlot = 0;
 
 	/**
-	 * @param connection Connection (or LiteSVM-compatible shim) used for the batched `getMultipleAccounts` polls.
-	 * @param commitment Commitment level applied to every poll.
-	 * @param pollingFrequency Poll interval in ms; `0` disables automatic polling (`startPolling` becomes a no-op), useful when the loader is driven manually via `load()`.
+	 * @param pollingFrequency Poll interval in ms; `0` disables automatic polling (`startPolling` becomes a no-op).
 	 */
 	public constructor(
 		connection: Connection,

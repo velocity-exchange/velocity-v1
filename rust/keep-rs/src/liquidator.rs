@@ -924,6 +924,7 @@ impl LiquidatorBot {
                 log::error!(target: TARGET, "grpc event channel closed, exiting liquidator loop");
                 return;
             }
+
             // Refresh on wall clock and not only on user traffic. A period with only
             // oracle updates must still pick up a newly staged slot duration
             // transition. Keep the previous clock on a transient State cache miss.
@@ -1433,6 +1434,7 @@ async fn derisk_subaccount(
                     "market {} has no approved book on its quoter slab; cannot derisk {subaccount}",
                     position.market_index,
                 );
+
                 return;
             };
 
@@ -2684,10 +2686,12 @@ impl PrimaryLiquidationStrategy {
                 return Vec::new();
             }
         };
+
         let liquidatee_ref = ClobUserRefV0 {
             authority: liquidatee.authority,
             sub_account_id: liquidatee.sub_account_id,
         };
+
         reachable
             .into_iter()
             .filter(|maker| *maker != liquidatee_ref)
@@ -2739,6 +2743,7 @@ impl PrimaryLiquidationStrategy {
                     )
                     .await,
                 );
+
                 vec![
                     AccountMeta::new_readonly(derive_quoter_slab(market_index), false),
                     AccountMeta::new(book.response_account, false),
@@ -4641,11 +4646,13 @@ async fn fetch_clob_force_cancel_refs(
             } else {
                 ClobSide::Ask
             };
+
             Some(ForceCancelClobRefV0 {
                 order_ref: ClobOrderRefV0 {
                     node_index,
                     order_id,
                 },
+
                 side,
             })
         })
@@ -4671,6 +4678,7 @@ async fn resolve_clob_force_cancel(
         position.market_index == market_index
             && (position.open_bids != 0 || position.open_asks != 0)
     });
+
     if !has_resting_exposure {
         return Ok(None);
     }
@@ -4708,5 +4716,6 @@ async fn resolve_clob_force_cancel(
         clob_program: book.program_id,
         crank_conditions: Some(derive_clob_crank_conditions(market_index)),
     };
+
     Ok(Some((order_refs, clob_fill)))
 }

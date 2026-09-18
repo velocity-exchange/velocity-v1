@@ -277,6 +277,7 @@ export class SwiftPlacer {
 								orderParams: signedMsgOrderParamsBufHex,
 								signature: Buffer.from(order['order_signature'], 'base64'),
 							},
+
 							signedMsgOrderParams.marketIndex,
 							{
 								taker: takerUserPubkey,
@@ -285,8 +286,10 @@ export class SwiftPlacer {
 									this.velocityClient.program.programId,
 									takerUserAccount.authority
 								),
+
 								signingAuthority,
 							},
+
 							computeBudgetIxs,
 							undefined,
 							undefined,
@@ -304,6 +307,7 @@ export class SwiftPlacer {
 						true,
 						lookupTableAccounts
 					);
+
 					// Dropping a maker shrinks the transaction and costs the taker
 					// that maker's depth. The order's remainder rests on the book,
 					// so the depth is not lost, only deferred to a cross crank.
@@ -327,6 +331,7 @@ export class SwiftPlacer {
 						logger.error(
 							`${logPrefix}: tx too large with no makers (${txSize.bytes} bytes, ${txSize.accounts} accounts), skipping`
 						);
+
 						return;
 					}
 

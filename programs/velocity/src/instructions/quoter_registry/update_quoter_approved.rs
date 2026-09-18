@@ -128,6 +128,7 @@ fn deployed_slot(
     if program.owner != &bpf_loader_upgradeable::ID {
         return Ok(0);
     }
+
     let program_data = program_data.ok_or_else(|| {
         msg!("approving an upgradeable program requires its program-data account");
         error!(ErrorCode::InvalidQuoterConfig)
@@ -146,6 +147,7 @@ fn deployed_slot(
         ErrorCode::InvalidQuoterConfig,
         "program data is not owned by the upgradeable loader"
     )?;
+
     let data = program_data
         .try_borrow_data()
         .map_err(|_| error!(ErrorCode::InvalidQuoterConfig))?;
@@ -154,6 +156,7 @@ fn deployed_slot(
         ErrorCode::InvalidQuoterConfig,
         "program data account does not hold program data"
     )?;
+
     let mut slot = [0u8; 8];
     slot.copy_from_slice(&data[DEPLOY_SLOT_OFFSET..DEPLOY_SLOT_OFFSET + 8]);
     Ok(u64::from_le_bytes(slot))
@@ -176,6 +179,7 @@ fn resize_slab<'info>(
     if capacity == current {
         return Ok(());
     }
+
     let info = slab.to_account_info();
     let new_space = QuoterSlabV0::space(capacity as usize);
     let required = Rent::get()?.minimum_balance(new_space);
@@ -195,6 +199,7 @@ fn resize_slab<'info>(
                 shortfall,
             )?;
         }
+
         info.resize(new_space).map_err(Into::<Error>::into)?;
         slab.load_mut()?.capacity = capacity;
     } else {
@@ -206,6 +211,7 @@ fn resize_slab<'info>(
             **admin.try_borrow_mut_lamports()? += refund;
         }
     }
+
     Ok(())
 }
 
@@ -251,6 +257,7 @@ pub fn handle_update_quoter_approved(
         config,
         &entry_key,
     )?;
+
     validate!(
         (index as u16) < MAX_TOTAL_CAPACITY,
         ErrorCode::QuoterSlabFull,
@@ -258,6 +265,7 @@ pub fn handle_update_quoter_approved(
         config.market,
         MAX_TOTAL_CAPACITY
     )?;
+
     if config.quoter_type == QuoterType::Clob {
         validate_book_identity(
             ctx.accounts.clob_market.as_ref(),
@@ -265,10 +273,12 @@ pub fn handle_update_quoter_approved(
             &ctx.accounts.quoter_slab.key(),
         )?;
     }
+
     let approved_program_slot = deployed_slot(
         &ctx.accounts.quoter_program,
         ctx.accounts.quoter_program_data.as_ref(),
     )?;
+
     // Grow to fit the chosen slot, and never shrink here. A `Clob` approval
     // into slot 0 must not take allocated slots away.
     let current = ctx.accounts.quoter_slab.load()?.capacity;
@@ -280,6 +290,7 @@ pub fn handle_update_quoter_approved(
             index as u16 + 1,
         )?;
     }
+
     write_approved_slot(
         &ctx.accounts.quoter_slab,
         index,
@@ -293,15 +304,13 @@ pub fn handle_update_quoter_approved(
 /// velocity may place on it.
 ///
 /// Every router fill needs the `Clob` slot. A slot whose account is not a CLOB
-/// market fails its `execute_v0` on every fill. So does a slot whose
+/// market fails its `execute_v0` on every fill, and so does a slot whose
 /// `place_authority` is not the market's slab. The market then stops filling
 /// until an admin revokes the slot. `update_perp_market_clob_quoter` runs the
-/// same two checks, but it can only run after approval, so approval asks for
-/// itself.
+/// same two checks, but only after approval, so approval must ask for itself.
 ///
-/// The question is `order_rules_v0`, a read-only CPI that signs nothing. An
-/// account that is not this program's market answers nothing, and the approval
-/// fails.
+/// The question is `order_rules_v0`, a CPI that signs nothing. An account
+/// that is not this program's market answers nothing, and the approval fails.
 fn validate_book_identity<'info>(
     clob_market: Option<&UncheckedAccount<'info>>,
     clob_program: &UncheckedAccount<'info>,
@@ -322,6 +331,7 @@ fn validate_book_identity<'info>(
         "book place authority is not the market's quoter slab {}",
         quoter_slab
     )?;
+
     Ok(())
 }
 
@@ -340,6 +350,7 @@ fn revoke_slab_slot<'info>(
             msg!("quoter {} holds no slab slot; nothing to revoke", entry_key);
             return Ok(());
         };
+
         if slots[index].config.quoter_type == QuoterType::Clob {
             // The config stays so the removal paths keep working on the dead
             // book. The slot quotes nothing.
@@ -348,6 +359,7 @@ fn revoke_slab_slot<'info>(
             slots[index].clear();
         }
     }
+
     // Give trailing vacancy back. Occupied slots never move, so only the
     // tail past the last occupied slot can shrink away.
     let fitted = fitted_capacity(slab)?;
@@ -363,6 +375,7 @@ fn validate_approvable_config(config: &QuoterConfigV0) -> Result<()> {
         ErrorCode::InvalidQuoterConfig,
         "the vAMM quotes in-program, not through the registry"
     )?;
+
     let registered = config.registered_accounts();
     for (name, indexes) in [
         ("quote", config.quote_leg_indexes()),
@@ -380,6 +393,7 @@ fn validate_approvable_config(config: &QuoterConfigV0) -> Result<()> {
             "a {} leg index points past the registered list",
             name
         )?;
+
         // The router reads responses from the response account, so every leg
         // must forward it.
         validate!(
@@ -390,6 +404,7 @@ fn validate_approvable_config(config: &QuoterConfigV0) -> Result<()> {
             "response account must be forwarded on both CPI legs"
         )?;
     }
+
     // The check runs here as well as at write time. A list stored before the
     // reserved-key check existed is still on chain, and approval is the gate
     // that lets a config take flow.
@@ -402,16 +417,9 @@ fn validate_approvable_config(config: &QuoterConfigV0) -> Result<()> {
 }
 
 /// Whether two approved quoters keep out of each other's response account.
-///
-/// The caller checks both directions. Approval order then does not decide which
-/// of a pair is refused, and the rule holds for a quoter approved before the one
-/// being approved now.
-///
-/// This is the whole of the signing model's first fact, and velocity's only
-/// enforcement of it. A fill re-checks nothing. The property is about the
-/// approved roster, and one transaction sees only a part of that roster. The
-/// slab grows with the roster, so a per-fill sweep would cost compute with no
-/// bound. See [`crate::signer`].
+/// The caller checks both directions, so approval order does not decide
+/// which of a pair is refused. This is velocity's only enforcement of the
+/// signing model's first fact, checked once at approval. See [`crate::signer`].
 fn response_accounts_stay_apart<'a>(
     mut left_list: impl Iterator<Item = &'a Pubkey>,
     left_response: &Pubkey,
@@ -441,25 +449,14 @@ fn approved_slot_index(
         "another approved quoter already uses response account {}",
         config.response_account
     )?;
+
     // A registered list may not name another slot's response account either.
-    // Such a list would force that slot into every fill this one rides in, and
-    // a consulted slot with an incomplete account list fails the fill. The
-    // check runs in both directions, so approval order does not decide which
-    // of a pair is refused.
-    //
-    // This exclusion also carries the signing model. Every quoter CPI signs as
-    // the market's slab, so a quoter holds inside its own execute the same
-    // signature that authenticates velocity at every other quoter on the
-    // market, the book included. A CPI can only name accounts the caller
-    // received, and every authority-trusting instruction on a callee requires
-    // its response account. A registered list that cannot name another slot's
-    // response account therefore cannot complete a forwarded call. See
-    // `crate::signer`.
-    //
-    // This instruction's caller carries the matching obligation. Before it
-    // approves a third-party quoter program, it must check that every
-    // instruction the program gates on the slab signer also requires that
-    // program's response account.
+    // Doing so forces that slot into every fill this one rides in, and a
+    // slot with an incomplete account list fails the fill. The check runs
+    // both directions, so approval order does not decide which of a pair is
+    // refused. This also carries the signing model (see `crate::signer`):
+    // before approving a third-party quoter program, check that every gated
+    // instruction also requires that program's response account.
     validate!(
         occupied_slots(&slots).all(|(_, slot)| slot.entry == *entry_key
             || response_accounts_stay_apart(
@@ -474,13 +471,11 @@ fn approved_slot_index(
         ErrorCode::InvalidQuoterConfig,
         "a registered account list may not name another approved quoter's response account"
     )?;
-    // The market's own book is excluded by name, and not only by slot. A
-    // market designates its book at registration in `initialize_quoter`, and
-    // the book reaches slot 0 only at its own approval. The sweep above
-    // therefore sees nothing while slot 0 is vacant. The book gates every one
-    // of its authority instructions on the market's slab and on no response
-    // account. A quoter that holds the book account could then place, cancel,
-    // evict and fill on it with the signature its own execute receives.
+
+    // The market's own book is excluded by name, not only by slot. It is named at registration
+    // (`initialize_quoter`) but reaches slot 0 only at its own approval, so the sweep above
+    // misses it while vacant. The book gates its authority on the slab signer alone, so a
+    // quoter holding the book account could place, cancel, evict and fill with its own signature.
     if config.quoter_type != QuoterType::Clob {
         let book = perp_market.load()?.clob_market;
         validate!(
@@ -490,6 +485,7 @@ fn approved_slot_index(
             book
         )?;
     }
+
     // Slot 0 is the book's by convention, so every book-touching instruction
     // reads it without a scan. A market holds one book, so a second `Clob`
     // approval must be the same entry approved again.
@@ -499,6 +495,7 @@ fn approved_slot_index(
             ErrorCode::InvalidQuoterConfig,
             "the slab already holds a book slot"
         )?;
+
         // The book the market designated at registration. The staging response
         // account is maker-editable, so this check refuses an edit that points
         // elsewhere.
@@ -508,6 +505,7 @@ fn approved_slot_index(
             "the entry's book {} is not the market's designated book",
             config.response_account
         )?;
+
         Ok(0)
     } else {
         Ok(match slot_for_entry(&slots, entry_key) {
@@ -535,6 +533,7 @@ fn write_approved_slot(
     if config.quoter_type == QuoterType::Clob {
         slab.load_mut()?.clob_market = config.response_account;
     }
+
     let mut slots = slab.slots_mut()?;
     slots[index].entry = *entry_key;
     slots[index].suspended = false;
@@ -565,6 +564,7 @@ mod response_exclusion_tests {
             Pubkey::new_unique(),
             Pubkey::new_unique(),
         );
+
         assert!(apart(&[a, x], &a, &[b, y], &b));
     }
 

@@ -180,6 +180,7 @@ describe('whitelist', () => {
 			svmContextWrapper.provider.wallet.publicKey,
 			1
 		);
+
 		await svmContextWrapper.sendTransaction(
 			new Transaction().add(ix, mintToIx)
 		);

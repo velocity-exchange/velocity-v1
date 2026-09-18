@@ -615,10 +615,10 @@
             "type": "bool"
           },
           {
-            "name": "consume_reservation",
+            "name": "include_taker_origin_reservations",
             "docs": [
-              "Same contract as [`QuoteArgsV0::consume_reservation`], and the same",
-              "rule: the execute must carry the value its quote carried, or it walks",
+              "Same contract as [`QuoteArgsV0::include_taker_origin_reservations`].",
+              "The execute must carry the value its quote carried. Otherwise it walks",
               "a different set of orders than the one it quoted."
             ],
             "type": "bool"
@@ -1036,18 +1036,21 @@
             "type": "bool"
           },
           {
-            "name": "consume_reservation",
+            "name": "include_taker_origin_reservations",
             "docs": [
-              "Fill the depth a crossing taker remainder claims.",
+              "Fill the depth that a taker-origin order reserves.",
               "",
-              "A book withholds the depth an unfilled taker remainder crosses, so the",
-              "improvement over that remainder's resting price reaches the taker",
-              "rather than whoever lands a transaction first. The crank that settles",
-              "the cross is the one caller that must reach it, and it says so here.",
+              "A taker-origin order is an unfilled taker remainder that rests on the",
+              "book. The book withholds the depth that order crosses, so the",
+              "improvement over its resting price reaches the taker and not whoever",
+              "lands a transaction first. The crank that settles the cross is the one",
+              "caller that may take that depth, and it says so here.",
               "",
-              "The caller asserts it, like `users` and `caps`: the quoter",
+              "This is unrelated to the margin a maker reserves at placement.",
+              "",
+              "The caller asserts it, like `users` and `caps`. The quoter",
               "authenticates the caller, and the caller is the settlement engine. A",
-              "quoter that reserves nothing ignores it."
+              "quoter that reserves no depth ignores it."
             ],
             "type": "bool"
           }

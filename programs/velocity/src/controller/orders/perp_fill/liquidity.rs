@@ -53,16 +53,10 @@ struct FillMarketSetup {
     amm_base_spread: u32,
     amm_long_spread: u32,
     amm_short_spread: u32,
-    /// The ceiling the vAMM ladder is cut at, tighter than the one the maker
-    /// books get.
-    ///
-    /// A post-only taker acts as a maker, so its limit is buffered by the
-    /// maker rebate it earns and stepped one tick inside the limit. A ladder
-    /// bounded by the raw limit lets a post-only order sweep past the buffer.
-    /// The taker then takes more size, and every unit is priced at the raw
-    /// limit rather than the buffered one. That difference is LP value. The
-    /// maker books keep the raw limit, because the buffer is the AMM's and not
-    /// theirs.
+    /// The ceiling the vAMM ladder is cut at, tighter than the maker books get. A
+    /// post-only taker's limit is buffered by the rebate it earns, and a ladder bounded
+    /// by the raw limit would let it sweep past that buffer and price every unit at the
+    /// raw limit. That difference is LP value.
     amm_taker_limit: Option<u64>,
     /// The one ceiling every maker book is cut at. A market order falls back
     /// to the AMM fallback price, so a router sweep stays price-bounded.
@@ -92,6 +86,7 @@ impl FillMarketSetup {
             quote_inputs.tick_size,
             quote_inputs.slot_clock,
         )?;
+
         amm_quoter.refresh(&quote_inputs.ctx(slot))?;
         let reserve_after_setup = amm_quoter.amm.reserve_price()?;
         let (amm_bid_price, amm_ask_price) = amm_quoter.amm_bid_ask(reserve_after_setup)?;
@@ -150,11 +145,9 @@ fn market_order_limit(
     )
 }
 
-/// What one liquidity pass has moved so far.
-///
-/// Every source settles into this. Only the steps that close the pass out read
-/// a running total, so the accumulators are held apart from the snapshot the
-/// pass quotes against.
+/// What one liquidity pass has moved so far. Every source settles into this. Only the
+/// steps that close the pass out read a running total, so the accumulators are held apart
+/// from the snapshot the pass quotes against.
 #[derive(Default)]
 struct FillTally {
     /// Base and quote settled so far, over every source.
@@ -203,14 +196,10 @@ impl FillTally {
     }
 }
 
-/// The external quoter books this fill may route to, and the leg that executes
-/// on them.
-///
-/// Everything an external book touches sits behind this: the ladders the split
-/// reads, the CPI that executes an allocation, and what the party that built
-/// the transaction owes when a book withheld depth. It is also the only part
-/// of the fill that borrows the quoting section and the executor's account
-/// region, so holding it apart keeps three lifetimes off [`PerpFill`].
+/// The external quoter books this fill may route to, and the leg that executes on them.
+/// Everything an external book touches sits behind this. It is the only part of the fill
+/// that borrows the quoting section and the executor's account region, so holding it
+/// apart keeps three lifetimes off [`PerpFill`].
 struct ExternalVenue<'a, 'r, 'b, 'info> {
     router: &'a mut RouterLeg<'r, 'b, 'info>,
     /// [`RouterLeg::books`], read out once so a step can hold a ladder
@@ -233,13 +222,9 @@ struct BookShare<'l> {
     allocation: &'l QuoterAllocation,
 }
 
-/// One external book's execution: which book answered, the quoter that stands
-/// behind it, and the bounds its response is held to.
-///
-/// Every field is read before the CPI runs. The checks that bound a response
-/// therefore never reach back into the executor while a borrow of that
-/// response is live. Each check names the quoter directly rather than an index
-/// into another table.
+/// One external book's execution: which book answered, the quoter behind it, and the
+/// bounds its response is held to. Every field is read before the CPI runs, so the checks
+/// never reach back into the executor while a borrow of the response is live.
 struct ExternalLeg {
     /// The quoter that answered, for the messages the checks emit.
     quoter_key: Pubkey,
@@ -259,12 +244,9 @@ struct ExternalLeg {
     maker_aggregates_tracked: bool,
 }
 
-/// One quote-and-split pass: what the split gave every source, and what the
-/// vAMM leg already executed.
-///
-/// The allocations are in book order, the external books first and then the
-/// vAMM. `externals_end` says where the external run ends, so it is also the
-/// vAMM's own index.
+/// One quote-and-split pass: what the split gave every source, and what the vAMM leg
+/// already executed. The allocations are in book order, external books first.
+/// `externals_end` says where that run ends, so it is also the vAMM's own index.
 struct RoutedFill {
     /// One allocation per book.
     allocations: Vec<QuoterAllocation>,
@@ -288,22 +270,11 @@ impl RoutedFill {
 
 /// What the liquidity pass carries across its own steps.
 ///
-/// The external books are not here. They live in [`ExternalVenue`], which each
-/// step that reaches one takes as an argument, so the three lifetimes the
-/// router carries stay out of this context.
-///
-/// The market and the filler are not fields either. The vAMM quoter borrows
-/// `market.amm` for the whole quote window, so a step reached through this
-/// struct while that borrow is live would collide with it. The filler carries
-/// four lifetimes, and folding them in would put nine lifetime parameters on
-/// every step. Each step that uses one takes it as an argument.
-///
-/// The three lifetimes that remain cannot merge. `OracleMap<'o>`,
-/// `UserMap<'m>` and `UserStatsMap<'s>` each hold `AccountInfo`, which is
-/// invariant in its lifetime. The three maps reach the fill from three
-/// separately elided caller regions. Merging any pair makes two unrelated
-/// caller regions equal, and every caller then fails to compile. `'a` is the
-/// borrow of the caller's own frame.
+/// The external books live in [`ExternalVenue`], and the market and the filler are
+/// arguments rather than fields. The vAMM quoter borrows `market.amm` for the whole quote
+/// window, and folding in the filler would put nine lifetimes on every step. The three
+/// remaining lifetimes cannot merge, because each map holds `AccountInfo`, which is
+/// invariant, and they reach the fill from separately elided caller regions.
 struct PerpFill<'a, 'o, 'm, 's> {
     oracle_map: &'a mut OracleMap<'o>,
     makers_and_referrer: &'a UserMap<'m>,
@@ -359,6 +330,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         } else {
             makers_and_referrer.user_ref_index()?
         };
+
         Ok(Self {
             market_index: taker.order.market_index,
             maker_direction: taker.direction.opposite(),
@@ -366,6 +338,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
                 PositionDirection::Long => Direction::Long,
                 PositionDirection::Short => Direction::Short,
             },
+
             taker_ref: taker.user.clob_user_ref(),
             withheld_depth: external_books
                 .iter()
@@ -389,6 +362,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         let Some(limit) = self.setup.effective_taker_limit else {
             return levels.len();
         };
+
         levels
             .iter()
             .position(|level| match self.taker.direction {
@@ -398,11 +372,9 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
             .unwrap_or(levels.len())
     }
 
-    /// Hand the worst price any one source executed at back to the caller.
-    ///
-    /// The fill's own return value is the base and the blended quote. A blend
-    /// hides the worst price it contains. A caller that must know whether
-    /// every unit cleared a price reads this instead.
+    /// Hand the worst price any one source executed at back to the caller. The fill's
+    /// return value is the base and the blended quote, and a blend hides the worst price
+    /// it contains.
     fn report_worst_fill_price(&self, venue: &mut ExternalVenue) {
         venue.router.worst_fill_price = self.tally.worst_fill_price;
     }
@@ -419,6 +391,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         if !self.withheld_depth {
             return;
         }
+
         self.tally.mark_settled(self.makers_and_referrer, key);
     }
 
@@ -433,6 +406,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
                     user.authority,
                     user.sub_account_id
                 );
+
                 ErrorCode::DefaultError
             })
     }
@@ -452,20 +426,17 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         let rivals = self.rival_books(venue);
         let amm_levels = self.quote_vamm(amm_quoter, &rivals, target_size)?;
 
-        // The vAMM book is not truncated again. `vamm_quote_levels` already
-        // capped the ladder at the limit, and its per-rung prices are rounded
-        // slice averages. Comparing those to the limit would drop small rungs
-        // whose true cost is inside it.
-        //
-        // `books` takes over the rival allocation. It is declared after
-        // `amm_levels`, so it drops first and can hold a level of the vAMM's
-        // ladder.
+        // `vamm_quote_levels` already capped the ladder at the limit, and its per-rung
+        // prices are rounded slice averages, so comparing them again would drop small
+        // rungs whose true cost is inside it. `books` takes over the rival allocation and
+        // is declared after `amm_levels`, so it drops first.
         let mut books = rivals;
         books.push(QuoterBook {
             priority: QuoterType::Vamm.default_priority(),
             levels: &amm_levels,
             withheld: PriceLevel::default(),
         });
+
         let allocations = split_across_quoters(
             self.route_direction,
             target_size,
@@ -482,25 +453,12 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         })
     }
 
-    /// Every external quoter book, each cut at the taker's effective limit, in
-    /// one allocation with room for the vAMM's own book after it.
+    /// Every external quoter book, each cut at the taker's effective limit, in one
+    /// allocation with room for the vAMM's book after it.
     ///
-    /// The ladders are already the depth this fill may settle. A custom
-    /// quoter's ladder is trimmed to its own band and its own account's room
-    /// when the route is assembled, and a book sizes its makers as it walks
-    /// them. The split and the settle pass therefore read the same levels,
-    /// rather than each rebuilding the same clamp.
-    ///
-    /// The vAMM shades against this set as its last look, and the split then
-    /// runs over the same set with the vAMM appended. The caller passes this
-    /// allocation on rather than collecting the same rows a second time. The
-    /// runtime's allocator never reclaims, so a second copy is heap the
-    /// instruction does not get back.
-    ///
-    /// The allocation holds one spare slot for the same reason. A `Vec` at
-    /// capacity doubles when pushed into, and doubling abandons a buffer as
-    /// large as the one it replaces. The caller's one `push` of the vAMM book
-    /// would otherwise cost the set's own size a second time.
+    /// The ladders are already the depth this fill may settle, so the split and the settle
+    /// pass read the same levels. The allocation carries one spare slot, because the
+    /// allocator never reclaims and a `Vec` that doubles abandons its old buffer.
     fn rival_books<'l, 'r: 'l, 'b: 'l>(
         &self,
         venue: &ExternalVenue<'_, 'r, 'b, '_>,
@@ -511,6 +469,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
             levels: &book.levels[..self.within_limit(book.levels)],
             withheld: book.withheld,
         }));
+
         books
     }
 
@@ -525,6 +484,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         if !self.conditions.amm_is_available {
             return Ok(vec![]);
         }
+
         vamm_quote_levels(
             &*amm_quoter.amm,
             self.route_direction,
@@ -548,12 +508,14 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         if allocation.base == 0 {
             return Ok(None);
         }
+
         let fill = RouterQuoter::execute(
             amm_quoter,
             &self.setup.quote_inputs.ctx(self.conditions.slot),
             self.route_direction,
             allocation.base,
         )?;
+
         validate!(
             fill.base_filled <= allocation.base,
             ErrorCode::DefaultError,
@@ -575,6 +537,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
             allocation.quote,
             allocation.base
         )?;
+
         Ok((fill.base_filled > 0).then_some(fill))
     }
 
@@ -593,6 +556,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         if let Some(amm_fill) = routed.amm_fill.as_ref() {
             self.settle_vamm_allocation(market, filler, amm_fill, routed.amm_allocation())?;
         }
+
         let ladders = self.rival_books(venue);
         self.settle_external_allocations(
             market,
@@ -614,12 +578,9 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         fill: &QuoterFill,
         allocation: &QuoterAllocation,
     ) -> VelocityResult {
-        // A maker that cranked this fill did the keeper's work for the whole
-        // order, so it earns the reward on the vAMM slice too. It arrives as
-        // `filler: None` with `filler_key` naming itself. It is already loaded
-        // in the maker map, so it cannot be loaded a second time as the
-        // filler. The reward requires it to have filled, so a maker that names
-        // itself but wins no allocation earns nothing.
+        // A maker that cranked this fill earns the reward on the vAMM slice too. It
+        // arrives as `filler: None` naming itself, because it is already in the maker map
+        // and cannot be loaded twice. The reward requires it to have filled.
         let cranking_maker_key = (filler.user.is_none()
             && self.tally.maker_fills.contains_key(&filler.key))
         .then_some(filler.key)
@@ -669,6 +630,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
                 filler_reward_paid: &mut self.tally.filler_reward_paid,
             },
         )?;
+
         self.note_fill(base_filled, quote_filled)
     }
 
@@ -700,19 +662,13 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
             })
     }
 
-    /// Read the two bounds an external response is held to, before the CPI
-    /// that produces it.
+    /// Read the two bounds an external response is held to, before the CPI that produces
+    /// it. A book-backed quoter's permitted subjects live in state the execute consumes,
+    /// and the execute overwrites the buffer the ladder was read from.
     ///
-    /// A book-backed quoter's permitted subjects live in the state its execute
-    /// is about to consume, and the execute overwrites the very buffer the
-    /// ladder was read from, so both are read first.
-    ///
-    /// The prefix is quantized at the same step the split used. The split
-    /// skips a level's sub-step tail, so it reaches further down the ladder
-    /// than an unquantized walk of the same base. The two would then disagree
-    /// about which levels the allocation was cut from. The price band is built
-    /// from this prefix's best and worst price, so a prefix that stopped short
-    /// would refuse a fill priced at the level the split allocated at.
+    /// The prefix is quantized at the same step the split used, because the split skips a
+    /// level's sub-step tail and reaches further down the ladder. A prefix that stopped
+    /// short would refuse a fill priced at the level the split allocated at.
     fn bound_external_leg(
         &self,
         venue: &ExternalVenue,
@@ -733,6 +689,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
             self.setup.quote_inputs.step_size,
             allocation.base,
         )?;
+
         Ok((subjects, quoted))
     }
 
@@ -756,9 +713,11 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
             levels,
             allocation,
         } = share;
+
         if allocation.base == 0 {
             return Ok(());
         }
+
         let (subjects, quoted) = self.bound_external_leg(venue, index, levels, allocation)?;
         // The guard lives here, for exactly as long as this leg reads the
         // response, so the records below borrow out of the quoter's account
@@ -795,6 +754,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         if leg.maker_aggregates_tracked {
             self.unwind_culled_remainders(market, &leg, &response)?;
         }
+
         Ok(())
     }
 
@@ -819,13 +779,9 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         let (ext_base, ext_quote) = response.changes.iter().try_fold(
             (0u64, 0u64),
             |(base, quote), change| -> VelocityResult<(u64, u64)> {
-                // A zero-base change is not a fill, so it has no place in the
-                // response. The per-change band and the subject check both
-                // skip a change with `base_size == 0`, while its quote is
-                // summed here. Admitting one therefore lets a quoter carry
-                // quote on a record nothing else bounds. A short taker is then
-                // settled at the quoter's worst rung, and the quoter keeps the
-                // difference.
+                // The per-change band and the subject check skip a change with
+                // `base_size == 0` while its quote is still summed, so admitting one lets
+                // a quoter carry quote on a record nothing else bounds.
                 validate!(
                     change.base_size > 0,
                     ErrorCode::QuoterFillOffQuote,
@@ -833,12 +789,14 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
                     leg.quoter_key,
                     change.quote_size
                 )?;
+
                 Ok((
                     base.safe_add(change.base_size)?,
                     quote.safe_add(change.quote_size)?,
                 ))
             },
         )?;
+
         validate!(
             ext_base <= allocation.base,
             ErrorCode::QuoterOverfilled,
@@ -855,6 +813,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
             ext_base,
             allocation.base
         )?;
+
         // Held to the notional the split accrued off the ladder, which the
         // allocation carries.
         validate!(
@@ -866,6 +825,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
             ext_base,
             allocation.scaled_quote
         )?;
+
         Ok(())
     }
 
@@ -902,21 +862,12 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
             leg.quoter_key,
             maker_key
         )?;
-        // Per-leg oracle band. The quoted-band and the aggregate checks bound
-        // a change against the quoter's own quote and the blended average,
-        // but a single maker can still sit far from oracle while the blend
-        // passes. That is value moved onto that maker at a price the average
-        // hides. Bound each maker's fill price the way a maker match bounds a
-        // resting maker order.
-        //
-        // The band is one-sided because it is the only bound the maker side
-        // has. The taker side already carries a per-change bound of its own:
-        // `validate_change_notional` holds every change inside the quoted
-        // prefix, and that prefix is cut from levels `within_limit` already
-        // trimmed to the taker's effective limit. So no single change can
-        // price a unit past the taker's own limit, whatever the blend says. A
-        // second oracle band on the taker side would refuse fills inside that
-        // limit, which is the price the taker asked for.
+
+        // Per-leg oracle band. The aggregate checks bound a change against the blended
+        // average, but one maker can sit far from oracle while the blend passes.
+        // One-sided, because `validate_change_notional` already holds every change inside
+        // a quoted prefix trimmed to the taker's effective limit, and a second band there
+        // would refuse fills at the price the taker asked for.
         let change_price = (change.quote_size as u128)
             .safe_mul(BASE_PRECISION_U64.cast()?)?
             .safe_div(change.base_size.cast()?)?
@@ -934,6 +885,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
             maker_key,
             change_price
         )?;
+
         Ok(())
     }
 
@@ -950,6 +902,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         if change.base_size == 0 {
             return Ok(());
         }
+
         // The count of orders this change completed, walked once for both the
         // band check and the open-order decrement.
         let completed = response.completed_count(change_index);
@@ -994,6 +947,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
                 filler_reward_paid: &mut self.tally.filler_reward_paid,
             },
         )?;
+
         self.note_fill(base_filled, quote_filled)?;
 
         let maker_position_index = get_position_index(&maker.perp_positions, self.market_index)?;
@@ -1007,15 +961,13 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
                 completed,
             )?;
         }
+
         Ok(())
     }
 
-    /// Bring a maker's funding stamp current before the fill touches its
-    /// position.
-    ///
-    /// The settle helpers update positions directly, and a stale stamp fails
-    /// `update_position_and_market`. Every match path runs this same
-    /// pre-flight.
+    /// Bring a maker's funding stamp current before the fill touches its position. The
+    /// settle helpers update positions directly, and a stale stamp fails
+    /// `update_position_and_market`.
     fn settle_maker_funding(
         &self,
         maker: &mut User,
@@ -1057,6 +1009,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
             &mut maker.perp_positions[position_index],
             completed.cast()?,
         )?;
+
         for clob_order_id in completed_order_ids {
             maker.decrement_open_orders(false);
             maker.release_placed_trigger_slot(
@@ -1065,6 +1018,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
                 OrderStatus::Filled,
             );
         }
+
         Ok(())
     }
 
@@ -1105,6 +1059,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
             cancelled.base_asset_amount,
             market.market_stats.min_order_size
         )?;
+
         Ok(())
     }
 
@@ -1134,12 +1089,14 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
                 &mut maker.perp_positions[maker_position_index],
                 1,
             )?;
+
             maker.decrement_open_orders(false);
             maker.release_placed_trigger_slot(
                 self.market_index,
                 cancelled.order_id,
                 OrderStatus::Canceled,
             );
+
             let is_isolated = maker.perp_positions[maker_position_index].is_isolated();
             drop(maker);
             // The cull is the only removal on this path velocity authors, and
@@ -1167,6 +1124,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
                 is_isolated,
             )?;
         }
+
         Ok(())
     }
 
@@ -1177,6 +1135,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
             PositionDirection::Long => self.setup.amm_ask_price,
             PositionDirection::Short => self.setup.amm_bid_price,
         };
+
         market.market_stats.update_mark_twap_with_amm_bid_ask(
             self.setup.amm_bid_price,
             self.setup.amm_ask_price,
@@ -1189,6 +1148,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
             self.setup.quote_inputs.sanitize_clamp_denominator,
             self.setup.quote_inputs.tick_size,
         )?;
+
         market.market_stats.update_volume_24h(
             self.tally.quote_filled,
             self.taker.direction,
@@ -1196,15 +1156,14 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         )
     }
 
-    /// The taker's once-per-order open-orders counter.
-    ///
-    /// Only a taker that reserved at placement unwinds a count here. A fresh
-    /// ephemeral taker never incremented one, so a decrement would underflow
-    /// the per-position `u8` and wrongly drop the user-level count.
+    /// The taker's once-per-order open-orders counter. Only a taker that reserved at
+    /// placement unwinds one. A fresh ephemeral taker never incremented one, so a
+    /// decrement would underflow the per-position `u8`.
     fn decrement_taker_open_orders(&mut self) -> VelocityResult {
         if !self.taker.reserved || self.taker.order.get_base_asset_amount_unfilled(None)? != 0 {
             return Ok(());
         }
+
         let has_auction = self.taker.order.has_auction();
         self.taker.user.decrement_open_orders(has_auction);
         self.taker.user.perp_positions[self.taker.position_index].open_orders -= 1;
@@ -1226,9 +1185,11 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
             base: self.tally.base_filled,
             quote: self.tally.quote_filled,
         };
+
         if filled.base == 0 {
             return Ok(filled);
         }
+
         self.update_mark_twap_and_volume(market)?;
         self.decrement_taker_open_orders()?;
         self.check_withheld_obligation(venue, filler_key)?;
@@ -1250,19 +1211,18 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         if !self.withheld_depth {
             return Ok(());
         }
-        // `settled_users` and `idle_loaded_users` address loaded users by a
-        // bit in a u64. A loaded map past 64 users cannot mark a filled maker
-        // beyond index 64 as settled, so it would read as idle and fail an
-        // honest fill. Guard the assumption loudly. The wire user set is
-        // capped well under 64 (`MAX_QUOTER_WIRE_USERS`), so a real fill never
-        // reaches this. If the caps ever grow, widen the bitmap instead of
-        // silently miscounting.
+
+        // `settled_users` and `idle_loaded_users` address loaded users by a bit in a u64,
+        // so a map past 64 users would read a filled maker as idle and fail an honest
+        // fill. `MAX_QUOTER_WIRE_USERS` keeps a real fill well under that. Widen the
+        // bitmap rather than miscounting if the caps grow.
         validate!(
             self.makers_and_referrer.0.len() <= u64::BITS as usize,
             ErrorCode::DefaultError,
             "loaded user map has {} users, past the 64 the obligation bitmap covers",
             self.makers_and_referrer.0.len()
         )?;
+
         let idle = idle_loaded_users(
             self.makers_and_referrer,
             self.tally.settled_users,
@@ -1271,6 +1231,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
             self.taker.stats.referrer,
             &*venue.router.executor,
         )?;
+
         crate::math::router::withheld_obligation(
             &venue.router.standing.obligation,
             idle,
@@ -1315,6 +1276,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         } else {
             0
         };
+
         // One writable account per consulted quoter: the account it writes
         // its response into. Its registry slab is shared by the whole route
         // and the `User` it settles for is a loaded user, so both are counted
@@ -1332,31 +1294,19 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
 
 /// Draw the taker's size from every liquidity source, in one pass.
 ///
-/// This layer governs liquidity. It quotes each source, splits the taker's
-/// unfilled size across them, executes each allocation and settles what comes
-/// back. It measures no risk of its own: the caller sets the limits it runs
-/// inside.
+/// This layer governs liquidity. It quotes each source, splits the taker's unfilled size
+/// across them by priority tier, executes each allocation and settles what comes back. It
+/// measures no risk of its own, because the caller sets the limits it runs inside.
 ///
-/// Quote (external CPI books, then the vAMM ladder last with everything else
-/// as its last look), split the
-/// taker's unfilled size across the union by priority tier, then execute and
-/// settle each allocation through the fee-policy-keyed settle functions.
+/// Quoting and routing happen together over one curve. So there is no scratch-AMM
+/// projection, no separate JIT participant, and no per-step fallback recompute. The vAMM
+/// quotes last, with every other source as its last look, and one effective taker limit
+/// bounds every book up front.
 ///
-/// One pass quotes and routes together. So there is no scratch-AMM
-/// projection, because routing and quoting see the same curve. There is no
-/// separate JIT participant, because the vAMM's last-look shading is its
-/// general form. There is no per-step fallback recompute, because one
-/// effective taker limit bounds every book up front.
-///
-/// External books are priced into the split. An allocation that lands on one
-/// executes through `RouterLeg::executor`, which is the CPI leg the fill
-/// entrypoint supplies. It settles per returned balance change against the
-/// loaded makers. A quoter requotes off the same oracle, slot and tick it was
-/// quoted against, so the quote and the execute agree by construction, and the
-/// settle pass's `validate_fill_price` enforces it.
-///
-/// The steps run in the order they are written below. [`PerpFill`] carries
-/// what they share.
+/// An allocation on an external book executes through `RouterLeg::executor`. A quoter
+/// requotes off the same oracle, slot and tick it was quoted against, and the settle
+/// pass's `validate_fill_price` enforces that. [`PerpFill`] carries what the steps
+/// share.
 pub(super) fn fill_from_liquidity_sources(
     taker: &mut TakerSide,
     rules: &PricingRules,
@@ -1370,6 +1320,7 @@ pub(super) fn fill_from_liquidity_sources(
     if target_size == 0 {
         return Ok((0, 0, MakerFills::new()));
     }
+
     // ---- The market snapshot every source quotes against. ----
     let AccountMaps {
         perp_market_map,
@@ -1434,6 +1385,7 @@ fn refresh_and_read_market<'m>(
         conditions,
         market_fee_adjustment,
     )?;
+
     Ok((amm_quoter, setup))
 }
 
@@ -1450,6 +1402,7 @@ fn maker_stats_for<'m>(
     if maker.authority == taker_authority {
         return Ok(None);
     }
+
     Ok(Some(stats.get_ref_mut(&maker.authority)?))
 }
 
@@ -1475,6 +1428,7 @@ fn idle_loaded_users<'info>(
         if key == taker_key || key == filler_key {
             continue;
         }
+
         let authority = loader
             .load()
             .map_err(|_| ErrorCode::UnableToLoadAccountLoader)?
@@ -1485,8 +1439,10 @@ fn idle_loaded_users<'info>(
         if (0..crate::state::prop_amm::MAX_ROUTE_QUOTERS).any(|i| executor.quoter_user(i) == *key) {
             continue;
         }
+
         idle = idle.saturating_add(1);
     }
+
     Ok(idle)
 }
 

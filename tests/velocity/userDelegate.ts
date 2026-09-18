@@ -171,6 +171,7 @@ describe('user delegate', () => {
 					publicKey: solUsd,
 				},
 			],
+
 			authority: svmContextWrapper.provider.wallet.publicKey,
 			authoritySubAccountMap: new Map().set(
 				svmContextWrapper.provider.wallet.publicKey,

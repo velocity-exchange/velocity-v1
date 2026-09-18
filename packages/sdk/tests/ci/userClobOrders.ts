@@ -5,11 +5,8 @@ import { PositionDirection } from '../../src/types';
 import { deserializeUserClobOrder } from '../../src/clob/userOrdersClient';
 
 /**
- * The feed's wire form is decimal strings in on-chain precision, matching the
- * book documents. What matters on the way in is that the two id spaces stay
- * distinct: `orderId` is velocity's — what a client names the order by
- * everywhere else — and `nodeIndex`/`clobOrderId` are the book's handle, which
- * together are the hint a cancel takes.
+ * Feed holds decimal strings in on-chain precision.
+ * `orderId` is velocity's identifier; `nodeIndex`/`clobOrderId` is the book's handle.
  */
 describe('user CLOB orders feed', () => {
 	// The producer's own test asserts it emits exactly this file. A literal

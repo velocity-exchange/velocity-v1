@@ -1225,14 +1225,17 @@ export type Vaults = {
 					name: 'velocityUser';
 					writable: true;
 				},
+
 				{
 					name: 'velocityUserConditions';
 					docs: [
 						"from `velocity_user`. A vault's velocity user holds positions like any",
 						'other, so it carries the same relay liquidation coverage.',
 					];
+
 					writable: true;
 				},
+
 				{
 					name: 'velocityState';
 					writable: true;
@@ -1437,14 +1440,17 @@ export type Vaults = {
 					name: 'velocityUser';
 					writable: true;
 				},
+
 				{
 					name: 'velocityUserConditions';
 					docs: [
 						"from `velocity_user`. A vault's velocity user holds positions like any",
 						'other, so it carries the same relay liquidation coverage.',
 					];
+
 					writable: true;
 				},
+
 				{
 					name: 'velocityState';
 					writable: true;
@@ -4236,6 +4242,7 @@ export type Vaults = {
 						];
 						type: 'u8';
 					},
+
 					{
 						name: 'routeDigest';
 						docs: [
@@ -4251,10 +4258,12 @@ export type Vaults = {
 							'against the transaction. Bytes, not a `u32`, to stay alignment-free in',
 							'the middle of a byte run.',
 						];
+
 						type: {
 							array: ['u8', 4];
 						};
 					},
+
 					{
 						name: 'padding';
 						type: {

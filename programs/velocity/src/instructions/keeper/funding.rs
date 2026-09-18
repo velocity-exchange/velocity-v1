@@ -62,10 +62,12 @@ pub fn handle_update_funding_rate(
             perp_market.last_funding_rate_ts,
             perp_market.market_stats.funding_period,
         )?;
+
         msg!(
             "time_until_next_update = {:?} seconds",
             time_until_next_update
         );
+
         return Err(ErrorCode::FundingWasNotUpdated.into());
     }
 
@@ -74,23 +76,15 @@ pub fn handle_update_funding_rate(
 
 /// Refresh the market's cached quote state against this slot's oracle.
 ///
-/// The AMM refresh happens inside `update_funding_rate`, in the AmmQuoter's
-/// setup phase, and not here.
-///
-/// This is the TWAP-free half, by design. `update_funding_rate`'s gate runs
-/// `oracle::block_operation` and then `get_oracle_status`. That gate reads
-/// `last_oracle_price_twap` for the too-volatile check, and
-/// `last_oracle_price_twap_5min` for the mark-divergence check. Advancing
-/// either one here would pull it toward the live price. A too-volatile or
-/// too-divergent oracle could then clear its own gate inside this same
-/// instruction, and go on to mutate cumulative funding.
-///
-/// The skip loses nothing. On the path where funding updates,
-/// `update_funding_rate` advances the TWAPs itself. On every path where it does
-/// not, the caller returns `FundingWasNotUpdated`, which reverts the whole
-/// instruction. The TWAPs also keep advancing through `update_amms`, perp
-/// fills, and `update_perp_bid_ask_twap`, so a market whose oracle is too
-/// volatile still recovers. This crank does not relax its own gate.
+/// The AMM refresh happens inside `update_funding_rate`'s AmmQuoter setup, not here. This is the
+/// TWAP-free half, by design: the gate there reads `last_oracle_price_twap` for the too-volatile
+/// check and `last_oracle_price_twap_5min` for the mark-divergence check, and advancing either TWAP
+/// here would pull it toward the live price. A too-volatile or too-divergent oracle could then
+/// clear its own gate inside this same instruction and mutate cumulative funding. The skip loses
+/// nothing. `update_funding_rate` advances the TWAPs itself when funding updates, and reverts the
+/// whole instruction with `FundingWasNotUpdated` when it does not. The TWAPs also keep advancing
+/// through `update_amms`, perp fills, and `update_perp_bid_ask_twap`, so a too-volatile market
+/// still recovers without this crank relaxing its own gate.
 fn refresh_quote_state_for_funding(
     perp_market: &mut PerpMarket,
     state: &State,
@@ -110,12 +104,14 @@ fn refresh_quote_state_for_funding(
         state,
         slot,
     )?;
+
     perp_market.refresh_amm_quote_state(
         &mm_oracle_price_data,
         validity,
         slot,
         state.slot_clock(),
     )?;
+
     Ok(())
 }
 
@@ -129,16 +125,10 @@ pub fn handle_update_perp_bid_ask_twap<'c: 'info, 'info>(
 ) -> Result<()> {
     let perp_market = &mut load_mut!(ctx.accounts.perp_market)?;
 
-    // Stop this crank while the market's funding is paused. The `funding_not_paused`
-    // access control already blocks the exchange-wide pause.
-    //
-    // The crank estimates the book from the market's CLOB. The estimate moves the
-    // bid, ask and mark TWAPs.
-    // `OrderParams::get_perp_baseline_start_price_offset` reads those TWAPs to set the
-    // auction band for a different user's triggered stop-loss order.
-    // A paused market is one the administrator does not trust, so the crank stops
-    // here. Perp fills still write the same TWAPs, because a fill is a trade with
-    // capital at risk.
+    // Stop this crank while funding is paused. `funding_not_paused` blocks only the exchange
+    // pause. This crank also feeds `OrderParams::get_perp_baseline_start_price_offset`'s stop-loss
+    // band from an estimated CLOB book, not real fills, so a paused, untrusted market skips it.
+    // Fills still write the same TWAPs, since they carry real capital.
     if perp_market.is_operation_paused(PerpOperation::UpdateFunding) {
         return Ok(());
     }
@@ -162,6 +152,7 @@ pub fn handle_update_perp_bid_ask_twap<'c: 'info, 'info>(
         &state.oracle_guard_rails.validity,
         state.slot_clock(),
     )?;
+
     // This crank writes `PerpMarket`-level oracle stats only. It reads the book
     // to estimate the bid and ask TWAP. It reads neither the AMM peg nor the
     // AMM reserves. `update_oracle_derived_stats` below
@@ -172,6 +163,7 @@ pub fn handle_update_perp_bid_ask_twap<'c: 'info, 'info>(
         &state,
         clock.slot,
     )?;
+
     perp_market.update_oracle_derived_stats(
         &mm_oracle_price_data,
         validity,
@@ -189,10 +181,9 @@ pub fn handle_update_perp_bid_ask_twap<'c: 'info, 'info>(
         &clock,
     )?;
 
-    // This crank does not apply funding. One instruction that refreshed the
-    // mark TWAP from resting depth and then applied funding would let a caller
-    // stamp `last_mark_price_twap_ts = now`. Funding would then read that
-    // just-written TWAP back at zero elapsed time. Funding runs on its own
+    // This crank does not apply funding. One instruction that refreshed the mark TWAP from resting
+    // depth and then applied funding would let a caller stamp `last_mark_price_twap_ts = now`, so
+    // funding would read that just-written TWAP back at zero elapsed time. Funding runs on its own
     // `update_funding_rate` crank, and on fills.
     apply_bid_ask_twap(
         perp_market,
@@ -221,6 +212,7 @@ fn require_twap_keeper(keeper_stats: &UserStats) -> Result<()> {
         keeper_stats.if_staked_quote_asset_amount,
         min_if_stake
     )?;
+
     Ok(())
 }
 
@@ -344,6 +336,7 @@ fn book_source<'a, 'info>(
     if perp_market.clob_market == Pubkey::default() {
         return Ok(None);
     }
+
     let (Some(slab), Some(book), Some(program)) = (
         ctx.accounts.quoter_slab.as_ref(),
         ctx.accounts.clob_market.as_ref(),
@@ -354,6 +347,7 @@ fn book_source<'a, 'info>(
             perp_market.market_index,
             perp_market.clob_market
         );
+
         return Err(ErrorCode::DefaultError.into());
     };
     let slot = slab.clob_slot(perp_market.market_index)?;
@@ -362,6 +356,7 @@ fn book_source<'a, 'info>(
     if !slot.quotes() {
         return Ok(None);
     }
+
     Ok(Some(BookSource {
         config: slot.config,
         slab,
@@ -397,6 +392,7 @@ fn apply_bid_ask_twap(
         let crate::state::perp_market::PerpMarket {
             amm, market_stats, ..
         } = &mut *perp_market;
+
         // Refresh the AMM's cached spread state against this slot's oracle,
         // then fold it (plus the resting liquidity) into the mark TWAP.
         crate::vlp::amm::math::spread::update_amm_quote_state(
@@ -407,6 +403,7 @@ fn apply_bid_ask_twap(
             clock.slot,
             state.slot_clock(),
         )?;
+
         market_stats.update_mark_twap_crank(
             amm,
             clock.unix_timestamp,
@@ -458,6 +455,7 @@ fn require_twap_moved(
         ErrorCode::CantUpdatePerpBidAskTwap,
         "bid or ask twap unchanged from small ts delta update",
     )?;
+
     Ok(())
 }
 
@@ -526,16 +524,18 @@ mod tests {
     }
 }
 
+/// allow-verbose: carries two independent facts, a manipulation-resistance rationale and a
+/// saturating-arithmetic edge case, neither of which the code below states on its own.
+///
 /// Whether a book row has rested long enough to move the mark.
 ///
-/// A quote that can be posted and cancelled inside one crank is a quote nobody
-/// had to stand behind, so the mark must not read it. Requiring
-/// [`BID_ASK_TWAP_MIN_QUOTE_REST`] of rest makes a row cost its poster real
-/// exposure before it counts.
+/// A quote that can be posted and cancelled inside one crank is a quote nobody had to stand
+/// behind, so the mark must not read it. Requiring [`BID_ASK_TWAP_MIN_QUOTE_REST`] of rest makes a
+/// row cost its poster real exposure before it counts.
 ///
-/// The subtraction saturates, so a row stamped at or after the current slot
-/// reports no rest rather than wrapping to a large one. A clock that runs
-/// behind the book therefore excludes a fresh quote instead of admitting it.
+/// The subtraction saturates, so a row stamped at or after the current slot reports no rest rather
+/// than wrapping to a large one. A clock that runs behind the book therefore excludes a fresh
+/// quote instead of admitting it.
 fn quote_has_rested(
     placed_slot: u64,
     now_slot: u64,

@@ -55,14 +55,10 @@ pub struct OracleMap<'a> {
     oracles: BTreeMap<Pubkey, AccountInfo<'a>>,
     price_data: BTreeMap<OracleIdentifier, OraclePriceData>,
     validity: BTreeMap<OracleValidityKey, OracleValidity>,
-    /// Which (oracle, market) pairs have already written their validity
-    /// diagnostics. The validity cache keys on the market's TWAP, which moves
-    /// with every fill. A transaction that fills against many makers therefore
-    /// misses that cache once per maker and recomputes. The recompute is
-    /// cheap. The logging is not. A formatted `msg!` allocates, and the
-    /// runtime's bump allocator never reclaims, so about thirty repeats of the
-    /// same line exhaust the heap. The lines are identical, so only the first
-    /// one is written.
+    /// Which (oracle, market) pairs already wrote their validity diagnostics.
+    /// The cache keys on the market's TWAP, which moves every fill, so a
+    /// multi-maker fill recomputes it once per maker, cheaply. A formatted
+    /// `msg!` never reclaims heap, so only the first of ~30 repeats logs.
     logged_validity: BTreeSet<(Pubkey, u8, u16)>,
     pub slot: u64,
     /// The full transition archive, from `State::slot_clock()`. It scales the

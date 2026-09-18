@@ -316,6 +316,7 @@ describe('velocity client', () => {
 			baseAssetAmount,
 			marketIndex
 		);
+
 		svmContextWrapper.connection.printTxLogs(txSig);
 
 		const marketData = velocityClient.getPerpMarketAccount(0);

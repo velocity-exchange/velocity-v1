@@ -26,10 +26,9 @@ use anchor_lang::prelude::*;
 pub const DISCRIMINATOR_BYTES: usize = 8;
 
 /// `[discriminator][body]` for a fixed-size (`#[event(bytemuck)]`) record.
-///
-/// `N` is the record's full log width. Call through [`emit_pod`], which
-/// computes `N` from the type and asserts at compile time that the slice math
-/// below is exact. A wrong `N` truncates or pads the event.
+/// `N` is the record's full log width; call through [`emit_pod`], which
+/// derives `N` from the type and asserts at compile time that the slice
+/// math below is exact. A wrong `N` truncates or pads the event.
 pub fn pod_log_bytes<E, const N: usize>(record: &E) -> [u8; N]
 where
     E: Discriminator + bytemuck::Pod,
@@ -52,11 +51,13 @@ macro_rules! emit_pod {
                 == $crate::emit::DISCRIMINATOR_BYTES,
             "event discriminator is not 8 bytes wide",
         );
+
         anchor_lang::sol_log_data(&[&$crate::emit::pod_log_bytes::<$ty, LOG_BYTES>(&$ty {
             $($field)*
         })]);
     }};
 }
+
 pub(crate) use emit_pod;
 
 #[cfg(test)]
@@ -85,6 +86,7 @@ mod tests {
             version: MIDPOINT_EVENT_VERSION,
             _pad: [0; 2],
         };
+
         assert_eq!(
             pod_log_bytes::<MidpointExecuteRecordV0, LOG_BYTES>(&record).as_slice(),
             Event::data(&record).as_slice()

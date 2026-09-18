@@ -145,6 +145,7 @@ fn reason_from_text(text: &str) -> FailReason {
     if let Some(reason) = custom_program_error(text).and_then(FailReason::from_velocity_code) {
         return reason;
     }
+
     // Anchor renders the variant name as well as the number, and the
     // program's own `validate!` messages carry only the name.
     for (name, reason) in [
@@ -159,18 +160,18 @@ fn reason_from_text(text: &str) -> FailReason {
             return reason;
         }
     }
+
     if is_compute_exhausted(text) {
         return FailReason::ComputeExhausted;
     }
+
     FailReason::Cpi
 }
 
-/// Read `quoter <key> <what happened>` out of one log line.
-///
-/// Every velocity message about an unusable quoter opens this way, so the
-/// shape of what follows is not constrained. The key filters out a maker's
-/// own log that starts with the same word. An arbitrary word does not parse
-/// as a 32-byte base58 public key.
+/// Read `quoter <key> <what happened>` out of one log line. Every velocity
+/// message about an unusable quoter opens this way, so the shape after it
+/// is not constrained. The key filters a maker's own log starting with the
+/// same word: an arbitrary word does not parse as a base58 public key.
 fn parse_named(line: &str) -> Option<(Pubkey, FailReason)> {
     let body = line.strip_prefix(LOG_PREFIX)?;
     let rest = body.strip_prefix(NAMED_MARKER)?;
@@ -189,6 +190,7 @@ fn parse_invoke(line: &str) -> Option<Pubkey> {
     if depth.parse::<u32>().ok()? < 2 {
         return None;
     }
+
     Pubkey::from_str(id).ok()
 }
 
@@ -260,6 +262,7 @@ pub fn attribute(logs: &[String], err: Option<&str>, route: RouteContext<'_>) ->
             .and_then(FailReason::from_velocity_code)
             .unwrap_or(FailReason::Unknown)
     });
+
     verdict
 }
 
@@ -297,6 +300,7 @@ mod tests {
                 proof: Attribution::Named,
             }]
         );
+
         assert!(verdict.unattributed.is_none());
     }
 

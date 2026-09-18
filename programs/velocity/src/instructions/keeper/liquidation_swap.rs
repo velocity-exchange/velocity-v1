@@ -102,22 +102,17 @@ pub fn handle_liquidate_spot_with_swap_begin<'c: 'info, 'info>(
     validate_swap_transaction(&ctx)
 }
 
-/// Book the lending interest of both markets, and prove neither one already
-/// holds an open flash loan.
+/// Book the lending interest of both markets, and prove neither one already holds an open flash
+/// loan. The oracle argument is `None` on purpose. This function advances the deposit, borrow and
+/// utilization TWAPs. It does not advance the markets' oracle TWAPs.
 ///
-/// The oracle argument is `None` on purpose. This function accrues interest and
-/// advances the deposit, borrow and utilization TWAPs. It does not advance the
-/// markets' oracle TWAPs. `liquidate_spot_with_swap_begin` gates itself on
-/// `is_oracle_too_divergent_with_twap_5min` against the liability market's
-/// `last_oracle_price_twap_5min`. A refresh of that anchor in the same
-/// instruction pulls it toward the live oracle price. A liquidation the band
-/// check would reject could then proceed and transfer collateral.
-///
-/// The direct `liquidate_spot` lane runs that same check with no pre-refresh, so
-/// this only brings the swap-backed lane in line with it. A band-blocked swap
-/// liquidation can still route through the direct path. The refresh moves and is
-/// not dropped. `liquidate_spot_with_swap_end` advances both markets' oracle
-/// TWAPs once every check in the lane is done.
+/// `liquidate_spot_with_swap_begin` gates itself on `is_oracle_too_divergent_with_twap_5min`
+/// against the liability market's `last_oracle_price_twap_5min`. A refresh of that anchor in the
+/// same instruction pulls it toward the live oracle price. A liquidation the band check would
+/// reject could then proceed and transfer collateral. The direct `liquidate_spot` lane runs that
+/// same check with no pre-refresh. A band-blocked swap liquidation can still route through the
+/// direct path. `liquidate_spot_with_swap_end` advances both markets' oracle TWAPs once every check
+/// in the lane is done.
 fn accrue_swap_market_interest(
     maps: &mut AccountMaps,
     state: &State,
@@ -140,6 +135,7 @@ fn accrue_swap_market_interest(
             state.funding_paused()?,
         )?;
     }
+
     Ok(())
 }
 
@@ -192,6 +188,7 @@ fn validate_swap_request(legs: &SwapLegs) -> Result<()> {
         ErrorCode::InvalidSwap,
         "swap_amount cannot be zero"
     )?;
+
     Ok(())
 }
 
@@ -235,6 +232,7 @@ fn open_flash_loan<'info>(
             None
         },
     )?;
+
     Ok(())
 }
 
@@ -274,6 +272,7 @@ fn validate_swap_transaction<'info>(
                 ErrorCode::InvalidLiquidateSpotWithSwap,
                 "the transaction must not contain a Velocity instruction after FlashLoanEnd"
             )?;
+
             found_end = true;
             validate_swap_end_ix(ctx, &ix)?;
         } else if found_end {
@@ -339,6 +338,7 @@ fn validate_swap_end_ix<'info>(
         ),
         (11, ctx.accounts.liquidator_stats.key(), "liquidator_stats"),
     ];
+
     for (position, key, name) in pinned {
         validate!(
             key == ix.accounts[position].pubkey,
@@ -381,6 +381,7 @@ fn validate_swap_middle_ix(ix: &solana_program::instruction::Instruction) -> Res
         dflow_mainnet_aggregator_4::ID,
         titan_mainnet_argos_v1::ID,
     ];
+
     validate!(
         whitelisted_programs.contains(&ix.program_id),
         ErrorCode::InvalidLiquidateSpotWithSwap,
@@ -466,6 +467,7 @@ pub fn handle_liquidate_spot_with_swap_end<'c: 'info, 'info>(
             ctx.accounts.asset_spot_market_vault.amount,
         ],
     )?;
+
     advance_swap_oracle_twaps(&mut maps, &legs, now)
 }
 
@@ -520,6 +522,7 @@ fn close_flash_loan<'info>(
             remaining_accounts,
         )?
     };
+
     Ok((amount_in, amount_out))
 }
 
@@ -566,6 +569,7 @@ fn close_asset_leg<'info>(
                 None
             },
         )?;
+
         side.token_account.reload()?;
         side.vault.reload()?;
 
@@ -637,8 +641,10 @@ fn validate_swap_closed(
             ErrorCode::InvalidSwap,
             "end_swap ended in invalid state"
         )?;
+
         math::spot_withdraw::validate_spot_market_vault_amount(&spot_market, vault_amount)?;
     }
+
     Ok(())
 }
 
@@ -658,6 +664,7 @@ fn advance_swap_oracle_twaps(maps: &mut AccountMaps, legs: &SwapLegs, now: i64) 
             now,
         )?;
     }
+
     Ok(())
 }
 

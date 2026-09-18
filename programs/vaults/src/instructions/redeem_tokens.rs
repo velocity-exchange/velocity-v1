@@ -110,14 +110,8 @@ pub fn redeem_tokens<'info>(
     // (OtterSec #105).
     tokenized_vault_depositor.checkpoint_vault_shares();
 
-    // An empty pool leaves a cost basis with no shares behind it. A basis above
-    // the current value shelters the next tokenizer from a loss. A basis below
-    // it charges the next tokenizer a fee they did not earn. Clear it
-    // (OtterSec #140).
-    //
-    // The test reads `total_supply_before` instead of the post-burn supply,
-    // because the depositor is dropped before `ctx.burn` runs. This instruction
-    // asserts `supply_delta == tokens_to_burn`, so the two tests are equivalent.
+    // An empty pool leaves a cost basis with no shares behind it, sheltering
+    // or overcharging the next tokenizer. Clear it (OtterSec #140).
     if tokenized_vault_depositor.get_vault_shares() == 0 && tokens_to_burn == total_supply_before {
         msg!("tokenized depositor emptied; clearing orphaned cost basis");
         tokenized_vault_depositor.reset_orphaned_cost_basis();

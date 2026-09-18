@@ -67,18 +67,10 @@ export function nextRevenuePoolSettleApr(
 }
 
 /**
- * Calculates how many insurance fund shares a deposit of `amount` would mint, mirroring
- * `deposit_amount_and_shares_for_if_stake`. Shares are minted proportionally to the deposit's
- * fraction of the vault (`amount * totalIfShares / insuranceFundVaultBalance`, floored); if the
- * vault is currently empty, 1 share is minted per token (bootstrapping the share price at 1:1).
- *
- * A share is indivisible, so `amount` is only an upper bound on what the deposit transfers.
- * {@link depositAmountAndSharesForIfStake} returns the amount that the program debits.
- *
- * @param {BN} amount - Token amount being staked, market's token decimals
- * @param {BN} totalIfShares - Current total insurance fund shares outstanding
- * @param {BN} insuranceFundVaultBalance - Current insurance fund vault token amount, market's token decimals
- * @return {BN} Shares minted
+ * Shares an `amount` deposit would mint, mirroring `deposit_amount_and_shares_for_if_stake`:
+ * `amount * totalIfShares / insuranceFundVaultBalance`, floored, or 1 share per token in an
+ * empty vault. A share is indivisible; see {@link depositAmountAndSharesForIfStake} for the amount debited.
+ * @param amount Token amount being staked, market's token decimals.
  */
 export function stakeAmountToShares(
 	amount: BN,
@@ -96,28 +88,15 @@ export function stakeAmountToShares(
 }
 
 /**
- * Prices a deposit into the insurance fund exactly. This mirrors
- * `deposit_amount_and_shares_for_if_stake`. It returns the whole shares that `amount` buys at
- * the current share price, and the token amount that `addInsuranceFundStake` debits for those
- * shares.
- *
- * A share is indivisible, so a request that is not an exact multiple of the share price cannot
- * be converted in full. The program transfers only the priced portion and leaves the remainder
- * in the depositor's token account rather than give it to the existing shareholders. The
- * remainder is always less than the price of one share. Both roundings run against the deposit.
- * The shares are floored, then their cost is rounded up, so the residual overpayment is at most
- * one token unit.
- *
- * A request below the price of a single share buys nothing and returns zeroes. On chain that
- * request reverts with `IFDepositMintsZeroShares`.
- *
- * @param {BN} amount - Token amount the caller wants to stake, market's token decimals
- * @param {BN} totalIfShares - Current total insurance fund shares outstanding
- * @param {BN} insuranceFundVaultBalance - Current insurance fund vault token amount, market's token decimals
- * @throws If the vault is empty while shares are outstanding, which on-chain reverts with
- *   `InvalidIFSharesDetected`.
- * @return {{amountToDeposit: BN, nShares: BN}} The amount that will be debited (never more than
- *   `amount`) and the shares it mints
+ * Prices a deposit into the insurance fund exactly, mirroring
+ * `deposit_amount_and_shares_for_if_stake`: returns the whole shares `amount` buys at the
+ * current price, and the token amount `addInsuranceFundStake` debits for them.
+ * A share is indivisible: a remainder under one share's price stays in the depositor's
+ * account rather than pricing into existing shares. Shares are floored, cost rounded up,
+ * so overpayment is at most one token unit. Below the price of one share, the deposit
+ * buys nothing and returns zeroes; on chain it reverts with `IFDepositMintsZeroShares`.
+ * @param amount Token amount the caller wants to stake, market's token decimals.
+ * @throws If the vault is empty while shares are outstanding (`InvalidIFSharesDetected`).
  */
 export function depositAmountAndSharesForIfStake(
 	amount: BN,

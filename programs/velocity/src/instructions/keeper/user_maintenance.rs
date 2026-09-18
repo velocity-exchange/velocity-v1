@@ -67,13 +67,10 @@ pub fn handle_trip_equity_floor_breaker<'c: 'info, 'info>(
         Some(state.oracle_guard_rails),
     )?;
 
-    // The trip threshold is real net equity, which is unweighted assets and pnl
-    // minus unweighted spot liabilities. The margin numerator does not serve
-    // here. Weighted collateral overstates equity when borrows exist, and asset
-    // weights, strict pricing and the positive-pnl clamp make it understate
-    // equity. The walk returns the trip's own upper bound. Invalid-oracle
-    // liabilities and shorts count at zero, and invalid-oracle assets and longs
-    // block the proof.
+    // The trip threshold is net equity: unweighted assets and pnl less unweighted spot liabilities.
+    // Weighted collateral overstates it when borrows exist. Asset weights, strict pricing and the
+    // positive-pnl clamp understate it. The walk returns an upper bound. Invalid-oracle liabilities
+    // and shorts count at zero. Invalid-oracle assets and longs block the walk.
     let trip_equity = calculate_user_equity_for_trip(&user, &mut maps)?;
 
     // An authority-wide freeze must not arm over exposure the program cannot
@@ -191,6 +188,7 @@ fn log_spot_positions(user: &User, maps: &AccountMaps) -> Result<()> {
             token_amount
         );
     }
+
     Ok(())
 }
 
@@ -219,6 +217,7 @@ fn log_perp_positions(user: &User, maps: &mut AccountMaps) -> Result<()> {
             unrealized_pnl
         );
     }
+
     Ok(())
 }
 
@@ -387,9 +386,11 @@ mod open_order_count_tests {
             open_bids: 1,
             ..PerpPosition::default()
         };
+
         for (index, row) in rows.into_iter().enumerate() {
             user.orders[index] = row;
         }
+
         user
     }
 

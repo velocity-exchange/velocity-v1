@@ -180,6 +180,7 @@ pub enum DLOBEvent {
         deltas: Vec<OrderDelta>,
         slot: u64,
     },
+
     /// the cluster slot clock changed, because an IBRL transition was
     /// synchronized
     SlotClockUpdate { slot_clock: SlotClock },
@@ -481,6 +482,7 @@ impl DynamicPrice for MarketOrder {
                 Some(self.price)
             };
         }
+
         // elapsed wall clock over the auction's wall clock length, which is
         // stored in 400ms units
         let duration_ms = Millis::from_stored_units(self.duration as u64).as_ms() as i64;

@@ -55,11 +55,7 @@ export type PriorityFeeSubscriberConfig = {
 	velocityMarkets?: VelocityMarketInfo[];
 	/** `PriorityFeeStrategy` backing `getCustomStrategyResult()`; defaults to `AverageOverSlotsStrategy`. */
 	customStrategy?: PriorityFeeStrategy;
-	/**
-	 * Overrides the SOLANA sampling call `fetchSolanaPriorityFee`. It defaults to
-	 * the built-in implementation, which calls the RPC. Set it to route the sample
-	 * through a cache or a proxy rather than call `getRecentPrioritizationFees`.
-	 */
+	/** Overrides the SOLANA sampling call, `fetchSolanaPriorityFee`; defaults to calling the RPC's `getRecentPrioritizationFees` directly. */
 	fetchSolanaPriorityFee?: FetchSolanaPriorityFee;
 	/** Which upstream API to sample from; defaults to `PriorityFeeMethod.SOLANA`. */
 	priorityFeeMethod?: PriorityFeeMethod;

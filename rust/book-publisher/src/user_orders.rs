@@ -120,6 +120,7 @@ pub fn changed_users(
     if index.arenas.get(&market_index) == Some(&arena_print) {
         return None;
     }
+
     index.arenas.insert(market_index, arena_print);
 
     // Group by owner. Node order inside a user is arena order, which is stable
@@ -149,6 +150,7 @@ pub fn changed_users(
                 slot_entry.insert(print);
             }
         }
+
         changed.push((user, rows));
     }
 
@@ -166,12 +168,10 @@ pub fn changed_users(
         changed.push((user, Value::Array(Vec::new())));
     }
 
-    // Documents a previous process stored. Their users rested orders when that
-    // process stopped. A user who rests none now is not in `index.users`, which
-    // this process built from scratch, so the sweep above cannot reach them and
-    // their document would be served forever. The first tick that sees the
-    // market clears them. A user who does still rest is written by the normal
-    // path above, because their fingerprint is unknown to this process too.
+    // Documents a previous process stored, for users not yet in `index.users`,
+    // which this process built from scratch. The sweep above cannot reach
+    // them, so the first tick that sees the market clears them here instead.
+    // A user who still rests was already written by the sweep above.
     if let Some(carried_over) = index.carried_over.remove(&market_index) {
         for user in carried_over {
             if !still_resting.contains(&user) {
@@ -179,6 +179,7 @@ pub fn changed_users(
             }
         }
     }
+
     Some(changed)
 }
 
@@ -213,9 +214,11 @@ pub async fn adopt_stored_users(
             let Some((user, market_index)) = parse_user_key(prefix, key) else {
                 continue;
             };
+
             if !markets.contains(&market_index) {
                 continue;
             }
+
             index
                 .carried_over
                 .entry(market_index)
@@ -223,9 +226,11 @@ pub async fn adopt_stored_users(
                 .insert(user);
             adopted += 1;
         }
+
         if next == 0 {
             return Ok(adopted);
         }
+
         cursor = next;
     }
 }
@@ -259,18 +264,18 @@ pub async fn publish(
     let Some(changed) = changed_users(index, velocity, market_index, book_account_data) else {
         return Ok(0);
     };
+
     for (user, rows) in &changed {
         write_user(redis, prefix, user, market_index, slot, ts_ms, rows.clone()).await?;
     }
+
     Ok(changed.len())
 }
 
 /// One key per user per market.
 ///
-/// A hash keyed by market would fit the shape better, but the serving side's
-/// Redis wrapper exposes no hash commands and does expose `mget`. The market
-/// set is also small and known to both ends, so a caller that wants every
-/// market asks for the keys it wants in one round trip either way.
+/// The serving side's Redis wrapper exposes `mget` but no hash commands, so
+/// this stores per user rather than per market.
 fn user_key(prefix: &str, user: &Pubkey, market_index: u16) -> String {
     format!("{prefix}last_update_user_orders_{user}_{market_index}")
 }
@@ -313,6 +318,7 @@ async fn write_user(
             .await
             .context("store user orders")?;
     }
+
     redis
         .publish::<_, _, ()>(format!("{prefix}user_orders_{user}"), body)
         .await
@@ -345,6 +351,7 @@ mod tests {
         for node in nodes {
             data.extend_from_slice(node_bytes(node));
         }
+
         data
     }
 
@@ -387,6 +394,7 @@ mod tests {
                 .len(),
             2
         );
+
         assert!(changed_users(&mut index, &velocity(), 0, &data).is_none());
         assert!(changed_users(&mut index, &velocity(), 0, &data).is_none());
     }
@@ -506,6 +514,7 @@ mod tests {
             client_order_id: 41,
             ..node(1, 41, 500_000_000)
         };
+
         assert_eq!(order_json_at(&node, 7, 3), fixture);
     }
 

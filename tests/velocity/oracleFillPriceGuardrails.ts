@@ -238,6 +238,7 @@ describe('oracle fill guardrails', () => {
 			takerVelocityClient.getOrder(1),
 			makerInfo
 		);
+
 		svmContextWrapper.printTxLogs(firstFillTxSig);
 
 		// assert that the
@@ -263,6 +264,7 @@ describe('oracle fill guardrails', () => {
 				takerVelocityClient.getOrder(1),
 				makerInfo
 			);
+
 			svmContextWrapper.printTxLogs(txSig);
 		} catch (e) {
 			error = true;

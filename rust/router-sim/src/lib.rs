@@ -117,6 +117,7 @@ pub fn router_subscriptions(
             bytes: market.to_le_bytes().to_vec(),
         });
     }
+
     std::iter::once(ProgramSubscription {
         program: velocity_program,
         filter_sets: vec![slab_filters],
@@ -193,13 +194,9 @@ pub struct RouterQuote {
     /// Compute units the fill consumed, for sizing the real transaction's
     /// CU limit.
     pub units_consumed: u64,
-    /// Post-simulation state of the accounts the caller asked for, in the same
-    /// order. A taker's `User` shows the position and the fees the fill would
-    /// produce, with nothing landed on chain.
-    /// This is the 4.x `solana_account::Account`, which is what
-    /// relay-chain-source returns. It is not `solana_sdk::account::Account`:
-    /// the workspace holds solana-sdk at 3.x for anchor, so the two are
-    /// distinct types even though they describe the same account.
+    /// Post-simulation state of the accounts the caller asked for, in the
+    /// same order. This is the 4.x `solana_account::Account` type that
+    /// relay-chain-source returns, not the workspace's solana-sdk 3.x type.
     pub accounts: Vec<Option<solana_account::Account>>,
 }
 
@@ -216,14 +213,8 @@ impl From<SimOutcome> for RouterQuote {
 
 /// Simulate a router fill and report what it would do.
 ///
-/// `fill` is a real `fill_perp_order` transaction, built as it would be sent,
-/// including the quoter section. `read_accounts` names the accounts whose
-/// post-fill state the caller wants back. That is usually the taker's `User`,
-/// the makers' accounts, and the perp market.
-///
-/// A failed fill is still a successful call. A fill that trips the baseline
-/// check, a margin clamp, or at-or-better comes back with `err` set and the
-/// reason in `logs`. A router reads that to drop a quoter and try again.
+/// `fill` is a real `fill_perp_order` transaction including the quoter
+/// section. A failed fill still returns Ok, with `err` and `logs` set.
 pub async fn simulate_router_fill<S: ChainSource>(
     source: &S,
     fill: &Transaction,
@@ -238,15 +229,8 @@ pub async fn simulate_router_fill<S: ChainSource>(
 
 /// A legacy transaction in the 4.x envelope chain-source takes.
 ///
-/// This workspace builds transactions with solana-sdk 3, because anchor 1.0
-/// holds solana-program at 3 and the instruction and pubkey types have to
-/// match the program's. chain-source is on the 4.x line, so its
-/// `VersionedTransaction` is a different type from anything here, and no
-/// `From` impl spans the two. The bytes do span them: a legacy transaction's
-/// wire form is the same in both, and a `VersionedTransaction` reads a message
-/// with no version prefix as legacy, which is how one comes off the network.
-/// So the bridge is the encoding rather than a conversion, and it is here in
-/// one place rather than at each call site.
+/// solana-sdk 3.x (this workspace) and chain-source's 4.x `VersionedTransaction`
+/// share no `From` impl; a legacy transaction's wire bytes match, so this re-encodes.
 pub fn as_versioned(
     tx: &Transaction,
 ) -> Result<solana_transaction::versioned::VersionedTransaction> {
@@ -300,11 +284,8 @@ mod tests {
 
 /// The program's own split, reachable off chain.
 ///
-/// Selection evaluates the split over candidate subsets of quoters. The number
-/// of subsets makes one simulated fill per subset impractical. This crate
-/// depends on the program as a host library, so the router runs the same
-/// `split_across_quoters` the chain runs. There is no port and no mirror that
-/// can drift.
+/// Evaluating subsets by simulated fill is impractical, so selection reuses
+/// this: the same `split_across_quoters` the chain runs, with no port to drift.
 pub use program::math::router::{split_across_quoters, QuoterAllocation, QuoterBook};
 pub use program::state::prop_amm::{Direction, PriceLevel};
 
@@ -356,6 +337,7 @@ pub mod l3 {
         if config.quote_l3_v0_discriminator == [0u8; 8] {
             return Ok(Vec::new());
         }
+
         let mut data = config.quote_l3_v0_discriminator.to_vec();
         program::state::prop_amm::write_l3_args(
             &mut data,
@@ -365,7 +347,7 @@ pub mod l3 {
                 max_rows: limit.min(u16::MAX as usize) as u16,
                 // A view of what a caller may take, so the depth a taker
                 // remainder claims stays out of it.
-                consume_reservation: false,
+                include_taker_origin_reservations: false,
             },
         )
         .map_err(|err| anyhow!("serialize l3 args: {err}"))?;
@@ -382,6 +364,7 @@ pub mod l3 {
             Some(&payer),
             &blockhash.hash,
         ));
+
         // The rows land in the book's own account and return data carries only
         // the pointer, so the simulation has to hand back the account too.
         let outcome = source
@@ -390,6 +373,7 @@ pub mod l3 {
         if let Some(err) = outcome.err {
             bail!("l3 simulation failed: {err}");
         }
+
         let pointer: ResponsePointerV0 = outcome
             .return_data
             .as_deref()
@@ -426,6 +410,7 @@ pub mod l3 {
                 makers.push(row.user);
             }
         }
+
         Ok(makers)
     }
 }

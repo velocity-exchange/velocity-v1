@@ -213,6 +213,7 @@ fn refresh_amm_for_funding_gate(
         market_status: market.status,
         market_config: market.market_config,
     };
+
     AmmQuoter::for_amm(&mut market.amm).refresh(&ctx)
 }
 

@@ -46,20 +46,17 @@ pub fn vault_amount_to_if_shares(
 /// Price an insurance-fund deposit exactly. It returns the whole shares `amount` buys at
 /// the current share price, and the token cost of exactly those shares.
 ///
-/// A share is indivisible, so a deposit that is not an exact multiple of the share price
-/// cannot be fully converted. Transferring the whole `amount` anyway donates the
-/// remainder to existing shareholders. With a donation-inflated share price the
-/// remainder is most of the deposit. A deposit worth 1.5 shares mints 1 share and
-/// forfeits a third of itself. Only the priced portion is charged, and the caller leaves
-/// the rest in the depositor's token account.
+/// A share is indivisible, so a deposit that is not an exact multiple of the share price cannot be
+/// fully converted; transferring the whole `amount` anyway donates the remainder to shareholders,
+/// most of the deposit at a donation-inflated price (1.5 shares mints 1, forfeiting a third). Only
+/// the priced portion is charged, and the rest stays in the depositor's account.
 ///
 /// Returns `(amount_to_deposit, n_shares)`. It returns `(0, 0)` when `amount` is below
 /// the price of a single share, and the caller decides whether that is an error.
 ///
-/// Both roundings run against the deposit. Shares are floored, then their cost is
-/// ceiled, so the fund never sells a share below its price. Flooring guarantees
-/// `n_shares * price <= amount`, and `amount` is an integer, so `amount_to_deposit` is
-/// never above `amount`. The residual overpayment is at most one token unit.
+/// Both roundings run against the deposit: shares are floored and their cost is ceiled, so the fund
+/// never sells below price. Flooring guarantees `n_shares * price <= amount`, so
+/// `amount_to_deposit` never exceeds `amount`, with residual overpayment of at most one token unit.
 pub fn deposit_amount_and_shares_for_if_stake(
     amount: u64,
     total_if_shares: u128,
@@ -144,28 +141,32 @@ pub fn calculate_if_shares_lost(
 ) -> VelocityResult<u128> {
     let n_shares = insurance_fund_stake.last_withdraw_request_shares;
 
+    // allow-verbose: this derives the anti-free-option and donation-immunity properties of the
+    // unstake-cancel forfeiture, including the profitability bound on a donation-sandwich attack.
+    // Cutting the derivation would leave those properties unverifiable from the code alone.
+    //
     // Forfeiture on unstake-cancel, modeled as **withdraw-and-restake at the current
     // active share price** (finding #30). A cancel is treated as if the staker completed
     // the withdrawal of their `n_shares` requested shares and immediately re-staked the
     // resulting tokens at the price prevailing right now:
     //   * the withdrawal pays out `withdraw_value = min(current value of n_shares,
-    //     last_withdraw_request_value)` — the exact payout `remove_insurance_fund_stake`
+    //     last_withdraw_request_value)`, the exact payout `remove_insurance_fund_stake`
     //     would give, capped at the value frozen at request time;
     //   * re-staking that `withdraw_value` at the current active price (the pool after
     //     removing `n_shares` and `withdraw_value` tokens) mints `new_n_shares`;
     //   * the staker keeps `new_n_shares` and forfeits `n_shares - new_n_shares` to the
     //     remaining stakers.
     // If the fund appreciated during escrow the current price is higher, so re-staking
-    // the frozen value buys back fewer shares and the appreciation is forfeited — this is
-    // the anti-free-option property (you cannot request at a low price, watch the fund
-    // rise, then cancel and keep the upside for free). If it did not appreciate
+    // the frozen value buys back fewer shares and the appreciation is forfeited. This is
+    // the anti-free-option property: you cannot request at a low price, watch the fund
+    // rise, then cancel and keep the upside for free. If it did not appreciate
     // (`current value <= last_withdraw_request_value`) nothing is forfeited.
     //
     // This is donation-immune without consulting the accounted balance: the withdraw leg
     // is bounded by `last_withdraw_request_value`, snapshotted at request time and never
     // re-read from the live vault. A raw SPL donation inflates the live price, but the
     // extractable forfeiture is capped by that frozen value, and the donation is spread
-    // pro-rata across *all* shareholders — so an attacker sandwiching a victim's cancel
+    // pro-rata across *all* shareholders. So an attacker sandwiching a victim's cancel
     // with a donation always forgoes more on the donated capital (a `(1 - f)` share of
     // the donation, `f` = attacker's share fraction) than they can recapture from the
     // victim's `f`-weighted burn. The attack is unprofitable for any `f < 1`, so pricing

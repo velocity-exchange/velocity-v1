@@ -4,12 +4,8 @@ import { PublicKey } from '@solana/web3.js';
 import { standardizePrice } from './math/orders';
 
 /**
- * Where a level's depth came from.
- *
- * `clob` is a resting order on the market's book. `propamm` is a quote that a
- * registered maker program answered with. Only a `clob` level holds a queue
- * position, and only a `clob` level can be cancelled. A `propamm` level is a
- * quote at the size it was asked for, and not standing depth.
+ * Where a level's depth came from. Only `clob` is a resting, cancellable order with
+ * a queue position; `propamm` is a maker-program quote at the size asked.
  */
 type liquiditySource = 'vamm' | 'clob' | 'propamm';
 
@@ -59,15 +55,9 @@ export type L3OrderBook = {
 };
 
 /**
- * Re-buckets an `L2OrderBook`'s levels onto a coarser price grid ("grouping"), summing size and
- * per-source sizes of levels that land in the same bucket, and truncating each side to `depth`
- * levels. Bids are standardized down (grouped toward the taker-friendly direction for longs),
- * asks standardized up, matching on-chain price standardization semantics.
- *
- * @param l2 the ungrouped order book, e.g. from the dlob-server's `/l2`
- * @param grouping price bucket size, PRICE_PRECISION (1e6) — must be a multiple of the market's tick size to produce valid on-chain prices
- * @param depth maximum number of levels to keep per side after grouping
- * @returns a new `L2OrderBook` with grouped bids/asks (does not mutate `l2`)
+ * Re-buckets an `L2OrderBook` onto a coarser price grid, summing size per bucket and
+ * truncating each side to `depth` levels. Bids standardize down, asks up.
+ * @param grouping price bucket size, PRICE_PRECISION (1e6), must be a multiple of the tick size.
  */
 export function groupL2(
 	l2: L2OrderBook,
@@ -130,6 +120,7 @@ function groupL2Levels(
 				size,
 				sources: level.sources,
 			};
+
 			groupedLevels.push(groupedLevel);
 		}
 
@@ -137,6 +128,7 @@ function groupL2Levels(
 			break;
 		}
 	}
+
 	return groupedLevels;
 }
 
@@ -165,6 +157,7 @@ const mergeByPrice = (bidsOrAsks: L2Level[]) => {
 			merged.set(key, cloneL2Level(level));
 		}
 	}
+
 	return Array.from(merged.values());
 };
 
@@ -218,6 +211,7 @@ export function uncrossL2(
 			levels[levels.length - 1].size = levels[levels.length - 1].size.add(
 				oldLevel.size
 			);
+
 			for (const [source, size] of Object.entries(oldLevel.sources) as [
 				liquiditySource,
 				BN,
@@ -322,10 +316,12 @@ export function uncrossL2(
 					nextAsk.price,
 					PositionDirection.SHORT
 				);
+
 				updateLevels(newAskPrice, nextAsk, newAsks);
 			} else {
 				newAsks.push(nextAsk);
 			}
+
 			askIndex++;
 
 			if (maxBid && nextBid.price.gte(maxBid)) {
@@ -333,10 +329,12 @@ export function uncrossL2(
 					nextBid.price,
 					PositionDirection.LONG
 				);
+
 				updateLevels(newBidPrice, nextBid, newBids);
 			} else {
 				newBids.push(nextBid);
 			}
+
 			bidIndex++;
 		}
 	}

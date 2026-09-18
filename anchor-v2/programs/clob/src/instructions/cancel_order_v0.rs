@@ -43,6 +43,7 @@ pub fn handle_cancel_order_v0(
         sub_account_id: removed.user.sub_account_id,
         client_order_id: removed.client_order_id,
     });
+
     Ok(RemovedOrderV0 {
         user: removed.user,
         order_id: removed.order_id,

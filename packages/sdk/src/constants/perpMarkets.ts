@@ -126,26 +126,10 @@ export const PerpMarkets: { [key in VelocityEnv]: PerpMarketConfig[] } = {
 	'mainnet-beta': MainnetPerpMarkets,
 };
 
-/**
- * The perp market indexes treated as majors. These are the deepest and most
- * liquid listings, which are SOL, BTC and ETH. Call `isMajorPerpMarket` rather
- * than read this array or compare an index directly, so the definition stays in
- * one place.
- */
+/** The major markets (SOL, BTC, ETH). Call `isMajorPerpMarket` instead of comparing an index directly. */
 export const MAJOR_PERP_MARKET_INDEXES: readonly number[] = [0, 1, 2];
 
-/**
- * Whether a perp market is a major. This is the single definition of the major
- * and non-major tiering for the SDK and for every consumer of it. A consumer
- * that keeps its own copy will disagree with the SDK.
- *
- * The tiering reads the market index, so it does not survive an on-chain
- * renumbering. When markets are reindexed, update `MAJOR_PERP_MARKET_INDEXES`
- * in the same change.
- *
- * @param marketIndex perp market index to classify
- * @returns true for a major market. It returns false otherwise, and a non-integer or negative index never matches
- */
+/** The single major/non-major tiering for the SDK. Update `MAJOR_PERP_MARKET_INDEXES` on any reindex. */
 export function isMajorPerpMarket(marketIndex: number): boolean {
 	return MAJOR_PERP_MARKET_INDEXES.includes(marketIndex);
 }

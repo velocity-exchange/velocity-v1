@@ -42,7 +42,7 @@ fn quoted_with(
     direction: Direction,
     size: u64,
     slot: u64,
-    consume_reservation: bool,
+    include_taker_origin_reservations: bool,
 ) -> Vec<u8> {
     let pointer = book
         .quote(
@@ -53,7 +53,7 @@ fn quoted_with(
             0,
             None,
             0,
-            consume_reservation,
+            include_taker_origin_reservations,
             slot,
             0,
         )
@@ -162,6 +162,7 @@ fn a_crossed_taker_remainder_is_passed_over() {
         quoted(&mut book, Direction::Short, u64::MAX, 0),
         encode_quote(&[])
     );
+
     // And it is still resting, untouched, waiting for its counterparty.
     assert_eq!(book.node_count(Side::Bid), 1);
 
@@ -206,6 +207,7 @@ fn a_crossed_remainder_does_not_shadow_the_depth_behind_it() {
         quoted(&mut book, Direction::Short, u64::MAX, 0),
         encode_quote(&[PriceLevel { price: 98, size: 7 }])
     );
+
     let outcome = book
         .execute(
             Direction::Short,
@@ -295,6 +297,7 @@ fn an_uncrossed_taker_remainder_is_quotable_and_takeable() {
             size: 5
         }])
     );
+
     let outcome = book
         .execute(
             Direction::Short,
@@ -376,6 +379,7 @@ fn only_a_counterparty_that_could_match_this_slot_gates_the_fill() {
         .len(),
         1
     );
+
     assert!(book
         .execute(
             Direction::Short,
@@ -453,12 +457,14 @@ fn the_cross_resolution_path_still_works() {
         quoted(&mut book, Direction::Long, u64::MAX, 0),
         encode_quote(&[])
     );
+
     // The crank reaches it at its own 99, which is the price the pair settles
     // at and the improvement the remainder came for.
     assert_eq!(
         consuming_quote(&mut book, Direction::Long, u64::MAX, 0),
         encode_quote(&[PriceLevel { price: 99, size: 5 }])
     );
+
     let outcome = book
         .execute(
             Direction::Long,
@@ -518,6 +524,7 @@ fn a_sweep_fills_around_the_remainder() {
             .collect::<Vec<_>>(),
         vec![5, 5]
     );
+
     // Both makers gone, the remainder still resting.
     assert_eq!(book.node_count(Side::Ask), 1);
     assert!(book
@@ -602,6 +609,7 @@ fn quote_and_execute_skip_the_same_order() {
             },
         ])
     );
+
     // And that is exactly what the fill delivers — 10 base, not 15.
     let outcome = book
         .execute(
@@ -670,6 +678,7 @@ fn the_same_book_quotes_that_depth_once_the_cross_is_gone() {
             },
         ])
     );
+
     // Execute agrees, which is the whole point of the two sharing a predicate.
     assert_eq!(
         book.execute(
@@ -735,11 +744,13 @@ fn a_bound_remainder_cannot_be_cancelled_inside_its_window() {
         book.cancel(taker, remainder, 0, false),
         ClobError::TakerOriginBound,
     );
+
     // The slot before activation is still inside the window.
     assert_err(
         book.cancel(taker, remainder, 9, false),
         ClobError::TakerOriginBound,
     );
+
     // The order becomes matchable in its activation slot, and the window ends
     // with it.
     assert!(book.cancel(taker, remainder, 10, false).is_ok());
@@ -811,7 +822,7 @@ fn executed_with(
     direction: Direction,
     size: u64,
     slot: u64,
-    consume_reservation: bool,
+    include_taker_origin_reservations: bool,
 ) -> Vec<u64> {
     book.execute(
         direction,
@@ -820,7 +831,7 @@ fn executed_with(
         &UserCapsV0::EMPTY,
         0,
         None,
-        consume_reservation,
+        include_taker_origin_reservations,
         slot,
         0,
     )
@@ -862,6 +873,7 @@ fn a_claim_takes_the_best_priced_prefix_of_the_side() {
             },
         ])
     );
+
     // Nothing moved on the book: a claim is computed, not stored.
     assert_eq!(book.node_count(Side::Ask), 3);
     assert_eq!(book.read_node(book.best(Side::Ask)).unwrap().price, 100);
@@ -936,6 +948,7 @@ fn a_better_priced_maker_arriving_mid_window_is_claimed() {
             size: 5
         }])
     );
+
     // Neither order was touched: same nodes, same ids, same sizes.
     assert_eq!(
         book.read_node(better.node_index).unwrap().order_id,
@@ -990,6 +1003,7 @@ fn cancelling_the_claimed_ask_moves_the_claim_and_leaves_the_rest_alone() {
             size: 5
         }])
     );
+
     let node = book.read_node(far.node_index).unwrap();
     assert_eq!((node.order_id, node.base_asset_amount), (far.order_id, 5));
     assert_eq!(book.read_node(book.best(Side::Ask)).unwrap().price, 101);
@@ -1020,6 +1034,7 @@ fn two_claimants_are_served_in_rest_order_and_lapse_one_at_a_time() {
         quoted(&mut book, Direction::Long, u64::MAX, 9),
         encode_quote(&[])
     );
+
     // The older one holds the 100, so a crank consuming it fills there.
     assert_eq!(
         consuming_quote(&mut book, Direction::Long, 5, 9),
@@ -1039,6 +1054,7 @@ fn two_claimants_are_served_in_rest_order_and_lapse_one_at_a_time() {
             size: 5
         }])
     );
+
     // The slot before, both claims still stand.
     assert_eq!(
         quoted(&mut book, Direction::Long, u64::MAX, lapsed - 1),
@@ -1100,6 +1116,7 @@ fn quote_and_execute_withhold_the_same_units() {
             },
         ])
     );
+
     // Five base, the same five the ladder published, and the claimed unit of
     // the 101 stays resting.
     assert_eq!(
@@ -1155,6 +1172,7 @@ fn every_removal_path_maintains_the_claimant_list() {
         book.evict_worst(Side::Bid).unwrap().order_id,
         evicted.order_id
     );
+
     assert_consistent(&book);
     assert_eq!(book.claimant_count(Side::Bid), 0);
 
@@ -1186,7 +1204,7 @@ fn every_removal_path_maintains_the_claimant_list() {
 /// size is what a caller may take, and the flag says why it is short of what
 /// the order holds — which is what an account-set builder and a book display
 /// each need, and what a caller resolving the cross reads through with
-/// `consume_reservation`.
+/// `include_taker_origin_reservations`.
 #[test]
 fn quote_l3_reports_the_claim_on_the_row() {
     let market = TestMarket::new(16);

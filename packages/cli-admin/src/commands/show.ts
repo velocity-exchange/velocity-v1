@@ -75,9 +75,8 @@ function describeBitmask(
 }
 
 /**
- * Renders any decoded account field. It prints a pubkey as base58, a BN as a
- * decimal, and an array or a struct inline. It sanitizes the result, because an
- * account field is chain data and a string field can carry a terminal escape.
+ * Renders a decoded account field, sanitized because an account field is
+ * chain data and a string field can carry a terminal escape.
  */
 function formatField(value: unknown): string {
 	return ui.safe(renderField(value));
@@ -243,6 +242,7 @@ export function registerShow(parent: Command): void {
 					quoteSpot,
 					SpotBalanceType.DEPOSIT
 				);
+
 				// The AMM reserve price is (quote / base) * peg. This display does not
 				// need more precision.
 				const price =

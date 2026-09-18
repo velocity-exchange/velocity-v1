@@ -66,6 +66,7 @@ pub async fn watch_program_deploys<S: ChainSource>(
     if seen.is_empty() {
         return Ok(());
     }
+
     let keys: Vec<Pubkey> = seen.iter().map(|(_, data)| *data).collect();
     let accounts = source.get_multiple_accounts(&keys).await?;
     for ((quoter, _), account) in seen.iter().zip(accounts) {
@@ -76,6 +77,7 @@ pub async fn watch_program_deploys<S: ChainSource>(
         let slot = u64::from_le_bytes(bytes.try_into().expect("eight bytes"));
         health.observe_program_slot(quoter, slot);
     }
+
     Ok(())
 }
 
@@ -206,6 +208,7 @@ pub async fn quote_with_health<S: ChainSource>(
                         },
                     ));
                 }
+
                 for entry in &built.entries {
                     health.record(Report::new(
                         entry.quoter,
@@ -213,6 +216,7 @@ pub async fn quote_with_health<S: ChainSource>(
                         Observation::SimOk { cu: units_consumed },
                     ));
                 }
+
                 // The view reports whether margin verification cut a book below
                 // what its source quoted. It reports that a cut happened, not
                 // how deep. This therefore counts the share of quotes a quoter
@@ -230,6 +234,7 @@ pub async fn quote_with_health<S: ChainSource>(
                         ));
                     }
                 }
+
                 return Ok(HealthyQuote {
                     view,
                     units_consumed,
@@ -254,6 +259,7 @@ pub async fn quote_with_health<S: ChainSource>(
                         entries: &entry_refs,
                     },
                 );
+
                 health.record_verdict(request.market_index, &verdict);
 
                 let round = plan_retry(&verdict, &excluded);
@@ -266,6 +272,7 @@ pub async fn quote_with_health<S: ChainSource>(
                     // market down.
                     return Err(err);
                 }
+
                 excluded.extend(last_dropped.iter().copied());
                 error = Some(err);
             }
@@ -325,6 +332,7 @@ mod tests {
                 reason: FailReason::Cpi,
                 proof: Attribution::Named,
             }],
+
             suspects: vec![],
             unattributed: None,
         };
@@ -340,6 +348,7 @@ mod tests {
             suspects: vec![key(2)],
             unattributed: None,
         };
+
         assert_eq!(plan_retry(&verdict, &[]).drop, vec![key(2)]);
     }
 
@@ -352,6 +361,7 @@ mod tests {
             suspects: vec![],
             unattributed: Some(FailReason::Unknown),
         };
+
         assert!(plan_retry(&verdict, &[]).drop.is_empty());
     }
 
@@ -363,9 +373,11 @@ mod tests {
                 reason: FailReason::Cpi,
                 proof: Attribution::Named,
             }],
+
             suspects: vec![key(3)],
             unattributed: None,
         };
+
         assert!(plan_retry(&verdict, &[key(3)]).drop.is_empty());
     }
 }
@@ -390,6 +402,7 @@ mod deploy_record_tests {
                 .try_into()
                 .expect("eight bytes"),
         );
+
         assert_eq!(read, 0x0102_0304_0506_0708);
     }
 
@@ -404,12 +417,10 @@ mod deploy_record_tests {
     }
 }
 
-/// Sources one pass of the view may hold, matching the buffer's own cap.
-///
-/// The buffer rejects a push past this rather than truncating, so a pass that
-/// would overflow it fails the whole market's quote. Every crossing DLOB
-/// order takes a slot too, so quoters get what is left after them and the
-/// vAMM.
+/// Sources one pass of the view may hold, matching the buffer's own cap. A
+/// push past this fails the whole market's quote rather than truncating.
+/// Every crossing DLOB order takes a slot too, so quoters get what is left
+/// after them and the vAMM.
 const SOURCES_PER_PASS: usize = program::state::router_quote::MAX_QUOTED_SOURCES;
 
 /// A market's whole book, read in as many passes as it takes.
@@ -477,6 +488,7 @@ fn plan_passes(slots: &[QuoterSlotV0]) -> Plan {
         if fits(&open, first) {
             continue;
         }
+
         open.pop();
 
         // The quoter did not fit, so close the pass in progress and try the
@@ -488,6 +500,7 @@ fn plan_passes(slots: &[QuoterSlotV0]) -> Plan {
                 entries: open.iter().map(|slot| slot.entry).collect(),
                 include_vamm: first,
             });
+
             first = false;
             open.clear();
         }
@@ -501,6 +514,7 @@ fn plan_passes(slots: &[QuoterSlotV0]) -> Plan {
             unquotable.push(slot.entry);
         }
     }
+
     if !open.is_empty() || passes.is_empty() {
         passes.push(Pass {
             entries: open.iter().map(|slot| slot.entry).collect(),
@@ -547,6 +561,7 @@ pub async fn quote_market<S: ChainSource>(
             "quoter needs more accounts than one transaction holds; not quoted"
         );
     }
+
     let mut merged = MarketQuote {
         books: Vec::new(),
         entries: Vec::new(),
@@ -556,6 +571,7 @@ pub async fn quote_market<S: ChainSource>(
         excluded: Vec::new(),
         rows_truncated: false,
     };
+
     for planned in &plan.passes {
         let pass = QuoteRequest {
             only: Some(&planned.entries),
@@ -574,9 +590,11 @@ pub async fn quote_market<S: ChainSource>(
             }
         }
     }
+
     if merged.slot == u64::MAX {
         merged.slot = 0;
     }
+
     Ok(merged)
 }
 #[cfg(test)]
@@ -615,8 +633,10 @@ mod pass_tests {
                 is_writable: index == 0,
                 padding: [0; 7],
             };
+
             slot.config.quote_account_indexes[index] = index as u8;
         }
+
         slot
     }
 
@@ -632,6 +652,7 @@ mod pass_tests {
                 padding: [0; 7],
             };
         }
+
         slot
     }
 

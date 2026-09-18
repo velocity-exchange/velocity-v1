@@ -61,6 +61,7 @@ pub fn svm() -> LiteSVM {
     for program in [clob_id(), midpoint_id()] {
         set_program_data(&mut svm, &program);
     }
+
     // Every resolver names the program-wide staging account, so it exists
     // from the start rather than each fixture remembering to create it.
     set_relay_scratch(&mut svm);
@@ -142,14 +143,10 @@ pub fn quoter_pda(market_index: u16, quoter_program: &Pubkey, user: &Pubkey) -> 
     .0
 }
 
-/// The market's quoter slab: one account per market, holding every approved
-/// quoter config. Fills read only this account, never the staging entries.
-/// It is also the one identity velocity signs every external quoter CPI as —
-/// the book's `place_authority` and each quoter's `execute_authority`.
-/// Deliberately a different PDA from [`velocity_signer_pda`], which is the
-/// token authority on every vault; response-account exclusion at approval and
-/// the per-market seed keep the shared signature harmless (see
-/// `programs/velocity/src/signer.rs`).
+/// One account per market, holding every approved quoter config. Velocity
+/// signs every quoter CPI as this PDA, not [`velocity_signer_pda`] (the
+/// vault token authority); per-market seeds and response-account exclusion
+/// keep the shared signature harmless (see `programs/velocity/src/signer.rs`).
 pub fn quoter_slab_pda(market_index: u16) -> Pubkey {
     Pubkey::find_program_address(
         &[b"quoter_slab", market_index.to_le_bytes().as_ref()],
@@ -181,6 +178,7 @@ pub fn create_quoter_slab(svm: &mut LiteSVM, payer: &Keypair, market_index: u16)
         }
         .data(),
     };
+
     send(svm, payer, ix, &[]).unwrap();
     slab
 }
@@ -301,6 +299,7 @@ pub fn set_crank_treasury(svm: &mut LiteSVM) {
         &treasury,
         velocity::state::crank_treasury::CrankTreasuryV0::SIZE,
     );
+
     let mut account = svm.get_account(&crank_treasury_pda()).unwrap();
     account.lamports = account.lamports.saturating_add(5_000_000_000);
     svm.set_account(crank_treasury_pda(), account).unwrap();
@@ -469,6 +468,7 @@ fn base64_decode(input: &str) -> Option<Vec<u8>> {
             out.push((acc >> bits) as u8);
         }
     }
+
     Some(out)
 }
 

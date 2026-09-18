@@ -77,35 +77,14 @@ pub fn spot_markets_that_price_equity<'info>(
     Ok(market_indexes)
 }
 
-/// Book the lending interest of every market that prices the vault's NAV, before the handler
-/// snapshots it.
-///
-/// `calculate_equity` prices a position off its market's stored cumulative index. Solana lets only
-/// the owning program mutate an account, so the vaults program cannot advance those indexes. It
-/// must CPI velocity.
-///
-/// `deposit` refreshed the market only afterwards, as a side effect of the deposit CPI. An entrant
-/// then minted shares against an index without the lender interest the incumbents earned, and
-/// captured part of it (OtterSec #136).
-///
-/// The withdraw-request and cancel paths never refreshed. Request understated the frozen request
-/// value, and cancel let request-window interest escape the share-forfeiture rule (OtterSec #137).
-///
-/// Call this first in any handler that snapshots NAV. It must run before `load_maps`, which must
-/// read the refreshed data, and before any `load_mut` of an account this call forwards.
-///
-/// The markets travel as writable accounts inside `remaining_accounts`, the same slice the handler
-/// later hands to `load_maps`. Velocity keys each account by the market index stored in the account
-/// itself, so it refreshes market `i` only when market `i`'s own account is passed.
-///
-/// The refresh is idempotent within a slot. Velocity's accrual does nothing once
-/// `last_interest_ts` reaches the current time, so a handler that later CPIs `deposit` or
-/// `withdraw` pays nothing extra.
-///
-/// Velocity books the interest but does not always advance the index. An interval whose interest
-/// does not reach a whole index unit on both the deposit side and the borrow side defers to the
-/// next crank. The index stays where it is and the call still succeeds. The deferred interval
-/// keeps growing, so it commits on the first crank that clears both floors.
+/// Books the lending interest of every market that prices the vault's NAV, before the handler
+/// snapshots it. Only velocity can advance those indexes, so this CPIs into it; skipping the
+/// refresh let an entrant mint against stale interest (OtterSec #136) and let the
+/// withdraw-request/cancel paths misvalue or leak request-window interest (OtterSec #137).
+/// Call first in any NAV-snapshotting handler: before `load_maps` and before any `load_mut` this
+/// call forwards. Markets travel as writable accounts in `remaining_accounts`; only a passed
+/// market's own index gets refreshed. Idempotent within a slot, and an interval too small to move
+/// the index on both sides just defers to the next crank instead of failing.
 pub fn refresh_spot_markets_that_price_equity<'info>(
     velocity_program: &AccountInfo<'info>,
     state: &AccountInfo<'info>,

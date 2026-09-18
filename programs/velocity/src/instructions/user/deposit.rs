@@ -60,11 +60,9 @@ fn credit_deposit(
 
     let is_borrow_before = user.spot_positions[position_index].is_borrow();
 
-    // Snapshot the market's deposit level so the daily cap below runs only on real growth.
-    // This instruction also repays borrows (see `DepositExplanation::RepayBorrow`). A repayment
-    // reduces `borrow_balance` and leaves `deposit_balance` alone, so a market-wide level
-    // predicate must not block it. OtterSec #118 removed that exit lock from the shared credit
-    // path.
+    // Snapshot the deposit level so the daily cap below gates only real growth. A
+    // repayment (`DepositExplanation::RepayBorrow`) reduces `borrow_balance`, not
+    // `deposit_balance`, so a market-wide cap must not block it (OtterSec #118).
     let deposit_token_amount_before = math::spot_balance::get_token_amount(
         spot_market.deposit_balance,
         spot_market,
@@ -216,6 +214,7 @@ fn emit_deposit_record(
             } else {
                 DepositExplanation::None
             },
+
             transfer_user: None,
             signer: external_deposit_signer(stamp.authority, user)?,
             total_deposits_after: credit.total_deposits_after,
@@ -245,25 +244,16 @@ fn admit_revenue_pool_deposit(spot_market: &SpotMarket, now: i64) -> Result<()> 
     Ok(())
 }
 
-/// Accrue interest on the market a withdrawal debits, and hold its oracle
-/// TWAPs at the values the margin check must read.
+/// Accrue interest on the withdrawn market, holding its oracle TWAPs at
+/// the values the margin check reads.
 ///
 /// A refresh drags both stored TWAPs toward the live price, and the margin
-/// check in the same instruction then reads the dragged values (OtterSec #81).
-/// Each field feeds a different gate.
-///
-///   `last_oracle_price_twap` (1h). `TooVolatile` validity compares the live
-///   oracle price against it. A refresh that drags it toward the live price
-///   lets a too-volatile oracle pass the same-instruction margin check and
-///   release vault tokens.
-///
-///   `last_oracle_price_twap_5min`. `StrictOraclePrice` bounds are the min and
-///   max of the live price and this field, and a liability is priced at the
-///   upper bound. The margin check runs with `Initial`, which enables strict
-///   pricing. Dragging the 5-minute TWAP toward a temporarily depressed live
-///   price under-values the debt and admits a withdrawal the pre-refresh value
-///   rejects.
-///
+/// check in the same instruction reads the dragged values (OtterSec #81).
+/// A dragged `last_oracle_price_twap` (1h) lets a too-volatile oracle pass
+/// `TooVolatile` validity and release vault tokens. A dragged
+/// `last_oracle_price_twap_5min` under-values a liability under
+/// `StrictOraclePrice`'s `Initial` bound, admitting a withdrawal the
+/// pre-refresh value would reject.
 /// Returns the refreshed values. The caller restores them with
 /// [`restore_oracle_twaps`] after the margin check, so the account still
 /// persists the up-to-date EMA.
@@ -325,13 +315,10 @@ fn accrue_withdraw_market(
     Ok((spot_market.is_reduce_only(), refreshed))
 }
 
-/// Prove the account may release value against its other markets.
-///
-/// OtterSec #135: this handler cranks only the market being withdrawn, so a
-/// borrow in any *other* market is valued through its stale stored
-/// `cumulative_borrow_interest`. The due interest is missing from the
-/// initial-margin check, and those markets arrive read-only so they cannot be
-/// refreshed here. Their accrual is required to be recent instead.
+/// Prove the account may release value against its other markets. This
+/// handler cranks only the withdrawn market, so a borrow elsewhere is valued
+/// through stale interest; those read-only markets must have recent accrual
+/// instead (OtterSec #135).
 fn check_withdraw_margin(user: &mut User, maps: &mut AccountMaps, now: i64) -> Result<()> {
     math::margin::validate_spot_borrow_interest_fresh_for_margin(user, &maps.spot_market_map, now)?;
 
@@ -370,6 +357,7 @@ fn emit_withdraw_record(
             } else {
                 DepositExplanation::None
             },
+
             transfer_user: None,
             signer: None,
             total_deposits_after: user.total_deposits,
@@ -488,6 +476,7 @@ pub fn handle_deposit<'c: 'info, 'info>(
             None
         },
     )?;
+
     ctx.accounts.spot_market_vault.reload()?;
 
     emit_deposit_record(

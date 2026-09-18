@@ -69,44 +69,41 @@ pub struct OracleWatchV0 {
 }
 
 impl OracleWatchV0 {
-    /// The oracle's current price in `PRICE_PRECISION`, matching what
-    /// `get_pyth_price` would report for it.
-    ///
-    /// A caller that does margin arithmetic against a watched market needs
-    /// this rather than [`Self::raw_price`]. The raw field is in the oracle's
-    /// own units, which match the protocol's only when the feed publishes six
-    /// decimals.
+    /// The oracle's current price in `PRICE_PRECISION`, matching what `get_pyth_price` would report.
+    /// A caller doing margin arithmetic against a watched market needs this rather than
+    /// [`Self::raw_price`], whose units are the oracle's own and match the protocol's only when the
+    /// feed publishes six decimals.
     pub fn protocol_price(&self) -> Option<i128> {
         if self.decimals > MAX_DECIMALS {
             return None;
         }
+
         i128::from(self.raw_price)
             .checked_mul((self.multiple as i128).checked_mul(PRICE_PRECISION_I128)?)?
             .checked_div(10i128.checked_pow(self.decimals)?)
     }
 
-    /// A `PRICE_PRECISION` price in this oracle's raw units, or `None` when it
-    /// does not survive the conversion. The conversion inverts
-    /// `get_pyth_price`'s scaling, so a raw crossing and a protocol crossing
-    /// are the same event.
+    /// A `PRICE_PRECISION` price in this oracle's raw units, or `None` when it does not survive the
+    /// conversion. The conversion inverts `get_pyth_price`'s scaling, so a raw crossing and a
+    /// protocol crossing are the same event.
     ///
-    /// Rounding follows `direction` and always moves toward firing early. The
-    /// resolver re-derives everything from the real oracle code, so an early
-    /// wake costs one simulation. A late wake is a missed trigger or a missed
-    /// liquidation.
+    /// Rounding follows `direction` and always moves toward firing early. The resolver re-derives
+    /// everything from the real oracle code, so an early wake costs one simulation. A late wake is a
+    /// missed trigger or a missed liquidation.
     ///
-    /// `None` means the caller must not arm this watch. A threshold that
-    /// overflows, or that lands at or below zero, is not a price the oracle
-    /// can report.
+    /// `None` means the caller must not arm this watch. A threshold that overflows, or that lands at
+    /// or below zero, is not a price the oracle can report.
     pub fn raw_threshold(&self, price: i128, direction: WatchDirection) -> Option<i64> {
         if self.decimals > MAX_DECIMALS {
             return None;
         }
+
         let numerator = price.checked_mul(10i128.checked_pow(self.decimals)?)?;
         let denominator = (self.multiple as i128).checked_mul(PRICE_PRECISION_I128)?;
         if numerator <= 0 || denominator <= 0 {
             return None;
         }
+
         let raw = match direction {
             WatchDirection::AtOrAbove => numerator.checked_div(denominator)?,
             // Ceiling division. `int_roundings` is unstable on this
@@ -115,9 +112,11 @@ impl OracleWatchV0 {
                 .checked_add(denominator.checked_sub(1)?)?
                 .checked_div(denominator)?,
         };
+
         if raw <= 0 || raw > i64::MAX as i128 {
             return None;
         }
+
         Some(raw as i64)
     }
 }
@@ -157,6 +156,7 @@ pub fn oracle_watch(oracle: &AccountInfo, source: OracleSource) -> Option<Oracle
         OracleSource::PythLazer | OracleSource::PythLazer1K | OracleSource::PythLazer1M => {
             (PYTH_LAZER_PRICE_OFFSET, PYTH_LAZER_EXPONENT_OFFSET)
         }
+
         // See the module docs: no affine raw threshold exists for these.
         _ => return None,
     };
@@ -171,6 +171,7 @@ pub fn oracle_watch(oracle: &AccountInfo, source: OracleSource) -> Option<Oracle
             return None;
         }
     }
+
     let price_at = price_offset as usize;
     let raw_price = i64::from_le_bytes(data.get(price_at..price_at + 8)?.try_into().ok()?);
     let exponent = i32::from_le_bytes(
@@ -212,12 +213,14 @@ mod tests {
             watch(8, 1).raw_threshold(150_000_000, up),
             Some(15_000_000_000)
         );
+
         // The same feed as a 1K source. The raw field carries a thousandth of
         // the protocol price, so the threshold is 1000 times smaller.
         assert_eq!(
             watch(8, 1000).raw_threshold(150_000_000, up),
             Some(15_000_000)
         );
+
         // Fewer decimals than PRICE_PRECISION divides down.
         assert_eq!(watch(4, 1).raw_threshold(150_000_000, up), Some(1_500_000));
     }
@@ -236,6 +239,7 @@ mod tests {
             watch(5, 1).raw_threshold(price, WatchDirection::AtOrBelow),
             Some(150_001)
         );
+
         // An exact conversion rounds nowhere.
         for direction in [WatchDirection::AtOrAbove, WatchDirection::AtOrBelow] {
             assert_eq!(

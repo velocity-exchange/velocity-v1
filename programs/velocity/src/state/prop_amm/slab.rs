@@ -37,9 +37,8 @@ const_assert_eq!(std::mem::size_of::<QuoterSlotV0>(), 776);
 
 // The slot region is read straight out of account bytes, so the slot needs
 // the bytemuck casts `#[account(zero_copy(unsafe))]` gives an account type.
-// The same trust argument applies: only this program writes a slab (the
-// loader checks the owner), and it writes only valid values into the `bool`
-// fields.
+// The same trust argument applies. The loader checks the owner, so only this
+// program writes a slab, and it writes only valid values into the `bool` fields.
 unsafe impl bytemuck::Zeroable for QuoterSlotV0 {}
 unsafe impl bytemuck::Pod for QuoterSlotV0 {}
 
@@ -59,26 +58,11 @@ impl QuoterSlotV0 {
     }
 }
 
-/// One market's approved quoters, in one account.
-///
-/// The slab spends one account lock where per-quoter registry entries spent one
-/// each. A router fill carries the slab plus each quoter's program and response
-/// account, so a quoter costs two unshared locks instead of three. That budget
-/// decides how many quoters a route can hold. A route names the slots it
-/// consults by carrying their response accounts. The slab itself carries no
-/// per-transaction selection.
-///
-/// This struct is only the fixed header. The slot region follows it in the
-/// account's remaining bytes as back-to-back [`QuoterSlotV0`]s, so capacity is
-/// the account's size rather than a layout constant. The approval flow keeps
-/// the account right-sized. It grows by exactly the slot an approval needs and
-/// gives trailing vacancy back on revocation, so a reader pays compute for the
-/// roster rather than for a guess made at creation. Read the region through
-/// [`QuoterSlabExt::slots`] or [`QuoterSlabExt::slots_mut`]. A vacant slot is
-/// all zeroes, which is what a fresh or grown region holds.
-///
-/// Creation through `initialize_quoter_slab` is permissionless. The payer buys
-/// rent on an all-vacant slab, and only the approval flow writes slots.
+/// One market's approved quoters, in one account. This struct is only the fixed
+/// header. Read the slot region that follows it through [`QuoterSlabExt::slots`]
+/// or [`QuoterSlabExt::slots_mut`]. A vacant slot is all zeroes. Creation through
+/// `initialize_quoter_slab` is permissionless, and only the approval flow writes
+/// slots.
 #[account(zero_copy(unsafe))]
 #[derive(Eq, PartialEq, Debug)]
 #[repr(C)]
@@ -94,12 +78,10 @@ pub struct QuoterSlabV0 {
     /// on every leg.
     pub bump: u8,
     pub _pad: [u8; 3],
-    /// The market's book, which is the `Clob` slot's response account, written
-    /// at approval. It is stored in the header so every accounts struct that
-    /// names both binds them with `has_one = clob_market`, a check the compiler
-    /// keeps on every context. It survives a book suspension, because the
-    /// removal paths must keep reaching a killed book. `Pubkey::default()`
-    /// means no book was ever approved.
+    /// The market's book, the `Clob` slot's response account. The header holds it so
+    /// every accounts struct that names both binds them with `has_one = clob_market`.
+    /// It survives a book suspension, because the removal paths must keep reaching a
+    /// killed book. `Pubkey::default()` means no book was ever approved.
     pub clob_market: Pubkey,
     /// Header reserve, so future header fields never move the slot region.
     pub padding: [u8; 120],
@@ -155,6 +137,7 @@ fn validate_slab_data(data: &[u8]) -> Result<usize> {
         ErrorCode::InvalidQuoterConfig,
         "quoter slab account is shorter than its header"
     )?;
+
     let header: &QuoterSlabV0 =
         bytemuck::from_bytes(&data[8..8 + std::mem::size_of::<QuoterSlabV0>()]);
     let capacity = header.capacity as usize;
@@ -170,6 +153,7 @@ fn validate_slab_data(data: &[u8]) -> Result<usize> {
         ErrorCode::InvalidQuoterConfig,
         "quoter slab data is not aligned"
     )?;
+
     Ok(capacity)
 }
 
@@ -210,14 +194,10 @@ pub fn clob_slot_index(slots: &[QuoterSlotV0]) -> Option<usize> {
         .map(|_| 0)
 }
 
-/// Quoters one transaction may consult.
-///
-/// Derived from the account-lock budget rather than chosen. A fill spends
-/// roughly 15 locks before its first quoter, and the slab is one of those,
-/// shared by every quoter. Each quoter then costs two more that nothing else
-/// shares, its program and its response account, against the 64 a transaction
-/// can name. Eight leaves room for the maker accounts a fill also carries. A
-/// transaction that carries more fails with an error.
+/// Quoters one transaction may consult. The account-lock budget sets it. A fill spends
+/// roughly 15 locks before its first quoter, and each quoter costs two more that nothing
+/// else shares, its program and its response account, against the 64 a transaction can
+/// name. Eight leaves room for the maker accounts. Carrying more fails with an error.
 pub const MAX_ROUTE_QUOTERS: usize = 8;
 
 /// The slab loader's read surface. It is an extension trait, because the loader
@@ -229,22 +209,16 @@ pub trait QuoterSlabExt<'info> {
     /// The slot region, writable.
     fn slots_mut(&self) -> Result<std::cell::RefMut<'_, [QuoterSlotV0]>>;
 
-    /// The market's book slot. It is an error when the slab holds no book or
-    /// serves a different market, so a caller can never read another market's
-    /// book config through a substituted slab.
-    ///
-    /// Not gated on `suspended` or `is_active`. Those two mean the slot may
-    /// take new flow, and the removal paths must keep working on a killed or
-    /// de-listed book. Callers that add flow gate on [`QuoterSlotV0::quotes`]
-    /// themselves.
+    /// The market's book slot. It is an error when the slab holds no book or serves a
+    /// different market, so a substituted slab cannot expose another market's book. It is
+    /// not gated on `suspended` or `is_active`, because the removal paths must keep working
+    /// on a killed or de-listed book. Callers that add flow gate on [`QuoterSlotV0::quotes`].
     fn clob_slot(&self, market_index: u16) -> Result<std::cell::Ref<'_, QuoterSlotV0>>;
 
-    /// The consulted slots `tail` carries, by slot index. It is every occupied
-    /// slot whose response account rides the transaction, in slab order and
-    /// capped at [`MAX_ROUTE_QUOTERS`]. Consultation is presence: carrying a
-    /// slot's response account is the intent to consult it. It returns indexes
-    /// rather than copies, because the slab is the one copy of every approved
-    /// config and a reader takes a short borrow when it needs a field.
+    /// The consulted slots `tail` carries, by slot index. It is every occupied slot
+    /// whose response account rides the transaction, in slab order and capped at
+    /// [`MAX_ROUTE_QUOTERS`]. Carrying a slot's response account is the intent to
+    /// consult it. It returns indexes rather than copies of the config.
     fn consulted_slots(&self, tail: &[AccountInfo<'info>]) -> Result<Vec<usize>>;
 }
 
@@ -266,6 +240,7 @@ impl<'info> QuoterSlabExt<'info> for AccountLoader<'info, QuoterSlabV0> {
             ErrorCode::InvalidQuoterConfig,
             "quoter slab is not writable"
         )?;
+
         let data = info.try_borrow_mut_data()?;
         let capacity = validate_slab_data(&data)?;
         Ok(std::cell::RefMut::map(data, |data| {
@@ -283,11 +258,13 @@ impl<'info> QuoterSlabExt<'info> for AccountLoader<'info, QuoterSlabV0> {
             market,
             market_index
         )?;
+
         let slots = self.slots()?;
         let index = clob_slot_index(&slots).ok_or_else(|| {
             msg!("quoter slab for market {} holds no book", market);
             error!(ErrorCode::QuoterNotOnSlab)
         })?;
+
         Ok(std::cell::Ref::map(slots, |slots| &slots[index]))
     }
 
@@ -298,14 +275,17 @@ impl<'info> QuoterSlabExt<'info> for AccountLoader<'info, QuoterSlabV0> {
             if find_account(tail, &slot.config.response_account).is_none() {
                 continue;
             }
+
             validate!(
                 consulted.len() < MAX_ROUTE_QUOTERS,
                 ErrorCode::DefaultError,
                 "a fill may consult at most {} quoters",
                 MAX_ROUTE_QUOTERS
             )?;
+
             consulted.push(index);
         }
+
         Ok(consulted)
     }
 }

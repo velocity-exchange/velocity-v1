@@ -96,8 +96,10 @@ pub fn handle_place_and_take_perp_order_v1<'c: 'info, 'info>(
             &ctx.accounts.quoter_slab,
             params.market_index,
         )?;
+
         (attested, synchronous)
     };
+
     place_and_take_perp_order_v1(
         PlaceAndTakeAccounts {
             state: &ctx.accounts.state,

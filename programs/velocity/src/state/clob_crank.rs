@@ -58,27 +58,13 @@ use {
 /// PDA seed: `["clob_crank_conditions", market_index]`.
 pub const CLOB_CRANK_CONDITIONS_PDA_SEED: &[u8] = b"clob_crank_conditions";
 
-/// Index of the cross fallback: `WakeKind::EverySlots`.
-///
-/// The book hosts the four conditions that describe its own state: an expiry,
-/// an activation, a side at its cap, and a crossed book. Those facts live on
-/// the book's account, and the book is the only program that can keep their
-/// wakes current without taking a second account on every write.
-///
-/// This condition is not about the book. A PropAMM that reprices into a cross
-/// with the book changes nothing on the book's account, so no watch on the
-/// book fires. The maker's own reprice watch belongs to the maker's
-/// conditions. This poll is the liveness floor for that case.
+/// Index of the cross fallback: `WakeKind::EverySlots`. A PropAMM that reprices into a
+/// cross with the book changes nothing on the book's account, so no watch on the book
+/// fires. This poll is the liveness floor for that case.
 pub const CLOB_CRANK_CROSS_FALLBACK: usize = 0;
-/// Index of the reservoir refill: `WakeKind::OnValueCross`.
-///
-/// The reservoir that pays this market's cranks mirrors its own spendable
-/// lamports into [`ClobCrankConditionsV0::spendable_mirror`]. This condition
-/// wakes when that value falls to the treasury's watermark. The refill then
-/// moves lamports from the protocol treasury into the reservoir.
-///
-/// The watched value sits on this same account, so the watch that already
-/// finds this block also covers it. No second watch is registered.
+/// Index of the reservoir refill: `WakeKind::OnValueCross`. Wakes when
+/// [`ClobCrankConditionsV0::spendable_mirror`] falls to the treasury's watermark. The
+/// watched value sits on this account, so the watch that finds this block covers it.
 pub const CLOB_CRANK_REFILL: usize = 1;
 /// Conditions hosted per market.
 pub const CLOB_CRANK_CONDITIONS: usize = 2;
@@ -101,52 +87,27 @@ pub const EXPIRY_ESCALATION_SECONDS: u64 = 300;
 /// The most an expiry crank adds to its base payment, in lamports.
 pub const EXPIRY_ESCALATION_CEILING: u32 = 5_000;
 
-/// Compute units a liquidation crank's priority fee is reimbursed against.
-///
-/// A measured figure, not the limit a transaction asks for. Reimbursement of
-/// the request would let a caller inflate its own bill. A keeper paid for an
-/// honest crank has every reason to size its request tightly.
+/// Compute units a liquidation crank's priority fee is reimbursed against. A measured
+/// figure, not the limit a transaction asks for, because reimbursing the request would
+/// let a caller inflate its own bill.
 pub const LIQUIDATION_CRANK_REIMBURSED_UNITS: u32 = 400_000;
 
-/// Least filled quote value a liquidation crank must recover to earn its flat
-/// reservoir payment, in `QUOTE_PRECISION`. Ten dollars.
-///
-/// The flat payment is paid once per crank, whatever it filled. Without a
-/// floor a keeper stages one liquidation as many small fills and collects the
-/// flat payment on each. That drains the reservoir for work that recovered
-/// almost nothing. A crank that fills less than this still liquidates the
-/// position. It does not draw the flat payment, so dust is cranked without
-/// paying to farm it.
+/// Least filled quote value a liquidation crank must recover to earn its flat reservoir
+/// payment, in `QUOTE_PRECISION`. Ten dollars. Without a floor a keeper stages one
+/// liquidation as many small fills and collects the flat payment on each. A crank below
+/// the floor still liquidates, so dust is cranked without paying to farm it.
 pub const LIQUIDATION_FLAT_PAYMENT_MIN_FILLED_QUOTE: u64 = 10_000_000;
 
-/// Cost units each of a market's cranks requests, one field per crank.
-///
-/// These figures are measured. A turner simulates the crank and asks for a
-/// compute limit based on what the simulation used. The rest of the sum comes
-/// out of the transaction the turner assembles: signatures, write locks,
-/// instruction-data bytes, and the loaded-accounts limit. An admin passes
-/// those totals here.
-///
-/// The unit is the block-packing cost unit, which is what the network prices a
-/// transaction by. `State.transaction_fee_rails` turns it into lamports.
+/// Cost units each of a market's cranks requests, one field per crank. Measured figures:
+/// a turner simulates the crank, and the rest of the sum comes from the transaction it
+/// assembles. The unit is the block-packing cost unit, which
+/// `State.transaction_fee_rails` turns into lamports.
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CrankCostUnitsV0 {
-    /// `evict_worst` / `remove_expired`: one book write and a hint repair.
-    ///
-    /// The removal cranks are the one pair whose payment is not checked against
-    /// what the protocol collects for the same work. A cross crank refuses
-    /// unless the surplus clears its own keeper payment priced in quote
-    /// (`cross_surplus_floor`). A removal collects one `flat_filler_fee` in
-    /// quote from the evictee and pays `removal` plus
-    /// [`EXPIRY_ESCALATION_CEILING`] in lamports from the reservoir, and
-    /// nothing compares the two.
-    ///
-    /// At the shipped rails the fee is worth more than the payment, so the loop
-    /// costs an attacker money. A rails re-pricing that lifts `removal` past
-    /// the fee's value in SOL would turn each market's reservoir into a faucet
-    /// that `refill_crank_reservoir` tops up. Checking the relation needs a SOL
-    /// price, and these cranks carry no SOL oracle account, so the check would
-    /// cost them an account each. Weigh that before re-pricing the rails.
+    /// `evict_worst` / `remove_expired`: one book write and a hint repair. The one crank
+    /// pair whose payment nothing compares against what the protocol collects. A rails
+    /// re-pricing that lifts `removal` past the `flat_filler_fee`'s value in SOL turns
+    /// each reservoir into a faucet.
     pub removal: u32,
     /// `crank_cross_match`: two settlement legs through the router.
     pub cross: u32,
@@ -162,19 +123,11 @@ pub struct CrankCostUnitsV0 {
     pub refill: u32,
 }
 
-/// What each of a market's cranks pays its keeper, in lamports.
-///
-/// One figure per crank rather than one for the market. A book removal and a
-/// two-legged cross differ by an order of magnitude in what they request, and
-/// the network charges a transaction for what it requests. A single figure
-/// would either underpay the cross, so nobody runs it, or overpay every
-/// removal.
-///
-/// The attach derives these once from [`CrankCostUnitsV0`] and
-/// `State.transaction_fee_rails`. They are stored rather than recomputed at
-/// crank time for two reasons. Pricing costs a crank compute and an extra
-/// account. A staged executor that could re-derive its own terms could
-/// re-price its own work.
+/// What each of a market's cranks pays its keeper, in lamports. One figure per crank,
+/// because a removal and a two-legged cross differ by an order of magnitude and a single
+/// figure would either underpay the cross or overpay every removal. The attach derives
+/// them once from [`CrankCostUnitsV0`] and `State.transaction_fee_rails`, because an
+/// executor that could re-derive its own terms could re-price its own work.
 #[zero_copy(unsafe)]
 #[derive(Debug, Default, PartialEq, Eq)]
 #[repr(C)]
@@ -185,13 +138,9 @@ pub struct CrankPaymentsV0 {
     pub trigger: u32,
     pub liquidation: u32,
     pub force_cancel: u32,
-    /// What the treasury pays to have this market's reservoir refilled.
-    ///
-    /// The treasury holds the lamports, but this price is stored with the
-    /// market's other crank prices. The refill condition lives here, and a
-    /// condition has to advertise a floor a turner can filter on. It comes
-    /// from the same rails as every other crank, so a change to the rails
-    /// re-prices it on the market's next attach.
+    /// What the treasury pays to have this market's reservoir refilled. Stored with the
+    /// market's other crank prices because the refill condition lives here, and a
+    /// condition has to advertise a floor a turner can filter on.
     pub refill: u32,
     pub padding: u32,
 }
@@ -215,6 +164,7 @@ impl CrankPaymentsV0 {
                 error!(ErrorCode::MathError)
             })
         };
+
         Ok(Self {
             removal: price(units.removal)?,
             cross: price(units.cross)?,
@@ -227,30 +177,16 @@ impl CrankPaymentsV0 {
         })
     }
 
-    /// Extra lamports an expiry crank pays on top of the base removal payment.
-    /// The figure grows with the seconds since the order came due.
-    ///
-    /// A crank's base payment covers what the transaction costs to land in a
-    /// quiet market and no more. A turner that pays any priority fee is then
-    /// short, so it declines, and congestion is what stopped the crank in the
-    /// first place. The offer climbs with the delay instead, and a turner
-    /// takes it once it beats the fee that turner must pay. No keeper is
-    /// reimbursed for a figure it chose. The protocol sets the price and the
-    /// turner decides whether to accept it.
-    ///
-    /// The growth is linear. It starts at nothing when the order comes due and
-    /// reaches [`EXPIRY_ESCALATION_CEILING`] after
-    /// [`EXPIRY_ESCALATION_SECONDS`].
-    ///
-    /// The period is long because an expired order is not urgent. Quote and
-    /// execute already skip it, so it causes no bad fills while it rests. The
-    /// only cost of leaving it is its owner's margin staying reserved. A fast
-    /// ramp would pay a premium for ordinary latency. This one still clears a
-    /// stuck order inside a congestion episode.
+    /// Extra lamports an expiry crank pays on top of the base removal payment. The base
+    /// covers a quiet market only, so a turner paying any priority fee declines. The
+    /// offer climbs linearly to [`EXPIRY_ESCALATION_CEILING`] over
+    /// [`EXPIRY_ESCALATION_SECONDS`] until a turner takes it. The period is long because
+    /// quote and execute already skip an expired order.
     pub fn expiry_escalation(max_ts: i64, now: i64) -> u32 {
         if max_ts == 0 {
             return 0;
         }
+
         let late = now.saturating_sub(max_ts).max(0) as u64;
         let scaled = late
             .saturating_mul(u64::from(EXPIRY_ESCALATION_CEILING))
@@ -259,12 +195,10 @@ impl CrankPaymentsV0 {
             .unwrap_or(EXPIRY_ESCALATION_CEILING)
     }
 
-    /// The largest figure this market's reservoir pays for any one crank.
-    ///
-    /// The reservoir is held between multiples of this figure rather than of
-    /// each crank's own price. A market above the watermark can then always
-    /// afford its most expensive crank. The refill is not counted, because the
-    /// treasury pays that one and a reservoir never spends on being filled.
+    /// The largest figure this market's reservoir pays for any one crank. The reservoir
+    /// is held between multiples of this rather than of each crank's own price, so a
+    /// market above the watermark can always afford its most expensive crank. The refill
+    /// is not counted, because the treasury pays that one.
     pub fn max_payment(&self) -> u64 {
         u64::from(
             self.removal
@@ -276,22 +210,13 @@ impl CrankPaymentsV0 {
         )
     }
 
-    /// The priority fee this transaction paid for the work a liquidation
-    /// crank is reimbursed for.
+    /// The priority fee this transaction paid for the work a liquidation crank is
+    /// reimbursed for. Priced on the lesser of what the transaction asked for and what
+    /// the crank was measured to need. A fixed figure would overpay a caller that asked
+    /// for less, and the request alone would let a caller inflate the limit.
     ///
-    /// Priced on the lesser of what the transaction asked for and what the
-    /// crank was measured to need. Both bounds matter, in opposite directions.
-    /// The runtime charges the priority fee on the limit a transaction
-    /// requests. A fixed figure would pay a caller that requests less than
-    /// that figure more than it spent, which is a profit drawn from the
-    /// reservoir on every liquidation. The request alone would let a caller
-    /// inflate the limit and bill the difference. The smaller of the two
-    /// leaves nothing in either direction.
-    ///
-    /// `max_price_per_unit` caps the per-unit price. The caller sets the
-    /// price, so without a cap a caller that builds the block can pay the fee
-    /// to itself and bill the reservoir any amount. A zero cap prices the
-    /// priority fee at nothing, which disables the reimbursement.
+    /// `max_price_per_unit` caps the per-unit price, because a caller that builds the
+    /// block could otherwise pay the fee to itself. A zero cap disables it.
     pub fn crank_priority_lamports(
         price_per_unit: u64,
         requested_units: u32,
@@ -307,21 +232,13 @@ impl CrankPaymentsV0 {
         .map_err(|_| ErrorCode::MathError)
     }
 
-    /// What a liquidation crank pays on top of its base figure. The
-    /// transaction's real cost, bounded by a share of what the liquidation
-    /// recovered.
+    /// What a liquidation crank pays on top of its base figure: the transaction's real
+    /// cost, bounded by a share of what the liquidation recovered. The base figure
+    /// already covers the signature, so only the priority fee is added back.
     ///
-    /// `filled_quote` is the liquidation's own filled value. `sol_price` is
-    /// the oracle's SOL price. Both are `PRICE_PRECISION`-scaled quote.
-    /// `priority_lamports` is the fee the transaction paid for its position in
-    /// the block. The base figure already covers the signature, so only the
-    /// priority fee is added back.
-    ///
-    /// Returns zero when the share is unset, the price is unusable, or the cap
-    /// is below what was spent. The last case is not a failure. It says this
-    /// liquidation was too small to be worth landing at this moment's fee, and
-    /// a keeper that agrees will leave it. It becomes worth landing when fees
-    /// fall or the account deteriorates further.
+    /// Returns zero when the share is unset, the price is unusable, or the cap is below
+    /// what was spent. The last case says the liquidation was too small to be worth
+    /// landing at this moment's fee, and it becomes worth landing when fees fall.
     pub fn liquidation_reimbursement(
         filled_quote: u64,
         sol_price: i64,
@@ -331,6 +248,7 @@ impl CrankPaymentsV0 {
         if share_bps == 0 || sol_price <= 0 || priority_lamports == 0 {
             return Ok(0);
         }
+
         // The most quote the protocol spends, then the same figure in
         // lamports. `quote / sol_price` is SOL, and a SOL is `LAMPORTS_PER_SOL`.
         let capped_quote = (filled_quote as u128)
@@ -342,19 +260,15 @@ impl CrankPaymentsV0 {
         Ok(u64::try_from(cap_lamports.min(u128::from(priority_lamports))).unwrap_or(0))
     }
 
-    /// The quote value of a lamport figure at the SOL oracle price.
-    ///
-    /// The cross cranks pay their keeper in lamports but net the protocol its
-    /// surplus in quote. A floor set in one unit cannot bound a cost in the
-    /// other. A cross must clear at least the keeper payment converted to
-    /// quote, or the protocol loses on it after what it pays to land it. The
-    /// result is rounded up, so the floor never sits below the true cost.
-    /// Returns `None` when the price is unusable, which leaves the admin's own
-    /// floor to stand.
+    /// The quote value of a lamport figure at the SOL oracle price. The cross cranks pay
+    /// their keeper in lamports but net the protocol its surplus in quote, so a cross
+    /// must clear the keeper payment converted. Rounded up, so the floor never sits below
+    /// the true cost. `None` when the price is unusable, which leaves the admin's floor.
     pub fn lamports_to_quote(lamports: u64, sol_price: i64) -> Option<u64> {
         if sol_price <= 0 || lamports == 0 {
             return None;
         }
+
         let quote = (lamports as u128)
             .checked_mul(sol_price as u128)?
             .div_ceil(u128::from(crate::math::constants::LAMPORTS_PER_SOL_U64));
@@ -406,48 +320,24 @@ pub struct ClobCrankConditionsV0 {
     /// than from the perp market account. An admin oracle rotation reaches the
     /// cranks on the next attach.
     pub oracle: Pubkey,
-    /// Lamports each executor pays its keeper, mirrored into that crank's
-    /// `min_payment`. This account is also the reservoir those lamports come
-    /// from. Relay's `assert_paid_v0` measures the keeper's lamport balance,
-    /// so a crank that moves no lamports cannot express a fee and turners have
-    /// no signal to take or decline the work. The reservoir lives here rather
-    /// than in a global PDA because the executor already writes this account
-    /// to repair the expiry hint, so it costs no extra account in a crank
-    /// transaction.
-    ///
-    /// [`crate::state::crank_treasury::CrankTreasuryV0`] refills the
-    /// reservoir. An empty reservoir fails the crank rather than paying
-    /// nothing, so the failure names the empty reservoir.
+    /// Lamports each executor pays its keeper, mirrored into that crank's `min_payment`.
+    /// This account is also the reservoir they come from, which costs no extra account.
+    /// [`crate::state::crank_treasury::CrankTreasuryV0`] refills it, and an empty
+    /// reservoir fails the crank rather than paying nothing.
     pub crank_payments: CrankPaymentsV0,
     /// Floor on the protocol's quote surplus from a cross-match crank, in
-    /// `QUOTE_PRECISION`. A cross costs the protocol SOL, because the
-    /// reservoir pays `crank_payments.cross` to whoever cranked it. A cross
-    /// that clears by a cent is worth declining. Zero keeps the rule that a
-    /// cross only has to be profitable.
-    ///
-    /// The floor is in quote rather than derived from the lamport cost,
-    /// because the conversion needs a SOL price and the cross crank carries no
-    /// SOL oracle. It holds the perp's oracle and its map section only. An
-    /// admin sets this floor to cover the cross payout with margin and
-    /// re-prices it alongside the payments.
+    /// `QUOTE_PRECISION`. The reservoir pays `crank_payments.cross` in SOL, so a cross
+    /// that clears by a cent is worth declining. In quote rather than lamports, because
+    /// the cross crank carries no SOL oracle. Zero means profitable is enough.
     pub min_cross_surplus: u64,
-    /// Where the book's own condition block sits in the market account, as it
-    /// reported at attach.
-    ///
-    /// A market has two blocks and each one needs its own relay watch. This
-    /// account's block is its first field, at offset 8. The book's block holds
-    /// the four conditions that describe the book. A registrar that watches
-    /// only this account leaves the book's cranks unwoken, so the book's
-    /// offset is captured here for the registrar to find.
+    /// Where the book's own condition block sits in the market account, as it reported at
+    /// attach. A market has two blocks and each needs its own relay watch, so a registrar
+    /// that watched only this account would leave the book's cranks unwoken.
     pub clob_block_offset: u32,
-    /// The region of the book that changes whenever either side's best moves,
-    /// as the book reported it at attach.
-    ///
-    /// A crossing order is a new best, so a relay watch here catches every
-    /// cross as it appears. The book reports the region rather than velocity
-    /// deriving it, so velocity registers the watch without knowing the book's
-    /// layout. The per-quoter cross conditions read this region too. They
-    /// watch the same book for a cross against a PropAMM.
+    /// The region of the book that changes whenever either side's best moves, as the book
+    /// reported it at attach. A crossing order is a new best, so a watch here catches
+    /// every cross. The book reports the region rather than velocity deriving it, so
+    /// velocity watches without knowing the book's layout.
     pub top_of_book_offset: u32,
     pub top_of_book_len: u32,
     /// The perp market these conditions crank. Also the PDA seed.
@@ -455,35 +345,15 @@ pub struct ClobCrankConditionsV0 {
     /// The market's quote spot market, captured at attach time. The staged
     /// executor's map section needs its PDA.
     pub quote_spot_market_index: u16,
-    /// The spendable balance this reservoir wakes its refill at, in lamports.
-    ///
-    /// The attach resolves this from the treasury's watermark setting and this
-    /// market's most expensive crank. It is stored because it is the threshold
-    /// the wake condition carries. Relay compares the mirror against this
-    /// number, so the executor must read the same number rather than recompute
-    /// it. A figure recomputed from a program constant would drift from the
-    /// conditions written before an upgrade. A market would then wake at one
-    /// level while its executor refused at another.
+    /// The spendable balance this reservoir wakes its refill at, in lamports. Relay
+    /// compares the mirror against this number, so the executor reads it rather than
+    /// recomputing. A figure from a program constant would drift from conditions written
+    /// before an upgrade, and the market would wake at one level and refuse at another.
     pub refill_watermark_lamports: u64,
-    /// This account's spendable lamports as of the last payment or refill.
-    /// Spendable means the balance less the rent exemption.
-    ///
-    /// A relay watch reads account data, and a lamport balance is account
-    /// metadata rather than data. The mirror is what lets the refill condition
-    /// wake on a draining reservoir. The write costs nothing, because every
-    /// payment already writes this account.
-    ///
-    /// The mirror is advisory. The refill instruction reads the real balance,
-    /// and the resolver refuses to stage a refill against a reservoir that is
-    /// full.
-    ///
-    /// The attach and every payment write it, which covers every way the
-    /// balance falls. A plain lamport transfer into the reservoir is the one
-    /// way the balance can rise without a write, and that leaves the mirror
-    /// low. The condition then stays due, and turners keep resolving it to no
-    /// work until the next payment restates it. That costs simulations rather
-    /// than lamports. The treasury refill exists so that funding a reservoir
-    /// by hand is not the normal path.
+    /// This account's spendable lamports as of the last payment or refill, meaning the
+    /// balance less rent exemption. A relay watch reads account data and a lamport
+    /// balance is metadata, so the mirror is what lets the refill condition wake.
+    /// Advisory: the refill instruction reads the real balance.
     pub spendable_mirror: u64,
     /// Tail reserve. It holds 4 bytes of alignment slack plus room for a
     /// captured pubkey and change. A resolver that needs another fixed account
@@ -598,6 +468,7 @@ impl ClobCrankConditionsV0 {
         if amount == 0 {
             return Ok(0);
         }
+
         let available = conditions.lamports().saturating_sub(rent_minimum);
         if available < amount {
             msg!(
@@ -606,8 +477,10 @@ impl ClobCrankConditionsV0 {
                 available,
                 amount
             );
+
             return Err(ErrorCode::InsufficientCrankReservoir.into());
         }
+
         **conditions.try_borrow_mut_lamports()? = conditions
             .lamports()
             .checked_sub(amount)
@@ -620,12 +493,9 @@ impl ClobCrankConditionsV0 {
         Ok(amount)
     }
 
-    /// Restate the spendable balance in account data, so the refill condition
-    /// sees what the account actually holds.
-    ///
-    /// This writes raw bytes rather than going through the loader. Every
-    /// caller already holds this account as an `AccountInfo`, and a loader
-    /// borrow here can collide with one the caller still holds.
+    /// Restate the spendable balance in account data, so the refill condition sees what
+    /// the account holds. Writes raw bytes rather than going through the loader, because
+    /// a loader borrow here can collide with one the caller still holds.
     pub fn write_spendable_mirror(conditions: &AccountInfo, rent_minimum: u64) -> Result<()> {
         let spendable = conditions.lamports().saturating_sub(rent_minimum);
         let mut data = conditions.try_borrow_mut_data()?;
@@ -654,11 +524,9 @@ mod tests {
         relay_spec::{bytemuck::Zeroable, ResolvedCrankV0, ResponsePointerV0},
     };
 
-    /// The account holds two conditions, and both describe this account rather
-    /// than the book. One polls for a cross a PropAMM created by repricing.
-    /// The other wakes when the reservoir falls to its refill watermark. The
-    /// book hosts its own four. A failure here means a condition was added
-    /// that belongs on the account whose state it describes.
+    /// Both conditions here describe this account rather than the book: a poll for a
+    /// cross a PropAMM created by repricing, and the reservoir's refill watermark. A
+    /// failure means a condition was added that belongs on the book.
     #[test]
     fn the_crank_terms_cost_no_account_space() {
         assert_eq!(CLOB_CRANK_CONDITIONS, 2);
@@ -689,6 +557,7 @@ mod tests {
             CrankPaymentsV0::expiry_escalation(1_000, 1_000 + half),
             EXPIRY_ESCALATION_CEILING / 2
         );
+
         // At the window and far past it, the ceiling and no more.
         let full = EXPIRY_ESCALATION_SECONDS as i64;
         assert_eq!(
@@ -699,6 +568,7 @@ mod tests {
             CrankPaymentsV0::expiry_escalation(1_000, 1_000 + full * 1_000),
             EXPIRY_ESCALATION_CEILING
         );
+
         // A good-till-cancelled order never escalates: it has no deadline to
         // be late for.
         assert_eq!(CrankPaymentsV0::expiry_escalation(0, i64::MAX), 0);
@@ -720,6 +590,7 @@ mod tests {
                 .unwrap(),
             30_000
         );
+
         // A fee over the cap is truncated to the cap. The keeper is short, so
         // it declines. This liquidation is not worth landing at that fee.
         assert_eq!(
@@ -727,6 +598,7 @@ mod tests {
                 .unwrap(),
             cap
         );
+
         // Every input that means "do not reimburse" pays nothing rather than
         // failing. The flat payment still stands and the crank still lands.
         assert_eq!(
@@ -741,6 +613,7 @@ mod tests {
             CrankPaymentsV0::liquidation_reimbursement(HUNDRED_DOLLARS, SOL, 0, 2_000).unwrap(),
             0
         );
+
         // A cent of recovery buys a cent of crank. 20% of $0.01 at $200 per
         // SOL is 10,000 lamports, short of the 30,000 fee. The keeper declines
         // and the liquidation waits for a cheaper block or a worse account.
@@ -816,6 +689,7 @@ mod tests {
             resource_fee_denominator: 10,
             max_priority_micro_lamports_per_cu: 0,
         };
+
         // 3 units at a tenth of a lamport each is a third of a lamport. A
         // payment short by a lamport buys nothing.
         assert_eq!(tenth.transaction_cost(3, 1).unwrap(), 2_501);
@@ -828,6 +702,7 @@ mod tests {
             resource_fee_denominator: 0,
             max_priority_micro_lamports_per_cu: 0,
         };
+
         assert_eq!(off.transaction_cost(u64::MAX, 2).unwrap(), 2_500 + 10_000);
     }
 
@@ -865,6 +740,7 @@ mod tests {
             },
             resolvers,
         );
+
         acct.set_condition(CLOB_CRANK_CROSS_FALLBACK, &condition)
             .unwrap();
 
@@ -877,6 +753,7 @@ mod tests {
             conditions[CLOB_CRANK_CROSS_FALLBACK].wake(),
             Ok(relay_spec::WakeView::AtTimestamp { unix_ts: 1_234 })
         );
+
         assert!(conditions[CLOB_CRANK_CROSS_FALLBACK].is_active());
 
         assert_eq!(
@@ -911,6 +788,7 @@ mod tests {
             pointer.offset(),
             crate::state::relay_scratch::RELAY_SCRATCH_OFFSET
         );
+
         let staged = &scratch.scratch[..pointer.len() as usize];
         assert_eq!(ResolvedCrankV0::read(staged).unwrap(), resolved);
     }
@@ -945,6 +823,7 @@ mod tests {
             refill: 90_000,
             padding: 0,
         };
+
         assert_eq!(payments.max_payment(), 21_000);
     }
 
@@ -975,6 +854,7 @@ mod tests {
             &owner,
             false,
         );
+
         ClobCrankConditionsV0::pay_keeper_lamports(&conditions, &keeper, 1_500_000, rent_minimum)
             .unwrap();
         assert_eq!(read_mirror(&conditions), 3_500_000);
@@ -986,6 +866,7 @@ mod tests {
         bytes.copy_from_slice(
             &data[CLOB_CRANK_SPENDABLE_MIRROR_OFFSET..CLOB_CRANK_SPENDABLE_MIRROR_OFFSET + 8],
         );
+
         u64::from_le_bytes(bytes)
     }
 
@@ -1041,11 +922,13 @@ mod tests {
             CrankPaymentsV0::crank_priority_lamports(1_000_000, units, ceiling).unwrap(),
             u64::from(units) * ceiling / 1_000_000
         );
+
         // A zero ceiling disables the priority reimbursement.
         assert_eq!(
             CrankPaymentsV0::crank_priority_lamports(1_000_000, units, 0).unwrap(),
             0
         );
+
         // A price below the ceiling is reimbursed at what it asked for.
         assert_eq!(
             CrankPaymentsV0::crank_priority_lamports(5_000, units, ceiling).unwrap(),

@@ -1,25 +1,19 @@
 /**
- * The vAMM quote ladder. It mirrors
- * `programs/velocity/src/vlp/amm/router_adapter.rs::vamm_quote_levels`.
+ * allow-verbose: mirrors `programs/velocity/src/vlp/amm/router_adapter.rs::vamm_quote_levels`;
+ * a divergence between the two is a bug, so change both together.
  *
- * The router turns the continuous curve into discrete price levels so the vAMM
- * can be split against the CLOB and PropAMM books. A client reproduces the
- * ladder to predict a fill, because the split consumes the ladder rather than
- * the raw curve.
+ * The router turns the continuous curve into discrete price levels so the vAMM can be split
+ * against the CLOB and PropAMM books. A client reproduces the ladder to predict a fill, because
+ * the split consumes the ladder rather than the raw curve.
  *
  * Two properties carry over from the Rust and matter for prediction:
- *
- *  - A rung's price is the exact per-unit cost of its own slice. It comes from
- *    the same swap math the fill runs, spread reserves included, rounded
- *    against the taker. It is not the curve's marginal price.
- *  - A rival price within {@link LAST_LOOK_BAND} of the vAMM's top becomes a
- *    rung. The slice of curve that is cheaper than the rival is quoted at the
- *    rival's price, and the vAMM wins the tie on tier priority. A client that
- *    ignores rival books therefore under-estimates what the taker pays. A rung
- *    reprices no more base than the rivals at that price offer, so rival size
- *    matters as much as rival price.
- *
- * A divergence from `router_adapter.rs` is a bug. Change both together.
+ *  - A rung's price is the exact per-unit cost of its own slice, from the same swap math the
+ *    fill runs, spread reserves included, rounded against the taker. It is not the curve's
+ *    marginal price.
+ *  - A rival price within {@link LAST_LOOK_BAND} of the vAMM's top becomes a rung, priced at the
+ *    rival's price; the vAMM wins the tie on tier priority. A client that ignores rival books
+ *    under-estimates what the taker pays. A rung reprices no more base than the rivals at that
+ *    price offer, so rival size matters as much as rival price.
  */
 
 import { BN } from '@coral-xyz/anchor';
@@ -50,9 +44,8 @@ import { RouterPriceLevel, RouterQuoterBook } from './router';
 export const VAMM_QUOTE_CHECKPOINTS = 8;
 
 /**
- * A rival price becomes a shading rung only within this fraction of the vAMM's
- * top price, in PERCENTAGE_PRECISION. It is 5 percent. Beyond the band a bad
- * price from an approved but hostile quoter cannot inflate the vAMM's book.
+ * A rival price becomes a shading rung only within this fraction of the vAMM's top price
+ * (PERCENTAGE_PRECISION, 5 percent), so a bad price from an approved quoter cannot inflate the book.
  */
 export const LAST_LOOK_BAND = PERCENTAGE_PRECISION.divn(20);
 
@@ -141,6 +134,7 @@ export function vammQuoteLevels(
 		if (crossedAtTop) {
 			return [];
 		}
+
 		const [reachable, tradeDirection] = calculateMaxBaseAssetAmountToTrade(
 			amm,
 			marketStats,
@@ -148,14 +142,15 @@ export function vammQuoteLevels(
 			direction,
 			mmOraclePriceData
 		);
+
 		if (!isVariant(tradeDirection, isLong ? 'long' : 'short')) {
-			// `top` is the reserve price plus one spread, and the swap's first
-			// marginal is higher than that. A limit above `top` can still sit
-			// below the marginal, so the inversion trades the other way. No
-			// size fills within the limit. Quote nothing rather than leave
-			// `total` uncapped and quote past the limit.
+			// `top` is the reserve price plus one spread. The swap's first marginal is
+			// higher, so a limit above `top` can still sit below it and trade the other
+			// way. No size fills within the limit, so quote nothing instead of leaving
+			// `total` uncapped past the limit.
 			return [];
 		}
+
 		total = BN.min(total, reachable);
 		if (total.lte(ZERO)) {
 			return [];
@@ -187,6 +182,7 @@ export function vammQuoteLevels(
 			if (!inBand || level.size.lte(ZERO)) {
 				continue;
 			}
+
 			let at = 0;
 			while (
 				at < rivalRungs.length &&
@@ -194,17 +190,20 @@ export function vammQuoteLevels(
 			) {
 				at++;
 			}
+
 			if (at < rivalRungs.length && rivalRungs[at].price.eq(level.price)) {
 				// Two rivals at one price offer that price for both their sizes.
 				rivalRungs[at] = {
 					price: rivalRungs[at].price,
 					size: rivalRungs[at].size.add(level.size),
 				};
+
 				continue;
 			}
 			if (at >= VAMM_QUOTE_CHECKPOINTS) {
 				continue;
 			}
+
 			rivalRungs.splice(at, 0, { price: level.price, size: level.size });
 			if (rivalRungs.length > VAMM_QUOTE_CHECKPOINTS) {
 				rivalRungs.length = VAMM_QUOTE_CHECKPOINTS;
@@ -229,9 +228,11 @@ export function vammQuoteLevels(
 			direction,
 			mmOraclePriceData
 		);
+
 		if (!isVariant(tradeDirection, isLong ? 'long' : 'short')) {
 			continue;
 		}
+
 		const capped = BN.min(BN.min(cumulative, total), rivalDepth);
 		checkpoints.push([capped, rung.price]);
 		if (capped.eq(total)) {
@@ -275,6 +276,7 @@ export function vammQuoteLevels(
 		if (cumulative.lte(previous)) {
 			continue;
 		}
+
 		const levelSize = cumulative.sub(previous);
 		const notional = BN.max(
 			swapNotional(spreadReserves, cumulative, swapDirection),
@@ -296,10 +298,12 @@ export function vammQuoteLevels(
 		if (price.lte(ZERO)) {
 			break;
 		}
+
 		bound = price;
 		levels.push({ price, size: levelSize });
 		previous = cumulative;
 		previousNotional = notional;
 	}
+
 	return levels;
 }

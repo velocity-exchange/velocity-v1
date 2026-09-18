@@ -198,6 +198,7 @@ describe('protocol fees', () => {
 			MARKET_INDEX,
 			bufferTarget
 		);
+
 		// Disable the bankruptcy IF floor, which defaults to 10 bps of open-interest
 		// notional, so this test can assert a full drain. bankruptcyIfFloor.ts covers
 		// the behavior with the floor active. 0 selects the default, so disabling the

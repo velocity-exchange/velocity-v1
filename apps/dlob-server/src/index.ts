@@ -246,6 +246,7 @@ const main = async (): Promise<void> => {
 			marketIndex: market.marketIndex,
 			marketName: market.symbol,
 		})),
+
 		slotSubscriber,
 		fetchFromRedis,
 		selectMostRecentBySlot
@@ -388,6 +389,7 @@ const main = async (): Promise<void> => {
 				`last_update_orderbook_best_makers_${getVariant(
 					normedMarketType
 				)}_${normedMarketIndex}`,
+
 				selectMostRecentBySlot
 			);
 			if (redisResponse) {
@@ -731,6 +733,7 @@ const main = async (): Promise<void> => {
 				res.status(400).send('userPubkey is required');
 				return;
 			}
+
 			try {
 				new PublicKey(userPubkey);
 			} catch {
@@ -765,6 +768,7 @@ const main = async (): Promise<void> => {
 				miss: orders.length === 0,
 				path: req.baseUrl + req.path,
 			});
+
 			res.writeHead(200);
 			res.end(
 				JSON.stringify({

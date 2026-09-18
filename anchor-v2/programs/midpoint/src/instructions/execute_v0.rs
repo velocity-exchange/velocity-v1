@@ -37,6 +37,7 @@ pub fn handle_execute_v0(
         args.taker.as_ref(),
         args.taker_served_window,
     )?;
+
     // A mid outside the band of velocity's oracle fills nothing, so a
     // compromised hot key cannot settle the maker at an off-market price.
     let open = open
@@ -66,9 +67,11 @@ pub fn handle_execute_v0(
                     Direction::Long => 0,
                     Direction::Short => 1,
                 },
+
                 version: MIDPOINT_EVENT_VERSION,
                 _pad: [0; 2],
             });
+
             change = Some((fill.base, fill.quote));
         }
     }

@@ -535,40 +535,14 @@ pub fn settle_expired_market(
         target_expiry_price
     )?;
 
-    // Price against the PnL pool only. The read happens after the transfer
-    // above, so it already includes `fee_pool_transfer`.
-    //
-    // Only `min(total_fee_minus_distributions, fee_pool)` ever moves into the
-    // PnL pool, and expired-position settlement pays out of the PnL pool alone.
-    // `update_pnl_pool_and_user_balance` caps there and reverts with
-    // `InsufficientPerpPnlPool`. Whenever `total_fee_minus_distributions` is
-    // below `fee_pool`, counting the whole fee pool here would price winners
-    // against value no claim can draw on, and the last winners would revert
-    // (OtterSec #116).
-    //
-    // Moving the entire fee pool instead is wrong for the same reason. The fee
-    // pool can hold more than the AMM's own accounted equity, and that excess is
-    // protocol and insurance fund revenue awaiting the sweep, not AMM surplus
-    // payable to perp winners. `settle_expired_market_pools_to_revenue_pool`
-    // routes the remainder to the revenue pool at delisting.
-    //
-    // The pool is then read net of `pending_revenue_share` (OtterSec #147). That
-    // counter is a booked third-party liability, not AMM surplus. The taker's
-    // quote was debited at fill and a matching builder or referrer payable was
-    // recorded, so the pool holds those tokens while they are owed elsewhere.
-    // `sweep_market_fees` reserves the counter ahead of every fee drain and
-    // `calculate_perp_market_amm_summary_stats` subtracts it. The expiry solver
-    // was the one consumer pricing against the gross pool.
-    //
-    // `pending_protocol_fee` and `pending_if_fee` are not reserved. They are the
-    // protocol's own revenue and sit junior to user claims by design.
-    // `sweep_market_fees` reserves `max(net_user_pnl, 0)` ahead of both drains,
-    // valued at `expiry_price` while the market is in Settlement. A short pool
-    // therefore pays winners first and the carveouts take the loss. Reserving
-    // them here would pay protocol revenue ahead of expiring traders.
-    //
-    // The subtraction saturates. A corrupt counter larger than the pool must
-    // floor the backing at zero rather than solve against a negative balance.
+    // Prices against the PnL pool only, after the transfer above, since
+    // only `min(total_fee_minus_distributions, fee_pool)` reaches it, and
+    // settlement pays winners from it alone. The raw fee pool would
+    // overprice winners past what it can pay (OtterSec #116). It can also
+    // exceed AMM equity with protocol and IF revenue awaiting sweep. Read
+    // net of `pending_revenue_share` (OtterSec #147), a booked builder or
+    // referrer payable, not AMM surplus. `pending_protocol_fee` and
+    // `pending_if_fee` stay unreserved: junior claims, paid after winners.
     let pnl_pool_token_amount = get_token_amount(
         market.pnl_pool.scaled_balance,
         spot_market,

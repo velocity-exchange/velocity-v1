@@ -96,22 +96,16 @@ export class UnifiedSwapClient implements SwapProvider {
 	}
 
 	/**
-	 * The configured client, seen only as {@link SwapProvider}.
-	 *
-	 * Forwarding through the interface rather than the concrete union makes the
-	 * contract enforceable. A provider added to the union that implements only
-	 * part of the contract fails to compile here. Through the union it would
-	 * instead resolve against whichever call signatures the members share.
+	 * The configured client, seen only as {@link SwapProvider}, so a partial
+	 * provider fails to compile here instead of matching the union loosely.
 	 */
 	private get provider(): SwapProvider {
 		return this.client;
 	}
 
 	/**
-	 * Get a swap quote from the configured provider.
-	 *
-	 * The provider maps the provider-specific fields on
-	 * {@link SwapQuoteParams} and ignores the ones it does not recognise.
+	 * Gets a swap quote from the configured provider, which maps the
+	 * provider-specific fields on {@link SwapQuoteParams} and ignores the rest.
 	 */
 	public async getQuote(params: SwapQuoteParams): Promise<SwapQuote> {
 		return this.provider.getQuote({
@@ -121,8 +115,7 @@ export class UnifiedSwapClient implements SwapProvider {
 	}
 
 	/**
-	 * Builds the route instructions for a quote from {@link getQuote}, at the
-	 * slippage that quote was priced at.
+	 * Builds the route instructions for a quote from {@link getQuote}, at the slippage that quote was priced at.
 	 * @throws If the quote came from a different provider or a different wallet.
 	 */
 	public async getRouteInstructions(
@@ -132,10 +125,7 @@ export class UnifiedSwapClient implements SwapProvider {
 	}
 
 	/**
-	 * Builds a standalone swap transaction for a quote from {@link getQuote}. It
-	 * keeps the provider's own compute budget, token account creation and SOL
-	 * wrapping. Use {@link getRouteInstructions} for a swap that runs inside
-	 * velocity's `beginSwap` and `endSwap` bracket.
+	 * Builds a standalone swap transaction for a quote from {@link getQuote}. Use {@link getRouteInstructions} instead inside velocity's `beginSwap`/`endSwap` bracket.
 	 * @throws If the quote came from a different provider or a different wallet.
 	 */
 	public async getSwapTransaction(

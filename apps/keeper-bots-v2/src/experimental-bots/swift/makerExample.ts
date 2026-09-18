@@ -222,12 +222,10 @@ export class SwiftMaker {
 									.divn(10000);
 								price = signedMsgOrderParams.auctionStartPrice!.add(offset);
 							}
-							// A maker does not name the taker. A signed-msg order
-							// routes at placement and fills against the book, and
-							// the maker quotes by resting a post-only order on the
-							// market's CLOB. The book rests an order at a fixed
-							// price, so an oracle-relative quote is priced here and
-							// rested at that fixed price.
+
+							// The CLOB rests an order at a fixed price, so the
+							// oracle-relative quote is converted to a fixed price
+							// before it is posted.
 							const { slots } = await this.velocityClient.getQuoterSlabAccount(
 								signedMsgOrderParams.marketIndex
 							);
@@ -236,8 +234,10 @@ export class SwiftMaker {
 								console.error(
 									`perp market ${signedMsgOrderParams.marketIndex} has no CLOB attached`
 								);
+
 								return;
 							}
+
 							const ixs = [
 								await this.velocityClient.getPlaceAndMakePerpOrderIx(
 									getLimitOrderParams({
@@ -251,11 +251,13 @@ export class SwiftMaker {
 										price,
 										postOnly: PostOnlyParams.MUST_POST_ONLY,
 									}),
+
 									{
 										quoterSlab: getQuoterSlabPublicKey(
 											this.velocityClient.program.programId,
 											signedMsgOrderParams.marketIndex
 										),
+
 										// The book is the account the slot's responses
 										// are written into.
 										clobMarket: book.config.responseAccount,

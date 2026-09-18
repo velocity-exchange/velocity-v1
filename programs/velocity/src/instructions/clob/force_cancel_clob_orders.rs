@@ -72,13 +72,8 @@ const _: () =
 
 /// One order the caller wants reclaimed.
 ///
-/// The side is declared rather than read, because a node carries no side of
-/// its own. The book stores the side as the list the node is linked into, and
-/// reading it costs a walk from the head. A declared side lets the
-/// risk-reducing test run before the CPI, so a reducing order is passed over
-/// rather than cancelled and then reverted. The declaration is not trusted. The
-/// removal the CLOB returns carries the real side, and the handler checks it
-/// against the declaration.
+/// The side is declared, not read, since a node carries no side of its own.
+/// It lets the risk-reducing test run before the CPI, but is not trusted: the handler checks it against the real side the CLOB removal returns.
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
 pub struct ForceCancelClobRefV0 {
     pub order_ref: ClobOrderRefV0,
@@ -142,6 +137,7 @@ pub struct ForceCancelClobOrders<'info> {
             CLOB_CRANK_CONDITIONS_PDA_SEED,
             args.market_index.to_le_bytes().as_ref(),
         ],
+
         bump
     )]
     pub crank_conditions: Option<AccountLoader<'info, ClobCrankConditionsV0>>,
@@ -223,14 +219,10 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
         maps.oracle_map.get_price_data(&oracle_id)?.price
     };
 
-    // The orders this crank reclaimed. The reservoir pays for work, and
-    // reaching this point does not prove any work was done. `plan.refs` may be
-    // empty, and the sweep is decided from `open_bids` and `open_asks`, which
-    // count a user's slot orders too. A user holding only those therefore
-    // sweeps a book that holds nothing of theirs, and `cancel_all_v0` removes zero
-    // without an error. Paying for that would let anyone with a failing account
-    // drain the market's reservoir in a loop, which stops every other crank on
-    // the market. Liquidations stop with them.
+    // The orders this crank reclaimed. Reaching this point does not prove any
+    // work was done: `open_bids`/`open_asks` count a user's slot orders too, so
+    // a sweep can remove zero without erroring. Paying anyway would let a
+    // failing account drain the market's reservoir in a loop and stall every crank, liquidations included.
     let reclaimed_orders = removals.orders.len() as u64
         + removals.swept.map_or(0, |outcome| {
             u64::from(outcome.bid_orders) + u64::from(outcome.ask_orders)
@@ -260,6 +252,7 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
         removals.orders.len(),
         ctx.accounts.user.key()
     );
+
     Ok(())
 }
 
@@ -315,19 +308,17 @@ fn has_force_cancel_grounds(
         maps,
         MarginContext::standard(MarginRequirementType::Initial),
     )?;
+
     // Being below the floor authorizes a keeper against the user, so this test
-    // fails closed in the opposite direction from the gates that restrict the
-    // user. The floor counts as grounds only when every oracle is valid and the
-    // trusted value sits below it. A bad price therefore cannot create
-    // authorization.
+    // fails closed in the direction opposite the gates that restrict the user.
+    // It counts as grounds only when every oracle is valid and the trusted
+    // value sits below it, so a bad price cannot create authorization.
     let below_equity_floor = calculate_net_equity_for_floor(user, maps)?
         .is_some_and(|net_equity| net_equity.proves_below_floor(user));
-    // A tripped breaker is grounds on its own. It is the authority-wide latch
-    // that records that one of this authority's subaccounts was proven below
-    // its floor, and setting it is already permissionless. While it is set,
-    // every subaccount is barred from risk-increasing activity. The
-    // risk-increasing orders this subaccount rests therefore cannot fill, and
-    // holding them on the book only blocks other people's orders.
+    // A tripped breaker is grounds on its own. It is the authority-wide latch,
+    // set permissionlessly, that records a subaccount proven below its floor.
+    // While set, it bars every subaccount from risk-increasing activity, so
+    // risk-increasing orders here cannot fill and only block other people's orders.
     let breaker_tripped = user_stats.load()?.is_equity_breaker_tripped();
     if margin_calc.meets_margin_requirement() && !below_equity_floor && !breaker_tripped {
         // There is no work here, which is not a refusal. A force-cancel put in
@@ -336,6 +327,7 @@ fn has_force_cancel_grounds(
         msg!("account meets its requirements; nothing to force-cancel");
         return Ok(false);
     }
+
     // The per-market arm of `force_cancel_orders`' skip logic. An isolated position
     // answers to its own requirement. A cross position answers to the cross
     // requirement. The breaker outranks both, because it freezes every
@@ -360,20 +352,14 @@ fn has_force_cancel_grounds(
 
 /// Decide which whole sides go in one sweep instead of one cancel per order.
 ///
-/// At least one whole side is always beyond saving, and often both sides are.
-/// That side goes in a single sweep instead of one CPI per order.
-/// `is_order_position_reducing` answers yes only for an order that faces an
-/// open position. Every order on the side that adds to the position is
-/// therefore risk-increasing whatever its size, and a flat account has no
-/// reducing side at all.
+/// At least one whole side is always beyond saving, often both, and goes in a
+/// single sweep. `is_order_position_reducing` marks an order risk-increasing
+/// unless it faces an open position, so a flat account has no reducing side.
 ///
-/// The sweep is what stops a maker from outrunning its own cleanup. Each
-/// resting order costs `OPEN_ORDER_MARGIN_REQUIREMENT`, so a few dollars buys
-/// the per-position ceiling of 255 orders. Clearing those eight at a time is 32
-/// transactions that the keeper pays for and an insolvent account may never
-/// repay. The sweep takes them in one CPI. The per-order refs are left for the
-/// tail of the reducing side, which is bounded by how far past flat that side's
-/// orders reach.
+/// The sweep stops a maker from outrunning its own cleanup. Each resting order
+/// costs `OPEN_ORDER_MARGIN_REQUIREMENT`, so a few dollars buys the 255-order
+/// per-position ceiling. Clearing eight at a time is 32 transactions the
+/// keeper pays for and an insolvent account may never repay. The sweep takes them in one CPI, and per-order refs stay for the reducing side's tail, bounded by how far past flat it reaches.
 fn decide_sweep(user: &User, market_index: u16) -> SweepDecision {
     let position = user.get_perp_position(market_index).ok();
     let position_base = position.map(|p| p.base_asset_amount).unwrap_or(0);
@@ -383,6 +369,7 @@ fn decide_sweep(user: &User, market_index: u16) -> SweepDecision {
         core::cmp::Ordering::Less => (false, true),
         core::cmp::Ordering::Equal => (true, true),
     };
+
     // A zero aggregate proves this side rests nothing on the book. The
     // aggregate counts a user's slot orders too, so only a zero is conclusive. Skipping
     // the call keeps a one-sided account from paying for a CPI that can remove
@@ -435,6 +422,7 @@ fn select_cancellable_refs(
                 view.user.authority,
                 view.user.sub_account_id
             )?;
+
             // The sweep takes this whole side, so a per-order CPI would be a
             // second call for work already done.
             if sweep
@@ -443,11 +431,13 @@ fn select_cancellable_refs(
             {
                 return Ok(None);
             }
+
             let reducing = is_order_position_reducing(
                 &order_ref.side.to_position_direction(),
                 view.base_asset_amount,
                 sweep.position_base,
             )?;
+
             Ok((!reducing).then_some(*order_ref))
         })
         .collect::<Result<Vec<_>>>()?
@@ -521,6 +511,7 @@ fn unwind_cancelled_orders(
             ErrorCode::DefaultError,
             "clob cancelled an order for a different user"
         )?;
+
         // The declared side decided, before the CPI, that this order was not
         // risk-reducing. A caller that declared the side wrong had a different
         // order cancelled from the one the test judged, so the test did not
@@ -531,6 +522,7 @@ fn unwind_cancelled_orders(
             "order {} rested on the other side than declared",
             removed.order_id
         )?;
+
         let direction = removed.side.to_position_direction();
         // The cleanup also frees a placed trigger's shadow permanently. A
         // failing account must not re-arm.
@@ -541,6 +533,7 @@ fn unwind_cancelled_orders(
             removed.reduce_only,
             removed.order_id,
         )?;
+
         total_fee = total_fee.safe_add(state.perp_fee_structure.flat_filler_fee)?;
         super::emit_clob_cancel_record(
             clock.unix_timestamp,
@@ -565,6 +558,7 @@ fn unwind_cancelled_orders(
             ErrorCode::DefaultError,
             "clob swept orders for a different user"
         )?;
+
         let orders = user.unwind_swept_orders(&clob.reader(), market_index, sides, &swept)?;
         total_fee = total_fee.safe_add(
             state
@@ -572,6 +566,7 @@ fn unwind_cancelled_orders(
                 .flat_filler_fee
                 .safe_mul(orders.into())?,
         )?;
+
         if !swept.exhaustive {
             // The CLOB stopped at its per-call cap. Everything unwound here
             // is real, and the caller repeats the call to take the rest.
@@ -579,17 +574,15 @@ fn unwind_cancelled_orders(
         }
     }
 
-    // A full exchange halt stops the fee, not the cancel. Reclaiming a failing
-    // account's orders has to stay reachable while the exchange is down, which
-    // is why this instruction carries no `exchange_not_paused` access control.
-    // The fee is the part that moves value, and its `User.orders` twin
-    // `force_cancel_orders` refuses outright under the same halt. Paying it
-    // here while the twin refuses would make the halt mean two different
-    // things for the same work.
+    // A full exchange halt stops the fee, not the cancel, so this instruction
+    // carries no `exchange_not_paused` gate. A failing account must stay
+    // reachable while halted. Its `User.orders` twin `force_cancel_orders`
+    // refuses outright under the same halt, because the fee moves value.
     let exchange_halted = state.get_exchange_status()?.is_all();
     if exchange_halted && total_fee > 0 {
         msg!("exchange halted; cancelling without the keeper fee");
     }
+
     pay_keeper_flat_reward_for_spot(
         user,
         Some(&mut filler),
@@ -597,6 +590,7 @@ fn unwind_cancelled_orders(
         if exchange_halted { 0 } else { total_fee },
         clock.slot,
     )?;
+
     user.update_last_active_slot(clock.slot);
 
     Ok(())
@@ -618,6 +612,7 @@ fn pay_crank_reward<'info>(
             let conditions = load_mut!(conditions_loader)?;
             u64::from(conditions.crank_payments.force_cancel)
         };
+
         if program_keeper_mode && reclaimed_orders > 0 {
             ClobCrankConditionsV0::pay_keeper(
                 conditions_loader,

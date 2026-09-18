@@ -783,12 +783,11 @@ pub mod delisting_test {
 
         let market = maps.perp_market_map.get_ref_mut(&0).unwrap();
         assert_eq!(market.pnl_pool.scaled_balance, 960519800000);
-        // The permissionless expiry closeout charges a taker fee (OtterSec #44).
-        // It must accrue to the market fee ledger (split IF + protocol, AMM provision
-        // zeroed since there is no AMM counterparty) rather than lingering in
-        // the pnl pool to be dumped into the revenue pool at delisting. With
-        // the default fee structure (amm/if numerators both 0) the whole fee
-        // lands in the protocol residual.
+        // A permissionless expiry closeout charges a taker fee (OtterSec #44). The
+        // fee accrues to the market fee ledger, split into IF and protocol, with
+        // AMM provision zeroed since there is no AMM counterparty. It does not
+        // linger in the pnl pool for delisting to sweep into the revenue pool.
+        // The default fee structure zeros both numerators, so the fee lands as protocol residual.
         assert_eq!(market.fee_ledger.pending_protocol_fee, 19799);
         assert_eq!(market.fee_ledger.pending_if_fee, 0);
         assert_eq!(market.fee_ledger.pending_amm_provision, 0);

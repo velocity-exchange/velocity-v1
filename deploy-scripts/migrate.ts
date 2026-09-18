@@ -1,38 +1,35 @@
 /**
- * Run this after a program upgrade. It applies every on-chain change the new
- * code needs, in dependency order.
+ * allow-verbose: this is the operational runbook an operator follows after every program
+ * upgrade. The step order and the report-not-cancel design in step 4 are safety decisions;
+ * cutting this to a summary is how someone later "fixes" step 4 into an unsafe auto-cancel.
+ *
+ * Run this after a program upgrade. It applies every on-chain change the new code needs, in
+ * dependency order.
  *
  *   bun run deploy-scripts/migrate.ts --url <rpc> --keypair <path> [--dry-run]
  *
  * Steps:
- *   1. resize: grow every velocity-owned zero-copy account whose struct
- *      gained fields. `extend_account` resolves the target size from the
- *      discriminator, so this step covers past and future growth the same
- *      way.
- *   2. liq coverage: create and sync relay liquidation conditions for every
- *      user with exposure. `initialize_user` creates them for a new user.
- *      This step backfills the users that predate that field.
- *   3. watches: register the relay `WatchV0` records that make the blocks
- *      above discoverable. Those are the market crank conditions, the
- *      per-quoter cross conditions, and the per-user liquidation conditions
- *      from step 2.
- *   4. legacy orders: report every order still resting in a `User.orders`
- *      slot that is not an unfired trigger and not a book shadow. Those are
- *      orders from the removed matching venue. Nothing matches them any more,
- *      but each one still holds an `open_bids`/`open_asks` reservation
- *      against its owner's margin, so the sooner the owner cancels it the
- *      sooner that margin comes back.
+ *   1. resize: grow every velocity-owned zero-copy account whose struct gained fields.
+ *      `extend_account` resolves the target size from the discriminator, so this step covers
+ *      past and future growth the same way.
+ *   2. liq coverage: create and sync relay liquidation conditions for every user with exposure,
+ *      backfilling users that predate `initialize_user` creating them automatically.
+ *   3. watches: register the relay `WatchV0` records that make the blocks from steps 1 and 2
+ *      discoverable: the market crank conditions, the per-quoter cross conditions, and the
+ *      per-user liquidation conditions.
+ *   4. legacy orders: report every order still resting in a `User.orders` slot that is not an
+ *      unfired trigger and not a book shadow. These are orders from the removed matching venue.
+ *      Each still holds an `open_bids`/`open_asks` reservation against its owner's margin, so
+ *      the sooner the owner cancels it the sooner that margin returns.
  *
- *      This step reports and does not cancel. Only the owner or their
- *      delegate can cancel an order, and the keeper sweep
- *      (`force_cancel_orders`) reaches an account only while it is below its
- *      initial margin requirement. A healthy owner's stale order is therefore
- *      theirs to pull.
+ *      This step reports and does not cancel. Only the owner or their delegate can cancel an
+ *      order, and the keeper sweep (`force_cancel_orders`) reaches an account only while it is
+ *      below its initial margin requirement. A healthy owner's stale order is therefore theirs
+ *      to pull.
  *
- * Every step reads on-chain state first and skips what is already correct. A
- * run that stops part way is resumed by running it again.
- *
- * A new migration belongs here as a step, not in a runbook.
+ * Every step reads on-chain state first and skips what is already correct, so a run that stops
+ * part way is resumed by running it again. A new migration belongs here as a step, not in a
+ * runbook.
  */
 import { createHash } from 'crypto';
 import * as fs from 'fs';
@@ -68,10 +65,8 @@ const PLACED_ON_CLOB_BIT = 0b0100_0000;
  * anchor discriminator. */
 const BLOCK_OFFSET = 8;
 /**
- * Bytes that follow `UserConditionsV0.sync_payment_lamports`. They are
- * `sync_fallback_slots`, `positions_digest`, `last_paid_sync_slot`, and the
- * 64-byte tail reserve. The read is measured from the end of the account, so a
- * field added ahead of the payment does not move it.
+ * Bytes that follow `UserConditionsV0.sync_payment_lamports`: `sync_fallback_slots`,
+ * `positions_digest`, `last_paid_sync_slot`, and the 64-byte tail reserve, measured from the account's end so a field added ahead of the payment does not move it.
  */
 const BYTES_AFTER_SYNC_PAYMENT = 8 + 8 + 72;
 
@@ -92,6 +87,7 @@ function parseArgs(): Args {
 		if (fallback !== undefined) return fallback;
 		throw new Error(`missing ${flag}`);
 	};
+
 	return {
 		url: get('--url', process.env.RPC_URL ?? 'http://127.0.0.1:8899'),
 		keypair: get('--keypair', `${process.env.HOME}/.config/solana/id.json`),
@@ -103,10 +99,8 @@ function parseArgs(): Args {
 }
 
 /**
- * An account's anchor discriminator, hashed from its Rust type name. The name
- * has to match the IDL exactly: a name that does not match hashes to a prefix
- * no account carries, `getProgramAccounts` returns nothing, and the step
- * reports zero accounts and moves on. `assertNamesAreReal` is the guard.
+ * An account's anchor discriminator, hashed from its Rust type name. The name must match the
+ * IDL exactly, or `getProgramAccounts` silently returns nothing. `assertNamesAreReal` guards against that.
  */
 function discriminator(name: string): Buffer {
 	return createHash('sha256')
@@ -145,12 +139,8 @@ const RESIZABLE: { name: string; size: number }[] = [
 	{ name: 'User', size: 8 + 4496 },
 	{ name: 'PerpMarket', size: 8 + 1328 },
 	{ name: 'QuoterV0', size: 8 + 784 },
-	// Relay condition hosts. The `sizes_for_the_migration_script` test in
-	// `state/relay_scratch.rs` prints these sizes. Run it and paste the output
-	// rather than working the sizes out by hand:
-	// `cargo test -p velocity --lib sizes_for_the_migration_script -- --show-output`.
-	// A type that is missing or stale here has no symptom until an account is
-	// read at the wrong offset.
+	// Relay condition hosts. Sizes come from `cargo test -p velocity --lib
+	// sizes_for_the_migration_script -- --show-output` in `state/relay_scratch.rs`. A stale or missing entry here has no symptom until read at the wrong offset.
 	{ name: 'ClobCrankConditionsV0', size: 808 },
 	{ name: 'QuoterCrossConditionsV0', size: 2424 },
 	{ name: 'UserConditionsV0', size: 6040 },
@@ -190,15 +180,18 @@ async function main() {
 		program.idl,
 		RESIZABLE.map(({ name }) => name)
 	);
+
 	const state = PublicKey.findProgramAddressSync(
 		[Buffer.from('velocity_state')],
 		velocity
 	)[0];
+
 	for (const { name, size } of RESIZABLE) {
 		const accounts = await connection.getProgramAccounts(velocity, {
 			filters: [
 				{ memcmp: { offset: 0, bytes: bs58(discriminator(name)) } },
 			],
+
 			dataSlice: { offset: 0, length: 0 },
 		});
 		const keys = accounts.map((a) => a.pubkey);
@@ -208,9 +201,11 @@ async function main() {
 			console.log(`resize ${name}: ${keys.length} accounts, all current`);
 			continue;
 		}
+
 		console.log(
 			`resize ${name}: ${stale.length}/${keys.length} undersized -> ${size}b`
 		);
+
 		for (const account of stale.slice(0, args.limit || stale.length)) {
 			await act(`extend ${name} ${account.toBase58()}`, [
 				await program.methods
@@ -277,6 +272,7 @@ async function main() {
 	const users = await connection.getProgramAccounts(velocity, {
 		filters: [{ memcmp: { offset: 0, bytes: bs58(userDisc) } }],
 	});
+
 	console.log(`\nliq coverage: ${users.length} user accounts`);
 	// The markets and oracles the sync needs, read once.
 	const perpMarkets = await connection.getProgramAccounts(velocity, {
@@ -306,6 +302,7 @@ async function main() {
 			if (!oracle) continue;
 			syncAccounts.push({ pubkey: oracle, isSigner: false, isWritable: false });
 		}
+
 		syncAccounts.push(
 			{
 				pubkey: getSpotMarketPublicKeySync(velocity, 0),
@@ -323,6 +320,7 @@ async function main() {
 				isWritable: false,
 			}))
 		);
+
 		// `SyncLiqConditionsArgs` is the cost units as a u32, then the fallback
 		// interval in slots. The program derives the lamport fee from
 		// `State.transactionFeeRails`.
@@ -347,6 +345,7 @@ async function main() {
 						},
 						...syncAccounts,
 					],
+
 					data: Buffer.concat([
 						ixDiscriminator('sync_liq_conditions'),
 						argsBuf,
@@ -354,12 +353,14 @@ async function main() {
 				}),
 			]
 		);
+
 		// The sync fee comes from the conditions account's own lamports.
 		if (!args.dryRun) {
 			const info = await connection.getAccountInfo(userConditions);
 			const floor = await connection.getMinimumBalanceForRentExemption(
 				info?.data.length ?? 7272
 			);
+
 			// Fund fifty syncs. The program prices the fee, so read the value
 			// the account holds rather than restating it here.
 			const paid = info
@@ -380,9 +381,11 @@ async function main() {
 				]);
 			}
 		}
+
 		await ensureWatch(connection, provider, payer, userConditions, act);
 		covered += 1;
 	}
+
 	console.log(`liq coverage: ${covered} accounts with exposure`);
 
 	// 3. watches for the market and quoter conditions
@@ -412,17 +415,21 @@ async function main() {
 			);
 		}
 	}
+
 	const quoters = await connection.getProgramAccounts(velocity, {
 		filters: [
 			{ memcmp: { offset: 0, bytes: bs58(discriminator('QuoterV0')) } },
 		],
+
 		dataSlice: { offset: 0, length: 0 },
 	});
+
 	for (const { pubkey: quoter } of quoters) {
 		const crossConditions = PublicKey.findProgramAddressSync(
 			[Buffer.from('quoter_cross_conditions'), quoter.toBuffer()],
 			velocity
 		)[0];
+
 		if (!(await connection.getAccountInfo(crossConditions))) continue;
 		await ensureWatch(connection, provider, payer, crossConditions, act);
 	}
@@ -449,6 +456,7 @@ async function clobBookFor(
 		'perpMarket',
 		marketInfo.data
 	) as { clobMarket: PublicKey };
+
 	if (!clobMarket || clobMarket.equals(PublicKey.default)) return undefined;
 	return new PublicKey(clobMarket);
 }
@@ -465,6 +473,7 @@ async function ensureWatch(
 		ixs: TransactionInstruction[],
 		signers?: Keypair[]
 	) => Promise<void>,
+
 	blockOffset: number = BLOCK_OFFSET
 ) {
 	// `WatchV0` holds `target_program` and then `target`, so a memcmp finds
@@ -473,6 +482,7 @@ async function ensureWatch(
 		filters: [{ memcmp: { offset: 40, bytes: target.toBase58() } }],
 		dataSlice: { offset: 0, length: 0 },
 	});
+
 	if (existing.length > 0) return;
 	const watch = Keypair.generate();
 	const offset = Buffer.alloc(4);
@@ -488,6 +498,7 @@ async function ensureWatch(
 				space: WATCH_V0_LEN,
 				programId: RELAY_PROGRAM,
 			}),
+
 			new TransactionInstruction({
 				programId: RELAY_PROGRAM,
 				keys: [
@@ -495,6 +506,7 @@ async function ensureWatch(
 					{ pubkey: target, isSigner: false, isWritable: false },
 					{ pubkey: watch.publicKey, isSigner: false, isWritable: true },
 				],
+
 				data: Buffer.concat([ixDiscriminator('register_watch_v0'), offset]),
 			}),
 		],
@@ -513,6 +525,7 @@ async function getMultipleAccountsChunked(
 		);
 		out.push(...chunk.map((a) => (a ? { data: a.data } : null)));
 	}
+
 	return out;
 }
 
@@ -550,6 +563,7 @@ function reportLegacyOrders(
 			// A book shadow keeps its slot so the owner can still cancel it.
 			return !order.bitFlags || (order.bitFlags & PLACED_ON_CLOB_BIT) === 0;
 		}).length;
+
 		if (count === 0) continue;
 		stranded.push({ user: pubkey, count });
 		total += count;
@@ -561,6 +575,7 @@ function reportLegacyOrders(
 	for (const { user, count } of stranded.slice(0, 40)) {
 		console.log(`  ${user.toBase58()}: ${count}`);
 	}
+
 	if (stranded.length > 40) {
 		console.log(`  … ${stranded.length - 40} more accounts`);
 	}
@@ -574,6 +589,7 @@ function exposedPerpMarkets(user: any): number[] {
 		const quote = new BN(position.quoteAssetAmount ?? 0);
 		if (!base.isZero() || !quote.isZero()) markets.push(position.marketIndex);
 	}
+
 	return [...new Set(markets)];
 }
 

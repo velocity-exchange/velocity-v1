@@ -97,6 +97,7 @@ pub struct TriggerMarketOrderV1<'info> {
             CLOB_CRANK_CONDITIONS_PDA_SEED,
             args.market_index.to_le_bytes().as_ref(),
         ],
+
         bump
     )]
     pub crank_conditions: Option<AccountLoader<'info, ClobCrankConditionsV0>>,
@@ -109,6 +110,7 @@ pub struct TriggerMarketOrderV1<'info> {
             crate::state::user_conditions::USER_CONDITIONS_PDA_SEED,
             user.key().as_ref(),
         ],
+
         bump
     )]
     pub trigger_conditions:
@@ -156,10 +158,9 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
         &ctx.accounts.user,
     )?;
 
-    // Firing is irreversible. It frees the trigger slot, charges the flat
-    // reward, and turns the order into a rest on the book. A book that takes no
-    // new orders would leave the owner with a paid fee and no order. So refuse
-    // before anything moves, and leave the trigger armed. The v0
+    // Firing is irreversible: it frees the trigger slot, charges the flat
+    // reward, and turns the order into a book rest. Refuse before anything
+    // moves rather than leave the owner with a paid fee and no order. The v0
     // `trigger_order` crank still fires such an order into `User.orders`.
     validate!(
         ctx.accounts.quoter_slab.clob_slot(market_index)?.quotes(),
@@ -230,9 +231,8 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
 
 /// What the caller staged after the market maps.
 ///
-/// A trigger crank carries the same tail a fill carries. That is the maker
-/// accounts, the taker's builder escrow, and the quoter accounts a route reads.
-/// The quoter accounts decide whether the fired order fills here at all.
+/// A trigger crank carries the same tail a fill carries: maker accounts,
+/// the taker's builder escrow, and the quoter accounts that decide whether the fired order fills here at all.
 struct RouteTail<'info> {
     makers_and_referrer: crate::state::user_map::UserMap<'info>,
     makers_and_referrer_stats: crate::state::user_map::UserStatsMap<'info>,
@@ -307,6 +307,7 @@ fn read_fired_route_inputs(
             PositionDirection::Long => Direction::Long,
             PositionDirection::Short => Direction::Short,
         },
+
         unfilled: fired.get_base_asset_amount_unfilled(position_base)?,
         taker: user.clob_user_ref(),
         limit_price: FillMode::Fill.quote_limit_price(
@@ -350,6 +351,7 @@ fn route_fill_fired_order<'info>(
         &ctx.accounts.quoter_slab,
         market_index,
     )?;
+
     if route_inputs.unfilled == 0 || tail.accounts.is_empty() || !synchronous_take {
         return Ok(());
     }
@@ -384,7 +386,7 @@ fn route_fill_fired_order<'info>(
             taker: route_inputs.taker,
             limit_price: route_inputs.limit_price,
             taker_served_window,
-            consume_reservation: false,
+            include_taker_origin_reservations: false,
             margin_ratio_initial: route_margin_ratio_initial,
         },
         Some(crate::instructions::RouteClaim {
@@ -414,6 +416,7 @@ fn route_fill_fired_order<'info>(
             ),
             None => None,
         },
+
         unrouted_quoters: quoted.unrouted_quoters,
     };
 
@@ -423,6 +426,7 @@ fn route_fill_fired_order<'info>(
         taker_exposure_closed_by_caller: false,
         obligation,
     });
+
     controller::orders::fill_perp_order(
         controller::orders::FillRequest {
             // The fired order is ephemeral. It reserved nothing, so the fill
@@ -448,6 +452,7 @@ fn route_fill_fired_order<'info>(
         },
         &mut router,
     )?;
+
     Ok(())
 }
 
@@ -496,8 +501,10 @@ fn rest_fired_remainder<'info>(
                 Some(rest_oracle_price),
             )
         };
+
         (remainder, unfilled, is_isolated_position)
     };
+
     // The fill took the whole order, so there is no remainder to rest.
     if unfilled == 0 {
         return Ok(());
@@ -524,6 +531,7 @@ fn rest_fired_remainder<'info>(
         )?,
         None => None,
     };
+
     if rested.is_some() {
         return Ok(());
     }
@@ -551,6 +559,7 @@ fn rest_fired_remainder<'info>(
         None,
         is_isolated_position,
     )?;
+
     Ok(())
 }
 
@@ -628,6 +637,7 @@ pub fn handle_resolve_trigger_market_order_v1(
                 crank_conditions: Some(crate::state::pdas::clob_crank_conditions(
                     meta.market_index,
                 )),
+
                 trigger_conditions: Some(ctx.accounts.trigger_conditions.key()),
                 // No fill, so no filler-obligation read of the sysvar.
                 ix_sysvar: None,

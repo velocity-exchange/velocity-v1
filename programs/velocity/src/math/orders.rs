@@ -590,16 +590,10 @@ pub fn is_new_order_risk_increasing(
     }
 }
 
-/// The base a reduce-only order may fill, given the position it reduces.
-///
-/// A short fill sells, so it reduces a long and is covered by the long side of
-/// the position. A long fill buys, so it reduces a short. A position held the
-/// same way as the fill covers nothing, and the order may not fill at all.
-///
-/// Every path that settles a reduce-only fill has to bind the fill to this,
-/// because the order's own size says nothing about how much of it may land. The
-/// router ships it to a book as a cap, and the cranks that settle a match
-/// themselves re-derive it rather than trusting the book.
+/// The base a reduce-only order may fill. A short fill reduces a long and a long fill reduces a
+/// short, so a position held the same way as the fill covers nothing and the order may not fill at
+/// all. Every path that settles a reduce-only fill binds the fill to this. The router ships it to a
+/// book as a cap, and the cranks that settle a match re-derive it rather than trust the book.
 pub fn reduce_only_cover(
     position_base_asset_amount: i64,
     fill_direction: PositionDirection,

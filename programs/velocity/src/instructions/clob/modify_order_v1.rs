@@ -116,11 +116,9 @@ pub struct ModifyOrderV1Params {
     /// book's default speed bump. A value below it needs the flow-authority
     /// attestation.
     pub activation_delay_slots: Option<u32>,
-    /// The rule of `place_and_make_perp_order_v1` applies. Refuse the
-    /// replacement rather than rest it crossed. The original is already off the
-    /// book at that point, so a refused replacement leaves the maker with no
-    /// order. That is what a maker who reprices into a crossed book asked
-    /// for.
+    /// The rule of `place_and_make_perp_order_v1` applies: refuse rather than
+    /// rest crossed. The original is already off the book, so a refused
+    /// replacement leaves the maker with no order at all.
     pub reject_if_crossed: bool,
 }
 
@@ -176,6 +174,7 @@ pub fn handle_modify_order_v1<'c: 'info, 'info>(
             clock.unix_timestamp,
             clock.slot,
         )?;
+
         user.clob_user_ref()
     };
 
@@ -185,6 +184,7 @@ pub fn handle_modify_order_v1<'c: 'info, 'info>(
         user: user_ref,
         force: false,
     })?;
+
     validate!(
         removed.user == user_ref,
         ErrorCode::DefaultError,
@@ -222,17 +222,13 @@ pub fn handle_modify_order_v1<'c: 'info, 'info>(
         activation_delay_slots: params.activation_delay_slots,
         max_ts: terms.max_ts,
         user: user_ref,
-        // A normal order rests at its owner's chosen price, so a modify makes
-        // it an ordinary maker quote. A reduce-only order stays taker-origin.
-        // Reduce-only CLOB orders are taker-origin by construction, and every
-        // path that fills or removes one relies on that to keep the owner's
-        // reduce-only counter balanced. A modify must not break that rule.
+        // Reduce-only CLOB orders are taker-origin by construction. Every path
+        // that fills or removes one relies on that to keep the reduce-only
+        // counter balanced, so a modify must preserve it.
         taker_origin: removed.reduce_only,
-        // A modify keeps the order's identity. The id is the same before and
-        // after, so a reprice is one order that moved rather than two orders. A
-        // placed trigger requires it. The trigger's shadow slot keeps the id it
-        // armed under, and a new id here would leave the slot naming an order
-        // nobody holds.
+        // The id stays the same, so a reprice reads as one order moved rather
+        // than two orders. A placed trigger's shadow slot keeps the id it
+        // armed under; a new id here would orphan the shadow.
         client_order_id: removed.client_order_id,
         reject_if_crossed: params.reject_if_crossed,
         // A modify keeps the order's reduce-only status. Otherwise the
@@ -275,6 +271,7 @@ pub fn handle_modify_order_v1<'c: 'info, 'info>(
         order_ref.node_index,
         ctx.accounts.user.key()
     );
+
     Ok(())
 }
 
@@ -301,6 +298,7 @@ fn validate_replacement_preconditions(
         "user pool id ({}) != 0",
         user.pool_id
     )?;
+
     Ok(())
 }
 
@@ -323,9 +321,11 @@ fn bind_book_for_replacement<'a, 'info>(
             ErrorCode::DefaultError,
             "CLOB quoter is not active and approved; cancel the order instead"
         )?;
+
         drop(slot);
         ClobMarket::from_slab(quoter_slab, market_index, clob_market, clob_program)?
     };
+
     validate!(
         matches!(
             perp_market_map.get_ref(&market_index)?.status,
@@ -334,6 +334,7 @@ fn bind_book_for_replacement<'a, 'info>(
         ErrorCode::MarketPlaceOrderPaused,
         "market not active"
     )?;
+
     Ok(clob)
 }
 
@@ -374,6 +375,7 @@ fn resolve_replacement_terms(
         price,
         base_asset_amount
     )?;
+
     Ok(ReplacementTerms {
         direction,
         price,
@@ -406,6 +408,7 @@ fn reserve_replacement_margin<'info>(
         ErrorCode::UserBankrupt,
         "user bankrupt"
     )?;
+
     let position_index = get_position_index(&user.perp_positions, market_index)
         .or_else(|_| add_new_position(&mut user.perp_positions, market_index))?;
     decrease_open_bids_and_asks(
@@ -414,14 +417,11 @@ fn reserve_replacement_margin<'info>(
         cancelled_base_asset_amount,
         true,
     )?;
-    // The same predicate every other placement uses, read at the same point:
-    // the position net of the cancel, before the replacement reserves. It
-    // counts the reservations the account already holds, so an order that
-    // merely fits inside the bare position still reads as risk-increasing
-    // when other orders are resting behind it. The margin type and the
-    // buffered equity floor both turn on this, so a reducing verdict that
-    // ignored those reservations would price the replacement at maintenance
-    // margin with no floor gate.
+
+    // The same predicate every placement uses, read at the same point: the
+    // position net of the cancel, before the replacement reserves. Counting
+    // existing reservations lets an order that fits the bare position still
+    // read as risk-increasing, which the margin type and equity floor rely on.
     let prospective = Order {
         direction: terms.direction,
         base_asset_amount: terms.base_asset_amount,
@@ -435,17 +435,18 @@ fn reserve_replacement_margin<'info>(
         position.open_bids,
         position.open_asks,
     )?;
+
     increase_open_bids_and_asks(
         &mut user.perp_positions[position_index],
         &terms.direction,
         terms.base_asset_amount,
         true,
     )?;
-    // One order leaves and one order arrives, so the order count does not
-    // change. Neither the position counter nor `User.open_orders` moves. A
-    // placed trigger's shadow slot does not move either. The shadow keeps the
-    // trigger parameters, and only its CLOB ref changes, which the re-stamp
-    // below writes.
+
+    // One order leaves and one arrives, so the order count does not change.
+    // Neither the position counter nor `User.open_orders` moves. A placed
+    // trigger's shadow slot keeps its parameters; only its CLOB ref changes,
+    // written by the re-stamp below.
     let isolated_market_index = (risk_increasing
         && user.perp_positions[position_index].is_isolated())
     .then_some(market_index);
@@ -475,5 +476,6 @@ fn restamp_placed_trigger_shadow<'info>(
         order.price = terms.price;
         order.max_ts = terms.max_ts;
     }
+
     Ok(())
 }

@@ -170,10 +170,9 @@ pub struct LPPool {
     pub xi: u8,
 
     /// Bps of fee charged per 10 whole 400ms periods of oracle delay past the
-    /// staleness threshold. One step is 4 seconds of wall clock. The `_slots`
-    /// suffix dates from when a slot was 400ms. `step_fee` takes period counts,
-    /// so the rate does not scale with slot time. A rename changes the IDL, so
-    /// the unit is stated here instead.
+    /// staleness threshold. One step is 4 seconds of wall clock. `step_fee`
+    /// takes period counts, not slot time, though the field keeps its legacy
+    /// `_slots` name because renaming would change the IDL.
     pub target_oracle_delay_fee_bps_per_10_slots: u8,
     /// Bps of fee charged per 10 whole 400ms periods of position delay past the
     /// staleness threshold. The units match the oracle field above.

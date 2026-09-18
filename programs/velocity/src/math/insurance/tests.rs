@@ -174,11 +174,10 @@ pub fn if_shares_lost_test() {
 
 #[test]
 pub fn if_shares_lost_sole_staker_full_request_test() {
-    // OtterSec #108: a staker whose pending request covers the entire fund must keep their
-    // position on cancel. The withdraw-and-restake forfeiture accrues to the *remaining*
-    // stakers, and a sole staker has none, so nothing is forfeited. Before the guard the
-    // restake leg divided into a zero-share pool, returned 0 new shares, and the cancel path
-    // burned every share (stake, user_shares and total_shares) while the vault kept the tokens.
+    // OtterSec #108: a staker whose pending request covers the whole fund keeps their position on
+    // cancel. Forfeiture from withdraw-and-restake accrues to the *remaining* stakers, and a sole
+    // staker has none. Before the guard the restake leg divided into a zero-share pool, returned 0
+    // shares, and cancel burned stake, user_shares and total_shares while the vault kept them.
     let spot_market = SpotMarket {
         insurance_fund: InsuranceFund {
             unstaking_period: 0,

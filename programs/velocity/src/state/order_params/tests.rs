@@ -886,6 +886,7 @@ mod update_perp_auction_params {
             amm,
             ..PerpMarket::default()
         };
+
         // The sanitizer prices a limit auction off the fixed limit price only.
         // A limit order with an oracle offset has no fixed price, so the pass
         // leaves it untouched. Validation then refuses it
@@ -2432,6 +2433,7 @@ fn a_signed_route_digests_canonically() {
         route_digest(&[a, b]),
         "duplicates collapse"
     );
+
     assert_ne!(
         route_digest(&[a]),
         route_digest(&[a, b]),

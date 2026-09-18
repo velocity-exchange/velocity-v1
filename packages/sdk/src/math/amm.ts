@@ -487,18 +487,12 @@ export function calculateMarketOpenBidAsk(
 }
 
 /**
- * The depth one fill may take from the vAMM, mirroring
- * `calculate_amm_available_liquidity` in
- * `programs/velocity/src/vlp/amm/math/amm.rs`.
- *
- * This is the per-fill reserve throttle, and it is much tighter than the room
- * to the hard reserve bound that {@link calculateMarketOpenBidAsk} reports. A
- * client that predicts a router split has to apply it, or it allocates the
- * vAMM depth the program will refuse.
- *
- * `maxFillReserveFraction` is validated above zero on chain. A zero here would
- * be a malformed account, so the cap falls back to the side's room rather than
- * dividing by zero.
+ * The depth one fill may take from the vAMM, mirroring `calculate_amm_available_liquidity` in
+ * `programs/velocity/src/vlp/amm/math/amm.rs`. This is the per-fill reserve throttle, much
+ * tighter than the room to the hard reserve bound that {@link calculateMarketOpenBidAsk} reports.
+ * A client that predicts a router split must apply it, or it allocates vAMM depth the program
+ * refuses. `maxFillReserveFraction` is validated above zero on chain, so a zero here means a
+ * malformed account. The cap then falls back to the side's room instead of dividing by zero.
  */
 export function calculateAmmAvailableLiquidity(
 	amm: AMM,
@@ -1312,13 +1306,11 @@ export function calculateSpreadBN(
 
 /**
  * Applies the market's manual `ammSpreadAdjustment` to an already-computed spread pair. The
- * adjustment is a percentage. A positive value grows the spread, a negative value shrinks it,
- * and the result is floored at 1. This mirrors the tail of `update_spreads` in
- * `vlp/amm/math/spread.rs`, which applies the adjustment to the frozen-curve branch as well as
- * the dynamic one. The rounding is integer: it rounds up when growing and down when shrinking.
+ * adjustment is a percentage: positive grows the spread, negative shrinks it, and the result is
+ * floored at 1. Mirrors the tail of `update_spreads` in `vlp/amm/math/spread.rs`, which applies
+ * the adjustment to the frozen-curve branch as well as the dynamic one. The rounding is integer:
+ * it rounds up when growing and down when shrinking.
  * @param amm AMM state holding `ammSpreadAdjustment`.
- * @param longSpread Long-side spread before adjustment.
- * @param shortSpread Short-side spread before adjustment.
  * @returns `[longSpread, shortSpread]` after adjustment.
  */
 function applyAmmSpreadAdjustment(
@@ -1366,12 +1358,10 @@ export function calculateSpread(
 	now?: BN,
 	reservePrice?: BN
 ): [number, number] {
-	// On chain the dynamic spread is computed whenever curveUpdateIntensity is
-	// above 0. A baseSpread of 0 does not disable it. It only lowers the floor
-	// that the volatility spread is maxed against. A short circuit on
-	// baseSpread == 0 would report a zero-width vAMM spread on a market
-	// configured with baseSpread 0, while the program quotes an
-	// inventory-skewed spread there.
+	// The dynamic spread runs whenever curveUpdateIntensity is above 0, even with
+	// baseSpread 0, which only lowers the volatility-spread floor. A short circuit
+	// on baseSpread == 0 would report a zero-width spread where the program quotes
+	// an inventory-skewed one.
 	if (amm.curveUpdateIntensity == 0) {
 		// The program divides as integers: `base_spread.safe_div(2)`.
 		const halfBaseSpread = Math.floor(amm.baseSpread / 2);

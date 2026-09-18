@@ -68,6 +68,7 @@ export const handleHealthCheck = (
 					{}
 				);
 			}
+
 			// Restart is the kill-switch latch and must survive this write.
 			// Otherwise the next probe derives a healthy verdict again and the
 			// pod is never replaced.

@@ -109,6 +109,7 @@ pub fn handle_place_and_make_perp_order_v1<'c: 'info, 'info>(
         ErrorCode::InvalidOrderIOCPostOnly,
         "place_and_make rests a limit order on the book"
     )?;
+
     // A post-only order refuses to rest crossed. A plain limit rests crossed,
     // and the cross crank matches it at the counterparty's price. Either way the
     // order rests as a maker. So `post_only` chooses only whether a crossed
@@ -162,6 +163,7 @@ pub fn handle_place_and_make_perp_order_v1<'c: 'info, 'info>(
         ErrorCode::InvalidOrderIOCPostOnly,
         "place_and_make order cannot rest on the book"
     )?;
+
     let rest_price = order.price;
 
     let position_base = load!(ctx.accounts.user)?
@@ -179,6 +181,7 @@ pub fn handle_place_and_make_perp_order_v1<'c: 'info, 'info>(
         activation_delay_slots,
         ctx.accounts.flow_authority.is_some(),
     )?;
+
     try_place_remainder_on_clob(
         &ctx.accounts.user,
         &ctx.accounts.quoter_slab,
@@ -199,5 +202,6 @@ pub fn handle_place_and_make_perp_order_v1<'c: 'info, 'info>(
         activation_delay_slots,
         &clock,
     )?;
+
     Ok(())
 }

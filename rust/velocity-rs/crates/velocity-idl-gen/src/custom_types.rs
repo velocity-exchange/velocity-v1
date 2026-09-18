@@ -161,6 +161,7 @@ impl<'de, T: Copy + Default + serde::Deserialize<'de>, const N: usize> serde::De
         if values.len() != N {
             return Err(serde::de::Error::invalid_length(values.len(), &"N elements"));
         }
+
         let mut out = [T::default(); N];
         out.copy_from_slice(&values);
         Ok(Self(out))
@@ -214,6 +215,7 @@ impl<'de, const N: usize> serde::Deserialize<'de> for ByteArray<N> {
         if values.len() != N {
             return Err(serde::de::Error::invalid_length(values.len(), &"N elements"));
         }
+
         let mut out = [0u8; N];
         out.copy_from_slice(&values);
         Ok(Self(out))

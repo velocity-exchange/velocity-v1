@@ -1,9 +1,5 @@
-// Runtime generator for Pyth Lazer oracle messages, so the LiteSVM tests don't depend on
-// frozen, pre-signed fixtures (which go stale against the on-chain wall-clock max-age check,
-// PYTH_LAZER_MAX_STALENESS_SECONDS). We mint a throwaway Ed25519 signer, make the injected
-// Pyth Lazer storage trust it (in addition to Pyth's real signer, so the remaining frozen
-// fixtures still verify), and sign fresh messages stamped at ~now — always within the max-age
-// window, no clock pinning required. See docs/DRIFT-TO-VELOCITY.md `lazer-max-staleness`.
+// Fresh Pyth Lazer messages. Frozen fixtures go stale against PYTH_LAZER_MAX_STALENESS_SECONDS.
+// See docs/DRIFT-TO-VELOCITY.md `lazer-max-staleness`.
 import * as nacl from 'tweetnacl';
 import { PYTH_STORAGE_DATA } from './pythLazerData';
 
@@ -113,21 +109,8 @@ export function makeFreshLazerMessageHex(
 	return message.toString('hex');
 }
 
-/**
- * A fresh SOL message, on feed 6, stamped at the LiteSVM clock.
- *
- * Pass `svmContextWrapper.connection.getTime()`, which is on-chain unix seconds. Do not pass
- * `Date.now()`. The LiteSVM clock advances about one second per processed transaction, so in a
- * transaction-heavy test it runs far ahead of the wall clock. A stamp taken from the wall clock
- * would read as stale on chain.
- *
- * `leadSeconds` moves the stamp into the future, so it survives the transactions that run between
- * building the message and posting it. The program rejects a stamp more than
- * `PYTH_LAZER_MAX_FUTURE_SECONDS` ahead of the clock, so the lead must stay under that bound.
- * Keep it 0 for an immediate post. A future `publish_time` is safe for a fill, and it can stall
- * the time-delta math in the LP-pool settle and AUM path. Lead only when the post is deferred,
- * such as a crank bundled into a transaction sent later.
- */
+// Fresh SOL message on feed 6, stamped at on-chain time (not wall clock).
+// LiteSVM advances ~1sec per tx. leadSeconds must stay under PYTH_LAZER_MAX_FUTURE_SECONDS.
 export function freshLazerSolHex(
 	nowSeconds: number,
 	leadSeconds = 0,

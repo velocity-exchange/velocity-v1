@@ -77,6 +77,7 @@ export const mockAMM: AMM = {
 		pendingInterestSplitDust: 0,
 		pendingInterestDust: new BN(0),
 	},
+
 	concentrationCoef: new BN(0),
 	minBaseAssetReserve: new BN(0),
 	maxBaseAssetReserve: new BN(0),
@@ -167,12 +168,14 @@ function mockPerpMarketCommon(): Omit<
 			pendingInterestSplitDust: 0,
 			pendingInterestDust: new BN(0),
 		},
+
 		protocolFeePool: {
 			scaledBalance: new BN(0),
 			marketIndex: 0,
 			pendingInterestSplitDust: 0,
 			pendingInterestDust: new BN(0),
 		},
+
 		feeLedger: {
 			totalExchangeFee: new BN(0),
 			totalLiquidationFee: new BN(0),
@@ -181,6 +184,7 @@ function mockPerpMarketCommon(): Omit<
 			ammProtocolFeesReceived: new BN(0),
 			pendingAmmProvision: new BN(0),
 		},
+
 		liquidatorFee: 0,
 		ifLiquidationFee: 0,
 		protocolLiquidationFee: 0,
@@ -199,6 +203,7 @@ function mockPerpMarketCommon(): Omit<
 			quoteSettledInsurance: new BN(0),
 			quoteMaxInsurance: new BN(0),
 		},
+
 		quoteSpotMarketIndex: 0,
 		feeAdjustment: 0,
 		takerFeeAddonTenthBps: 0,
@@ -211,6 +216,7 @@ function mockPerpMarketCommon(): Omit<
 			exchangeFeeExclusionScalar: 0,
 			feeTransferScalar: 0,
 		},
+
 		paddingFuture: Array(256).fill(0),
 		marketConfig: 0,
 
@@ -252,6 +258,7 @@ export const mockPerpMarkets: Array<PerpMarketAccount> = [
 		marginRatioInitial: 2000,
 		marginRatioMaintenance: 1000,
 	},
+
 	{
 		...mockPerpMarketCommon(),
 		contractTier: ContractTier.A,
@@ -259,6 +266,7 @@ export const mockPerpMarkets: Array<PerpMarketAccount> = [
 		marginRatioInitial: 0,
 		marginRatioMaintenance: 0,
 	},
+
 	{
 		...mockPerpMarketCommon(),
 		contractTier: ContractTier.A,
@@ -286,6 +294,7 @@ export const mockSpotMarkets: Array<SpotMarketAccount> = [
 			pendingInterestSplitDust: 0,
 			pendingInterestDust: new BN(0),
 		},
+
 		insuranceFund: {
 			vault: PublicKey.default,
 			totalShares: new BN(0),
@@ -296,6 +305,7 @@ export const mockSpotMarkets: Array<SpotMarketAccount> = [
 			revenueSettlePeriod: new BN(0),
 			ifFeeFactor: 0,
 		},
+
 		ifLiquidationFee: 0,
 		liquidatorFee: 0,
 		protocolFeePool: {
@@ -304,6 +314,7 @@ export const mockSpotMarkets: Array<SpotMarketAccount> = [
 			pendingInterestSplitDust: 0,
 			pendingInterestDust: new BN(0),
 		},
+
 		protocolLiquidationFee: 0,
 		protocolFeeFactor: 0,
 		decimals: 6,
@@ -350,6 +361,7 @@ export const mockSpotMarkets: Array<SpotMarketAccount> = [
 			lastOraclePriceTwap5Min: PRICE_PRECISION,
 			lastOraclePriceTwapTs: new BN(0),
 		},
+
 		historicalIndexData: {
 			lastIndexBidPrice: PRICE_PRECISION,
 			lastIndexAskPrice: PRICE_PRECISION,
@@ -357,6 +369,7 @@ export const mockSpotMarkets: Array<SpotMarketAccount> = [
 			lastIndexPriceTwap5Min: PRICE_PRECISION,
 			lastIndexPriceTwapTs: new BN(0),
 		},
+
 		pausedOperations: 0,
 		ifPausedOperations: 0,
 		maxTokenBorrowsFraction: 0,
@@ -369,6 +382,7 @@ export const mockSpotMarkets: Array<SpotMarketAccount> = [
 		withdrawCircuitBreakerBps: 0,
 		maxDepositBpsPerDay: 0,
 	},
+
 	{
 		status: MarketStatus.ACTIVE,
 		assetTier: AssetTier.CROSS,
@@ -384,6 +398,7 @@ export const mockSpotMarkets: Array<SpotMarketAccount> = [
 			pendingInterestSplitDust: 0,
 			pendingInterestDust: new BN(0),
 		},
+
 		minOrderSize: ZERO,
 		maxPositionSize: ZERO,
 		insuranceFund: {
@@ -396,6 +411,7 @@ export const mockSpotMarkets: Array<SpotMarketAccount> = [
 			revenueSettlePeriod: new BN(0),
 			ifFeeFactor: 0,
 		},
+
 		ifLiquidationFee: 0,
 		liquidatorFee: 0,
 		protocolFeePool: {
@@ -404,6 +420,7 @@ export const mockSpotMarkets: Array<SpotMarketAccount> = [
 			pendingInterestSplitDust: 0,
 			pendingInterestDust: new BN(0),
 		},
+
 		protocolLiquidationFee: 0,
 		protocolFeeFactor: 0,
 		decimals: 9,
@@ -450,6 +467,7 @@ export const mockSpotMarkets: Array<SpotMarketAccount> = [
 			lastOraclePriceTwap5Min: new BN(0),
 			lastOraclePriceTwapTs: new BN(0),
 		},
+
 		historicalIndexData: {
 			lastIndexBidPrice: new BN(0),
 			lastIndexAskPrice: new BN(0),
@@ -457,6 +475,7 @@ export const mockSpotMarkets: Array<SpotMarketAccount> = [
 			lastIndexPriceTwap5Min: new BN(0),
 			lastIndexPriceTwapTs: new BN(0),
 		},
+
 		pausedOperations: 0,
 		ifPausedOperations: 0,
 		maxTokenBorrowsFraction: 0,
@@ -469,6 +488,7 @@ export const mockSpotMarkets: Array<SpotMarketAccount> = [
 		withdrawCircuitBreakerBps: 0,
 		maxDepositBpsPerDay: 0,
 	},
+
 	{
 		status: MarketStatus.ACTIVE,
 		assetTier: AssetTier.PROTECTED,
@@ -486,6 +506,7 @@ export const mockSpotMarkets: Array<SpotMarketAccount> = [
 			pendingInterestSplitDust: 0,
 			pendingInterestDust: new BN(0),
 		},
+
 		minOrderSize: ZERO,
 		maxPositionSize: ZERO,
 		insuranceFund: {
@@ -498,6 +519,7 @@ export const mockSpotMarkets: Array<SpotMarketAccount> = [
 			revenueSettlePeriod: new BN(0),
 			ifFeeFactor: 0,
 		},
+
 		ifLiquidationFee: 0,
 		liquidatorFee: 0,
 		protocolFeePool: {
@@ -506,6 +528,7 @@ export const mockSpotMarkets: Array<SpotMarketAccount> = [
 			pendingInterestSplitDust: 0,
 			pendingInterestDust: new BN(0),
 		},
+
 		protocolLiquidationFee: 0,
 		protocolFeeFactor: 0,
 		decimals: 6,
@@ -552,6 +575,7 @@ export const mockSpotMarkets: Array<SpotMarketAccount> = [
 			lastOraclePriceTwap5Min: new BN(0),
 			lastOraclePriceTwapTs: new BN(0),
 		},
+
 		historicalIndexData: {
 			lastIndexBidPrice: new BN(0),
 			lastIndexAskPrice: new BN(0),
@@ -559,6 +583,7 @@ export const mockSpotMarkets: Array<SpotMarketAccount> = [
 			lastIndexPriceTwap5Min: new BN(0),
 			lastIndexPriceTwapTs: new BN(0),
 		},
+
 		pausedOperations: 0,
 		ifPausedOperations: 0,
 		maxTokenBorrowsFraction: 0,
@@ -614,6 +639,7 @@ export const mockStateAccount: StateAccount = {
 			markOraclePercentDivergence: new BN(0),
 			oracleTwap5MinPercentDivergence: new BN(0),
 		},
+
 		validity: {
 			slotsBeforeStaleForAmm: new BN(0),
 			slotsBeforeStaleForMargin: new BN(0),
@@ -621,6 +647,7 @@ export const mockStateAccount: StateAccount = {
 			tooVolatileRatio: new BN(0),
 		},
 	},
+
 	perpFeeStructure: {
 		feeTiers: [
 			{
@@ -634,15 +661,18 @@ export const mockStateAccount: StateAccount = {
 				refereeFeeDenominator: 0,
 			},
 		],
+
 		fillerRewardStructure: {
 			rewardNumerator: 0,
 			rewardDenominator: 0,
 			timeBasedRewardLowerBound: new BN(0),
 		},
+
 		flatFillerFee: new BN(0),
 		ammFeeNumerator: 0,
 		ifFeeNumerator: 0,
 	},
+
 	settlementDuration: 0,
 	signer: PublicKey.default,
 	signerNonce: 0,
@@ -659,15 +689,18 @@ export const mockStateAccount: StateAccount = {
 				refereeFeeDenominator: 0,
 			},
 		],
+
 		fillerRewardStructure: {
 			rewardNumerator: 0,
 			rewardDenominator: 0,
 			timeBasedRewardLowerBound: new BN(0),
 		},
+
 		flatFillerFee: new BN(0),
 		ammFeeNumerator: 0,
 		ifFeeNumerator: 0,
 	},
+
 	srmVault: PublicKey.default,
 	whitelistMint: PublicKey.default,
 	maxNumberOfSubAccounts: 0,
@@ -685,6 +718,7 @@ export const mockStateAccount: StateAccount = {
 		resourceFeeDenominator: 1,
 		maxPriorityMicroLamportsPerCu: 0,
 	},
+
 	liquidationCrankReimbursementBps: 0,
 	solSpotMarketIndex: 0,
 };
@@ -714,6 +748,7 @@ export class MockUserMap implements UserMapInterface {
 			velocityClient: this.velocityClient,
 			userAccountPublicKey: userAccountPublicKey,
 		});
+
 		this.userMap.set(userAccountPublicKey.toBase58(), user);
 	}
 
@@ -725,6 +760,7 @@ export class MockUserMap implements UserMapInterface {
 		if (!this.userMap.has(userAccountPublicKey.toBase58())) {
 			this.addPubkey(userAccountPublicKey);
 		}
+
 		this.userAccountToAuthority.set(
 			userAccountPublicKey.toBase58(),
 			authorityPublicKey.toBase58()
@@ -756,6 +792,7 @@ export class MockUserMap implements UserMapInterface {
 				velocityClient: this.velocityClient,
 				userAccountPublicKey: PublicKey.default,
 			}),
+
 			slot: 0,
 		};
 	}

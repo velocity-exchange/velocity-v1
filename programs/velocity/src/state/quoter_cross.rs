@@ -190,6 +190,7 @@ mod tests {
             conditions[QUOTER_CROSS_FALLBACK].wake(),
             Ok(relay_spec::WakeView::AtSlot { slot: 77 })
         );
+
         assert!(!conditions[QUOTER_CROSS_WATCH].is_active());
     }
 }

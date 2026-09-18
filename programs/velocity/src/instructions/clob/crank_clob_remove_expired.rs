@@ -31,6 +31,7 @@ pub fn handle_crank_clob_remove_expired(
         market_index,
         order_ref,
     } = args;
+
     crank_clob_removal(
         ctx,
         market_index,
@@ -46,9 +47,11 @@ pub(super) fn stage_expired_removal(ctx: &Context<ResolveClobCrank>) -> Result<O
     let found = clob_reader(ctx).next_removal(ClobNextRemovalArgsV0 {
         kind: ClobRemovalKindV0::Expired,
     })?;
+
     if !found.found() {
         return Ok(None);
     }
+
     let market_index = ctx.accounts.crank_conditions.load()?.market_index;
     Ok(Some(
         removal_call::<crate::instruction::CrankClobRemoveExpired>(

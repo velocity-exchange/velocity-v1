@@ -15,27 +15,8 @@ if (typeof globalThis !== 'undefined' && (globalThis as any).WebSocket) {
 const RECONNECT_DELAY_MS = 1_000;
 
 /**
- * A user's resting CLOB orders, read from the dlob-server.
- *
- * # Why this is not read from the chain
- *
- * A CLOB order has no `User.orders` slot, because the order lives on the book.
- * The account a client already subscribes to therefore cannot report what the
- * user rests. The book cannot report it either. The book answers about orders a
- * caller already names, and about the depth a taker of a given size reaches. A
- * user's order deeper than that size is absent from the answer. The server
- * indexes the book's account and serves the result.
- *
- * # What the feed costs
- *
- * The feed is cheap to hold open. Books are re-quoted continuously because
- * prices move continuously. A user's resting set changes only when that user
- * places an order, cancels one, or gets filled. The publisher therefore
- * republishes a user only when that user's own rows change, and a subscriber
- * that hears nothing still rests what it had.
- *
- * Every row carries the handle a cancel or a modify takes, so acting on an
- * order needs no further lookup.
+ * A user's resting CLOB orders, read from the dlob-server: a CLOB order has
+ * no `User.orders` slot, so this is the only place to read what a user rests.
  */
 type UserSubscription = {
 	/** The user's rows, per market. A market with no rows is absent. */
@@ -79,15 +60,18 @@ export class UserClobOrdersClient {
 		const query = new URLSearchParams({
 			userPubkey: userAccountPublicKey.toString(),
 		});
+
 		if (marketIndexes?.length) {
 			query.set('marketIndexes', marketIndexes.join(','));
 		}
+
 		const response = await fetch(`${this.url}/userOrders?${query}`);
 		if (!response.ok) {
 			throw new Error(
 				`userOrders request failed: ${response.status} ${response.statusText}`
 			);
 		}
+
 		const body = await response.json();
 		return (body.orders ?? []).map(deserializeUserClobOrder);
 	}
@@ -113,6 +97,7 @@ export class UserClobOrdersClient {
 		if (!this.wsUrl) {
 			throw new Error('UserClobOrdersClient was built without a websocket URL');
 		}
+
 		const user = userAccountPublicKey.toString();
 		const existing = this.subscribers.get(user);
 		const subscription: UserSubscription = existing ?? {
@@ -120,6 +105,7 @@ export class UserClobOrdersClient {
 			live: new Set(),
 			listeners: new Set(),
 		};
+
 		subscription.listeners.add(onUpdate);
 		this.subscribers.set(user, subscription);
 		this.closed = false;
@@ -146,6 +132,7 @@ export class UserClobOrdersClient {
 			clearTimeout(this.reconnectTimer);
 			this.reconnectTimer = undefined;
 		}
+
 		this.subscribers.clear();
 		this.socket?.close();
 		this.socket = undefined;
@@ -165,6 +152,7 @@ export class UserClobOrdersClient {
 				if (!this.subscribers.has(userAccountPublicKey.toString())) {
 					return;
 				}
+
 				const byMarket = new Map<number, UserClobOrder[]>();
 				for (const order of orders) {
 					const rows = byMarket.get(order.marketIndex) ?? [];
@@ -176,6 +164,7 @@ export class UserClobOrdersClient {
 						subscription.byMarket.set(marketIndex, rows);
 					}
 				}
+
 				emit(subscription);
 			})
 			.catch(() => {
@@ -190,6 +179,7 @@ export class UserClobOrdersClient {
 		if (this.socket) {
 			return;
 		}
+
 		this.socket = new WebSocketImpl(this.wsUrl!);
 		this.socket.onopen = () => {
 			// A reconnect must repeat what it was watching. The server keeps no
@@ -202,6 +192,7 @@ export class UserClobOrdersClient {
 			this.socket = undefined;
 			this.scheduleReconnect();
 		};
+
 		// A socket that errors closes after it, and `onclose` reconnects. The
 		// handler exists so an error does not reach the process as an unhandled
 		// event.
@@ -222,8 +213,10 @@ export class UserClobOrdersClient {
 			if (this.closed || this.subscribers.size === 0) {
 				return;
 			}
+
 			this.connect();
 		}, RECONNECT_DELAY_MS);
+
 		// A node timer that outlives the work keeps the process alive.
 		(this.reconnectTimer as any)?.unref?.();
 	}
@@ -232,6 +225,7 @@ export class UserClobOrdersClient {
 		if (typeof raw !== 'string') {
 			return;
 		}
+
 		let message: any;
 		try {
 			message = JSON.parse(raw);
@@ -242,10 +236,12 @@ export class UserClobOrdersClient {
 		} catch {
 			return;
 		}
+
 		const subscription = this.subscribers.get(message?.user);
 		if (!subscription || !Array.isArray(message.orders)) {
 			return;
 		}
+
 		const orders = message.orders.map(deserializeUserClobOrder);
 		// The document covers one market. Its index is on the document, and on
 		// every row it carries. An empty document names the market it emptied
@@ -254,12 +250,14 @@ export class UserClobOrdersClient {
 		if (!Number.isInteger(marketIndex)) {
 			return;
 		}
+
 		subscription.live.add(marketIndex);
 		if (orders.length === 0) {
 			subscription.byMarket.delete(marketIndex);
 		} else {
 			subscription.byMarket.set(marketIndex, orders);
 		}
+
 		emit(subscription);
 	}
 
@@ -276,6 +274,7 @@ function currentOrders(subscription: UserSubscription): UserClobOrder[] {
 	for (const rows of subscription.byMarket.values()) {
 		orders.push(...rows);
 	}
+
 	return orders;
 }
 

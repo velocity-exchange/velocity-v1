@@ -44,6 +44,7 @@ describe('VelocityCore perp order instruction builders', () => {
 			params: { m: 0 },
 			successCondition: 256,
 		});
+
 		const accounts = called[0][1].accounts;
 		expect(accounts.quoterSlab).toBe(clobAccounts.quoterSlab);
 		expect(accounts.clobMarket).toBe(clobAccounts.clobMarket);

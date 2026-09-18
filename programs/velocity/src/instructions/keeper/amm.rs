@@ -13,6 +13,7 @@ pub fn handle_update_amms<'c: 'info, 'info>(
         msg!("Too many markets passed, max 5");
         return Err(ErrorCode::DefaultError.into());
     }
+
     // up to ~60k compute units (per amm) worst case
 
     let clock = Clock::get()?;
@@ -50,6 +51,7 @@ pub fn view_amm_liquidity<'c: 'info, 'info>(
         msg!("Too many markets passed, max 5");
         return Err(ErrorCode::DefaultError.into());
     }
+
     // up to ~60k compute units (per amm) worst case
 
     let clock = Clock::get()?;
@@ -83,6 +85,7 @@ pub fn view_amm_liquidity<'c: 'info, 'info>(
             market.amm.short_spread,
             market.amm.reference_price_offset,
         )?;
+
         crate::dlog!(bid, ask, oracle_price_data.price);
     }
 
@@ -114,6 +117,7 @@ pub fn handle_update_amm_cache<'c: 'info, 'info>(
         if perp_market.hedge_config.status == 0 {
             continue;
         }
+
         let oracle_data = *maps.oracle_map.get_price_data(&perp_market.oracle_id())?;
         refresh_cached_market(
             amm_cache.get_for_market_index_mut(perp_market.market_index)?,
@@ -164,6 +168,7 @@ fn refresh_cached_market(
         &state.oracle_guard_rails,
         state.slot_clock(),
     )?;
+
     Ok(())
 }
 

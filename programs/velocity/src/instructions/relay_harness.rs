@@ -75,13 +75,10 @@ pub struct StagedCall {
 }
 
 impl StagedCall {
-    /// Name the executor by its two generated types. `I` is
-    /// `crate::instruction::X`, the discriminator relay invokes, and
-    /// `accounts` is `crate::accounts::X`. A change to the instruction's name
-    /// or to its `#[derive(Accounts)]` shape then breaks staging at compile
-    /// time, and the writability flags come from the derive rather than from
-    /// hand-written metas. Prefer [`staged_call!`], which pairs the two types
-    /// from one name.
+    /// `I` is `crate::instruction::X` and `accounts` is `crate::accounts::X`. Relay invokes the
+    /// discriminator of `I`. A rename or an `#[derive(Accounts)]` change then breaks staging at
+    /// compile time, and the writability flags come from the derive rather than from hand-written
+    /// metas. Prefer [`staged_call!`], which pairs the two types from one name.
     pub fn new<I: anchor_lang::Discriminator>(accounts: impl ToAccountMetas) -> Self {
         Self {
             disc: I::DISCRIMINATOR,
@@ -97,6 +94,7 @@ impl StagedCall {
         } else {
             AccountMeta::new_readonly(pubkey, false)
         });
+
         self
     }
 
@@ -153,6 +151,7 @@ impl StagedCall {
                 AccountMeta::new_readonly(Pubkey::new_from_array(r.address), false)
             });
         }
+
         self
     }
 
@@ -182,6 +181,7 @@ impl StagedCall {
                 if meta.pubkey.to_bytes() == KEEPER_PLACEHOLDER {
                     names_placeholder = true;
                 }
+
                 Ok(if meta.is_writable {
                     AccountRefV0::writable(meta.pubkey.to_bytes())
                 } else {
@@ -193,6 +193,7 @@ impl StagedCall {
             msg!("staged executor names no keeper placeholder");
             return Err(error!(ErrorCode::DefaultError));
         }
+
         Ok(ResolvedCrankV0::new(
             crate::ID.to_bytes(),
             executor_disc,

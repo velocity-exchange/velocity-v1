@@ -14,21 +14,7 @@ import {
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
 import { VelocityCore } from '../../packages/sdk/src/core/VelocityCore';
 
-/**
- * On-chain behavior of `update_mm_oracle_batch_native`, which is native dispatch
- * opcode 2.
- *
- * The Rust unit tests in `instructions::admin::native_batch_tests` cover every
- * branch of the handler against synthetic `AccountInfo`s. They cannot cover the
- * wire contract, which is that the bytes and the account order the SDK builder
- * emits are the ones the handler expects. These tests run the real builder
- * against the real program. A transposed field or a stride mistake then appears
- * as a write that did not land, instead of a passing unit test.
- *
- * This suite lives in its own file rather than in `admin.ts`, because it needs
- * four perp markets. Adding markets to `admin.ts` would move the market counts
- * that its other tests assert on.
- */
+// Test wire contract for mm oracle batch native. In separate file to use four markets.
 describe('mm oracle batch native', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
 

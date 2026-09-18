@@ -75,20 +75,17 @@ impl HistoricalOracleData {
     /// Seed the quote spot market's historical oracle data at launch.
     ///
     /// This leaves `last_oracle_price_twap_ts` at zero, unlike
-    /// [`Self::default_with_current_oracle`]. `OracleSource::QuoteAsset`
-    /// returns a constant `PRICE_PRECISION`. This market's TWAP and live price
-    /// are therefore always the same number, and its `StrictOraclePrice` band
-    /// is a single point. The collapse that
-    /// [`Self::default_with_current_oracle`] guards against cannot happen
-    /// here.
+    /// [`Self::default_with_current_oracle`]. `OracleSource::QuoteAsset` returns a
+    /// constant `PRICE_PRECISION`, so this market's TWAP and live price are always
+    /// the same number and its `StrictOraclePrice` band is a single point. The
+    /// collapse `default_with_current_oracle` guards against cannot happen here.
     ///
-    /// A stamped timestamp is not harmless. It changes which way the plus or
-    /// minus one rounding bias in `calculate_weighted_average` falls on the
-    /// first crank, so the TWAP reads `999999` instead of `1000001`. A zero
-    /// timestamp saturates `from_start` to 1 and flips that bias. Every
-    /// collateral valuation reads that TWAP. Both values are noise around a
-    /// price that is 1.0 by definition, so this market keeps the behavior it
-    /// has.
+    /// allow-verbose: a stamped timestamp is not harmless even so. It changes
+    /// which way the plus or minus one rounding bias in `calculate_weighted_average`
+    /// falls on the first crank, so the TWAP reads `999999` instead of `1000001`. A
+    /// zero timestamp saturates `from_start` to 1 and flips that bias. Every
+    /// collateral valuation reads this TWAP, but both values are noise around a
+    /// price that is 1.0 by definition, so the market keeps zero.
     pub fn default_quote_oracle() -> Self {
         HistoricalOracleData {
             last_oracle_price: PRICE_PRECISION_I64,
@@ -112,15 +109,10 @@ impl HistoricalOracleData {
     }
 
     /// Seed a spot market's historical oracle data at launch.
-    ///
-    /// `now` must land in `last_oracle_price_twap_ts`. If it stays at zero,
-    /// the first `update_spot_market_twap_stats` computes `since_last = now -
-    /// 0`, which is far larger than any TWAP period. `from_start` then
-    /// saturates to 0 and the new TWAP becomes the live price exactly. Both
-    /// `StrictOraclePrice` bounds are the minimum and maximum of the current
-    /// price and the 5-minute TWAP, so both collapse onto that single price.
-    /// The first price-banded operation on the market is then unguarded in
-    /// both directions (OtterSec #121).
+    /// `now` must land in `last_oracle_price_twap_ts`. A zero timestamp saturates
+    /// `from_start` to 0, so the new TWAP becomes the live price exactly and both
+    /// `StrictOraclePrice` bounds collapse onto it, leaving the first price-banded
+    /// operation unguarded in both directions (OtterSec #121).
     pub fn default_with_current_oracle(oracle_price_data: OraclePriceData, now: i64) -> Self {
         HistoricalOracleData {
             last_oracle_price: oracle_price_data.price,
@@ -488,13 +480,10 @@ pub fn get_oracle_price(
     }
 }
 
-/// Pyth writes the same four `u32` words at the start of every account it
-/// owns: `magic`, `ver`, `atype`, and `size`. The first three identify the
-/// account. `PYTH_PUSH_ACCOUNT_TYPE_PRICE` is the `AccountType::Price`
-/// discriminant.
-///
-/// These are public so that a test fixture builds its header from the same
-/// values the check reads and cannot drift from them.
+/// Pyth writes four `u32` words at the start of every account it owns:
+/// `magic`, `ver`, `atype`, and `size`. `PYTH_PUSH_ACCOUNT_TYPE_PRICE` is the
+/// `AccountType::Price` discriminant. These are public so a test fixture
+/// builds its header from the same values the check reads.
 pub const PYTH_PUSH_MAGIC: u32 = 0xa1b2_c3d4;
 pub const PYTH_PUSH_VERSION: u32 = 2;
 pub const PYTH_PUSH_ACCOUNT_TYPE_PRICE: u32 = 3;

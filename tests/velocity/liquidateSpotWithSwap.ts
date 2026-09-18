@@ -36,21 +36,9 @@ import {
 	startLiteSVM,
 } from '../../packages/sdk/src/litesvm/litesvmConnection';
 
-// Regression guard for `liquidate_spot_with_swap`. The begin handler introspects
-// the matching end instruction and binds accounts by hard-coded index. It
-// assumes the swap accounts, which are the remaining accounts, start right after
-// the fixed accounts.
-//
-// `LiquidateSpotWithSwap` has 12 fixed accounts at indexes 0 through 11. The
-// last of them is the liquidator_stats that the equity-breaker gate reads. A
-// stale guard once used the old 13-account Drift layout, which made the
-// begin-to-end account-count check impossible to satisfy and left the route
-// unusable.
-//
-// This test builds begin and end through the generated SDK and IDL, and asserts
-// the account order the program guard depends on. A later struct reshuffle that
-// desyncs the guard then fails here rather than on chain.
-// InvalidLiquidateSpotWithSwap
+// The begin handler binds swap accounts by hard-coded index; this test asserts
+// the account order the guard depends on. A struct reshuffle that desyncs the
+// guard fails here rather than on chain.
 const INVALID_LIQUIDATE_SPOT_WITH_SWAP_HEX = '0x18a4';
 
 describe('liquidate spot with swap account bindings', () => {
@@ -310,20 +298,8 @@ describe('liquidate spot with swap account bindings', () => {
 	});
 
 	it('the program accepts the layout the sdk builds', async () => {
-		// Every assertion above compares the built instructions against the IDL.
-		// That cannot catch a wrong index in the program's own copy. `begin`
-		// introspects the matching `end` and compares the two lists by position,
-		// and no test had ever executed that block. The other suites that send this
-		// pair reject earlier, at the equity breaker check or at an account
-		// constraint.
-		//
-		// The fixture's user is liquidatable, so `begin` runs to completion, and
-		// that includes the introspection. The pair still fails at `end` with
-		// InvalidSwap, because nothing swaps between the two instructions and the
-		// flash loan is never repaid. Reaching `end` is what the test asserts. It
-		// means the guard accepted this account order. A mis-numbered index, or an
-		// off-by-one boundary between the fixed and the remaining accounts, stops
-		// the pair in `begin` with the error below.
+		// IDL checks cannot catch wrong program indices. `begin` introspects `end`
+		// and compares by position. Reaching `end` means the account order is valid.
 		const { beginSwapIx, endSwapIx } =
 			await liquidatorClient.getLiquidateSpotWithSwapIx({
 				swapAmount: new BN(10 ** 6),

@@ -1,57 +1,50 @@
 /**
  * Mainnet base initialization runbook for the velocity program.
  *
- * Modeled on init-devnet.ts with the devnet-only machinery removed: no token
- * faucet, no mint creation, no admin pre-mint, no keeper token funding. The
- * quote asset is mainnet USDT (Es9vMFrz...), overridable via QUOTE_MINT.
+ * allow-verbose: this is the operator runbook read before a real mainnet
+ * init, not narration of the code below. The phase list, the state-init-
+ * authority footgun, and the env var reference are what an operator needs
+ * before touching a production key, and a comment sized to the code ratio
+ * would cut exactly that content.
  *
- * Run AFTER the mainnet .so is deployed (bun run program:build:mainnet + the
- * buffer flow in deploy-scripts/README.md). Executes phases:
+ * Modeled on init-devnet.ts with devnet-only machinery removed (no faucet,
+ * no mint creation, no keeper funding). Quote asset is mainnet USDT
+ * (Es9vMFrz...), overridable via QUOTE_MINT. Run AFTER the mainnet .so is
+ * deployed (bun run program:build:mainnet + the buffer flow in
+ * deploy-scripts/README.md). Phases:
  *
- *   0)  pre-flight: program executable, admin key gate, quote mint sanity
- *   A)  global State + hot-role authorities + mm-oracle feature bit + AmmCache
- *       + the protocol User that every permissionless crank settles through
- *   B)  quote spot market at index 0 (oracle source forced to QuoteAsset)
- *   C)  Pyth Lazer oracle PDA for the quote feed + initial signed price post
- *   E)  switch quote spot market oracle to PythLazerStableCoin
+ *   0) pre-flight: program executable, admin key gate, quote mint sanity
+ *   A) global State + hot-role authorities + mm-oracle feature bit +
+ *      AmmCache + the protocol User every permissionless crank settles through
+ *   B) quote spot market at index 0 (oracle source forced to QuoteAsset)
+ *   C) Pyth Lazer oracle PDA for the quote feed + initial signed price post
+ *   E) switch quote spot market oracle to PythLazerStableCoin
  *
- * Perp markets are NOT initialized here; run init-markets.sh afterwards
- * (params file drives the markets).
+ * Perp markets are NOT initialized here; run init-markets.sh afterwards.
  *
- * IMPORTANT, state init authority: a real mainnet build (`mainnet-beta` on,
- * `anchor-test` off) locks `initialize` to ids.rs::state_init_authority so the
- * one-time State init cannot be front-run. ADMIN_KEYPAIR must therefore be
- * that key when State does not exist yet. The signer also becomes
- * State.cold_admin, which every subsequent admin ix (and active-status market
- * init) asserts against.
+ * IMPORTANT, state init authority: a real mainnet build locks `initialize`
+ * to ids.rs::state_init_authority, so ADMIN_KEYPAIR must be that key when
+ * State does not exist yet. The signer also becomes State.cold_admin, which
+ * every later admin ix (and active-status market init) asserts against.
  *
- * Idempotent: every phase checks whether its destination already exists on
- * chain and skips if so. Safe to re-run after partial failure.
+ * Idempotent: each phase skips if its destination already exists on chain.
  *
- * Required env:
- *   ADMIN_KEYPAIR         path to admin keypair file (must be the state init
- *                         authority on first run, see above)
- *   RPC_URL               private mainnet RPC
- *   QUOTE_LAZER_FEED_ID   Pyth Lazer u32 feed id for the quote asset
- *   PYTH_LAZER_TOKEN      auth token for the Pyth Lazer relay
- * Optional env:
- *   QUOTE_MINT            quote SPL mint (default: mainnet USDT)
- *   QUOTE_SYMBOL          spot market 0 name (default USDT)
- *   HOT_MM_ORACLE_CRANK, HOT_VAMM_QUOTE_MANAGEMENT, HOT_LP_SWAP, HOT_LP_CACHE,
- *   HOT_LP_SETTLE, HOT_AMM_CRANK, HOT_FEATURE_FLAG, HOT_FUEL, HOT_USER_FLAG,
- *   HOT_VAULT_DEPOSIT, HOT_FEE_WITHDRAW
- *                         hot-role authorities (default: admin pubkey; set
- *                         the real keeper keys before the bots go live)
- *   PYTH_LAZER_ENDPOINTS  comma-separated WSS endpoints
- *   PYTH_LAZER_WAIT_MS    ms to wait for first price message (default 30000)
- *   RECEIPT_PATH          default deploy-scripts/out/mainnet-deployment.json
- *   NON_INTERACTIVE=1     skip confirmation prompts
- *   DRY_RUN=1 (or --dry-run)  no transactions sent; performs every read
- *                         (pre-flight, mint checks, Lazer relay fetch) and
- *                         prints each ix as "[DRY RUN] would ...". When State
- *                         does not exist yet the dependent diffs (hot roles,
- *                         oracle switch) cannot be read and are logged
- *                         generically. Receipt untouched.
+ * Required env: ADMIN_KEYPAIR (must be the state init authority on first
+ * run, see above), RPC_URL (private mainnet RPC), QUOTE_LAZER_FEED_ID (Pyth
+ * Lazer u32 feed id), PYTH_LAZER_TOKEN (Pyth Lazer relay auth token).
+ *
+ * Optional env: QUOTE_MINT (default mainnet USDT), QUOTE_SYMBOL (default
+ * USDT), the HOT_* role keys (HOT_MM_ORACLE_CRANK, HOT_VAMM_QUOTE_MANAGEMENT,
+ * HOT_LP_SWAP, HOT_LP_CACHE, HOT_LP_SETTLE, HOT_AMM_CRANK, HOT_FEATURE_FLAG,
+ * HOT_FUEL, HOT_USER_FLAG, HOT_VAULT_DEPOSIT, HOT_FEE_WITHDRAW; default the
+ * admin pubkey, set real keeper keys before the bots go live),
+ * PYTH_LAZER_ENDPOINTS (comma-separated WSS endpoints), PYTH_LAZER_WAIT_MS
+ * (default 30000), RECEIPT_PATH (default
+ * deploy-scripts/out/mainnet-deployment.json), NON_INTERACTIVE=1 (skip
+ * confirmation prompts), DRY_RUN=1 / --dry-run (no transactions sent; runs
+ * every read and prints each ix as "[DRY RUN] would ..."; when State does
+ * not exist yet the dependent diffs are logged generically; receipt
+ * untouched).
  */
 
 import { BN } from '@coral-xyz/anchor';
@@ -284,6 +277,7 @@ async function main() {
 				process.env.HOT_MM_ORACLE_CRANK ?? MM_ORACLE_CRANKER_BOT_WALLET
 			),
 		},
+
 		{
 			role: HotRole.AmmSpreadAdjust,
 			field: 'hotAmmSpreadAdjust',
@@ -291,6 +285,7 @@ async function main() {
 				process.env.HOT_AMM_SPREAD_ADJUST ?? VAMM_CRANKER_BOT_WALLET
 			),
 		},
+
 		{
 			role: HotRole.VammQuoteManagement,
 			field: 'hotVammQuoteManagement',
@@ -298,6 +293,7 @@ async function main() {
 				? new PublicKey(process.env.HOT_VAMM_QUOTE_MANAGEMENT)
 				: PublicKey.default,
 		},
+
 		{
 			role: HotRole.LpSwap,
 			field: 'hotLpSwap',
@@ -305,6 +301,7 @@ async function main() {
 				process.env.HOT_LP_SWAP ?? DLP_TAKER_WATCHER_BOT_WALLET
 			),
 		},
+
 		{
 			role: HotRole.LpCache,
 			field: 'hotLpCache',
@@ -312,6 +309,7 @@ async function main() {
 				? new PublicKey(process.env.HOT_LP_CACHE)
 				: hotDefault,
 		},
+
 		{
 			role: HotRole.LpSettle,
 			field: 'hotLpSettle',
@@ -319,6 +317,7 @@ async function main() {
 				? new PublicKey(process.env.HOT_LP_SETTLE)
 				: hotDefault,
 		},
+
 		{
 			role: HotRole.AmmCrank,
 			field: 'hotAmmCrank',
@@ -326,6 +325,7 @@ async function main() {
 				? new PublicKey(process.env.HOT_AMM_CRANK)
 				: hotDefault,
 		},
+
 		{
 			role: HotRole.FeatureFlag,
 			field: 'hotFeatureFlag',
@@ -333,6 +333,7 @@ async function main() {
 				? new PublicKey(process.env.HOT_FEATURE_FLAG)
 				: hotDefault,
 		},
+
 		{
 			role: HotRole.Fuel,
 			field: 'hotFuel',
@@ -340,6 +341,7 @@ async function main() {
 				? new PublicKey(process.env.HOT_FUEL)
 				: hotDefault,
 		},
+
 		{
 			role: HotRole.UserFlag,
 			field: 'hotUserFlag',
@@ -347,6 +349,7 @@ async function main() {
 				? new PublicKey(process.env.HOT_USER_FLAG)
 				: hotDefault,
 		},
+
 		{
 			role: HotRole.VaultDeposit,
 			field: 'hotVaultDeposit',
@@ -354,6 +357,7 @@ async function main() {
 				? new PublicKey(process.env.HOT_VAULT_DEPOSIT)
 				: hotDefault,
 		},
+
 		{
 			role: HotRole.FeeWithdraw,
 			field: 'hotFeeWithdraw',
@@ -394,11 +398,13 @@ async function main() {
 		`admin:        ${keypair.publicKey.toBase58()} (${adminSol.toFixed(
 			4
 		)} SOL)`,
+
 		`quote mint:   ${quoteMint.toBase58()} (${quoteSymbol})`,
 		`quote feed:   ${quoteLazerFeedId} (Pyth Lazer)`,
 		`state:        ${
 			stateExists ? 'exists (skipping init)' : 'will be created'
 		}`,
+
 		`receipt:      ${receiptPath}`,
 		'',
 		...HOT_ROLE_CONFIG.map(
@@ -525,6 +531,7 @@ async function main() {
 		programId,
 		velocitySigner
 	);
+
 	if (await pdaExists(connection, protocolUser)) {
 		logStep('protocol User already initialized', protocolUser.toBase58());
 		receipt.protocolUser = {
@@ -541,6 +548,7 @@ async function main() {
 			'initializeUserStats + initializeUser (protocol)',
 			protocolUser.toBase58()
 		);
+
 		// The instructions are built here rather than through the client
 		// helpers. A helper acts for the wallet's own authority, and this
 		// account's authority is a program address that no wallet holds.
@@ -555,6 +563,7 @@ async function main() {
 			client.program.instruction.initializeUserStats({
 				accounts: { userStats: protocolUserStats, ...sharedAccounts },
 			}),
+
 			client.program.instruction.initializeUser(0, encodeName('Protocol'), {
 				accounts: {
 					user: protocolUser,
@@ -572,6 +581,7 @@ async function main() {
 			txSig,
 		};
 	}
+
 	writeReceipt();
 
 	// Phase B: quote spot market at index 0
@@ -591,6 +601,7 @@ async function main() {
 			`Spot market 0 (${quoteSymbol}) already initialized`,
 			spot0Pk.toBase58()
 		);
+
 		receipt.spotMarkets[0] = { pubkey: spot0Pk.toBase58() };
 	} else if (DRY_RUN) {
 		dryStep(
@@ -635,6 +646,7 @@ async function main() {
 	await confirm(
 		`Begin Phase C: quote Pyth Lazer oracle (feed ${quoteLazerFeedId})?`
 	);
+
 	if (await pdaExists(connection, quoteLazerPk)) {
 		logStep(
 			`Pyth Lazer oracle (feed ${quoteLazerFeedId}) already initialized`,

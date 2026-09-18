@@ -95,6 +95,7 @@ export function registerFees(parent: Command): void {
 					opts.multisig ? new PublicKey(opts.multisig) : undefined,
 					'velocity-admin fees set-liquidation-crank-reimbursement'
 				);
+
 				reportDispatch(
 					`liquidation_crank_reimbursement = ${share}bps, sol spot market ${market}`,
 					result
@@ -144,6 +145,7 @@ export function registerFees(parent: Command): void {
 					opts.multisig ? new PublicKey(opts.multisig) : undefined,
 					'velocity-admin fees set-transaction-rails'
 				);
+
 				reportDispatch(
 					`transaction_fee_rails = ${JSON.stringify(rails)}`,
 					result
@@ -295,6 +297,7 @@ export function registerFees(parent: Command): void {
 				opts.multisig ? new PublicKey(opts.multisig) : undefined,
 				'velocity-admin fees withdraw-protocol-user'
 			);
+
 			reportDispatch(
 				`protocol user deposit (spot-market[${market}]) ${amount} -> recipient ATA`,
 				result
@@ -698,6 +701,7 @@ export function registerFees(parent: Command): void {
 							tiers[i].makerRebateDenominator
 						);
 					}
+
 					// Only a tier with a nonzero referral numerator carries referral
 					// fields. The zeroed tail stays as it is.
 					if (
@@ -900,10 +904,12 @@ export function registerFees(parent: Command): void {
 				opts.multisig ? new PublicKey(opts.multisig) : undefined,
 				'velocity-admin fees init-crank-treasury'
 			);
+
 			reportDispatch(
 				`crank treasury = ${getCrankTreasuryPublicKey(
 					client.program.programId
 				).toBase58()} (fund it by sending SOL to this address)`,
+
 				result
 			);
 		} finally {
@@ -939,6 +945,7 @@ export function registerFees(parent: Command): void {
 					opts.multisig ? new PublicKey(opts.multisig) : undefined,
 					'velocity-admin fees set-crank-treasury'
 				);
+
 				reportDispatch(
 					`crank treasury wakes under ${watermark} cranks, fills to ${target}`,
 					result
@@ -967,6 +974,7 @@ export function registerFees(parent: Command): void {
 				opts.multisig ? new PublicKey(opts.multisig) : undefined,
 				'velocity-admin fees withdraw-crank-treasury'
 			);
+
 			reportDispatch(
 				`withdrew ${lamports} lamports from crank treasury`,
 				result
@@ -999,6 +1007,7 @@ export function registerFees(parent: Command): void {
 					opts.multisig ? new PublicKey(opts.multisig) : undefined,
 					'velocity-admin fees sweep-crank-reservoir'
 				);
+
 				reportDispatch(
 					`swept ${lamports} lamports from market ${market} reservoir`,
 					result

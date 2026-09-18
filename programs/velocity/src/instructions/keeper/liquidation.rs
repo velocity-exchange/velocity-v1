@@ -153,15 +153,9 @@ pub fn handle_liquidate_perp_with_fill<'c: 'info, 'info>(
     };
 
     // In program-keeper mode the caller's payout account earns reservoir
-    // lamports for the crank. Every other relay executor closes the same loop.
-    //
-    // Only a crank that liquidated something is paid. Several paths through the
-    // controller succeed without filling. A user who can exit liquidation exits
-    // it, and a shortage that allows no transfer transfers nothing. Those
-    // outcomes are correct rather than errors, but they are not work. Paying for
-    // them would let anyone empty the reservoir by cranking a healthy account in
-    // a loop, which stops the cranks that do matter. The filled quote is the
-    // proof, and the reimbursement is capped against the same figure.
+    // lamports for the crank; every other relay executor closes the same loop.
+    // Only a crank that filled something is paid, since paying a no-op success
+    // (exit or shortage) would let anyone drain the reservoir by looping on it.
     if filled_quote > 0 && ctx.accounts.liquidator.load()?.authority == state.signer {
         pay_liquidation_crank(&ctx, &state, &mut maps, market_index, filled_quote)?;
     }
@@ -169,14 +163,12 @@ pub fn handle_liquidate_perp_with_fill<'c: 'info, 'info>(
     Ok(())
 }
 
-/// The liquidity a forced liquidation order fills against. That is the market's
-/// book and its quoters through the router, the vAMM, and any makers the
-/// caller loaded.
-///
-/// A liquidation is the one taker order velocity writes for somebody else, so it
-/// is also the one route nobody signs for. The facts that answer for it live
-/// here and not on the controller, which knows only the order. Those facts are
-/// who built the transaction and how many locks it holds.
+/// The liquidity a forced liquidation order fills against: the market's book
+/// and its quoters through the router, the vAMM, and any makers the caller
+/// loaded. A liquidation is the one taker order velocity writes for somebody
+/// else, so it is also the one route nobody signs for. Who built the
+/// transaction and how many locks it holds live here, not on the controller,
+/// which knows only the order.
 struct LiquidationBooks<'a, 'info> {
     state: &'a State,
     market_index: u16,
@@ -262,6 +254,7 @@ impl<'info> LiquidationBooks<'_, 'info> {
                 ),
                 None => None,
             },
+
             unrouted_quoters: quoted.unrouted_quoters,
         };
 
@@ -271,6 +264,7 @@ impl<'info> LiquidationBooks<'_, 'info> {
             taker_exposure_closed_by_caller: false,
             obligation,
         });
+
         Ok(controller::orders::fill_perp_order(
             controller::orders::FillRequest {
                 // The forced order never reserved `open_bids`/`open_asks`, so
@@ -316,6 +310,7 @@ impl<'info> LiquidationBooks<'_, 'info> {
         let Some(slab) = crate::instructions::route_slab(self.tail, self.market_index)? else {
             return Ok(false);
         };
+
         crate::instructions::clob::helpers::crank_common::book_side_rested(
             &slab,
             self.tail,
@@ -354,6 +349,7 @@ fn pay_liquidation_crank<'info>(
             conditions.market_index,
             market_index
         )?;
+
         // A fill below the dust floor liquidates the position but earns no flat
         // payment. Paying for each small step would let a keeper farm the flat
         // reward by slicing one liquidation into many.
@@ -362,6 +358,7 @@ fn pay_liquidation_crank<'info>(
         } else {
             0
         };
+
         // The liquidations batched into one transaction do not share the flat
         // payment. A relay crank carries its own payment guard, which measures
         // what this one instruction paid. A figure that fell with the size of
@@ -383,6 +380,7 @@ fn pay_liquidation_crank<'info>(
         &ctx.accounts.authority.to_account_info(),
         payment,
     )?;
+
     Ok(())
 }
 
@@ -408,14 +406,17 @@ fn liquidation_reimbursement<'info>(
     let Some(sysvar) = instructions_sysvar else {
         return Ok(0);
     };
+
     if state.liquidation_crank_reimbursement_bps == 0 || state.sol_spot_market_index == 0 {
         return Ok(0);
     }
+
     let (price_per_unit, requested_units) =
         crate::instructions::optional_accounts::tx_compute_budget(sysvar)?;
     if price_per_unit == 0 || requested_units == 0 {
         return Ok(0);
     }
+
     let Some(sol_price) = crank_sol_price(state, spot_market_map, oracle_map)? else {
         return Ok(0);
     };
@@ -469,10 +470,12 @@ fn crank_sol_price(
         0,
         None,
     )?;
+
     if !matches!(validity, crate::math::oracle::OracleValidity::Valid) {
         msg!("sol oracle is not valid for pricing the crank; paying the flat figure");
         return Ok(None);
     }
+
     Ok(Some(oracle_data.price))
 }
 
@@ -719,9 +722,8 @@ pub struct LiquidateSpot<'info> {
     pub state: AccountLoader<'info, State>,
     /// A spot liquidation settles by handing the liquidator the borrow and the
     /// collateral behind it, so whoever liquidates takes on that inventory and
-    /// its price risk. A protocol keeper has no way to unwind it, so it cannot
-    /// liquidate here. That rules out relay as well. An executor may name no
-    /// signer, so a path that requires one is a signed-keeper path only.
+    /// its price risk. A protocol keeper (and so relay) has no way to unwind
+    /// it, so this path requires a signer: an executor names none.
     pub authority: Signer<'info>,
     #[account(
         mut,

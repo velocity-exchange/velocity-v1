@@ -112,9 +112,11 @@ mod parking_lot_free {
                 Ok(guard) => guard,
                 Err(poisoned) => poisoned.into_inner(),
             };
+
             if guard.len() >= CAP {
                 guard.remove(0);
             }
+
             guard.push(transition);
         }
 
@@ -171,17 +173,17 @@ impl Health {
         if rate <= 0.0 {
             return false;
         }
+
         // One route in N, counted rather than drawn, so the rate is exact and
         // two processes agree.
         let stride = (1.0 / rate).round().max(1.0) as u64;
         entry.sample_counter.fetch_add(1, Ordering::Relaxed) % stride == 0
     }
 
-    /// Quoters excluded outright right now.
-    ///
-    /// A router passes these to the instruction builder so a quarantined or
-    /// denied quoter never enters a simulation at all. Throttled quoters are
-    /// not here. [`Health::admits`] decides those once per route.
+    /// Quoters excluded outright right now. A router passes these to the
+    /// instruction builder so a quarantined or denied quoter never enters a
+    /// simulation. Throttled quoters are not here; [`Health::admits`]
+    /// decides those once per route.
     pub fn excluded(&self) -> Vec<Pubkey> {
         let now = now_ms();
         self.entries
@@ -227,6 +229,7 @@ impl Health {
         if let Some(metrics) = &self.metrics {
             metrics.observe(&report);
         }
+
         let policy = self.policy;
         let transition = self.with_entry(&report.quoter, |entry| {
             entry.state.last_seen_ms = now;
@@ -238,6 +241,7 @@ impl Health {
                 entry.state.last_success_ms = now;
                 entry.state.clean_streak = entry.state.clean_streak.saturating_add(1);
             }
+
             entry
                 .window
                 .record(now, policy.half_life_ms, report.observation);
@@ -263,6 +267,7 @@ impl Health {
                 ),
             })
         });
+
         if let Some(transition) = transition {
             self.note(transition);
         }
@@ -278,6 +283,7 @@ impl Health {
                 &transition.actor,
             );
         }
+
         self.transitions.push(transition);
     }
 
@@ -291,6 +297,7 @@ impl Health {
             if !charge.proof.is_actionable() {
                 continue;
             }
+
             self.record(Report::new(
                 charge.quoter,
                 market,
@@ -300,6 +307,7 @@ impl Health {
                 },
             ));
         }
+
         if let Some(reason) = verdict.unattributed {
             self.record_unattributed(reason);
         }
@@ -310,6 +318,7 @@ impl Health {
         if let Some(metrics) = &self.metrics {
             metrics.observe_unattributed(reason);
         }
+
         *self.unattributed.entry(reason.as_str()).or_insert(0) += 1;
     }
 
@@ -340,6 +349,7 @@ impl Health {
                 detail: format!("deploy_slot={slot}"),
             })
         });
+
         if let Some(transition) = transition {
             self.note(transition);
         }
@@ -373,6 +383,7 @@ impl Health {
             entry.pin = None;
             entry.state.admission
         });
+
         self.note(Transition {
             quoter: quoter.to_string(),
             at_ms: now,
@@ -413,6 +424,7 @@ impl Health {
         for transition in transitions {
             self.note(transition);
         }
+
         // A quiet quoter is forgotten, but never one an operator pinned or
         // one still serving a quarantine. Dropping either would readmit it.
         self.entries.retain(|_, entry| {
@@ -490,6 +502,7 @@ mod tests {
                 set_at_ms: 0,
             },
         );
+
         assert!(!health.admits(&quoter));
 
         health.clear_pin(&quoter);
@@ -510,6 +523,7 @@ mod tests {
                 set_at_ms: 0,
             },
         );
+
         assert!(health.admits(&quoter));
     }
 
@@ -527,6 +541,7 @@ mod tests {
                 set_at_ms: 0,
             },
         );
+
         let carried = (0..100).filter(|_| health.admits(&quoter)).count();
         assert_eq!(carried, 25);
     }
@@ -549,9 +564,11 @@ mod tests {
                     proof: Attribution::Bracketed,
                 },
             ],
+
             suspects: vec![],
             unattributed: None,
         };
+
         health.record_verdict(0, &verdict);
         let seen: Vec<Pubkey> = health.snapshot().into_iter().map(|s| s.quoter).collect();
         assert!(seen.contains(&charged));
@@ -569,6 +586,7 @@ mod tests {
                 unattributed: Some(FailReason::Unknown),
             },
         );
+
         assert!(health.snapshot().is_empty());
         assert_eq!(health.unattributed_counts(), vec![("unknown", 1)]);
     }
@@ -590,6 +608,7 @@ mod tests {
                 },
             ));
         }
+
         let transitions = health.transitions();
         assert!(!transitions.is_empty());
         let last = transitions.last().unwrap();
@@ -617,6 +636,7 @@ mod tests {
                 set_at_ms: 0,
             },
         );
+
         health.sweep();
         let seen: Vec<Pubkey> = health.snapshot().into_iter().map(|s| s.quoter).collect();
         assert!(seen.contains(&pinned));

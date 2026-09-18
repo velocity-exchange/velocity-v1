@@ -38,6 +38,7 @@ pub fn handle_set_levels_v0(ctx: &mut Context<SetLevelsV0>, args: SetLevelsArgsV
         let slot = Clock::get()?.slot;
         quoter.set_mid(mid, args.sequence.unwrap_or(0), slot)?;
     }
+
     // Shape writes are rare, so they pay for the full post-write invariant
     // scan. The scan checks counts against capacity, ascending live rungs with
     // `filled` inside `size`, and a zeroed tail behind a shrinking rewrite.

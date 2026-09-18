@@ -24,14 +24,9 @@ use {
 };
 
 /// Conditions this market hosts, in the fixed slots a resolver addresses them
-/// by. Each one is a fact about the book that a turner has to be woken for.
+/// by. The book maintains each one, so none is a best-effort poll.
 ///
-/// The book keeps every condition current itself. None of them is a fallback
-/// poll. A poll covers a hint that is maintained on a best-effort basis, and
-/// the same code that changes what these describe maintains them.
-///
-/// An order past its `max_ts`. The condition fires at the earliest `max_ts`
-/// any live order carries.
+/// An order past its `max_ts`, the earliest any live order carries.
 pub const CRANK_EXPIRY: usize = 0;
 /// An order that reaches its `activation_slot`. Nothing on chain changes when
 /// the slot arrives. It is the slot at which a counterparty lined up against
@@ -63,20 +58,14 @@ pub const ZERO_ADDRESS: Address = Address::new_from_array([0u8; 32]);
 
 /// [`ClobHeaderV0::reservation_grace_slots`] a fresh market starts with.
 ///
-/// The window has to cover the transaction that resolves a cross. A relay
-/// condition wakes the crank the moment the cross appears. The window is also
-/// the longest the claimed depth stays out of the matchable set when that
-/// crank never lands.
+/// The window covers the transaction that resolves a cross. It is also the
+/// longest the claimed depth stays out of the matchable set.
 pub const DEFAULT_RESERVATION_GRACE_SLOTS: u16 = 32;
 
 /// Ceiling on [`ClobHeaderV0::reservation_grace_slots`], enforced by
-/// `update_market_v0`.
-///
-/// The window only has to cover the crank transaction that resolves the
-/// cross. A transaction is invalid more than 150 slots after its blockhash. A
-/// crank that misses that window must be sent again with a fresh blockhash,
-/// so a wider grace does not help it land. It only holds the claimed depth
-/// out of the matchable set for longer.
+/// `update_market_v0`. A transaction is invalid more than 150 slots after its
+/// blockhash, so a wider grace cannot help a crank land. It only holds the
+/// claimed depth out of the matchable set for longer.
 pub const RESERVATION_GRACE_SLOTS_CEILING: u16 = 150;
 
 /// Response region size. A response lives in the header, because return data
@@ -167,42 +156,28 @@ pub const QUOTE_LEVELS_CEILING: u16 =
 pub const L3_ROW_BYTES: usize = quoter_spec::L3_ROW_BYTES;
 
 /// Rows one `quote_l3_v0` may report: a count, that many rows, then the
-/// one-byte marker saying whether depth remains.
-///
-/// The region sets this ceiling, and this ceiling is not allowed to widen the
-/// region. The market account rides every CPI, and the runtime charges
-/// compute per byte of it. A wider region costs every fill, and it buys one
-/// deeper description of the book. A caller that wants more of the book asks
-/// again from where this stopped.
+/// one-byte marker saying whether depth remains. This ceiling must not widen
+/// the region, because the market account rides every CPI and costs compute
+/// per byte. A caller asks again from where the rows stopped.
 pub const L3_ROWS_CEILING: u16 =
     ((RESPONSE_BUFFER_BYTES - RESPONSE_LEN_BYTES - 1) / L3_ROW_BYTES) as u16;
 
 /// Orders one `execute_v0` may consume.
 ///
-/// The value holds the response region near its original size instead of
-/// raising it to fit the widest response. The market account rides every CPI,
-/// and the runtime charges compute per byte of it. About 1 KB of extra region
-/// put `crank_cross_match` over the 200k per-instruction budget, because that
-/// crank CPIs this book twice. Fifteen fewer fills on one execute cost less
-/// than a wider region on every crank.
+/// About 1 KB of extra response region put `crank_cross_match` over the 200k
+/// per-instruction compute budget, because that crank CPIs this book twice.
 pub const EXECUTE_FILLS_CEILING: u16 = 113;
 
 /// Hard cap on the orders one `cancel_all_v0` removes. It bounds the removal
-/// work in a single call, the id list the cancel record logs
-/// ([`crate::emit::CANCEL_ALL_RECORD_LOG_BYTES`]), and how far a maker's
-/// aggregate unwind can drift from one instruction. A maker that holds more
-/// than this cancels in repeated calls, and
-/// [`CancelAllOutcome::exhaustive`] reports whether the call finished.
+/// work, the id list the cancel record logs
+/// ([`crate::emit::CANCEL_ALL_RECORD_LOG_BYTES`]), and the maker aggregate
+/// unwind. [`CancelAllOutcome::exhaustive`] reports whether the call finished.
 pub const CANCEL_ALL_ORDERS_CEILING: u16 = 128;
 
 /// Ceiling on `max_execute_users`. It is how many balance changes fit the
-/// region once the other three sections have taken their worst case.
-///
-/// Every completed order belongs to a fill, so `EXECUTE_FILLS_CEILING` bounds
-/// the completed section rather than any count of users. This formula
-/// reserves that section instead of dividing the region by the change width
-/// alone. A market configured at this ceiling therefore cannot overrun the
-/// region, whatever the book holds.
+/// region once the other three sections have taken their worst case. Every
+/// completed order belongs to a fill, so `EXECUTE_FILLS_CEILING` bounds the
+/// completed section rather than any count of users.
 pub const EXECUTE_USERS_CEILING: u16 = ((RESPONSE_BUFFER_BYTES
     - 2 * RESPONSE_LEN_BYTES
     - CANCELLED_BYTES
@@ -320,6 +295,7 @@ pub fn order_view(node: &OrderNodeV0, node_index: u32) -> OrderViewV0 {
             node_index,
             order_id: node.order_id,
         },
+
         client_order_id: node.client_order_id,
         user: node.user_ref(),
         side: node.side(),
@@ -348,31 +324,10 @@ pub struct ClobHeaderV0 {
     pub order_step_size: u64,
     /// Floor on order size so every resting order has real capital at risk.
     pub min_order_size: u64,
-    /// Floor on the size of an order that may end a walk.
+    /// Floor on the size of an order that may end a walk. Zero disables it.
     ///
-    /// An order whose owner the caller did not carry ends the walk once it is
-    /// past `unknown_user_grace_slots`, and the depth behind it goes untraded.
-    /// That stops a caller from filling around the maker who would have won.
-    /// It is also a blocking right, and a right that costs only
-    /// `min_order_size` can be bought in bulk. A caller carries at most 48
-    /// users, so 49 orders at the top of book on 49 fresh sub-accounts make
-    /// the depth behind them unreachable for everyone, for rent.
-    ///
-    /// The walk steps over an order below this floor instead, at any age,
-    /// exactly as it steps over a too-fresh order. The blocking right then
-    /// costs 49 times this size, posted at the top of book and exposed to
-    /// being filled. That is market making rather than rent.
-    ///
-    /// A maker below the floor gives up price priority against a caller that
-    /// did not carry it. That cost is stated and bounded. At or above the
-    /// floor the priority is guaranteed. Below it a maker depends on being
-    /// carried, and a maker that is carried fills normally either way.
-    ///
-    /// Zero disables the floor. Every market reads zero out of reserved bytes,
-    /// so the behaviour does not change until an admin sets the field. There
-    /// is no upper bound. Raising the floor is the answer to someone who buys
-    /// blocking rights in bulk. A floor above the real book lets no order end
-    /// a walk, so every caller can fill around any maker it left out.
+    /// A caller carries at most 48 users, so 49 orders at the top of book can
+    /// block the depth behind them. The walk steps over a smaller order.
     pub blocking_min_size: u64,
     /// Base units per whole unit. Velocity perps use 1e9 and spot varies.
     /// Immutable after init, because resting order sizes are denominated in
@@ -396,27 +351,8 @@ pub struct ClobHeaderV0 {
     pub max_activation_delay_slots: u32,
     /// How far the caller's account set is allowed to lag the book.
     ///
-    /// A fill races the transaction's fixed account set. Quote and execute
-    /// take the set of users the caller can settle. The walk skips an order
-    /// whose owner is absent while the order's age is at most this many slots,
-    /// because the caller cannot be expected to have heard of it yet. Once the
-    /// age passes that, the order ends the walk. The window is therefore this
-    /// many slots after the slot the order became matchable in. Age runs from
-    /// `activation_slot`, the slot the order first became visible to any
-    /// reader of this book, not from the slot it was placed in.
-    ///
-    /// At or below that age a new maker costs the caller nothing. Past it, a
-    /// maker the caller did not bring is where the fill stops, and the book
-    /// reports the depth behind that maker as withheld.
-    ///
-    /// The size depends on how the callers of this market build their account
-    /// sets. A set assembled from a live subscription can lag by a slot or
-    /// two. A set assembled from an address lookup table cannot name a maker
-    /// until the table has been extended and that extension has landed, which
-    /// takes longer. Too small a value stops every fresh quote at the top of
-    /// book. Too large a value lets a caller leave out a maker it did know
-    /// about, and the depth behind that maker goes untraded rather than to a
-    /// worse price.
+    /// The walk skips an order whose owner is absent while its age, measured
+    /// from `activation_slot`, is at most this. Past that the order ends the walk.
     pub unknown_user_grace_slots: u32,
     /// Soft cap. `evict_worst` is allowed once a side holds at least this
     /// many orders. Eviction runs through a velocity crank, which keeps the
@@ -430,59 +366,29 @@ pub struct ClobHeaderV0 {
     pub max_execute_fills: u16,
     pub max_execute_users: u16,
     /// The earliest `max_ts` any live order carries, or [`i64::MAX`] when no
-    /// live order expires.
-    ///
-    /// The book keeps it so a caller does not have to walk the arena to learn
-    /// when its next expiry crank is due. A placement folds its own expiry in.
-    /// A removal recomputes the field only when it took the order that held
-    /// the minimum. The field may therefore be earlier than the truth until
-    /// the next removal notices, which costs a caller a simulation that finds
-    /// nothing. It is never later, because that would leave work nobody is
-    /// woken for.
+    /// live order expires. A removal recomputes it only when it took the order
+    /// that held the minimum, so the field may be earlier than the truth. It is
+    /// never later, because that would leave work nobody is woken for.
     pub next_expiry_ts: i64,
     /// The earliest `activation_slot` any live order carries that has not yet
-    /// arrived, or [`u64::MAX`] when none is pending.
-    ///
-    /// This field goes stale on its own, and the expiry does not. A slot the
-    /// chain passes turns a pending activation into an arrived one without any
-    /// write to the book. Every mutation therefore recomputes the field when
-    /// the stored slot is no longer in the future. For a book that nothing
-    /// writes to, the caller's own fallback poll covers the gap rather than
-    /// this field.
+    /// arrived, or [`u64::MAX`] when none is pending. A passing slot makes the
+    /// field stale without any write, so every mutation recomputes it when the
+    /// stored slot is no longer in the future.
     pub next_activation_slot: u64,
     /// The relay conditions that wake a turner for this book's own work.
     ///
-    /// Expiry, activation, a side at its soft cap and a crossed book are all
-    /// facts about this account. The conditions that watch for them therefore
-    /// live on it, and the book maintains them as it places and removes
-    /// orders. No caller passes a second account to keep them fresh, so no
-    /// condition goes stale because a caller omitted one.
-    ///
-    /// The book does not decide who resolves them. Each condition carries a
-    /// [`relay_spec::CrankSpecV0`] that names the resolver program, its
-    /// discriminator and the payment floor. `set_crank_conditions_v0` writes
-    /// it. Removing an order has consequences the book does not hold, such as
-    /// a maker's margin, a reward or a trigger slot. The program that owns the
-    /// flow therefore says what runs.
+    /// The book maintains them as it places and removes orders, so no caller
+    /// passes a second account. `set_crank_conditions_v0` names the resolvers.
     pub crank: RelayBlockV0<CRANK_CONDITIONS, CRANK_RESOLVER_CAPACITY>,
     /// Reserved bytes. A later field, such as a fee destination or a
     /// paused-operations bitmap, can claim them without moving `response`,
     /// changing the account size, or migrating every live market. The bytes
     /// must stay zero until a field claims them.
     pub padding: [u8; 104],
-    /// Oldest taker-origin order on each side, indexed by [`Side`] (bid 0,
-    /// ask 1). [`NIL`] when the side holds none.
-    ///
-    /// A taker-origin order is a migrated taker remainder. It claims the depth
-    /// it crosses on the other side. See the reservation in [`crate::book`].
-    /// Every read of a side therefore has to enumerate the remainders resting
-    /// on the opposite side, so they are threaded on their own list rather
-    /// than found by a walk down a price-sorted side.
-    ///
-    /// The list is in rest order, and that costs nothing to keep.
-    /// `next_order_id` only increases, so the newest taker-origin order always
-    /// carries the highest id. An append at the tail is O(1) and already
-    /// sorted.
+    /// Oldest taker-origin order on each side, indexed by [`Side`] (bid 0, ask
+    /// 1). [`NIL`] when the side holds none. The list is in rest order. A
+    /// taker-origin order is a migrated taker remainder that claims depth on
+    /// the other side, so a read of a side enumerates it. See [`crate::book`].
     pub taker_origin_head: [u32; 2],
     /// Newest taker-origin order on each side, so an append is O(1).
     pub taker_origin_tail: [u32; 2],
@@ -490,28 +396,16 @@ pub struct ClobHeaderV0 {
     /// a side may take, so a corrupt list cannot spin.
     pub taker_origin_count: [u16; 2],
     /// Slots past its activation slot for which a taker remainder's claim on
-    /// the depth it crosses is still honoured.
-    ///
-    /// The claim hides that depth from every caller except the crank that owes
-    /// the taker its improvement. A crank that never lands would hold the top
-    /// of book for ever. Past this window the book stops honouring the claim
-    /// and the depth is ordinary again. Zero ends a claim in the slot the
-    /// remainder activates.
-    ///
-    /// `update_market_v0` writes it, bounded by
-    /// [`RESERVATION_GRACE_SLOTS_CEILING`]. A fresh market starts at
-    /// [`DEFAULT_RESERVATION_GRACE_SLOTS`].
+    /// the depth it crosses is still honoured. Past the window the depth is
+    /// ordinary again, so a crank that never lands cannot hold the top of book
+    /// for ever. Zero ends the claim at activation.
     pub reservation_grace_slots: u16,
     /// Keeps `response` on the 8-byte step its records are cast at.
     pub padding1: [u8; 2],
     /// Scratch region that `quote_v0` and `execute_v0` stream their response
-    /// into. Return data carries a [`ResponsePointerV0`] that locates it. It
-    /// is the last field, so [`RESPONSE_OFFSET`] is the header size minus its
-    /// length.
-    ///
-    /// Its size holds the region's 8-byte start. See
-    /// [`RESPONSE_BUFFER_BYTES`]. Both programs therefore cast the records in
-    /// place instead of copying them field by field.
+    /// into. Return data carries a [`ResponsePointerV0`] that locates it. It is
+    /// the last field, so [`RESPONSE_OFFSET`] is the header size minus its
+    /// length. Its size holds the region's 8-byte start, so records cast in place.
     pub response: [u8; RESPONSE_BUFFER_BYTES],
 }
 
@@ -532,12 +426,9 @@ pub const CRANK_BLOCK_OFFSET: usize = relay_spec::block_offset!(ClobHeaderV0, cr
 const_assert_eq!(CRANK_BLOCK_OFFSET % 8, 0);
 
 /// The region of this account that changes whenever either side's best moves.
-/// `best_bid` and `best_ask` are adjacent, so one watched range covers both.
-///
-/// A crossing order is always a new best, so a relay watch here catches every
-/// cross the moment it appears. `set_crank_conditions_v0` reports the region,
-/// so a caller that registers a watch never has to know where the heads
-/// sit.
+/// `best_bid` and `best_ask` are adjacent, so one watched range covers both. A
+/// crossing order is always a new best, so a relay watch here catches every
+/// cross. `set_crank_conditions_v0` reports the region.
 pub const TOP_OF_BOOK_OFFSET: usize = 8 + core::mem::offset_of!(ClobHeaderV0, best_bid);
 pub const TOP_OF_BOOK_BYTES: usize = 2 * core::mem::size_of::<u32>();
 
@@ -587,23 +478,15 @@ pub use clob_state::{live_orders, OrderBitFlag, OrderNodeV0, NIL, NODE_BYTES};
 /// instruction surface, so the bytes this program reads and the bytes its
 /// caller writes come from one declaration.
 pub use clob_wire::ClobOrderRefV0 as OrderRefV0;
-/// A velocity user in derivable form: the authority wallet and the
-/// sub-account index. The `User` PDA (`["user", authority, sub_account_id]`)
-/// and the `UserStats` PDA (`["user_stats", authority]`) both derive from it.
-/// The book stores this rather than the `User` account key so that an
-/// off-chain reader, such as a relay resolver that stages a crank, reaches
-/// every user-derived account from the node alone. A stored `User` key
-/// reaches nothing, because its authority lives inside account data the
-/// reader cannot load.
+/// A velocity user in derivable form: the authority wallet and the sub-account
+/// index, which derive the `User` and `UserStats` PDAs. The book stores this
+/// rather than the `User` key, so an off-chain reader reaches both from the
+/// node alone. A stored key hides the authority inside account data.
 pub use quoter_spec::UserRefV0;
 /// The request half of this wire, declared in `quoter-spec` alongside the
-/// responses. Both programs read one declaration, rather than each restating
-/// a shape and asserting a width.
-///
-/// `USER_SET_CAPACITY` comes from the account-lock budget of the transaction
-/// that forwards the set. It is 64 locks, minus the 15 a router fill spends
-/// before its first maker, minus one for the `UserStats` those makers share
-/// in the best case.
+/// responses. `USER_SET_CAPACITY` comes from the account-lock budget of the
+/// forwarding transaction: 64 locks, minus the 15 a router fill spends before
+/// its first maker, minus one for the `UserStats` those makers share.
 pub use quoter_spec::{
     user_set_within_capacity, UserCapV0, UserCapsV0, BASE_PRECISION, USER_CAPS_BYTES,
     USER_CAPS_CAPACITY, USER_EXCLUSION_BITMAP_BYTES, USER_SET_CAPACITY, USER_SET_MAX_BYTES,
@@ -619,12 +502,9 @@ pub use quoter_spec::CancelSidesV0;
 /// `quoter-spec`, which owns every shape on this wire.
 pub use quoter_spec::ResponsePointerV0;
 /// One user's share of an executed fill. Mirrors velocity's quoter-interface
-/// `UserBalanceChangeV0`.
-///
-/// `execute` writes this encoding into the response region field by field
-/// rather than serializing this struct. See [`crate::book`]. The type remains
-/// the schema of record for that layout, and the response unit tests pin the
-/// two against each other.
+/// `UserBalanceChangeV0`. `execute` writes this encoding into the response
+/// region field by field rather than serializing this struct. The type stays
+/// the schema of record, and the response unit tests pin the two together.
 pub use quoter_spec::UserBalanceChangeV0;
 pub use quoter_spec::{ExecuteResponseV0, L3ArgsV0, L3ResponseV0, L3RowV0, QuoteResponseV0};
 
@@ -656,11 +536,9 @@ impl CancelSidesExt for CancelSidesV0 {
 
 /// What a `cancel_all_v0` withdrew, aggregated per side.
 ///
-/// Per-side totals rather than a list of removals. Velocity unwinds
-/// `open_bids` and `open_asks` by a summed base amount, and the open-order
-/// counts by a count. The whole sweep therefore costs it the same two calls
-/// one cancel does. The cancel record's id list carries the per-order detail
-/// an indexer needs, so return data does not.
+/// Velocity unwinds `open_bids` and `open_asks` by a summed base amount, so
+/// the whole sweep costs it the same two calls one cancel does. The cancel
+/// record's id list carries the per-order detail an indexer needs.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CancelAllOutcome {
     pub bid_base_asset_amount: u64,
@@ -723,17 +601,9 @@ pub struct ExecuteOutcome {
 pub const FILL_BATCH_CEILING: usize = 8;
 
 /// Wire form of a removed order. It is the return data of cancel, evict and
-/// expire. Declared by `clob-wire`.
-///
-/// Its `taker_origin` flag is the only place this program reports that an
-/// order was a migrated taker remainder. A taker-origin cross cannot go
-/// through an ordinary `execute_v0`, because the reservation in
-/// [`crate::book`] withholds both the remainder and the depth it crosses. A
-/// caller resolves one by taking the counterparty's side with `execute_v0`
-/// and `consume_reservation`. It then removes the taker-origin order with
-/// `cancel_order_v0`, which returns this. Without the flag the caller cannot
-/// tell which of the two removed orders demanded liquidity, so it cannot know
-/// which side's price the match settles at.
+/// expire. Declared by `clob-wire`. Its `taker_origin` flag is the only place
+/// this program reports a migrated taker remainder. A caller needs the flag to
+/// know which side's price the match settles at.
 pub use clob_wire::RemovedOrderV0;
 /// What one order in a `fill_v0` came to. Declared by `clob-wire`.
 pub use clob_wire::{FillArgsV0, FillOutcomeV0, FillRequestV0, FilledOrderV0 as FilledOrder};

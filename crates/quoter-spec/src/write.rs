@@ -48,21 +48,17 @@ use {
     core::mem::size_of,
 };
 
-/// Append-only cursor over a response region.
-///
-/// Appends are bounds-checked against the region and patches against the bytes
-/// written so far. A miscomputed offset is therefore a [`SpecError`], never a
-/// write past the response into whatever the account holds next.
+/// Append-only cursor over a response region. Appends are bounds-checked against the
+/// region and patches against the bytes written so far, so a miscomputed offset is a
+/// [`SpecError`] rather than a write into whatever the account holds next.
 struct Cursor {
     len: usize,
 }
 
 impl Cursor {
-    /// A cursor positioned past the response's leading length prefix.
-    ///
-    /// The prefix is not written here. Its count is unknown until the walk
-    /// ends, and [`Self::patch_len`] writes all eight bytes once it is known.
-    /// A zero written first is therefore a store that is always overwritten.
+    /// A cursor positioned past the response's leading length prefix. The count is
+    /// unknown until the walk ends, so [`Self::patch_len`] writes all eight bytes
+    /// later rather than storing a zero that is always overwritten.
     const fn new() -> Self {
         Self { len: LEN_BYTES }
     }
@@ -114,6 +110,7 @@ impl Cursor {
         if end > self.len {
             return Err(SpecError::RegionTooSmall);
         }
+
         region
             .get_mut(offset..end)
             .ok_or(SpecError::RegionTooSmall)?
@@ -167,15 +164,14 @@ impl Cursor {
         if end > self.len {
             return Err(SpecError::RegionTooSmall);
         }
+
         Ok(end)
     }
 }
 
-/// Writes a [`crate::QuoteResponseV0`] as the ladder is produced.
-///
-/// [`Self::new`] reserves the ladder's length prefix and [`Self::finish`]
-/// backfills it, because a walk that stops once the taker's size is covered
-/// does not know how many rungs it wrote until it stops.
+/// Writes a [`crate::QuoteResponseV0`] as the ladder is produced. [`Self::new`] reserves
+/// the length prefix and [`Self::finish`] backfills it, because a walk that stops once
+/// the taker's size is covered does not know how many rungs it wrote.
 pub struct QuoteWriter {
     cursor: Cursor,
     levels: usize,
@@ -208,12 +204,9 @@ impl QuoteWriter {
         Ok(())
     }
 
-    /// Backfill the ladder's count, write the withheld report behind it, and
-    /// return the response's length in bytes.
-    ///
-    /// The report is a parameter rather than something a quoter appends for
-    /// itself. It is the whole tail of the response, so a field added there
-    /// changes this signature.
+    /// Backfill the ladder's count, write the withheld report behind it, and return the
+    /// response's length in bytes. The report is a parameter because it is the whole
+    /// tail, so a field added there changes this signature.
     pub fn finish(self, region: &mut [u8], withheld: PriceLevelV0) -> Result<usize, SpecError> {
         let Self { mut cursor, levels } = self;
         cursor.patch_len(region, 0, levels)?;
@@ -222,11 +215,10 @@ impl QuoteWriter {
     }
 }
 
-/// Writes an [`crate::L3ResponseV0`] as the walk produces it.
-///
-/// Same shape as [`QuoteWriter`], and for the same reason: the row count is
-/// not known until the walk ends, so the prefix is backfilled and the tail
-/// marker is a parameter of [`Self::finish`].
+/// Writes an [`crate::L3ResponseV0`] as the walk produces it. Same shape as
+/// [`QuoteWriter`] and for the same reason. The row count is not known until the walk
+/// ends, so the prefix is backfilled and the tail marker is a [`Self::finish`]
+/// parameter.
 pub struct L3Writer {
     cursor: Cursor,
     rows: usize,
@@ -273,13 +265,10 @@ impl L3Writer {
 /// then the records.
 const CHANGES_START: usize = LEN_BYTES;
 
-/// Writes a [`crate::ExecuteResponseV0`] as the fill is produced.
-///
-/// The balance changes are streamed and the other sections are passed to
-/// [`Self::finish`] whole. That follows what a fill does with each. A fill
-/// revisits a change, because a maker filled twice has one record and the second
-/// fill adds into it through [`Self::change_mut`]. A cancelled remainder and a
-/// completed order are written once and never read again.
+/// Writes a [`crate::ExecuteResponseV0`] as the fill is produced. The balance changes
+/// are streamed because a fill revisits them through [`Self::change_mut`] when a maker
+/// fills twice. The other sections are written once, so they pass to [`Self::finish`]
+/// whole.
 pub struct ExecuteWriter {
     cursor: Cursor,
     changes: usize,
@@ -353,15 +342,14 @@ impl ExecuteWriter {
             mut cursor,
             changes,
         } = self;
-        // The reader refuses a completed order that names a change the
-        // response does not hold, because it indexes with that number and a
-        // dangling one unwinds some other user's live margin. Refuse to write
-        // one too, so a quoter fails on its own bug rather than on the
-        // router's rejection of it. The partial section is held to the same
-        // bound, and to the one record a fill can produce.
+
+        // The reader indexes with this number, and a dangling one unwinds some other
+        // user's live margin. Refuse to write one, so a quoter fails on its own bug
+        // rather than on the router's rejection of it.
         if !completed_orders_fit(completed, changes) || !partial_orders_fit(partial, changes) {
             return Err(SpecError::DanglingCompletedOrder);
         }
+
         cursor.patch_len(region, 0, changes)?;
         cursor.push_section(region, cancelled)?;
         cursor.push_section(region, completed)?;

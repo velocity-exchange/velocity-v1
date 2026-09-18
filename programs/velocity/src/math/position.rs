@@ -47,17 +47,16 @@ pub fn calculate_base_asset_value_and_pnl_with_oracle_price(
     calculate_base_asset_value_and_pnl_with_price(market_position, oracle_price, false)
 }
 
-/// Same as [`calculate_base_asset_value_and_pnl_with_oracle_price`], but valued at a
-/// market's committed `expiry_price`, which may be negative.
+/// Same as [`calculate_base_asset_value_and_pnl_with_oracle_price`], but valued at a market's
+/// committed `expiry_price`, which the expiry solver may commit negative. The live-oracle path
+/// clamps a non-positive price to zero, because a negative oracle print is nonsense. That clamp
+/// would clip a long's signed base loss to zero here, so margin and equity would value the position
+/// as worthless rather than underwater and the owner could withdraw collateral.
+/// `calculate_base_asset_value_with_expiry_price` never clamps, so `settle_expired_position` books
+/// the real negative value as an unsecured quote borrow. This variant keeps the two valuations in
+/// agreement (OtterSec #133).
 ///
-/// The live-oracle path clamps a non-positive price to zero. A negative oracle print is
-/// nonsense, so zero is the safe read there. The expiry solver can commit a negative
-/// `expiry_price`, and the oracle clamp would clip a long's signed base loss to zero.
-/// Margin and equity would then value the position as worthless rather than underwater,
-/// which lets the owner withdraw collateral.
-/// `calculate_base_asset_value_with_expiry_price` never clamps, so
-/// `settle_expired_position` books the real negative value as an unsecured quote borrow.
-/// This variant keeps the two valuations in agreement (OtterSec #133).
+/// allow-verbose: why the expiry path must not reuse the oracle clamp is not stated anywhere else.
 pub fn calculate_base_asset_value_and_pnl_with_expiry_price(
     market_position: &PerpPosition,
     expiry_price: i64,

@@ -330,6 +330,7 @@ fn prop_jit_clamped_bound(
     let Ok(reserve_price) = amm.reserve_price() else {
         return;
     };
+
     for direction in [Direction::Long, Direction::Short] {
         let Ok(levels) = vamm_quote_levels(&amm, direction, size, step, &[], None) else {
             continue;
@@ -350,6 +351,7 @@ fn prop_jit_clamped_bound(
         let Ok(top) = top else {
             continue;
         };
+
         for level in &levels {
             match direction {
                 // The taker buys: no rung may undercut the ask.

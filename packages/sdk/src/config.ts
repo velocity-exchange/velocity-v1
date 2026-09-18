@@ -34,9 +34,7 @@ export type LegacyVelocityEnv = VelocityEnv | 'master';
 
 /**
  * The network tag a signed-msg order must carry for `env` (`SignedMsgOrderParamsMessage.network`).
- * The program compares the tag against the cluster its own build targets. It refuses a message
- * that names the other cluster, and a message that names no cluster. The tag describes the
- * deployment, not the order, so `VelocityClient` fills it in from `env`.
+ * The program refuses a message that names the other cluster, or none.
  */
 export function signedMsgNetworkForEnv(env: VelocityEnv): number {
 	return env === 'mainnet-beta'

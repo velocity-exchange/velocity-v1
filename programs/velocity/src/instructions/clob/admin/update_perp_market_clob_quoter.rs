@@ -41,10 +41,9 @@ pub struct AdminUpdatePerpMarketClobQuoter<'info> {
     #[account(mut)]
     pub quoter_slab: AccountLoader<'info, crate::state::prop_amm::QuoterSlabV0>,
     /// CHECK: the perp market's `has_one` binds it to the book the market
-    /// designated. It is writable because the attach registers velocity's
-    /// resolvers on the book itself. The wakes for an expiry, an activation, a
-    /// side at its cap and a crossed book are facts about this account, so the
-    /// conditions that watch for them live on it.
+    /// designated. Writable because the attach registers velocity's resolvers
+    /// on it. The conditions for expiry, activation, a side at its cap and a
+    /// crossed book live on this account because those are facts about it.
     #[account(mut)]
     pub clob_market: UncheckedAccount<'info>,
     /// CHECK: a Clob slot's program is pinned to velocity's CLOB at
@@ -60,6 +59,7 @@ pub struct AdminUpdatePerpMarketClobQuoter<'info> {
             crate::state::clob_crank::CLOB_CRANK_CONDITIONS_PDA_SEED,
             perp_market.load()?.market_index.to_le_bytes().as_ref(),
         ],
+
         space = crate::state::clob_crank::ClobCrankConditionsV0::SIZE,
         bump,
         payer = admin
@@ -76,17 +76,10 @@ pub struct AdminUpdatePerpMarketClobQuoter<'info> {
     pub system_program: Program<'info, System>,
 }
 
-/// Names the market's canonical CLOB quoter entry. Once the entry is set,
-/// every router fill must carry it in its quoter section, so a route cannot
-/// exclude the public book. A dead entry is still passed but skipped at quote
-/// time, so deactivating the book never stops fills. There is no clear path for
-/// the same reason. Kill the entry instead.
-///
-/// The attach also writes the market's relay crank conditions. Those are the
-/// evict and expire condition block, plus the lamport reservoir that pays relay
-/// keepers per crank. A re-attach rewrites them. The attach is the earliest
-/// point at which the full reference graph exists, that is the book and the
-/// registry entry, so a new market needs no separate conditions ceremony.
+/// Names the market's canonical CLOB quoter entry. Every router fill must
+/// then carry it, so no route can exclude the book. A dead entry is still
+/// passed but skipped at quote time, so deactivating the book never stops
+/// fills. There is no clear instruction. Kill the entry instead.
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
 pub struct UpdatePerpMarketClobQuoterArgs {
     /// What each crank requests, measured by simulating it. The lamport
@@ -137,11 +130,10 @@ pub fn handle_update_perp_market_clob_quoter(
     )?;
 
     // A cross must clear by more than nothing. Cranking one pays
-    // `crank_payments.cross` out of the reservoir, so a cross that clears by a
-    // cent is a cross the protocol pays to run. Anyone can create one by
-    // resting two orders a tick apart. The caller must state the figure because
-    // this instruction cannot derive it. Converting the lamport payout into
-    // quote needs a SOL price, and the cross crank carries no SOL oracle.
+    // `crank_payments.cross` out of the reservoir, so a cheap cross costs the
+    // protocol to run, and anyone can create one by resting two orders a tick
+    // apart. The caller states the figure because the instruction cannot
+    // derive it: it has no SOL oracle to price the lamport payout in quote.
     validate!(
         min_cross_surplus > 0,
         ErrorCode::DefaultError,
@@ -157,12 +149,12 @@ pub fn handle_update_perp_market_clob_quoter(
 
     // The book's own conditions come first. Velocity registers which resolver
     // answers each one and what it pays, and the book keeps their wakes
-    // current. The book reports where its condition block sits, and which of
-    // its bytes change when its top of book moves. Nothing here derives those,
-    // so nothing here knows the market account's layout.
+    // current. The book reports where its condition block sits and which
+    // bytes change on a top-of-book move, so nothing here knows its layout.
     let block = clob.set_crank_conditions(crate::instructions::clob_crank_registration(
         &keys, payments,
     )?)?;
+
     msg!(
         "clob crank conditions at book offset {}",
         block.block_offset
@@ -190,9 +182,8 @@ pub fn handle_update_perp_market_clob_quoter(
 
     // A market names its book once, at registration in `initialize_quoter`.
     // The accounts struct's `has_one = clob_market` holds this attach to that
-    // designation. Nothing here writes it. A book settles for whoever rests on
-    // it, so a path that could point the market at a second book later would
-    // put every user a fill carries behind whoever holds the admin key.
+    // designation and nothing here writes it. A path that could repoint the
+    // market later would put every user a fill carries behind the admin key.
     Ok(())
 }
 
@@ -218,13 +209,16 @@ fn bind_book_slot<'a, 'info>(
             "the slab's book slot holds entry {}, not the passed one",
             book_slot.entry
         )?;
+
         book_slot.config.program_id
     };
+
     validate!(
         registered_program == clob_program.key(),
         ErrorCode::DefaultError,
         "clob program does not match the quoter entry"
     )?;
+
     Ok((clob, registered_program))
 }
 
@@ -255,19 +249,17 @@ fn mirror_book_placement_rules(
         rules.min_order_size,
         perp_market.market_stats.min_order_size
     )?;
-    // The book's place authority is its trust root. The book settles for
-    // whoever it names as a maker, and velocity signs its CPIs as this key. Pin
-    // it to the market's quoter slab PDA, which is the one identity velocity
-    // signs every external quoter CPI as. A book whose place authority is a
-    // stranger then cannot be attached, and cannot forge orders for any loaded
-    // user through the attachment. `place_authority` is immutable on the book,
-    // so a book that passes here stays pinned for the life of the
-    // attachment.
+
+    // The book's place authority is its trust root. Velocity signs every
+    // external quoter CPI as the market's quoter slab PDA, so only a book
+    // pinned to that PDA can be attached without forging orders. Immutable
+    // on the book, so a passing book stays pinned for the attachment's life.
     validate!(
         rules.place_authority == quoter_slab.key().to_bytes(),
         ErrorCode::DefaultError,
         "book place authority is not the market's quoter slab"
     )?;
+
     // The book's grid must match the market's grid. A remainder aligned to the
     // market can then always rest. An off-tick or off-step remainder would
     // revert the whole fill that carried it.
@@ -285,12 +277,11 @@ fn mirror_book_placement_rules(
         rules.step_size,
         perp_market.order_step_size
     )?;
-    // Mirror the placement rules onto the book's slot and onto the staging
-    // entry. The take gate, the route's maker-priority skip and the remainder
-    // rest read the slot copy instead of calling `order_rules_v0` by CPI on
-    // every fill. The staging entry copy carries forward to a later
-    // re-approval. The attach is the supported way to change an attached book's
-    // rules, so this write is what keeps the mirror current.
+
+    // Mirrors the rules onto the book's slot and the staging entry, so the
+    // take gate, the maker-priority skip and the remainder rest read the slot
+    // copy instead of calling `order_rules_v0` by CPI on every fill. The
+    // staging copy carries forward to a later re-approval.
     {
         let mut slots = quoter_slab.slots_mut()?;
         let index = crate::state::prop_amm::clob_slot_index(&slots)
@@ -300,6 +291,7 @@ fn mirror_book_placement_rules(
         slots[index].config.book_default_activation_delay_slots =
             rules.default_activation_delay_slots;
     }
+
     let mut quoter = quoter.load_mut()?;
     quoter.config.book_tick_size = rules.tick_size;
     quoter.config.book_min_order_size = rules.min_order_size;
@@ -332,6 +324,7 @@ fn write_market_crank_conditions(
         expire_fallback_slots,
         refill_watermark_lamports,
     )?;
+
     // A Custom quoter's cross conditions watch this same region for a cross
     // against the book. `initialize_quoter_cross_conditions` reads the region
     // from here rather than deriving it.

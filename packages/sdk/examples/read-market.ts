@@ -1,9 +1,6 @@
 /**
- * A read-only quickstart. It prints the SOL-PERP vAMM bid, ask and oracle price
- * on mainnet.
- *
- * It needs no funds and signs nothing. Run with:
- *   RPC_URL=<your rpc> bunx ts-node examples/read-market.ts
+ * A read-only quickstart. Prints the SOL-PERP vAMM bid, ask and oracle price.
+ * Run with: RPC_URL=<your rpc> bunx ts-node examples/read-market.ts
  */
 import { Connection, Keypair } from '@solana/web3.js';
 import {

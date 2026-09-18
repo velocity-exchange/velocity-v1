@@ -101,13 +101,9 @@ struct Config {
     /// (default 300 = 3%).
     auction_oracle_band_bps: u32,
     /// Skip the oracle-band guard, failing open, when the server's own oracle
-    /// is more than this far behind the latest slot. A lagging swift-side
-    /// oracle must not start rejecting otherwise-valid orders. `0` disables
-    /// the staleness gate, so the band always applies. Override with
-    /// `AUCTION_ORACLE_MAX_STALENESS_SLOTS` (default 10). The value counts
-    /// 400ms units, so the default is about 4 seconds of wall clock. The
-    /// measured age is wall clock, so faster slots fit more of them in that
-    /// window.
+    /// is more than this far behind the latest slot. `0` disables the gate.
+    /// Override with `AUCTION_ORACLE_MAX_STALENESS_SLOTS` (default 10, about
+    /// 4 seconds of wall clock at 400ms per slot).
     auction_oracle_max_staleness_slots: u64,
 }
 
@@ -490,9 +486,8 @@ pub async fn process_order(
             .set(current_slot as f64);
         // This is recorded on accept rather than on publish. It is the one
         // point both HTTP entry points reach with `order_params` still in
-        // scope. A publish that then fails still counts here.
-        // swift_redis_publish_fail_count measures that gap, and it is
-        // normally zero.
+        // scope. A failed publish still counts here; `swift_redis_publish_fail_count`
+        // measures that gap, and it is normally zero.
         server_params.record_order_notional(&order_params, context);
 
         Ok(order_metadata)
@@ -832,7 +827,6 @@ pub async fn start_server() {
         velocity_rs::utils::get_http_url(&env::var("ENDPOINT").expect("valid rpc endpoint"))
             .expect("valid RPC endpoint");
 
-    // Registry for metrics
     let registry = Registry::new();
     let metrics = SwiftServerMetrics::new();
     metrics.register(&registry);
@@ -849,7 +843,6 @@ pub async fn start_server() {
 
     let user_account_fetcher = UserAccountFetcher::from_env(client.clone()).await;
 
-    // Slot subscriber
     let mut ws_clients = vec![];
     for (_k, ws_endpoint) in std::env::vars().filter(|(k, _v)| k.starts_with("WS_ENDPOINT")) {
         ws_clients.push(Arc::new(PubsubClient::new(&ws_endpoint).await.unwrap()));
@@ -861,7 +854,6 @@ pub async fn start_server() {
     let mut slot_subscriber = SuperSlotSubscriber::new(ws_clients, client.rpc());
     slot_subscriber.subscribe();
 
-    // Set ignore pubkeys
     let ignore_pubkeys = env::var("IGNORE_PUBKEYS").unwrap_or_else(|_| "".to_string());
     let pubkeys = ignore_pubkeys
         .split(',')
@@ -924,7 +916,6 @@ pub async fn start_server() {
         }
     });
 
-    // App
     let host = env::var("HOST").unwrap_or("0.0.0.0".to_string());
     let port = env::var("PORT").unwrap_or("3000".to_string());
     let cors = CorsLayer::new()
@@ -945,7 +936,6 @@ pub async fn start_server() {
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     log::info!("Swift server on {}", listener.local_addr().unwrap());
 
-    // Metrics
     let registry = Arc::new(registry);
     let server_metrics_state = MetricsServerParams {
         registry,
@@ -967,8 +957,8 @@ pub async fn start_server() {
         listener_metrics.local_addr().unwrap()
     );
 
-    // RPC sim loop to avoid rpc cold starts when orders are infrequent
-    // Build tx once and just resign with new blockhash
+    // Avoids RPC cold starts when orders are infrequent: builds one tx and
+    // resigns it with a fresh blockhash each tick.
     let rpc_sim_loop = tokio::spawn(async {
         let sender = Keypair::new();
         let receiver = Keypair::new();

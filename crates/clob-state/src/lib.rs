@@ -41,14 +41,10 @@ use {
 /// The list terminator: no next node, no head, no free slot.
 pub const NIL: u32 = u32::MAX;
 
-/// Account-data offset of the order-node tail.
-///
-/// The market is `[disc][ClobHeaderV0][len: u32][OrderNodeV0 tail]`, padded to
-/// the node's alignment, so this is a fact about the header's size. It is a
-/// number here rather than an expression because the header is the book's and
-/// stays the book's. `clob::state` asserts the two agree at compile time, so a
-/// header that grows fails the book's own build rather than moving the arena
-/// under a reader.
+/// Account-data offset of the order-node tail. The market is
+/// `[disc][ClobHeaderV0][len: u32][OrderNodeV0 tail]`, padded to the node's alignment.
+/// A number rather than an expression, because the header stays the book's.
+/// `clob::state` asserts the two agree at compile time.
 pub const ORDERS_OFFSET: usize = 9648;
 
 /// Flags on a node's `bit_flags` byte.
@@ -82,17 +78,13 @@ impl OrderBitFlag {
     }
 }
 
-/// One arena slot. It holds a live order threaded into a side's price-time
-/// list, or a free node threaded into the free list through `next`. The
-/// velocity `User` is stored inline and there is no seat table, so user
-/// capacity is order capacity, governed by the one eviction rule.
+/// One arena slot, holding either a live order threaded into a side's price-time list
+/// or a free node threaded into the free list through `next`. The velocity `User` is
+/// inline and there is no seat table, so user capacity is order capacity.
 ///
-/// 104 bytes, with one spare byte. The node is the per-order cost of a market,
-/// because capacity times this size is the account's rent. Growth room lives on
-/// the header, and a field belongs here only when a walk of one side has to
-/// read it. The two taker-origin links are that case. The reservation walk
-/// enumerates the claimants on a side, and reaching them through the
-/// price-sorted list would read every order on it.
+/// 104 bytes, with one spare. Capacity times this size is the account's rent, so growth
+/// room lives on the header and a field belongs here only when a walk of one side has
+/// to read it.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
 #[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
@@ -123,13 +115,9 @@ pub struct OrderNodeV0 {
     /// Toward the oldest taker-origin order on this side. [`NIL`] marks the
     /// head. It means nothing unless [`OrderBitFlag::TakerOrigin`] is set.
     pub taker_origin_prev: u32,
-    /// Toward the newest taker-origin order on this side. [`NIL`] marks the
-    /// tail.
-    ///
-    /// The side's taker-origin orders are threaded on their own list, in rest
-    /// order. A crossing remainder claims the depth it crosses, so every read
-    /// of a side has to enumerate the remainders that claim it. The list makes
-    /// that cost the number of remainders instead of the number of orders.
+    /// Toward the newest taker-origin order on this side. [`NIL`] marks the tail. These
+    /// orders are threaded on their own list in rest order, so enumerating the
+    /// remainders that claim a side costs their count rather than the side's.
     pub taker_origin_next: u32,
     pub bit_flags: u8,
     pub padding0: u8,
@@ -202,16 +190,11 @@ impl OrderNodeV0 {
     }
 }
 
-/// Every live order in a market account, paired with its arena index.
-///
-/// The iteration is in arena order rather than book order. A reader that wants
-/// one user's orders does not care where they sit in a price queue, and a walk
-/// of the array skips the links. A short or misaligned account yields nothing
-/// rather than failing, because an account feed can hand over a partial write.
-///
-/// The index is the node's own slot, not its position among live orders. It is
-/// half of the handle a cancel takes, so a count of live orders would hand a
-/// caller a hint pointing at some other order.
+/// Every live order in a market account, paired with its arena index. Iteration is in
+/// arena order, because a reader after one user's orders does not care about price
+/// queues and a walk of the array skips the links. A short or misaligned account yields
+/// nothing rather than failing, because an account feed can hand over a partial write.
+/// The index is the node's own slot, which is half of the handle a cancel takes.
 pub fn live_orders(account_data: &[u8]) -> impl Iterator<Item = (u32, OrderNodeV0)> + '_ {
     account_data
         .get(ORDERS_OFFSET..)
@@ -236,6 +219,7 @@ mod tests {
         for node in nodes {
             data.extend_from_slice(bytemuck::bytes_of(node));
         }
+
         data
     }
 

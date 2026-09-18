@@ -35,6 +35,7 @@ pub struct UpdateQuoterActive<'info> {
             QUOTER_SLAB_PDA_SEED,
             quoter.load()?.config.market.to_le_bytes().as_ref(),
         ],
+
         bump
     )]
     pub quoter_slab: Option<AccountLoader<'info, QuoterSlabV0>>,
@@ -58,6 +59,7 @@ pub fn handle_update_quoter_active(
         &ctx.accounts.authority.key(),
         ctx.accounts.state.as_ref(),
     )?;
+
     ctx.accounts.quoter.load_mut()?.config.is_active = active;
     if let Some(slab) = &ctx.accounts.quoter_slab {
         let mut slots = slab.slots_mut()?;
@@ -65,5 +67,6 @@ pub fn handle_update_quoter_active(
             slots[index].config.is_active = active;
         }
     }
+
     Ok(())
 }

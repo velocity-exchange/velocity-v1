@@ -7,11 +7,8 @@ export enum HEALTH_STATUS {
 }
 
 /**
- * These durations gate the restart safety mechanisms, so a bad override has to
- * fall back to the default rather than pass through. A plain `Number(x) || fb`
- * lets a negative or infinite value past. A negative sample gap resets the
- * window on every sample, and an infinite sustain never latches. Either one
- * turns the kill-switch off and reports nothing.
+ * Gates a restart-safety duration override. A plain `Number(x) || fallback` lets a
+ * negative or infinite value past, which silently disables the kill-switch.
  */
 function positiveDurationMs(
 	value: string | undefined,
@@ -38,12 +35,14 @@ const HEALTH_CHECK_CONFIG = {
 		process.env.KILL_SWITCH_SUSTAIN_MS,
 		60_000
 	),
+
 	// If sampling stops, elapsed time says nothing about whether the market was
 	// behind for the whole period. A gap this long restarts the window.
 	KILL_SWITCH_SAMPLE_GAP_MS: positiveDurationMs(
 		process.env.KILL_SWITCH_SAMPLE_GAP_MS,
 		10_000
 	),
+
 	// How long a process may report no slot at all before it counts as stuck.
 	// Without a bound, a slot source that never delivers stays liveness-healthy
 	// for good, which is worse than a cold-start crash loop.
@@ -74,11 +73,10 @@ function evaluateHealth(currentSlot: number): {
 } {
 	const now = Date.now();
 
-	// Restart is the kill-switch and stays latched until the pod is replaced, so
-	// it outranks every other branch here. A slot source that dips to 0 on
-	// reconnect must not return a healthy verdict and clear it. Every other
-	// status is derived again from slot progression below, so a short stall
-	// clears itself instead of holding the pod unhealthy.
+	// Restart is the kill-switch and stays latched until the pod is replaced, so it
+	// outranks every other branch here. A slot source that dips to 0 on reconnect
+	// must not return a healthy verdict and clear it. Every other status recomputes
+	// from slot progression below, so a short stall does not stay unhealthy.
 	if (getHealthStatus() === HEALTH_STATUS.Restart) {
 		return {
 			isHealthy: false,
@@ -145,19 +143,8 @@ function evaluateHealth(currentSlot: number): {
 }
 
 /**
- * Tracks, per market, when the DLOB slot first fell behind the oracle and when
- * it was last sampled. The kill-switch latches only once a market has been
- * behind continuously for KILL_SWITCH_SUSTAIN_MS, so a brief oracle or RPC
- * hiccup cannot restart a pod that is otherwise serving fine.
- *
- * lastSeen is what makes "continuously" true. Elapsed time alone is also
- * satisfied by one bad sample, a long gap in sampling, and then a second bad
- * sample. A stalled publisher is the case that samples least often, so that gap
- * is real rather than hypothetical.
- *
- * The window is process-wide, so two publishers over the same market share one
- * window. They read the same slot source and oracle data, so they agree in
- * practice.
+ * Per-market window tracking how long the DLOB slot has stayed continuously
+ * behind the oracle, used to latch the kill-switch after KILL_SWITCH_SUSTAIN_MS.
  */
 type SlotDiffWindow = { since: number; lastSeen: number };
 const slotDiffWindows: Map<string, SlotDiffWindow> = new Map();

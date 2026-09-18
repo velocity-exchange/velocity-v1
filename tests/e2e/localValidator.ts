@@ -1,44 +1,7 @@
-/**
- * Full-stack e2e against a real local validator. This is the devnet
- * confidence gate. Run it through `bash test-scripts/run-e2e-localnet.sh`,
- * which starts the validator and redis and builds the programs and the
- * book-publisher that this file uses.
- *
- * The topology is the production one and no account is synthesized. Protocol
- * init goes through the admin instructions. CLOB bring-up matches the admin
- * CLI: book, registry entry, canonical attach, and conditions reservoir. A
- * midpoint spline instance quotes around a hot-key mid, makers rest orders on
- * the book, and the protocol User pays for cranks. The Rust book-publisher ticks
- * against the validator over RPC and writes the Redis wire, and its cross
- * fast path watches for crossed books.
- *
- * A spec here waits for something to happen rather than making it happen, so
- * it can pass by waiting for a state it was already in. Two rules keep that
- * from turning a green run into a proof of nothing.
- *
- * Assert the precondition, not only the outcome. A poll that exits on "the
- * order is gone" also exits on an order that never rested, so a spec that
- * rests one asserts it rested before it starts waiting. `place_and_make` is
- * why the placement's own success is not enough: it lands and succeeds whether
- * the order rests or fills, so landing and resting are different events here.
- *
- * Assert who did the work. A relay-cranked outcome can arrive from the
- * publisher, from another spec, or from a crank nobody meant to fire, and the
- * account state looks the same either way. Every relay-cranked spec snapshots
- * `relayPayoutBalance()` and asserts it rose, which is the only evidence that
- * discovery reached the crank under test. A new one that leaves that out
- * still passes on a market where relay never ran.
- *
- * Read balances as deltas. An account here is shared across specs, so an
- * absolute is true for a position some earlier spec opened.
- *
- * Velocity instructions go through the SDK. The CLOB and midpoint ship no TS
- * client, so anchor-v2/scripts/gen-quoter-idls.sh generates their IDLs from
- * the programs into tests/e2e/idl. Anchor's `Program` then drives them as
- * `clobProgram` and `midpointProgram`. The relay program is on a different
- * anchor fork. Its one instruction here, `register_watch_v0`, stays
- * hand-encoded in the `relayIx` helper below.
- */
+/** Full-stack e2e against a real local validator. Run it through
+ * `bash test-scripts/run-e2e-localnet.sh`, which starts the validator, redis,
+ * the programs and the book-publisher. A spec waits for state instead of
+ * forcing it, so assert the precondition first and read balances as deltas. */
 import * as anchor from '@coral-xyz/anchor';
 import { Program } from '@coral-xyz/anchor';
 import { assert } from 'chai';
@@ -187,15 +150,10 @@ async function pollUntil<T>(
 	}
 }
 
-// The book is read through its own instructions, never through its bytes.
-// The market account's layout belongs to the CLOB. A hand copy of that layout
-// here went stale as soon as the book grew a field. A stale copy reads live
-// orders as zeros, which looks like an order that never rested rather than
-// like a decoding bug.
-//
-// `quote_l3_v0` reports one row per resting order, best price first, so the
-// counts and both tops of book come from it. It is simulated like any
-// read-only leg. Nothing lands and the book is untouched.
+// The book is read by simulating `quote_l3_v0`, never through its bytes. The
+// market account's layout belongs to the CLOB. A hand copy of it here goes
+// stale as soon as the book grows a field, and then reads live orders as
+// zeros, which looks like an order that never rested.
 
 const CLOB_NODE_LEN = 104;
 
@@ -210,25 +168,18 @@ type ClobRow = { price: BN; size: BN; orderId: BN };
 
 /** The CLOB program's anchor wire (it has no TS client). */
 const clobIx = {
-	/**
-	 * Bytes for a market account that holds at least `capacity` orders.
-	 *
-	 * The size is generous rather than exact. `initialize_market_v0` derives
-	 * the arena's capacity from the account's length, so a header that grows
-	 * costs this book a few slots instead of sizing it wrong. Restating the
-	 * header's width here is what used to go stale.
-	 */
+	/** Bytes for a market account that holds at least `capacity` orders. The
+	 * size is generous rather than exact. `initialize_market_v0` derives the
+	 * arena's capacity from the account's length, so a header that grows costs
+	 * this book a few slots instead of sizing it wrong. */
 	space(capacity: number): number {
 		return 32 * 1024 + capacity * CLOB_NODE_LEN;
 	},
-	/**
-	 * A soft eviction cap for a book sized by `space(capacity)`.
-	 *
-	 * Both sides share one arena, so `initialize_market_v0` requires the cap to
-	 * be under half the capacity it derived: two sides at the cap have to fit.
-	 * A quarter leaves the suite far more headroom than it ever uses and stays
-	 * valid however the header grows.
-	 */
+
+	/** A soft eviction cap for a book sized by `space(capacity)`. Both sides
+	 * share one arena, so `initialize_market_v0` requires the cap to be under
+	 * half the capacity it derived. A quarter stays valid however the header
+	 * grows. */
 	evictThreshold(capacity: number): number {
 		return Math.floor(capacity / 4);
 	},
@@ -282,6 +233,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		commitment: 'confirmed',
 		preflightCommitment: 'confirmed',
 	});
+
 	// Generated clients for the CLOB and midpoint. Their wire is the fork's
 	// wincode, which is byte-identical to borsh for these fixed and
 	// option/vec-of-fixed args, so the upstream Program coder encodes them
@@ -366,22 +318,14 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				quoterProgram.toBuffer(),
 				user.toBuffer(),
 			],
+
 			VELOCITY_ID
 		)[0];
 
-	/** How long any send here waits for its signature.
-	 *
-	 * Nothing in this file confirms through `connection.confirmTransaction`.
-	 * Its legacy strategy gives up after a fixed 30 seconds and reports only
-	 * "unknown if it succeeded or failed", with no signature and no on-chain
-	 * error. By the later scenarios this machine runs the validator alongside
-	 * redis, the book-publisher, swift and a crank turner, so a transaction
-	 * that did land often confirms past that mark.
-	 *
-	 * 60s is the validity window of the blockhash the transaction was signed
-	 * with, which is 150 slots. Past it the RPC has stopped rebroadcasting, so
-	 * a signature still missing is missing for good, and waiting longer only
-	 * delays the report. */
+	/** How long any send here waits for its signature. Nothing confirms through
+	 * `connection.confirmTransaction`, whose legacy strategy gives up after 30
+	 * seconds and reports neither a signature nor an on-chain error. 60s is the
+	 * blockhash validity window, past which a missing signature stays missing. */
 	const CONFIRM_TIMEOUT_MS = 60_000;
 
 	/** Wait for `signature` by polling its status, reporting the on-chain
@@ -409,6 +353,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 						.join('\n')}`
 				);
 			}
+
 			// Every account fetch after a send reads at 'confirmed', so a
 			// status of 'processed' is not yet enough.
 			return status.confirmationStatus === 'processed' ? undefined : status;
@@ -423,12 +368,14 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		tx.recentBlockhash = (
 			await connection.getLatestBlockhash('confirmed')
 		).blockhash;
+
 		tx.sign(payer, ...signers);
 		// Preflight stays on. A reverting setup transaction returns its program
 		// logs there, which is more than a status lookup can recover.
 		const signature = await connection.sendRawTransaction(tx.serialize(), {
 			preflightCommitment: 'confirmed',
 		});
+
 		await confirmSignature(signature);
 		return signature;
 	};
@@ -535,6 +482,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				console.error(`${name} exited ${code} — see ${SCRATCH}/${name}.log`);
 			}
 		});
+
 		services.push({ child, log });
 		return child;
 	};
@@ -577,6 +525,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			],
 			[mint]
 		);
+
 		return mint;
 	};
 
@@ -589,11 +538,13 @@ describe('e2e localnet: programs + publisher + redis', function () {
 					AccountLayout.span,
 					TOKEN_PROGRAM_ID
 				),
+
 				createInitializeAccountInstruction(
 					account.publicKey,
 					usdcMint.publicKey,
 					owner
 				),
+
 				createMintToInstruction(
 					usdcMint.publicKey,
 					account.publicKey,
@@ -603,6 +554,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			],
 			[account]
 		);
+
 		return account.publicKey;
 	};
 
@@ -622,6 +574,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				accountLoader: new BulkAccountLoader(connection, 'confirmed', 500),
 			},
 		});
+
 		// The SDK's default sender stops waiting after 35s. A loaded validator
 		// can take longer, so hold the sender to this file's budget.
 		(client.txSender as RetryTxSender).timeout = CONFIRM_TIMEOUT_MS;
@@ -671,6 +624,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 							args.quoteL3Discriminator ?? new Array(8).fill(0),
 						executeV0Discriminator: Array.from(ixDiscriminator('execute_v0')),
 					},
+
 					{
 						accounts: {
 							state: statePdaCache,
@@ -681,10 +635,8 @@ describe('e2e localnet: programs + publisher + redis', function () {
 							// Designating the book is refused when an approved
 							// quoter's account list already names it, so a book
 							// registration reads the slab. No other type does.
-							// Anchor's client reads a null as a missing account even
-							// for an optional one, so an omitted slab is passed
-							// as the program id, which the program decodes as
-							// `None`.
+							// Anchor's client reads a null as a missing account,
+							// so an omitted slab travels as the program id.
 							quoterSlab:
 								args.quoterType === QuoterType.CLOB ? quoterSlab : VELOCITY_ID,
 							quoterProgram: args.quoterProgram,
@@ -694,12 +646,14 @@ describe('e2e localnet: programs + publisher + redis', function () {
 						},
 					}
 				),
+
 				program.instruction.updateQuoterAccounts(
 					{
 						metas: args.metas,
 						quoteIndexes: Buffer.from(args.quoteIndexes),
 						executeIndexes: Buffer.from(args.executeIndexes),
 					},
+
 					{
 						accounts: {
 							authority: args.authority,
@@ -711,6 +665,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 						},
 					}
 				),
+
 				program.instruction.updateQuoterApproved(
 					{ approved: true },
 					{
@@ -732,12 +687,12 @@ describe('e2e localnet: programs + publisher + redis', function () {
 								[args.quoterProgram.toBuffer()],
 								BPF_LOADER_UPGRADEABLE_ID
 							)[0],
+
 							// A book approval asks the book for its own placement
 							// rules, so a slot that would fail every fill is
-							// refused here. No other type reads a book.
-							// As above: an omitted optional account travels as the
-							// program id, because anchor's client reads a null as
-							// missing.
+							// refused here. No other type reads a book. As above,
+							// an omitted optional account travels as the program
+							// id, because anchor's client reads a null as missing.
 							clobMarket:
 								args.quoterType === QuoterType.CLOB
 									? args.responseAccount
@@ -803,9 +758,11 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				{ pubkey: clobBook.publicKey, isWritable: true },
 				{ pubkey: quoterSlab, isWritable: false },
 			],
+
 			quoteIndexes: [0],
 			executeIndexes: [0, 1],
 		});
+
 		clobEntry = registration.quoter;
 		await send([
 			// Registration reads the market's slab and approval writes it. This
@@ -837,8 +794,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 					// Cost units each crank requests. The lamport payments come
 					// from these and from State.transactionFeeRails, which
 					// `initialize` sets to a flat fee per signature. On this
-					// harness every crank pays that flat fee whatever it asks
-					// for.
+					// harness every crank pays that flat fee whatever it asks for.
 					crankCostUnits: {
 						removal: 30_000,
 						cross: 180_000,
@@ -848,12 +804,14 @@ describe('e2e localnet: programs + publisher + redis', function () {
 						forceCancel: 60_000,
 						refill: 30_000,
 					},
+
 					expireFallbackSlots: new BN(1500), // cross fallback poll interval
 					// The attach requires a floor above zero, so this is the
 					// smallest floor there is. The cross-match scenario below
 					// asserts only that a cross has to be profitable at all.
 					minCrossSurplus: new BN(1),
 				},
+
 				{
 					accounts: {
 						admin: payer.publicKey,
@@ -889,11 +847,9 @@ describe('e2e localnet: programs + publisher + redis', function () {
 						sizeStep: new BN(100000),
 						minQuoteSize: new BN(100000),
 						requireAttestedFlow: false,
-						// The oracle-deviation band, which a fresh instance must
-						// carry: without it the instance quotes unprotected. The
-						// suite runs it wide, because some cases move the oracle
-						// far from the mid on purpose and the band is not what
-						// they are testing.
+						// The oracle-deviation band. A fresh instance without it
+						// quotes unprotected. The suite runs it wide, because
+						// some cases move the oracle far from the mid on purpose.
 						maxMidDeviationPpm: new BN(300_000),
 					})
 					.accountsStrict({
@@ -911,6 +867,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			],
 			[midConfigKp, midMakerKp]
 		);
+
 		// Spline: 10bps / 30bps rungs, one unit each, mid $100.
 		await setMidpointLevels(usd(100), [
 			{ offsetPpm: 1000, size: UNIT },
@@ -930,9 +887,11 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				{ pubkey: midInstance, isWritable: true },
 				{ pubkey: quoterSlab, isWritable: false },
 			],
+
 			quoteIndexes: [0],
 			executeIndexes: [0, 1],
 		});
+
 		await send(registration.ixs, [midMakerKp]);
 	};
 
@@ -955,6 +914,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			offsetPpm: new BN(l.offsetPpm),
 			size: l.size,
 		}));
+
 		return send(
 			[
 				await midpointProgram.methods
@@ -983,10 +943,12 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			rent: SYSVAR_RENT_PUBKEY,
 			systemProgram: SystemProgram.programId,
 		};
+
 		await send([
 			program.instruction.initializeUserStats({
 				accounts: { userStats: protocolUserStats, ...shared },
 			}),
+
 			program.instruction.initializeUser(0, Array.from(Buffer.alloc(32, ' ')), {
 				accounts: {
 					user: protocolUser,
@@ -1017,6 +979,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			client.wallet.publicKey.equals(kp.publicKey),
 			'placeClobOrder expects kp to own the client'
 		);
+
 		const ix = await client.getPlaceAndMakePerpOrderIx(
 			getLimitOrderParams({
 				marketIndex: 0,
@@ -1026,14 +989,17 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				postOnly: PostOnlyParams.NONE,
 				...(maxTs.isZero() ? {} : { maxTs }),
 			}),
+
 			{
 				quoterSlab,
 				clobMarket: clobBook.publicKey,
 				clobProgram: CLOB_ID,
 			}
+
 			// activationDelaySlots is omitted, so the book's default applies
 			// and there is no attestation.
 		);
+
 		await client.sendTransaction(new Transaction().add(ix));
 	};
 
@@ -1069,12 +1035,14 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				},
 			}
 		);
+
 		assert.isNull(
 			sim.value.err,
 			`quote_l3_v0 simulation failed: ${JSON.stringify(
 				sim.value.err
 			)} ${JSON.stringify(sim.value.logs?.slice(-4))}`
 		);
+
 		// The return data is a `ResponsePointerV0 { offset: u32, len: u32 }`.
 		// The rows themselves are in the account it points into.
 		const pointer = Buffer.from(sim.value.returnData!.data[0], 'base64');
@@ -1127,6 +1095,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			],
 			[watch]
 		);
+
 		return watch.publicKey;
 	};
 
@@ -1141,12 +1110,10 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				writeKeypair('turner-keeper', turnerKeeper),
 				'--program-id',
 				RELAY_ID.toBase58(),
-				// Scoped as an operator would run it, and to both programs
-				// that host this market's conditions. A condition's wake lives
-				// on the account whose state it describes, so the book holds
-				// the four that describe the book itself, and the CLOB owns
-				// that account. A turner allowed only velocity drops those
-				// watches at the registry query and never cranks them.
+				// Both programs that host this market's conditions. A condition's
+				// wake lives on the account whose state it describes, and the
+				// CLOB owns the book's. A turner allowed only velocity drops
+				// those watches at the registry query and never cranks them.
 				'--target-program',
 				`${VELOCITY_ID.toBase58()},${CLOB_ID.toBase58()}`,
 				// Untrusted mode: velocity gets no trust flag, so relay
@@ -1159,6 +1126,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				'--refresh-ticks',
 				'5',
 			],
+
 			{ RUST_LOG: 'relay_crank_turner=debug,info' }
 		);
 
@@ -1174,6 +1142,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		const unique = [...new Set(addresses.map((a) => a.toBase58()))].map(
 			(a) => new PublicKey(a)
 		);
+
 		await send([
 			createIx,
 			AddressLookupTableProgram.extendLookupTable({
@@ -1183,6 +1152,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				addresses: unique,
 			}),
 		]);
+
 		// Addresses added in slot N only resolve from slot N+1. The account
 		// reads back at once, but a transaction that uses it before the slot
 		// turns over fails with "invalid index" at load time.
@@ -1208,6 +1178,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			new PublicKey('feezFJywCs7LZXXi6dyLKpr3XKgtf7KXXKZ2y6vzTSQ'),
 			1
 		);
+
 		startService('swift', SWIFT_BIN, ['--server', 'swift'], {
 			ENV: 'devnet',
 			ENDPOINT: RPC_URL,
@@ -1219,15 +1190,15 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			FLOW_AUTHORITY_KEYPAIR: JSON.stringify(
 				Array.from(flowAuthorityKp.secretKey)
 			),
+
 			// Long enough that the scenario observes the too-early
 			// response. Short enough that the signed message's slot
 			// window survives the round trip.
 			ATTESTATION_HOLD_MS: '600',
-			// Intake's pre-flight RPC simulation is a production
-			// admission guard and is outside the attestation loop. It
-			// needs the client's devnet market accounts, which a
-			// freshly initialized localnet does not have. The verdict
-			// here is the on-chain fill at the end.
+			// Intake's pre-flight RPC simulation is a production admission
+			// guard outside the attestation loop. It needs the client's devnet
+			// market accounts, which a fresh localnet does not have. The
+			// verdict here is the on-chain fill at the end.
 			DISABLE_RPC_SIM: 'true',
 			RUST_LOG: 'info',
 		});
@@ -1257,6 +1228,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			rw(userOf(kp.publicKey)),
 			rw(statsOf(kp.publicKey)),
 		]),
+
 		ro(quoterSlab),
 		rw(clobBook.publicKey),
 		ro(CLOB_ID),
@@ -1271,11 +1243,9 @@ describe('e2e localnet: programs + publisher + redis', function () {
 	];
 
 	/** Place a taker order and route it in one instruction, with the router tail
-	 * the SDK's builder cannot express: that builder has no quoter section, and
-	 * it marks the quote spot market read-only.
-	 *
-	 * This is how a position opens on a real validator. The placement routes the
-	 * order as it places it, so there is no separate fill to send. */
+	 * the SDK's builder cannot express. That builder has no quoter section, and
+	 * it marks the quote spot market read-only. The placement routes the order
+	 * as it places it, so there is no separate fill to send. */
 	const placeAndTakeIx = async (
 		takerAuthority: PublicKey,
 		orderParams: OptionalOrderParams,
@@ -1286,6 +1256,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				params: getOrderParams(orderParams, { marketType: MarketType.PERP }),
 				successCondition: null,
 			},
+
 			{
 				accounts: {
 					state: await admin.getStatePublicKey(),
@@ -1300,6 +1271,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 					// `None`.
 					flowAuthority: VELOCITY_ID,
 				},
+
 				remainingAccounts: routerTail(makerKps),
 			}
 		);
@@ -1328,6 +1300,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				syncCostUnits: 20_000,
 				syncFallbackSlots: new BN(3000), // coarse fallback poll
 			},
+
 			{
 				accounts: {
 					payer: payer.publicKey,
@@ -1337,10 +1310,12 @@ describe('e2e localnet: programs + publisher + redis', function () {
 					rent: SYSVAR_RENT_PUBKEY,
 					systemProgram: SystemProgram.programId,
 				},
+
 				// Margin maps, then the market's reservoir (keeper fee).
 				remainingAccounts: [...marginMap(), ro(conditions), ...extra],
 			}
 		);
+
 		return send([ix]);
 	};
 
@@ -1361,6 +1336,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		]) {
 			await airdrop(kp.publicKey, 100);
 		}
+
 		// The payout is rent-exempt but never signs. Relay credits it.
 		await airdrop(relayPayout.publicKey, 1);
 
@@ -1373,6 +1349,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		const pythIdl = JSON.parse(
 			fs.readFileSync('target/idl/pyth.json', 'utf-8')
 		);
+
 		pythIdl.address = PYTH_ID.toBase58();
 		anchor.setProvider(provider);
 		pythProgram = new Program(pythIdl, provider);
@@ -1386,6 +1363,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			],
 			[feed]
 		);
+
 		oracle = feed.publicKey;
 
 		// Protocol init through the real admin instructions.
@@ -1467,6 +1445,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				kp.publicKey,
 				new BN(100_000).mul(USDC)
 			);
+
 			await client.initializeUserAccountAndDepositCollateral(
 				new BN(100_000).mul(USDC),
 				tokenAccount
@@ -1482,16 +1461,8 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			adminUsdc
 		);
 
-		// Keep the oracle fresh. A live feed does this on a real cluster. Here
-		// a background loop re-posts `oracleTargetPrice` every second, so the
-		// vAMM stays inside its oracle-validity gates and a test can move the
-		// price by moving the target.
-		//
-		// The loop must call `set_price_info` rather than `set_price`, because
-		// velocity reads staleness off `valid_slot` in `get_pyth_price`, and
-		// `set_price` leaves that field at whatever `initialize` wrote. A feed
-		// that never advances its slot ages out of every validity gate however
-		// often the price is rewritten.
+		// Keep oracle fresh via loop. Use `set_price_info` to update `valid_slot`;
+		// `set_price` alone ages out of validity gates.
 		oracleRefresher = (async () => {
 			// The loop sends without confirming, unlike `send`. The price only
 			// has to stay where it is, and a trigger tolerates a stale oracle
@@ -1512,6 +1483,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 							{ accounts: { price: oracle } }
 						)
 					);
+
 					tx.feePayer = payer.publicKey;
 					tx.recentBlockhash = blockhash;
 					tx.sign(payer);
@@ -1521,6 +1493,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				} catch {
 					// A transient failure is fine. The next beat retries.
 				}
+
 				await sleep(300);
 			}
 		})();
@@ -1572,17 +1545,10 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			return doc ?? undefined;
 		});
 
-		// Register both of the market's condition blocks and start a turner.
-		// Relay cranks everything after this point unless a test submits.
-		//
-		// There are two watches, because a condition's wake lives on the
-		// account whose state it describes. Velocity's conditions account
-		// holds the cross fallback poll, and its block is the first field at
-		// offset 8. The book holds the four conditions that describe the book:
-		// an expired order, a side at its eviction threshold, a crossed book,
-		// and an activation coming due. Their block sits at the offset the
-		// attach recorded when it registered velocity's resolvers there. Watch
-		// only the first account and none of the book's own cranks ever fire.
+		// Two watches, because a condition's wake lives on the account whose
+		// state it describes. Velocity's block is its first field at offset 8.
+		// The book's four sit at the offset the attach recorded. Watch only
+		// velocity's and none of the book's cranks ever fire.
 		const conditionsAccount = await connection.getAccountInfo(conditions);
 		const bookBlockOffset = (
 			admin.program.coder.accounts.decode(
@@ -1590,6 +1556,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				conditionsAccount!.data
 			) as { clobBlockOffset: number }
 		).clobBlockOffset;
+
 		assert.isAbove(bookBlockOffset, 0, 'the attach recorded the book block');
 		await registerWatch(conditions);
 		await registerWatch(clobBook.publicKey, bookBlockOffset);
@@ -1618,10 +1585,12 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		} catch {
 			// best effort
 		}
+
 		for (const { child, log } of services) {
 			child.kill();
 			fs.closeSync(log);
 		}
+
 		redis?.disconnect();
 		for (const client of clients) {
 			try {
@@ -1645,6 +1614,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			const sources = new Set(
 				book.asks.flatMap((level: any) => Object.keys(level.sources))
 			);
+
 			return sources.has('clob') &&
 				sources.has('propamm') &&
 				sources.has('vamm')
@@ -1669,6 +1639,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				askCount: d[base + 71],
 				currentSlot: await connection.getSlot(),
 			});
+
 			throw err;
 		});
 
@@ -1722,6 +1693,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		const bestMakers = JSON.parse(
 			(await redis.get('last_update_orderbook_best_makers_perp_0'))!
 		);
+
 		assert.include(bestMakers.asks, makerPda);
 		assert.include(bestMakers.asks, midMakerPda);
 		assert.include(bestMakers.bids, makerPda);
@@ -1734,12 +1706,14 @@ describe('e2e localnet: programs + publisher + redis', function () {
 					() => reject(new Error('no grouped publish within 15s')),
 					15_000
 				);
+
 				sub.subscribe('orderbook_perp_0_grouped_10');
 				sub.on('message', (_channel, message) => {
 					clearTimeout(timer);
 					resolve(JSON.parse(message));
 				});
 			});
+
 			assert.isAtLeast(grouped.asks.length, 1);
 		} finally {
 			sub.disconnect();
@@ -1760,6 +1734,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				baseAssetAmount: size,
 				price: usd(102),
 			}),
+
 			[clobMakerKp, bookMaker2Kp, midMakerKp]
 		);
 
@@ -1777,12 +1752,14 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			midPosition.baseAssetAmount.toString(),
 			UNIT.muln(-2).toString()
 		);
+
 		// (both rungs: 1.0 @ 100.1 + 1.0 @ 100.3)
 		await clobMaker.fetchAccounts();
 		assert.equal(
 			clobMaker.getUser().getPerpPosition(0)!.baseAssetAmount.toString(),
 			UNIT.neg().toString()
 		);
+
 		await bookMaker2.fetchAccounts();
 		assert.equal(
 			bookMaker2.getUser().getPerpPosition(0)!.baseAssetAmount.toString(),
@@ -1799,6 +1776,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		await setMidpointLevels(usd(100), [
 			{ offsetPpm: 1000, size: UNIT.muln(2) },
 		]);
+
 		const before = await readClob();
 
 		const ix = await taker.getPlaceAndTakePerpOrderIx(
@@ -1808,12 +1786,14 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				baseAssetAmount: UNIT,
 				price: usd(100),
 			}),
+
 			{
 				quoterSlab,
 				clobMarket: clobBook.publicKey,
 				clobProgram: CLOB_ID,
 			}
 		);
+
 		await taker.sendTransaction(new Transaction().add(ix));
 
 		const after = await readClob();
@@ -1890,6 +1870,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			UNIT.toString(),
 			'the crosser bought the unit it bid for'
 		);
+
 		const protocolAfter = (await connection.getAccountInfo(protocolUser))!;
 		assert.notDeepEqual(
 			protocolAfter.data.subarray(0, 4384),
@@ -1898,13 +1879,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		);
 	});
 
-	// A migrated taker remainder is the one order on the book that nobody may
-	// take while a counterparty crosses it. The improvement between the two
-	// prices therefore cannot be won by landing a transaction at the activation
-	// slot. This path hands that improvement to the taker instead. The
-	// assertions below bound where the improvement lands: the taker's all-in
-	// cost must beat the price it was resting at, and it must not beat the
-	// counterparty's price.
+	// Migrated taker remainder gets the counterparty price, bounded by rest price.
 	it('hands a crossed taker remainder the counterparty price, cranked by relay', async function () {
 		this.timeout(120_000);
 
@@ -1921,12 +1896,10 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		);
 
 		try {
-			// Park the midpoint 5% wide of a 100 mid. Every price below sits
-			// inside that spread, so the midpoint does not fill the remainder at
-			// placement, where its ask is 105, and does not cross the
-			// counterparty ask, where its bid is 95. The only cross on the book
-			// is then the pair this crank owns, which makes the poll below
-			// unambiguous.
+			// Park the midpoint 5% wide of a 100 mid, so its ask is 105 and its
+			// bid is 95. Every price below sits inside that spread, so the
+			// midpoint neither fills the remainder at placement nor crosses the
+			// counterparty ask. The only cross is then the pair this crank owns.
 			await setMidpointLevels(usd(100), [
 				{ offsetPpm: 50_000, size: UNIT.muln(2) },
 			]);
@@ -1959,12 +1932,14 @@ describe('e2e localnet: programs + publisher + redis', function () {
 					baseAssetAmount: UNIT,
 					price: usd(104),
 				}),
+
 				{
 					quoterSlab,
 					clobMarket: clobBook.publicKey,
 					clobProgram: CLOB_ID,
 				}
 			);
+
 			await taker.sendTransaction(new Transaction().add(ix));
 
 			const rested = await readClob();
@@ -2071,13 +2046,9 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		const payoutBefore = await relayPayoutBalance();
 
 		// A CLOB ask that expires in about 10s. Velocity folds the expiry into
-		// the market's wake hint as it places, keeping the earliest one, so the
-		// turner has a deadline to wake on.
-		//
-		// The ask is priced well above every bid on the book. The midpoint
-		// spline quotes around 102, so an ask near the touch is crossed and
-		// filled, and the order count returns to baseline for a reason that has
-		// nothing to do with expiry.
+		// the market's wake hint, keeping the earliest one, so the turner has a
+		// deadline. The ask is priced well above every bid, including the
+		// midpoint's 102, so only expiry can return the count to baseline.
 		await clobMaker.fetchAccounts();
 		const makerSizeBefore =
 			clobMaker.getUser().getPerpPosition(0)?.baseAssetAmount ?? new BN(0);
@@ -2097,19 +2068,17 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			UNIT,
 			new BN(now + 10)
 		);
+
 		const armed = await readClob();
 		assert.equal(armed.askCount, before.askCount + 1);
 		await clobMaker.fetchAccounts();
 		const openAsksArmed =
 			clobMaker.getUser().getPerpPosition(0)?.openAsks ?? new BN(0);
 
-		// Nobody in this test submits anything from here on.
-		//
-		// The poll waits on the maker's reservation rather than on the book's
-		// depth. An expired order stops being matchable as soon as it comes
-		// due, so it leaves a depth reading before anything reclaims it. The
-		// crank unwinds the reservation, and that only moves when the crank
-		// lands.
+		// Nobody in this test submits anything from here on. The poll waits on
+		// the maker's reservation, not the book's depth. An expired order stops
+		// being matchable before anything reclaims it, so depth moves early.
+		// The reservation only unwinds when the crank lands.
 		await pollUntil('relay to reclaim the expired order', 120_000, async () => {
 			await clobMaker.fetchAccounts();
 			const openAsks =
@@ -2118,6 +2087,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			// toward zero. Compare what it reserves, not the signed value.
 			return openAsks.abs().lt(openAsksArmed.abs()) ? true : undefined;
 		});
+
 		// A fill would also unwind the reservation, so check that the maker's
 		// position did not change.
 		await clobMaker.fetchAccounts();
@@ -2125,8 +2095,10 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			(clobMaker.getUser().getPerpPosition(0)?.baseAssetAmount ?? new BN(0)).eq(
 				makerSizeBefore
 			),
+
 			'the order expired rather than trading'
 		);
+
 		assert.isAbove(
 			await relayPayoutBalance(),
 			payoutBefore,
@@ -2196,10 +2168,12 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			stopperKp.publicKey,
 			new BN(1_000).mul(USDC)
 		);
+
 		await stopper.initializeUserAccountAndDepositCollateral(
 			new BN(1_000).mul(USDC),
 			stopperUsdc
 		);
+
 		const stopperUser = userOf(stopperKp.publicKey);
 
 		// A fired stop rests on the book taker-origin and does not fill
@@ -2211,10 +2185,12 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			0,
 			PerpOperation.AMM_FILL | PerpOperation.AMM_IMMEDIATE_FILL
 		);
+
 		try {
 			await setMidpointLevels(usd(100), [
 				{ offsetPpm: 200_000, size: UNIT.muln(2) },
 			]);
+
 			// A stop that sells 1.0 if the oracle rises through 104.
 			await stopper.placeTriggerOrders([
 				getTriggerMarketOrderParams({
@@ -2260,6 +2236,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 					return !stillArmed && rested ? true : undefined;
 				}
 			);
+
 			// The slot is freed and the order rests on the book unfilled. A
 			// fire to the book stops here. The v0 flip left the order live
 			// instead.
@@ -2268,6 +2245,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				(
 					stopper.getUser().getPerpPosition(0)?.baseAssetAmount ?? new BN(0)
 				).toString(),
+
 				'0',
 				'the fired stop rests; it does not fill against the book alone'
 			);
@@ -2295,6 +2273,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				stopper.getUser().getPerpPosition(0)!.baseAssetAmount.ltn(0),
 				'the fired stop sold into the crossing bid'
 			);
+
 			assert.isAbove(
 				await relayPayoutBalance(),
 				relayPaid0,
@@ -2359,11 +2338,13 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				return rested ? true : undefined;
 			}
 		);
+
 		assert.isAbove(
 			await relayPayoutBalance(),
 			relayPaid0,
 			'relay cranked the trigger-limit onto the book'
 		);
+
 		await setOraclePrice(100);
 	});
 
@@ -2379,6 +2360,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			new BN(60).mul(USDC),
 			victimUsdc
 		);
+
 		// A standing ask deep enough for the whole entry. Without it the vAMM's
 		// slippage caps the fill near one unit and the victim reaches about
 		// 1.7x, which is never liquidatable, so the scenario passes while
@@ -2390,6 +2372,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			usd(102),
 			UNIT.muln(5)
 		);
+
 		// About 8.5x: 5 units near 102 on 60 of collateral. A price drop to 84
 		// puts equity below zero, well past maintenance.
 		await placeAndTake(
@@ -2413,11 +2396,10 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		// an underfunded user cannot leave its own thresholds stale.
 		const victimUser = userOf(victimKp.publicKey);
 		const userConditions = getUserConditionsPublicKey(VELOCITY_ID, victimUser);
-		// The sync stores the slab, the book, and the book's program in the
-		// shared account list, so the liquidation's staged executor fills
-		// through the router. A market that names a book refuses a fill that
-		// carries no slab. A sync without the slab therefore writes conditions
-		// that detect the liquidation and can never land it.
+		// A market that names a book refuses a fill that carries no slab. The
+		// sync stores the slab, the book, and the book's program in the shared
+		// account list, so the liquidation's staged executor fills through the
+		// router. Without the slab the conditions detect but never land.
 		await syncUserConditions(victimUser, [ro(quoterSlab)]);
 		await registerWatch(userConditions);
 
@@ -2436,11 +2418,10 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		// against passes as soon as the victim's position is smaller than it,
 		// which reports "relay liquidated" for a relay that did nothing.
 		const sizeBefore = victim.getUser().getPerpPosition(0)!.baseAssetAmount;
-		// Crash the oracle. The drop is hard enough to put the victim under
-		// maintenance, where equity is about $14 against about $23 required at
-		// 93. It is gentle enough to stay inside the oracle price bands, which
-		// a 16% single-slot move breaches with `PriceBandsBreached` on the
-		// staged executor. Nobody submits a liquidation.
+		// Crash the oracle, and let relay liquidate. 93 puts the victim under
+		// maintenance, at about $14 equity against about $23 required. It stays
+		// inside the oracle price bands, which a 16% single-slot move breaches
+		// with `PriceBandsBreached` on the staged executor.
 		await setOraclePrice(93);
 
 		await pollUntil('relay to liquidate', 180_000, async () => {
@@ -2449,6 +2430,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			const reduced = !position || position.baseAssetAmount.lt(sizeBefore);
 			return reduced ? true : undefined;
 		});
+
 		assert.isAbove(await relayPayoutBalance(), payoutBefore);
 
 		// The protocol User was only the filler, so its account must still be
@@ -2507,6 +2489,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		) {
 			await taker.initializeSignedMsgUserOrders(takerKp.publicKey, 8);
 		}
+
 		await taker.fetchAccounts();
 		const takerUser = userOf(takerKp.publicKey);
 		const positionBefore =
@@ -2514,10 +2497,8 @@ describe('e2e localnet: programs + publisher + redis', function () {
 
 		// A v0 message over a lookup table, the way a real keeper sends a swift
 		// fill. The ed25519 instruction carries the whole signed message, so the
-		// router tail does not fit in a legacy transaction. The table is built
-		// before the order is submitted, because a table costs two slots to
-		// activate, and activating it after intake would consume the hold window
-		// this scenario exists to observe.
+		// router tail does not fit in a legacy transaction. Activating a table
+		// costs two slots, so build it before intake or it eats the hold window.
 		const lookupTable = await createRouterLookupTable([
 			...routerTail([clobMakerKp, midMakerKp]).map((a) => a.pubkey),
 			VELOCITY_ID,
@@ -2544,19 +2525,16 @@ describe('e2e localnet: programs + publisher + redis', function () {
 					auctionStartPrice: usd(101),
 					auctionEndPrice: usd(103),
 				}),
+
 				subAccountId: 0,
 				slot: new BN(await connection.getSlot()),
 				uuid,
 				takeProfitOrderParams: null,
 				stopLossOrderParams: null,
-				// The message is tagged for this cluster. The program
-				// refuses a message signed for the other cluster, and one
-				// signed for no cluster. The route names the midpoint
-				// explicitly, and the CLOB and vAMM baseline is implicit.
-				// This harness builds velocity without its default features,
-				// so the program names devnet. The anchor suite builds with
-				// them and names mainnet, which is why the two suites tag
-				// differently.
+				// This harness builds velocity without default features, so the
+				// program names devnet and refuses a message tagged for another
+				// cluster. The anchor suite names mainnet. The route names the
+				// midpoint, and the CLOB and vAMM baseline is implicit.
 				network: SignedMsgNetwork.DEVNET,
 				route: [midEntry],
 			});
@@ -2570,8 +2548,10 @@ describe('e2e localnet: programs + publisher + redis', function () {
 					signing_authority: takerKp.publicKey.toBase58(),
 				}),
 			});
+
 			return { uuid, signed, ok: res.ok, body: await res.text() };
 		};
+
 		let lastRejection = '';
 		const accepted = await pollUntil(
 			'swift to accept the signed order',
@@ -2581,6 +2561,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				if (attempt.ok) {
 					return attempt;
 				}
+
 				lastRejection = attempt.body;
 				return undefined;
 			}
@@ -2612,9 +2593,11 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				await new Promise((r) => setTimeout(r, retryAfterMs ?? 250));
 				continue;
 			}
+
 			assert.equal(res.status, 200, `attest refused: ${body}`);
 			attested = JSON.parse(body);
 		}
+
 		assert.isTrue(sawHoldWindow, 'the hold window was observed');
 		assert.isOk(attested, 'attestation granted after the hold');
 		// Swift signs with the key the program checks against. That key is the
@@ -2624,6 +2607,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			flowAuthorityKp.publicKey.toBase58(),
 			'the attestation came from the on-chain flow authority'
 		);
+
 		// The blob binds to the taker's own order signature and to an
 		// expiry. Velocity verifies it in-program, next to the taker
 		// signature it binds to.
@@ -2635,6 +2619,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		const cuLimit = ComputeBudgetProgram.setComputeUnitLimit({
 			units: 1_400_000,
 		});
+
 		// One instruction. The program verifies the signed message itself with
 		// brine-ed25519, so there is no separate ed25519 precompile.
 		const [placeIx] = await admin.getPlaceSignedMsgTakerPerpOrderIxs(
@@ -2646,12 +2631,14 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				takerUserAccount: taker.getUserAccount()!,
 				signingAuthority: takerKp.publicKey,
 			},
+
 			[cuLimit],
 			undefined,
 			undefined,
 			undefined,
 			flowAttestation
 		);
+
 		// The v1 signed-message instruction places, fills, and rests in one
 		// call, so it carries the same maker maps and quoter tail a keeper fill
 		// does. The SDK builder writes only the map section, and keep-rs appends
@@ -2663,6 +2650,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				rw(userOf(kp.publicKey)),
 				rw(statsOf(kp.publicKey)),
 			]),
+
 			ro(quoterSlab),
 			rw(clobBook.publicKey),
 			ro(CLOB_ID),
@@ -2671,6 +2659,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			ro(statePdaCache),
 			ro(MIDPOINT_ID)
 		);
+
 		const blockhash = await connection.getLatestBlockhash();
 		const message = new TransactionMessage({
 			payerKey: payer.publicKey,
@@ -2688,6 +2677,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			skipPreflight: true,
 			maxRetries: 20,
 		});
+
 		await confirmSignature(signature, 'the attested fill');
 
 		await taker.fetchAccounts();
@@ -2699,6 +2689,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				.sub(positionBefore)
 				.toString()})`
 		);
+
 		// The attestation reached the midpoint. Its books now open only to
 		// attested flow, and its maker settled part of the fill. The check reads
 		// the transaction rather than a position a later crank could move.
@@ -2706,6 +2697,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			signature,
 			userOf(midMakerKp.publicKey)
 		);
+
 		assert.isTrue(
 			midFilled.gt(new BN(0)),
 			`midpoint maker filled the attested flow (got ${midFilled})`
@@ -2716,13 +2708,10 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		// Two makers on the book, the second better than everything else the
 		// route offers. The fill carries the first and not the second, which is
 		// what happens whenever a book holds more makers than a transaction has
-		// account locks for.
-		//
-		// The book stops at the maker it was not given and reports what it was
-		// holding. The router reserves that depth instead of giving it to the
-		// midpoint or the vAMM, so the taker keeps it unfilled. The remainder
-		// rests where the book's own price can still reach it, rather than at a
-		// price the book was beating.
+		// account locks for. The book stops at the maker it was not given and
+		// reports what it was holding. The router reserves that depth instead of
+		// giving it to the midpoint or the vAMM, so the remainder rests where
+		// the book's own price can still reach it.
 		await placeClobOrder(
 			clobMaker,
 			clobMakerKp,
@@ -2737,11 +2726,11 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			usd(100.4),
 			UNIT.divn(2)
 		);
+
 		// The book skips an order whose owner is missing while that order is
 		// younger than `unknown_user_grace_slots`, because the caller could not
-		// have heard of it yet. It stops on the order once the order is older.
-		// Both of this test's makers have to be past that window for the fill to
-		// see the second one at all.
+		// have heard of it yet. Both makers have to be past that window for the
+		// fill to see the second one at all.
 		await sleep(2_000);
 
 		// The midpoint quotes worse than both makers, so it is what the reserve
@@ -2753,9 +2742,8 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		const size = UNIT.muln(15).divn(10);
 		// `clobMaker2Kp` is absent from the account list. The taker places and
 		// routes its own order, so it endorses that list and the filler
-		// obligation to carry every reachable maker does not apply. That
-		// isolates the reserve behavior from the obligation guard. A keeper that
-		// omitted a maker it had room for would be refused instead.
+		// obligation to carry every reachable maker does not apply. A keeper
+		// that omitted a maker it had room for would be refused instead.
 		const signature = await send(
 			[
 				ComputeBudgetProgram.setComputeUnitLimit({ units: 800_000 }),
@@ -2767,24 +2755,24 @@ describe('e2e localnet: programs + publisher + redis', function () {
 						baseAssetAmount: size,
 						price: usd(102),
 					}),
+
 					[clobMakerKp, midMakerKp]
 				),
 			],
 			[takerKp]
 		);
 
-		// The check reads the fill itself rather than positions afterwards. The
-		// claim is about this transaction, which settled for the maker it
-		// carried and not for the one it did not. A position can move again as
-		// soon as the fill lands. This taker's remainder rests as a taker-origin
-		// bid that crosses the absent maker's ask, and a crank may match them a
-		// slot later, so asserting on account state raced that crank.
+		// The check reads the fill itself rather than positions afterwards. This
+		// taker's remainder rests as a taker-origin bid that crosses the absent
+		// maker's ask, and a crank may match them a slot later, so asserting on
+		// account state raced that crank.
 		const filled = await makersFilledBy(signature);
 		assert.notInclude(
 			filled,
 			userOf(clobMaker2Kp.publicKey).toBase58(),
 			'the maker the fill could not carry is not filled'
 		);
+
 		const book = await readClob();
 		assert.isAtLeast(book.askCount, 1, 'its ask is still on the book');
 
@@ -2824,9 +2812,11 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				const res = await fetch(
 					`${SWIFT_URL}/route?marketIndex=0&direction=long&size=${size.toString()}`
 				);
+
 				if (!res.ok) {
 					return undefined;
 				}
+
 				const body: any = await res.json();
 				// The publisher's buffer has to have seen the ask placed above,
 				// and the route has to report this size as fillable. The suite
@@ -2853,6 +2843,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			namedKp,
 			`/route named ${named.user}, which is not a maker in this suite`
 		);
+
 		assert.equal(
 			named.userStats,
 			statsOf(namedKp!.publicKey).toBase58(),
@@ -2863,6 +2854,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			assert.isDefined(kp, `/route named an unknown maker ${m.user}`);
 			return kp!;
 		});
+
 		// The bound comes from the route rather than from a number this test
 		// picked. It is the worst price the route quoted, with room over it, so
 		// the taker crosses everything the route says it would reach.
@@ -2871,10 +2863,6 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			.reduce((worst: BN, l: any) => BN.max(worst, new BN(l.price)), new BN(0));
 		assert.isTrue(worstQuoted.gt(new BN(0)), 'the route quoted something');
 
-		// The id is read before the order is placed rather than matched by size
-		// afterwards. By now the taker has older orders of every common size,
-		// and `find` can return a closed one. A fill against a closed order
-		// lands and does nothing.
 		// The taker routes its own order through the endpoint's account list,
 		// which is the realistic use of /route. The call is taker-signed, so it
 		// is held only to whether the endpoint's accounts let it land. The
@@ -2890,6 +2878,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 						baseAssetAmount: size,
 						price: worstQuoted.muln(102).divn(100),
 					}),
+
 					[...namedKps, midMakerKp]
 				),
 			],
@@ -2905,6 +2894,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			takerGot.gt(new BN(0)),
 			"a fill built from the endpoint's account list lands and fills"
 		);
+
 		const namedUsers = new Set(
 			namedKps.map((kp) => userOf(kp.publicKey).toBase58())
 		);

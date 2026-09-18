@@ -167,7 +167,6 @@ pub struct FillAccounts<'a, 'info> {
 }
 
 /// The leftover accounts of a router fill, split into the sections it reads.
-///
 /// Every fill path lays the sections out in the same order: the market and
 /// oracle accounts, the maker and referrer set, the taker's revenue-share
 /// escrow, and then the quoter tail.
@@ -178,11 +177,9 @@ struct FillSections<'info> {
     escrow: Option<RevenueShareEscrowZeroCopyMut<'info>>,
     referrer_is_accelerated: bool,
     /// The quoter section: the market's `QuoterSlabV0` plus the union of the
-    /// consulted quoters' registered CPI accounts.
-    ///
-    /// A subslice rather than a collected list. The iterator's remaining length
-    /// tells how much the sections above consumed, and borrowing from there
-    /// avoids cloning every account.
+    /// consulted quoters' registered CPI accounts. A subslice rather than a
+    /// collected list, since the iterator's remaining length already tells how
+    /// much the sections above consumed, and borrowing avoids cloning every account.
     tail: &'info [AccountInfo<'info>],
 }
 
@@ -286,6 +283,7 @@ impl<'info> FillSections<'info> {
             },
             router,
         )?;
+
         Ok(filled.base)
     }
 }
@@ -336,11 +334,13 @@ impl RouteContext<'_, '_> {
                 market.margin_ratio_initial,
             )
         };
+
         Ok(RoutedOrder {
             direction: match order.direction {
                 PositionDirection::Long => Direction::Long,
                 PositionDirection::Short => Direction::Short,
             },
+
             unfilled: order.get_base_asset_amount_unfilled(position_base)?,
             taker: user.clob_user_ref(),
             limit_price: mode.quote_limit_price(
@@ -349,6 +349,7 @@ impl RouteContext<'_, '_> {
                 tick_size,
                 self.state.slot_clock(),
             ),
+
             reference_price: self.maps.oracle_map.get_price_data(&oracle_id)?.price,
             margin_ratio_initial,
         })
@@ -374,21 +375,15 @@ impl RoutedOrder {
             taker: self.taker,
             limit_price: self.limit_price,
             taker_served_window,
-            consume_reservation: false,
+            include_taker_origin_reservations: false,
         }
     }
 }
 
-/// Bar a liquidator whose authority equity breaker is tripped.
-///
-/// A position-acquiring liquidation both takes on the liquidatee's risk and
-/// earns a liquidation fee. That is the risk-taking the authority-wide equity
-/// breaker freezes, so a tripped authority must not liquidate out of a healthy
-/// sibling subaccount. PnL-settlement liquidations stay allowed. They are
-/// protocol-protective and acquire no new risk.
-///
-/// `liquidate_perp_with_fill` is also exempt. Its liquidator routes the
-/// position to the book and never acquires a balance.
+/// Bar a liquidator whose authority equity breaker is tripped: a
+/// position-acquiring liquidation takes on the liquidatee's risk and earns a
+/// fee, which is what the breaker freezes. PnL-settlement liquidations (no
+/// new risk) and `liquidate_perp_with_fill` (no balance acquired) stay exempt.
 fn require_liquidator_not_frozen(liquidator_stats: &UserStats) -> Result<()> {
     validate!(
         !liquidator_stats.is_equity_breaker_tripped(),

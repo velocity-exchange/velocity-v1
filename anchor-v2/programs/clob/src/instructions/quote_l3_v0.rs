@@ -21,10 +21,9 @@ pub use quoter_spec::L3ArgsV0;
 /// ladder `quote_v0` would return, one row per order, streamed into the
 /// market's response tail.
 ///
-/// A quoter implements this when its ladder stands on orders that belong to
-/// somebody other than itself. A book is the only quoter type that does. A
-/// caller that must carry those users' accounts, or draw the book, reads them
-/// here instead of decoding this account from outside.
+/// A book is the only quoter type whose ladder stands on orders belonging to
+/// somebody else. A caller that must carry those users' accounts, or draw
+/// the book, reads them here instead of decoding this account from outside.
 pub fn handle_quote_l3_v0(
     ctx: &mut Context<QuoteL3V0>,
     args: L3ArgsV0,
@@ -34,7 +33,7 @@ pub fn handle_quote_l3_v0(
         args.direction,
         args.size,
         args.max_rows,
-        args.consume_reservation,
+        args.include_taker_origin_reservations,
         clock.slot,
         clock.unix_timestamp,
     )

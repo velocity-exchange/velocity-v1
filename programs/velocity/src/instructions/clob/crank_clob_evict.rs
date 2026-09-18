@@ -44,9 +44,11 @@ pub(super) fn stage_eviction(ctx: &Context<ResolveClobCrank>) -> Result<Option<S
     let found = clob_reader(ctx).next_removal(ClobNextRemovalArgsV0 {
         kind: ClobRemovalKindV0::Evictable,
     })?;
+
     if !found.found() {
         return Ok(None);
     }
+
     let maker = derive_user_pdas(&found.user).0;
 
     let market_index = ctx.accounts.crank_conditions.load()?.market_index;

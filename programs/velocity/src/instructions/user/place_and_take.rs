@@ -17,11 +17,9 @@ pub struct PlaceAndTakeAccounts<'a, 'info> {
 }
 
 /// What the caller asked a v1 take to do.
-///
-/// `taker_served_window` and `synchronous_take` come from the caller's
-/// accounts. Attested flow (the flow authority signed) fills synchronously.
-/// Unattested flow on a book with a speed bump rests the order whole instead,
-/// which is maker priority.
+/// `taker_served_window` and `synchronous_take` come from the caller's accounts.
+/// Attested flow fills synchronously. Unattested flow on a speed-bumped book
+/// rests the order whole instead, which is maker priority.
 pub struct PlaceAndTakeRequest {
     pub params: OrderParams,
     pub optional_params: Option<u32>,
@@ -90,6 +88,7 @@ fn validate_place_and_take_success_condition(
             "no full fill"
         )?;
     }
+
     Ok(())
 }
 
@@ -165,9 +164,8 @@ fn validate_unattested_take(request: &PlaceAndTakeRequest) -> Result<()> {
 
 /// Maker priority rests the order whole, and the cross cranks fill it through
 /// the activation-slot auction. An order that cannot rest would do nothing, so
-/// it is refused instead. The shape that trips this is an `OrderType::Oracle`
-/// taker. Its bound floats with the oracle, so it has no fixed price to rest
-/// at.
+/// it is refused instead. An `OrderType::Oracle` taker trips this. Its bound
+/// floats with the oracle, so it has no fixed price to rest at.
 fn validate_order_can_rest(order: &Order) -> Result<()> {
     validate!(
         crate::instructions::restable_remainder_price(order, None).is_some(),
@@ -256,6 +254,7 @@ fn read_take_shape(
             PositionDirection::Long => crate::state::prop_amm::Direction::Long,
             PositionDirection::Short => crate::state::prop_amm::Direction::Short,
         },
+
         unfilled: order.get_base_asset_amount_unfilled(position_base)?,
         taker: user.clob_user_ref(),
         limit_price: mode.quote_limit_price(
@@ -292,7 +291,7 @@ fn quote_take_route<'a, 'info>(
         taker: shape.taker,
         limit_price: shape.limit_price,
         taker_served_window,
-        consume_reservation: false,
+        include_taker_origin_reservations: false,
     };
 
     crate::instructions::quote_route(
@@ -426,6 +425,7 @@ fn fill_ephemeral_take(
             unrouted_quoters: 0,
         },
     });
+
     fill_against_route(take, &mut router, state, mode, referrer_is_accelerated)
 }
 
@@ -465,6 +465,7 @@ fn settle_take_remainder<'info>(
         let remainder = load!(accounts.user).ok().and_then(|user| {
             crate::instructions::restable_remainder(&user, order, order.market_index, None)
         });
+
         if let Some(remainder) = remainder {
             if remainder.unfilled > 0 {
                 crate::instructions::try_place_remainder_on_clob(
@@ -542,10 +543,9 @@ pub fn place_and_take_perp_order_v1<'info>(
 
     let Some(mut ephemeral_order) = order else {
         // An order whose `max_ts` already passed builds nothing. It is the one
-        // soft skip reachable here. The other skip is a failed try-post-only,
-        // and place_and_take refuses every post-only above. Nothing was placed
-        // or filled, so enforce the success condition against an empty take
-        // and stop.
+        // soft skip reachable here. The other skip, a failed try-post-only, is
+        // refused above. Nothing was placed or filled, so enforce the success
+        // condition against an empty take and stop.
         return validate_place_and_take_success_condition(success_condition, 0, false);
     };
 

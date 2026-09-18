@@ -97,6 +97,7 @@ impl Decaying {
         if half_life_ms == 0 || self.value == 0.0 {
             return self.value;
         }
+
         let elapsed = now_ms.saturating_sub(self.last_ms) as f64;
         self.value * 0.5_f64.powf(elapsed / half_life_ms as f64)
     }
@@ -184,6 +185,7 @@ impl Window {
                 } else {
                     adverse / quoted_price as f64 * 10_000.0
                 };
+
                 self.slip_bps_total.add(now_ms, hl, bps);
                 self.slip_samples.add(now_ms, hl, 1.0);
             }
@@ -201,6 +203,7 @@ impl Window {
         if attempts <= 0.0 {
             return 0.0;
         }
+
         self.sim_failures.value(now_ms, hl) / attempts
     }
 
@@ -209,6 +212,7 @@ impl Window {
         if attempts <= 0.0 {
             return 0.0;
         }
+
         self.execute_failures.value(now_ms, hl) / attempts
     }
 
@@ -217,6 +221,7 @@ impl Window {
         if samples <= 0.0 {
             return 0.0;
         }
+
         self.cu_total.value(now_ms, hl) / samples
     }
 
@@ -226,6 +231,7 @@ impl Window {
         if quoted <= 0.0 {
             return 0.0;
         }
+
         let admitted = self.admitted_base.value(now_ms, hl);
         ((quoted - admitted) / quoted).clamp(0.0, 1.0)
     }
@@ -236,6 +242,7 @@ impl Window {
         if allocated <= 0.0 {
             return 0.0;
         }
+
         let filled = self.filled_base.value(now_ms, hl);
         ((allocated - filled) / allocated).clamp(0.0, 1.0)
     }
@@ -245,6 +252,7 @@ impl Window {
         if samples <= 0.0 {
             return 0.0;
         }
+
         self.slip_bps_total.value(now_ms, hl) / samples
     }
 }
@@ -405,22 +413,26 @@ fn breach(now_ms: u64, window: &Window, policy: &Policy) -> Option<Cause> {
     {
         return Some(Cause::ExecuteFailureRate);
     }
+
     if window.sim_attempts.value(now_ms, hl) >= policy.sim_min_attempts
         && window.sim_failure_rate(now_ms, hl) > policy.sim_failure_rate
     {
         return Some(Cause::SimFailureRate);
     }
+
     if policy.cu_budget > 0
         && window.mean_cu(now_ms, hl) / policy.cu_budget as f64 > policy.cu_share
     {
         return Some(Cause::ComputeShare);
     }
+
     if window.clamp_ratio(now_ms, hl) > policy.clamp_ratio {
         return Some(Cause::PhantomDepth);
     }
     if window.mean_slip_bps(now_ms, hl) > policy.slip_bps {
         return Some(Cause::AdverseSlip);
     }
+
     None
 }
 
@@ -443,6 +455,7 @@ pub fn advance(now_ms: u64, state: &mut State, window: &Window, policy: &Policy)
         if now_ms < until_ms {
             return;
         }
+
         // Quarantine expires into probation, never straight back to full
         // flow. A quoter that has not been tried since it failed has not
         // shown anything yet.
@@ -454,6 +467,7 @@ pub fn advance(now_ms: u64, state: &mut State, window: &Window, policy: &Policy)
             },
             Cause::QuarantineExpired,
         );
+
         return;
     }
 
@@ -474,6 +488,7 @@ pub fn advance(now_ms: u64, state: &mut State, window: &Window, policy: &Policy)
                 cause,
             ),
         }
+
         return;
     }
 
@@ -514,11 +529,13 @@ pub fn on_program_upgrade(
     if state.program_deploy_slot == slot {
         return;
     }
+
     let first_sighting = state.program_deploy_slot == 0;
     state.program_deploy_slot = slot;
     if first_sighting {
         return;
     }
+
     window.reset();
     state.backoff_level = 0;
     state.clean_streak = 0;
@@ -605,6 +622,7 @@ mod tests {
                 },
             );
         }
+
         let mut state = State::default();
         advance(0, &mut state, &window, &policy);
         assert_eq!(state.admission, Admission::Admit);
@@ -625,6 +643,7 @@ mod tests {
                 },
             );
         }
+
         let mut state = State::default();
         advance(0, &mut state, &window, &policy);
         assert!(matches!(state.admission, Admission::Quarantined { .. }));
@@ -648,6 +667,7 @@ mod tests {
                 },
             );
         }
+
         let mut state = State::default();
         advance(0, &mut state, &window, &policy);
         assert_eq!(state.last_cause, Some(Cause::ContractViolations));
@@ -669,6 +689,7 @@ mod tests {
                 },
             );
         }
+
         let mut state = State::default();
         advance(0, &mut state, &window, &policy);
         let Admission::Quarantined { until_ms } = state.admission else {
@@ -710,10 +731,12 @@ mod tests {
                 },
             );
         }
+
         advance(0, &mut state, &window, &policy);
         let Admission::Quarantined { until_ms } = state.admission else {
             panic!("expected quarantine");
         };
+
         assert_eq!(until_ms, policy.quarantine_base_ms * 2);
         assert_eq!(state.backoff_level, 2);
         assert_eq!(state.last_cause, Some(Cause::ProbationFailure));
@@ -726,6 +749,7 @@ mod tests {
             backoff_level: 30,
             ..State::default()
         };
+
         assert_eq!(state.quarantine_ms(&policy), policy.quarantine_max_ms);
     }
 
@@ -785,6 +809,7 @@ mod tests {
                 admitted_base: 100,
             },
         );
+
         let mut state = State::default();
         advance(0, &mut state, &window, &policy);
         assert!(matches!(state.admission, Admission::Throttled { .. }));
@@ -807,6 +832,7 @@ mod tests {
                 taker_long: true,
             },
         );
+
         assert!((long.mean_slip_bps(0, hl) - 100.0).abs() < 1e-6);
 
         // A short taker receiving less than quoted is the same harm.
@@ -820,6 +846,7 @@ mod tests {
                 taker_long: false,
             },
         );
+
         assert!((short.mean_slip_bps(0, hl) - 100.0).abs() < 1e-6);
     }
 
@@ -846,6 +873,7 @@ mod tests {
             actor: "operator".into(),
             set_at_ms: 0,
         };
+
         assert!(pin.is_live(99));
         assert!(!pin.is_live(100));
     }

@@ -158,6 +158,7 @@ impl<'a> SignedMsgUserOrdersZeroCopy<'a> {
         if clob_order_id == 0 {
             return None;
         }
+
         self.iter()
             .find(|entry| entry.clob_order_id == clob_order_id)
             .map(|entry| entry.route_digest)
@@ -265,6 +266,7 @@ impl<'a> SignedMsgUserOrdersZeroCopyMut<'a> {
                     index,
                     self.get(index).clob_order_id
                 );
+
                 *self.get_mut(index) = signed_msg_order_id;
                 Ok(())
             }
@@ -292,21 +294,21 @@ impl<'a> SignedMsgUserOrdersZeroCopyMut<'a> {
                 return true;
             }
         }
+
         false
     }
 
-    /// Release the entry's hold once its order has left the book, so the stale
-    /// sweep can reclaim the slot in the ordinary way.
-    ///
-    /// Nothing calls this yet. It shortens how long a retained entry holds a
-    /// slot; it is not what keeps the reclaim in `add_signed_msg_order_id`
-    /// safe. That rests on the eviction buffer. Wiring it needs the account on
-    /// the cancel and crank instructions that remove a book order, and only
-    /// `crank_taker_origin_cross` carries the account today.
+    /// Release the entry's hold once its order leaves the book, so the stale
+    /// sweep can reclaim the slot the ordinary way. Nothing calls this yet: it
+    /// shortens how long a retained entry holds a slot, but reclaim safety in
+    /// `add_signed_msg_order_id` rests on the eviction buffer, not this.
+    /// Wiring it needs the account on the cancel and crank instructions that
+    /// remove a book order, and only `crank_taker_origin_cross` carries it today.
     pub fn clear_resting_route(&mut self, clob_order_id: u64) -> bool {
         if clob_order_id == 0 {
             return false;
         }
+
         for i in 0..self.len() {
             let entry = self.get_mut(i);
             if entry.clob_order_id == clob_order_id {
@@ -315,6 +317,7 @@ impl<'a> SignedMsgUserOrdersZeroCopyMut<'a> {
                 return true;
             }
         }
+
         false
     }
 }

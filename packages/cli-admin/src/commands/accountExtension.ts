@@ -10,14 +10,10 @@ import { buildAdminClient, buildProvider } from '../lib/provider';
 import { confirmMainnetDirect } from '../lib/context';
 
 /**
- * CLI type flag to IDL account name, for every zero-copy account the program's
- * `extend_account` instruction supports. The map omits Borsh accounts on
- * purpose. A Borsh account migrates through a per-type deserialization change
- * and never through growth in trailing bytes.
- *
- * Each value is the account name as the program coder knows it. Anchor's
- * `Program` converts the IDL to camelCase at construction, so a lookup against
- * `program.coder.accounts` must use camelCase and not the Rust struct name.
+ * CLI type flag to IDL account name, for every zero-copy account the program's `extend_account`
+ * instruction supports. Borsh accounts are omitted, since they migrate through a per-type
+ * deserialization change, not trailing-byte growth. Each value is camelCase, matching Anchor's
+ * `program.coder.accounts` keys rather than the Rust struct name.
  */
 const EXTENDABLE_ACCOUNT_TYPES: Record<string, string> = {
 	user: 'user',

@@ -22,16 +22,10 @@ use {
 
 /// Account metas for one quoter CPI leg.
 ///
-/// Never forward outer signer privilege. Signer status propagates through CPI,
-/// so a quoter handed the taker's wallet as a signer could CPI to the system
-/// program or the token program and drain it. A quoter that must know who
-/// signed the outer transaction reads the instructions sysvar instead. The
-/// `flow_authority` attestation works that way.
-///
-/// The single signer is the market's quoter slab, which is velocity signing as
-/// itself. A registered slot for that key is how a quoter authenticates that
-/// velocity, and not an arbitrary caller, is invoking it. See `crate::signer`
-/// for why forwarding that signature to another quoter completes nothing.
+/// Never forward outer signer privilege. It propagates through CPI, so a quoter handed
+/// the taker's wallet could CPI to the token program and drain it. A quoter that must
+/// know who signed reads the instructions sysvar. The single signer is the market's
+/// quoter slab, which is how a quoter authenticates velocity as the caller.
 pub(super) fn write_quoter_account_metas<'a>(
     into: &mut Vec<AccountMeta>,
     registered: impl Iterator<Item = &'a AmmAccountMeta>,
@@ -79,6 +73,7 @@ fn invoke_quoter_signed(
                     let _ = info.try_borrow_lamports()?;
                     let _ = info.try_borrow_data()?;
                 }
+
                 break;
             }
         }
@@ -86,12 +81,9 @@ fn invoke_quoter_signed(
 
     #[cfg(target_os = "solana")]
     {
-        /// Mirrors `StableVec`, which the runtime reads as an address, a
-        /// capacity it ignores, and a length.
-        ///
-        /// This is not `StableVec` itself. That type owns its allocation and
-        /// frees it on drop, so building one over borrowed memory would hand
-        /// the allocator a pointer this program still owns.
+        /// Mirrors `StableVec`, which the runtime reads as an address, a capacity it
+        /// ignores, and a length. Not `StableVec` itself, which owns its allocation and
+        /// would hand the allocator a pointer this program still owns.
         #[repr(C)]
         struct BorrowedVec {
             addr: u64,
@@ -127,19 +119,19 @@ fn invoke_quoter_signed(
                 cap: instruction.accounts.len() as u64,
                 len: instruction.accounts.len() as u64,
             },
+
             data: BorrowedVec {
                 addr: instruction.data.as_ptr() as u64,
                 cap: instruction.data.len() as u64,
                 len: instruction.data.len() as u64,
             },
+
             program_id: instruction.program_id,
         };
 
-        // SAFETY: `borrowed` has `StableInstruction`'s layout, asserted above.
-        // The metas and args it addresses are the caller's and outlive this
-        // call. Every meta came from a real `AccountMeta`, so its flag bytes
-        // are 0 or 1, which the runtime requires. The infos and seeds are
-        // passed as the SDK passes them: a data pointer and a count.
+        // SAFETY: `borrowed` has `StableInstruction`'s layout, asserted above. The
+        // metas and args it addresses are the caller's and outlive this call. Every
+        // meta came from a real `AccountMeta`, so its flag bytes are 0 or 1.
         let result = unsafe {
             solana_cpi::syscalls::sol_invoke_signed_rust(
                 &borrowed as *const _ as *const u8,
@@ -149,6 +141,7 @@ fn invoke_quoter_signed(
                 signer_seeds.len() as u64,
             )
         };
+
         match result {
             0 => Ok(()),
             _ => Err(anchor_lang::solana_program::program_error::ProgramError::from(result).into()),
@@ -164,26 +157,10 @@ fn invoke_quoter_signed(
     }
 }
 
-/// The three buffers a quoter CPI leg needs, allocated once and reused by every
-/// leg of every entry in one instruction.
-///
-/// Velocity's heap is 32 KB and its allocator never reclaims, so a `Vec` per leg
-/// is a `Vec` for the rest of the instruction. One leg at capacity wants its
-/// account metas, its `AccountInfo`s, and up to [`QUOTER_CPI_DATA_MAX`] bytes
-/// of args. A fill runs two legs per entry across up to
-/// [`super::MAX_ROUTE_QUOTERS`] entries, which is more scaffolding than the
-/// heap holds. The pass then aborts out of memory well before the route reaches
-/// the size the account-lock budget allows.
-///
-/// The buffers are only ever cleared and refilled. `clear` keeps the
-/// allocation, so the whole fill pays for one set.
-///
-/// They start empty and take their size from the first leg that uses them.
-/// Reserving the widest a leg may be is close to unreachable. The wire allows
-/// [`MAX_QUOTER_WIRE_USERS`] users, but a transaction's account locks cap a
-/// real route far below that. A registered CPI surface is also a handful of
-/// accounts rather than the [`super::MAX_QUOTER_ACCOUNTS`] the array holds. A
-/// pass that calls no quoter then pays nothing at all.
+/// The three buffers a quoter CPI leg needs, allocated once and reused by every leg.
+/// Velocity's heap is 32 KB and never reclaims, so a `Vec` per leg is a `Vec` for the
+/// rest of the instruction. `clear` keeps the allocation, and the buffers size themselves
+/// from the first leg.
 pub struct QuoterCpiScratch<'info> {
     /// Carries the metas and the args. `Instruction` owns both, and the CPI
     /// leg takes an `&Instruction`, so reusing them means reusing the
@@ -206,6 +183,7 @@ impl<'info> QuoterCpiScratch<'info> {
                 accounts: Vec::new(),
                 data: Vec::new(),
             },
+
             infos: Vec::new(),
         }
     }
@@ -244,38 +222,20 @@ impl WireDirectionExt for ClobSide {
     }
 }
 
-/// A velocity user on the quoter wire, in its derivable form: an authority
-/// wallet and a sub-account index.
-///
-/// The `User` PDA and the `UserStats` PDA both derive from those two fields.
-/// An off-chain reader such as a relay resolver staging a crank therefore
-/// reaches every user-derived account from a quoter's state alone. A stored
-/// `User` key reaches nothing, because its authority lives inside account data
-/// the reader cannot load. Velocity resolves refs against its loaded users by
-/// field match and never by PDA derivation, so the hot path pays nothing for
-/// this.
-///
-/// Declared by `quoter-spec`, which every program on this wire compiles
-/// against. `Pubkey` and the v2 programs' `Address` are the same type, so the
-/// declaration needs no per-program restatement. The alias keeps velocity's
-/// name for it.
+/// A velocity user on the quoter wire, in its derivable form: an authority wallet and a
+/// sub-account index. Both the `User` and `UserStats` PDAs derive from those, so an
+/// off-chain reader reaches every user-derived account from a quoter's state alone.
+/// Declared by `quoter-spec`, and this alias keeps velocity's name for it.
 pub type ClobUserRefV0 = quoter_spec::UserRefV0;
 
 /// Borsh width of a [`ClobUserRefV0`].
 pub const CLOB_USER_REF_BYTES: usize = quoter_spec::UserRefV0::SIZE;
 const_assert_eq!(std::mem::size_of::<ClobUserRefV0>(), CLOB_USER_REF_BYTES);
 
-/// The loaded-user set on the quoter wire: a length prefix and that many
-/// entries.
-///
-/// An empty set means unrestricted. Only callers that settle nothing send one,
-/// which is the quote view and cross discovery. A quoter reading a non-empty
-/// set must skip liquidity whose owner is absent from it. Velocity cannot
-/// settle a balance change for a `User` it did not load, so it refuses such a
-/// fill whole.
-///
-/// Declared by `quoter-spec` beside the responses. The aliases keep velocity's
-/// names for them.
+/// The loaded-user set on the quoter wire: a length prefix and that many entries. An
+/// empty set means unrestricted, which only callers that settle nothing send. A quoter
+/// must skip liquidity whose owner is absent from a non-empty set, because velocity
+/// cannot settle a balance change for a `User` it did not load.
 pub use quoter_spec::{
     user_set_bytes as quoter_user_set_bytes, UserCapV0 as QuoterUserCapV0,
     UserCapsV0 as QuoterUserCapsV0, USER_CAPS_BYTES as QUOTER_USER_CAPS_BYTES,
@@ -283,16 +243,11 @@ pub use quoter_spec::{
     USER_SET_CAPACITY as MAX_QUOTER_WIRE_USERS, USER_SET_MAX_BYTES as QUOTER_USER_SET_MAX_BYTES,
 };
 
-/// Bytes an execute CPI's instruction data takes. The wire order is the
-/// discriminator, the user set, the direction, the size, the caps, the
-/// reference price, and the taker behind its option tag. The two trailing
-/// bytes are `taker_served_window` and `consume_reservation`.
-///
-/// A size rather than a constant, because the user set is length-prefixed. The
-/// caller reserves exactly this much in one shot. Every field the args
-/// serializer writes has to be counted here. One byte short and the `Vec`
-/// doubles, and on this heap that means the fill runs out of memory rather
-/// than slowing down.
+/// Bytes an execute CPI's instruction data takes: the discriminator, the user set, the
+/// direction, the size, the caps, the reference price, the taker behind its option tag,
+/// then `taker_served_window` and `include_taker_origin_reservations`. A size rather
+/// than a constant, because the user set is length-prefixed. One byte short and the
+/// `Vec` doubles onto a heap that never reclaims.
 pub const fn quoter_cpi_data_len(users: usize, taker: bool) -> usize {
     8 + 1
         + 8
@@ -314,14 +269,10 @@ pub const fn quote_cpi_data_len(users: usize, taker: bool) -> usize {
 /// Widest either leg can be: a quote with a full user set and a taker.
 pub const QUOTER_CPI_DATA_MAX: usize = quote_cpi_data_len(MAX_QUOTER_WIRE_USERS, true);
 
-/// The loaded-user set as velocity holds it: a heap slice, capped at the
-/// wire's capacity.
-///
-/// Velocity never holds the set by value. A full set is
-/// [`MAX_QUOTER_WIRE_USERS`] entries of [`CLOB_USER_REF_BYTES`] bytes. One of
-/// those in an SBF frame overflows the 4 KB limit on the fill and cross-match
-/// entrypoints. The linker reports "overflows the maximum allowed frame space"
-/// at build time. At runtime it is an access violation several frames deep.
+/// The loaded-user set as velocity holds it: a heap slice, capped at the wire's
+/// capacity. Never held by value. A full set of [`MAX_QUOTER_WIRE_USERS`] entries
+/// overflows the 4 KB SBF frame on the fill and cross-match entrypoints, which the
+/// linker reports as "overflows the maximum allowed frame space".
 pub fn quoter_wire_users(
     refs: impl IntoIterator<Item = ClobUserRefV0>,
 ) -> crate::error::VelocityResult<Vec<ClobUserRefV0>> {
@@ -333,6 +284,7 @@ pub fn quoter_wire_users(
         users.len(),
         MAX_QUOTER_WIRE_USERS
     )?;
+
     Ok(users)
 }
 
@@ -346,19 +298,14 @@ pub fn write_l3_args(dst: &mut Vec<u8>, args: &L3ArgsV0) -> crate::error::Veloci
         msg!("could not serialize l3 args");
         ErrorCode::DefaultError
     })?;
+
     Ok(())
 }
 
-/// The request half of the quoter wire, declared by `quoter-spec`. That crate
-/// declares the responses too, so the bytes velocity writes and the bytes a
-/// quoter reads come from one declaration.
-///
-/// Both carry the user set as a borrowed slice. A full set is
-/// [`MAX_QUOTER_WIRE_USERS`] entries of [`CLOB_USER_REF_BYTES`] bytes, and an
-/// SBF stack frame is 4 KB. Owning one put a copy in this frame per quoter and
-/// another inside the CPI leg, which overflowed the fill path at runtime while
-/// every host-side test passed. The quoter reads it in place too, straight out
-/// of its instruction data.
+/// The request half of the quoter wire, declared by `quoter-spec` beside the responses.
+/// The user set is a borrowed slice. Owning one put a copy in this frame per quoter and
+/// another in the CPI leg, which overflowed the 4 KB SBF frame at runtime while every
+/// host-side test passed.
 pub use quoter_spec::{
     ExecuteArgsV0, L3ArgsV0, L3ResponseV0, L3RowV0, QuoteArgsV0, L3_ROW_FLAG_BLOCKS_WALK,
     L3_ROW_FLAG_REDUCE_ONLY, L3_ROW_FLAG_TAKER_ORIGIN,
@@ -379,39 +326,15 @@ pub struct QuotedLadderV0 {
     pub withheld: PriceLevel,
 }
 
-/// One order a CLOB removed as a sub-min remainder of a fill.
-///
-/// `base_asset_amount` releases a maker's margin reservation, and the
-/// completed-order ids beside it decrement their open-order counts. That maker
-/// is an ordinary velocity user resting on the book, not the quoter's own
-/// account. The subject rule therefore bounds whose orders an entry may
-/// remove. It does not bound whether the entry described what it removed.
-///
-/// The bound on the description is the reservation itself. Velocity wrote
-/// `open_bids` and `open_asks` when the order was placed, under its owner's
-/// signature, and holds every removal report to
-/// [`PerpPosition::reserved_open_base`]. A report above what the user has
-/// resting fails rather than freeing the margin behind orders that still rest.
-/// The same bound covers `evict_worst_v0` and `remove_expired_v0`, which drive
-/// identical unwinding, and the fill path's balance changes.
-///
-/// The one lenient path is a removal the owner signed for, meaning velocity's
-/// `cancel_order_v1` and its sweeps. Those run against books that may be dead
-/// or de-listed, so an over-report clamps and logs instead of failing. A maker
-/// must always be able to leave a book that reports garbage.
-///
-/// The reservation does not bound which of a user's orders a report names. An
-/// id for an order still live on the book frees a placed trigger's shadow
-/// while the book keeps the size. The size still has to be one the user really
-/// placed.
+/// One order a CLOB removed as a sub-min remainder of a fill. Velocity holds every
+/// removal report to [`PerpPosition::reserved_open_base`], so a book may only free size
+/// a user really placed. A removal the owner signed for clamps and logs instead of
+/// failing, because a maker must be able to leave a book that reports garbage.
 pub use quoter_spec::CancelledRemainderV0;
 pub use quoter_spec::CompletedOrderV0;
-/// The execute response, read in place out of the quoter's account.
-///
-/// Borrows rather than owns. Velocity's heap is 32 KB and never reclaims, and
-/// one fill CPIs every registered quoter, so copying the records out would
-/// spend heap per quoter per fill that nothing gives back. The caller holds
-/// the account guard for as long as it reads. See [`ResponseLocationV0`].
+/// The execute response, read in place out of the quoter's account. Borrows rather than
+/// owns, because one fill CPIs every registered quoter and copying the records out would
+/// spend heap per quoter that nothing gives back. See [`ResponseLocationV0`].
 pub use quoter_spec::ExecuteResponseV0;
 /// Returned via return data by `quote_v0` and `execute_v0`. It says where in
 /// the quoter's `response_account` the borsh response was written. Declared by
@@ -420,62 +343,25 @@ pub use quoter_spec::ResponsePointerV0;
 
 /// Who a quoter's `execute_v0` response is allowed to move balances for.
 pub enum QuoterSubjects {
-    /// A Custom entry fills against exactly one margin account, the entry's
-    /// `user`. That user's authority created the entry, so registration is
-    /// that user's consent. Nothing else the entry names is settleable.
-    /// Velocity knows that from the registry rather than from anything the
-    /// quoter says.
+    /// A Custom entry fills against exactly one margin account, the entry's `user`. That
+    /// user's authority created the entry, so registration is their consent. Velocity
+    /// knows it from the registry rather than from anything the quoter says.
     Account(Pubkey),
-    /// A book fills against whoever rests on it, and velocity takes its word
-    /// for who that is.
-    ///
-    /// Velocity does not check the response against the book's arena. The
-    /// arena is the book program's own state, so a book that wanted to name a
-    /// stranger would write the stranger into a node first. Such a check runs
-    /// the program against itself. It buys no safety and costs a walk of the
-    /// swept prefix on every leg.
-    ///
-    /// What bounds a book instead is the record velocity wrote itself. Every
-    /// CLOB order reserved `open_bids` or `open_asks` on its owner's position
-    /// at placement, under that owner's signature, and no external program can
-    /// write those. So a response is held to
-    /// [`crate::state::user::PerpPosition::reserved_open_base`]. A book may
-    /// only fill or remove size a user really placed, on the side they placed
-    /// it. That bound needs nothing from the book's own state, which is why it
-    /// stands where the arena walk did not. It covers the removal reports on
-    /// the same terms. See [`super::ClobRemovedOrderV0`].
-    ///
-    /// Three further limits hold. The response may only name users the
-    /// transaction already carries. Every balance change is held to the quoted
-    /// prices and to the oracle band. Every user it touches is margin-checked
-    /// after the fill.
-    ///
-    /// Two things the reservation does not bound. It records size and side but
-    /// not price, so an order a user did place can still be filled anywhere
-    /// inside the oracle band. The exposure is the band's width across the size
-    /// they posted. `open_bids` also does not separate a book's reservation
-    /// from a slot order's on the same market and side, so a book's report can
-    /// consume reservation a slot order made. Splitting them needs sixteen more
-    /// bytes on [`crate::state::user::PerpPosition`], which has no spare bytes.
+    /// A book fills against whoever rests on it. Velocity does not walk the book's
+    /// arena, which is the book's own state. It holds the response to
+    /// [`crate::state::user::PerpPosition::reserved_open_base`] instead, so a book may
+    /// only fill or remove size a user really placed, on the side they placed it.
     Book,
 }
 
 impl QuoterSubjects {
-    /// Whether this quoter may move `user`'s balances. `key` is `user`
-    /// resolved against the loaded set, which is how the Custom case compares
-    /// against the entry's `user` field.
+    /// Whether this quoter may move `user`'s balances. `key` is `user` resolved against
+    /// the loaded set.
     ///
-    /// The `taker` is never a subject, whatever the entry type. A quoter that
-    /// could name the taker would net the taker's position against itself at a
-    /// price of its choosing. The wire asks every quoter to skip the taker.
-    /// This is the rule rather than the request, and it lives here so no caller
-    /// can apply the type check without it.
-    ///
-    /// `protocol_authority` is `State::signer`. The protocol `User` is never a
-    /// subject either. It is the inventory-free taker the cranks fill through,
-    /// so a quoter that could name it would move a position onto protocol funds
-    /// at a price of its own choosing. It is excluded by identity rather than by
-    /// never being loaded, because the cross cranks load it on purpose.
+    /// Neither the taker nor the protocol `User` is ever a subject. A quoter that could
+    /// name either would net that position against itself at a price of its choosing.
+    /// Both are excluded by identity here rather than by never being loaded, because the
+    /// cross cranks load the protocol user on purpose.
     pub fn permits(
         &self,
         user: &ClobUserRefV0,
@@ -489,6 +375,7 @@ impl QuoterSubjects {
         if user.sub_account_id == 0 && user.authority == *protocol_authority {
             return false;
         }
+
         match self {
             QuoterSubjects::Account(quoted) => quoted == key,
             QuoterSubjects::Book => true,
@@ -496,12 +383,9 @@ impl QuoterSubjects {
     }
 }
 
-/// Find one of the fill's tail accounts by key.
-///
-/// A scan rather than a map. The tail is a couple of dozen accounts, and one
-/// fill looks up a handful per quoter CPI, so building an index costs more than
-/// searching. A `BTreeMap` also pays that cost in allocations on a 32 KB heap
-/// that never reclaims.
+/// Find one of the fill's tail accounts by key. A scan rather than a map, because the
+/// tail is a couple of dozen accounts and building an index costs more than searching.
+/// A `BTreeMap` would also allocate on a 32 KB heap that never reclaims.
 pub fn find_account<'a, 'info>(
     accounts: &'a [AccountInfo<'info>],
     key: &Pubkey,
@@ -509,15 +393,10 @@ pub fn find_account<'a, 'info>(
     accounts.iter().find(|info| info.key == key)
 }
 
-/// Where a quoter left its response, handed back so the caller creates the
-/// account borrow.
-///
-/// The response is read in place out of the quoter's account, and the borrow
-/// guard cannot outlive the function that takes it. So the executor validates
-/// the pointer and returns its location, and the fill that consumes the
-/// response holds the guard for exactly as long as it reads. Returning the
-/// records instead would mean copying them onto a 32 KB heap that never
-/// reclaims, once per quoter per fill.
+/// Where a quoter left its response, handed back so the caller creates the account
+/// borrow. The guard cannot outlive the function that takes it, so the executor returns
+/// a location and the fill holds the guard for as long as it reads. Returning the
+/// records would copy them onto a 32 KB heap that never reclaims.
 pub struct ResponseLocationV0<'info> {
     pub account: AccountInfo<'info>,
     pub start: usize,
@@ -544,6 +423,7 @@ impl<'info> ResponseLocationV0<'info> {
             msg!("prop amm response pointer out of bounds");
             ErrorCode::DefaultError
         })?;
+
         ExecuteResponseV0::parse(bytes).map_err(|_| {
             msg!("prop amm quoter returned an undecodable execute response");
             ErrorCode::DefaultError
@@ -559,6 +439,7 @@ impl<'info> ResponseLocationV0<'info> {
             msg!("prop amm response pointer out of bounds");
             ErrorCode::DefaultError
         })?;
+
         QuoteResponseV0::parse(bytes).map_err(|_| {
             msg!("prop amm quoter returned an undecodable quote response");
             ErrorCode::DefaultError
@@ -575,6 +456,7 @@ impl<'info> ResponseLocationV0<'info> {
             msg!("prop amm response pointer out of bounds");
             ErrorCode::DefaultError
         })?;
+
         L3ResponseV0::parse(bytes).map_err(|_| {
             msg!("prop amm quoter returned an undecodable l3 response");
             ErrorCode::DefaultError
@@ -596,12 +478,9 @@ impl<'info> ResponseLocationV0<'info> {
     }
 }
 
-/// The part of a quoted ladder a reader can use.
-///
-/// The router's cursor and its level validation both stop at
-/// [`crate::math::router::MAX_LEVELS_PER_BOOK`], so a reader that took a deeper
-/// ladder would never look at the tail. A market may set `max_quote_levels`
-/// high enough that the discarded tail is kilobytes per book.
+/// The part of a quoted ladder a reader can use. The router's cursor and its level
+/// validation both stop at [`crate::math::router::MAX_LEVELS_PER_BOOK`], and a market
+/// may set `max_quote_levels` high enough that the discarded tail is kilobytes.
 pub fn usable_levels(levels: &[PriceLevel]) -> &[PriceLevel] {
     &levels[..levels.len().min(crate::math::router::MAX_LEVELS_PER_BOOK)]
 }
@@ -622,19 +501,14 @@ pub trait ExternalQuoterExecutor<'info> {
     /// pre-execute clamp sizes Custom books against that margin account.
     fn quoter_user(&self, index: usize) -> Pubkey;
 
-    /// The registry entry of quoter `index`.
-    ///
-    /// Failure messages name this rather than the index. An off-chain router
-    /// reading the logs of a failed fill knows the program from the runtime's
-    /// CPI brackets, but one quoter program serves many entries, so only the
-    /// entry key says which maker to hold responsible.
+    /// The registry entry of quoter `index`. Failure messages name this rather than the
+    /// index, because one quoter program serves many entries and only the entry key says
+    /// which maker to hold responsible.
     fn quoter_key(&self, index: usize) -> Pubkey;
 
-    /// How far from oracle a fill on quoter `index` may price, in
-    /// MARGIN_PRECISION units. See [`QuoterConfigV0::oracle_band`].
-    ///
-    /// Defaults to the market's own band, which is what an executor that
-    /// carries no registry entry can say.
+    /// How far from oracle a fill on quoter `index` may price, in MARGIN_PRECISION
+    /// units. Defaults to the market's own band, which is what an executor carrying no
+    /// registry entry can say. See [`QuoterConfigV0::oracle_band`].
     fn oracle_band(&self, _index: usize, market_margin_ratio_initial: u32) -> u32 {
         market_margin_ratio_initial
     }
@@ -647,12 +521,9 @@ pub trait ExternalQuoterExecutor<'info> {
         size: u64,
     ) -> crate::error::VelocityResult<QuoterSubjects>;
 
-    /// CPI a whole-side cancel on quoter `index` for one of its makers.
-    ///
-    /// Only book-backed entries can honour this. A `Custom` quoter has no
-    /// orders and answers `None`. The caller uses it to clear a maker the fill
-    /// has proven may not rest risk-increasing orders, once the fill it would
-    /// have broken has settled.
+    /// CPI a whole-side cancel on quoter `index` for one of its makers. Only book-backed
+    /// entries honour it, and a `Custom` quoter answers `None`. The caller clears a maker
+    /// the fill proved may not rest risk-increasing orders.
     fn cancel_all(
         &mut self,
         _index: usize,
@@ -662,11 +533,10 @@ pub trait ExternalQuoterExecutor<'info> {
         Ok(None)
     }
 
-    /// CPI `execute_v0` on quoter `index` with the routed allocation.
-    ///
-    /// The response is untrusted. Before it settles anything, the router pass
-    /// validates overfill, checks the executed price against the quoted prefix,
-    /// and checks that every balance change lands on a permitted subject.
+    /// CPI `execute_v0` on quoter `index` with the routed allocation. The response is
+    /// untrusted. The router pass validates overfill, checks the executed price against
+    /// the quoted prefix, and checks every balance change lands on a permitted
+    /// subject.
     fn execute(
         &mut self,
         index: usize,
@@ -717,14 +587,10 @@ impl<'info> ExternalQuoterExecutor<'info> for NoExternalQuoters {
 pub use quoter_spec::UserBalanceChangeV0;
 
 impl QuoterConfigV0 {
-    /// Shared gate on both CPI legs. The entry takes new flow, and it takes
-    /// that flow for the market the caller is filling.
-    ///
-    /// An entry is registered per `(market, program, user)`, and nothing about
-    /// the CPI itself carries the market. Without the second check, an entry
-    /// vetted for one perp market could be quoted into another. It would then
-    /// settle its balance changes against positions it was never approved to
-    /// touch.
+    /// Shared gate on both CPI legs. The entry takes new flow, and takes it for the
+    /// market the caller is filling. Nothing about the CPI itself carries the market, so
+    /// without the second check an entry vetted for one perp market could settle balance
+    /// changes against positions it was never approved to touch.
     fn gate_for_market(&self, market_index: u16) -> Result<()> {
         validate!(
             self.is_active,
@@ -738,6 +604,7 @@ impl QuoterConfigV0 {
             self.market,
             market_index
         )?;
+
         Ok(())
     }
 
@@ -785,6 +652,7 @@ impl QuoterConfigV0 {
         if self.quote_l3_v0_discriminator == [0u8; 8] {
             return Ok(None);
         }
+
         self.gate_for_market(market_index)?;
         self.invoke_quoter(
             &self.quote_l3_v0_discriminator,
@@ -857,17 +725,21 @@ impl QuoterConfigV0 {
                 infos.push(slab_info.clone());
                 continue;
             }
+
             let info = find_account(accounts, &meta.pubkey).ok_or_else(|| {
                 msg!("prop amm account {} missing from account map", meta.pubkey);
                 ErrorCode::DefaultError
             })?;
+
             infos.push(info.clone());
         }
+
         // CPI needs the callee program's account info too.
         let program_info = find_account(accounts, &self.program_id).ok_or_else(|| {
             msg!("quoter program account missing from account map");
             ErrorCode::DefaultError
         })?;
+
         infos.push(program_info.clone());
 
         // `QUOTER_CPI_DATA_MAX` counts every byte the args serializer writes,
@@ -885,6 +757,7 @@ impl QuoterConfigV0 {
             data_len,
             QUOTER_CPI_DATA_MAX
         )?;
+
         instruction.data.clear();
         instruction.data.extend_from_slice(discriminator);
         quoter_spec::write_args(&mut instruction.data, args).map_err(|_| {
@@ -892,30 +765,29 @@ impl QuoterConfigV0 {
             ErrorCode::DefaultError
         })?;
 
-        // Signed as the market's slab, the one identity every quoter on the
-        // market authenticates velocity by. See `crate::signer` for why the
-        // shared key is safe to hand a quoter. The seeds derive from the
-        // config's own market, so a slab for a different market fails the
-        // runtime's signer check instead of signing.
+        // Signed as the market's slab, the identity every quoter authenticates velocity
+        // by. The seeds derive from the config's own market, so a slab for a different
+        // market fails the runtime's signer check instead of signing.
         let market = self.market.to_le_bytes();
         let seeds = get_quoter_slab_signer_seeds(&market, &slab_bump);
         invoke_quoter_signed(instruction, infos, &[&seeds])?;
 
-        // The payload lives in the quoter's response account, and return data
-        // carries only a pointer into it. A response is therefore not bound by
-        // the 1024-byte return-data cap. Return data is last-writer-wins within
-        // the transaction. Requiring the writer to be `program_id` stops a read
-        // of a pointer set by a program the quoter called.
+        // The payload lives in the quoter's response account and return data carries
+        // only a pointer, so a response is not bound by the 1024-byte cap. Return data is
+        // last-writer-wins, so requiring the writer to be `program_id` stops a read of a
+        // pointer set by a program the quoter called.
         let (writer, pointer_data) = get_return_data().ok_or_else(|| {
             msg!("prop amm quoter set no return data");
             ErrorCode::DefaultError
         })?;
+
         validate!(
             writer == self.program_id,
             ErrorCode::DefaultError,
             "prop amm return data written by {} instead of quoter program",
             writer
         )?;
+
         let pointer =
             ResponsePointerV0::deserialize(&mut pointer_data.as_slice()).map_err(|_| {
                 msg!("prop amm quoter returned undecodable response pointer");
@@ -926,12 +798,14 @@ impl QuoterConfigV0 {
             msg!("prop amm response account missing from account map");
             ErrorCode::DefaultError
         })?;
+
         // Only the quoter program can have written an account it owns.
         validate!(
             *response_info.owner == self.program_id,
             ErrorCode::DefaultError,
             "prop amm response account not owned by quoter program"
         )?;
+
         let data = response_info
             .try_borrow_data()
             .map_err(|_| ErrorCode::DefaultError)?;

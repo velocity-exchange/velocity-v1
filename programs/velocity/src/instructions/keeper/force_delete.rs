@@ -286,23 +286,20 @@ impl<'info> KeeperTransfer<'info> {
             spot_market,
             self.market_vault.amount,
         )?;
+
         Ok(())
     }
 }
 
 /// Settle this subaccount's revenue-share rows before the id goes away.
 ///
-/// This path retires the id exactly as `delete_user` does, so it orphans a
-/// fee-bearing row the same way. See `handle_delete_user` for why the row then
-/// becomes unreachable.
+/// This path retires the id exactly as `delete_user` does, so it orphans a fee-bearing row the same
+/// way. See `handle_delete_user` for why the row then becomes unreachable. `cancel_orders` closed
+/// every order of this subaccount, so each row for it becomes `Completed`, or is cleared when it
+/// carries no fees. That is the state the permissionless sweep pays out of.
 ///
-/// `cancel_orders` closed every order of this subaccount, so each row for it
-/// becomes `Completed` (or is cleared when it carries no fees). That is the
-/// state the permissionless sweep pays out of.
-///
-/// The escrow is pinned to the authority's PDA by `seeds`, so an empty account
-/// proves this authority has no escrow rather than signalling an omitted
-/// account.
+/// The escrow is pinned to the authority's PDA by `seeds`, so an empty account proves this
+/// authority has no escrow rather than signalling an omitted account.
 fn settle_escrow_on_delete<'c: 'info, 'info>(
     ctx: &Context<'info, ForceDeleteUser<'info>>,
     user: &User,
@@ -326,6 +323,7 @@ fn settle_escrow_on_delete<'c: 'info, 'info>(
         "sub account {} still has outstanding revenue-share orders",
         user.sub_account_id
     )?;
+
     Ok(())
 }
 

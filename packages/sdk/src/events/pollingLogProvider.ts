@@ -76,9 +76,8 @@ export class PollingLogProvider implements LogProvider {
 
 				// `fetchLogs` leaves `mostRecentTx` undefined when a `getTransaction`
 				// failed on the oldest signature in the page, so there is no forward
-				// cursor to move to. Skip the tick as if nothing was found. The
-				// cursor and `firstFetch` stay put, and the next poll retries the
-				// window.
+				// cursor to move to. The cursor and `firstFetch` stay put, and the
+				// next poll retries the window.
 				if (response === undefined || response.mostRecentTx === undefined) {
 					return;
 				}

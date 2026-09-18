@@ -16,16 +16,13 @@
 /// is inside `floor + 2 * buffer`.
 pub const DEFAULT_WARNING_BUFFER_MULTIPLE: u64 = 2;
 
-/// Minimal equity floor to carry with a quote transfer of `amount` out of a
-/// subaccount, so the debited side ends at or above its buffered floor
-/// `equity_floor + equity_floor_buffer`. The transfer carries no floor for its
-/// first `net_equity - (floor + buffer)`. The remainder carries floor one for
-/// one, capped at the floor the subaccount holds. Returns zero when no floor
-/// is set.
-///
-/// The result never exceeds `amount`, so a credited side that met its own
-/// buffered floor before the transfer still meets it after. All values are
-/// QUOTE_PRECISION.
+/// Minimal equity floor delta to carry with a quote transfer of `amount` out
+/// of a subaccount, so the debited side ends at or above its buffered floor
+/// `equity_floor + equity_floor_buffer`. The first `net_equity - (floor +
+/// buffer)` carries no floor; the remainder carries floor one for one,
+/// capped at `equity_floor`. Zero when no floor is set. The result never
+/// exceeds `amount`, so a credited side already at its buffered floor stays
+/// there. All values are QUOTE_PRECISION.
 pub fn calculate_equity_floor_auto_delta(
     amount: u64,
     net_equity: i128,

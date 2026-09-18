@@ -58,11 +58,10 @@ impl FailReason {
         }
     }
 
-    /// True when the quoter broke the response contract.
-    ///
-    /// A quoter that answers off its own quote, overfills, or moves a user it
-    /// does not own broke the contract. The policy weighs one of these
-    /// heavier than many plain reverts.
+    /// True when the quoter broke the response contract. A quoter that
+    /// answers off its own quote, overfills, or moves a user it does not
+    /// own broke the contract. The policy weighs this heavier than a plain
+    /// revert.
     pub fn is_contract_violation(self) -> bool {
         matches!(
             self,
@@ -116,13 +115,10 @@ impl Attribution {
         }
     }
 
-    /// True when the evidence is strong enough to move a quoter's state.
-    ///
-    /// A named line and a re-simulation both identify one entry. A CPI
-    /// bracket identifies one program, and it resolves to an entry through
-    /// the route's order. That inference breaks if the on-chain entry set
-    /// moved after the route was built, so a bracket stays a hypothesis. A
-    /// re-simulation without the suspect settles it.
+    /// True when the evidence is strong enough to move a quoter's state. A
+    /// named line or a re-simulation identifies one entry directly. A CPI
+    /// bracket identifies only the program, resolved to an entry through
+    /// the route's order, so it stays a hypothesis if that order later shifts.
     pub fn is_actionable(self) -> bool {
         matches!(self, Self::Named | Self::Resim | Self::Bisect)
     }
@@ -138,11 +134,13 @@ pub enum Observation {
         reason: FailReason,
         proof: Attribution,
     },
+
     /// The quoter's execute leg settled.
     ExecuteOk {
         allocated_base: u64,
         filled_base: u64,
     },
+
     /// The quoter's execute leg failed in a landed or simulated fill.
     ExecuteFail { reason: FailReason },
     /// The router cut the quoter's ladder before quoting it. A Custom entry
@@ -152,6 +150,7 @@ pub enum Observation {
         quoted_base: u64,
         admitted_base: u64,
     },
+
     /// A route that named this quoter landed. The prices are the one the
     /// router published off chain and the one the fill executed at.
     RouteLanded {

@@ -87,12 +87,9 @@ use {
 /// so `initialize` must thread the free list before the book is usable.
 pub const NIL: u32 = u32::MAX;
 
-/// Two conditions that must agree. Either both hold or neither does.
-///
-/// Most of the book's structural invariants have this shape. An empty side has
-/// a `NIL` best link and a zero count, and either one alone is a corrupt book.
-/// Written directly, the condition becomes `(a == b) == (c == d)`, which reads
-/// as a typo for `&&` rather than as a claim about equivalence.
+/// Two conditions that must agree, such as a `NIL` best link and a zero count.
+/// Written inline the test reads `(a == b) == (c == d)`, which looks like a typo
+/// for `&&`.
 #[inline(always)]
 const fn both_or_neither(a: bool, b: bool) -> bool {
     a == b
@@ -136,7 +133,7 @@ pub trait ClobBook {
         reference_price: i64,
         taker: Option<&UserRefV0>,
         limit_price: u64,
-        consume_reservation: bool,
+        include_taker_origin_reservations: bool,
         slot: u64,
         now: i64,
     ) -> Result<ResponsePointerV0>;
@@ -145,7 +142,7 @@ pub trait ClobBook {
         direction: Direction,
         size: u64,
         max_rows: u16,
-        consume_reservation: bool,
+        include_taker_origin_reservations: bool,
         slot: u64,
         now: i64,
     ) -> Result<ResponsePointerV0>;
@@ -158,7 +155,7 @@ pub trait ClobBook {
         caps: &UserCapsV0,
         reference_price: i64,
         taker: Option<&UserRefV0>,
-        consume_reservation: bool,
+        include_taker_origin_reservations: bool,
         slot: u64,
         now: i64,
     ) -> Result<ExecuteOutcome>;
@@ -206,15 +203,11 @@ pub(crate) trait BookHeader {
 }
 
 impl BookHeader for ClobMarketV0 {
-    /// Fold one order's wake inputs into the header's hints.
+    /// Moves a hint earlier only. An early hint costs one wasted simulation. A
+    /// late hint is work nobody is woken for.
     ///
-    /// This only moves a hint earlier, which is the safe direction. A hint that
-    /// fires early costs a caller a simulation that finds nothing. A hint that
-    /// fires late is work nobody is woken for.
-    ///
-    /// An activation already at or behind the slot it was placed on is not
-    /// pending, so this does not fold it in. A zero-delay order would otherwise
-    /// peg the hint to the past.
+    /// An activation at or behind its placement slot is not pending, so a
+    /// zero-delay order does not peg the hint to the past.
     fn fold_wake_hints(
         &mut self,
         max_ts: i64,
@@ -224,9 +217,11 @@ impl BookHeader for ClobMarketV0 {
         if max_ts != 0 && max_ts < self.next_expiry_ts {
             self.next_expiry_ts = max_ts;
         }
+
         if activation_slot > placed_slot && activation_slot < self.next_activation_slot {
             self.next_activation_slot = activation_slot;
         }
+
         self.publish_wakes()
     }
 
@@ -243,6 +238,7 @@ impl BookHeader for ClobMarketV0 {
                 .update_condition(index, |condition| condition.set_wake(wake))
                 .map_err(|_| ClobError::InvalidConfig)
         };
+
         write(
             crate::state::CRANK_EXPIRY,
             relay_spec::WakeView::AtTimestamp { unix_ts },
@@ -251,39 +247,31 @@ impl BookHeader for ClobMarketV0 {
             crate::state::CRANK_ACTIVATION,
             relay_spec::WakeView::AtSlot { slot },
         )?;
+
         Ok(())
     }
 
-    /// Recompute the expiry hint if the removed order was holding it.
-    ///
-    /// This repairs the expiry hint only. The activation hint is a future slot,
-    /// so a repair of it needs the current slot, and removal is the one
-    /// mutation that does not know the current slot. A cancel takes no clock.
-    /// Leaving the activation hint alone is safe. It can only be early, and
-    /// [`Self::expire_activation_hint`] moves it on at the next write that does
-    /// know the slot.
-    ///
-    /// A removal invalidates a hint only when the removed order held the
-    /// minimum, so the ordinary case is one comparison. The walk is owed once
-    /// per holder. For expiry that holder is the expiry crank itself, which is
-    /// the one removal that always takes the minimum.
+    /// Repairs the expiry hint only. A removal takes no clock, and the
+    /// activation hint needs the current slot to repair. An early activation
+    /// hint is safe, and [`Self::expire_activation_hint`] moves it on at the
+    /// next write that knows the slot.
     fn repair_expiry_hint_for(&mut self, removed: &OrderNodeV0) -> Result<()> {
         if removed.max_ts != 0 && removed.max_ts <= self.next_expiry_ts {
             self.recompute_wake_hints(true, None)?;
         }
+
         Ok(())
     }
 
-    /// Move the activation hint past a slot the chain has reached.
-    ///
-    /// The expiry hint needs no equivalent. It is a timestamp a caller compares
-    /// against the clock, so it stays true as time moves. A pending activation
-    /// becomes an arrived one with nothing writing to the book, so a stored
-    /// slot at or behind the current one would leave its wake due for good.
+    /// Moves the activation hint past a slot the chain has reached. The expiry
+    /// hint needs no equivalent, because a timestamp stays true as time moves. A
+    /// pending activation arrives with nothing writing to the book, so a stored
+    /// slot behind the current one would stay due for good.
     fn expire_activation_hint(&mut self, slot: u64) -> Result<()> {
         if self.next_activation_slot != u64::MAX && self.next_activation_slot <= slot {
             self.recompute_wake_hints(false, Some(slot))?;
         }
+
         Ok(())
     }
 
@@ -296,18 +284,10 @@ impl BookHeader for ClobMarketV0 {
     /// exist to remove.
     fn recompute_wake_hints(&mut self, expiry: bool, activation: Option<u64>) -> Result<()> {
         let (mut min_ts, mut min_slot) = (i64::MAX, u64::MAX);
-        // Walk the two side lists rather than the arena. They hold exactly the
-        // live orders, so the walk is `bid_count + ask_count` hops instead of
-        // the arena's capacity, and a mostly-empty book costs almost nothing.
-        //
-        // That difference is the whole cost of this function on the paths that
-        // reach it repeatedly. `cancel_all` removes up to
-        // `CANCEL_ALL_ORDERS_CEILING` orders and a deep `execute` up to
-        // `EXECUTE_FILLS_CEILING`. Each removal repairs the hint when the
-        // removed order held the minimum, and makers quote whole ladders under
-        // one `max_ts`, so that case is the common one. A walk of the full
-        // arena per removal put both instructions over the compute budget on a
-        // large market, which puts a maker's own bulk unwind out of reach.
+        // Walk the side lists, not the arena. The cost is `bid_count +
+        // ask_count` hops instead of the arena capacity. Every removal in
+        // `cancel_all` and in a deep `execute` can land here, and a full-arena
+        // walk per removal put both over the compute budget on a large market.
         for side in [Side::Bid, Side::Ask] {
             let mut cursor = self.best(side);
             let mut hops = 0usize;
@@ -318,20 +298,25 @@ impl BookHeader for ClobMarketV0 {
                 if node.max_ts != 0 && node.max_ts < min_ts {
                     min_ts = node.max_ts;
                 }
+
                 if activation.is_some_and(|slot| node.activation_slot > slot)
                     && node.activation_slot < min_slot
                 {
                     min_slot = node.activation_slot;
                 }
+
                 cursor = node.next;
             }
         }
+
         if expiry {
             self.next_expiry_ts = min_ts;
         }
+
         if activation.is_some() {
             self.next_activation_slot = min_slot;
         }
+
         self.publish_wakes()
     }
 
@@ -354,10 +339,12 @@ impl BookHeader for ClobMarketV0 {
             count <= self.capacity() as u32,
             ClobError::BookInvariantViolated
         );
+
         match side {
             Side::Bid => self.bid_count = count,
             Side::Ask => self.ask_count = count,
         }
+
         Ok(())
     }
 
@@ -379,16 +366,9 @@ impl BookHeader for ClobMarketV0 {
         self.taker_origin_count[side.to_u8() as usize]
     }
 
-    /// Append a taker-origin order to its side's claimant list.
-    ///
-    /// The order goes on the tail, and that is what keeps the list in rest
-    /// order. `next_order_id` only increases, so the order joining the list
-    /// always carries the highest id on the book. [`CrossReservation`] serves
-    /// the claimants in that order, which makes the oldest remainder the first
-    /// one paid.
-    ///
-    /// Only [`insert_order`] calls this, so a placement is the one thing that
-    /// can grow a list.
+    /// Appends to the tail, which keeps the list in rest order because
+    /// `next_order_id` only increases. [`CrossReservation`] serves claimants in
+    /// that order, so the oldest remainder is paid first.
     fn link_claimant(&mut self, side: Side, index: u32) -> Result<()> {
         let list = side.to_u8() as usize;
         let tail = self.taker_origin_tail[list];
@@ -396,11 +376,13 @@ impl BookHeader for ClobMarketV0 {
             node.taker_origin_prev = tail;
             node.taker_origin_next = NIL;
         })?;
+
         if tail == NIL {
             self.taker_origin_head[list] = index;
         } else {
             self.update_node(tail, |node| node.taker_origin_next = index)?;
         }
+
         self.taker_origin_tail[list] = index;
         self.taker_origin_count[list] = self.taker_origin_count[list]
             .checked_add(1)
@@ -423,19 +405,23 @@ impl BookHeader for ClobMarketV0 {
                 self.taker_origin_head[list] == index,
                 ClobError::BookInvariantViolated
             );
+
             self.taker_origin_head[list] = next;
         } else {
             self.update_node(prev, |node| node.taker_origin_next = next)?;
         }
+
         if next == NIL {
             require!(
                 self.taker_origin_tail[list] == index,
                 ClobError::BookInvariantViolated
             );
+
             self.taker_origin_tail[list] = prev;
         } else {
             self.update_node(next, |node| node.taker_origin_prev = prev)?;
         }
+
         self.taker_origin_count[list] = self.taker_origin_count[list]
             .checked_sub(1)
             .ok_or(ClobError::BookInvariantViolated)?;
@@ -485,6 +471,7 @@ impl NodeArena for ClobMarketV0 {
         if index == NIL {
             return Ok(());
         }
+
         self.update_node(index, |node| node.next = next)
     }
 
@@ -492,25 +479,22 @@ impl NodeArena for ClobMarketV0 {
         if index == NIL {
             return Ok(());
         }
+
         self.update_node(index, |node| node.prev = prev)
     }
 }
 
-/// Bounds the eviction threshold against the arena a market holds.
-///
-/// A side owns half the arena, and the threshold is the count at which the
-/// crank may take that side's tail. Zero makes every non-empty side
-/// evictable, so the crank could take a maker's only order at will. A
+/// A side owns half the arena, and the threshold is the count at which the crank
+/// may take that side's tail. Zero lets the crank take a maker's only order. A
 /// threshold at or above the per-side capacity unlocks eviction only once
-/// placements are already refused, which makes the hard cap the normal
-/// operating state instead of an ops failure. The legal range is what leaves
-/// a buffer the crank can work down.
+/// placements are already refused.
 pub(crate) fn validate_evict_threshold(threshold: u32, capacity: u32) -> Result<()> {
     let per_side = capacity / 2;
     require!(
         threshold != 0 && threshold < per_side,
         ClobError::InvalidConfig
     );
+
     Ok(())
 }
 
@@ -543,8 +527,10 @@ where
         if matches!(visit(book, cursor, &node)?, Walk::Stop) {
             break;
         }
+
         cursor = next;
     }
+
     Ok(())
 }
 
@@ -571,6 +557,7 @@ impl ClobBook for ClobMarketV0 {
             config.base_precision == BASE_PRECISION,
             ClobError::InvalidConfig
         );
+
         validate_evict_threshold(config.evict_threshold_per_side, cap)?;
         require!(
             config.default_activation_delay_slots <= config.max_activation_delay_slots,
@@ -588,6 +575,7 @@ impl ClobBook for ClobMarketV0 {
             config.max_execute_users != 0 && config.max_execute_users <= EXECUTE_USERS_CEILING,
             ClobError::InvalidConfig
         );
+
         let ClobHeaderV0 {
             authority,
             place_authority,
@@ -624,6 +612,7 @@ impl ClobBook for ClobMarketV0 {
             response,
             crank,
         } = &mut **self;
+
         *authority = new_authority;
         *place_authority = new_place_authority;
         *order_tick_size = config.order_tick_size;
@@ -675,6 +664,7 @@ impl ClobBook for ClobMarketV0 {
                 .map_err(|_| ClobError::InvalidCapacity)?;
             Ok(())
         })?;
+
         self.validate_book()
     }
 
@@ -702,6 +692,7 @@ impl ClobBook for ClobMarketV0 {
             reject_if_crossed,
             reduce_only,
         } = params;
+
         require!(
             price != 0 && base_asset_amount != 0 && !address_eq(&user.authority, &ZERO_ADDRESS),
             ClobError::InvalidOrderParams
@@ -724,30 +715,21 @@ impl ClobBook for ClobMarketV0 {
         );
 
         // A maker that quotes through the other side has mispriced, and would
-        // rather place nothing than rest crossed.
-        //
-        // The check measures against the best opposite order that anybody could
-        // still take. An order inside its activation delay counts. It is
-        // resting liquidity a moment from now, and a caller that asks not to
-        // cross does not want to cross that either. An expired order does not
-        // count. Quote and execute walk past it and the expiry crank reclaims
-        // it later, so until then it sits at the head and matches nothing. A
-        // rejection against it would let one cheap order refuse every post-only
-        // placement on the other side.
-        //
-        // The scan stops at the first order that is not expired. Prices grow
-        // worse away from the best, so no order behind that one can cross a
-        // price this one does not. The scan is also the same walk the insertion
-        // point below runs, so it adds no extra work.
+        // rather place nothing than rest crossed. An order inside its activation
+        // delay counts, because it is resting liquidity a moment from now. An
+        // expired order does not, or one cheap order could refuse every
+        // post-only placement on the other side.
         if reject_if_crossed {
             let mut crossed = false;
             walk_side(self, side.opposite(), |_, _, node| {
                 if node.is_expired(now) {
                     return Ok(Walk::Continue);
                 }
+
                 crossed = side.is_crossed_by(price, node.price);
                 Ok(Walk::Stop)
             })?;
+
             require!(!crossed, ClobError::OrderWouldCross);
         }
 
@@ -796,6 +778,7 @@ impl ClobBook for ClobMarketV0 {
                 client_order_id,
             },
         )?;
+
         insert_order(self, side, index, prev, next, taker_origin)?;
         self.set_node_count(
             side,
@@ -804,8 +787,6 @@ impl ClobBook for ClobMarketV0 {
                 .ok_or(ClobError::BookInvariantViolated)?,
         )?;
 
-        // The node is spliced where the scan said it should be, and the
-        // side's endpoints followed.
         let placed = self.read_node(index)?;
         require!(
             placed.order_id == order_id
@@ -822,18 +803,21 @@ impl ClobBook for ClobMarketV0 {
             both_or_neither(next == NIL, self.worst(side) == index),
             ClobError::BookInvariantViolated
         );
+
         if prev != NIL {
             require!(
                 self.read_node(prev)?.next == index,
                 ClobError::BookInvariantViolated
             );
         }
+
         if next != NIL {
             require!(
                 self.read_node(next)?.prev == index,
                 ClobError::BookInvariantViolated
             );
         }
+
         self.fold_wake_hints(max_ts, activation_slot, placed_slot)?;
         // Placement is the book's most frequent write and it knows the slot, so
         // it is the place that drops an activation hint the chain has passed.
@@ -867,6 +851,7 @@ impl ClobBook for ClobMarketV0 {
             force || !node.is_taker_origin() || node.is_active(slot),
             ClobError::TakerOriginBound
         );
+
         let removed = removed_order(&node);
         remove_order(self, order_ref.node_index)?;
         validate_single_removal(self, &node, order_ref.node_index)?;
@@ -906,24 +891,20 @@ impl ClobBook for ClobMarketV0 {
             exhaustive: true,
             ..Default::default()
         };
-        // The walk passes over a bound remainder rather than failing the sweep,
-        // so one order a maker cannot pull yet does not block the withdrawal of
-        // a whole ladder. The skip is reported through `exhaustive` after both
-        // sides run. Setting that flag inside the walk would stop the other
-        // side too.
         let mut skipped_bound = false;
-        // The count runs across both sides, so the cap bounds the call rather
-        // than each side of it.
+        // The count runs across both sides, so the cap bounds the call rather than
+        // each side of it.
         let mut total_removed = 0u32;
-        // One repair for the whole call. Each removal would otherwise walk the
-        // live orders to re-derive the minimum. A maker's ladder shares one
-        // `max_ts` often enough that every removal in it holds the minimum,
-        // which made a full sweep quadratic and put it over the compute budget.
+        // One repair for the whole call. A maker's ladder shares one `max_ts`, so
+        // repairing per removal re-walks the live orders almost every time and made
+        // a full sweep quadratic.
         let mut owes_expiry_repair = false;
+
         for side in sides.sides().iter().copied() {
             if !outcome.exhaustive {
                 break;
             }
+
             let count_before = self.node_count(side);
             let mut base_removed = 0u64;
             let mut orders_removed = 0u32;
@@ -932,14 +913,21 @@ impl ClobBook for ClobMarketV0 {
                 if node.user_ref() != user {
                     return Ok(Walk::Continue);
                 }
+
+                // Pass over a bound remainder rather than fail the sweep, so one
+                // order a maker cannot pull yet does not block a whole ladder. The
+                // flag is read after both sides run, because ending the walk here
+                // would stop the other side too.
                 if !force && node.is_taker_origin() && !node.is_active(slot) {
                     skipped_bound = true;
                     return Ok(Walk::Continue);
                 }
+
                 if total_removed >= ceiling {
                     outcome.exhaustive = false;
                     return Ok(Walk::Stop);
                 }
+
                 base_removed = base_removed
                     .checked_add(node.base_asset_amount)
                     .ok_or(ClobError::MathError)?;
@@ -948,6 +936,7 @@ impl ClobBook for ClobMarketV0 {
                 if node.is_reduce_only() {
                     reduce_only_removed += 1;
                 }
+
                 removed_ids(node.client_order_id)?;
                 owes_expiry_repair |= holds_expiry_hint(book, node);
                 unlink_order(book, index)?;
@@ -962,6 +951,7 @@ impl ClobBook for ClobMarketV0 {
                         .ok_or(ClobError::BookInvariantViolated)?,
                 ClobError::BookInvariantViolated
             );
+
             match side {
                 Side::Bid => {
                     outcome.bid_base_asset_amount = base_removed;
@@ -975,12 +965,15 @@ impl ClobBook for ClobMarketV0 {
                 }
             }
         }
+
         if skipped_bound {
             outcome.exhaustive = false;
         }
+
         if owes_expiry_repair {
             self.recompute_wake_hints(true, None)?;
         }
+
         self.validate_book()?;
         Ok(outcome)
     }
@@ -996,12 +989,14 @@ impl ClobBook for ClobMarketV0 {
             count > 0 && count >= self.evict_threshold_per_side,
             ClobError::BelowEvictThreshold
         );
+
         let tail = self.worst(side);
         let node = self.read_node(tail)?;
         require!(
             node.is_bit_flag_set(OrderBitFlag::Open) && node.side() == side,
             ClobError::BookInvariantViolated
         );
+
         let removed = removed_order(&node);
         remove_order(self, tail)?;
 
@@ -1015,6 +1010,7 @@ impl ClobBook for ClobMarketV0 {
             self.node_count(side) == count - 1,
             ClobError::BookInvariantViolated
         );
+
         validate_single_removal(self, &node, tail)?;
         self.validate_book()?;
         Ok(removed)
@@ -1033,24 +1029,13 @@ impl ClobBook for ClobMarketV0 {
         Ok(removed)
     }
 
-    /// Take size off a resting order the caller filled elsewhere.
+    /// Takes size off a resting taker-origin order that velocity filled
+    /// elsewhere. A remainder aggresses against prices this program cannot see,
+    /// so velocity does that matching and reports it back here.
     ///
-    /// This takes a taker-origin order only. `execute` fills an ordinary maker
-    /// quote, and there this book walks its own side and knows what it gave
-    /// away. A taker remainder is the other case. It aggresses, and the prices
-    /// it aggresses against are not all here. A quoter or the vAMM may hold the
-    /// better price, and this program can see neither. Velocity does that
-    /// matching and reports it back, and this is where the book learns what
-    /// happened to an order of its own.
-    ///
-    /// The order keeps its place in the queue and its id. That is why this
-    /// exists rather than a cancel and a fresh placement. A partly filled
-    /// remainder still wants its price, and re-placing it would send it to the
-    /// back of its own level.
-    ///
-    /// A leftover under `min_order_size` is culled, exactly as `execute` culls
-    /// one, and reported so the caller can unwind the reservation it still
-    /// holds for it.
+    /// The order keeps its queue place and its id, which a cancel and a fresh
+    /// placement would lose. A leftover under `min_order_size` is culled and
+    /// reported, so the caller can unwind the reservation it holds for it.
     fn fill(&mut self, order_ref: OrderRefV0, base_asset_amount: u64) -> Result<FilledOrder> {
         let node = live_order(self, order_ref)?;
         require!(node.is_taker_origin(), ClobError::OrderNotTakerOrigin);
@@ -1058,6 +1043,7 @@ impl ClobBook for ClobMarketV0 {
             base_asset_amount > 0 && base_asset_amount <= node.base_asset_amount,
             ClobError::FillExceedsOrder
         );
+
         let remainder = node.base_asset_amount - base_asset_amount;
         let culls = remainder > 0 && remainder < self.min_order_size;
         let mut filled = FilledOrder {
@@ -1067,6 +1053,7 @@ impl ClobBook for ClobMarketV0 {
             culled_base_asset_amount: 0,
             removed: false,
         };
+
         if remainder == 0 || culls {
             filled.culled_base_asset_amount = remainder;
             filled.removed = true;
@@ -1077,6 +1064,7 @@ impl ClobBook for ClobMarketV0 {
             reduced.base_asset_amount = remainder;
             self.write_node(order_ref.node_index, reduced)?;
         }
+
         self.validate_book()?;
         Ok(filled)
     }
@@ -1106,163 +1094,139 @@ impl ClobBook for ClobMarketV0 {
         reference_price: i64,
         taker: Option<&UserRefV0>,
         limit_price: u64,
-        consume_reservation: bool,
+        include_taker_origin_reservations: bool,
         slot: u64,
         now: i64,
     ) -> Result<ResponsePointerV0> {
         require!(user_set_within_capacity(users), ClobError::OversizedUserSet);
         let side = direction.book_side();
+
         let max_levels = self.max_quote_levels.min(QUOTE_LEVELS_CEILING) as usize;
-        // A quote promises what `execute` can deliver, so it spends `execute`'s
-        // budget as it walks, and not only its own level cap. The two budgets
-        // are counted in different units. A level aggregates however many
-        // orders sit at one price, so a ladder capped only on levels can stand
-        // on more orders than one execute is allowed to touch. A quote of depth
-        // that execute would decline is a false quote, and the caller cannot
-        // tell.
-        let max_fills = self.max_execute_fills.min(EXECUTE_FILLS_CEILING) as usize;
-        let max_users = self.max_execute_users.min(EXECUTE_USERS_CEILING) as usize;
-        let grace_slots = self.unknown_user_grace_slots;
-        let blocking_min_size = self.blocking_min_size;
+        // A level aggregates however many orders sit at one price, so a ladder
+        // capped on levels alone would quote depth that execute declines.
+        let max_execute_fills = self.max_execute_fills.min(EXECUTE_FILLS_CEILING) as usize;
+        let max_execute_users = self.max_execute_users.min(EXECUTE_USERS_CEILING) as usize;
+
         let mut writer = QuoteWriter::new();
-        let mut levels = 0usize;
-        // Orders promised so far, against `execute`'s budget rather than this
-        // walk's own.
-        let mut fills = 0usize;
-        // The level being accumulated. It is written out when the price changes
-        // or the walk ends. Orders at one price are contiguous, so a level
-        // costs one 16-byte append however many orders it holds.
-        let mut open: Option<(u64, u64)> = None;
-        // Price of the last level actually written, for the best-first check
-        // in `write_level`.
-        let mut written: Option<u64> = None;
+        let mut open_level: Option<PriceLevel> = None;
+        let mut last_written_price: Option<u64> = None;
+        let mut levels_written = 0usize;
+
         let mut remaining = size;
-        // `execute` reports a truncated order in one of two single-slot
-        // sections, so it stops at the second of either. This walk stops in the
-        // same place, or the ladder would promise depth the fill declines.
-        let min_order_size = self.min_order_size;
-        let (mut culled, mut partialed) = (false, false);
-        let mut reservation = CrossReservation::new(self, side, slot, now, consume_reservation);
-        // This walk spends the budget exactly as `execute` spends it, so the
-        // ladder stands only on orders the fill can settle.
+        let mut promised_fills = 0usize;
+        let (mut cull_slot_used, mut partial_slot_used) = (false, false);
+        let mut unsettleable_level: Option<PriceLevel> = None;
+
+        let mut reservation =
+            CrossReservation::new(self, side, slot, now, include_taker_origin_reservations);
         let mut budget = UserBudget::new(caps, side, reference_price);
-        // The other half of that budget. `execute` writes one balance-change
-        // record per distinct user filled and stops when the next one would not
-        // fit, so a quote that walked past that point would promise depth the
-        // fill declines. This walk counts the same way and stops in the same
-        // place, by set index rather than by user ref. A ref is 34 bytes and
-        // this frame has no room for a table of them.
-        //
-        // Bounding the walk rather than the caller's set is what keeps a busy
-        // book fillable. A set wider than this cap is not an error. The extra
-        // users are ordinary loaded accounts, such as makers on other venues or
-        // a referrer, that this book may never fill. Refusing them would leave a
-        // book that holds more distinct makers than the cap with no assembly
-        // that works at all. Passing them would refuse the call, and omitting
-        // one would make its aged order a stale set.
-        //
-        // A discovery quote is unrestricted. It has no set to index and stays
-        // advisory.
-        let mut seen_users = [0u8; USER_EXCLUSION_BITMAP_BYTES];
-        let mut distinct_users = 0usize;
-        // Where the walk gave up for want of a loaded user, if it did.
-        let mut withheld: Option<PriceLevel> = None;
+        let mut users_promised = DistinctUsers::new();
 
         walk_side(self, side, |book, _, node| {
-            // This is `execute`'s own stop, in the same place in the walk, so
-            // the ladder ends exactly where the fill would.
-            if remaining == 0 || fills == max_fills {
+            // Stop where `execute` stops, so the ladder ends where the fill would.
+            if remaining == 0 || promised_fills == max_execute_fills {
                 return Ok(Walk::Stop);
             }
-            // Past the caller's worst acceptable price. The walk is ordered
-            // best price first, so nothing behind this order is acceptable
-            // either. The caller drops these levels, and a hop it does not
-            // need is compute it still pays for.
+
             if worse_than_limit(side, node.price, limit_price) {
                 return Ok(Walk::Stop);
             }
-            // The reasons to pass over an order run cheapest first. They are
-            // the order's own state, then the units a crossing remainder
-            // claims, then whether the caller can settle for its owner.
-            // Settleability comes last, so an order the walk would skip anyway
-            // never costs the caller two accounts.
+
+            // Skips, cheapest test first. The reservation is read before the
+            // self-trade test, because the allocation is positional.
             if !is_live(node, slot, now) {
                 return Ok(Walk::Continue);
             }
-            // This is asked for every order anyone could match, ahead of the
-            // self-trade test, because the allocation is positional.
+
             let available = reservation.available(book, node)?;
             if available == 0 || is_takers_own(node, taker) {
                 return Ok(Walk::Continue);
             }
-            // This is built once per order, not once per member of the set. The
-            // closure below runs for every entry the scan tests, and a
-            // `UserRefV0` is 34 bytes to assemble and 34 to compare.
+
+            // Hoisted out of the scan, which compares a 34-byte ref per entry.
             let user = node.user_ref();
             let owner = users.iter().position(|u| *u == user);
-            match settleable(users, owner, node, grace_slots, blocking_min_size, slot) {
+            match settleable(
+                users,
+                owner,
+                node,
+                book.unknown_user_grace_slots,
+                book.blocking_min_size,
+                slot,
+            ) {
                 Settleable::Yes => {}
                 Settleable::SteppedOver => return Ok(Walk::Continue),
                 Settleable::Withheld => {
-                    withheld = Some(PriceLevel {
+                    unsettleable_level = Some(PriceLevel {
                         price: node.price,
                         size: node.base_asset_amount,
                     });
+
                     return Ok(Walk::Stop);
                 }
             }
+
             let take = budget.allow(
                 owner,
                 remaining.min(available),
                 node.price,
                 node.is_reduce_only(),
             );
+
+            // The owner is out of room. The depth behind it is still fillable.
             if take == 0 {
-                // The budget is out of room. This owner's remaining orders
-                // cannot settle, and the depth behind them still can.
                 return Ok(Walk::Continue);
             }
+
+            // `execute` reports a truncated order in one of two single-slot
+            // sections and stops at the second of either, so this walk stops too.
             if take < node.base_asset_amount {
                 let remainder = node.base_asset_amount - take;
-                let culls = remainder < min_order_size;
-                if if culls { culled } else { partialed } {
+                let slot_used = if remainder < book.min_order_size {
+                    &mut cull_slot_used
+                } else {
+                    &mut partial_slot_used
+                };
+
+                if *slot_used {
                     return Ok(Walk::Stop);
                 }
-                if culls {
-                    culled = true;
-                } else {
-                    partialed = true;
-                }
+
+                *slot_used = true;
             }
-            if let Some(index) = owner.filter(|index| *index < USER_SET_CAPACITY) {
-                let (byte, bit) = (index / 8, 1u8 << (index % 8));
-                if seen_users[byte] & bit == 0 {
-                    if distinct_users == max_users {
-                        return Ok(Walk::Stop);
-                    }
-                    seen_users[byte] |= bit;
-                    distinct_users += 1;
-                }
+
+            if !users_promised.admit(owner, max_execute_users) {
+                return Ok(Walk::Stop);
             }
-            fills += 1;
-            match open {
-                Some((price, aggregate)) if price == node.price => {
-                    open = Some((
-                        price,
-                        aggregate.checked_add(take).ok_or(ClobError::MathError)?,
-                    ));
+
+            promised_fills += 1;
+            // The side is price-sorted, so orders at one price are contiguous and
+            // one open level holds them all.
+            match open_level {
+                Some(level) if level.price == node.price => {
+                    open_level = Some(PriceLevel {
+                        price: level.price,
+                        size: level.size.checked_add(take).ok_or(ClobError::MathError)?,
+                    });
                 }
                 _ => {
-                    if levels == max_levels {
+                    if levels_written == max_levels {
                         return Ok(Walk::Stop);
                     }
-                    if let Some((price, aggregate)) = open {
-                        write_level(book, &mut writer, side, &mut written, price, aggregate)?;
+
+                    if let Some(level) = open_level {
+                        write_level(book, &mut writer, side, &mut last_written_price, level)?;
                     }
-                    open = Some((node.price, take));
-                    levels += 1;
+
+                    open_level = Some(PriceLevel {
+                        price: node.price,
+                        size: take,
+                    });
+
+                    levels_written += 1;
                 }
             }
+
             remaining -= take;
             Ok(if remaining == 0 {
                 Walk::Stop
@@ -1270,14 +1234,15 @@ impl ClobBook for ClobMarketV0 {
                 Walk::Continue
             })
         })?;
-        if let Some((price, aggregate)) = open {
-            write_level(self, &mut writer, side, &mut written, price, aggregate)?;
+
+        if let Some(level) = open_level {
+            write_level(self, &mut writer, side, &mut last_written_price, level)?;
         }
 
         // `finish` backfills the ladder's count and writes the withheld report
         // behind it, which is the shape `QuoteResponseV0` declares.
         let len = writer
-            .finish(&mut self.response, withheld.unwrap_or_default())
+            .finish(&mut self.response, unsettleable_level.unwrap_or_default())
             .map_err(ClobError::from)?;
         Ok(response_pointer(len))
     }
@@ -1301,14 +1266,14 @@ impl ClobBook for ClobMarketV0 {
         direction: Direction,
         size: u64,
         max_rows: u16,
-        consume_reservation: bool,
+        include_taker_origin_reservations: bool,
         slot: u64,
         now: i64,
     ) -> Result<ResponsePointerV0> {
         let side = direction.book_side();
         let rows_wanted = max_rows.min(L3_ROWS_CEILING) as usize;
-        let blocking_min_size = self.blocking_min_size;
-        let mut reservation = CrossReservation::new(self, side, slot, now, consume_reservation);
+        let mut reservation =
+            CrossReservation::new(self, side, slot, now, include_taker_origin_reservations);
         let mut writer = L3Writer::new();
         // Zero asks for the whole side rather than for nothing. A caller that
         // draws a book has no size in mind.
@@ -1321,14 +1286,17 @@ impl ClobBook for ClobMarketV0 {
                 more = true;
                 return Ok(Walk::Stop);
             }
+
             if !is_live(node, slot, now) {
                 return Ok(Walk::Continue);
             }
-            // The row reports what a caller may take, which is the resting size
-            // less whatever a crossing remainder claims. The row itself stays.
-            // It names an order whose owner a caller may still have to carry,
-            // and the flag says why the size is short.
+
+            // The row stays even when a remainder claims it all. It names an owner
+            // the caller may still have to carry, and the flag says why the size is
+            // short.
             let withheld = reservation.withheld(book, node)?;
+            // Read before the call, which borrows `book.response` mutably.
+            let blocking_min_size = book.blocking_min_size;
             writer
                 .push_row(
                     &mut book.response,
@@ -1386,7 +1354,7 @@ impl ClobBook for ClobMarketV0 {
         caps: &UserCapsV0,
         reference_price: i64,
         taker: Option<&UserRefV0>,
-        consume_reservation: bool,
+        include_taker_origin_reservations: bool,
         slot: u64,
         now: i64,
     ) -> Result<ExecuteOutcome> {
@@ -1394,89 +1362,90 @@ impl ClobBook for ClobMarketV0 {
         let side = direction.book_side();
         let max_fills = self.max_execute_fills.min(EXECUTE_FILLS_CEILING) as usize;
         let max_users = self.max_execute_users.min(EXECUTE_USERS_CEILING) as usize;
-        let grace_slots = self.unknown_user_grace_slots;
-        let blocking_min_size = self.blocking_min_size;
-        let min_order_size = self.min_order_size;
         let base_precision = self.base_precision.max(1) as u128;
         let count_before = self.node_count(side);
 
         let mut writer = ExecuteWriter::new();
-        // The response merges by user, so only the event needs per-order
-        // detail. This is the one collection execute still builds.
+        // A fill consumes at most one order, so both collections are bounded by
+        // `max_fills` and neither has to grow by doubling.
         let mut fills: Vec<FillSlimV0> = Vec::with_capacity(max_fills);
+        let mut completed: Vec<CompletedOrderV0> = Vec::with_capacity(max_fills);
         let mut cancelled: Option<CancelledRemainderV0> = None;
         let mut partial: Option<PartiallyFilledOrderV0> = None;
-        // A fill consumes at most one order, so the same bound holds here as on
-        // `fills`. This reserves the same capacity, rather than growing by
-        // doubling beside a sibling that does not.
-        let mut completed: Vec<CompletedOrderV0> = Vec::with_capacity(max_fills);
-        let mut removals = 0u32;
+
         let mut remaining = size;
-        // Price of the last order consumed, for the best-first check in
-        // `check_fill_price`.
-        let mut filled: Option<u64> = None;
-        // The sweep's notional so far (before the divide) and the quote already
-        // attributed to earlier fills. See `quote_size` below.
-        let mut swept = 0u128;
-        let mut paid = 0u128;
-        let mut reservation = CrossReservation::new(self, side, slot, now, consume_reservation);
-        let mut budget = UserBudget::new(caps, side, reference_price);
-        // One expiry repair for the whole sweep, for the reason `cancel_all`
-        // batches its own. The repair walks the live orders, and a sweep can
-        // free as many orders as `max_execute_fills` allows.
+        let mut removals = 0u32;
+        let mut last_filled_price: Option<u64> = None;
+        let mut swept_notional = 0u128;
+        let mut quote_attributed = 0u128;
+        // One expiry repair for the whole sweep, for the reason `cancel_all` batches
+        // its own. The repair walks the live orders, and a sweep can free many.
         let mut owes_expiry_repair = false;
+
+        let mut reservation =
+            CrossReservation::new(self, side, slot, now, include_taker_origin_reservations);
+        let mut budget = UserBudget::new(caps, side, reference_price);
 
         walk_side(self, side, |book, index, node| {
             if remaining == 0 || fills.len() == max_fills {
                 return Ok(Walk::Stop);
             }
+
             // The same order of reasons `quote` applies, so the fill ends
             // exactly where the ladder did.
             if !is_live(node, slot, now) {
                 return Ok(Walk::Continue);
             }
+
             let available = reservation.available(book, node)?;
             if available == 0 || is_takers_own(node, taker) {
                 return Ok(Walk::Continue);
             }
+
             let user = node.user_ref();
             let owner = users.iter().position(|u| *u == user);
-            match settleable(users, owner, node, grace_slots, blocking_min_size, slot) {
+            match settleable(
+                users,
+                owner,
+                node,
+                book.unknown_user_grace_slots,
+                book.blocking_min_size,
+                slot,
+            ) {
                 Settleable::Yes => {}
                 Settleable::SteppedOver => return Ok(Walk::Continue),
                 Settleable::Withheld => return Ok(Walk::Stop),
             }
+
             let take = budget.allow(
                 owner,
                 remaining.min(available),
                 node.price,
                 node.is_reduce_only(),
             );
+
             if take == 0 {
                 return Ok(Walk::Continue);
             }
+
             // A truncated order leaves either a partial or a culled remainder,
-            // and the response carries one slot for each. Taker exhaustion
-            // produces at most one because it ends the walk on the same pass,
-            // but a per-owner budget truncates whichever order it reaches, and
-            // a sweep crossing two capped makers would need a second slot.
-            //
-            // The walk therefore ends where the response runs out of room.
-            // Ending short is a smaller fill, which the caller reads off the
-            // response. The alternative was `BookInvariantViolated`, which
-            // takes the whole transaction down on a request the caps make
-            // ordinary.
+            // and the response carries one slot for each. A per-owner budget can
+            // truncate two orders, so the walk ends where the response runs out
+            // of room. Ending short is a smaller fill the caller reads off the
+            // response, rather than a failure on an ordinary request.
             if take < node.base_asset_amount {
                 let remainder = node.base_asset_amount - take;
-                let slot_taken = if remainder < min_order_size {
+                let slot_taken = if remainder < book.min_order_size {
                     cancelled.is_some()
                 } else {
                     partial.is_some()
                 };
+
                 if slot_taken {
                     return Ok(Walk::Stop);
                 }
             }
+
             // The records already written are the accumulator, so a repeat
             // maker is a scan of them rather than a table this frame has no
             // room for.
@@ -1488,28 +1457,27 @@ impl ClobBook for ClobMarketV0 {
             if existing.is_none() && writer.changes_len() == max_users {
                 return Ok(Walk::Stop);
             }
-            check_fill_price(side, filled, node.price, take)?;
-            filled = Some(node.price);
-            // Each fill's quote is the difference of two running floors, rather
-            // than the floor of its own notional. The sweep's total then comes
-            // out as the floor of the whole sweep's notional, rather than the
-            // sum of per-fill floors, which can sit a unit lower per fill.
-            // Velocity holds the total to the prices this book quoted for these
-            // same orders moments earlier, and admits that one rounding only.
-            // The dust a per-fill truncation loses would come out of the
-            // makers.
-            swept = swept
+
+            check_fill_price(side, last_filled_price, node.price, take)?;
+            last_filled_price = Some(node.price);
+
+            // Each fill's quote is the difference of two running floors, not the
+            // floor of its own notional. The sweep then rounds once in total,
+            // instead of once per fill, and the dust a per-fill truncation loses
+            // would come out of the makers.
+            swept_notional = swept_notional
                 .checked_add(
                     (node.price as u128)
                         .checked_mul(take as u128)
                         .ok_or(ClobError::MathError)?,
                 )
                 .ok_or(ClobError::MathError)?;
-            let swept_quote = swept / base_precision;
-            let quote_size: u64 = (swept_quote - paid)
+            let swept_quote = swept_notional / base_precision;
+            let quote_size: u64 = (swept_quote - quote_attributed)
                 .try_into()
                 .map_err(|_| ClobError::MathError)?;
-            paid = swept_quote;
+            quote_attributed = swept_quote;
+
             let change_index = match existing {
                 Some(index) => {
                     let index = index as u32;
@@ -1538,6 +1506,7 @@ impl ClobBook for ClobMarketV0 {
                     )
                     .map_err(ClobError::from)?,
             };
+
             fills.push(FillSlimV0 {
                 order_id: node.order_id,
                 client_order_id: node.client_order_id,
@@ -1554,17 +1523,16 @@ impl ClobBook for ClobMarketV0 {
                     change_index,
                     client_order_id: node.client_order_id,
                 });
+
                 owes_expiry_repair |= holds_expiry_hint(book, node);
                 unlink_order(book, index)?;
                 removals += 1;
             } else {
                 let remainder = node.base_asset_amount - take;
-                if remainder < min_order_size {
-                    // A partial fill only happens once `remaining` runs out,
-                    // which ends the walk. There is therefore at most one cull,
-                    // and `cancelled` needs no growable storage. Fail here if
-                    // that ever stops holding, rather than drop a cull velocity
-                    // must unwind.
+                if remainder < book.min_order_size {
+                    // `remaining` running out ends the walk, so at most one cull
+                    // exists and `cancelled` needs no growable storage. Fail here
+                    // rather than drop a cull velocity must unwind.
                     require!(cancelled.is_none(), ClobError::BookInvariantViolated);
                     cancelled = Some(CancelledRemainderV0 {
                         order_id: node.order_id,
@@ -1574,15 +1542,14 @@ impl ClobBook for ClobMarketV0 {
                         user: node.user_ref(),
                         _pad: [0; 2],
                     });
+
                     owes_expiry_repair |= holds_expiry_hint(book, node);
                     unlink_order(book, index)?;
                     removals += 1;
                 } else {
-                    // The order stays on the book smaller than the walk found
-                    // it. A balance change merges every order of one maker, so
-                    // this is the only place the fill says which order moved.
-                    // At most one exists, for the same reason at most one cull
-                    // does.
+                    // A balance change merges every order of one maker, so this
+                    // is the only place the fill says which order moved. At most
+                    // one exists, for the same reason at most one cull does.
                     require!(partial.is_none(), ClobError::BookInvariantViolated);
                     partial = Some(PartiallyFilledOrderV0 {
                         order_id: node.order_id,
@@ -1590,9 +1557,11 @@ impl ClobBook for ClobMarketV0 {
                         client_order_id: node.client_order_id,
                         change_index,
                     });
+
                     book.update_node(index, |n| n.base_asset_amount = remainder)?;
                 }
             }
+
             remaining -= take;
             Ok(if remaining == 0 {
                 Walk::Stop
@@ -1622,11 +1591,13 @@ impl ClobBook for ClobMarketV0 {
             self.node_count(side) == expected_count,
             ClobError::BookInvariantViolated
         );
+
         // The sweep's one expiry repair, owed only if something it freed was
         // holding the hint.
         if owes_expiry_repair {
             self.recompute_wake_hints(true, None)?;
         }
+
         // A fill is a removal path too. It consumes orders whole and culls a
         // sub-minimum remainder, and either can retire the activation the hint
         // pointed at. It is the one such path that knows the slot without being
@@ -1656,6 +1627,7 @@ impl ClobBook for ClobMarketV0 {
                 .checked_add(1)
                 .ok_or(ClobError::InvalidCapacity)?;
         }
+
         self.validate_book()
     }
 
@@ -1698,6 +1670,7 @@ impl ClobBook for ClobMarketV0 {
             both_or_neither(self.free_count == 0, self.free_head == NIL),
             ClobError::BookInvariantViolated
         );
+
         if self.free_head != NIL {
             require!(
                 !self
@@ -1706,6 +1679,7 @@ impl ClobBook for ClobMarketV0 {
                 ClobError::BookInvariantViolated
             );
         }
+
         [Side::Bid, Side::Ask]
             .into_iter()
             .try_for_each(|side| -> Result<()> {
@@ -1716,13 +1690,16 @@ impl ClobBook for ClobMarketV0 {
                         && both_or_neither(count == 0, worst == NIL),
                     ClobError::BookInvariantViolated
                 );
+
                 if count == 0 {
                     return Ok(());
                 }
+
                 require!(
                     both_or_neither(count == 1, best == worst),
                     ClobError::BookInvariantViolated
                 );
+
                 let head = self.read_node(best)?;
                 let tail = self.read_node(worst)?;
                 require!(
@@ -1737,6 +1714,7 @@ impl ClobBook for ClobMarketV0 {
                     tail.is_bit_flag_set(OrderBitFlag::Open) && tail.side() == side,
                     ClobError::BookInvariantViolated
                 );
+
                 Ok(())
             })?;
         // The claimant lists get the same depth of check. An empty list has both
@@ -1762,13 +1740,16 @@ impl ClobBook for ClobMarketV0 {
                     count as u32 <= self.node_count(side),
                     ClobError::BookInvariantViolated
                 );
+
                 if count == 0 {
                     return Ok(());
                 }
+
                 require!(
                     both_or_neither(count == 1, head == tail),
                     ClobError::BookInvariantViolated
                 );
+
                 let first = self.read_node(head)?;
                 let last = self.read_node(tail)?;
                 require!(
@@ -1783,6 +1764,7 @@ impl ClobBook for ClobMarketV0 {
                     last.is_open() && last.is_taker_origin() && last.side() == side,
                     ClobError::BookInvariantViolated
                 );
+
                 Ok(())
             })
     }
@@ -1800,6 +1782,7 @@ fn live_order(book: &ClobMarketV0, order_ref: OrderRefV0) -> Result<OrderNodeV0>
         node.is_bit_flag_set(OrderBitFlag::Open) && node.order_id == order_ref.order_id,
         ClobError::StaleOrderRef
     );
+
     Ok(node)
 }
 
@@ -1817,15 +1800,10 @@ fn removed_order(node: &OrderNodeV0) -> RemovedOrder {
     }
 }
 
-/// Whether anyone at all could match this order right now. The order is past
-/// its activation delay and it is not expired.
-///
-/// This is a property of the order alone, which is why every read of a side
-/// asks it first and asks [`CrossReservation`] second. A claim is allocated
-/// positionally over the orders anyone could match. A reason that belongs to
-/// the caller, such as its own resting order or an owner it did not load, must
-/// therefore be tested after the allocation. Otherwise two callers reading the
-/// same book would put the same claim on different orders.
+/// Whether anyone at all could match this order now, which is a property of the
+/// order alone. Every read of a side asks this first and [`CrossReservation`]
+/// second, because a claim is allocated positionally over the matchable orders.
+/// A reason belonging to the caller must be tested after that allocation.
 pub(crate) fn is_live(node: &OrderNodeV0, slot: u64, now: i64) -> bool {
     !node.is_expired(now) && node.is_active(slot)
 }
@@ -1841,14 +1819,9 @@ fn is_takers_own(node: &OrderNodeV0, taker: Option<&UserRefV0>) -> bool {
 enum Settleable {
     /// The owner is in the caller's set, or the set is unrestricted.
     Yes,
-    /// The owner is absent, and this order may not end the walk. The walk
-    /// passes over the order and carries on to the depth behind it. Two reasons
-    /// reach this state:
-    ///
-    /// - The order is younger than the grace window. The caller cannot be
-    ///   expected to have heard of it yet.
-    /// - The order is below `blocking_min_size`, at any age. Ending a walk is a
-    ///   right, and a right that cost `min_order_size` could be bought in bulk.
+    /// The owner is absent, and the walk passes over the order to the depth
+    /// behind it. Either the order is younger than the grace window, or it is
+    /// below `blocking_min_size` at any age.
     SteppedOver,
     /// The owner is absent, the order is old enough that the caller had every
     /// chance to carry it, and it is big enough to be worth the right. The walk
@@ -1858,46 +1831,36 @@ enum Settleable {
 
 /// The facts about an order a caller cannot see from its price and size.
 ///
-/// `L3_ROW_FLAG_BLOCKS_WALK` is the one an account-set builder acts on. It says
-/// this order can end a walk, so its owner gates the depth behind it. The book
-/// reports the flag rather than leave a reader to derive it, so the floor stays
-/// the book's rule and a reader cannot fall out of step with it.
-///
-/// `L3_ROW_FLAG_RESERVED` says the row's size is short of what the order
-/// holds, because a crossing taker remainder claims the rest. It is the same
-/// answer [`ClobBook::quote`] gives, on a surface that reports orders one by
-/// one.
+/// `L3_ROW_FLAG_BLOCKS_WALK` says this order can end a walk, so its owner gates
+/// the depth behind it. The book reports it so the floor stays the book's rule.
+/// `L3_ROW_FLAG_RESERVED` says a crossing taker remainder claims the rest of the
+/// row's size.
 fn l3_row_flags(node: &OrderNodeV0, blocking_min_size: u64, reserved: bool) -> u8 {
     let mut flags = 0;
     if node.is_taker_origin() {
         flags |= quoter_spec::L3_ROW_FLAG_TAKER_ORIGIN;
     }
+
     if reserved {
         flags |= quoter_spec::L3_ROW_FLAG_RESERVED;
     }
+
     if blocking_min_size == 0 || node.base_asset_amount >= blocking_min_size {
         flags |= quoter_spec::L3_ROW_FLAG_BLOCKS_WALK;
     }
+
     if node.is_reduce_only() {
         flags |= quoter_spec::L3_ROW_FLAG_REDUCE_ONLY;
     }
+
     flags
 }
 
 /// A transaction locks at most 64 accounts and a maker costs two, so no caller
-/// can carry every user a book might hold. Ending the walk is what makes that
-/// workable. The caller fills as deep as the users it brought, and the rest
-/// stays resting.
-///
-/// Ending the walk, rather than stepping over the order, is what keeps the
-/// choice honest. The walk is best-first, so a stop at the first missing owner
-/// means a caller cannot leave out the maker who would have won and then fill
-/// the one behind it. A caller can trade less of the book, never a worse part
-/// of it.
-///
-/// This book cannot answer whether the caller should have brought more users,
-/// because it cannot see the transaction. It reports where it stopped instead,
-/// and the caller's own checks decide.
+/// can carry every user a book might hold. The caller fills as deep as the users
+/// it brought. Ending the walk rather than stepping over the order keeps that
+/// honest. The walk is best-first, so a caller can trade less of the book, never
+/// a worse part of it.
 fn settleable(
     users: &[UserRefV0],
     index: Option<usize>,
@@ -1909,29 +1872,23 @@ fn settleable(
     if users.is_empty() || index.is_some() {
         return Settleable::Yes;
     }
-    // Ending a walk is a right, and a right that costs only `min_order_size`
-    // can be turned against a caller's own account budget. 49 orders on 49
-    // fresh sub-accounts is more owners than any caller can carry, so the depth
-    // behind them is unreachable for everyone, for the price of rent. The floor
-    // prices the right in inventory at the top of book instead. It is checked
-    // before the age, because a small order never earns the right however long
-    // it rests.
+
+    // Ending a walk is a right, and a right that costs only `min_order_size` can
+    // be bought in bulk. 49 orders on 49 fresh sub-accounts would put the depth
+    // behind them out of everyone's reach for the price of rent. The floor is
+    // checked before the age, because a small order never earns the right.
     if blocking_min_size != 0 && node.base_asset_amount < blocking_min_size {
         return Settleable::SteppedOver;
     }
-    // The age runs from the slot the order became matchable, not from the slot
-    // it was placed. An order inside its activation delay is invisible to every
-    // reader of this book, because quotes, fills and the cranks all skip it. A
-    // caller cannot have carried its owner, whatever its age. A measure from
-    // placement would let an auction order, which can sit up to
-    // `max_activation_delay_slots` out, arrive already past the window. The
-    // first walk to see it would end there and forfeit the depth behind, and
-    // anyone could arrange that on purpose by resting a well-priced order on a
-    // fresh sub-account. The two slots are the same for an order that activates
-    // immediately.
+
+    // The age runs from the slot the order became matchable, not from placement.
+    // An order inside its activation delay is invisible to every reader, so a
+    // caller cannot have carried its owner. Measuring from placement would let an
+    // auction order arrive already past the window.
     if slot.saturating_sub(node.activation_slot) <= grace_slots as u64 {
         return Settleable::SteppedOver;
     }
+
     Settleable::Withheld
 }
 
@@ -1947,26 +1904,51 @@ struct UserRoom {
     cover: u64,
 }
 
-/// The caller's per-user budgets for one walk, spent as the walk fills.
-///
-/// A budget is quote the user may lose, not base it may take, because the
-/// caller cannot convert one into the other without knowing the price each
-/// order fills at. This walk knows those prices, so it does the conversion. A
-/// user the caller does not name is unconstrained. A user out of room is passed
-/// over, and a user with less room than an order holds is filled only as far as
-/// the room goes.
-///
-/// `quote` and `execute` spend the same budget in the same place, so a ladder
-/// never promises depth standing on a user the fill would then decline. This is
-/// not a trust boundary. A book that ignored the budgets would leave its caller
-/// where it stands without them. Honouring them keeps a maker who cannot be
-/// settled against from stopping every fill that reaches them.
-///
-/// The struct holds indices into the caller's set rather than copies of the
-/// refs it names. A ref is 34 bytes, and this lives on a walk's frame inside a
-/// 4 KB SBF stack that the fixed-width arguments have already spent most of.
-/// Copies of the refs overflowed that stack.
+/// `execute` writes one balance-change record per user and stops when the next will
+/// not fit, so `quote` counts the same way and stops in the same place. Membership
+/// is a bitmap over set positions, because a table of 34-byte refs does not fit
+/// this frame.
+struct DistinctUsers {
+    seen: [u8; USER_EXCLUSION_BITMAP_BYTES],
+    count: usize,
+}
+
+impl DistinctUsers {
+    fn new() -> Self {
+        DistinctUsers {
+            seen: [0u8; USER_EXCLUSION_BITMAP_BYTES],
+            count: 0,
+        }
+    }
+
+    /// Records the owner at `index` and reports whether the walk may go on. An
+    /// owner already counted is free. A new one past `max` refuses the walk.
+    fn admit(&mut self, index: Option<usize>, max: usize) -> bool {
+        let Some(index) = index.filter(|index| *index < USER_SET_CAPACITY) else {
+            return true;
+        };
+        let (byte, bit) = (index / 8, 1u8 << (index % 8));
+        if self.seen[byte] & bit != 0 {
+            return true;
+        }
+
+        if self.count == max {
+            return false;
+        }
+
+        self.seen[byte] |= bit;
+        self.count += 1;
+        true
+    }
+}
+
+/// The caller's per-user budgets for one walk, spent as the walk fills. A budget
+/// is quote the user may lose, not base it may take, because only this walk knows
+/// the price each order fills at. `quote` and `execute` spend it in the same
+/// place, so a ladder never promises depth the fill would decline.
 struct UserBudget {
+    /// Indices into the caller's set, not copies of the refs. A ref is 34 bytes,
+    /// and copies overflowed the 4 KB SBF stack this walk's frame sits in.
     excluded: [u8; USER_EXCLUSION_BITMAP_BYTES],
     any_excluded: bool,
     /// Per-user room for the users that have some room.
@@ -1988,18 +1970,22 @@ impl UserBudget {
                 budget: 0,
                 cover: u64::MAX,
             }; USER_CAPS_CAPACITY],
+
             len: 0,
             side,
             reference_price: reference_price.max(0) as u64,
         };
+
         for cap in caps.as_slice() {
             budget.entries[budget.len] = UserRoom {
                 index: cap.index,
                 budget: cap.quote_cap,
                 cover: cap.base_cap,
             };
+
             budget.len += 1;
         }
+
         budget
     }
 
@@ -2031,39 +2017,45 @@ impl UserBudget {
         if !self.any_excluded && self.len == 0 {
             return if reduce_only { 0 } else { want };
         }
+
         let Some(index) = index else {
             return if reduce_only { 0 } else { want };
         };
+
         if index < USER_SET_CAPACITY && self.excluded[index / 8] & (1 << (index % 8)) != 0 {
             return 0;
         }
+
         for slot in 0..self.len {
             let UserRoom {
                 index: named,
                 budget: room,
                 cover,
             } = self.entries[slot];
+
             if named as usize != index {
                 continue;
             }
+
             let cost_per_base = self.cost_per_base(price);
-            // The quote budget. It does not bind when it is unbounded, or when
-            // the price is in the owner's favour and the cost is zero.
-            // Otherwise convert the quote room to affordable base. The base
-            // rounds down and the spend rounds up, so a long run of orders
-            // cannot creep past the budget one remainder at a time.
+            // The quote budget does not bind when it is unbounded, or when the
+            // cost is zero. Otherwise the base rounds down and the spend rounds
+            // up, so a long run cannot creep past the budget one remainder at a
+            // time.
             let budget_allowed = if room == u64::MAX || cost_per_base == 0 {
                 want
             } else {
                 let affordable = (room as u128 * BASE_PRECISION as u128) / cost_per_base as u128;
                 want.min(affordable.min(u64::MAX as u128) as u64)
             };
+
             // The authoritative base cover binds only a reduce-only order.
             let allowed = if reduce_only {
                 budget_allowed.min(cover)
             } else {
                 budget_allowed
             };
+
             // Spend the quote budget for what was actually taken, and draw the
             // cover down by the same base for a reduce-only fill.
             if room != u64::MAX && cost_per_base != 0 {
@@ -2071,11 +2063,14 @@ impl UserBudget {
                     (allowed as u128 * cost_per_base as u128).div_ceil(BASE_PRECISION as u128);
                 self.entries[slot].budget = room.saturating_sub(spent.min(u64::MAX as u128) as u64);
             }
+
             if reduce_only {
                 self.entries[slot].cover = cover.saturating_sub(allowed);
             }
+
             return allowed;
         }
+
         // An owner named in the set but carrying no cap entry is
         // unconstrained. It is uncovered, so a reduce-only order does not fill.
         if reduce_only {
@@ -2086,54 +2081,13 @@ impl UserBudget {
     }
 }
 
-/// What a crossing taker remainder has claimed on the side being read.
+/// What a crossing taker remainder has claimed on the side being read, and what
+/// `include_taker_origin_reservations` lets one caller reach. It is unrelated to
+/// the margin a maker reserves at placement.
 ///
-/// A taker-origin order is an unfilled taker remainder that velocity migrated
-/// onto the book. It rests at the worst price its owner agreed to tolerate. The
-/// activation delay before it becomes matchable is an auction. Makers line up
-/// inside the window, and the best-priced one is meant to get the cross at its
-/// own price, so the improvement over the resting price goes to the taker. Two
-/// things follow, and they are the two directions of one computation.
-///
-/// A remainder claims the depth it crosses. Otherwise the improvement goes to
-/// whoever lands a transaction first. Take asks at 100 and 101 and a remainder
-/// bidding 102. A taker buys the 100 ask and reposts it at 101, and the
-/// remainder crosses 101 instead of 100. The crossed depth therefore leaves the
-/// matchable set. It is invisible to every caller except the crank that owes
-/// the taker its improvement, which reads the book with `consume_reservation`.
-///
-/// A remainder is itself withheld while a counterparty crosses it. A taker that
-/// lifts the remainder at its own price buys the same improvement from the
-/// other end.
-///
-/// The book skips claimed units rather than rejecting the call. They come out
-/// of the matchable set the way an expired or a not-yet-activated order does,
-/// and a taker sweeping past them fills the depth behind instead. That protects
-/// the remainder just as completely, and it leaves the rest of the side
-/// tradeable. The second part matters because a remainder rests at a slippage
-/// bound, so it normally sits at or near the front of its side. A failed call
-/// would take the whole side dark for as long as the cross stood.
-/// [`ClobError::TakerOriginCrossPending`] is the deprecated remnant of that
-/// earlier behaviour.
-///
-/// Every read of a side runs this, so no two of them can disagree.
-/// [`ClobBook::quote`] subtracts the claim from the level it publishes,
-/// [`ClobBook::execute`] clamps the fill to what is left, `quote_l3_v0` reports
-/// the claim on the row, and `next_cross_v0` passes over an order that is
-/// claimed whole. If quote and execute disagreed, a taker that quoted honestly,
-/// was allocated the difference by the router, and then executed would get a
-/// failed transaction through no fault of its own. Velocity binds the execute
-/// to the quoted prefix, so the taker can do nothing about a shortfall after
-/// the fact. Here the two agree structurally, because they run the same
-/// function over the same list.
-///
-/// A claim lapses. The book stops honouring it
-/// [`ClobHeaderV0::reservation_grace_slots`] past the claimant's activation
-/// slot, and the depth is ordinary again. That bounds a crank that never lands.
-///
-/// The claim is scoped to the orders being read, not to the book. An ordinary
-/// cross of one maker against another is nobody's improvement to steal, and it
-/// must not cost takers anything.
+/// The book skips claimed units rather than refusing the call, and a claim lapses
+/// [`ClobHeaderV0::reservation_grace_slots`] past the activation slot. Every read
+/// of a side runs this, so no two disagree. See `docs/taker-remainder-auction.md`.
 pub(crate) struct CrossReservation {
     /// The side being read. A claimant rests on the other one and takes this
     /// side as its cover.
@@ -2145,9 +2099,10 @@ pub(crate) struct CrossReservation {
     /// Floor on the units one claim withholds. See [`Self::claimed`].
     min_order_size: u64,
     /// The caller settles the cross itself, so it reads the book with every
-    /// claim ignored. Velocity signs the CPI, and the book trusts the flag the
-    /// way it already trusts `users` and `caps`.
-    consume: bool,
+    /// claim ignored. This is `include_taker_origin_reservations` on the
+    /// quoter surface. Velocity signs the CPI, and the book trusts the flag
+    /// the way it already trusts `users` and `caps`.
+    include_reserved: bool,
     /// The claimant being allocated, or [`NIL`] once the list is spent. A
     /// [`NIL`] head is the whole cost of this type on a book that holds no
     /// remainder.
@@ -2164,14 +2119,10 @@ pub(crate) struct CrossReservation {
     /// Claimants left to read. Each is read at most once for the whole walk,
     /// so the side's own count bounds what a corrupt list can cost.
     reads_left: u16,
-    /// Best price on the other side that could match this slot. It is resolved
-    /// on first need and then reused for the rest of the walk. One lookup
-    /// answers every order, and holding it is correct, because the other side
-    /// cannot change while a walk of `cover` is in flight. The resolution is
-    /// lazy rather than done before the walk, because an eager resolution
-    /// inlines a second side walk into `execute`'s prologue. The spills that
-    /// costs the frame measured far worse than the lookup itself. See the CU
-    /// benchmarks in `tests/clob_tests.rs`.
+    /// Best price on the other side that could match this slot, resolved on first
+    /// need and reused. The other side cannot change while a walk of `cover` is in
+    /// flight. Resolving eagerly inlines a second side walk into `execute`'s
+    /// prologue, and the frame spills cost more than the lookup.
     counterparty: Option<Option<u64>>,
 }
 
@@ -2181,7 +2132,7 @@ impl CrossReservation {
         cover: Side,
         slot: u64,
         now: i64,
-        consume: bool,
+        include_reserved: bool,
     ) -> Self {
         let claiming = cover.opposite();
         Self {
@@ -2190,8 +2141,8 @@ impl CrossReservation {
             now,
             grace_slots: book.reservation_grace_slots as u64,
             min_order_size: book.min_order_size,
-            consume,
-            cursor: if consume {
+            include_reserved,
+            cursor: if include_reserved {
                 NIL
             } else {
                 book.first_claimant(claiming)
@@ -2204,36 +2155,33 @@ impl CrossReservation {
         }
     }
 
-    /// Whether this order can be withheld at all. Either some claimant still
-    /// holds unallocated demand, or the order is a remainder of its own.
-    ///
-    /// A whole-side walk asks this once per order, and on a book that holds no
-    /// remainder the answer is two compares and a bit test. Everything behind
-    /// it stays out of line, which keeps the reservation off the cost of an
-    /// ordinary quote.
+    /// Whether this order can be withheld at all. Either some claimant still holds
+    /// unallocated demand, or the order is a remainder of its own. A book with no
+    /// remainder answers in two compares and a bit test, which keeps the
+    /// reservation off the cost of an ordinary quote.
     #[inline(always)]
     fn may_withhold(&self, node: &OrderNodeV0) -> bool {
         self.cursor != NIL || self.demand != 0 || node.is_taker_origin()
     }
 
-    /// Units of `node` no ordinary caller may take.
-    ///
-    /// This covers both directions. They are the units a crossing remainder
-    /// claims, and the whole of a remainder that a counterparty crosses. The
-    /// second is the larger answer whenever it applies, so it wins.
+    /// Units of `node` no ordinary caller may take: the units a crossing remainder
+    /// claims, or the whole of a remainder a counterparty crosses. The second is
+    /// the larger answer whenever it applies, so it wins.
     #[inline(always)]
     pub(crate) fn withheld(&mut self, book: &ClobMarketV0, node: &OrderNodeV0) -> Result<u64> {
         if !self.may_withhold(node) {
             return Ok(0);
         }
+
         self.withheld_uncached(book, node)
     }
 
     #[inline(never)]
     fn withheld_uncached(&mut self, book: &ClobMarketV0, node: &OrderNodeV0) -> Result<u64> {
-        if self.consume {
+        if self.include_reserved {
             return Ok(0);
         }
+
         let claimed = self.claimed(book, node)?;
         if claimed < node.base_asset_amount
             && node.is_taker_origin()
@@ -2242,6 +2190,7 @@ impl CrossReservation {
         {
             return Ok(node.base_asset_amount);
         }
+
         Ok(claimed)
     }
 
@@ -2251,6 +2200,7 @@ impl CrossReservation {
         if !self.may_withhold(node) {
             return Ok(node.base_asset_amount);
         }
+
         Ok(node
             .base_asset_amount
             .saturating_sub(self.withheld_uncached(book, node)?))
@@ -2276,26 +2226,27 @@ impl CrossReservation {
     /// positional, so a caller's own exclusions must not move a claim onto a
     /// different order.
     pub(crate) fn claimed(&mut self, book: &ClobMarketV0, node: &OrderNodeV0) -> Result<u64> {
-        if self.consume || (self.cursor == NIL && self.demand == 0) {
+        if self.include_reserved || (self.cursor == NIL && self.demand == 0) {
             return Ok(0);
         }
+
         let base = node.base_asset_amount;
-        // A claimant whose demand outlasts one cover order reaches this call
-        // with that demand still held, and the cover price has worsened since
-        // it was tested. If the claimant no longer crosses, its unallocated
-        // demand is spent rather than carried. Cover prices only get worse, so
-        // nothing further down the side can satisfy it, and carrying it would
-        // claim depth the claimant cannot trade against.
+        // Cover prices only get worse down the side, so a claimant that no longer
+        // crosses will not cross anything behind this either. Spend its
+        // unallocated demand rather than carry it onto depth it cannot trade
+        // against.
         if self.demand > 0 && !self.cover.is_crossed_by(node.price, self.demand_price) {
             self.demand = 0;
             self.cursor = self.cursor_next;
         }
+
         let mut honoured = 0u64;
         loop {
             if self.demand == 0 {
                 if self.cursor == NIL {
                     break;
                 }
+
                 require!(self.reads_left > 0, ClobError::BookInvariantViolated);
                 self.reads_left -= 1;
                 let claimant = book.read_node(self.cursor)?;
@@ -2303,13 +2254,16 @@ impl CrossReservation {
                     self.cursor = claimant.taker_origin_next;
                     continue;
                 }
+
                 self.demand = claimant.base_asset_amount;
                 self.demand_price = claimant.price;
                 self.cursor_next = claimant.taker_origin_next;
             }
+
             if honoured >= base {
                 break;
             }
+
             let take = self.demand.min(base - honoured);
             honoured += take;
             self.demand -= take;
@@ -2317,9 +2271,11 @@ impl CrossReservation {
                 self.cursor = self.cursor_next;
             }
         }
+
         if honoured == 0 {
             return Ok(0);
         }
+
         // A claim withholds at least `min_order_size`. A fill of everything
         // around a smaller claim leaves a remainder the cull rule removes, and
         // the cull would take the claim with it.
@@ -2334,12 +2290,10 @@ impl CrossReservation {
             && self.cover.is_crossed_by(cover_price, claimant.price)
     }
 
-    /// Past the window in which the book honours this remainder's claim.
-    ///
-    /// The window is measured from the activation slot, which is when the
-    /// auction the claim protects ends. A claimant still inside its delay is
-    /// the ordinary case. Nothing can match it yet, and the claim is what stops
-    /// its cover from being taken while it waits.
+    /// Past the window in which the book honours this remainder's claim. The
+    /// window runs from the activation slot, which is when the auction the claim
+    /// protects ends. A claimant inside its delay is the ordinary case, and the
+    /// claim is what holds its cover while it waits.
     fn lapsed(&self, claimant: &OrderNodeV0) -> bool {
         self.slot >= claimant.activation_slot.saturating_add(self.grace_slots)
     }
@@ -2356,20 +2310,18 @@ impl CrossReservation {
                 resolved
             }
         };
+
         Ok(counterparty.is_some_and(|opposite| self.cover.is_crossed_by(price, opposite)))
     }
 }
 
 /// Price of the best order on `side` that could be matched this slot at all.
 ///
-/// This is blind to the caller's user set and to its self-trade exclusion, by
-/// design. Those say whether this caller may fill an order, not whether the
-/// order is a live counterparty. An order still inside its activation delay,
-/// and an order already expired, are both skipped, because nothing can match
-/// them yet. A cross that involves one is not actionable by anyone, so there is
-/// no improvement within reach to protect. Firing on such an order would also
-/// freeze the book for the whole auction window, which is exactly when a
-/// migrated taker remainder sits unactivated in front of the resting book.
+/// Blind to the caller's user set and self-trade exclusion, which say whether this
+/// caller may fill an order rather than whether the order is a live counterparty.
+/// Unactivated and expired orders are skipped, because a cross involving one is
+/// not actionable by anyone, and firing on one would freeze the book for a whole
+/// auction window.
 fn best_actionable_price(
     book: &ClobMarketV0,
     side: Side,
@@ -2385,63 +2337,61 @@ fn best_actionable_price(
         if is_live(&node, slot, now) {
             return Ok(Some(node.price));
         }
+
         cursor = node.next;
     }
+
     Ok(None)
 }
 
-/// Whether a level at `price` is past the caller's worst acceptable price.
-///
-/// Zero is no bound. A level exactly at the limit is acceptable, so the
-/// comparison is strict. The caller's own at-or-better check treats it the same
-/// way.
+/// Whether a level at `price` is past the caller's worst acceptable price. Zero is
+/// no bound. A level exactly at the limit is acceptable, so the comparison is
+/// strict, matching the caller's own at-or-better check.
 fn worse_than_limit(side: Side, price: u64, limit_price: u64) -> bool {
     limit_price != 0 && side.is_worse_price(price, limit_price)
 }
 
-/// Append one wincode `PriceLevel` to the quote response, after re-checking on
-/// the way out what the wire type promises. Levels are best-price-first, and
-/// every one is a real, fillable level.
+/// Append one wincode `PriceLevel` to the quote response, re-checking on the way
+/// out what the wire type promises: best-price-first, and every level fillable.
 ///
-/// A response carrying a zero price, a zero size, or a level that improves on
-/// the one before it would win a routing waterfall it cannot honour, because
-/// the router picks a quoter by exactly these numbers. The instruction fails
-/// instead. A book that holds its invariants produces none of the three.
-/// `place` rejects a zero price or a zero size, and a side is a price-sorted
-/// list whose equal-priced orders are contiguous, so aggregation leaves the
-/// written prices strictly monotone. This check says so.
+/// The router picks a quoter by exactly these numbers, so a zero price, a zero
+/// size, or a level improving on the one before it would win a waterfall the book
+/// cannot honour. A book holding its invariants produces none of the three, and
+/// this check says so.
 fn write_level(
     book: &mut ClobMarketV0,
     writer: &mut QuoteWriter,
     side: Side,
-    written: &mut Option<u64>,
-    price: u64,
-    size: u64,
+    last_written_price: &mut Option<u64>,
+    level: PriceLevel,
 ) -> Result<()> {
-    require!(price != 0 && size != 0, ClobError::InvalidResponseLevel);
     require!(
-        written.is_none_or(|before| side.is_worse_price(price, before)),
+        level.price != 0 && level.size != 0,
         ClobError::InvalidResponseLevel
     );
+    require!(
+        last_written_price.is_none_or(|before| side.is_worse_price(level.price, before)),
+        ClobError::InvalidResponseLevel
+    );
+
     writer
-        .push_level(&mut book.response, PriceLevel { price, size })
+        .push_level(&mut book.response, level)
         .map_err(ClobError::from)?;
-    *written = Some(price);
+    *last_written_price = Some(level.price);
     Ok(())
 }
 
-/// The same self-check for a fill entering the execute response. Execute
-/// reports per-maker balance changes rather than levels, so the price is not on
-/// the wire. It does value the fill as `price * base`, and the sweep is the
-/// same best-first walk, so the ordering still has to hold. Equal consecutive
-/// prices are expected here, because one level is contiguous orders and each
-/// order is its own fill.
+/// The same self-check for a fill entering the execute response. The price is not
+/// on the wire, but execute values the fill as `price * base` over the same
+/// best-first walk, so the ordering still has to hold. Equal consecutive prices are
+/// expected, because one level is contiguous orders and each is its own fill.
 fn check_fill_price(side: Side, filled: Option<u64>, price: u64, take: u64) -> Result<()> {
     require!(price != 0 && take != 0, ClobError::InvalidResponseLevel);
     require!(
         filled.is_none_or(|before| !side.is_worse_price(before, price)),
         ClobError::InvalidResponseLevel
     );
+
     Ok(())
 }
 
@@ -2458,24 +2408,29 @@ fn validate_single_removal(book: &ClobMarketV0, removed: &OrderNodeV0, index: u3
     } else {
         book.read_node(removed.prev)?.next
     };
+
     require!(
         neighbour_next == removed.next,
         ClobError::BookInvariantViolated
     );
+
     let neighbour_prev = if removed.next == NIL {
         book.worst(side)
     } else {
         book.read_node(removed.next)?.prev
     };
+
     require!(
         neighbour_prev == removed.prev,
         ClobError::BookInvariantViolated
     );
+
     let freed = book.read_node(index)?;
     require!(
         freed.bit_flags == 0 && freed.order_id == 0 && book.free_head == index,
         ClobError::BookInvariantViolated
     );
+
     Ok(())
 }
 
@@ -2492,6 +2447,7 @@ fn alloc_node(book: &mut ClobMarketV0) -> Result<u32> {
         !node.is_bit_flag_set(OrderBitFlag::Open),
         ClobError::BookInvariantViolated
     );
+
     book.free_head = node.next;
     book.free_count -= 1;
     Ok(index)
@@ -2520,23 +2476,24 @@ fn insert_order(
     } else {
         book.set_next(prev, index)?;
     }
+
     if next == NIL {
         book.set_worst(side, index);
     } else {
         book.set_prev(next, index)?;
     }
+
     if taker_origin {
         book.link_claimant(side, index)?;
     }
+
     Ok(())
 }
 
-/// Unlink one node from its side and return it to the free list, and repair the
-/// expiry hint if that order was holding it.
-///
-/// The bulk paths use [`unlink_order`] and repair once at the end. The repair
-/// walks the live orders, and one repair per removal is quadratic in a call
-/// that can free a hundred of them.
+/// Unlink one node from its side, return it to the free list, and repair the
+/// expiry hint if that order held it. The bulk paths use [`unlink_order`] and
+/// repair once at the end, because the repair walks the live orders and one per
+/// removal is quadratic in a call that frees a hundred.
 fn remove_order(book: &mut ClobMarketV0, index: u32) -> Result<()> {
     let node = unlink_order(book, index)?;
     // The order that just left may have been the one holding the expiry hint.
@@ -2569,6 +2526,7 @@ fn unlink_order(book: &mut ClobMarketV0, index: u32) -> Result<OrderNodeV0> {
         node.is_bit_flag_set(OrderBitFlag::Open),
         ClobError::BookInvariantViolated
     );
+
     let side = node.side();
     let count = book.node_count(side);
     require!(count > 0, ClobError::BookInvariantViolated);
@@ -2576,16 +2534,19 @@ fn unlink_order(book: &mut ClobMarketV0, index: u32) -> Result<OrderNodeV0> {
     if node.is_taker_origin() {
         book.unlink_claimant(side, index, &node)?;
     }
+
     if node.prev == NIL {
         book.set_best(side, node.next);
     } else {
         book.set_next(node.prev, node.next)?;
     }
+
     if node.next == NIL {
         book.set_worst(side, node.prev);
     } else {
         book.set_prev(node.next, node.prev)?;
     }
+
     book.set_node_count(side, count - 1)?;
 
     let mut freed: OrderNodeV0 = bytemuck::Zeroable::zeroed();

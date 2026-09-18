@@ -31,6 +31,7 @@ mod signed_msg_order_id_eviction {
             11,
             SlotClock::baseline(),
         );
+
         assert!(add_result.is_ok());
 
         assert_eq!(
@@ -97,6 +98,7 @@ mod signed_msg_order_id_eviction {
             11,
             SlotClock::baseline(),
         );
+
         assert!(add_result.is_err());
         assert_eq!(
             add_result.err().unwrap(),
@@ -134,6 +136,7 @@ mod signed_msg_order_id_eviction {
             11,
             SlotClock::baseline(),
         );
+
         assert!(add_result.is_err());
         assert_eq!(
             add_result.err().unwrap(),
@@ -146,6 +149,7 @@ mod signed_msg_order_id_eviction {
             11,
             SlotClock::baseline(),
         );
+
         assert!(add_result.is_err());
         assert_eq!(
             add_result.err().unwrap(),
@@ -158,6 +162,7 @@ mod signed_msg_order_id_eviction {
             11,
             SlotClock::baseline(),
         );
+
         assert!(add_result.is_err());
         assert_eq!(
             add_result.err().unwrap(),
@@ -377,6 +382,7 @@ mod resting_route {
             10_000,
             SlotClock::default(),
         );
+
         assert_eq!(orders.get(0).clob_order_id, 77);
         assert_eq!(orders.get(0).route_digest, DIGEST);
 
@@ -389,6 +395,7 @@ mod resting_route {
             10_000,
             SlotClock::default(),
         );
+
         assert_eq!(orders.get(0), &SignedMsgOrderId::default());
     }
 
@@ -433,10 +440,12 @@ mod resting_route {
             10_000,
             SlotClock::default(),
         );
+
         assert_eq!(
             result.err().unwrap(),
             ErrorCode::SignedMsgUserOrdersAccountFull
         );
+
         // The first entry keeps its uuid and its route.
         assert_eq!(orders.get(0).uuid, [1; 8]);
         assert_eq!(orders.get(0).route_digest, DIGEST);

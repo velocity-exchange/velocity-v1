@@ -164,27 +164,24 @@ fn validate_pool_legs(
     Ok(())
 }
 
-/// Accrue interest on all four markets, but do not advance their oracle TWAPs
-/// (OtterSec #134, the same shape as #110 and #111).
+/// Accrue interest on all four markets, but do not advance their oracle TWAPs (OtterSec #134, the
+/// same shape as #110 and #111).
 ///
-/// The margin checks at the end of this transfer run with `Initial`, which
-/// enables strict pricing. `StrictOraclePrice` bounds are the min and max of
-/// the live price and each market's `last_oracle_price_twap_5min`, and a
-/// liability is priced at the *upper* bound. A refresh here, from an
-/// instruction any user can call, drags that TWAP toward a temporarily
-/// depressed live price, under-values the borrow, and admits a transfer the
-/// pre-refresh TWAP rejects. That leaves socialized debt once the oracle
-/// recovers.
-///
-/// Only pause flags gate this instruction, so the caller controls when it runs.
-/// Four markets are refreshed and both accounts are then margin checked, so
+/// The margin checks at the end of this transfer run with `Initial`, which enables strict pricing.
+/// `StrictOraclePrice` bounds are the min and max of the live price and each market's
+/// `last_oracle_price_twap_5min`, and a liability is priced at the *upper* bound. A refresh here,
+/// from an instruction any user can call, drags that TWAP toward a temporarily depressed live
+/// price, under-values the borrow, and admits a transfer the pre-refresh TWAP rejects. That leaves
+/// socialized debt once the oracle recovers. Only pause flags gate this instruction, so the caller
+/// controls when it runs. Four markets are refreshed and both accounts are then margin checked, so
 /// every one of them is a lever.
 ///
-/// Interest accrual and the deposit/borrow/utilization TWAPs still advance.
-/// Only the oracle TWAPs and their timestamps are left alone, so the next real
-/// refresh still weights the full elapsed interval. Those TWAPs keep advancing
-/// on every other spot path and through the permissionless
+/// Interest accrual and the deposit/borrow/utilization TWAPs still advance. Only the oracle TWAPs
+/// and their timestamps are left alone, so the next real refresh still weights the full elapsed
+/// interval. Those TWAPs keep advancing on every other spot path and through the permissionless
 /// `update_spot_market_cumulative_interest` crank.
+///
+/// allow-verbose: the strict-pricing lever this guards is not stated at any callsite.
 fn accrue_pool_legs(
     deposit_from: &mut SpotMarket,
     deposit_to: &mut SpotMarket,

@@ -91,20 +91,17 @@ export class TransactionParamProcessor {
 				);
 			}
 
-			// Apply the buffer, but round down to the MAX_COMPUTE_UNITS, and round up to the nearest whole number.
-			//
-			// The floor matters: a ComputeBudget instruction costs 150 CU that
-			// simulation does not report, so execution always lands a fixed amount
-			// above the simulated figure. A percentage buffer covers that on a large
-			// transaction and not on a small one, where 20% of 255 is less than the
-			// 150 the limit instruction alone adds, and the transaction dies with
-			// ComputationalBudgetExceeded.
+			// A ComputeBudget instruction costs 150 CU that simulation does not
+			// report. A percentage buffer alone misses that floor on a small
+			// transaction, so this takes the max of the two before capping at
+			// MAX_COMPUTE_UNITS, else execution can die with ComputationalBudgetExceeded.
 			let bufferedComputeUnits = Math.ceil(
 				Math.min(
 					Math.max(
 						computeUnits * bufferMultiplier,
 						computeUnits + COMPUTE_BUDGET_IX_OVERHEAD_CU
 					),
+
 					MAX_COMPUTE_UNITS
 				)
 			);

@@ -48,6 +48,7 @@ describe('VelocityCore trigger builders', () => {
 			orderId: 9,
 			signedRoute: [],
 		});
+
 		const accounts = called[0][1].accounts;
 		expect(accounts.clobMarket).toBe(clobMarket);
 		// An omitted optional account encodes as the program id (anchor's `None`).

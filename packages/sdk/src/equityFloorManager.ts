@@ -252,9 +252,8 @@ export type EquityFloorManagerConfig = {
 	 */
 	subAccountIds?: number[];
 	/**
-	 * Client-side equity haircut (QUOTE_PRECISION) applied when sizing floor
-	 * deltas. It absorbs the dust by which onchain oracle pricing can differ
-	 * from the client's. Defaults to 1 quote unit ($1).
+	 * Client-side equity haircut (QUOTE_PRECISION) absorbing dust from onchain/client oracle
+	 * price differences when sizing floor deltas. Defaults to 1 quote unit ($1).
 	 */
 	collateralHaircut?: BN;
 };
@@ -523,12 +522,8 @@ export class EquityFloorManager {
 	}
 
 	/**
-	 * Plans the fund-only transfers (zero floor delta) that lift subaccounts
-	 * below their buffered floor back above it. A fund-only transfer is the one
-	 * delegate transfer the program allows while the equity breaker is tripped.
-	 * Cure every breach from internal surplus, then ask the admin to reset the
-	 * breaker. The transfers never clear the flag themselves. See
-	 * `planCureMoves` for the sizing rules.
+	 * Plans fund-only transfers, the one delegate transfer allowed while the equity breaker
+	 * is tripped. Does not clear the flag itself; see `planCureMoves` for sizing rules.
 	 */
 	public planCureTransfers(): QuoteTransferPlan[] {
 		return planCureMoves(

@@ -54,6 +54,7 @@ export function decodeQuoterConfig(
 			padding: Array.from(data.subarray(base + 33, base + 40)),
 		});
 	}
+
 	return {
 		approvedProgramSlot: new BN(data.subarray(offset, offset + 8), 'le'),
 		bookTickSize: new BN(data.subarray(offset + 8, offset + 16), 'le'),
@@ -67,14 +68,17 @@ export function decodeQuoterConfig(
 		executeV0Discriminator: Array.from(
 			data.subarray(offset + 192, offset + 200)
 		),
+
 		quoteL3V0Discriminator: Array.from(
 			data.subarray(offset + 200, offset + 208)
 		),
+
 		accounts,
 		quoteAccountIndexes: Array.from(data.subarray(offset + 688, offset + 700)),
 		executeAccountIndexes: Array.from(
 			data.subarray(offset + 700, offset + 712)
 		),
+
 		watchOffset: data.readUInt32LE(offset + 712),
 		watchLen: data.readUInt32LE(offset + 716),
 		maxOracleDeviationBps: data.readUInt32LE(offset + 720),
@@ -116,6 +120,7 @@ export function decodeQuoterSlab(data: Buffer): {
 				`quoter slab declares ${header.capacity} slots but is too short to hold them`
 			);
 		}
+
 		slots.push({
 			entry: readPubkey(data, start),
 			suspended: data.readUInt8(start + 32) !== 0,
@@ -123,5 +128,6 @@ export function decodeQuoterSlab(data: Buffer): {
 			config: decodeQuoterConfig(data, start + 40),
 		});
 	}
+
 	return { header, slots };
 }

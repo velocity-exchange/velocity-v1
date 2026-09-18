@@ -181,6 +181,7 @@ fn quote_streams_the_wincode_encoding_of_its_levels() {
             size: 6
         }])
     );
+
     let pointer = book
         .quote(
             Direction::Short,
@@ -393,6 +394,7 @@ fn a_fill_reports_at_most_one_partial() {
         for _ in 0..4 {
             place(&mut book, Side::Ask, 100, 10, maker);
         }
+
         let outcome = book
             .execute(
                 Direction::Long,
@@ -455,6 +457,7 @@ fn execute_stops_at_the_user_cap() {
             &[]
         )
     );
+
     // B's order is untouched — a second user would need a second record.
     assert_eq!(book.node_count(Side::Ask), 1);
 }
@@ -484,6 +487,7 @@ fn wire_widths_match_the_response_types() {
         reduce_only: true,
         max_ts: 4,
     };
+
     assert_eq!(encode(&removed).len(), REMOVED_ORDER_BYTES);
     // Side, the taker-origin flag, the reduce-only flag, then the expiry.
     let tail = REMOVED_ORDER_BYTES - 3 - core::mem::size_of::<i64>();
@@ -498,6 +502,7 @@ fn wire_widths_match_the_response_types() {
         })[tail..tail + 3],
         [Side::Bid.to_u8(), 0, 0]
     );
+
     // Every record is one fixed stride: a change carries no ids, so it cannot
     // grow, and a consumed order is its own record in the trailing section.
     assert_eq!(encode(&change(user, 1, 2)).len(), CHANGE_BYTES);
@@ -512,6 +517,7 @@ fn wire_widths_match_the_response_types() {
     ] {
         assert_eq!(width % RESPONSE_LEN_BYTES, 0, "{width}");
     }
+
     assert_eq!(encode(&cull(user, 1, 2, 3)).len(), CANCELLED_BYTES);
     // An empty quote is its length prefix and the withheld report behind it;
     // an empty execute response is one prefix per section.
@@ -547,6 +553,7 @@ fn execute_totals_the_floor_of_the_whole_sweeps_notional() {
     for _ in 0..3 {
         place(&mut book, Side::Ask, 3, 4 * TENTH, maker);
     }
+
     let outcome = book
         .execute(
             Direction::Long,
@@ -575,6 +582,7 @@ fn execute_totals_the_floor_of_the_whole_sweeps_notional() {
     for _ in 0..2 {
         place(&mut book, Side::Ask, 7, 4 * TENTH, maker);
     }
+
     let outcome = book
         .execute(
             Direction::Long,
@@ -609,7 +617,7 @@ fn the_args_round_trip_with_caps_between_the_set_and_the_taker() {
     let taker = user(0xC);
     let args = QuoteArgsV0 {
         taker_served_window: true,
-        consume_reservation: false,
+        include_taker_origin_reservations: false,
         direction: crate::state::Direction::Long,
         size: 12,
         users: &[],
@@ -661,7 +669,7 @@ fn the_user_set_is_read_in_place_and_costs_only_what_it_carries() {
     let users = [user(0xA), user(0xB)];
     let args = QuoteArgsV0 {
         taker_served_window: true,
-        consume_reservation: false,
+        include_taker_origin_reservations: false,
         users: &users,
         direction: crate::state::Direction::Long,
         size: 7,
@@ -798,6 +806,7 @@ fn corrupted_ask_book(prices: [u64; 2]) -> TestMarket {
         book.update_node(second.node_index, |node| node.price = prices[1])
             .unwrap();
     }
+
     market
 }
 
@@ -822,6 +831,7 @@ fn a_corrupt_book_cannot_produce_a_response() {
             ),
             ClobError::InvalidResponseLevel,
         );
+
         // Execute sweeps the same list and rejects the same shapes. Fresh
         // market: the failed sweep leaves the book part-consumed.
         assert_err(
@@ -876,6 +886,7 @@ fn quote_accepts_the_orders_a_healthy_book_produces() {
             PriceLevel { price: 99, size: 5 },
         ])
     );
+
     book.execute(
         Direction::Short,
         15,
@@ -901,6 +912,7 @@ fn the_quote_ceiling_fits_the_response_region() {
         widest <= RESPONSE_BUFFER_BYTES,
         "{widest} > the response region"
     );
+
     // One more level would not.
     assert!(widest + PRICE_LEVEL_BYTES > RESPONSE_BUFFER_BYTES);
 }
@@ -962,6 +974,7 @@ fn the_streamed_response_parses_back() {
         response.completed_for(1).collect::<Vec<_>>(),
         vec![middle.order_id]
     );
+
     assert!(response.cancelled.is_empty());
 }
 

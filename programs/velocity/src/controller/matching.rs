@@ -40,6 +40,7 @@ pub(crate) fn fill_at_or_better(
     if fill.base_filled == 0 {
         return Ok(true);
     }
+
     match side {
         PositionDirection::Long => {
             if fill.quote_filled <= allocation.quote.saturating_add(1) {
@@ -52,6 +53,7 @@ pub(crate) fn fill_at_or_better(
             }
         }
     }
+
     let bp = base_precision.max(1) as u128;
     let actual_floor = (fill.quote_filled as u128)
         .safe_mul(bp)?

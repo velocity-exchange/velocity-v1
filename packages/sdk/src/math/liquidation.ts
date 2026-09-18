@@ -424,13 +424,10 @@ export function calculateAssetTransferForLiabilityTransfer(
 /**
  * Calculates the fraction of a position's remaining liability a liquidator may currently
  * take, mirroring `calculate_max_pct_to_liquidate` in
- * `programs/velocity/src/math/liquidation.rs`. Liquidations ramp up gradually over
- * the `liquidationDuration` wall-clock window, starting from `initialPctToLiquidate`, rather
- * than allow 100% at once. A user is therefore not force-closed more aggressively than
- * necessary. Two cases skip the ramp. An isolated perp position, which `isIsolatedPosition`
- * marks, is always liquidated 100% at once, because it has no other cross-margin exposure to
- * protect. Any position is liquidated 100% at once once `marginShortage` falls under $50,
- * which is too small to ramp.
+ * `programs/velocity/src/math/liquidation.rs`. Liquidations ramp from `initialPctToLiquidate`
+ * over the `liquidationDuration` window rather than allow 100% at once. An isolated perp
+ * position (`isIsolatedPosition`) always liquidates 100% at once, and so does any position
+ * once `marginShortage` falls under $50.
  * @param userLastActiveSlot Slot the user was last active (start of the liquidation ramp), used with `slot` to compute elapsed time.
  * @param userLiquidationMarginFreed Margin already freed by liquidation actions so far this liquidation, QUOTE_PRECISION (1e6).
  * @param marginShortage Total margin shortfall for the user/position, QUOTE_PRECISION (1e6).

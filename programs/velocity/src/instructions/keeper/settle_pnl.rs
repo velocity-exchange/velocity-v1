@@ -92,6 +92,7 @@ pub fn handle_settle_multiple_pnls<'c: 'info, 'info>(
         meets_margin_requirement: Some(meets_settle_pnl_maintenance_margin_requirement(
             user, &mut maps,
         )?),
+
         mode,
     };
 
@@ -126,6 +127,7 @@ impl<'info> RevenueShareSweep<'info> {
                 map: None,
             });
         }
+
         Ok(Self {
             escrow: get_revenue_share_escrow_account(remaining_accounts, authority)?,
             map: load_revenue_share_map(remaining_accounts).ok(),
@@ -198,6 +200,7 @@ impl PnlSettlement<'_, '_> {
                 self.meets_margin_requirement,
                 self.mode,
             )?;
+
             return Ok(settled);
         }
 
@@ -228,9 +231,11 @@ impl PnlSettlement<'_, '_> {
         if !self.state.builder_codes_enabled() {
             return Ok(());
         }
+
         let Some(escrow) = rev_share.escrow.as_mut() else {
             return Ok(());
         };
+
         escrow.revoke_completed_orders(user)?;
 
         // Only sweep the market's pnl pool when the settle happened. A
@@ -239,6 +244,7 @@ impl PnlSettlement<'_, '_> {
         if !settled {
             return Ok(());
         }
+
         let Some(builder_map) = rev_share.map.as_ref() else {
             msg!("Builder Users not provided, but RevenueEscrow was provided");
             return Ok(());
@@ -264,6 +270,7 @@ impl PnlSettlement<'_, '_> {
             self.state.builder_codes_enabled(),
             self.state.funding_paused()?,
         )?;
+
         Ok(())
     }
 
@@ -277,9 +284,11 @@ impl PnlSettlement<'_, '_> {
         let Ok(position_index) = get_position_index(&user.perp_positions, market_index) else {
             return Ok(());
         };
+
         if !user.perp_positions[position_index].can_transfer_isolated_position_deposit() {
             return Ok(());
         }
+
         transfer_isolated_perp_position_deposit(
             user,
             None,
@@ -291,6 +300,7 @@ impl PnlSettlement<'_, '_> {
             i64::MIN,
             self.state.funding_paused()?,
         )?;
+
         Ok(())
     }
 }

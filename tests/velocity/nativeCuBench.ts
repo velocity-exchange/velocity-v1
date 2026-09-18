@@ -99,18 +99,12 @@ describe('compute units', () => {
 	let acceptedMmOracleSequenceId = new BN(1_000_000);
 	let ammSpreadAdjustment = 0;
 
-	// Dedicated market for the fill bench. The oracle, the MM oracle, and the AMM
-	// curve all sit at price 1, so a taker fills cleanly against the vAMM.
-	// `curve_update_intensity` stays above 0, so the routing projection runs.
-	// This market stays separate from market 0, whose MM oracle sits at 100 for
-	// the admin noop benches.
+	// Oracle and AMM sit at price 1 for clean vAMM fills; separate from market 0 (price 100).
 	const fillMarketIndex = 1;
 	const fillMmOraclePrice = new BN(1_000_000); // price 1, PRICE_PRECISION
 	let fillMmOracleSequenceId = new BN(1_000_000);
 
-	// Dedicated markets for the batch bench, kept off markets 0 and 1 so the
-	// batch writes cannot perturb the single-market noop benches or the fill
-	// bench. Four of them because that is the current mainnet perp market count.
+	// Four batch markets, kept off 0-1, matching current mainnet perp market count.
 	const batchMarketIndexes = [2, 3, 4, 5];
 	let batchMmOraclePrice = new BN(100_000_000);
 	let batchMmOracleSequenceId = new BN(1_000_000);
@@ -420,11 +414,8 @@ describe('compute units', () => {
 			}
 		);
 
-		// Warm-up, and not measured. Markets 2-5 start with `mm_oracle_price == 0`,
-		// which takes the bootstrap branch and skips the step-cap arithmetic.
-		// Without this call every measured row holds some markets on the cheap
-		// path, and fewer of them as n grows. The slope would then measure
-		// bootstrap against steady state rather than the marginal cost.
+		// Warm-up: markets 2-5 bootstrap, skipping step-cap arithmetic.
+		// Normalize the bootstrap path so measured rows reflect marginal cost.
 		await sendAcceptedMmOracleBatch(batchMarketIndexes.length);
 
 		// Batch handler at 1, 2 and 4 markets. The n=1 row is the control. It

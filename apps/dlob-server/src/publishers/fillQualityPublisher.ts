@@ -1,4 +1,8 @@
 /**
+ * allow-verbose: module doc. States the external dependency, the silent
+ * fallback if this stops running, and the timer/gating rationale — none of
+ * which the code below states on its own.
+ *
  * Taker fill quality against the oracle, per market, from Athena into Redis.
  *
  * `/auctionParams` at version 2 and above reads these numbers to widen or
@@ -73,6 +77,7 @@ export async function publishFillQuality(
 				'1e5': result.TakerBuyBpsFromOracle_1e5,
 				'1e6': result.TakerBuyBpsFromOracle_1e6,
 			},
+
 			takerSellBpsFromOracle: {
 				all: result.TakerSellBpsFromOracle_ALL,
 				'1e0': result.TakerSellBpsFromOracle_1e0,
@@ -81,6 +86,7 @@ export async function publishFillQuality(
 				'1e5': result.TakerSellBpsFromOracle_1e5,
 				'1e6': result.TakerSellBpsFromOracle_1e6,
 			},
+
 			updatedAtTs: Date.now(),
 		};
 		const body = JSON.stringify(value);
@@ -96,6 +102,7 @@ export async function publishFillQuality(
 			Date.now() - startedAt
 		}ms`
 	);
+
 	return results.length;
 }
 
@@ -111,6 +118,7 @@ export function startFillQualityPublisher(
 		logger.info(
 			'fill quality analytics disabled; /auctionParams v2+ uses its static offsets'
 		);
+
 		return undefined;
 	}
 

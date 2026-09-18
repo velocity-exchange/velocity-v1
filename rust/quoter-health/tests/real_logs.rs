@@ -55,6 +55,7 @@ fn a_reverting_quoter_is_resolved_from_its_cpi_frame() {
         vec![entry],
         "the frame must still point the router at something to drop"
     );
+
     assert!(verdict.unattributed.is_none());
 }
 
@@ -80,6 +81,7 @@ fn the_tenant_of_a_shared_program_is_resolved_by_frame_order() {
         None,
         RouteContext { entries: &route },
     );
+
     assert_eq!(verdict.suspects, vec![first]);
 }
 
@@ -96,6 +98,7 @@ fn a_quoter_that_was_not_on_the_route_is_never_suspected() {
         Some("InstructionError(0, InvalidInstructionData)"),
         RouteContext { entries: &route },
     );
+
     assert!(verdict.charges.is_empty());
     assert!(verdict.suspects.is_empty());
     assert_eq!(verdict.unattributed, Some(FailReason::Unknown));
@@ -112,6 +115,7 @@ fn a_quoter_velocity_refused_is_charged_from_its_named_line() {
         Some("InstructionError(0, Custom(6129))"),
         RouteContext { entries: &[] },
     );
+
     assert_eq!(verdict.charges.len(), 1);
     assert_eq!(verdict.charges[0].quoter, quoter);
     assert!(verdict.charges[0].proof.is_actionable());
@@ -121,11 +125,8 @@ fn a_quoter_velocity_refused_is_charged_from_its_named_line() {
 
 #[test]
 fn an_anchor_error_is_read_from_the_debug_rendering_velocity_actually_writes() {
-    // `Display for AnchorError` defers to `Debug`, so a `msg!("{}", e)`
-    // writes `error_code_number: 6129`, not the prose `Error Number: 6129`
-    // that `AnchorError::log` produces. Both appear in these logs, from
-    // different call sites, and a parser that knows only the prose form
-    // reads the wrong one.
+    // Display for AnchorError uses Debug format, so msg!() produces
+    // a different format than AnchorError::log() — both appear in these logs.
     let logs = lines("quote_velocity_refusal.log");
     let named = logs
         .iter()
@@ -155,6 +156,7 @@ fn the_routers_own_failure_is_not_charged_to_a_quoter() {
         Some("InstructionError(0, Custom(6010))"),
         RouteContext { entries: &route },
     );
+
     assert!(verdict.charges.is_empty());
     assert!(verdict.suspects.is_empty());
     assert!(verdict.unattributed.is_some());

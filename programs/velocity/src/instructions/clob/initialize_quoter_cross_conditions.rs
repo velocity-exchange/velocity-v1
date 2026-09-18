@@ -58,6 +58,7 @@ pub struct InitializeQuoterCrossConditions<'info> {
             CLOB_CRANK_CONDITIONS_PDA_SEED,
             quoter.load()?.config.market.to_le_bytes().as_ref(),
         ],
+
         bump
     )]
     pub market_conditions: AccountLoader<'info, ClobCrankConditionsV0>,
@@ -75,13 +76,8 @@ pub struct InitializeQuoterCrossConditions<'info> {
 
 /// Ceiling on the cross-discovery poll interval, roughly an hour of slots.
 ///
-/// This instruction is permissionless and re-prices an existing account in
-/// place, so anybody may set the interval on anybody's entry. The interval is
-/// the floor under a maker's own reprice watch, and an unbounded value removes
-/// that floor. The ceiling keeps the worst a third party can do to a bounded
-/// delay rather than an indefinite one. For scale, the liquidation liveness
-/// poll is [`crate::state::user_conditions::LIQ_LIVENESS_POLL_SLOTS`], about
-/// two minutes.
+/// Setting the interval is permissionless, so this bounds what a third party
+/// can do to a maker's own reprice-watch floor to a delay, not indefinite exposure.
 pub const QUOTER_CROSS_FALLBACK_MAX_SLOTS: u64 = 9_000;
 
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
@@ -99,6 +95,7 @@ pub fn handle_initialize_quoter_cross_conditions(
     let InitializeQuoterCrossConditionsArgs {
         expire_fallback_slots,
     } = args;
+
     validate!(
         expire_fallback_slots > 0,
         ErrorCode::DefaultError,
@@ -111,6 +108,7 @@ pub fn handle_initialize_quoter_cross_conditions(
         expire_fallback_slots,
         QUOTER_CROSS_FALLBACK_MAX_SLOTS
     )?;
+
     let slots = ctx.accounts.quoter_slab.slots()?;
     let quoter_slot = slot_for_entry(&slots, &ctx.accounts.quoter.key()).ok_or_else(|| {
         msg!("quoter holds no slab slot; approve it first");
@@ -127,6 +125,7 @@ pub fn handle_initialize_quoter_cross_conditions(
         ErrorCode::InvalidQuoterConfig,
         "quoter must be active and approved to attach cross discovery"
     )?;
+
     let book_slot = clob_slot_index(&slots).ok_or_else(|| {
         msg!("quoter slab holds no book slot");
         error!(ErrorCode::QuoterNotOnSlab)
@@ -150,30 +149,27 @@ pub fn handle_initialize_quoter_cross_conditions(
             market_conditions.top_of_book_len,
         )
     };
+
     validate!(
         top_of_book_len > 0,
         ErrorCode::InvalidQuoterConfig,
         "market conditions carry no top-of-book region; re-run the market's attach"
     )?;
+
     let (oracle, quote_spot_market_index) = {
         let market = ctx.accounts.perp_market.load()?;
         (market.oracle, market.quote_spot_market_index)
     };
     let clob_market = clob.response_account;
 
-    // The resolver's account list, in order: the shared scratch at index 0,
-    // which is where the response pointer says the payload lives, the
-    // conditions, the CLOB book, the state, the market's quoter slab holding
-    // both legs' approved configs, the entry's quoted user, the CLOB program,
-    // then the entry's registered quote surface and its program. That is
-    // everything the two generic quote CPIs need.
-    //
-    // The list is stored once next to the block. Each condition points at it
-    // through relay's resolver-list indirection rather than inlining a copy.
-    //
-    // The book is writable because the resolver quotes it through
-    // `quote_l3_v0`, which streams its answer into the market account's own
-    // response tail. Nothing a resolver sends ever lands.
+    // The resolver's account list, in order: the shared scratch at index 0
+    // (where the response pointer says the payload lives), the conditions,
+    // the CLOB book, the state, the market's quoter slab (both legs'
+    // approved configs), the entry's quoted user, the CLOB program, then the
+    // entry's registered quote surface and its program. That is everything
+    // the two generic quote CPIs need, stored once and pointed at by each
+    // condition through relay's resolver-list indirection. The book is
+    // writable because the resolver streams its quote into the market's own response tail through `quote_l3_v0`; nothing it sends lands.
     let mut resolver_accounts = vec![
         AccountRefV0::writable(crate::state::pdas::relay_scratch().to_bytes()),
         AccountRefV0::readonly(ctx.accounts.cross_conditions.key().to_bytes()),
@@ -183,6 +179,7 @@ pub fn handle_initialize_quoter_cross_conditions(
         AccountRefV0::readonly(quoter.user.to_bytes()),
         AccountRefV0::readonly(clob.program_id.to_bytes()),
     ];
+
     for meta in quoter.leg_metas(quoter.quote_leg_indexes())? {
         resolver_accounts.push(if meta.is_writable {
             AccountRefV0::writable(meta.pubkey.to_bytes())
@@ -190,6 +187,7 @@ pub fn handle_initialize_quoter_cross_conditions(
             AccountRefV0::readonly(meta.pubkey.to_bytes())
         });
     }
+
     resolver_accounts.push(AccountRefV0::readonly(quoter.program_id.to_bytes()));
 
     let disc8 = |disc: &[u8]| -> Result<[u8; 8]> {
@@ -205,6 +203,7 @@ pub fn handle_initialize_quoter_cross_conditions(
         // The account already exists on a re-attach, so re-price in place.
         ctx.accounts.cross_conditions.load_mut()
     })?;
+
     conditions.quoter = ctx.accounts.quoter.key();
     conditions.clob_market = clob_market;
     conditions.clob_program = clob.program_id;
@@ -236,6 +235,7 @@ pub fn handle_initialize_quoter_cross_conditions(
             &relay_spec::bytemuck::Zeroable::zeroed(),
         )?;
     }
+
     conditions.set_condition(
         QUOTER_CROSS_CLOB,
         // The book's own top-of-book region. A crossing order is always a new
@@ -254,5 +254,6 @@ pub fn handle_initialize_quoter_cross_conditions(
         QUOTER_CROSS_FALLBACK,
         &(ConditionV0::every_slots(expire_fallback_slots, spec, resolvers)),
     )?;
+
     Ok(())
 }

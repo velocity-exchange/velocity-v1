@@ -294,6 +294,7 @@ export function registerMultisig(parent: Command): void {
 				'no multisig: pass --multisig <pda> or use a profile that has one'
 			);
 		}
+
 		// This command reads the program coders and the connection only. It does
 		// not subscribe to account state.
 		const client = await buildAdminClient(opts, false);
@@ -921,9 +922,8 @@ function accountFlags(
 }
 
 /**
- * Render one decoded value as a single line. The value can be a pubkey, a BN,
- * or an anchor enum. Instruction arguments and account fields are chain data,
- * so a borsh string can carry terminal escapes. The result is sanitized.
+ * Renders one decoded value as a single line, sanitized because instruction
+ * arguments and account fields are chain data and a borsh string can carry a terminal escape.
  */
 function formatValue(value: unknown): string {
 	return ui.safe(renderValue(value));
@@ -973,6 +973,7 @@ function isLeaf(value: unknown): boolean {
 	if (value instanceof PublicKey || Buffer.isBuffer(value)) {
 		return true;
 	}
+
 	// A BN, or a similar object that stringifies to a meaningful value.
 	return (
 		!Array.isArray(value) &&

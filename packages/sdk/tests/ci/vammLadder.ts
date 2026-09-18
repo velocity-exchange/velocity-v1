@@ -1,11 +1,6 @@
 /**
- * Parity test for the vAMM ladder mirror.
- *
- * The expected levels are not hand-derived: they are the program's own output,
- * dumped by `ts_mirror_fixture::print_ladder_for_ts_mirror` in
- * `programs/velocity/src/vlp/amm/router_adapter.rs` for this exact AMM. Re-run
- * that test (`cargo test -p velocity --lib ts_mirror_fixture -- --nocapture`)
- * and paste its output here whenever the ladder changes on either side.
+ * Parity test for the vAMM ladder mirror. Expected levels come from
+ * `cargo test -p velocity --lib ts_mirror_fixture -- --nocapture`.
  */
 
 import { BN } from '@coral-xyz/anchor';
@@ -24,12 +19,7 @@ import {
 /** `TS_MIRROR long` from the Rust fixture: "price:size" pairs. */
 const RUST_LONG =
 	'50632912:1250000000,51931192:1250000000,53280053:1250000000,54682160:1250000000,56140352:1250000000,57657658:1250000000,59237320:1250000000,60882801:1250000000';
-/**
- * `TS_MIRROR long_capped` / `short_capped`: a 40-base take against the same
- * AMM. The program covers only the per-fill reserve throttle, so the ladder
- * totals 25 base rather than the 40 asked for.
- */
-const RUST_CAPPED_TOTAL = BASE_PRECISION.muln(25);
+const RUST_CAPPED_TOTAL = BASE_PRECISION.muln(25); // TS_MIRROR: 40-base take caps at 25 due to per-fill throttle
 /** `TS_MIRROR short` from the Rust fixture. */
 const RUST_SHORT =
 	'49382716:1250000000,48178259:1250000000,47017337:1250000000,45897877:1250000000,44817927:1250000000,43775649:1250000000,42769312:1250000000,41797283:1250000000';
@@ -95,6 +85,7 @@ describe('vAMM ladder (mirror of vlp/amm/router_adapter.rs)', () => {
 			// Equal-size filler rungs when there are no rival books.
 			assert(levels.every((l) => l.size.eq(levels[0].size)));
 		}
+
 		const longLevels = parse(RUST_LONG);
 		for (let i = 1; i < longLevels.length; i++) {
 			assert(
@@ -102,6 +93,7 @@ describe('vAMM ladder (mirror of vlp/amm/router_adapter.rs)', () => {
 				'long ladder is ascending'
 			);
 		}
+
 		const shortLevels = parse(RUST_SHORT);
 		for (let i = 1; i < shortLevels.length; i++) {
 			assert(
@@ -111,14 +103,8 @@ describe('vAMM ladder (mirror of vlp/amm/router_adapter.rs)', () => {
 		}
 	});
 
-	/**
-	 * The per-fill reserve throttle. `calculate_amm_available_liquidity` caps a
-	 * fill at `base_asset_reserve / max_fill_reserve_fraction`, then at half the
-	 * side's room. The room to the hard reserve bound is far wider, so a mirror
-	 * that used it over-allocates the vAMM in every router split it predicts.
-	 *
-	 * The expectation is the program's own `TS_MIRROR long_capped` total.
-	 */
+	// Per-fill reserve throttle caps depth. A mirror using the wider reserve bound
+	// would over-allocate in every router split prediction.
 	it('caps depth at the per-fill reserve throttle, not the reserve bound', () => {
 		const amm = ammFixture();
 		const step = new BN(1);
@@ -127,6 +113,7 @@ describe('vAMM ladder (mirror of vlp/amm/router_adapter.rs)', () => {
 				calculateAmmAvailableLiquidity(amm as never, direction, step).eq(
 					RUST_CAPPED_TOTAL
 				),
+
 				'available liquidity matches the program'
 			);
 		}

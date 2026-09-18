@@ -244,12 +244,10 @@ pub mod velocity {
         )
     }
 
-    /// Arm trigger orders in the user's own order slots.
-    ///
-    /// A slot holds one unfired conditional. Every other order type rests on
-    /// the market's book, so this endpoint refuses it. One margin check covers
-    /// the whole batch, which is what lets a stop loss and a take profit arrive
-    /// together.
+    /// Arm trigger orders in the user's own order slots. A slot holds one
+    /// unfired conditional, and every other order type rests on the market's
+    /// book instead. One margin check covers the whole batch, so a stop loss
+    /// and a take profit can arrive together.
     pub fn place_trigger_orders_v1<'c: 'info, 'info>(
         ctx: Context<'info, PlaceTriggerOrdersV1>,
         args: PlaceTriggerOrdersV1Args,
@@ -312,11 +310,10 @@ pub mod velocity {
         handle_place_and_take_perp_order_v1(ctx, args)
     }
 
-    /// Rest a maker limit order on the market's CLOB. The order goes straight to
-    /// the book as a maker quote and never occupies a `User.orders` slot.
-    /// `activation_delay_slots` sets the book speed bump. `None` takes the
-    /// default. A value below the default needs the flow-authority
-    /// attestation.
+    /// Rest a maker limit order on the market's CLOB. The order goes straight
+    /// to the book as a maker quote and never occupies a `User.orders` slot.
+    /// `activation_delay_slots` sets the book speed bump, or `None` for the
+    /// default. A value below the default needs the flow-authority attestation.
     pub fn place_and_make_perp_order_v1<'c: 'info, 'info>(
         ctx: Context<'info, PlaceAndMakeV1<'info>>,
         args: PlaceAndMakePerpOrderV1Args,
@@ -324,24 +321,12 @@ pub mod velocity {
         handle_place_and_make_perp_order_v1(ctx, args)
     }
 
-    /// Place, route and rest one signed-message taker order.
-    ///
-    /// The instruction does the whole order in one call. It verifies the
-    /// taker's signature, places the order, routes it through the market's
-    /// quoters and books for whatever fills at or better than the order's
-    /// auction start price, and rests what is left on the market's CLOB as a
-    /// taker-origin remainder. A signed-message order never rests in a slot.
-    ///
-    /// The keeper that builds the transaction is a filler. The taker signed a
-    /// message and not a transaction, so the keeper answers for the account
-    /// list it chose. It must carry every quoter the message named, and it
-    /// owes the taker every maker it had room for.
-    ///
-    /// `flow_attestation` is swift's detached signature over the order's own
-    /// signature plus an expiry. It proves the order served the hold, without
-    /// the flow authority signing this keeper-built transaction. An absent
-    /// attestation reads as unattested. On a book with a speed bump the order
-    /// then rests whole instead of filling.
+    /// Place, route and rest one signed-message taker order in one call. It verifies the signature. It
+    /// routes through the market's quoters and books at or better than the auction start price. It
+    /// rests any remainder as a taker-origin remainder. The order never occupies a slot.
+    /// `flow_attestation` is swift's detached signature over the order and an expiry. It stands in for
+    /// the flow authority's signature on this keeper-built transaction. An absent attestation reads as
+    /// unattested. A book with a speed bump then rests the order whole instead of filling it.
     pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
         ctx: Context<'info, PlaceSignedMsgTakerOrder<'info>>,
         signed_msg_order_params_message_bytes: Vec<u8>,
@@ -450,12 +435,10 @@ pub mod velocity {
         handle_update_user_reduce_only(ctx, _sub_account_id, reduce_only)
     }
 
-    /// Mark a User as vault-owned. Its authority is a vault PDA, and its
-    /// equity prices vault depositor shares. The instruction sets the flag and
-    /// never clears it. Only the User's authority may call it, and the vaults
-    /// program CPIs it at vault init. The revenue-share sweep skips a
-    /// vault-owned User, so a builder or referral reward can never enter vault
-    /// NAV (OtterSec #91/#92/#93).
+    /// Mark a User as vault-owned. Its authority is a vault PDA, and its equity prices vault depositor
+    /// shares. The instruction sets the flag once and never clears it. Only the authority may call it,
+    /// and the vaults program CPIs it at vault init. The revenue-share sweep skips a vault-owned User,
+    /// so a builder or referral reward can never enter vault NAV (OtterSec #91/#92/#93).
     pub fn update_user_vault_owned(ctx: Context<UpdateUser>, _sub_account_id: u16) -> Result<()> {
         handle_update_user_vault_owned(ctx, _sub_account_id)
     }
@@ -1698,14 +1681,10 @@ pub mod velocity {
         handle_withdraw_protocol_fees_perp(ctx, market_index, amount)
     }
 
-    /// Derive a user's whole relay condition block in one pass. The block
-    /// holds the liquidation thresholds and the trigger watches.
-    ///
-    /// This is the default way to sync a user. `sync_liq_conditions` and
-    /// `sync_trigger_conditions` remain for a caller that wants one half. A
-    /// user with orders and no positions needs no thresholds. Both write the
-    /// same account, so calling them in sequence classifies the same
-    /// `remaining_accounts` twice.
+    /// Derive a user's whole relay condition block, the liquidation thresholds and the trigger
+    /// watches, in one pass. `sync_liq_conditions` and `sync_trigger_conditions` remain for a caller
+    /// that wants only one half. Both write the same account, so calling them in sequence classifies
+    /// the same `remaining_accounts` twice.
     pub fn sync_user_conditions<'c: 'info, 'info>(
         ctx: Context<'info, SyncUserConditions<'info>>,
         args: SyncLiqConditionsArgs,
@@ -1755,22 +1734,18 @@ pub mod velocity {
         handle_initialize_relay_scratch(ctx)
     }
 
-    /// Grow a zero-copy account to the size this program build compiles in
-    /// for its type. The account discriminator resolves the type. This is the
-    /// migration crank after an upgrade that appends fields to an account
-    /// struct. It does nothing when the account is already at size. The payer
-    /// covers the rent-exempt shortfall. The authority is the
-    /// `AccountExtension` hot key, or the warm or cold admin. See
-    /// `docs/ACCOUNT-EXTENSION.md`.
+    /// Grow a zero-copy account to the size this program build compiles in for its type. This is the
+    /// migration crank after an upgrade that appends fields to an account struct. It does nothing when
+    /// the account is already at size. The authority is the `AccountExtension` hot key, or the warm or
+    /// cold admin. See `docs/ACCOUNT-EXTENSION.md`.
     pub fn extend_account(ctx: Context<ExtendAccount>) -> Result<()> {
         handle_extend_account(ctx)
     }
 
-    /// Devnet and test builds only. Grows a zero-copy account to an arbitrary
-    /// larger size, so the extension flow can be exercised before a real
-    /// struct extension exists. Production mainnet builds compile it out.
-    /// `anchor-test` keeps it, so the integration suite can exercise extension
-    /// end to end. That suite builds with default features plus `anchor-test`.
+    /// Devnet and test builds only. Grows a zero-copy account to an arbitrary larger size, so the
+    /// extension flow can be exercised before a real struct extension exists. Production mainnet
+    /// builds compile it out. `anchor-test` keeps it, so the integration suite can exercise extension
+    /// end to end.
     #[cfg(any(feature = "anchor-test", not(feature = "mainnet-beta")))]
     pub fn extend_account_devnet(ctx: Context<ExtendAccountDevnet>, new_len: u64) -> Result<()> {
         handle_extend_account_devnet(ctx, new_len)
@@ -2437,15 +2412,10 @@ pub mod velocity {
         handle_crank_cross_match(ctx, args)
     }
 
-    /// Resolve one taker-origin cross on a market's CLOB. The call is
-    /// permissionless. It consumes the crossing counterparty at that
-    /// counterparty's price, removes the migrated taker remainder from the
-    /// book, and settles the pair at the counterparty's price. The taker
-    /// captures the improvement, rather than whoever lands a transaction at
-    /// the activation slot. The cranker is paid a filler reward in quote out
-    /// of that improvement. The reward is capped so the taker's net price
-    /// still beats the price it was resting at. A cross that cannot clear that
-    /// cap is left resting.
+    /// Resolve one taker-origin cross on a market's CLOB. The call is permissionless. It settles the
+    /// crossing counterparty and the migrated remainder at the counterparty's price, so the taker
+    /// captures the improvement. The cranker earns a filler reward from that improvement, capped so
+    /// the taker's net price beats its resting price. A cross that cannot clear the cap is left resting.
     pub fn crank_taker_origin_cross<'c: 'info, 'info>(
         ctx: Context<'info, CrankTakerOriginCross<'info>>,
         args: CrankTakerOriginCrossArgs,
@@ -2462,12 +2432,10 @@ pub mod velocity {
         handle_force_cancel_clob_orders(ctx, args)
     }
 
-    /// Resolver for every condition a market's CLOB cranks wake on. Those are
-    /// an expired order, a side at its eviction threshold, the book crossing
-    /// itself, and the poll that catches a cross a PropAMM created. Relay
-    /// reports which condition fired, so one resolver answers for all of them
-    /// and stages the executor that fits. It returns a response pointer.
-    /// Simulate it rather than landing it.
+    /// Resolver for every condition a market's CLOB cranks wake on. Those are an expired order, a
+    /// side at its eviction threshold, and the book crossing itself. Another is the poll that catches
+    /// a cross a PropAMM created. Relay reports which condition fired, so one resolver stages the
+    /// executor that fits and returns a response pointer. Simulate it rather than landing it.
     pub fn resolve_clob_crank(
         ctx: Context<ResolveClobCrank>,
         fired: FiredConditionArgV0,

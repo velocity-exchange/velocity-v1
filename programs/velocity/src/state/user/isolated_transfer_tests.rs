@@ -510,6 +510,7 @@ fn cannot_transfer_from_isolated_while_clob_order_rests() {
         PythLazerOracle,
         oracle_account_info
     );
+
     let oracle_map =
         OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
@@ -526,6 +527,7 @@ fn cannot_transfer_from_isolated_while_clob_order_rests() {
             base_asset_amount_with_amm: AMM_RESERVE_PRECISION as i128,
             ..AMM::default()
         },
+
         margin_ratio_initial: 1000,
         margin_ratio_maintenance: 500,
         number_of_users_with_base: 1,
@@ -542,6 +544,7 @@ fn cannot_transfer_from_isolated_while_clob_order_rests() {
         },
         ..PerpMarket::default()
     };
+
     create_anchor_account_info!(market, PerpMarket, market_account_info);
     let perp_market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
 
@@ -564,6 +567,7 @@ fn cannot_transfer_from_isolated_while_clob_order_rests() {
         },
         ..SpotMarket::default()
     };
+
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
     let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
     let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);

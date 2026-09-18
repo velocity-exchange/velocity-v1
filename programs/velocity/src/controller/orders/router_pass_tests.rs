@@ -43,6 +43,7 @@ fn response_account(
         account: anchor_lang::prelude::AccountInfo::new(
             key, false, true, lamports, data, owner, false,
         ),
+
         start: 0,
         end: len,
     }
@@ -57,6 +58,7 @@ fn get_fee_structure() -> FeeStructure {
         maker_rebate_denominator: ONE_BPS_DENOMINATOR,
         ..FeeTier::default()
     };
+
     FeeStructure {
         fee_tiers,
         ..FeeStructure::test_default()
@@ -184,6 +186,7 @@ pub mod amm_jit {
             price: u64,
             requested: u64,
         }
+
         impl ExternalQuoterExecutor<'static> for MockCustomExecutor {
             fn quoter_type(&self, _index: usize) -> QuoterType {
                 QuoterType::Custom
@@ -236,6 +239,7 @@ pub mod amm_jit {
             PythLazerOracle,
             oracle_account_info
         );
+
         let mut oracle_map =
             OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
@@ -251,6 +255,7 @@ pub mod amm_jit {
                 base_spread: 20000,
                 ..AMM::default()
             },
+
             base_asset_amount_long: (AMM_RESERVE_PRECISION / 2) as i128,
             order_step_size: 1000,
             order_tick_size: 1,
@@ -265,11 +270,13 @@ pub mod amm_jit {
                 },
                 ..MarketStats::default()
             },
+
             margin_ratio_initial: 1000,
             margin_ratio_maintenance: 500,
             status: MarketStatus::Initialized,
             ..PerpMarket::default_test()
         };
+
         market.amm.max_base_asset_reserve = u64::MAX as u128;
         market.amm.min_base_asset_reserve = 0;
 
@@ -286,6 +293,7 @@ pub mod amm_jit {
             historical_oracle_data: HistoricalOracleData::default_price(QUOTE_PRECISION_I64),
             ..SpotMarket::default()
         };
+
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
         let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
@@ -304,12 +312,14 @@ pub mod amm_jit {
                 auction_duration: 0,
                 ..Order::default()
             }),
+
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 open_orders: 1,
                 open_bids: BASE_PRECISION_I64,
                 ..PerpPosition::default()
             }),
+
             spot_positions: get_spot_positions(SpotPosition {
                 market_index: 0,
                 balance_type: SpotBalanceType::Deposit,
@@ -336,6 +346,7 @@ pub mod amm_jit {
             }),
             ..User::default()
         };
+
         create_anchor_account_info!(custom_maker, &custom_maker_key, User, custom_maker_info);
         let makers_and_referrers = UserMap::load_one(&custom_maker_info).unwrap();
 
@@ -347,6 +358,7 @@ pub mod amm_jit {
             authority: custom_maker_authority,
             ..UserStats::default()
         };
+
         create_anchor_account_info!(custom_maker_stats, UserStats, custom_maker_stats_info);
         let maker_and_referrer_stats = UserStatsMap::load_one(&custom_maker_stats_info).unwrap();
         let mut filler_stats = UserStats::default();
@@ -366,6 +378,7 @@ pub mod amm_jit {
                 authority: custom_maker_authority,
                 sub_account_id: 0,
             },
+
             price: 99 * PRICE_PRECISION_U64,
             requested: 0,
         };
@@ -383,6 +396,7 @@ pub mod amm_jit {
                     unrouted_quoters: 0,
                 },
             },
+
             worst_fill_price: None,
         };
 
@@ -442,11 +456,13 @@ pub mod amm_jit {
             taker.perp_positions[0].base_asset_amount,
             BASE_PRECISION_I64
         );
+
         let custom_maker_after = makers_and_referrers.get_ref(&custom_maker_key).unwrap();
         assert_eq!(
             custom_maker_after.perp_positions[0].base_asset_amount,
             -(requested as i64)
         );
+
         let market_after = maps.perp_market_map.get_ref(&0).unwrap();
         assert_eq!(
             market_after.amm.base_asset_amount_with_amm,
@@ -478,6 +494,7 @@ pub mod amm_jit {
             prices: [u64; 2],
             requested: [u64; 2],
         }
+
         impl ExternalQuoterExecutor<'static> for MockTwoBookExecutor {
             fn quoter_type(&self, index: usize) -> QuoterType {
                 if index == 0 {
@@ -523,6 +540,7 @@ pub mod amm_jit {
                 } else {
                     &[]
                 };
+
                 Ok(response_account(
                     &[UserBalanceChangeV0 {
                         base_size: size,
@@ -547,6 +565,7 @@ pub mod amm_jit {
             PythLazerOracle,
             oracle_account_info
         );
+
         let mut oracle_map =
             OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
@@ -562,6 +581,7 @@ pub mod amm_jit {
                 base_spread: 20000,
                 ..AMM::default()
             },
+
             base_asset_amount_long: (AMM_RESERVE_PRECISION / 2) as i128,
             order_step_size: 1000,
             order_tick_size: 1,
@@ -576,11 +596,13 @@ pub mod amm_jit {
                 },
                 ..MarketStats::default()
             },
+
             margin_ratio_initial: 1000,
             margin_ratio_maintenance: 500,
             status: MarketStatus::Initialized,
             ..PerpMarket::default_test()
         };
+
         market.amm.max_base_asset_reserve = u64::MAX as u128;
         market.amm.min_base_asset_reserve = 0;
 
@@ -597,6 +619,7 @@ pub mod amm_jit {
             historical_oracle_data: HistoricalOracleData::default_price(QUOTE_PRECISION_I64),
             ..SpotMarket::default()
         };
+
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
         let mut maps = AccountMaps::new(market_map, spot_market_map, oracle_map);
@@ -614,12 +637,14 @@ pub mod amm_jit {
                 price: 105 * PRICE_PRECISION_U64,
                 ..Order::default()
             }),
+
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
                 open_orders: 1,
                 open_bids: BASE_PRECISION_I64,
                 ..PerpPosition::default()
             }),
+
             spot_positions: get_spot_positions(SpotPosition {
                 market_index: 0,
                 balance_type: SpotBalanceType::Deposit,
@@ -645,6 +670,7 @@ pub mod amm_jit {
                 open_asks: -BASE_PRECISION_I64 / 2,
                 ..PerpPosition::default()
             }),
+
             spot_positions: get_spot_positions(SpotPosition {
                 market_index: 0,
                 balance_type: SpotBalanceType::Deposit,
@@ -653,6 +679,7 @@ pub mod amm_jit {
             }),
             ..User::default()
         };
+
         create_anchor_account_info!(clob_maker, &clob_maker_key, User, clob_maker_info);
         let mut makers_and_referrers = UserMap::load_one(&clob_maker_info).unwrap();
 
@@ -673,6 +700,7 @@ pub mod amm_jit {
             }),
             ..User::default()
         };
+
         create_anchor_account_info!(custom_maker, &custom_maker_key, User, custom_maker_info);
         makers_and_referrers.0.insert(
             custom_maker_key,
@@ -687,17 +715,20 @@ pub mod amm_jit {
             authority: clob_maker_authority,
             ..UserStats::default()
         };
+
         create_anchor_account_info!(clob_maker_stats, UserStats, clob_maker_stats_info);
         let mut maker_and_referrer_stats = UserStatsMap::load_one(&clob_maker_stats_info).unwrap();
         let mut custom_maker_stats = UserStats {
             authority: custom_maker_authority,
             ..UserStats::default()
         };
+
         create_anchor_account_info!(custom_maker_stats, UserStats, custom_maker_stats_info);
         maker_and_referrer_stats.0.insert(
             custom_maker_authority,
             anchor_lang::prelude::AccountLoader::try_from(&custom_maker_stats_info).unwrap(),
         );
+
         let mut filler_stats = UserStats::default();
 
         // The CLOB at 99 and the PropAMM at 100. The split is price-first, so
@@ -735,6 +766,7 @@ pub mod amm_jit {
                     sub_account_id: 0,
                 },
             ],
+
             prices: [99 * PRICE_PRECISION_U64, 100 * PRICE_PRECISION_U64],
             requested: [0; 2],
         };
@@ -752,6 +784,7 @@ pub mod amm_jit {
                     unrouted_quoters: 0,
                 },
             },
+
             worst_fill_price: None,
         };
 
@@ -817,6 +850,7 @@ pub mod amm_jit {
             clob_maker_after.perp_positions[0].base_asset_amount,
             -BASE_PRECISION_I64 / 2
         );
+
         // The book's reservation unwound; the PropAMM had none to unwind.
         assert_eq!(clob_maker_after.perp_positions[0].open_asks, 0);
         assert_eq!(clob_maker_after.perp_positions[0].open_orders, 0);
@@ -1004,10 +1038,12 @@ pub mod hostile_book_reports {
             open_orders: 1,
             ..PerpPosition::default()
         };
+
         match direction {
             PositionDirection::Long => position.open_bids = base as i64,
             PositionDirection::Short => position.open_asks = -(base as i64),
         }
+
         position
     }
 
@@ -1019,6 +1055,7 @@ pub mod hostile_book_reports {
             open_asks: -2 * BASE_PRECISION_I64,
             ..PerpPosition::default()
         };
+
         assert_eq!(
             position.reserved_open_base(PositionDirection::Long),
             3 * BASE_PRECISION_U64
@@ -1075,6 +1112,7 @@ pub mod hostile_book_reports {
             market_index: 0,
             ..PerpPosition::default()
         };
+
         assert_eq!(
             release_reserved_open_base(&mut position, &PositionDirection::Long, 1),
             Err(ErrorCode::QuoterReportExceedsReservation)
@@ -1099,6 +1137,7 @@ pub mod hostile_book_reports {
             open_orders: 2,
             ..PerpPosition::default()
         };
+
         release_reserved_open_orders(&mut position, 2).unwrap();
         assert_eq!(position.open_orders, 0);
         assert_eq!(
@@ -1127,9 +1166,11 @@ pub mod hostile_book_reports {
                 open_orders: 1,
                 ..PerpPosition::default()
             }),
+
             orders: crate::test_utils::get_orders(placed),
             ..User::default()
         };
+
         user.orders[0].set_clob_order_ref(0, 7);
 
         assert_eq!(

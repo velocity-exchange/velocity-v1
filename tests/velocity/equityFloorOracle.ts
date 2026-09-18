@@ -38,20 +38,8 @@ import {
 // InvalidOracle
 const INVALID_ORACLE_HEX = '0x1793';
 
-// Equity-floor gates against an invalid oracle (OtterSec #131/#139/#142).
-//
-// `calculate_user_equity` prices every position at the raw live oracle price
-// and reports the oracle-validity verdict separately. Every floor gate once
-// discarded that verdict. These tests pin the current behavior:
-//
-//  - A gate that authorizes an action fails closed on the verdict. Any invalid
-//    oracle rejects with `InvalidOracle`, so a stale-high price cannot buy a
-//    withdrawal down through the floor.
-//  - The floor-shed defusal guard rejects an invalid oracle outright, so it
-//    agrees with `trip_equity_floor_breaker`, which already did.
-//  - The trip uses a user-favorable upper bound. An invalid-oracle liability
-//    or short counts at zero. Any invalid-oracle asset or long keeps the
-//    breach unprovable and rejects with `InvalidOracle`.
+// Equity-floor gates against invalid oracle (OtterSec #131/#139/#142).
+// Authorization gates fail closed. Trip uses user-favorable upper bound.
 describe('equity floor oracle validity', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
 

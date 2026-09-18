@@ -150,6 +150,7 @@ pub fn validate_market_within_price_band(
                 reserve_price,
                 reserve_spread_pct,
             );
+
             return Err(ErrorCode::PriceBandsBreached);
         }
     } else {
@@ -169,6 +170,7 @@ pub fn validate_market_within_price_band(
                 oracle_price,
                 oracle_spread_pct,
             );
+
             return Err(ErrorCode::PriceBandsBreached);
         }
     }
@@ -276,12 +278,10 @@ fn cancel_reduce_only_trigger_orders(
             continue;
         }
 
-        // A placed trigger's slot is a shadow, and its live order rests on
-        // the CLOB. `cancel_order` refuses such a slot, because cancelling the
-        // shadow strands the CLOB order and unwinds its accounting twice. The
-        // slot also holds an `open_bids` or `open_asks` reservation, so the
-        // flat position this sweep runs under already puts it out of reach.
-        // Skip it here as well, so the sweep does not depend on that.
+        // A placed trigger's slot is a shadow; `cancel_order` refuses it because
+        // cancelling would strand the live CLOB order and unwind its accounting
+        // twice. The slot also holds an `open_bids` or `open_asks` reservation,
+        // but the flat position this sweep runs under already excludes it, so skip it here too.
         if user.orders[order_index].is_placed_on_clob() {
             continue;
         }
@@ -341,5 +341,6 @@ fn safe_mm_oracle_state(
         slot,
         state.slot_clock(),
     )?;
+
     Ok((mm_oracle_price_data, safe_oracle_validity))
 }

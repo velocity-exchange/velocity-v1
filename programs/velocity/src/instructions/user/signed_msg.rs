@@ -25,12 +25,10 @@ pub fn handle_resize_signed_msg_user_orders<'c: 'info, 'info>(
     num_orders: u16,
 ) -> Result<()> {
     let signed_msg_user_orders = &mut ctx.accounts.signed_msg_user_orders;
-    // The SignedMsgUserOrders account is authority-scoped and shared across all of the
-    // authority's subaccounts (its replay-protection UUIDs cover every subaccount). A
-    // per-subaccount delegate must therefore not be able to shrink it: shrinking evicts
-    // active UUIDs belonging to other subaccounts and re-enables replay of their signed
-    // orders. Only the authority itself (which owns every subaccount) may shrink; anyone
-    // else may only grow the account (and pays for the extra rent).
+    // SignedMsgUserOrders is authority-scoped and shared across the authority's subaccounts, and
+    // its replay-protection UUIDs cover every one. Shrinking it evicts active UUIDs of other
+    // subaccounts and re-enables replay of their signed orders, so only the authority may shrink
+    // it, not a per-subaccount delegate. Anyone else may only grow it and pays the rent.
     if ctx.accounts.payer.key != ctx.accounts.authority.key {
         validate!(
             num_orders as usize >= signed_msg_user_orders.signed_msg_order_data.len(),

@@ -489,12 +489,11 @@ pub fn add_builder_order<'a, 'b>(
         (Some(idx), Some(fee)) => (idx, fee),
         _ => return Ok(None),
     };
+
     // A requested builder fee must reserve a row. An absent or full escrow that
-    // returned `Ok(None)` would drop the `HasBuilder` bit, and the fill would
-    // then charge no builder fee. A taker could avoid the fee by zero-sizing an
-    // order or by filling the escrow's order list. The placement is rejected
-    // instead (OtterSec #82). `validate_builder_fee` already errors on an absent
-    // escrow when a fee is requested, so this `None` case is a second guard.
+    // silently returned `Ok(None)` would drop the `HasBuilder` bit and let a
+    // taker dodge the fee by zero-sizing or filling the order list, so placement
+    // is rejected instead (OtterSec #82); `validate_builder_fee` is the first guard.
     let escrow = escrow
         .as_mut()
         .ok_or(ErrorCode::UnableToLoadRevenueShareAccount)?;
@@ -537,6 +536,7 @@ pub fn tx_compute_budget(instructions_sysvar: &AccountInfo) -> VelocityResult<(u
     use {
         solana_program::sysvar::instructions::load_instruction_at_checked, std::convert::TryInto,
     };
+
     /// `ComputeBudget111111111111111111111111111111`.
     const COMPUTE_BUDGET_ID: Pubkey =
         solana_program::pubkey!("ComputeBudget111111111111111111111111111111");
@@ -552,6 +552,7 @@ pub fn tx_compute_budget(instructions_sysvar: &AccountInfo) -> VelocityResult<(u
         if instruction.program_id != COMPUTE_BUDGET_ID {
             continue;
         }
+
         match instruction.data.split_first() {
             Some((&SET_UNIT_PRICE, rest)) if rest.len() >= 8 => {
                 price = u64::from_le_bytes(rest[..8].try_into().unwrap());
@@ -562,6 +563,7 @@ pub fn tx_compute_budget(instructions_sysvar: &AccountInfo) -> VelocityResult<(u
             _ => {}
         }
     }
+
     Ok((price, limit))
 }
 
@@ -570,12 +572,10 @@ pub fn tx_compute_budget(instructions_sysvar: &AccountInfo) -> VelocityResult<(u
 ///
 /// The transaction pays the priority fee once, and [`tx_compute_budget`] reports
 /// that one figure. A crank that reimburses against it divides by the number of
-/// peers that do the same. Otherwise a transaction that batches N of them
-/// collects N times one fee. The count matches on the discriminator, so an
-/// unrelated velocity instruction in the transaction does not dilute the share.
-///
-/// The result is never zero. The instruction that asks is itself a claimant, and
-/// a sysvar that cannot be read answers one rather than zero.
+/// peers doing the same, else a transaction batching N of them collects N times
+/// one fee. The count matches on the discriminator, so an unrelated velocity
+/// instruction does not dilute the share. The result is never zero: the asking
+/// instruction is itself a claimant, and an unreadable sysvar answers one.
 pub fn tx_reimbursement_claimants(
     instructions_sysvar: &AccountInfo,
     discriminator: &[u8],
@@ -592,28 +592,21 @@ pub fn tx_reimbursement_claimants(
             claimants = claimants.saturating_add(1);
         }
     }
+
     Ok(claimants.max(1))
 }
 
 /// Distinct accounts this transaction locks.
 ///
-/// The runtime caps a transaction at 64 account locks. That cap is the scarce
-/// resource on a router fill, because a CLOB maker costs two accounts and a
-/// custom quoter costs five. A caller that omits a maker is held to whether it
-/// had room for one, and this is one of the two counts that answer that.
-///
-/// The count is an upper bound. A writable meta may name any pubkey, including
-/// one that holds no account, so a caller can raise the number for the price of
-/// 32 bytes of transaction per key. The second count is the one a caller cannot
-/// inflate, which is the set of locks velocity verified itself.
-/// `withheld_obligation` takes both counts and uses the smaller one.
-///
-/// The count covers the whole transaction rather than one instruction. A fill
-/// often travels with a force-cancel ahead of it, and those accounts hold locks
-/// too. Counting one instruction would report room the transaction does not
-/// have.
-///
-/// The scan is bounded. The cap is 64, so the scan stops there and reports 64.
+/// The runtime caps a transaction at 64 account locks, the scarce resource on
+/// a router fill (a CLOB maker costs two, a custom quoter costs five), so this
+/// is one of two counts telling a caller whether it had room for an omitted
+/// maker. The count is an upper bound: a writable meta can name any pubkey,
+/// even one with no account, so a caller can inflate it for 32 bytes per key.
+/// The other count, of locks velocity verified itself, cannot be inflated;
+/// `withheld_obligation` takes the smaller of the two. The count covers the
+/// whole transaction, since a force-cancel ahead of a fill locks accounts
+/// too, and the scan is capped at 64.
 pub fn tx_writable_lock_count(instructions_sysvar: &AccountInfo) -> VelocityResult<usize> {
     use solana_program::sysvar::instructions::load_instruction_at_checked;
     const CAP: usize = 64;
@@ -637,9 +630,11 @@ pub fn tx_writable_lock_count(instructions_sysvar: &AccountInfo) -> VelocityResu
             if count == CAP {
                 return Ok(CAP);
             }
+
             seen[count] = meta.pubkey;
             count += 1;
         }
     }
+
     Ok(count)
 }

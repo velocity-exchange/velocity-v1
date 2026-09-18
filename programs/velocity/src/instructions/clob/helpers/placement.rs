@@ -25,14 +25,10 @@ use {
     anchor_lang::prelude::*,
 };
 
-/// The restable remainder of `order` for its owner. It carries the direction,
-/// the rest price, the base still unfilled, and the facts the rest needs.
-/// [`restable_remainder_price`] returns `None` when the order's own rules keep
-/// it off the book. An `unfilled` of zero is the caller's to skip, because some
-/// routes cancel first either way.
-///
-/// Every route that migrates a remainder uses this one derivation, so a
-/// remainder that rests on one route rests on all of them.
+/// A remainder of `order` that can rest, or `None` when
+/// [`restable_remainder_price`] refuses it. An `unfilled` of zero is the
+/// caller's to skip. Some routes cancel first anyway. Every migrating route
+/// uses this one derivation, so a remainder rests the same on every route.
 pub struct RestableRemainder {
     pub direction: crate::controller::position::PositionDirection,
     pub price: u64,
@@ -65,39 +61,10 @@ pub fn restable_remainder(
     })
 }
 
-/// The price an unfilled remainder can rest at on the book, or `None` when it
-/// cannot rest at all.
-///
-/// Both fill routes apply this one rule. A remainder that rests on one route
-/// and not on the other is a remainder whose fate depends on which keeper
-/// reached it. An order left in a `User.orders` slot is an order nothing will
-/// fill, because nothing matches slots any more.
-///
-/// A `Market` order's own `price` is zero. Its bound lives in
-/// `auction_end_price`, which is the worst fill it already agreed to. That is
-/// the only price it can rest at. Resting there is safe because a migrated
-/// remainder is taker-origin. It cannot be taken while a live counterparty
-/// crosses it, and a cross settles at the counterparty's price. A maker that
-/// arrives during the activation window therefore competes on price rather than
-/// on transaction landing. Without that protection this would be a free option
-/// written at the taker's own worst price.
-///
-/// Every other order type stays behind. An `OrderType::Oracle` order prices its
-/// bound relative to the oracle for its whole life, so it has nothing fixed to
-/// rest at, and the type match refuses it. It is also the one order type that
-/// still carries `oracle_price_offset`, because validation refuses that field
-/// on every other type. No separate offset check is needed here. A
-/// trigger-limit has its own placement path. A fired trigger-market does rest.
-/// Once it fires it is a plain market order, and its remainder belongs on the
-/// book. A reduce-only order rests too, because the router carries an
-/// authoritative `base_cover` and the book clamps every fill against it to the
-/// position the order may reduce.
-///
-/// A `post_only` order never migrates. It is a maker's own quote rather than a
-/// taker remainder. Migrating it would cancel the maker's resting order, hide
-/// it for the activation window, and re-place it as `taker_origin`. A later
-/// cross would then charge the maker taker fees on a quote it posted as a
-/// maker. A maker order belongs where its owner placed it.
+/// The price a remainder can rest at, or `None` when it cannot rest. A
+/// market or fired trigger-market rests at its auction bound, its worst
+/// agreed price. Resting there is safe. A taker-origin remainder can be
+/// crossed only at the counterparty's price, never taken as a free option.
 pub fn restable_remainder_price(
     order: &crate::state::user::Order,
     // The oracle price a fired trigger-market's auction is relative to. An
@@ -113,6 +80,7 @@ pub fn restable_remainder_price(
     if order.status != OrderStatus::Open || order.post_only {
         return None;
     }
+
     let price = match order.order_type {
         OrderType::Limit => order.price,
         // A market order and a fired trigger-market both rest at their
@@ -136,34 +104,29 @@ pub fn restable_remainder_price(
         }
         _ => return None,
     };
+
     (price != 0).then_some(price)
 }
 
-/// Snap a rest price to the book's `tick_size`, within the order's own auction
-/// bound. The book rejects a price that is not a multiple of the tick with
-/// `PriceNotTickAligned`, and a fired trigger-market rests at the oracle plus
-/// an arbitrary offset. The rounding goes toward the price the order already
-/// agreed to and never past it. A short's ask rounds up, so the rest never sits
-/// below the floor it agreed to sell at. A long's bid rounds down, so the rest
-/// never sits above the ceiling it agreed to pay. A `tick_size` of zero or one
-/// aligns every price, so the rounding changes nothing.
+/// Snap a rest price to the book's `tick_size`. A fired trigger-market's
+/// price is the oracle plus an arbitrary offset, and the book rejects a
+/// non-tick price with `PriceNotTickAligned`. Rounding favors the order's
+/// own agreed price: a short rounds up, a long rounds down.
 pub fn align_rest_price_to_tick(price: u64, tick_size: u64, direction: PositionDirection) -> u64 {
     if tick_size <= 1 {
         return price;
     }
+
     match direction {
         PositionDirection::Short => price.div_ceil(tick_size).saturating_mul(tick_size),
         PositionDirection::Long => (price / tick_size).saturating_mul(tick_size),
     }
 }
 
-/// Gate a below-default activation delay on the flow authority's attestation.
-///
-/// The speed bump is the taker protection that replaced just-in-time matching.
-/// Only attested flow may skip it. Attested flow is a transaction that the flow
-/// authority, swift, signed as a named account after serving the hold window
-/// off-chain. A delay at or above the book's default needs no attestation, and
-/// `None` takes the default.
+/// Gate a below-default activation delay on the flow authority's
+/// attestation. The speed bump is the taker protection that replaced
+/// just-in-time matching. Attested flow is a transaction the flow
+/// authority, swift, signed after serving the hold window off-chain.
 pub fn attest_activation_delay(
     quoter_slab: &AccountLoader<QuoterSlabV0>,
     market_index: u16,
@@ -176,6 +139,7 @@ pub fn attest_activation_delay(
     let Some(requested) = requested else {
         return Ok(());
     };
+
     // The mirror the attach wrote, rather than a CPI. See
     // `QuoterConfigV0::book_tick_size`.
     let default_delay = quoter_slab
@@ -185,6 +149,7 @@ pub fn attest_activation_delay(
     if requested >= default_delay {
         return Ok(());
     }
+
     validate!(
         attested,
         ErrorCode::UnattestedFastActivation,
@@ -193,6 +158,7 @@ pub fn attest_activation_delay(
         requested,
         default_delay
     )?;
+
     Ok(())
 }
 
@@ -212,6 +178,7 @@ pub fn synchronous_take_allowed(
     if taker_served_window {
         return Ok(true);
     }
+
     // The mirror the attach wrote, rather than a CPI. The slab is already
     // loaded on every path that asks.
     Ok(quoter_slab
@@ -221,12 +188,10 @@ pub fn synchronous_take_allowed(
         == 0)
 }
 
-/// Why the book would refuse to hold a remainder.
-///
-/// Each variant names one rule `place_order_v0` enforces. Velocity tests them
-/// itself because a failed CPI aborts the whole transaction. A rejection the
-/// caller could have predicted would otherwise fail the fill that carried the
-/// remainder.
+/// Why the book would refuse to hold a remainder. Each variant names one
+/// rule `place_order_v0` enforces. Velocity tests them itself because a
+/// failed CPI aborts the whole transaction, and a rejection the caller
+/// could have predicted would otherwise fail the fill that carried it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RestRefusal {
     /// The market's book slot is inactive, unapproved, or suspended.
@@ -254,20 +219,14 @@ pub enum RestAdmission {
     Refused(RestRefusal),
 }
 
-/// Ask the book for its placement rules and hold the remainder to every one of
-/// them velocity can test before it commits.
-///
-/// This is one read-only CPI, `order_rules_v0`, and it replaces the slab's
-/// mirrored copy of the same numbers rather than adding to it. The attach
-/// writes the mirror. The book's own authority can move its tick, step, minimum
-/// and maximum delay afterwards, and a remainder measured against a stale
-/// mirror reverts the fill that carried it.
-///
-/// One rejection stays unpredictable, and is named here so a reader does not
-/// look for it. `OrderWouldCross` needs the opposite best price, which
-/// `next_cross_v0` reports and velocity's wire does not call. Only a post-only
-/// maker place asks for that rejection, and no fill has landed on that path for
-/// a revert to destroy.
+/// Ask the book for its placement rules and hold the remainder to every
+/// rule velocity can test before it commits. This is one read-only CPI,
+/// `order_rules_v0`, replacing the slab's mirrored copy rather than
+/// adding to it. The book's authority can move its tick, step, minimum,
+/// and maximum delay after the attach wrote the mirror, so a
+/// stale-mirror remainder reverts the fill that carried it.
+/// `OrderWouldCross` stays untested: only a post-only maker place asks
+/// for it, and velocity's wire never calls `next_cross_v0` to check it.
 pub fn clob_admits_rest(
     clob: &ClobMarket<'_, '_>,
     direction: PositionDirection,
@@ -304,9 +263,11 @@ pub fn rest_admission(
     {
         return RestAdmission::Refused(RestRefusal::SizeBelowMinimum);
     }
+
     if !base_asset_amount.is_multiple_of(rules.step_size.max(1)) {
         return RestAdmission::Refused(RestRefusal::SizeOffStep);
     }
+
     // A fired trigger-market rests at the oracle plus its auction offset,
     // which is an arbitrary value. Snap it toward the price the order already
     // agreed to, then hold the result to the book's rule.
@@ -314,6 +275,7 @@ pub fn rest_admission(
     if price == 0 || !price.is_multiple_of(rules.tick_size.max(1)) {
         return RestAdmission::Refused(RestRefusal::PriceOffTick);
     }
+
     // The book takes `max_ts == 0` as good till cancelled and refuses any
     // other value at or before now.
     if max_ts != 0 && max_ts <= now {
@@ -322,40 +284,29 @@ pub fn rest_admission(
     if activation_delay_slots.is_some_and(|delay| delay > rules.max_activation_delay_slots) {
         return RestAdmission::Refused(RestRefusal::DelayAboveMaximum);
     }
-    // The arena is shared, so each side holds at most half of it. A full side
-    // refuses every placement, including a better priced one, until a crank
-    // takes a tail. The counts are a fact about the slot the book answered in.
-    // Nothing else writes the book between that answer and the placement in the
-    // same instruction, so the reading holds until velocity commits.
+
+    // The arena is shared, so each side holds at most half of it. A full
+    // side refuses every placement, including a better priced one, until a
+    // crank takes a tail. Nothing else writes the book between this answer
+    // and the placement in the same instruction, so it still holds.
     let side = match direction {
         PositionDirection::Long => 0,
         PositionDirection::Short => 1,
     };
+
     if rules.side_order_counts[side] >= rules.arena_capacity / 2 {
         return RestAdmission::Refused(RestRefusal::SideAtCapacity);
     }
+
     RestAdmission::Admitted { price }
 }
 
-/// Rest an unfilled taker remainder on the CLOB. A remainder that can rest and
-/// be matched lives on the book rather than in `User.orders`.
-///
-/// Returns the CLOB order id the remainder now rests as. A caller that has to
-/// find the order again later needs that id. A signed-message taker records it
-/// on its own message entry, which is how the fill at the activation slot knows
-/// which route the taker chose.
-///
-/// Three cases return `Ok(None)` rather than reverting the whole call: a dead
-/// book slot, a failed margin re-reserve, and a remainder the book's own rules
-/// refuse. In all three the remainder stays cancelled and the fill stands. The
-/// fill already happened and already cancelled the order, so a remainder that
-/// cannot rest never reverts it. [`clob_admits_rest`] is what makes that true.
-/// A failed CPI aborts the transaction, so velocity tests every rule it can
-/// before the CPI. The two rules it cannot test are named there.
-///
-/// The routes that hold CLOB accounts call this:
-/// `place_and_take_perp_order_v1`, `place_and_make_perp_order_v1`,
-/// and `place_signed_msg_taker_order`.
+/// Rest an unfilled taker remainder on the CLOB. Returns the CLOB order id,
+/// which a signed-message taker records so the fill at the activation slot
+/// can find its route. A dead book slot, a failed margin re-reserve, or a
+/// remainder the book's rules refuse all return `Ok(None)` instead of
+/// reverting: the fill already landed and canceled the order, so a
+/// remainder that cannot rest must never undo it.
 #[allow(clippy::too_many_arguments)]
 pub fn try_place_remainder_on_clob<'info>(
     user_loader: &AccountLoader<'info, User>,
@@ -373,19 +324,14 @@ pub fn try_place_remainder_on_clob<'info>(
     // the records before and in the records after.
     client_order_id: u32,
     // Whether this remainder rests as a taker-origin order. A taker's own
-    // remainder rests `true`, which covers `place_and_take` and a keeper fill.
-    // A live counterparty then crosses it at the counterparty's price rather
-    // than taking it at its own price. A maker's own remainder from
-    // `place_and_make` rests `false`, because it is a maker quote. Resting it
-    // taker-origin would charge its owner taker fees when a later order crossed
-    // it. A maker rest also refuses to rest crossed, which is what post-only
-    // asked for.
+    // remainder rests `true`, so a live counterparty crosses it at the
+    // counterparty's price rather than at its own. A maker's remainder from
+    // `place_and_make` rests `false`, to avoid taker fees on a later cross.
     taker_origin: bool,
     // Refuse to rest when the order would cross the opposite best price,
-    // rather than resting it crossed. A post-only maker asks for this. A taker
-    // remainder passes `false`, because it came to trade and must rest even
-    // when crossed. The cross crank then matches it at the counterparty's
-    // price.
+    // rather than resting it crossed. A post-only maker asks for this. A
+    // taker remainder passes `false`: it must rest even when crossed, and
+    // the cross crank matches it at the counterparty's price.
     reject_if_crossed: bool,
     // Whether this order only reduces its owner's position. The book clamps a
     // fill against it to the owner's `base_cover` cap, so a reduce-only order
@@ -404,8 +350,10 @@ pub fn try_place_remainder_on_clob<'info>(
             "book refuses the remainder ({:?}); stays cancelled",
             RestRefusal::BookClosed
         );
+
         return Ok(None);
     }
+
     let clob = ClobMarket::from_slab(quoter_slab, market_index, clob_market, clob_program)?;
 
     // Every book rule velocity can test, tested before the CPI that would
@@ -438,11 +386,13 @@ pub fn try_place_remainder_on_clob<'info>(
         if user.is_bankrupt() {
             return Ok(None);
         }
+
         let position_index = get_position_index(&user.perp_positions, market_index)
             .or_else(|_| add_new_position(&mut user.perp_positions, market_index))?;
         if user.perp_positions[position_index].open_orders == u8::MAX {
             return Ok(None);
         }
+
         let risk_increasing = !is_order_position_reducing(
             &direction,
             base_asset_amount,
@@ -475,6 +425,7 @@ pub fn try_place_remainder_on_clob<'info>(
             msg!("remainder fails the placement margin gate; stays cancelled");
             return Ok(None);
         }
+
         user.clob_user_ref()
     };
 
@@ -485,6 +436,7 @@ pub fn try_place_remainder_on_clob<'info>(
         PositionDirection::Long => ClobSide::Bid,
         PositionDirection::Short => ClobSide::Ask,
     };
+
     // A failed CPI aborts the transaction, so this call has no error arm to
     // handle. `clob_admits_rest` above catches every rejection it can. What is
     // left here is `OrderWouldCross` for a post-only maker, which fails the
@@ -523,6 +475,7 @@ pub fn try_place_remainder_on_clob<'info>(
             base_asset_amount,
             true,
         )?;
+
         user.perp_positions[position_index].open_orders += 1;
         user.increment_open_orders(false);
         // A reduce-only rest arms the position's counter. The router then caps
@@ -531,6 +484,7 @@ pub fn try_place_remainder_on_clob<'info>(
         if reduce_only {
             user.perp_positions[position_index].arm_reduce_only_clob();
         }
+
         user.update_last_active_slot(clock.slot);
         // The order now holds `open_orders` on this position, so its margin
         // regime cannot change while it rests. The record states it.
@@ -559,6 +513,7 @@ pub fn try_place_remainder_on_clob<'info>(
         order_ref.order_id,
         order_ref.node_index
     );
+
     Ok(Some(order_ref.order_id))
 }
 
@@ -642,6 +597,7 @@ mod restable_remainder_price_tests {
             restable_remainder_price(&order, Some(106_000_000)),
             Some(104_629_000)
         );
+
         // The offset cannot be resolved without the oracle.
         assert_eq!(restable_remainder_price(&order, None), None);
     }
@@ -665,6 +621,7 @@ mod restable_remainder_price_tests {
             auction_end_price: 104_000_000,
             ..Order::default()
         };
+
         assert_eq!(restable_remainder_price(&order, None), Some(104_000_000));
     }
 }
@@ -713,6 +670,7 @@ mod rest_admission_tests {
             None,
             NOW,
         );
+
         assert!(matches!(
             admission,
             RestAdmission::Admitted { price: 104_629_000 }
@@ -730,6 +688,7 @@ mod rest_admission_tests {
             None,
             NOW,
         );
+
         assert_eq!(refusal(admission), Some(RestRefusal::SizeBelowMinimum));
     }
 
@@ -746,6 +705,7 @@ mod rest_admission_tests {
             None,
             NOW,
         );
+
         assert_eq!(refusal(admission), Some(RestRefusal::SizeBelowMinimum));
     }
 
@@ -760,6 +720,7 @@ mod rest_admission_tests {
             None,
             NOW,
         );
+
         assert_eq!(refusal(admission), Some(RestRefusal::SizeOffStep));
     }
 
@@ -782,6 +743,7 @@ mod rest_admission_tests {
             None,
             NOW,
         );
+
         assert_eq!(refusal(admission), Some(RestRefusal::ExpiryPassed));
         // A zero expiry means good till cancelled, which the book accepts.
         let admission = rest_admission(
@@ -793,6 +755,7 @@ mod rest_admission_tests {
             None,
             NOW,
         );
+
         assert_eq!(refusal(admission), None);
     }
 
@@ -807,6 +770,7 @@ mod rest_admission_tests {
             Some(11),
             NOW,
         );
+
         assert_eq!(refusal(admission), Some(RestRefusal::DelayAboveMaximum));
         let admission = rest_admission(
             &rules(),
@@ -817,6 +781,7 @@ mod rest_admission_tests {
             Some(10),
             NOW,
         );
+
         assert_eq!(refusal(admission), None);
     }
 
@@ -836,6 +801,7 @@ mod rest_admission_tests {
             None,
             NOW,
         );
+
         assert!(matches!(
             admission,
             RestAdmission::Admitted { price: 104_620_000 }
@@ -856,6 +822,7 @@ mod rest_admission_tests {
             None,
             NOW,
         );
+
         assert_eq!(refusal(admission), Some(RestRefusal::SideAtCapacity));
     }
 
@@ -873,6 +840,7 @@ mod rest_admission_tests {
             None,
             NOW,
         );
+
         assert!(matches!(admission, RestAdmission::Admitted { .. }));
     }
 }

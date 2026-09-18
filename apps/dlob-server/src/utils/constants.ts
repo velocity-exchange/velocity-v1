@@ -36,14 +36,10 @@ export const DEFAULT_AUCTION_PARAMS: Partial<AuctionParamArgs> = {
 	auctionEndPriceOffsetFrom: DEFAULT_AUCTION_END_PRICE_FROM,
 };
 
-// Perp indexes that take the mid-major slippage tier, which is a base of 0.25%
-// and a multiplier of 1.25, instead of the non-major defaults. Index 3 is
-// HYPE-PERP on mainnet. Devnet has no market at index 3.
-//
-// These are raw indexes, so they do not survive on-chain market renumbering. A
-// stale index buckets whatever market later occupies it. The MID_MAJOR_MARKETS
-// test pins each entry to its expected symbol in MainnetPerpMarkets. Update both
-// together.
+// Perp indexes on the mid-major slippage tier (0.25% base, 1.25x multiplier).
+// Index 3 is HYPE-PERP on mainnet; devnet has no market there. Raw indexes do
+// not survive on-chain renumbering, so the MID_MAJOR_MARKETS test pins each
+// entry to its symbol in MainnetPerpMarkets. Update both together.
 export const MID_MAJOR_MARKETS: number[] = [3];
 
 /** The symbol each MID_MAJOR_MARKETS index resolves to on mainnet. */

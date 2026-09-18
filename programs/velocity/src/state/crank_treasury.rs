@@ -50,20 +50,10 @@ pub struct CrankTreasuryV0 {
     /// Read at refill time, so re-tuning it takes effect on every market at
     /// once.
     pub refill_target_cranks: u16,
-    /// Wake the refill when a reservoir can pay fewer than this many.
-    ///
-    /// A refill needs two levels, or it fills by nothing. This is the low one.
-    /// Unlike the target, the attach resolves it to lamports and stores it on
-    /// the market. Relay compares the mirrored balance against it, and a
-    /// condition carries its own threshold. A change to it therefore reaches a
-    /// market on that market's next attach.
-    ///
-    /// Size it for the refill's own round trip. The refill is itself a relay
-    /// crank, so a turner polls for it, simulates it, and then lands it. The
-    /// reservoir keeps paying for ordinary work throughout. Both terms are at
-    /// their worst together. A market-wide move is when cranks fire fastest
-    /// and when the network is slowest to land one. An empty reservoir stops
-    /// cranking at exactly that point, and nothing else reports it.
+    /// Wake the refill when a reservoir can pay fewer than this many. The attach resolves it to lamports
+    /// on the market, so a change reaches a market only at its next attach. Size it for the refill's own
+    /// round trip: itself a relay crank a turner polls, simulates and lands, worst together with
+    /// ordinary work at a market-wide move, when an empty reservoir stops cranking unreported.
     pub refill_watermark_cranks: u16,
     /// Tail reserve, so a later field costs no migration.
     pub padding: [u8; 36],
@@ -87,15 +77,10 @@ impl Default for CrankTreasuryV0 {
 impl CrankTreasuryV0 {
     pub const SIZE: usize = 8 + 8 + 8 + 8 + 2 + 2 + 36;
 
-    /// The balance a refill takes a reservoir to, given the most expensive
-    /// crank that reservoir pays.
-    ///
-    /// Returns zero on a treasury nobody has priced yet, which stages no
-    /// refill. That is the safe answer. A target at or below the wake level
-    /// would leave the reservoir still due after a refill, and the condition
-    /// would stay due against an executor that can only revert.
-    /// [`crate::instructions::handle_update_crank_treasury`] refuses a target
-    /// that low, so a priced treasury always makes progress.
+    /// The balance a refill takes a reservoir to, given the most expensive crank it pays. Returns zero
+    /// on an unpriced treasury, staging no refill. A target at or below the wake level would leave the
+    /// reservoir still due after a refill, stuck against an executor that can only revert.
+    /// `handle_update_crank_treasury` refuses that target, so a priced treasury always progresses.
     pub fn refill_target(&self, max_crank_payment: u64) -> VelocityResult<u64> {
         max_crank_payment.safe_mul(u64::from(self.refill_target_cranks))
     }
@@ -120,6 +105,7 @@ impl CrankTreasuryV0 {
         if amount == 0 {
             return Ok(0);
         }
+
         let available = treasury.lamports().saturating_sub(rent_minimum);
         if available < amount {
             msg!(
@@ -127,8 +113,10 @@ impl CrankTreasuryV0 {
                 available,
                 amount
             );
+
             return Err(ErrorCode::InsufficientCrankTreasury.into());
         }
+
         **treasury.try_borrow_mut_lamports()? = treasury
             .lamports()
             .checked_sub(amount)
@@ -163,6 +151,7 @@ mod tests {
             refill_target_cranks: 64,
             ..CrankTreasuryV0::default()
         };
+
         assert_eq!(treasury.refill_target(10_000).unwrap(), 640_000);
         // A market whose cranks cost twice as much holds twice the balance
         // from the same setting.
@@ -178,6 +167,7 @@ mod tests {
             refill_watermark_cranks: 100,
             ..CrankTreasuryV0::default()
         };
+
         assert!(treasury.refill_target(1_000).unwrap() > treasury.refill_watermark(1_000).unwrap());
         assert!(
             treasury.refill_target(50_000).unwrap() > treasury.refill_watermark(50_000).unwrap()

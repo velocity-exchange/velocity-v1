@@ -188,6 +188,7 @@ impl ClobCrankConditionsV0 {
                 resolvers,
             ),
         )?;
+
         // The reservoir's own liveness. A lamport balance is account metadata,
         // and a watch reads account data. So the account mirrors its spendable
         // balance into `spendable_mirror`, and this condition wakes when that
@@ -211,17 +212,16 @@ impl ClobCrankConditionsV0 {
                 CrankSpecV0 {
                     resolver_program: crate::ID.to_bytes(),
                     resolver_disc: disc8(crate::instruction::ResolveClobCrank::DISCRIMINATOR)?,
-                    // A turner drops any condition that advertises less than
-                    // its own configured floor, so this states what the refill
-                    // pays. The price comes from the same rails as every other
-                    // crank and is stored on this account. Re-pricing the
-                    // network therefore re-prices the refill on the next
-                    // attach. The treasury holds the lamports, not the price.
+                    // A turner drops conditions below its configured floor. This
+                    // is the refill's price, taken from the same rails as every
+                    // other crank, so re-pricing it re-prices the refill on the
+                    // next attach. The treasury holds the lamports, not this field.
                     min_payment: u64::from(payments.refill),
                 },
                 resolvers,
             ),
         )?;
+
         // A new account's mirror is zero, which reads as below the watermark.
         // The refill therefore fires as soon as the market is attached. A market
         // funds its own reservoir from the treasury, and no operator seeds it by

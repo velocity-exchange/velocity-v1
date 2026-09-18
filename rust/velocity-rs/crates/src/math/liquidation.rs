@@ -345,6 +345,7 @@ pub fn calculate_max_pct_to_liquidate(
     if slot < user.last_active_slot {
         return Err(SdkError::MathError("slot < user.last_active_slot"));
     }
+
     // The ramp is the ratio of elapsed wall clock time to the liquidation
     // window, integrated per slot duration regime. This mirrors the program's
     // `calculate_max_pct_to_liquidate`. The result is unchanged while a slot

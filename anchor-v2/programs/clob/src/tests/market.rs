@@ -18,13 +18,7 @@ use {
     },
 };
 
-/// Largest arena the harness backs. Sized once so the buffer length is a
-/// constant; smaller markets just set a shorter `data_len`.
-///
-/// A side is half the arena, so this is twice the most orders any test needs on
-/// one side: `EXECUTE_FILLS_CEILING` for the widest execute response a market
-/// can produce, and a few past `CANCEL_ALL_ORDERS_CEILING` so a cancel-all
-/// sweep can be driven over its per-call cap.
+/// Arena capacity: a side is half, sized for the widest fills a market can produce.
 const MAX_PER_SIDE: u32 =
     if crate::state::EXECUTE_FILLS_CEILING > crate::state::CANCEL_ALL_ORDERS_CEILING {
         crate::state::EXECUTE_FILLS_CEILING as u32
@@ -96,6 +90,7 @@ impl TestMarket {
             true,
             false,
         );
+
         buffer.write_data(ClobHeaderV0::DISCRIMINATOR);
         Self { buffer }
     }
@@ -231,15 +226,18 @@ pub fn assert_consistent(book: &ClobMarketV0) {
                     "{side:?} price order broken at node {cursor}"
                 );
             }
+
             last_price = Some(node.price);
             if node.is_taker_origin() {
                 taker_origin[side.to_u8() as usize] += 1;
             }
+
             prev = cursor;
             cursor = node.next;
             count += 1;
             assert!(count <= capacity, "{side:?} list cycles");
         }
+
         assert_eq!(count as u32, book.node_count(side), "{side:?} count");
         assert_eq!(prev, book.worst(side), "{side:?} tail pointer");
     }
@@ -258,10 +256,12 @@ pub fn assert_consistent(book: &ClobMarketV0) {
             !node.is_bit_flag_set(OrderBitFlag::Open),
             "live node {cursor} is on the free list"
         );
+
         cursor = node.next;
         free += 1;
         assert!(free <= capacity, "free list cycles");
     }
+
     assert_eq!(free as u32, book.free_count, "free count");
     assert!(
         seen.into_iter().all(|slot| slot),
@@ -304,12 +304,14 @@ fn assert_claimants_listed(book: &ClobMarketV0, taker_origin: [usize; 2]) {
                 node.order_id > last_id,
                 "the {side:?} claimant list is out of rest order at node {cursor}"
             );
+
             last_id = node.order_id;
             prev = cursor;
             cursor = node.taker_origin_next;
             count += 1;
             assert!(count <= book.capacity(), "{side:?} claimant list cycles");
         }
+
         assert_eq!(
             count, taker_origin[list],
             "{side:?} holds {} taker-origin orders and lists {count}",

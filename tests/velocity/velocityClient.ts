@@ -299,6 +299,7 @@ describe('velocity client', () => {
 			baseAssetAmount,
 			marketIndex
 		);
+
 		svmContextWrapper.connection.printTxLogs(txSig);
 
 		const marketData = velocityClient.getPerpMarketAccount(0);
@@ -490,6 +491,7 @@ describe('velocity client', () => {
 				.getAccountAndSlot()
 				.data.fees.totalFeePaid.toString()
 		);
+
 		assert.ok(velocityClient.getQuoteAssetTokenAmount().eq(new BN(9951951)));
 		assert(
 			velocityClient

@@ -1,16 +1,6 @@
 /**
- * Router split. This is the TypeScript mirror of
- * `programs/velocity/src/math/router.rs`.
- *
- * The on-chain router combines every quoter's book into per-quoter allocations
- * for a taker of `direction` and `size`. A client must reproduce it exactly to
- * predict a fill. At each price the priority tiers fill in ascending order, the
- * vAMM first, then the CLOB, then the customs. Books that share a tier fill
- * pro rata.
- *
- * Divergence between this file and `math/router.rs` makes the SDK mispredict
- * fills, slippage and entry prices. When the Rust changes, change this file in
- * the same pull request.
+ * TypeScript mirror of `programs/velocity/src/math/router.rs`. Splits a
+ * taker fill across quoters by price and priority tier. Keep in sync.
  */
 
 import { BN } from '@coral-xyz/anchor';
@@ -39,15 +29,8 @@ export type RouterQuoterBook = {
 	/** Best price first: ascending for a long taker, descending for a short taker. */
 	levels: RouterPriceLevel[];
 	/**
-	 * Depth the quoter says it holds at a better price than it quoted, and could
-	 * not offer because the accounts of the user who owns it are not in the
-	 * transaction. `quote_v0` returns it as `withheld`, one price level behind
-	 * the ladder.
-	 *
-	 * Nobody can fill it, so it never belongs in `levels` and takes no part of
-	 * the split. It reports that the transaction omitted a maker the book
-	 * wanted. On a fill the taker did not sign, the program then checks whether
-	 * the filler had room to carry that maker.
+	 * Depth the quoter withheld because the owner's accounts were absent
+	 * from the transaction. Mirrors `quote_v0`'s `withheld`. Not part of the split.
 	 */
 	withheld?: RouterPriceLevel;
 };
@@ -59,14 +42,8 @@ export type RouterAllocation = {
 	/** Quote notional at the quoted levels. Each level rounds toward the taker. */
 	quote: BN;
 	/**
-	 * The sum of `price * base` over the levels this allocation was cut from,
-	 * before the single division into quote units. It mirrors
-	 * `QuoterAllocation::scaled_quote`.
-	 *
-	 * The program holds the execute leg to this scalar in
-	 * `validate_allocated_notional`. A client that reproduces the route needs it
-	 * to predict whether a fill is accepted. The split accrues it while it walks
-	 * the ladder, so nothing downstream reads the levels again.
+	 * Sum of `price * base` over the allocation. Mirrors
+	 * `QuoterAllocation::scaled_quote`, checked by `validate_allocated_notional`.
 	 */
 	scaledQuote: BN;
 };
@@ -82,16 +59,15 @@ function floorToStep(value: BN, step: BN): BN {
 }
 
 /**
- * The notional rounded toward the bound that is safe for the taker. It mirrors
- * `math::router::quote_notional`. A long taker pays at most the quote, so the
- * notional rounds up. A short taker receives at least the quote, so it rounds
- * down.
+ * Notional rounded toward the bound safe for the taker. Mirrors
+ * `quote_notional`. A long rounds up, a short rounds down.
  */
 function quoteNotional(direction: PositionDirection, price: BN, base: BN): BN {
 	const exact = price.mul(base);
 	if (isVariant(direction, 'long')) {
 		return exact.add(BASE_PRECISION).subn(1).div(BASE_PRECISION);
 	}
+
 	return exact.div(BASE_PRECISION);
 }
 
@@ -134,8 +110,10 @@ class Cursor {
 				this.consumed = ZERO;
 				continue;
 			}
+
 			return [level.price, usable];
 		}
+
 		return undefined;
 	}
 
@@ -167,6 +145,7 @@ export function splitAcrossQuoters(
 	if (books.length === 0) {
 		throw new Error('router split needs at least one book');
 	}
+
 	const step = stepSize.gt(ZERO) ? stepSize : new BN(1);
 	const cursors = books.map(
 		(book) => new Cursor(book.priority, book.levels, step)
@@ -176,6 +155,7 @@ export function splitAcrossQuoters(
 		quote: ZERO,
 		scaledQuote: ZERO,
 	}));
+
 	let remaining = takerSize;
 
 	const take = (
@@ -192,6 +172,7 @@ export function splitAcrossQuoters(
 		allocations[i].quote = allocations[i].quote.add(
 			quoteNotional(direction, price, amount)
 		);
+
 		allocations[i].scaledQuote = allocations[i].scaledQuote.add(
 			price.mul(amount)
 		);
@@ -207,6 +188,7 @@ export function splitAcrossQuoters(
 		if (live.length === 0) {
 			break;
 		}
+
 		const price = live.reduce(
 			(best, [p]) =>
 				isVariant(direction, 'long') ? BN.min(best, p) : BN.max(best, p),
@@ -230,6 +212,7 @@ export function splitAcrossQuoters(
 			if (cursors[i].priority !== tier || !top || !top[0].eq(price)) {
 				return undefined;
 			}
+
 			return top[1];
 		};
 
@@ -237,6 +220,7 @@ export function splitAcrossQuoters(
 			if (remaining.eq(ZERO)) {
 				break;
 			}
+
 			let total = ZERO;
 			for (let i = 0; i < cursors.length; i++) {
 				const available = availableAt(i, tier);
@@ -244,28 +228,34 @@ export function splitAcrossQuoters(
 					total = total.add(available);
 				}
 			}
+
 			if (total.eq(ZERO)) {
 				continue;
 			}
+
 			const demand = floorToStep(BN.min(remaining, total), step);
 			if (demand.eq(ZERO)) {
 				// Nothing step-sized left to give at this tier.
 				remaining = ZERO;
 				break;
 			}
+
 			let given = ZERO;
 			for (let i = 0; i < cursors.length; i++) {
 				const available = availableAt(i, tier);
 				if (!available) {
 					continue;
 				}
+
 				const share = floorToStep(demand.mul(available).div(total), step);
 				if (share.eq(ZERO)) {
 					continue;
 				}
+
 				take(i, price, share, tops);
 				given = given.add(share);
 			}
+
 			// Floor-division dust: hand it to the first quoter with spare depth.
 			let dust = demand.sub(given);
 			for (let i = 0; i < cursors.length && dust.gt(ZERO); i++) {
@@ -273,13 +263,16 @@ export function splitAcrossQuoters(
 				if (!available) {
 					continue;
 				}
+
 				const amount = floorToStep(BN.min(dust, available), step);
 				if (amount.eq(ZERO)) {
 					continue;
 				}
+
 				take(i, price, amount, tops);
 				dust = dust.sub(amount);
 			}
+
 			remaining = remaining.sub(demand);
 		}
 	}
@@ -314,15 +307,16 @@ export function areQuotedLevelsValid(
 				return false;
 			}
 		}
+
 		previous = level.price;
 	}
+
 	return true;
 }
 
 /**
- * The prices a quoter committed to for the best-priced `base` units of the book
- * it quoted. An execute of that size is held to them. It mirrors
- * `QuotedPrefix`.
+ * Prices a quoter committed to for the best-priced `base` units of its
+ * book. Mirrors `QuotedPrefix`.
  */
 export type RouterQuotedPrefix = {
 	/** The sum of `price * base` over the prefix, before the division by `BASE_PRECISION`. */
@@ -355,26 +349,29 @@ export function quotedPrefix(
 		if (remaining.eq(ZERO)) {
 			break;
 		}
+
 		const usable = floorToStep(level.size, step);
 		if (usable.eq(ZERO)) {
 			continue;
 		}
+
 		const take = BN.min(remaining, usable);
 		scaledQuote = scaledQuote.add(level.price.mul(take));
 		bestPrice = bestPrice ?? level.price;
 		worstPrice = level.price;
 		remaining = remaining.sub(take);
 	}
+
 	if (!remaining.eq(ZERO)) {
 		return undefined;
 	}
+
 	return { scaledQuote, bestPrice: bestPrice ?? ZERO, worstPrice };
 }
 
 /**
- * Whether `quote` lies in `[lo, hi]` after both bounds divide by
- * `BASE_PRECISION`. Each bound admits the one rounding step the division cannot
- * avoid, plus `slack` further quote units. It mirrors `notional_within`.
+ * Whether `quote` lies in `[lo, hi]` after dividing both bounds by
+ * `BASE_PRECISION`, each admitting one rounding step plus `slack`. Mirrors `notional_within`.
  */
 function notionalWithin(lo: BN, hi: BN, quote: BN, slack: BN): boolean {
 	const floor = BN.max(lo.div(BASE_PRECISION).sub(slack), ZERO);
@@ -383,19 +380,10 @@ function notionalWithin(lo: BN, hi: BN, quote: BN, slack: BN): boolean {
 }
 
 /**
- * Whether an external quoter's executed `(base, quote)` is inside the quote it
- * gave in the same transaction. This check decides whether a router fill lands.
- *
- * The upper bound is the notional of the best-priced `base` units of the
- * allocation. That is what every unit at the price quoted for that unit means
- * for a partial fill. The lower bound is every unit at the prefix's best price.
- * Without it a response could pay its makers nothing. Rounding is admitted
- * exactly once, for the single division into quote units. A quoter whose
- * encoder divides per fill must carry the remainder across them.
- *
- * The program's `validate_executed_notional` is stricter than this band. It
- * requires `quote` to equal `prefix.scaledQuote` divided by `BASE_PRECISION`,
- * so this band accepts a fill the program rejects.
+ * Whether an external quoter's executed `(base, quote)` fits inside its
+ * quote, bounded by the best-price notional and the prefix's scaledQuote
+ * with one rounding step of slack. `validate_executed_notional` is stricter
+ * and requires exact division, so this band can accept a fill the program rejects.
  */
 export function isExecutedNotionalInQuote(
 	prefix: RouterQuotedPrefix,
@@ -412,16 +400,11 @@ export function isExecutedNotionalInQuote(
 }
 
 /**
- * The same band applied to one balance change. It mirrors
- * `validate_change_notional`. Every unit of a change must price inside the
- * quoted prefix's range. The aggregate bound alone would let a quoter overpay
- * one maker out of another maker's pocket.
- *
- * `orders` is how many of the quoter's own orders the change merges. For a CLOB
- * that is `completedOrderIds.length + 1`. A merged record cannot be exact even
- * when the response total is, so each merged order admits one quote unit of
- * slack. The program also caps `orders` at `MAX_LEVELS_PER_BOOK`, which this
- * function does not.
+ * Same band as `isExecutedNotionalInQuote`, applied to one balance change. This
+ * stops one maker being overpaid from another maker's share. Mirrors
+ * `validate_change_notional`. `orders` counts the quoter's own orders the change
+ * merges, `completedOrderIds.length + 1` for a CLOB. Each merged order admits
+ * one quote unit of slack. This does not cap `orders` at `MAX_LEVELS_PER_BOOK`.
  */
 export function isChangeNotionalInQuote(
 	prefix: RouterQuotedPrefix,
@@ -440,12 +423,8 @@ export function isChangeNotionalInQuote(
 }
 
 /**
- * How far from oracle a fill on a quoter entry may price, in MARGIN_PRECISION
- * units. It mirrors `QuoterConfigV0::oracle_band`.
- *
- * The market's `marginRatioInitial` is the ceiling. A maker's declaration can
- * only bring the band in, which is what makes the declaration safe to take from
- * the maker rather than from the admin.
+ * Max deviation from oracle a fill may price at, in MARGIN_PRECISION units.
+ * Mirrors `QuoterConfigV0::oracle_band`. A maker's declaration can only narrow the ceiling, not widen it.
  */
 export function quoterOracleBand(
 	maxOracleDeviationBps: number,
@@ -457,15 +436,12 @@ export function quoterOracleBand(
 }
 
 /**
- * Whether a maker filled at `price` sits outside `band` of `oraclePrice`. It
- * mirrors `limit_price_breaches_maker_oracle_price_bands`, which every external
- * quoter leg is held to.
- *
- * The bound is one-sided, in the maker's favour. A maker buying below oracle or
- * selling above it never breaches. Only the direction that moves value off the
- * maker is bounded, and that is the direction a compromised quoter moves it.
- *
- * `makerDirection` is the maker's side, so it is the opposite of the taker's.
+ * Whether a maker filled at `price` sits outside `band` of `oraclePrice`.
+ * Mirrors `limit_price_breaches_maker_oracle_price_bands`, which every
+ * external quoter leg is held to. The bound is one-sided, in the maker's
+ * favor. A maker buying below oracle or selling above it never breaches.
+ * Only the direction that moves value off the maker is bounded.
+ * `makerDirection` is the maker's side, the opposite of the taker's.
  */
 export function makerPriceBreachesOracleBand(
 	price: BN,
@@ -477,23 +453,21 @@ export function makerPriceBreachesOracleBand(
 	if (oracle.isZero()) {
 		return false;
 	}
+
 	const diff = isVariant(makerDirection, 'long')
 		? price.sub(oracle)
 		: oracle.sub(price);
 	if (diff.lte(ZERO)) {
 		return false;
 	}
+
 	return diff.mul(MARGIN_PRECISION).div(oracle).gten(band);
 }
 
 /**
- * Whether a book's report of `base` filled or removed for a maker is inside
- * what velocity reserved for that maker. It mirrors the
- * `PerpPosition::reserved_open_base` bound every external unwind is held to.
- *
- * `openBids` and `openAsks` come from the maker's `PerpPosition`. Placement
- * writes them under the owner's signature, so a quoter cannot inflate them. A
- * report above them fails the fill on chain.
+ * Whether a maker's reported filled or removed `base` is within what
+ * velocity reserved for it. Mirrors `PerpPosition::reserved_open_base`.
+ * `openBids`/`openAsks` are signed by the owner, so a quoter cannot inflate them.
  */
 export function isReportWithinReservation(
 	openBids: BN,

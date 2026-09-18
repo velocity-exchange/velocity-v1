@@ -132,6 +132,7 @@ describe('surge pricing', () => {
 			0,
 			await getMaxWithdrawGuardThreshold(admin, 0)
 		);
+
 		svmContextWrapper.printTxLogs(txSig);
 		await admin.fetchAccounts();
 		const spotMarket = await admin.getSpotMarketAccount(0);

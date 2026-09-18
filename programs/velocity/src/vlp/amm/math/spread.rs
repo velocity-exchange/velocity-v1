@@ -62,24 +62,15 @@ use {
 #[cfg(test)]
 mod tests;
 
-/// Refresh the AMM's cached quote-time state (spreads, reference-price
-/// offset, oracle-reserve spread pct, and spread-adjusted ask/bid reserves)
-/// in place from durable inputs, stamping `last_spread_update_slot = slot`.
-///
-/// The cache lives on `AMM`. Each AMM crank (`update_oracle_derived_stats`)
-/// and each fill refresh (`AmmQuoter::refresh`) rewrites it, and every quote
-/// and fill path then reads it directly. Two quotes in the same refresh window
-/// therefore see byte-identical spread state, and a dashboard can read the
-/// values straight off the account.
-///
-/// `reserve_price` is an input rather than a value re-derived from the AMM, so
-/// a caller can refresh against a just-projected AMM without computing the
-/// price again.
-///
-/// The function is a shell over a pure body. [`compute_quote_state`] derives a
-/// [`QuoteState`] snapshot. [`commit_quote_state`] writes it to the account and
-/// re-derives the cached spread reserves. [`validate_amm_quote_state`] checks
-/// the result.
+/// Refresh the AMM's cached quote-time state (spreads, reference-price offset, oracle-reserve
+/// spread pct, spread-adjusted bid/ask reserves) in place, stamping `last_spread_update_slot`.
+/// The cache lives on `AMM`; each crank (`update_oracle_derived_stats`) and fill refresh
+/// (`AmmQuoter::refresh`) rewrites it, and quote and fill paths read it directly, so two quotes
+/// in one refresh window see identical state, and a dashboard reads it straight off the account.
+/// `reserve_price` is a separate input, so a caller can refresh a just-projected AMM without
+/// recomputing price. The function is a shell: [`compute_quote_state`] derives a snapshot,
+/// [`commit_quote_state`] writes it and re-derives the cached reserves, and
+/// [`validate_amm_quote_state`] checks the result.
 pub fn update_amm_quote_state(
     amm: &mut AMM,
     market_stats: &MarketStats,
@@ -130,7 +121,6 @@ fn compute_quote_state(
     slot: u64,
     slot_clock: SlotClock,
 ) -> VelocityResult<QuoteState> {
-    // last_oracle_reserve_price_spread_pct
     let last_oracle_reserve_price_spread_pct =
         crate::vlp::amm::math::amm::calculate_oracle_reserve_price_spread_pct(
             amm,
@@ -138,7 +128,6 @@ fn compute_quote_state(
             Some(reserve_price),
         )?;
 
-    // reference_price_offset
     let max_ref_offset = amm.get_max_reference_price_offset()?;
 
     let reference_price_offset = if max_ref_offset > 0 {
@@ -667,13 +656,10 @@ impl SpreadComponents {
         let mut result = SpreadPair::default();
         let mut remaining = max_total;
 
-        // The safety order is:
-        //   1. Divergence protection keeps its room first.
-        //   2. The per-side base/vol floor keeps quotes away from mid.
-        //   3. Inventory steering keeps the remaining room next.
-        //   4. Common padding above the floor receives only leftover room.
-        // If a tier only partly fits, it is compressed within that tier and
-        // every lower-priority tier receives zero.
+        // Safety order: divergence protection keeps its room first, then the per-side base/vol floor
+        // keeps quotes away from mid, then inventory steering takes the remaining room, then common
+        // padding above the floor gets only what is left. A tier that only partly fits is compressed
+        // within itself, and every lower-priority tier after it receives zero.
         for layer in [self.divergence, self.floor, self.steering, self.padding] {
             if remaining == 0 {
                 break;

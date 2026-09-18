@@ -4,25 +4,12 @@ import * as path from 'path';
 import { VelocityEnv } from '@velocity-exchange/sdk';
 
 /**
- * Named connection profiles for the CLI. They are stored per user and never in
- * the repo, at `~/.config/velocity-admin/config.json`. `VELOCITY_ADMIN_CONFIG`
- * overrides that path. A profile bundles the `-u`, `-k`, `-e` and `-m` values
- * that an invocation otherwise passes every time. An explicit flag always wins
- * over the profile, so a flag-only invocation behaves as before and no profile
- * value redirects an explicit request.
- *
- * A multisig address lives only in this local config and not as a constant in
- * the codebase. `config init` verifies a pasted multisig against the live State
- * admins, in `commands/config.ts`. The config is therefore validated when it is
- * written rather than trusted when it is used.
+ * Named connection profiles, stored per user at `~/.config/velocity-admin/config.json`
+ * (override with `VELOCITY_ADMIN_CONFIG`). An explicit flag always wins over the profile.
  */
 
 export type Profile = {
-	/**
-	 * Solana RPC URL. It is optional. When it is unset, the shared `rpcs[env]`
-	 * entry is used, so one URL per cluster serves every profile on that
-	 * cluster.
-	 */
+	/** Solana RPC URL. Falls back to the shared `rpcs[env]` entry when unset. */
 	url?: string;
 	/** Path to the signer keypair JSON. A leading `~` expands. */
 	keypair: string;

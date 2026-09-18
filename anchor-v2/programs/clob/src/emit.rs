@@ -37,12 +37,10 @@ use {
 /// agrees, so this constant is the prefix width.
 pub const DISCRIMINATOR_BYTES: usize = 8;
 
-/// Widest [`ExecuteRecordV0`] log. It holds the discriminator, the fixed
-/// prefix, and both sequences at their widest. That is `EXECUTE_FILLS_CEILING`
-/// fills and `FILL_BATCH_CEILING` culled orders. `execute_v0` culls at most one
-/// order, because a partial fill happens only when the taker's size runs out,
-/// which ends the walk. `fill_v0` reports a batch, and every order in it can
-/// leave a leftover below the minimum.
+/// Widest [`ExecuteRecordV0`] log: discriminator, fixed prefix, and both
+/// sequences at their widest, `EXECUTE_FILLS_CEILING` fills and
+/// `FILL_BATCH_CEILING` culled orders. `execute_v0` culls at most one order,
+/// since a partial fill ends the walk; `fill_v0` reports a batch where every order can leave a leftover.
 pub const EXECUTE_RECORD_LOG_BYTES: usize = DISCRIMINATOR_BYTES
     + core::mem::size_of::<i64>()
     + core::mem::size_of::<u64>()
@@ -53,10 +51,9 @@ pub const EXECUTE_RECORD_LOG_BYTES: usize = DISCRIMINATOR_BYTES
     + COUNT_BYTES
     + crate::state::FILL_BATCH_CEILING * CLIENT_ORDER_ID_BYTES;
 
-/// Widest [`OrdersCancelRecordV0`] log. It holds the discriminator, the fixed
-/// prefix, and the id list at [`CANCEL_ALL_ORDERS_CEILING`]. The prefix is the
-/// authority, the timestamp, both base totals, the market index, the
-/// sub-account id, the sides tag, and the exhaustive flag. The ceiling keeps
+/// Widest [`OrdersCancelRecordV0`] log: discriminator, fixed prefix (authority,
+/// timestamp, base totals, market index, sub-account id, sides tag, exhaustive
+/// flag), and the id list at [`CANCEL_ALL_ORDERS_CEILING`]. The ceiling keeps
 /// this bound reachable and never exceeded, whatever the book holds.
 pub const CANCEL_ALL_RECORD_LOG_BYTES: usize = DISCRIMINATOR_BYTES
     + core::mem::size_of::<Address>()
@@ -68,9 +65,8 @@ pub const CANCEL_ALL_RECORD_LOG_BYTES: usize = DISCRIMINATOR_BYTES
     + CANCEL_ALL_ORDERS_CEILING as usize * CLIENT_ORDER_ID_BYTES;
 
 /// `[discriminator][body]` for a fixed-size `#[event(bytemuck)]` record.
-///
-/// `N` is the record's full log width. Call through [`emit_pod`], which
-/// computes `N` from the type and checks the discriminator width at compile
+/// `N` is the record's full log width; call through [`emit_pod`], which
+/// derives `N` from the type and checks the discriminator width at compile
 /// time. A wrong `N` would truncate or pad the event.
 pub fn pod_log_bytes<E, const N: usize>(record: &E) -> [u8; N]
 where
@@ -94,19 +90,19 @@ macro_rules! emit_pod {
                 == $crate::emit::DISCRIMINATOR_BYTES,
             "event discriminator is not 8 bytes wide",
         );
+
         anchor_lang::sol_log_data(&[&$crate::emit::pod_log_bytes::<$ty, LOG_BYTES>(&$ty {
             $($field)*
         })]);
     }};
 }
+
 pub(crate) use emit_pod;
 
 /// Append-only stack buffer holding one `sol_log_data` field.
 ///
-/// Every push checks its bounds, so a payload wider than the buffer is an
-/// error rather than a truncated event. `N` comes from the config ceilings,
-/// which makes that error unreachable for a market the init and update checks
-/// accepted.
+/// Every push checks its bounds, so an over-wide payload is an error rather
+/// than a truncated event. `N` comes from the config ceilings that init and update already enforce.
 pub struct LogBuf<const N: usize> {
     /// The buffer is uninitialized rather than zeroed. At the fill ceiling it
     /// is about 2KB, and zeroing it costs more compute than the `Vec` this path
@@ -149,15 +145,15 @@ impl<const N: usize> LogBuf<N> {
                 bytes.len(),
             );
         }
+
         self.len = end;
         Ok(())
     }
 
-    /// Push `len` zero bytes and return their offset. This holds a field whose
-    /// value is not known until later fields are written. The cancel-all
-    /// record's totals and id count settle only when its walk ends. The bytes
-    /// are zeros rather than a gap, so every counted byte stays initialized,
-    /// which is what [`Self::as_slice`] relies on.
+    /// Push `len` zero bytes and return their offset, for a field whose value is
+    /// not known until later fields are written, such as the cancel-all record's
+    /// totals and id count, which settle only at the end of the walk. The bytes
+    /// are zeros rather than a gap, so every counted byte stays initialized, as [`Self::as_slice`] relies on.
     pub fn reserve(&mut self, len: usize) -> Result<usize> {
         let at = self.len;
         (0..len).try_for_each(|_| self.push(&[0]))?;
@@ -182,6 +178,7 @@ impl<const N: usize> LogBuf<N> {
                 bytes.len(),
             );
         }
+
         Ok(())
     }
 
@@ -234,22 +231,17 @@ pub fn write_execute_record<const N: usize>(
         entry[2 * ORDER_ID_BYTES..].copy_from_slice(&fill.client_order_id.to_le_bytes());
         log.push(&entry)
     })?;
+
     log.push(&(cancelled_client_order_ids.len() as u32).to_le_bytes())?;
     cancelled_client_order_ids
         .iter()
         .try_for_each(|order_id| log.push(&order_id.to_le_bytes()))
 }
 
-/// Streaming writer for an [`OrdersCancelRecordV0`].
-///
-/// The sweep cannot know its own totals until it ends. The base amounts, the
-/// `exhaustive` flag and the id count all settle at the last removal. The ids
-/// have to be written as the walk frees them, or they would need a second
-/// buffer. The prefix is written with those four fields reserved, the ids are
-/// appended during the walk, and [`Self::finish`] patches and emits.
-///
-/// [`OrdersCancelRecordV0`] stays the schema of record for the layout, and
-/// `tests::emit` pins the two encodings against each other.
+/// Streaming writer for an [`OrdersCancelRecordV0`]. The sweep does not know
+/// its totals, `exhaustive` flag, or id count until the last removal, so the
+/// prefix reserves those fields and the walk appends ids as it frees them,
+/// avoiding a second buffer; [`Self::finish`] patches and emits, pinned against [`OrdersCancelRecordV0`] by `tests::emit`.
 pub struct CancelAllRecord {
     log: LogBuf<CANCEL_ALL_RECORD_LOG_BYTES>,
     bid_base_at: usize,
@@ -356,6 +348,7 @@ pub fn emit_execute_record(
         fills,
         cancelled_client_order_ids,
     )?;
+
     log.emit();
     Ok(())
 }

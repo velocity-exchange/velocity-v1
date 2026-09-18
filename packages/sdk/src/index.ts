@@ -1,14 +1,6 @@
 /**
  * @module @velocity-exchange/sdk
- * Main package barrel — re-exports all public SDK types, classes, and utilities.
- *
- * Primary entry points:
- *   {@link VelocityClient}  — trading and keeper instruction builders (velocityClient.ts)
- *   {@link AdminClient}  — governance/admin instruction builders (adminClient.ts)
- *   {@link User}         — user account abstraction: margin queries, position accessors (user.ts)
- *   {@link UserClobOrdersClient} — a user's resting CLOB orders (clob/userOrdersClient.ts)
- *
- * Key re-exported namespaces: types, addresses/pda, accounts (subscribers), math, events, oracles, constants.
+ * Main package barrel. Entry points: `VelocityClient`, `AdminClient`, `User`, `UserClobOrdersClient`.
  */
 import { BN } from './isomorphic/anchor';
 import { PublicKey } from '@solana/web3.js';

@@ -279,19 +279,11 @@ const REDIS_WARN_THROTTLE_MS = 5_000;
 const lastRedisWarnAt: Map<string, number> = new Map();
 
 /**
- * Nothing awaits a Redis write in the publish path, so a rejection would reach
- * Node's unhandled-rejection handler. A write that lands during a reconnect is
- * expected. This function logs such a write and lets the publishing continue.
- *
- * It catches the rejection of the RedisClient method itself, which is where the
- * "Redis client not connected" throw lives. `RedisClient.set` and
- * `RedisClient.setRaw` do not await the underlying ioredis command, so a
- * command-level failure is a separate floating promise that only the
- * process-level unhandledRejection guard can see. `publish()` awaits, so this
- * function covers it fully.
- *
- * The logging is throttled per context. These writes run once per market per
- * update, so an unthrottled warning would turn the outage into a log storm.
+ * A Redis write in the publish path is unawaited, so a rejection reaches
+ * Node's unhandled-rejection handler. `RedisClient.set`/`setRaw` do not
+ * await the underlying ioredis command, so a reconnect-time failure
+ * surfaces only here. Logging is throttled per context, since these writes
+ * run once per market per update.
  */
 export function fireAndForgetRedis(
 	write: Promise<unknown>,
@@ -618,7 +610,6 @@ export function createMarketBasedAuctionParams(
 	// price improvement.
 	const isFastFill = version >= 3;
 
-	// Resolve "marketBased" values and undefined values (both should use market-based logic)
 	const resolvedAuctionStartPriceOffsetFrom =
 		args.auctionStartPriceOffsetFrom === 'marketBased' ||
 		args.auctionStartPriceOffsetFrom === undefined
@@ -639,11 +630,10 @@ export function createMarketBasedAuctionParams(
 				: -0.1
 			: args.auctionStartPriceOffset;
 
-	// Set market-specific defaults (only used if values are undefined)
-	// The default durations are wall clock milliseconds in the on-chain 400ms
-	// unit encoding that `Order.auction_duration` uses. The program converts
-	// elapsed slots to wall clock at fill time, so the live slot duration is not
-	// needed here.
+	// The default duration is wall-clock milliseconds in the on-chain 400ms unit
+	// encoding that `Order.auction_duration` uses. The program converts elapsed
+	// slots to wall clock at fill time, so the live slot duration is not needed
+	// here.
 	const marketSpecificDefaults: Partial<AuctionParamArgs> = {
 		...DEFAULT_AUCTION_PARAMS,
 		auctionDuration: Math.min(
@@ -660,7 +650,6 @@ export function createMarketBasedAuctionParams(
 		auctionStartPriceOffset: isMajorMarket && version === 1 ? 0 : -0.1,
 	};
 
-	// Apply custom overrides if provided
 	const finalDefaults = overrideDefaults
 		? { ...marketSpecificDefaults, ...overrideDefaults }
 		: marketSpecificDefaults;
@@ -668,7 +657,6 @@ export function createMarketBasedAuctionParams(
 	return {
 		...finalDefaults,
 		...args,
-		// Override with resolved "marketBased" values if were provided
 		auctionStartPriceOffsetFrom:
 			resolvedAuctionStartPriceOffsetFrom ??
 			finalDefaults.auctionStartPriceOffsetFrom,

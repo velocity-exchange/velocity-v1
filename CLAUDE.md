@@ -499,7 +499,38 @@ is not the new code, it is the diff that can no longer be read. Land readability
 
 Prefer declarative iterator chains (`map`/`filter`/`fold`/`try_fold`/`collect`) over imperative `for`/`while` loops wherever the two are performance-equivalent. Explicit loops are fine when they are genuinely better: hot paths where the imperative form saves real work, or indexed mutation across parallel structures that the borrow checker won't allow through closures. Also avoid redundant recomputation in loops — hoist or precompute values that don't change (or change predictably) across iterations.
 
+That last rule is about recomputation, not about plain field reads. **Do not copy a field into a
+local for its own sake.** `let min_order_size = self.min_order_size;` at the top of a function,
+used once sixty lines below, costs a reader a lookup and buys nothing. Read `self.min_order_size`
+where the value is used, or `book.min_order_size` inside a `walk_side` closure, which receives the
+market as its first argument for exactly this reason.
+
+It does not save compute. It spends it. Removing these locals from `quote`, `quote_l3` and
+`execute` moved `quote(full side)` from 16439 CU to 16237 and `execute(50 orders)` from 45639 to
+45633, measured with `cu_benchmarks` in `anchor-v2/programs/clob/tests/clob_tests.rs`. A local a
+walk closure captures stays live across every iteration and every call the body makes. A field
+read at the point of use folds into the instruction that needs it and leaves the closure's
+environment smaller, which matters on a 4 KB SBF frame.
+
+Two cases still earn the local. Keep it on the line before its use, not at the top of the
+function:
+
+- The borrow checker refuses the field read. `l3_row_flags(node, book.blocking_min_size, ..)`
+  inside a call that already takes `&mut book.response` does not compile.
+- The value has to be read before something changes it, such as `let order_id =
+  self.next_order_id;` before the counter increments.
+
 ### Doc comments
+
+**`allow-verbose:` marks a comment that may exceed the length budget.** The budget is in
+`~/.claude/CLAUDE.md` and enforced by the `deslop-comments` skill: a comment is at most half
+the lines of the code it documents. A comment that must run longer carries a line starting
+`allow-verbose:` saying why, and the tooling then skips it. `grep -rn "allow-verbose:"` lists
+every place the rule was set aside, so an exception is a decision rather than a quiet drift.
+
+What earns it here: a wire format or ABI a client builds bytes from, a security bound whose
+derivation a reader cannot reconstruct, an operator runbook, an audit finding's full
+reasoning. What does not: wanting to keep a paragraph.
 
 All modules have doc comments. When making feature or refactor changes, update any module-level doc comments that would be invalidated by the change.
 

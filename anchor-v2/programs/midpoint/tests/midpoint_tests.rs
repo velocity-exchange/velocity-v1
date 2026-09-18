@@ -131,6 +131,7 @@ fn setup_with_config(config: QuoterConfigV0) -> Ctx {
         execute_auth,
         quoter,
     };
+
     send(&mut ctx, ix).unwrap();
     ctx
 }
@@ -149,6 +150,7 @@ fn send_signed_by(
         ix.accounts
             .push(AccountMeta::new_readonly(co_signer.pubkey(), true));
     }
+
     ctx.svm.expire_blockhash();
     let blockhash = ctx.svm.latest_blockhash();
     let msg = Message::new_with_blockhash(&[ix.clone()], Some(&ctx.payer.pubkey()), &blockhash);
@@ -174,6 +176,7 @@ fn send_signed_by(
             signers.push(kp);
         }
     }
+
     let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &signers).unwrap();
     ctx.svm.send_transaction(tx)
 }
@@ -187,6 +190,7 @@ fn read_response(ctx: &Ctx, meta: &TransactionMetadata) -> Vec<u8> {
         meta.return_data.program_id.to_bytes(),
         program_id().to_bytes()
     );
+
     let offset = parse_u32(&meta.return_data.data) as usize;
     assert_eq!(offset, RESPONSE_OFFSET);
     let len = parse_u32(&meta.return_data.data[4..]) as usize;
@@ -218,6 +222,7 @@ fn parse_execute(b: &[u8]) -> Vec<([u8; 32], u64, u64)> {
         response.cancelled.is_empty(),
         "midpoint never culls remainders"
     );
+
     response
         .changes
         .iter()
@@ -283,7 +288,7 @@ fn arm(ctx: &mut Ctx) {
 fn quote_args<'a>(direction: Direction, size: u64) -> QuoteArgsV0<'a> {
     QuoteArgsV0 {
         taker_served_window: true,
-        consume_reservation: false,
+        include_taker_origin_reservations: false,
         direction,
         size,
         users: &[],
@@ -317,7 +322,7 @@ fn execute_ix_served(
     instruction::ExecuteV0 {
         args: ExecuteArgsV0 {
             taker_served_window,
-            consume_reservation: false,
+            include_taker_origin_reservations: false,
             direction,
             size,
             users: &[],
@@ -399,6 +404,7 @@ fn prices_round_away_from_mid_to_the_tick() {
         let ix = set_mid_ix(&ctx, 100_000_050, 0);
         send(&mut ctx, ix).unwrap();
     }
+
     send_levels(
         &mut ctx,
         SetLevelsArgsV0 {
@@ -433,6 +439,7 @@ fn stale_mid_stops_quoting_and_a_fresh_write_resumes() {
         let ix = set_mid_ix(&ctx, MID, 0);
         send(&mut ctx, ix).unwrap();
     }
+
     assert_eq!(quote_levels(&mut ctx, Direction::Long, UNIT).len(), 1);
 }
 
@@ -443,24 +450,29 @@ fn nonzero_mid_sequence_must_increase() {
         let ix = set_mid_ix(&ctx, MID, 5);
         send(&mut ctx, ix).unwrap();
     }
+
     // Equal and lower nonzero sequences are stale.
     {
         let ix = set_mid_ix(&ctx, MID + 1, 5);
         assert!(send(&mut ctx, ix).is_err());
     }
+
     {
         let ix = set_mid_ix(&ctx, MID + 1, 4);
         assert!(send(&mut ctx, ix).is_err());
     }
+
     // Higher passes; a later zero is a rejected downgrade, not an opt-out.
     {
         let ix = set_mid_ix(&ctx, MID + 1, 6);
         send(&mut ctx, ix).unwrap();
     }
+
     {
         let ix = set_mid_ix(&ctx, MID + 2, 0);
         assert!(send(&mut ctx, ix).is_err());
     }
+
     let quoter: MidpointQuoterV0 = read_quoter(&ctx);
     assert_eq!(quoter.mid_price, MID + 1);
     assert_eq!(quoter.mid_sequence, 6);
@@ -517,6 +529,7 @@ fn the_config_key_resets_a_runaway_mid_sequence() {
         },
         None,
     );
+
     ix.accounts[1] = AccountMeta::new_readonly(ctx.hot.pubkey(), true);
     assert!(send(&mut ctx, ix).is_err());
 
@@ -528,6 +541,7 @@ fn the_config_key_resets_a_runaway_mid_sequence() {
         },
         None,
     );
+
     send(&mut ctx, ix).unwrap();
     assert_eq!(read_quoter(&ctx).mid_sequence, 0);
 
@@ -566,6 +580,7 @@ fn the_config_authority_is_independent_of_the_quoted_wallet() {
         ctx.authority.pubkey().to_bytes(),
         ctx.user_authority.pubkey().to_bytes()
     );
+
     assert_eq!(quoter.authority, addr(ctx.authority.pubkey()));
     assert_eq!(quoter.user_authority, addr(ctx.user_authority.pubkey()));
 
@@ -578,6 +593,7 @@ fn the_config_authority_is_independent_of_the_quoted_wallet() {
         },
         None,
     );
+
     ix.accounts[1] = AccountMeta::new_readonly(ctx.user_authority.pubkey(), true);
     assert!(send(&mut ctx, ix).is_err());
 
@@ -591,6 +607,7 @@ fn the_config_authority_is_independent_of_the_quoted_wallet() {
         },
         None,
     );
+
     send(&mut ctx, ix).unwrap();
     assert!(quote_levels(&mut ctx, Direction::Long, UNIT).is_empty());
 }
@@ -624,6 +641,7 @@ fn creating_an_instance_needs_the_quoted_wallets_signature() {
             meta.is_signer = false;
         }
     }
+
     assert!(send(&mut ctx, ix).is_err());
 }
 
@@ -698,6 +716,7 @@ fn a_shrinking_rewrite_drops_the_tail() {
     for level in &quoter.asks[1..] {
         assert_eq!((level.offset_ppm, level.size, level.filled), (0, 0, 0));
     }
+
     let asks = quote_levels(&mut ctx, Direction::Long, 10 * UNIT);
     assert_eq!(asks, vec![(100_500_000, UNIT)]);
 }
@@ -729,7 +748,7 @@ fn quoted_user_gates_apply() {
         &ctx,
         QuoteArgsV0 {
             taker_served_window: true,
-            consume_reservation: false,
+            include_taker_origin_reservations: false,
             users: &[stranger],
             ..quote_args(Direction::Long, UNIT)
         },
@@ -742,7 +761,7 @@ fn quoted_user_gates_apply() {
         &ctx,
         QuoteArgsV0 {
             taker_served_window: true,
-            consume_reservation: false,
+            include_taker_origin_reservations: false,
             caps: UserCapsV0::EMPTY,
             reference_price: 0,
             taker: Some(quoted),
@@ -757,7 +776,7 @@ fn quoted_user_gates_apply() {
         &ctx,
         QuoteArgsV0 {
             taker_served_window: true,
-            consume_reservation: false,
+            include_taker_origin_reservations: false,
             users: &[stranger, quoted],
             caps: UserCapsV0::EMPTY,
             reference_price: 0,
@@ -778,6 +797,7 @@ fn a_protected_flow_instance_refuses_an_unprotected_taker() {
         require_attested_flow: true,
         ..config()
     });
+
     arm(&mut ctx);
 
     // Unprotected flow sees an empty book.
@@ -785,7 +805,7 @@ fn a_protected_flow_instance_refuses_an_unprotected_taker() {
         &ctx,
         QuoteArgsV0 {
             taker_served_window: false,
-            consume_reservation: false,
+            include_taker_origin_reservations: false,
             ..quote_args(Direction::Long, UNIT)
         },
     );
@@ -816,7 +836,7 @@ fn an_unprotected_instance_ignores_the_flag() {
         &ctx,
         QuoteArgsV0 {
             taker_served_window: false,
-            consume_reservation: false,
+            include_taker_origin_reservations: false,
             ..quote_args(Direction::Long, UNIT)
         },
     );
@@ -856,6 +876,7 @@ fn level_validation_rejects_bad_shapes() {
             asks: Some(levels(&[(3_000, UNIT), (1_000, UNIT)])),
         },
     );
+
     assert!(send(&mut ctx, ix).is_err());
     // Zero size.
     let ix = set_levels_ix(
@@ -867,6 +888,7 @@ fn level_validation_rejects_bad_shapes() {
             asks: None,
         },
     );
+
     assert!(send(&mut ctx, ix).is_err());
     // Equal offsets (must be strictly ascending).
     let ix = set_levels_ix(
@@ -878,6 +900,7 @@ fn level_validation_rejects_bad_shapes() {
             asks: None,
         },
     );
+
     assert!(send(&mut ctx, ix).is_err());
     // More rungs than the ladder holds.
     let ix = set_levels_ix(
@@ -891,6 +914,7 @@ fn level_validation_rejects_bad_shapes() {
             )),
         },
     );
+
     assert!(send(&mut ctx, ix).is_err());
 }
 
@@ -906,12 +930,14 @@ fn paused_quoter_is_silent() {
         },
         None,
     );
+
     send(&mut ctx, ix).unwrap();
     assert!(quote_levels(&mut ctx, Direction::Long, UNIT).is_empty());
     let meta = {
         let ix = execute_ix(&ctx, Direction::Long, UNIT);
         send(&mut ctx, ix).unwrap()
     };
+
     assert!(parse_execute(&read_response(&ctx, &meta)).is_empty());
 }
 
@@ -1009,6 +1035,7 @@ fn either_maker_key_can_cancel_all_and_no_one_else() {
         CancelSidesV0::Both,
         false,
     );
+
     assert!(send(&mut ctx, ix).is_err());
     assert_eq!(read_quoter(&ctx).bid_count, 2);
 
@@ -1119,6 +1146,7 @@ fn set_mid_cu_stays_near_the_floor() {
         "CU — set_mid: {set_mid_cu}, set_levels(64×2 + mid): {set_levels_cu}, \
          quote(64 rungs): {quote_cu}, execute(64 rungs): {execute_cu}"
     );
+
     assert!(set_mid_cu <= 800, "set_mid regressed: {set_mid_cu} CU");
     assert!(
         set_levels_cu <= 10_000,
@@ -1249,6 +1277,7 @@ fn cancel_all_cu_beats_the_set_levels_it_replaces() {
              {set_levels_one_side_cu}, set_levels(clear both) {set_levels_cu}, \
              + set_mid(0) = {full_stop_baseline}"
         );
+
         assert!(
             one_side_cu < set_levels_one_side_cu,
             "{label}: withdrawing one side ({one_side_cu}) must beat clearing it via \
@@ -1265,12 +1294,9 @@ fn cancel_all_cu_beats_the_set_levels_it_replaces() {
             "{label}: withdrawing one side ({one_side_cu}) must cost less than both \
              ({both_cu}) — the cost is meant to track the rungs actually written"
         );
-        // Deliberately no assertion that a two-sided withdrawal beats
-        // `set_levels(clear both)`. At the ladder's full 64 rungs a side it does
-        // not: `set_levels` pays a flat cost (it always rewrites both ladders in
-        // full and always re-scans them) while this pays per rung, so the two
-        // cross around the high fifties. What is claimed above is what holds
-        // everywhere — one-sided withdrawals, and the atomic full stop.
+
+        // Two-sided vs set_levels costs cross around 50 rungs;
+        // only one-sided withdrawal and atomic stop scale predictably.
         one_side.push(one_side_cu);
     }
 
@@ -1280,6 +1306,7 @@ fn cancel_all_cu_beats_the_set_levels_it_replaces() {
     let [empty, shallow, deep] = one_side[..] else {
         panic!("one measurement per shape");
     };
+
     assert!(
         empty < shallow && shallow * 2 < deep,
         "withdrawal cost must scale with the rungs pulled, got {empty} (none), \
@@ -1311,6 +1338,7 @@ fn creation_refuses_a_foreign_denominator_and_a_missing_deviation_band() {
                 system_program: addr(system_program()),
             },
         );
+
         send_signed_by(ctx, ix, Some(wallet))
     };
 
@@ -1391,7 +1419,7 @@ fn a_fresh_instance_already_refuses_an_off_market_mid() {
     let ix = instruction::ExecuteV0 {
         args: ExecuteArgsV0 {
             taker_served_window: true,
-            consume_reservation: false,
+            include_taker_origin_reservations: false,
             direction: Direction::Long,
             size: UNIT,
             users: &[],
@@ -1404,6 +1432,7 @@ fn a_fresh_instance_already_refuses_an_off_market_mid() {
         quoter: addr(ctx.quoter),
         execute_authority: addr(ctx.execute_auth.pubkey()),
     });
+
     let meta = send(&mut ctx, ix).unwrap();
     assert!(parse_execute(&read_response(&ctx, &meta)).is_empty());
 }

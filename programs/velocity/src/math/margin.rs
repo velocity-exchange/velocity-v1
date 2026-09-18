@@ -246,35 +246,25 @@ pub fn calculate_user_safest_position_tiers(
     Ok((safest_tier_spot_liablity, safest_tier_perp_liablity))
 }
 
-/// Reject valuing a user's spot **borrows** for margin when the market's interest
-/// accrual is too stale (OtterSec #135 / #148).
+/// Reject valuing a user's spot **borrows** for margin when the market's interest accrual
+/// is too stale (OtterSec #135 / #148). This mirrors the perp side's freshness
+/// precondition, `amm.is_fresh_at`.
 ///
 /// Margin values a scaled borrow through the market's stored
-/// `cumulative_borrow_interest`. Interest accrued since `last_interest_ts` is not in
-/// that index, so the debt is understated by the un-booked amount. Nothing on these
-/// paths refreshes the market. `handle_withdraw` cranks only the market being
-/// withdrawn, the perp-fill handler cranks none, and the user's other borrow markets
-/// arrive read-only (OtterSec #135 / #148). A borrower can therefore release tokens, or take an adverse
-/// in-band maker fill, against debt the check never fully saw. That leaves bad debt
-/// once the market is finally cranked.
+/// `cumulative_borrow_interest`. Interest accrued since `last_interest_ts` is not in that
+/// index, so the debt is understated by the un-booked amount. Nothing refreshes the market
+/// on these paths. `handle_withdraw` cranks only the market being withdrawn, and other
+/// borrow markets arrive read-only. A borrower can therefore release tokens against debt
+/// the check never saw, or take an adverse in-band maker fill, and bad debt remains.
 ///
-/// Only borrow positions are gated. A stale deposit index understates collateral,
-/// which errs in the protocol's favour, so there is nothing to protect against there.
-/// Gating deposits would strand withdrawals for no gain.
-///
-/// The perp side has the same freshness precondition in `amm.is_fresh_at`. Recovery
-/// needs no privileges. `update_spot_market_cumulative_interest` is permissionless and
-/// may be bundled into the same transaction.
-///
-/// A market whose interval cannot be booked yet is exempt. The clock is the cheap
-/// test, not the property that matters. `update_spot_market_cumulative_interest`
-/// defers an interval whose split or configured carveout rounds below one token, and
-/// it leaves `last_interest_ts` where it is while it does. On a dust-sized market that
-/// deferral can outlast the staleness bound, and no amount of cranking moves the
-/// clock. This function measures the omission itself, which keeps such a market
-/// fillable. When the un-booked index applied to this borrow converts to less than one
-/// token, the debt is understated by less than the smallest unit the account can be
-/// charged.
+/// Only borrows are gated. A stale deposit index understates collateral, which errs in
+/// the protocol's favour. `update_spot_market_cumulative_interest` is permissionless and
+/// may be bundled into the same transaction. The check measures the omission rather than
+/// the clock. That crank defers an interval whose split or configured carveout rounds
+/// below one token, and leaves `last_interest_ts` where it is. On a dust-sized market the
+/// deferral can outlast the staleness bound, and cranking cannot move the clock. Such a
+/// market stays fillable when the un-booked index applied to this borrow converts to less
+/// than one token, which understates the debt by less than the smallest chargeable unit.
 pub fn validate_spot_borrow_interest_fresh_for_margin(
     user: &User,
     spot_market_map: &SpotMarketMap,
@@ -321,22 +311,13 @@ pub fn validate_spot_borrow_interest_fresh_for_margin(
     Ok(())
 }
 
-/// The time window `validate_spot_borrow_interest_fresh_for_margin` allows one
-/// market, derived from what that market may charge.
-///
-/// The un-booked share of a borrow is `borrow_rate x elapsed / year`. Holding that
-/// share under `MAX_SPOT_INTEREST_UNDERSTATEMENT_FOR_MARGIN` means
-/// `elapsed <= share x year / borrow_rate`. A fixed window would instead let the
-/// hidden share scale with the rate, and the rate is configuration.
-/// `validate_borrow_rate` bounds `max_borrow_rate` only from below, so a market may
-/// carry a rate high enough to hide a material share of the debt within any fixed
-/// window.
-///
-/// The divisor is the ceiling the market's own curve cannot exceed, not its current
-/// rate. The window then costs one multiply and one divide instead of a utilization
-/// and rate computation on every borrow of every margin check. `calculate_borrow_rate`
-/// interpolates up to `max_borrow_rate` and then raises the result to
-/// `min_borrow_rate`, so the larger of the two bounds it.
+/// The un-booked share of a borrow is `borrow_rate x elapsed / year`. Holding it under
+/// `MAX_SPOT_INTEREST_UNDERSTATEMENT_FOR_MARGIN` means `elapsed <= share x year /
+/// borrow_rate`. A fixed window would let the hidden share scale with the rate, and
+/// `validate_borrow_rate` bounds `max_borrow_rate` only from below. The divisor is the
+/// ceiling the market's curve cannot exceed, not its current rate, which saves a rate
+/// computation per check. `calculate_borrow_rate` interpolates up to `max_borrow_rate`
+/// and then raises it to `min_borrow_rate`, so the larger of the two bounds it.
 pub fn max_spot_interest_staleness_for_margin(spot_market: &SpotMarket) -> VelocityResult<i64> {
     let rate_ceiling = spot_market
         .max_borrow_rate
@@ -1046,15 +1027,14 @@ impl TripUpperBound {
     }
 }
 
-/// One position walk feeds every equity-floor consumer. `observed_value` is the
-/// live-oracle point value that strict gates and diagnostics use.
-/// `all_oracles_valid` says whether that point is trusted for `MarginCalc`.
-/// `trip_upper_bound` is the separate, user-favorable proof used only to arm the
-/// breaker.
+/// One position walk feeds every equity-floor consumer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct UserEquityCalculation {
+    /// The live-oracle point value that strict gates and diagnostics use.
     observed_value: i128,
+    /// Whether `observed_value` is trusted for `MarginCalc`.
     all_oracles_valid: bool,
+    /// The separate, user-favorable proof used only to arm the breaker.
     trip_upper_bound: TripUpperBound,
 }
 
@@ -1281,10 +1261,9 @@ pub fn calculate_user_equity(user: &User, maps: &mut AccountMaps) -> VelocityRes
 }
 
 /// Net equity paired with the oracle-validity verdict of the walk that produced it.
-/// Every floor decision consumes both, because a value built from an invalid price is
-/// not bounded by anything. A stale oracle and its own 5-minute twap can share the same
-/// wrong value, so no pair of stored prices can bracket the true one. Each predicate
-/// therefore fails closed for its own direction instead of trusting the number.
+/// Every floor decision consumes both. A stale oracle and its own 5-minute twap can
+/// share the same wrong value, so no pair of stored prices can bracket the true one.
+/// Each predicate therefore fails closed for its own direction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FloorNetEquity {
     /// Net equity from [`calculate_user_equity`]. It is unweighted assets and perp pnl
@@ -1295,11 +1274,10 @@ pub struct FloorNetEquity {
 }
 
 impl FloorNetEquity {
-    /// True when the subaccount provably clears `floor + buffer`, meaning every oracle
-    /// is valid and net equity is at or above the buffered floor. Paths that authorize
-    /// an action require this, so an invalid oracle cannot price the subaccount up
-    /// through the floor. Those paths are risk-increasing placement and fills,
-    /// withdrawals, transfers out, and liquidator admission.
+    /// True when the subaccount provably clears `floor + buffer`. Paths that authorize an
+    /// action require this, so an invalid oracle cannot price the subaccount up through
+    /// the floor. Those paths are risk-increasing placement and fills, withdrawals,
+    /// transfers out, and liquidator admission.
     pub fn clears_buffered_floor(&self, user: &User) -> bool {
         self.all_oracles_valid && !user.is_below_buffered_equity_floor(self.value)
     }
@@ -1342,13 +1320,11 @@ impl FloorNetEquity {
 }
 
 /// Net equity for the equity-floor gates. It returns [`calculate_user_equity`] and its
-/// oracle-validity verdict when the user has a floor set, and `None` otherwise so
-/// callers skip the extra position pass. Unlike the margin numerator
-/// `total_collateral`, this values assets, perp pnl and spot liabilities at unweighted
-/// oracle prices, so borrows subtract their full value.
-///
-/// Callers pick the [`FloorNetEquity`] predicate that fails closed for the
-/// decision they make.
+/// oracle-validity verdict when the user has a floor set, and `None` otherwise so callers
+/// skip the extra position pass. Unlike the margin numerator `total_collateral`, this
+/// values assets, perp pnl and spot liabilities at unweighted oracle prices, so borrows
+/// subtract their full value. Callers pick the [`FloorNetEquity`] predicate that fails
+/// closed for the decision they make.
 pub fn calculate_net_equity_for_floor(
     user: &User,
     maps: &mut AccountMaps,

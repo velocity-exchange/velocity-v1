@@ -90,6 +90,7 @@ pub fn handle_cancel_orders_v1(
         sides: params.sides,
         force: false,
     })?;
+
     validate!(
         removed.user == user_ref,
         ErrorCode::DefaultError,
@@ -123,6 +124,7 @@ pub fn handle_cancel_orders_v1(
             "no clob orders to cancel for user {}",
             ctx.accounts.user.key()
         );
+
         return Ok(());
     }
 
@@ -151,5 +153,6 @@ pub fn handle_cancel_orders_v1(
             ctx.accounts.user.key()
         );
     }
+
     Ok(())
 }

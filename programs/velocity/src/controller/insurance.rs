@@ -47,19 +47,10 @@ use {
 #[cfg(test)]
 mod tests;
 
-/// Lowers the revenue-settle cap base to the insurance-fund vault balance that an
-/// outflow leaves behind.
-///
-/// `if_last_settle_vault_amount` is the lowest balance the vault held since the last
-/// revenue settle. Every path that moves tokens out of the vault must call this.
-/// Without it, a dip inside a period stays invisible at the next settle. A draw takes
-/// the vault to 100, a donation puts it back to 1000, and `min(live, snapshot)` reads
-/// 1000 again. The donation then lifts the cap without staying in the fund for a
-/// period.
-///
-/// `insurance_vault_amount` is the balance before the outflow. The subtraction
-/// saturates rather than errors. A cap base of `0` only settles less revenue for the
-/// rest of the period. An error would revert a bankruptcy or deficit resolution.
+/// Lowers the revenue-settle cap base to the vault balance an outflow leaves
+/// behind. Every path that moves tokens out must call this, or a dip inside a
+/// period stays invisible at the next settle. The subtraction saturates rather
+/// than errors, since erroring would revert a bankruptcy or deficit resolution.
 pub fn record_insurance_fund_outflow(
     spot_market: &mut SpotMarket,
     insurance_vault_amount: u64,
@@ -136,11 +127,10 @@ pub fn add_insurance_fund_stake(
     let total_if_shares_before = spot_market.insurance_fund.total_shares;
     let user_if_shares_before = spot_market.insurance_fund.user_shares;
 
-    // `amount` is the share-aligned portion of the request. The remainder stays in the
-    // depositor's token account, so no part of a deposit accrues to existing
-    // shareholders as rounding. Shares are priced off the pre-transfer vault balance,
-    // which an attacker can inflate by donating into the vault. Pricing the deposit
-    // exactly makes that inflation unprofitable.
+    // `amount` is the share-aligned portion of the request; the remainder stays
+    // in the depositor's account, so no deposit accrues to shareholders as
+    // rounding. Shares price off the pre-transfer vault balance, which pricing
+    // exactly makes unprofitable to inflate by donation.
     let (amount, n_shares) = deposit_amount_and_shares_for_if_stake(
         requested_amount,
         spot_market.insurance_fund.total_shares,
@@ -651,20 +641,12 @@ pub fn settle_revenue_to_insurance_fund(
     }
 
     if spot_market.insurance_fund.user_shares > 0 {
-        // Size the APR cap off the balance the fund held for the whole period, not off
-        // the live vault alone. `insurance_vault_amount` is the raw token-account
-        // balance, which anyone can inflate with a direct SPL transfer right before a
-        // settle to lift the cap toward the 1/10-of-revenue-pool bound.
-        // `if_last_settle_vault_amount` is the lowest balance the vault held since the
-        // last settle, so it predates any such transfer and it already carries every
-        // dip in between. The `min` of the two counts only capital that was present
-        // throughout, and a pre-settle donation is not. Capital that does span a full
-        // period already belongs to the stakers pro rata, so counting it is correct. A
-        // `0` snapshot means the market never settled, or settled on an empty vault. It
-        // gives a `0` cap for one period, and the snapshot written below repairs it.
+        // Caps off the balance held the whole period, since the live vault is
+        // donation-inflatable right before a settle; `if_last_settle_vault_amount`,
+        // the period's lowest balance, predates any such donation. A `0` snapshot
+        // (never settled) yields one `0`-cap period; the write below repairs it.
         let cap_vault_amount = insurance_vault_amount.min(spot_market.if_last_settle_vault_amount);
 
-        // only allow MAX_APR_PER_REVENUE_SETTLE_TO_INSURANCE_FUND_VAULT or 1/10th of revenue pool to be settled
         let capped_apr_amount = cap_vault_amount
             .cast::<u128>()?
             .safe_mul(MAX_APR_PER_REVENUE_SETTLE_TO_INSURANCE_FUND_VAULT)?

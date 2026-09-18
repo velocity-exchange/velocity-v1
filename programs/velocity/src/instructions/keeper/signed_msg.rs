@@ -53,6 +53,7 @@ pub fn handle_place_signed_msg_taker_order<'c: 'info, 'info>(
     let Some(mut placed) = placed else {
         return Ok(());
     };
+
     validate!(
         placed.market_index == market_index,
         ErrorCode::InvalidSignedMsgOrderParam,
@@ -69,8 +70,6 @@ pub fn handle_place_signed_msg_taker_order<'c: 'info, 'info>(
         market_index,
     )?;
 
-    // The fill mutates the ephemeral order's filled amounts in place. The rest
-    // leg reads its remainder from there.
     let filled = if synchronous_take {
         fill_signed_msg_taker_order(
             &ctx,
@@ -91,6 +90,7 @@ pub fn handle_place_signed_msg_taker_order<'c: 'info, 'info>(
         let taker = load_mut!(ctx.accounts.user)?;
         escrow.revoke_completed_orders(&taker)?;
     }
+
     Ok(())
 }
 
@@ -126,18 +126,18 @@ fn run_placement_leg<'c: 'info, 'info>(
         sections.escrow.take(),
         is_delegate_signer,
     )?;
+
     sections.escrow = escrow;
     Ok(placed)
 }
 
 /// Whether the taker's flow served the book's protection window.
 ///
-/// A book with a speed bump gives makers priority, so only attested flow fills
-/// synchronously. An unattested submission of a signed message instead rests the
-/// whole order taker-origin through the activation window, and the cross cranks
-/// fill it. The attestation is detached. Swift signs over the taker's own order
-/// signature after the hold, so the flow authority never signs a keeper-built
-/// transaction and the fill pays no second signature fee. The placement already
+/// A book with a speed bump gives makers priority, so only attested flow fills synchronously.
+/// An unattested signed-message submission instead rests the whole order taker-origin through
+/// the activation window, and the cross cranks fill it. The attestation is detached: Swift signs
+/// over the taker's own order signature after the hold, so the flow authority never signs a
+/// keeper-built transaction, and the fill pays no second signature fee. The placement already
 /// validated the envelope, so the signature prefix is present.
 fn verify_taker_served_window(
     attestation: &Option<crate::validation::sig_verification::FlowAttestationV0>,
@@ -148,12 +148,14 @@ fn verify_taker_served_window(
     let Some(attestation) = attestation else {
         return Ok(false);
     };
+
     crate::validation::sig_verification::verify_flow_attestation(
         attestation,
         &state.hot_key(crate::state::state::HotRole::FlowAuthority),
         &taker_order_signature.ok_or(ErrorCode::SigVerificationFailed)?,
         clock.unix_timestamp,
     )?;
+
     Ok(true)
 }
 
@@ -192,6 +194,7 @@ fn fill_signed_msg_taker_order<'c: 'info, 'info>(
         }
         .routed_order(&user, &placed.order, mode)?
     };
+
     if order.unfilled == 0 {
         return Ok(0);
     }
@@ -218,6 +221,7 @@ fn fill_signed_msg_taker_order<'c: 'info, 'info>(
         obligation,
         taker_exposure_closed_by_caller: false,
     });
+
     sections.run_fill(
         &fill_accounts(ctx),
         controller::orders::FillRequest {
@@ -248,6 +252,7 @@ fn keeper_obligation<'c: 'info, 'info>(
                 &ctx.accounts.ix_sysvar.to_account_info(),
             )?,
         ),
+
         unrouted_quoters,
     })
 }
@@ -289,12 +294,14 @@ fn rest_signed_msg_remainder<'c: 'info, 'info>(
         if user.is_being_liquidated() {
             return Ok(());
         }
+
         // The order lives on `placed`, not `user.orders`. Its filled amounts
         // were updated in place by the fill leg.
         let order = &placed.order;
         if base_asset_amount_filled == 0 && !order.has_auction() {
             return Ok(());
         }
+
         crate::instructions::restable_remainder(&user, order, market_index, None)
     };
 
@@ -308,6 +315,7 @@ fn rest_signed_msg_remainder<'c: 'info, 'info>(
     let Some(remainder) = remainder else {
         return Ok(());
     };
+
     if remainder.unfilled == 0 {
         return Ok(());
     }
@@ -339,6 +347,7 @@ fn rest_signed_msg_remainder<'c: 'info, 'info>(
             .load_mut()?
             .set_resting_route(placed.uuid, clob_order_id, placed.route_digest);
     }
+
     Ok(())
 }
 
@@ -395,14 +404,11 @@ pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
 
     apply_message_position_settings(&mut taker, &message, env)?;
 
-    // Place nothing when the main taker order would soft-skip on an
-    // already-expired `max_ts`. The reduce-only sidecars below are trigger
-    // orders, and `max_ts` expiry does not apply to them. Without this check
-    // they would be installed as standalone triggers even though the main entry
-    // never existed, which breaks the bundle's atomicity. The check runs first
-    // and not after the main order is placed, so the sidecars keep their order
-    // ids. The main order then keeps the trailing id that clients and the
-    // `SignedMsgOrderRecord` rely on.
+    // Place nothing when the main taker order would soft-skip on an already-expired `max_ts`. The
+    // reduce-only sidecars below are trigger orders, so `max_ts` expiry does not apply to them, and
+    // they would otherwise install as standalone triggers with no main entry, breaking the bundle's
+    // atomicity. The check runs before the main order is placed, so the sidecars keep their ids,
+    // and the main order keeps the trailing id that clients and `SignedMsgOrderRecord` rely on.
     if let Some(max_ts) = message.signed_msg_order_params.max_ts {
         if max_ts != 0 && max_ts < env.clock.unix_timestamp {
             msg!(
@@ -410,6 +416,7 @@ pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
                 max_ts,
                 env.clock.unix_timestamp
             );
+
             return Ok((escrow_zc, None));
         }
     }
@@ -419,6 +426,7 @@ pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
         idx: message.builder_idx,
         fee_bps: builder_fee_bps,
     };
+
     // The sidecars go first. Each builder row is keyed to
     // `taker.next_order_id`, the id `place_perp_order` assigns, so the main
     // order takes the trailing id.
@@ -464,6 +472,7 @@ fn verify_signed_msg(
             ],
             &ID,
         );
+
         validate!(
             taker_pda.0 == taker.key,
             ErrorCode::SignedMsgUserContextUserMismatch,
@@ -491,24 +500,22 @@ fn signed_msg_order_slot(
     message: &VerifiedMessage,
     env: &PlacementEnv<'_, '_>,
 ) -> Result<Option<SignedMsgOrderId>> {
-    // First order must be a taker order
     let params = &message.signed_msg_order_params;
     if params.market_type != MarketType::Perp || !params.has_valid_auction_params()? {
         msg!("First order must be a perp taker order");
         return Err(print_error!(ErrorCode::InvalidSignedMsgOrderParam)().into());
     }
 
-    // `auction_duration` is in wall clock 400ms units.
     let auction_duration_units = if params.order_type == OrderType::Limit {
         params.auction_duration.unwrap_or(0)
     } else {
         params.auction_duration.safe_unwrap()?
     };
-    // A limit order with no auction rests from placement. Its message slot is a
-    // placement deadline rather than an auction start, and `max_slot` below
-    // equals it. A client stamps that deadline ahead by its signing budget of
-    // about 14 seconds, so the order may be placed before the slot arrives. The
-    // lead is bounded.
+
+    // A limit order with no auction rests from placement. Its message slot is a placement deadline
+    // rather than an auction start, and `max_slot` below equals it. A client stamps that deadline
+    // ahead by its signing budget of about 14 seconds, so the order may be placed before the slot
+    // arrives. The lead is bounded.
     let is_resting_limit = params.order_type == OrderType::Limit && auction_duration_units == 0;
     let max_resting_limit_lead = Millis::from_secs(30);
     // About 200 seconds of wall-clock age, integrated per slot duration regime.
@@ -522,6 +529,7 @@ fn signed_msg_order_slot(
                 order_slot,
                 env.clock.slot
             );
+
             return Err(print_error!(ErrorCode::InvalidSignedMsgOrderParam)().into());
         }
         if env.state.slot_clock().elapsed(env.clock.slot, order_slot) > max_resting_limit_lead {
@@ -531,6 +539,7 @@ fn signed_msg_order_slot(
                 max_resting_limit_lead.as_ms(),
                 env.clock.slot
             );
+
             return Err(print_error!(ErrorCode::InvalidSignedMsgOrderParam)().into());
         }
     }
@@ -541,6 +550,7 @@ fn signed_msg_order_slot(
             max_order_age.as_ms(),
             env.clock.slot
         );
+
         return Err(print_error!(ErrorCode::InvalidSignedMsgOrderParam)().into());
     }
 
@@ -552,17 +562,16 @@ fn signed_msg_order_slot(
         Millis::from_stored_units(auction_duration_units as u64),
     );
 
-    // Dont place order if max slot already passed
     if max_slot < env.clock.slot {
         msg!(
             "SignedMsg order max_slot {} < current slot {}",
             max_slot,
             env.clock.slot
         );
+
         return Ok(None);
     }
 
-    // Dont place order if signed msg order already exists
     let signed_msg_order_id = SignedMsgOrderId::new(message.uuid, max_slot, 0);
     if taker
         .orders
@@ -662,6 +671,7 @@ fn place_bracket_orders(
             } else {
                 on_short_entry
             },
+
             market_index: entry.market_index,
             market_type: MarketType::Perp,
             reduce_only: true,
@@ -791,9 +801,8 @@ fn place_entry_order(
 
 /// What the placement leg hands the fill leg.
 ///
-/// The placement holds the taker's `User` borrowed for its whole body, and the
-/// router fill takes the loader instead, so the two cannot run inside one
-/// borrow. This is the state that has to cross that boundary.
+/// The placement borrows the taker's `User` for its whole body, and the router fill takes the
+/// loader instead, so the two cannot share one borrow. This carries what crosses it.
 pub struct PlacedSignedMsgOrder {
     pub order_id: u32,
     /// The ephemeral taker order. It never enters `user.orders`. The fill leg

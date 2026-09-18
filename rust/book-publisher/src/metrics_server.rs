@@ -41,6 +41,7 @@ async fn metrics_handler(State(state): State<Exporter>) -> impl IntoResponse {
     if let Err(err) = TextEncoder::new().encode_utf8(&state.registry.gather(), &mut body) {
         warn!(error = %err, "encode metrics");
     }
+
     (
         [(CONTENT_TYPE, "text/plain;version=1.0.0;charset=utf-8")],
         body,
@@ -150,6 +151,7 @@ async fn pin_handler(
             set_at_ms: now,
         },
     );
+
     info!(%quoter, admission = admission.as_str(), "quoter pinned");
     StatusCode::NO_CONTENT.into_response()
 }
@@ -165,6 +167,7 @@ async fn unpin_handler(
     let Ok(quoter) = Pubkey::from_str(&quoter) else {
         return (StatusCode::BAD_REQUEST, "quoter is not a pubkey").into_response();
     };
+
     state.health.clear_pin(&quoter);
     info!(%quoter, "quoter pin cleared");
     StatusCode::NO_CONTENT.into_response()

@@ -617,20 +617,10 @@ export function calculateBorrowRate(
 }
 
 /**
- * How long one spot market's interest accrual may lag before the program refuses to
- * value a borrow in it for margin. It mirrors
- * `math::margin::max_spot_interest_staleness_for_margin`, which fails with
- * `SpotMarketInterestStaleForMargin`.
- *
- * The un-booked share of a borrow is `borrowRate * elapsed / year`. Holding that
- * share under `MAX_SPOT_INTEREST_UNDERSTATEMENT_FOR_MARGIN` means
- * `elapsed <= share * year / borrowRate`. The divisor is the ceiling the market's
- * curve cannot exceed, not its current rate. `calculateInterestRate` ramps up to
- * `maxBorrowRate` and then raises the result to `minBorrowRate`, so the larger of the
- * two bounds it. `MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN` caps the result.
- *
- * @param {SpotMarketAccount} bank - The spot market account
- * @return {BN} Window in seconds
+ * How long, in seconds, one spot market's interest accrual may lag before the program refuses
+ * to value a borrow for margin. Mirrors `math::margin::max_spot_interest_staleness_for_margin`,
+ * which fails with `SpotMarketInterestStaleForMargin`. Bounds `borrowRate * elapsed / year` at
+ * the rate ceiling `calculateInterestRate` ramps to, capped by `MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN`.
  */
 export function maxSpotInterestStalenessForMargin(bank: SpotMarketAccount): BN {
 	const rateCeiling = BN.max(
@@ -649,54 +639,50 @@ export function maxSpotInterestStalenessForMargin(bank: SpotMarketAccount): BN {
 }
 
 /**
- * Projects the cumulative interest multipliers that accrue between `spotMarket.lastInterestTs` and
- * `now` at the market's current interest rate. It mirrors the gross amounts
- * `calculate_accumulated_interest` computes. The result is a point-in-time estimate for display.
- * The on-chain update, `update_spot_market_cumulative_interest`, re-derives the rate from
- * utilization at settlement time, which is what this function does when it calls
- * `calculateInterestRate(bank)` with no delta. That update runs only if
+ * allow-verbose: three distinct on-chain rounding behaviors (OtterSec #115, #117, #127) diverge
+ * from this projection in ways a reader cannot reconstruct from the code, and dropping any one
+ * citation is how the next drift between this mirror and the program goes undetected.
+ *
+ * Projects the cumulative interest multipliers accrued between `spotMarket.lastInterestTs` and
+ * `now` at the market's current rate, mirroring the gross amounts `calculate_accumulated_interest`
+ * computes. It is a point-in-time display estimate. The on-chain update,
+ * `update_spot_market_cumulative_interest`, re-derives the rate the same way, via
+ * `calculateInterestRate(bank)` with no delta, but only runs when
  * `deposit_interest > 0 && borrow_interest > 1`.
  *
- * The program also advances `lastInterestTs` without accruing for an interval that owes no
- * interest. It does so while the market's `UpdateCumulativeInterest` operation or the
- * exchange-wide funding pause is set, and while utilization is zero. A projection from
- * `bank.lastInterestTs` therefore never spans a paused or zero-borrow window. The program drops
- * those intervals instead of billing them later to whatever balances exist then
- * (OtterSec #115, #117).
+ * The program also advances `lastInterestTs` without accruing when the market's
+ * `UpdateCumulativeInterest` operation or the exchange-wide funding pause is set, or while
+ * utilization is zero, dropping those intervals rather than billing them later (OtterSec #115,
+ * #117). A projection from `bank.lastInterestTs` never spans such a window.
  *
- * Every other interval that is owed commits on the interval it belongs to, once it reaches a whole
- * index unit on both sides. An interval under that floor stays on the clock and is retried on the
- * next crank. That floor is a `borrowInterest` of 1 or a `depositInterest` of 0. A projection from
- * `bank.lastInterestTs` can therefore span a window in which balances changed only by that
+ * An interval commits only once it reaches a whole index unit on both sides, a `borrowInterest`
+ * of 1 or `depositInterest` of 0. Below that floor it stays on the clock for the next crank, so a
+ * projection from `bank.lastInterestTs` can span a window where balances changed only by that
  * sub-unit remainder.
  *
- * Borrow interest always adds 1, which matches the program's lender-favoring rounding, and it
- * reaches `cumulativeBorrowInterest` in full. `depositInterest` here is the gross amount before the
- * carveouts. On chain, `insuranceFund.ifFeeFactor` and `protocolFeeFactor`, both in
- * `IF_FACTOR_PRECISION`, are each cut from it first, to `revenuePool` and to `protocolFeePool`.
- * Only the remainder is added to `cumulativeDepositInterest`. This function does not reproduce that
- * split, so it overstates the deposit-side increment whenever either factor is non-zero.
+ * Borrow interest always adds 1, matching the program's lender-favoring rounding, and reaches
+ * `cumulativeBorrowInterest` in full. `depositInterest` here is the gross pre-carveout amount. On
+ * chain, `insuranceFund.ifFeeFactor` and `protocolFeeFactor` (`IF_FACTOR_PRECISION`) are each cut
+ * to `revenuePool` and `protocolFeePool` first, and only the remainder reaches
+ * `cumulativeDepositInterest`. This function skips that split, so it overstates the deposit side
+ * whenever either factor is non-zero.
  *
  * A cut too small to pay in whole units is neither dropped nor delayed. The program carries the
- * remainder of each of the cut's two divisions. Those divisions are the factor multiply in index
- * space and the conversion to tokens. The remainders live on the carveout pools, in
- * `pendingInterestSplitDust` and `pendingInterestDust`, and the program adds them back on the next
- * interval (OtterSec #127). A market with a configured carveout therefore pays its pools in steps rather than on
- * every interval. `cumulativeDepositInterest` and `lastInterestTs` still advance on every interval
- * that clears the floor above.
+ * remainder of the factor multiply and the token conversion on the carveout pools, in
+ * `pendingInterestSplitDust` and `pendingInterestDust`, and adds it back next interval (OtterSec
+ * #127), so a market with a carveout pays its pools in steps. `cumulativeDepositInterest` and
+ * `lastInterestTs` still advance on every interval that clears the floor above.
  *
- * `depositInterest` is subject to the program's conservation clamp. It scales down if the tokens it
- * would credit to `depositBalance` exceed the tokens `borrowInterest` charges `borrowBalance`. The
- * two are equal by construction, because the deposit rate is the borrow rate scaled by utilization.
- * Utilization comes from rounded token amounts and is sampled once for the whole interval, so a
- * long projection at a high rate can otherwise overstate the deposit side by whole tokens.
+ * `depositInterest` is also subject to the program's conservation clamp. It scales down if the
+ * tokens credited to `depositBalance` would exceed what `borrowInterest` charges `borrowBalance`.
+ * The two are equal by construction, since utilization is sampled once and rounded, so a long
+ * projection at a high rate can otherwise overstate the deposit side by whole tokens.
  *
- * @param {SpotMarketAccount} bank - The spot market account
- * @param {BN} now - The timestamp (unix seconds) to project interest up to
- * @return {{ borrowInterest: BN; depositInterest: BN }} `borrowInterest` is the exact amount added
- *   to `cumulativeBorrowInterest`; `depositInterest` is the gross pre-carveout amount, not
- *   necessarily what's added to `cumulativeDepositInterest` (see above). Both in the same
- *   fixed-point units as those cumulative fields (`SPOT_MARKET_CUMULATIVE_INTEREST_PRECISION`)
+ * @param now Unix seconds to project interest up to.
+ * @return `borrowInterest` is the exact amount added to `cumulativeBorrowInterest`.
+ *   `depositInterest` is the gross pre-carveout amount, not necessarily what's added to
+ *   `cumulativeDepositInterest` (see above). Both share `SPOT_MARKET_CUMULATIVE_INTEREST_PRECISION`
+ *   fixed-point units.
  */
 export function calculateInterestAccumulated(
 	bank: SpotMarketAccount,
@@ -949,12 +935,10 @@ export function calculateWithdrawLimit(
 	// the per-account eligibility test, `User.canBypassWithdrawLimits`.
 	//
 	// `exceptionWithdrawLimit` is never below `withdrawLimit`, because
-	// `exceptionFloor` is never above `minDepositTokens`. An eligible account
-	// therefore never loses room it already had.
-	//
-	// The relaxation is one `withdrawGuardThreshold`. It does not depend on
-	// `withdrawCircuitBreakerBps`. That field moves the breaker floor and this
-	// exception floor by the same amount.
+	// `exceptionFloor` is never above `minDepositTokens`, so an eligible account
+	// never loses room it already had. The relaxation is one
+	// `withdrawGuardThreshold` and does not depend on `withdrawCircuitBreakerBps`,
+	// which moves the breaker floor and this exception floor by the same amount.
 	const exceptionFloor = BN.max(
 		minDepositTokens.sub(spotMarket.withdrawGuardThreshold),
 		ZERO
@@ -1022,16 +1006,13 @@ export function calculateMaxDepositTokenAmount(
 }
 
 /**
- * Mirror of the program's `check_deposit_limits`. Returns true if the market's
- * current deposit level is within the daily deposit cap (always true when the
- * cap is disabled).
- *
- * This is a market-wide level predicate. It does not predict that a given action succeeds. The
+ * Mirror of the program's `check_deposit_limits`. Returns true if the market's current deposit
+ * level is within the daily deposit cap (always true when the cap is disabled).
+ * This is a market-wide level predicate, not a prediction that a given action succeeds. The
  * program enforces it through `validate_deposit_cap_after_increase`, which runs only on an
- * operation that raises the market's deposit level. A `false` here does not mean a withdrawal, a
- * repayment or a borrow-reducing swap reverts, because the cap never blocks those. Use it to
- * predict `DailyDepositLimit` only on a flow that raises a deposit, such as a deposit, a transfer
- * in, or a swap whose out leg grows a deposit.
+ * operation that raises the market's deposit level, so a `false` here does not mean a withdrawal,
+ * a repayment or a borrow-reducing swap reverts. Use it to predict `DailyDepositLimit` only on a
+ * flow that raises a deposit, such as a deposit, a transfer in, or a swap whose out leg grows one.
  */
 export function checkDepositLimits(spotMarket: SpotMarketAccount): boolean {
 	if (spotMarket.maxDepositBpsPerDay === 0) {

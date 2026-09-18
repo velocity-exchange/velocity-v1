@@ -123,6 +123,7 @@ pub fn rewrite_trigger_conditions<'info>(
     if write_shared_list {
         validate_market_coverage(user_loader, &inputs.coverage())?;
     }
+
     let oracle_refs = resolve_oracle_watches(&mut inputs);
 
     let user_key = user_loader.key();
@@ -141,6 +142,7 @@ pub fn rewrite_trigger_conditions<'info>(
             inputs.market_refs,
             inputs.tail_refs,
         );
+
         conditions.write_sync_accounts(&stored)?;
     }
 
@@ -150,6 +152,7 @@ pub fn rewrite_trigger_conditions<'info>(
         if slot_index >= TRIGGER_CONDITION_SLOTS {
             break;
         }
+
         let Some(trigger) = trigger_watch_for_order(order, &inputs.markets) else {
             continue;
         };
@@ -163,6 +166,7 @@ pub fn rewrite_trigger_conditions<'info>(
             resolver_disc,
             min_payment: trigger.min_payment,
         };
+
         conditions.set_condition(
             TRIGGER_SLOT_BASE + slot_index,
             &ConditionV0::on_value_cross(
@@ -179,9 +183,11 @@ pub fn rewrite_trigger_conditions<'info>(
                 resolvers,
             ),
         )?;
+
         conditions.trigger_slots[slot_index] = meta;
         slot_index += 1;
     }
+
     clear_unused_trigger_slots(&mut conditions, slot_index)
 }
 
@@ -281,6 +287,7 @@ fn collect_trigger_inputs<'info>(
                     tail_refs.push(AccountRefV0::readonly(
                         slots[index].config.program_id.to_bytes(),
                     ));
+
                     if slots[index].quotes() {
                         markets.entry(market).or_default().clob = Some((
                             *info.key,
@@ -289,9 +296,11 @@ fn collect_trigger_inputs<'info>(
                         ));
                     }
                 }
+
                 continue;
             }
         }
+
         // Anything else is a candidate oracle. It is matched by pubkey below and is
         // part of the readonly margin-map section. Velocity-owned accounts land here
         // on purpose, because velocity hosts its own oracle accounts for PythLazer and
@@ -324,6 +333,7 @@ fn resolve_oracle_watches(inputs: &mut TriggerInputs<'_>) -> Vec<AccountRefV0> {
             entry.watch = oracle_watch(info, source);
         }
     }
+
     oracle_refs
 }
 
@@ -348,6 +358,7 @@ fn build_sync_accounts(
         AccountRefV0::readonly(user_key.to_bytes()),
         AccountRefV0::readonly(crate::state::pdas::state().to_bytes()),
     ];
+
     stored.extend(oracle_refs);
     stored.extend(market_refs);
     stored.extend(tail_refs);
@@ -385,6 +396,7 @@ fn trigger_watch_for_order(
     {
         return None;
     }
+
     let inputs = markets.get(&order.market_index)?;
     // Everything a watch needs, or the order is not staged.
     let (Some(oracle), Some(watch), Some(min_payment)) =
@@ -392,11 +404,13 @@ fn trigger_watch_for_order(
     else {
         return None;
     };
+
     let direction = match order.trigger_condition {
         crate::state::user::OrderTriggerCondition::Above => WatchDirection::AtOrAbove,
         crate::state::user::OrderTriggerCondition::Below => WatchDirection::AtOrBelow,
         _ => return None,
     };
+
     // Every fired trigger goes to the market's book, so a market with no CLOB
     // has nowhere to fire one. Skipping it here rather than failing keeps one
     // such order from stopping the sync, which would leave this user's other
@@ -435,6 +449,7 @@ fn route_trigger_resolver(
             return Err(ErrorCode::OrderNotTriggerable.into());
         }
     };
+
     Ok((
         crate::instructions::relay_harness::disc8(disc)?,
         TriggerSlotMetaV0 {
@@ -462,6 +477,7 @@ fn slot_resolver_refs(
         &[b"perp_market", market_index.to_le_bytes().as_ref()],
         &crate::ID,
     );
+
     [
         AccountRefV0::writable(crate::state::pdas::relay_scratch().to_bytes()),
         AccountRefV0::readonly(conditions_key.to_bytes()),
@@ -478,7 +494,9 @@ fn clear_unused_trigger_slots(conditions: &mut UserConditionsV0, from: usize) ->
             TRIGGER_SLOT_BASE + index,
             &relay_spec::bytemuck::Zeroable::zeroed(),
         )?;
+
         conditions.trigger_slots[index] = TriggerSlotMetaV0::default();
     }
+
     Ok(())
 }

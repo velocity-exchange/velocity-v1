@@ -109,6 +109,7 @@ impl RouteContext {
         if let Some(route) = self.markets.read().await.get(&market_index) {
             return Ok(route.clone());
         }
+
         let (buffer, authority) = find_quote_buffer(&self.source, &self.velocity, market_index)
             .await
             .map_err(RouteError::internal)?
@@ -130,6 +131,7 @@ impl RouteContext {
             step_size: market.order_step_size,
             quoters,
         };
+
         self.markets
             .write()
             .await
@@ -151,10 +153,9 @@ pub struct RouteQuery {
     /// Taker base size, BASE_PRECISION units.
     size: u64,
     /// The taker's own authority and sub-account, when it has one. A book
-    /// never fills a user against itself, so a caller that also rests on the
-    /// book gets a different answer than one that does not. Omitting these
-    /// means the caller has no resting liquidity here, which is the common
-    /// case. At worst the omission names one maker the fill will skip.
+    /// never fills a user against itself, so supplying these changes the
+    /// quote from a caller with no resting orders. Omitting them skips at
+    /// most one maker.
     taker_authority: Option<String>,
     #[serde(default)]
     taker_sub_account_id: u16,
@@ -227,27 +228,21 @@ struct RouteResponse {
     /// The makers resting on the route's CLOB books that this fill would
     /// sweep, in the order to carry them, with the two accounts each costs.
     ///
-    /// A fill settles only for users whose accounts it carries, and a book
-    /// stores its makers as an authority and a sub-account rather than an
-    /// account key. This is therefore the one part of a fill's account set
-    /// that a caller cannot work out without reading the book. The list is
-    /// the program's own walk, not an estimate.
+    /// A book stores its makers as an authority and a sub-account, not an
+    /// account key. This is the only way to build the fill's account set
+    /// without reading the book directly. The list is the program's own
+    /// walk, not an estimate.
     ///
-    /// Carry them in this order and stop where the transaction runs out of
-    /// room. The book stops at the first maker the caller did not bring, so a
-    /// prefix fills and a gap forfeits everything behind it.
-    ///
-    /// The order is the book's own walk, best price first, except that every
-    /// owner that gates depth comes ahead of every owner that does not. Each
-    /// group stays in walk order. The book itself says which of its orders can
-    /// end a walk, per row, so this ordering never reimplements that rule. An
-    /// owner whose orders all sit below that floor cannot end a walk. It gates
-    /// nothing, and carrying it buys only its own size, which is what
-    /// `gatesDepth` reports per maker. Truncating this list at the account
-    /// budget therefore drops the makers that cost the least to lose.
-    ///
-    /// These and `books` together decide a fill's account set: these makers in
-    /// this order, and the quoter section for each entry in `books`.
+    /// allow-verbose: this is the account-ordering contract a caller must
+    /// follow. Carry makers in this order and stop where the transaction
+    /// runs out of room. The book stops at the first maker the caller did
+    /// not bring, so a gap forfeits every maker behind it. The order is the
+    /// book's own walk, best price first, except every maker with
+    /// `gates_depth` true comes before one with it false, each group
+    /// keeping walk order. `gates_depth` mirrors the book's own rule for
+    /// which order can end a walk, so truncating this list always drops the
+    /// makers that cost least to lose. These and `books` together decide
+    /// the full account set.
     clob_makers: Vec<MakerOut>,
 }
 
@@ -280,6 +275,7 @@ impl IntoResponse for RouteError {
             Self::Simulation(message) => (StatusCode::SERVICE_UNAVAILABLE, message),
             Self::Internal(message) => (StatusCode::INTERNAL_SERVER_ERROR, message),
         };
+
         (status, Json(serde_json::json!({ "error": message }))).into_response()
     }
 }
@@ -307,9 +303,11 @@ pub async fn route_quote(
             )))
         }
     };
+
     if query.size == 0 {
         return Err(RouteError::BadRequest("size must be nonzero".into()));
     }
+
     // One retry through rediscovery. The cached buffer may have been closed,
     // or the publisher may have moved markets since the last discovery. The
     // retry rebuilds the same account set, so it only helps when the buffer
@@ -326,6 +324,7 @@ pub async fn route_quote(
             direction,
             query.size,
         );
+
         match quote_market(&ctx.source, &ctx.health, &request, &route.quoters).await {
             Ok(quoted) => {
                 if !quoted.excluded.is_empty() {
@@ -336,6 +335,7 @@ pub async fn route_quote(
                         quoted.excluded
                     );
                 }
+
                 view = Some((
                     QuoteView {
                         market: query.market_index,
@@ -347,6 +347,7 @@ pub async fn route_quote(
                     },
                     route,
                 ));
+
                 break;
             }
             Err(err) if attempt == 0 => {
@@ -356,6 +357,7 @@ pub async fn route_quote(
             Err(err) => return Err(RouteError::Simulation(format!("{err:#}"))),
         }
     }
+
     let (view, route) = view.expect("loop either set view or returned");
 
     // The program's own split over the verified books. Nothing here mirrors

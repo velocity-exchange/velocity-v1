@@ -94,6 +94,7 @@ impl FiredConditionArgV0 {
             CLOB_CRANK_SLOT_ACTIVATION, CLOB_CRANK_SLOT_CAPACITY, CLOB_CRANK_SLOT_CROSS,
             CLOB_CRANK_SLOT_EXPIRY,
         };
+
         if self.target == ctx.accounts.clob_market.key() {
             return match self.index {
                 CLOB_CRANK_SLOT_EXPIRY => Ok(ClobCrankWork::Removal(Removal::Expired)),
@@ -104,16 +105,19 @@ impl FiredConditionArgV0 {
                         "book condition slot {} is not a crank velocity serves",
                         other
                     );
+
                     Err(ErrorCode::DefaultError.into())
                 }
             };
         }
+
         validate!(
             self.target == ctx.accounts.crank_conditions.key(),
             ErrorCode::DefaultError,
             "fired condition names {}, which is neither this market's book nor its conditions",
             self.target
         )?;
+
         match usize::from(self.index) {
             CLOB_CRANK_CROSS_FALLBACK => Ok(ClobCrankWork::Cross),
             CLOB_CRANK_REFILL => Ok(ClobCrankWork::Refill),
@@ -137,6 +141,7 @@ pub fn handle_resolve_clob_crank(
         &ctx.accounts.to_account_infos(),
         &[ctx.accounts.scratch.key()],
     )?;
+
     validate_linkage(&ctx)?;
     let work = fired.work(&ctx)?;
     resolve_into(&ctx.accounts.scratch, || match work {

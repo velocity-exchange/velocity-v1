@@ -96,10 +96,8 @@ export type LiquidationExitPosition = {
 
 export type LiquidationExitCandidate = {
 	/**
-	 * `crank` is a zero-base liquidate_perp. It clears the flag through the
-	 * program's early exit.
-	 * `base` is a step-sized liquidate_perp.
-	 * `pnl` is liquidate_perp_pnl_for_deposit or settle_pnl.
+	 * `crank` clears a stuck flag via zero-base liquidate_perp; `base` is
+	 * step-sized; `pnl` is liquidate_perp_pnl_for_deposit or settle_pnl.
 	 */
 	kind: 'crank' | 'base' | 'pnl';
 	marketIndex: number;
@@ -347,6 +345,7 @@ export class LiquidatorBot implements Bot {
 				`${config.botId}: no dlobServerHttpUrl configured; perp liquidations will not force-cancel CLOB orders (on-chain revert is the backstop)`
 			);
 		}
+
 		this.runtimeSpecs = runtimeSpec;
 		this.userMap = userMap;
 
@@ -1634,6 +1633,7 @@ export class LiquidatorBot implements Bot {
 		if (!perpMarket || perpMarket.clobMarket.equals(PublicKey.default)) {
 			return undefined;
 		}
+
 		const { slots } = await this.velocityClient.getQuoterSlabAccount(
 			marketIndex
 		);
@@ -1641,11 +1641,13 @@ export class LiquidatorBot implements Bot {
 		if (!book || book.entry.equals(PublicKey.default)) {
 			return undefined;
 		}
+
 		return {
 			quoterSlab: getQuoterSlabPublicKey(
 				this.velocityClient.program.programId,
 				marketIndex
 			),
+
 			// The book is the account the slot's responses are written into.
 			clobMarket: book.config.responseAccount,
 			clobProgram: book.config.programId,
@@ -1665,11 +1667,13 @@ export class LiquidatorBot implements Bot {
 		if (!this.userClobOrdersClient) {
 			return undefined;
 		}
+
 		try {
 			const clobOrders = await this.userClobOrdersClient.fetch(
 				user.userAccountPublicKey,
 				[perpMarketIndex]
 			);
+
 			if (clobOrders.length === 0) {
 				return undefined;
 			}
@@ -1682,9 +1686,11 @@ export class LiquidatorBot implements Bot {
 			if (!clobAccounts) {
 				return undefined;
 			}
+
 			const filler = await this.velocityClient.getUserAccountPublicKey(
 				liquidatorSubAccountId
 			);
+
 			return await this.velocityClient.getForceCancelClobOrdersIx(
 				perpMarketIndex,
 				user.userAccountPublicKey,
@@ -1697,6 +1703,7 @@ export class LiquidatorBot implements Bot {
 			logger.error(
 				`force-cancel CLOB lookup failed for ${user.userAccountPublicKey.toBase58()} on market ${perpMarketIndex}: ${err}; liquidating anyway (on-chain revert is the backstop)`
 			);
+
 			return undefined;
 		}
 	}
@@ -1958,6 +1965,7 @@ export class LiquidatorBot implements Bot {
 			undefined,
 			subAccountToLiqPerp
 		);
+
 		// A perp liquidation reverts while the liquidatee holds resting CLOB
 		// orders, so force-cancel them first. On a feed error the force-cancel is
 		// skipped, and the on-chain revert is the backstop.

@@ -100,9 +100,11 @@ mod sig_verification {
         } else {
             std::mem::size_of::<SignedMsgOrderParamsMessage>()
         };
+
         if owned.len() < min_len {
             owned.resize(min_len, 0);
         }
+
         let mut tagged = owned[..8].to_vec();
         if is_delegate_signer {
             let mut message =
@@ -114,6 +116,7 @@ mod sig_verification {
             message.network = Some(expected_signed_msg_network());
             message.serialize(&mut tagged).unwrap();
         }
+
         tagged
     }
 
@@ -625,6 +628,7 @@ mod sig_verification {
                     base_asset_amount: 1_000_000_000,
                     ..OrderParams::default()
                 },
+
                 sub_account_id: 0,
                 slot: 42,
                 uuid: *b"CRO3irG1",
@@ -667,6 +671,7 @@ mod sig_verification {
         } else {
             SIGNED_MSG_NETWORK_DEVNET
         };
+
         assert!(
             deserialize_into_verified_message(encode(Some(wrong), None), &signature, false)
                 .is_err(),

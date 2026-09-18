@@ -31,6 +31,7 @@ pub struct UpdateQuoterPriority<'info> {
             QUOTER_SLAB_PDA_SEED,
             quoter.load()?.config.market.to_le_bytes().as_ref(),
         ],
+
         bump
     )]
     pub quoter_slab: Option<AccountLoader<'info, QuoterSlabV0>>,
@@ -54,5 +55,6 @@ pub fn handle_update_quoter_priority(
             slots[index].config.priority = priority;
         }
     }
+
     Ok(())
 }

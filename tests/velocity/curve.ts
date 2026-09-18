@@ -449,6 +449,7 @@ describe('AMM Curve', () => {
 			'->',
 			candidatePegDown.toString()
 		);
+
 		assert(candidatePegDown.eq(new BN(148996114)));
 
 		await velocityClient.closePosition(marketIndex);
@@ -473,6 +474,7 @@ describe('AMM Curve', () => {
 			'->',
 			candidatePegUp2.toString()
 		);
+
 		assert(candidatePegUp2.eq(new BN(151005886)));
 
 		const candidatePegDown2 = calculateBudgetedPeg(
@@ -486,6 +488,7 @@ describe('AMM Curve', () => {
 			'->',
 			candidatePegDown2.toString()
 		);
+
 		assert(candidatePegDown2.eq(new BN(10048872)));
 		await velocityClient.fetchAccounts();
 

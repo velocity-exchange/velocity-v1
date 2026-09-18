@@ -70,8 +70,10 @@ pub(crate) fn fill_perp_order_without_external_books<'info>(
             // depth and the obligation is never reached.
             obligation: crate::math::router::FillerObligation::default(),
         },
+
         worst_fill_price: None,
     };
+
     fill_perp_order(
         FillRequest {
             order,
@@ -103,14 +105,10 @@ pub struct FillRequest<'a> {
     /// back through this handle. No order lives in a `User.orders` slot while
     /// it is live, so there is nowhere else for one to come from.
     pub order: &'a mut Order,
-    /// Whether the taker already owns an `open_bids`/`open_asks` and
-    /// `open_orders` reservation that the fill must unwind as it fills.
-    ///
-    /// An order lifted off the book rested first, so it reserved and this is
-    /// true. A fresh ephemeral taker that routes straight to the book never
-    /// reserved, so it is false. The fill must not unwind exposure the order
-    /// never took: such an unwind removes a co-resident order's reservation
-    /// and underflows the counter.
+    /// Whether the order already holds an `open_bids`/`open_asks` and
+    /// `open_orders` reservation. True for an order lifted off the book,
+    /// false for an ephemeral taker routed straight to the book. Unwinding
+    /// a false reservation would underflow another order's counter.
     pub reserved: bool,
     pub mode: FillMode,
     /// Whether the taker's referrer is on the accelerated schedule.
@@ -149,15 +147,10 @@ impl<'a> Taker<'a> {
         }
     }
 
-    /// Bind the position this order settles into.
-    ///
-    /// An ephemeral taker holds only the empty position `build_perp_order`
-    /// added, which `get_position_index` skips as available.
-    /// `add_new_position` reuses that same slot, so the fill settles into it.
-    /// A slot order always has a findable position from its placement, so the
-    /// fallback never fires for one.
-    ///
-    /// Binding can add a position, so it runs only once the fill is admitted.
+    /// An ephemeral taker's empty position, added by `build_perp_order`, is
+    /// skipped by `get_position_index` and reused by `add_new_position`. A
+    /// slot order always finds its position, so the fallback never fires.
+    /// Binding can add a position, so it runs only after the fill is admitted.
     fn bind_position(&mut self, market_index: u16) -> VelocityResult {
         let index = get_position_index(&self.user.perp_positions, market_index)
             .or_else(|_| add_new_position(&mut self.user.perp_positions, market_index))?;
@@ -171,11 +164,10 @@ impl<'a> Taker<'a> {
     }
 }
 
-/// The filler that runs a fill, and what the flat reward is worth.
-///
-/// Both accounts are absent when the filler is the taker, one of the makers,
-/// or another subaccount of the taker's authority. Such a filler earns no
-/// reward and is never loaded a second time.
+/// The filler that runs a fill, and the flat reward it is owed. Both
+/// accounts are absent when the filler is the taker, a maker, or another
+/// subaccount of the taker's authority: such a filler earns no reward and
+/// is never loaded twice.
 pub(super) struct Filler<'a> {
     pub user: Option<&'a mut User>,
     pub stats: Option<&'a mut UserStats>,
@@ -183,10 +175,9 @@ pub(super) struct Filler<'a> {
 }
 
 /// The order a fill works on, and the caller's handle it goes back to.
-///
-/// `Order` is `Copy` and 104 bytes, so the fill works on this copy and writes
-/// it back once. Writing back through the caller's handle is what lets the
-/// caller rest, cancel or discard whatever the fill left unfilled.
+/// `Order` is `Copy` and 104 bytes, so the fill works on a copy and writes
+/// it back once. The handle then lets the caller rest, cancel or discard
+/// whatever the fill left unfilled.
 pub(super) struct WorkingOrder<'a> {
     pub order: Order,
     /// The caller's handle on the order.
@@ -210,6 +201,7 @@ impl<'a> WorkingOrder<'a> {
             ErrorCode::InvalidOrderMarketType,
             "must be perp order"
         )?;
+
         Ok(Self {
             reduce_only_at_entry: order.reduce_only,
             order,
@@ -281,6 +273,7 @@ pub fn fill_perp_order(
             stats: filler_stats.as_deref_mut(),
             key: filler_key,
         },
+
         state,
         rules,
         conditions,
@@ -324,12 +317,14 @@ fn admit_perp_market(
         ErrorCode::MarketFillOrderPaused,
         "Market fills paused",
     )?;
+
     let market_is_reduce_only = market.is_reduce_only()?;
     drop(market);
 
     if market_is_reduce_only {
         order.order.reduce_only = true;
     }
+
     Ok(())
 }
 
@@ -377,18 +372,17 @@ fn admit_taker(
     Ok(Admission::Proceed)
 }
 
-/// The taker's `RevenueShareEscrow` is an optional account. A keeper that
-/// omits it resolves the fees that depend on it to zero. Two cases require the
-/// keeper to supply it:
+/// The taker's `RevenueShareEscrow` is optional. A keeper that omits it
+/// resolves the fees that depend on it to zero. Two cases require it:
 ///
-/// 1. the taker order carries a builder code, so the builder fee must accrue;
-/// 2. the taker is referred and their escrow exists, so the referee discount
-///    and the referrer reward must apply. `BuilderReferral` is set only when an
+/// 1. the order carries a builder code, so the builder fee must accrue;
+/// 2. the taker is referred through an escrow, so the referee discount and
+///    referrer reward must apply. `BuilderReferral` is set only when an
 ///    escrow was initialized with a referrer, and escrows cannot be closed.
 ///
-/// Skipped when the builder-codes feature is globally disabled, because the
-/// keeper then passes no escrow by design, and skipped for liquidations,
-/// because the liquidatee's order is force-filled without an escrow.
+/// Skipped when builder codes are globally disabled, since the keeper then
+/// passes no escrow by design. Also skipped for liquidations, whose order
+/// is force-filled without an escrow.
 fn require_revenue_share_escrow(
     order: &WorkingOrder,
     taker: &Taker,
@@ -399,6 +393,7 @@ fn require_revenue_share_escrow(
     if mode.is_liquidation() || !state.builder_codes_enabled() {
         return Ok(());
     }
+
     validate!(
         !order.order.is_has_builder() || rev_share_escrow.is_some(),
         ErrorCode::UnableToLoadRevenueShareAccount,
@@ -410,6 +405,7 @@ fn require_revenue_share_escrow(
         ErrorCode::UnableToLoadRevenueShareAccount,
         "User is referred with an escrow but no RevenueShareEscrow account was included in the fill"
     )?;
+
     Ok(())
 }
 
@@ -433,6 +429,7 @@ fn bind_filler<'f, 'info>(
     if taker.key == *filler_key || makers_and_referrer.0.contains_key(filler_key) {
         return Ok((None, None));
     }
+
     let filler = load_mut!(filler)?;
     validate!(
         filler.pool_id == 0,
@@ -440,26 +437,18 @@ fn bind_filler<'f, 'info>(
         "filler pool id ({}) != 0",
         filler.pool_id
     )?;
+
     if filler.authority == taker.user.authority {
         return Ok((None, None));
     }
+
     Ok((Some(filler), Some(load_mut!(filler_stats)?)))
 }
 
-/// One perp order, as the fill works on it.
-///
-/// This is the order layer's own subject: the order and where it goes back to,
-/// the taker that owns it, the filler that runs the fill, and the rules the
-/// three run under. [`Self::run`] names the steps and they run in the order
-/// they are written.
-///
-/// The account maps, the router leg and the escrow are not fields. Each step
-/// takes them as arguments, because this layer passes all three to the layer
-/// below. A market handle taken from the maps is then rooted outside `self`.
-/// A step can hold the market and still mutate the taker and the filler. A
-/// field would root that handle in `self`, and the two borrows would collide.
-/// `PerpFill` holds its own maps, because it consumes them rather than passing
-/// them on.
+/// One perp order, as the fill works on it. The account maps, router leg
+/// and escrow are arguments, not fields. A field would root a market
+/// borrow in `self`, colliding with the taker and filler mutations a step
+/// needs.
 struct OrderUnderFill<'a> {
     order: WorkingOrder<'a>,
     taker: Taker<'a>,
@@ -485,6 +474,7 @@ impl OrderUnderFill<'_> {
             if let Some(filler) = self.filler.user.as_deref_mut() {
                 filler.update_last_active_slot(self.conditions.slot);
             }
+
             return Ok(FillAmounts::default());
         }
 
@@ -530,16 +520,14 @@ impl OrderUnderFill<'_> {
                 taker_can_match,
             );
         }
+
         router.books = &[];
     }
 
-    /// Whether a floored taker may take part in a match fill.
-    ///
-    /// The exchange oracle is the valuation source for the equity floor. An MM
-    /// oracle may still quote the AMM, but it cannot authorize a floored user
-    /// to match against a book while the exchange oracle is invalid for the
-    /// match and margin policy. The rule applies to match fills only, not to
-    /// AMM fills.
+    /// The exchange oracle values the equity floor. An MM oracle may still
+    /// quote the AMM, but cannot authorize a floored taker to match against
+    /// a book while the exchange oracle is invalid. This gate applies to
+    /// match fills only, not AMM fills.
     fn taker_admits_match(&self) -> bool {
         self.taker.user.equity_floor == 0 || self.conditions.exchange_match_fills_allowed
     }
@@ -554,6 +542,7 @@ impl OrderUnderFill<'_> {
         if !should_expire && !should_cancel_reduce_only {
             return Ok(Admission::Proceed);
         }
+
         Ok(Admission::Skip)
     }
 
@@ -582,6 +571,7 @@ impl OrderUnderFill<'_> {
         if filled.base == 0 {
             return Ok(());
         }
+
         let fill_price = calculate_fill_price(filled.quote, filled.base, BASE_PRECISION_U64)?;
         let mut market = parties
             .maps
@@ -597,6 +587,7 @@ impl OrderUnderFill<'_> {
                 .max_oracle_twap_5min_percent_divergence(),
             None,
         )?;
+
         market.last_fill_price = fill_price;
         Ok(())
     }
@@ -619,6 +610,7 @@ impl OrderUnderFill<'_> {
             &mut self.order.order,
             self.order.reserved,
         )?;
+
         fill_within_taker_risk_limits(
             &mut taker,
             &self.rules,
@@ -640,6 +632,7 @@ impl OrderUnderFill<'_> {
         if position.base_asset_amount != 0 || position.open_asks != 0 || position.open_bids != 0 {
             return Ok(());
         }
+
         cancel_reduce_only_trigger_orders(
             self.taker.user,
             &self.taker.key,
@@ -663,6 +656,7 @@ impl OrderUnderFill<'_> {
             open_interest,
             max_open_interest
         )?;
+
         Ok(())
     }
 
@@ -692,6 +686,7 @@ impl OrderUnderFill<'_> {
             funding_paused,
             None,
         )?;
+
         Ok(())
     }
 }
@@ -762,6 +757,7 @@ impl FillConditions {
                 safe_validity,
                 Some(VelocityAction::FillOrderMatch),
             )?,
+
             exchange_match_fills_allowed: is_oracle_valid_for_action(
                 exchange_validity,
                 Some(VelocityAction::FillOrderMatch),
@@ -807,6 +803,7 @@ fn refresh_market_oracle_stats(
         clock.slot,
         state.slot_clock(),
     )?;
+
     Ok(twap_5min)
 }
 
@@ -821,6 +818,7 @@ fn limit_price_oracle(
     if is_oracle_valid_for_action(safe_validity, Some(VelocityAction::OracleOrderPrice))? {
         return Ok(Some(oracle_price));
     }
+
     msg!("Perp market = {} oracle deemed invalid", market_index);
     Ok(None)
 }

@@ -426,6 +426,7 @@ describe('equity floor swap', () => {
 			// @ts-ignore
 			adminVelocityClient.wallet.payer,
 		]);
+
 		svmContextWrapper.printTxLogs(txSig);
 
 		await takerVelocityClient.fetchAccounts();

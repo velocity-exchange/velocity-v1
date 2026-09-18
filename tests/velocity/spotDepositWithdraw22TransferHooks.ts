@@ -191,6 +191,7 @@ describe('spot deposit and withdraw 22', () => {
 				TOKEN_2022_PROGRAM_ID
 			)
 		);
+
 		await svmContextWrapper.sendTransaction(mintTransaction, [
 			svmContextWrapper.provider.wallet.payer,
 			mintKeypair,
@@ -564,6 +565,7 @@ describe('spot deposit and withdraw 22', () => {
 		const updateTransferHookInstruction = new Transaction().add(
 			createUpdateTransferHookInstruction(mint, payer, PublicKey.default)
 		);
+
 		await svmContextWrapper.sendTransaction(updateTransferHookInstruction, [
 			svmContextWrapper.provider.wallet.payer,
 			mintKeypair,

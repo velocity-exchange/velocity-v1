@@ -26,6 +26,7 @@ import { readGlobalOpts, withGlobalOptions } from '../lib/options';
 const BPF_LOADER_UPGRADEABLE_ID = new PublicKey(
 	'BPFLoaderUpgradeab1e11111111111111111111111'
 );
+
 import { buildAdminClient, buildProvider } from '../lib/provider';
 import { reportDispatch, sendOrPropose } from '../lib/squads';
 
@@ -42,8 +43,7 @@ const DEFAULT_RELAY_PROGRAM = '4D5tPhw9sqkdkR5CpmP427TH6y9p9AMuKUukUEHn3Mpu';
 
 /**
  * `[disc][ClobHeaderV0 9636][len u32][pad to 8]` then the order-node arena
- * (104 bytes per node). Mirrors the CLOB program's `ORDERS_OFFSET`, which is
- * pinned there against `clob-state`'s own copy of the number.
+ * (104 bytes/node). Mirrors the CLOB program's `ORDERS_OFFSET`, pinned against `clob-state`.
  */
 function clobMarketSpace(capacity: number): number {
 	const ordersOffset = Math.ceil((8 + 9636 + 4) / 8) * 8;
@@ -129,8 +129,10 @@ async function watchRegistrationIxs(
 			{ pubkey: target, isSigner: false, isWritable: false },
 			{ pubkey: watch.publicKey, isSigner: false, isWritable: true },
 		],
+
 		data: Buffer.concat([ixDiscriminator('register_watch_v0'), offsetArg]),
 	});
+
 	return [create, register];
 }
 
@@ -139,6 +141,7 @@ type RpcConnection = {
 	getAccountInfo(
 		key: PublicKey
 	): Promise<{ data: Buffer; owner: PublicKey } | null>;
+
 	getMinimumBalanceForRentExemption(n: number): Promise<number>;
 };
 
@@ -166,15 +169,18 @@ async function clobBlockOffset(
 	if (!info) {
 		throw new Error(`crank conditions ${conditions.toBase58()} not found`);
 	}
+
 	const decoded = client.program.coder.accounts.decode(
 		'clobCrankConditionsV0',
 		info.data
 	) as { clobBlockOffset: number };
+
 	if (!decoded.clobBlockOffset) {
 		throw new Error(
 			`crank conditions ${conditions.toBase58()} carry no book block offset; re-run the market attach`
 		);
 	}
+
 	return decoded.clobBlockOffset;
 }
 
@@ -246,6 +252,7 @@ function clobUpdateMarketArgs(flags: ClobUpdateFlags): Buffer | undefined {
 		if (value === undefined) {
 			return Buffer.from([0]);
 		}
+
 		const b = Buffer.alloc(1 + width);
 		b.writeUInt8(1, 0);
 		new BN(value).toArrayLike(Buffer, 'le', width).copy(b, 1);
@@ -285,6 +292,7 @@ async function marketBook(
 	if (!marketInfo) {
 		throw new Error(`perp market ${marketIndex} not found`);
 	}
+
 	const book = new PublicKey(
 		(
 			client.program.coder.accounts.decode('perpMarket', marketInfo.data) as {
@@ -292,13 +300,16 @@ async function marketBook(
 			}
 		).clobMarket
 	);
+
 	if (book.equals(PublicKey.default)) {
 		throw new Error(`perp market ${marketIndex} names no book`);
 	}
+
 	const bookInfo = await connection.getAccountInfo(book);
 	if (!bookInfo) {
 		throw new Error(`book ${book.toBase58()} not found`);
 	}
+
 	// `ClobHeaderV0.authority` is the header's first field, after the 8-byte
 	// discriminator. It is the one signer `update_market_v0` accepts.
 	return {
@@ -401,6 +412,7 @@ export function registerClobMarket(parent: Command): void {
 				minCrossSurplus: string;
 				relayProgram: string;
 			},
+
 			cmd: Command
 		) => {
 			const crankCostUnits = readCrankCostUnits(
@@ -414,6 +426,7 @@ export function registerClobMarket(parent: Command): void {
 						'For multisig admin keys, run the steps individually: quoter init / update-accounts / set-approved / set-market-clob.'
 				);
 			}
+
 			const provider = buildProvider(opts);
 			const client = await buildAdminClient(opts, false);
 			try {
@@ -456,15 +469,18 @@ export function registerClobMarket(parent: Command): void {
 						{ pubkey: quoterSlab, isSigner: false, isWritable: false },
 						{ pubkey: book.publicKey, isSigner: false, isWritable: true },
 					],
+
 					data: Buffer.concat([
 						ixDiscriminator('initialize_market_v0'),
 						clobMarketConfig(marketIndex, flags),
 					]),
 				});
+
 				await provider.sendAndConfirm(
 					new Transaction().add(createBook, initBook),
 					[book]
 				);
+
 				console.log(
 					`book ${book.publicKey.toBase58()} initialized (${space} bytes)`
 				);
@@ -476,6 +492,7 @@ export function registerClobMarket(parent: Command): void {
 						clobProgram.toBuffer(),
 						quoterUser.toBuffer(),
 					],
+
 					client.program.programId
 				)[0];
 				const initQuoter = client.program.instruction.initializeQuoter(
@@ -489,6 +506,7 @@ export function registerClobMarket(parent: Command): void {
 						quoteL3V0Discriminator: Array.from(ixDiscriminator('quote_l3_v0')),
 						executeV0Discriminator: Array.from(ixDiscriminator('execute_v0')),
 					},
+
 					{
 						accounts: {
 							state: await client.getStatePublicKey(),
@@ -507,6 +525,7 @@ export function registerClobMarket(parent: Command): void {
 						},
 					}
 				);
+
 				// One unified account list, and each leg names its slice by index.
 				// The quote leg reads the book. The execute leg also carries the
 				// quoter slab, which the book checks velocity's CPI signature
@@ -518,9 +537,11 @@ export function registerClobMarket(parent: Command): void {
 								{ pubkey: book.publicKey, isWritable: true },
 								{ pubkey: quoterSlab, isWritable: false },
 							],
+
 							quoteIndexes: Buffer.from([0]),
 							executeIndexes: Buffer.from([0, 1]),
 						},
+
 						{
 							accounts: {
 								authority: wallet,
@@ -578,6 +599,7 @@ export function registerClobMarket(parent: Command): void {
 						},
 					}
 				);
+
 				await provider.sendAndConfirm(
 					new Transaction().add(
 						...slabIxs,
@@ -586,6 +608,7 @@ export function registerClobMarket(parent: Command): void {
 						approve
 					)
 				);
+
 				console.log(
 					`quoter ${quoterPda.toBase58()} registered + approved into slab ${quoterSlab.toBase58()}`
 				);
@@ -598,6 +621,7 @@ export function registerClobMarket(parent: Command): void {
 						expireFallbackSlots: new BN(flags.expireFallbackSlots),
 						minCrossSurplus: new BN(flags.minCrossSurplus),
 					},
+
 					{
 						accounts: {
 							admin: wallet,
@@ -614,6 +638,7 @@ export function registerClobMarket(parent: Command): void {
 						},
 					}
 				);
+
 				await provider.sendAndConfirm(new Transaction().add(attach));
 				// The reservoir deliberately holds rent and nothing more. A market
 				// funds itself from the crank treasury through the refill crank.
@@ -640,6 +665,7 @@ export function registerClobMarket(parent: Command): void {
 						book.publicKey,
 						watches
 					);
+
 					await provider.sendAndConfirm(new Transaction().add(...ixs), watches);
 					console.log(
 						`relay watches registered: ${watches[0].publicKey.toBase58()} -> conditions, ` +
@@ -674,6 +700,7 @@ export function registerClobMarket(parent: Command): void {
 					'register-watch is direct-send only (the fresh watch keypair must co-sign); registration is permissionless, so no multisig is needed.'
 				);
 			}
+
 			const provider = buildProvider(opts);
 			const client = await buildAdminClient(opts, false);
 			try {
@@ -689,6 +716,7 @@ export function registerClobMarket(parent: Command): void {
 				if (!marketInfo) {
 					throw new Error(`perp market ${marketIndex} not found`);
 				}
+
 				// The market stores its book directly.
 				const book = new PublicKey(
 					(
@@ -698,9 +726,11 @@ export function registerClobMarket(parent: Command): void {
 						) as { clobMarket: PublicKey }
 					).clobMarket
 				);
+
 				if (book.equals(PublicKey.default)) {
 					throw new Error(`perp market ${marketIndex} names no book`);
 				}
+
 				const watches: [Keypair, Keypair] = [
 					Keypair.generate(),
 					Keypair.generate(),
@@ -714,6 +744,7 @@ export function registerClobMarket(parent: Command): void {
 					book,
 					watches
 				);
+
 				await provider.sendAndConfirm(new Transaction().add(...ixs), watches);
 				console.log(
 					`relay watches: ${watches[0].publicKey.toBase58()} -> conditions ${conditions.toBase58()} (offset 8), ` +
@@ -765,6 +796,7 @@ export function registerClobMarket(parent: Command): void {
 				'update-config writes nothing: pass at least one config flag (see --help)'
 			);
 		}
+
 		const opts = readGlobalOpts(cmd);
 		const provider = buildProvider(opts);
 		const client = await buildAdminClient(opts, false);
@@ -781,6 +813,7 @@ export function registerClobMarket(parent: Command): void {
 					{ pubkey: book, isSigner: false, isWritable: true },
 					{ pubkey: authority, isSigner: true, isWritable: false },
 				],
+
 				data: Buffer.concat([ixDiscriminator('update_market_v0'), args]),
 			});
 			const result = await sendOrPropose(
@@ -789,6 +822,7 @@ export function registerClobMarket(parent: Command): void {
 				opts.multisig ? new PublicKey(opts.multisig) : undefined,
 				'velocity-admin clob-market update-config'
 			);
+
 			reportDispatch(
 				`book ${book.toBase58()} config updated (authority ${authority.toBase58()})`,
 				result

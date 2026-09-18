@@ -88,12 +88,10 @@ pub fn calculate_auction_prices(
     Ok((oracle_price, auction_end_price))
 }
 
-/// Auction interpolation progress, as elapsed milliseconds over the auction's
-/// wall-clock length. Elapsed time is integrated per slot-duration regime and
-/// saturates at zero for a same-slot read. It is capped at the auction length.
-/// `Order.auction_duration` stores 400ms units, so at the 400ms baseline the ramp's
-/// endpoints and wall-clock shape match the earlier per-slot interpolation. That shape
-/// holds at every slot-duration gate.
+/// Interpolation progress: milliseconds elapsed over the auction's wall-clock length, capped at it.
+/// Elapsed time integrates per slot-duration regime and saturates at zero for a same-slot read.
+/// `Order.auction_duration` stores 400ms units, so at 400ms the ramp's endpoints and wall-clock
+/// shape match the earlier per-slot interpolation. That holds at every slot-duration gate.
 fn auction_progress(order: &Order, slot: u64, slot_clock: SlotClock) -> (u64, u64) {
     let duration_ms = Millis::from_stored_units(order.auction_duration as u64).as_ms();
     let elapsed_ms = slot_clock.elapsed(order.slot, slot).as_ms();

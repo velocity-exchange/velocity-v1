@@ -425,12 +425,7 @@ describe('TestTrustedVault', () => {
 		);
 	});
 
-	// A NAV snapshot books the interest of every market that prices it, and not only
-	// of the denomination market. A manager borrow puts a liability on a second spot
-	// market, and `calculate_user_equity` values that position through the second
-	// market's own `cumulative_borrow_interest`. While that interest is un-booked, the
-	// liability reads low and NAV reads high. The vault then overpays a withdrawer at
-	// the expense of the other depositors.
+	// A NAV snapshot must book interest from all markets, not only the denomination.
 	it('books a non-denomination market before pricing shares', async () => {
 		await adminClient.updateMarginTradingEnabled(commonVaultKey, true, {
 			noLut: true,

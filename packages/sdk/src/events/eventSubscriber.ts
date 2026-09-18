@@ -408,10 +408,9 @@ export class EventSubscriber {
 
 			if (response.earliestTx === undefined) {
 				// No signature in the page is safe to page back from, so `beforeTx`
-				// cannot move. The logs above are already delivered. The break is
-				// required, because a loop with an unchanged `beforeTx` re-fetches
-				// this same page until `maxTx` or forever. A one-shot backfill has
-				// no later pass, so it stops here.
+				// cannot move. A loop with an unchanged `beforeTx` re-fetches this
+				// same page until `maxTx` or forever, and a one-shot backfill has
+				// no later pass to catch it, so it stops here.
 				break;
 			}
 

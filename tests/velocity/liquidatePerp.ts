@@ -426,6 +426,7 @@ describe('liquidate perp (no open orders)', () => {
 			QUOTE_PRECISION,
 			QUOTE_PRECISION
 		);
+
 		svmContextWrapper.connection.printTxLogs(tx1);
 
 		await velocityClient.fetchAccounts();
@@ -469,6 +470,7 @@ describe('liquidate perp (no open orders)', () => {
 			'marketAfterBankruptcy.totalSocialLoss:',
 			marketAfterBankruptcy.totalSocialLoss.toString()
 		);
+
 		assert(marketAfterBankruptcy.totalSocialLoss.eq(new BN(5757243)));
 
 		// assert(!velocityClient.getUserAccount().isBankrupt);
@@ -490,6 +492,7 @@ describe('liquidate perp (no open orders)', () => {
 		console.log(
 			perpBankruptcyRecord.perpBankruptcy.cumulativeFundingRateDelta.toString()
 		);
+
 		assert(perpBankruptcyRecord.perpBankruptcy.pnl.eq(new BN(-5757243)));
 		console.log(
 			perpBankruptcyRecord.perpBankruptcy.cumulativeFundingRateDelta.toString()
@@ -505,6 +508,7 @@ describe('liquidate perp (no open orders)', () => {
 			market.cumulativeFundingRateLong.toString(),
 			market.cumulativeFundingRateShort.toString()
 		);
+
 		assert(market.cumulativeFundingRateLong.eq(new BN(328998500)));
 		assert(market.cumulativeFundingRateShort.eq(new BN(-328973500)));
 	});

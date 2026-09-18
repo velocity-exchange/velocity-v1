@@ -1,8 +1,5 @@
 /**
- * Parity tests for the router split mirror. Every case here is transcribed
- * from `programs/velocity/src/math/router.rs`'s own unit tests, with the same
- * inputs and the same expected numbers — if the TS diverges from the Rust,
- * these fail.
+ * Parity tests for router split mirror, transcribed from `math/router.rs`.
  */
 
 import { BN } from '@coral-xyz/anchor';
@@ -41,6 +38,7 @@ function split(
 		priority,
 		levels,
 	}));
+
 	return splitAcrossQuoters(direction, size, shaped, step);
 }
 
@@ -53,6 +51,7 @@ describe('router split (mirror of math/router.rs)', () => {
 				levels: [level(100, B)],
 				withheld: level(101, B.muln(2)),
 			},
+
 			{ priority: VAMM_PRIORITY, levels: [level(102, B.muln(5))] },
 		];
 		const out = splitAcrossQuoters(
@@ -61,6 +60,7 @@ describe('router split (mirror of math/router.rs)', () => {
 			shaped,
 			ONE
 		);
+
 		assert.isTrue(out[0].base.eq(B), 'the book fills what it quoted');
 		assert.isTrue(out[1].base.eq(B.muln(4)), 'the vAMM fills the rest');
 		assert.isTrue(
@@ -73,6 +73,7 @@ describe('router split (mirror of math/router.rs)', () => {
 		let out = split(PositionDirection.LONG, B.muln(3), [
 			[CLOB_PRIORITY, [level(100, B.muln(2)), level(101, B.muln(2))]],
 		]);
+
 		assert(out[0].base.eq(B.muln(3)));
 		// 2 @ 100 + 1 @ 101, prices per base unit at BASE_PRECISION.
 		assert(out[0].quote.eq(new BN(2 * 100 + 101)));
@@ -80,6 +81,7 @@ describe('router split (mirror of math/router.rs)', () => {
 		out = split(PositionDirection.LONG, B.muln(10), [
 			[CLOB_PRIORITY, [level(100, B.muln(2))]],
 		]);
+
 		assert(out[0].base.eq(B.muln(2)));
 	});
 
@@ -88,6 +90,7 @@ describe('router split (mirror of math/router.rs)', () => {
 			[CUSTOM_PRIORITY, [level(100, B.muln(4))]],
 			[CLOB_PRIORITY, [level(100, B.muln(2))]],
 		]);
+
 		assert(out[1].base.eq(B.muln(2)));
 		assert(out[0].base.eq(B));
 
@@ -96,6 +99,7 @@ describe('router split (mirror of math/router.rs)', () => {
 			[CLOB_PRIORITY, [level(100, B.muln(2))]],
 			[VAMM_PRIORITY, [level(100, B)]],
 		]);
+
 		assert(out[2].base.eq(B)); // vAMM drained first
 		assert(out[1].base.eq(B)); // then CLOB
 		assert(out[0].base.eq(new BN(0))); // custom sees nothing
@@ -106,6 +110,7 @@ describe('router split (mirror of math/router.rs)', () => {
 			[CUSTOM_PRIORITY, [level(100, B.muln(2))]],
 			[CUSTOM_PRIORITY, [level(100, B.muln(4))]],
 		]);
+
 		assert(out[0].base.eq(B));
 		assert(out[1].base.eq(B.muln(2)));
 
@@ -113,6 +118,7 @@ describe('router split (mirror of math/router.rs)', () => {
 			[CUSTOM_PRIORITY, [level(100, new BN(3))]],
 			[CUSTOM_PRIORITY, [level(100, new BN(3))]],
 		]);
+
 		assert(out[0].base.add(out[1].base).eq(new BN(5)));
 	});
 
@@ -121,6 +127,7 @@ describe('router split (mirror of math/router.rs)', () => {
 			[CLOB_PRIORITY, [level(101, B.muln(2))]],
 			[CUSTOM_PRIORITY, [level(100, B), level(102, B.muln(5))]],
 		]);
+
 		assert(out[1].base.eq(B)); // 1 @ 100 (custom)
 		assert(out[0].base.eq(B.muln(2))); // 2 @ 101 (clob)
 
@@ -128,6 +135,7 @@ describe('router split (mirror of math/router.rs)', () => {
 			[CLOB_PRIORITY, [level(99, B)]],
 			[CUSTOM_PRIORITY, [level(100, B), level(98, B)]],
 		]);
+
 		assert(out[1].base.eq(B)); // 100 first
 		assert(out[0].base.eq(B)); // then 99
 	});
@@ -141,6 +149,7 @@ describe('router split (mirror of math/router.rs)', () => {
 			[[CLOB_PRIORITY, [level(100, new BN(2500))]]],
 			step
 		);
+
 		assert(out[0].base.eq(new BN(2000)));
 		assert(out[0].base.mod(step).eq(new BN(0)));
 	});
@@ -154,17 +163,14 @@ describe('router split (mirror of math/router.rs)', () => {
 		const shortOut = split(PositionDirection.SHORT, new BN(1), [
 			[CLOB_PRIORITY, [level(101, new BN(1))]],
 		]);
+
 		// 101 * 1 / 1e9 → ceil 1 for a long, floor 0 for a short.
 		assert(longOut[0].quote.eq(new BN(1)));
 		assert(shortOut[0].quote.eq(new BN(0)));
 	});
 });
 
-/**
- * Parity for the quote↔execute binding, transcribed from the same Rust unit
- * tests (`math/router.rs`): the level contract velocity enforces on ingestion,
- * and the bounds a quoter's execute is held to against the levels it quoted.
- */
+// Parity for quote↔execute binding (mirror of math/router.rs).
 describe('quoter response bounds (mirror of math/router.rs)', () => {
 	const PRICE = BASE_PRECISION;
 	/** Two rungs a base unit deep, at 100 and 102 in PRICE_PRECISION. */
@@ -194,6 +200,7 @@ describe('quoter response bounds (mirror of math/router.rs)', () => {
 				level(101, B),
 			])
 		);
+
 		// Equal consecutive prices are legal: distinct ladder offsets can round
 		// to the same tick.
 		assert(
@@ -307,6 +314,7 @@ describe('external quoter bounds', () => {
 				1000
 			)
 		);
+
 		// Selling above oracle is never a breach, however far above.
 		assert(
 			!makerPriceBreachesOracleBand(

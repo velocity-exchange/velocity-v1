@@ -124,11 +124,10 @@ pub fn extension_target_len(discriminator: &[u8]) -> Option<usize> {
         RevenueShare,
         LPPool,
         Constituent,
-        // Relay plumbing. The condition blocks grow whenever
-        // `relay_spec::CONDITION_LEN` changes, so they belong here rather than
-        // in a migration of their own. A quoter slab is absent on purpose. Its
-        // size is capacity rather than layout, so growing one also raises the
-        // header's `capacity` instead of matching a struct's `SIZE`.
+        // Relay plumbing. These grow with `relay_spec::CONDITION_LEN`, so they
+        // stay here instead of a dedicated migration. A quoter slab is absent:
+        // its size is capacity, not layout, so growing one raises the
+        // header's `capacity` rather than a struct's `SIZE`.
         QuoterV0,
         ClobCrankConditionsV0,
         QuoterCrossConditionsV0,

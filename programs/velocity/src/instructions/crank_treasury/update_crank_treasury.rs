@@ -52,11 +52,13 @@ pub fn handle_update_crank_treasury(
         refill_target_cranks,
         refill_watermark_cranks,
     } = args;
+
     validate!(
         refill_watermark_cranks > 0,
         ErrorCode::DefaultError,
         "a zero watermark never wakes a refill"
     )?;
+
     // The target must sit strictly above the level that wakes the refill. A
     // target at the watermark leaves the reservoir still due the moment it is
     // filled, and the condition would stay due against an executor that can
@@ -68,6 +70,7 @@ pub fn handle_update_crank_treasury(
         refill_target_cranks,
         refill_watermark_cranks
     )?;
+
     let mut treasury = ctx.accounts.treasury.load_mut()?;
     treasury.refill_target_cranks = refill_target_cranks;
     treasury.refill_watermark_cranks = refill_watermark_cranks;
@@ -77,5 +80,6 @@ pub fn handle_update_crank_treasury(
         refill_watermark_cranks,
         refill_target_cranks
     );
+
     Ok(())
 }

@@ -150,11 +150,10 @@ pub fn emit_clob_cancel_record(
 ) -> VelocityResult {
     let order = facts.to_order(OrderStatus::Canceled, is_isolated_position);
     let bit_flags = set_order_bit_flag(0, is_isolated_position, OrderBitFlag::IsIsolatedPosition);
-    // A book order fills the maker half of the record for the same reason it
-    // reports `post_only`. It is standing liquidity, and a reader that filed it
-    // as a taker would count it against the taker-side volume of a market it
-    // never took from. A migrated remainder is the aggressor, so it fills the
-    // taker half.
+    // A book order fills the maker half of the record, since it is standing
+    // liquidity and a reader that filed it as a taker would count it against
+    // taker-side volume it never took. A migrated remainder is the aggressor,
+    // so it fills the taker half.
     let (taker, taker_order, maker, maker_order) = if order.post_only {
         (None, None, Some(*user_key), Some(order))
     } else {
@@ -189,5 +188,6 @@ pub fn emit_clob_cancel_record(
         None,
         None,
     )?;
+
     emit_stack::<_, { OrderActionRecord::SIZE }>(record)
 }

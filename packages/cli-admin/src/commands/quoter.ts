@@ -63,6 +63,7 @@ function parseIndexList(value: string): number[] {
 		if (!Number.isInteger(index) || index < 0 || index > 255) {
 			throw new Error(`account index must be 0-255, got "${part}"`);
 		}
+
 		return index;
 	});
 }
@@ -75,6 +76,7 @@ function parseDiscriminator(value: string): number[] {
 			`discriminator must be 8 bytes as 16 hex chars, got "${value}"`
 		);
 	}
+
 	return Array.from(Buffer.from(hex, 'hex'));
 }
 
@@ -89,6 +91,7 @@ function parseAccountMeta(value: string): {
 			`account meta must be "<pubkey>" or "<pubkey>:w", got "${value}"`
 		);
 	}
+
 	return { pubkey: new PublicKey(pubkey), isWritable: suffix === 'w' };
 }
 
@@ -106,6 +109,7 @@ async function liveSlabFor(
 			account: any;
 		};
 	},
+
 	connection: { getAccountInfo(key: PublicKey): Promise<unknown | null> },
 	quoterKey: PublicKey
 ): Promise<PublicKey | null> {
@@ -114,6 +118,7 @@ async function liveSlabFor(
 		client.program.programId,
 		entry.config.market
 	);
+
 	return (await connection.getAccountInfo(quoterSlab)) ? quoterSlab : null;
 }
 
@@ -197,6 +202,7 @@ export function registerQuoter(parent: Command): void {
 							: new Array(8).fill(0),
 						executeV0Discriminator: parseDiscriminator(executeDisc),
 					},
+
 					{
 						accounts: {
 							state: await client.getStatePublicKey(),
@@ -207,6 +213,7 @@ export function registerQuoter(parent: Command): void {
 								client.program.programId,
 								marketIndex
 							),
+
 							// The program refuses a book registration when an approved
 							// quoter's account list already names that book, so a
 							// book registration must read the slab. No other quoter
@@ -227,6 +234,7 @@ export function registerQuoter(parent: Command): void {
 					opts.multisig ? new PublicKey(opts.multisig) : undefined,
 					'velocity-admin quoter init'
 				);
+
 				reportDispatch(
 					`quoter ${quoterPda.toBase58()} initialized (market ${marketIndex}, type ${flags.type.toLowerCase()})`,
 					result
@@ -251,6 +259,7 @@ export function registerQuoter(parent: Command): void {
 		if (opts.multisig) {
 			throw new Error('init-slab is permissionless — direct-send only');
 		}
+
 		const provider = buildProvider(opts);
 		const client = await buildAdminClient(opts, false);
 		try {
@@ -267,6 +276,7 @@ export function registerQuoter(parent: Command): void {
 							client.program.programId,
 							marketIndex
 						),
+
 						quoterSlab,
 						rent: SYSVAR_RENT_PUBKEY,
 						systemProgram: SystemProgram.programId,
@@ -312,6 +322,7 @@ export function registerQuoter(parent: Command): void {
 				executeIndexes: string;
 				authority?: string;
 			},
+
 			cmd: Command
 		) => {
 			const opts = readGlobalOpts(cmd);
@@ -324,6 +335,7 @@ export function registerQuoter(parent: Command): void {
 						quoteIndexes: Buffer.from(parseIndexList(flags.quoteIndexes)),
 						executeIndexes: Buffer.from(parseIndexList(flags.executeIndexes)),
 					},
+
 					{
 						accounts: {
 							authority: flags.authority
@@ -343,6 +355,7 @@ export function registerQuoter(parent: Command): void {
 					opts.multisig ? new PublicKey(opts.multisig) : undefined,
 					'velocity-admin quoter update-accounts'
 				);
+
 				reportDispatch(
 					`quoter ${quoterArg} staged ${metas.length} accounts (quote [${flags.quoteIndexes}], execute [${flags.executeIndexes}]); re-approve to publish`,
 					result
@@ -385,6 +398,7 @@ export function registerQuoter(parent: Command): void {
 				executeDisc?: string;
 				authority?: string;
 			},
+
 			cmd: Command
 		) => {
 			if (
@@ -397,6 +411,7 @@ export function registerQuoter(parent: Command): void {
 					'nothing to update — pass at least one of --response-account, --quote-disc, --l3-disc, --execute-disc'
 				);
 			}
+
 			const opts = readGlobalOpts(cmd);
 			const provider = buildProvider(opts);
 			const client = await buildAdminClient(opts, false);
@@ -416,6 +431,7 @@ export function registerQuoter(parent: Command): void {
 							? parseDiscriminator(flags.executeDisc)
 							: null,
 					},
+
 					{
 						accounts: {
 							authority: flags.authority
@@ -435,6 +451,7 @@ export function registerQuoter(parent: Command): void {
 					opts.multisig ? new PublicKey(opts.multisig) : undefined,
 					'velocity-admin quoter update-config'
 				);
+
 				reportDispatch(
 					`quoter ${quoterArg} config staged; re-approve to publish`,
 					result
@@ -483,6 +500,7 @@ export function registerQuoter(parent: Command): void {
 								provider.connection,
 								quoterKey
 							),
+
 							// A book's entry answers to the State admin roles rather
 							// than to the key that registered it. A Custom entry
 							// answers to its own stored authority and ignores this.
@@ -496,6 +514,7 @@ export function registerQuoter(parent: Command): void {
 					opts.multisig ? new PublicKey(opts.multisig) : undefined,
 					'velocity-admin quoter set-active'
 				);
+
 				reportDispatch(
 					`quoter ${quoterArg} ${on ? 'activated' : 'deactivated'}`,
 					result
@@ -557,10 +576,12 @@ export function registerQuoter(parent: Command): void {
 								client.program.programId,
 								entry.config.market
 							),
+
 							quoterSlab: getQuoterSlabPublicKey(
 								client.program.programId,
 								entry.config.market
 							),
+
 							quoterProgram,
 							quoterProgramData: on ? programData : null,
 							// A book approval asks the book for its own placement
@@ -581,6 +602,7 @@ export function registerQuoter(parent: Command): void {
 					opts.multisig ? new PublicKey(opts.multisig) : undefined,
 					'velocity-admin quoter set-approved'
 				);
+
 				reportDispatch(
 					`quoter ${quoterArg} ${on ? 'approved' : 'unapproved'}`,
 					result
@@ -614,6 +636,7 @@ export function registerQuoter(parent: Command): void {
 			if (!Number.isInteger(priority) || priority < 0 || priority > 255) {
 				throw new Error(`priority must be 0-255, got "${priorityArg}"`);
 			}
+
 			const opts = readGlobalOpts(cmd);
 			const provider = buildProvider(opts);
 			const client = await buildAdminClient(opts, false);
@@ -642,6 +665,7 @@ export function registerQuoter(parent: Command): void {
 					opts.multisig ? new PublicKey(opts.multisig) : undefined,
 					'velocity-admin quoter set-priority'
 				);
+
 				reportDispatch(`quoter ${quoterArg} priority = ${priority}`, result);
 			} finally {
 				if ((client as any).isSubscribed) {
@@ -694,9 +718,11 @@ export function registerQuoter(parent: Command): void {
 				const entryInfo = await provider.connection.getAccountInfo(
 					new PublicKey(quoterArg)
 				);
+
 				if (!entryInfo) {
 					throw new Error(`quoter entry ${quoterArg} not found`);
 				}
+
 				const clobProgramId = new PublicKey(
 					(
 						client.program.coder.accounts.decode(
@@ -711,6 +737,7 @@ export function registerQuoter(parent: Command): void {
 						expireFallbackSlots: new BN(expireFallbackSlots ?? 1500),
 						minCrossSurplus: new BN(flags.minCrossSurplus),
 					},
+
 					{
 						accounts: {
 							admin: flags.admin
@@ -721,17 +748,20 @@ export function registerQuoter(parent: Command): void {
 								client.program.programId,
 								marketIndex
 							),
+
 							quoter: new PublicKey(quoterArg),
 							quoterSlab: getQuoterSlabPublicKey(
 								client.program.programId,
 								marketIndex
 							),
+
 							clobMarket: new PublicKey(clobMarket),
 							clobProgram: clobProgramId,
 							crankConditions: getClobCrankConditionsPublicKey(
 								client.program.programId,
 								marketIndex
 							),
+
 							treasury: getCrankTreasuryPublicKey(client.program.programId),
 							rent: SYSVAR_RENT_PUBKEY,
 							systemProgram: SystemProgram.programId,
@@ -744,10 +774,12 @@ export function registerQuoter(parent: Command): void {
 					opts.multisig ? new PublicKey(opts.multisig) : undefined,
 					'velocity-admin quoter set-market-clob'
 				);
+
 				reportDispatch(
 					`perp-market[${market}] clob_quoter = ${quoterArg}, cranks priced from ${JSON.stringify(
 						crankCostUnits
 					)} cost units`,
+
 					result
 				);
 			} finally {
@@ -785,6 +817,7 @@ export function registerQuoter(parent: Command): void {
 				len: string;
 				authority?: string;
 			},
+
 			cmd: Command
 		) => {
 			const opts = readGlobalOpts(cmd);
@@ -795,11 +828,13 @@ export function registerQuoter(parent: Command): void {
 				if (watchLen > 0 && !flags.watchAccount) {
 					throw new Error('--watch-account is required unless --len is 0');
 				}
+
 				const ix = client.program.instruction.updateQuoterWatch(
 					{
 						watchOffset: Number.parseInt(flags.offset, 10),
 						watchLen,
 					},
+
 					{
 						accounts: {
 							authority: flags.authority
@@ -822,10 +857,12 @@ export function registerQuoter(parent: Command): void {
 					opts.multisig ? new PublicKey(opts.multisig) : undefined,
 					'velocity-admin quoter set-watch'
 				);
+
 				reportDispatch(
 					`quoter ${quoterArg} watch ${
 						watchLen > 0 ? 'declared' : 'cleared'
 					}; re-approve to publish`,
+
 					result
 				);
 			} finally {
@@ -857,6 +894,7 @@ export function registerQuoter(parent: Command): void {
 			if (!Number.isInteger(bps) || bps < 0 || bps >= 10_000) {
 				throw new Error(`bps must be 0-9999, got "${bpsArg}"`);
 			}
+
 			const opts = readGlobalOpts(cmd);
 			const provider = buildProvider(opts);
 			const client = await buildAdminClient(opts, false);
@@ -884,10 +922,12 @@ export function registerQuoter(parent: Command): void {
 					opts.multisig ? new PublicKey(opts.multisig) : undefined,
 					'velocity-admin quoter set-oracle-band'
 				);
+
 				reportDispatch(
 					`quoter ${quoterArg} oracle band ${
 						bps > 0 ? `= ${bps} bps` : 'cleared (market band stands)'
 					}`,
+
 					result
 				);
 			} finally {
@@ -915,6 +955,7 @@ export function registerQuoter(parent: Command): void {
 			if (opts.multisig) {
 				throw new Error('attach-cross is permissionless — direct-send only');
 			}
+
 			const provider = buildProvider(opts);
 			const client = await buildAdminClient(opts, false);
 			try {
@@ -946,6 +987,7 @@ export function registerQuoter(parent: Command): void {
 								client.program.programId,
 								entry.config.market
 							),
+
 							marketConditions,
 							crossConditions,
 							rent: SYSVAR_RENT_PUBKEY,

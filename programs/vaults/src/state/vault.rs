@@ -203,10 +203,6 @@ impl Vault {
     ) -> Result<VaultFee> {
         let mut update_matured = false;
         if let Some(ref mut fee_update) = fee_update {
-            // Validate a matured update against the live protocol state before it takes
-            // effect (OtterSec #97). Queue-time validation sees only the manager fields, and
-            // not the combined protocol sums. A revert here leaves the pending update in place, and
-            // manager_cancel_fee_update removes it.
             let fu = fee_update.load()?;
             update_matured = fu.is_pending() && now >= fu.incoming_update_ts;
             if update_matured {
@@ -215,6 +211,10 @@ impl Vault {
                         Some(vp) => (true, vp.protocol_fee, vp.protocol_profit_share),
                         None => (false, 0, 0),
                     };
+                // Validate a matured update against the live protocol state before it takes
+                // effect (OtterSec #97). Queue-time validation sees only the manager fields, and
+                // not the combined protocol sums. A revert here leaves the pending update in
+                // place, and manager_cancel_fee_update removes it.
                 validate_fee_policy(
                     fu.incoming_management_fee,
                     fu.incoming_profit_share,
@@ -238,7 +238,6 @@ impl Vault {
         match vault_protocol {
             None => {
                 if self.management_fee != 0 && depositor_equity > 0 {
-                    // A legacy vault holds no protocol state, so the rebase takes &mut None.
                     let (mgmt_fee_shares, skip) = self.apply_management_fee_only(
                         &mut None,
                         depositor_equity,
@@ -397,10 +396,8 @@ impl Vault {
         }
 
         // A matured update installs only after the accrual above closes the interval at the
-        // policy that was in force while it accrued (OtterSec #98). Stamp the boundary even when
-        // that accrual
-        // was too small to move a share, so the new policy never prices an interval it did not
-        // cover.
+        // policy in force when it accrued (OtterSec #98). Stamp the boundary even when that
+        // accrual moved no share, so the new policy never prices an interval it did not cover.
         if !skip_ts_update || update_matured {
             self.last_fee_update_ts = now;
         }
@@ -526,11 +523,9 @@ impl Vault {
                         .protocol_profit_and_fee_shares
                         .safe_div(_rebase_divisor)?;
 
-                    // last_protocol_withdraw_request.shares holds the outstanding protocol
-                    // withdraw request. It must scale by the same divisor (OtterSec #99). A
-                    // stale request
-                    // otherwise exceeds the rebased supply, and the protocol cancel, execute and
-                    // replace paths stop working.
+                    // last_protocol_withdraw_request.shares must scale by the same divisor
+                    // (OtterSec #99), or a stale request exceeds the rebased supply and the
+                    // protocol cancel, execute and replace paths stop working.
                     if vp.last_protocol_withdraw_request.shares != 0 {
                         vp.last_protocol_withdraw_request.rebase(_rebase_divisor)?;
                     }
@@ -556,27 +551,23 @@ impl Vault {
     /// Vault NAV, denominated in `spot_market_index`'s token.
     ///
     /// A caller whose result reaches share math must first run the `refresh_velocity_spot_market!`
-    /// macro. See [`crate::velocity_cpi::refresh_spot_markets_that_price_equity`].
+    /// macro (see [`crate::velocity_cpi::refresh_spot_markets_that_price_equity`]). `manager_borrow`,
+    /// `manager_repay` and `manager_update_borrow` are exceptions: they read equity only for event
+    /// fields, so a stale index only misreports a log, and nothing enforces the split. A new handler
+    /// that prices shares must add the macro.
     ///
-    /// `manager_borrow`, `manager_repay` and `manager_update_borrow` are the exceptions. They read
-    /// equity only to fill event fields, so a stale index misreports a log and nothing else.
-    /// Nothing enforces that split, so a new handler that prices shares must add the macro.
+    /// The function values a velocity spot position through its market's cumulative index, and an
+    /// isolated perp position's collateral through the quote spot market's index. An unaccrued market
+    /// misprices that position: a deposit reads low by the unbooked lender interest, reading NAV low;
+    /// a borrow reads low as a liability, reading NAV high. A stale NAV overmints entrants and
+    /// misprices withdraw requests and cancellations (OtterSec #136/#137).
     ///
-    /// This function values every velocity spot position through its market's stored cumulative
-    /// index, and an isolated perp position's collateral through the quote spot market's index. A
-    /// market that has not accrued since the last crank therefore misprices that position. A
-    /// deposit reads low by the unbooked lender interest. A borrow reads low as a liability, which
-    /// reads NAV high. Pricing shares against a stale NAV overmints for entrants, and it misprices
-    /// withdraw requests and cancellations (OtterSec #136/#137).
-    ///
-    /// The vaults program cannot advance an index itself. Only the owning program may write a
-    /// velocity-owned account.
-    ///
-    /// Two writes still move an index outside that refresh, and neither needs one. A carveout too
-    /// small to convert to one token defers its whole interval, so the index stays put and the
-    /// unbooked amount stays under one token of the carveout divided by its factor. A spot
-    /// bankruptcy reduces depositor value by lowering `cumulative_deposit_interest` directly, in
-    /// the same instruction as the loss, so it leaves nothing unbooked to catch up on.
+    /// Only the owning program may write a velocity-owned account, so the vaults program cannot
+    /// advance an index itself. Two writes still move an index outside that refresh, and neither
+    /// needs one: a carveout too small to convert to one token defers its whole interval, leaving the
+    /// unbooked amount under one token of the carveout divided by its factor; a spot bankruptcy lowers
+    /// `cumulative_deposit_interest` directly in the same instruction as the loss, leaving nothing
+    /// unbooked to catch up on.
     pub fn calculate_equity(
         &self,
         user: &User,

@@ -21,17 +21,11 @@ fn get_builder_escrow_info(
     builder_fee_allowed: bool,
 ) -> (Option<u32>, Option<u32>, Option<u16>, Option<u8>) {
     if let Some(escrow) = escrow_opt {
-        // Only match a builder-order row for an order that actually carries the
-        // `HasBuilder` flag, and bind the row to the market being filled. Escrow rows
-        // are keyed on chain by `(sub_account_id, order_id)`, and order ids are reused
-        // both within a market (a placement soft-skips after `add_builder_order` wrote
-        // the row — e.g. an expired `max_ts`, which returns before `next_order_id` is
-        // consumed) and across markets (ids are per-subaccount). Without the
-        // `HasBuilder` gate a stale row would attach to a later non-builder order that
-        // reuses the id (OtterSec #49); without the market binding a market-A row would
-        // attach to a same-id market-B fill and be paid from market A's pnl pool
-        // (OtterSec #88). `find_builder_order_index` enforces both. The referral lookup
-        // is keyed by market, not order id, so it is unaffected and stays unconditional.
+        // Escrow rows are keyed by `(sub_account_id, order_id)`, and ids are reused
+        // both within a market (a soft-skipped placement) and across markets
+        // (ids are per-subaccount). `find_builder_order_index` gates the match on the
+        // order's `HasBuilder` flag and the market. A stale row could otherwise attach
+        // to a reused id (OtterSec #49), or to a same-id market-B fill paid from market A's pnl pool (OtterSec #88).
         let builder_order_idx = if order_has_builder {
             escrow.find_builder_order_index(
                 sub_account_id,
@@ -45,11 +39,10 @@ fn get_builder_escrow_info(
         let referrer_builder_order_idx = escrow.find_or_create_referral_index(market_index);
 
         let builder_order = builder_order_idx.and_then(|idx| escrow.get_order(idx).ok());
-        // `builder_fee_allowed` is false when the taker does not meet initial
-        // margin. The row stays bound so the fill still reports its builder in
-        // the `OrderActionRecord` and `revoke_completed_orders` still closes
-        // the row, but the fee for this fill is zero. See the gate in
-        // `fulfill_perp_order` for why (OtterSec #83).
+        // `builder_fee_allowed` is false when the taker misses initial margin. The
+        // row stays bound so the fill still reports its builder in
+        // `OrderActionRecord` and `revoke_completed_orders` still closes the row,
+        // but the fee for this fill is zero. See `fulfill_perp_order` (OtterSec #83).
         let builder_order_fee_bps = if builder_fee_allowed {
             builder_order.map(|order| order.fee_tenth_bps)
         } else {
@@ -137,17 +130,17 @@ fn emit_perp_action_record(
         builder_idx,
         builder_fee_option,
     )?;
-    // A maker whose order rests on a book has no `Order` here to snapshot.
-    // What the fill knows of it is its id and its side, which is what a reader
-    // needs to attribute the fill. The order's size and its running totals
-    // live in the reader's own table, built from the place record. Reporting
-    // this fill's size as the order's size would be wrong, so the fields say
-    // nothing instead.
+
+    // A maker whose order rests on a book has no `Order` here to snapshot. The
+    // fill knows only its id and side, enough for a reader to attribute it.
+    // Its size and running totals live in the reader's own table, built from
+    // the place record, so reporting this fill's size as the order's would be wrong. The fields say nothing instead.
     if maker_record_order.is_some_and(|order| order.is_placed_on_clob()) {
         record.maker_order_base_asset_amount = None;
         record.maker_order_cumulative_base_asset_amount_filled = None;
         record.maker_order_cumulative_quote_asset_amount_filled = None;
     }
+
     emit_stack::<_, { OrderActionRecord::SIZE }>(record)
 }
 
@@ -193,6 +186,7 @@ pub(super) fn settle_amm_house_normal_quote(
             }
             .cast::<u64>()?
         };
+
         taker_quote = match taker_direction {
             PositionDirection::Long => taker_quote.max(shade_quote),
             PositionDirection::Short => taker_quote.min(shade_quote),
@@ -207,6 +201,7 @@ pub(super) fn settle_amm_house_normal_quote(
             crate::math::constants::PERP_DECIMALS,
             taker_direction,
         )?;
+
         taker_quote = match taker_direction {
             PositionDirection::Long => taker_quote.min(limit_quote),
             PositionDirection::Short => taker_quote.max(limit_quote),
@@ -370,9 +365,7 @@ impl<'a, 'stats> MakerSide<'a, 'stats> {
 /// Who takes the filler reward, and where a builder fee is escrowed. A path
 /// that pays no filler holds `None` in each option.
 ///
-/// Each option comes from a different owner, so each inner reference keeps
-/// its own lifetime. A `&mut` to a `&mut` is invariant, so one shared
-/// lifetime would force three unrelated borrows to be equal.
+/// Each option has its own lifetime, since each comes from a different owner. A `&mut` to a `&mut` is invariant, so one shared lifetime would force three unrelated borrows to be equal.
 pub(crate) struct FillerSide<'a, 'user, 'stats, 'escrow, 'info> {
     pub user: &'a mut Option<&'user mut User>,
     pub stats: &'a mut Option<&'stats mut UserStats>,
@@ -638,10 +631,8 @@ impl SettleContext<'_, '_> {
 
 /// The fee split one settled allocation produced, and what it accrues against.
 ///
-/// Each leg prices its own schedule against its own counterparty. From here
-/// the three walk one spine: accrue the market's share, charge the taker, pay
-/// the keeper, accrue the revenue share, advance the taker's order and unwind
-/// what it reserved.
+/// Each leg prices its own schedule against its own counterparty, then all
+/// three walk one spine: accrue the market's share, charge the taker, pay the keeper, accrue the revenue share, advance the taker's order, and unwind what it reserved.
 struct SettledFees {
     fees: FillFees,
     escrow: BuilderEscrow,
@@ -680,6 +671,7 @@ impl SettledFees {
         if self.builder_fee == 0 {
             return Ok(());
         }
+
         match (
             self.escrow.order_index,
             filler.rev_share_escrow.as_deref_mut(),
@@ -693,6 +685,7 @@ impl SettledFees {
                     ErrorCode::UnableToLoadRevenueShareAccount,
                     "Order has builder fee but no escrow account found"
                 )?;
+
                 Ok(())
             }
         }
@@ -763,12 +756,14 @@ fn accrue_market_fees(
         }
         None => {}
     }
+
     cx.market.fee_ledger.accrue_fill_fees(
         fees.user_fee,
         fees.protocol_fee,
         fees.if_fee,
         fees.amm_fee,
     )?;
+
     Ok(())
 }
 
@@ -783,6 +778,7 @@ fn charge_taker(
         cx.market,
         -settled.taker_debit()?.cast::<i64>()?,
     )?;
+
     taker.stats.increment_total_fees(settled.fees.user_fee)?;
     taker
         .stats
@@ -804,6 +800,7 @@ fn credit_maker_rebate(
         cx.market,
         rebate.cast()?,
     )?;
+
     match maker.stats.as_mut() {
         Some(stats) => stats.increment_total_rebate(rebate),
         None => taker.stats.increment_total_rebate(rebate),
@@ -826,6 +823,7 @@ fn move_maker_position(
         cx.market,
         &delta,
     )?;
+
     match maker.stats.as_mut() {
         Some(stats) => stats.update_maker_volume_30d(filled.quote, cx.now),
         None => taker.stats.update_maker_volume_30d(filled.quote, cx.now),
@@ -847,6 +845,7 @@ fn move_taker_position(
         cx.market,
         &delta,
     )?;
+
     Ok(())
 }
 
@@ -864,6 +863,7 @@ fn pay_fill_keeper(
     let Some(filler_user) = filler.user.as_mut() else {
         return Ok(());
     };
+
     if settled.fees.filler_reward > 0 {
         let market_index = cx.market.market_index;
         let position_index = get_position_index(&filler_user.perp_positions, market_index)
@@ -873,12 +873,14 @@ fn pay_fill_keeper(
             cx.market,
             settled.fees.filler_reward.cast()?,
         )?;
+
         filler
             .stats
             .as_mut()
             .safe_unwrap()?
             .update_filler_volume(quote_filled, cx.now)?;
     }
+
     filler_user.update_last_active_slot(cx.slot);
     Ok(())
 }
@@ -909,6 +911,7 @@ fn advance_taker_order(
             taker.order.update_open_bids_and_asks(),
         )?;
     }
+
     Ok(())
 }
 
@@ -985,6 +988,7 @@ pub(super) fn settle_amm_house_fill(
         base: fill.base_filled,
         quote: taker_quote,
     };
+
     settled.accrue_builder_fee(filler, cx)?;
 
     move_taker_position(taker, filled, cx)?;
@@ -1007,6 +1011,7 @@ pub(super) fn settle_amm_house_fill(
     } else {
         taker.stats.update_taker_volume_30d(taker_quote, cx.now)?;
     }
+
     pay_house_keeper(house, filler, &settled, taker_quote, cx)?;
 
     advance_taker_order(taker, filler, &settled, filled)?;
@@ -1050,6 +1055,7 @@ fn price_amm_house_fill(
         cx.market,
         clock,
     )?;
+
     Ok((
         taker_quote,
         taker_surplus,
@@ -1088,6 +1094,7 @@ fn pay_house_keeper(
             cx.slot,
         );
     }
+
     Ok(())
 }
 
@@ -1111,6 +1118,7 @@ fn emit_amm_house_record(
     } else {
         OrderActionExplanation::OrderFilledWithAMM
     };
+
     // The house is the counterparty, so it holds no position to be isolated.
     let bit_flags = fill_record_bit_flags(taker, false);
     let (existing_quote_entry_amount, existing_base_asset_amount) =
@@ -1129,6 +1137,7 @@ fn emit_amm_house_record(
     } else {
         (existing_quote_entry_amount, existing_base_asset_amount)
     };
+
     emit_perp_action_record(
         cx.market,
         cx.oracle_map,
@@ -1224,6 +1233,7 @@ fn price_matched_fill(
         cx.market,
         clock,
     )?;
+
     Ok(SettledFees::take(fees, escrow, cx))
 }
 
@@ -1267,6 +1277,7 @@ fn pay_matched_keeper(
     if filler.key != maker.key {
         return Ok(());
     }
+
     credit_filler_perp_pnl(
         maker.user,
         &mut maker.stats.as_deref_mut(),
@@ -1346,28 +1357,25 @@ pub(crate) fn settle_external_match_fill(
                 bit_flags: OrderBitFlag::PlacedOnClob as u8,
                 ..Order::default()
             }),
+
             filler_key: filler.key,
         },
         cx,
     )?;
+
     Ok((filled.base, filled.quote))
 }
 
-/// Release the open-base a quoter's maker reserved for the size this leg
-/// filled.
+/// Release the open-base a quoter's maker reserved for the size this leg filled.
 ///
-/// The maker's leg is the quoter's own claim about a user it does not own, so
-/// it is held to that user's reservation rather than clamped to it. Every
-/// external settlement passes through this one place, which is the router fill
-/// and both cross cranks. That is what stops a caller from settling one
-/// without the bound.
-///
-/// CLOB orders are margin-reserved through velocity at placement, so their
-/// fills release those aggregates. Custom PropAMM depth is never reserved.
+/// The maker's leg is the quoter's own claim about a user it does not own, so it is held to that user's reservation rather than clamped to it.
+/// Every external settlement (the router fill and both cross cranks) passes through this one place, so a caller cannot settle one without the bound.
+/// CLOB orders are margin-reserved through velocity at placement, so their fills release those aggregates. Custom PropAMM depth is never reserved.
 fn release_external_maker_reservation(maker: &mut MakerSide, base_filled: u64) -> VelocityResult {
     if !maker.reserved {
         return Ok(());
     }
+
     position::release_reserved_open_base(
         &mut maker.user.perp_positions[maker.position_index],
         &maker.direction,
@@ -1472,6 +1480,7 @@ pub(super) fn note_worst_fill_price(
     if base_filled == 0 {
         return Ok(());
     }
+
     let price = quote_filled
         .cast::<u128>()?
         .safe_mul(BASE_PRECISION_U64.cast()?)?
@@ -1482,15 +1491,14 @@ pub(super) fn note_worst_fill_price(
         (Some(seen), PositionDirection::Long) => seen.max(price),
         (Some(seen), PositionDirection::Short) => seen.min(price),
     });
+
     Ok(())
 }
 
 /// The bit flags every fill record carries.
 ///
 /// A signed-message order is marked so a consumer can tell swift flow from
-/// on-chain flow. A fill is marked isolated when either side settles into an
-/// isolated position, because the record then describes a position whose
-/// collateral is not the account's.
+/// on-chain flow. A fill is marked isolated when either side settles into an isolated position, since the record then describes collateral outside the account.
 fn fill_record_bit_flags(taker: &TakerSide, maker_is_isolated: bool) -> u8 {
     let flags = set_order_bit_flag(0, taker.order.is_signed_msg(), OrderBitFlag::SignedMessage);
     let taker_is_isolated = taker.user.perp_positions[taker.position_index].is_isolated();

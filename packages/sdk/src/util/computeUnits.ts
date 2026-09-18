@@ -89,8 +89,6 @@ export function isSetComputeUnitPriceIx(ix: TransactionInstruction): boolean {
 /**
  * Checks whether `ix` is a `SetLoadedAccountsDataSizeLimit` instruction, by matching the program
  * id and the instruction discriminator byte (`4`).
- * @param ix - Instruction to check.
- * @returns `true` if `ix` sets the transaction's loaded-accounts data size limit.
  */
 export function isSetLoadedAccountsDataSizeIx(
 	ix: TransactionInstruction
@@ -105,25 +103,10 @@ export function isSetLoadedAccountsDataSizeIx(
 }
 
 /**
- * Builds a `SetLoadedAccountsDataSizeLimit` instruction. The limit is the ceiling, in bytes, on
- * the account data a transaction may load. That covers its own accounts, the programs it names,
- * and those programs' data.
- *
- * The instruction is written by hand because `@solana/web3.js` v1 has no builder for it. The
- * encoding is the compute budget program's: a discriminator byte, then the limit as a
- * little-endian `u32`.
- *
- * Set it on every transaction. The limit is priced on what a transaction asks for, so a
- * transaction that asks for nothing in particular is charged for the 64 MiB default however
- * little it loads. Asking for less than the transaction loads makes it fail to load at all, so
- * leave headroom.
- *
- * Add it at the end of the instruction list. The runtime finds compute-budget instructions by
- * program id wherever they sit, and an instruction added at the front shifts every index behind
- * it. The Pyth Lazer oracle-update flow encodes such indexes. See
- * `createMinimalEd25519VerifyIx`.
- * @param bytes - The limit, in bytes.
- * @returns The instruction.
+ * Builds a `SetLoadedAccountsDataSizeLimit` instruction, written by hand since `@solana/web3.js`
+ * v1 has no builder for it. Add it at the end of the instruction list, since an instruction added
+ * earlier shifts every index the Pyth Lazer oracle-update flow encodes (see
+ * `createMinimalEd25519VerifyIx`). Leave headroom, since asking for less than a transaction loads makes it fail to load at all.
  */
 export function setLoadedAccountsDataSizeLimitIx(
 	bytes: number
@@ -141,7 +124,6 @@ export function setLoadedAccountsDataSizeLimitIx(
 /**
  * Checks a list of instructions for compute-budget instructions. A transaction builder uses it to
  * avoid appending a duplicate when the caller already supplied one.
- * @param ixs - Instructions to scan (typically an in-progress transaction's instruction list).
  * @returns Which of the three compute-budget instructions are present.
  */
 export function containsComputeUnitIxs(ixs: TransactionInstruction[]): {

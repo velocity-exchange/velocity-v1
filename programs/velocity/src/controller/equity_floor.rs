@@ -21,20 +21,14 @@ use crate::{
 };
 
 /// Arms the authority-wide equity breaker if the subaccount's net equity is
-/// provably below its raw floor.
-///
-/// The decision uses the same `TripNetEquity::proves_breach` predicate as the
-/// permissionless trip. An invalid-oracle liability and an invalid-oracle
-/// short receive their sound zero upper bound. An invalid-oracle asset or long
-/// keeps the breach unprovable. The permissionless trip rejects on an
-/// unprovable breach so the keeper can retry. This function skips instead,
-/// because it must not fail its host. The next touch after the feed recovers
-/// arms a breach that rides out such an outage.
-///
-/// The gates cover the outage itself and fail closed on the strict verdict.
-/// Match fills carry their own `FillOrderMatch` validity rule. This function
-/// does no work when the subaccount has no floor or the breaker is already
-/// set, and it never fails the host instruction.
+/// provably below its raw floor. Uses the same `TripNetEquity::proves_breach`
+/// predicate as the permissionless trip: an invalid-oracle liability or short
+/// gets its sound zero upper bound, while an invalid-oracle asset or long
+/// stays unprovable. The permissionless trip rejects an unprovable breach so
+/// the keeper can retry; this function skips instead, since it must not fail
+/// its host. The next touch after the feed recovers arms a breach that rode
+/// out the outage. A no-op when the subaccount has no floor or the breaker is
+/// already set; match fills use their own `FillOrderMatch` validity rule.
 pub fn try_lazy_equity_breaker_trip(
     user: &User,
     user_stats: &mut UserStats,

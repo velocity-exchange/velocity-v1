@@ -140,6 +140,7 @@ fn measure(case: Case, measure: Measure) -> u64 {
             peg_multiplier: 100 * PEG_PRECISION,
             ..AMM::default()
         },
+
         margin_ratio_initial: 1000,
         margin_ratio_maintenance: 500,
         status: crate::state::market_status::MarketStatus::Active,
@@ -158,6 +159,7 @@ fn measure(case: Case, measure: Measure) -> u64 {
         },
         ..PerpMarket::default_test()
     };
+
     market.amm.max_base_asset_reserve = u128::MAX;
     market.amm.min_base_asset_reserve = 0;
     create_anchor_account_info!(market, PerpMarket, market_info);
@@ -174,6 +176,7 @@ fn measure(case: Case, measure: Measure) -> u64 {
         historical_oracle_data: HistoricalOracleData::default_price(QUOTE_PRECISION_I64),
         ..SpotMarket::default()
     };
+
     create_anchor_account_info!(spot_market, SpotMarket, spot_market_info);
     let spot_market_map =
         crate::state::spot_market_map::SpotMarketMap::load_one(&spot_market_info, true).unwrap();
@@ -192,6 +195,7 @@ fn measure(case: Case, measure: Measure) -> u64 {
             ..Order::default()
         };
     }
+
     let mut maker = User {
         orders,
         authority,
@@ -208,6 +212,7 @@ fn measure(case: Case, measure: Measure) -> u64 {
                 .unwrap_or(0),
             ..PerpPosition::default()
         }),
+
         spot_positions: get_spot_positions(SpotPosition {
             market_index: 0,
             balance_type: SpotBalanceType::Deposit,
@@ -224,6 +229,7 @@ fn measure(case: Case, measure: Measure) -> u64 {
         authority,
         ..UserStats::default()
     };
+
     stats.set_equity_breaker_tripped(latched);
     create_anchor_account_info!(stats, UserStats, stats_info);
     let stats_map = crate::state::user_map::UserStatsMap::load_one(&stats_info).unwrap();
@@ -236,6 +242,7 @@ fn measure(case: Case, measure: Measure) -> u64 {
         slot,
         now: 0,
     };
+
     match measure {
         Measure::Budget => inputs
             .maker_budget(&maker_key, 0, ClobSide::Bid, taker_size, ORACLE, books)
@@ -317,6 +324,19 @@ fn a_maker_on_two_books_is_offered_half_its_budget_each() {
 }
 
 #[test]
+fn a_route_with_no_book_leaves_the_budget_unbounded() {
+    // Nothing reserved this maker's depth, so no budget can be spent against
+    // it. The count also divides the budget, and zero would fail the fill.
+    assert_eq!(
+        budget(Case {
+            books: 0,
+            ..thin_maker()
+        }),
+        u64::MAX
+    );
+}
+
+#[test]
 fn a_fill_too_small_to_reach_the_budget_costs_no_slot() {
     // The eight slots are scarce, so a maker this fill cannot reach should
     // not hold one. The taker wants 0.1 base; even sold at nothing that is 10
@@ -359,6 +379,7 @@ fn what_is_already_reserved_is_not_charged_twice() {
         taker_size: 400 * BASE_PRECISION_I64 as u64,
         ..Case::default()
     });
+
     // 40,000 of notional reserves 3,000 at the fill tier and leaves 1,550,
     // less the haircut. Twice the orders of `thin_maker`, and the budget
     // tracks the collateral behind them rather than the orders themselves.
@@ -367,11 +388,10 @@ fn what_is_already_reserved_is_not_charged_twice() {
 
 #[test]
 fn a_slot_order_is_not_mistaken_for_book_depth() {
-    // `open_bids` reserves for every open order on the market, so a slot
-    // share has to come off before what is left reads as depth on a book. A
-    // maker whose bids are all in slots is unreachable by a book budget,
-    // and answering that from the account is what keeps a margin walk off a
-    // heap that cannot give the memory back.
+    // `open_bids` reserves for every open order on the market, so a slot share has to come off
+    // before what is left reads as depth on a book. A maker whose bids are all in slots is
+    // unreachable by a book budget, and answering that from the account is what keeps a margin
+    // walk off a heap that cannot give the memory back.
     assert_eq!(
         budget(Case {
             slot_bid: 200 * BASE_PRECISION_I64 as u64,
@@ -380,6 +400,7 @@ fn a_slot_order_is_not_mistaken_for_book_depth() {
         u64::MAX,
         "every reserved bid is accounted for in a slot, so none is on a book"
     );
+
     // Half on each: the book's half is still worth pricing.
     assert_eq!(
         budget(Case {
@@ -462,6 +483,7 @@ mod quoter_base_room {
             deposit: 100_000,
             ..Case::default()
         });
+
         assert!(thin > 0, "a solvent account carries some base");
         assert!(
             deep > thin,
@@ -496,6 +518,7 @@ mod quoter_base_room {
             position_base: 50 * BASE_PRECISION_I64,
             ..Case::default()
         });
+
         assert!(
             long < flat,
             "an open long leaves less room: {} {}",

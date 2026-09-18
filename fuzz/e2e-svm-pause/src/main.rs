@@ -609,6 +609,7 @@ mod regr_276_interest {
                 &[b"user", authority.pubkey().as_ref(), &sub0],
                 &program_id,
             );
+
             // `initialize_user` creates the relay liquidation-coverage account
             // alongside the user, so its list carries the PDA.
             let (user_pda_conditions, _) =

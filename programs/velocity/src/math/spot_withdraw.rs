@@ -93,20 +93,16 @@ pub fn check_deposit_limits(spot_market: &SpotMarket) -> VelocityResult<bool> {
     Ok(deposit_token_amount <= max_deposit_token)
 }
 
-/// Enforce the daily deposit cap across a state transition, but only when the market's
-/// deposit level grew.
+/// Enforce the daily deposit cap across a state transition, but only when the deposit level grew.
 ///
-/// `check_deposit_limits` is a level predicate over the whole market. It asks whether
-/// total deposits are within the cap. Validating it on every call turns a deposit rate
-/// limit into a market-wide lock. Once the level sits above the cap for any reason,
-/// every caller of the shared credit path reverts with `DailyDepositLimit`. That
-/// includes withdrawals and borrow repayments, which lower the deposit level or leave
-/// it alone, and which are the actions that bring a market back under its cap.
-/// Liquidation does not route through that path, so the lock is one-sided. Users cannot
-/// exit or repay while they remain liquidatable (OtterSec #118).
-///
-/// Gating on growth keeps the cap throttling the operations it is meant to throttle.
-/// Pass the market's deposit token amount from before the balance update.
+/// `check_deposit_limits` is a level predicate over the whole market: it asks whether total deposits
+/// are within the cap. Validating it on every call turns a deposit rate limit into a market-wide
+/// lock, since once the level sits above the cap, every caller of the shared credit path reverts
+/// with `DailyDepositLimit`, including withdrawals and borrow repayments that would bring it back
+/// under. Liquidation skips that path, so the lock is one-sided: users cannot exit or repay while
+/// liquidatable (OtterSec #118).
+/// Gating on growth keeps the cap throttling only its intended operations; pass the market's deposit
+/// amount from before the update.
 pub fn validate_deposit_cap_after_increase(
     spot_market: &SpotMarket,
     deposit_token_amount_before: u128,
@@ -335,38 +331,37 @@ pub fn check_withdraw_limits(
         msg!("max_borrow_token={:?}", max_borrow_token);
         msg!("borrow_token_amount={:?}", borrow_token_amount);
 
-        // The market-level check failed, and a small depositor can still get an
-        // exception. `check_user_exception_to_withdraw_limits` is only the eligibility
-        // filter for it, and it is a per-account predicate. An attacker can split one
-        // large deposit across many accounts, pass that predicate on each, and drain the
-        // market past a tripped breaker. Rent on the extra accounts is refundable, so
+        // allow-verbose: this derives the $10k sybil-resistance bound and the attack it defeats.
+        // Cutting the derivation would leave the bound unverifiable from the code alone.
+        //
+        // The market-level check failed, and a small depositor can still get an exception.
+        // `check_user_exception_to_withdraw_limits` is only the per-account eligibility filter for it.
+        // An attacker can split one large deposit across many accounts, pass that predicate on each,
+        // and drain the market past a tripped breaker; rent on the extra accounts is refundable, so
         // the split costs near zero.
         //
-        // `exception_floor` adds the market-level budget the predicate lacks. The whole
-        // eligible cohort can take the market one `withdraw_guard_threshold` below the
-        // breaker floor and no further, however many accounts join.
+        // `exception_floor` adds the market-level budget the predicate lacks: the whole eligible
+        // cohort can take the market one `withdraw_guard_threshold` below the breaker floor and no
+        // further, however many accounts join.
         //
-        // `withdraw_guard_threshold` sizes the carve-out for two reasons. The
-        // per-account predicate already derives its own allowance from it. It is also
-        // the only field in this subsystem with an enforced absolute notional cap.
-        // `validate_withdraw_guard_threshold` in `validation/spot_market.rs` rejects a
-        // value above `MAX_WITHDRAW_GUARD_THRESHOLD_NOTIONAL`, which is $10k, and both
-        // `initialize_spot_market` and `update_withdraw_guard_threshold` run that check.
-        // Total exception outflow per market per TWAP window is therefore bounded at
-        // $10k notional. The budget regenerates at the same rate as the breaker, because
+        // `withdraw_guard_threshold` sizes the carve-out for two reasons. The per-account predicate
+        // already derives its own allowance from it, and it is the only field in this subsystem with
+        // an enforced absolute notional cap: `validate_withdraw_guard_threshold` in
+        // `validation/spot_market.rs` rejects a value above `MAX_WITHDRAW_GUARD_THRESHOLD_NOTIONAL`
+        // ($10k), and both `initialize_spot_market` and `update_withdraw_guard_threshold` run that
+        // check. Total exception outflow per market per TWAP window is therefore bounded at $10k
+        // notional. The budget regenerates at the same rate as the breaker, because
         // `min_deposit_token` and `exception_floor` both fall as the deposit TWAP decays.
         //
-        // `withdraw_circuit_breaker_bps` does not tune this. It feeds only
-        // `calculate_min_deposit_token_amount`. Before this bound existed the exception
-        // ignored that field, so moving it from 2500 bps to 1 bp changed the sybil yield
-        // by zero.
+        // `withdraw_circuit_breaker_bps` does not tune this bound; it feeds only
+        // `calculate_min_deposit_token_amount`. Before this bound existed the exception ignored that
+        // field, so moving it from 2500 bps to 1 bp changed the sybil yield by zero.
         //
-        // The attack needs preparation. A large position cannot be split after the
-        // breaker trips, because every path that can shrink a position below the
-        // per-account allowance runs this same check. `transfer_deposit`,
-        // `transfer_pools` and `end_swap` all go through
-        // `update_spot_balances_and_cumulative_deposits_with_limits`, and spot
-        // order-book fills are disabled.
+        // The attack needs preparation: a large position cannot be split after the breaker trips,
+        // because every path that can shrink a position below the per-account allowance runs this
+        // same check. `transfer_deposit`, `transfer_pools` and `end_swap` all go through
+        // `update_spot_balances_and_cumulative_deposits_with_limits`, and spot order-book fills are
+        // disabled.
         let exception_floor =
             min_deposit_token.saturating_sub(spot_market.withdraw_guard_threshold.cast::<u128>()?);
 

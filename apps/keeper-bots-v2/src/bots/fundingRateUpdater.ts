@@ -330,13 +330,11 @@ export class FundingRateUpdaterBot implements Bot {
 			'perp',
 			marketIndex
 		);
-		// `pfs` can be present and still carry no levels. /batchPriorityFees
-		// spreads JSON.parse(null) for a market with no published fees. On devnet
-		// Helius getPriorityFeeEstimate is unavailable, so the publisher never
-		// writes levels. pfs.medium is then undefined, Math.floor gives NaN, and
-		// setComputeUnitPrice throws at the BigInt conversion, which fails every
-		// funding update. Use the level only when it is finite, and otherwise keep
-		// the default.
+
+		// pfs.medium can be undefined: Helius getPriorityFeeEstimate is
+		// unavailable on devnet, so no levels are ever published there. An
+		// undefined medium makes Math.floor return NaN, which throws at the
+		// BigInt conversion in setComputeUnitPrice.
 		let microLamports = 10_000;
 		if (pfs && Number.isFinite(pfs.medium)) {
 			microLamports = Math.floor(pfs.medium);

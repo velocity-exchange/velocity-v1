@@ -26,18 +26,10 @@ pub fn can_sign_for_user(user: &AccountLoader<User>, signer: &Signer) -> anchor_
     })
 }
 
-/// Tests whether the `User` is the one the protocol owns. That account is
-/// sub-account 0 of the velocity signer PDA, and nobody can sign for it. The
-/// crank rewards and the cross-match surplus accrue to it, and
-/// `withdraw_protocol_user_deposit` is the only exit.
-///
-/// The test covers the authority and the sub-account id together.
-/// `initialize_user` takes its authority unchecked, so anyone can pay to create
-/// sub-account 1 or higher under the signer PDA. A test on the authority alone
-/// would accept one of those. The crank paths waive the caller's signature for
-/// the protocol `User`, so they would then credit a sub-account the protocol
-/// does not track. A `User` lives at the PDA of `(authority, sub_account_id)`,
-/// so the pair names exactly one account.
+/// Tests whether the `User` is the one the protocol owns: sub-account 0 of
+/// the velocity signer PDA, which nobody signs for. Testing only the
+/// authority is not enough, because `initialize_user` takes it unchecked, so
+/// anyone can create sub-account 1+ under that PDA, and crank paths waive the caller's signature for the protocol `User`.
 pub fn is_protocol_user(
     user: &AccountLoader<User>,
     state: &AccountLoader<State>,
@@ -59,6 +51,7 @@ pub fn can_crank_for_filler(
     if is_protocol_user(filler, state)? {
         return Ok(true);
     }
+
     let filler = filler.load()?;
     Ok(authority.is_signer
         && (filler.authority.eq(authority.key)
@@ -255,6 +248,7 @@ mod tests {
             signer,
             ..State::default()
         };
+
         create_anchor_account_info!(state, State, state_loader);
         let state_loader: AccountLoader<State> = AccountLoader::try_from(&state_loader).unwrap();
 
@@ -263,6 +257,7 @@ mod tests {
             sub_account_id: 0,
             ..User::default()
         };
+
         create_anchor_account_info!(protocol, User, protocol_info);
         let protocol_loader: AccountLoader<User> = AccountLoader::try_from(&protocol_info).unwrap();
         assert!(is_protocol_user(&protocol_loader, &state_loader).unwrap());
@@ -272,6 +267,7 @@ mod tests {
             sub_account_id: 1,
             ..User::default()
         };
+
         create_anchor_account_info!(impostor, User, impostor_info);
         let impostor_loader: AccountLoader<User> = AccountLoader::try_from(&impostor_info).unwrap();
         assert!(
@@ -290,6 +286,7 @@ mod tests {
             &crate::ID,
             false,
         );
+
         assert!(
             !can_crank_for_filler(&impostor_loader, &authority_info, &state_loader).unwrap(),
             "an impostor filler still needs a signature"
@@ -299,26 +296,9 @@ mod tests {
 
 /// Hold a resolver to writing only its staging region.
 ///
-/// A resolver is a view. A turner simulates it, reads the staged call out of
-/// the simulated post-state, and submits the real instruction separately.
-/// Nothing a resolver writes is ever meant to land, so landing one should
-/// change nothing. That property is worth asserting rather than reviewing,
-/// because it is what makes a resolver safe to expose permissionlessly.
-///
-/// `staging` names the accounts the chain never reads back: the shared relay
-/// scratch account, or a quote buffer.
-///
-/// The check is on velocity-owned accounts, because those are the only ones
-/// this program can write. A fee payer rides writable on every transaction and
-/// the runtime debits it, and a token account belongs to the token program;
-/// neither is something a resolver could dirty. A velocity-owned account
-/// marked writable is the real hazard, and outside the staging region there is
-/// no reason for one.
-///
-/// This governs velocity's own named accounts. The quoter tail in
-/// `remaining_accounts` is governed separately, by what the registry vetted a
-/// quoter to mark writable at approval, because a quoter's CPI streams its
-/// answer into its own response account.
+/// A resolver is a view: nothing it writes is meant to land, so asserting
+/// that here is what makes it safe to expose permissionlessly. The quoter
+/// tail in `remaining_accounts` is governed separately, at approval.
 pub fn require_view_accounts(
     accounts: &[anchor_lang::prelude::AccountInfo<'_>],
     staging: &[Pubkey],
@@ -327,12 +307,15 @@ pub fn require_view_accounts(
         if !account.is_writable || account.owner != &crate::ID || staging.contains(account.key) {
             continue;
         }
+
         msg!(
             "resolver marked {} writable; a resolver writes only its staging region",
             account.key
         );
+
         return Err(ErrorCode::DefaultError.into());
     }
+
     Ok(())
 }
 
@@ -362,6 +345,7 @@ mod view_account_tests {
             account(&k1, &owner, &mut l1, &mut d1, false),
             account(&k2, &owner, &mut l2, &mut d2, false),
         ];
+
         assert!(require_view_accounts(&accounts, &[]).is_ok());
     }
 
@@ -386,6 +370,7 @@ mod view_account_tests {
             account(&scratch, &owner, &mut l1, &mut d1, true),
             account(&other, &owner, &mut l2, &mut d2, true),
         ];
+
         assert!(require_view_accounts(&accounts, &[scratch]).is_err());
     }
 

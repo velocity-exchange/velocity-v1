@@ -507,11 +507,10 @@ impl DLOB {
         *self.slot_clock.read().expect("read slot clock")
     }
 
-    /// Update the cluster slot clock, the velocity `State` transition
-    /// archive, so auction wall clock math stays exact across IBRL slot
-    /// duration transitions. Without an update the books assume the 400ms
-    /// baseline. Calling this every slot is cheap. It returns at once unless
-    /// the clock changed.
+    /// Update the cluster slot clock, the velocity `State` transition archive,
+    /// so auction wall clock math stays exact across IBRL duration transitions.
+    /// Without an update the books assume the 400ms baseline. Cheap to call
+    /// every slot: it returns at once unless the clock changed.
     pub fn update_slot_clock(&self, slot_clock: SlotClock) {
         if *self.slot_clock.read().expect("read slot clock") == slot_clock {
             return;

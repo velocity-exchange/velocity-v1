@@ -46,11 +46,10 @@ use {
     std::convert::{TryFrom, TryInto},
 };
 
-/// Storage encoding quantum for pre-gate duration fields. It is the historical
-/// 400ms slot length. It appears only in the encode and decode of those fields,
-/// and in the calibration period of a few legacy per-slot rates. A new compact
-/// field puts its own quantum in [`StoredSlotDuration`]'s const parameter
-/// instead of referring to this legacy constant.
+/// Storage encoding quantum for pre-gate duration fields. It is the historical 400ms slot length.
+/// It appears only in the encode and decode of those fields, and in the calibration period of a
+/// few legacy per-slot rates. A new compact field puts its own quantum in [`StoredSlotDuration`]'s
+/// const parameter instead.
 pub const STORED_UNIT_MS: u64 = 400;
 
 /// A compact wall-clock duration stored as `T` fixed-slot quanta.
@@ -673,11 +672,13 @@ mod tests {
             Millis::from_secs(4).to_slots(SlotDuration::from_state_ms(300)),
             13
         );
+
         // 4s at 250ms: exact.
         assert_eq!(
             Millis::from_secs(4).to_slots(SlotDuration::from_state_ms(250)),
             16
         );
+
         // Period counting floors: 3 slots at 200ms is 600ms, which is 1 whole
         // 400ms period.
         assert_eq!(
@@ -754,6 +755,7 @@ mod tests {
             clock.elapsed(0, 5_000).as_ms(),
             1_000 * 400 + 1_000 * 350 + 1_000 * 300 + 1_000 * 250 + 1_000 * 200
         );
+
         // A degenerate interval is zero.
         assert_eq!(clock.elapsed(10, 10), Millis::ZERO);
         assert_eq!(clock.elapsed(20, 10), Millis::ZERO);
@@ -762,6 +764,7 @@ mod tests {
             clock.elapsed_slot_delta(20, 1_010).as_ms(),
             10 * 400 + 10 * 350
         );
+
         // A delta larger than the end slot saturates to slot zero.
         assert_eq!(clock.elapsed_slot_delta(100, 50).as_ms(), 50 * 400);
     }

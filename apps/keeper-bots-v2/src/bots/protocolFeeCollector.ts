@@ -155,6 +155,7 @@ export class ProtocolFeeCollectorBot implements Bot {
 				marketType,
 				marketIndex
 			);
+
 			// Guard against NaN. /batchPriorityFees returns an entry with no
 			// levels for a market with no published fees, as fundingRateUpdater.ts
 			// describes. pfs.medium is then undefined and Math.floor(NaN) throws at

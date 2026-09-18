@@ -633,22 +633,11 @@ impl User {
     /// How many of this market's open perp orders rest on a CLOB instead of in
     /// a `User.orders` slot.
     ///
-    /// Two kinds of order rest on a book. A plain CLOB placement reserves the
-    /// position's `open_orders` slot and writes no `Order` row. A fired
-    /// trigger order keeps its `Order` row `Open` and marks it with
-    /// [`OrderBitFlag::PlacedOnClob`], and its book reservation reuses the
-    /// `open_orders` slot that row already holds. Both kinds reserve book
-    /// depth that only the CLOB can release, so both count here and neither
-    /// leaves a row that counts as listed.
-    ///
-    /// This count is the only record velocity keeps of a plain CLOB order.
-    /// The order ids themselves live on the book. A caller that must not
-    /// mistake a resting book order for a gone one asks this instead of a
-    /// scan of `orders`.
-    ///
-    /// A consumer that also counts `Order` rows must skip the rows that
-    /// [`Order::is_placed_on_clob`] reports, or it counts a fired trigger
-    /// order twice.
+    /// A plain CLOB placement reserves the position's `open_orders` slot and
+    /// writes no `Order` row. A fired trigger order keeps its `Order` row
+    /// open, flagged [`OrderBitFlag::PlacedOnClob`], reusing that slot. Both
+    /// count here. A consumer also counting `Order` rows must skip rows
+    /// [`Order::is_placed_on_clob`] reports, or double-counts a fired trigger order.
     pub fn clob_resident_open_orders(&self, market_index: u16) -> u8 {
         let listed = self
             .orders
@@ -667,13 +656,10 @@ impl User {
             .saturating_sub(listed)
     }
 
-    /// The first perp market where the user has an order resting on a CLOB.
-    ///
-    /// A book-resident order reserves `open_bids` and `open_asks`. The
-    /// reservation inflates the worst-case margin a liquidation reads. The
-    /// slot cancel that a liquidation runs cannot remove a book order, so the
-    /// liquidation proceeds on the inflated figure. A keeper reclaims these
-    /// orders with `force_cancel_clob_orders` before it liquidates.
+    /// A book-resident order reserves `open_bids`/`open_asks`, inflating the
+    /// margin a liquidation reads. Its slot cancel cannot remove such an
+    /// order, so a keeper must reclaim it with `force_cancel_clob_orders`
+    /// before liquidating.
     pub fn first_market_with_clob_resident_orders(&self) -> Option<u16> {
         self.perp_positions
             .iter()
@@ -707,6 +693,7 @@ impl User {
             direction,
             base_asset_amount,
         )?;
+
         self.perp_positions[position_index].open_orders = self.perp_positions[position_index]
             .open_orders
             .saturating_sub(1);
@@ -716,27 +703,26 @@ impl User {
         if reduce_only {
             self.perp_positions[position_index].disarm_reduce_only_clob();
         }
+
         self.release_placed_trigger_slot(market_index, clob_order_id, OrderStatus::Canceled);
         Ok(())
     }
 
-    /// Take an order that has left the book off its owner's aggregates:
-    /// whatever it still reserved comes off, and the open-order slot with it.
-    /// Runs for an order a fill consumed outright (nothing left to unwind but
-    /// the slot) and for one the book culled for falling under its minimum.
+    /// Take an order that has left the book off its owner's aggregates. What it
+    /// still reserved comes off, along with the open-order slot. This runs for
+    /// an order a fill consumed outright, leaving only the slot to unwind. It
+    /// also runs for one the book culled for falling under its minimum.
     ///
     /// `leftover` is the book's report, so it is held to what velocity
-    /// reserved for this user rather than clamped to it
-    /// ([`crate::controller::position::release_reserved_open_base`]). A
-    /// report above the reservation would free the margin behind orders that
-    /// still rest. [`Self::cleanup_removed_clob_order`] is the lenient
-    /// sibling for an exit the owner chose or a keeper forced.
+    /// reserved for this user, not clamped to it. A report above the
+    /// reservation would free margin behind orders that still rest.
+    /// [`Self::cleanup_removed_clob_order`] is the lenient sibling for an exit
+    /// the owner chose or a keeper forced.
     ///
     /// `release_slot` is false when the fill already took the slot. A router
-    /// fill releases it as soon as the order it was handed reaches zero
-    /// unfilled, so a fully-consumed order arrives here with its slot already
-    /// gone. Taking it again would free the slot of some other order the owner
-    /// still has resting.
+    /// fill releases it as soon as its order reaches zero unfilled. A
+    /// fully-consumed order therefore arrives here with the slot already gone.
+    /// Taking it again would free another order's slot instead.
     pub fn unwind_removed_clob_order(
         &mut self,
         market_index: u16,
@@ -759,14 +745,17 @@ impl User {
                 &mut self.perp_positions[position_index],
                 1,
             )?;
+
             self.decrement_open_orders(false);
         }
+
         // The order left the book, so disarm the reduce-only counter it
         // armed. This runs only for a removed order: a partial fill shrinks
         // the order in place and never lands here.
         if reduce_only {
             self.perp_positions[position_index].disarm_reduce_only_clob();
         }
+
         self.release_placed_trigger_slot(market_index, clob_order_id, OrderStatus::Canceled);
         Ok(())
     }
@@ -821,6 +810,7 @@ impl User {
         let Some(index) = self.find_placed_trigger_slot(market_index, clob_order_id) else {
             return Ok(false);
         };
+
         // `remaining_base` is the book's report of what the evicted order still
         // held, and it is written straight onto the row below. An order can
         // only shrink while it rests, so a report above the size the row
@@ -832,6 +822,7 @@ impl User {
             remaining_base,
             self.orders[index].base_asset_amount
         )?;
+
         {
             let order = &mut self.orders[index];
             order.remove_bit_flag(OrderBitFlag::PlacedOnClob);
@@ -841,6 +832,7 @@ impl User {
                 OrderTriggerCondition::TriggeredBelow => OrderTriggerCondition::Below,
                 other => other,
             };
+
             order.set_clob_order_ref(0, 0);
             order.auction_start_price = 0;
             order.auction_end_price = 0;
@@ -850,6 +842,7 @@ impl User {
             order.quote_asset_amount_filled = 0;
             order.slot = slot;
         }
+
         // The armed slot is a live order again, so it takes back the
         // open-order count its CLOB order carried. The evict crank's unwind
         // decremented that count. An untriggered order adds no bids or asks.
@@ -1379,12 +1372,10 @@ pub struct PerpPosition {
     /// The scaled balance of the isolated position
     /// precision: SPOT_BALANCE_PRECISION
     pub isolated_position_scaled_balance: u64,
-    /// The number of reduce-only orders the user has resting on the CLOB for
-    /// this market. The book is position-blind, so velocity must tell it which
-    /// resting orders to clamp to the owner's position. This count is that
-    /// signal: it is not zero exactly when the router must pass a `base_cover`
-    /// cap for this user. Velocity arms it when it rests a reduce-only order
-    /// and disarms it when that order leaves the book.
+    /// The count of reduce-only orders the user rests on the CLOB for this
+    /// market. The book is position-blind, so this is nonzero exactly when
+    /// the router must pass a `base_cover` cap for this user. Velocity arms
+    /// it when it rests a reduce-only order and disarms it when that order leaves the book.
     pub reduce_only_clob_orders: u16,
     // custom max margin ratio for perp market
     pub max_margin_ratio: u16,
@@ -1400,16 +1391,10 @@ impl PerpPosition {
         self.market_index == market_index && !self.is_available()
     }
 
-    /// Whether the slot holds nothing, so `add_new_position` may take it for
-    /// another market.
-    ///
-    /// A CLOB order depends on this staying false while it rests. The book
-    /// holds no margin regime of its own: the isolated flag lives on this
-    /// position, and every path that fills or removes a book order reads it
-    /// back from here to pick the collateral pool the order settles against.
-    /// A resting order holds `open_orders` on this position, so
-    /// `has_open_order()` is true, the slot cannot be recycled under it, and
-    /// the flag it reads back is the one it rested under.
+    /// A resting CLOB order needs this to stay false. The book has no margin
+    /// regime of its own. A fill or removal reads the isolated flag back from
+    /// here instead. `open_orders` keeps `has_open_order()` true, so the slot
+    /// cannot be recycled under it.
     pub fn is_available(&self) -> bool {
         !self.is_open_position()
             && !self.has_open_order()
@@ -1426,14 +1411,10 @@ impl PerpPosition {
         self.open_orders != 0 || self.open_bids != 0 || self.open_asks != 0
     }
 
-    /// The unfilled base this position holds resting on `direction`. It counts
-    /// every order on that side, on a book and in [`User::orders`] alike.
-    ///
-    /// Velocity writes this at placement, under the owner's signature, and
-    /// takes it back on each fill, cull, cancel, eviction and expiry. An
-    /// external quoter cannot inflate it. So it is the one number that says
-    /// how much size the owner really put on this side, and it bounds what a
-    /// quoter's report may claim to have filled or removed.
+    /// The unfilled base resting on `direction`, counted across both the book
+    /// and [`User::orders`]. Velocity alone writes and reverses it, so an
+    /// external quoter cannot inflate it. It bounds what a quoter's report may
+    /// claim to have filled or removed.
     pub fn reserved_open_base(&self, direction: PositionDirection) -> u64 {
         match direction {
             PositionDirection::Long => self.open_bids.max(0).unsigned_abs(),
@@ -1769,26 +1750,20 @@ pub struct Order {
     pub immediate_or_cancel: bool,
     /// Whether the order is triggered above or below the trigger price. Only relevant for trigger orders
     pub trigger_condition: OrderTriggerCondition,
-    /// Auction length in wall clock 400ms units (one slot at the 400ms
-    /// baseline, where the raw value is identical to the historical slot
-    /// count). Progress compares `SlotClock::elapsed` against this value's
-    /// wall clock length, so the ramp holds at every slot duration and the
-    /// u8 keeps the full historical 72s range.
+    /// Auction length in wall clock 400ms units, one unit per slot at the
+    /// 400ms baseline. Progress compares `SlotClock::elapsed` against this
+    /// value's wall clock length, so the ramp holds at every slot duration.
+    /// The u8 keeps the full historical 72s range.
     pub auction_duration: u8,
     /// Last 8 bits of the slot the order was posted onchain (not order slot for signed msg orders)
     pub posted_slot_tail: u8,
     /// Bitflags for further classification
     /// 0: is_signed_message
     pub bit_flags: u8,
-    /// Free bytes. These held a route digest while a signed-message order
-    /// could rest in a slot. Such an order now routes at placement and rests
-    /// any remainder on the market's CLOB, so the route travels with the
-    /// message, on
-    /// [`crate::state::signed_msg_user::SignedMsgOrderId::route_digest`].
-    ///
-    /// Kept as padding rather than removed: `Order` is 104 bytes with no
-    /// slack, and it is an array element in `User`, so dropping these bytes
-    /// would change that array's stride and rewrite every existing account.
+    /// Free bytes. These held a route digest until routing moved to placement
+    /// and `SignedMsgOrderId::route_digest`. `Order` is 104 bytes with no
+    /// slack and is an array element in `User`. Removing them would rewrite
+    /// every existing account.
     pub padding: [u8; 5],
 }
 
@@ -2171,18 +2146,15 @@ pub enum OrderBitFlag {
     NewTriggerReduceOnly = 0b00001000,
     HasBuilder = 0b00010000,
     IsIsolatedPosition = 0b00100000,
-    /// A triggered trigger-limit whose live order now rests on the market's
-    /// CLOB. The slot is a shadow that keeps the trigger parameters and the
-    /// CLOB `OrderRef` (see `Order::clob_order_ref`). It frees on a fill, a
-    /// cancel or an expiry, and re-arms on an eviction. While the flag is set
-    /// the slot carries no open-order accounting of its own. The CLOB order
-    /// carries it.
+    /// A triggered trigger-limit whose live order rests on the market's CLOB.
+    /// The slot shadows it, keeping the trigger parameters and the CLOB
+    /// `OrderRef`. It frees on a fill, cancel or expiry, and re-arms on
+    /// eviction. While set, the CLOB order carries the open-order accounting instead of this slot.
     PlacedOnClob = 0b01000000,
-    /// Set when an evicted trigger re-arms. The trigger may not re-fire until
-    /// a keeper observes the price on the non-trigger side. This is the
-    /// on-chain approximation of edge-triggering. A level-triggered re-arm
-    /// livelocks. An evicted stop-limit is near the tail by definition, so an
-    /// immediate re-placement is evicted again.
+    /// Set when an evicted trigger re-arms. It may not re-fire until a keeper
+    /// observes the price on the non-trigger side. This approximates
+    /// edge-triggering on chain: a level-triggered re-arm would livelock, since
+    /// an evicted stop-limit near the tail gets evicted again.
     AwaitingTriggerRecross = 0b10000000,
 }
 
@@ -2259,10 +2231,9 @@ pub struct UserStats {
     /// fills, withdrawals and transfers out. Cleared only by the warm admin.
     pub equity_breaker_tripped: u8,
     /// Persistent referral reward status. See [`AcceleratedReferralStatus`].
-    /// This is separate from `referrer_status`, which says whether this
-    /// authority refers or was referred by somebody else. The field comes out
-    /// of former padding, so an account written before the upgrade reads `0`.
-    /// That value is standard status with automatic enrollment allowed.
+    /// Separate from `referrer_status`, which says whether this authority
+    /// refers or was referred by somebody else. The field comes from former
+    /// padding, so pre-upgrade accounts read `0`, standard status with automatic enrollment allowed.
     pub accelerated_referral_status: u8,
     pub padding: [u8; 61],
 }
@@ -2431,16 +2402,11 @@ impl UserStats {
         Ok(())
     }
 
-    /// Fold a fill into the trailing-30d maker volume. The `*_volume_30d`
-    /// fields are decaying sums that approximate trailing-30d notional. Each
-    /// update first decays the stored sum by the fraction of the 30d window
-    /// elapsed since the last update, as `sum * (30d - gap)/30d`, and a gap of
-    /// 30d or more wipes it to zero. The update then adds the fill. For a
-    /// steady trader the sum converges to the true trailing-30d total. The
-    /// decay is lazy, so a burst decays only when the account trades again and
-    /// the stored value does not fall while the account is idle. A reader that
-    /// needs the live window must project the decay itself. See
-    /// `get_total_30d_volume_at`.
+    /// Folds a fill into the decaying `*_volume_30d` sum approximating
+    /// trailing-30d notional. Each update decays the sum by
+    /// `sum * (30d - gap)/30d`, then adds the fill. A gap of 30d or more
+    /// wipes it to zero instead. The decay is lazy, so the stored value does
+    /// not fall while the account is idle. See `get_total_30d_volume_at` for the live window.
     pub fn update_maker_volume_30d(&mut self, quote_asset_amount: u64, now: i64) -> VelocityResult {
         let since_last = max(1_i64, now.safe_sub(self.last_maker_volume_30d_ts)?);
 
@@ -2905,9 +2871,11 @@ mod clob_resident_open_orders_tests {
             open_bids: 1,
             ..PerpPosition::default()
         };
+
         for (index, row) in rows.into_iter().enumerate() {
             user.orders[index] = row;
         }
+
         user
     }
 

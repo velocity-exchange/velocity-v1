@@ -116,7 +116,6 @@ pub fn settle_pnl(
 
     // cannot settle negative pnl this way on a user who is in liquidation territory
     if unrealized_pnl < 0 {
-        // may already be cached
         let meets_margin_requirement = match meets_margin_requirement {
             Some(meets_margin_requirement) => meets_margin_requirement,
             None => meets_settle_pnl_maintenance_margin_requirement(user, maps)?,
@@ -181,11 +180,10 @@ pub fn settle_pnl(
                     return mode.result(ErrorCode::AMMNotUpdatedInSameSlot, market_index, &msg);
                 }
 
-                // Both cached attestations hold, so `healthy_oracle` can only
-                // be false because the samples do not match. The oracle
-                // account was rewritten after the AMM update in this slot. The
-                // cached verdict does not cover the sample being consumed, so
-                // the current validity decides.
+                // Both cached attestations hold, so `healthy_oracle` is false
+                // only because the samples do not match: the oracle account
+                // was rewritten after the AMM update this slot, and the
+                // cached verdict does not cover the sample now being consumed.
                 let msg = format!(
                     "Market={} oracle rewritten after same-slot AMM update; current sample is invalid ({})",
                     market_index, oracle_validity
@@ -193,16 +191,13 @@ pub fn settle_pnl(
                 return mode.result(oracle_validity.get_error_code(), market_index, &msg);
             }
 
-            // SettlePnl deliberately admits StaleForMargin and
-            // InsufficientDataPoints. A user settling their own pnl through a
-            // slightly stale oracle is acceptable, and the layered
-            // last_oracle_valid and is_fresh_at checks above still guard the AMM.
-            // A third party, meaning anyone who is not the user's authority or
-            // delegate, must not push another user's negative pnl through such a
-            // margin-invalid oracle. Negative pnl debits that user's collateral.
-            // That combination is gated on the stricter margin validity, which
-            // mirrors the positive-pnl guard that forces a user to settle their
-            // own positive pnl (OtterSec #70).
+            // SettlePnl admits StaleForMargin and InsufficientDataPoints: a
+            // user settling their own pnl through a slightly stale oracle is
+            // acceptable, and the layered checks above still guard the AMM. A
+            // third party (anyone but the user's authority or delegate) must
+            // not push another user's negative pnl, which debits their
+            // collateral, through such a margin-invalid oracle. That mirrors
+            // the guard forcing a user to settle their own positive pnl (OtterSec #70).
             let settler_can_sign_for_user =
                 user.authority.eq(authority) || user.delegate.eq(authority);
             if unrealized_pnl < 0

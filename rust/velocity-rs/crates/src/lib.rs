@@ -690,9 +690,7 @@ impl VelocityClient {
         self.backend.try_get_account(account)
     }
 
-    /// Fetch the market's `QuoterSlabV0` and decode its slot region.
-    ///
-    /// The slab holds every approved quoter config for the market. The book
+    /// Fetch the market's `QuoterSlabV0` and decode its slot region. The book
     /// is at slot 0, and Custom quoters are at slots 1 and up. Vacant slots
     /// are included, so an index into the result is the on-chain slot index.
     pub async fn get_quoter_slab_slots(
@@ -854,28 +852,17 @@ impl VelocityClient {
         }
     }
 
-    /// List the spot markets that must be cranked before these accounts can be used
-    /// on a value-releasing path.
+    /// Lists spot markets that must be cranked before these accounts are used on a
+    /// value-releasing path. That path includes withdraw, transfer deposit, transfer
+    /// pools, swap, isolated-position withdraw, and any perp fill.
     ///
-    /// The program refuses to value a spot borrow for margin through an index
-    /// that has not accrued recently. It fails with
-    /// `SpotMarketInterestStaleForMargin`. The rule applies on withdraw,
-    /// transfer deposit, transfer pools, swap, isolated-position withdraw, and
-    /// any perp fill, for the taker and for every maker. Only borrow positions
-    /// count. A stale deposit index understates collateral, so the program
-    /// allows it.
+    /// A stale borrow index there fails with `SpotMarketInterestStaleForMargin`. Only
+    /// borrow positions count. A stale deposit index only understates collateral, which
+    /// the program allows. Each market's window comes from its own rate ceiling.
     ///
-    /// Each market earns its own window from its rate ceiling, so a market
-    /// that may charge more interest must be cranked more often.
-    ///
-    /// The program also exempts a borrow whose un-booked interest is still
-    /// under one token unit. This does not model that exemption, so the result
-    /// is a superset. Cranking every market it names always clears the check.
-    ///
-    /// A market missing from the cache is skipped, so a caller that is not
-    /// subscribed to it gets no crank for it.
-    ///
-    /// * `users` - accounts the transaction values, e.g. a fill's taker and makers
+    /// The program also exempts sub-token-unit un-booked interest, unmodeled here, so
+    /// the result is a superset. A market missing from the cache is skipped.
+    /// * `users` - accounts the transaction values
     /// * `now` - unix seconds to measure staleness against
     pub fn stale_spot_interest_markets(&self, users: &[&User], now: i64) -> Vec<u16> {
         let mut stale = Vec::<u16>::new();
@@ -894,11 +881,10 @@ impl VelocityClient {
                     continue;
                 };
 
-                // A window this cannot compute falls to zero, which names the
-                // market for any staleness at all. The two outcomes differ in
-                // cost. A market this fails to name reverts the transaction
-                // the caller is building. A market it names needlessly costs
-                // one idempotent permissionless crank.
+                // A window this cannot compute falls to zero, flagging the
+                // market as stale. Missing a market reverts the caller's
+                // transaction. Naming one needlessly only costs an
+                // idempotent permissionless crank.
                 let window =
                     program::math::margin::max_spot_interest_staleness_for_margin(&spot_market)
                         .unwrap_or(0);
@@ -2029,12 +2015,10 @@ struct ForceMarkets {
 #[derive(Clone, Copy, Debug)]
 pub struct ClobFillAccounts {
     pub market_index: u16,
-    /// The market's `QuoterSlabV0` PDA, seeded
-    /// `["quoter_slab", market_index_le]`.
-    /// [`constants::derive_quoter_slab`] derives it. The slab holds every
-    /// approved quoter config, with the book at slot 0. It is also the one
-    /// signer velocity uses to CPI external quoter programs, the book's
-    /// `place_authority` included. See `velocity::signer`.
+    /// The market's `QuoterSlabV0` PDA, seeded `["quoter_slab", market_index_le]`
+    /// and derived by [`constants::derive_quoter_slab`]. Also the signer velocity
+    /// uses to CPI external quoter programs, book's `place_authority` included.
+    /// See `velocity::signer`.
     pub quoter_slab: Pubkey,
     pub clob_market: Pubkey,
     pub clob_program: Pubkey,
@@ -2220,27 +2204,10 @@ impl<'a> TransactionBuilder<'a> {
         self
     }
 
-    /// Cap the account data this transaction may load, in bytes.
-    ///
-    /// This call is optional. [`Self::build`] adds
-    /// [`crate::constants::LOADED_ACCOUNTS_DATA_SIZE_DEFAULT`] when no limit
-    /// is set. Call this to widen the limit for a transaction that loads more,
-    /// or to narrow it for one that loads much less.
-    ///
-    /// Setting it on every transaction is worthwhile. The limit is priced on
-    /// what the transaction asks for, so a transaction that asks for nothing
-    /// in particular is charged for the 64 MiB default however little it
-    /// loads. The velocity program and its program data count toward the
-    /// limit, because the transaction names the program. Leave headroom above
-    /// them. A limit under what the transaction really loads makes it fail to
-    /// load at all.
-    ///
-    /// The instruction is appended rather than inserted at the front. The
-    /// runtime finds compute-budget instructions by program id wherever they
-    /// sit. An instruction added at the front shifts every index behind it,
-    /// and [`Self::place_swift_order`] encodes such an index. Its ed25519
-    /// verify instruction points at the instruction that holds the message it
-    /// verifies, by absolute index. Only the tail is free.
+    /// If unset, [`Self::build`] bills the 64 MiB default no matter what
+    /// loads. Set too low, and the transaction fails to load.
+    /// Appended, not inserted at the front, since [`Self::place_swift_order`]'s
+    /// ed25519 verify ix encodes an absolute instruction index a front-insert would shift.
     pub fn with_loaded_accounts_data_size(mut self, bytes: u32) -> Self {
         self.ixs
             .push(ComputeBudgetInstruction::set_loaded_accounts_data_size_limit(bytes));
@@ -2562,6 +2529,7 @@ impl<'a> TransactionBuilder<'a> {
                 },
             }),
         });
+
         self
     }
 
@@ -2881,22 +2849,10 @@ impl<'a> TransactionBuilder<'a> {
         self
     }
 
-    /// Place a swift order (Perps only)
-    ///
-    /// The order routes when it is placed. It fills against the market's book
-    /// and the routed quoters, and whatever is left rests on the book as a
-    /// taker-origin remainder. The CLOB accounts are therefore required, and
-    /// no separate fill instruction is needed to make the order trade.
-    ///
-    /// * `signed_order_info` - the signed swift order info
-    /// * `taker_account` - taker subaccount data
-    /// * `makers` - the accounts of the book makers this order would sweep
-    /// * `clob` - the market's book, its quoter slab and the CLOB program
-    ///
-    /// A fill settles only for the users the transaction carries, and the book
-    /// stops at the first maker it was not handed. A maker left out of `makers`
-    /// is therefore depth the order does not get, and leaving out the best one
-    /// gives up the rest of the book behind it.
+    /// Places and routes a swift perp order in one instruction, filling
+    /// against the book and routed quoters. `makers` must include every
+    /// book maker the fill should sweep: the book stops at the first one
+    /// omitted, giving up all depth behind it.
     pub fn place_swift_order(
         mut self,
         signed_order_info: &SignedOrderInfo,
@@ -3156,11 +3112,6 @@ impl<'a> TransactionBuilder<'a> {
         }
     }
 
-    /// Prepares Jupiter swap instructions for insertion into a transaction
-    ///
-    /// This function handles common Jupiter-specific logic and returns a struct containing
-    /// all the instructions that need to be inserted between begin and end wrapper instructions.
-    ///
     /// Of the route's instructions, only the swap and a non-token cleanup go
     /// in the bracket. The cleanup is a SOL unwrap. Jupiter's compute-budget
     /// instructions are dropped, because the caller budgets the whole
@@ -3617,7 +3568,6 @@ impl<'a> TransactionBuilder<'a> {
     /// read-only, so this crank must precede it in the same transaction.
     /// `VelocityClient::stale_spot_interest_markets` names the markets a given
     /// set of accounts needs.
-    ///
     /// * `market_index` - the spot market to accrue
     pub fn update_spot_market_cumulative_interest(mut self, market_index: u16) -> Self {
         let spot_market = self
@@ -4280,6 +4230,7 @@ impl<'a> TransactionBuilder<'a> {
                 ),
             );
         }
+
         let payer = self.fee_payer.unwrap_or(self.authority);
         if self.legacy {
             let message = Message::new(self.ixs.as_ref(), Some(&payer));
@@ -4420,12 +4371,9 @@ pub fn build_accounts<'a>(
     account_metas
 }
 
-/// Whether `ix` is the compute budget program's
-/// `SetLoadedAccountsDataSizeLimit`.
-///
-/// Matched on the program id and the leading discriminator byte rather than by
-/// decoding, so an instruction a caller built by hand counts the same as one
-/// from the builder.
+/// Whether `ix` is the compute budget program's `SetLoadedAccountsDataSizeLimit`.
+/// Matched by program id and discriminator byte rather than decoding, so an
+/// instruction built by hand matches the same as one from this builder.
 fn is_loaded_accounts_data_size_ix(ix: &Instruction) -> bool {
     ix.program_id == solana_compute_budget_interface::id() && ix.data.first() == Some(&4)
 }

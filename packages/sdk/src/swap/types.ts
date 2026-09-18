@@ -23,9 +23,8 @@ export interface UnifiedQuoteResponse {
 	outAmount: string;
 	swapMode: SwapMode;
 	/**
-	 * The slippage the route was quoted at. The swap executes with this value,
-	 * because {@link SwapProvider.getRouteInstructions} takes no slippage
-	 * override. To swap at a different slippage, quote again.
+	 * Slippage the route was quoted at. {@link SwapProvider.getRouteInstructions}
+	 * takes no override, so a different slippage needs a new quote.
 	 */
 	slippageBps: number;
 	routePlan: Array<{ swapInfo: any; percent: number }>;
@@ -42,11 +41,8 @@ export interface UnifiedQuoteResponse {
 }
 
 /**
- * What the provider says its route does, recorded when the quote was produced.
- *
- * This is part of the tamper check described on {@link expectProviderRoute}.
- * {@link buildSwapQuote} records it from the quote a provider returns. No other
- * code writes one.
+ * What the provider says its route does, recorded at quote time by
+ * {@link buildSwapQuote}. Used by the tamper check in {@link expectProviderRoute}.
  */
 export interface SwapRouteFields {
 	readonly inputMint: string;
@@ -58,15 +54,8 @@ export interface SwapRouteFields {
 }
 
 /**
- * Everything a provider needs to turn its own quote back into instructions.
- *
- * It rides on the quote rather than on the client, so building a swap depends
- * only on the quote passed in. A provider that held this internally would build
- * against whatever route it had cached. The call site cannot see that, and it is
- * wrong whenever more than one quote is in flight.
- *
- * The payload is opaque. Read the normalized fields on {@link SwapQuote}
- * instead.
+ * Rides on the quote, not the client, so a provider never replays a stale
+ * route. See {@link SwapQuote} for the normalized fields.
  */
 export type SwapProviderRoute =
 	| {
@@ -83,9 +72,8 @@ export type SwapProviderRoute =
 	  };
 
 /**
- * A {@link SwapProviderRoute} as a provider hands it to {@link buildSwapQuote}.
- * It is the payload without the `routed` fields, which `buildSwapQuote` records
- * itself.
+ * A {@link SwapProviderRoute} without the `routed` fields. {@link buildSwapQuote}
+ * records those itself.
  */
 export type SwapProviderRoutePayload = OmitRouted<SwapProviderRoute>;
 
@@ -93,12 +81,8 @@ export type SwapProviderRoutePayload = OmitRouted<SwapProviderRoute>;
 type OmitRouted<R> = R extends unknown ? Omit<R, 'routed'> : never;
 
 /**
- * A quote and the provider payload that executes it. Pass the quote the swap is
- * meant to run on. A provider never falls back to a previous quote.
- *
- * Treat it as immutable. Building a swap checks the normalized fields against
- * the payload, so an edited copy is rejected rather than executed as the swap it
- * was originally quoted for. Quote again instead.
+ * A quote and the provider payload that executes it, treated as immutable.
+ * An edited copy fails the payload check and is rejected rather than run.
  */
 export type SwapQuote = UnifiedQuoteResponse & {
 	readonly providerRoute: SwapProviderRoute;
@@ -140,29 +124,16 @@ export interface SwapRouteInstructions {
 export interface GetRouteInstructionsParams {
 	quote: SwapQuote;
 	/**
-	 * Wallet the swap executes as. When the provider binds a route to a wallet,
-	 * this must be the wallet the quote was requested for. See
-	 * {@link expectProviderRoute}.
-	 *
-	 * This is not the Velocity user account public key. It is usually the
-	 * Velocity authority.
+	 * Wallet the swap executes as, not the Velocity user account public key.
+	 * Usually the Velocity authority. See {@link expectProviderRoute}.
 	 */
 	userPublicKey: PublicKey;
 }
 
 /**
- * The contract every swap provider implements.
- *
- * A caller quotes, then builds. The build target is either velocity's swap
- * bracket or a standalone transaction. One interface for both clients stops one
- * provider from growing behaviour the other lacks, so a caller gets the same
- * semantics whichever provider is configured.
- *
- * A provider-specific request field lives on {@link SwapQuoteParams} and the
- * provider maps it itself, so adding one never means editing the unified client.
- * A field only one provider can honour does not belong on
- * {@link GetRouteInstructionsParams}. A build-time parameter the other provider
- * ignores looks the same to a caller as one it applied.
+ * A caller quotes, then builds either velocity's swap bracket or a standalone
+ * transaction through one shared interface. Provider-specific fields live on
+ * {@link SwapQuoteParams}, never on {@link GetRouteInstructionsParams}.
  */
 export interface SwapProvider {
 	readonly providerName: SwapClientType;
@@ -170,25 +141,16 @@ export interface SwapProvider {
 	getQuote(params: SwapQuoteParams): Promise<SwapQuote>;
 
 	/**
-	 * Builds the route instructions for a quote returned by this provider's
-	 * `getQuote`, at the slippage that quote was priced at.
-	 * @throws If the quote came from a different provider or a different wallet.
+	 * Builds route instructions for a quote from `getQuote`, at its priced slippage.
+	 * @throws If the quote came from a different provider or wallet.
 	 */
 	getRouteInstructions(
 		params: GetRouteInstructionsParams
 	): Promise<SwapRouteInstructions>;
 
 	/**
-	 * Builds a complete swap transaction. It keeps the setup and teardown that
-	 * `getRouteInstructions` strips, which are the compute budget, the token
-	 * account creation and the SOL wrapping.
-	 *
-	 * Use it for a swap the caller signs and sends on its own. A swap inside
-	 * velocity's `beginSwap` and `endSwap` bracket needs `getRouteInstructions`
-	 * instead. Velocity supplies those three parts itself, and a second copy
-	 * wraps SOL that nothing then unwraps.
-	 *
-	 * @throws If the quote came from a different provider or a different wallet.
+	 * Keeps the setup and teardown {@link getRouteInstructions} strips.
+	 * Do not call it inside velocity's bracket. It double-wraps SOL that nothing unwraps.
 	 */
 	getSwapTransaction(
 		params: GetRouteInstructionsParams

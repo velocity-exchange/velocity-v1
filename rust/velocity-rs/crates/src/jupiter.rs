@@ -48,11 +48,10 @@ const DEFAULT_JUPITER_API_URL: &str = "https://api.jup.ag/swap/v2";
 /// A quote goes stale in seconds, so a hung request is worth less than a retry
 const JUPITER_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Ceiling on the accounts a route may touch, so it still fits in a
-/// transaction alongside the swap bracket. The bracket is the begin and end
-/// swap instructions, the ATA creation, and the caller's own instructions.
-/// Jupiter's own default of 64 assumes the swap has the transaction to itself.
-/// This value matches the TS SDK's `DEFAULT_SWAP_MAX_ACCOUNTS`.
+/// Ceiling on the accounts a route may touch, so it still fits alongside
+/// the swap bracket (begin/end swap ix, ATA creation, caller's own ix).
+/// Jupiter's own default of 64 assumes the swap has the transaction to
+/// itself. Matches the TS SDK's `DEFAULT_SWAP_MAX_ACCOUNTS`.
 const DEFAULT_MAX_ACCOUNTS: usize = 50;
 
 /// Shared so the connection pool survives between quotes. Kept as the builder's
@@ -356,6 +355,7 @@ impl BuildResponse {
                 quote.slippage_bps, request.slippage_bps
             )));
         }
+
         // An absent mode means ExactIn. It is the only mode the endpoint
         // builds.
         if let Some(swap_mode) = self.swap_mode.as_deref().filter(|mode| *mode != "ExactIn") {
@@ -368,6 +368,7 @@ impl BuildResponse {
                 jupiter_mainnet_6::ID
             )));
         }
+
         // The swap bracket refuses any instruction it does not recognize, so
         // neither of these can be forwarded. Neither should exist, because the
         // SDK opts into no feature that produces one. Dropping them would build
@@ -533,6 +534,7 @@ impl ErrorBody {
                     false => format!("{name}: {}", issues.join("; ")),
                 })
             }
+
             // An empty `error` string carries as little as a missing one. It
             // falls through to the next candidate rather than rendering as
             // nothing.

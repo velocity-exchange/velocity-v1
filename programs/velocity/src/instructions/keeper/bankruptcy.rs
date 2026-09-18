@@ -61,6 +61,7 @@ impl<'info> InsuranceVaults<'_, 'info> {
             spot_market,
             self.spot_market_vault.amount,
         )?;
+
         Ok(())
     }
 
@@ -97,6 +98,7 @@ impl<'info> InsuranceVaults<'_, 'info> {
             ErrorCode::InvalidIFDetected,
             "insurance_fund_vault.amount must remain > 0"
         )?;
+
         Ok(())
     }
 
@@ -120,6 +122,7 @@ impl<'info> InsuranceVaults<'_, 'info> {
                     self.insurance_fund_vault.amount
                 )?;
             }
+
             self.pay_out(
                 spot_market,
                 state.signer_nonce,
@@ -134,12 +137,14 @@ impl<'info> InsuranceVaults<'_, 'info> {
             claim.fund_balance_before,
             claim.amount,
         );
+
         // reload the spot market vault balance so it's up-to-date
         self.spot_market_vault.reload()?;
         math::spot_withdraw::validate_spot_market_vault_amount(
             spot_market,
             self.spot_market_vault.amount,
         )?;
+
         Ok(())
     }
 }
@@ -155,16 +160,14 @@ fn distinct_parties(
         user_key != liquidator_key,
         ErrorCode::UserCantLiquidateThemself
     )?;
+
     Ok((user_key, liquidator_key))
 }
 
-/// The perp markets a bankruptcy resolution writes to.
-///
-/// The resolver forfeits unfundable claims to their own markets' insurance
-/// tranches, so every market that holds such a claim is written, not only the
-/// one being resolved. Declaring them at load makes a caller that passes one
-/// read-only fail with `MarketWrongMutability` instead of failing deep inside
-/// the resolver.
+/// The perp markets a bankruptcy resolution writes to. The resolver forfeits unfundable claims to
+/// their own markets' insurance tranches, so every market that holds such a claim is written, not
+/// only the one being resolved. Declaring them at load makes a caller that passes one read-only
+/// fail with `MarketWrongMutability` instead of failing deep inside the resolver.
 fn forfeitable_claim_markets(user: &User, resolved: Option<u16>) -> Vec<u16> {
     let mut markets: Vec<u16> = resolved.into_iter().collect();
     markets.extend(perp_markets_with_forfeitable_claims(user));
@@ -218,6 +221,7 @@ pub fn handle_resolve_perp_pnl_deficit<'c: 'info, 'info>(
         velocity_signer: &ctx.accounts.velocity_signer,
         token_program: &ctx.accounts.token_program,
     };
+
     {
         let spot_market = &mut maps.spot_market_map.get_ref_mut(&spot_market_index)?;
         vaults.presettle_revenue(spot_market, &state, &mint, remaining_accounts_iter, now)?;
@@ -250,6 +254,7 @@ pub fn handle_resolve_perp_pnl_deficit<'c: 'info, 'info>(
             &mint,
             remaining_accounts_iter,
         )?;
+
         controller::insurance::record_insurance_fund_outflow(
             spot_market,
             balances.insurance_fund,
@@ -321,6 +326,7 @@ fn resolve_perp_deficit(
         now,
         state.funding_paused()?,
     )?;
+
     Ok(pay_from_insurance)
 }
 
@@ -368,6 +374,7 @@ pub fn handle_resolve_perp_bankruptcy<'c: 'info, 'info>(
         velocity_signer: &ctx.accounts.velocity_signer,
         token_program: &ctx.accounts.token_program,
     };
+
     {
         let spot_market = &mut maps.spot_market_map.get_ref_mut(&quote_spot_market_index)?;
         vaults.presettle_revenue(spot_market, &state, &mint, remaining_accounts_iter, now)?;
@@ -440,6 +447,7 @@ pub fn handle_resolve_spot_bankruptcy<'c: 'info, 'info>(
         velocity_signer: &ctx.accounts.velocity_signer,
         token_program: &ctx.accounts.token_program,
     };
+
     {
         let spot_market = &mut maps.spot_market_map.get_ref_mut(&market_index)?;
         vaults.presettle_revenue(spot_market, &state, &mint, remaining_accounts_iter, now)?;

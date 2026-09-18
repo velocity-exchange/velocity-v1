@@ -73,6 +73,7 @@ pub fn handle_update_market_v0(
             v != 0 && v <= QUOTE_LEVELS_CEILING,
             crate::error::ClobError::InvalidConfig
         );
+
         market.max_quote_levels = v;
     }
     if let Some(v) = args.max_execute_fills {
@@ -80,6 +81,7 @@ pub fn handle_update_market_v0(
             v != 0 && v <= EXECUTE_FILLS_CEILING,
             crate::error::ClobError::InvalidConfig
         );
+
         market.max_execute_fills = v;
     }
     if let Some(v) = args.max_execute_users {
@@ -87,6 +89,7 @@ pub fn handle_update_market_v0(
             v != 0 && v <= EXECUTE_USERS_CEILING,
             crate::error::ClobError::InvalidConfig
         );
+
         market.max_execute_users = v;
     }
     if let Some(v) = args.reservation_grace_slots {
@@ -99,11 +102,14 @@ pub fn handle_update_market_v0(
             v <= RESERVATION_GRACE_SLOTS_CEILING,
             crate::error::ClobError::InvalidConfig
         );
+
         market.reservation_grace_slots = v;
     }
+
     require!(
         market.default_activation_delay_slots <= market.max_activation_delay_slots,
         crate::error::ClobError::InvalidConfig
     );
+
     Ok(())
 }

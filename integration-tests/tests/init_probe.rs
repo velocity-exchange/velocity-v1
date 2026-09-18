@@ -96,8 +96,10 @@ fn initialize_user_creates_its_liq_conditions() {
             }
             .to_account_metas(None),
         ),
+
         data: velocity::instruction::InitializeUserStats {}.data(),
     };
+
     send(&mut svm, &admin, init_stats, &[]).unwrap();
 
     let init_user = solana_instruction::Instruction {
@@ -115,12 +117,14 @@ fn initialize_user_creates_its_liq_conditions() {
             }
             .to_account_metas(None),
         ),
+
         data: velocity::instruction::InitializeUser {
             sub_account_id: 0,
             name: [b' '; 32],
         }
         .data(),
     };
+
     send(&mut svm, &admin, init_user, &[]).unwrap();
 
     // The block exists, is owned by velocity, and points back at its user.
@@ -129,6 +133,7 @@ fn initialize_user_creates_its_liq_conditions() {
     let conditions: &velocity::state::user_conditions::UserConditionsV0 = bytemuck::from_bytes(
         &account.data[8..velocity::state::user_conditions::UserConditionsV0::SIZE],
     );
+
     assert_eq!(conditions.user, user);
     // `init_block` ran: the header is a valid, all-inactive relay block.
     assert_eq!(&conditions.block()[..8], b"RELAY-V0");

@@ -252,11 +252,13 @@ const getRedisChannelFromMessage = (message: any): string => {
 		if (!user || typeof user !== 'string') {
 			throw new Error('Bad user specified');
 		}
+
 		try {
 			new PublicKey(user);
 		} catch {
 			throw new Error('Bad user specified');
 		}
+
 		return `user_orders_${user}`;
 	}
 

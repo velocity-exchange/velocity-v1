@@ -192,11 +192,11 @@ pub fn get_liquidation_fee(
     if current_slot < last_active_user_slot {
         return Err(SdkError::MathError("slot < user.last_active_slot"));
     }
-    // The grace period and the per-period rate are in 400ms baseline units.
-    // The count is whole 400ms periods of elapsed wall clock, integrated per
-    // slot duration regime, like the program's `get_liquidation_fee`. The full
-    // `SlotClock` prices an interval that spans an IBRL transition exactly.
-    // `slot_clock_from_state` resolves one from `State`.
+
+    // The grace period and rate are 400ms-baseline units. `SlotClock` counts
+    // whole periods of elapsed wall clock across an IBRL transition, like the
+    // program's `get_liquidation_fee`. `slot_clock_from_state` builds one
+    // from `State`.
     let periods_elapsed = slot_clock
         .elapsed(last_active_user_slot, current_slot)
         .div_periods(Millis::UNIT);

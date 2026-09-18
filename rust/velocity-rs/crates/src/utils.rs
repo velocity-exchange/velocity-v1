@@ -200,10 +200,9 @@ pub fn decode_quoter_slab_slots(data: &[u8]) -> SdkResult<Vec<QuoterSlotV0>> {
 }
 
 /// The market's book config from its slab slots. The book is slot 0 by
-/// convention, occupied and `Clob`, which is the program's `clob_slot_index`
-/// rule. The lookup ignores `suspended` and `is_active`. Those flags mean the
-/// book may take new flow, and the removal paths must keep working on a
-/// killed or de-listed book.
+/// convention, occupied and `Clob`, per the program's `clob_slot_index`
+/// rule. The lookup ignores `suspended` and `is_active`, so removal paths
+/// keep working on a killed or de-listed book.
 pub fn clob_slot_config(slots: &[QuoterSlotV0]) -> Option<QuoterConfigV0> {
     program::state::prop_amm::clob_slot_index(slots).map(|index| slots[index].config)
 }

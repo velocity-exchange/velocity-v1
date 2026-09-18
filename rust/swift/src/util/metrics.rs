@@ -24,6 +24,7 @@ pub async fn metrics_handler(
             quoter.sync(health, velocity_quoter_health::store::now_ms());
         }
     }
+
     let metric_families = state.registry.gather();
     let mut buffer = Vec::new();
     let encoder = TextEncoder::new();

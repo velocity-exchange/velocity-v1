@@ -63,10 +63,8 @@ function syncNativeIx(ata: PublicKey): TransactionInstruction {
 const JUPITER_API = 'https://lite-api.jup.ag/swap/v1';
 
 /**
- * The programs a Jupiter swap response may invoke. The command rejects an
- * instruction that targets any other program before it signs or proposes. The
- * swap endpoint returns opaque instruction bytes, so a compromised API could
- * otherwise return an unrelated instruction and call it a swap.
+ * The programs a Jupiter swap response may invoke. The command rejects any other program before it
+ * signs, since a compromised swap endpoint could otherwise return an unrelated instruction.
  */
 const SWAP_PROGRAM_ALLOWLIST = new Set([
 	'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4', // Jupiter v6
@@ -339,6 +337,7 @@ export function registerWallet(parent: Command): void {
 				quoteResponse: quote,
 				userPublicKey: owner.toBase58(),
 			});
+
 			// The inner message carries no compute-budget instruction. The vault
 			// executes that message through a CPI, and the ComputeBudget program
 			// does not accept a CPI. The executor sets the budget on the outer
@@ -355,6 +354,7 @@ export function registerWallet(parent: Command): void {
 				provider.connection,
 				swap.addressLookupTableAddresses ?? []
 			);
+
 			// Show a reviewer every program the transaction invokes, and not only
 			// the memo.
 			console.log('instruction programs:');

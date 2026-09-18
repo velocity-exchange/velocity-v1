@@ -17,9 +17,8 @@ export type GlobalOpts = {
 	env: VelocityEnv;
 	multisig?: string;
 	/**
-	 * True when the env came from a flag or a profile. False when it is the
-	 * fallback default. A declared env that contradicts the RPC's genesis hash
-	 * is a fatal mismatch. The detected cluster replaces the fallback instead.
+	 * True when `env` came from a flag or profile. A declared env contradicting the RPC
+	 * genesis hash is fatal. An undeclared one is replaced by the detected cluster.
 	 */
 	envExplicit?: boolean;
 	/** Name of the config profile these options came from, if there was one. */

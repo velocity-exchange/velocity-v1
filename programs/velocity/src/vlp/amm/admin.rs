@@ -1338,16 +1338,15 @@ pub fn handle_update_amm_spread_adjustment_native(
     accounts: &[AccountInfo],
     data: &[u8],
 ) -> Result<()> {
-    // Pre-Anchor native dispatch: re-establish the ownership + discriminator
-    // guarantees Anchor would provide (see `crate::auth::require_native_account`)
-    // before trusting any byte. Accounts: [0] perp_market (mut), [1] signer,
-    // [2] state. The payload is one byte, the i8 spread adjustment.
-    //
-    // Every index below is bounds-checked first. The handler runs before Anchor,
-    // so a malformed instruction arrives verbatim. Without the checks, a short
-    // account list or an empty payload panics on the indexing and aborts the
-    // transaction with no identifiable error. That indexing sits ahead of the
-    // hot-key check, so any caller reaches it.
+    // allow-verbose: pre-Anchor native dispatch. Re-establishes the ownership
+    // and discriminator guarantees Anchor would give (see
+    // `crate::auth::require_native_account`) before trusting any byte.
+    // Accounts: [0] perp_market (mut), [1] signer, [2] state. Payload is
+    // one byte, the i8 spread adjustment. Every index below is
+    // bounds-checked first, since the handler runs before Anchor and a
+    // malformed instruction arrives verbatim. Without the checks, a short
+    // account list or empty payload panics on indexing with no
+    // identifiable error, ahead of the hot-key check, so any caller reaches it.
     require!(accounts.len() >= 3, ErrorCode::InvalidNativeInstructionData);
     require!(!data.is_empty(), ErrorCode::InvalidNativeInstructionData);
 

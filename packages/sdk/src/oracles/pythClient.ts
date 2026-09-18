@@ -111,14 +111,8 @@ export class PythClient implements OracleClient {
 }
 
 /**
- * Pyth writes the same four `u32` words at the start of every account it owns:
- * `magic`, `ver`, `atype`, `size`. `PYTH_PUSH_ACCOUNT_TYPE_PRICE` is the
- * `AccountType::Price` discriminant, and `PYTH_PUSH_ACCOUNT_LEN` is
- * `size_of::<pyth_client::Price>()`.
- *
- * These are literals because nothing shares them across the two languages. The
- * program test `the_pyth_header_values_the_sdk_repeats` pins them, so the two
- * sides cannot disagree about which accounts are price accounts.
+ * Pyth's four `u32` account header words (`magic`, `ver`, `atype`, `size`).
+ * The program test `the_pyth_header_values_the_sdk_repeats` pins these literals.
  */
 const PYTH_PUSH_MAGIC = 0xa1b2c3d4;
 const PYTH_PUSH_VERSION = 2;

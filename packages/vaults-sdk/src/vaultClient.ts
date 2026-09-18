@@ -139,7 +139,6 @@ export class VaultClient {
 	 * They are the denomination market, every market the vault's velocity user
 	 * holds a spot position in, and the quote spot market of every isolated perp
 	 * position it holds.
-	 *
 	 * `Vault::calculate_equity` converts each held spot position through its own
 	 * market's cumulative index. It converts an isolated perp position's
 	 * collateral through that perp market's quote spot market. Every one of
@@ -415,19 +414,8 @@ export class VaultClient {
 	}
 
 	/**
-	 * The accounts every NAV-snapshotting vault instruction needs, so that the
-	 * vaults program can CPI velocity's `refresh_spot_market_interest` before it
-	 * prices shares.
-	 *
-	 * `Vault::calculate_equity` values every held velocity spot position off that
-	 * market's stored cumulative index. Only velocity may write those accounts,
-	 * so the refresh has to be a CPI. A stale index misprices NAV. An entrant
-	 * then overmints shares (OtterSec #136), and a withdraw request or a
-	 * cancellation snapshots the wrong equity (OtterSec #137).
-	 *
-	 * The markets themselves are not named accounts. They travel in the
-	 * instruction's remaining accounts, which `getRemainingAccountsForUser`
-	 * marks writable.
+	 * The accounts every NAV-snapshotting instruction needs so the vaults program
+	 * can CPI velocity's `refresh_spot_market_interest` first, since a stale index misprices NAV (OtterSec #136, #137).
 	 */
 	private async getSpotMarketRefreshAccounts(): Promise<{
 		velocityState: PublicKey;
@@ -741,6 +729,7 @@ export class VaultClient {
 				this.velocityClient.program.programId,
 				userKey
 			),
+
 			velocityState,
 			vault,
 			tokenAccount,
@@ -3044,21 +3033,11 @@ export class VaultClient {
 	}
 
 	/**
-	 * Adds an amount to an insurance fund stake for the vault.
-	 *
-	 * An IF share is indivisible, so velocity stakes only what prices to whole
-	 * shares. The instruction transfers `amount` from the manager into the
-	 * vault's IF token account and stakes that account's whole balance. A
-	 * remainder left behind by an earlier add is therefore included, and the
-	 * staked amount can exceed `amount`. A balance below the price of one share
-	 * is rejected with `IFDepositMintsZeroShares`. Read the staked amount from
-	 * the `InsuranceFundStakeRecord` event rather than assume it equals
-	 * `amount`.
-	 *
-	 * @param vault vault address to update
-	 * @param spotMarketIndex spot market index of the insurance fund stake
-	 * @param amount amount to add to the insurance fund stake, in spotMarketIndex precision
-	 * @returns
+	 * Adds an amount, in spotMarketIndex precision, to an insurance fund stake for the vault. An IF
+	 * share is indivisible, so velocity stakes the vault's whole IF token balance after the transfer,
+	 * not `amount` itself. A remainder from an earlier add can make the staked amount exceed `amount`,
+	 * and a balance below one share's price is rejected with `IFDepositMintsZeroShares`. Read the
+	 * staked amount from the `InsuranceFundStakeRecord` event rather than assume it equals `amount`.
 	 */
 	public async addToInsuranceFundStake(
 		vault: PublicKey,
@@ -3710,11 +3689,10 @@ export class VaultClient {
 		const vaultAccount = await this.program.account.vault.fetch(vault);
 		const feeUpdate = getFeeUpdateAddressSync(this.program.programId, vault);
 
-		// Installing a matured update settles the vault's fee first, and that
-		// needs the vault's equity, so the call passes the spot market and its
-		// oracle. A protocol vault also passes VaultProtocol, so the program
-		// validates the queued policy against the live bounds on the combined
-		// manager and protocol fee.
+		// Installing a matured update settles the vault's fee first, which needs the
+		// vault's equity, so the call passes the spot market and its oracle. A protocol
+		// vault also passes VaultProtocol, so the program validates the queued policy
+		// against the live bounds on the combined manager and protocol fee.
 		const user = await this.getSubscribedVaultUser(vaultAccount.user);
 		const userStatsKey = getUserStatsAccountPublicKey(
 			this.velocityClient.program.programId,

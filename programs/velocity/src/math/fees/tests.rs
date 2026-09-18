@@ -1492,6 +1492,7 @@ mod taker_origin_cross_fee {
             fee.crank_reward, 10_000,
             "the time-based allowance (1 cent at 1x, one slot old) is the              smaller half of the reward here, so it is what the cranker gets"
         );
+
         assert!(fee.taker_surplus().unwrap() > 0);
     }
 

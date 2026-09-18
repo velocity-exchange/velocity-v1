@@ -842,13 +842,16 @@ describe('TestProtocolVaults', () => {
 			auctionStartPrice: new BN(
 				initialSolPerpPrice * PRICE_PRECISION.toNumber()
 			),
+
 			auctionEndPrice: new BN(
 				(initialSolPerpPrice - 1) * PRICE_PRECISION.toNumber()
 			),
+
 			auctionDuration: 10,
 			userOrderId: 1,
 			postOnly: PostOnlyParams.NONE,
 		});
+
 		await fillerClient.velocityClient.placePerpOrder(takerOrderParams);
 
 		await fillerUser.fetchAccounts();
@@ -866,6 +869,7 @@ describe('TestProtocolVaults', () => {
 			userOrderId: 1,
 			postOnly: PostOnlyParams.MUST_POST_ONLY,
 		});
+
 		await delegateClient.velocityClient.placePerpOrder(makerOrderParams);
 
 		await delegateActiveUser.fetchAccounts();
@@ -963,10 +967,12 @@ describe('TestProtocolVaults', () => {
 			auctionEndPrice: new BN(
 				(finalSolPerpPrice + 1) * PRICE_PRECISION.toNumber()
 			),
+
 			auctionDuration: 10,
 			userOrderId: 1,
 			postOnly: PostOnlyParams.NONE,
 		});
+
 		await fillerClient.velocityClient.placePerpOrder(takerOrderParams);
 
 		await fillerUser.fetchAccounts();
@@ -983,6 +989,7 @@ describe('TestProtocolVaults', () => {
 			userOrderId: 1,
 			postOnly: PostOnlyParams.MUST_POST_ONLY,
 		});
+
 		await delegateClient.velocityClient.placePerpOrder(makerOrderParams);
 
 		await delegateActiveUser.fetchAccounts();
@@ -1065,12 +1072,8 @@ describe('TestProtocolVaults', () => {
 		await delegateClient.velocityClient.fetchAccounts();
 
 		try {
-			// settle_pnl requires the AMM to have been updated in the same slot
-			// (AMMNotUpdatedInSameSlot guard). On LiteSVM every transaction
-			// advances the clock by exactly one slot, so calling updateAMMs in a
-			// separate tx would leave the AMM stale by the time settle runs.
-			// Instead prepend the AMM-update ix into the SAME transaction as each
-			// settle so both execute in one slot.
+			// settle_pnl requires AMM fresh in same slot. LiteSVM advances 1 slot per tx,
+			// so prepend updateAMMs into the settle tx.
 			const dc = delegateClient.velocityClient;
 			const updateAmmIx = await dc.getUpdateAMMsIx([0]);
 
@@ -1853,24 +1856,12 @@ describe('TestTokenizedVaults', () => {
 		await bootstrapVd.vaultClient.unsubscribe();
 	});
 
-	// The following profit-share / rebase tests move vault equity by having the
-	// vault trade SPOT against a market maker (placeAndTakeSpotOrder on spot
-	// market index 1). Velocity disabled spot DLOB trading entirely
-	// (validate_spot_dlob_trading_enabled_for_market_type always rejects
-	// MarketType::Spot -> SpotDlobTradingDisabled / 0x18ce), so there is no way
-	// to drive the vault into the profit/loss/rebase states these tests assert,
-	// on LiteSVM or any other harness. Left as skipped stubs.
-	it.skip('Redeem vault tokens with profit share, profitable', async () => {
-		// blocked: requires spot DLOB trading, which velocity removed (SpotDlobTradingDisabled)
-	});
+	// Profit-share/rebase require spot DLOB trading, which velocity removed (SpotDlobTradingDisabled).
+	it.skip('Redeem vault tokens with profit share, profitable', async () => {});
 
-	it.skip('Redeem vault tokens with profit share, not profitable', async () => {
-		// blocked: requires spot DLOB trading, which velocity removed (SpotDlobTradingDisabled)
-	});
+	it.skip('Redeem vault tokens with profit share, not profitable', async () => {});
 
-	it.skip('Disallow tokenize after vault rebases, allow redeeming tokens', async () => {
-		// blocked: requires spot DLOB trading, which velocity removed (SpotDlobTradingDisabled)
-	});
+	it.skip('Disallow tokenize after vault rebases, allow redeeming tokens', async () => {});
 });
 
 describe('TestInsuranceFundStake', () => {

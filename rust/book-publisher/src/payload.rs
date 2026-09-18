@@ -58,6 +58,7 @@ fn aggregate(view: &QuoteView, clob_entry: &Pubkey) -> SideLevels {
                 .or_default() += level.size as u128;
         }
     }
+
     side
 }
 
@@ -130,6 +131,7 @@ pub fn build_decorations(
             perp_market.market_index
         )
     })?;
+
     let mm_oracle_data = perp_market
         .get_mm_oracle_price_data(
             oracle_data,
@@ -171,11 +173,13 @@ pub fn l2_payload(
         (Some(bid), Some(ask)) => Some((ask as i128) - (bid as i128)),
         _ => None,
     };
+
     // PERCENTAGE_PRECISION (1e6), matching the TS payload's units.
     let spread_pct = match (spread_quote, mark) {
         (Some(spread), Some(mark)) if mark > 0 => Some(spread * 1_000_000 / mark as i128),
         _ => None,
     };
+
     fn opt_string<T: ToString>(value: Option<T>) -> Value {
         match value {
             Some(value) => json!(value.to_string()),
@@ -200,6 +204,7 @@ pub fn l2_payload(
             Some(mark) => json!(mark.to_string()),
             None => json!(decorations.oracle),
         },
+
         "spreadQuote": opt_string(spread_quote),
         "spreadPct": opt_string(spread_pct),
         "oracle": decorations.oracle,
@@ -255,6 +260,7 @@ fn aggregate_grouping(levels: &[Value], is_ask: bool, precision: u64) -> Grouped
             }
         }
     }
+
     grouped
 }
 
@@ -310,6 +316,7 @@ pub fn grouped_payloads(l2: &Value, tick_size: u64) -> Vec<(u64, Value)> {
         documents.push((group, document));
         results.insert(group, (full_bids, full_asks));
     }
+
     documents
 }
 
@@ -397,6 +404,7 @@ pub fn view_rows(velocity: &Pubkey, view: &QuoteView, entries: &[CarriedEntry]) 
                 QuotedSourceKind::DlobOrder => "dlob",
                 QuotedSourceKind::Vamm => "vamm",
             };
+
             // The vAMM names no user because it settles against the market's
             // own AMM, so its rungs are attributed to the market account and
             // taken from the ladder itself. Every other source described its
@@ -417,6 +425,7 @@ pub fn view_rows(velocity: &Pubkey, view: &QuoteView, entries: &[CarriedEntry]) 
             } else {
                 Vec::new()
             };
+
             book.rows
                 .iter()
                 .map(move |row| BookRow {
@@ -435,15 +444,11 @@ pub fn view_rows(velocity: &Pubkey, view: &QuoteView, entries: &[CarriedEntry]) 
         .collect()
 }
 
-/// Merge two best-first sides into one, still best first.
-/// Order the rows the way a taker would reach them: best price first, and
-/// within a price, the order the router fills them in.
-///
-/// The tie-break is the routing tier, not the source's name — at a shared
-/// price the split walks tiers ascending (the vAMM, then the book, then
-/// customs), so listing them any other way would show a queue that does not
-/// exist. The sort is stable, so rows inside one source keep the order that
-/// source reported them in, which for a book is its own price-time queue.
+/// Merge two best-first sides into one, still best first: order rows the
+/// way a taker would reach them, best price first, then routing tier at a
+/// shared price (vAMM, then book, then customs), since listing them any
+/// other way would show a queue that does not exist. The sort is stable,
+/// so rows within one source keep the order that source reported.
 fn merge_side(is_ask: bool, mut rows: Vec<BookRow>) -> Vec<BookRow> {
     rows.sort_by(|a, b| {
         if is_ask {
@@ -453,6 +458,7 @@ fn merge_side(is_ask: bool, mut rows: Vec<BookRow>) -> Vec<BookRow> {
         }
         .then(a.priority.cmp(&b.priority))
     });
+
     rows
 }
 
@@ -524,8 +530,10 @@ pub fn best_makers_payload(slot: u64, bids: Vec<BookRow>, asks: Vec<BookRow>) ->
                 }
             }
         }
+
         makers
     };
+
     json!({
         "bids": side(false, bids),
         "asks": side(true, asks),
@@ -637,6 +645,7 @@ mod tests {
             &decorations(),
             1_234,
         );
+
         assert_eq!(payload["marketIndex"], 7);
         assert_eq!(payload["slot"], 100);
         // Decorations ride every document.
@@ -871,6 +880,7 @@ mod tests {
             ),
             &[custom(quoter, Pubkey::new_unique())],
         );
+
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].maker, user_pda(&velocity, &user));
         assert_eq!(rows[0].quoter, Some(quoter));
@@ -900,6 +910,7 @@ mod tests {
             ),
             &[clob(quoter)],
         );
+
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].maker, user_pda(&velocity, &maker));
         assert_eq!(rows[0].source, "clob");
@@ -922,6 +933,7 @@ mod tests {
             ),
             &[],
         );
+
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].maker, user_pda(&velocity, &maker));
         assert_eq!(rows[0].quoter, None);
@@ -943,6 +955,7 @@ mod tests {
             ),
             &[],
         );
+
         assert_eq!(rows.len(), 2);
         assert!(rows.iter().all(|row| row.maker == market));
         assert!(rows.iter().all(|row| row.source == "vamm"));
@@ -968,6 +981,7 @@ mod tests {
             true,
             vec![row("propamm", 20), row("vamm", 0), row("clob", 10)],
         );
+
         assert_eq!(
             merged.iter().map(|row| row.source).collect::<Vec<_>>(),
             vec!["vamm", "clob", "propamm"]
@@ -995,15 +1009,18 @@ mod tests {
             true,
             vec![row(102, "clob"), row(100, "propamm"), row(101, "clob")],
         );
+
         assert_eq!(
             asks.iter().map(|r| r.price).collect::<Vec<_>>(),
             vec![100, 101, 102],
             "an ask book reads cheapest first"
         );
+
         let bids = merge_side(
             false,
             vec![row(98, "clob"), row(100, "propamm"), row(99, "clob")],
         );
+
         assert_eq!(
             bids.iter().map(|r| r.price).collect::<Vec<_>>(),
             vec![100, 99, 98],

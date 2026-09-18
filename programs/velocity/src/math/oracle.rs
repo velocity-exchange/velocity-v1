@@ -218,6 +218,7 @@ pub fn is_oracle_valid_for_action(
                     | OracleValidity::InsufficientDataPoints
                     | OracleValidity::StaleForMargin
             ),
+
             // The admitted set matches `MarginCalc` on purpose. A maker match
             // prices off resting limit orders rather than the oracle, so a
             // looser rule reads reasonable in isolation. A fill it lets through
@@ -415,36 +416,32 @@ pub fn oracle_validity(
         .confidence_interval_max_size
         .safe_mul(max_confidence_interval_multiplier)?);
 
-    // Immediate (JIT / auction-skipping) AMM fills.
+    // Immediate (JIT / auction-skipping) AMM fills. `0` is the explicit sentinel for never allowing
+    // one on this market. A positive value is an explicit admin threshold and is used as it stands.
+    // A negative value means unset, and what it resolves to depends on where the price being
+    // classified came from. An explicit override still wins in both directions on both paths, so
+    // the rest only affects markets that never had one set.
     //
-    // There are three cases. `0` is the explicit sentinel for never allowing an
-    // immediate AMM fill on this market. A positive value is an explicit admin
-    // threshold and is used as it stands.
-    //
-    // A negative value means unset, and what it resolves to depends on where the price
-    // being classified came from. A threshold of zero requires the price to have been
-    // written in this exact slot. An MM-oracle-sourced price cannot satisfy that by
-    // construction. The program refuses any MM-oracle write closer than
-    // `MM_ORACLE_MIN_WRITE_GAP` to the previous one, so such a price is at best zero
-    // slots old on alternating slots and is older on the rest. A market left at the
-    // init default would fail this gate on roughly half of all slots however hard it
-    // was cranked. Unset therefore resolves to `MM_ORACLE_MIN_WRITE_GAP` for an
-    // MM-sourced price, which is the tightest window the crank can satisfy.
-    //
-    // An exchange-oracle price has no such floor and can be same-slot fresh every
-    // slot, so unset keeps the strict zero threshold there. Widening it would tolerate
-    // extra staleness on immediate fills exactly when the safe-price path has fallen
-    // back to the exchange oracle, which happens when the MM oracle is stale or
-    // diverged. That is when latency arbitrage against the vAMM pays most.
-    //
-    // `oracle_delay` for an MM price measures from the landing slot, and the write path
-    // accepts observations up to `MM_ORACLE_MAX_SOURCE_AGE` older than their landing.
-    // The true observation age this gate admits is therefore up to the sum of the two.
-    // A `const_assert!` in `math/constants.rs` holds that bound at or below
+    // A threshold of zero requires the price to have been written in this exact slot. An
+    // MM-oracle-sourced price cannot satisfy that by construction. The program refuses any
+    // MM-oracle write closer than `MM_ORACLE_MIN_WRITE_GAP` to the previous one, so such a price is
+    // at best zero slots old on alternating slots and is older on the rest. A market left at the
+    // init default would fail this gate on roughly half of all slots however hard it was cranked.
+    // Unset therefore resolves to `MM_ORACLE_MIN_WRITE_GAP` for an MM-sourced price, which is the
+    // tightest window the crank can satisfy. `oracle_delay` for an MM price measures from the
+    // landing slot, and the write path accepts observations up to `MM_ORACLE_MAX_SOURCE_AGE` older
+    // than their landing. The true observation age this gate admits is therefore up to the sum of
+    // the two. A `const_assert!` in `math/constants.rs` holds that bound at or below
     // `MM_ORACLE_MIN_WRITE_GAP`, so the sum is twice the gap, to within one slot.
     //
-    // An explicit override still wins in both directions on both paths, so this only
-    // affects markets that never had one set.
+    // An exchange-oracle price has no such floor and can be same-slot fresh every slot, so unset
+    // keeps the strict zero threshold there. Widening it would tolerate extra staleness on
+    // immediate fills exactly when the safe-price path has fallen back to the exchange oracle,
+    // which happens when the MM oracle is stale or diverged. That is when latency arbitrage against
+    // the vAMM pays most.
+    //
+    // allow-verbose: the unset threshold resolves per price source, and the observation age it
+    // admits is a derivation no other comment carries.
     let is_stale_for_amm_immediate =
         match DelayOverride::from_immediate(slots_before_stale_for_amm_immdiate_override) {
             DelayOverride::Never => true,

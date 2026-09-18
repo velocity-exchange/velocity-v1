@@ -49,6 +49,7 @@ pub fn handle_set_crank_conditions_v0(
         args.accounts.len() <= CRANK_RESOLVER_CAPACITY,
         ClobError::InvalidConfig
     );
+
     let refs: Vec<AccountRefV0> = args
         .accounts
         .iter()
@@ -108,6 +109,7 @@ pub fn handle_set_crank_conditions_v0(
             self_watch(TOP_OF_BOOK_OFFSET, TOP_OF_BOOK_BYTES, &args.cross),
         ),
     ];
+
     // A resolver with a zeroed program is a condition the caller does not want.
     // The slot goes inactive instead of waking into nothing.
     for (index, program, condition) in conditions {
@@ -120,6 +122,7 @@ pub fn handle_set_crank_conditions_v0(
                 .map_err(fail)?;
         }
     }
+
     Ok(CrankBlockV0 {
         block_offset: CRANK_BLOCK_OFFSET as u32,
         top_of_book_offset: TOP_OF_BOOK_OFFSET as u32,

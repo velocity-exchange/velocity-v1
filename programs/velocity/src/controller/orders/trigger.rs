@@ -138,6 +138,7 @@ fn open_trigger(
         let perp_market = maps.perp_market_map.get_ref(&market_index)?;
         trigger_market_preflight(state, &perp_market, &mut maps.oracle_map, now)?
     };
+
     validate_trigger_condition(&user.orders[order_index], trigger_price)?;
 
     Ok(Some(FiringOrder {
@@ -170,6 +171,7 @@ fn find_triggerable_order(user: &User, order_id: u32, now: i64) -> VelocityResul
         ErrorCode::OrderNotTriggerable,
         "Order is not triggerable"
     )?;
+
     // A placed trigger's slot reads as untriggered, which keeps it out of
     // every discovery path. Its live order already rests on the CLOB, so
     // this guards against it explicitly.
@@ -178,11 +180,11 @@ fn find_triggerable_order(user: &User, order_id: u32, now: i64) -> VelocityResul
         ErrorCode::OrderPlacedOnClob,
         "Order is placed on the CLOB"
     )?;
-    // An evicted trigger comes back armed behind an edge gate. It fires again
-    // only after a crank observes the price move back off the trigger side.
-    // This path makes no such observation, so it would fire a re-armed order
-    // at the price that already evicted it. The gate belongs to the book crank
-    // that set it, and only that crank clears it.
+
+    // An evicted trigger rearms behind an edge gate. Only the book crank that
+    // set the gate clears it, once price moves back off the trigger side. This
+    // path makes no such observation, so firing here would refire the order at
+    // the price that already evicted it.
     validate!(
         !order.is_bit_flag_set(OrderBitFlag::AwaitingTriggerRecross),
         ErrorCode::OrderAwaitingTriggerRecross,
@@ -194,18 +196,17 @@ fn find_triggerable_order(user: &User, order_id: u32, now: i64) -> VelocityResul
         return Ok(None);
     }
 
-    // An armed trigger past its own `max_ts` is dead. `should_expire_order`
-    // exempts anything that must be triggered, so the sweep never takes it and
-    // it sits in the slot until its owner cancels. Firing it moves nothing: the
-    // fill finds the order expired and the book refuses to rest it. Paying the
-    // flat reward for that would charge the owner for destroying an order they
-    // could cancel for free.
+    // An armed trigger past its own max_ts is dead. should_expire_order exempts
+    // anything that must trigger, so it sits until the owner cancels it. Firing
+    // it moves nothing, since the fill finds it expired and the book refuses to
+    // rest it. The flat reward would then only charge the owner for a free cancel.
     if order.max_ts != 0 && now > order.max_ts {
         msg!(
             "Order max_ts {} passed (now {}); nothing to trigger",
             order.max_ts,
             now
         );
+
         return Ok(None);
     }
 
@@ -220,19 +221,10 @@ fn find_triggerable_order(user: &User, order_id: u32, now: i64) -> VelocityResul
 
 /// The market gates every trigger passes, whichever endpoint fires it.
 ///
-/// Triggering starts the order's auction and pays the keeper reward, so it is
-/// part of the fill lifecycle. It respects the market-scoped fill pause the
-/// same way `fill_perp_order` does. A caller's `fill_not_paused` access
-/// control enforces the exchange-wide `FillPaused` breaker, and
-/// `MarketStatus` is a separate axis each endpoint judges for itself: a fired
-/// market order routes to a fill that admits `ReduceOnly`, while a fired
-/// limit order rests and requires `Active`.
-///
-/// A trigger is also forbidden once a market is in settlement. Otherwise a
-/// keeper could trigger a dormant order on an expired market. The flat reward
-/// then creates a settleable positive quote claim on a zero-base position, and
-/// that claim consumes PnL-pool headroom that backs legitimate expiry
-/// claimants.
+/// The fill pause gate matches `fill_perp_order`. `MarketStatus` is judged per
+/// endpoint: a market order admits `ReduceOnly`, a limit order needs `Active`.
+/// Triggering is also forbidden in settlement. Otherwise the reward creates a
+/// claim that drains PnL-pool headroom owed to expiry claimants.
 pub(crate) fn trigger_market_gates(perp_market: &PerpMarket, now: i64) -> VelocityResult {
     validate!(
         !perp_market.is_operation_paused(PerpOperation::Fill),
@@ -244,6 +236,7 @@ pub(crate) fn trigger_market_gates(perp_market: &PerpMarket, now: i64) -> Veloci
         ErrorCode::MarketPlaceOrderPaused,
         "Market is in settlement mode",
     )?;
+
     Ok(())
 }
 
@@ -270,6 +263,7 @@ fn trigger_market_preflight(
         perp_market.oracle_low_risk_slot_delay_override,
         None,
     )?;
+
     validate!(
         is_oracle_valid_for_action(oracle_validity, Some(VelocityAction::TriggerOrder))?,
         ErrorCode::InvalidOracle
@@ -286,6 +280,7 @@ fn trigger_market_preflight(
             .max_oracle_twap_5min_percent_divergence()
             .cast()?,
     )?;
+
     validate!(
         !oracle_too_divergent_with_twap_5min,
         ErrorCode::OrderBreachesOraclePriceLimits,
@@ -357,6 +352,7 @@ fn fired_order_increases_risk(
         fired.base_asset_amount,
         update_open_bids_and_asks,
     )?;
+
     let (_, worst_case_after) = user
         .get_perp_position(market_index)?
         .worst_case_liability_value(oracle_price)?;
@@ -377,8 +373,7 @@ fn fired_order_increases_risk(
 /// fill, withdraw and transfer paths. While the breaker is set, no
 /// risk-increasing action is allowed on any of the authority's subaccounts.
 /// The gate runs before the keeper reward is paid, so a keeper earns nothing
-/// for turning the resting orders of a frozen or below-floor account into
-/// cancels.
+/// for turning the resting orders of a frozen or below-floor account into cancels.
 ///
 /// An unverifiable floor rejects the trigger instead of cancelling it. A
 /// cancel is irreversible, so an invalid oracle must not destroy a resting
@@ -516,6 +511,7 @@ fn pay_and_record_trigger(
         None,
         None,
     )?;
+
     emit!(order_action_record);
 
     Ok(())
@@ -615,6 +611,7 @@ mod gate_tests {
             max_ts,
             ..Order::default()
         };
+
         user
     }
 

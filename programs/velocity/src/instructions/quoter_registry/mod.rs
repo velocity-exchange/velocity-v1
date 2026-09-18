@@ -50,21 +50,26 @@ pub fn check_quoter_config_authority(
             "quoter entry answers to {}",
             config.authority
         )?;
+
         return Ok(());
     }
+
     let state = state.ok_or_else(|| {
         msg!(
             "a {:?} entry answers to the admin roles",
             config.quoter_type
         );
+
         error!(ErrorCode::InvalidQuoterAuthority)
     })?;
+
     validate!(
         check_warm(signer, state)?,
         ErrorCode::InvalidQuoterAuthority,
         "only the admin may configure a {:?} quoter",
         config.quoter_type
     )?;
+
     Ok(())
 }
 

@@ -119,9 +119,8 @@ impl OrderParams {
         {
             // Signed-message limit orders also carry user-approved auction
             // parameters. On an A or B market a fully specified auction is
-            // preserved, so a crossing limit can choose a short and aggressive
-            // fill path. Validation and the limit price remain the hard
-            // bounds.
+            // preserved, so a crossing limit can choose a short, aggressive
+            // fill path. Validation and the limit price remain the hard bounds.
             return Ok(false);
         }
 
@@ -146,6 +145,7 @@ impl OrderParams {
                             "Updating auction start price to {}",
                             new_auction_start_price
                         );
+
                         self.auction_start_price = Some(new_auction_start_price);
                         msg!("Updating auction end price to {}", self.price);
                         self.auction_end_price = Some(self.price as i64);
@@ -166,6 +166,7 @@ impl OrderParams {
                             "Updating auction start price to {}",
                             new_auction_start_price
                         );
+
                         self.auction_start_price = Some(new_auction_start_price);
                         msg!("Updating auction end price to {}", self.price);
                         self.auction_end_price = Some(self.price as i64);
@@ -204,6 +205,7 @@ impl OrderParams {
                         "Updating limit auction start price to {}",
                         new_auction_start_price
                     );
+
                     self.auction_start_price = Some(new_auction_start_price);
                 }
             }
@@ -238,6 +240,7 @@ impl OrderParams {
             oracle_price.unsigned_abs(),
             perp_market.contract_tier,
         )?;
+
         // Allow about 4 seconds of slop, in 400ms units, before this overwrites a
         // signed-message duration.
         let duration_tolerance = Millis::from_secs(4)
@@ -637,15 +640,10 @@ impl OrderParams {
         oracle_price: i64,
         is_signed_msg: bool,
     ) -> VelocityResult<bool> {
-        // A test build does not sanitize auction parameters. The integration
-        // suites build auctions on purpose that this pass would rewrite, and a
-        // rewrite makes a fixture describe something other than what it
-        // asserts on. A test build therefore accepts auction parameters that
-        // production sanitizes. Read a test result about auction pricing with
-        // that in mind.
-        //
-        // Every other build flavour consumes these bindings below. Naming them
-        // here stops the unused-parameter warning.
+        // A test build skips auction sanitizing. Integration fixtures build
+        // auctions this pass would otherwise rewrite, which changes what a
+        // test asserts on. Read a test result on auction pricing with that
+        // in mind. This binds the unused parameters to silence a warning.
         #[cfg(feature = "anchor-test")]
         {
             let _ = (perp_market, oracle_price, is_signed_msg);
@@ -673,23 +671,10 @@ impl OrderParams {
         Ok(sanitized)
     }
 
-    /// Widest distance from the oracle TWAP that a baseline auction start
-    /// offset may sit. An auction that starts further from the oracle than the
-    /// widest auction the tier permits has no meaning, so the same number
-    /// bounds the start offset (OtterSec #146).
-    ///
-    /// The bound reuses the tier band of
-    /// `PerpMarket::get_auction_end_min_max_divisors`, which returns
-    /// `(min_divisor, max_divisor)` for the auction end buffer. A larger
-    /// divisor gives a smaller price, so `oracle_twap / max_divisor` is the
-    /// widest auction the tier allows. That is 2% for tier A, 5% for B and C,
-    /// 10% for Speculative, and 20% for HighlySpeculative and Isolated.
-    ///
-    /// The bound is symmetric. A start offset is signed and can point either
-    /// way, and the manipulated input can push it either way.
-    ///
-    /// A zero oracle TWAP gives a zero bound, so the offset collapses to zero.
-    /// The end buffer clamp already degenerates the same way on such a market.
+    /// Widest distance from the oracle TWAP a baseline auction start offset
+    /// may sit, bounded by the tier's own widest auction via
+    /// `get_auction_end_min_max_divisors` (OtterSec #146). The bound is
+    /// symmetric, since the offset is signed and a manipulated input can push it either way. A zero TWAP degenerates to a zero bound, like the end buffer clamp.
     fn get_perp_baseline_max_price_offset(perp_market: &PerpMarket) -> VelocityResult<i64> {
         let oracle_twap = perp_market
             .market_stats
@@ -928,15 +913,10 @@ impl OrderParams {
     }
 }
 
-/// Network tag on a signed message. It says which cluster the taker signed
-/// for.
-///
-/// Without it, a message signed for devnet is byte-identical to one signed for
-/// mainnet. The signature covers the order, not the chain it was meant for, so
-/// a devnet order is cheap to farm and replays against mainnet state. One byte
-/// closes that. The value is `b'm'` or `b'd'`, and it is checked against the
-/// build's own cluster. The tag is required. A message that carries none is
-/// refused, because an absent tag replays exactly like a wrong one.
+/// Network tag on a signed message, checked against the build's own
+/// cluster. Without it a devnet-signed message is byte-identical to a
+/// mainnet one and could replay across clusters. The tag is required: an
+/// absent tag replays exactly like a wrong one, so it is refused. Value is `b'm'` or `b'd'`.
 pub const SIGNED_MSG_NETWORK_MAINNET: u8 = b'm';
 pub const SIGNED_MSG_NETWORK_DEVNET: u8 = b'd';
 
@@ -952,26 +932,16 @@ pub const fn expected_signed_msg_network() -> u8 {
     }
 }
 
-/// Cap on a signed route. See [`SignedMsgOrderParamsMessage::route`]. A
-/// message that names more custom quoters than this is refused rather than
-/// truncated. The cap also keeps the message length bounded for off-chain
-/// buffers.
-///
-/// It matches [`crate::state::prop_amm::MAX_ROUTE_QUOTERS`], because a taker
-/// may name every entry one transaction can carry, and naming more than that
-/// could not be honoured. Raising this cap keeps every earlier message valid.
-/// The field is a borsh `Vec`, so the wire format does not change.
+/// Cap on a signed route. See [`SignedMsgOrderParamsMessage::route`]. A message naming more
+/// custom quoters than this is refused, not truncated, and it bounds the message length for
+/// off-chain buffers. It matches [`crate::state::prop_amm::MAX_ROUTE_QUOTERS`], since a taker
+/// may name every entry one transaction can carry. Raising the cap later keeps every earlier message valid, since the field is a borsh `Vec`.
 pub const MAX_SIGNED_MSG_ROUTE_LEN: usize = crate::state::prop_amm::MAX_ROUTE_QUOTERS;
 
-/// Digest of a signed route. It is the `QuoterV0` entries a taker chose,
-/// reduced to the bytes a
-/// [`crate::state::signed_msg_user::SignedMsgOrderId`] can hold. An order
-/// stores it to pin which quoter entries a fill may claim its signer chose.
-///
-/// The route is canonicalised first, by sorting and removing duplicates, so
-/// the same choice always digests the same way whatever order a client sent it
-/// in. An empty route digests to zero. That is what lets one equality check
-/// cover both an unsigned route and the route that was signed.
+/// Digest of a signed route: the `QuoterV0` entries a taker chose, reduced
+/// to the bytes [`crate::state::signed_msg_user::SignedMsgOrderId`] can
+/// hold. An order stores it to pin which entries a fill may claim its
+/// signer chose. The route is canonicalised first, by sorting and removing duplicates, so the same choice always digests the same way, and an empty route digests to zero so one equality check covers both an unsigned and a signed route.
 pub type RouteDigest = [u8; ROUTE_DIGEST_LEN];
 
 /// Width of a [`RouteDigest`]. See [`route_digest`] for why it is this wide.
@@ -981,29 +951,19 @@ pub const ROUTE_DIGEST_LEN: usize = 8;
 /// check covers both an unsigned route and the route that was signed.
 pub const NO_ROUTE_DIGEST: RouteDigest = [0; ROUTE_DIGEST_LEN];
 
-/// Reduce `route` to a [`RouteDigest`].
-///
-/// The digest is eight bytes, because a filler can enumerate candidates. It
-/// cannot choose preimages freely. A claimed route must consist of entries the
-/// transaction carries, and a fill carries at most `MAX_ROUTE_QUOTERS` of
-/// them. The filler does pick which ones to carry, so its candidate set is
-/// every subset of that size over the market's registered entries. That set is
-/// public, stable, and worth precomputing once. The count grows fast in the
-/// number of entries, and this design aims to raise that number, so the width
-/// has to cover the market this becomes rather than the market it starts as.
-///
-/// A collision routes to an entry the taker did not pick. The taker's own
-/// limit price bounds that, so it is not a theft. It still defeats the only
-/// thing the digest is for.
-///
-/// The digest rides [`crate::state::signed_msg_user::SignedMsgOrderId`], whose
-/// stride this width is chosen against. A home on `Order` would allow only
-/// five bytes, because `Order` is an array element in `User` and a sixth byte
-/// would change that array's stride.
+/// Reduce `route` to a [`RouteDigest`]. Eight bytes, because a filler can
+/// only claim entries the transaction carries, at most `MAX_ROUTE_QUOTERS`
+/// of them, so its candidate set is every subset of that size over the
+/// market's registered entries. That set is public and worth precomputing,
+/// and the width targets a larger future entry count. A collision routes
+/// to an entry the taker did not pick. The taker's own limit price bounds
+/// that, so it is not a theft, but it still defeats the digest's purpose.
+/// The width matches [`crate::state::signed_msg_user::SignedMsgOrderId`]'s stride. `Order` allows only five bytes, since a sixth byte would shift that array's stride in `User`.
 pub fn route_digest(route: &[Pubkey]) -> RouteDigest {
     if route.is_empty() {
         return [0; ROUTE_DIGEST_LEN];
     }
+
     let mut keys: Vec<[u8; 32]> = route.iter().map(|key| key.to_bytes()).collect();
     keys.sort_unstable();
     keys.dedup();
@@ -1016,6 +976,7 @@ pub fn route_digest(route: &[Pubkey]) -> RouteDigest {
     if out == [0; ROUTE_DIGEST_LEN] {
         out[0] = 1;
     }
+
     out
 }
 
@@ -1037,12 +998,10 @@ pub struct SignedMsgOrderParamsMessage {
     pub isolated_position_deposit: Option<u64>,
     /// [`SIGNED_MSG_NETWORK_MAINNET`] / [`SIGNED_MSG_NETWORK_DEVNET`].
     pub network: Option<u8>,
-    /// The route the taker signed for. It names the `QuoterV0` entries of the
-    /// custom quoters, the PropAMMs, that the taker wants used. The CLOB and
-    /// the vAMM are the mandatory baseline of every router fill, so they are
-    /// implicit and never named here. The field is advisory to the program
-    /// today. Swift forwards it to keepers, and that is what makes a routed
-    /// order reach the quoters the taker chose.
+    /// The route the taker signed for: the `QuoterV0` entries of the custom
+    /// quoters (PropAMMs) the taker wants used. The CLOB and vAMM are the
+    /// mandatory baseline of every router fill, so they are implicit and
+    /// never named here. The field is advisory today. Swift forwards it to keepers, which is what makes a routed order reach the quoters the taker chose.
     pub route: Option<Vec<Pubkey>>,
 }
 
@@ -1086,12 +1045,10 @@ fn get_auction_duration(
         60
     };
 
-    // `Order.auction_duration` stores wall clock 400ms units rather than live
-    // slots, so the value does not depend on the slot duration. The u8 keeps
-    // the full historical range. The clamp below stops at 180 units, which is
-    // 72s, and the type ceiling of 255 units is 102s. Auction progress
-    // converts elapsed slots to wall clock through the `SlotClock` at fill
-    // time.
+    // `Order.auction_duration` stores wall clock 400ms units rather than
+    // live slots, so the value does not depend on the slot duration. The
+    // clamp below stops at 180 units (72s); the type ceiling of 255 units
+    // is 102s. Auction progress converts elapsed slots to wall clock through the `SlotClock` at fill time.
     Ok(percent_diff
         .safe_mul(steps_per_pct)?
         .safe_div_ceil(PERCENTAGE_PRECISION_U64 / 100)?
@@ -1149,10 +1106,9 @@ pub struct PlaceOrderOptions {
     pub explanation: OrderActionExplanation,
     pub existing_position_direction_override: Option<PositionDirection>,
     /// Emit the `Place` `OrderActionRecord` and `OrderRecord` for the built
-    /// order. A maker that rests straight on the CLOB clears this flag. Its
-    /// CLOB placement record is the one statement about the order, and the
-    /// ephemeral place record would be a second record for the same resting
-    /// order.
+    /// order. A maker resting straight on the CLOB clears this flag: its
+    /// CLOB placement record is the one statement about the order, and an
+    /// ephemeral place record would duplicate it.
     pub emit_place_record: bool,
 }
 

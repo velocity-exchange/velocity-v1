@@ -188,21 +188,16 @@ pub fn handle_initialize(ctx: Context<Initialize>) -> Result<()> {
     Ok(())
 }
 
-/// Names reserved to the quote spot market, which is index 0. Monitoring keys
-/// the stablecoin exemption in the deposit-concentration alert off the decoded
-/// market name, where `decodeName` is utf8 plus trim. Another market named
-/// "USDT" would inherit that exemption and hide a TVL concentration. Reserving
-/// the name onchain binds the name to the index, so only market 0 can be
-/// "USDT".
+/// Names reserved to the quote spot market, index 0. Monitoring keys the
+/// deposit-concentration stablecoin exemption off the decoded market name.
+/// A second market named "USDT" would inherit that exemption and hide a
+/// TVL concentration, so the name is reserved onchain to index 0.
 const RESERVED_QUOTE_NAMES: &[&[u8]] = &[b"USDT"];
 
-/// True if `name` decodes to one of the reserved quote names after leading and
-/// trailing whitespace is trimmed. The trim covers a superset of what the
-/// offchain `decodeName().trim()` strips. It removes all Unicode whitespace,
-/// which is `char::is_whitespace`, plus U+FEFF and NUL. JavaScript trims U+FEFF
-/// and Rust does not. Invalid UTF-8 is never reserved. It decodes to U+FFFD
-/// offchain, and `trim()` keeps that character, so it cannot decode to a
-/// reserved name.
+/// True if `name` decodes to a reserved quote name after trimming. The trim
+/// is a superset of offchain `decodeName().trim()`: `char::is_whitespace`
+/// plus U+FEFF and NUL, since JavaScript trims U+FEFF and Rust does not.
+/// Invalid UTF-8 never matches, since it offchain decodes to U+FFFD instead.
 fn name_is_reserved_quote(name: &[u8; 32]) -> bool {
     let is_trim = |c: char| c.is_whitespace() || c == '\0' || c == '\u{feff}';
     match core::str::from_utf8(name) {
@@ -1307,24 +1302,10 @@ pub fn handle_settle_expired_market_pools_to_revenue_pool(
         escrow_period_before_transfer
     )?;
 
-    // The program must pay the accrued builder and referrer fees before it moves the pnl pool to
-    // the revenue pool. The fees are payable until this point. The expiry solver values winner
-    // claims against `pnl_pool - pending_revenue_share` (OtterSec #147), so the pool still holds
-    // the tokens for the counter. The checks above also set `net_user_pnl` to 0, so
-    // `settle_revenue_share` reserves nothing and can pay every row. A delist with a non-zero
-    // counter would give the earned fees of third parties to the revenue pool.
-    //
-    // The counter must therefore reach zero first. This rule has no time limit, because every row
-    // has an end state. `settle_revenue_share` pays a payable row. In Settlement it needs no help
-    // from the escrow owner and no `Completed` flag. `forfeit_revenue_share_order` writes off a
-    // row that the program cannot pay. Anyone can call both. A market that still owes here is one
-    // that nobody has settled yet.
-    //
-    // The admin holds one exception. While the `BuilderCodes` feature bit is off,
-    // `settle_revenue_share` fails and the sweep skips builder rows. A row that the pool can pay
-    // is then neither payable nor forfeitable, and this check holds. Enable the bit again to close
-    // the market. The admin controls the bit, so this is an order of operations. No other party
-    // can block a delist through this check.
+    // The pnl pool must still hold pending_revenue_share when it drains to
+    // the revenue pool: the expiry solver prices winner claims against
+    // `pnl_pool - pending_revenue_share` (OtterSec #147). A nonzero counter
+    // here would give third-party fees to the revenue pool.
     validate!(
         perp_market.pending_revenue_share == 0,
         ErrorCode::UnsettledRevenueShareOnDelist,
@@ -2579,16 +2560,14 @@ pub fn handle_update_promo_fee_tier(
     state.promo_fee_tier = promo_fee_tier;
     Ok(())
 }
-/// Re-price what the network charges to land a transaction.
-///
-/// Every relay crank pays its keeper enough to cover the keeper's own
-/// transaction, and that cost follows the network's fee model. This is the one
-/// write that moves it when the model changes, such as a new rate on requested
-/// cost units or a different inclusion fee.
-///
-/// Payments already stored on a market's conditions account hold their figures
-/// until that market's attach runs again. That failure is loud. A stored floor
-/// above what the executor pays stops the crank at `assert_paid_v0`. A floor
+
+/// Re-price what the network charges to land a transaction. Every relay
+/// crank pays its keeper enough to cover the keeper's own transaction, so
+/// this is the one write that moves that cost when the network's fee model
+/// changes, such as a new cost-unit rate or a different inclusion fee.
+/// Payments already stored on a market's conditions account keep their old
+/// figures until that market's attach runs again. A stored floor above
+/// what the executor pays stops the crank at `assert_paid_v0`. A floor
 /// below it only overpays.
 pub fn handle_update_transaction_fee_rails(
     ctx: Context<AdminUpdateState>,
@@ -2610,18 +2589,10 @@ pub fn handle_update_transaction_fee_rails(
     Ok(())
 }
 
-/// Sets what the protocol spends to get a liquidation cranked, and the market
-/// whose oracle prices that spend.
-///
-/// A liquidation crank repays the priority fee its keeper paid, so the crank
-/// stays worth landing when the fee market moves. The share bounds that repay
-/// at a fraction of what the liquidation recovers. A recovery too small to
-/// cover its own gas is left alone. Both fields are needed. A share with no SOL
-/// market has no way to turn quote into lamports, and a market with no share
-/// spends nothing.
-///
-/// Zero in either field is a valid setting. It leaves the flat payment, which
-/// is where every market starts.
+/// What the protocol spends to get a liquidation cranked, and the market
+/// whose oracle prices that spend. The share repays a keeper's priority
+/// fee as a fraction of what the liquidation recovers, leaving alone a
+/// recovery too small to cover its own gas. Zero in either field is valid.
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
 pub struct UpdateLiquidationCrankReimbursementArgs {
     /// The liquidator fee share paid back to a cranked liquidation's payer,
@@ -2639,11 +2610,13 @@ pub fn handle_update_liquidation_crank_reimbursement(
         share_bps,
         sol_spot_market_index,
     } = args;
+
     validate!(
         share_bps <= 10_000,
         ErrorCode::DefaultError,
         "a share of a liquidation cannot exceed the liquidation"
     )?;
+
     let mut state = ctx.accounts.state.load_mut()?;
     msg!(
         "liquidation crank reimbursement: {}bps market {} -> {}bps market {}",
@@ -2652,6 +2625,7 @@ pub fn handle_update_liquidation_crank_reimbursement(
         share_bps,
         sol_spot_market_index
     );
+
     state.liquidation_crank_reimbursement_bps = share_bps;
     state.sol_spot_market_index = sol_spot_market_index;
     Ok(())
@@ -2760,10 +2734,9 @@ pub fn handle_update_liquidation_margin_buffer_ratio(
 }
 
 /// Ceiling on the margin oracle staleness window, in 400ms baseline units.
-/// 1,000,000 units is about 4.6 days. No real configuration reaches that, and
-/// it stays far below the point where `Millis::from_stored_units` saturates.
-/// The limit stops a mistyped value from making the staleness gate accept every
-/// oracle.
+/// 1,000,000 units is about 4.6 days, far below where
+/// `Millis::from_stored_units` saturates. The limit stops a mistyped
+/// value from making the staleness gate accept every oracle.
 const MAX_STALENESS_STORED_UNITS: i64 = 1_000_000;
 
 /// A tighter ceiling on the AMM staleness window. `get_oracle_status` routes the
@@ -2857,6 +2830,7 @@ fn feature_gate_effective_slot(
         ErrorCode::DefaultError,
         "feature-gate account has the wrong data length"
     )?;
+
     // 0 means the feature is not activated. Any other value is malformed.
     validate!(
         data[0] == 1,
@@ -4062,12 +4036,10 @@ fn update_mm_oracle(accounts: &[AccountInfo], data: &[u8], current_slot: u64) ->
         }
     }
 
-    // Non-positive prices are a hard error. A check for exact zero alone leaves
-    // a hole, because the step cap clamps instead of skipping. A negative target
-    // would be clamped against the stored price and written. For example, -1
-    // against 1,000,000 lands as 990,000 and consumes the sequence id. Repeated
-    // negatives could walk the price to zero, which resets the bootstrap path
-    // and the step cap with it.
+    // Non-positive prices are a hard error. A zero-only check would leave a
+    // hole: the step cap clamps a negative target instead of skipping it, so
+    // repeated negatives could walk the stored price to zero and reset the
+    // bootstrap path and the step cap with it.
     let incoming_price = i64::from_le_bytes(data[0..8].try_into().unwrap());
     if incoming_price <= 0 {
         msg!("MM oracle price is non-positive, not updating");
@@ -4094,6 +4066,7 @@ fn update_mm_oracle(accounts: &[AccountInfo], data: &[u8], current_slot: u64) ->
                 );
             }
         }
+
         // A stale sequence id is the crank's ordinary redundant send, so it
         // stays silent. The other reasons are logged with their values. The
         // batch handler logs a mask instead.
@@ -4121,6 +4094,7 @@ fn update_mm_oracle(accounts: &[AccountInfo], data: &[u8], current_slot: u64) ->
                 current_slot
             );
         }
+
         // The hard error above makes this unreachable. The match stays
         // exhaustive so a new skip reason cannot pass unnoticed.
         MmOracleUpdateOutcome::Skipped(MmOracleSkipReason::NonPositivePrice) => {
@@ -4148,125 +4122,23 @@ const MM_ORACLE_BATCH_FIXED_ACCOUNTS: usize = 2;
 /// + `u64` sequence id + `u64` source slot.
 const MM_ORACLE_BATCH_ENTRY_LEN: usize = 26;
 
-/// Writes the MM oracle price for many perp markets in one native instruction,
-/// dispatch opcode 2.
+/// Batches MM oracle price writes for many perp markets into one native instruction,
+/// opcode 2, paying the auth prologue once instead of once per market.
 ///
-/// The result matches `handle_update_mm_oracle_native` applied once per market.
-/// The authentication prologue, which is the state validation, the kill switch
-/// and the hot key compare, is paid once for the whole batch instead of once per
-/// market.
+/// allow-verbose: this is the wire format of a native entrypoint. A client builds the
+/// bytes from this comment, and the dispatcher below is short because it delegates, so
+/// the length of the body is not the measure of what the interface needs.
 ///
-/// `bun run bench:native-cu` measures the cost as linear: 1627 CU at one market,
-/// 2145 at two, and 3181 at four. That is a fixed prologue near 1109 CU plus
-/// about 518 CU per market. Four markets cost 3181 CU here against 6320 CU as
-/// four separate instructions. Compute is the smaller half of the saving. The
-/// per-signature transaction fee is flat and does not depend on how much the
-/// instruction does, so collapsing N transactions into one dominates for a
-/// caller cranking on a fixed slot interval.
+/// Accounts are `[0]` the signer, which must equal `State::hot_mm_oracle_crank`, `[1]`
+/// state, then `[2..2+n]` the perp markets in payload order, writable. The payload after
+/// the 5-byte native prefix is a `u8` entry count of 1 to
+/// [`MM_ORACLE_BATCH_MAX_MARKETS`], then that many
+/// [`MM_ORACLE_BATCH_ENTRY_LEN`]-byte entries.
 ///
-/// # Accounts
-///
-/// - `[0]` signer, must equal `State::hot_mm_oracle_crank`
-/// - `[1]` state, owner and discriminator checked
-/// - `[2..2+n]` perp markets, writable, owner and discriminator checked, in the
-///   order of the payload
-///
-/// Accounts beyond `2 + n` are ignored. The slot comes from the Clock sysvar
-/// syscall, so no clock account is passed and none can be forged.
-///
-/// # Payload (after the 5-byte native prefix)
-///
-/// ```text
-/// byte 0        u8   n           number of market entries, 1..=64
-/// bytes 1..     n x  { u16 market_index_le (2B), i64 price_le (8B),
-///                      u64 sequence_id_le (8B), u64 source_slot_le (8B) }
-/// ```
-///
-/// `source_slot` is the slot at which the crank observed the price. It is not
-/// stored. It only bounds how late a signed update may land, which
-/// `MM_ORACLE_MAX_SOURCE_AGE` states. `mm_oracle_slot` is stamped with the
-/// landing slot, so without that bound an old observation would read as fresh.
-///
-/// Entry `i` applies to account `2 + i`, and the entry's `market_index` must
-/// equal that market's own `market_index`. Without that check the binding from
-/// entry to market would be positional alone. One off-by-one in a caller's
-/// account list would then write one market's price onto another, and the
-/// transaction would still succeed. The step cap catches that for a market with
-/// an established price. A market still bootstrapping from zero would accept the
-/// wrong price outright, and every later legitimate update would fail the 1%
-/// step cap against it. Only `zero_mm_oracle_fields` recovers such a market. Two
-/// bytes and one compare give a hard error instead.
-///
-/// # Failure model
-///
-/// Hard errors fail the whole transaction. Every one of them is a caller bug,
-/// and the caller is the hot key. Skipping a market the operator believes is
-/// being cranked would restore the "landed but wrote nothing" blindness this
-/// instruction reduces.
-/// - malformed payload framing, `n == 0`, `n > MM_ORACLE_BATCH_MAX_MARKETS`
-/// - too few accounts for the declared `n`
-/// - state account not owned by this program, or the wrong discriminator
-/// - kill switch off, which is `FeatureBitFlags::MmOracleUpdate` clear
-/// - signer is not the configured hot key
-/// - any market account fails owner or discriminator, or is not writable
-/// - any market's own `market_index` disagrees with its payload entry
-///
-/// Soft skips leave that market untouched and the batch continues. These are
-/// expected runtime conditions for a caller cranking near the program's minimum
-/// slot gap. One rate-limited market must never destroy the writes for the
-/// others.
-/// - non-positive price
-/// - sequence id not strictly greater than the stored one
-/// - current slot not strictly greater than the stored slot
-/// - slot gap below `MM_ORACLE_MIN_WRITE_GAP`
-/// - source slot more than `MM_ORACLE_MAX_SOURCE_AGE` from the current slot in
-///   either direction. It landed too late to be fresh, or its source stamp is
-///   too far ahead to be a plausible landing-slot estimate.
-///
-/// A step beyond `MM_ORACLE_MAX_STEP_PCT_PRECISION` is neither a hard error nor
-/// a skip. It is clamped to the cap and written, as opcode 0 does, so a feed gap
-/// larger than the cap converges over a few writes instead of freezing the
-/// oracle. `apply_mm_oracle_update` holds that rule. Clamped entries are
-/// reported in their own bitmask, so a crank feeding diverging prices can see
-/// that its writes are altered.
-///
-/// The handler emits one `msg!` per non-zero bitmask, rejected and clamped, so a
-/// batch with nothing to report pays nothing for logging. Formatted logging
-/// measured about 700 CU on the single-market handler's reject paths, which is
-/// why it is not emitted per market.
-///
-/// # What the batch size couples
-///
-/// Batching couples the markets in a batch on three axes, and all three scale
-/// with `n`. A dropped transaction stales every market in it. A structural error
-/// on one market discards every other market's write. The transaction takes a
-/// writable lock on every market for the slot, so fills and liquidations on all
-/// of them queue behind the crank. None of this halts a market, because a missed
-/// update degrades to exchange-oracle pricing through the freshness fallback in
-/// `MMOraclePriceData::new`. Batch size still trades cost against coupling.
-/// Sharding a large market set across a few batches is usually better than one
-/// maximal batch.
-///
-/// # Relationship to opcode 0
-///
-/// The per-market gating is `apply_mm_oracle_update`, shared with opcode 0, so
-/// the two handlers cannot drift apart.
-/// `native_batch_tests::batch_matches_single_market_handler` pins them to the
-/// same accept and reject decisions at the wire level. The differences are all
-/// in the wrappers.
-///
-/// - The account order is not a superset of opcode 0's. Opcode 0 is
-///   `[market, signer, state]` and this is `[signer, state, markets..]`, because
-///   the variable-length region has to sit last. Both confusions fail closed.
-///   Opcode-0 order here yields `Unauthorized`, and this order into opcode 0
-///   yields `InvalidNativeStateAccount`.
-/// - The payload carries a market index per entry, cross-checked against the
-///   account. Opcode 0's payload does not.
-/// - A non-positive price is skipped here. Opcode 0 returns `Err`, which in a
-///   batch would destroy every other market's write.
-/// - Market writability is checked here. Opcode 0 leaves it to the runtime.
-/// - Skips and clamps are reported as bitmasks here. Opcode 0 logs each one with
-///   its values.
+/// Opcode 0 takes `[market, signer, state]` and this takes `[signer, state, markets..]`,
+/// because the variable-length region has to sit last. Both confusions fail closed.
+/// `bun run bench:native-cu` measures 1627 CU at one market, 2145 at two, 3181 at four.
+/// [`update_mm_oracle_batch`] holds the accept, skip and clamp rules.
 pub fn handle_update_mm_oracle_batch_native(accounts: &[AccountInfo], data: &[u8]) -> Result<()> {
     // The slot comes from the Clock sysvar syscall. There is no clock account
     // for a caller to forge, and one more market fits the transaction.
@@ -4525,38 +4397,29 @@ fn apply_mm_oracle_update(
     // fallback inside `oracle_validity`.
     let gap = current_slot - stats.mm_oracle_slot;
     // The rate limiter rounds the minimum accepted interval up, so the wall
-    // clock gap is never shorter than intended. A floor would loosen the slew
-    // cap at intermediate gates. The immediate-fill staleness fallback in
-    // `oracle_validity` rounds the same constant up, so its accept threshold
-    // matches this write gate.
+    // clock gap is never shorter than intended. The immediate-fill staleness
+    // fallback in `oracle_validity` rounds the same constant up, so its
+    // accept threshold matches this write gate.
     let slot_duration = slot_clock.slot_duration_at(current_slot);
     let min_gap = MM_ORACLE_MIN_WRITE_GAP.to_slots_ceil(slot_duration);
     if gap < min_gap {
         return Ok(Outcome::Skipped(Skip::RecrankGapTooSmall { gap, min_gap }));
     }
 
-    // Source-observation freshness around the landing slot. `mm_oracle_slot` is
-    // stamped with the landing slot, so a late-landing signed update would
-    // otherwise make an old observation read as fresh. The bound applies in both
-    // directions. A source slot far in the future is a caller bug. A wrong-unit
-    // value, such as a millisecond timestamp, would otherwise disable this gate
-    // for good and without a log. A small forward allowance still lets a crank
-    // estimate its landing slot.
-    //
-    // Past observations use the piecewise clock, so a transition cannot disguise
-    // an old source time. A small future landing estimate has no elapsed
-    // interval yet, so it keeps the conservative endpoint conversion.
+    // Freshness of the source observation around the landing slot, bounded
+    // in both directions. A late-landing update would read an old
+    // observation as fresh without the lower bound. A wrong-unit value, such
+    // as a millisecond timestamp, would silently disable the upper bound.
     if mm_oracle_source_slot_out_of_range(slot_clock, current_slot, source_slot) {
         return Ok(Outcome::Skipped(Skip::SourceSlotOutOfRange { source_slot }));
     }
 
-    // The step cap is measured against the last accepted price. A step beyond
-    // the cap is clamped to the cap rather than skipped, so a feed gap larger
-    // than the cap converges over a few writes instead of freezing the oracle at
-    // its pre-gap price. The cap has a floor of one price unit, so a price small
-    // enough for the cap to round to zero still makes progress. A stored price
-    // of zero means the market is still bootstrapping, and the cap does not
-    // apply.
+    // The step cap is measured against the last accepted price. A step
+    // beyond the cap is clamped rather than skipped, so a feed gap larger
+    // than the cap converges over a few writes instead of freezing the
+    // oracle at its pre-gap price. The cap floors at one price unit, so a
+    // small enough price still makes progress. A stored price of zero
+    // means the market is still bootstrapping, and the cap does not apply.
     let mut incoming_price = incoming_price;
     if stats.mm_oracle_price != 0 {
         let prev = stats.mm_oracle_price as i128;

@@ -36,42 +36,18 @@ impl QuoterType {
         }
     }
 
-    /// Whether this quoter's depth was margin-reserved through velocity
-    /// before the fill.
-    ///
-    /// This is the one fact that separates the two kinds of quoter, and the
-    /// rules below follow from it. A book's depth is resting orders. Each was
-    /// gated at placement and reserved into its owner's `open_bids` or
-    /// `open_asks`. Every other quoter computes its depth when asked, so
-    /// nothing was set aside for it.
-    ///
-    /// It decides how a fill sizes the quoter's counterparties, which is why
-    /// there are two sizings and not one. Reserved depth costs its owner the
-    /// gap between the order's price and the mark, because the base was already
-    /// priced into the owner's worst case. The bound is therefore a quote
-    /// budget, and there is one per owner, because a book walks the orders of
-    /// many. Depth that was never reserved grows its owner's worst case when it
-    /// fills. The bound is therefore initial margin on the base taken, as one
-    /// base figure, because every such quoter fills from the single `user` on
-    /// its own registry slot.
-    ///
-    /// Only `Clob` is reserved, and only velocity's own book may register as
-    /// one. A `Vamm` never reaches a slab at all, because approval refuses it.
-    /// The vAMM quotes in-program.
+    /// Whether this quoter's depth was already reserved into its owner's
+    /// `open_bids` or `open_asks` at placement. Reserved depth bounds a fill by
+    /// a per-owner quote budget. Unreserved depth bounds it by initial margin on
+    /// the base taken. Only `Clob` is reserved.
     pub fn depth_is_margin_reserved(self) -> bool {
         matches!(self, QuoterType::Clob)
     }
 
     /// Whether a fill unwinds this quoter's makers' open-order aggregates from
-    /// its execute response (`completed_orders` and `cancelled`).
-    ///
-    /// The same fact as [`Self::depth_is_margin_reserved`], read for its other
-    /// consequence. There is something to unwind exactly when something was
-    /// reserved. An unreserved quoter allowed to report completions or culls
-    /// could decrement other loaded users' aggregates, release their trigger
-    /// slots, and free their margin. Both readings share one predicate so the
-    /// fill path cannot drift from the registration rule that only velocity's
-    /// own CLOB is a `Clob`.
+    /// its execute response (`completed_orders` and `cancelled`). There is
+    /// something to unwind exactly when something was reserved. An unreserved
+    /// quoter could decrement other loaded users' aggregates and free their margin.
     pub fn tracks_maker_aggregates(self) -> bool {
         self.depth_is_margin_reserved()
     }
@@ -82,12 +58,10 @@ impl QuoterType {
 #[repr(C)]
 pub struct AmmAccountMeta {
     pub pubkey: Pubkey,
-    /// Whether the account is passed writable to the quoter program.
-    ///
-    /// `is_signer` is not stored. The market's slab is the only account a
-    /// quoter CPI ever receives signer privilege on, and
-    /// [`super::wire::write_quoter_account_metas`] decides that by pubkey match
-    /// rather than by registration.
+    /// Whether the account is passed writable to the quoter program. `is_signer`
+    /// is not stored. The market's slab is the only account a quoter CPI ever
+    /// receives signer privilege on, and [`super::wire::write_quoter_account_metas`]
+    /// decides that by pubkey match rather than by registration.
     pub is_writable: bool,
     pub padding: [u8; 7],
 }
@@ -106,31 +80,15 @@ const_assert_eq!(std::mem::size_of::<AmmAccountMeta>(), 40);
 #[derive(Default, Eq, PartialEq, Debug)]
 #[repr(C)]
 pub struct QuoterConfigV0 {
-    /// The slot the approved program was last deployed at, read from its
-    /// program-data account when the admin approved this config. Zero when the
-    /// program sits on a loader that cannot redeploy it. Meaningful only in a
-    /// slab slot. The staging copy holds the last approval's figure.
-    ///
-    /// Approval does not freeze the program. A maker may upgrade, and the
-    /// bounds on a quoter hold either way. A `Custom` entry can move only its
-    /// own registered user, at a price held to its own quote and to the taker's
-    /// limit, sized inside its own margin. So an upgrade can lose the maker's
-    /// money and cannot take anyone else's.
-    ///
-    /// What an upgrade can still do is quote and not deliver, which costs the
-    /// taker a fill. That is why the slot is recorded. An off-chain reader
-    /// compares it to the live one and knows the code changed, rather than
-    /// waiting to infer the change from behaviour.
+    /// The slot the approved program was last deployed at, read at approval and
+    /// meaningful only in a slab slot. Zero when the loader cannot redeploy the
+    /// program. Approval does not freeze the program, so an off-chain reader
+    /// compares this to the live slot to know the code changed.
     pub approved_program_slot: u64,
     /// The book's placement rules, mirrored here by the attach
-    /// (`update_perp_market_clob_quoter`) so the hot paths read a loaded field
-    /// instead of calling `order_rules_v0`. Zero for a non-`Clob` entry and for
-    /// a book no market has attached.
-    ///
-    /// Changing the book's rules requires re-running the attach. A stale mirror
-    /// degrades rather than fails. A wrong tick or minimum drops the remainder
-    /// to the plain cancel. A stale zero delay routes an unattested taker
-    /// synchronously where it should have rested.
+    /// (`update_perp_market_clob_quoter`) so the hot paths read a loaded field.
+    /// Zero for a non-`Clob` entry and for a book no market has attached. A
+    /// stale mirror degrades the remainder handling rather than failing a fill.
     pub book_tick_size: u64,
     pub book_min_order_size: u64,
     /// For a Custom quoter, the User this quoter may quote for. That user's
@@ -143,28 +101,17 @@ pub struct QuoterConfigV0 {
     /// Account owned by `program_id` that quote and execute responses are
     /// written into. Both legs' index lists must name it. A response is read at
     /// the pointer returned via return data, so a payload is not bound by the
-    /// 1024-byte return-data cap.
-    ///
-    /// For a CLOB entry this is the book itself, because the CLOB's response
-    /// region lives in its market account. That is what lets velocity read the
-    /// resting orders an execute may touch without a second registered account
-    /// to trust.
+    /// 1024-byte return-data cap. For a CLOB entry this is the book itself.
     pub response_account: Pubkey,
     /// Manages the staging entry. For a Custom quoter this is the quoted user's
     /// authority, enforced at creation with no handoff. The maker can therefore
     /// always kill their own quoter, because `is_active` writes through to the
-    /// approved copy. The admin vets the CPI surface by copying it into the
-    /// slab.
+    /// approved copy.
     pub authority: Pubkey,
     /// Maker-declared reprice region: the account bytes whose change means the
-    /// quoter may quote differently now. A midpoint's mid region and a custom
-    /// AMM's parameter block are examples. Relay cross-discovery conditions
-    /// wake on it, and `watch_len == 0` means the maker declared none, which
-    /// leaves discovery to the poll.
-    ///
-    /// It is config like everything else here, vetted by the admin at the copy
-    /// into the slab. A watch that misses reprices costs the maker cross
-    /// latency and never correctness, because the poll is the floor.
+    /// quoter may quote differently now. Relay cross-discovery conditions wake
+    /// on it, and `watch_len == 0` means the maker declared none, which leaves
+    /// discovery to the poll. A missed reprice costs cross latency, never correctness.
     pub watch_account: Pubkey,
     /// Raw instruction discriminators on `program_id`. Stored rather than
     /// derived so non-Anchor programs can participate.
@@ -173,8 +120,7 @@ pub struct QuoterConfigV0 {
     /// The optional third leg, `quote_l3_v0`. It reports the resting orders
     /// behind a ladder and who each one belongs to. Zero means the quoter does
     /// not implement it, and a reader attributes the whole ladder to
-    /// [`Self::user`]. That is right for every quoter that fills from one
-    /// account. A book is the exception, and this field is how it says so.
+    /// [`Self::user`]. A book is the exception, and this field is how it says so.
     pub quote_l3_v0_discriminator: [u8; 8],
     /// The one registered CPI account list. Only the first `accounts_count`
     /// entries are live. Each leg forwards a subset, in its own order, named by
@@ -190,22 +136,9 @@ pub struct QuoterConfigV0 {
     pub watch_offset: u32,
     pub watch_len: u32,
     /// The furthest from oracle a fill on this entry may price, in
-    /// MARGIN_PRECISION units, so one unit is one basis point. Zero means the
-    /// entry declares nothing and the market's own band stands.
-    ///
-    /// A maker sets this to cap what its own program can lose if that program
-    /// is compromised. Velocity already bounds every external leg by the
-    /// market's band. That band is sized for a market rather than for one
-    /// quoter's risk appetite, and this field is how a quoter asks for a
-    /// tighter one.
-    ///
-    /// Unlike the rest of the config it writes through to the approved copy
-    /// without re-vetting. The band applies as the smaller of this and the
-    /// market's, so no value it can hold is wider than the one the admin
-    /// vetted. A maker tightening it during an incident must not wait.
-    ///
-    /// `Custom` entries only. A book fills third parties, so a band on one
-    /// would let its entry authority revert other people's fills.
+    /// MARGIN_PRECISION units. Zero means the market's own band stands. It
+    /// writes through to the approved copy without re-vetting, because the band
+    /// applies as the smaller of this and the market's. `Custom` entries only.
     pub max_oracle_deviation_bps: u32,
     pub book_default_activation_delay_slots: u32,
     /// Perp market index this quoter serves.
@@ -226,12 +159,9 @@ pub struct QuoterConfigV0 {
 const_assert_eq!(std::mem::size_of::<QuoterConfigV0>(), 736);
 
 impl QuoterConfigV0 {
-    /// The oracle deviation a fill on this entry may reach, in
-    /// MARGIN_PRECISION units.
-    ///
-    /// The market's band is the ceiling. A maker's declaration can only bring
-    /// it in, which is what makes the declaration safe to take from the maker
-    /// rather than from the admin.
+    /// The oracle deviation a fill on this entry may reach, in MARGIN_PRECISION
+    /// units. The market's band is the ceiling, so a maker's declaration can
+    /// only bring it in.
     pub fn oracle_band(&self, market_margin_ratio_initial: u32) -> u32 {
         match self.max_oracle_deviation_bps {
             0 => market_margin_ratio_initial,
@@ -259,6 +189,7 @@ impl QuoterConfigV0 {
             ErrorCode::InvalidQuoterConfig,
             "quoter leg index past the registered account list"
         )?;
+
         Ok(indexes.iter().map(move |&i| &registered[i as usize]))
     }
 
@@ -273,16 +204,9 @@ impl QuoterConfigV0 {
 }
 
 /// The staging half of the registry: one entry per perp market, quoter program
-/// and quoted user. The quoted user's authority creates it, and it holds the
-/// config that authority proposes.
-///
-/// Nothing fills from it. `update_quoter_approved` copies it into the market's
-/// [`super::QuoterSlabV0`], and a fill reads only that copy. A maker edit here
-/// therefore never reaches flow until the admin copies again, and the approved
-/// copy keeps serving its vetted config in the meantime.
-///
-/// The entry's address is also the quoter's identity. A signed route names it,
-/// a relay condition references it, and its slab slot records it.
+/// and quoted user. Nothing fills from it. `update_quoter_approved` copies it
+/// into the market's [`super::QuoterSlabV0`], and a fill reads only that copy.
+/// The entry's address is also the quoter's identity.
 #[account(zero_copy(unsafe))]
 #[derive(Eq, PartialEq, Debug)]
 #[repr(C)]
@@ -317,22 +241,10 @@ const_assert_eq!(QuoterV0::SIZE, 8 + std::mem::size_of::<QuoterV0>());
 /// PDA: one entry per (perp market, quoter program, quoted user).
 pub const QUOTER_PDA_SEED: &[u8] = b"quoter";
 
-/// Whether a registered CPI account list keeps clear of a market's book.
-///
-/// The market's book is off limits to every entry but the book's own. A book
-/// gates its whole authority surface on the market's slab and requires no
-/// response account. An entry that receives the book account could therefore
-/// place, cancel, evict and fill on it with the slab signature its own
-/// `execute_v0` holds. See [`crate::signer`].
-///
-/// This is a separate rule from the response-account exclusion. A market
-/// designates its book at registration, and the book reaches slot 0 only at its
-/// own approval. Nothing on the slab names the book in that window. Both sides
-/// of the window read this predicate. Approval checks a new list against the
-/// market's designation, and a designation checks the account against every
-/// approved list.
-///
-/// A market that names no book bars nothing.
+/// Whether a registered CPI account list keeps clear of a market's book. An
+/// entry that receives the book account could place, cancel, evict and fill on
+/// it with the slab signature its own `execute_v0` holds. Approval and book
+/// designation both read this predicate. A market that names no book bars nothing.
 pub fn list_stays_off_the_book<'a>(
     registered: impl IntoIterator<Item = &'a Pubkey>,
     book: &Pubkey,
@@ -361,11 +273,11 @@ pub fn validate_quoter_accounts<'a>(
             "velocity's vault authority {} cannot be a quoter cpi account",
             vault_authority
         )?;
+
         // The slab rides every quoter CPI as the signer, and the runtime
-        // refuses to lend an account writable that the caller holds
-        // read-only. A list that asks for it writable therefore fails at the
-        // CPI, once per fill, for a reason the registrant never sees. Refuse
-        // it here, where the registrant is the one reading the error.
+        // refuses to lend an account writable that the caller holds read-only.
+        // A list that asks for it writable therefore fails at the CPI, for a
+        // reason the registrant never sees. Refuse it here instead.
         validate!(
             !(*pubkey == slab && is_writable),
             ErrorCode::InvalidQuoterConfig,
@@ -373,5 +285,6 @@ pub fn validate_quoter_accounts<'a>(
             slab
         )
     })?;
+
     Ok(())
 }

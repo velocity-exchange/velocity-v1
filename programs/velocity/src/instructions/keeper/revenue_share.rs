@@ -26,6 +26,7 @@ fn load_escrow_for_authority<'a, 'info>(
         escrow.fixed.authority,
         escrow_authority
     )?;
+
     Ok(escrow)
 }
 
@@ -223,10 +224,12 @@ fn complete_owner_rows<'a: 'b, 'b>(
         escrow_authority,
         num_owner_sub_accounts,
     )?;
+
     for loader in owner_sub_accounts.iter() {
         let user = load!(loader)?;
         escrow.revoke_completed_orders(&user)?;
     }
+
     Ok(())
 }
 
@@ -295,10 +298,9 @@ pub struct ForfeitRevenueShareOrder<'info> {
         bump,
     )]
     pub revenue_share_escrow: UncheckedAccount<'info>,
-    /// Sub-account 0 of the beneficiary of the row. This is the payout account. The handler proves
-    /// that it does not exist.
-    /// CHECK: the handler derives the required address from the beneficiary of the row and rejects
-    /// any other address. Anchor `seeds` cannot express this, because the address depends on
+    /// Payout account: sub-account 0 of the row's beneficiary. The handler proves it is absent.
+    /// CHECK: the handler derives the required address from the row's beneficiary and rejects any
+    /// other address. Anchor `seeds` cannot express this, because the address depends on
     /// `builder_idx` and on `approved_builders`, which the handler reads at run time.
     pub beneficiary_user: UncheckedAccount<'info>,
 }

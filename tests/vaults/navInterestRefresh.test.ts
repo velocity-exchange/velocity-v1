@@ -1,24 +1,5 @@
 /**
- * Regression suite for the NAV interest refresh (OtterSec #136/#137).
- *
- * `Vault::calculate_equity` values the vault's velocity spot deposit off the spot
- * market's stored `cumulative_deposit_interest`. Only velocity may write that
- * account, so the vaults program must CPI
- * `update_spot_market_cumulative_interest` before it snapshots NAV.
- *
- * `deposit` once refreshed the market only after it minted shares, as a side
- * effect of the deposit CPI (OtterSec #136). An entrant then priced its shares
- * against a stale index and captured a slice of the lender interest the
- * incumbents had already earned.
- *
- * `request_withdraw` and `cancel_withdraw_request` once did not refresh at all
- * (OtterSec #137). The recorded request value understated NAV, and the
- * cancellation share-forfeiture rule saw no request-window gain to forfeit.
- *
- * Every test below drives real interest accrual and then warps the clock without
- * cranking the market, so the on-chain index is provably stale when the vault
- * instruction runs. A borrower creates the utilization on the vault's
- * denomination market.
+ * Regression suite for NAV interest refresh: stale-index and no-refresh bugs (OtterSec #136/#137).
  */
 import * as anchor from '@coral-xyz/anchor';
 import { BN, Program } from '@coral-xyz/anchor';
@@ -541,14 +522,8 @@ describe('vault NAV interest refresh (OtterSec #136/#137)', () => {
 		).to.equal(true);
 	});
 
-	// The refresh CPI once carried velocity's `spot_market_valid` access control, which
-	// rejects a delisted market. Every vault instruction ran that CPI first, so delisting
-	// the denomination market froze all of them, including the paths that move no tokens.
-	// Delisting is terminal, because `handle_update_spot_market_status` carries the same
-	// guard, so there was no recovery.
-	//
-	// The token-moving paths stay blocked either way. Velocity's own withdraw admits only
-	// Active, ReduceOnly and Settlement. This test covers what the refresh unblocks.
+	// The refresh CPI once rejected delisted markets via `spot_market_valid`.
+	// Token-less paths now work; token-moving paths stay blocked.
 	it('keeps the token-less paths working when the denomination market is delisted', async () => {
 		await user1Client.deposit(
 			user1VaultDepositor,

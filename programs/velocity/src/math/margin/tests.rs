@@ -1619,6 +1619,7 @@ mod calculate_margin_requirement_and_total_collateral {
             PythLazerOracle,
             oracle_account_info
         );
+
         let oracle_map =
             OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
         maps.oracle_map = oracle_map;

@@ -13,6 +13,9 @@ pub const PYTH_LAZER_STORAGE_ID: Pubkey = pubkey!("3rdJbqfnagQ4yx9HXJViD4zc4xpiS
 /// a fresh post but tightly caps how long a replayed message can keep the price pegged as fresh.
 pub const PYTH_LAZER_MAX_STALENESS_SECONDS: i64 = 15;
 
+/// allow-verbose: derives a security bound, so the derivation stays next
+/// to the number it justifies rather than being re-derived by a reader.
+///
 /// The most seconds a signed Lazer message's feed timestamp may lead
 /// `Clock::unix_timestamp` and still be posted. The monotonic gate skips any
 /// message whose timestamp is at or below the stored `publish_time`. A message

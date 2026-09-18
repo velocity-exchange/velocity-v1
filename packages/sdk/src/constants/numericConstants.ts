@@ -36,27 +36,13 @@ export const PERCENTAGE_PRECISION_EXP = new BN(6);
 export const PERCENTAGE_PRECISION = new BN(10).pow(PERCENTAGE_PRECISION_EXP);
 
 /**
- * Minimum wall-clock time the program requires between two accepted MM-oracle
- * writes. Mirrors `MM_ORACLE_MIN_WRITE_GAP` in `math/constants.rs`.
- *
- * A perp market also falls back to this immediate-fill staleness threshold when
- * `oracleSlotDelayOverride` is unset and the price comes from the MM oracle. A
- * tighter threshold is unsatisfiable for such a price. An exchange-sourced price
- * keeps the strict zero threshold when the override is unset.
+ * Minimum wall-clock time between two accepted MM-oracle writes. An MM-oracle price
+ * without `oracleSlotDelayOverride` also uses it as the immediate-fill staleness bound.
  */
 export const MM_ORACLE_MIN_WRITE_GAP = millis(800);
 /**
- * Max wall-clock age the program tolerates between an MM-oracle update's source
- * observation slot and the slot it lands. The payload carries the source slot.
- * The program enforces the bound in both directions. Mirrors
- * `MM_ORACLE_MAX_SOURCE_AGE` in `math/constants.rs`.
- *
- * The stored `mmOracleSlot` is the landing slot. The program skips an update that
- * lands later than this, because a late update makes an old observation read as
- * fresh. It skips a source slot further ahead than this as a caller bug in the
- * unit or the scale. A program-side assert pins this value at or below
- * `MM_ORACLE_MIN_WRITE_GAP`, because the landing-slot stamp understates
- * observation age by up to this bound.
+ * Max wall-clock age between an MM-oracle update's source observation slot and the slot it lands. The
+ * program skips an update outside the bound either way, and asserts this value is at or below `MM_ORACLE_MIN_WRITE_GAP`.
  */
 export const MM_ORACLE_MAX_SOURCE_AGE = millis(800);
 /** Alias of `PERCENTAGE_PRECISION` (1e6) for the AMM's `concentrationCoef` field. */
@@ -155,19 +141,14 @@ export const BPS_PRECISION = TEN_THOUSAND; // 1 unit = 1bp
 /** 1e6; precision for AMM bid/ask spread fields (`baseSpread`, `maxSpread`, `longSpread`, `shortSpread`, `lastOracleReservePriceSpreadPct`). */
 export const BID_ASK_SPREAD_PRECISION = new BN(1000000); // 10^6
 /**
- * `PERCENTAGE_PRECISION / 400`, which is 2500 ppm or 25 bp. Oracle confidence at or
- * above this carries full weight in the vol spread. Below it the weight ramps
- * continuously from `1 / SPREAD_CONF_DISCOUNT_DIVISOR` to full weight. Mirrors the
- * program's `SPREAD_CONF_FULL_WEIGHT_THRESHOLD`.
+ * `PERCENTAGE_PRECISION / 400`, which is 2500 ppm, or 25 bp. Oracle confidence at or above this carries
+ * full weight in the vol spread. Below it the weight ramps continuously from `1 / SPREAD_CONF_DISCOUNT_DIVISOR`.
  */
 export const SPREAD_CONF_FULL_WEIGHT_THRESHOLD = PERCENTAGE_PRECISION.div(
 	new BN(400)
 );
-/**
- * Denominator of the confidence contribution's starting weight below
- * `SPREAD_CONF_FULL_WEIGHT_THRESHOLD`. Mirrors the program's
- * `SPREAD_CONF_DISCOUNT_DIVISOR`.
- */
+
+/** Denominator of the confidence contribution's starting weight below `SPREAD_CONF_FULL_WEIGHT_THRESHOLD`. */
 export const SPREAD_CONF_DISCOUNT_DIVISOR = new BN(20);
 
 /** 1e4; precision for `StateAccount.initialPctToLiquidate`, the fraction of a position liquidated per partial-liquidation pass. */
@@ -197,38 +178,19 @@ export const ONE_HOUR = new BN(60 * 60);
 export const ONE_YEAR = new BN(31536000);
 
 /**
- * How many funding periods the mark TWAP may stay unwritten. Past this many periods
- * the program discards the stored value and re-seeds it from the oracle TWAP.
- * Mirrors the program's `MARK_TWAP_RESEED_FUNDING_PERIODS`.
- *
- * The weight an incoming fill-path sample receives grows with the time since the last
- * write. The program caps the weight of a crank sample. Either way the stored TWAP
- * holds no usable history past this many periods. Callers floor the threshold at
- * {@link ONE_HOUR}, because a market's funding period can be zero.
+ * How many funding periods the mark TWAP may stay unwritten. Past this many periods the program discards
+ * the stored value and re-seeds it from the oracle TWAP. Callers floor the window at {@link ONE_HOUR}, because a market's funding period can be zero.
  */
 export const MARK_TWAP_RESEED_FUNDING_PERIODS = new BN(3);
 
 /**
- * The largest share of a spot borrow that un-booked interest may hide, in
- * `PERCENTAGE_PRECISION`. One basis point. Mirrors the program's
- * `MAX_SPOT_INTEREST_UNDERSTATEMENT_FOR_MARGIN`.
- *
- * A value-releasing path rejects with `SpotMarketInterestStaleForMargin` when a
- * market that carries one of the account's borrows has not accrued interest recently
- * enough to hold its omission under this share. Withdraw, transfer, swap, and a perp
- * fill are such paths. `updateSpotMarketCumulativeInterest` is permissionless and can
- * go in the same transaction.
- *
- * Use `maxSpotInterestStalenessForMargin` to turn this into one market's time window.
+ * The largest share of a spot borrow that un-booked interest may hide, in `PERCENTAGE_PRECISION`. One basis point.
+ * Withdraw, transfer, swap and a perp fill reject with `SpotMarketInterestStaleForMargin` past this share. Use `maxSpotInterestStalenessForMargin` for one market's time window.
  */
 export const MAX_SPOT_INTEREST_UNDERSTATEMENT_FOR_MARGIN =
 	PERCENTAGE_PRECISION.divn(10_000);
 
-/**
- * Ceiling on the window `maxSpotInterestStalenessForMargin` derives, so a low-rate
- * market cannot go un-cranked indefinitely. Mirrors the program's
- * `MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN`.
- */
+/** Ceiling on the window `maxSpotInterestStalenessForMargin` derives, so a low-rate market cannot go un-cranked indefinitely. */
 export const MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN = ONE_HOUR;
 
 /** Market index of the protocol's quote spot market (the protocol's quote asset on mainnet). */
@@ -250,19 +212,13 @@ export const DEFAULT_REVENUE_SINCE_LAST_FUNDING_SPREAD_RETREAT = new BN(
 /** 13 days in seconds; minimum account age before an idle user account becomes eligible for keeper-initiated deletion. */
 export const ACCOUNT_AGE_DELETION_CUTOFF_SECONDS = 60 * 60 * 24 * 13; // 13 days
 /**
- * Inactivity time after which a keeper can mark a user account idle. This one-hour
- * threshold applies to an account with equity under $1,000. Every other account
- * waits one week. Compare against `millisFromSlots(elapsedSlots, slotDuration)`.
+ * Inactivity time in milliseconds after which a keeper can mark a user account idle. This one-hour
+ * threshold applies to an account with equity under $1,000. Every other account waits one week.
  */
 export const IDLE_TIME = millisFromSecs(3_600);
 /**
- * @deprecated Solana slot time is no longer a constant. Feature gates move it from
- * 400 to 350 to 300 to 250 to 200ms. Resolve the live value with
- * `currentSlotDuration(client, currentSlot)` from `math/time.ts`. Use
- * `currentSlotClock` instead to learn whether the value came from live data. Convert
- * with the `millisToSlots` and `millisFromSlots` helpers. Call
- * `activeSlotDurationFromState(state, slot)` when a decoded `State` and a slot are
- * already in hand.
+ * @deprecated Solana slot time is no longer a constant. Feature gates move it from 400 down to
+ * 200ms. Resolve the live value with `currentSlotDuration(client, currentSlot)` from `math/time.ts`.
  */
 export const SLOT_TIME_ESTIMATE_MS = 400;
 
@@ -284,19 +240,13 @@ export const MAX_POSITIVE_UPNL_FOR_INITIAL_MARGIN = new BN(100).mul(
 export const GET_MULTIPLE_ACCOUNTS_CHUNK_SIZE = 99;
 
 /**
- * The standing bankruptcy first-loss tranche the fee sweep leaves in
- * `feeLedger.pendingIfFee`. 10 bps of open-interest notional, in
- * `PERCENTAGE_PRECISION`. A market whose `bankruptcyIfFloorPct` reads 0 uses this
- * value, which covers every market written before the field existed. Mirrors the Rust
- * `DEFAULT_BANKRUPTCY_IF_FLOOR_PCT` constant. Keep both in sync.
+ * The standing bankruptcy first-loss tranche the fee sweep leaves in `feeLedger.pendingIfFee`. 10 bps of open-interest notional, in `PERCENTAGE_PRECISION`.
+ * A market whose `bankruptcyIfFloorPct` reads 0 uses this value, which covers every market written before that field existed.
  */
 export const DEFAULT_BANKRUPTCY_IF_FLOOR_PCT = 1000;
 /**
- * The `PerpMarketAccount.bankruptcyIfFloorPct` value that turns the standing floor
- * off. A market needs this sentinel because 0 means
- * `DEFAULT_BANKRUPTCY_IF_FLOOR_PCT`. A latched bankruptcy still freezes the sweep
- * through `pendingBankruptcyClaims`. Mirrors the Rust `BANKRUPTCY_IF_FLOOR_DISABLED`
- * constant.
+ * The `PerpMarketAccount.bankruptcyIfFloorPct` value that turns the standing floor off. The sentinel is needed because 0 means `DEFAULT_BANKRUPTCY_IF_FLOOR_PCT`.
+ * A latched bankruptcy still freezes the sweep through `pendingBankruptcyClaims`.
  */
 export const BANKRUPTCY_IF_FLOOR_DISABLED = 4294967295; // u32::MAX
 

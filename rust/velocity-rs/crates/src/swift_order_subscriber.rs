@@ -23,14 +23,10 @@ use crate::{
     VelocityClient, Wallet,
 };
 
-/// The network tag every signed order must carry. The value comes from the
-/// program build this crate links against, and it fills
-/// `SignedMsgOrderParamsMessage::network`.
-///
-/// A signature covers the order and not the cluster it was meant for. The
-/// program therefore refuses an order that names the other cluster. It also
-/// refuses an order that names no cluster, because an untagged order replays
-/// either way. Every producer stamps this value.
+/// Network tag every signed order must carry, from the program build this
+/// crate links against. It fills `SignedMsgOrderParamsMessage::network`.
+/// A signature does not cover the cluster, so the program refuses an order
+/// naming the wrong cluster or none, since either would replay across clusters.
 pub const fn expected_network_tag() -> u8 {
     program::state::order_params::expected_signed_msg_network()
 }
@@ -98,6 +94,7 @@ impl SignedOrderType {
     pub fn is_delegated(&self) -> bool {
         matches!(self, Self::Delegated { .. })
     }
+
     /// Cluster the taker signed for, `b'm'` for mainnet or `b'd'` for devnet.
     /// The program refuses an order that names the other cluster, and one that
     /// names none. `None` therefore describes a message the program rejects.
@@ -108,6 +105,7 @@ impl SignedOrderType {
             Self::Delegated { inner, .. } => inner.network,
         }
     }
+
     /// Custom quoters, the PropAMMs, that the taker's route names. The CLOB
     /// and vAMM baseline is implicit and never listed. A keeper that honors a
     /// route passes these entries in its fill.
@@ -117,6 +115,7 @@ impl SignedOrderType {
             Self::Delegated { inner, .. } => inner.route.as_deref(),
         }
     }
+
     /// Serialize as a borsh buffer
     ///
     /// DEV: Swift clients do not encode or decode the enum byte
@@ -862,25 +861,20 @@ mod tests {
         let uuid = *b"ru9YBLRt";
         let signed_order = sample_authority_order(uuid, 4);
 
-        // borsh message (with anchor prefix) and its hex encoding (what swift signs over)
         let order_type = SignedOrderType::authority(signed_order.clone());
         let message_bytes = order_type.to_borsh();
         assert_eq!(message_bytes[..8], SWIFT_MSG_PREFIX);
         let hex_message = hex::encode(&message_bytes);
 
-        // deterministic keypair so the signature is reproducible
         let signer = Keypair::new_from_array([7u8; 32]);
         let signature = signer.sign_message(hex_message.as_bytes());
 
-        // assemble the framed payload: signature(64) + signer(32) + len(u16) + hex
         let mut payload: Vec<u8> = Vec::new();
         payload.extend_from_slice(signature.as_ref());
         payload.extend_from_slice(signer.pubkey().as_ref());
         payload.extend_from_slice(&(hex_message.len() as u16).to_le_bytes());
         payload.extend_from_slice(hex_message.as_bytes());
 
-        // wrap in the anchor ix and serialize to bytes (with the 8-byte ix discriminator),
-        // then decode exactly as an on-chain consumer would.
         let ix = program::instruction::PlaceSignedMsgTakerOrder {
             signed_msg_order_params_message_bytes: payload.clone(),
             is_delegate_signer: false,
@@ -892,7 +886,6 @@ mod tests {
         let decoded =
             program::instruction::PlaceSignedMsgTakerOrder::deserialize(&mut &data[8..]).unwrap();
         let framed = &decoded.signed_msg_order_params_message_bytes;
-        // signature(64) + signer(32) + len(u16) = 98 bytes of header before the hex message
         let recovered_signer = Pubkey::try_from(&framed[64..96]).unwrap();
         assert_eq!(recovered_signer, signer.pubkey());
 

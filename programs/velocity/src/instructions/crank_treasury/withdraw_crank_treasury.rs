@@ -44,6 +44,7 @@ pub fn handle_withdraw_crank_treasury(
         lamports,
         rent_minimum,
     )?;
+
     msg!("withdrew {} lamports from the crank treasury", paid);
     Ok(())
 }

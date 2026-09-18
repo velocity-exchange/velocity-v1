@@ -3,15 +3,8 @@ import { Connection, PublicKey } from '@solana/web3.js';
 import pc from 'picocolors';
 
 /**
- * The run context for one invocation. It holds the cluster the RPC serves, who
- * signs, and how the action dispatches. The cluster is verified by genesis
- * hash rather than read from the URL. The context is printed once before any
- * command does work, so every invocation states what it can affect. A mainnet
- * direct send asks for confirmation unless `--yes` is passed.
- *
- * The context is a module-level singleton. The CLI is a single-command
- * process, and threading the context through every `sendOrPropose` call site
- * would change dozens of signatures without changing behavior.
+ * The run context for one invocation: cluster (verified by genesis hash), signer, and dispatch mode.
+ * A module-level singleton, since the CLI is single-command and runs one context at a time.
  */
 
 export type Cluster = 'mainnet-beta' | 'devnet' | 'testnet' | 'unknown';

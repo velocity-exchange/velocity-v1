@@ -614,11 +614,10 @@ pub fn get_liquidation_fee(
     current_slot: u64,
     slot_clock: SlotClock,
 ) -> VelocityResult<u32> {
-    // The fee ramps per whole 400ms period of elapsed time, which is the rate's
-    // historical calibration. The grace window gates the ramp, and the period count
-    // still measures from `last_active_user_slot`. The count floors, so the fee
-    // escalates marginally later, which favors the user. Elapsed time is integrated per
-    // slot-duration regime.
+    // The fee ramps per whole 400ms period of elapsed time, which is the rate's historical
+    // calibration. The grace window gates the ramp, and the period count still measures from
+    // `last_active_user_slot`. The count floors, so the fee escalates marginally later, which
+    // favors the user. Elapsed time is integrated per slot-duration regime.
     let elapsed = slot_clock.elapsed(last_active_user_slot, current_slot);
     if elapsed < LIQUIDATION_FEE_ADJUST_GRACE_PERIOD {
         return Ok(base_liquidation_fee);

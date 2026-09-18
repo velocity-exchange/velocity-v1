@@ -213,6 +213,7 @@ impl ForceCancelScope {
             order.get_base_asset_amount_unfilled(Some(base_asset_amount))?,
             base_asset_amount,
         )?;
+
         if is_position_reducing {
             return Ok(None);
         }
@@ -223,6 +224,7 @@ impl ForceCancelScope {
         } else {
             self.cross_margin_meets_initial_margin_requirement
         };
+
         if meets_margin_requirement {
             return Ok(None);
         }
@@ -260,13 +262,10 @@ pub fn pay_keeper_flat_reward_for_perps(
 ) -> VelocityResult<u64> {
     let filler_reward = if let Some(filler) = filler {
         filler.update_last_active_slot(slot);
-        // The filler's position slot is the half that can fail, so it is
-        // claimed before the user is debited. A filler that holds a position
-        // in every slot, none of them this market's, gets no slot. A debit
-        // first would take the user's quote and pay nobody. The reward would
-        // then accrue to the pool instead of to the keeper that earned it.
-        // `force_get_perp_position_mut` creates the slot, so the credit below
-        // finds it.
+        // The filler's position slot is claimed before the user is debited,
+        // since it is the half that can fail. A filler with a position in
+        // every slot but this market's gets none. Debiting first would take
+        // the user's quote and pay nobody, so the reward would accrue to the pool instead of the keeper.
         if filler
             .force_get_perp_position_mut(market.market_index)
             .is_err()
@@ -389,6 +388,7 @@ pub fn pay_taker_origin_crank_reward(
     if fee.crank_reward == 0 {
         return Ok(0);
     }
+
     let paid = {
         let mut taker = load_mut!(taker_loader)?;
         let mut filler = load_mut!(filler_loader)?;
@@ -400,6 +400,7 @@ pub fn pay_taker_origin_crank_reward(
             fee.crank_reward,
             clock.slot,
         )?;
+
         // `pay_keeper_flat_reward_for_perps` pays nothing when the filler has
         // no room for a position in this market. Refuse the crank instead of
         // completing it unpaid. The cranker can pass a `User` that can hold
@@ -410,9 +411,11 @@ pub fn pay_taker_origin_crank_reward(
             "cranker's User cannot hold a position in market {} to be paid in",
             market_index
         )?;
+
         taker.update_last_active_slot(clock.slot);
         paid
     };
+
     load_mut!(filler_stats_loader)?.update_filler_volume(quote_filled, clock.unix_timestamp)?;
 
     // The debit lands after the fill's own checks, so this is where the taker

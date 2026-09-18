@@ -42,89 +42,49 @@ pub struct TriggerSlotMetaV0 {
     pub padding: [u8; 2],
 }
 
-/// The shortest fallback interval a paid self-sync may ask for.
-///
-/// The interval is also the rate limit on what the treasury pays for
-/// resyncing one account. A caller free to name one slot would be paid every
-/// slot. This is roughly a minute of slots.
+/// The shortest fallback interval a paid self-sync may ask for. The interval is also the
+/// rate limit on what the treasury pays to resync one account, so a caller free to name
+/// one slot would be paid every slot. Roughly a minute of slots.
 pub const LIQ_SYNC_MIN_FALLBACK_SLOTS: u64 = 150;
 
-/// The most cost units a self-sync may price its resync at.
-///
-/// The opt-in states what a resync costs and the protocol treasury pays that
-/// figure to whoever cranks it. Opting in is permissionless, so an unbounded
-/// figure would let anyone name their own price against protocol funds. A
-/// caller may state less, never more.
-///
-/// This bounds the work a resync does, not what a transaction may request. A
-/// resync loads at most [`LIQ_SYNC_ACCOUNTS_MAX`] accounts, reads a few fields
-/// from each, and rewrites the block. That is far below a full transaction's
-/// budget. A ceiling set at that budget is exploitable. The caller names the
-/// price, the caller cranks it, and the treasury pays the difference between
-/// the honest cost and the stated one. That repeats once per interval per
-/// account, on as many accounts as the caller opts in.
-///
-/// A low figure is the safe direction here. A per-market crank figure an admin
-/// sets errs high instead, for the opposite reason (see `crankCostUnits.ts`).
-/// Too low and a turner declines the work, which costs this account its
-/// fallback poll while every other liquidation path keeps working. Too high
-/// and anyone can drain the treasury. Measure again with
-/// `sol_log_compute_units` around a full-map resync when the rewrite changes.
+/// The most cost units a self-sync may price its resync at. Opting in is permissionless,
+/// so an unbounded figure would let anyone name their own price against protocol funds. A
+/// low figure is the safe direction. Measure again with `sol_log_compute_units` around a
+/// full-map resync when the rewrite changes.
 pub const LIQ_SYNC_MAX_COST_UNITS: u32 = 40_000;
 
-/// The longest fallback interval a paid self-sync may ask for.
-///
-/// The interval is how long the account may go without a rewrite, and opting
-/// in is permissionless. Without an upper bound a third party could opt an
-/// account in with an interval long enough that the poll never fires. The
-/// block would then read as covered while providing no safety net. This is
-/// roughly a day of slots.
+/// The longest fallback interval a paid self-sync may ask for. Opting in is
+/// permissionless, so without an upper bound a third party could name an interval long
+/// enough that the poll never fires and the block reads as covered. Roughly a day.
 pub const LIQ_SYNC_MAX_FALLBACK_SLOTS: u64 = 216_000;
 
 /// PDA seed: `["user_conditions", user key]`.
 pub const USER_CONDITIONS_PDA_SEED: &[u8] = b"user_conditions";
 
-/// The sync watch, the sync fallback, then the liveness poll.
-///
-/// The block holds no per-exposure threshold slot. Watching a solved
-/// liquidation price needs a second margin engine beside the real one. That
-/// copy is approximate by construction, and every change to margin has to
-/// reach it. The resolver runs the real calculation instead, so the poll
-/// below is exact.
+/// The sync watch, the sync fallback, then the liveness poll. No per-exposure threshold
+/// slot, because watching a solved liquidation price needs a second margin engine that is
+/// approximate by construction. The resolver runs the real calculation instead.
 pub const LIQ_SYNC_WATCH: usize = 0;
 pub const LIQ_SYNC_FALLBACK: usize = 1;
-/// The coverage floor. It is a slow poll that asks the liquidation resolver
-/// the real question.
-///
-/// The resolver recomputes the maintenance-margin calculation before it
-/// stages anything, and reports no work when the account is healthy. A wake
-/// that fires early costs one simulation. A wake that never fires is the only
-/// failure. This poll guarantees that something asks.
+/// The coverage floor: a slow poll that asks the liquidation resolver the real question.
+/// The resolver recomputes maintenance margin before staging anything. A wake that fires
+/// early costs one simulation, and a wake that never fires is the only failure.
 pub const LIQ_LIVENESS_POLL: usize = 2;
 
-/// How often the liveness poll asks.
-///
-/// The interval bounds how long an account can stay liquidatable before
-/// anything asks, so a shorter interval is safer for the protocol. It is not
-/// free. The poll resolves to no work almost every time. Relay tracks how
-/// often a program's cranks turn out to be worth landing, and turners
-/// deprioritize a program that mostly wastes a simulation. This is roughly two
-/// minutes of slots.
+/// How often the liveness poll asks. A shorter interval is safer but not free, because
+/// the poll resolves to no work almost every time and turners deprioritize a program whose
+/// cranks mostly waste a simulation. Roughly two minutes of slots.
 pub const LIQ_LIVENESS_POLL_SLOTS: u64 = 300;
-/// Trigger-order slots follow the liquidation ones in the same block. The two
-/// share one account per user. Both are keyed by the user, both are
-/// invalidated when that account changes, and both want the same margin map.
-/// Separate accounts would pay rent, a `WatchV0`, and a turner registry entry
-/// twice for one user.
+/// Trigger-order slots follow the liquidation ones in the same block, sharing one account
+/// per user. Both are keyed by the user, invalidated by the same writes, and want the same
+/// margin map. Separate accounts would pay rent and a `WatchV0` twice.
 pub const TRIGGER_SLOT_BASE: usize = 3;
 pub const TRIGGER_CONDITION_SLOTS: usize = 8;
 pub const USER_CONDITIONS: usize = TRIGGER_SLOT_BASE + TRIGGER_CONDITION_SLOTS;
 
-/// Each trigger slot's resolver names that slot's own market oracle and perp
-/// market, so no one list can serve every condition the way the margin map
-/// does. The region is striped by slot instead. `relay_spec` owns the stride
-/// and offset math. See [`relay_spec::write_resolver_stripe`] and
-/// [`relay_spec::resolver_stripes_len`].
+/// Each trigger slot's resolver names its own market oracle and perp market, so no one
+/// list serves every condition the way the margin map does. The region is striped by slot.
+/// See [`relay_spec::write_resolver_stripe`] and [`relay_spec::resolver_stripes_len`].
 pub const TRIGGER_RESOLVERS_PER_SLOT: usize = 5;
 pub const TRIGGER_RESOLVERS_LEN: usize =
     relay_spec::resolver_stripes_len(TRIGGER_CONDITION_SLOTS, TRIGGER_RESOLVERS_PER_SLOT);
@@ -136,27 +96,10 @@ pub const TRIGGER_RESOLVERS_OFFSET: usize =
 /// Account-data offset of the relay block (what a `WatchV0` registers at).
 pub const USER_CONDITIONS_BLOCK_OFFSET: usize = relay_spec::block_offset!(UserConditionsV0, relay);
 
-/// Capacity of the stored sync account list.
-///
-/// The list is the remaining-accounts list the sync was last called with, in
-/// [`relay_spec::AccountRefV0`] wire form. It holds the user's full margin
-/// maps followed by the markets' crank-conditions accounts and quoter
-/// entries. Staged executors reuse it. `load_maps` parses positionally and
-/// stops at the first non-map account, so the tail is inert there. The tail
-/// still reaches a staged resync, which classifies everything again.
-///
-/// The list lives in the relay block's built-in resolver region because every
-/// condition on this account points at it. A condition may only carry a
-/// pointer, and `ResolveLiquidatePerpWithFill` needs its named accounts plus
-/// the whole margin map. Storing the list once lets every slot share it.
-///
-/// The capacity is four fixed resolver accounts plus roughly three per market
-/// the user is exposed in. Those three are an oracle, the market, and a
-/// crank-conditions or quoter tail entry. A list that does not fit reverts the
-/// sync rather than truncating, so too small a capacity denies the opt-in to
-/// exactly the accounts carrying the most risk. Forty-eight covers about
-/// fourteen markets. A transaction's account-lock budget must still hold the
-/// staged crank's own accounts, which is the real ceiling on this number.
+/// Capacity of the stored sync account list: four fixed resolver accounts plus roughly
+/// three per market the user is exposed in, so forty-eight covers about fourteen markets.
+/// A list that does not fit reverts the sync rather than truncating, which would deny the
+/// opt-in to the accounts carrying the most risk.
 pub const LIQ_SYNC_ACCOUNTS_MAX: usize = 48;
 
 /// The stored list starts with the resolver's named accounts, which are
@@ -180,33 +123,21 @@ pub struct UserConditionsV0 {
     pub trigger_resolvers: [u8; TRIGGER_RESOLVERS_LEN],
     /// The `User` these conditions watch.
     pub user: Pubkey,
-    /// Fee the sync executor pays its keeper out of the protocol crank
-    /// treasury.
-    ///
-    /// Stated by whoever opts in, and capped at
-    /// [`LIQ_SYNC_MAX_COST_UNITS`] when it is priced, because opting in is
-    /// permissionless and the payer is protocol funds rather than the account
-    /// itself. [`Self::last_paid_sync_slot`] bounds how often it can be drawn.
-    ///
-    /// A payment above zero is only sound beside an interval of at least
-    /// [`LIQ_SYNC_MIN_FALLBACK_SLOTS`], because the interval is that bound.
-    /// A block holding a shorter interval pays nothing.
+    /// Fee the sync executor pays its keeper out of the protocol crank treasury. Stated by
+    /// whoever opts in and capped at [`LIQ_SYNC_MAX_COST_UNITS`], because opting in is
+    /// permissionless and the payer is protocol funds. A block below
+    /// [`LIQ_SYNC_MIN_FALLBACK_SLOTS`] pays nothing.
     pub sync_payment_lamports: u64,
     /// The fallback poll interval.
     pub sync_fallback_slots: u64,
-    /// Digest of the exposures the last sync ran against. The resolver
-    /// compares it to the user's current positions to decide staleness.
-    /// Comparing watched markets instead never converges for a user whose
-    /// exposures arm no condition, such as one in a market with no crank
-    /// reservoir. The level-triggered sync wake then fires forever.
+    /// Digest of the exposures the last sync ran against, compared to the user's current
+    /// positions to decide staleness. Comparing watched markets never converges for a user
+    /// whose exposures arm no condition, and the level-triggered wake then fires forever.
     pub positions_digest: u64,
-    /// Slot the treasury last paid a keeper for resyncing this account.
-    ///
-    /// A resync is paid at most once per [`Self::sync_fallback_slots`], which
-    /// is the cadence the fallback poll already runs at. Opting in is
-    /// permissionless and the treasury pays. Without this slot anyone could
-    /// crank the same account in a loop and draw the fee every time. The
-    /// instruction succeeds whether or not it had real work to do.
+    /// Slot the treasury last paid a keeper for resyncing this account. A resync is paid
+    /// at most once per [`Self::sync_fallback_slots`]. Opting in is permissionless and the
+    /// instruction succeeds whether or not it had work, so without this slot anyone could
+    /// crank the same account in a loop and draw the fee every time.
     pub last_paid_sync_slot: u64,
     /// Tail reserve, sized for two more pubkeys. A future sync input is
     /// captured here instead of forcing an `extend_account` migration on every
@@ -252,20 +183,17 @@ impl UserConditionsV0 {
                 hash = hash.wrapping_mul(0x1000_0000_01b3);
             }
         };
-        // The skip uses the margin engine's own emptiness test, and the fold
-        // covers every field that can change the account's margin.
-        //
-        // `base_asset_amount == 0 && quote_asset_amount == 0` is not
-        // emptiness. A position that holds only open orders, or only an
-        // isolated balance, is one `is_available` reports as live, and the
-        // margin walk still visits it. A narrower test here left those
-        // positions out of the digest, so the watch this digest drives never
-        // fired when their open orders changed. Open orders are what the
-        // initial-margin tier behind the force-cancel gate is computed from.
+
+        // The skip uses the margin engine's own emptiness test, and the fold covers every
+        // field that can change the account's margin. A position holding only open orders
+        // or only an isolated balance is live to `is_available`, and a narrower test left
+        // those out of the digest, so the watch never fired when their open orders
+        // changed.
         for position in user.perp_positions.iter() {
             if position.is_available() {
                 continue;
             }
+
             fold(position.market_index as u64);
             fold(position.base_asset_amount as u64);
             fold(position.quote_asset_amount as u64);
@@ -277,12 +205,14 @@ impl UserConditionsV0 {
             if position.is_available() {
                 continue;
             }
+
             fold(position.market_index as u64);
             fold(position.scaled_balance);
             fold(position.balance_type as u64);
             fold(position.open_bids as u64);
             fold(position.open_asks as u64);
         }
+
         hash
     }
 
@@ -357,6 +287,7 @@ impl UserConditionsV0 {
                     &mut self.relay,
                     TRIGGER_SLOT_BASE + index,
                 );
+
                 return;
             }
         }
@@ -434,17 +365,15 @@ mod merged_size_tests {
             sync_cost_units: units,
             sync_fallback_slots: 150,
         };
+
         assert!(validate_sync_args(&args(LIQ_SYNC_MAX_COST_UNITS)).is_ok());
         assert!(validate_sync_args(&args(LIQ_SYNC_MAX_COST_UNITS + 1)).is_err());
         assert!(validate_sync_args(&args(u32::MAX)).is_err());
     }
 
-    /// The interval is also the rate limit on what the treasury pays for one
-    /// account, so a paid sync cannot name one short enough to be paid every
-    /// slot. An unpaid sync may name any interval.
-    ///
-    /// The rule reads the terms a block holds, so a change to the pricing
-    /// cannot move a paid block past it.
+    /// The interval is also the rate limit on what the treasury pays for one account, so a
+    /// paid sync cannot name one short enough to be paid every slot. The rule reads the
+    /// terms a block holds, so a pricing change cannot move a paid block past it.
     #[test]
     fn a_paid_self_sync_cannot_ask_to_be_paid_every_slot() {
         let paid = |slots: u64| terms(1_000, slots);
@@ -455,12 +384,9 @@ mod merged_size_tests {
         assert!(terms(0, 1).is_ok());
     }
 
-    /// Zero cost units is an unpaid opt-in, and it must store a zero payment.
-    ///
-    /// The fee rails charge a signature for a transaction of any shape, so
-    /// pricing zero units through them stores the signature fee. The fallback
-    /// poll would then pay that fee every interval, out of the protocol
-    /// treasury, for an account that named no work.
+    /// Zero cost units is an unpaid opt-in and must store a zero payment. The fee rails
+    /// charge a signature for a transaction of any shape, so pricing zero units through
+    /// them would pay that fee every interval for an account that named no work.
     #[test]
     fn a_zero_cost_sync_stores_no_payment() {
         let unpaid = terms(0, LIQ_SYNC_MIN_FALLBACK_SLOTS).unwrap();
@@ -490,6 +416,7 @@ mod merged_size_tests {
             sync_payment_lamports: 5_000,
             sync_fallback_slots: 1,
         };
+
         assert!(!armed.interval_is_sound());
         assert_eq!(armed.payable_lamports(), 0);
 
@@ -497,6 +424,7 @@ mod merged_size_tests {
             sync_payment_lamports: 5_000,
             sync_fallback_slots: LIQ_SYNC_MIN_FALLBACK_SLOTS,
         };
+
         assert_eq!(sound.payable_lamports(), 5_000);
     }
 

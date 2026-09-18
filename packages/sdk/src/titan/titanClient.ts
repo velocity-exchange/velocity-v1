@@ -26,13 +26,10 @@ export enum SwapMode {
 }
 
 /**
- * A u64 as msgpack decodes it under `useBigInt64`. It is a `bigint` when the
- * server encoded a full 64-bit int, and a `number` for the narrower encodings
- * the server uses for small values.
- *
- * Never pass one through `Number()` or arithmetic to produce an amount. A u64
- * token amount above 2^53 does not survive the conversion, and the loss is
- * silent. `String()` and `.toString()` are exact for both halves of the union.
+ * A u64 as msgpack decodes it under `useBigInt64`: `bigint` for a full 64-bit
+ * int, `number` for the server's narrower small-value encodings. Never pass
+ * one through `Number()` or arithmetic; a token amount above 2^53 silently
+ * loses precision. `String()` and `.toString()` are exact for both halves.
  */
 type U64 = bigint | number;
 

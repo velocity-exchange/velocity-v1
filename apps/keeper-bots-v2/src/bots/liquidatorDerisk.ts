@@ -497,6 +497,7 @@ export class LiquidatorDerisk {
 				quote.outAmount
 			}, routePlan length: ${quote.routePlan.length}`
 		);
+
 		return {
 			quote,
 			inMarketIndex: inMarket.marketIndex,
@@ -572,12 +573,10 @@ export class LiquidatorDerisk {
 		}
 		const limitPrice = this.calculateOrderLimitPrice(entryPrice, direction);
 
-		// A market order, not an oracle-offset one. `place_and_take_perp_order_v1`
-		// refuses an order that cannot rest whenever the book runs a speed bump,
-		// and an oracle-offset order has no fixed price to rest at, so
-		// `restable_remainder_price` returns nothing for it. A market order rests
-		// at its auction end price, which is the worst fill this derisk already
-		// agreed to.
+		// A market order, not oracle-offset: `place_and_take_perp_order_v1` refuses
+		// an order with no restable price during a speed bump, and an oracle-offset
+		// order has none. A market order rests at its auction end price, the worst
+		// fill this derisk already agreed to.
 		return getOrderParams({
 			orderType: OrderType.MARKET,
 			direction,
@@ -593,6 +592,7 @@ export class LiquidatorDerisk {
 					SLOT_DURATION_BASELINE
 				)
 			),
+
 			auctionStartPrice: bestPrice,
 			auctionEndPrice: limitPrice,
 			price: limitPrice,
@@ -613,6 +613,7 @@ export class LiquidatorDerisk {
 		if (!this.config.dlobServerHttpUrl) {
 			return [];
 		}
+
 		// A long sweeps the asks.
 		const side = isVariant(direction, 'long') ? 'ask' : 'bid';
 		let keys: string[];
@@ -624,17 +625,21 @@ export class LiquidatorDerisk {
 				)}/topMakers?marketType=perp&marketIndex=${marketIndex}&side=${side}&limit=${DERISK_MAKERS}`,
 				{ timeout: TOP_MAKERS_TIMEOUT_MS, validateStatus: () => true }
 			);
+
 			if (response.status !== 200 || !Array.isArray(response.data)) {
 				logger.warn(
 					`topMakers for market ${marketIndex} ${side} returned status ${response.status}`
 				);
+
 				return [];
 			}
+
 			keys = response.data as string[];
 		} catch (e) {
 			logger.warn(
 				`Error loading topMakers for market ${marketIndex} ${side}: ${e}`
 			);
+
 			return [];
 		}
 
@@ -644,12 +649,14 @@ export class LiquidatorDerisk {
 				const makerUserAccount = (
 					await this.userMap.mustGet(key)
 				).getUserAccountOrThrow();
+
 				makers.push({
 					maker: new PublicKey(key),
 					makerStats: getUserStatsAccountPublicKey(
 						this.velocityClient.program.programId,
 						makerUserAccount.authority
 					),
+
 					makerUserAccount,
 				});
 			} catch (e) {
@@ -659,6 +666,7 @@ export class LiquidatorDerisk {
 				logger.warn(`Skipping book maker ${key}: ${e}`);
 			}
 		}
+
 		return makers;
 	}
 
@@ -684,6 +692,7 @@ export class LiquidatorDerisk {
 				if (orderParams === undefined) {
 					continue;
 				}
+
 				// The derisk order is a taker. It routes across the vAMM, the book
 				// and the market's PropAMMs, and whatever it cannot fill rests on
 				// the book as a taker-origin remainder, so one instruction both
@@ -703,8 +712,10 @@ export class LiquidatorDerisk {
 								? CancelSidesV0.BIDS
 								: CancelSidesV0.ASKS,
 						},
+
 						userAccount.subAccountId
 					);
+
 					placeOrderIx = await this.velocityClient.getPlaceAndTakePerpOrderIx(
 						orderParams,
 						undefined,
@@ -712,6 +723,7 @@ export class LiquidatorDerisk {
 							position.marketIndex,
 							orderParams.direction
 						),
+
 						undefined,
 						undefined,
 						userAccount.subAccountId
@@ -724,6 +736,7 @@ export class LiquidatorDerisk {
 							(e as Error).message
 						}`
 					);
+
 					continue;
 				}
 

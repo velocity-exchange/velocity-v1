@@ -69,11 +69,10 @@ pub struct FillFees {
     pub protocol_fee: u64,
     /// Insurance fund's cut of the trade-fee remainder -> `revenue_pool`.
     pub if_fee: u64,
-    /// AMM's fee provision: its cut of the trade-fee remainder. While the
-    /// vamm-maker-rebate feature is enabled it also holds the maker rebate the AMM
-    /// earns for making the fill. The fill books it into the AMM's ledger, the sweep
-    /// tokenizes it into `amm.fee_pool`, and bankruptcy can claw it back.
-    /// `amm_protocol_fees_received` and `pending_amm_provision` track it.
+    /// AMM's fee provision: its cut of the trade-fee remainder, plus the maker
+    /// rebate it earns while `vamm-maker-rebate` is enabled. The fill books it
+    /// into the AMM ledger. The sweep tokenizes it into `amm.fee_pool`, where
+    /// bankruptcy can claw it back. `amm_protocol_fees_received` and `pending_amm_provision` track it.
     pub amm_fee: u64,
 }
 
@@ -191,11 +190,10 @@ pub fn calculate_fee_for_fulfillment_with_amm(
         // the pnl pool by `sweep_market_fees` — they never transit the AMM.
         let mut remainder = fee.safe_sub(filler_reward)?.safe_sub(referrer_reward)?;
 
-        // When enabled, the AMM earns the maker rebate for making this fill. It comes
-        // off the remainder before the three-way split, the same as the user-maker
-        // rebate, and folds into `amm_fee` so it reuses the AMM ledger and
-        // pending-provision path. The clamp to the remainder is needed because
-        // fee-structure numerators are admin-mutable, so the rebate may not fit.
+        // When enabled, the AMM earns the maker rebate for this fill. It comes off
+        // the remainder before the three-way split, like the user-maker rebate. It
+        // folds into `amm_fee` to reuse the AMM ledger. The clamp to `remainder` is
+        // needed because fee-structure numerators are admin-mutable, so it may not fit.
         let amm_rebate = if vamm_maker_rebate {
             calculate_vamm_maker_rebate(quote_asset_amount, fee_structure, fee_adjustment)?
                 .min(remainder)
@@ -598,6 +596,7 @@ pub fn calculate_taker_origin_cross_fee(
         fee_adjustment,
         taker_fee_addon_tenth_bps,
     )?;
+
     // Buying: the taker pays the smaller notional. Selling: it receives the
     // bigger one. Either way the taker's cost improves by this much, before
     // fees.
@@ -605,6 +604,7 @@ pub fn calculate_taker_origin_cross_fee(
         PositionDirection::Long => rest_quote.saturating_sub(counterparty_quote),
         PositionDirection::Short => counterparty_quote.saturating_sub(rest_quote),
     };
+
     // Crossing must not cost the taker more than resting did.
     // `improvement + fee_at_rest` is what it saves and `fee_at_cross` is what it now
     // owes.
@@ -618,8 +618,10 @@ pub fn calculate_taker_origin_cross_fee(
             improvement,
             fee_at_cross.saturating_sub(fee_at_rest)
         );
+
         return Err(ErrorCode::TakerOriginCrossWorseForTaker);
     }
+
     let budget = budget.cast::<u64>()?;
 
     let uncapped = if filler_multiplier == 0 {
@@ -635,6 +637,7 @@ pub fn calculate_taker_origin_cross_fee(
             0,
         )?
     };
+
     Ok(TakerOriginCrossFee {
         improvement,
         budget,
@@ -658,6 +661,9 @@ pub fn determine_user_fee_tier(
     }
 }
 
+/// allow-verbose: the promotion/demotion asymmetry and the legacy zero-padding
+/// equivalence below are derived facts a reader cannot recover from the code alone.
+///
 /// Select the perp fee tier from the trailing-30d volume, evaluated live. The populated
 /// tiers are named Regular, VIP 1, VIP 2 and VIP 3, at indices 0 to 3. The names are
 /// presentation only, and everything onchain is index-based.

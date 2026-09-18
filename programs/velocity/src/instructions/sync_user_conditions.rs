@@ -63,6 +63,7 @@ pub fn handle_sync_user_conditions<'c: 'info, 'info>(
         // interval away.
         true,
     )?;
+
     rewrite_trigger_conditions(
         &ctx.accounts.user_conditions,
         &ctx.accounts.user,

@@ -34,47 +34,23 @@ function isIsolatedPositionEconomicallyBankrupt(
 }
 
 /**
- * Determines whether a user's cross-margin book is bankrupt. This mirrors
- * `is_cross_margin_bankrupt` in `programs/velocity/src/math/bankruptcy.rs`. A user is
- * cross-margin bankrupt when the user holds no realizable spot deposits, holds at least one
- * spot borrow, and every non-isolated perp position is flat. A flat position has zero base,
- * no open orders, and no realizable positive quote. At least one of them carries a negative
- * quote, which is an unpaid perp liability. Isolated perp positions are skipped here.
- * `user.isPerpPositionIsolated` identifies them, and `isIsolatedPositionBankrupt` checks them
- * one at a time, because they resolve and settle apart from the cross-margin book.
- *
- * Two of the vetoes read value rather than rows. A keeper that gets either one wrong stalls
- * the bad-debt repair the program is willing to perform. The resolvers admit an estate
- * themselves, so the one thing between such an account and resolution is a caller that
- * decides to send the instruction.
- *
- * A deposit row vetoes only when it is worth at least one token. A full spot-market
- * socialization floors `cumulativeDepositInterest` at 1, which leaves every wiped depositor
- * holding a positive `scaledBalance` worth zero tokens. `liquidate_spot` rejects a zero token
- * amount, so such a row cannot be seized. Treating it as collateral blocks admission forever.
- *
- * A positive perp quote does not veto, and neither does its market's PnL pool. The resolvers
- * recover whatever that pool can pay into the estate's quote deposit and forfeit the rest to
- * the market's insurance tranche. A claim therefore cannot strand a resolvable loss in
- * another market, whatever the pool holds. A veto on the pool would stall the repair, and
- * trading fees flow into the pool, so any market participant could re-arm such a veto with a
- * trade.
- *
- * The net-quote gate then keeps an estate that is net solvent out of bankruptcy, however
- * unfundable its claims are. The sum of the quotes is exact here rather than an
- * approximation. Every position that reaches the gate has `baseAssetAmount == 0`, so its
- * whole value is its `quoteAssetAmount`. The gate does not bound the forfeit. The program
- * bounds the forfeit against the loss each resolver call covers, because a latched estate
- * reaches a resolver without passing this predicate again.
- *
+ * Determines whether a user's cross-margin book is bankrupt, mirroring
+ * `is_cross_margin_bankrupt` in `programs/velocity/src/math/bankruptcy.rs`. Bankrupt means:
+ * no realizable spot deposits, at least one spot borrow, and every non-isolated perp position
+ * flat (zero base, no open orders, no realizable positive quote) with at least one carrying a
+ * negative quote (unpaid liability). Isolated positions are skipped here and checked one at a
+ * time by {@link isIsolatedPositionBankrupt}, since they resolve apart from the cross-margin book.
+ * A deposit row vetoes only when worth at least one token. Socialization floors
+ * `cumulativeDepositInterest` at 1, leaving a wiped depositor's positive `scaledBalance` worth
+ * zero tokens; `liquidate_spot` rejects a zero amount, so such a row cannot veto admission.
+ * A positive perp quote, and its market's PnL pool, do not veto: the resolvers recover what
+ * the pool can pay and forfeit the rest to the market's insurance tranche, so a claim cannot
+ * strand a loss elsewhere. The net-quote sum is exact, not an approximation, because every
+ * position reaching this gate has `baseAssetAmount == 0`.
  * @param user The `User` account wrapper to evaluate.
- * @returns `true` if the user's cross-margin collateral is exhausted and the user still owes
- *   a liability, which is a spot borrow or a negative perp quote balance. `false` otherwise.
- * @throws if a spot market named by a nonzero deposit row is not loaded on the client.
- *   `getSpotMarketAccountOrThrow` raises it. The token conversion cannot run without the
- *   market, and treating an unloaded market as "no assets" would over-report bankruptcy.
- *   `User.canBeLiquidated` throws on the same condition, so a keeper that screens users with
- *   both does not gain a new failure mode here.
+ * @returns `true` if cross-margin collateral is exhausted and a liability remains.
+ * @throws if a spot market named by a nonzero deposit row is not loaded on the client, via
+ *   `getSpotMarketAccountOrThrow`, the same condition `User.canBeLiquidated` throws on.
  */
 export function isUserBankrupt(user: User): boolean {
 	const userAccount = user.getUserAccountOrThrow();
@@ -190,19 +166,10 @@ export function hasIsolatedMarginBankrupt(user: User): boolean {
 }
 
 /**
- * Perp market indexes a bankruptcy resolver may write to beyond the market being resolved.
- * This mirrors `perp_markets_with_forfeitable_claims` in
- * `programs/velocity/src/math/bankruptcy.rs`.
- *
- * `resolvePerpBankruptcy` and `resolveSpotBankruptcy` forfeit the estate's unfundable positive
- * perp claims to their own markets' insurance tranches. The forfeit debits the user's claim and
- * credits that market's `pendingIfFee`. Both instructions therefore pass these markets
- * writable. A read-only account fails the program's `load_mut` and reverts the whole resolve.
- *
- * The filter does not test fundability. A claim the pool can pay when the transaction is built
- * may be unfundable by the time it lands, and the program recomputes fundability at execution.
- * @param userAccount The decoded user account of the estate being resolved.
- * @returns The market indexes to add to `writablePerpMarketIndexes`. The list can be empty.
+ * Perp markets a bankruptcy resolver may write to beyond the one being resolved, to add to
+ * `writablePerpMarketIndexes`. Mirrors `perp_markets_with_forfeitable_claims`. Unfundable
+ * positive claims forfeit to these markets' insurance tranches, so a read-only account fails
+ * `load_mut`. Fundability is not tested here, and the program recomputes it at execution.
  */
 export function getPerpMarketsWithForfeitableClaims(
 	userAccount: UserAccount

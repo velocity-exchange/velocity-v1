@@ -125,11 +125,11 @@ where
 /// Build the on-chain bytes for a `SignedMsgUserOrders` account holding
 /// `num_orders` (all-zero / default) slots, owned by `authority`.
 ///
-/// The byte layout is identical for the borsh `Account` path (resize) and the
-/// custom zero-copy loader (place):
-///   disc[8] | authority_pubkey[32] | padding: u32 | len: u32 | num_orders * 40
-/// where each slot is a 40-byte `SignedMsgOrderId`. All-zero slots read as
-/// `max_slot == 0` (empty).
+/// allow-verbose: documents the wire layout the function builds, shared by
+/// the borsh `Account` resize path and the custom zero-copy loader used at
+/// place: disc[8] | authority_pubkey[32] | padding: u32 | len: u32 |
+/// num_orders * 40, each slot a 40-byte `SignedMsgOrderId`. All-zero slots
+/// read as `max_slot == 0` (empty).
 fn signed_msg_user_orders_bytes(authority: Pubkey, num_orders: u32) -> Vec<u8> {
     let mut v = Vec::new();
     v.extend_from_slice(&A_SIGNED_MSG_USER_ORDERS);
@@ -390,7 +390,6 @@ mod regr_271_pause {
         current_slot: u64,
     ) -> (Vec<u8>, u16) {
         let signer = signer_kp.pubkey();
-        // A valid perp taker order with well-formed auction params.
         let order = OrderParams {
             order_type: OrderType::Market,
             market_type: MarketType::Perp,
@@ -486,7 +485,6 @@ mod regr_271_pause {
             state.number_of_markets = 1;
             inject(&mut ctx, state_pda, &mut state);
 
-            // Quote USDC spot market (index 0) + vault, $1 QuoteAsset oracle path.
             let usdc_mint = Keypair::new().pubkey();
             ctx.create_mint()
                 .pubkey(usdc_mint)
@@ -574,10 +572,9 @@ mod regr_271_pause {
             let clob_program_id =
                 Pubkey::new_from_array(velocity::ids::clob_program::ID.to_bytes());
 
-            // Quoter slab at ["quoter_slab", market_le_u16]. The account is
-            // the zero-copy header plus a slot region of `capacity` vacant
-            // (all-zero) slots. The header must carry the real PDA bump and
-            // the book account, because the accounts struct binds the slab
+            // Quoter slab at ["quoter_slab", market_le_u16], a zero-copy header plus
+            // `capacity` vacant (all-zero) slots. The header carries the real PDA
+            // bump and the book account, since the accounts struct binds the slab
             // to the book with `has_one = clob_market`.
             let mut slab = velocity::state::prop_amm::QuoterSlabV0 {
                 market: 0,
@@ -591,6 +588,7 @@ mod regr_271_pause {
                 velocity::state::prop_amm::QuoterSlabV0::space(slab.capacity as usize),
                 0,
             );
+
             ctx.create_account()
                 .pubkey(quoter_slab_pda)
                 .owner(program_id)

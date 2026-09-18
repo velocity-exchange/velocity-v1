@@ -32,22 +32,16 @@ pub struct QuoterBook<'a> {
     /// Best price first. Asks ascend for a long taker. Bids descend for a
     /// short taker.
     pub levels: &'a [PriceLevel],
-    /// Depth this book says it holds at a better price than it quoted, and
-    /// could not offer because the accounts of the user who owns it are not
-    /// in this transaction. A zero price means none.
-    ///
-    /// Nobody can fill it, so it never appears in `levels` and takes no part
-    /// of the split. It marks the fill as one that withheld depth, which is
-    /// what [`withheld_obligation`] answers for.
+    /// Depth this book holds at a better price than it quoted but could not offer,
+    /// because the owner's accounts are not in this transaction. A zero price means none.
+    /// Nobody can fill it, so it never appears in `levels`. It marks the fill as one that
+    /// withheld depth, which [`withheld_obligation`] answers for.
     pub withheld: PriceLevel,
 }
 
-/// Writable and signer locks a full transaction holds. A filler cannot fit one
-/// more maker at this count. The count covers contended locks only. Read-only
-/// locks are shared and free to pad, so they cannot prove a transaction was
-/// full. A fill that holds fewer writable locks had room for the maker it
-/// omitted. The value sits below the writable-lock reach of a deep fill, and
-/// above what a shallow padded fill holds.
+/// Writable and signer locks a full transaction holds, so a filler cannot fit one more
+/// maker. Contended locks only, because read-only locks are shared and free to pad. The
+/// value sits below the writable-lock reach of a deep fill and above a shallow one.
 pub const TX_WRITABLE_LOCK_BUDGET: usize = 40;
 /// Writable locks one more CLOB maker costs: its `User` and its `UserStats`.
 pub const MAKER_ACCOUNT_COST: usize = 2;
@@ -55,15 +49,10 @@ pub const MAKER_ACCOUNT_COST: usize = 2;
 /// the signer, the taker's `User` and `UserStats`, and the perp market.
 pub const FILL_FIXED_WRITABLE_LOCKS: usize = 4;
 
-/// What the fill knows about the party that built the transaction.
-///
-/// A book stops its walk at an order whose owner the transaction does not
-/// carry. It reports the depth behind that order as withheld. Who answers for
-/// the withheld depth depends on who chose the account list.
-///
-/// A taker that signed the transaction chose that list. A taker that did not
-/// sign trusts a filler. The filler then owes the taker every maker it had
-/// room for. [`withheld_obligation`] states the rule.
+/// What the fill knows about the party that built the transaction. A book that stops at
+/// an owner the transaction does not carry reports the depth behind as withheld, and who
+/// answers for it depends on who chose the account list. A taker that did not sign trusts
+/// a filler, which then owes every maker it had room for. See [`withheld_obligation`].
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FillerObligation {
     /// The taker's own authority or delegate signs this transaction.
@@ -71,36 +60,25 @@ pub struct FillerObligation {
     /// Distinct accounts the transaction locks. `None` when the caller passed
     /// no instructions sysvar, so the fill cannot count them.
     pub tx_accounts: Option<usize>,
-    /// Quoter entries the transaction carried that the order's signed route
-    /// did not name.
-    ///
-    /// Zero when the order signed no route. The taker then named no entries,
-    /// so no carried entry is uninvited. A taker that wants this test signs a
-    /// route.
+    /// Quoter entries the transaction carried that the order's signed route did not name.
+    /// Zero when the order signed no route, because the taker named no entries and none
+    /// is uninvited. A taker that wants this test signs a route.
     pub unrouted_quoters: usize,
 }
 
-/// Whether a filler that left a book short of an owner met its obligation.
+/// Whether a filler that left a book short of an owner met its obligation. Four outcomes,
+/// and only the last one fills.
 ///
-/// There are four outcomes and only the last one fills.
+/// - The transaction had room for another maker, so the filler owed that maker.
+/// - It is full, but carries a loaded user that filled nothing and holds no role. Those
+///   accounts crowded out the maker, and a filler can force a withhold this way.
+/// - It is full and every loaded user worked, but it carries a quoter entry the signed
+///   route never named. Each entry costs locks that could have carried the maker.
+/// - It is full and every loaded user worked, so the walk stops and the fill is short.
 ///
-/// - The transaction had room for another maker. The filler owed that maker.
-/// - The transaction is full, but it carries a loaded user that filled nothing
-///   and holds no role in the fill. Those accounts crowded out the maker the
-///   book wanted. A filler can force a withhold this way and then take the
-///   fill on a worse-priced source of its own.
-/// - The transaction is full and every loaded user did something, but it
-///   carries a quoter entry the signed route never named. Each entry costs
-///   locks that could have carried the maker. The taker's route is the only
-///   statement of which entries it wanted.
-/// - The transaction is full and every loaded user did something. The filler
-///   could not carry the maker, so the walk stops and the fill is short.
-///
-/// `attributable_locks` is the part of the transaction velocity can point at
-/// work of its own. A writable meta may name any pubkey, including one that
-/// holds no account. The transaction's own count therefore states what a
-/// filler claims rather than what it spent. The room test runs on the smaller
-/// of the two figures, which a filler cannot raise by naming more keys.
+/// `attributable_locks` is the part velocity can point at work of its own. A writable meta
+/// may name any pubkey, so the transaction's own count states what a filler claims rather
+/// than what it spent. The room test runs on the smaller figure.
 pub fn withheld_obligation(
     obligation: &FillerObligation,
     idle_loaded_users: usize,
@@ -109,6 +87,7 @@ pub fn withheld_obligation(
     if obligation.taker_signed {
         return Ok(());
     }
+
     let Some(accounts) = obligation.tx_accounts else {
         msg!("a fill that withholds depth must pass the instructions sysvar");
         return Err(ErrorCode::FillerObligationUncountable);
@@ -127,27 +106,24 @@ pub fn withheld_obligation(
         "{} loaded users filled nothing while a book withheld depth",
         idle_loaded_users
     )?;
-    // A full transaction whose every user worked can still be the wrong
-    // transaction. A quoter entry costs locks. Carrying one the taker did not
-    // ask for spends the room a maker needed, and the fill then prices against
-    // that entry instead of the book. Extra entries stay free while nothing is
-    // withheld, because they can only lose at their own quoted prices.
+
+    // A quoter entry costs locks, so carrying one the taker did not ask for spends the
+    // room a maker needed and prices the fill against that entry. Extra entries stay free
+    // while nothing is withheld, because they can only lose at their own quoted prices.
     validate!(
         obligation.unrouted_quoters == 0,
         ErrorCode::FillerCarriedUnroutedQuoter,
         "{} carried quoter entries are outside the signed route while a book withheld depth",
         obligation.unrouted_quoters
     )?;
+
     Ok(())
 }
 
-/// The router leg of a fill, as the entrypoint hands it to the fill
-/// controller. It holds the external quoter books the entrypoint quoted
-/// through CPI, and the execute leg for the allocations that land on them.
-/// Books and executor share indexing.
-///
-/// `'info` is the account lifetime the executor reads its responses out of. It
-/// is distinct from the books' `'b`, which borrows from the quoting section.
+/// The router leg of a fill: the external quoter books the entrypoint quoted through CPI,
+/// and the execute leg for allocations that land on them. Books and executor share
+/// indexing. `'info` is the account lifetime the executor reads responses out of, distinct
+/// from the books' `'b`, which borrows from the quoting section.
 pub struct RouterLeg<'a, 'b, 'info> {
     pub books: &'a [QuoterBook<'b>],
     pub executor: &'a mut dyn crate::state::prop_amm::ExternalQuoterExecutor<'info>,
@@ -156,19 +132,10 @@ pub struct RouterLeg<'a, 'b, 'info> {
     /// the taker's exposure itself. Held whole, so a reader of any of the
     /// three can see which caller stated it.
     pub standing: crate::instructions::FillerStanding,
-    /// The worst price any source of the fill executed at, written back by the
-    /// pass. `None` when the fill moved no base.
-    ///
-    /// The fill's own return value is the base and the blended quote. The
-    /// blend does not show the worst unit. A caller cannot tell a route that
-    /// filled every unit inside a bound from one that averaged past it. A
-    /// caller that must know whether every unit cleared a price reads this
-    /// instead. An ordinary fill ignores it.
-    ///
-    /// The unit of measure is one settled allocation, because that is where
-    /// value moves. An allocation is a maker order, one external balance
-    /// change, or the vAMM slice. The vAMM slice reports its slice average,
-    /// which is the only price a curve fill has.
+    /// The worst price any source of the fill executed at, written back by the pass.
+    /// `None` when the fill moved no base. The blended return value cannot tell a route
+    /// that filled every unit inside a bound from one that averaged past it. Measured per
+    /// settled allocation, because that is where value moves.
     pub worst_fill_price: Option<u64>,
 }
 
@@ -180,14 +147,10 @@ pub struct QuoterAllocation {
     /// that is safe for the taker. The router prices the taker's own fill at
     /// this number.
     pub quote: u64,
-    /// The sum of `price * base` over the levels this allocation was cut from,
-    /// before the single division into quote units. It is the exact number the
-    /// quoter owes for filling the allocation.
-    ///
-    /// The split accrues it while it walks the ladder, so nothing downstream
-    /// reads the levels again. The execute leg is held to this scalar rather
-    /// than to a slice that lives only until the quoter's next CPI overwrites
-    /// the buffer it came from.
+    /// The sum of `price * base` over the levels this allocation was cut from, before the
+    /// single division into quote units, and the exact number the quoter owes. The split
+    /// accrues it while walking, so the execute leg is held to this scalar rather than to
+    /// a slice the quoter's next CPI overwrites.
     pub scaled_quote: u128,
 }
 
@@ -223,6 +186,7 @@ impl Cursor<'_> {
                     Direction::Short => level.price > prev,
                 }
             };
+
             if out_of_order {
                 // Truncate the book at its first non-monotone level.
                 self.index = self.levels.len();
@@ -233,8 +197,10 @@ impl Cursor<'_> {
                 self.consumed = 0;
                 continue;
             }
+
             return Some((level.price, usable));
         }
+
         None
     }
 
@@ -243,13 +209,10 @@ impl Cursor<'_> {
     }
 }
 
-/// Round toward the bound that is safe for the taker. The allocation's quote
-/// is the at-or-better bar execution is held to, so it must never be tighter
-/// than a level's true notional. A long taker pays at most the quote, so the
-/// division rounds up. A short taker receives at least the quote, so the
-/// division rounds down. The tighter rounding would reject honest fills whose
-/// own terminal rounding goes against the taker, such as the AMM's one unit or
-/// a maker-favored quote, whenever the quoted price has no slack for it.
+/// Round toward the bound that is safe for the taker. The allocation's quote is the
+/// at-or-better bar execution is held to, so it must never be tighter than a level's true
+/// notional. A long taker pays at most the quote, so the division rounds up, and a short
+/// receives at least it, so it rounds down.
 fn quote_notional(direction: Direction, price: u64, base: u64) -> VelocityResult<u64> {
     let exact = (price as u128).safe_mul(base as u128)?;
     match direction {
@@ -286,6 +249,7 @@ fn available_at(top: Option<(u64, u64)>, priority: u8, tier: u8, price: u64) -> 
     if priority != tier {
         return None;
     }
+
     top.and_then(|(p, available)| (p == price).then_some(available))
 }
 
@@ -311,6 +275,7 @@ pub fn split_across_quoters(
         ErrorCode::DefaultError,
         "router split needs at least one book"
     )?;
+
     let step = step_size.max(1);
     let mut cursors: Vec<Cursor> = books
         .iter()
@@ -336,6 +301,7 @@ pub fn split_across_quoters(
         for (top, cursor) in tops.iter_mut().zip(cursors.iter_mut()) {
             *top = cursor.peek(direction);
         }
+
         let live = tops.iter().flatten().map(|&(price, _)| price);
         let Some(price) = (match direction {
             Direction::Long => live.min(),
@@ -349,6 +315,7 @@ pub fn split_across_quoters(
         tiers.extend(cursors.iter().zip(&tops).filter_map(|(cursor, top)| {
             top.and_then(|(p, _)| (p == price).then_some(cursor.priority))
         }));
+
         tiers.sort_unstable();
         tiers.dedup();
 
@@ -356,6 +323,7 @@ pub fn split_across_quoters(
             if remaining == 0 {
                 break;
             }
+
             let total = cursors
                 .iter()
                 .zip(&tops)
@@ -365,24 +333,16 @@ pub fn split_across_quoters(
                 let d = remaining.min(total);
                 d - d % step
             };
+
             if demand == 0 {
-                // Nothing step-sized is left to give at this tier. Every
-                // allocation below is floored to the step, so a round that
-                // demands zero consumes nothing, advances no cursor and leaves
-                // `remaining` unchanged. The next pass of the outer loop would
-                // be identical, and the walk would spin until the compute
-                // budget ran out.
-                //
-                // A step-aligned `taker_size` makes a sub-step remainder
-                // impossible, but this function cannot rely on that alignment.
-                // The book carries its own `order_step_size` apart from the
-                // market's, and a reduce-only order is sized from a position
-                // magnitude that was never standardized. The walk ends here
-                // instead. The TypeScript mirror ends it the same way, so both
-                // report the same allocations.
+                // Nothing step-sized is left at this tier, so a round that demands zero
+                // would consume nothing and spin until the compute budget ran out. The
+                // book carries its own `order_step_size`, so `taker_size` alignment cannot
+                // rule this out. The TypeScript mirror ends it the same way.
                 remaining = 0;
                 break;
             }
+
             // Indexed loops: `take` mutates three parallel structures.
             let mut given: u64 = 0;
             for i in 0..cursors.len() {
@@ -390,6 +350,7 @@ pub fn split_across_quoters(
                 else {
                     continue;
                 };
+
                 let share = (demand as u128)
                     .safe_mul(available as u128)?
                     .safe_div(total as u128)?
@@ -403,8 +364,10 @@ pub fn split_across_quoters(
                     price,
                     share,
                 )?;
+
                 given = given.safe_add(share)?;
             }
+
             // Floor division and step alignment leave a remainder below one
             // step per book. Give it to the first quoter in the tier that has
             // spare depth.
@@ -413,17 +376,21 @@ pub fn split_across_quoters(
                 if dust == 0 {
                     break;
                 }
+
                 let Some(available) = available_at(tops[i], cursors[i].priority, tier, price)
                 else {
                     continue;
                 };
+
                 let amount = {
                     let a = dust.min(available);
                     a - a % step
                 };
+
                 if amount == 0 {
                     continue;
                 }
+
                 take(
                     direction,
                     &mut cursors[i],
@@ -432,8 +399,10 @@ pub fn split_across_quoters(
                     price,
                     amount,
                 )?;
+
                 dust = dust.safe_sub(amount)?;
             }
+
             remaining = remaining.safe_sub(demand)?;
         }
     }
@@ -443,22 +412,17 @@ pub fn split_across_quoters(
 
 /// Reject a foreign `quote_v0` response outright rather than route it.
 ///
-/// The split walk tolerates junk by truncating, but more than the split reads
-/// the raw levels. The taker-limit cut, the Custom margin clamp's depth sum
-/// and the vAMM's last look all see them. There a level nobody can fill still
-/// moves the outcome. A zero-priced level reads as the best price in
-/// existence, and it shades the vAMM's whole ladder away. So velocity holds
-/// the levels to the contract the type documents at ingestion instead.
+/// The split truncates junk, but the taker-limit cut, the Custom margin clamp and the
+/// vAMM's last look all read the raw levels, where a level nobody can fill still moves the
+/// outcome. A zero-priced level reads as the best price in existence and shades the vAMM's
+/// whole ladder away.
 ///
-/// - Every price and every size is nonzero. A level nobody can fill is not a
-///   quote.
-/// - Prices run best-first for the taker's direction, non-strictly. Equal
-///   consecutive prices are legal and normal, because a ladder's rungs come
-///   from distinct offsets that can round to the same tick.
+/// - Every price and every size is nonzero.
+/// - Prices run best-first for the taker's direction, non-strictly. Equal consecutive
+///   prices are normal, because distinct offsets can round to the same tick.
 ///
-/// A quoter that trips this fails the fill it was quoted for. That is not new
-/// exposure, because an approved quoter can fail the CPI itself. It also keeps
-/// the misbehavior loud enough for the admin to pull the entry.
+/// A quoter that trips this fails the fill, which is no new exposure, because an approved
+/// quoter can fail the CPI itself.
 pub fn validate_quoted_levels(direction: Direction, levels: &[PriceLevel]) -> VelocityResult<()> {
     let mut previous: Option<u64> = None;
     for level in levels {
@@ -469,11 +433,13 @@ pub fn validate_quoted_levels(direction: Direction, levels: &[PriceLevel]) -> Ve
             level.price,
             level.size
         )?;
+
         if let Some(previous) = previous {
             let ordered = match direction {
                 Direction::Long => level.price >= previous,
                 Direction::Short => level.price <= previous,
             };
+
             validate!(
                 ordered,
                 ErrorCode::InvalidQuoterResponse,
@@ -482,8 +448,10 @@ pub fn validate_quoted_levels(direction: Direction, levels: &[PriceLevel]) -> Ve
                 previous
             )?;
         }
+
         previous = Some(level.price);
     }
+
     Ok(())
 }
 
@@ -516,14 +484,17 @@ pub fn quoted_prefix(
         best_price: 0,
         worst_price: 0,
     };
+
     for level in levels.iter().take(MAX_LEVELS_PER_BOOK) {
         if remaining == 0 {
             break;
         }
+
         let usable = level.size - level.size % step;
         if usable == 0 {
             continue;
         }
+
         let take = remaining.min(usable);
         prefix.scaled_quote = prefix
             .scaled_quote
@@ -531,9 +502,11 @@ pub fn quoted_prefix(
         if prefix.best_price == 0 {
             prefix.best_price = level.price;
         }
+
         prefix.worst_price = level.price;
         remaining -= take;
     }
+
     validate!(
         remaining == 0,
         ErrorCode::QuoterOverfilled,
@@ -541,6 +514,7 @@ pub fn quoted_prefix(
         base,
         base - remaining
     )?;
+
     Ok(prefix)
 }
 
@@ -557,18 +531,10 @@ fn notional_within(lo: u128, hi: u128, quote: u64, slack: u64) -> VelocityResult
     Ok(quote >= floor && quote <= ceil)
 }
 
-/// Hold an external quoter's executed quote to the notional the split accrued
-/// off its own ladder.
-///
-/// The check is exact and not a band. Quoting and executing happen in one
-/// transaction, and a quoter's book cannot change between them, so
-/// `scaled_quote` is the notional of that allocation as an integer. The single
-/// division from `price * base` into quote units is the only rounding.
-///
-/// A quoter whose encoder divides per fill must carry the remainder forward
-/// across the fills rather than truncate each one. Per-fill truncation lands
-/// below this number by up to one unit per fill, and that dust comes out of
-/// its makers.
+/// Hold an external quoter's executed quote to the notional the split accrued off its own
+/// ladder. Exact, not a band, because a quoter's book cannot change inside one
+/// transaction. A quoter whose encoder divides per fill must carry the remainder forward,
+/// or the dust comes out of its makers.
 pub fn validate_allocated_notional(
     allocation: &QuoterAllocation,
     quote: u64,
@@ -577,29 +543,17 @@ pub fn validate_allocated_notional(
 }
 
 pub fn validate_executed_notional(prefix: &QuotedPrefix, quote: u64) -> VelocityResult<bool> {
-    // Exact, not a band. Quoting and executing happen in one transaction and a
-    // quoter's book cannot change between them, so the ladder fixes the
-    // notional of any prefix of itself. Walking the ladder is arithmetic on a
-    // published schedule. The single division from `price * base` into quote
-    // units is the only rounding, and the quoter's own encoder must carry the
-    // same one. `quote_size` in the CLOB's execute differences running floors
-    // for this reason.
+    // Exact, not a band. A quoter's book cannot change inside one transaction, so the
+    // ladder fixes the notional of any prefix of itself. The single division into quote
+    // units is the only rounding, and the quoter's encoder must carry the same one.
     Ok(quote as u128 == prefix.scaled_quote.safe_div(BASE_PRECISION)?)
 }
 
-/// Hold one balance change to the quoted prefix's price range. Every unit of
-/// the change must be priced inside that range. A bound on the response total
-/// alone would let a quoter overpay one maker out of another's pocket while
-/// the total stayed honest. This bounds each subject's price to what the
-/// quoter published.
-///
-/// `orders` is how many of the quoter's own orders the change merges. A merged
-/// record cannot be exact even when the response total is, because the
-/// remainder carried between fills lands in whichever record follows. So the
-/// band admits one quote unit of slack per merged order. At quote precision
-/// that slack is sub-cent dust. The response the quoter had to declare bounds
-/// it, because a CLOB change names every order it consumed except the one it
-/// left a remainder on.
+/// Hold one balance change to the quoted prefix's price range. A bound on the response
+/// total alone would let a quoter overpay one maker out of another's pocket. `orders` is
+/// how many of the quoter's orders the change merges: a merged record cannot be exact,
+/// because the remainder between fills lands in whichever record follows, so the band
+/// admits one sub-cent quote unit of slack per merged order.
 pub fn validate_change_notional(
     prefix: &QuotedPrefix,
     base: u64,
@@ -609,11 +563,9 @@ pub fn validate_change_notional(
     let base = base as u128;
     let at_best = (prefix.best_price as u128).safe_mul(base)?;
     let at_worst = (prefix.worst_price as u128).safe_mul(base)?;
-    // The quoter reports `orders`, so cap the rounding slack it buys. One real
-    // change never merges more than the levels the router split off a book. A
-    // figure past that cap is a quoter widening its own price band. The cap
-    // costs an honest quoter nothing, because `MAX_LEVELS_PER_BOOK` sub-cent
-    // units is already more slack than a real merge needs.
+    // The quoter reports `orders`, so cap the slack it buys. One real change never merges
+    // more than the levels the router split off a book, and a figure past that is a quoter
+    // widening its own price band.
     let orders = orders.min(MAX_LEVELS_PER_BOOK as u64);
     notional_within(at_best.min(at_worst), at_best.max(at_worst), quote, orders)
 }
@@ -702,6 +654,7 @@ mod tests {
             tx_accounts: None,
             unrouted_quoters: 0,
         };
+
         assert!(withheld_obligation(&signed, 7, 0).is_ok());
     }
 
@@ -714,6 +667,7 @@ mod tests {
             tx_accounts: None,
             unrouted_quoters: 0,
         };
+
         assert_eq!(
             withheld_obligation(&blind, 0, TX_WRITABLE_LOCK_BUDGET),
             Err(ErrorCode::FillerObligationUncountable)
@@ -730,6 +684,7 @@ mod tests {
                 tx_accounts: Some(accounts),
                 unrouted_quoters: 0,
             };
+
             assert_eq!(
                 withheld_obligation(&roomy, 0, accounts),
                 Err(ErrorCode::FillerOmittedReachableMaker),
@@ -747,6 +702,7 @@ mod tests {
             tx_accounts: Some(TX_WRITABLE_LOCK_BUDGET),
             unrouted_quoters: 1,
         };
+
         assert_eq!(
             withheld_obligation(&full, 0, TX_WRITABLE_LOCK_BUDGET),
             Err(ErrorCode::FillerCarriedUnroutedQuoter)
@@ -762,6 +718,7 @@ mod tests {
             tx_accounts: Some(TX_WRITABLE_LOCK_BUDGET),
             unrouted_quoters: 0,
         };
+
         assert!(withheld_obligation(&honest, 0, TX_WRITABLE_LOCK_BUDGET).is_ok());
     }
 
@@ -774,10 +731,12 @@ mod tests {
             tx_accounts: Some(TX_WRITABLE_LOCK_BUDGET),
             unrouted_quoters: 0,
         };
+
         assert_eq!(
             withheld_obligation(&full, 1, TX_WRITABLE_LOCK_BUDGET),
             Err(ErrorCode::FillerPaddedTheUserSet)
         );
+
         assert!(
             withheld_obligation(&full, 0, TX_WRITABLE_LOCK_BUDGET).is_ok(),
             "a full transaction whose every user filled has met the obligation"
@@ -800,6 +759,7 @@ mod tests {
             Err(ErrorCode::FillerOmittedReachableMaker),
             "a fill of {shallow} attributable locks had room for the maker it omitted"
         );
+
         assert!(
             withheld_obligation(&padded, 0, TX_WRITABLE_LOCK_BUDGET).is_ok(),
             "the same transaction fills once its locks are work velocity can name"
@@ -813,6 +773,7 @@ mod tests {
             3 * B,
             &[(CLOB, vec![level(100, 2 * B), level(101, 2 * B)])],
         );
+
         assert_eq!(out[0].base, 3 * B);
         // 2 @ 100 + 1 @ 101, prices are per base unit at BASE_PRECISION.
         assert_eq!(out[0].quote, 2 * 100 + 101);
@@ -831,6 +792,7 @@ mod tests {
                 (CLOB, vec![level(100, 2 * B)]),
             ],
         );
+
         // CLOB tier first, custom gets the remaining 1.
         assert_eq!(out[1].base, 2 * B);
         assert_eq!(out[0].base, B);
@@ -845,6 +807,7 @@ mod tests {
                 (VAMM, vec![level(100, B)]),
             ],
         );
+
         assert_eq!(out[2].base, B); // vAMM drained first
         assert_eq!(out[1].base, B); // then CLOB
         assert_eq!(out[0].base, 0); // custom sees nothing
@@ -860,6 +823,7 @@ mod tests {
                 (CUSTOM, vec![level(100, 4 * B)]),
             ],
         );
+
         // Demand 3 across depth 6 gives 1 and 2.
         assert_eq!(out[0].base, B);
         assert_eq!(out[1].base, 2 * B);
@@ -871,6 +835,7 @@ mod tests {
             5,
             &[(CUSTOM, vec![level(100, 3)]), (CUSTOM, vec![level(100, 3)])],
         );
+
         assert_eq!(out[0].base + out[1].base, 5);
     }
 
@@ -884,6 +849,7 @@ mod tests {
                 (CUSTOM, vec![level(100, B), level(102, 5 * B)]),
             ],
         );
+
         // 1 @ 100 (custom) and 2 @ 101 (clob). 102 is never reached. A better
         // price always beats a better tier.
         assert_eq!(out[1].base, B);
@@ -898,6 +864,7 @@ mod tests {
                 (CUSTOM, vec![level(100, B), level(98, B)]),
             ],
         );
+
         assert_eq!(out[1].base, B); // 100 first
         assert_eq!(out[0].base, B); // then 99
     }
@@ -915,6 +882,7 @@ mod tests {
                 (CLOB, vec![level(103, 10 * B)]),
             ],
         );
+
         assert_eq!(out[0].base, B); // only its monotone prefix
         assert_eq!(out[1].base, B); // only its valid level
         assert_eq!(out[2].base, 2 * B); // clob fills the rest
@@ -1070,6 +1038,7 @@ mod tests {
             prefix.scaled_quote,
             (100 * PRICE as u128) * 2 + (200 * PRICE as u128) * 4
         );
+
         assert!(quoted_prefix(&levels, 2, 7).is_err());
     }
 }

@@ -588,26 +588,14 @@ export interface CustomError {
 }
 
 /**
- * Emits one wide event. The whole message of the log line is one JSON object,
- * `{"event":"<name>", ...}`, with snake_case keys.
- *
- * This is the TypeScript counterpart of keep-rs's `tx_event` wide events,
- * `emit_tx_event` and `emit_cross_decision_event` in
- * `rust/keep-rs/src/filler.rs`. The Order Trace Grafana dashboard reads both
- * bots' payloads. That dashboard lives in infrastructure-v3 at
- * `grafana/src/authored/order-history.ts`. It filters lines on
- * `"event":"<name>"`, extracts the JSON with `| regexp "(?P<payload>\{.*\})"`,
- * and parses it into table columns. The extraction spans the first `{` to the
- * last `}` on the line, so the message must be the JSON and nothing else. The
- * winston prefix `[<ts>] <level>: ` contributes no braces.
- *
- * The keys serialize alphabetically to match serde_json's BTreeMap ordering on
- * the rust side. An `undefined` value is dropped, so an unknown dimension is an
- * absent column rather than a `null` one.
- *
- * This function never throws. The transaction confirmation loop is one of its
- * callers, and an exception escaping into the surrounding `try` there would
- * abort the whole confirmation batch.
+ * Emits one wide event: the whole log message is one JSON object,
+ * `{"event":"<name>", ...}`, snake_case keys serialized alphabetically to
+ * match serde_json's BTreeMap ordering in keep-rs's `tx_event`
+ * (`rust/keep-rs/src/filler.rs`). The Order Trace Grafana dashboard extracts
+ * the JSON from the first `{` to the last `}` on the line, so the message
+ * must be nothing but the JSON, and an `undefined` field is dropped rather
+ * than serialized as `null`. Never throws: the confirmation loop calls this
+ * inside a `try` that would abort the whole batch on an escaping exception.
  */
 export function logWideEvent(
 	event: string,

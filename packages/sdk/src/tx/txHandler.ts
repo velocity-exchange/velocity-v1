@@ -63,17 +63,14 @@ const DEV_TRY_FORCE_TX_TIMEOUTS =
 export const COMPUTE_UNITS_DEFAULT = 200_000;
 
 /**
- * Default ceiling on the account data a transaction may load, in bytes.
+ * allow-verbose: derives a non-obvious byte figure from Solana's loaded-account-data
+ * accounting, which nothing else in the codebase restates.
  *
- * A transaction is charged for the limit it requests and not for what it loads. Without a request
- * the limit is 64 MiB. A velocity transaction that does not request one is charged for all 64 MiB
- * while it loads a few megabytes. What it loads is the velocity program and its program data,
- * which count because the transaction names the program, plus the transaction's accounts.
- *
- * 12 MiB is about twice what the program and a full account list come to. It leaves room for the
- * program to grow and for a caller to add another program's instruction. A transaction that loads
- * more than the limit is refused before it runs, so a caller that assembles an unusually wide
- * transaction raises the limit first.
+ * Default ceiling on the account data a transaction may load, in bytes. A transaction is
+ * charged for the full limit it requests, not for what it loads, and the unset default is
+ * 64 MiB. 12 MiB is about twice the velocity program plus a full account list, leaving room
+ * to grow. A transaction over the limit is refused before it runs, so a caller assembling an
+ * unusually wide transaction must raise the limit first.
  */
 export const LOADED_ACCOUNTS_DATA_SIZE_DEFAULT = 12 * 1024 * 1024;
 
@@ -736,14 +733,10 @@ export class TxHandler {
 
 		allIx.push(...instructionsToUse);
 
-		// The instruction is appended rather than prepended. The runtime finds a
-		// compute-budget instruction by program id wherever it sits, and an
-		// instruction added at the front shifts every index behind it. The Pyth
-		// Lazer oracle-update flow encodes such an index. Its ed25519 verify
-		// instruction points at the instruction holding the message it verifies,
-		// by absolute index, in `createMinimalEd25519VerifyIx`. A caller computes
-		// that index from the instructions it assembled, so only the tail is
-		// free.
+		// Appended, not prepended. The runtime finds a compute-budget instruction by
+		// program id wherever it sits, but the Pyth Lazer ed25519 verify instruction
+		// encodes an absolute index to the instruction holding its message, in
+		// `createMinimalEd25519VerifyIx`. Only the tail stays free for the caller to add to.
 		const loadedAccountsDataSize = baseTxParams?.loadedAccountsDataSize;
 		if (
 			loadedAccountsDataSize !== undefined &&
@@ -823,6 +816,7 @@ export class TxHandler {
 		if (loadedAccountsDataSize > 0) {
 			tx.add(setLoadedAccountsDataSizeLimitIx(loadedAccountsDataSize));
 		}
+
 		return tx;
 	}
 

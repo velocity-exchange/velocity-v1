@@ -35,6 +35,7 @@ fn strip_redundant_const_generics(value: &mut Value) {
                     defined.remove("generics");
                 }
             }
+
             for child in map.values_mut() {
                 strip_redundant_const_generics(child);
             }

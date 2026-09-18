@@ -41,8 +41,8 @@ pub struct CpiQuoterExecutor<'a, 'info> {
     /// [`crate::instructions::QuoteInputs::taker_served_window`].
     pub taker_served_window: bool,
     /// Forwarded on every quote and execute leg. See
-    /// [`crate::instructions::QuoteInputs::consume_reservation`].
-    pub consume_reservation: bool,
+    /// [`crate::instructions::QuoteInputs::include_taker_origin_reservations`].
+    pub include_taker_origin_reservations: bool,
     /// The loaded-user set, in the wire's derivable form. It is forwarded on
     /// every execute, and a quoter must not fill anyone outside it.
     pub users: &'a [ClobUserRefV0],
@@ -129,6 +129,7 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
         if self.quoter_type(index) != QuoterType::Clob {
             return Ok(None);
         }
+
         let slab = self.slab()?;
         let slot = self.slot_index(index)?;
         let (book, program) = {
@@ -142,6 +143,7 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
                     "clob book {} missing from the account map",
                     config.response_account
                 );
+
                 ErrorCode::DefaultError
             })?;
             let program = find_account(self.accounts, &config.program_id).ok_or_else(|| {
@@ -149,8 +151,10 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
                     "clob program {} missing from the account map",
                     config.program_id
                 );
+
                 ErrorCode::DefaultError
             })?;
+
             (book, program)
         };
         let clob = ClobMarket::from_slab(slab, self.market_index, book, program)
@@ -191,7 +195,7 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
                     users: self.users,
                     taker: Some(self.taker),
                     taker_served_window: self.taker_served_window,
-                    consume_reservation: self.consume_reservation,
+                    include_taker_origin_reservations: self.include_taker_origin_reservations,
                 },
                 slab,
                 self.accounts,

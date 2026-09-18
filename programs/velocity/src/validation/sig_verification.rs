@@ -100,6 +100,7 @@ pub fn deserialize_into_verified_message(
             msg!("Invalid delegate message encoding for with is_delegate_signer = false");
             SignatureVerificationError::InvalidMessageDataSize
         })?;
+
         validate_signed_msg_network(deserialized.network)?;
         Ok(VerifiedMessage {
             signed_msg_order_params: deserialized.signed_msg_order_params,
@@ -132,9 +133,11 @@ fn validate_signed_msg_route(
                 entries.len(),
                 crate::state::order_params::MAX_SIGNED_MSG_ROUTE_LEN
             );
+
             return Err(SignatureVerificationError::InvalidMessageDataSize.into());
         }
     }
+
     Ok(route)
 }
 
@@ -157,6 +160,7 @@ fn validate_signed_msg_network(
                 tag as char,
                 expected as char
             );
+
             Err(SignatureVerificationError::InvalidMessageDataSize.into())
         }
         None => {
@@ -164,6 +168,7 @@ fn validate_signed_msg_network(
                 "signed message names no network; this program is {}",
                 expected as char
             );
+
             Err(SignatureVerificationError::InvalidMessageDataSize.into())
         }
     }
@@ -220,6 +225,7 @@ pub fn verify_flow_attestation(
         );
         return Err(ErrorCode::SigVerificationFailed.into());
     }
+
     brine_ed25519::verify(
         &brine_ed25519::Address::new_from_array(flow_authority.to_bytes()),
         &attestation.signature,
@@ -254,6 +260,7 @@ pub fn verify_and_decode_signed_msg(
     if message_bytes.len() < PAYLOAD_OFFSET {
         return Err(SignatureVerificationError::InvalidMessageDataSize.into());
     }
+
     let signature: [u8; 64] = message_bytes[..SIGNATURE_LEN].try_into().unwrap();
     let public_key: [u8; 32] = message_bytes[SIGNATURE_LEN..SIGNATURE_LEN + PUBKEY_LEN]
         .try_into()
@@ -276,6 +283,7 @@ pub fn verify_and_decode_signed_msg(
             public_key,
             signer
         );
+
         return Err(ErrorCode::SigVerificationFailed.into());
     }
 

@@ -81,6 +81,7 @@ pub fn handle_resolve_liquidate_perp_with_fill<'c: 'info, 'info>(
             ErrorCode::DefaultError,
             "resolver needs the stored margin-map accounts"
         )?;
+
         let account_iter = &mut ctx.remaining_accounts.iter().peekable();
         let mut maps = load_maps(
             account_iter,
@@ -90,6 +91,7 @@ pub fn handle_resolve_liquidate_perp_with_fill<'c: 'info, 'info>(
             state.slot_clock(),
             Some(state.oracle_guard_rails),
         )?;
+
         // Where the stored list stops being the margin map. The liquidation
         // executor reads its leftover accounts in sections, and the makers it
         // may settle against belong between the map and the quoter tail.
@@ -116,21 +118,21 @@ pub fn handle_resolve_liquidate_perp_with_fill<'c: 'info, 'info>(
             &mut maps,
             state.liquidation_margin_buffer_ratio,
         )?;
+
         if !liquidatable {
             return Ok(None);
         }
 
         let Some(market_index) = largest_perp_position(&ctx.accounts.user)? else {
-            // Spot-only distress. The account is liquidatable and the check
-            // above proved it, but no crank can act on it.
+            // Spot-only distress. The account is liquidatable and the check above proved it, but no
+            // crank can act on it. `liquidate_spot` gives the liquidator the borrow and the
+            // collateral behind it, so a protocol keeper would hold spot inventory and its price
+            // risk. The perp path avoids that by routing the fill through the book. Spot has no
+            // such flavor without an external swap venue, and nothing here wires one. A real
+            // liquidator carries that inventory on its own balance sheet and unwinds it elsewhere,
+            // so this stays a keeper-bot path.
             //
-            // `liquidate_spot` settles by giving the liquidator the borrow and
-            // the collateral behind it, so a protocol keeper would hold spot
-            // inventory and its price risk. The perp path avoids that by
-            // routing the fill through the book. Spot has no such flavor
-            // without an external swap venue, and nothing here wires one. A
-            // real liquidator carries that inventory on its own balance sheet
-            // and unwinds it elsewhere, so this stays a keeper-bot path.
+            // allow-verbose: no other comment says why a liquidatable account returns no work.
             return Ok(None);
         };
 
@@ -202,8 +204,10 @@ fn stage_force_cancel<'info>(
             "quoter slab {} absent from the stored list; cannot stage a cancel",
             quoter_slab
         );
+
         return Ok(None);
     };
+
     let slab = AccountLoader::<crate::state::prop_amm::QuoterSlabV0>::try_from(slab_info)?;
     let (clob_market, clob_program) = {
         let slots = slab.slots()?;
@@ -211,11 +215,13 @@ fn stage_force_cancel<'info>(
             msg!("quoter slab holds no book slot; cannot stage a cancel");
             return Ok(None);
         };
+
         (
             slots[index].config.response_account,
             slots[index].config.program_id,
         )
     };
+
     Ok(Some(
         crate::instructions::StagedCall::new::<crate::instruction::ForceCancelClobOrders>(
             crate::accounts::ForceCancelClobOrders {
@@ -254,6 +260,7 @@ fn is_liquidatable(
         maps,
         MarginContext::liquidation(liquidation_margin_buffer_ratio),
     )?;
+
     Ok(!calculation.meets_margin_requirement())
 }
 
@@ -370,9 +377,11 @@ fn book_makers<'info>(
         let Some(index) = clob_slot_index(&slots) else {
             return Ok(Vec::new());
         };
+
         if !slots[index].quotes() {
             return Ok(Vec::new());
         }
+
         slots[index].config
     };
     let (Some(book), Some(program)) = (
@@ -407,6 +416,7 @@ fn book_makers<'info>(
             if makers.len() < MAX_LIQUIDATION_MAKERS && !makers.contains(&owner) {
                 makers.push(owner);
             }
+
             makers
         }))
 }
@@ -421,6 +431,7 @@ fn sweep_direction(
     let Ok(position) = user.get_perp_position(market_index) else {
         return Ok(None);
     };
+
     Ok(match position.base_asset_amount {
         0 => None,
         // Closing a long means selling, and a seller sweeps the bids.

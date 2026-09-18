@@ -692,13 +692,9 @@ export function registerUser(parent: Command): void {
 				}
 				const u = client.getUser(subId, authority);
 				const account = u.getUserAccountOrThrow();
-				// `getEquityFloorLevel` takes net equity, which is what every onchain
-				// floor gate compares against. `getTotalCollateral` is the margin
-				// numerator. It never subtracts a spot borrow and it applies asset
-				// weights, so it reports a different quantity from the gate.
-				//
-				// A gate fails closed on oracle validity. An invalid oracle therefore
-				// blocks the account whatever value this command shows.
+				// Net equity differs from `getTotalCollateral`, which subtracts no
+				// spot borrow and applies asset weights. A gate fails closed on an
+				// invalid oracle regardless of the value shown here.
 				const { value: equity, allOraclesValid } = u.getFloorNetEquity(slot);
 				const floor = account.equityFloor;
 				const buffer = account.equityFloorBuffer;

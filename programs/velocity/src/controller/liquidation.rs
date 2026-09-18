@@ -97,22 +97,10 @@ mod tests;
 
 /// Refuse a fresh liquidation while the user holds orders on a CLOB.
 ///
-/// A book-resident order reserves `open_bids` and `open_asks`. The
-/// reservation inflates the worst-case margin that a liquidation entry
-/// reads. The slot cancel that a liquidation runs cannot remove a book
-/// order, so the entry acts on the inflated figure and the book order keeps
-/// resting through the liquidation. `force_cancel_clob_orders` reclaims the
-/// order and releases the reservation, so a keeper runs it first.
-///
-/// Every entry that can start a liquidation calls this, including
-/// `set_user_status_to_being_liquidated`. A user that a liquidation latch
-/// already covers is therefore exempt, because the guarded entry that set
-/// the latch already ran this check, and a latched user cannot place a new
-/// order.
-///
-/// The exemption is also what keeps a distressed account liquidatable.
-/// `force_cancel_clob_orders` refuses a latched user, so a refusal here
-/// would leave no way to clear the book orders and no way to liquidate.
+/// A book order reserves `open_bids` and `open_asks`, which inflates the
+/// worst-case margin a liquidation entry reads. A liquidation slot cancel cannot
+/// remove it, so `force_cancel_clob_orders` runs first. A latched user is exempt,
+/// because that cancel refuses a latched user and would leave no way to liquidate.
 fn validate_no_clob_resident_orders(user: &User) -> VelocityResult {
     if user.is_being_liquidated() {
         return Ok(());
@@ -123,6 +111,7 @@ fn validate_no_clob_resident_orders(user: &User) -> VelocityResult {
             "user has resting CLOB orders in market {}; force_cancel_clob_orders must run first",
             clob_market
         );
+
         return Err(ErrorCode::LiquidationConflictsWithClobOrders);
     }
 
@@ -179,22 +168,11 @@ pub fn liquidate_perp(
         market_index
     )?;
 
-    // Once `expiry_ts` passes, an expired perp position must close only at the market's
-    // committed `expiry_price`, never at the live oracle (OtterSec #149).
-    //
-    // Every ordinary user path already refuses past expiry on the same
-    // `is_in_settlement(now)` predicate. Placing, filling, triggering, transferring and
-    // settling all gate on it. Direct permissionless liquidation did not, so it valued
-    // and transferred the position at the live oracle for the whole window between
-    // `expiry_ts` and an admin moving the status to `Settlement`. A liquidator could take
-    // the position at a live price that the fixed settlement price then supersedes, and
-    // the owner had no way to act.
-    //
-    // The check covers that window alone. It is not `is_in_settlement(now)`, which is
-    // also true once the status reaches `Settlement` or `Delisted`. By then `expiry_price`
-    // is committed, and liquidation during the wind-down is a legitimate way to resolve
-    // bad debt. Only the gap where the market has expired and no settlement price exists
-    // yet is refused.
+    // An expired perp position must close at the committed `expiry_price`, never at the
+    // live oracle (OtterSec #149). This refuses only the window between `expiry_ts` and
+    // that committed price, where a liquidator could take the position at a live price
+    // the settlement price then supersedes. Once the status reaches `Settlement` or
+    // `Delisted` the price is committed, and liquidation legitimately resolves bad debt.
     let expired_awaiting_settlement = market.expiry_ts != 0
         && now >= market.expiry_ts
         && !matches!(
@@ -836,11 +814,8 @@ pub struct LiquidationParties<'a, 'info> {
 
 /// What [`place_liquidation_order`] left for the caller to act on.
 ///
-/// This is not boxed, although `Placed` is 336 bytes and `Settled` is empty.
-/// Boxing trades a stack concern for a heap one, and the heap is the scarcer
-/// resource here. Velocity's heap is 32 KB and its allocator never reclaims,
-/// while 336 bytes sits well inside an SBF frame. The value crosses one call
-/// and is destructured on arrival.
+/// `Placed` is 336 bytes and is not boxed. Velocity's heap is 32 KB and its
+/// allocator never reclaims, while 336 bytes sits well inside an SBF frame.
 #[allow(clippy::large_enum_variant)]
 pub enum LiquidationStep {
     /// Nothing to liquidate. The account exited liquidation, holds no
@@ -878,14 +853,10 @@ pub struct PlacedLiquidation {
     existing_direction: PositionDirection,
 }
 
-/// Sizes a liquidation, cancels what blocks it, and places the forced order
-/// it fills through.
+/// Sizes a liquidation, cancels what blocks it, and places the forced order.
 ///
-/// The order's size follows from the margin shortage, so the order does not
-/// exist until this function has run. The fill therefore belongs to the caller
-/// rather than to a callback from here. The caller holds the transaction's
-/// quoter accounts, routes the order against them, and returns with the
-/// fill.
+/// The order's size follows from the margin shortage, so the order does not exist
+/// until this function runs. The caller holds the quoter accounts and fills it.
 pub fn place_liquidation_order<'info>(
     market_index: u16,
     parties: LiquidationParties<'_, 'info>,
@@ -943,22 +914,11 @@ pub fn place_liquidation_order<'info>(
         market_index
     )?;
 
-    // Once `expiry_ts` passes, an expired perp position must close only at the market's
-    // committed `expiry_price`, never at the live oracle (OtterSec #149).
-    //
-    // Every ordinary user path already refuses past expiry on the same
-    // `is_in_settlement(now)` predicate. Placing, filling, triggering, transferring and
-    // settling all gate on it. Direct permissionless liquidation did not, so it valued
-    // and transferred the position at the live oracle for the whole window between
-    // `expiry_ts` and an admin moving the status to `Settlement`. A liquidator could take
-    // the position at a live price that the fixed settlement price then supersedes, and
-    // the owner had no way to act.
-    //
-    // The check covers that window alone. It is not `is_in_settlement(now)`, which is
-    // also true once the status reaches `Settlement` or `Delisted`. By then `expiry_price`
-    // is committed, and liquidation during the wind-down is a legitimate way to resolve
-    // bad debt. Only the gap where the market has expired and no settlement price exists
-    // yet is refused.
+    // An expired perp position must close at the committed `expiry_price`, never at the
+    // live oracle (OtterSec #149). This refuses only the window between `expiry_ts` and
+    // that committed price, where a liquidator could take the position at a live price
+    // the settlement price then supersedes. Once the status reaches `Settlement` or
+    // `Delisted` the price is committed, and liquidation legitimately resolves bad debt.
     let expired_awaiting_settlement = market.expiry_ts != 0
         && now >= market.expiry_ts
         && !matches!(
@@ -1166,12 +1126,10 @@ pub fn place_liquidation_order<'info>(
         .oracle_map
         .get_price_data(&quote_spot_market.oracle_id())?
         .price;
-    // Use the time-adjusted liquidator fee (grace-period ramp) as the basis for
-    // both the IF/protocol fee budget and the margin-shortage base sizing, so it
-    // matches the fee the forced liquidation order is actually priced with
-    // (see `liquidator_fee` below). Sizing against the un-aged `market.liquidator_fee`
-    // would under-budget the insurance/protocol fees relative to the larger
-    // execution discount the victim pays post-grace-period (matches liquidate_perp).
+    // Use the time-adjusted liquidator fee for both the IF/protocol fee budget and the
+    // margin-shortage base sizing, so it matches the fee the forced order is priced with.
+    // The un-aged `market.liquidator_fee` would under-budget those fees against the larger
+    // execution discount the victim pays after the grace period. `liquidate_perp` matches.
     let liquidator_fee = get_liquidation_fee(
         market.get_base_liquidator_fee(),
         market.get_max_liquidation_fee()?,
@@ -2440,21 +2398,18 @@ pub fn liquidate_spot_with_swap_begin(
 
     // Size the swap bound against the time-ramped max-pct-to-liquidate throttle
     // (`max_liability_allowed_to_be_transferred`), NOT the uncapped
-    // `liability_transfer_to_cover_margin_shortage`. Deriving `max_asset_transfer`
-    // from the full shortage would let this lane seize more collateral in a single
-    // swap than the throttle permits, since `swap_amount_in` is only bounded by
-    // `max_asset_transfer` here (swap_end re-checks price, not the throttle). This
-    // mirrors the direct `liquidate_spot` path, which caps the transfer at
-    // `max_liability_allowed_to_be_transferred`.
+    // `liability_transfer_to_cover_margin_shortage`. Deriving `max_asset_transfer` from
+    // the full shortage would let this lane seize more collateral in a single swap than
+    // the throttle permits, since `swap_amount_in` is only bounded by `max_asset_transfer`
+    // here. `swap_end` re-checks price, not the throttle. This mirrors the direct
+    // `liquidate_spot` path, which caps the transfer at the same throttle.
     //
-    // The bound is exact, and no headroom is added on top of the throttle. Begin
-    // and end run in one transaction and read the same oracle prices, so there is
-    // no price drift to absorb, and `swap_end` bounds the exchange rate on its own
-    // with `validate_swap_within_liquidation_boundaries`. Headroom here would only
-    // raise the collateral volume the liquidator can seize above the throttle. The
-    // conversion is exact for the same reason. The round-to-whole-deposit form
-    // would lift the bound to the user's entire deposit whenever the throttle
-    // lands within $1 of it.
+    // The bound is exact, and no headroom is added on top of the throttle. Begin and end
+    // run in one transaction and read the same oracle prices, so there is no price drift
+    // to absorb, and `swap_end` bounds the exchange rate on its own with
+    // `validate_swap_within_liquidation_boundaries`. The round-to-whole-deposit form
+    // would lift the bound to the user's entire deposit whenever the throttle lands
+    // within $1 of it.
     let max_asset_transfer = calculate_asset_transfer_for_liability_transfer_exact(
         LIQUIDATION_FEE_PRECISION,
         asset_decimals,
@@ -3653,23 +3608,14 @@ pub fn liquidate_perp_pnl_for_deposit(
     let pnl_liability_weight_plus_buffer =
         pnl_liability_weight.safe_add(liquidation_margin_buffer_ratio)?;
 
-    // Refuse a transfer that cannot improve the account (OtterSec #25). The account
-    // gives up deposit valued at `asset_weight` and priced with the liquidator
-    // premium, and it receives pnl relief valued at
-    // `pnl_liability_weight_plus_buffer` and priced with the liquidator discount.
-    // The margin improvement per unit transferred is therefore constant, and it is
-    // positive only while the asset side stays below the liability side. Once the
-    // asset side reaches the liability side, every transfer size strips more
-    // collateral than it frees, so no partial size helps and the call must revert.
-    // `calculate_liability_transfer_to_cover_margin_shortage` below detects the
-    // same condition, but it reports `u128::MAX`. The sizing reads that sentinel as
-    // an absent bound and transfers the largest amount the other caps allow.
-    //
-    // `asset_weight` is the raw maintenance weight. A size-scaled imf weight is
-    // never higher, so this check errs toward refusing a transfer that would in
-    // fact help by a small amount.
-    //
-    // Settlement is exempt for the reason given at `market_in_settlement`.
+    // Refuse a transfer that cannot improve the account (OtterSec #25). The account gives
+    // up deposit valued at `asset_weight`, and receives pnl relief valued at
+    // `pnl_liability_weight_plus_buffer`. The margin improvement per unit is constant, and
+    // positive only while the asset side stays below the liability side. Above that, every
+    // size strips more collateral than it frees, so the call must revert.
+    // `calculate_liability_transfer_to_cover_margin_shortage` below reports `u128::MAX` in
+    // that case, which the sizing reads as an absent bound. `asset_weight` is the raw
+    // maintenance weight, so this may refuse a transfer that would in fact help a little.
     if !market_in_settlement {
         // The extra factor of 10 mirrors the precision scaling in
         // `calculate_liability_transfer_to_cover_margin_shortage`.
@@ -3745,21 +3691,13 @@ pub fn liquidate_perp_pnl_for_deposit(
         .min(max_pnl_allowed_to_be_transferred.max(minimum_pnl_transfer))
         .min(pnl_transfer_implied_by_asset_amount);
 
-    // Given the borrow amount to transfer, determine how much deposit amount to transfer.
-    //
     // Every unit seized must be paid for, so this path does not use the
-    // round-to-whole-deposit form of the conversion (OtterSec #25). That form takes up
-    // to $1 of collateral the pnl relief does not cover, and that is real value
-    // rather than rounding.
-    //
-    // The whole deposit still goes when the deposit is what limited the transfer.
-    // `pnl_transfer_implied_by_asset_amount` is the pnl the whole deposit buys, and
-    // it rounds up, so charging the whole deposit for it never overcharges. The
-    // only gap is the base-unit truncation of the two inverse conversions, and
-    // taking the deposit to zero leaves no dust in the position.
-    //
-    // The exact form can exceed the deposit by a unit or two through the same
-    // truncation, so it is clamped.
+    // round-to-whole-deposit form of the conversion (OtterSec #25). That form takes up to
+    // $1 of collateral the pnl relief does not cover. The whole deposit still goes when
+    // the deposit is what limited the transfer. `pnl_transfer_implied_by_asset_amount` is
+    // the pnl the whole deposit buys, and it rounds up, so charging the whole deposit for
+    // it never overcharges. The exact form can exceed the deposit by a unit or two through
+    // base-unit truncation, so it is clamped.
     let asset_transfer = if pnl_transfer == pnl_transfer_implied_by_asset_amount {
         asset_amount
     } else {
@@ -3836,23 +3774,11 @@ pub fn liquidate_perp_pnl_for_deposit(
         Some(liquidation_mode.as_ref()),
     )?;
 
-    // `liquidate_perp_pnl_for_deposit` must never grow the account's buffered
-    // margin shortage (OtterSec #25). The weight check above rejects the market
-    // parameters that make the transfer loss-making at every size, and
-    // `calculate_margin_freed` saturates a negative improvement to 0. This check is
-    // the backstop for anything the sizing math does not model.
-    //
-    // The check is exact and holds no tolerance, because the seizure above pays for
-    // every unit it takes. A tolerance would let a liquidator size each transfer to
-    // degrade the account by just under it, and repeat the call until the deposit is
-    // gone.
-    //
-    // Settlement is exempt. An expired market winds every position down at the
-    // expiry price, and this path clears the residual expired pnl into the
-    // liquidator, which legitimately drives the account to bankruptcy. No live risk
-    // is left to protect, so this check must not block the wind-down. The finding
-    // targets the ordinary permissionless liquidation of a live market, which stays
-    // guarded.
+    // `liquidate_perp_pnl_for_deposit` must never grow the account's buffered margin
+    // shortage (OtterSec #25). This backs up anything the sizing math does not model. It
+    // holds no tolerance, or a liquidator sizes each transfer to degrade the account by
+    // just under it and repeats until the deposit is gone. Settlement is exempt, because
+    // an expired market winds down at the expiry price and may legitimately go bankrupt.
     if !market_in_settlement {
         let new_margin_shortage = liquidation_mode.margin_shortage(&margin_calculation_after)?;
         validate!(
@@ -4372,19 +4298,10 @@ pub fn resolve_perp_bankruptcy(
         funding_paused,
     )?;
 
-    // OtterSec #130 fallback, for what the setoff cannot reach: a credit in a NON-QUOTE deposit.
-    // Netting that against a quote debt needs a cross-asset swap, not a balance transfer.
-    //
-    // If such an asset remains, the latch's premise is stale. Clear it and return without drawing.
-    // Ordinary liquidation rejects a latched user, so it becomes legal again, seizes the asset, and
-    // re-latches for the real residual.
-    //
-    // This tests only for realizable assets, not the full predicate. That one also vetoes on an open
-    // order or base exposure, which the resolvers are reached with. The mode decides which assets can
-    // reach this debt: an isolated position is walled off from the cross-margin book.
-    //
-    // Commit the un-latch instead of erroring. An error leaves the bit set and wedges both paths.
-    // Nothing is drawn here, so this cannot reorder insurance spending against the OtterSec #52 precedence.
+    // OtterSec #130 fallback for what the setoff cannot reach, a credit in a NON-QUOTE deposit.
+    // The latch's premise is then stale, so clear it and return without drawing. Ordinary
+    // liquidation seizes the asset and re-latches for the real residual. An error would leave
+    // the bit set and block both paths, so the un-latch is committed instead.
     if liquidation_mode.has_realizable_assets(user, &maps.spot_market_map)? {
         msg!(
             "stale bankruptcy latch (assets present after setoff of {}); un-latching without drawing",
@@ -4398,17 +4315,11 @@ pub fn resolve_perp_bankruptcy(
         .quote_asset_amount
         .cast::<i128>()?;
 
-    // The setoff can clear this market's debt while a liability elsewhere keeps the account bankrupt.
-    // Nothing is left to resolve here. `has_pending_cross_margin_perp_bankruptcy` no longer reports
-    // this market, so the spot resolver is unblocked (OtterSec #52). Return instead of tripping the assertion
-    // below.
-    //
-    // Admission is re-derived first, on the same rule as the tail of this function. The recovery pass
-    // caps what it draws at this debt, so a claim big enough to cover the debt makes a deposit equal
-    // to the debt the designed outcome, and the setoff then zeroes both. Without the re-derive the
-    // latch survives on an estate that owes nothing, and no path can clear it: a deposit rejects a
-    // bankrupt user, ordinary liquidation rejects a latched one, and a second call to this resolver
-    // reaches this same return. A liability in another market keeps the latch set.
+    // The setoff can clear this market's debt while a liability elsewhere keeps the account
+    // bankrupt. `has_pending_cross_margin_perp_bankruptcy` no longer reports this market, so
+    // the spot resolver is unblocked (OtterSec #52). Admission is re-derived first. Without
+    // that, the latch survives on an estate that owes nothing, and no path can clear it. A
+    // deposit rejects a bankrupt user, and ordinary liquidation rejects a latched one.
     if loss == 0 {
         msg!(
             "perp market {} bad debt fully covered by setoff; nothing to resolve",
@@ -4428,17 +4339,11 @@ pub fn resolve_perp_bankruptcy(
         "user must have negative pnl"
     )?;
 
-    // OtterSec #145: wind up the estate's unfundable claims, so the account cannot keep one after
-    // other people's money covers its debt.
-    //
-    // This MUST sit below the un-latch above. Forfeiting is irreversible, and the un-latch path hands
-    // the account back to ordinary liquidation, which may cover the whole debt out of the seized
-    // asset — leaving no bankruptcy, no draw, and a forfeit that bought nothing.
-    //
-    // It sits below the `loss` read because `loss` is what bounds it. This call pays off `loss` with
-    // the revenue pool, the insurance fund and the surviving depositors, so `loss` is exactly the
-    // amount of other people's money the estate is about to consume, and the most it can owe them.
-    // `resolve_spot_bankruptcy` bounds its own forfeit the same way, against the borrow it covers.
+    // OtterSec #145: wind up the estate's unfundable claims, so the account cannot keep one
+    // after other people's money covers its debt. This MUST sit below the un-latch above.
+    // Forfeiting is irreversible, and that path may leave no bankruptcy at all. It sits below
+    // the `loss` read because `loss` bounds it. `loss` is the amount of other people's money
+    // the estate is about to consume, and the most it can owe them.
     extinguish_unfundable_perp_claims(
         user,
         &maps.perp_market_map,
@@ -4624,18 +4529,12 @@ pub fn resolve_perp_bankruptcy(
             .total_social_loss
             .safe_add(loss_to_socialize.unsigned_abs())?;
 
-        // Fully settle the AMM's OWN funding through the current (pre-
-        // socialization) cum rates against its actual net position first —
-        // exactly the payment the `FundingUpdated` quoter handler applies — so
-        // no genuine accrued AMM funding is dropped when we advance the AMM
-        // stamp past the socialization bump below. `calculate_amm_funding_payment`
-        // pays the AMM `(cumulative_funding_rate − amm.last_cumulative_funding_rate)
-        // × −net_position` per leg; here the deltas are only what has genuinely
-        // accrued (the socialization bump has NOT been applied yet). Today the
-        // market cum rates and the AMM stamp only ever advance together in
-        // `update_funding_rate`, so on entry this payment is 0 — but applying it
-        // explicitly (rather than assuming the invariant) keeps the AMM's books
-        // correct even if another writer of the cum rates is ever added.
+        // Settle the AMM's own funding through the pre-socialization cum rates first, so no
+        // accrued AMM funding is dropped when the AMM stamp advances past the socialization
+        // bump below. `calculate_amm_funding_payment` pays the AMM the cum-rate delta times
+        // the negated net position per leg, and here the deltas hold only what genuinely
+        // accrued. Today the cum rates and the AMM stamp only advance together in
+        // `update_funding_rate`, so this payment is 0 on entry. It guards a future writer.
         let amm_funding_payment = crate::math::funding::calculate_amm_funding_payment(
             market.base_asset_amount_long,
             market.base_asset_amount_short,
@@ -4788,15 +4687,10 @@ pub fn resolve_spot_bankruptcy(
         )?;
     }
 
-    // OtterSec #130: assets can arrive after the latch is set, through the permissionless
-    // revenue-share sweep or keeper filler rewards. Every route that could apply them to the debt is
-    // closed to a bankrupt user, and this resolver reads only the liability row. A stale latch would
-    // socialize the whole borrow while the new asset became withdrawable.
-    //
-    // If a realizable asset is present, clear the latch and return without drawing. Ordinary
-    // liquidation then seizes it and re-latches for the real residual. Commit the un-latch instead of
-    // erroring, which would wedge both paths. This tests only for assets, not the full predicate.
-    // It sits above the OtterSec #52 check because it draws nothing.
+    // OtterSec #130: assets can arrive after the latch through the permissionless revenue-share
+    // sweep or keeper filler rewards, and a stale latch would socialize the whole borrow while
+    // the new asset became withdrawable. Clear the latch and return without drawing. Ordinary
+    // liquidation then seizes the asset and re-latches for the real residual.
     if has_realizable_spot_assets_for_setoff(user, &maps.spot_market_map)? {
         msg!("stale cross-margin bankruptcy latch (assets present); un-latching without drawing");
         user.exit_cross_margin_bankruptcy();
@@ -4858,18 +4752,10 @@ pub fn resolve_spot_bankruptcy(
         MarginContext::standard(MarginRequirementType::Maintenance),
     )?;
 
-    // Accrue the borrow market's cumulative interest to `now` before reading
-    // the borrow amount. `SpotPosition::get_token_amount` scales the position
-    // by `cumulative_borrow_interest`, so a stale (un-accrued) index would clear
-    // the debt at less than its current value — under-drawing the revenue-pool
-    // and IF tranches, under-socializing the residual, and forgiving the
-    // interest accrued since the last touch. Pass `None` (interest + token/util
-    // TWAPs only, no oracle price data): the fix only needs the interest index
-    // refreshed, and interest accrual does not depend on the oracle. Feeding the
-    // oracle price here would also stamp the market's `historical_oracle_data`
-    // (conf/delay/TWAPs) as a side effect of a bankruptcy resolution — state
-    // this path never reads — so it is deliberately omitted, matching the
-    // sibling `resolve_perp_pnl_deficit` refresh.
+    // Accrue the borrow market's cumulative interest to `now` before reading the borrow
+    // amount. A stale index would clear the debt at less than its current value, and
+    // under-draw the revenue-pool and IF tranches. `None` refreshes interest alone. An
+    // oracle price would also stamp `historical_oracle_data`, which this path never reads.
     {
         let spot_market = &mut maps.spot_market_map.get_ref_mut(&market_index)?;
         update_spot_market_cumulative_interest(spot_market, None, now, funding_paused)?;
@@ -4903,11 +4789,10 @@ pub fn resolve_spot_bankruptcy(
         )?
     };
 
-    // OtterSec #145: an account can reach this resolver holding unfundable perp claims, because its
-    // liability is a spot borrow and the OtterSec #52 precedence above does not divert it. Wind them up here
-    // too, or the tranches cover the borrow and the claim stays live to collect later.
-    //
-    // Bounded by the borrow this call covers, for the reason given in `resolve_perp_bankruptcy`.
+    // OtterSec #145: an account can reach this resolver holding unfundable perp claims, because
+    // its liability is a spot borrow and the OtterSec #52 precedence above does not divert it.
+    // Wind them up here too, or the tranches cover the borrow and the claim stays live to
+    // collect later. Bounded by the borrow this call covers, as in `resolve_perp_bankruptcy`.
     extinguish_unfundable_perp_claims(
         user,
         &maps.perp_market_map,
@@ -5124,6 +5009,7 @@ mod clob_guard_tests {
             open_bids: 1,
             ..PerpPosition::default()
         };
+
         user.orders[0] = Order {
             status: OrderStatus::Open,
             market_type: MarketType::Perp,

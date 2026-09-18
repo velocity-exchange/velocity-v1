@@ -292,6 +292,7 @@ pub mod liquidate_perp {
             liquidator.perp_positions[0].quote_asset_amount,
             -99 * QUOTE_PRECISION_I64
         );
+
         let market_after = maps.perp_market_map.get_ref(&0).unwrap();
         assert_eq!(market_after.fee_ledger.total_liquidation_fee, 0);
     }
@@ -829,6 +830,7 @@ pub mod liquidate_perp {
             liquidator.perp_positions[0].quote_asset_amount,
             101 * QUOTE_PRECISION_I64
         );
+
         let market_after = maps.perp_market_map.get_ref(&0).unwrap();
         assert_eq!(market_after.fee_ledger.total_liquidation_fee, 0);
     }
@@ -1233,6 +1235,7 @@ pub mod liquidate_perp {
             total_collateral.unsigned_abs(),
             margin_requirement_plus_buffer
         );
+
         let oracle_price = maps
             .oracle_map
             .get_price_data(&(
@@ -1419,6 +1422,7 @@ pub mod liquidate_perp {
             liquidator.perp_positions[0].quote_asset_amount,
             -99 * QUOTE_PRECISION_I64
         );
+
         let market_after = maps.perp_market_map.get_ref(&0).unwrap();
         // IF-first split: the IF keeps its full 1% (margin budget allowed it),
         // the protocol captures its 0.5% on top; total_liquidation_fee records
@@ -1801,6 +1805,7 @@ pub mod liquidate_perp {
             liquidator.perp_positions[0].quote_asset_amount,
             -99 * QUOTE_PRECISION_I64 / 100
         );
+
         let market_after = maps.perp_market_map.get_ref(&0).unwrap();
         assert_eq!(
             market_after.fee_ledger.total_liquidation_fee,
@@ -2738,6 +2743,7 @@ pub mod liquidate_perp_with_fill {
         solana_program::{clock::Clock, pubkey::Pubkey},
         std::str::FromStr,
     };
+
     /// The three steps a with-fill liquidation takes, as the handler runs
     /// them: size and place, fill, settle. These tests fill against the vAMM
     /// and the loaded makers with no external book, which is what the
@@ -2767,6 +2773,7 @@ pub mod liquidate_perp_with_fill {
             liquidator,
             liquidator_key,
         };
+
         match place_liquidation_order(market_index, refreshed(), maps, clock, state)? {
             LiquidationStep::Settled => Ok(0),
             LiquidationStep::Placed(mut placed) => {
@@ -2786,6 +2793,7 @@ pub mod liquidate_perp_with_fill {
                     &mut None,
                     false,
                 )?;
+
                 settle_liquidation_fill(placed, filled, refreshed(), maps, clock, state)
             }
         }
@@ -6590,6 +6598,7 @@ pub mod liquidate_perp_pnl_for_deposit {
         );
         (result, user.spot_positions[0].scaled_balance)
     }
+
     // The seizure premium scales with the deposit's asset weight, so whether the
     // transfer helps or hurts depends on that weight (OtterSec #25). At a 2%
     // liquidation buffer against a 2% perp and 0.1% deposit liquidator fee, the
@@ -6763,6 +6772,7 @@ pub mod liquidate_perp_pnl_for_deposit {
         assert_eq!(liquidator.spot_positions[1].scaled_balance, 505555000);
         assert_eq!(liquidator.perp_positions[0].quote_asset_amount, -50000000);
     }
+
     // When the perp + asset liquidator fees exceed the liquidation margin buffer,
     // transferring pnl-for-deposit *worsens* the account's (buffered) margin
     // shortage (OtterSec #25) — the asset premium the liquidator collects
@@ -6904,6 +6914,7 @@ pub mod liquidate_perp_pnl_for_deposit {
         );
         assert_eq!(result, Err(ErrorCode::LiquidationWorsensAccountHealth));
     }
+
     // A degradation of less than a dollar must revert too (OtterSec #25).
     // The liquidator picks `liquidator_max_pnl_transfer`, so any tolerance on this
     // guard is an amount the liquidator can stay under and repeat until the
@@ -8879,11 +8890,10 @@ pub mod resolve_perp_bankruptcy {
             expected_market.cumulative_funding_rate_long as i64;
         expected_market.amm.last_cumulative_funding_rate_short =
             expected_market.cumulative_funding_rate_short as i64;
-        // Model the production invariant: update_funding_rate keeps the AMM
-        // funding stamp in sync with the market cum rates, so on entry the stamp
-        // is not lagging and the OtterSec #89 settle-first is a no-op (without this the
-        // harness's default-zero stamp would make the settle realize a spurious
-        // payment and shift total_fee_minus_distributions).
+        // update_funding_rate keeps the AMM stamp synced with the market cum
+        // rates, so the OtterSec #89 settle-first is a no-op on entry. Without
+        // this the harness's default-zero stamp would realize a spurious
+        // payment and shift total_fee_minus_distributions.
         {
             let mut m = maps.perp_market_map.get_ref_mut(&0).unwrap();
             m.amm.last_cumulative_funding_rate_long = m.cumulative_funding_rate_long as i64;
@@ -8910,6 +8920,7 @@ pub mod resolve_perp_bankruptcy {
             expected_market,
             maps.perp_market_map.get_ref(&0).unwrap().clone()
         );
+
         let mut affected_long_user = User {
             orders: [Order::default(); 32],
             perp_positions: get_positions(PerpPosition {
@@ -9521,6 +9532,7 @@ pub mod resolve_perp_bankruptcy {
             expected_market,
             maps.perp_market_map.get_ref(&0).unwrap().clone()
         );
+
         let mut affected_long_user = User {
             orders: [Order::default(); 32],
             perp_positions: get_positions(PerpPosition {
@@ -10163,6 +10175,7 @@ pub mod resolve_perp_bankruptcy {
                 .pending_bankruptcy_claims,
             1
         );
+
         // a second latch counts the same debt once
         flag_perp_bankruptcy_claim(&mut user, 0, &maps.perp_market_map).unwrap();
         assert_eq!(
@@ -10172,6 +10185,7 @@ pub mod resolve_perp_bankruptcy {
                 .pending_bankruptcy_claims,
             1
         );
+
         // the floor alone would protect nothing here
         assert_eq!(
             maps.perp_market_map
@@ -11009,6 +11023,7 @@ pub mod resolve_perp_bankruptcy {
                 .pending_bankruptcy_claims,
             1
         );
+
         let mut liquidator = User::default();
         let user_key = Pubkey::default();
         let liquidator_key = Pubkey::default();
@@ -11386,6 +11401,7 @@ pub mod resolve_spot_bankruptcy {
             expected_spot_market,
             *maps.spot_market_map.get_ref(&0).unwrap()
         );
+
         let spot_market = maps.spot_market_map.get_ref_mut(&0).unwrap();
         let deposit_balance = spot_market.deposit_balance;
         let deposit_token_amount =
@@ -11623,6 +11639,7 @@ pub mod resolve_spot_bankruptcy {
             expected_spot_market,
             *maps.spot_market_map.get_ref(&0).unwrap()
         );
+
         let spot_market = maps.spot_market_map.get_ref_mut(&0).unwrap();
         let deposit_balance = spot_market.deposit_balance;
         let deposit_token_amount =
@@ -11756,6 +11773,7 @@ pub mod resolve_spot_bankruptcy {
             expected_spot_market,
             *maps.spot_market_map.get_ref(&0).unwrap()
         );
+
         let spot_market = maps.spot_market_map.get_ref_mut(&0).unwrap();
         let deposit_balance = spot_market.deposit_balance;
         let deposit_token_amount =
@@ -11892,6 +11910,7 @@ pub mod resolve_spot_bankruptcy {
             expected_spot_market,
             *maps.spot_market_map.get_ref(&0).unwrap()
         );
+
         let spot_market = maps.spot_market_map.get_ref_mut(&0).unwrap();
         let deposit_balance = spot_market.deposit_balance;
         let deposit_token_amount =
@@ -12034,6 +12053,7 @@ pub mod resolve_spot_bankruptcy {
             expected_spot_market,
             *maps.spot_market_map.get_ref(&0).unwrap()
         );
+
         let spot_market = maps.spot_market_map.get_ref_mut(&0).unwrap();
         let deposit_balance = spot_market.deposit_balance;
         let deposit_token_amount =
@@ -13371,6 +13391,7 @@ pub mod liquidate_isolated_perp {
             liquidator.perp_positions[0].quote_asset_amount,
             -99 * QUOTE_PRECISION_I64
         );
+
         let market_after = maps.perp_market_map.get_ref(&0).unwrap();
         assert_eq!(market_after.fee_ledger.total_liquidation_fee, 0);
     }
@@ -13509,6 +13530,7 @@ pub mod liquidate_isolated_perp {
             liquidator.perp_positions[0].quote_asset_amount,
             101 * QUOTE_PRECISION_I64
         );
+
         let market_after = maps.perp_market_map.get_ref(&0).unwrap();
         assert_eq!(market_after.fee_ledger.total_liquidation_fee, 0);
     }
@@ -13653,6 +13675,7 @@ pub mod liquidate_isolated_perp {
             total_collateral.unsigned_abs(),
             margin_requirement_plus_buffer
         );
+
         let oracle_price = maps
             .oracle_map
             .get_price_data(&(

@@ -27,13 +27,10 @@ import {
 } from './time';
 
 /**
- * Auction interpolation progress. This mirrors the program's
- * `auction_progress`. The numerator is the elapsed wall clock time in
- * milliseconds, integrated per slot duration regime and capped at the
- * auction's wall clock length. The denominator is that length.
- * `order.auctionDuration` is stored in 400ms units. One such unit is one slot
- * at the 400ms baseline, where this matches the earlier per-slot
- * interpolation.
+ * Auction interpolation progress. Mirrors the program's `auction_progress`. The numerator is
+ * elapsed wall clock time in milliseconds, integrated per slot duration regime and capped at the
+ * auction's wall clock length. The denominator is that length. `order.auctionDuration` is stored
+ * in 400ms units, one unit per slot at the 400ms baseline.
  */
 function auctionProgress(
 	order: Order,
@@ -387,12 +384,11 @@ export function deriveOracleAuctionParams({
 }
 
 /**
- * The tier band for a perp auction's width, as divisors of the oracle TWAP. This mirrors
+ * The tier band for a perp auction's width, as divisors of the oracle TWAP. Mirrors
  * `PerpMarket::get_auction_end_min_max_divisors` in `state/perp_market.rs`. A larger divisor
- * gives a smaller price, so `oracleTwap / minDivisor` is the narrowest auction the tier allows
- * and `oracleTwap / maxDivisor` is the widest. The widest is 2 percent for tier A, 5 percent for
- * B and C, 10 percent for Speculative, and 20 percent for HighlySpeculative and Isolated.
- * @param perpMarket The market whose `contractTier` selects the band.
+ * gives a smaller price: `oracleTwap / minDivisor` is the narrowest auction the tier allows,
+ * `oracleTwap / maxDivisor` the widest. The widest is 2 percent for tier A, 5 percent for B and
+ * C, 10 percent for Speculative, and 20 percent for HighlySpeculative and Isolated.
  * @returns `{ minDivisor, maxDivisor }` to divide the oracle TWAP by.
  */
 export function getAuctionEndMinMaxDivisors(perpMarket: PerpMarketAccount): {
@@ -414,14 +410,16 @@ export function getAuctionEndMinMaxDivisors(perpMarket: PerpMarketAccount): {
 }
 
 /**
- * The widest distance from the oracle TWAP that a baseline auction start offset may sit. This
- * mirrors `OrderParams::get_perp_baseline_max_price_offset` in `state/order_params.rs`. The
- * value is `oracleTwap / maxDivisor` from `getAuctionEndMinMaxDivisors`. An auction that starts
- * further from the oracle than the widest auction the tier permits is nonsense, so the same
- * number bounds the start offset (OtterSec #146).
- * @param perpMarket The market that provides the oracle TWAP and the contract tier.
- * @returns A non-negative bound, in PRICE_PRECISION (1e6). The program clamps the start offset
- *   to plus or minus this value.
+ * allow-verbose: an OtterSec-audited bound (#146); the citation, the Rust cross-reference, and
+ * the unit must all survive together.
+ *
+ * The widest distance from the oracle TWAP that a baseline auction start offset may sit. Mirrors
+ * `OrderParams::get_perp_baseline_max_price_offset` in `state/order_params.rs`: the value is
+ * `oracleTwap / maxDivisor` from {@link getAuctionEndMinMaxDivisors}. An auction starting further
+ * from the oracle than the tier's widest auction is nonsense, so the same number bounds the start
+ * offset (OtterSec #146).
+ * @returns A non-negative bound, in PRICE_PRECISION (1e6). The program clamps the start offset to
+ *   plus or minus this value.
  */
 export function getPerpBaselineMaxPriceOffset(
 	perpMarket: PerpMarketAccount

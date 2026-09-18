@@ -31,12 +31,8 @@ use {
 
 const SO_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/deploy/clob.so");
 
-/// Whole base units per order, the denominator every market carries.
-///
-/// The harness speaks whole units: a size a test writes is multiplied by this
-/// on the way into the program, and a size the program reports is divided by
-/// it on the way back. Quote amounts are therefore `price x size` exactly as
-/// they read, and the tests stay about the book rather than about scaling.
+/// The harness uses whole base units.
+/// Sizes are scaled on input/output; prices and quotes read directly.
 const UNIT: u64 = BASE_PRECISION;
 
 /// Arena capacity for test markets (chosen per market at creation).
@@ -125,6 +121,7 @@ fn setup_with_capacity(capacity: usize) -> Ctx {
         place_authority: addr(place_auth.pubkey()),
         market: addr(market),
     });
+
     let mut ctx = Ctx {
         svm,
         payer,
@@ -133,6 +130,7 @@ fn setup_with_capacity(capacity: usize) -> Ctx {
         market_kp,
         market,
     };
+
     send(&mut ctx, ix).unwrap();
     ctx
 }
@@ -191,6 +189,7 @@ fn send_with_budget(
             signers.push(kp);
         }
     }
+
     let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &signers).unwrap();
     ctx.svm.send_transaction(tx)
 }
@@ -256,6 +255,7 @@ fn read_response(ctx: &Ctx, meta: &TransactionMetadata) -> Vec<u8> {
         meta.return_data.program_id.to_bytes(),
         program_id().to_bytes()
     );
+
     let offset = parse_u32(&meta.return_data.data) as usize;
     let len = parse_u32(&meta.return_data.data[4..]) as usize;
     let account = ctx.svm.get_account(&ctx.market).unwrap();
@@ -328,7 +328,7 @@ fn quote_meta_limited(
     let ix = instruction::QuoteV0 {
         args: QuoteArgsV0 {
             taker_served_window: true,
-            consume_reservation: false,
+            include_taker_origin_reservations: false,
             caps: UserCapsV0::EMPTY,
             reference_price: 0,
             direction,
@@ -341,6 +341,7 @@ fn quote_meta_limited(
     .to_instruction(accounts::QuoteV0 {
         market: addr(ctx.market),
     });
+
     send(ctx, ix)
 }
 
@@ -364,7 +365,7 @@ fn quote_consuming(ctx: &mut Ctx, direction: Direction, size: u64) -> Vec<(u64, 
     let ix = instruction::QuoteV0 {
         args: QuoteArgsV0 {
             taker_served_window: true,
-            consume_reservation: true,
+            include_taker_origin_reservations: true,
             caps: UserCapsV0::EMPTY,
             reference_price: 0,
             direction,
@@ -377,6 +378,7 @@ fn quote_consuming(ctx: &mut Ctx, direction: Direction, size: u64) -> Vec<(u64, 
     .to_instruction(accounts::QuoteV0 {
         market: addr(ctx.market),
     });
+
     let meta = send(ctx, ix).unwrap();
     parse_levels(&read_response(ctx, &meta))
 }
@@ -390,7 +392,7 @@ fn execute_consuming(
     let ix = instruction::ExecuteV0 {
         args: ExecuteArgsV0 {
             taker_served_window: true,
-            consume_reservation: true,
+            include_taker_origin_reservations: true,
             caps: UserCapsV0::EMPTY,
             reference_price: 0,
             direction,
@@ -403,6 +405,7 @@ fn execute_consuming(
         market: addr(ctx.market),
         place_authority: addr(ctx.place_auth.pubkey()),
     });
+
     let meta = send(ctx, ix).unwrap();
     parse_balance_changes(&read_response(ctx, &meta))
 }
@@ -431,7 +434,7 @@ fn execute_meta_users(
     let ix = instruction::ExecuteV0 {
         args: ExecuteArgsV0 {
             taker_served_window: true,
-            consume_reservation: false,
+            include_taker_origin_reservations: false,
             caps: UserCapsV0::EMPTY,
             reference_price: 0,
             direction,
@@ -444,6 +447,7 @@ fn execute_meta_users(
         market: addr(ctx.market),
         place_authority: addr(ctx.place_auth.pubkey()),
     });
+
     send(ctx, ix)
 }
 
@@ -480,6 +484,7 @@ fn evict_worst(
         market: addr(ctx.market),
         place_authority: addr(ctx.place_auth.pubkey()),
     });
+
     send(ctx, ix)
 }
 
@@ -492,6 +497,7 @@ fn next_removal(ctx: &mut Ctx, kind: ClobRemovalKindV0) -> OrderViewV0 {
     .to_instruction(accounts::NextRemovalV0Accounts {
         market: addr(ctx.market),
     });
+
     let meta = send(ctx, ix).expect("next_removal_v0 runs");
     anchor_lang::wincode::config::deserialize(&meta.return_data.data, anchor_lang::BORSH_CONFIG)
         .expect("decodes as NextRemovalV0")
@@ -508,6 +514,7 @@ fn remove_expired(
         market: addr(ctx.market),
         place_authority: addr(ctx.place_auth.pubkey()),
     });
+
     send(ctx, ix)
 }
 
@@ -563,6 +570,7 @@ fn program_data(meta: &TransactionMetadata) -> Vec<u8> {
         !encoded.contains(' '),
         "event was logged as multiple fields"
     );
+
     let mut bytes = Vec::new();
     let (mut accumulator, mut bits) = (0u32, 0u32);
     for byte in encoded.bytes().filter(|byte| *byte != b'=') {
@@ -577,6 +585,7 @@ fn program_data(meta: &TransactionMetadata) -> Vec<u8> {
             bytes.push((accumulator >> bits) as u8);
         }
     }
+
     bytes
 }
 
@@ -602,6 +611,7 @@ fn parse_cancel_all(b: &[u8]) -> (u64, u64, u32, u32, bool) {
         34 + 8 + 8 + 4 + 4 + 4 + 4 + 1,
         "outcome wire width"
     );
+
     (
         parse_u64(&b[34..]),
         parse_u64(&b[42..]),
@@ -620,6 +630,7 @@ fn parse_cancel_all_record(bytes: &[u8]) -> (bool, Vec<u32>) {
         OrdersCancelRecordV0::DISCRIMINATOR,
         "not a cancel-all record"
     );
+
     // [disc 8][authority 32][ts 8][bid base 8][ask base 8][market 2][sub 2]
     // [sides 1][exhaustive 1][count 4][client ids…]
     const IDS: usize = 8 + 32 + 8 + 8 + 8 + 2 + 2 + 1 + 1 + 4;
@@ -682,6 +693,7 @@ fn price_time_priority_and_level_aggregation() {
         quote(&mut ctx, Direction::Long, 100),
         vec![(100, 12), (101, 10)]
     );
+
     // Quote caps at the requested size.
     assert_eq!(quote(&mut ctx, Direction::Long, 6), vec![(100, 6)]);
 
@@ -695,6 +707,7 @@ fn price_time_priority_and_level_aggregation() {
         quote(&mut ctx, Direction::Long, 100),
         vec![(100, 4), (101, 10)]
     );
+
     let state = market_state(&ctx);
     assert_eq!(state.ask_count, 2);
     assert_eq!(state.bid_count, 1);
@@ -718,6 +731,7 @@ fn cancel_verifies_hint_and_user() {
             market: addr(ctx.market),
             place_authority: addr(ctx.place_auth.pubkey()),
         });
+
         send(ctx, ix)
     };
 
@@ -736,12 +750,14 @@ fn cancel_verifies_hint_and_user() {
         cancel(&mut ctx, addr(Pubkey::new_unique()), order_ref),
         err_code(clob::error::ClobError::OrderUserMismatch),
     );
+
     cancel(&mut ctx, user, order_ref).unwrap();
     // Freed node: same hint can't cancel twice.
     assert_clob_err(
         cancel(&mut ctx, user, order_ref),
         err_code(clob::error::ClobError::StaleOrderRef),
     );
+
     let state = market_state(&ctx);
     assert_eq!(state.bid_count, 0);
     assert_eq!(state.free_count, CAPACITY as u32);
@@ -765,12 +781,14 @@ fn place_rejects_off_grid_undersized_and_bad_authority() {
         market: addr(ctx.market),
         authority: addr(ctx.admin.pubkey()),
     });
+
     send(&mut ctx, ix).unwrap();
 
     let try_place = |ctx: &mut Ctx, price: u64, size: u64| {
         let ix = place_ix(ctx, place_args(Side::Bid, price, size), user);
         send(ctx, ix)
     };
+
     assert_clob_err(
         try_place(&mut ctx, 101, 10),
         err_code(clob::error::ClobError::PriceNotTickAligned),
@@ -783,6 +801,7 @@ fn place_rejects_off_grid_undersized_and_bad_authority() {
         try_place(&mut ctx, 100, 5),
         err_code(clob::error::ClobError::OrderTooSmall),
     );
+
     try_place(&mut ctx, 100, 10).unwrap();
 
     // A random signer can't place.
@@ -797,6 +816,7 @@ fn place_rejects_off_grid_undersized_and_bad_authority() {
         market: addr(ctx.market),
         place_authority: addr(rando.pubkey()),
     });
+
     ctx.svm.airdrop(&rando.pubkey(), 1_000_000_000).unwrap();
     ctx.svm.expire_blockhash();
     let blockhash = ctx.svm.latest_blockhash();
@@ -821,7 +841,7 @@ fn execute_rejects_unauthorized_caller() {
 
     let args = || ExecuteArgsV0 {
         taker_served_window: true,
-        consume_reservation: false,
+        include_taker_origin_reservations: false,
         caps: UserCapsV0::EMPTY,
         reference_price: 0,
         direction: Direction::Long,
@@ -858,6 +878,7 @@ fn execute_rejects_unauthorized_caller() {
     for meta in &mut unsigned.accounts {
         meta.is_signer = false;
     }
+
     ctx.svm.expire_blockhash();
     let blockhash = ctx.svm.latest_blockhash();
     let msg = Message::new_with_blockhash(&[unsigned], Some(&ctx.payer.pubkey()), &blockhash);
@@ -870,6 +891,7 @@ fn execute_rejects_unauthorized_caller() {
             .expect_err("expected failure")
             .err
     );
+
     assert!(
         err.contains("MissingRequiredSignature"),
         "expected MissingRequiredSignature, got {err}"
@@ -891,10 +913,12 @@ fn hard_cap_rejects_placement_and_crank_evicts_tail() {
         let ix = place_ix(&ctx, place_args(Side::Bid, 100 + i, 1), user);
         send(&mut ctx, ix).unwrap();
     }
+
     assert_clob_err(
         evict_worst(&mut ctx, Side::Bid),
         err_code(clob::error::ClobError::BelowEvictThreshold),
     );
+
     assert!(!next_removal(&mut ctx, ClobRemovalKindV0::Evictable).found());
 
     // At the hard cap every placement is rejected, even better-priced —
@@ -903,6 +927,7 @@ fn hard_cap_rejects_placement_and_crank_evicts_tail() {
         let ix = place_ix(&ctx, place_args(Side::Bid, 100 + i, 1), user);
         send(&mut ctx, ix).unwrap();
     }
+
     let ix = place_ix(&ctx, place_args(Side::Bid, 200, 1), user);
     assert_clob_err(
         send(&mut ctx, ix),
@@ -924,6 +949,7 @@ fn hard_cap_rejects_placement_and_crank_evicts_tail() {
         (evicted_user, price, base, side, taker_origin),
         (user.to_bytes(), 100, 1, Side::Bid.to_u8(), false)
     );
+
     place(&mut ctx, place_args(Side::Bid, 200, 1), user);
     let state = market_state(&ctx);
     assert_eq!(state.bid_count, 8);
@@ -934,6 +960,7 @@ fn hard_cap_rejects_placement_and_crank_evicts_tail() {
         evict_worst(&mut ctx, Side::Ask),
         err_code(clob::error::ClobError::BelowEvictThreshold),
     );
+
     // With only the bid side over the threshold, that is the side the book
     // names.
     assert_eq!(
@@ -945,6 +972,7 @@ fn hard_cap_rejects_placement_and_crank_evicts_tail() {
     for i in 0..8u64 {
         place(&mut ctx, place_args(Side::Ask, 300 + i, 1), user);
     }
+
     evict_worst(&mut ctx, Side::Bid).unwrap();
     let work = next_removal(&mut ctx, ClobRemovalKindV0::Evictable);
     assert_eq!(work.side, Side::Ask);
@@ -981,10 +1009,12 @@ fn auction_delay_is_clamped_to_market_bounds() {
         },
         user,
     );
+
     assert_clob_err(
         send(&mut ctx, ix),
         err_code(clob::error::ClobError::InvalidActivationDelay),
     );
+
     // A 20-slot auction: invisible at +19, live at +20.
     let ix = place_ix(
         &ctx,
@@ -994,6 +1024,7 @@ fn auction_delay_is_clamped_to_market_bounds() {
         },
         user,
     );
+
     send(&mut ctx, ix).unwrap();
     ctx.svm.warp_to_slot(29);
     assert!(quote(&mut ctx, Direction::Long, 5).is_empty());
@@ -1017,6 +1048,7 @@ fn zero_delay_activates_immediately() {
         },
         user,
     );
+
     send(&mut ctx, ix).unwrap();
     // Active immediately, same slot.
     assert_eq!(quote(&mut ctx, Direction::Long, 5).len(), 1);
@@ -1052,6 +1084,7 @@ fn set_crank_conditions(ctx: &mut Ctx, resolver: Pubkey) -> u32 {
         market: addr(ctx.market),
         place_authority: addr(ctx.place_auth.pubkey()),
     });
+
     let meta = send(ctx, ix).expect("set_crank_conditions_v0 runs");
     u32::from_le_bytes(meta.return_data.data[..4].try_into().unwrap())
 }
@@ -1161,21 +1194,25 @@ fn the_book_hosts_the_conditions_that_watch_its_own_state() {
                 disc: [0u8; 8],
                 min_payment: 0,
             },
+
             activation: CrankResolverV0 {
                 program: resolver.to_bytes(),
                 disc: [2; 8],
                 min_payment: 2_000,
             },
+
             capacity: CrankResolverV0 {
                 program: resolver.to_bytes(),
                 disc: [3; 8],
                 min_payment: 3_000,
             },
+
             cross: CrankResolverV0 {
                 program: resolver.to_bytes(),
                 disc: [4; 8],
                 min_payment: 4_000,
             },
+
             accounts: vec![CrankAccountV0 {
                 address: ctx.market.to_bytes(),
                 writable: 1,
@@ -1186,6 +1223,7 @@ fn the_book_hosts_the_conditions_that_watch_its_own_state() {
         market: addr(ctx.market),
         place_authority: addr(ctx.place_auth.pubkey()),
     });
+
     send(&mut ctx, ix).unwrap();
     let conditions = crank_block(&ctx, offset);
     assert!(!conditions[CRANK_EXPIRY].is_active());
@@ -1205,21 +1243,25 @@ fn registering_a_resolver_is_place_authority_only() {
                 disc: [1; 8],
                 min_payment: 1,
             },
+
             activation: CrankResolverV0 {
                 program: [0u8; 32],
                 disc: [0u8; 8],
                 min_payment: 0,
             },
+
             capacity: CrankResolverV0 {
                 program: [0u8; 32],
                 disc: [0u8; 8],
                 min_payment: 0,
             },
+
             cross: CrankResolverV0 {
                 program: [0u8; 32],
                 disc: [0u8; 8],
                 min_payment: 0,
             },
+
             accounts: vec![],
         },
     }
@@ -1227,6 +1269,7 @@ fn registering_a_resolver_is_place_authority_only() {
         market: addr(ctx.market),
         place_authority: addr(stranger.pubkey()),
     });
+
     assert_clob_err(
         send_signed(&mut ctx, ix, &stranger),
         err_code(clob::error::ClobError::InvalidAuthority),
@@ -1244,6 +1287,7 @@ fn orders(ctx: &mut Ctx, refs: &[OrderRefV0]) -> Vec<OrderViewV0> {
     .to_instruction(accounts::OrdersV0Accounts {
         market: addr(ctx.market),
     });
+
     let meta = send(ctx, ix).expect("orders_v0 runs");
     let answer: clob::OrdersV0 = anchor_lang::wincode::config::deserialize(
         &meta.return_data.data,
@@ -1318,6 +1362,7 @@ fn the_book_describes_the_orders_a_caller_holds_refs_for() {
     .to_instruction(accounts::OrdersV0Accounts {
         market: addr(ctx.market),
     });
+
     assert_clob_err(
         send(&mut ctx, ix),
         err_code(clob::error::ClobError::InvalidConfig),
@@ -1337,6 +1382,7 @@ fn expired_orders_are_skipped_and_cranked_off() {
         },
         user,
     );
+
     advance_slot(&mut ctx, 1);
 
     // Not expired yet: the crank can't reclaim it.
@@ -1371,6 +1417,7 @@ fn expired_orders_are_skipped_and_cranked_off() {
         (removed_user, base, side, taker_origin),
         (user.to_bytes(), 5, Side::Ask.to_u8(), false)
     );
+
     let state = market_state(&ctx);
     assert_eq!(state.ask_count, 0);
     assert_eq!(state.free_count, CAPACITY as u32);
@@ -1390,6 +1437,7 @@ fn expired_orders_are_skipped_and_cranked_off() {
         },
         user,
     );
+
     assert_clob_err(
         send(&mut ctx, ix),
         err_code(clob::error::ClobError::MaxTsInPast),
@@ -1416,6 +1464,7 @@ fn unknown_user_grace_skips_fresh_orders_and_stops_on_aged_ones() {
         quote_withheld(&mut ctx, Direction::Long, 12, Some(vec![user_b])),
         None
     );
+
     let changes = execute_users(&mut ctx, Direction::Long, 7, Some(vec![user_b]));
     assert_eq!(changes, vec![(user_b.to_bytes(), 7, 707, vec![2])]);
     // A's order still resting, untouched.
@@ -1432,6 +1481,7 @@ fn unknown_user_grace_skips_fresh_orders_and_stops_on_aged_ones() {
         Some((100, 5)),
         "the book says where it stopped and what it was holding there"
     );
+
     assert!(
         execute_users(&mut ctx, Direction::Long, 12, Some(vec![user_b])).is_empty(),
         "leaving out the best maker forfeits the book, it does not reach past it"
@@ -1465,6 +1515,7 @@ fn a_short_user_set_trades_less_of_the_book_not_a_worse_part() {
         quote_withheld(&mut ctx, Direction::Long, 12, Some(vec![best])),
         Some((101, 7))
     );
+
     let changes = execute_users(&mut ctx, Direction::Long, 12, Some(vec![best]));
     assert_eq!(changes, vec![(best.to_bytes(), 5, 500, vec![1])]);
 
@@ -1484,6 +1535,7 @@ fn set_blocking_min_size(ctx: &mut Ctx, size: u64) {
         market: addr(ctx.market),
         authority: addr(ctx.admin.pubkey()),
     });
+
     send(ctx, ix).unwrap();
 }
 
@@ -1568,12 +1620,13 @@ fn the_l3_read_flags_the_orders_that_can_end_a_walk() {
             direction: Direction::Long,
             size: 0,
             max_rows: 8,
-            consume_reservation: false,
+            include_taker_origin_reservations: false,
         },
     }
     .to_instruction(accounts::QuoteL3V0 {
         market: addr(ctx.market),
     });
+
     let meta = send(&mut ctx, ix).unwrap();
     let bytes = read_response(&mut ctx, &meta);
     let response = L3ResponseV0::parse(&bytes).expect("l3 response");
@@ -1655,6 +1708,7 @@ fn partial_fill_remainder_below_min_order_size_is_culled() {
         market: addr(ctx.market),
         authority: addr(ctx.admin.pubkey()),
     });
+
     send(&mut ctx, ix).unwrap();
 
     // 15 of 20 fills; the 5 remaining is below min and is culled with the
@@ -1702,6 +1756,7 @@ fn cancel_all_logs_every_removed_order_id_at_the_ceiling() {
         client_order_id += 1;
         client_order_id
     };
+
     for i in 0..per_side {
         let id = next_id();
         expected.push(id);
@@ -1766,6 +1821,7 @@ fn cancel_all_requires_the_place_authority() {
         send(&mut ctx, ix),
         err_code(clob::error::ClobError::InvalidAuthority),
     );
+
     assert_eq!(market_state(&ctx).bid_count, 1);
 }
 
@@ -1777,6 +1833,7 @@ fn cu_benchmarks() {
         let ix = place_ix(&ctx, place_args(Side::Bid, 100 + i, 10), user);
         send(&mut ctx, ix).unwrap();
     }
+
     advance_slot(&mut ctx, 1);
 
     // Place at the best of a nearly-full book (fills the side).
@@ -1790,7 +1847,7 @@ fn cu_benchmarks() {
     let ix = instruction::QuoteV0 {
         args: QuoteArgsV0 {
             taker_served_window: true,
-            consume_reservation: false,
+            include_taker_origin_reservations: false,
             caps: UserCapsV0::EMPTY,
             reference_price: 0,
             direction: Direction::Short,
@@ -1803,6 +1860,7 @@ fn cu_benchmarks() {
     .to_instruction(accounts::QuoteV0 {
         market: addr(ctx.market),
     });
+
     let quote_meta = send(&mut ctx, ix).unwrap();
 
     // Execute across 50 orders (one user, so the response stays small).
@@ -1823,6 +1881,7 @@ fn cu_benchmarks() {
         market: addr(ctx2.market),
         place_authority: addr(ctx2.place_auth.pubkey()),
     });
+
     let cancel_empty = send(&mut ctx2, cancel_ix).unwrap().compute_units_consumed;
 
     // Cancel out of a nearly-full side (relink cost at depth).
@@ -1830,6 +1889,7 @@ fn cu_benchmarks() {
     for i in 0..PER_SIDE as u64 - 1 {
         refs.push(place(&mut ctx2, place_args(Side::Bid, 1_000 + i, 10), u2));
     }
+
     let mid_ref = refs[refs.len() / 2];
     let cancel_ix = instruction::CancelOrderV0 {
         args: CancelOrderArgsV0 {
@@ -1842,6 +1902,7 @@ fn cu_benchmarks() {
         market: addr(ctx2.market),
         place_authority: addr(ctx2.place_auth.pubkey()),
     });
+
     let cancel_full = send(&mut ctx2, cancel_ix).unwrap().compute_units_consumed;
 
     let empty_place = {
@@ -1902,6 +1963,7 @@ fn cu_benchmark_cancel_all() {
                 market: addr(ctx.market),
                 place_authority: addr(ctx.place_auth.pubkey()),
             });
+
             send(&mut ctx, ix).unwrap().compute_units_consumed
         })
         .sum();
@@ -1910,6 +1972,7 @@ fn cu_benchmark_cancel_all() {
     (0..LADDER).for_each(|i| {
         place(&mut ctx, place_args(Side::Ask, 2_000 + i, 10), mine);
     });
+
     let ix = cancel_all_ix(&ctx, mine, CancelSidesV0::Both);
     let shallow_cu = send(&mut ctx, ix).unwrap().compute_units_consumed;
 
@@ -1921,9 +1984,11 @@ fn cu_benchmark_cancel_all() {
     (0..PER_SIDE as u64 - LADDER).for_each(|i| {
         place(&mut ctx, place_args(Side::Ask, 1_000 + i, 10), other);
     });
+
     (0..LADDER).for_each(|i| {
         place(&mut ctx, place_args(Side::Ask, 2_000 + i, 10), mine);
     });
+
     let ix = cancel_all_ix(&ctx, mine, CancelSidesV0::Both);
     let deep_cu = send_with_budget(&mut ctx, ix, Some(400_000))
         .unwrap()
@@ -1934,6 +1999,7 @@ fn cu_benchmark_cancel_all() {
          ({LADDER} orders behind a full {PER_SIDE}-deep side): {deep_cu}; \
          baseline {LADDER}× cancel_order_v0: {per_order_cu}"
     );
+
     assert!(
         shallow_cu < per_order_cu,
         "sweeping {LADDER} orders ({shallow_cu}) must beat cancelling them one at a \
@@ -1954,8 +2020,10 @@ fn cu_benchmark_interleaved_makers() {
             place_args(Side::Ask, 100 + i, 1),
             makers[(i % 8) as usize],
         );
+
         send(&mut ctx, ix).unwrap();
     }
+
     advance_slot(&mut ctx, 1);
 
     let meta = execute_meta_users(&mut ctx, Direction::Long, 64, Some(makers.clone())).unwrap();
@@ -1996,6 +2064,7 @@ fn an_execute_at_the_ceilings_fits_the_response_and_emits_the_record() {
         market: addr(ctx.market),
         authority: addr(ctx.admin.pubkey()),
     });
+
     send(&mut ctx, ix).unwrap();
 
     let orders: Vec<OrderRefV0> = (0..fills)
@@ -2015,7 +2084,7 @@ fn an_execute_at_the_ceilings_fits_the_response_and_emits_the_record() {
     let ix = instruction::ExecuteV0 {
         args: ExecuteArgsV0 {
             taker_served_window: true,
-            consume_reservation: false,
+            include_taker_origin_reservations: false,
             caps: UserCapsV0::EMPTY,
             reference_price: 0,
             direction: Direction::Long,
@@ -2028,6 +2097,7 @@ fn an_execute_at_the_ceilings_fits_the_response_and_emits_the_record() {
         market: addr(ctx.market),
         place_authority: addr(ctx.place_auth.pubkey()),
     });
+
     let meta = send_with_budget(&mut ctx, ix, Some(1_400_000)).unwrap();
     let response = read_response(&ctx, &meta);
     let changes = parse_balance_changes(&response);
@@ -2051,6 +2121,7 @@ fn an_execute_at_the_ceilings_fits_the_response_and_emits_the_record() {
             .collect(),
         cancelled_client_order_ids: vec![],
     };
+
     assert_eq!(program_data(&meta), Event::data(&expected));
     println!(
         "CU — execute({fills} fills, {fills} makers, at the ceilings): {}, response: {} bytes",
@@ -2068,6 +2139,7 @@ fn resize_grows_arena_and_per_side_capacity() {
         let ix = place_ix(&ctx, place_args(Side::Bid, 100 + i, 1), user);
         send(&mut ctx, ix).unwrap();
     }
+
     // Side full; every placement rejected until crank/resize.
     let ix = place_ix(&ctx, place_args(Side::Bid, 100, 1), user);
     assert_clob_err(
@@ -2085,6 +2157,7 @@ fn resize_grows_arena_and_per_side_capacity() {
         authority: addr(ctx.admin.pubkey()),
         system_program: addr(system_program()),
     });
+
     send(&mut ctx, ix).unwrap();
 
     let state = market_state(&ctx);
@@ -2100,6 +2173,7 @@ fn resize_grows_arena_and_per_side_capacity() {
         authority: addr(ctx.admin.pubkey()),
         system_program: addr(system_program()),
     });
+
     assert_clob_err(
         send(&mut ctx, ix),
         err_code(clob::error::ClobError::InvalidCapacity),
@@ -2110,6 +2184,7 @@ fn resize_grows_arena_and_per_side_capacity() {
         let ix = place_ix(&ctx, place_args(Side::Bid, 90 + i, 1), user);
         send(&mut ctx, ix).unwrap();
     }
+
     let state = market_state(&ctx);
     assert_eq!(state.bid_count, 16);
     assert_eq!(state.free_count, 32 - 16);
@@ -2119,7 +2194,7 @@ fn quote_taker(ctx: &mut Ctx, direction: Direction, size: u64, taker: Address) -
     let ix = instruction::QuoteV0 {
         args: QuoteArgsV0 {
             taker_served_window: true,
-            consume_reservation: false,
+            include_taker_origin_reservations: false,
             caps: UserCapsV0::EMPTY,
             reference_price: 0,
             direction,
@@ -2132,6 +2207,7 @@ fn quote_taker(ctx: &mut Ctx, direction: Direction, size: u64, taker: Address) -
     .to_instruction(accounts::QuoteV0 {
         market: addr(ctx.market),
     });
+
     let meta = send(ctx, ix).unwrap();
     parse_levels(&read_response(ctx, &meta))
 }
@@ -2145,7 +2221,7 @@ fn execute_taker(
     let ix = instruction::ExecuteV0 {
         args: ExecuteArgsV0 {
             taker_served_window: true,
-            consume_reservation: false,
+            include_taker_origin_reservations: false,
             caps: UserCapsV0::EMPTY,
             reference_price: 0,
             direction,
@@ -2158,6 +2234,7 @@ fn execute_taker(
         market: addr(ctx.market),
         place_authority: addr(ctx.place_auth.pubkey()),
     });
+
     let meta = send(ctx, ix).unwrap();
     parse_balance_changes(&read_response(ctx, &meta))
 }
@@ -2178,6 +2255,7 @@ fn taker_own_orders_are_skipped_for_self_trade_prevention() {
         quote_taker(&mut ctx, Direction::Long, 12, taker),
         vec![(101, 7)]
     );
+
     let changes = execute_taker(&mut ctx, Direction::Long, 12, taker);
     assert_eq!(changes, vec![(other.to_bytes(), 7, 707, vec![2])]);
     // The taker's own order still rests.
@@ -2200,6 +2278,7 @@ fn cancel(
         market: addr(ctx.market),
         place_authority: addr(ctx.place_auth.pubkey()),
     });
+
     send(ctx, ix)
 }
 
@@ -2274,6 +2353,7 @@ fn a_crossed_taker_remainder_and_the_depth_it_crosses_are_both_withheld() {
         quote_consuming(&mut ctx, Direction::Long, u64::MAX),
         vec![(99, 5)]
     );
+
     let changes = execute_consuming(&mut ctx, Direction::Long, 5);
     assert_eq!(changes, vec![(maker.to_bytes(), 5, 495, vec![2])]);
 
@@ -2305,6 +2385,7 @@ fn the_reservation_grace_window_is_settable_and_bounded() {
             market: addr(ctx.market),
             authority: addr(ctx.admin.pubkey()),
         });
+
         send(ctx, ix)
     };
 
@@ -2312,6 +2393,7 @@ fn the_reservation_grace_window_is_settable_and_bounded() {
         set_grace(&mut ctx, RESERVATION_GRACE_SLOTS_CEILING + 1),
         err_code(clob::error::ClobError::InvalidConfig),
     );
+
     set_grace(&mut ctx, RESERVATION_GRACE_SLOTS_CEILING).unwrap();
     assert_eq!(
         market_state(&ctx).reservation_grace_slots,
@@ -2407,6 +2489,7 @@ fn an_unactivated_counterparty_does_not_gate_the_fill() {
         },
         taker,
     );
+
     send(&mut ctx, ix).unwrap();
     let ix = place_ix(
         &ctx,
@@ -2416,6 +2499,7 @@ fn an_unactivated_counterparty_does_not_gate_the_fill() {
         },
         maker,
     );
+
     send(&mut ctx, ix).unwrap();
 
     // Slot 10: the ask cannot match, so the remainder is ordinary depth.
@@ -2452,6 +2536,7 @@ fn quote_and_execute_skip_the_same_order() {
         quote(&mut ctx, Direction::Long, u64::MAX),
         vec![(99, 5), (102, 5)]
     );
+
     // Execute honours exactly that: 10 base across the two makers, and the
     // remainder still resting between them.
     let changes = execute(&mut ctx, Direction::Long, u64::MAX);
@@ -2486,12 +2571,14 @@ fn cu_benchmark_quote_with_a_taker_origin_head() {
         let ix = place_ix(&ctx, place_args(Side::Bid, 100 + i, 10), user);
         send(&mut ctx, ix).unwrap();
     }
+
     // Best of the bid side, with an ask far above it so nothing crosses.
     let ix = place_ix(
         &ctx,
         taker_origin_args(Side::Bid, 100 + PER_SIDE as u64, 10),
         user,
     );
+
     send(&mut ctx, ix).unwrap();
     let ix = place_ix(&ctx, place_args(Side::Ask, 100_000, 10), user);
     send(&mut ctx, ix).unwrap();
@@ -2500,7 +2587,7 @@ fn cu_benchmark_quote_with_a_taker_origin_head() {
     let ix = instruction::QuoteV0 {
         args: QuoteArgsV0 {
             taker_served_window: true,
-            consume_reservation: false,
+            include_taker_origin_reservations: false,
             caps: UserCapsV0::EMPTY,
             reference_price: 0,
             direction: Direction::Short,
@@ -2513,6 +2600,7 @@ fn cu_benchmark_quote_with_a_taker_origin_head() {
     .to_instruction(accounts::QuoteV0 {
         market: addr(ctx.market),
     });
+
     let meta = send(&mut ctx, ix).unwrap();
     // 64, not the 128 orders resting: the ladder stops at this market's
     // `max_execute_fills`, because a quote may only promise what one execute
@@ -2546,18 +2634,20 @@ fn cu_benchmark_quote_and_execute_with_claimants_resting() {
             let ix = place_ix(&ctx, place_args(Side::Bid, 1_000 - i, SIZE), maker);
             send(&mut ctx, ix).unwrap();
         }
+
         // Remainders that cross the whole bid side, so every claim is tested
         // and honoured rather than skipped on price.
         for _ in 0..claimants {
             let ix = place_ix(&ctx, taker_origin_args(Side::Ask, 1, SIZE), taker);
             send(&mut ctx, ix).unwrap();
         }
+
         advance_slot(&mut ctx, 1);
 
         let ix = instruction::QuoteV0 {
             args: QuoteArgsV0 {
                 taker_served_window: true,
-                consume_reservation: false,
+                include_taker_origin_reservations: false,
                 caps: UserCapsV0::EMPTY,
                 reference_price: 0,
                 direction: Direction::Short,
@@ -2570,6 +2660,7 @@ fn cu_benchmark_quote_and_execute_with_claimants_resting() {
         .to_instruction(accounts::QuoteV0 {
             market: addr(ctx.market),
         });
+
         let quote_meta = send(&mut ctx, ix).unwrap();
         // The claimed prefix is missing from the ladder, and the ladder still
         // runs to this market's `max_execute_fills`.
@@ -2615,12 +2706,13 @@ fn quote_l3_reports_the_orders_behind_the_ladder() {
                 direction: Direction::Long,
                 size: size.saturating_mul(UNIT),
                 max_rows,
-                consume_reservation: false,
+                include_taker_origin_reservations: false,
             },
         }
         .to_instruction(accounts::QuoteL3V0 {
             market: addr(ctx.market),
         });
+
         let meta = send(ctx, ix).unwrap();
         let bytes = read_response(ctx, &meta);
         let response = L3ResponseV0::parse(&bytes).expect("l3 response");
@@ -2640,6 +2732,7 @@ fn quote_l3_reports_the_orders_behind_the_ladder() {
         quote(&mut ctx, Direction::Long, 100),
         vec![(100, 12), (101, 10)]
     );
+
     let (rows, more) = l3(&mut ctx, 0, L3_ROWS_CEILING);
     assert_eq!(
         rows,
@@ -2649,6 +2742,7 @@ fn quote_l3_reports_the_orders_behind_the_ladder() {
             (101, 10, user_b.to_bytes()),
         ]
     );
+
     assert!(!more, "the whole side fit");
 
     // Order ids are the book's own, so a caller can act on a row.
@@ -2657,12 +2751,13 @@ fn quote_l3_reports_the_orders_behind_the_ladder() {
             direction: Direction::Long,
             size: 0,
             max_rows: L3_ROWS_CEILING,
-            consume_reservation: false,
+            include_taker_origin_reservations: false,
         },
     }
     .to_instruction(accounts::QuoteL3V0 {
         market: addr(ctx.market),
     });
+
     let meta = send(&mut ctx, ix).unwrap();
     let bytes = read_response(&ctx, &meta);
     let response = L3ResponseV0::parse(&bytes).expect("l3 response");
@@ -2704,6 +2799,7 @@ fn the_l3_ceiling_fits_the_region_the_market_already_pays_for() {
     assert!(
         RESPONSE_LEN_BYTES + L3_ROWS_CEILING as usize * L3_ROW_BYTES + 1 <= RESPONSE_BUFFER_BYTES
     );
+
     // The next row would not fit: the ceiling is the region's true capacity,
     // not a round number chosen under it.
     assert!(
@@ -2761,6 +2857,7 @@ fn an_order_waking_from_its_speed_bump_gets_the_grace_window() {
         quote_withheld(&mut ctx, Direction::Long, 12, Some(vec![user_b])),
         None
     );
+
     let changes = execute_users(&mut ctx, Direction::Long, 7, Some(vec![user_b]));
     assert_eq!(changes.len(), 1, "the reachable maker filled");
 
@@ -2914,6 +3011,7 @@ fn an_order_that_cannot_outlive_its_activation_delay_is_refused() {
         max_ts,
         ..place_args(Side::Ask, 100, 5)
     };
+
     assert_clob_err(
         {
             let ix = place_ix(&ctx, delayed(1_005), user);
@@ -2921,6 +3019,7 @@ fn an_order_that_cannot_outlive_its_activation_delay_is_refused() {
         },
         err_code(clob::error::ClobError::MaxTsBeforeActivation),
     );
+
     // A lifetime that reaches past the activation is accepted, and so is a
     // good-till-cancelled order.
     let ix = place_ix(&ctx, delayed(1_100), user);
@@ -2938,6 +3037,7 @@ fn an_order_that_cannot_outlive_its_activation_delay_is_refused() {
         },
         user,
     );
+
     send(&mut ctx, ix).expect("no delay to outlive");
 }
 
@@ -2981,6 +3081,7 @@ fn the_order_rules_report_what_the_sides_hold() {
     for i in 0..7 {
         place(&mut ctx, place_args(Side::Ask, 101 + i, 5), user);
     }
+
     let full = rules(&mut ctx);
     assert_eq!(full.side_order_counts[1], full.arena_capacity / 2);
     let ix = place_ix(&ctx, place_args(Side::Ask, 200, 5), user);

@@ -77,6 +77,7 @@ fn pair_post_checks_with(breaker_tripped: bool, isolated: Isolated) -> VelocityR
         },
         ..PerpMarket::default_test()
     };
+
     create_anchor_account_info!(market, PerpMarket, market_info);
     let perp_market_map = PerpMarketMap::load_one(&market_info, true).unwrap();
 
@@ -91,6 +92,7 @@ fn pair_post_checks_with(breaker_tripped: bool, isolated: Isolated) -> VelocityR
         historical_oracle_data: HistoricalOracleData::default_price(QUOTE_PRECISION_I64),
         ..SpotMarket::default()
     };
+
     create_anchor_account_info!(quote_market, SpotMarket, quote_market_info);
     let spot_market_map = SpotMarketMap::load_one(&quote_market_info, true).unwrap();
     let mut maps = AccountMaps::new(perp_market_map, spot_market_map, oracle_map);
@@ -111,6 +113,7 @@ fn pair_post_checks_with(breaker_tripped: bool, isolated: Isolated) -> VelocityR
                 .unwrap_or(0),
             ..PerpPosition::default()
         }),
+
         spot_positions: get_spot_positions(SpotPosition {
             market_index: 0,
             balance_type: SpotBalanceType::Deposit,
@@ -119,6 +122,7 @@ fn pair_post_checks_with(breaker_tripped: bool, isolated: Isolated) -> VelocityR
         }),
         ..User::default()
     };
+
     create_anchor_account_info!(taker, &taker_key, User, taker_info);
     let taker_loader = AccountLoader::try_from(&taker_info).unwrap();
 
@@ -126,6 +130,7 @@ fn pair_post_checks_with(breaker_tripped: bool, isolated: Isolated) -> VelocityR
         equity_breaker_tripped: u8::from(breaker_tripped),
         ..UserStats::default()
     };
+
     create_anchor_account_info!(taker_stats, UserStats, taker_stats_info);
     let taker_stats_loader = AccountLoader::try_from(&taker_stats_info).unwrap();
 
@@ -148,6 +153,7 @@ fn pair_post_checks_with(breaker_tripped: bool, isolated: Isolated) -> VelocityR
                 .unwrap_or(0),
             ..PerpPosition::default()
         }),
+
         spot_positions: get_spot_positions(SpotPosition {
             market_index: 0,
             balance_type: SpotBalanceType::Deposit,
@@ -156,6 +162,7 @@ fn pair_post_checks_with(breaker_tripped: bool, isolated: Isolated) -> VelocityR
         }),
         ..User::default()
     };
+
     create_anchor_account_info!(counterparty, &counterparty_key, User, counterparty_info);
     let makers_and_referrer = UserMap::load_one(&counterparty_info).unwrap();
 
@@ -163,6 +170,7 @@ fn pair_post_checks_with(breaker_tripped: bool, isolated: Isolated) -> VelocityR
         authority: counterparty_authority,
         ..UserStats::default()
     };
+
     create_anchor_account_info!(counterparty_stats, UserStats, counterparty_stats_info);
     let makers_and_referrer_stats = UserStatsMap::load_one(&counterparty_stats_info).unwrap();
 

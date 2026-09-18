@@ -137,6 +137,7 @@ fn the_cancel_all_record_emits_the_bytes_the_event_impl_would() {
             2,
         ),
     ];
+
     for (outcome, sides) in shapes {
         let client_order_ids: Vec<u32> = (0..outcome.orders()).map(|i| 1_000 + i).collect();
         // Boxed for the same reason as the execute record's buffer: the program
@@ -158,6 +159,7 @@ fn the_cancel_all_record_emits_the_bytes_the_event_impl_would() {
             exhaustive: outcome.exhaustive,
             client_order_ids: client_order_ids.clone(),
         });
+
         assert_eq!(
             record.log_bytes(&outcome).unwrap(),
             expected.as_slice(),
@@ -178,6 +180,7 @@ fn the_cancel_all_record_refuses_a_count_that_disagrees_with_its_ids() {
         exhaustive: true,
         ..Default::default()
     };
+
     assert!(record.log_bytes(&outcome).is_err());
 }
 
@@ -200,6 +203,7 @@ fn the_execute_record_emits_the_bytes_the_event_impl_would() {
             Some(u32::MAX),
         ),
     ];
+
     for (fills, cancelled_client_order_id) in shapes {
         // Boxed: the program keeps this buffer in its own stack frame, and the
         // test has no reason to put ~2KB on the host stack either.
@@ -214,6 +218,7 @@ fn the_execute_record_emits_the_bytes_the_event_impl_would() {
             fills: fills.clone(),
             cancelled_client_order_ids: cancelled.clone(),
         };
+
         assert_eq!(
             log.as_slice(),
             Event::data(&record).as_slice(),

@@ -123,36 +123,16 @@ pub const ONE_HOUR_I128: i128 = ONE_HOUR as i128;
 pub const TWENTY_FOUR_HOUR: i64 = 3600 * 24;
 pub const THIRTEEN_DAY: i64 = TWENTY_FOUR_HOUR * 13; // IF unstake default
 
-/// The largest share of a spot borrow that un-booked interest may hide before the
-/// borrow can no longer be valued for margin on a value-releasing path
-/// (OtterSec #135 / #148).
-///
-/// Margin values a scaled borrow through the market's stored
-/// `cumulative_borrow_interest`. Interest accrued since `last_interest_ts` is left
-/// out, so the debt is understated by `debt x borrow_rate x elapsed / year`. The
-/// bound is on that understated share, not on the elapsed time.
-/// `validate_borrow_rate` constrains `max_borrow_rate` only against
-/// `optimal_borrow_rate`, so the rate has no ceiling. One fixed time window would
-/// hide an arbitrary share on a high-rate market.
-///
-/// One basis point is far inside the gap between initial and maintenance margin. It
-/// is too small to build bad debt with. An un-cranked market drifts arbitrarily far,
-/// which is the real vector.
-/// `math::margin::max_spot_interest_staleness_for_margin` turns this share into the
-/// per-market time window that enforces it.
+/// Largest share of a spot borrow that un-booked interest may hide before the borrow can
+/// no longer be valued for margin on a value-releasing path (OtterSec #135 / #148).
+/// One basis point stays far inside the initial-to-maintenance margin gap.
+/// `math::margin::max_spot_interest_staleness_for_margin` turns it into a time window.
 pub const MAX_SPOT_INTEREST_UNDERSTATEMENT_FOR_MARGIN: u128 = PERCENTAGE_PRECISION / 10_000;
 
-/// Ceiling on the window `math::margin::max_spot_interest_staleness_for_margin`
-/// derives, so a low-rate market cannot go un-cranked indefinitely.
-///
-/// A market that charges little interest earns a wide window from
-/// `MAX_SPOT_INTEREST_UNDERSTATEMENT_FOR_MARGIN` alone. The admin can raise its rate
-/// at any time, and the raise applies to the whole un-booked interval. The window a
-/// low rate earns is therefore not a promise about that interval.
-///
-/// Recovery needs no special privileges.
-/// `update_spot_market_cumulative_interest` is permissionless and can be bundled
-/// into the same transaction.
+/// Ceiling on the window `math::margin::max_spot_interest_staleness_for_margin` derives.
+/// A low rate earns a wide window on its own, but the admin can raise the rate at any
+/// time, and the raise applies to the whole un-booked interval. Recovery is
+/// permissionless through `update_spot_market_cumulative_interest`.
 pub const MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN: i64 = ONE_HOUR;
 pub const EPOCH_DURATION: i64 = TWENTY_FOUR_HOUR * 28;
 pub const THIRTY_DAY: i64 = TWENTY_FOUR_HOUR * 30;
@@ -160,13 +140,9 @@ pub const THIRTY_DAY_I128: i128 = (TWENTY_FOUR_HOUR * 30) as i128;
 pub const ONE_YEAR: u128 = 31536000;
 
 /// How many funding periods the mark TWAP may stay unwritten. Past this many periods
-/// `MarketStats::reseed_mark_twap_from_oracle_if_stale` discards the stored value and
-/// re-seeds it from the oracle TWAP. That function documents why.
-///
-/// The multiplier must stay above 2. A market whose only writer is the funding crank
-/// writes once per funding period in the steady state. `on_the_hour_update` can also
-/// stretch one legitimate interval to about 1.67 periods. A lower bound re-seeds a
-/// market that is only quiet or cranked late, and discards a real premium.
+/// `MarketStats::reseed_mark_twap_from_oracle_if_stale` re-seeds it from the oracle TWAP.
+/// The multiplier must stay above 2. The funding crank writes once per period in the
+/// steady state, and `on_the_hour_update` can stretch one interval to about 1.67 periods.
 pub const MARK_TWAP_RESEED_FUNDING_PERIODS: i64 = 3;
 /// Max age of the last fill before the trigger price's last-fill leg is
 /// treated as absent (oracle price substitutes).
@@ -202,43 +178,30 @@ pub const LP_FEE_SLICE_DENOMINATOR: u128 = 10;
 pub const FEE_DENOMINATOR: u32 = 10 * ONE_BPS_DENOMINATOR;
 pub const FEE_PERCENTAGE_DENOMINATOR: u32 = 100;
 pub const ACCELERATED_REFERRER_REWARD_NUMERATOR: u32 = 20;
-/// While true, three paths permanently grant Accelerated referral status: user
-/// initialization, a perp fill for either the taker or the maker, and a completed swap.
-/// Set it to false to stop new enrollment. There is no runtime switch, so that takes a
-/// program upgrade.
-///
-/// Enrollment is temporary. When it ends, delete this constant and the branches that
-/// read it. Delete `AcceleratedReferralStatus::AutoEnrollmentBlocked` and
-/// `AcceleratedReferralStatusChange::AutoEnrollment` too, which exist only for automatic
-/// enrollment. `UserStats::accelerated_referral_status` and
-/// `update_user_accelerated_referral_status` stay.
+/// While true, user initialization, a perp fill for either side, and a completed swap each
+/// permanently grant Accelerated referral status. Set it to false to stop new enrollment.
+/// That takes a program upgrade. When enrollment ends, delete this constant and the
+/// `AutoEnrollmentBlocked` and `AutoEnrollment` enum variants that exist only for it.
 pub const ACCELERATED_REFERRAL_ENROLLMENT_ENABLED: bool = true;
-/// Global ceiling on a builder-code fee, in tenths of a bps. The fee is
-/// `quote * fee_tenth_bps / FEE_DENOMINATOR`, so `FEE_DENOMINATOR` is 100% and 1000 is
-/// 1%. TUNABLE.
-///
-/// A builder's own `max_fee_tenth_bps` is set at approval with no ceiling, up to
-/// `u16::MAX`, about 65.5% of notional. This caps the fee actually charged, so the
-/// builder-fee rail cannot move value a taker could not withdraw under initial margin
-/// (OtterSec #83).
+/// Global ceiling on a builder-code fee, in tenths of a bps. `FEE_DENOMINATOR` is 100%,
+/// so 1000 is 1%. TUNABLE. A builder's own `max_fee_tenth_bps` is set at approval with no
+/// ceiling, up to `u16::MAX`, about 65.5% of notional. This caps the fee actually charged,
+/// so the rail cannot move value a taker could not withdraw under initial margin (OtterSec #83).
 pub const MAX_BUILDER_FEE_TENTH_BPS: u16 = 1000;
 /// Ceiling on the magnitude of `PerpMarket.taker_fee_addon_tenth_bps`, in tenth-bps,
 /// so 100 is 10 bps. It keeps the per-market fee add-on within the same order of
 /// magnitude as the tier fees it adjusts. TUNABLE.
 pub const MAX_TAKER_FEE_ADDON_TENTH_BPS: u16 = 100;
-/// Highest populated perp fee-tier index. Tiers `0` through this index are live and
-/// the remaining `fee_tiers` slots are zeroed spares. `determine_perp_fee_tier` clamps
-/// its result to this index. `update_promo_fee_tier` validates against it, so a promo
-/// floor cannot pass validation and then mean a lower tier. Move it together with the
-/// schedule in `FeeStructure::perps_default`.
+/// Highest populated perp fee-tier index. The remaining `fee_tiers` slots are zeroed
+/// spares. `determine_perp_fee_tier` clamps its result to this index.
+/// `update_promo_fee_tier` validates against it, so a promo floor cannot pass validation
+/// and then mean a lower tier. Move it with the schedule in `FeeStructure::perps_default`.
 pub const PERP_FEE_TIER_MAX_INDEX: usize = 3;
 pub const OPEN_ORDER_MARGIN_REQUIREMENT: u128 = QUOTE_PRECISION / 100;
-/// Max oracle-value loss a strictly reducing `end_swap` may realize while the account
-/// is under equity-floor protection, meaning the floor is set or the breaker is
-/// tripped. The output value must be at least the input value minus this many bps. The
-/// in leg is valued at the strict max of the live oracle price and the 5min twap, and
-/// the out leg at the strict min. This bounds how much value a reducing swap can lose
-/// through a bad route while the account is frozen. 100 is 1%. TUNABLE.
+/// Max oracle-value loss a strictly reducing `end_swap` may realize while the account is
+/// under equity-floor protection, meaning the floor is set or the breaker is tripped. The
+/// output value must be at least the input value minus this many bps. The in leg is valued
+/// at the strict max of live oracle and 5min twap, the out leg at the min. 100 is 1%. TUNABLE.
 pub const EQUITY_FLOOR_SWAP_MAX_VALUE_LOSS_BPS: u128 = 100;
 pub const FEE_ADJUSTMENT_MAX: u64 = 100;
 pub const FEE_ADJUSTMENT_MAX_I16: i16 = FEE_ADJUSTMENT_MAX as i16;
@@ -287,11 +250,10 @@ pub const SPREAD_CONF_DISCOUNT_DIVISOR: u64 = 20;
 pub const SPREAD_VOL_STD_DISCOUNT_DIVISOR: u128 = 4;
 /// The revenue retreat is capped at `max_spread` divided by this.
 pub const SPREAD_REVENUE_RETREAT_MAX_DIVISOR: u64 = 10;
-/// Reference-price-offset sign-transition smoothing: the budget for the
-/// pre-division step, calibrated per [`crate::math::time::Millis::UNIT`] of elapsed
-/// time, which is 400ms. `compute_quote_state` prorates it by the elapsed
-/// milliseconds. The convergence rate per wall-clock second is then the same at
-/// every slot duration, and matches the per-slot behavior at 400ms.
+/// Reference-price-offset sign-transition smoothing: the budget for the pre-division
+/// step, calibrated per [`crate::math::time::Millis::UNIT`] of elapsed time, which is
+/// 400ms. `compute_quote_state` prorates it by the elapsed milliseconds. The convergence
+/// rate per wall-clock second is then equal at every slot duration, and matches 400ms.
 pub const REF_PRICE_OFFSET_SMOOTHING_PER_PERIOD_BUDGET: i128 = 1000;
 /// Reference-price-offset sign-transition smoothing: the capped delta is
 /// divided by this to get the per-refresh step.
@@ -304,32 +266,10 @@ pub const REF_PRICE_OFFSET_SMOOTHING_MIN_STEP: i32 = 10;
 /// Bids more than this % below oracle and asks more than this % above oracle are filtered out.
 pub const BID_ASK_TWAP_MAX_ORACLE_DIVERGENCE_PERCENT: u64 = 15;
 
-/// Minimum wall-clock time a quote must rest onchain before it can move the
-/// bid/ask/mark TWAP (OtterSec #146).
-///
-/// `update_perp_bid_ask_twap` samples the market's book, and its caller chooses when
-/// to run it.
-/// Nothing else in the program checks how long an order has existed. A post-only limit
-/// order, or any order with `auction_duration == 0`, counts as resting in the slot it
-/// was placed. The crank's caller could therefore place a self-crossed pair of quotes,
-/// crank, and cancel, all in one transaction. That moves the mark TWAP that
-/// `get_perp_baseline_start_price_offset` uses to set a third party's forced-close
-/// auction band, at no risk of a fill.
-///
-/// The value comes from `min_auction_duration = 20`, which `place_perp_order` forces
-/// onto every triggered stop-loss auction (`controller/orders`). A quote must rest at
-/// least as long as the auction it can move, so a third party could have taken it
-/// first. 24 slots is that 20 plus a slack leader window, about 9.6s at 400ms. It stays
-/// below the 60s `SafeTriggerOrder` rest window and the 256-slot
-/// `Order::posted_slot_tail` modulus.
-///
-/// The value is wall-clock and the read site converts it to actual slots. The
-/// `min_auction_duration` and `SafeTriggerOrder` windows it is calibrated against are
-/// wall-clock too, so all three scale together and the resting rule survives every
-/// slot-duration gate. The `posted_slot_tail` modulus does not scale, because it is a
-/// u8 field width. The honest age window therefore shrinks in wall-clock as slots get
-/// faster. The rest requirement is 48 actual slots at 200ms, which still fits under
-/// that modulus.
+/// Gates the bid/ask and mark TWAPs, so a self-crossed pair placed, cranked and cancelled in one
+/// transaction cannot move a third party's forced-close auction band (OtterSec #146). 9.6s is the
+/// 20-slot `min_auction_duration` at 400ms plus slack. It stays under the 60s `SafeTriggerOrder`
+/// window and the 256-slot `Order::posted_slot_tail` modulus.
 pub const BID_ASK_TWAP_MIN_QUOTE_REST: Millis = Millis::from_ms(9_600);
 
 pub const MAX_POSITIVE_UPNL_FOR_INITIAL_MARGIN: i128 = 100 * QUOTE_PRECISION_I128; // max upnl for initial margin calc
@@ -337,11 +277,10 @@ pub const DEFAULT_MAX_TWAP_UPDATE_PRICE_BAND_DENOMINATOR: i64 = 3; // '3' here m
 
 // DEFAULTS
 pub const DEFAULT_REVENUE_SINCE_LAST_FUNDING_SPREAD_RETREAT: i64 = -25 * QUOTE_PRECISION_I64; //$25 loss
-/// Default `PerpMarket.bankruptcy_if_floor_pct` for new markets: 10 bps of
-/// open-interest notional retained in `pending_if_fee` as a standing
-/// bankruptcy tranche (PERCENTAGE_PRECISION). A market that holds `0` also uses this
-/// value, and every market created before the field existed holds `0`. The tranche
-/// therefore does not depend on an admin call per market.
+/// Default `PerpMarket.bankruptcy_if_floor_pct` for new markets: 10 bps of open-interest
+/// notional retained in `pending_if_fee` as a standing bankruptcy tranche
+/// (PERCENTAGE_PRECISION). A market that holds `0` uses this value too, and every market
+/// created before the field existed holds `0`, so the tranche needs no admin call.
 pub const DEFAULT_BANKRUPTCY_IF_FLOOR_PCT: u32 = PERCENTAGE_PRECISION_U32 / 1000; // 0.1%
 /// The `PerpMarket.bankruptcy_if_floor_pct` value that turns the standing floor off.
 /// `0` means use `DEFAULT_BANKRUPTCY_IF_FLOOR_PCT`, so a market with no floor needs an
@@ -386,22 +325,10 @@ pub const INTEREST_RATE_SEGMENT_AND_WEIGHTS: &[(u128, u128)] = &[
 /// slots.
 pub const MM_ORACLE_MIN_WRITE_GAP: Millis = Millis::from_ms(800);
 pub const MM_ORACLE_MAX_STEP_PCT_PRECISION: i128 = PERCENTAGE_PRECISION_I128 / 100; // 1%
-/// Max wall-clock age between an MM oracle update's source observation slot, carried
-/// in the payload, and the slot it lands. Both directions are bounded. The stored
-/// `mm_oracle_slot` is the landing slot. Without this bound a signed update that lands
-/// late, and a recent blockhash allows about 150 slots, would make an old observation
-/// read as fresh. The future direction guards against a wrong-unit source value that
-/// would disable the gate. A skipped write costs nothing, because by the time an update
-/// is this late the crank has newer data to send.
-///
-/// The value must stay at or below `MM_ORACLE_MIN_WRITE_GAP`, which the assertion below
-/// enforces. The landing-slot stamp makes `oracle_delay` understate true observation
-/// age by up to this bound. The immediate-fill gate's unset threshold of
-/// `MM_ORACLE_MIN_WRITE_GAP` then bounds true age to the sum of the two. The write gate
-/// ceils and this bound floors, so that sum is `ceil(gap / d) + floor(age / d)` slots.
-/// That is exactly twice the gap at 400ms and at 200ms slots, and within one slot of
-/// twice the gap at 350ms, 300ms and 250ms. A wider bound here widens what "slot-fresh"
-/// means everywhere downstream.
+/// Max wall-clock age between an MM oracle update's source observation slot, carried in
+/// the payload, and the slot it lands. Both directions are bounded. A recent blockhash
+/// allows about 150 slots, so without this an old observation would read as fresh. The
+/// future direction guards a wrong-unit source value that would disable the gate.
 pub const MM_ORACLE_MAX_SOURCE_AGE: Millis = Millis::from_ms(800);
 static_assertions::const_assert!(
     MM_ORACLE_MAX_SOURCE_AGE.as_ms() <= MM_ORACLE_MIN_WRITE_GAP.as_ms()

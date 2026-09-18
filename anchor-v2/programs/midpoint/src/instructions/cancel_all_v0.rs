@@ -10,11 +10,10 @@ use {
 pub struct CancelAllV0 {
     #[account(mut)]
     pub quoter: Account<MidpointQuoterV0>,
-    /// Either of the maker's keys. The handler matches them, because anchor's
-    /// `address =` locks to one key. The hot key works because withdrawing
-    /// quotes is part of the quoting loop and must not need the cold key. The
-    /// config key works because a withdrawal must still succeed when the maker
-    /// no longer trusts the hot key.
+    /// Either of the maker's keys. The handler matches them, since anchor's
+    /// `address =` locks to one key. The hot key covers withdrawal so the
+    /// quoting loop does not need the cold key. The config key covers it
+    /// when the maker no longer trusts the hot key.
     pub authority: Signer,
 }
 
@@ -23,11 +22,9 @@ pub struct CancelAllV0 {
 pub struct CancelAllArgsV0 {
     pub sides: CancelSidesV0,
     /// Also zero the mid, which stops every side from quoting whatever the
-    /// ladders hold. See `MidpointQuoterV0::is_quoting`.
-    ///
-    /// The stop is not durable. The hot key can stamp a new mid at once. The
-    /// durable stop is `update_quoter_v0 { is_paused: true }`. Only the config
-    /// key can set it, and only the config key can clear it.
+    /// ladders hold. See `MidpointQuoterV0::is_quoting`. The stop is not
+    /// durable: the hot key can stamp a new mid at once. The durable stop
+    /// is `update_quoter_v0 { is_paused: true }`, set and cleared only by the config key.
     pub clear_mid: bool,
 }
 
@@ -61,6 +58,7 @@ pub fn handle_cancel_all_v0(
             Direction::Long => outcome.ask_rungs = rungs,
             Direction::Short => outcome.bid_rungs = rungs,
         }
+
         quoter.validate_cleared_side(direction, rungs)?;
     }
 

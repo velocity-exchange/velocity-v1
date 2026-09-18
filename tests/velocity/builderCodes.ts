@@ -185,6 +185,7 @@ describe('builder codes', () => {
 			undefined,
 			10000
 		);
+
 		usdcMint = await mockUSDCMint(svmContextWrapper);
 
 		marketIndexes = [0, 1];

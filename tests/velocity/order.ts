@@ -1373,6 +1373,7 @@ describe('orders', () => {
 				velocityClientUser.getUserAccount(),
 				order
 			);
+
 			svmContextWrapper.printTxLogs(txSig);
 		} catch (e) {
 			console.error(e);
@@ -1466,6 +1467,7 @@ describe('orders', () => {
 			price.mul(new BN(96)).div(new BN(100)),
 			PRICE_PRECISION
 		);
+
 		await setFeedPriceNoProgram(svmContextWrapper, newPrice, solUsd, 10000);
 		await velocityClient.moveAmmToPrice(
 			marketIndex,

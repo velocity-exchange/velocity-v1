@@ -104,6 +104,7 @@ describe('tick size standardization parity', () => {
 				auctionDuration: 10,
 				slot: new BN(1),
 			});
+
 			expect(
 				getAuctionPriceForFixedAuction(order, 4, TICK).toString()
 			).to.equal('130');
@@ -118,6 +119,7 @@ describe('tick size standardization parity', () => {
 				auctionDuration: 10,
 				slot: new BN(1),
 			});
+
 			expect(
 				getAuctionPriceForFixedAuction(order, 4, TICK).toString()
 			).to.equal('180');
@@ -129,6 +131,7 @@ describe('tick size standardization parity', () => {
 				auctionEndPrice: new BN(127),
 				auctionDuration: 0,
 			});
+
 			expect(
 				getAuctionPriceForFixedAuction(longOrder, 4, TICK).toString()
 			).to.equal('120');
@@ -142,6 +145,7 @@ describe('tick size standardization parity', () => {
 				auctionDuration: 10,
 				slot: new BN(1),
 			});
+
 			expect(getAuctionPriceForFixedAuction(order, 4).toString()).to.equal(
 				'132'
 			);
@@ -157,6 +161,7 @@ describe('tick size standardization parity', () => {
 				auctionEndPrice: new BN(27),
 				auctionDuration: 0,
 			});
+
 			expect(
 				getAuctionPriceForOracleOffsetAuction(
 					order,
@@ -174,6 +179,7 @@ describe('tick size standardization parity', () => {
 				auctionEndPrice: new BN(27),
 				auctionDuration: 0,
 			});
+
 			expect(
 				getAuctionPriceForOracleOffsetAuction(
 					order,
@@ -192,6 +198,7 @@ describe('tick size standardization parity', () => {
 				auctionEndPrice: new BN(-100),
 				auctionDuration: 0,
 			});
+
 			expect(
 				getAuctionPriceForOracleOffsetAuction(
 					order,
@@ -212,6 +219,7 @@ describe('tick size standardization parity', () => {
 				auctionDuration: 10,
 				slot: new BN(1),
 			});
+
 			expect(
 				getAuctionPriceForOracleOffsetAuction(
 					order,
@@ -232,6 +240,7 @@ describe('tick size standardization parity', () => {
 				oraclePriceOffset: new BN(27),
 				auctionDuration: 0,
 			});
+
 			expect(
 				getLimitPrice(
 					longOrder,
@@ -248,6 +257,7 @@ describe('tick size standardization parity', () => {
 				oraclePriceOffset: new BN(27),
 				auctionDuration: 0,
 			});
+
 			expect(
 				getLimitPrice(
 					shortOrder,
@@ -266,6 +276,7 @@ describe('tick size standardization parity', () => {
 				oraclePriceOffset: new BN(-100),
 				auctionDuration: 0,
 			});
+
 			expect(
 				getLimitPrice(order, mmOracle(5, 4), 4, undefined, TICK)!.toString()
 			).to.equal('10');
@@ -281,6 +292,7 @@ describe('tick size standardization parity', () => {
 				auctionDuration: 10,
 				slot: new BN(1),
 			});
+
 			// slot 4 -> elapsed 3 -> raw 132 -> floor 130
 			expect(
 				getLimitPrice(order, mmOracle(1000, 4), 4, undefined, TICK)!.toString()
@@ -294,6 +306,7 @@ describe('tick size standardization parity', () => {
 				price: new BN(123),
 				auctionDuration: 0,
 			});
+
 			expect(
 				getLimitPrice(order, mmOracle(1000, 4), 4, undefined, TICK)!.toString()
 			).to.equal('123');
@@ -307,6 +320,7 @@ describe('tick size standardization parity', () => {
 				oraclePriceOffset: ZERO,
 				auctionDuration: 0,
 			});
+
 			expect(
 				getLimitPrice(
 					order,
@@ -330,6 +344,7 @@ describe('tick size standardization parity', () => {
 				auctionDuration: 10,
 				slot: new BN(1),
 			});
+
 			// live auction, oracle-offset auction path: offset delta = (27-10)*3/10 = 5,
 			// offset = 15, price = max(1000+15, 10) = 1015 -> long floor 1010
 			expect(getAuctionPrice(order, 4, new BN(1000), TICK).toString()).to.equal(

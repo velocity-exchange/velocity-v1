@@ -53,6 +53,7 @@ pub fn handle_update_quoter_watch(
         &ctx.accounts.authority.key(),
         ctx.accounts.state.as_ref(),
     )?;
+
     let mut quoter = ctx.accounts.quoter.load_mut()?;
     let config = &mut quoter.config;
     validate!(
@@ -60,11 +61,13 @@ pub fn handle_update_quoter_watch(
         ErrorCode::InvalidQuoterConfig,
         "watch declarations are for Custom quoters (the CLOB's cross watch is built in)"
     )?;
+
     config.watch_account = if args.watch_len == 0 {
         Pubkey::default()
     } else {
         ctx.accounts.watch_account.key()
     };
+
     config.watch_offset = args.watch_offset;
     config.watch_len = args.watch_len;
     Ok(())

@@ -305,17 +305,8 @@ export class VelocityCore {
 	}
 
 	/**
-	 * Builds a `placeTriggerOrdersV1` instruction, arming trigger orders in the user's
-	 * own order slots. Every entry must be a `TriggerMarket` or a `TriggerLimit`; a live
-	 * order rests on the market's book, through `buildPlaceAndTakePerpOrderInstruction`
-	 * or `buildPlaceAndMakePerpOrderInstruction`.
-	 * @param args.program - Anchor `Program<Velocity>` used to build the instruction.
-	 * @param args.orderParams - the triggers to arm; `baseAssetAmount` is BASE_PRECISION (1e9), `price`/`triggerPrice` are PRICE_PRECISION (1e6).
-	 * @param args.state - the global `State` PDA.
-	 * @param args.user - the `User` account the triggers are armed on.
-	 * @param args.authority - signer that must own or be a registered delegate of `user`.
-	 * @param args.remainingAccounts - oracle/market `AccountMeta[]` for each `marketIndex`, plus the placing user's `RevenueShareEscrow` account if an order carries a `builderIdx` and builder codes are enabled.
-	 * @returns the unsigned `placeTriggerOrdersV1` `TransactionInstruction`.
+	 * Delegates to `buildPlaceTriggerOrdersInstruction` in `core/instructions/perpOrders.ts`,
+	 * which documents the arguments, their precisions and the account ordering.
 	 */
 	static async buildPlaceTriggerOrdersInstruction(args: {
 		program: VelocityProgram;
@@ -329,26 +320,8 @@ export class VelocityCore {
 	}
 
 	/**
-	 * Builds a `placeAndTakePerpOrder` instruction: places an order and immediately
-	 * attempts to fill it as a taker against the AMM and/or the supplied maker accounts.
-	 * `orderParams.postOnly` must be `PostOnlyParam.None` or the instruction throws. Any
-	 * portion left unfilled is auto-cancelled when the order is (or becomes, via
-	 * `optionalParams`) immediate-or-cancel.
-	 * @param args.program - Anchor `Program<Velocity>` used to build the instruction.
-	 * @param args.orderParams - an `OrderParams` object; `baseAssetAmount` is BASE_PRECISION (1e9), `price`/`triggerPrice`/`oraclePriceOffset` are PRICE_PRECISION (1e6).
-	 * @param args.optionalParams - packed `u32` combining a `PlaceAndTakeOrderSuccessCondition` (fail the tx if not at least partially/fully filled) and an auction-duration percentage override; pass `null` for default behavior (no success-condition check, no override). Also forces IOC cancel-remainder semantics when non-null.
-	 * @param args.state - the global `State` PDA.
-	 * @param args.user - the taker's `User` account.
-	 * @param args.userStats - the taker's `UserStats` PDA.
-	 * @param args.authority - signer that must own or be a registered delegate of `user`.
-	 * @param args.remainingAccounts - the writable perp market and oracle `AccountMeta[]`
-	 * for `orderParams.marketIndex`, then the maker and referrer `(User, UserStats)` pairs,
-	 * then the taker's `RevenueShareEscrow` account if builder codes are enabled, then the
-	 * referrer's read-only `UserStats` when that taker is referred.
-	 * @param args.clobAccounts - the market's CLOB accounts, which are `quoterSlab`, a
-	 * writable `clobMarket`, and `clobProgram`. The order routes through them, and a
-	 * restable remainder rests on the book.
-	 * @returns the unsigned `placeAndTakePerpOrderV1` `TransactionInstruction`.
+	 * Delegates to `buildPlaceAndTakePerpOrderInstruction` in `core/instructions/perpOrders.ts`,
+	 * which documents the arguments, their precisions and the account ordering.
 	 */
 	static async buildPlaceAndTakePerpOrderInstruction(args: {
 		program: VelocityProgram;
@@ -369,20 +342,8 @@ export class VelocityCore {
 	}
 
 	/**
-	 * Builds a `placeAndMakePerpOrder` instruction: posts an immediate-or-cancel,
-	 * post-only limit order for `user` and immediately fills it as the maker against
-	 * `taker`'s existing resting order. `orderParams` must be an IOC, post-only, `Limit`
-	 * order or the instruction throws. Any unfilled remainder of the just-placed maker
-	 * order is auto-cancelled.
-	 * @param args.program - Anchor `Program<Velocity>` used to build the instruction.
-	 * @param args.orderParams - an `OrderParams` object; `baseAssetAmount` is BASE_PRECISION (1e9), `price` is PRICE_PRECISION (1e6).
-	 * @param args.state - the global `State` PDA.
-	 * @param args.user - the maker's `User` account.
-	 * @param args.userStats - the maker's `UserStats` PDA.
-	 * @param args.authority - signer that must own or be a registered delegate of `user` (the maker).
-	 * @param args.remainingAccounts - writable perp market + oracle `AccountMeta[]` for `orderParams.marketIndex`.
-	 * @param args.clobAccounts - the market's CLOB accounts. All of them are required.
-	 * @returns the unsigned `placeAndMakePerpOrderV1` `TransactionInstruction`.
+	 * Delegates to `buildPlaceAndMakePerpOrderInstruction` in `core/instructions/perpOrders.ts`,
+	 * which documents the arguments, their precisions and the account ordering.
 	 */
 	static async buildPlaceAndMakePerpOrderInstruction(args: {
 		program: VelocityProgram;
@@ -397,6 +358,7 @@ export class VelocityCore {
 			clobMarket: PublicKey;
 			clobProgram: PublicKey;
 		};
+
 		activationDelaySlots?: number | null;
 	}): Promise<TransactionInstruction> {
 		return await buildPlaceAndMakePerpOrderInstruction(args);

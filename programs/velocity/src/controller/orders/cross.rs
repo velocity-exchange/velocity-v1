@@ -45,6 +45,7 @@ pub(crate) fn crank_market_gates(market: &PerpMarket, now: i64) -> VelocityResul
         ErrorCode::MarketFillOrderPaused,
         "Market fills paused",
     )?;
+
     Ok(())
 }
 
@@ -75,6 +76,7 @@ pub(crate) fn crank_oracle_preflight(
         "oracle not valid for {}",
         crank
     )?;
+
     let oracle_price = mm_oracle_price_data.get_price();
     validate_market_within_price_band(market, state, oracle_price)?;
     Ok(CrankOraclePreflight {
@@ -167,6 +169,7 @@ pub fn price_taker_origin_cross(
         )?,
         &state.perp_fee_structure.filler_reward_structure,
     )?;
+
     Ok(TakerOriginCrossPricing {
         fee,
         oracle_price,
@@ -176,11 +179,9 @@ pub fn price_taker_origin_cross(
     })
 }
 
-/// Notional of `base_asset_amount` at `price`, floored.
-///
-/// This is the CLOB's own rounding. A notional velocity computes for a
-/// remainder it prices itself then lands in the same units as a book-filled
-/// leg.
+/// Notional of `base_asset_amount` at `price`, floored. This is the CLOB's
+/// own rounding, so a notional velocity computes for a remainder it prices
+/// itself lands in the same units as a book-filled leg.
 pub fn clob_notional(price: u64, base_asset_amount: u64) -> VelocityResult<u64> {
     price
         .cast::<u128>()?
@@ -189,21 +190,16 @@ pub fn clob_notional(price: u64, base_asset_amount: u64) -> VelocityResult<u64> 
         .cast::<u64>()
 }
 
-/// The `Order` a taker-origin remainder is, so the router can fill it the way
-/// it fills anything else.
+/// The `Order` a taker-origin remainder is, so the router fills it like any
+/// other order. It is not stored: the fill path takes it directly, so it
+/// holds no order slot and never leaves the book. The caller reports the
+/// fill afterward, and the order shrinks in place against its reservation.
 ///
-/// The order is not stored. The fill path takes the order itself, so this
-/// never occupies one of the owner's order slots. The remainder never leaves
-/// the book. The caller reports what the fill took to the book afterwards, and
-/// the order shrinks in place against the reservation it already holds.
-///
-/// The order is a limit at the price it rested at. That price is the taker's
-/// own bound, so a routed fill can only fill at or better than it. This is
-/// what makes the improvement the auction is for reach the taker.
-///
-/// The CLOB's order id is wider than a velocity one. Narrowing it keeps the
-/// fill records pointing at the book's order, because ids are sequential per
-/// book. The crank's own record carries the full-width id.
+/// Its price is the taker's own resting limit, so a routed fill matches
+/// only at or better, reaching the taker with the auction's improvement.
+/// The CLOB's order id is wider than velocity's. Narrowing it keeps fill
+/// records pointing at the book's order, since ids are sequential per
+/// book. The crank's own record keeps the full-width id.
 pub fn taker_origin_order(
     market_index: u16,
     taker_direction: PositionDirection,

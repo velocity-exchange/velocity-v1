@@ -91,6 +91,7 @@ describe('recenter amm crank oracle binding', () => {
 			undefined,
 			10000
 		);
+
 		// A second real feed at a much higher price. The binding must refuse this
 		// substitution, because it is a valid oracle for a different asset.
 		otherOracle = await mockOracleNoProgram(

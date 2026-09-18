@@ -465,18 +465,15 @@ impl<const N: usize> PendingTxs<N> {
 }
 
 /// The maximum age of a swift signed message before the program refuses to place
-/// it. The bound is about 200 seconds, measured in actual slots at the current
-/// slot duration.
-///
-/// This mirrors the staleness gate in `place_signed_msg_taker_order`, in
+/// it. The bound is measured in actual slots at the current slot duration. It
+/// mirrors the staleness gate in `place_signed_msg_taker_order`, in
 /// `programs/velocity/src/instructions/keeper.rs`.
 pub const SWIFT_SIGNED_MSG_MAX_AGE: Millis = Millis::from_secs(200);
 
 /// The maximum lead of a resting swift limit's message slot over the current slot
-/// before the program refuses to place it early. The bound is about 30 seconds. The
-/// UI stamps about 14 seconds ahead.
-///
-/// This mirrors `max_resting_limit_lead` in `place_signed_msg_taker_order`.
+/// before the program refuses to place it early. The UI stamps about 14 seconds
+/// ahead. This mirrors `max_resting_limit_lead` in
+/// `place_signed_msg_taker_order`.
 pub const SWIFT_RESTING_LIMIT_MAX_LEAD: Millis = Millis::from_secs(30);
 
 /// How to treat a swift order whose signed message may be stamped ahead of the chain.
@@ -498,21 +495,17 @@ pub fn is_resting_swift_limit(order_params: &OrderParams) -> bool {
     order_params.order_type == OrderType::Limit && order_params.auction_duration.unwrap_or(0) == 0
 }
 
-/// Classify a swift order's signed-message slot against the current slot.
-///
 /// For an auction order, `place_signed_msg_taker_order` rejects `order_slot > clock.slot`
-/// with `InvalidSignedMsgOrderParam`. An order stamped ahead of the chain can therefore be
-/// neither filled nor placed yet. A signer adds a buffer so the message stays valid while it
-/// travels, and the UI stamps a few slots ahead. That makes an early stamp a normal arrival
-/// state and not a bad order. The swift feed delivers each order once, so the only way to
-/// keep it is to hold it until its slot arrives. `max_wait` bounds how far ahead a stamp is
-/// still credible as a signing buffer.
+/// with `InvalidSignedMsgOrderParam`, so an early order can be neither filled nor placed
+/// yet. A signer adds a buffer so the message stays valid while it travels, and the UI
+/// stamps a few slots ahead. An early stamp is therefore a normal arrival state. The swift
+/// feed delivers each order once, so the only way to keep it is to hold it until its slot
+/// arrives. `max_wait` bounds how far ahead a stamp is still credible as a signing buffer.
 ///
 /// A resting limit, the `resting_limit` argument, has no auction to start. See
-/// [`is_resting_swift_limit`]. Its message slot is the placement deadline, `max_slot`, and a
-/// signer stamps it a whole signing budget ahead. The program places it before that slot as
-/// long as the stamp is within [`SWIFT_RESTING_LIMIT_MAX_LEAD`]. Waiting would leave one slot
-/// to land the transaction, so the order is ready on arrival.
+/// [`is_resting_swift_limit`]. Its message slot is the placement deadline, and the program
+/// places it before that slot when the stamp is within [`SWIFT_RESTING_LIMIT_MAX_LEAD`].
+/// Waiting would leave one slot to land the transaction, so the order is ready on arrival.
 pub fn swift_slot_wait(
     order_slot: u64,
     current_slot: u64,
@@ -570,27 +563,16 @@ pub fn should_poll_swift(
     swift_feed_live && !(slot_update_pending && prefer_slot)
 }
 
-/// Returns true if a swift (signed-message) order is too old to fill or place on chain, so
-/// the bot does not spend a transaction on it.
+/// The two slot gates mirror `place_signed_msg_taker_order` exactly. The program rejects
+/// the order once its wall clock age, integrated over each slot duration regime, exceeds
+/// about 200 seconds. It also does nothing once `max_slot < current_slot`. `max_slot` is
+/// the first slot that reaches the auction duration across every known slot-duration
+/// transition. The `max_ts` check is an extra client-side guard, because the program does
+/// not gate placement on `max_ts`. An order whose `max_ts` has passed is already dead.
 ///
-/// The two slot gates mirror `place_signed_msg_taker_order` exactly.
-///
-/// - Signed message staleness. The program rejects the order once its wall clock age,
-///   integrated over each slot duration regime, exceeds about 200 seconds.
-/// - Placement deadline. The program does nothing once `max_slot < current_slot`. `max_slot`
-///   is the first slot that reaches the auction duration across every known slot-duration
-///   transition. The formula is the same for a limit order and a market order.
-///
-/// The `max_ts` check is an extra client-side guard, because the program does not gate
-/// placement on `max_ts`. An order whose `max_ts` has passed is already dead, so placing it
-/// would waste a transaction. `auction_duration` is a `u8`, so it holds at most 255 units, or
-/// about 102 seconds. The placement deadline therefore always binds before the 200 second
-/// staleness window. This function checks both.
-///
-/// An order stamped ahead of the chain is the other end of the window, and
-/// [`swift_slot_wait`] handles it. Such an order is early rather than dead, and the caller
-/// holds it rather than dropping it. This function reports "not expired" for one, so a caller
-/// must run the wait gate first.
+/// An order stamped ahead of the chain is early rather than dead. [`swift_slot_wait`]
+/// handles it, and this function reports "not expired" for one. A caller must run the wait
+/// gate first.
 pub fn swift_order_expired(
     order_slot: u64,
     auction_duration: u8,
@@ -630,15 +612,15 @@ pub struct PythPriceUpdate {
 }
 
 /// A marker recorded when a liquidate-with-fill transaction fails on chain with
-/// `LiquidationOrderFailedToFill`. It tells the liquidator to route the next
-/// attempt on that liquidatee and market straight to a collateral takeover.
-///
-/// The marker survives until a takeover transaction is sent. `attempts` counts
-/// the takeover routings it has driven, and `recorded_ms` bounds its lifetime, so
-/// a takeover path that keeps failing before send cannot hold the marker forever.
+/// `LiquidationOrderFailedToFill`. It routes the next attempt on that liquidatee
+/// and market straight to a collateral takeover. It survives until a takeover
+/// transaction is sent.
 #[derive(Clone, Copy, Debug)]
 pub struct PerpFillFallback {
+    /// Bounds the marker's lifetime, so a takeover path that keeps failing before
+    /// send cannot hold the marker forever.
     pub recorded_ms: u64,
+    /// Counts the takeover routings the marker has driven.
     pub attempts: u32,
 }
 
@@ -902,13 +884,10 @@ pub fn subscribe_price_feeds(
 
                                     log::trace!(target: "pyth", "got update: {data:?}");
                                     for f in data.feeds {
-                                        // The program gates staleness and monotonicity on the
-                                        // per-feed `FeedUpdateTimestamp`, not on the payload
-                                        // timestamp. See
-                                        // `instructions/pyth_lazer_oracle.rs`. A fixed-rate
-                                        // channel keeps ticking a fresh payload timestamp even
-                                        // when a feed's price is stalled. So stamp each update
-                                        // with the timestamp the program checks.
+                                        // The program gates staleness and monotonicity on
+                                        // the per-feed `FeedUpdateTimestamp`, not the payload
+                                        // one, which a fixed-rate channel keeps fresh while a
+                                        // feed stalls. See `instructions/pyth_lazer_oracle.rs`.
                                         let feed_update_ts = f
                                             .properties
                                             .iter()

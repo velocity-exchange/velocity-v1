@@ -113,12 +113,10 @@ pub struct State {
     /// accounts to the deployed program's size after a struct-extending
     /// upgrade).
     pub hot_account_extension: Pubkey,
-    /// Promotional fee-tier floor applied to every account. The effective perp
-    /// fee tier is `max(volume tier, promo_fee_tier)`, clamped to the
-    /// configured tier count, so it never downgrades an account. Zero disables
-    /// it, and a pre-upgrade account reads zero out of former padding. A reset
-    /// to zero puts every account back on its volume tier at its next fill,
-    /// because no per-user state records the promotion.
+    /// Promotional fee-tier floor applied to every account. The effective
+    /// perp fee tier is `max(volume tier, promo_fee_tier)`, clamped to the
+    /// tier count. Zero disables it, matching what a pre-upgrade account
+    /// reads from former padding, and needs no per-user reset to take effect.
     pub promo_fee_tier: u8,
     /// Legacy current slot duration field in milliseconds, kept coherent by
     /// the permissionless sync as the IBRL feature gates activate
@@ -152,50 +150,20 @@ pub struct State {
     /// lives in that multisig. Added from former padding so existing fields,
     /// including `hot_amm_spread_adjust`, retain their offsets.
     pub hot_vamm_quote_management: Pubkey,
-    /// The retail-flow attestation key (swift's). Not a signer of any admin
-    /// instruction. It attests flow through two transports. On a
-    /// swift-built transaction it signs as a named `flow_authority`
-    /// account — a CLOB placement (`place_and_make_perp_order_v1`, a
-    /// modify's replacement leg) accepts a faster-than-default activation
-    /// delay only when that signer is present, and
-    /// `place_and_take_perp_order_v1` takes synchronously on a bumped book
-    /// only with it. For a keeper-built swift fill it signs a detached
-    /// attestation over the order's own signature (`FlowAttestationV0`),
-    /// verified in-program — the key never signs a transaction it did not
-    /// build. Velocity forwards the verdict to quoters on the wire
-    /// (`taker_served_window`); a quoter checks nothing itself. On a book
-    /// with a nonzero default activation delay, only attested flow fills
-    /// against the book in the same transaction; an unattested taker rests
-    /// whole through the window (maker priority — a maker can always
-    /// reprice ahead of unattested aggression). `Pubkey::default()` (unset)
-    /// disables fast activation entirely rather than leaving it open — the
-    /// zero key can neither sign an account nor an attestation.
+    /// The retail-flow attestation key (swift's), not an admin signer. It
+    /// signs as `flow_authority` on a swift transaction, or a detached
+    /// `FlowAttestationV0` on a keeper fill, to unlock faster activation.
+    /// `Pubkey::default()` disables that, since the zero key signs neither.
     pub hot_flow_authority: Pubkey,
     /// What one transaction costs the account that sends it, as the network
-    /// prices it now. Every relay crank payment is derived from this, so a
-    /// change to the network's fee model is one write here instead of a
-    /// re-price of every market. Holds `u32`s, so it lands 4-aligned right
-    /// after `hot_flow_authority` (offset 1608) with no alignment slack ahead.
+    /// prices it now. Every relay crank payment derives from this, so a fee
+    /// model change is one write here instead of a re-price of every market.
+    /// Holds `u32`s, 4-aligned at offset 1608 with no alignment slack ahead.
     pub transaction_fee_rails: TransactionFeeRails,
-    /// Most of a liquidation's filled quote value the protocol will spend
-    /// reimbursing whoever cranked it, in basis points.
-    ///
-    /// A crank that nobody can afford to land is a liquidation that does not
-    /// happen, and a fee market moves faster than any figure the protocol can
-    /// keep written down. So the liquidation crank repays what the
-    /// transaction actually cost — its base fee plus the priority fee it
-    /// paid — and this bounds that at a share of what the liquidation
-    /// recovered. Small liquidations stop being worth landing in heavy
-    /// congestion, which is the right answer: the recovery does not cover the
-    /// gas.
-    ///
-    /// Reimbursing a cost the keeper chooses is safe here because it is not a
-    /// cost the keeper keeps: a priority fee goes to the validator, so
-    /// bidding it up buys nothing. A keeper that is also the validator can
-    /// recapture some of it, and this cap is what bounds that to a share the
-    /// protocol chose.
-    ///
-    /// Zero disables reimbursement, leaving the flat payment.
+    /// Share of a liquidation's filled quote value that bounds what a crank
+    /// is reimbursed for its actual cost (base fee plus priority fee), in
+    /// basis points. This caps what a keeper that is also the validator
+    /// could recapture through its own priority fee. Zero disables reimbursement, leaving the flat payment.
     pub liquidation_crank_reimbursement_bps: u16,
     /// Spot market whose oracle prices SOL, for the one place the protocol
     /// pays lamports against a quote-denominated figure. Zero disables the
@@ -676,44 +644,17 @@ pub enum LpPoolFeatureBitFlags {
 }
 
 impl Size for State {
-    // 8 (disc) + 13 Pubkey (cold + warm + pause + 10 hot, 416 B) + 8 Pubkey (mint/signer/srm
-    // + protocol_fee_recipient_perp/_spot + hot_fee_withdraw + hot_account_extension, 256 B)
-    // + 2*FeeStructure + OracleGuardRails + scalars + solvency_status[1] + promo_fee_tier[1]
-    // + slot_duration_ms[2] + pending_slot_duration_ms[2] + slot_duration_pad[2]
-    // + slot_duration_effective_slot[8] + transition slots[32] (the slot-duration
-    // archive, offsets 1498..1544) + hot_vamm_quote_management[32]
-    // + hot_flow_authority[32] + transaction_fee_rails[20]
-    // + liquidation_crank_reimbursement_bps[2] + sol_spot_market_index[2] + padding_0[2]
-    // (offsets 1544..1634) + padding[110] = 1752 B.
-    // hot_if_rebalance was removed with the if-rebalance machinery (its 32 B went into
-    // the padding); protocol_fee_recipient_spot later took 32 B back out; solvency_status
-    // took 1 B out of the padding; hot_account_extension took another 32 B out;
-    // promo_fee_tier took 1 B; slot_duration_ms took 2 B (promo_fee_tier ends at an odd
-    // offset, so the u16 starts at the even byte right after it — no implicit padding,
-    // pinned below); the staging fields (pending_slot_duration_ms[2] + slot_duration_pad[2]
-    // + slot_duration_effective_slot[8] + transition slots[32]) took 44 B; then
-    // hot_vamm_quote_management[32] + hot_flow_authority[32] + transaction_fee_rails[20]
-    // (4-aligned, no slack ahead) + liquidation_crank_reimbursement_bps[2]
-    // + sol_spot_market_index[2] + padding_0[2] took 90 B. The padding absorbs the 8
-    // formerly-implicit trailing bytes (State contains a u128, align 16 on the host but
-    // 8 on SBF) so sizeof is target-independent.
-    // SIZE stays constant and (SIZE - 8) % 16 == 0 holds (1744).
+    // 8-byte disc plus every field above, totaling 1752 B. The 110-byte
+    // padding absorbs the gap between host u128 alignment (16) and SBF's
+    // (8), so sizeof stays target-independent and
+    // (SIZE - 8) % 16 == 0 holds (1744).
     const SIZE: usize = 1752;
 }
 
-/// What the network charges to land one transaction, split the way the fee
-/// model splits it.
-///
-/// Relay cranks pay their keeper out of a reservoir, and the payment has to
-/// cover the keeper's own transaction or nobody cranks. The cost is a function
-/// of what the transaction asks for: a fixed charge to be included, plus a rate
-/// on the cost units it requests. A crank's cost units differ by an order of
-/// magnitude between a book removal and a two-legged cross, and the rate is
-/// the network's to change, so every payment is derived from these fields
-/// rather than set beside them.
-///
-/// Setting `resource_fee_denominator` to zero prices resource units at nothing,
-/// which is the fee model that charges per signature alone.
+/// What the network charges to land one transaction: a fixed inclusion
+/// charge plus a rate on requested cost units, which differ by an order of
+/// magnitude between a book removal and a two-legged cross. Every crank
+/// payment derives from these fields, since the network sets the rate.
 #[derive(Copy, AnchorSerialize, AnchorDeserialize, Clone, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
 pub struct TransactionFeeRails {
@@ -726,15 +667,10 @@ pub struct TransactionFeeRails {
     pub resource_fee_numerator: u32,
     /// Zero prices cost units at nothing.
     pub resource_fee_denominator: u32,
-    /// Ceiling on the compute-unit price a crank's priority fee is reimbursed
-    /// against, in micro-lamports per compute unit.
-    ///
-    /// A caller states its own compute-unit price, and a liquidation crank
-    /// repays the priority fee that price bought. Left unbounded, a caller
-    /// that also builds the block sets an arbitrary price, pays the fee to
-    /// itself, and bills the reservoir for it. This caps the per-unit price
-    /// the reservoir will match. Zero disables priority reimbursement, which
-    /// is the safe default until an admin sets a live ceiling.
+    /// Ceiling on the compute-unit price a crank's priority fee is
+    /// reimbursed against, in micro-lamports per compute unit. Left
+    /// unbounded, a caller that also builds the block could set an
+    /// arbitrary price and bill the reservoir for it. Zero is the safe default.
     pub max_priority_micro_lamports_per_cu: u32,
 }
 
@@ -757,27 +693,24 @@ impl TransactionFeeRails {
     }
 
     /// Lamports a transaction of this shape costs whoever sends it.
-    ///
-    /// `cost_units` is the sum the block-packing cost model charges for:
+    /// `cost_units` sums what the block-packing cost model charges for
     /// signatures, write locks, instruction-data bytes, the requested compute
-    /// limit, and the requested loaded-accounts data size. The requested
-    /// figures, not the consumed ones — a transaction pays for the room it
-    /// asks for.
-    ///
-    /// Rounded up, because this sizes a payment and a payment short by a
-    /// lamport buys nothing.
+    /// limit, and requested loaded-accounts size, using requested figures,
+    /// not consumed ones. Rounded up, since a short payment buys nothing.
     pub fn transaction_cost(&self, cost_units: u64, signatures: u64) -> VelocityResult<u64> {
         let fixed = u64::from(self.inclusion_lamports)
             .safe_add(u64::from(self.signature_lamports).safe_mul(signatures)?)?;
         if self.resource_fee_denominator == 0 {
             return Ok(fixed);
         }
+
         let resource = cost_units
             .safe_mul(u64::from(self.resource_fee_numerator))?
             .safe_div_ceil(u64::from(self.resource_fee_denominator))?;
         fixed.safe_add(resource)
     }
 }
+
 // `slot_duration_ms` must start exactly where the old padding began (byte 1498
 // of the struct, an even offset), so pre-upgrade accounts read `0` (= 400ms
 // baseline) out of former padding. The staging fields follow it with explicit
@@ -795,11 +728,10 @@ static_assertions::const_assert_eq!(
     1512
 );
 static_assertions::const_assert_eq!(std::mem::size_of::<State>(), 1744);
-// The quote-management key and the fee-rails fields follow the slot-duration
-// archive in the former padding. `hot_vamm_quote_management` starts where the
-// archive ends (1544), `hot_flow_authority` follows it, and
-// `transaction_fee_rails` holds `u32`s, so it lands 4-aligned at 1608 with no
-// slack ahead of it. A shift here means the SDK mirror in `types.ts` is stale.
+// The quote-management key and fee-rails fields follow the slot-duration
+// archive in the former padding. `hot_vamm_quote_management` starts at
+// 1544, `hot_flow_authority` follows, and `transaction_fee_rails` holds
+// `u32`s, landing 4-aligned at 1608. A shift here leaves the SDK mirror in `types.ts` stale.
 static_assertions::const_assert_eq!(std::mem::offset_of!(State, hot_vamm_quote_management), 1544);
 static_assertions::const_assert_eq!(std::mem::offset_of!(State, hot_flow_authority), 1576);
 static_assertions::const_assert_eq!(std::mem::offset_of!(State, transaction_fee_rails), 1608);

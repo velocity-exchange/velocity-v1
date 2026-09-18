@@ -42,6 +42,7 @@ pub struct UpdateQuoterMaxOracleDeviation<'info> {
             QUOTER_SLAB_PDA_SEED,
             quoter.load()?.config.market.to_le_bytes().as_ref(),
         ],
+
         bump
     )]
     pub quoter_slab: Option<AccountLoader<'info, QuoterSlabV0>>,
@@ -75,6 +76,7 @@ pub fn handle_update_quoter_max_oracle_deviation(
         "an oracle band of {} is at or past 100%; the market's band already bounds that",
         max_oracle_deviation_bps
     )?;
+
     quoter.config.max_oracle_deviation_bps = max_oracle_deviation_bps;
     drop(quoter);
     if let Some(slab) = &ctx.accounts.quoter_slab {
@@ -83,10 +85,12 @@ pub fn handle_update_quoter_max_oracle_deviation(
             slots[index].config.max_oracle_deviation_bps = max_oracle_deviation_bps;
         }
     }
+
     msg!(
         "quoter {} fills within {} bps of oracle, or the market's band if that is tighter",
         ctx.accounts.quoter.key(),
         max_oracle_deviation_bps
     );
+
     Ok(())
 }

@@ -111,6 +111,7 @@ pub struct CrankClobOrderRemoval<'info> {
             CLOB_CRANK_CONDITIONS_PDA_SEED,
             quoter_slab.load()?.market.to_le_bytes().as_ref(),
         ],
+
         bump
     )]
     pub crank_conditions: Option<AccountLoader<'info, ClobCrankConditionsV0>>,
@@ -205,6 +206,7 @@ pub fn crank_clob_removal(
             market.market_index,
             market_index
         )?;
+
         // A keeper that removes its own order is already loaded as the maker
         // and cannot be loaded a second time as the filler. It pays itself
         // nothing.
@@ -218,6 +220,7 @@ pub fn crank_clob_removal(
             state.perp_fee_structure.flat_filler_fee,
             clock.slot,
         )?;
+
         drop(filler);
 
         // The removal report is the book's, so its size and its slot are held
@@ -229,6 +232,7 @@ pub fn crank_clob_removal(
             &removed.side.to_position_direction(),
             removed.base_asset_amount,
         )?;
+
         release_reserved_open_orders(&mut user.perp_positions[position_index], 1)?;
         user.decrement_open_orders(false);
         // The order left the book, so disarm the reduce-only counter it armed.
@@ -274,11 +278,10 @@ pub fn crank_clob_removal(
     }
 
     if let Some(conditions_loader) = &ctx.accounts.crank_conditions {
-        // An expiry that went unclaimed pays for the wait. The escalation is
-        // priced off the order's own `max_ts`, which the removal reports, so
-        // the figure is the protocol's and a caller cannot name its own.
-        // Eviction answers a capacity limit rather than a deadline, so it does
-        // not escalate.
+        // An expiry that went unclaimed pays escalation, priced off the
+        // order's own `max_ts` so a caller cannot name its own figure.
+        // Eviction is a capacity limit, not a deadline, so it does not
+        // escalate.
         let escalation = if is_evict {
             0
         } else {
@@ -300,6 +303,7 @@ pub fn crank_clob_removal(
         removed.order_id,
         ctx.accounts.user.key()
     );
+
     Ok(())
 }
 
@@ -316,11 +320,9 @@ pub struct ResolveClobCrank<'info> {
     /// rather than into the block they read.
     pub crank_conditions: AccountLoader<'info, ClobCrankConditionsV0>,
     /// CHECK: the slab's `has_one` binds it to the book the admin approved.
-    ///
-    /// It is writable for the book's response tail. The cross resolver asks the
-    /// book for its resting orders through `quote_l3_v0`, which streams the
-    /// answer into that tail. Nothing a resolver sends ever lands, and the tail
-    /// is a scratch region the book rewrites on every quote.
+    /// It is writable for the book's response tail, scratch the book rewrites
+    /// every quote as the cross resolver streams resting orders into it
+    /// through `quote_l3_v0`. Nothing a resolver sends lands there.
     #[account(mut)]
     pub clob_market: UncheckedAccount<'info>,
     #[account(
@@ -352,6 +354,7 @@ pub fn validate_linkage(ctx: &Context<ResolveClobCrank>) -> Result<()> {
         ErrorCode::DefaultError,
         "clob program does not match the book slot"
     )?;
+
     Ok(())
 }
 
@@ -436,8 +439,10 @@ pub fn finish_trigger_crank<'info>(
             conditions.user,
             user.key()
         )?;
+
         conditions.release_slot(market_index, order_id);
     }
+
     let program_keeper_mode = is_protocol_user(filler, state)?;
     if program_keeper_mode {
         let reservoir = crank_conditions
@@ -455,20 +460,20 @@ pub fn finish_trigger_crank<'info>(
                 conditions.market_index,
                 market_index
             )?;
+
             u64::from(conditions.crank_payments.trigger)
         };
+
         ClobCrankConditionsV0::pay_keeper(reservoir, &authority.to_account_info(), payment)?;
     }
+
     Ok(())
 }
 
 /// Which resolver a fired trigger slot belongs to.
 ///
-/// A user can hold several fired triggers on one market at once, and each
-/// resolver runs for its own slots only. The order type names the resolver: a
-/// trigger-limit rests whole on the book, and every other trigger fires and
-/// fills against it. Without this split, a resolver would stage the first
-/// fired order of either kind and its executor would then reject it.
+/// The order type decides it: a trigger-limit rests whole on the book,
+/// every other trigger fires and fills against it. Staging the wrong kind fails.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TriggerResolverKind {
     /// `trigger_limit_order_v1` rests the whole trigger-limit on the book.
@@ -480,14 +485,8 @@ pub enum TriggerResolverKind {
 
 /// Whether a trigger crank on `order` can land at this oracle price.
 ///
-/// An evicted trigger comes back armed behind an edge gate, which is
-/// [`crate::state::user::OrderBitFlag::AwaitingTriggerRecross`]. The crank that
-/// clears the flag is the one that observes the price back off the trigger
-/// side. A crank that observes the price still through the trigger fails with
-/// `OrderAwaitingTriggerRecross`. A re-armed order is therefore due while its
-/// condition is not satisfied, and an ordinary order is due while its condition
-/// is satisfied. Staging the other half lands nothing and starves fired
-/// triggers behind it.
+/// A re-armed order (flagged `AwaitingTriggerRecross`) is due while unsatisfied. An
+/// ordinary order is due while satisfied. The wrong half fails with `OrderAwaitingTriggerRecross`.
 pub fn trigger_crank_is_due(order: &crate::state::user::Order, oracle_price: u64) -> Result<bool> {
     let satisfied = crate::math::orders::order_satisfies_trigger_condition(order, oracle_price)?;
     let awaiting_recross =
@@ -519,24 +518,18 @@ pub fn find_fired_trigger(
         oracle_info.key(),
         market.market_index
     )?;
+
     let oracle_price =
         crate::state::oracle::get_oracle_price(&market.oracle_source, oracle_info, slot)?
             .price
             .max(0) as u64;
 
     for order in user.orders.iter() {
-        // A trigger slot already placed on the CLOB is a shadow, not armed
-        // work. It reads as untriggered, which means the `triggered()` test
-        // below does not exclude it. Without this test, discovery keeps re-firing an order that is
-        // already resting on the book. `trigger_limit_order_v1` then rejects the
-        // staged crank with `OrderPlacedOnClob` every round, which spends turner
-        // work and starves armed triggers behind it.
-        //
-        // An order past its own `max_ts` starves the queue the same way.
-        // `should_expire_order` exempts anything that must be triggered, so
-        // the sweep never takes it and it stays armed forever. Both fire paths
-        // treat it as no work, so staging it spends a round and accomplishes
-        // nothing.
+        // A trigger slot already placed on the CLOB reads as untriggered, so
+        // `triggered()` does not exclude it. Staging it anyway makes
+        // `trigger_limit_order_v1` reject the crank with `OrderPlacedOnClob`,
+        // which spends turner work and starves triggers behind it. An order
+        // past its own `max_ts` is exempt from `should_expire_order` too, and stays armed the same way.
         let expired = order.max_ts != 0 && now > order.max_ts;
         if order.status != crate::state::user::OrderStatus::Open
             || order.market_index != market.market_index
@@ -547,9 +540,11 @@ pub fn find_fired_trigger(
         {
             continue;
         }
+
         if !trigger_crank_is_due(order, oracle_price)? {
             continue;
         }
+
         let Some(meta) = conditions
             .trigger_slots
             .iter()
@@ -558,21 +553,25 @@ pub fn find_fired_trigger(
         else {
             continue;
         };
+
         // A synced slot always names a book: `sync_trigger_conditions` refuses
         // to stage a trigger on a market with no CLOB, because such a trigger
         // has nowhere to fire.
         if meta.quoter_slab == Pubkey::default() {
             continue;
         }
+
         let kind = if order.order_type == crate::state::user::OrderType::TriggerLimit {
             TriggerResolverKind::ClobRest
         } else {
             TriggerResolverKind::ClobFill
         };
+
         if kind == want {
             return Ok(Some(meta));
         }
     }
+
     Ok(None)
 }
 
@@ -630,10 +629,9 @@ pub(crate) fn book_side_rested<'info>(
 /// `(size, placed_slot)` rows the read returned.
 ///
 /// Unmeasured depth counts as unrested. The read stops at
-/// [`RESTED_ROWS_PER_SIDE`], so a side whose read filled the window without
-/// reaching `size` hides rows the fill can still sweep, and those rows may be
-/// fresh. A read that came back short of the window is the whole side, and
-/// depth below `size` there does not exist.
+/// [`RESTED_ROWS_PER_SIDE`], so a side that filled the window without reaching
+/// `size` hides rows the fill can still sweep, and those rows may be fresh.
+/// A read short of the window is the whole side. Depth below `size` there does not exist.
 pub(crate) fn rows_rested(rows: &[(u64, u64)], size: u64, slot: u64) -> bool {
     let (depth, rested) =
         rows.iter()
@@ -641,6 +639,7 @@ pub(crate) fn rows_rested(rows: &[(u64, u64)], size: u64, slot: u64) -> bool {
                 if depth >= size {
                     return (depth, rested);
                 }
+
                 (
                     depth.saturating_add(*row_size),
                     rested && crate::math::crosses::served_window(*placed_slot, slot),
@@ -667,7 +666,7 @@ pub(crate) fn book_l3_side<'info, T>(
     max_rows: u16,
     accounts: &[AccountInfo<'info>],
     scratch: &mut QuoterCpiScratch<'info>,
-    consume_reservation: bool,
+    include_taker_origin_reservations: bool,
     map: impl Fn(&L3RowV0) -> T,
 ) -> Result<Option<Vec<T>>> {
     let located = quoter.quote_l3(
@@ -676,7 +675,7 @@ pub(crate) fn book_l3_side<'info, T>(
             direction,
             size: 0,
             max_rows,
-            consume_reservation,
+            include_taker_origin_reservations,
         },
         slab,
         accounts,
@@ -708,7 +707,7 @@ pub(crate) fn book_l3_sides<'info>(
     max_rows: u16,
     accounts: &[AccountInfo<'info>],
     scratch: &mut QuoterCpiScratch<'info>,
-    consume_reservation: bool,
+    include_taker_origin_reservations: bool,
 ) -> Result<
     Option<(
         Vec<crate::math::crosses::RestingOrder>,
@@ -724,12 +723,13 @@ pub(crate) fn book_l3_sides<'info>(
         max_rows,
         accounts,
         scratch,
-        consume_reservation,
+        include_taker_origin_reservations,
         from_row,
     )?
     else {
         return Ok(None);
     };
+
     let Some(bids) = book_l3_side(
         quoter,
         slab,
@@ -738,12 +738,13 @@ pub(crate) fn book_l3_sides<'info>(
         max_rows,
         accounts,
         scratch,
-        consume_reservation,
+        include_taker_origin_reservations,
         from_row,
     )?
     else {
         return Ok(None);
     };
+
     Ok(Some((bids, asks)))
 }
 

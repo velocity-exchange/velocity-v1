@@ -41,6 +41,7 @@ pub fn handle_update_quoter_config(
         &ctx.accounts.authority.key(),
         ctx.accounts.state.as_ref(),
     )?;
+
     let mut quoter = ctx.accounts.quoter.load_mut()?;
     let config = &mut quoter.config;
     if let Some(response_account) = args.response_account {
@@ -55,5 +56,6 @@ pub fn handle_update_quoter_config(
     if let Some(discriminator) = args.execute_v0_discriminator {
         config.execute_v0_discriminator = discriminator;
     }
+
     Ok(())
 }

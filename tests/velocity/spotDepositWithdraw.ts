@@ -159,6 +159,7 @@ describe('spot deposit and withdraw', () => {
 			0,
 			await getMaxWithdrawGuardThreshold(admin, 0)
 		);
+
 		svmContextWrapper.printTxLogs(txSig);
 		await admin.fetchAccounts();
 		const spotMarket = await admin.getSpotMarketAccount(0);
@@ -222,6 +223,7 @@ describe('spot deposit and withdraw', () => {
 			1,
 			await getMaxWithdrawGuardThreshold(admin, 1)
 		);
+
 		svmContextWrapper.printTxLogs(txSig);
 		await admin.fetchAccounts();
 		const spotMarket = await admin.getSpotMarketAccount(1);
@@ -256,6 +258,7 @@ describe('spot deposit and withdraw', () => {
 				new BN(30 * PRICE_PRECISION.toNumber())
 			)
 		);
+
 		// The market's first oracle-TWAP refresh runs the normal EMA (OtterSec #121).
 		// It once took a zero-timestamp path that replaced the whole TWAP with the
 		// live price. `calculate_weighted_average` adds an anti-stagnation bias of one
@@ -299,6 +302,7 @@ describe('spot deposit and withdraw', () => {
 			marketIndex,
 			firstUserVelocityClientUSDCAccount
 		);
+
 		svmContextWrapper.printTxLogs(txSig);
 
 		const spotMarket = await admin.getSpotMarketAccount(marketIndex);
@@ -353,6 +357,7 @@ describe('spot deposit and withdraw', () => {
 			marketIndex,
 			secondUserVelocityClientWSOLAccount
 		);
+
 		svmContextWrapper.printTxLogs(txSig);
 
 		const spotMarket = await admin.getSpotMarketAccount(marketIndex);
@@ -368,6 +373,7 @@ describe('spot deposit and withdraw', () => {
 				new BN(30 * PRICE_PRECISION.toNumber())
 			)
 		);
+
 		// The market's first oracle-TWAP refresh runs the normal EMA (OtterSec #121).
 		// It once took a zero-timestamp path that replaced the whole TWAP with the
 		// live price. `calculate_weighted_average` adds an anti-stagnation bias of one
@@ -419,6 +425,7 @@ describe('spot deposit and withdraw', () => {
 			marketIndex,
 			secondUserVelocityClientUSDCAccount
 		);
+
 		svmContextWrapper.printTxLogs(txSig);
 
 		const spotMarket = await admin.getSpotMarketAccount(marketIndex);
@@ -539,6 +546,7 @@ describe('spot deposit and withdraw', () => {
 			marketIndex,
 			secondUserVelocityClientUSDCAccount
 		);
+
 		svmContextWrapper.printTxLogs(txSig);
 
 		await secondUserVelocityClient.fetchAccounts();
@@ -697,6 +705,7 @@ describe('spot deposit and withdraw', () => {
 			marketIndex,
 			secondUserVelocityClientUSDCAccount
 		);
+
 		svmContextWrapper.printTxLogs(txSig);
 
 		await secondUserVelocityClient.fetchAccounts();
@@ -760,6 +769,7 @@ describe('spot deposit and withdraw', () => {
 			marketIndex,
 			secondUserVelocityClientUSDCAccount
 		);
+
 		svmContextWrapper.printTxLogs(txSig);
 
 		await secondUserVelocityClient.fetchAccounts();
@@ -815,6 +825,7 @@ describe('spot deposit and withdraw', () => {
 			undefined,
 			true
 		);
+
 		svmContextWrapper.printTxLogs(txSig);
 
 		const spotMarketAccountAfter =
@@ -870,6 +881,7 @@ describe('spot deposit and withdraw', () => {
 			secondUserVelocityClientWSOLAccount,
 			true
 		);
+
 		svmContextWrapper.printTxLogs(txSig);
 
 		const spotMarketAccountAfter =
@@ -948,6 +960,7 @@ describe('spot deposit and withdraw', () => {
 			marketIndex,
 			thirdUserVelocityClientUSDCAccount
 		);
+
 		svmContextWrapper.printTxLogs(txSig);
 
 		const spotPositionAfter =

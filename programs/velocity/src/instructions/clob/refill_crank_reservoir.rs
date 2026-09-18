@@ -49,6 +49,7 @@ pub(super) fn stage_refill(ctx: &Context<ResolveClobCrank>) -> Result<Option<Sta
     if spendable > watermark {
         return Ok(None);
     }
+
     Ok(Some(
         crate::staged_call!(RefillCrankReservoir {
             treasury: crate::state::pdas::crank_treasury(),
@@ -72,6 +73,7 @@ pub struct RefillCrankReservoir<'info> {
             crate::state::clob_crank::CLOB_CRANK_CONDITIONS_PDA_SEED,
             args.market_index.to_le_bytes().as_ref(),
         ],
+
         bump
     )]
     pub crank_conditions: AccountLoader<'info, ClobCrankConditionsV0>,
@@ -134,13 +136,12 @@ pub fn handle_refill_crank_reservoir(
         spendable,
         target
     )?;
+
     let amount = target.safe_sub(spendable)?.min(available);
-    // A refill must leave the reservoir above the level that woke it. A
-    // treasury too poor for that would otherwise pay in a loop. Each partial
-    // refill pays a keeper, leaves the condition due, and is cranked again,
-    // which spends more on the payments than it moves. A revert here holds the
-    // remaining lamports for the markets that can still be served, and reports
-    // that the treasury needs funding.
+    // A refill must leave the reservoir above the watermark that woke it.
+    // Otherwise a partial refill pays a keeper, leaves the condition due, and
+    // gets cranked again, spending more on payments than it moves. Reverting
+    // holds the remaining lamports for other markets and signals underfunding.
     validate!(
         spendable.safe_add(amount)? > watermark,
         ErrorCode::InsufficientCrankTreasury,
@@ -173,5 +174,6 @@ pub fn handle_refill_crank_reservoir(
         paid,
         ctx.accounts.authority.key()
     );
+
     Ok(())
 }

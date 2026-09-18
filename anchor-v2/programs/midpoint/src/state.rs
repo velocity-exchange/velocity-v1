@@ -51,11 +51,9 @@ pub const RESPONSE_BUFFER_BYTES: usize = 2048;
 
 pub const ZERO_ADDRESS: Address = Address::new_from_array([0u8; 32]);
 
-/// Which sides a `cancel_all_v0` withdraws. This is the same wire enum and
-/// the same borsh tags the CLOB uses, so a client speaks one shape to either
-/// quoter type. Named sides replace a pair of bools because the wire must not
-/// express "neither". A maker would then believe the quotes are gone when
-/// nothing happened.
+/// Which sides a `cancel_all_v0` withdraws. It is the same wire enum and the
+/// same borsh tags the CLOB uses. Named sides replace a pair of bools because
+/// the wire must not express "neither".
 pub use quoter_spec::CancelSidesV0;
 /// Taker direction on the quoter interface. `quoter-spec` declares it once.
 pub use quoter_spec::DirectionV0 as Direction;
@@ -78,16 +76,10 @@ impl CancelSidesExt for CancelSidesV0 {
     }
 }
 
-/// What a `cancel_all_v0` withdrew.
-///
-/// The outcome carries rung counts and nothing more. Unlike the CLOB sweep,
-/// this one reserves nothing on velocity's side. Spline depth is standing
-/// intent, and velocity clamps it to margin at execute. No caller has
-/// aggregates to unwind, so the response is informational.
-///
-/// A total of the withdrawn intent would mean reading every rung back before
-/// zeroing it. That costs more per rung than the withdrawal, and it reports a
-/// number the maker already knows.
+/// What a `cancel_all_v0` withdrew. It carries rung counts and nothing more.
+/// Unlike the CLOB sweep, this one reserves nothing on velocity's side, so no
+/// caller has aggregates to unwind. A total of the withdrawn intent would mean
+/// reading every rung back, which costs more per rung than the withdrawal.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, wincode::SchemaRead, wincode::SchemaWrite)]
 #[cfg_attr(feature = "idl-build", derive(anchor_lang::IdlType))]
 pub struct CancelAllOutcomeV0 {
@@ -123,14 +115,10 @@ pub use quoter_spec::CancelledRemainderV0;
 /// Where in the quoter account the program wrote the borsh response.
 /// `quoter-spec` declares it.
 pub use quoter_spec::ResponsePointerV0;
-/// One user's share of an executed fill. It mirrors velocity's
-/// quoter-interface `UserBalanceChangeV0`. The midpoint always has exactly
-/// one, the quoted user, and never completes an order because the ladder
-/// holds none.
-///
-/// This is the wire definition. The program writes the same bytes field by
-/// field in [`MidpointQuoterV0::write_execute_response`] rather than building
-/// one of these. A unit test pins the two encodings equal.
+/// One user's share of an executed fill. The midpoint always has exactly one,
+/// the quoted user, and never completes an order because the ladder holds
+/// none. [`MidpointQuoterV0::write_execute_response`] writes the same bytes
+/// field by field. A unit test pins the two encodings equal.
 pub use quoter_spec::UserBalanceChangeV0;
 pub use quoter_spec::{ExecuteResponseV0, QuoteResponseV0};
 
@@ -176,10 +164,8 @@ pub struct MidpointQuoterV0 {
     /// here. The field never changes after init.
     pub execute_authority: Address,
     /// Wallet half of the quoted velocity `User`. Fills settle against
-    /// `(user_authority, user_sub_account_id)`. It signs creation to give
-    /// consent, and it is part of the PDA seeds, so it is fixed for the life
-    /// of the instance. Quoting a different wallet needs a new instance that
-    /// the wallet signs for.
+    /// `(user_authority, user_sub_account_id)`. It signs creation and is part
+    /// of the PDA seeds, so quoting a different wallet needs a new instance.
     pub user_authority: Address,
     /// Mid price, in the market's price precision. Velocity perps use a
     /// PRICE_PRECISION of 1e6. Zero means the instance does not quote.
@@ -219,9 +205,8 @@ pub struct MidpointQuoterV0 {
     pub ask_count: u8,
     /// The largest `|mid − reference_price| / reference_price` the quoter
     /// fills at, in parts per million. Zero disables the bound. The config key
-    /// owns the field. A compromised hot key cannot move the mid past this
-    /// band around velocity's oracle. A bad mid then quotes and fills nothing
-    /// rather than draining the maker's collateral at an off-market price.
+    /// owns the field, so a compromised hot key cannot move the mid past this
+    /// band around velocity's oracle.
     pub max_mid_deviation_ppm: u64,
     /// Room for two more pubkeys and a scalar or two. A future field lands
     /// here without moving the ladders or the response tail.
@@ -263,13 +248,9 @@ pub struct QuoterConfigV0 {
     pub min_quote_size: u64,
     pub require_attested_flow: bool,
     /// The largest `|mid - reference_price| / reference_price` the instance
-    /// fills at, in parts per million. It must be nonzero at creation.
-    ///
-    /// This band stops a compromised hot key from filling the maker at an
-    /// off-market mid, so an instance must not start without one. The config
-    /// key can set it to zero later through `update_quoter_v0`. That is a
-    /// maker who decides to run unbounded, not a maker who never learned the
-    /// field exists.
+    /// fills at, in parts per million. It must be nonzero at creation, so a
+    /// compromised hot key cannot fill the maker at an off-market mid. The
+    /// config key can set it to zero later through `update_quoter_v0`.
     pub max_mid_deviation_ppm: u64,
 }
 
@@ -300,10 +281,8 @@ impl SplineParams {
     ///
     /// This runs once per rung per quote, so it stays in u64. SBF has no
     /// 128-bit divide, and each `u128 / u128` costs hundreds of compute units.
-    /// A 64-rung ladder would pay that 128 times over. `mid × offset_ppm` fits
-    /// u64 for any plausible market, because a 1e8 price times 1e6 ppm is
-    /// 1e14. The u128 path covers the inputs where it does not fit, and a unit
-    /// test pins it equal to the all-u128 form.
+    /// `mid × offset_ppm` fits u64 for any plausible market, because a 1e8
+    /// price times 1e6 ppm is 1e14. A unit test pins the u128 fallback equal.
     pub fn level_price(&self, direction: Direction, offset_ppm: u64) -> Option<u64> {
         let mid = self.mid_price;
         let delta = match mid.checked_mul(offset_ppm) {
@@ -320,6 +299,7 @@ impl SplineParams {
             // Taker sells: bid below mid, rounded down.
             Direction::Short => mid.checked_sub(delta)? / tick * tick,
         };
+
         (price != 0).then_some(price)
     }
 
@@ -340,17 +320,17 @@ impl SplineParams {
     /// rung's sub-unit remainder. This function folds it in and returns the
     /// new remainder.
     ///
-    /// A carry rather than a truncation per rung makes a multi-rung fill total
-    /// the floor of the whole walk's notional. That is the one rounding
-    /// velocity admits when it holds the fill to the prices this quoter
-    /// published. The math stays in u64 while the product fits and widens only
-    /// when it must. See [`SplineParams::level_price`] for why the divide is
-    /// worth avoiding.
+    /// The carry makes a multi-rung fill total the floor of the whole walk's
+    /// notional. That is the one rounding velocity admits when it holds the
+    /// fill to the prices this quoter published. See
+    /// [`SplineParams::level_price`] for why the math stays in u64 while the
+    /// product fits.
     pub fn quote_amount(&self, price: u64, base: u64, carry: u64) -> Result<(u64, u64)> {
         let base_precision = self.base_precision.max(1);
         if let Some(scaled) = price.checked_mul(base).and_then(|p| p.checked_add(carry)) {
             return Ok((scaled / base_precision, scaled % base_precision));
         }
+
         let scaled = (price as u128)
             .checked_mul(base as u128)
             .ok_or(MidpointError::MathError)?
@@ -412,6 +392,7 @@ impl MidpointQuoterV0 {
         if self.max_mid_deviation_ppm == 0 || self.mid_price == 0 || reference_price <= 0 {
             return true;
         }
+
         let reference = reference_price as u128;
         let diff = (self.mid_price as u128).abs_diff(reference);
         // diff / reference <= ppm / 1e6  ⇔  diff * 1e6 <= ppm * reference.
@@ -427,9 +408,11 @@ impl MidpointQuoterV0 {
             quote: 0,
             consumed: [0; MAX_SPLINE_LEVELS],
         };
+
         if !self.is_quoting(slot) {
             return Ok(fill);
         }
+
         let params = self.params();
         let mut wanted = size;
         let mut carry = 0u64;
@@ -437,10 +420,12 @@ impl MidpointQuoterV0 {
             if wanted == 0 {
                 break;
             }
+
             let remaining = params.level_remaining(level);
             if remaining == 0 {
                 continue;
             }
+
             let Some(price) = params.level_price(direction, level.offset_ppm) else {
                 continue;
             };
@@ -458,6 +443,7 @@ impl MidpointQuoterV0 {
             fill.consumed[index] = take;
             wanted -= take;
         }
+
         Ok(fill)
     }
 
@@ -470,9 +456,11 @@ impl MidpointQuoterV0 {
             Direction::Long => &mut self.asks[..count],
             Direction::Short => &mut self.bids[..count],
         };
+
         for (level, consumed) in levels.iter_mut().zip(fill.consumed.iter()) {
             level.filled = level.filled.saturating_add(*consumed);
         }
+
         self.validate_consumption(direction, fill)
     }
 
@@ -488,6 +476,7 @@ impl MidpointQuoterV0 {
             inputs.len() <= MAX_SPLINE_LEVELS,
             MidpointError::TooManyLevels
         );
+
         let mut previous: Option<u64> = None;
         for input in inputs {
             require!(input.size > 0, MidpointError::InvalidLevel);
@@ -495,12 +484,15 @@ impl MidpointQuoterV0 {
                 previous.is_none_or(|p| input.offset_ppm > p),
                 MidpointError::LevelsNotAscending
             );
+
             previous = Some(input.offset_ppm);
         }
+
         let (levels, count) = match direction {
             Direction::Long => (&mut self.asks[..], &mut self.ask_count),
             Direction::Short => (&mut self.bids[..], &mut self.bid_count),
         };
+
         for (slot, input) in levels.iter_mut().zip(inputs.iter()) {
             *slot = SplineLevelV0 {
                 offset_ppm: input.offset_ppm,
@@ -515,6 +507,7 @@ impl MidpointQuoterV0 {
                 filled: 0,
             };
         }
+
         *count = inputs.len() as u8;
         Ok(())
     }
@@ -524,100 +517,94 @@ impl MidpointQuoterV0 {
     ///
     /// The write covers only the live prefix. The tail past `count` is already
     /// zero by the ladder invariant, so a maker who runs eight rungs pays for
-    /// eight rather than for the ladder's capacity. That is what makes this
-    /// cheaper than `set_levels_v0` with an empty side. The write is a
-    /// straight `fill`, so it lowers to a memset rather than a per-rung
-    /// loop.
+    /// eight rather than for the ladder's capacity.
     pub fn clear_side(&mut self, direction: Direction) -> u8 {
         let count = self.side_count(direction) as usize;
         let (levels, stored) = match direction {
             Direction::Long => (&mut self.asks[..], &mut self.ask_count),
             Direction::Short => (&mut self.bids[..], &mut self.bid_count),
         };
+
         levels[..count].fill(SplineLevelV0 {
             offset_ppm: 0,
             size: 0,
             filled: 0,
         });
+
         *stored = 0;
         count as u8
     }
 
     /// Post-condition of [`Self::clear_side`]. The side's count is zero and
-    /// every rung the withdrawal wrote is zeroed, so nothing on the side can
-    /// quote.
+    /// every rung the withdrawal wrote is zeroed.
     ///
     /// The check covers the `cleared` rungs rather than the whole ladder. The
     /// tail past the old count was already zero by the ladder invariant, and a
-    /// withdrawal never writes there. A scan of the tail would spend compute
-    /// to prove something this operation cannot break, on a path a maker takes
-    /// under time pressure. Every other mutating instruction still runs the
-    /// full [`Self::validate`], which catches a tail that anything else
-    /// corrupted. [`Self::set_mid`] makes the same trade for the same
-    /// reason.
+    /// withdrawal never writes there. Every other mutating instruction still
+    /// runs the full [`Self::validate`], which catches a tail that anything
+    /// else corrupted.
     pub fn validate_cleared_side(&self, direction: Direction, cleared: u8) -> Result<()> {
         require!(
             self.side_count(direction) == 0,
             MidpointError::InvariantViolated
         );
+
         let levels = match direction {
             Direction::Long => &self.asks,
             Direction::Short => &self.bids,
         };
+
         require!(
             levels[..(cleared as usize).min(MAX_SPLINE_LEVELS)]
                 .iter()
                 .all(|level| level.offset_ppm == 0 && level.size == 0 && level.filled == 0),
             MidpointError::InvariantViolated
         );
+
         Ok(())
     }
 
     /// Stamp a new mid. `sequence` is an optional monotonic guard for racing
     /// writers. A nonzero sequence must increase strictly, so a delayed relay
-    /// cannot overwrite a fresher mid. A zero sequence skips the check, so a
-    /// single-writer setup does not pay for coordination it does not need.
+    /// cannot overwrite a fresher mid. A zero sequence skips the check.
     ///
     /// A mid of zero is a withdrawal. It routes to [`Self::clear_mid`] and
     /// never fails on the guard.
     ///
-    /// The post-write assertion is O(1) by design. This is the compute-pinned
-    /// hot path, so it checks only what it wrote and never the ladders.
+    /// The post-write assertion is O(1). This is the compute-pinned hot path,
+    /// so it checks only what it wrote and never the ladders.
     pub fn set_mid(&mut self, mid: u64, sequence: u64, slot: u64) -> Result<()> {
         if mid == 0 {
             return self.clear_mid();
         }
+
         // Once a writer uses sequences, every later write must carry a higher
-        // one. A sequence of 0 skips the monotonic check and still refreshes
-        // the slot. Allowing it after a real sequence would let a set_mid
-        // replayed through a durable nonce re-stamp a stale mid as fresh. A
-        // writer that never sequences keeps opting out with 0.
+        // one. A 0 after a real sequence would let a set_mid replayed through a
+        // durable nonce re-stamp a stale mid as fresh. A writer that never
+        // sequences keeps opting out with 0.
         if sequence != 0 || self.mid_sequence != 0 {
             require!(
                 sequence > self.mid_sequence,
                 MidpointError::StaleMidSequence
             );
+
             self.mid_sequence = sequence;
         }
+
         self.mid_price = mid;
         self.mid_slot = slot;
         require!(
             self.mid_slot == slot && (sequence == 0 || self.mid_sequence == sequence),
             MidpointError::InvariantViolated
         );
+
         Ok(())
     }
 
     /// Withdraw the mid. The instance stops quoting at once, because
-    /// [`Self::is_quoting`] refuses a zero mid on every side.
-    ///
-    /// This write skips the monotonic guard and leaves `mid_sequence` and
-    /// `mid_slot` alone. The guard exists so a delayed or replayed write
-    /// cannot publish a stale price as fresh. A zero mid publishes no price,
-    /// so it cannot do that, and a later real mid must still beat the last
-    /// real sequence. A withdrawal must also never lose a race. It is the
-    /// maker's kill switch, so a maker who fires it with a compromised hot key
-    /// gets the quotes down rather than an error.
+    /// [`Self::is_quoting`] refuses a zero mid on every side. This write skips
+    /// the monotonic guard and leaves `mid_sequence` and `mid_slot` alone. A
+    /// zero mid publishes no price, and a withdrawal must never lose a race.
     pub fn clear_mid(&mut self) -> Result<()> {
         self.mid_price = 0;
         require!(self.mid_price == 0, MidpointError::InvariantViolated);
@@ -651,6 +638,7 @@ impl MidpointQuoterV0 {
                 && self.execute_authority != ZERO_ADDRESS,
             MidpointError::InvalidConfig
         );
+
         Self::validate_side(&self.bids, self.bid_count)?;
         Self::validate_side(&self.asks, self.ask_count)
     }
@@ -670,6 +658,7 @@ impl MidpointQuoterV0 {
                 previous.is_none_or(|p| level.offset_ppm > p),
                 MidpointError::LevelsNotAscending
             );
+
             previous = Some(level.offset_ppm);
         }
         for level in &levels[count..] {
@@ -678,6 +667,7 @@ impl MidpointQuoterV0 {
                 MidpointError::InvariantViolated
             );
         }
+
         Ok(())
     }
 
@@ -696,6 +686,7 @@ impl MidpointQuoterV0 {
             fill.consumed[count..].iter().all(|taken| *taken == 0),
             MidpointError::InvariantViolated
         );
+
         let mut total: u64 = 0;
         let mut walk_ended = false;
         for (level, taken) in self.side_levels(direction).iter().zip(fill.consumed.iter()) {
@@ -703,12 +694,14 @@ impl MidpointQuoterV0 {
             if *taken == 0 {
                 continue;
             }
+
             require!(!walk_ended, MidpointError::InvariantViolated);
             // A take that leaves the rung quotable means the taker ran out of
             // size here. Nothing beyond this rung may be consumed.
             walk_ended = params.level_remaining(level) > 0;
             total = total.checked_add(*taken).ok_or(MidpointError::MathError)?;
         }
+
         require!(total == fill.base, MidpointError::InvariantViolated);
         Ok(())
     }
@@ -748,19 +741,23 @@ impl MidpointQuoterV0 {
             if wanted == 0 {
                 break;
             }
+
             let remaining = params.level_remaining(level);
             if remaining == 0 {
                 continue;
             }
+
             let Some(price) = params.level_price(direction, level.offset_ppm) else {
                 continue;
             };
+
             // Past the caller's worst acceptable price. Offsets ascend
             // strictly, so every later rung prices further from the mid and is
             // worse.
             if worse_than_limit(direction, price, limit_price) {
                 break;
             }
+
             let quoted = remaining.min(wanted);
             writer
                 .push_level(
@@ -773,6 +770,7 @@ impl MidpointQuoterV0 {
                 .map_err(MidpointError::from)?;
             wanted -= quoted;
         }
+
         // `finish` backfills the ladder's count and writes the withheld
         // report behind it. The report is always empty here. The midpoint
         // settles against one standing-intent user and holds no resting
@@ -805,6 +803,7 @@ impl MidpointQuoterV0 {
                 )
                 .map_err(MidpointError::from)?;
         }
+
         // Standing intent has no resting orders, so there is never a
         // cancelled remainder, a completed order, or a partial fill.
         let len = writer
@@ -815,15 +814,13 @@ impl MidpointQuoterV0 {
 }
 
 /// Whether a rung at `price` is past the caller's worst acceptable price.
-///
 /// Zero is no bound. A rung exactly at the limit is acceptable, so the
-/// comparison is strict. A long taker buys the ask ladder and refuses to pay
-/// above its limit. A short taker sells the bid ladder and refuses to receive
-/// below it.
+/// comparison is strict.
 fn worse_than_limit(direction: Direction, price: u64, limit_price: u64) -> bool {
     if limit_price == 0 {
         return false;
     }
+
     match direction {
         Direction::Long => price > limit_price,
         Direction::Short => price < limit_price,
@@ -866,6 +863,7 @@ mod tests {
                 })
                 .collect::<Vec<_>>()
         };
+
         quoter
             .write_side(Direction::Short, &inputs(bids))
             .expect("bids");
@@ -906,10 +904,12 @@ mod tests {
             if wanted == 0 {
                 break;
             }
+
             let remaining = params.level_remaining(level);
             if remaining == 0 {
                 continue;
             }
+
             let Some(price) = params.level_price(direction, level.offset_ppm) else {
                 continue;
             };
@@ -918,8 +918,10 @@ mod tests {
                 price,
                 size: quoted,
             });
+
             wanted -= quoted;
         }
+
         wincode::serialize(&QuoteResponseV0 {
             levels: &levels,
             withheld: PriceLevel::default(),
@@ -934,6 +936,7 @@ mod tests {
             user: quoter.user_ref(),
             _pad: [0; 6],
         });
+
         wincode::serialize(&ExecuteResponseV0 {
             changes: change.as_slice(),
             cancelled: &[],
@@ -1088,6 +1091,7 @@ mod tests {
             pointer.len as usize,
             quoter_spec::LEN_BYTES + MAX_SPLINE_LEVELS * quoter_spec::PRICE_LEVEL_BYTES + 2 * 8
         );
+
         assert!(pointer.len as usize <= RESPONSE_BUFFER_BYTES);
     }
 
@@ -1123,6 +1127,7 @@ mod tests {
             quote: 0,
             consumed,
         };
+
         assert!(quoter.apply_fill(Direction::Long, &fill).is_err());
     }
 
@@ -1137,6 +1142,7 @@ mod tests {
             quote: 0,
             consumed,
         };
+
         assert!(quoter.apply_fill(Direction::Long, &fill).is_err());
     }
 
@@ -1150,6 +1156,7 @@ mod tests {
             quote: 0,
             consumed,
         };
+
         assert!(quoter.apply_fill(Direction::Long, &fill).is_err());
     }
 
@@ -1305,9 +1312,11 @@ mod tests {
                 raw / tick * tick
             }
         };
+
         if price == 0 {
             return None;
         }
+
         u64::try_from(price).ok()
     }
 
@@ -1343,6 +1352,7 @@ mod tests {
                     min_quote_size: 0,
                     base_precision: UNIT,
                 };
+
                 for offset_ppm in offsets {
                     for direction in [Direction::Long, Direction::Short] {
                         assert_eq!(
@@ -1365,6 +1375,7 @@ mod tests {
             min_quote_size: 0,
             base_precision: UNIT,
         };
+
         for price in [0, 1, MID, u64::MAX / 3, u64::MAX] {
             for base in [0, 1, UNIT, 12_345_678_901, u64::MAX / 7, u64::MAX] {
                 for carry in [0, 1, UNIT - 1] {

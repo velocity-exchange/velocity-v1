@@ -10,15 +10,14 @@ const ASSOCIATED_TOKEN_PROGRAM_ID =
 const ATA_IX_MINT_KEY_INDEX = 3;
 
 /**
- * Strip the setup and teardown a provider wraps around its route. What remains
- * is the instructions that go between `beginSwap` and `endSwap`.
+ * Strip the setup and teardown a provider wraps around its route, leaving the
+ * instructions between `beginSwap` and `endSwap`.
  *
  * Velocity supplies its own compute budget, funds the input token account from
- * the spot market vault, and sweeps the output back. The provider's version of
- * all three is redundant. The provider's ATA creation for the input or output
- * mint goes too, because velocity creates those accounts itself. An ATA for any
- * other mint stays, such as an intermediate hop or a fee account, because
- * nothing else creates it.
+ * the spot market vault, and sweeps the output back, so the provider's version
+ * of all three is redundant. The provider's ATA creation for the input or
+ * output mint goes too, since velocity creates those itself; an ATA for any
+ * other mint (an intermediate hop, a fee account) stays, since nothing else creates it.
  *
  * Both providers call this one function. Two copies drifted when each client
  * held its own, and the difference showed up only as a malformed transaction.

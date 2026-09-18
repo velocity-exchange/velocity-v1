@@ -317,23 +317,22 @@ pub fn handle_cancel_request_remove_insurance_fund_stake<'c: 'info, 'info>(
         "No withdraw request in progress"
     )?;
 
-    // Settle any already due revenue into the insurance fund vault before the
-    // cancel prices the forfeiture. The add and request-remove paths settle the
-    // same way (OtterSec #141).
+    // Settle any due revenue into the insurance fund vault before the cancel
+    // prices the forfeiture. The add and request-remove paths settle the same
+    // way (OtterSec #141).
     //
-    // `cancel_request_remove_insurance_fund_stake` withdraws at the frozen
-    // `last_withdraw_request_value` and restakes at the live vault price. Any
-    // appreciation during the escrow window is forfeited to the stakers who
-    // stayed. A restake priced against an unsettled vault understates the live
-    // value. The cancel then burns no shares, or too few, and the canceller keeps
-    // revenue that belongs to the remaining stakers. A staker can order a signed
-    // cancel ahead of an already due signerless settle and take it.
+    // The cancel withdraws at the frozen `last_withdraw_request_value` and
+    // restakes at the live vault price. Appreciation during the escrow
+    // window is forfeited to the stakers who stayed, so an unsettled vault
+    // understates that price. The cancel then burns too few shares, or
+    // none, and the canceller keeps revenue owed to those stakers. A staker
+    // could order a signed cancel ahead of an already due signerless settle
+    // and take it.
     //
-    // The settle runs here instead of gating the cancel. A pending request must
-    // always be cancellable, and refusing the cancel until someone else cranks
-    // the settle would add a new cancel-blocking condition (OtterSec #34). Revenue that accrues
-    // after this point is still forfeited by the freeze. That is the intended
-    // escrow tradeoff.
+    // The settle runs here instead of gating the cancel. A pending request
+    // must stay cancellable, so a settle requirement would add a new
+    // cancel-blocking condition (OtterSec #34). Revenue accrued after this
+    // point is still forfeited by the freeze. That is the intended tradeoff.
     {
         if spot_market.has_transfer_hook() {
             controller::insurance::attempt_settle_revenue_to_insurance_fund(

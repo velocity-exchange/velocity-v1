@@ -10,31 +10,28 @@ pub struct QuoteV0 {
     pub quoter: Account<MidpointQuoterV0>,
 }
 
-/// Declared by `quoter-spec`, which owns every shape on this wire. A local
-/// mirror is unsafe. The reader takes the fields in declaration order, so a
-/// mirror that misses one field reads every later field from the wrong place
-/// and reports no error.
+/// allow-verbose: declared by `quoter-spec`, which owns this wire's shape.
+/// A local mirror is unsafe, since the reader takes fields in declaration
+/// order and a missing field silently reads everything after it wrong.
 ///
-/// The midpoint reads `users`, `taker`, `limit_price` and `reference_price`.
-/// It ignores `caps`. It settles against one standing-intent user and holds no
-/// orders, so there is no per-user budget to spend and nothing to skip
-/// mid-book. `reference_price` is velocity's oracle price. The quoter refuses
-/// to quote when its mid is outside the configured band of that price.
+/// The midpoint reads `users`, `taker`, `limit_price`, and `reference_price`,
+/// and ignores `caps`: it settles one standing-intent user and holds no
+/// orders, so there is no per-user budget to spend or book to skip mid-way.
+/// `reference_price` is velocity's oracle price, and the quoter refuses to
+/// quote when its mid is outside the configured band of that price.
 pub use quoter_spec::QuoteArgsV0;
 
 /// Report whether this quoter has anything to say to this caller. The gate
-/// covers settleability, self-trade, and protected flow when protected flow is
-/// configured. The mid-staleness gate and the pause gate live in
-/// `MidpointQuoterV0::is_quoting`, which the quote walk and the fill walk
-/// apply.
+/// covers settleability, self-trade, and protected flow when configured.
+/// The mid-staleness and pause gates live in `MidpointQuoterV0::is_quoting`,
+/// which the quote and fill walks apply.
 ///
 /// The protected-flow branch reads `taker_served_window` off the wire.
-/// Velocity asserts that the flow served a protection window. The window is
-/// either the swift hold, where velocity read the co-signature off the
-/// instructions sysvar, or the book's activation delay, where a crank fills an
-/// order that rested through it. This program trusts the claim the way it
-/// trusts `users` and `caps`. It authenticates its caller, and the caller is
-/// the settlement engine.
+/// Velocity asserts the flow served a protection window, either the swift
+/// hold's co-signature off the instructions sysvar, or the book's
+/// activation delay, where a crank filled an order that rested through it.
+/// This program trusts that claim as it trusts `users` and `caps`: it
+/// authenticates its caller, and the caller is the settlement engine.
 pub fn caller_gate(
     quoter: &MidpointQuoterV0,
     users: &[UserRefV0],
@@ -48,6 +45,7 @@ pub fn caller_gate(
         crate::state::user_set_within_capacity(users),
         crate::error::MidpointError::OversizedUserSet
     );
+
     let quoted = quoter.user_ref();
     if !users.is_empty() && !users.contains(&quoted) {
         return Ok(false);
@@ -58,6 +56,7 @@ pub fn caller_gate(
     if quoter.require_attested_flow != 0 && !taker_served_window {
         return Ok(false);
     }
+
     Ok(true)
 }
 
@@ -72,6 +71,7 @@ pub fn handle_quote_v0(ctx: &mut Context<QuoteV0>, args: QuoteArgsV0) -> Result<
         args.taker.as_ref(),
         args.taker_served_window,
     )?;
+
     // A mid outside the band of velocity's oracle quotes nothing, so a
     // compromised hot key cannot draw flow onto an off-market price.
     let open = open

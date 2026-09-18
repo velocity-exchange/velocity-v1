@@ -83,13 +83,10 @@ pub struct Metrics {
     pub titan_quote_failures: IntCounter,
     pub confirmation_slots: HistogramVec,
     pub cu_spent: HistogramVec,
-    /// Quoter health, reported from what the filler's own simulations show.
-    ///
-    /// The filler sees a failure that nothing else sees: a quoter whose execute
-    /// leg breaks a real fill. The filler does not exclude the quoter itself. A
-    /// signed route is enforced on chain, so dropping an entry the taker named
-    /// trades one rejection for another. Exclusion belongs where the route is
-    /// chosen, before it is signed.
+    /// Quoter health, from what the filler's own simulations show: a quoter
+    /// whose execute leg breaks a real fill, a failure nothing else sees. It
+    /// does not exclude the quoter itself; a signed route is enforced on
+    /// chain, so exclusion belongs where the route is chosen and signed.
     pub quoter_health: Arc<Health>,
     pub registry: Registry,
 }
@@ -353,6 +350,7 @@ pub async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse
     if let Some(quoter) = state.metrics.quoter_health.metrics() {
         quoter.sync(&state.metrics.quoter_health, now_ms());
     }
+
     let metric_families = state.metrics.registry.gather();
     let mut buffer = Vec::new();
     let encoder = TextEncoder::new();

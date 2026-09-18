@@ -86,15 +86,10 @@ pub struct QuoteContext<'a> {
     /// such as the reference price offset smoothing budget, across an IBRL
     /// transition.
     pub slot_clock: SlotClock,
-    /// Base-asset precision divisor: when computing `quote_amount` from a
-    /// base amount filled at a price, the formula is
-    /// `quote = base * price / base_precision` to convert from raw base
-    /// units to QUOTE_PRECISION-scaled quote. For perps this is `1e9`
-    /// (BASE_PRECISION). Step makers and the matcher's
-    /// credit/marginal accumulation steps use this to keep precision
-    /// consistent. AMM-style makers using try_fill_solo bypass this since
-    /// they compute quote via the AMM's own swap math, which is already
-    /// precision-correct.
+    /// Base-asset precision divisor. `quote = base * price / base_precision`
+    /// converts a raw base amount to QUOTE_PRECISION-scaled quote. `1e9`
+    /// (BASE_PRECISION) for perps. An AMM maker computes quote through its
+    /// own swap math instead and does not use this field.
     pub base_precision: u64,
     /// PerpMarket status — threaded to the AMM's projection so the curve
     /// update can relax its k-down precondition when the market is
@@ -106,13 +101,10 @@ pub struct QuoteContext<'a> {
     pub market_config: u8,
 }
 
-/// The result of a single maker's portion of a match. Constructed either by
-/// the matcher (during segment-walk + pro-rata) or returned directly by a
-/// maker's [`Quoter::try_fill_solo`].
-///
-/// The fields are protocol-level — meaningful to the fill controller without
-/// any maker-specific interpretation. The maker is the sole interpreter of
-/// any maker-specific state changes implied by the fill; those happen inside
+/// The result of a single maker's portion of a match, built by the matcher
+/// during segment-walk and pro-rata, or returned by a maker's solo-fill
+/// path. Fields are protocol-level: the fill controller reads them without
+/// maker interpretation. Maker-specific state changes happen inside
 /// [`RouterQuoter::execute`].
 #[derive(Debug, Clone, Copy)]
 pub struct QuoterFill {
@@ -125,27 +117,23 @@ pub struct QuoterFill {
     /// The clearing price for this maker's portion (the marginal tick the
     /// matcher decided on, or the analytical inverse for sole-maker fills).
     pub clearing_price: u64,
-    /// Any cost the maker incurred to produce this fill — for the AMM, this
-    /// is the cost of a conditional repeg / k-update that fired as part of
-    /// the quote. Summed across the match by the fill controller and
-    /// deducted from the appropriate place. Zero for makers without such
-    /// costs.
+    /// Cost the maker incurred to produce this fill. For the AMM this is the
+    /// cost of a conditional repeg or k-update the quote triggered. The fill
+    /// controller sums it across the match and deducts it. Zero for a maker
+    /// with no such cost.
     pub refresh_cost: u64,
     /// Maker's fee-exempt flag at fill time, copied from `Quoter::is_fee_exempt`.
     /// The fill controller reads this to decide whether to apply the
     /// protocol's maker-fee schedule. AMM = true; a maker order = false.
     pub is_fee_exempt: bool,
-    /// Per-fill fee schedule selector, copied from `Quoter::fee_policy()`.
-    /// The unified fulfill orchestrator switches on this to apply the right
-    /// fee-calculation path (`calculate_fee_for_fulfillment_with_amm` for
-    /// AMM-side fills; `calculate_fee_for_fulfillment_with_match` for
-    /// maker-side fills) without inspecting the quoter's concrete type.
+    /// Per-fill fee schedule selector, copied from the maker's fee policy.
+    /// The fulfill orchestrator uses it to pick the AMM-house or match fee
+    /// calculation without inspecting the quoter's concrete type.
     pub fee_policy: FillFeePolicy,
-    /// Maker-specific quote surplus (or deficit, if negative). For the AMM,
-    /// this is the gap between the spread-adjusted swap result and the
-    /// no-spread swap result — the bid/ask spread profit the AMM captured
-    /// (or lost) on this fill. Zero for makers without such a concept
-    /// (a maker order quotes a single price; there is no spread to capture).
+    /// Maker-specific quote surplus, or deficit if negative. For the AMM
+    /// this is the gap between the spread-adjusted and no-spread swap
+    /// result: the spread profit or loss on this fill. Zero for a maker
+    /// order, which quotes a single price and has no spread to capture.
     pub quote_asset_amount_surplus: i64,
 }
 
@@ -162,22 +150,19 @@ impl QuoterFill {
     };
 }
 
-/// Per-fill fee schedule. Returned by `Quoter::fee_policy()` and copied into
-/// each `QuoterFill` so the unified fulfill orchestrator can switch on it
-/// without knowing the concrete quoter type.
-///
-/// - `AmmHouse` — the AMM is the counterparty. Taker pays the AMM-house fee
-///   schedule (`calculate_fee_for_fulfillment_with_amm`); no maker rebate.
-///   The AMM's `total_fee` / `total_fee_minus_distributions` /
-///   `net_revenue_since_last_funding` get credited via
-///   `AmmContract::apply_fill_fees`.
-/// - `MakerMatch` — a resting maker order is the counterparty. Taker pays the
-///   match fee schedule (`calculate_fee_for_fulfillment_with_match`); the
-///   maker receives a rebate. AMM-side counters are NOT touched (the AMM
-///   was not party to this fill).
+/// Per-fill fee schedule, returned by the maker's fee policy and copied
+/// into each `QuoterFill` so the fulfill orchestrator can pick a fee path
+/// without knowing the concrete quoter type. See each variant for the fee
+/// and rebate it selects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FillFeePolicy {
+    /// AMM is the counterparty. Taker pays the AmmHouse fee schedule and
+    /// no maker rebate applies. Fees credit through
+    /// `AmmContract::apply_fill_fees`.
     AmmHouse,
+    /// A resting maker order is the counterparty. Taker pays the match
+    /// fee schedule and the maker receives a rebate. AMM fee counters are
+    /// not touched.
     MakerMatch,
 }
 
@@ -252,11 +237,10 @@ pub trait RouterQuoter {
     /// price, and one tier splits pro rata.
     fn priority(&self) -> u8;
 
-    /// Discrete best-first levels for a taker of `direction` and `size`. This
-    /// is the in-program `quote_v0`. `rival_books` carries the books already
-    /// built in this fill, which are the external CPI books and the
-    /// worse-tier internal ones. It lets a quoter run a last look. Most
-    /// quoters ignore it.
+    /// Discrete best-first levels for a taker of `direction` and `size`.
+    /// This is the in-program `quote_v0`. `rival_books` carries the books
+    /// already built in this fill (external CPI books and worse-tier
+    /// internal ones), letting a quoter run a last look. Most ignore it.
     fn quote(
         &self,
         ctx: &QuoteContext,
@@ -313,10 +297,9 @@ pub trait RouterQuoter {
 /// An owned snapshot of everything a [`QuoteContext`] needs from a
 /// `PerpMarket`, so a caller can build the context once and hand out borrows.
 ///
-/// Both quoting entry points need the same fields pulled off the market before
-/// they can borrow its AMM mutably. Those entry points are the fill's
-/// fulfillment pass and the router's quote view. Assembling the fields by hand
-/// at each site lets the two drift apart.
+/// The fill's fulfillment pass and the router's quote view both need the
+/// same fields pulled off the market before borrowing its AMM mutably.
+/// Assembling them by hand at each site lets the two drift apart.
 pub struct MarketQuoteInputs {
     pub stats: MarketStats,
     pub safe_oracle: OraclePriceData,
@@ -346,6 +329,7 @@ impl MarketQuoteInputs {
             validity_guard_rails,
             slot_clock,
         )?;
+
         // Only `project_and_apply` reads `oracle_validity`, and it returns
         // early when the curve was already refreshed at this slot. The
         // router's own projection, an earlier fill, or a keeper crank can do
@@ -362,6 +346,7 @@ impl MarketQuoteInputs {
         } else {
             None
         };
+
         Ok(MarketQuoteInputs {
             stats: market.market_stats,
             safe_oracle: mm_oracle.get_safe_oracle_price_data(),

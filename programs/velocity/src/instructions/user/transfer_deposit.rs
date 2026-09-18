@@ -63,21 +63,17 @@ fn validate_cure_transfer(
     Ok(())
 }
 
-/// Carry equity floor along with the funds so the sum of floors across the
-/// authority's subaccounts is preserved. The from side is validated against its
-/// reduced floor by the withdraw margin check inside [`transfer_spot_deposit`].
-/// The to side is validated by [`validate_floor_is_backed`] after the deposit
-/// lands, so its increased floor must be backed by real equity.
+/// Carry equity floor with the funds so the sum of floors across the authority's subaccounts is
+/// preserved. The from side is validated against its reduced floor by the withdraw margin check in
+/// [`transfer_spot_deposit`]; the to side is validated by [`validate_floor_is_backed`] after the
+/// deposit lands, so its increased floor must be backed by real equity.
 ///
-/// A delegate must not shed floor off a subaccount that is already below the
-/// floor being reduced (OtterSec #55). Without that guard, an owner could shift
-/// the floor off a breached subaccount with a zero-amount transfer. The
-/// subaccount leaves breach before the permissionless breaker trips, which
-/// defuses the pending trip. `from_user` is measured against its floor before
-/// the reduction, because the transfer below reduces it. The guard reads the
-/// raw floor and not floor plus buffer, because its only job is trip defusal. A
-/// subaccount inside the buffer band may still move floor away. The metric is
-/// net equity, which is what the breaker trip threshold uses.
+/// A delegate must not shed floor off a subaccount already below the floor being reduced (OtterSec
+/// #55): without the guard, an owner could shift floor off a breached subaccount with a zero-amount
+/// transfer, leaving breach before the permissionless breaker trips and defusing it. `from_user` is
+/// measured against its floor before the reduction, since the transfer below reduces it. The guard
+/// reads the raw floor, not floor plus buffer, since its only job is trip defusal; a subaccount inside
+/// the buffer band may still move floor away, since the breaker trips on net equity.
 fn move_equity_floor(
     from_user: &mut User,
     to_user: &mut User,
@@ -274,21 +270,20 @@ pub fn handle_transfer_deposit<'c: 'info, 'info>(
     )
 }
 
-/// Accrue interest on the transferred market, but do not advance its oracle
-/// TWAPs (OtterSec #134, the same shape as #110 and #111).
+/// allow-verbose: states the margin-manipulation exploit this guards against (OtterSec #134, #110,
+/// #111) and why only the oracle TWAP is excluded from the accrual. Cutting either leaves the guard
+/// unverifiable from the code alone.
 ///
-/// `meets_withdraw_margin_requirement` values the source account through
-/// `StrictOraclePrice`, whose bounds are the min and max of the live price and
-/// this market's `last_oracle_price_twap_5min`. A liability is priced at the
-/// upper bound, so dragging that TWAP down toward a temporarily depressed live
-/// price under-values the debt, lets the margin check pass, and frees sibling
-/// collateral for withdrawal. That leaves depositor-socialized debt once the
-/// oracle recovers.
+/// Accrue interest on the transferred market, but do not advance its oracle TWAPs.
+/// `meets_withdraw_margin_requirement` values the source account through `StrictOraclePrice`, whose
+/// bounds are the min and max of the live price and this market's `last_oracle_price_twap_5min`. A
+/// liability is priced at the upper bound, so dragging that TWAP down toward a temporarily depressed
+/// live price under-values the debt, lets the margin check pass, and frees sibling collateral for
+/// withdrawal, leaving depositor-socialized debt once the oracle recovers.
 ///
-/// Interest accrual and the deposit/borrow/utilization TWAPs still advance.
-/// Only the oracle TWAP and its timestamp are left alone, so the next real
-/// refresh still weights the full elapsed interval. That TWAP keeps advancing
-/// on every other spot path and through the permissionless
+/// Interest accrual and the deposit/borrow/utilization TWAPs still advance. Only the oracle TWAP and
+/// its timestamp are left alone, so the next real refresh still weights the full elapsed interval.
+/// That TWAP keeps advancing on every other spot path and through the permissionless
 /// `update_spot_market_cumulative_interest` crank.
 fn accrue_transfer_interest(maps: &mut AccountMaps, terms: &TransferTerms) -> Result<()> {
     let spot_market = &mut maps.spot_market_map.get_ref_mut(&terms.market_index)?;

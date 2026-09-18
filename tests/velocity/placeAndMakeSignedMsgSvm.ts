@@ -78,24 +78,7 @@ const PYTH_STORAGE_ACCOUNT_INFO: AccountInfo<Buffer> = {
 	data: Buffer.from(mockLazerStorageData(), 'base64'),
 };
 
-/**
- * Signed-message order placement.
- *
- * These tests are skipped, because this harness can no longer run the
- * instruction. A signed-message order routes when it is placed and rests what
- * it cannot fill on the market's CLOB. `place_signed_msg_taker_order` therefore
- * carries the book's accounts and fails without them. Attaching a book here
- * needs the CLOB program on chain, and `solana-LiteSVM@0.4.0` cannot execute
- * it. The CLOB is built against `anchor-lang-v2`, whose runtime this LiteSVM
- * predates, so the program fails at entry with an access violation. The same
- * `.so` runs under litesvm.
- *
- * `integration-tests/tests/router_fill.rs` covers the routed placement, the
- * migration and the taker-origin auction against a real book. This file's
- * signed-message format coverage is what is lost. That is the delegate
- * encoding, the parameter sanitization and the malicious-sub-account case. To
- * restore it, move this suite off LiteSVM 0.4.0 or port these cases to litesvm.
- */
+// Skipped: requires CLOB on chain. LiteSVM 0.4.0 cannot execute anchor-lang-v2 program.
 describe.skip('place and make signedMsg order', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
 
@@ -184,6 +167,7 @@ describe.skip('place and make signedMsg order', () => {
 			opts: {
 				commitment: 'confirmed',
 			},
+
 			activeSubAccountId: 0,
 			perpMarketIndexes: marketIndexes,
 			spotMarketIndexes: spotMarketIndexes,
@@ -194,6 +178,7 @@ describe.skip('place and make signedMsg order', () => {
 				accountLoader: bulkAccountLoader,
 			},
 		});
+
 		await makerVelocityClient.initialize(usdcMint.publicKey, true);
 		await makerVelocityClient.subscribe();
 		await initializeQuoteSpotMarket(makerVelocityClient, usdcMint.publicKey);
@@ -222,6 +207,7 @@ describe.skip('place and make signedMsg order', () => {
 				accountLoader: bulkAccountLoader,
 			},
 		});
+
 		await makerVelocityClientUser.subscribe();
 	});
 
@@ -294,6 +280,7 @@ describe.skip('place and make signedMsg order', () => {
 				takerStats: takerVelocityClient.getUserStatsAccountPublicKey(),
 				signingAuthority: makerVelocityClient.wallet.publicKey,
 			},
+
 			undefined,
 			2
 		);
@@ -306,6 +293,7 @@ describe.skip('place and make signedMsg order', () => {
 		const event = events.find(
 			(event) => event.eventType == 'SignedMsgOrderRecord'
 		);
+
 		assert(event !== undefined);
 		assert(
 			(event as SignedMsgOrderRecord).hash ==
@@ -438,6 +426,7 @@ describe.skip('place and make signedMsg order', () => {
 					takerStats: takerVelocityClient.getUserStatsAccountPublicKey(),
 					signingAuthority: takerVelocityClient.wallet.publicKey,
 				},
+
 				pythLazerCrankIxs
 			);
 
@@ -484,6 +473,7 @@ describe.skip('place and make signedMsg order', () => {
 			recentBlockhash: (
 				await makerVelocityClient.connection.getLatestBlockhash()
 			).blockhash,
+
 			instructions: [
 				...pythLazerCrankIxs,
 				...placeSignedMsgTakerOrderIxs,
@@ -501,6 +491,7 @@ describe.skip('place and make signedMsg order', () => {
 		const txSig = await makerVelocityClient.connection.sendTransaction(
 			new VersionedTransaction(message)
 		);
+
 		console.log(txSig);
 
 		await takerVelocityClient.fetchAccounts();
@@ -632,6 +623,7 @@ describe.skip('place and make signedMsg order', () => {
 					takerStats: takerVelocityClient.getUserStatsAccountPublicKey(),
 					signingAuthority: takerVelocityClient.wallet.publicKey,
 				},
+
 				pythLazerCrankIxs
 			);
 
@@ -678,6 +670,7 @@ describe.skip('place and make signedMsg order', () => {
 			recentBlockhash: (
 				await makerVelocityClient.connection.getLatestBlockhash()
 			).blockhash,
+
 			instructions: [
 				...pythLazerCrankIxs,
 				...placeSignedMsgTakerOrderIxs,
@@ -695,6 +688,7 @@ describe.skip('place and make signedMsg order', () => {
 		const txSig = await makerVelocityClient.connection.sendTransaction(
 			new VersionedTransaction(message)
 		);
+
 		console.log(txSig);
 
 		await takerVelocityClient.fetchAccounts();
@@ -710,6 +704,7 @@ describe.skip('place and make signedMsg order', () => {
 		slot = new BN(
 			await svmContextWrapper.connection.toConnection().getSlot()
 		);
+
 		const [takerVelocityClient, takerVelocityClientUser] =
 			await initializeNewTakerClientAndUser(
 				svmContextWrapper,
@@ -765,12 +760,14 @@ describe.skip('place and make signedMsg order', () => {
 					takerStats: takerVelocityClient.getUserStatsAccountPublicKey(),
 					signingAuthority: takerVelocityClient.wallet.publicKey,
 				},
+
 				undefined,
 				2
 			);
 		} catch (e) {
 			assert(e);
 		}
+
 		await svmContextWrapper.moveTimeForward(10);
 
 		await takerVelocityClientUser.fetchAccounts();
@@ -787,6 +784,7 @@ describe.skip('place and make signedMsg order', () => {
 		slot = new BN(
 			await svmContextWrapper.connection.toConnection().getSlot()
 		);
+
 		const [takerVelocityClient, takerVelocityClientUser] =
 			await initializeNewTakerClientAndUser(
 				svmContextWrapper,
@@ -840,6 +838,7 @@ describe.skip('place and make signedMsg order', () => {
 				takerStats: takerVelocityClient.getUserStatsAccountPublicKey(),
 				signingAuthority: takerVelocityClient.wallet.publicKey,
 			},
+
 			undefined,
 			2
 		);
@@ -860,6 +859,7 @@ describe.skip('place and make signedMsg order', () => {
 		slot = new BN(
 			await svmContextWrapper.connection.toConnection().getSlot()
 		);
+
 		const [takerVelocityClient, takerVelocityClientUser] =
 			await initializeNewTakerClientAndUser(
 				svmContextWrapper,
@@ -910,6 +910,7 @@ describe.skip('place and make signedMsg order', () => {
 					takerStats: takerVelocityClient.getUserStatsAccountPublicKey(),
 					signingAuthority: takerVelocityClient.wallet.publicKey,
 				},
+
 				undefined,
 				2
 			);
@@ -921,6 +922,7 @@ describe.skip('place and make signedMsg order', () => {
 				e.toString()
 			);
 		}
+
 		assert(rejected);
 
 		await takerVelocityClientUser.fetchAccounts();
@@ -934,6 +936,7 @@ describe.skip('place and make signedMsg order', () => {
 		slot = new BN(
 			await svmContextWrapper.connection.toConnection().getSlot()
 		);
+
 		const [takerVelocityClient, takerVelocityClientUser] =
 			await initializeNewTakerClientAndUser(
 				svmContextWrapper,
@@ -989,6 +992,7 @@ describe.skip('place and make signedMsg order', () => {
 					takerStats: takerVelocityClient.getUserStatsAccountPublicKey(),
 					signingAuthority: takerVelocityClient.wallet.publicKey,
 				},
+
 				undefined,
 				2
 			);
@@ -1000,6 +1004,7 @@ describe.skip('place and make signedMsg order', () => {
 				e.toString()
 			);
 		}
+
 		assert(rejected);
 
 		await takerVelocityClientUser.fetchAccounts();
@@ -1064,6 +1069,7 @@ describe.skip('place and make signedMsg order', () => {
 				takerStats: takerVelocityClient.getUserStatsAccountPublicKey(),
 				signingAuthority: takerVelocityClient.wallet.publicKey,
 			},
+
 			undefined,
 			2
 		);
@@ -1079,6 +1085,7 @@ describe.skip('place and make signedMsg order', () => {
 			postOnly: PostOnlyParams.MUST_POST_ONLY,
 			bitFlags: 1,
 		});
+
 		await makerVelocityClient.placeAndMakeSignedMsgPerpOrder(
 			signedOrderParams,
 			uuid,
@@ -1088,6 +1095,7 @@ describe.skip('place and make signedMsg order', () => {
 				takerStats: takerVelocityClient.getUserStatsAccountPublicKey(),
 				signingAuthority: takerVelocityClient.wallet.publicKey,
 			},
+
 			makerOrderParams,
 			undefined,
 			undefined,
@@ -1157,6 +1165,7 @@ describe.skip('place and make signedMsg order', () => {
 				takerStats: takerVelocityClient.getUserStatsAccountPublicKey(),
 				signingAuthority: takerVelocityClient.wallet.publicKey,
 			},
+
 			undefined,
 			2
 		);
@@ -1169,6 +1178,7 @@ describe.skip('place and make signedMsg order', () => {
 		slot = new BN(
 			await svmContextWrapper.connection.toConnection().getSlot()
 		);
+
 		const [takerVelocityClient, takerVelocityClientUser] =
 			await initializeNewTakerClientAndUser(
 				svmContextWrapper,
@@ -1218,9 +1228,11 @@ describe.skip('place and make signedMsg order', () => {
 					takerStats: takerVelocityClient.getUserStatsAccountPublicKey(),
 					signingAuthority: takerVelocityClient.wallet.publicKey,
 				},
+
 				undefined,
 				2
 			);
+
 			assert.fail('Should have failed');
 		} catch (error) {
 			assert(error.message.includes('custom program error: 0x1890'));
@@ -1284,6 +1296,7 @@ describe.skip('place and make signedMsg order', () => {
 				takerStats: takerVelocityClient.getUserStatsAccountPublicKey(),
 				signingAuthority: takerVelocityClient.wallet.publicKey,
 			},
+
 			undefined,
 			2
 		);
@@ -1330,11 +1343,13 @@ describe.skip('place and make signedMsg order', () => {
 			userAccountPublicKey: await takerVelocityClient.getUserAccountPublicKey(
 				1
 			),
+
 			accountSubscription: {
 				type: 'polling',
 				accountLoader: bulkAccountLoader,
 			},
 		});
+
 		await takerVelocityClientUser2.subscribe();
 
 		const marketIndex = 0;
@@ -1375,9 +1390,11 @@ describe.skip('place and make signedMsg order', () => {
 					takerStats: takerVelocityClient.getUserStatsAccountPublicKey(),
 					signingAuthority: takerVelocityClient.wallet.publicKey,
 				},
+
 				undefined,
 				2
 			);
+
 			assert.fail('Should have failed');
 		} catch (error) {
 			assert(error);
@@ -1438,10 +1455,12 @@ describe.skip('place and make signedMsg order', () => {
 			takeProfitOrderParams: null,
 			stopLossOrderParams: null,
 		};
+
 		let signedOrderParams = makerVelocityClient.signSignedMsgOrderParamsMessage(
 			takerOrderParamsMessage,
 			false
 		);
+
 		try {
 			await makerVelocityClient.placeSignedMsgTakerOrder(
 				signedOrderParams,
@@ -1452,9 +1471,11 @@ describe.skip('place and make signedMsg order', () => {
 					takerStats: takerVelocityClient.getUserStatsAccountPublicKey(),
 					signingAuthority: makerVelocityClient.wallet.publicKey,
 				},
+
 				undefined,
 				2
 			);
+
 			assert.fail('should fail');
 		} catch (e) {
 			assert(e.toString().includes('0x18a5')); // SignedMsgUserContextUserMismatch
@@ -1466,6 +1487,7 @@ describe.skip('place and make signedMsg order', () => {
 			takerOrderParamsMessage,
 			true
 		);
+
 		// Should fail if we dont set delegate as signing authority
 		try {
 			await makerVelocityClient.placeSignedMsgTakerOrder(
@@ -1477,9 +1499,11 @@ describe.skip('place and make signedMsg order', () => {
 					takerStats: takerVelocityClient.getUserStatsAccountPublicKey(),
 					signingAuthority: takerVelocityClient.wallet.publicKey,
 				},
+
 				undefined,
 				2
 			);
+
 			assert.fail('should fail');
 		} catch (e) {
 			assert(e.toString().includes('Error: Invalid option'));

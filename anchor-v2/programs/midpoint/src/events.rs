@@ -33,15 +33,10 @@ pub struct MidpointExecuteRecordV0 {
     pub mid_price: u64,
     pub base_size: u64,
     pub quote_size: u64,
-    /// The market index this instance was created for. It rides the PDA
-    /// seeds, so it is fixed.
-    ///
-    /// It is not proof of where the fill settled. Velocity's registry decides
-    /// which market an instance quotes, and it can hold an entry whose market
-    /// differs from this one. A reader that needs the settled market takes it
-    /// from velocity's own fill record. No value turns on it either way.
-    /// Velocity matches the balance-change user against its registry before it
-    /// settles anything.
+    /// The market index this instance was created for. It rides the PDA seeds,
+    /// so it is fixed, not proof of where the fill settled. Velocity's registry
+    /// decides the settled market and matches the balance-change user against it
+    /// before settling, so no value here turns on this field.
     pub configured_market_index: u16,
     pub sub_account_id: u16,
     /// 0 is Long, which means the taker bought the ask side. 1 is Short.

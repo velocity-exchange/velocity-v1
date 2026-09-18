@@ -62,36 +62,20 @@ pub fn handle_initialize_revenue_share_escrow<'c: 'info, 'info>(
 ) -> Result<()> {
     let mut user_stats = ctx.accounts.user_stats.load_mut()?;
 
-    // This handler snapshots `escrow.referrer` and nothing writes it again. Only the
-    // first `initialize_user` sets `user_stats.referrer`, so the snapshot is correct
-    // only after that call. `authority` is unchecked and only `payer` signs. Without
-    // this gate a third party could create another authority's escrow between
-    // `initialize_user_stats` and its first `initialize_user`. That freezes a defaulted
-    // referrer into the escrow, and no instruction can rewrite the field, not even the
-    // permissionless resize. The user then loses their referral rewards and referee
-    // discount for good. Requiring a created subaccount puts the escrow after the point
-    // where the referrer becomes immutable.
-    //
-    // The check runs before the escrow is written or resized. It is a precondition on
-    // state this handler does not own, so the orders vec need not be sized first.
+    // The escrow snapshots `escrow.referrer` once, and no instruction rewrites
+    // it, not even the permissionless resize. `authority` is unchecked and only
+    // `payer` signs, so without this gate a third party could create the escrow
+    // before the authority's first `initialize_user` sets `user_stats.referrer`, freezing a defaulted referrer for good.
     validate!(
         user_stats.number_of_sub_accounts_created > 0,
         ErrorCode::UserNotFound,
         "revenue share escrow requires the authority's first user to exist, otherwise it snapshots a defaulted referrer"
     )?;
 
-    // An escrow with no order slots cannot hold a builder or referral row.
-    // `find_or_create_referral_index` and `add_builder_order` then fail to claim one,
-    // and every fee, discount, and reward computation falls back to its
-    // no-revenue-share value. `authority` is an `UncheckedAccount` here and only
-    // `payer` signs, so a third party can create any user's escrow PDA. At zero
-    // capacity that suppresses the user's rewards until someone calls the
-    // permissionless resize (OtterSec #114).
-    //
-    // The check lives here and not in `RevenueShareEscrow::validate`, which `resize`
-    // and `change_approved_builder` also run. An escrow already at zero capacity on
-    // chain must stay able to resize its way out. Blocking its builder edits would be a
-    // new liveness problem rather than a fix.
+    // A zero-slot escrow cannot hold a builder or referral row, so every fee,
+    // discount, and reward computation falls back to no revenue share.
+    // `authority` is unchecked, so a third party can create it at zero capacity
+    // until someone calls the permissionless resize (OtterSec #114).
     validate!(
         num_orders > 0,
         ErrorCode::DefaultError,
@@ -155,6 +139,7 @@ pub fn handle_change_approved_builder<'c: 'info, 'info>(
                 ctx.accounts.escrow.approved_builders[index].max_fee_tenth_bps,
                 max_fee_tenth_bps
             );
+
             ctx.accounts.escrow.approved_builders[index].max_fee_tenth_bps = max_fee_tenth_bps;
         } else {
             if ctx
@@ -167,11 +152,13 @@ pub fn handle_change_approved_builder<'c: 'info, 'info>(
                 msg!("Builder has open orders, must cancel orders and settle_pnl before revoking");
                 return Err(ErrorCode::CannotRevokeBuilderWithOpenOrders.into());
             }
+
             msg!(
                 "Revoking builder: {}, max fee tenth bps: {} -> 0",
                 builder,
                 ctx.accounts.escrow.approved_builders[index].max_fee_tenth_bps,
             );
+
             ctx.accounts.escrow.approved_builders[index].max_fee_tenth_bps = 0;
         }
     } else if add {
@@ -180,6 +167,7 @@ pub fn handle_change_approved_builder<'c: 'info, 'info>(
             max_fee_tenth_bps,
             ..BuilderInfo::default()
         });
+
         msg!(
             "Added builder: {} with max fee tenth bps: {}",
             builder,

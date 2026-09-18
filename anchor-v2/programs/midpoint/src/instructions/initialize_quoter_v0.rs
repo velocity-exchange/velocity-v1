@@ -16,17 +16,10 @@ pub struct InitializeQuoterV0 {
     /// hold it cold, or share one operator key across the wallets it quotes
     /// for.
     pub authority: Signer,
-    /// The quoted wallet. Its signature is the consent to quote for its
-    /// sub-account, which is the rule the velocity registry enforces on
-    /// Custom-entry creation. The address rides the seeds, so one instance
-    /// exists per market, quoted wallet and sub-account, and no one can claim
-    /// another maker's address.
-    ///
-    /// The consent survives the split from `authority` because this key seeds
-    /// the PDA and signs here, and the config key does not. An operator who
-    /// wants to quote a wallet's sub-account must get that wallet to sign
-    /// creation. The binding is immutable afterwards. A different quoted user
-    /// means a new instance, signed for again.
+    /// The quoted wallet. Its signature is the consent to quote its sub-account,
+    /// which velocity's registry enforces on Custom-entry creation. The address
+    /// seeds the PDA, so only one instance exists per market, wallet and
+    /// sub-account, and the binding is immutable once set.
     pub user_authority: Signer,
     /// The only signer `execute_v0` accepts. It is velocity's quoter CPI signer
     /// PDA, and it is immutable after creation. It arrives as an account and
@@ -44,6 +37,7 @@ pub struct InitializeQuoterV0 {
             user_authority.address().as_ref(),
             &config.user_sub_account_id.to_le_bytes(),
         ],
+
         bump
     )]
     pub quoter: Account<MidpointQuoterV0>,
@@ -58,6 +52,7 @@ pub fn handle_initialize_quoter_v0(
         config.base_precision == crate::state::BASE_PRECISION,
         MidpointError::InvalidConfig
     );
+
     // A fresh instance must never quote without the oracle-deviation band.
     // The band is what keeps a compromised hot key from filling the maker at
     // an off-market mid, and an instance that starts at zero runs unprotected

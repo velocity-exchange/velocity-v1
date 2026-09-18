@@ -2367,11 +2367,10 @@ fn carveout_test_market(if_fee_factor: u32, protocol_fee_factor: u32) -> SpotMar
 fn if_carveout_under_one_token_is_carried_as_dust() {
     let mut market = carveout_test_market(1000, 0);
 
-    // Crank once a second for a minute. Each cut is far below one unit. Before the dust carry
-    // each cut floored to zero. Lenders gave up the value, nobody received it, and the clock
-    // advanced, so no later crank could retry the interval. Any caller could hold every cut
-    // below the floor forever with frequent cranks of this permissionless accrual.
-    // OtterSec #127 describes this.
+    // Crank once a second for a minute; each cut is far below one unit. Before
+    // the dust carry, each cut floored to zero and nobody received the lost
+    // value, so frequent permissionless cranks could hold every cut below the
+    // floor forever (OtterSec #127).
     for i in 1..=60_i64 {
         update_spot_market_cumulative_interest(&mut market, None, i, false).unwrap();
 
@@ -2572,15 +2571,10 @@ fn lowering_the_factors_does_not_strand_a_market() {
 
 #[test]
 fn carveout_dust_never_defers_across_a_balance_change() {
-    // This is why the accrual carries the cut and does not delay the interval. An un-stamped
-    // span does not keep its own terms. `calculate_accumulated_interest` bills the whole span
-    // at the rate that applies when it runs. It commits the span with an index move, and the
-    // index credits every balance that exists at that moment.
-    //
-    // Balances move between cranks. Every spot instruction that changes balances cranks this
-    // function first. A delayed interval therefore settles against later balances
-    // (OtterSec #115, #117). Each span below must bill against the balances that existed
-    // during it, although neither span's carveout reaches a whole token on its own.
+    // The accrual carries the cut instead of delaying the interval, because
+    // `calculate_accumulated_interest` bills a span at the rate active when it
+    // runs and credits every balance that exists at that moment. A delayed
+    // interval would settle against later balances instead (OtterSec #115, #117).
     let mut market = carveout_test_market(1000, 1000);
 
     update_spot_market_cumulative_interest(&mut market, None, 1, false).unwrap();

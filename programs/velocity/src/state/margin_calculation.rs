@@ -152,14 +152,10 @@ pub struct MarginCalculation {
     pub num_perp_liabilities: u8,
     pub all_deposit_oracles_valid: bool,
     pub all_liability_oracles_valid: bool,
-    /// Spot-only counterpart of `all_liability_oracles_valid`.
-    ///
-    /// An invalid perp oracle also clears `all_liability_oracles_valid`, and
-    /// the perp-fill path handles that case through `oracle_stale_for_margin`.
-    /// That path overrides the taker's margin to 100% and rejects the maker
-    /// unless one side reduces. A gate that reasons about stale spot-borrow
-    /// pricing alone cannot read the wider field without overriding that perp
-    /// behavior, so it reads this narrower flag (OtterSec #144).
+    /// Spot-only counterpart of `all_liability_oracles_valid`. An invalid
+    /// perp oracle also clears that field, handled by the perp-fill path's
+    /// `oracle_stale_for_margin`, which forces the taker's margin to 100%. A
+    /// gate that only reasons about spot-borrow pricing reads this flag instead (OtterSec #144).
     pub all_spot_liability_oracles_valid: bool,
     pub with_perp_isolated_liability: bool,
     pub with_spot_isolated_liability: bool,

@@ -51,11 +51,13 @@ pub struct ResyncLiqConditions<'info> {
     pub treasury: AccountLoader<'info, CrankTreasuryV0>,
 }
 
+/// Resyncs a user's liquidation conditions along relay's permissionless path.
+///
+/// The block carries its own terms. Re-deriving them from the account would
+/// let a staged resync re-price itself.
 pub fn handle_resync_liq_conditions<'c: 'info, 'info>(
     ctx: Context<'info, ResyncLiqConditions<'info>>,
 ) -> Result<()> {
-    // The block carries its own terms. Re-deriving them from the account
-    // means a staged resync can never re-price itself.
     let args = {
         let conditions = ctx.accounts.liq_conditions.load()?;
         SyncLiqConditionsTerms {
@@ -63,6 +65,7 @@ pub fn handle_resync_liq_conditions<'c: 'info, 'info>(
             sync_fallback_slots: conditions.sync_fallback_slots,
         }
     };
+
     rewrite_liq_conditions(
         &ctx.accounts.liq_conditions,
         &ctx.accounts.user,
@@ -71,23 +74,19 @@ pub fn handle_resync_liq_conditions<'c: 'info, 'info>(
         false,
     )?;
 
-    // Terms that break the interval floor pay nothing, whatever the block
-    // holds. A payment with an interval below the floor is a paid loop, since
-    // the treasury then funds one crank per slot for an account anyone may opt
-    // in. The rewrite above already stored the zero and silenced the
-    // conditions that advertised it, so this covers a block armed before the
-    // floor existed.
+    // Terms below the interval floor pay nothing, since paying them would let
+    // any permissionless account fund a crank once per slot. The rewrite
+    // above already zeroes and silences a block armed before the floor
+    // existed, so this also covers that case.
     let payment = args.payable_lamports();
     if payment == 0 {
         return Ok(());
     }
 
-    // Paid at most once per fallback interval. The instruction succeeds
-    // whether or not anything moved, opting in is permissionless, and the
-    // protocol treasury pays rather than the account being watched. Without
-    // this bound anyone could crank the same account in a loop and draw the
-    // fee every time. The interval is the cadence the fallback poll already
-    // runs at, so an honest crank still gets paid.
+    // Paid at most once per fallback interval. Opting in is permissionless
+    // and the treasury pays even when nothing moved, so without this bound
+    // anyone could loop a crank on the same account and draw the fee every
+    // time. The interval matches the fallback poll's own cadence.
     let slot = Clock::get()?.slot;
     let due_slot = {
         let conditions = ctx.accounts.liq_conditions.load()?;
@@ -95,13 +94,16 @@ pub fn handle_resync_liq_conditions<'c: 'info, 'info>(
             .last_paid_sync_slot
             .saturating_add(conditions.sync_fallback_slots)
     };
+
     if slot < due_slot {
         msg!(
             "resync of {} was already paid this interval",
             ctx.accounts.user.key()
         );
+
         return Ok(());
     }
+
     ctx.accounts.liq_conditions.load_mut()?.last_paid_sync_slot = slot;
 
     let treasury = ctx.accounts.treasury.to_account_info();
@@ -161,9 +163,11 @@ pub fn handle_resolve_resync_liq_conditions(
             // wake.
             UserConditionsV0::digest_positions(&user) != conditions.positions_digest
         };
+
         if !stale {
             return Ok(None);
         }
+
         // The builder enforces the no-signer rule for every resolver. That
         // rule is why this instruction exists.
         Ok(Some(

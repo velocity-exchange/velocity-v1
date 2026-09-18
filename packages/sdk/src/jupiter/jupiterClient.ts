@@ -108,17 +108,9 @@ export interface SwapInfo {
 	 * @memberof SwapInfo
 	 */
 	outAmount: string;
-	/**
-	 * Absent on the v2 API. `/swap/v2/build` omits per-hop fees.
-	 * @type {string}
-	 * @memberof SwapInfo
-	 */
+	/** Absent on the v2 API. `/swap/v2/build` omits per-hop fees. */
 	feeAmount?: string;
-	/**
-	 * Absent on the v2 API. `/swap/v2/build` omits per-hop fees.
-	 * @type {string}
-	 * @memberof SwapInfo
-	 */
+	/** Absent on the v2 API. `/swap/v2/build` omits per-hop fees. */
 	feeMint?: string;
 }
 
@@ -311,12 +303,9 @@ const toTransactionInstruction = (
 	});
 
 /**
- * Everything a v2 build wants sent, in execution order: compute budget, setup,
- * swap, cleanup, other, and tip.
- *
- * This is the standalone-transaction list. The velocity swap bracket uses
- * {@link bracketBuildInstructions} instead, because the bracket must not carry
- * the tip or `otherInstructions`.
+ * Every v2 build instruction, in execution order: compute budget, setup, swap,
+ * cleanup, other, and tip. The velocity swap bracket must not carry the tip or
+ * `otherInstructions`, so it uses {@link bracketBuildInstructions} instead.
  */
 const flattenBuildInstructions = (
 	build: JupiterBuildResponse
@@ -331,15 +320,8 @@ const flattenBuildInstructions = (
 	].map(toTransactionInstruction);
 
 /**
- * The build's route only, for splicing between `beginSwap` and `endSwap`.
- *
- * This is an allowlist. `tipInstruction` and `otherInstructions` are dropped
- * because they are not selected, rather than because
- * {@link filterRouteInstructions} recognizes them. That filter is a denylist and
- * keeps anything it does not know, so a tip routed through a Jito-specific
- * program rather than a plain System transfer would survive it and fail on
- * chain with `InvalidSwap`. Selecting only the route's own instructions cannot
- * let such a tip through.
+ * The build's route only, for splicing between `beginSwap` and `endSwap`. An
+ * allowlist drops a tip {@link filterRouteInstructions} keeps and chain rejects.
  */
 const bracketBuildInstructions = (
 	build: JupiterBuildResponse
@@ -353,8 +335,7 @@ const bracketBuildInstructions = (
 
 /**
  * `SetComputeUnitLimit`'s discriminator. A v2 build carries only a CU price,
- * whose discriminator is 3. If that ever changes, a caller-supplied limit must
- * not be duplicated.
+ * whose discriminator is 3. A caller-supplied limit must not be duplicated.
  */
 const SET_COMPUTE_UNIT_LIMIT_DISCRIMINATOR = 2;
 
@@ -368,13 +349,8 @@ const isSetComputeUnitLimitIx = (
 type ZodIssue = { path?: unknown[]; message?: string };
 
 /**
- * Render whatever a Jupiter response says went wrong as a readable string.
- *
- * v2 answers with three unrelated shapes. They are a Zod validation object
- * `{ error: { issues, name: 'ZodError' } }`, a rate-limit body
- * `{ code, message }`, and v1's `{ error, errorCode }`. Interpolating `error`
- * directly renders the first one as `[object Object]`, which hides a missing
- * required parameter from the caller.
+ * v2 reports errors as a Zod object, `{ code, message }`, or `{ error, errorCode }`.
+ * Interpolating `error` renders the Zod shape as `[object Object]`.
  */
 const describeJupiterError = (
 	body: Record<string, any> | undefined,
@@ -467,14 +443,9 @@ export class JupiterClient implements SwapProvider {
 	}
 
 	/**
-	 * The version path segment for an endpoint.
-	 *
-	 * Empty for a custom `url`, which is assumed to already carry one.
-	 *
-	 * A caller passes the version the endpoint belongs to rather than the
-	 * configured one. `/quote` and `/swap` exist only under v1, and `/build`
-	 * exists only under v2. Deriving the segment from `this.apiVersion` would let
-	 * a v2-configured client address a `/v2/swap` that does not exist.
+	 * The version path segment for an endpoint. It is empty for a custom `url`,
+	 * which already carries one. The caller passes the endpoint's own version,
+	 * not `this.apiVersion`: `/quote` and `/swap` are v1 only, `/build` is v2 only.
 	 */
 	private versionSegment(apiVersion: JupiterApiVersion): string {
 		if (
@@ -504,17 +475,8 @@ export class JupiterClient implements SwapProvider {
 	}
 
 	/**
-	 * Get routes for a swap
-	 * @param inputMint the mint of the input token
-	 * @param outputMint the mint of the output token
-	 * @param amount the amount of the input token
-	 * @param userPublicKey the taker's wallet. It is required under
-	 * `apiVersion: 'v2'`, which builds the route for one wallet at quote time.
-	 * @param slippageBps the slippage tolerance in basis points
-	 * @param swapMode the swap mode (ExactIn or ExactOut)
-	 * @param onlyDirectRoutes whether to return direct routes only. It is
-	 * rejected under `apiVersion: 'v2'`, which has no direct-only routing
-	 * control.
+	 * `apiVersion: 'v2'` builds the route for one wallet, so it requires
+	 * `userPublicKey`. It has no direct-only routing, so it rejects `onlyDirectRoutes`.
 	 */
 	public async getQuote(params: SwapQuoteParams): Promise<JupiterSwapQuote> {
 		return this.apiVersion === 'v2'
@@ -552,23 +514,19 @@ export class JupiterClient implements SwapProvider {
 				'JupiterClient.getQuote: userPublicKey is required for the Jupiter v2 API (the /swap/v2/build endpoint builds instructions for a specific taker)'
 			);
 		}
+
 		// `/build` accepts ExactIn only and drops `swapMode` from its contract.
-		// Sending ExactOut does not fail. The response comes back with
-		// `swapMode: 'ExactIn'` and spends `amount` as the input, so a caller that
-		// asked to receive `amount` spends it instead. Reject the request rather
-		// than invert the trade.
+		// ExactOut does not fail. The response spends `amount` as the input, so a
+		// caller that asked to receive `amount` spends it instead.
 		if (swapMode !== 'ExactIn') {
 			throw new Error(
 				`JupiterClient.getQuote: swapMode '${swapMode}' is not supported by the Jupiter v2 API (/swap/v2/build is ExactIn-only and silently treats the amount as the input); construct the client with apiVersion: "v1"`
 			);
 		}
 
-		// `/build` has no direct-only routing control. It does not reject the
-		// parameter, because an unknown query parameter still returns 200. It
-		// ignores the parameter, and the route it returns can still pass through
-		// intermediate mints. Sending it would return a multi-hop route to a
-		// caller who asked for a single hop, which spends more accounts and
-		// intermediate ATAs than that caller budgeted for.
+		// `/build` has no direct-only routing control. It returns 200 and ignores
+		// the parameter, so a caller that asked for one hop can get a multi-hop
+		// route with more accounts and intermediate ATAs than it budgeted for.
 		if (onlyDirectRoutes) {
 			throw new Error(
 				'JupiterClient.getQuote: onlyDirectRoutes is not supported by the Jupiter v2 API (/swap/v2/build silently ignores it and still returns multi-hop routes); construct the client with apiVersion: "v1"'
@@ -711,11 +669,9 @@ export class JupiterClient implements SwapProvider {
 			| QuoteResponse
 			| undefined;
 
-		// A failed quote still returns parseable JSON. The body is
-		// `{ error, errorCode }` with no mints and no amounts. Returning it
-		// unchecked moves the failure to /swap, which rejects it with a
-		// deserialization error such as "missing field `inputMint`" that hides the
-		// real cause.
+		// A failed quote still returns parseable JSON with no mints and no
+		// amounts. Returning it unchecked moves the failure to /swap, which
+		// reports "missing field `inputMint`" and hides the real cause.
 		if (!response.ok || !quote) {
 			throw new Error(
 				`Jupiter quote failed: ${response.status} ${
@@ -740,27 +696,28 @@ export class JupiterClient implements SwapProvider {
 	}
 
 	/**
+	 * allow-verbose: two protocol versions carry different, non-obvious caller
+	 * obligations (whether `computeUnitLimit` is accepted, and what CU limit
+	 * applies without it), and dropping either breaks a caller silently rather
+	 * than loudly.
+	 *
 	 * The route as a standalone transaction, setup and teardown included.
 	 *
 	 * Under v1 this posts the quote to `POST /swap` and deserializes the returned
 	 * transaction. Under v2 it compiles the build's instructions locally against
 	 * a freshly fetched blockhash rather than the build's own
-	 * `blockhashWithMetadata`. A build response can be minutes old by the time it
-	 * is signed. The Titan client does the same.
+	 * `blockhashWithMetadata`, which can be minutes old by the time it is signed.
+	 * The Titan client does the same.
 	 *
-	 * The transaction is always built at the quote's own slippage, which is the
-	 * price the caller was shown. Re-quote to change it rather than overriding it
-	 * here.
+	 * The transaction is always built at the quote's own slippage. Re-quote to
+	 * change it rather than overriding it here.
 	 *
-	 * `computeUnitLimit` applies to v2 only. v1's `/swap` sizes the compute
-	 * budget itself, so passing `computeUnitLimit` under v1 throws rather than
-	 * being ignored. Under v2, `/build` returns a compute unit price but no
-	 * compute unit limit. Without `computeUnitLimit` the transaction runs on the
-	 * runtime default of 200k CU per instruction, capped at 1.4M. That is often
-	 * enough for a swap, but it is not sized to the route, and the CU price then
+	 * `computeUnitLimit` applies to v2 only; v1's `/swap` sizes the compute
+	 * budget itself, so passing it under v1 throws. Under v2, without
+	 * `computeUnitLimit` the transaction runs on the runtime default of 200k CU
+	 * per instruction, capped at 1.4M, unsized to the route, and the CU price
 	 * applies to the whole default. Pass `computeUnitLimit` to set the limit
-	 * explicitly. A simulated value is tighter still, and the fee scales with
-	 * whatever limit is in force.
+	 * explicitly.
 	 *
 	 * @throws If the quote came from a different provider or a different wallet.
 	 */
@@ -920,15 +877,12 @@ export class JupiterClient implements SwapProvider {
 	}
 
 	/**
-	 * The lookup tables a v2 build depends on, read from chain.
-	 *
-	 * The build lists each table's addresses inline in
-	 * `addressesByLookupTableAddress`, which would let this skip the RPC call. A
+	 * The build lists each table's addresses in
+	 * `addressesByLookupTableAddress`, so this could skip the RPC call. A
 	 * synthesized `AddressLookupTableAccount` would have to invent the `state`
-	 * metadata that compiling a transaction reads, which is the authority and
-	 * `deactivationSlot`, and it would not notice a table deactivated since the
-	 * build. Fetching keeps the semantics identical to the v1 path. Dropping the
-	 * fetch is a separate change that needs its own verification.
+	 * metadata that transaction compilation reads, which is the authority and
+	 * `deactivationSlot`. It would also miss a table deactivated since the
+	 * build, so the fetch stays.
 	 */
 	private async getBuildLookupTables(
 		build: JupiterBuildResponse

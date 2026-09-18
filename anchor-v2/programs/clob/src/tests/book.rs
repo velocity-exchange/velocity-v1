@@ -42,6 +42,7 @@ fn place_queues_by_price_then_time() {
         book.read_node(first_at_100.node_index).unwrap().next,
         later_at_100.node_index
     );
+
     // Bids sort the other way: the highest price is the best of book.
     let low_bid = place(&mut book, Side::Bid, 50, 1, maker_a);
     let high_bid = place(&mut book, Side::Bid, 60, 1, maker_a);
@@ -215,6 +216,7 @@ fn a_wholly_expired_opposite_side_refuses_nothing() {
         })
         .expect("placement succeeds");
     }
+
     book.place(PlaceOrderParams {
         reject_if_crossed: true,
         now: 900,
@@ -478,6 +480,7 @@ fn the_price_bound_stops_the_walk_at_the_limit() {
     for (price, size) in [(100, 2), (101, 2), (102, 2), (103, 2)] {
         place(&mut book, Side::Ask, price, size, maker);
     }
+
     let users = [maker];
 
     // A long taker will not pay above 101. The level at 101 is acceptable;
@@ -525,6 +528,7 @@ fn the_price_bound_stops_the_walk_at_the_limit() {
     for (price, size) in [(103, 2), (102, 2), (101, 2), (100, 2)] {
         place(&mut book, Side::Bid, price, size, maker);
     }
+
     let pointer = book
         .quote(
             Direction::Short,
@@ -649,6 +653,7 @@ fn a_user_with_some_room_is_filled_only_that_far() {
         vec![(100, 2 * UNIT), (101, 7 * UNIT)],
         "capped to what its budget buys, and the rest of the book follows"
     );
+
     let outcome = book
         .execute(
             Direction::Long,
@@ -781,6 +786,7 @@ fn a_second_capped_maker_ends_the_sweep_rather_than_failing_it() {
         quote_cap: 4,
         base_cap: u64::MAX,
     };
+
     caps.caps[1] = crate::state::UserCapV0 {
         index: 1,
         quote_cap: 3,
@@ -979,6 +985,7 @@ fn a_link_out_of_the_arena_fails_every_walk() {
             ),
             ClobError::NodeIndexOutOfRange,
         );
+
         // The placement scan walks the same list.
         assert_err(
             place_raw(&mut book, Side::Ask, 100, 5, maker),
@@ -1035,6 +1042,7 @@ fn removals_free_the_slot_and_close_the_list() {
         book.read_node(low.node_index).unwrap().prev,
         high.node_index
     );
+
     // The slot is zeroed and heads the free list, so the handle is dead.
     let freed = book.read_node(mid.node_index).unwrap();
     assert_eq!((freed.bit_flags, freed.order_id), (0, 0));
@@ -1139,6 +1147,7 @@ fn cancel_all_sweeps_only_the_named_sides() {
             ..Default::default()
         }
     );
+
     assert!(ids.is_empty());
 }
 
@@ -1270,6 +1279,7 @@ fn expired_orders_are_reclaimed_only_once_expired() {
         book.remove_expired(order, 1_000),
         ClobError::OrderNotExpired,
     );
+
     let removed = book.remove_expired(order, 1_001).unwrap();
     assert_eq!(removed.base_asset_amount, 5);
     assert_consistent(&book);
@@ -1331,11 +1341,13 @@ fn place_is_rejected_at_the_per_side_cap_before_the_arena_runs_dry() {
     for i in 0..4 {
         place(&mut book, Side::Bid, 100 + i, 1, maker);
     }
+
     assert_eq!(book.free_count, 4);
     assert_err(
         place_raw(&mut book, Side::Bid, 200, 1, maker),
         ClobError::SideAtCapacity,
     );
+
     // The other side is unaffected.
     place(&mut book, Side::Ask, 200, 1, maker);
 }
@@ -1404,6 +1416,7 @@ fn initialize_refuses_any_base_precision_but_the_constant() {
         ),
         ClobError::InvalidConfig,
     );
+
     init_with(16, test_config()).expect("the constant is accepted");
 }
 
@@ -1417,6 +1430,7 @@ fn the_eviction_threshold_is_bounded_by_the_per_side_cap() {
         evict_threshold_per_side: v,
         ..test_config()
     };
+
     assert_err(init_with(16, threshold(0)), ClobError::InvalidConfig);
     assert_err(init_with(16, threshold(8)), ClobError::InvalidConfig);
     assert_err(init_with(16, threshold(9)), ClobError::InvalidConfig);
@@ -1429,6 +1443,7 @@ fn the_eviction_threshold_is_bounded_by_the_per_side_cap() {
         crate::book::validate_evict_threshold(8, market.book().capacity() as u32).is_err(),
         "an update to the cap is refused too"
     );
+
     crate::book::validate_evict_threshold(7, market.book().capacity() as u32)
         .expect("an update below the cap is accepted");
 }

@@ -103,43 +103,25 @@ export type MmOracleBatchUpdate = {
 	/** Monotonically increasing sequence id for this market's MM oracle. */
 	oracleSequenceId: BN;
 	/**
-	 * Slot the price was observed at. The program skips the entry when the
-	 * landing slot is more than `MM_ORACLE_MAX_SOURCE_AGE` from this slot in
-	 * either direction. The behind bound stops a late-landing transaction from
-	 * making an old observation read as fresh. The ahead bound stops a value in
-	 * the wrong unit from turning the check off without an error.
+	 * Slot the price was observed at. The program skips the entry when the landing slot is
+	 * more than `MM_ORACLE_MAX_SOURCE_AGE` from this slot in either direction.
 	 */
 	oracleSourceSlot: BN;
 };
 
 /**
  * Maximum markets per `updateMmOracleBatchNative` call, mirroring the program's
- * `MM_ORACLE_BATCH_MAX_MARKETS`. A caller does not reach it. The transaction packet size and
- * the runtime's 64 account-lock ceiling both bind well before this does.
+ * `MM_ORACLE_BATCH_MAX_MARKETS`. Packet size and the 64 account-lock ceiling bind first.
  */
 export const MM_ORACLE_BATCH_MAX_MARKETS = 64;
 
 /** Bytes per batch payload entry: `u16` market index + `i64` price + `u64` sequence id + `u64` source slot. */
 const MM_ORACLE_BATCH_ENTRY_LEN = 26;
 
-// Default compute budget for `updateMmOracleBatchNative`. `bun run bench:native-cu`
-// splits the handler into a fixed authentication prologue of about 1109 CU, about
-// 518 CU per accepted market, about 460 CU per skipped market, and about 453 CU
-// for the reject-mask log. The log is emitted at most once, and only when the
-// handler skipped something. The prologue is charged once per batch rather than
-// once per market, which is what makes batching cheaper.
-//
-// A partly rejected batch is the worst case, at about 1504 + 518n, because it pays
-// for both the writes and the log. An all-accepted batch is cheaper at 3181 CU for
-// 4 markets, because it emits no log. An all-rejected batch is cheaper still at
-// 3402 CU, because it performs no writes. Neither bounds the budget. The measured
-// 4-market figures are 3181 accepted, 3402 rejected and 3576 mixed.
-//
-// The constants below round the mixed case up for about 31% headroom, which also
-// covers the ComputeBudget instructions' own 150 CU and the hot-key compare that
-// the bench build leaves out. The priority fee is charged on the requested limit
-// rather than on consumption, so a cranker at production cadence should pass its
-// own measured `txParams.computeUnits` instead of these.
+// Default compute budget for `updateMmOracleBatchNative`, measured by `bun run bench:native-cu`.
+// The worst case is a partly rejected batch, at about 1504 + 518n CU. These round that up for
+// about 31% headroom. A cranker at production cadence should pass its own measured
+// `txParams.computeUnits` instead.
 const MM_ORACLE_BATCH_BASE_CU = 1_900;
 const MM_ORACLE_BATCH_PER_MARKET_CU = 700;
 
@@ -503,10 +485,8 @@ export class VelocityClient {
 				config.txParams?.loadedAccountsDataSize ??
 				LOADED_ACCOUNTS_DATA_SIZE_DEFAULT,
 			// A transaction is charged for the compute limit it requests, so a flat
-			// ceiling on every transaction pays for room almost none of them use.
-			// Simulating costs one RPC round trip. A failed simulation falls back
-			// to the ceiling above instead of throwing, so the worst case matches
-			// what a static limit gave.
+			// ceiling pays for room almost no transaction uses. Simulating costs one
+			// RPC round trip. A failed simulation falls back to the ceiling above.
 			useSimulatedComputeUnits:
 				config.txParams?.useSimulatedComputeUnits ?? true,
 		};
@@ -805,11 +785,8 @@ export class VelocityClient {
 
 	signerPublicKey?: PublicKey;
 	/**
-	 * Returns the program's PDA signer (used as the authority for vault CPIs), computing and caching
-	 * it on first call. Synchronous — the signer PDA has no seeds that require an on-chain lookup.
-	 * A CPI into an external program signs as the market's quoter slab instead. See
-	 * {@link getQuoterSlabPublicKey}.
-	 * @returns The velocity signer public key.
+	 * Returns the program's PDA signer, the authority for vault CPIs. A CPI into an external
+	 * program signs as the market's quoter slab instead. See {@link getQuoterSlabPublicKey}.
 	 */
 	public getSignerPublicKey(): PublicKey {
 		if (this.signerPublicKey) {
@@ -1426,11 +1403,8 @@ export class VelocityClient {
 		 */
 		externalWallet?: PublicKey;
 		/**
-		 * Build for an authority other than this client's. `initialize_user_stats`
-		 * does not require the authority to sign, so a `UserStats` can be created
-		 * for any key. That is the only way to create the protocol-owned account,
-		 * whose authority is velocity's signer PDA and never a wallet. Defaults to
-		 * this client's authority.
+		 * Build for an authority other than this client's. `initialize_user_stats` needs no
+		 * authority signature, so a `UserStats` can be made for any key, such as the signer PDA.
 		 */
 		authority?: PublicKey;
 	}): Promise<TransactionInstruction> {
@@ -1570,16 +1544,8 @@ export class VelocityClient {
 	}
 
 	/**
-	 * Grows a zero-copy account (User, PerpMarket, SpotMarket, State, ...) to the size the
-	 * deployed program compiles in for its type. Use it for an account-size migration after a
-	 * program upgrade that appended fields. The signing wallet must hold
-	 * `HotRole.AccountExtension`, which cold, warm, and the configured account-extension hot key
-	 * all satisfy. The payer covers the rent-exempt shortfall and the program zero-fills the new
-	 * tail. It does nothing when the account is already at size, so the crank is idempotent. See
-	 * `docs/ACCOUNT-EXTENSION.md`.
-	 * @param account - The account to extend.
-	 * @param txParams - Optional compute-unit and priority-fee overrides for the transaction.
-	 * @returns The transaction signature.
+	 * Grows a zero-copy account to the size the deployed program compiles in for its type. The
+	 * signer must hold `HotRole.AccountExtension`. See `docs/ACCOUNT-EXTENSION.md`.
 	 */
 	public async extendAccount(
 		account: PublicKey,
@@ -1762,20 +1728,10 @@ export class VelocityClient {
 	}
 
 	/**
-	 * Initializes `authority`'s `RevenueShareEscrow` account — the per-user account that tracks
-	 * pending builder-fee orders and the list of builders this user has approved (`approvedBuilders`),
-	 * required to place orders carrying a builder fee. On creation, `escrow.referrer` is copied from
-	 * the authority's existing `UserStats.referrer`, if any, and no instruction rewrites that copy
-	 * later. The authority's first subaccount must therefore already exist, because
-	 * `UserStats.referrer` is set only when that subaccount is created.
-	 * @param authority - Authority the escrow is created for.
-	 * @param numOrders - Number of pending-order slots to allocate, which decides the account's
-	 * rent and size. Must be at least 1. The program rejects a zero-capacity escrow, which could
-	 * hold neither a builder row nor a referral row and would suppress all revenue share without
-	 * an error. Grow it later with `resizeRevenueShareEscrowOrders`. It never shrinks.
-	 * @param txParams - Optional compute-unit/priority-fee overrides for the transaction.
-	 * @returns The transaction signature.
-	 * @throws (on-chain `UserNotFound`) if `authority` has not created a subaccount yet.
+	 * Initializes `authority`'s `RevenueShareEscrow`, required to place orders that carry a builder
+	 * fee. Creation copies `escrow.referrer` from `UserStats.referrer`, and no later instruction
+	 * rewrites that copy, so the authority's first subaccount must already exist.
+	 * @param numOrders - Pending-order slots to allocate, which decides the account's rent and size. It must be at least 1, because a zero-capacity escrow holds neither a builder row nor a referral row and would suppress all revenue share without an error. Grow it later with `resizeRevenueShareEscrowOrders`. It never shrinks.
 	 */
 	public async initializeRevenueShareEscrow(
 		authority: PublicKey,
@@ -2108,10 +2064,8 @@ export class VelocityClient {
 					systemProgram: SystemProgram.programId,
 					state: await this.getStatePublicKey(),
 					// Relay liquidation coverage, created with the account it
-					// watches and paid for by the same payer. It is always
-					// created, because coverage starts to matter as soon as
-					// somebody else's transaction gives this user a position,
-					// and the user does not sign that transaction.
+					// watches and paid for by the same payer. It is always created,
+					// because another user's transaction can give this user a position.
 					userConditions: getUserConditionsPublicKey(
 						this.program.programId,
 						userAccountPublicKey
@@ -2900,16 +2854,10 @@ export class VelocityClient {
 	}
 
 	/**
-	 * Builds the `deleteUser` instruction. See `deleteUser` for on-chain preconditions.
-	 *
-	 * This derives and passes the authority's `RevenueShareEscrow` PDA, so a caller needs
-	 * no change. The account is required even when the authority has never created an
-	 * escrow, because seeds pin the address on chain, so an uninitialized account proves
-	 * absence rather than an omitted check. The program uses it to settle this
-	 * sub-account's builder rows before the id is retired for good, which keeps the
-	 * builder's accrued fee from being stranded (OtterSec #128).
-	 * @param userAccountPublicKey - User account PDA to delete.
-	 * @returns The instruction.
+	 * Builds the `deleteUser` instruction. See `deleteUser` for on-chain preconditions. It passes
+	 * the authority's `RevenueShareEscrow` PDA, which is required even when no escrow exists,
+	 * because seeds pin the address. The program settles this sub-account's builder rows before
+	 * the id is retired, so an accrued builder fee is not stranded (OtterSec #128).
 	 */
 	public async getUserDeletionIx(userAccountPublicKey: PublicKey) {
 		const ix = await this.program.instruction.deleteUser({
@@ -3902,26 +3850,18 @@ export class VelocityClient {
 	}
 
 	/**
-	 * Builds (but does not send) a single transaction that deposits collateral and then places a
-	 * pre-signed SignedMsg ("swift") taker perp order in one atomic bundle — useful for funding a new
-	 * or under-collateralized account immediately before submitting an off-chain-signed order.
-	 * Optionally also initializes the taker's `SignedMsgUserOrders` account (with 8 order slots) first,
-	 * if it doesn't already exist.
-	 * @param signedOrderParams - The pre-signed SignedMsg order message/params to place.
+	 * Builds one transaction that deposits collateral, then places a pre-signed SignedMsg taker perp
+	 * order. It optionally initializes the taker's `SignedMsgUserOrders` account, with 8 order slots,
+	 * first.
 	 * @param takerInfo - Taker's user/user-stats accounts, loaded `UserAccount` data, and the signing
 	 * authority for the order message.
 	 * @param depositAmount - Amount to deposit, in `depositSpotMarketIndex`'s token precision.
-	 * @param depositSpotMarketIndex - Spot market index to deposit into.
-	 * @param tradePerpMarketIndex - Perp market index the signed order trades.
-	 * @param subAccountId - Sub-account id to deposit into and place the order for.
-	 * @param takerAssociatedTokenAccount - Source token account for the deposit.
 	 * @param initSwiftAccount - If `true`, initializes the taker's `SignedMsgUserOrders` account first
-	 * when it doesn't already exist; defaults to `false`.
+	 * when it doesn't already exist. Defaults to `false`.
 	 * @param makerInfo - The book's resting owners the placement may settle against. The placement
 	 * fills in the same instruction, and a fill reaches only the users the transaction carries, so a
 	 * placement that leaves out an owner the book could have reached is refused with
 	 * `FillerOmittedReachableMaker`. The dlob-server's `/topMakers` names them.
-	 * @returns The built transaction.
 	 */
 	public async buildSwiftDepositTx(
 		signedOrderParams: SignedMsgOrderParams,
@@ -5162,42 +5102,19 @@ export class VelocityClient {
 	}
 
 	/**
-	 * Like `transferDeposit`, but signed by a *delegate* (`this.wallet.publicKey`) rather than the
-	 * sub-accounts' owning authority. On-chain requires all of:
-	 *   - the owner has opted in via `updateUserAllowDelegateTransfer(true)` on their `UserStats` — the
-	 *     transfer is rejected outright otherwise, regardless of delegate status on the sub-accounts;
-	 *   - `this.wallet.publicKey` is set as the `delegate` on **both** `fromSubAccountId` and
-	 *     `toSubAccountId` (see `updateUserDelegate`) — a delegate for only one side is not sufficient;
-	 *   - both sub-accounts share the same owning `authority` (this only moves funds within one owner's
-	 *     sub-accounts, never across different owners);
-	 *   - neither sub-account is bankrupt, and `fromSubAccountId !== toSubAccountId`.
+	 * Like `transferDeposit`, but signed by a delegate rather than the sub-accounts' owning authority.
+	 * The owner must opt in with `updateUserAllowDelegateTransfer(true)`, the signer must be the `delegate`
+	 * on both sub-accounts, the two must share one authority, neither may be bankrupt, and the ids must differ.
 	 * @param amount - Amount to transfer, in the spot market's own token precision.
-	 * @param marketIndex - Spot market index of the balance to transfer.
-	 * @param fromSubAccountId - Sub-account id to debit.
-	 * @param toSubAccountId - Sub-account id to credit.
-	 * @param equityFloorDelta - Equity floor (QUOTE_PRECISION) to move from the debited to the credited
-	 * sub-account along with the funds, keeping the sum of floors constant. A proportional share of
-	 * the debited side's `equityFloorBuffer` travels with the floor. That share rounds up on the
-	 * debited side, so shedding the whole floor also sheds the whole buffer and leaves no orphan
-	 * buffer on a check-disabled sub-account. The sum of buffers stays constant too. Three rules
-	 * apply. The debited side must not already be below the floor it reduces, so a below-floor
-	 * sub-account cannot shed floor to defuse a pending equity-breaker trip, and the program
-	 * reverts with `InvalidEquityFloorTransfer` otherwise. The debited side must stay at or above
-	 * its reduced floor plus its reduced buffer, and the program reverts with `EquityBelowFloor`
-	 * otherwise. The credited side's net equity, measured after the transfer lands, must back its
-	 * increased floor plus its increased buffer, and the program reverts with
-	 * `InvalidEquityFloorTransfer` otherwise. Pass `'auto'`, on the quote market only, to move the
-	 * smallest floor that keeps the debited side at or above its buffered floor:
-	 * `max(0, amount - max(0, netEquity - (floor + buffer)))`, capped at the debited side's floor.
-	 * See `calculateEquityFloorAutoDelta`. The auto delta never exceeds `amount`, so the credited
-	 * side stays backed whenever it was backed before. Client-side pricing can differ from the
-	 * onchain check at the exact boundary. Retry with an explicit padded delta if an `'auto'`
-	 * transfer reverts. Defaults to zero.
-	 * @param txParams - Optional compute-unit/priority-fee overrides for the transaction.
-	 * @returns The transaction signature.
-	 * @throws (on-chain) if `allowDelegateTransfer` is not enabled, if the signer is not the delegate on
-	 * both sub-accounts, if the sub-accounts have different owners, if either is bankrupt, or if
-	 * `fromSubAccountId === toSubAccountId`.
+	 * @param equityFloorDelta - Equity floor (QUOTE_PRECISION) moved from the debited to the credited
+	 * sub-account with the funds, so the sum of floors stays constant. A proportional share of the
+	 * debited side's `equityFloorBuffer` travels with it, rounded up on the debited side, so shedding
+	 * the whole floor sheds the whole buffer. The program reverts with `InvalidEquityFloorTransfer`
+	 * when the debited side is already below the floor it reduces, or when the credited side cannot
+	 * back its increased floor plus buffer. It reverts with `EquityBelowFloor` when the debited side
+	 * would fall under its reduced floor plus buffer. Pass `'auto'`, on the quote market only, for
+	 * `max(0, amount - max(0, netEquity - (floor + buffer)))` capped at the debited floor. See
+	 * `calculateEquityFloorAutoDelta`. Client-side pricing may differ at the boundary. Defaults to zero.
 	 */
 	public async transferDepositByDelegate(
 		amount: BN,
@@ -6134,16 +6051,10 @@ export class VelocityClient {
 
 	/**
 	 * Permissionless batch crank. It books the lending interest of several spot markets in one
-	 * instruction. It exists for a caller that has to value several markets in one transaction,
-	 * such as a program pricing a share against the markets a user holds.
-	 *
-	 * It differs from `updateSpotMarketCumulativeInterest` in two ways. It passes no oracle, so
-	 * it leaves every oracle TWAP alone, and it accepts a market whose status is `Delisted`.
-	 * `updateSpotMarketCumulativeInterest` stays the crank that keeps a market's oracle EMA
-	 * fresh.
+	 * instruction, for a caller that must value several markets in one transaction. It differs
+	 * from `updateSpotMarketCumulativeInterest` in two ways. It passes no oracle, so it leaves
+	 * every oracle TWAP alone, and it accepts a market whose status is `Delisted`.
 	 * @param marketIndexes - Spot market indexes to book, at most 16.
-	 * @param txParams - Optional compute-unit and priority-fee overrides for the transaction.
-	 * @returns The transaction signature.
 	 */
 	public async refreshSpotMarketInterest(
 		marketIndexes: number[],
@@ -6191,24 +6102,15 @@ export class VelocityClient {
 	}
 
 	/**
-	 * Lists the spot markets that must be cranked before the given accounts can be
-	 * used on a value-releasing path.
-	 *
-	 * The program refuses to value a spot borrow for margin through an index that has
-	 * not accrued recently, and reverts with `SpotMarketInterestStaleForMargin`. The
-	 * rule applies on withdraw, transfer deposit, transfer pools, swap,
-	 * isolated-position withdraw, and any perp fill, for the taker and for every maker
-	 * alike. Only borrow positions count. A stale deposit index understates collateral,
-	 * so the program allows it.
-	 *
-	 * Each market takes its own window from its rate ceiling
-	 * (`maxSpotInterestStalenessForMargin`), so a market that can charge more interest
-	 * must be cranked more often.
-	 *
-	 * The program also exempts a borrow whose un-booked interest is still under one
-	 * token unit. This method does not model that exemption, so its result is a
-	 * superset. Cranking every market it names always clears the check.
-	 *
+	 * Lists the spot markets that must be cranked before the given accounts can be used on a
+	 * value-releasing path. The program refuses to value a borrow for margin through an index that
+	 * has not accrued recently, and reverts with `SpotMarketInterestStaleForMargin`. The rule
+	 * applies on withdraw, transfer deposit, transfer pools, swap, isolated-position withdraw, and
+	 * any perp fill, for the taker and for every maker alike. Only borrow positions count. A stale
+	 * deposit index understates collateral, so the program allows it. Each market takes its own
+	 * window from `maxSpotInterestStalenessForMargin`. The program also exempts a borrow whose
+	 * un-booked interest is still under one token unit, which this method does not model, so its
+	 * result is a superset.
 	 * @param userAccounts - Accounts the transaction values, for example a fill's taker and makers.
 	 * @param now - Unix seconds to measure staleness against. Defaults to the local clock.
 	 * @returns Ascending market indexes, deduplicated.
@@ -6345,6 +6247,7 @@ export class VelocityClient {
 		const increasing = orderParams.find((params) =>
 			this.isOrderIncreasingPosition(params, subAccountId)
 		);
+
 		if (isolatedPositionDepositAmount?.gt?.(ZERO) && increasing) {
 			preIxs.push(
 				await this.getTransferIsolatedPerpPositionDepositIx(
@@ -6368,9 +6271,11 @@ export class VelocityClient {
 			[],
 			this.opts
 		);
+
 		for (const params of orderParams) {
 			this.cachePerpMarketSlot(slot, params.marketIndex);
 		}
+
 		return txSig;
 	}
 
@@ -6483,11 +6388,9 @@ export class VelocityClient {
 			},
 		];
 
-		// The program reads the referrer's persistent Accelerated status immediately after
-		// the taker's escrow. The account stays readonly, so a popular referrer does not
-		// become a write-lock bottleneck for every referee fill. A caller-supplied
-		// `takerReferrer` wins, including the default pubkey, which says the referrer's
-		// status is not being resolved.
+		// The program reads the referrer's persistent Accelerated status after the taker's
+		// escrow. The account stays readonly, so a popular referrer is not a write-lock
+		// bottleneck. A caller-supplied `takerReferrer` wins, including the default pubkey.
 		if (referred && !hasReferrer(referrer) && takerReferrer === undefined) {
 			referrer = (
 				await fetchUserStatsAccount(
@@ -6732,30 +6635,17 @@ export class VelocityClient {
 	}
 
 	/**
-	 * Cancel an open order and broadcast the transaction.
-	 *
-	 * When `orderId` is `undefined` (omitted or passed explicitly), the instruction is
-	 * sent with a `null` order ID and the program cancels the most recently placed order
-	 * on-chain via `get_last_order_id`. This is safe to use in a composed transaction
-	 * where a place instruction runs first and the assigned order ID is not yet known.
-	 *
-	 * Note: when `orderId` is `undefined` and `overrides.withdrawIsolatedDepositAmount`
-	 * is also provided, `getOrder` will return `undefined` (the ID is unknown client-side),
-	 * causing the withdraw path to throw — supply an explicit `orderId` in that case.
-	 *
-	 * @param orderId - Program-assigned order ID to cancel; omit to cancel the most recently
-	 * placed order (resolved on-chain via `get_last_order_id`).
-	 * @param txParams - Optional compute-unit/priority-fee overrides.
+	 * Cancel an order in a `User.orders` slot and broadcast. See `cancelOrderV1` for an order resting
+	 * on the CLOB, which has no such slot and is cancelled by its book handle instead.
+	 * @param orderId - Program-assigned order ID to cancel. Omit it to cancel the most recently placed
+	 * order, which the program resolves through `get_last_order_id`. That is safe in a composed
+	 * transaction where a place instruction runs first and the assigned id is not yet known.
 	 * @param subAccountId - Sub-account the order belongs to; defaults to the active sub-account.
 	 * @param overrides.withdrawIsolatedDepositAmount - If set and > 0, appends an isolated-margin
-	 * withdrawal (token-mint precision) for the cancelled order's market in the same transaction;
-	 * requires an explicit `orderId` (see note above).
-	 * @returns The transaction signature.
+	 * withdrawal (token-mint precision) for the cancelled order's market in the same transaction. It
+	 * requires an explicit `orderId`. With an omitted id `getOrder` returns `undefined` and the
+	 * withdraw path throws.
 	 * @see `getCancelOrderIx` to obtain the instruction without sending.
-	 * @remarks Cancels an order in a `User.orders` slot. An order
-	 * resting on the CLOB has no such slot and is cancelled by its book handle. Read its
-	 * `ClobOrderRefV0` from the user-orders feed (`UserClobOrdersClient`), then call
-	 * `cancelOrderV1` or `cancelOrdersV1`.
 	 */
 	public async cancelOrder(
 		orderId?: number,
@@ -7060,9 +6950,8 @@ export class VelocityClient {
 	}
 
 	/**
-	 * Disabled. Spot DLOB trading (order placement/matching) is turned off in this deployment —
-	 * spot balances, deposits, withdrawals, and swaps remain available.
-	 * @throws Always throws with the spot-DLOB-disabled message.
+	 * Disabled. Spot order placement and matching are off in this deployment. Spot balances,
+	 * deposits, withdrawals and swaps stay available.
 	 */
 	public async placeSpotOrder(
 		_orderParams: OptionalOrderParams,
@@ -7135,8 +7024,7 @@ export class VelocityClient {
 	 * deposits/vault balances rather than the wallet's own token accounts. Sends and confirms the
 	 * transaction.
 	 * @param swapClient - Provider that quotes the swap and builds its route. Pass a
-	 * `UnifiedSwapClient`, or a `TitanClient` or `JupiterClient` directly. See
-	 * `getProviderSwapIx`.
+	 * `UnifiedSwapClient`, or a `TitanClient` or `JupiterClient` directly. See `getProviderSwapIx`.
 	 * @param jupiterClient - @deprecated Use `swapClient` instead. Used only when `swapClient` is
 	 * not passed.
 	 * @param outMarketIndex - Spot market index of the token being bought.
@@ -7145,19 +7033,15 @@ export class VelocityClient {
 	 * idempotently if omitted.
 	 * @param inAssociatedTokenAccount - Token account to source the sold token from; created
 	 * idempotently if omitted.
-	 * @param amount - Amount of the "in" token, in the token's own mint decimals rather than a
-	 * fixed protocol precision. When the effective mode is `ExactOut`, it is the desired output
-	 * amount of the "out" token instead.
+	 * @param amount - Amount of the "in" token, in the token's own mint decimals rather than a fixed
+	 * protocol precision. Under `ExactOut` it is the desired output amount of the "out" token.
 	 * @param slippageBps - Max slippage in basis points passed to the swap provider's routing API.
 	 * @param swapMode - `ExactIn` (default) or `ExactOut`. Ignored when `quote` is passed, because
 	 * the quote's own mode wins.
 	 * @param reduceOnly - Whether the in/out token's position on the velocity account must reduce
 	 * (not flip sign); enforced by `endSwap` after the swap completes.
-	 * @param quote - Pre-fetched quote, which skips a round trip to the swap provider. It must be
-	 * for this pair and this `amount`.
-	 * @param txParams - Optional compute-unit/priority-fee overrides.
+	 * @param quote - Pre-fetched quote, which must be for this pair and this `amount`.
 	 * @throws If neither `swapClient` nor `jupiterClient` is provided.
-	 * @returns The transaction signature.
 	 */
 	public async swap({
 		swapClient,
@@ -7218,10 +7102,8 @@ export class VelocityClient {
 	}
 
 	/**
-	 * Throws unless a quote swaps the same pair the `beginSwap` and `endSwap` instructions are
-	 * built for. A mismatched quote routes and executes, but it deposits its output into a token
-	 * account `endSwap` does not watch. `endSwap` then reverts with `InvalidSwap: amount_out must
-	 * be greater than 0`, after the funds have already moved.
+	 * Throws unless a quote swaps the same pair `beginSwap` and `endSwap` are built for. A mismatched
+	 * quote executes, deposits into an account `endSwap` does not watch, then reverts `InvalidSwap`.
 	 */
 	protected assertQuoteMatchesMarkets(
 		quote: { inputMint: string; outputMint: string },
@@ -7669,10 +7551,9 @@ export class VelocityClient {
 	}
 
 	/**
-	 * Fires an armed stop-market order straight to the book. One instruction fills
-	 * the fired order and rests only its remainder as a taker-origin order on the
-	 * market's CLOB, so nothing is left live in `User.orders` for a later crank.
-	 * For trigger-market orders only. See `getTriggerMarketOrderV1Ix`.
+	 * Fires an armed stop-market order straight to the book. One instruction fills the fired order
+	 * and rests only its remainder as a taker-origin order on the market's CLOB, so nothing is left
+	 * live in `User.orders` for a later crank. For trigger-market orders only.
 	 */
 	public async triggerMarketOrderV1(
 		marketIndex: number,
@@ -7684,6 +7565,7 @@ export class VelocityClient {
 			clobMarket: PublicKey;
 			clobProgram: PublicKey;
 		},
+
 		routeAccounts: AccountMeta[],
 		txParams?: TxParams,
 		fillerPublicKey?: PublicKey
@@ -7704,22 +7586,17 @@ export class VelocityClient {
 			[],
 			this.opts
 		);
+
 		return txSig;
 	}
 
 	/**
 	 * Builds the `triggerMarketOrderV1` instruction. See `triggerMarketOrderV1` for semantics.
-	 * @param marketIndex - The order's perp market.
-	 * @param userAccountPublicKey - Public key of the order owner's user account.
-	 * @param userAccount - Decoded user account for the order owner.
-	 * @param order - The trigger-market order to fire.
-	 * @param clobAccounts - The market's quoter slab, book and program.
 	 * @param routeAccounts - The maker, referrer and quoter `AccountMeta[]` the fill routes through.
 	 * They are appended after the standard market and oracle accounts. The market's quoter slab and
 	 * its book are mandatory.
 	 * @param fillerPublicKey - Filler's user account public key. Defaults to this client's own user
 	 * account.
-	 * @returns The instruction.
 	 */
 	public async getTriggerMarketOrderV1Ix(
 		marketIndex: number,
@@ -7731,6 +7608,7 @@ export class VelocityClient {
 			clobMarket: PublicKey;
 			clobProgram: PublicKey;
 		},
+
 		routeAccounts: AccountMeta[],
 		fillerPublicKey?: PublicKey
 	): Promise<TransactionInstruction> {
@@ -7753,6 +7631,7 @@ export class VelocityClient {
 				this.program.programId,
 				userAccount.authority
 			),
+
 			authority: this.wallet.publicKey,
 			quoterSlab: clobAccounts.quoterSlab,
 			clobMarket: clobAccounts.clobMarket,
@@ -7762,6 +7641,7 @@ export class VelocityClient {
 				this.program.programId,
 				marketIndex
 			),
+
 			triggerConditions: getUserConditionsPublicKey(
 				this.program.programId,
 				userAccountPublicKey
@@ -7827,30 +7707,20 @@ export class VelocityClient {
 				user: userAccountPublicKey,
 				authority: this.wallet.publicKey,
 			},
+
 			remainingAccounts,
 		});
 	}
 
 	/**
-	 * Keeper instruction: reclaims a deteriorated account's risk-increasing CLOB orders.
-	 *
-	 * The CLOB arm of `forceCancelOrders`. It takes the same grounds, plus the
-	 * authority-wide equity breaker. The account fails initial margin, is provably below
-	 * its equity floor, or its breaker is latched. It leaves risk-reducing orders alone,
-	 * because cancelling those would only make the account worse.
-	 *
-	 * Every "nothing to do" outcome succeeds rather than erroring. The account turned out
-	 * healthy, the refs are already gone, or none of them is risk-increasing. That is what
-	 * makes it safe to put in front of a fill that would otherwise revert on this maker,
-	 * while a keeper or relay races to do the same work.
-	 *
-	 * @param marketIndex - Perp market whose CLOB the orders rest on.
-	 * @param userAccountPublicKey - Public key of the deteriorated account.
-	 * @param userAccount - Decoded account of the deteriorated user.
+	 * Keeper instruction: reclaims a deteriorated account's risk-increasing CLOB orders, on the same
+	 * grounds as `forceCancelOrders` plus the authority-wide equity breaker. The account fails initial
+	 * margin, is provably below its equity floor, or its breaker is latched. It leaves risk-reducing
+	 * orders alone, because cancelling those would only make the account worse. Every "nothing to do"
+	 * outcome succeeds rather than erroring, so it is safe in front of a fill that would otherwise
+	 * revert on this maker, while a keeper or relay races to do the same work.
 	 * @param orderRefs - The orders to reclaim, each with the side it rests on.
-	 * @param clobAccounts - The market's quoter slab, book and program.
 	 * @param fillerPublicKey - Filler's user account. Defaults to this client's own.
-	 * @returns The instruction.
 	 */
 	public async getForceCancelClobOrdersIx(
 		marketIndex: number,
@@ -7862,6 +7732,7 @@ export class VelocityClient {
 			clobMarket: PublicKey;
 			clobProgram: PublicKey;
 		},
+
 		fillerPublicKey?: PublicKey
 	): Promise<TransactionInstruction> {
 		const filler = fillerPublicKey ?? (await this.getUserAccountPublicKey());
@@ -7885,6 +7756,7 @@ export class VelocityClient {
 						this.program.programId,
 						userAccount.authority
 					),
+
 					quoterSlab: clobAccounts.quoterSlab,
 					clobMarket: clobAccounts.clobMarket,
 					clobProgram: clobAccounts.clobProgram,
@@ -7893,25 +7765,18 @@ export class VelocityClient {
 						marketIndex
 					),
 				},
+
 				remainingAccounts,
 			}
 		);
 	}
 
 	/**
-	 * Keeper instruction: trips the authority-wide equity floor breaker. It proves on-chain that
-	 * the given subaccount's net equity is below its `equityFloor`, then sets
-	 * `equityBreakerTripped` on the authority's `UserStats`. Net equity is unweighted assets and
-	 * perp PnL minus spot liabilities. The program reverts with `SufficientCollateral` when the
-	 * equity clears the floor or no floor is set, and with `InvalidOracle` when any of the
-	 * subaccount's oracles is invalid. Once the breaker is set, every subaccount of the authority
-	 * rejects risk-increasing fills, withdrawals and transfers out until the warm admin calls
-	 * `resetEquityFloorBreaker`. Permissionless, so any signer can trip it. The equity calculation
-	 * is the proof.
-	 * @param userAccountPublicKey - Public key of the breached subaccount's user account.
-	 * @param user - Decoded user account of the breached subaccount.
-	 * @param txParams - Optional compute-unit/priority-fee overrides.
-	 * @returns The transaction signature.
+	 * Keeper instruction: trips the authority-wide equity floor breaker. It proves on-chain that the
+	 * subaccount's net equity, unweighted assets and perp PnL minus spot liabilities, is below its
+	 * `equityFloor`. It reverts with `SufficientCollateral` when the equity clears the floor or no
+	 * floor is set, and with `InvalidOracle` on an invalid oracle. Every subaccount of the authority
+	 * then rejects risk-increasing fills and withdrawals until a warm admin calls `resetEquityFloorBreaker`.
 	 */
 	public async tripEquityFloorBreaker(
 		userAccountPublicKey: PublicKey,
@@ -8173,34 +8038,27 @@ export class VelocityClient {
 				user: userAccountPublicKey,
 				authority: this.wallet.publicKey,
 			},
+
 			remainingAccounts,
 		});
 	}
 
 	/**
-	 * Places a perp order and routes it in the same instruction across every liquidity source the
-	 * market has. `orderParams.postOnly` must be `PostOnlyParams.NONE` — the onchain handler
-	 * rejects post only orders here (use `placeAndMakePerpOrder` instead for a post-only maker
-	 * order). A restable remainder rests on the market's CLOB. If the order is
-	 * immediate-or-cancel (or `successCondition`/`auctionDurationPercentage` is set) and still
-	 * open after the fill attempt, it is cancelled in the same instruction.
-	 * @param orderParams - Order to place; `baseAssetAmount` is BASE_PRECISION (1e9), `price`/
-	 * `triggerPrice`/`oraclePriceOffset` (signed) are PRICE_PRECISION (1e6).
-	 * @param clobAccounts - The market's quoter slab, book and CLOB program. The route reaches
-	 * book and PropAMM liquidity through them, and the remainder rests on them. Omit them and
-	 * they are read off the market.
-	 * @param makerInfo - The `(User, UserStats)` pairs the fill settles against. A fill settles
-	 * only for users the transaction carries, so a book that names a maker this list omits stops
-	 * at that maker.
-	 * @param successCondition - Require the fill to be a `PartialFill` or `FullFill`; the
-	 * instruction reverts with `PlaceAndTakeOrderSuccessConditionFailed` if not met. Omit for no check.
-	 * @param auctionDurationPercentage - Percent (0-100, default 100) of the order's auction that
-	 * must have elapsed before this fill attempt is allowed to cross the AMM/makers at the current
-	 * auction price; packed onchain into the same `u32` as `successCondition`.
-	 * @param txParams - Optional compute-unit/priority-fee overrides.
+	 * Places a perp order and routes it across every liquidity source the market has. A restable remainder
+	 * rests on the market's CLOB. `orderParams.postOnly` must be `PostOnlyParams.NONE`, because the handler
+	 * rejects a post-only order here; `placeAndMakePerpOrder` takes those. An immediate-or-cancel order, or one
+	 * carrying `successCondition` or `auctionDurationPercentage`, is cancelled in the same instruction when it is still open after the fill attempt.
+	 * @param orderParams - `baseAssetAmount` is BASE_PRECISION (1e9). `price`, `triggerPrice` and
+	 * `oraclePriceOffset` (signed) are PRICE_PRECISION (1e6).
+	 * @param clobAccounts - The market's quoter slab, book and CLOB program. The route reaches book and
+	 * PropAMM liquidity through them, and the remainder rests on them. Omit them and they are read off the market.
+	 * @param makerInfo - The `(User, UserStats)` pairs the fill settles against. A fill settles only for
+	 * users the transaction carries, so a book that names a maker this list omits stops at that maker.
+	 * @param successCondition - Require the fill to be a `PartialFill` or `FullFill`. The instruction reverts with `PlaceAndTakeOrderSuccessConditionFailed` otherwise. Omit for no check.
+	 * @param auctionDurationPercentage - Percent (0-100, default 100) of the order's auction that must have
+	 * elapsed before this attempt may cross the AMM or makers at the current auction price. It is packed onchain into the same `u32` as `successCondition`.
 	 * @param subAccountId - Sub-account to place the order for; defaults to the active sub-account.
-	 * @param takerEscrow - Optional decoded escrow used to avoid automatic UserStats lookup.
-	 * @returns The transaction signature.
+	 * @param takerEscrow - Decoded escrow that avoids the automatic `UserStats` lookup.
 	 */
 	public async placeAndTakePerpOrder(
 		orderParams: OptionalOrderParams,
@@ -8209,6 +8067,7 @@ export class VelocityClient {
 			clobMarket: PublicKey;
 			clobProgram: PublicKey;
 		},
+
 		makerInfo?: MakerInfo | MakerInfo[],
 		successCondition?: PlaceAndTakeOrderSuccessCondition,
 		auctionDurationPercentage?: number,
@@ -8268,6 +8127,7 @@ export class VelocityClient {
 			clobMarket: PublicKey;
 			clobProgram: PublicKey;
 		},
+
 		makerInfo?: MakerInfo | MakerInfo[],
 		bracketOrdersParams = new Array<OptionalOrderParams>(),
 		txParams?: TxParams,
@@ -8494,6 +8354,7 @@ export class VelocityClient {
 			clobMarket: PublicKey;
 			clobProgram: PublicKey;
 		},
+
 		makerInfo?: MakerInfo | MakerInfo[],
 		bracketOrdersParams = new Array<OptionalOrderParams>(),
 		txParams?: TxParams,
@@ -8553,21 +8414,11 @@ export class VelocityClient {
 	}
 
 	/**
-	 * Builds the `placeAndTakePerpOrder` instruction. See `placeAndTakePerpOrder` for semantics.
-	 * @param orderParams - Order to place; see `placeAndTakePerpOrder` for field precisions.
-	 * @param clobAccounts - The market's CLOB accounts. The order routes through them, so the
-	 * taker reaches book and PropAMM liquidity and not only the vAMM, and an unfilled limit
-	 * remainder rests on the book. The quoter section they imply is appended to the remaining
-	 * accounts for you. Omit them and they are read off the market.
-	 * @param makerInfo - See `placeAndTakePerpOrder`.
-	 * @param successCondition - See `placeAndTakePerpOrder`.
-	 * @param auctionDurationPercentage - See `placeAndTakePerpOrder`.
-	 * @param subAccountId - Sub-account to place the order for; defaults to the active sub-account.
-	 * @param overrides - `authority` overrides the signing authority (defaults to `this.wallet.publicKey`).
-	 * @param takerEscrow - See `placeAndTakePerpOrder`.
-	 * @param extraQuoterAccounts - Additional quoter entries and their registered CPI accounts,
-	 * for a taker routing across PropAMMs beyond the mandatory CLOB + vAMM baseline.
-	 * @returns The instruction.
+	 * Builds the `placeAndTakePerpOrder` instruction. See `placeAndTakePerpOrder` for semantics. The
+	 * quoter section `clobAccounts` implies is appended to the remaining accounts automatically.
+	 * @param overrides - `authority` overrides the signing authority, which defaults to `this.wallet.publicKey`.
+	 * @param extraQuoterAccounts - Additional quoter entries and their registered CPI accounts, for a
+	 * taker routing across PropAMMs beyond the mandatory CLOB + vAMM baseline.
 	 */
 	public async getPlaceAndTakePerpOrderIx(
 		orderParams: OptionalOrderParams,
@@ -8576,6 +8427,7 @@ export class VelocityClient {
 			clobMarket: PublicKey;
 			clobProgram: PublicKey;
 		},
+
 		makerInfo?: MakerInfo | MakerInfo[],
 		successCondition?: PlaceAndTakeOrderSuccessCondition,
 		auctionDurationPercentage?: number,
@@ -8583,6 +8435,7 @@ export class VelocityClient {
 		overrides?: {
 			authority?: PublicKey;
 		},
+
 		// place_and_take fills the placing user's (the taker's) order in-instruction, so
 		// their RevenueShareEscrow must be attached for BOTH builder fees and referrer
 		// revenue share. The builder case is detected from orderParams; pass the user's
@@ -8635,17 +8488,18 @@ export class VelocityClient {
 			hasBuilderParams(orderParams),
 			takerEscrow
 		);
+
 		remainingAccounts.push(...takerRevenueShareMetas);
-		// v1 routes, so its tail carries the quoter section, and the market's
-		// canonical CLOB is mandatory there. These are the same accounts the
-		// remainder leg already names — the program resolves a quoter's
-		// registered CPI accounts from the remaining accounts, which its named
-		// ones are not part of.
+		// v1 routes, so its tail carries the quoter section, and the market's canonical
+		// CLOB is mandatory there. The program resolves a quoter's registered CPI accounts
+		// from the remaining accounts, and the accounts the remainder leg names are not part
+		// of those.
 		remainingAccounts.push(
 			{ pubkey: clob.quoterSlab, isWritable: false, isSigner: false },
 			{ pubkey: clob.clobMarket, isWritable: true, isSigner: false },
 			{ pubkey: clob.clobProgram, isWritable: false, isSigner: false }
 		);
+
 		// Any further quoters the taker wants competing for this fill.
 		if (extraQuoterAccounts) {
 			remainingAccounts.push(...extraQuoterAccounts);
@@ -8692,6 +8546,7 @@ export class VelocityClient {
 			clobMarket: PublicKey;
 			clobProgram: PublicKey;
 		},
+
 		txParams?: TxParams,
 		subAccountId?: number,
 		activationDelaySlots?: number | null
@@ -8704,6 +8559,7 @@ export class VelocityClient {
 					subAccountId,
 					activationDelaySlots
 				),
+
 				txParams
 			),
 			[],
@@ -8716,12 +8572,10 @@ export class VelocityClient {
 	}
 
 	/**
-	 * Builds the `placeAndMakePerpOrderV1` instruction: a post-only maker order that rests
-	 * straight on the market's CLOB. See `placeAndMakePerpOrder` for semantics.
-	 * @param orderParams - Maker order to place (post-only `Limit`).
-	 * @param clobAccounts - the market's CLOB accounts.
+	 * Builds the `placeAndMakePerpOrderV1` instruction: a post-only maker order that rests straight
+	 * on the market's CLOB. See `placeAndMakePerpOrder` for semantics.
+	 * @param orderParams - Maker order to place, a post-only `Limit`.
 	 * @param subAccountId - Sub-account placing the maker order; defaults to the active sub-account.
-	 * @returns The instruction.
 	 */
 	public async getPlaceAndMakePerpOrderIx(
 		orderParams: OptionalOrderParams,
@@ -8730,6 +8584,7 @@ export class VelocityClient {
 			clobMarket: PublicKey;
 			clobProgram: PublicKey;
 		},
+
 		subAccountId?: number,
 		activationDelaySlots?: number | null
 	): Promise<TransactionInstruction> {
@@ -8843,12 +8698,9 @@ export class VelocityClient {
 	}
 
 	/**
-	 * Stamps this client's own cluster on a signed-msg message that does not name one.
-	 * The program refuses an untagged message, because a signature covers the order and not
-	 * the chain, so an untagged order replays from one cluster to the other. A message that
-	 * already names a cluster is left alone.
-	 * @param orderParamsMessage - The message to tag.
-	 * @returns The same message with `network` set.
+	 * Stamps this client's own cluster on a signed-msg message that does not name one. The program
+	 * refuses an untagged message, because a signature covers the order and not the chain, so an
+	 * untagged order replays from one cluster to the other. A tagged message is left alone.
 	 */
 	private withSignedMsgNetwork(
 		orderParamsMessage:
@@ -8899,37 +8751,30 @@ export class VelocityClient {
 		if (!keypair) {
 			throw new Error('No keypair available to sign message');
 		}
+
 		return Buffer.from(nacl.sign.detached(message, keypair.secretKey));
 	}
 
 	/**
-	 * Submits a previously off-chain-signed swift/signed-msg taker order on-chain and completes it
-	 * in the same instruction: verifies the ed25519 signature via the sysvar-instructions program,
-	 * records the order in the taker's `SignedMsgUserOrders` account (see
-	 * `initializeSignedMsgUserOrders`, required beforehand), routes it through the market's quoters
-	 * and books for whatever fills at or better than its auction start price, and rests the
-	 * remainder on the market's CLOB. A signed-message order never takes a `User.orders` slot.
-	 *
-	 * The caller is a filler, not the taker: it must carry every quoter the signed message named,
-	 * and it owes the taker every maker it had room for. Pass those quoter entries and their
-	 * registered CPI accounts in `remainingAccounts` after the market/oracle section.
-	 * @param signedSignedMsgOrderParams - The signed order payload from `signSignedMsgOrderParamsMessage`.
-	 * @param marketIndex - Perp market index the signed order targets.
-	 * @param fillerInfo - Optional; the keeper's own `User`/`UserStats`, credited for the fill it
-	 * lands. Defaults to the client's own margin account.
-	 * @param clobAccounts - Optional; the market's CLOB registry entry and book accounts, where the
-	 * remainder rests. Defaults to what the market's registry entry names.
-	 * @param takerInfo - Taker's account/authority info; `signingAuthority` is the delegate or
-	 * direct authority that produced the signature (compared against `takerUserAccount.delegate`
-	 * to determine whether the message decodes as the delegate-signer variant).
-	 * @param _precedingIxs - Retained for call-site compatibility; no effect. The order's signature
-	 * is verified in-program, so it no longer rides an ed25519 precompile instruction whose sysvar
-	 * index these once computed.
+	 * Submits an off-chain-signed swift taker order and fills it in the same instruction: it verifies the
+	 * ed25519 signature through the sysvar-instructions program, records the order in the taker's
+	 * `SignedMsgUserOrders` account (see `initializeSignedMsgUserOrders`, required beforehand), routes it
+	 * through the market's quoters and books for whatever fills at or better than its auction start price,
+	 * and rests the remainder on the market's CLOB. A signed-message order never takes a `User.orders` slot.
+	 * The caller is a filler, not the taker: it must carry every quoter the signed message named, and it
+	 * owes the taker every maker it had room for.
+	 * @param fillerInfo - The keeper's own `User`/`UserStats`, credited for the fill it lands. Defaults
+	 * to the client's own margin account.
+	 * @param clobAccounts - The market's CLOB registry entry and book accounts, where the remainder
+	 * rests. Defaults to what the market's registry entry names.
+	 * @param takerInfo - Taker's account/authority info. `signingAuthority` is the delegate or direct
+	 * authority that produced the signature, compared against `takerUserAccount.delegate` to decide
+	 * whether the message decodes as the delegate-signer variant.
+	 * @param _precedingIxs - Retained for call-site compatibility; no effect. The signature is verified
+	 * in-program, so the order no longer rides an ed25519 precompile instruction whose sysvar index these once computed.
 	 * @param _overrideCustomIxIndex - Retained for call-site compatibility; no effect.
-	 * @param txParams - Optional compute-unit/priority-fee overrides.
 	 * @param makerInfo - The book's resting owners this placement may settle against. See
 	 * `getPlaceSignedMsgTakerPerpOrderIxs`.
-	 * @returns The transaction signature.
 	 */
 	public async placeSignedMsgTakerOrder(
 		signedSignedMsgOrderParams: SignedMsgOrderParams,
@@ -8940,6 +8785,7 @@ export class VelocityClient {
 			takerUserAccount: UserAccount;
 			signingAuthority: PublicKey;
 		},
+
 		precedingIxs: TransactionInstruction[] = [],
 		overrideCustomIxIndex?: number,
 		txParams?: TxParams,
@@ -8947,11 +8793,13 @@ export class VelocityClient {
 			filler: PublicKey;
 			fillerStats: PublicKey;
 		},
+
 		clobAccounts?: {
 			quoterSlab: PublicKey;
 			clobMarket: PublicKey;
 			clobProgram: PublicKey;
 		},
+
 		flowAttestation?: FlowAttestationV0,
 		makerInfo?: MakerInfo | MakerInfo[]
 	): Promise<TransactionSignature> {
@@ -8975,15 +8823,8 @@ export class VelocityClient {
 	}
 
 	/**
-	 * Builds the single `placeSignedMsgTakerOrder` program instruction. The taker's signature
-	 * rides this instruction's own data and is verified in-program, so no ed25519 precompile
-	 * instruction precedes it. See `placeSignedMsgTakerOrder` for semantics.
-	 * @param signedSignedMsgOrderParams - The signed order payload.
-	 * @param marketIndex - Perp market index the signed order targets.
-	 * @param takerInfo - Taker's account/authority info; see `placeSignedMsgTakerOrder`.
-	 * @param _precedingIxs - Retained for call-site compatibility; no effect.
-	 * @param _overrideCustomIxIndex - Retained for call-site compatibility; no effect.
-	 * @returns `[placeSignedMsgTakerOrderIx]`.
+	 * Builds the single `placeSignedMsgTakerOrder` instruction. The taker's signature rides this
+	 * instruction's own data, so no ed25519 precompile instruction precedes it.
 	 */
 	public async getPlaceSignedMsgTakerPerpOrderIxs(
 		signedSignedMsgOrderParams: SignedMsgOrderParams,
@@ -8994,6 +8835,7 @@ export class VelocityClient {
 			takerUserAccount: UserAccount;
 			signingAuthority: PublicKey;
 		},
+
 		// Retained for call-site compatibility. The order no longer rides an
 		// ed25519 precompile instruction, so there is no sysvar index to
 		// compute and these have no effect.
@@ -9003,11 +8845,13 @@ export class VelocityClient {
 			filler: PublicKey;
 			fillerStats: PublicKey;
 		},
+
 		clobAccounts?: {
 			quoterSlab: PublicKey;
 			clobMarket: PublicKey;
 			clobProgram: PublicKey;
 		},
+
 		/** Swift's detached attestation (`/attest`) for this order; absent rests the whole order on a bumped book. */
 		flowAttestation?: FlowAttestationV0,
 		/**
@@ -9061,6 +8905,7 @@ export class VelocityClient {
 				takerInfo.takerUserAccount,
 				...makerInfos.map((maker) => maker.makerUserAccount),
 			],
+
 			useMarketLastSlotCache: false,
 			writablePerpMarketIndexes: [marketIndex],
 			writableSpotMarketIndexes,
@@ -9085,6 +8930,7 @@ export class VelocityClient {
 					this.program.programId,
 					takerInfo.takerUserAccount.authority
 				),
+
 				isWritable: true,
 				isSigner: false,
 			});
@@ -9123,6 +8969,7 @@ export class VelocityClient {
 							this.program.programId,
 							takerInfo.takerUserAccount.authority
 						),
+
 						authority: this.wallet.publicKey,
 						ixSysvar: SYSVAR_INSTRUCTIONS_PUBKEY,
 						filler: filler.filler,
@@ -9293,29 +9140,16 @@ export class VelocityClient {
 	}
 
 	/**
-	 * Modifies an open order (spot or perp) by closing it and replacing it with a new order in one
-	 * instruction. Only fields present (non-`undefined`) in `orderParams` are changed; the rest of
-	 * the order is left as-is.
-	 * @param orderParams.orderId - The open order to modify (program-assigned order ID).
-	 * @param orderParams.newDirection - The new direction for the order.
-	 * @param orderParams.newBaseAmount - The new base amount for the order, BASE_PRECISION (1e9).
-	 * @param orderParams.newLimitPrice - The new limit price for the order, PRICE_PRECISION (1e6).
-	 * @param orderParams.newOraclePriceOffset - The new oracle price offset for the order, PRICE_PRECISION (1e6), signed.
-	 * @param orderParams.newTriggerPrice - Optional - the new trigger price for the order, PRICE_PRECISION (1e6).
-	 * @param orderParams.auctionDuration - Auction length in fixed 400ms units; only relevant for market/oracle orders.
-	 * @param orderParams.auctionStartPrice - PRICE_PRECISION (1e6), signed; only relevant for market/oracle orders.
-	 * @param orderParams.auctionEndPrice - PRICE_PRECISION (1e6), signed; only relevant for market/oracle orders.
-	 * @param orderParams.reduceOnly - Whether the modified order must only reduce the position.
-	 * @param orderParams.postOnly - Post-only behavior for the modified order.
+	 * Modifies an open order by closing it and replacing it in one instruction. Only fields present
+	 * (non-`undefined`) in `orderParams` are changed.
+	 * @param orderParams - `newBaseAmount` is BASE_PRECISION (1e9). `newLimitPrice`,
+	 * `newTriggerPrice`, `newOraclePriceOffset`, `auctionStartPrice` and `auctionEndPrice` are
+	 * PRICE_PRECISION (1e6), the last three signed. `auctionDuration` is in fixed 400ms units.
+	 * `policy` is a bitmask of `ModifyOrderPolicy`, for example `MustModify` or `ExcludePreviousFill`.
 	 * @param orderParams.bitFlags - Bitmask, see `OrderParamsBitFlag`.
-	 * @param orderParams.policy - Bitmask of `ModifyOrderPolicy` (e.g. `MustModify`, `ExcludePreviousFill`).
 	 * @param orderParams.maxTs - Unix timestamp after which the order expires.
-	 * @param txParams - Optional compute-unit/priority-fee overrides.
 	 * @param subAccountId - Sub-account the order belongs to; defaults to the active sub-account.
-	 * @returns The transaction signature.
-	 * @remarks Modifies an order in a `User.orders` slot. An order resting on the CLOB is modified by
-	 * its book handle. Read its `ClobOrderRefV0` from the user-orders feed, then call
-	 * `modifyOrderV1`.
+	 * @remarks It modifies an order in a `User.orders` slot. A CLOB order uses `modifyOrderV1`.
 	 */
 	public async modifyOrder(
 		orderParams: {
@@ -10235,6 +10069,7 @@ export class VelocityClient {
 				this.getUserAccountOrThrow(liquidatorSubAccountId),
 				userAccount,
 			],
+
 			useMarketLastSlotCache: true,
 			writablePerpMarketIndexes: [marketIndex],
 		});
@@ -10256,25 +10091,16 @@ export class VelocityClient {
 
 	/**
 	 * Keeper instruction: liquidates a user's perp position in `marketIndex` by filling it through
-	 * the router (instead of transferring it to the liquidator's own sub-account as `liquidatePerp`
-	 * does). The forced order routes across the market's CLOB, its PropAMM quoters, the vAMM and
-	 * any `makerInfos` passed, so the liquidator is only the filler and acquires no position.
-	 * Reverts if `userAccountPublicKey` equals the liquidator's own user account. Permissionless —
-	 * any signer can act as liquidator/filler.
-	 *
-	 * A market that names a book must be liquidated through it: the quoter section is appended to
-	 * the remaining accounts automatically, and the instruction reverts without it. Book depth is
-	 * only reachable for makers the transaction carries, so pass the book's own resting owners in
-	 * `makerInfos`.
-	 * @param userAccountPublicKey - Public key of the user account being liquidated.
-	 * @param userAccount - Decoded user account being liquidated.
-	 * @param marketIndex - Perp market index of the position to liquidate.
-	 * @param makerInfos - Maker(s) the fill may settle against on the book.
-	 * @param txParams - Optional compute-unit/priority-fee overrides.
+	 * the router, instead of transferring it to the liquidator's own sub-account as `liquidatePerp`
+	 * does. The forced order routes across the market's CLOB, its PropAMM quoters, the vAMM and any
+	 * `makerInfos` passed, so the liquidator is only the filler and acquires no position. It reverts
+	 * if `userAccountPublicKey` equals the liquidator's own user account. Permissionless.
+	 * A market that names a book must be liquidated through it. The quoter section is appended to the
+	 * remaining accounts automatically, and the instruction reverts without it. Book depth is only
+	 * reachable for makers the transaction carries, so pass the book's own resting owners in `makerInfos`.
 	 * @param liquidatorSubAccountId - Liquidator's sub-account to credit; defaults to the active sub-account.
 	 * @param extraQuoterAccounts - Further quoter entries and their registered CPI accounts, beyond
 	 * the mandatory CLOB + vAMM baseline.
-	 * @returns The transaction signature.
 	 */
 	public async liquidatePerpWithFill(
 		userAccountPublicKey: PublicKey,
@@ -10297,6 +10123,7 @@ export class VelocityClient {
 				),
 				txParams
 			),
+
 			[],
 			this.opts
 		);
@@ -10339,6 +10166,7 @@ export class VelocityClient {
 				userAccount,
 				...makerInfos.map((makerInfo) => makerInfo.makerUserAccount),
 			],
+
 			writablePerpMarketIndexes: [marketIndex],
 		});
 
@@ -10366,6 +10194,7 @@ export class VelocityClient {
 				{ pubkey: clob.clobMarket, isWritable: true, isSigner: false },
 				{ pubkey: clob.clobProgram, isWritable: false, isSigner: false }
 			);
+
 			if (extraQuoterAccounts) {
 				remainingAccounts.push(...extraQuoterAccounts);
 			}
@@ -10379,11 +10208,10 @@ export class VelocityClient {
 				userStats: userStatsPublicKey,
 				liquidator,
 				liquidatorStats: liquidatorStatsPublicKey,
-				// Signed-keeper path: the relay reservoir account is absent,
-				// encoded as the program id (anchor's `None`). The
-				// instructions sysvar likewise — it exists so a relay crank can
-				// have its priority fee repaid, and a signed keeper is paying
-				// its own way.
+				// Signed-keeper path: the relay reservoir account is absent, encoded as the
+				// program id, which is anchor's `None`. The instructions sysvar is absent too.
+				// It exists so a relay crank can have its priority fee repaid, and a signed
+				// keeper pays its own way.
 				crankConditions: this.program.programId,
 				instructionsSysvar: this.program.programId,
 			},
@@ -11331,28 +11159,11 @@ export class VelocityClient {
 	}
 
 	/**
-	 * Keeper instruction: estimates the market's bid/ask price from its resting liquidity (kept
-	 * only within `±BID_ASK_TWAP_MAX_ORACLE_DIVERGENCE_PERCENT` of the oracle price on both sides)
-	 * and folds the estimate into `lastBidPriceTwap`/`lastAskPriceTwap`. This does NOT
-	 * update the funding rate, crank funding separately via `getUpdateFundingRateIx`. Restricted:
-	 * the calling wallet's `UserStats` (which must be the signer's own) must have
-	 * `canUpdateBidAskTwap` set and at least 1000 USDC (`QUOTE_PRECISION`, 1e6) staked in the
-	 * insurance fund (`ifStakedQuoteAssetAmount`), or the instruction reverts.
-	 *
-	 * One source. The market's CLOB is read on-chain through the book's own `quoteL3V0` leg, so the
-	 * caller supplies no depth and names no counterparties. A market that names a book must be
-	 * cranked with it — the instruction is built with the book accounts automatically and reverts
-	 * without them. A market that names no book yields no estimate.
-	 *
-	 * Only orders that have rested on-chain for at least `BID_ASK_TWAP_MIN_QUOTE_REST`
-	 * (24 baseline slots, ~10s, inflated to actual slots at the current slot duration) are sampled — a quote must have been takeable by someone else before it may
-	 * move the TWAP. Orders newer than that are silently skipped, so a market whose
-	 * depth was all placed this slot yields no estimate and the crank falls back to the AMM's
-	 * quote. Note this is measured from the order's on-chain post slot, not from `order.slot`
-	 * (which signed-message orders back-date).
-	 * @param perpMarketIndex - Perp market index to update.
-	 * @param txParams - Optional compute-unit/priority-fee overrides.
-	 * @returns The transaction signature.
+	 * Keeper instruction: estimates the market's bid/ask from resting liquidity within
+	 * `±BID_ASK_TWAP_MAX_ORACLE_DIVERGENCE_PERCENT` of the oracle price, and folds it into
+	 * `lastBidPriceTwap`/`lastAskPriceTwap`. It does not update the funding rate. The signer's own
+	 * `UserStats` needs `canUpdateBidAskTwap` and 1000 USDC of insurance-fund stake. The book is read
+	 * through `quoteL3V0`. Only orders that rested `BID_ASK_TWAP_MIN_QUOTE_REST` since their on-chain post slot are sampled.
 	 */
 	public async updatePerpBidAskTwap(
 		perpMarketIndex: number,
@@ -11398,6 +11209,7 @@ export class VelocityClient {
 				clobMarket: clob?.clobMarket ?? this.program.programId,
 				clobProgram: clob?.clobProgram ?? this.program.programId,
 			},
+
 			remainingAccounts: [],
 		});
 	}
@@ -13412,6 +13224,7 @@ export class VelocityClient {
 		if (!info) {
 			throw new Error(`quoter slab for market ${marketIndex} not found`);
 		}
+
 		return decodeQuoterSlab(info.data);
 	}
 
@@ -13437,6 +13250,7 @@ export class VelocityClient {
 		) {
 			throw new Error(`perp market ${marketIndex} has no CLOB attached`);
 		}
+
 		return {
 			quoterSlab: getQuoterSlabPublicKey(this.program.programId, marketIndex),
 			// The book is the account the slot's responses are written into.
@@ -13446,18 +13260,13 @@ export class VelocityClient {
 	}
 
 	/**
-	 * Builds a `cancelOrderV1` instruction.
+	 * Builds a `cancelOrderV1` instruction. The `orderRef` is the hint the placement returned, which
+	 * the user-orders feed also carries on every row. The book verifies it against the order id and
+	 * fails closed on a stale one, so a hint that a fill has since invalidated cannot cancel somebody
+	 * else's order.
 	 *
-	 * The `orderRef` is the hint the placement returned, which the user-orders feed also carries
-	 * on every row — the book verifies it against the order id and fails closed on a stale one,
-	 * so a hint that a fill has since invalidated cannot cancel somebody else's order.
-	 *
-	 * Deliberately ungated on the quoter entry's active/approved flags: a maker must always be
-	 * able to pull orders off a killed or delisted book.
-	 *
-	 * @param params - Market and the order's handle.
-	 * @param subAccountId - Sub-account holding the order; defaults to the active one.
-	 * @returns The instruction.
+	 * It is deliberately ungated on the quoter entry's active and approved flags. A maker must
+	 * always be able to pull orders off a killed or delisted book.
 	 */
 	public async getCancelOrderV1Ix(
 		params: CancelOrderV1Params,
@@ -13470,6 +13279,7 @@ export class VelocityClient {
 					this.program.programId,
 					params.marketIndex
 				),
+
 				user: await this.getUserAccountPublicKey(subAccountId),
 				authority: this.wallet.publicKey,
 				quoterSlab: clob.quoterSlab,
@@ -13493,25 +13303,22 @@ export class VelocityClient {
 				await this.getCancelOrderV1Ix(params, subAccountId),
 				txParams
 			),
+
 			[],
 			this.opts
 		);
+
 		return txSig;
 	}
 
 	/**
-	 * Builds a `modifyOrderV1` instruction: cancel and replace in one call, gated on the net
-	 * margin change.
-	 *
-	 * The order keeps its id — a reprice is one order that moved, not two orders — and loses its
-	 * queue position, since the book has no in-place mutation. A `null` field keeps what the
-	 * resting order carries, except `baseAssetAmount`, where `null` keeps the *remaining* size
-	 * rather than the original.
-	 *
-	 * @param params - Market, the order's handle, and the fields to change.
-	 * @param subAccountId - Sub-account holding the order; defaults to the active one.
-	 * @param flowAuthority - The flow authority, when it signs this transaction; required for a below-default activation delay.
-	 * @returns The instruction.
+	 * Builds a `modifyOrderV1` instruction: cancel and replace in one call, gated on the net margin
+	 * change. The order keeps its id, because a reprice is one order that moved, and loses its queue
+	 * position, because the book has no in-place mutation. A `null` field keeps what the resting
+	 * order carries, except `baseAssetAmount`, where `null` keeps the remaining size rather than the
+	 * original.
+	 * @param flowAuthority - The flow authority, when it signs this transaction. It is required for
+	 * a below-default activation delay.
 	 */
 	public async getModifyOrderV1Ix(
 		params: ModifyOrderV1Params,
@@ -13546,23 +13353,20 @@ export class VelocityClient {
 				await this.getModifyOrderV1Ix(params, subAccountId),
 				txParams
 			),
+
 			[],
 			this.opts
 		);
+
 		return txSig;
 	}
 
 	/**
-	 * Builds a `cancelOrdersV1` instruction: pull a whole side (or both) off the book in one
-	 * CPI, unwinding from per-side totals so the cost does not grow with the ladder.
-	 *
-	 * The book caps how many orders one sweep removes and reports whether it finished. When it did
-	 * not, the user still has resting orders and repeating the call is safe — the totals always
-	 * describe exactly what that call removed.
-	 *
-	 * @param params - Market and which sides to withdraw.
+	 * Builds a `cancelOrdersV1` instruction: pull a whole side, or both, off the book in one CPI.
+	 * It unwinds from per-side totals, so the cost does not grow with the ladder. The book caps how
+	 * many orders one sweep removes and reports whether it finished. Repeating the call is safe,
+	 * because the totals always describe exactly what that call removed.
 	 * @param subAccountId - Sub-account holding the orders; defaults to the active one.
-	 * @returns The instruction.
 	 */
 	public async getCancelOrdersV1Ix(
 		params: CancelOrdersV1Params,
@@ -13594,9 +13398,11 @@ export class VelocityClient {
 				await this.getCancelOrdersV1Ix(params, subAccountId),
 				txParams
 			),
+
 			[],
 			this.opts
 		);
+
 		return txSig;
 	}
 
@@ -13852,19 +13658,15 @@ export class VelocityClient {
 
 	/**
 	 * Swaps `inMarketIndex` tokens for `outMarketIndex` tokens directly against an LP pool's
-	 * constituent vaults (not the book or the AMM), paying a fee priced off each constituent's deviation
-	 * from its target-base weight. Reverts if pool swaps are disabled, `inMarketIndex` equals
-	 * `outMarketIndex`, or `updateLpPoolAum` has not run within `LP_POOL_SWAP_AUM_UPDATE_DELAY` slots
-	 * (see `getAllLpPoolSwapIxs` for a wrapper that prepends the required AUM refresh).
-	 * @param inMarketIndex - Spot market index of the token being sold.
-	 * @param outMarketIndex - Spot market index of the token being bought.
+	 * constituent vaults, not the book or the AMM, paying a fee priced off each constituent's
+	 * deviation from its target-base weight. It reverts if pool swaps are disabled, if the two
+	 * market indexes are equal, or if `updateLpPoolAum` has not run within
+	 * `LP_POOL_SWAP_AUM_UPDATE_DELAY` slots. See `getAllLpPoolSwapIxs` for a wrapper that prepends
+	 * the AUM refresh.
 	 * @param inAmount - Amount of `inMarketIndex` token to sell, in that market's mint precision.
 	 * @param minOutAmount - Minimum acceptable amount of `outMarketIndex` token to receive, in that
 	 * market's mint precision.
-	 * @param lpPool - LP pool public key.
-	 * @param userAuthority - Authority whose associated token accounts fund/receive the swap.
-	 * @param txParams - Optional compute-unit/priority-fee overrides.
-	 * @returns The transaction signature.
+	 * @param userAuthority - Authority whose associated token accounts fund and receive the swap.
 	 */
 	public async lpPoolSwap(
 		inMarketIndex: number,

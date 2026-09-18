@@ -41,6 +41,7 @@ pub fn handle_orders_v0(
         args.refs.len() <= ORDER_VIEW_CEILING,
         ClobError::InvalidConfig
     );
+
     let market = &ctx.accounts.market;
     let orders = args
         .refs

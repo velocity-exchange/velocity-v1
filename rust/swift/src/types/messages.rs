@@ -15,12 +15,10 @@ use {
     },
 };
 
-/// Upper bound on an encoded signed message.
-///
-/// The bound is hand-computed rather than derived from `InitSpace`. The
-/// message carries a signed route (`Vec<Pubkey>`), which has no fixed size,
-/// so anchor cannot size the type. The bound covers everything before the
-/// route plus a full-length route.
+/// Upper bound on an encoded signed message, hand-computed rather than
+/// derived from `InitSpace` since the signed route (`Vec<Pubkey>`) has no
+/// fixed size. Covers everything before the route plus a full-length
+/// route.
 pub const MAX_SIGNED_MSG_BORSH_LEN: usize = SIGNED_MSG_FIXED_LEN + SIGNED_MSG_ROUTE_MAX_LEN + 8;
 /// Borsh length of the delegate message with every `Option` present and no
 /// route. This is the widest fixed part either variant can have.

@@ -14,13 +14,8 @@ import { PerpMarketAccount } from '../../src/types';
 import { mockPerpMarkets } from '../fixtures/mockAccounts';
 
 /**
- * The walk consumes published book levels, and a published level is the sum of
- * several orders, so its size does not divide evenly at its price.
- *
- * In quote terms both conversions round down. A level can therefore keep a
- * residual worth zero quote, which fills no base and leaves the level as it
- * was. The walk has to move past such a level. Before it did, it repeated the
- * level forever and froze whichever process asked for the estimate.
+ * A published level's size may not divide evenly, leaving a zero-quote residual.
+ * The walk must skip such levels.
  */
 describe('perp entry price walk', () => {
 	const ORACLE = new BN(3).mul(PRICE_PRECISION);
@@ -69,6 +64,7 @@ describe('perp entry price walk', () => {
 				sources: {},
 			},
 		],
+
 		bids: [],
 	});
 

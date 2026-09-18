@@ -25,34 +25,14 @@ use crate::{
     },
 };
 
-/// The contract boundary between Velocity's general logic and the AMM module.
+/// Module boundary between general logic and the AMM: general logic mutates AMM state only through
+/// these methods, never by direct field writes. Not a CPI boundary; both sides live in this program,
+/// and an audit grep enforces it.
 ///
-/// In the target architecture, the vAMM is one of several quoter modules
-/// that share a perp-market account's bytes — sitting alongside other
-/// quoter-state regions (book state, future propAMM-style
-/// participants, etc.) within the same program. Each module owns its own
-/// state slice and exposes a contract trait; Velocity's general logic mutates
-/// the AMM's state slice *only* through `AmmContract` methods, never by
-/// direct field writes. It's not a CPI boundary — both sides live in this
-/// program — it's a module boundary enforced by the type system and an
-/// audit grep ("does any non-`amm/` code write AMM fields directly?").
-///
-/// **Scope.** This trait covers exactly the operations that are *special*
-/// to the vAMM — the things no other quoter can do:
-///
-/// 1. **Moving P&L around** between the AMM's books and other protocol
-///    accounts: insurance-fund credits ([`record_credit`]), the AMM's
-///    per-fill earnings ([`apply_fill_fees`]), protocol funding flowing
-///    through the AMM ([`record_amm_pnl`]).
-/// 2. **Taking over positions** the AMM was not actively making against:
-///    settlement of expired user positions where the AMM becomes
-///    counterparty ([`apply_settlement_counterparty`]).
-///
-/// Anything generic to a quoter (fills, periodic oracle refresh, funding
-/// reactions) lives on `AmmQuoter` instead. Only the vAMM implements
-/// `on_market_event` for `Refresh` and `FundingApplied`, because only the AMM
-/// holds the curve, peg and k state those events update. The event channel
-/// itself is the generic quoter interface, not an AMM-specific surface.
+/// Covers only what is special to the vAMM: moving PnL (insurance credits, per-fill earnings, protocol
+/// funding) and taking over positions it was not actively quoting. Generic quoter behavior lives on
+/// `AmmQuoter`; only the vAMM implements `on_market_event` for `Refresh` and `FundingApplied`, since
+/// only it holds the curve, peg and k state those events update.
 pub trait AmmContract {
     /// Credit the AMM's books with an external deposit (insurance fund
     /// covering a PnL deficit, etc.). The token movement itself happens at
@@ -241,6 +221,7 @@ impl<'a> AmmQuoter<'a> {
             crate::msg!("AmmQuoter::refresh requires ctx.mm_oracle");
             ErrorCode::DefaultError
         })?;
+
         // The curve projection is slot-idempotent. A `last_update_slot` at this
         // slot means an earlier refresh or the keeper crank already projected
         // the AMM against this slot's oracle. `project_post_refresh_scalar` is
@@ -262,15 +243,12 @@ impl<'a> AmmQuoter<'a> {
                 mm_oracle,
                 ctx.oracle_validity,
             )?;
+
             projection.apply_to(self.amm)?;
-            // Same gates as `snap_to_oracle`. Set `last_update_slot` when the
-            // oracle is fresh enough for low-risk fills and the affordability
-            // floor accepts the curve update. The gate reads
-            // `rejected_due_to_affordability` because a rejected refresh comes
-            // back as a passthrough with `cost == 0`, and peg and reserves keep
-            // their current values. A `cost > 0` test never catches that case,
-            // and it would mark stale curve state fresh for the same-slot
-            // freshness gates downstream.
+            // Same gates as `snap_to_oracle`: set `last_update_slot` when the oracle is fresh enough for
+            // low-risk fills and the affordability floor accepts the update. The gate reads
+            // `rejected_due_to_affordability`, not `cost > 0`: a rejected refresh returns `cost == 0`
+            // with peg and reserves unchanged, which `cost > 0` misses, wrongly marking the curve fresh.
             if let Some(validity) = ctx.oracle_validity {
                 if crate::math::oracle::is_oracle_valid_for_action(
                     validity,
@@ -281,6 +259,7 @@ impl<'a> AmmQuoter<'a> {
                 }
             }
         }
+
         // Refresh the cached spread state against the projected AMM. It runs
         // after the block above so the cached ask and bid reserves match the
         // projected curve. Every quote and fill read in this match then sees
@@ -294,6 +273,7 @@ impl<'a> AmmQuoter<'a> {
             ctx.slot,
             ctx.slot_clock,
         )?;
+
         Ok(())
     }
 

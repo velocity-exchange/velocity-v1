@@ -85,6 +85,7 @@ pub fn handle_cancel_order_v1(
         user: user_ref,
         force: false,
     })?;
+
     validate!(
         removed.user == user_ref,
         ErrorCode::DefaultError,
@@ -104,6 +105,7 @@ pub fn handle_cancel_order_v1(
         removed.reduce_only,
         removed.order_id,
     )?;
+
     user.update_last_active_slot(clock.slot);
     // An order that never filled leaves its owner with no position in the
     // market, which is the ordinary case for a cancel. A missing position is
@@ -135,5 +137,6 @@ pub fn handle_cancel_order_v1(
         removed.order_id,
         ctx.accounts.user.key()
     );
+
     Ok(())
 }

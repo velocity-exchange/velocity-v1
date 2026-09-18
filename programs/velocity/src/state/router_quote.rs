@@ -37,13 +37,9 @@ use {
 pub const MAX_QUOTED_SOURCES: usize = 16;
 
 /// Levels kept per source. Each source has its own fixed slot, so no code
-/// computes an offset into a shared region.
-///
-/// The value matches [`crate::math::router::MAX_LEVELS_PER_BOOK`], which is
-/// the most the split ever consumes from one book. A deeper slot would hold
-/// levels no fill can route against. A book with more distinct prices than
-/// this inside `quoted_size` truncates, which understates depth and never
-/// overstates it.
+/// computes an offset into a shared region. The value matches
+/// [`crate::math::router::MAX_LEVELS_PER_BOOK`], the most the split ever
+/// consumes; a book with more distinct prices truncates, understating depth but never overstating it.
 pub const MAX_LEVELS_PER_SOURCE: usize = crate::math::router::MAX_LEVELS_PER_BOOK;
 
 /// Which kind of liquidity a quoted book came from. The router needs it to
@@ -103,12 +99,10 @@ pub struct QuotedLevelV0 {
 
 const_assert_eq!(std::mem::size_of::<QuotedLevelV0>(), 16);
 
-// `zero_copy(unsafe)` emits no bytemuck derives, and the quote view casts a
+// `zero_copy(unsafe)` emits no bytemuck derives, so the quote view casts a
 // stored book straight to the wire's level type instead of copying it. The
 // cast is sound because both types are `#[repr(C)]` over the same two `u64`
-// fields. Neither has padding, and every bit pattern is a valid value. The
-// asserts below keep that true. A widened or reordered field stops the
-// compile.
+// fields with no padding, and the asserts below keep it true: a widened or reordered field stops the compile.
 const_assert_eq!(
     std::mem::size_of::<QuotedLevelV0>(),
     std::mem::size_of::<PriceLevel>()
@@ -117,6 +111,7 @@ const_assert_eq!(
     std::mem::align_of::<QuotedLevelV0>(),
     std::mem::align_of::<PriceLevel>()
 );
+
 unsafe impl bytemuck::Pod for QuotedLevelV0 {}
 unsafe impl bytemuck::Zeroable for QuotedLevelV0 {}
 
@@ -155,13 +150,13 @@ const_assert_eq!(
     std::mem::size_of::<QuotedRowV0>(),
     std::mem::size_of::<L3RowV0>()
 );
+
 unsafe impl bytemuck::Pod for QuotedRowV0 {}
 unsafe impl bytemuck::Zeroable for QuotedRowV0 {}
 
-/// Rows one call may report, across every source it carried.
-///
-/// A depth-100 book of one side fits, which is what a display asks for. The
-/// account is sized once for every market. A pass that fills the region sets
+/// Rows one call may report, across every source it carried. A depth-100
+/// book of one side fits, which is what a display asks for. The account is
+/// sized once for every market; a pass that fills the region sets
 /// `rows_truncated` rather than dropping rows without a record.
 pub const MAX_QUOTED_ROWS: usize = 128;
 
@@ -191,10 +186,9 @@ pub struct RouterQuoteBufferV0 {
     /// short.
     pub direction: u8,
     /// Pads the header to 128 bytes. The reserve holds two more pubkeys, so
-    /// naming another account in the header does not move `sources` or
-    /// `levels` and break every off-chain decoder of this buffer. The length
-    /// also keeps `(SIZE - 8) % 16 == 0`. See
-    /// docs/alignment-and-native-offsets.md.
+    /// naming another account later does not move `sources` or `levels` and
+    /// break every off-chain decoder. The length also keeps
+    /// `(SIZE - 8) % 16 == 0`. See docs/alignment-and-native-offsets.md.
     pub padding: [u8; 74],
     pub sources: [QuotedSourceV0; MAX_QUOTED_SOURCES],
     /// One slot per source, parallel to `sources`.
@@ -268,12 +262,14 @@ impl RouterQuoteBufferV0 {
             "router quote buffer holds at most {} sources",
             MAX_QUOTED_SOURCES
         )?;
+
         let mut remaining = cap;
         let mut written = 0usize;
         for level in levels {
             if remaining == 0 {
                 break;
             }
+
             // The check counts what the cap admits, not what the quoter
             // offered. A book deeper than the slot is a problem only when the
             // cap lets that much of it through.
@@ -284,14 +280,17 @@ impl RouterQuoteBufferV0 {
                 MAX_LEVELS_PER_SOURCE,
                 levels.len()
             )?;
+
             let size = level.size.min(remaining);
             self.levels[index][written] = QuotedLevelV0 {
                 price: level.price,
                 size,
             };
+
             remaining -= size;
             written += 1;
         }
+
         let quoted: u64 = levels
             .iter()
             .map(|level| level.size)
@@ -307,6 +306,7 @@ impl RouterQuoteBufferV0 {
             clamped,
             padding: [0; 1],
         };
+
         self.source_count += 1;
         Ok(clamped)
     }
@@ -322,6 +322,7 @@ impl RouterQuoteBufferV0 {
             msg!("a row needs a source to belong to");
             ErrorCode::DefaultError
         })?;
+
         if self.row_count as usize >= MAX_QUOTED_ROWS {
             self.rows_truncated = true;
             return Ok(false);
@@ -329,6 +330,7 @@ impl RouterQuoteBufferV0 {
         if self.sources[index].row_len == 0 {
             self.sources[index].row_start = self.row_count;
         }
+
         self.rows[self.row_count as usize] = row;
         self.row_count += 1;
         self.sources[index].row_len += 1;

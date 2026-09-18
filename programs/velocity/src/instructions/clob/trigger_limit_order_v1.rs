@@ -141,6 +141,7 @@ pub struct TriggerLimitOrderV1<'info> {
             CLOB_CRANK_CONDITIONS_PDA_SEED,
             args.market_index.to_le_bytes().as_ref(),
         ],
+
         bump
     )]
     pub crank_conditions: Option<AccountLoader<'info, ClobCrankConditionsV0>>,
@@ -153,12 +154,18 @@ pub struct TriggerLimitOrderV1<'info> {
             crate::state::user_conditions::USER_CONDITIONS_PDA_SEED,
             user.key().as_ref(),
         ],
+
         bump
     )]
     pub trigger_conditions:
         Option<AccountLoader<'info, crate::state::user_conditions::UserConditionsV0>>,
 }
 
+/// Fires an armed stop-limit trigger onto the book as a taker-origin order.
+///
+/// Everything that can decide against placing runs while `user` is borrowed:
+/// the gate, the reservation, and the reward. The CPI that places the order
+/// runs afterward, with no borrow of `user` held.
 #[access_control(
     fill_not_paused(&ctx.accounts.state)
 )]
@@ -194,6 +201,7 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
             ErrorCode::DefaultError,
             "CLOB quoter is not active and approved"
         )?;
+
         drop(slot);
         ClobMarket::from_slab(
             &ctx.accounts.quoter_slab,
@@ -203,8 +211,6 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
         )?
     };
 
-    // Everything that can decide against placing runs here, while the user is
-    // borrowed. That is the gate, the reservation and the reward.
     let (side, price, base_asset_amount, max_ts, reduce_only, user_ref, is_isolated_position) = {
         let user = &mut load_mut!(ctx.accounts.user)?;
         let user_stats = load!(ctx.accounts.user_stats)?;
@@ -212,11 +218,9 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
         let order_index = find_armed_trigger_limit(user, order_id, market_index)?;
 
         // An armed trigger past its own `max_ts` is dead. `should_expire_order`
-        // exempts anything that must be triggered, so the sweep never takes it.
-        // Firing it would pay the keeper and then revert, because the book
-        // refuses an order whose `max_ts` has passed. Reverting on every relay
-        // round also starves every armed trigger behind it on this account, so
-        // this is a no-op rather than a refusal.
+        // exempts it, so the sweep never removes it, and firing would pay the
+        // keeper and then revert. This is a no-op rather than a refusal, since
+        // reverting would starve every armed trigger behind it on this account.
         let order_max_ts = user.orders[order_index].max_ts;
         if order_max_ts != 0 && now > order_max_ts {
             msg!(
@@ -224,6 +228,7 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
                 order_max_ts,
                 now
             );
+
             return Ok(());
         }
 
@@ -283,6 +288,7 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
             PositionDirection::Long => ClobSide::Bid,
             PositionDirection::Short => ClobSide::Ask,
         };
+
         (
             side,
             user.orders[order_index].price,
@@ -297,7 +303,6 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
         )
     };
 
-    // Place through the CPI while no borrow of `user` is held.
     let order_ref = clob.place(ClobPlaceOrderArgsV0 {
         side,
         price,
@@ -305,13 +310,10 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
         activation_delay_slots: None,
         max_ts,
         user: user_ref,
-        // A fired trigger came to trade. It rests taker-origin, so a live
-        // counterparty crosses it at the counterparty's price instead of taking
-        // it at its own price. The activation-slot auction then decides who
-        // fills it on price rather than on who lands a transaction first.
-        // Resting taker-origin is also what routes it. The taker-origin cross
-        // crank carries the market's baseline book, which an order resting as
-        // an ordinary maker quote never asks for.
+        // A fired trigger rests taker-origin, so a live counterparty crosses
+        // it at the counterparty's price, and the activation-slot auction
+        // decides the fill by price rather than by who lands a transaction
+        // first. Taker-origin is also what routes it into the cross crank.
         taker_origin: true,
         // The slot the trigger armed keeps its id. To the owner this is the
         // order they placed, now live, and the shadow slot holds the same
@@ -374,6 +376,7 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
         order_ref.node_index,
         user_key
     );
+
     Ok(())
 }
 
@@ -414,6 +417,7 @@ fn find_armed_trigger_limit(user: &User, order_id: u32, market_index: u16) -> Re
         ErrorCode::InvalidOrderOracleOffset,
         "oracle-offset trigger orders cannot rest at a fixed CLOB price"
     )?;
+
     Ok(order_index)
 }
 
@@ -451,6 +455,7 @@ fn read_trigger_prices(
         ErrorCode::MarketPlaceOrderPaused,
         "market not active"
     )?;
+
     crate::controller::orders::trigger_market_gates(&perp_market, now)?;
 
     let (oracle_price_data, oracle_validity) = oracle_map.get_price_data_and_validity(
@@ -482,6 +487,7 @@ fn read_trigger_prices(
             .max_oracle_twap_5min_percent_divergence()
             .cast()?,
     )?;
+
     validate!(
         !oracle_too_divergent,
         ErrorCode::OrderBreachesOraclePriceLimits,
@@ -519,12 +525,14 @@ fn observe_trigger_condition(
             ErrorCode::OrderAwaitingTriggerRecross,
             "trigger price never crossed back after eviction"
         )?;
+
         user.orders[order_index].remove_bit_flag(OrderBitFlag::AwaitingTriggerRecross);
         user.update_last_active_slot(slot);
         msg!(
             "trigger order {} observed the recross and is armed again",
             order_id
         );
+
         return Ok(false);
     }
 
@@ -536,6 +544,7 @@ fn observe_trigger_condition(
         user.orders[order_index].trigger_price,
         user.orders[order_index].trigger_condition
     )?;
+
     Ok(true)
 }
 
@@ -577,6 +586,7 @@ fn reserve_and_gate_trigger(
         let user_position = user.get_perp_position_mut(market_index)?;
         increase_open_bids_and_asks(user_position, &direction, base_asset_amount, true)?;
     }
+
     let (_, worst_case_after) = user
         .get_perp_position(market_index)?
         .worst_case_liability_value(oracle_price)?;
@@ -619,6 +629,7 @@ fn reserve_and_gate_trigger(
                 base_asset_amount,
                 true,
             )?;
+
             cancel_order(
                 order_index,
                 user,
@@ -631,6 +642,7 @@ fn reserve_and_gate_trigger(
                 0,
                 false,
             )?;
+
             user.update_last_active_slot(slot);
             return Ok(None);
         }
@@ -672,6 +684,7 @@ fn pay_trigger_keeper(
         flat_filler_fee,
         slot,
     )?;
+
     Ok(())
 }
 
@@ -703,6 +716,7 @@ fn mark_slot_placed(
         let position_index = get_position_index(&user.perp_positions, market_index)?;
         user.perp_positions[position_index].arm_reduce_only_clob();
     }
+
     user.update_last_active_slot(slot);
     Ok(())
 }
@@ -770,6 +784,7 @@ pub fn handle_resolve_trigger_limit_order_v1(
                 crank_conditions: Some(crate::state::pdas::clob_crank_conditions(
                     meta.market_index,
                 )),
+
                 trigger_conditions: Some(ctx.accounts.trigger_conditions.key()),
             })
             .refs(ctx.accounts.trigger_conditions.load()?.read_sync_accounts())

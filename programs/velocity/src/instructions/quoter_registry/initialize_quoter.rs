@@ -51,6 +51,7 @@ pub struct InitializeQuoter<'info> {
             quoter_program.key().as_ref(),
             user.key().as_ref(),
         ],
+
         space = QuoterV0::SIZE,
         bump,
         payer = payer
@@ -109,6 +110,7 @@ pub fn handle_initialize_quoter(
         ErrorCode::InvalidQuoterConfig,
         "a quoter program cannot be velocity itself"
     )?;
+
     if args.quoter_type != QuoterType::Custom {
         // A book's response may name any user the transaction carries, so a
         // maker may not designate one.
@@ -120,12 +122,10 @@ pub fn handle_initialize_quoter(
         )?;
     }
     if args.quoter_type == QuoterType::Clob {
-        // A book settles for whoever it says rests on it, so the program behind
-        // a `Clob` entry is the trust root for maker identity. Pin it to the
-        // CLOB that velocity wrote. The admin can then give a market a book, but
-        // it cannot choose the code a book runs. Otherwise a warm admin could
-        // point a market's book at a program of its own, and name any loaded
-        // user as a maker at a price of its choosing.
+        // A book settles for whoever it says rests on it, so the program
+        // behind a `Clob` entry is the trust root for maker identity. Without
+        // this pin, a warm admin could point a market's book at its own
+        // program and name any loaded user as a maker at a price of its choosing.
         validate!(
             ctx.accounts.quoter_program.key() == crate::ids::clob_program::id(),
             ErrorCode::InvalidQuoterConfig,
@@ -133,6 +133,7 @@ pub fn handle_initialize_quoter(
             crate::ids::clob_program::id(),
             ctx.accounts.quoter_program.key()
         )?;
+
         // No approved entry may already name the account being designated.
         // Approval holds a registered list apart from the market's book, and an
         // entry approved before the designation was never held to it. Such an
@@ -157,13 +158,13 @@ pub fn handle_initialize_quoter(
                 args.response_account
             )?;
         }
-        // The market names its book here and nowhere else. A book settles for
-        // whoever rests on it. A market that could be pointed at a second book
-        // later would put every user a fill carries behind whoever holds the
-        // admin key. Registering the book is the designation, and it cannot be
-        // changed. The stored key is the book account itself, which is the
-        // entry's response account. Every accounts struct that names the market
-        // and the book binds them with `has_one = clob_market`.
+
+        // The market names its book here and nowhere else, and the choice
+        // cannot be changed afterward. A book settles for whoever rests on
+        // it, so pointing a market at a second book later would put every
+        // user a fill carries behind whoever holds the admin key. The stored
+        // key is the book account itself, the entry's response account, and
+        // every accounts struct binds market to book with `has_one = clob_market`.
         let mut perp_market = ctx.accounts.perp_market.load_mut()?;
         validate!(
             perp_market.clob_market == Pubkey::default()
@@ -173,6 +174,7 @@ pub fn handle_initialize_quoter(
             perp_market.market_index,
             perp_market.clob_market
         )?;
+
         perp_market.clob_market = args.response_account;
     }
     if args.quoter_type == QuoterType::Custom {
@@ -187,12 +189,14 @@ pub fn handle_initialize_quoter(
             ErrorCode::InvalidQuoterConfig,
             "quoted user is not a velocity account"
         )?;
+
         let data = info.try_borrow_data()?;
         validate!(
             data.len() >= 40 && &data[..8] == User::DISCRIMINATOR,
             ErrorCode::InvalidQuoterConfig,
             "quoted user is not a User account"
         )?;
+
         let mut authority_bytes = [0u8; 32];
         authority_bytes.copy_from_slice(&data[8..40]);
         let user_authority = Pubkey::new_from_array(authority_bytes);

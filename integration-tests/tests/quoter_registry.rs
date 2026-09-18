@@ -89,6 +89,7 @@ fn set_accounts_ix(authority: Pubkey, quoter: Pubkey, response_account: Pubkey) 
                     pubkey: response_account,
                     is_writable: true,
                 }],
+
                 quote_indexes: vec![0],
                 execute_indexes: vec![0],
             },
@@ -191,8 +192,10 @@ fn init_clob_book(svm: &mut litesvm::LiteSVM, admin: &Keypair) -> Pubkey {
             AccountMeta::new_readonly(quoter_slab_pda(0), false),
             AccountMeta::new(book, true),
         ],
+
         data,
     };
+
     send(svm, admin, ix, &[&book_kp]).unwrap();
     book
 }
@@ -229,6 +232,7 @@ fn quoter_registry_lifecycle() {
             response_account,
         )
     };
+
     assert!(send(&mut svm, &admin, init(admin.pubkey()), &[]).is_err());
     send(&mut svm, &maker, init(maker.pubkey()), &[]).unwrap();
     let entry: QuoterV0 = read_zero_copy(&svm, &quoter);
@@ -305,6 +309,7 @@ fn quoter_registry_lifecycle() {
         slot.config.response_account.to_bytes(),
         response_account.to_bytes()
     );
+
     // Approval records the slot the program was deployed at, so a reader can
     // see a later upgrade. The fixture's program-data account carries slot
     // zero, which is also what a fresh slot holds — so this pins that the
@@ -328,6 +333,7 @@ fn quoter_registry_lifecycle() {
         }
         .data(),
     };
+
     assert!(send(
         &mut svm,
         &admin,
@@ -348,6 +354,7 @@ fn quoter_registry_lifecycle() {
         read_slab_slot(&svm, 0, 1).quotes(),
         "without the slab the live copy keeps serving"
     );
+
     send(
         &mut svm,
         &maker,
@@ -359,6 +366,7 @@ fn quoter_registry_lifecycle() {
         !read_slab_slot(&svm, 0, 1).quotes(),
         "with the slab the kill lands on the live copy at once"
     );
+
     send(
         &mut svm,
         &maker,
@@ -389,12 +397,14 @@ fn quoter_registry_lifecycle() {
         }
         .data(),
     };
+
     send(&mut svm, &maker, ix, &[]).unwrap();
     let entry: QuoterV0 = read_zero_copy(&svm, &quoter);
     assert_eq!(
         entry.config.response_account.to_bytes(),
         new_response.to_bytes()
     );
+
     let slot: QuoterSlotV0 = read_slab_slot(&svm, 0, 1);
     assert_eq!(
         slot.config.response_account.to_bytes(),
@@ -535,6 +545,7 @@ fn only_the_admin_may_register_a_book() {
     for key in [&admin, &maker] {
         svm.airdrop(&key.pubkey(), 10_000_000_000).unwrap();
     }
+
     set_state(&mut svm, &admin.pubkey());
     set_perp_market(&mut svm, 0);
     let user = Pubkey::new_unique();
@@ -551,6 +562,7 @@ fn only_the_admin_may_register_a_book() {
         send(&mut svm, &maker, init(maker.pubkey()), &[]).is_err(),
         "a maker cannot type its own entry as a book"
     );
+
     send(&mut svm, &admin, init(admin.pubkey()), &[]).unwrap();
 
     // Registering the book is the market's designation of it, and the
@@ -571,6 +583,7 @@ fn only_the_admin_may_register_a_book() {
         QuoterType::Clob,
         Pubkey::new_unique(),
     );
+
     assert!(send(&mut svm, &admin, ix, &[]).is_err());
     let market: velocity::state::perp_market::PerpMarket =
         read_zero_copy(&svm, &perp_market_pda(0));
@@ -589,6 +602,7 @@ fn approval_grows_the_slab_and_revocation_shrinks_it() {
     for key in [&admin, &maker] {
         svm.airdrop(&key.pubkey(), 10_000_000_000).unwrap();
     }
+
     set_state(&mut svm, &admin.pubkey());
     set_perp_market(&mut svm, 0);
     send(&mut svm, &maker, slab_ix(maker.pubkey()), &[]).unwrap();
@@ -674,6 +688,7 @@ fn approval_grows_the_slab_and_revocation_shrinks_it() {
         read_slab_slot(&svm, 0, 1).entry.to_bytes(),
         first.to_bytes()
     );
+
     send(
         &mut svm,
         &admin,
@@ -708,6 +723,7 @@ fn a_full_slab_refuses_another_approval() {
     for key in [&admin, &maker] {
         svm.airdrop(&key.pubkey(), 10_000_000_000).unwrap();
     }
+
     set_state(&mut svm, &admin.pubkey());
     set_perp_market(&mut svm, 0);
     send(&mut svm, &maker, slab_ix(maker.pubkey()), &[]).unwrap();

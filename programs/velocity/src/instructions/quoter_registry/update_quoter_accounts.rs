@@ -56,6 +56,7 @@ pub fn handle_update_quoter_accounts(
         &ctx.accounts.authority.key(),
         ctx.accounts.state.as_ref(),
     )?;
+
     let mut quoter = ctx.accounts.quoter.load_mut()?;
     let config = &mut quoter.config;
 
@@ -72,6 +73,7 @@ pub fn handle_update_quoter_accounts(
             .map(|meta| (&meta.pubkey, meta.is_writable)),
         config.market,
     )?;
+
     for (name, indexes) in [
         ("quote", &args.quote_indexes),
         ("execute", &args.execute_indexes),
@@ -97,6 +99,7 @@ pub fn handle_update_quoter_accounts(
         slot.pubkey = meta.pubkey;
         slot.is_writable = meta.is_writable;
     }
+
     config.accounts_count = args.metas.len() as u8;
 
     config.quote_account_indexes = Default::default();

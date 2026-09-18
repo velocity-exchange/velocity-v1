@@ -21,12 +21,11 @@ pub use clob_wire::CancelAllArgsV0;
 
 /// Withdraw every order one user holds on a side, or on both, in a single call.
 ///
-/// The alternative is one `cancel_order_v0` per order. Each of those costs a
-/// velocity instruction and a CPI round trip, so a maker repricing a
-/// twenty-quote ladder pays twenty of them. This sweep is one CPI and one
-/// aggregate unwind. Return data carries per-side base totals and order counts
-/// rather than a list, which is the shape velocity's `open_bids` and
-/// `open_asks` accounting consumes.
+/// The alternative is one `cancel_order_v0` per order, each costing a
+/// velocity instruction and a CPI round trip. This sweep is one CPI and one
+/// aggregate unwind. Return data carries per-side base totals and order
+/// counts, the shape velocity's `open_bids` and `open_asks` accounting
+/// consumes.
 ///
 /// Removals are capped per call. See
 /// [`crate::state::CANCEL_ALL_ORDERS_CEILING`]. `exhaustive` in the response
@@ -61,6 +60,7 @@ pub fn handle_cancel_all_v0(
         args.force,
         &mut |order_id| record.push_id(order_id),
     )?;
+
     // The removal path takes no clock. An activation hint that the chain
     // already reached is dropped here.
     market.expire_activation_hint(clock.slot)?;

@@ -59,10 +59,8 @@ pub fn cancel_orders(
 
 /// The orders one sweep cancels.
 ///
-/// A sweep either names one market, or takes every market the user has an
-/// order in. In the second form it can leave the isolated positions alone,
-/// because an isolated position carries its own collateral and the sweep is
-/// answering for the cross-margin account.
+/// A sweep names one market, or every market the user has an order in. The
+/// latter form skips isolated positions, since each carries its own collateral.
 struct CancelScope {
     /// The one market the sweep covers, as `(type, index)`. `None` covers
     /// every market.
@@ -298,6 +296,7 @@ fn emit_cancel_record(
         None,
         None,
     )?;
+
     emit_stack::<_, { OrderActionRecord::SIZE }>(order_action_record)
 }
 
@@ -471,6 +470,7 @@ fn merge_modify_order_params_with_existing_order(
     else {
         return Ok(None);
     };
+
     let (auction_duration, auction_start_price, auction_end_price) =
         merged_auction(modify_order_params);
 

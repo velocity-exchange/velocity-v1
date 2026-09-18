@@ -188,6 +188,11 @@ pub struct CapInputs<'a, 'info> {
 }
 
 /// Budgets for every named maker this fill could put out of margin.
+///
+/// A quoter that settles for the taker is a self trade. It gets zero room, so the split
+/// never allocates depth that `QuoterSubjects::permits` refuses, and that refusal fails the
+/// whole fill. The zero is pushed before the walk, because `inputs.users` carries the loaded
+/// makers and never the taker.
 pub fn build_user_caps<'info>(
     slab: Option<&AccountLoader<'info, QuoterSlabV0>>,
     tail: &'info [AccountInfo<'info>],
@@ -198,14 +203,10 @@ pub fn build_user_caps<'info>(
     // quoters will be asked for. The other side stays unconstrained.
     let resting_side = inputs.direction.side();
 
-    // One budget goes to every book in the route, so a maker that rests on two
-    // of them would be offered the same room twice and could take it on each.
-    // Every execute runs after every quote is taken, so a budget cannot be
-    // decremented between them without the second book's execute disagreeing
-    // with its own quote. Division by the count keeps the total inside the
-    // budget. Zero books leaves every budget unbounded rather than ending the
-    // pass. The unreserved half of a cap is still owed to whichever quoters
-    // are consulted, and a route may carry those without a book at all.
+    // One budget goes to every book, so a maker resting on two could take it on each. Execute
+    // always runs after every quote, leaving no chance to decrement a budget between them.
+    // Division by the count keeps the total inside the budget. A consulted quoter with no book
+    // still owes the unreserved half of a cap.
     let books = clob_books_in_route(slab, tail)?;
 
     // Which loaded user each unreserved quoter settles for, and the slot that
@@ -214,21 +215,17 @@ pub fn build_user_caps<'info>(
     let sized_quoters = unreserved_quoters(slab, tail)?;
 
     let mut rooms = QuoterRooms::NONE;
+    if let Some(slot) = sized_quoters.slot_for(ctx.taker_key) {
+        rooms.push(slot, 0);
+    }
+
     let mut caps: Vec<QuoterUserCapV0> = Vec::with_capacity(USER_CAPS_CAPACITY);
     for (index, user_ref) in inputs.users.iter().enumerate() {
+        // The taker can be loaded as a maker too. It gets no budget of its own.
         if *user_ref == inputs.taker {
-            // A quoter that settles for the taker itself is a self trade, so
-            // it gets no room at all. The zero is recorded here because the
-            // taker takes no cap of its own. Without a room entry the slot
-            // reads as unsized, the ladder is never trimmed, and the split
-            // allocates depth the subject check then refuses. That refusal
-            // takes the whole fill, where a zero room skips the quoter and
-            // fills the rest.
-            if let Some(slot) = sized_quoters.slot_for(ctx.taker_key) {
-                rooms.push(slot, 0);
-            }
             continue;
         }
+
         let Some(key) = ctx
             .makers_and_referrer
             .0
@@ -243,33 +240,22 @@ pub fn build_user_caps<'info>(
         else {
             continue;
         };
-        // The quote cap: what this user may lose to depth a book already
-        // reserved for them. Unbounded when no book is consulted, because
-        // nothing would spend it.
-        let quote_cap = if books == 0 {
-            u64::MAX
-        } else {
-            ctx.maker_budget(
-                &key,
-                inputs.market_index,
-                resting_side,
-                inputs.size,
-                inputs.reference_price,
-                books,
-            )?
-        };
 
-        // The base cap, which two readers share, so it is the tighter of what
-        // each needs. Both measure the same thing, which is the base this user
-        // may give up on the swept side. In all but one shape only one of them
-        // binds, because the other is unbounded.
-        //
-        // A book holds reduce-only orders to the position they may reduce. The
-        // cover is `0` when the owner holds none of that position, which fails
-        // such an order closed. Otherwise the order could grow a position it
-        // exists to shrink. A reduce-only order rests only when its owner is
-        // capped here, so this is always priced, even for a maker whose quote
-        // cap does not bind.
+        // The quote cap: what this user may lose to depth a book already
+        // reserved for them.
+        let quote_cap = ctx.maker_budget(
+            &key,
+            inputs.market_index,
+            resting_side,
+            inputs.size,
+            inputs.reference_price,
+            books,
+        )?;
+
+        // The base cap is shared by two readers, so it is the tighter of what each needs. Usually only one
+        // binds, since the other is unbounded. A book covers reduce-only orders to the position they may
+        // reduce. That cover is `0` when the owner holds none of it. Without that cover, such an order could
+        // grow a position it exists to shrink. So it is always priced, even when the quote cap does not bind.
         let reduce_cover = ctx.maker_reduce_cover(&key, inputs.market_index, resting_side)?;
         // An unreserved quoter holds its own depth to what its account's
         // margin carries. This is priced only for a user that some consulted
@@ -289,6 +275,7 @@ pub fn build_user_caps<'info>(
                     inputs.reference_price,
                     inputs.margin_ratio_initial,
                 )?);
+
                 // Kept by slot as well. The quote step trims the ladder to
                 // this value and reaches it by slot, because it cannot resolve
                 // a user there.
@@ -302,19 +289,20 @@ pub fn build_user_caps<'info>(
         if quote_cap == u64::MAX && base_cap == u64::MAX {
             continue;
         }
+
         caps.push(QuoterUserCapV0 {
             index: index as u8,
             quote_cap,
             base_cap,
         });
     }
+
     Ok((QuoterUserCapsV0::from_caps(caps), rooms))
 }
 
 /// The base room of every custom quoter the route consults, by slab slot.
-///
-/// Small, and copied rather than borrowed. A route consults at most
-/// [`MAX_ROUTE_QUOTERS`] slots, and the quote step wants this after the
+/// Copied rather than borrowed, since a route consults at most
+/// [`MAX_ROUTE_QUOTERS`] slots and the quote step wants this after the
 /// account maps it was built from leave scope.
 #[derive(Clone, Copy, Debug)]
 pub struct QuoterRooms {
@@ -380,10 +368,9 @@ pub fn with_counterparty_room<'a, 'info>(
 }
 
 /// A quote whose counterparties are priced, and the slab they were priced
-/// from.
-///
-/// The slab rides along because the quote reads it next. Finding it costs a
-/// scan of the account tail, and one fill must not pay that cost twice.
+/// from. The slab rides along because the quote reads it next. Finding it
+/// costs a scan of the account tail, and one fill must not pay that cost
+/// twice.
 pub struct SizedQuote<'a, 'info> {
     pub inputs: QuoteInputs<'a>,
     /// What each named user may lose, and how much base they may give up.
@@ -391,45 +378,25 @@ pub struct SizedQuote<'a, 'info> {
     /// that binds to it cannot be given different numbers. Both read this one
     /// value.
     pub caps: QuoterUserCapsV0,
-    /// The same `base_cap` these caps carry, indexed by slab slot.
-    ///
-    /// This is not a second number. [`Self::caps`] is what a quoter is told,
-    /// and this is the copy velocity's own ladder trim reads. One pass
-    /// produces both. They are kept apart for two reasons, both about reach
-    /// rather than meaning. A slot names its quoter's user by account address,
-    /// and to resolve that to a cap's index into the user set would mean to
-    /// derive the user PDA per slot, which no quote step can afford. A cap can
-    /// also be evicted from the wire list, which costs a quoter a hint it may
-    /// ignore anyway. The trim is velocity's own bound on unreserved depth,
-    /// and it must not go missing with that hint.
+    /// The same `base_cap` these caps carry, indexed by slab slot rather than duplicated by chance.
+    /// Resolving a slot's user into a cap index would mean deriving the user PDA per slot. No quote step
+    /// can afford that. A cap can also be evicted from the wire list, but this copy keeps velocity's own
+    /// ladder-trim bound intact.
     pub rooms: QuoterRooms,
     pub slab: Option<AccountLoader<'info, QuoterSlabV0>>,
 }
 
-/// Base that `quote` of collateral funds at a market's initial margin.
-///
-/// This is how much of an unreserved quoter's room a book's claim on the same
-/// user takes away. The two claims are on one pool of collateral, and the
-/// book's claim is senior. Its depth was margin reserved when the order was
-/// placed, where the quoter's depth is computed on demand and reserved
-/// nowhere. The routing tiers order the two the same way, because a book fills
-/// ahead of a custom quoter.
-///
-/// The conversion is the margin one, not the price-gap one a quote cap is
-/// spent at. Whatever the book takes leaves the user's collateral, and what
-/// leaving collateral costs the quoter is the base that collateral would have
-/// carried.
-///
-/// The result is conservative twice over. It assumes the book spends the whole
-/// cap, which the book may not do. It also prices at the market's own margin
-/// ratio, which is the lowest a user can face, so it accounts for the most
-/// base that collateral could have carried. It returns `0` when the oracle or
-/// the ratio cannot size it, which leaves the room untouched. A fill whose
-/// oracle is not positive has already failed elsewhere.
+/// Base that `quote` of collateral funds at a market's initial margin. A book's claim on the same user is
+/// senior, and takes part of an unreserved quoter's room. The book's depth was reserved at placement, where
+/// the quoter's depth is computed on demand and reserved nowhere. What leaving collateral costs the quoter
+/// is the base that collateral would have carried. The result is conservative twice over. It assumes the
+/// book spends the whole cap and prices at the market's lowest margin ratio. It returns `0` when the oracle
+/// or the ratio cannot size it. A fill with a non-positive oracle has already failed elsewhere.
 fn base_funded_by(quote: u64, oracle_price: i64, margin_ratio_initial: u32) -> Result<u64> {
     if quote == u64::MAX || oracle_price <= 0 || margin_ratio_initial == 0 {
         return Ok(0);
     }
+
     Ok(quote
         .cast::<u128>()?
         .safe_mul(BASE_PRECISION_U64.cast()?)?
@@ -509,19 +476,21 @@ fn clob_books_in_route<'info>(
     let Some(loader) = slab else {
         return Ok(0);
     };
+
     {
         let slots = loader.slots()?;
         let consulted_book = clob_slot_index(&slots).is_some_and(|index| {
             find_account(tail, &slots[index].config.response_account).is_some()
         });
+
         Ok(consulted_book as u32)
     }
 }
 
 impl CapInputs<'_, '_> {
     /// Quote this maker may lose filling on `resting_side`. It is `0` when the
-    /// fill would refuse them outright, and `u64::MAX` when this fill cannot
-    /// reach far enough to matter.
+    /// fill would refuse them outright, and `u64::MAX` when no book is
+    /// consulted or this fill cannot reach far enough to matter.
     ///
     /// The cheap answers come first, and that order is deliberate. A margin
     /// walk leaves allocations on a heap that never reclaims, so every named
@@ -536,18 +505,22 @@ impl CapInputs<'_, '_> {
         reference_price: i64,
         books: u32,
     ) -> Result<u64> {
+        // No book spends a budget, and the divide by `books` below needs a non-zero count.
+        if books == 0 {
+            return Ok(u64::MAX);
+        }
+
         let maker = self.makers_and_referrer.get_ref(key)?;
 
-        // The most base this maker can give up, which bounds everything below.
-        // Some users rest nothing on a book: a referrer, a maker that only
-        // quotes one side, a maker that quotes the other way. This fill cannot
-        // cost them anything, and they are answered before any walk is spent on
-        // them.
+        // The most base this maker can give up, which bounds everything below. Some users rest nothing on a
+        // book. Examples are a referrer, a maker that quotes only one side, and a maker that quotes the other
+        // way. This fill cannot cost them anything, so they are answered before any walk is spent on them.
         let position = maker.get_perp_position(market_index).ok();
         let resting = clob_resting_base(&maker, market_index, resting_side)?.min(taker_size);
         if resting == 0 {
             return Ok(u64::MAX);
         }
+
         // And the most it can cost them, which is that base sold for nothing.
         let worst_loss = resting
             .cast::<i128>()?
@@ -565,6 +538,7 @@ impl CapInputs<'_, '_> {
         {
             return Ok(0);
         }
+
         // Equity above `floor + buffer` is the first budget. A floor the
         // program cannot verify, or one already breached, leaves no budget.
         let mut budget = i128::MAX;
@@ -602,14 +576,17 @@ impl CapInputs<'_, '_> {
             MarginContext::standard_with_config(margin_type_config)
                 .ignore_invalid_deposit_oracles(true),
         )?;
+
         if !calculation.meets_margin_requirement() {
             return Ok(0);
         }
+
         let free_collateral = if calculation.has_isolated_margin_calculation(market_index) {
             calculation.get_isolated_free_collateral(market_index)?
         } else {
             calculation.get_cross_free_collateral()?
         };
+
         budget = budget
             .min(free_collateral.cast::<i128>()?)
             .safe_mul(BPS_DENOM.safe_sub(BUDGET_HAIRCUT_BPS)?)?
@@ -623,6 +600,7 @@ impl CapInputs<'_, '_> {
         if budget >= worst_loss {
             return Ok(u64::MAX);
         }
+
         Ok(budget.cast()?)
     }
 
@@ -653,20 +631,16 @@ impl CapInputs<'_, '_> {
         )?)
     }
 
-    /// The most base the book may fill against this user's reduce-only orders
-    /// on `resting_side`, or `u64::MAX` when the user holds none.
-    ///
-    /// A user with no resting reduce-only order stays uncapped, so a normal
-    /// maker never spends one of the scarce cap slots. A user that holds one is
-    /// capped to the position those orders reduce. A reduce-only ask reduces a
-    /// long and a reduce-only bid reduces a short, so the cover is the position
-    /// held in the reduce direction.
-    ///
-    /// The cover is `0` when the user holds none of that position, which is the
-    /// whole guard. The book is position-blind, so without this cover a
-    /// reduce-only order rested against a flat account would grow a position it
-    /// exists to shrink. The cover reads live position on every call, so a
-    /// position closed elsewhere shrinks the cover on the next fill.
+    /// The most base the book may fill against this user's reduce-only orders on
+    /// `resting_side`, or `u64::MAX` when the user holds none.
+    /// A user with no resting reduce-only order stays uncapped, so a normal maker never spends
+    /// one of the scarce cap slots. A user that holds one is capped to the position those
+    /// orders reduce. A reduce-only ask reduces a long and a reduce-only bid reduces a short,
+    /// so the cover is the position held in the reduce direction.
+    /// The cover is `0` when the user holds none of that position, which is the whole guard.
+    /// The book is position-blind, so without this cover a reduce-only order rested against a
+    /// flat account would grow a position it exists to shrink. The cover reads live position on
+    /// every call, so a position closed elsewhere shrinks the cover on the next fill.
     fn maker_reduce_cover(
         &mut self,
         key: &Pubkey,
@@ -677,14 +651,17 @@ impl CapInputs<'_, '_> {
         let Ok(position) = maker.get_perp_position(market_index) else {
             return Ok(u64::MAX);
         };
+
         if !position.has_reduce_only_clob() {
             return Ok(u64::MAX);
         }
+
         // An ask sells, so filling it is a short fill and it reduces a long.
         let fill_direction = match resting_side {
             ClobSide::Ask => PositionDirection::Short,
             ClobSide::Bid => PositionDirection::Long,
         };
+
         Ok(crate::math::orders::reduce_only_cover(
             position.base_asset_amount,
             fill_direction,

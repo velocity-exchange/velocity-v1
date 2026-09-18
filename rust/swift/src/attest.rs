@@ -74,6 +74,7 @@ impl AttestContext {
             }
             None => log::info!(target: "attest", "no FLOW_AUTHORITY_KEYPAIR; /attest disabled"),
         }
+
         Self {
             keypair,
             hold_ms: std::env::var("ATTESTATION_HOLD_MS")
@@ -95,11 +96,13 @@ impl AttestContext {
         if self.keypair.is_none() {
             return;
         }
+
         // Opportunistic eviction keeps the map bounded without a sweeper.
         if self.held.len() > 4096 {
             let horizon = now_ms().saturating_sub(self.expiry_ms);
             self.held.retain(|_, held| held.received_ms >= horizon);
         }
+
         self.held.insert(
             uuid,
             HeldOrder {
@@ -170,6 +173,7 @@ pub async fn attest(
         )
             .into_response();
     }
+
     let expiry_at = held.received_ms.saturating_add(ctx.expiry_ms);
     if now > expiry_at {
         return err(StatusCode::GONE, "order is past the attestation window");
@@ -234,6 +238,7 @@ mod tests {
             verify_flow_attestation(&attestation, &authority, &order_sig, expiry_ts + 1).is_err(),
             "an expired attestation must not verify"
         );
+
         let stranger =
             anchor_lang::prelude::Pubkey::new_from_array(Keypair::new().pubkey().to_bytes());
         assert!(

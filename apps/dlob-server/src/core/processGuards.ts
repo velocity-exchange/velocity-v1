@@ -1,14 +1,8 @@
 import { logger } from '../utils/logger';
 
 /**
- * Node 24 defaults to `--unhandled-rejections=throw`, so one un-awaited promise
- * anywhere kills the process. A rejected Redis write during a reconnect should
- * degrade the publisher rather than stop it, so the handler logs the full
- * context and keeps running. The health check judges liveness, not the rejection
- * count.
- *
- * `uncaughtException` keeps its default handling. A synchronous throw that
- * escapes to the top level leaves unknown state, so exiting is correct there.
+ * Node 24 exits on any unawaited rejection. A Redis write dropped during a
+ * reconnect should degrade the publisher, not crash it, so this logs it.
  */
 export function installUnhandledRejectionGuard(processName: string): void {
 	process.on('unhandledRejection', (reason: unknown) => {

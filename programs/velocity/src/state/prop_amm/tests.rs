@@ -199,6 +199,7 @@ fn a_book_may_move_any_loaded_user_but_the_taker() {
         authority: protocol(),
         sub_account_id: 0,
     };
+
     assert!(!QuoterSubjects::Book.permits(&protocol_user, &key(3), &taker, &protocol()));
     // A different sub-account of the protocol authority is an ordinary user.
     assert!(QuoterSubjects::Book.permits(
@@ -245,6 +246,7 @@ fn the_cap_list_puts_no_ceiling_on_exclusions() {
         value.serialize(&mut bytes).unwrap();
         bytes
     }
+
     assert_eq!(MAX_CONSTRAINED_WIRE_USERS, 8);
     assert_eq!(USER_EXCLUSION_BITMAP_BYTES, 6);
     assert_eq!(QUOTER_USER_CAPS_BYTES, 143);
@@ -319,7 +321,7 @@ fn the_user_set_encodes_to_what_it_carries() {
     let live = [user_ref(1, 0), user_ref(2, 7)];
     let args = QuoteArgsV0 {
         taker_served_window: true,
-        consume_reservation: false,
+        include_taker_origin_reservations: false,
         users: &live,
         direction: Direction::Long,
         size: 1,
@@ -341,7 +343,7 @@ fn the_user_set_encodes_to_what_it_carries() {
 
     let empty = QuoteArgsV0 {
         taker_served_window: true,
-        consume_reservation: false,
+        include_taker_origin_reservations: false,
         users: &[],
         ..args
     };
@@ -364,6 +366,7 @@ fn the_user_set_refuses_to_truncate() {
         quoter_wire_users(full).unwrap().len(),
         MAX_QUOTER_WIRE_USERS
     );
+
     let over = (0..MAX_QUOTER_WIRE_USERS + 1).map(|i| user_ref(1, i as u16));
     assert_eq!(
         quoter_wire_users(over).map(|_| ()),
@@ -387,6 +390,7 @@ fn the_reader_agrees_with_the_specs_writer() {
                 authority,
                 sub_account_id: 3,
             },
+
             _pad: [0; 6],
         },
         quoter_spec::UserBalanceChangeV0 {
@@ -396,6 +400,7 @@ fn the_reader_agrees_with_the_specs_writer() {
                 authority: other,
                 sub_account_id: 0,
             },
+
             _pad: [0; 6],
         },
     ];
@@ -408,6 +413,7 @@ fn the_reader_agrees_with_the_specs_writer() {
             authority,
             sub_account_id: 1,
         },
+
         _pad: [0; 2],
     }];
     let completed = [
@@ -454,7 +460,7 @@ fn the_cpi_buffer_holds_exactly_what_the_args_serialize_to() {
     // The widest each leg can be: a full user set and a taker present.
     let quote = QuoteArgsV0 {
         taker_served_window: true,
-        consume_reservation: false,
+        include_taker_origin_reservations: false,
         users: &all,
         direction: Direction::Long,
         size: u64::MAX,
@@ -465,7 +471,7 @@ fn the_cpi_buffer_holds_exactly_what_the_args_serialize_to() {
     };
     let execute = ExecuteArgsV0 {
         taker_served_window: true,
-        consume_reservation: false,
+        include_taker_origin_reservations: false,
         users: &all,
         direction: Direction::Long,
         size: u64::MAX,
@@ -473,6 +479,7 @@ fn the_cpi_buffer_holds_exactly_what_the_args_serialize_to() {
         reference_price: i64::MAX,
         taker: Some(user_ref(0xFF, 0)),
     };
+
     // Eight for the anchor discriminator the caller writes ahead of the args.
     // The quote is the wider leg, by the price bound execute does not carry.
     assert_eq!(
@@ -494,7 +501,7 @@ fn the_cpi_buffer_holds_exactly_what_the_args_serialize_to() {
         for taker in [None, Some(user_ref(0xFF, 0))] {
             let args = QuoteArgsV0 {
                 taker_served_window: true,
-                consume_reservation: false,
+                include_taker_origin_reservations: false,
                 users: &all[..count],
                 taker,
                 ..quote
@@ -554,6 +561,7 @@ fn the_clob_wire_encodes_the_same_under_borsh_and_wincode() {
             reduce_only: false,
         },
     );
+
     // The absent-option arm encodes its tag differently; both are on the wire.
     agree(
         "PlaceOrderArgsV0 (no delay)",
@@ -570,6 +578,7 @@ fn the_clob_wire_encodes_the_same_under_borsh_and_wincode() {
             reduce_only: true,
         },
     );
+
     // The two `force` flags carry opposite values so the agreement covers both
     // encodings of the byte, not just the zero one.
     agree(
@@ -725,6 +734,7 @@ fn slab_space_counts_whole_slots() {
         QuoterSlabV0::space(3),
         QuoterSlabV0::SLOT_REGION_OFFSET + 3 * std::mem::size_of::<QuoterSlotV0>()
     );
+
     let book = Pubkey::new_unique();
     let mut config = QuoterConfigV0 {
         quoter_type: QuoterType::Clob,
@@ -733,6 +743,7 @@ fn slab_space_counts_whole_slots() {
         market: 7,
         ..Default::default()
     };
+
     assert!(config.validate_clob_book(7, &book).is_ok());
     assert!(config.validate_clob_book(8, &book).is_err());
     assert!(config.validate_clob_book(7, &Pubkey::new_unique()).is_err());

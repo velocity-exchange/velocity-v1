@@ -1,8 +1,5 @@
 /**
- * Parity tests for the signed-route digest. The byte cases are the ones the
- * program pins in `state::order_params::tests::a_signed_route_digests_canonically`,
- * so a divergence fails here rather than as a filler whose claimed route the
- * program rejects.
+ * Parity test: signed-route digest must match the program's implementation.
  */
 import { PublicKey } from '@solana/web3.js';
 import { assert } from 'chai';

@@ -118,13 +118,11 @@ export async function fetchLogs(
 		)
 	).flat();
 
-	// `filteredSignatures` runs oldest first. `mostRecentTx` is the forward
-	// resume cursor and stops just before the oldest failure.
-	// `PollingLogProvider` feeds it back as `untilTx`, so the next poll sees only
-	// newer signatures. `earliestTx` is the backward cursor and stops just after
-	// the newest failure. `EventSubscriber.fetchPreviousTx` feeds it back as
-	// `beforeTx` to page into older history. Either way a failed signature stays
-	// in range for a later fetch instead of being skipped for good.
+	// `filteredSignatures` runs oldest first. `mostRecentTx` stops just before
+	// the oldest failure and feeds back as `PollingLogProvider`'s `untilTx`.
+	// `earliestTx` stops just after the newest failure and feeds back as
+	// `EventSubscriber.fetchPreviousTx`'s `beforeTx`. Either way a failed
+	// signature stays in range for a later fetch instead of being skipped.
 	const erroredIndexes = filteredSignatures
 		.map((signature, index) =>
 			erroredSignatures.has(signature.signature) ? index : -1

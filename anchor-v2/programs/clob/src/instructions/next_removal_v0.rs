@@ -47,18 +47,19 @@ pub fn handle_next_removal_v0(
 
 /// The first live order past its expiry.
 ///
-/// This walks the arena rather than a side. Expiry has no ordering on the
-/// book, and keeping one would cost every placement to serve a crank. The walk
-/// reads the book's own memory, and a caller only simulates this call, so the
-/// compute cost never lands on chain.
+/// This walks the arena rather than a side, since expiry has no book
+/// ordering and keeping one would cost every placement. The walk reads the
+/// book's own memory only in simulation, so the cost never lands on chain.
 fn expired(market: &ClobMarketV0, now: i64) -> Result<OrderViewV0> {
     for index in 0..market.len() as u32 {
         let node = market.read_node(index)?;
         if !node.is_bit_flag_set(OrderBitFlag::Open) || node.max_ts == 0 || node.max_ts > now {
             continue;
         }
+
         return Ok(crate::state::order_view(&node, index));
     }
+
     Ok(OrderViewV0::NONE)
 }
 

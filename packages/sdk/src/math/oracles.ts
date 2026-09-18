@@ -37,11 +37,8 @@ import {
 import { isOperationPaused } from './exchangeStatus';
 
 /**
- * Allowance the SDK subtracts from a raw oracle delay to absorb normal
- * reporting lag. The program has no such subtraction. The allowance is a
- * wall-clock duration converted to slots at the live slot duration, so it does
- * not shrink as slots get faster. It only makes the SDK's verdict more
- * permissive than the chain's, by a constant amount of time.
+ * Allowance the SDK subtracts from a raw oracle delay. The program applies no such subtraction.
+ * Held as wall-clock time, it converts to slots at the live slot duration, so it does not shrink as slots get faster.
  */
 export const ORACLE_STALENESS_BUFFER = millis(5 * STORED_UNIT_MS);
 
@@ -97,15 +94,8 @@ export function getMaxConfidenceIntervalMultiplier(
 }
 
 /**
- * Classifies an oracle reading's validity for `market`, mirroring `oracle_validity` in
- * `programs/velocity/src/math/oracle.rs`. Checks are evaluated in severity order and the
- * first failing check wins: non-positive price, too volatile vs the oracle TWAP
- * (`tooVolatileRatio`), confidence interval too wide (scaled by
- * `getMaxConfidenceIntervalMultiplier`), stale for margin use, insufficient oracle data
- * points, then stale for AMM use (low-risk or immediate, gated by the market's
- * `oracleLowRiskSlotDelayOverride`/`oracleSlotDelayOverride`). Returns `OracleValidity.Valid`
- * only if none of these trip. Callers typically gate on the returned enum via
- * `isOracleValidForAction`-style helpers rather than comparing directly.
+ * Mirrors `oracle_validity` in `programs/velocity/src/math/oracle.rs`.
+ * Checks run in severity order. The first failing check wins, else the result is `OracleValidity.Valid`.
  * @param market Perp market providing contract tier, oracle source, and stale-slot overrides.
  * @param oraclePriceData Oracle reading to validate (`price`/`confidence` PRICE_PRECISION 1e6, `slot`).
  * @param oracleGuardRails Protocol-wide validity thresholds (`state.oracleGuardRails`).
@@ -237,12 +227,8 @@ export function getOracleValidity(
 }
 
 /**
- * Simplified, AMM-fill-oriented validity check: `true` only if the oracle has sufficient
- * data points, is not stale (vs `slotsBeforeStaleForAmm`), has a positive price, isn't too
- * volatile vs the market's oracle TWAP, and its confidence interval isn't too wide. Unlike
- * `getOracleValidity` this does not distinguish "stale for margin" or "low risk" tiers — it
- * is a single valid/invalid gate specifically for whether the AMM may fill against this
- * price.
+ * Simplified, AMM-fill-oriented validity check: true only if the oracle has data, is not stale, has a positive price, is not too volatile, and its confidence interval is not too wide.
+ * Unlike `getOracleValidity` this does not distinguish severity tiers. It is a single valid/invalid gate for whether the AMM may fill against this price.
  * @param market Perp market providing the oracle TWAP and contract tier for the confidence multiplier.
  * @param oraclePriceData Oracle reading to validate (`price`/`confidence` PRICE_PRECISION 1e6).
  * @param oracleGuardRails Protocol-wide validity thresholds.
@@ -346,12 +332,8 @@ export function isMarkOracleTooDivergent(
 }
 
 /**
- * Predicts whether the program blocks a funding update. This mirrors
- * `math::oracle::block_operation`. Funding accepts a stale reading and a
- * reading with too few data points. It rejects a non-positive, too volatile, or
- * too uncertain price. It also blocks on mark to TWAP divergence, on a paused
- * market, and on an AMM that has not updated for more than 40 percent of the
- * funding period.
+ * Predicts whether the program blocks a funding update, mirroring `math::oracle::block_operation`.
+ * Funding tolerates a stale or data-thin reading but rejects a non-positive, too volatile, or too uncertain price, plus mark-to-TWAP divergence, a paused market, or an AMM stale beyond 40 percent of the funding period.
  */
 export function blockOperation(
 	market: PerpMarketAccount,
@@ -608,9 +590,8 @@ export function getMultipleBetweenOracleSources(
 
 /**
  * Per-market multiplier applied to `confidenceIntervalMaxSize` for spot oracle
- * validity. This mirrors `SpotMarket::get_max_confidence_interval_multiplier`.
- * The multiplier is 1 for Collateral and Protected, 5 for Cross, and 50 for
- * Isolated and Unlisted.
+ * validity. Mirrors `SpotMarket::get_max_confidence_interval_multiplier`: 1 for
+ * Collateral and Protected, 5 for Cross, 50 for Isolated and Unlisted.
  * @param spotMarket The spot market whose `assetTier` selects the multiplier.
  * @returns The multiplier, as a unitless BN.
  */
@@ -630,13 +611,8 @@ export function getSpotMaxConfidenceIntervalMultiplier(
 }
 
 /**
- * Classifies a spot oracle reading's validity for the checks `MarginCalc`
- * depends on. This mirrors the spot-market parameters of `oracle_validity` in
- * `programs/velocity/src/math/oracle.rs`. The TWAP comes from the spot market's
- * `historicalOracleData`, the confidence multiplier comes from the asset tier,
- * and a stablecoin source tolerates three times the margin staleness. Only the
- * four severities `MarginCalc` reads are distinguished. A reading that passes
- * all four reports `Valid`.
+ * Mirrors the spot-market parameters of `oracle_validity` in `programs/velocity/src/math/oracle.rs`. A stablecoin source tolerates three times the margin staleness.
+ * Only the four severities `MarginCalc` reads are distinguished. A reading that passes all four reports `Valid`.
  * @param spotMarket The spot market that provides the oracle TWAP, the asset tier and the oracle source.
  * @param oraclePriceData The oracle reading to validate. `price` and `confidence` are in PRICE_PRECISION 1e6.
  * @param oracleGuardRails Protocol-wide validity thresholds, from `state.oracleGuardRails`.
@@ -702,12 +678,8 @@ export function getSpotOracleValidity(
 }
 
 /**
- * True when `validity` is acceptable for `VelocityAction::MarginCalc`. This
- * mirrors `is_oracle_valid_for_action`. It rejects `NonPositive`,
- * `TooVolatile`, `TooUncertain` and `StaleForMargin`. Every other
- * classification passes.
- * @param validity The classification from `getOracleValidity` or `getSpotOracleValidity`.
- * @returns Whether the equity-floor metric can trust this oracle.
+ * True when `validity` is acceptable for `VelocityAction::MarginCalc`, mirroring `is_oracle_valid_for_action`.
+ * Rejects `NonPositive`, `TooVolatile`, `TooUncertain` and `StaleForMargin`. Every other classification passes.
  */
 export function isOracleValidForMarginCalc(validity: OracleValidity): boolean {
 	return !(

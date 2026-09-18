@@ -26,12 +26,10 @@ pub struct PlaceOrderResult {
     pub isolated_market_index: Option<u16>,
 }
 
-/// A perp `Order` built from its params, ready to place or to route detached.
-///
-/// [`build_perp_order`] returns this. It carries the constructed order plus
-/// the facts a caller needs to reserve, margin-check, and record it. It holds
-/// no slot and touches no open-order counter, so an ephemeral taker can route
-/// it without ever entering `user.orders`.
+/// A perp `Order` built from its params, ready to place or route detached.
+/// [`build_perp_order`] returns this. It holds no slot and touches no
+/// open-order counter, so an ephemeral taker can route it without ever
+/// entering `user.orders`.
 pub struct BuiltPerpOrder {
     pub order: Order,
     pub position_index: usize,
@@ -161,11 +159,9 @@ pub fn build_perp_order(
 }
 
 /// Report a placement that stops before it produces an order.
-///
-/// `add_builder_order` writes the builder-order row before the order is built,
-/// so a placement that returns without an order must free the row. A row left
-/// behind is keyed to an order id, and a later order that reuses that id would
-/// find the row.
+/// `add_builder_order` writes the builder-order row before the order is
+/// built, so a placement that returns without one must free the row, keyed
+/// to an order id that a later order could reuse and find.
 fn skip_placement<T>(
     rev_share_order: &mut Option<&mut RevenueShareOrder>,
 ) -> VelocityResult<Option<T>> {
@@ -353,6 +349,7 @@ fn new_order_bit_flags(
         options.is_signed_msg_order(),
         OrderBitFlag::SignedMessage,
     );
+
     bit_flags = set_order_bit_flag(
         bit_flags,
         params.is_trigger_order() && reduce_only,
@@ -398,6 +395,7 @@ fn assemble_perp_order(
             &market.amm,
             market.order_tick_size,
         )?,
+
         existing_position_direction: resolved.existing_position_direction,
         base_asset_amount: resolved.base_asset_amount,
         base_asset_amount_filled: 0,
@@ -409,6 +407,7 @@ fn assemble_perp_order(
             market.order_tick_size,
             params.direction,
         )?,
+
         trigger_condition: params.trigger_condition,
         post_only: params.post_only != PostOnlyParam::None,
         oracle_price_offset: params.oracle_price_offset.unwrap_or(0),
@@ -443,6 +442,7 @@ fn validate_built_order(
         Err(err) => Err(err),
     }
 }
+
 pub fn place_perp_order(
     state: &State,
     user: &mut User,
@@ -470,6 +470,7 @@ pub fn place_perp_order(
     else {
         return Ok(PlaceOrderResult::default());
     };
+
     let BuiltPerpOrder {
         order: new_order,
         position_index,
@@ -480,8 +481,6 @@ pub fn place_perp_order(
     commit_order_to_slot(user, new_order_index, &new_order, position_index)?;
     options.update_risk_increasing(risk_increasing);
 
-    // if isolated position, the isolated market is the scope that must meet
-    // initial margin for a risk-increasing order
     let isolated_market_index = user.perp_positions[position_index]
         .is_isolated()
         .then_some(market_index);
@@ -489,8 +488,7 @@ pub fn place_perp_order(
     // Single-order placement checks margin here. Bulk placement passes
     // `enforce_margin_check == false` and instead runs one accumulated check
     // after the whole batch (see `place_orders`), so an early risk-increasing
-    // order can't be admitted under a weaker check by a later no-op/reducing
-    // order.
+    // order cannot be admitted under a weaker check by a later no-op order.
     if options.enforce_margin_check && !options.is_liquidation() {
         meets_place_order_margin_requirement(
             user,
@@ -666,6 +664,7 @@ fn emit_place_records(
         None,
         None,
     )?;
+
     emit_stack::<_, { OrderActionRecord::SIZE }>(order_action_record)?;
 
     emit_stack::<_, { OrderRecord::SIZE }>(OrderRecord {
@@ -700,6 +699,7 @@ pub fn check_prospective_order_margin(
         base_asset_amount,
         update_open_bids_and_asks,
     )?;
+
     // The requirement carries a flat term per open order, so the model
     // counts the prospective one too.
     let open_orders_before = user.perp_positions[position_index].open_orders;
@@ -713,6 +713,7 @@ pub fn check_prospective_order_margin(
         base_asset_amount,
         update_open_bids_and_asks,
     )?;
+
     checked
 }
 
@@ -757,6 +758,7 @@ pub fn create_ephemeral_perp_order(
     else {
         return Ok(None);
     };
+
     let BuiltPerpOrder {
         order,
         position_index,

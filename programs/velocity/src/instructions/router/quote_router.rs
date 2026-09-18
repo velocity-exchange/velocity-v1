@@ -83,22 +83,15 @@ pub struct QuoteRouterArgs {
     /// can get. A resting source is truncated by it. The vAMM and the
     /// PropAMMs price against it.
     pub size: u64,
-    /// Whether the flow this view prices for served a protection window. The
-    /// window is the swift hold or the book's activation delay. The real route
-    /// asks the same question. A book with an activation delay quotes no depth
-    /// to unprotected flow, and a protected-flow quoter refuses it. The
-    /// midpoint's `require_attested_flow` is such a quoter. A view for
-    /// unprotected flow must show the same books the fill would get. Swift and
-    /// the book publisher price protected flow and pass `true`.
+    /// Whether the flow this view prices for served a protection window: the
+    /// swift hold or the book's activation delay. A protected-flow quoter (e.g.
+    /// midpoint's `require_attested_flow`) hides depth from unprotected flow, so
+    /// the view must match the real route. Swift and the book publisher pass `true`.
     pub taker_served_window: bool,
-    /// Quote the vAMM into the buffer as well.
-    ///
-    /// A market with more quoters than one view can carry is read in several
-    /// passes. The vAMM prices against every other book in the same call, so a
-    /// pass that holds a subset would shade the vAMM against a subset, and each
-    /// pass would return a different vAMM. Exactly one pass sets this flag, and
-    /// the caller merges the vAMM from that pass. The passes that clear it also
-    /// stop paying to compute a ladder they would discard.
+    /// Quote the vAMM into the buffer as well. A market with more quoters than
+    /// one view can carry is read in several passes, and the vAMM shades against
+    /// every book in the call, so only one pass sets this flag; the caller merges
+    /// the vAMM from that pass, while the rest skip computing a discarded ladder.
     pub include_vamm: bool,
 }
 
@@ -115,6 +108,7 @@ pub fn handle_quote_router<'c: 'info, 'info>(
         &ctx.accounts.to_account_infos(),
         &[ctx.accounts.quote_buffer.key()],
     )?;
+
     let state = ctx.accounts.state.load()?;
     let market_index = args.market_index;
 
@@ -156,6 +150,7 @@ pub fn handle_quote_router<'c: 'info, 'info>(
         let oracle_pd = *maps.oracle_map.get_price_data(&market.oracle_id())?;
         (oracle_pd, market.amm)
     };
+
     quote_vamm(
         &args,
         &maps.perp_market_map,
@@ -172,6 +167,7 @@ pub fn handle_quote_router<'c: 'info, 'info>(
         market_index,
         args.size
     );
+
     Ok(())
 }
 
@@ -193,6 +189,7 @@ fn find_market_slab<'info>(
         if !is_slab {
             continue;
         }
+
         let loader = AccountLoader::<QuoterSlabV0>::try_from(info)?;
         validate!(
             loader.load()?.market == market_index,
@@ -202,8 +199,10 @@ fn find_market_slab<'info>(
             loader.load()?.market,
             market_index
         )?;
+
         return Ok(Some(loader));
     }
+
     Ok(None)
 }
 
@@ -238,6 +237,7 @@ fn quote_one_slot<'info>(
     if !slot.quotes() {
         return Ok(None);
     }
+
     let entry_key = slot.entry;
     // Makers take priority, as the fill's route applies it. A book with an
     // activation delay quotes no depth to unprotected flow, so this view must
@@ -248,6 +248,7 @@ fn quote_one_slot<'info>(
     {
         return Ok(None);
     }
+
     let located = slot
         .config
         .quote_in_place(
@@ -269,7 +270,7 @@ fn quote_one_slot<'info>(
                 // the depth a bound would cut.
                 limit_price: 0,
                 taker_served_window: args.taker_served_window,
-                consume_reservation: false,
+                include_taker_origin_reservations: false,
             },
             slab_loader,
             accounts,
@@ -302,14 +303,12 @@ fn quote_externals<'info>(
     maps: &mut AccountMaps,
     buffer: &mut RouterQuoteBufferV0,
 ) -> Result<()> {
-    // A transaction that carries no slab consults no quoter.
     let Some(slab_loader) = slab_loader else {
         return Ok(());
     };
     let market_index = args.market_index;
     let taker_direction = args.direction.to_position_direction();
-    // One set of CPI buffers for every entry this view quotes.
-    let mut scratch = crate::state::prop_amm::QuoterCpiScratch::new();
+    let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
     let consulted: Vec<usize> = {
         let slots = slab_loader.slots()?;
         occupied_slots(&slots)
@@ -317,11 +316,14 @@ fn quote_externals<'info>(
             .map(|(index, _)| index)
             .collect()
     };
+
     for slot_index in consulted {
-        let Some(quoted) = quote_one_slot(args, slab_loader, slot_index, accounts, &mut scratch)?
+        let Some(quoted) =
+            quote_one_slot(args, slab_loader, slot_index, accounts, &mut cpi_scratch)?
         else {
             continue;
         };
+
         let QuotedSlot {
             priority,
             quoter_type,
@@ -330,20 +332,11 @@ fn quote_externals<'info>(
             located,
         } = quoted;
 
-        // A Custom quoter's depth is never margin reserved, so it is clamped
-        // to what its user can support. CLOB depth was gated at placement, so
-        // it stands as quoted here. The cap is taken before the response is
-        // borrowed, because it reads the maps.
-        //
-        // The fill cuts a CLOB book once more, at the first order resting under
-        // a maker whose equity floor it cannot verify. See
-        // `clob_unverifiable_floor_depth`. This view does not reproduce that
-        // cut, because it would have to load every resting maker's `User`, and
-        // this instruction carries only the Custom quoters' accounts. The
-        // divergence is bounded. A floor is admin-set, and it binds only while
-        // one of that maker's oracles is invalid. The view errs by showing
-        // depth the fill routes elsewhere, not by hiding depth that exists. To
-        // close the divergence, load the makers.
+        // A Custom quoter's depth is clamped to what its user can support; CLOB
+        // depth stands as quoted, already margin-gated at placement, and the cap
+        // is taken before the response is borrowed since borrowing reads the maps.
+        // The fill applies one further, bounded CLOB cut this view skips, at a
+        // maker with an unverifiable floor (`clob_unverifiable_floor_depth`).
         let cap = if quoter_type == QuoterType::Custom {
             margin_cap(
                 makers,
@@ -369,6 +362,7 @@ fn quote_externals<'info>(
                 response.levels,
                 cap,
             )?;
+
             buffer
                 .levels_for(buffer.source_count as usize - 1)
                 .iter()
@@ -376,16 +370,12 @@ fn quote_externals<'info>(
                 .fold(0u64, u64::saturating_add)
         };
 
-        // Who the ladder stands on. A quoter that holds other people's orders
-        // says so itself, through the optional third leg. Every other quoter
-        // fills from the one account the registry names, so its rows say that
-        // instead. Either way a reader gets one shape, and never has to decode
-        // a quoter's account from outside.
         let rows_wanted = buffer.rows_remaining();
         if rows_wanted > 0 {
-            // A Custom entry is bound to the user it registered for. A book is
-            // not bound to anyone velocity can name. Settlement makes the same
-            // split.
+            // Who the ladder stands on: a Custom entry is bound to the user it
+            // registered for, matching settlement's split. A quoter holding
+            // other people's orders says so itself through the optional third
+            // leg; every other quoter's rows point at the registry's one account.
             let bound_to = (quoter_type == QuoterType::Custom)
                 .then(|| user_ref(makers, &quoter_user))
                 .flatten();
@@ -398,15 +388,17 @@ fn quote_externals<'info>(
                 rows_wanted,
                 &entry_key,
                 accounts,
-                &mut scratch,
+                &mut cpi_scratch,
                 bound_to,
                 buffer,
             )?;
+
             if !described {
                 attribute_to_user(makers, &quoter_user, admitted, buffer)?;
             }
         }
     }
+
     Ok(())
 }
 
@@ -429,6 +421,7 @@ fn quote_vamm(
     if !args.include_vamm {
         return Ok(());
     }
+
     let market_index = args.market_index;
     {
         // Quoted off a copy. `AmmQuoter::refresh` projects the curve, and this
@@ -444,6 +437,7 @@ fn quote_vamm(
                 state.slot_clock(),
             )?
         };
+
         // Every book quoted above is already in the buffer, in fill order, so
         // the rivals are views onto it rather than copies of it. The two level
         // types are the same 16 bytes. One is the borsh wire form and one is
@@ -468,6 +462,7 @@ fn quote_vamm(
                 None,
             )?
         };
+
         buffer.push(
             QuotedSourceKind::Vamm,
             perp_market_map.get_ref(&market_index)?.pubkey,
@@ -475,6 +470,7 @@ fn quote_vamm(
             &amm_levels,
         )?;
     }
+
     Ok(())
 }
 
@@ -506,7 +502,7 @@ fn quoter_rows<'info>(
                 direction,
                 size: admitted,
                 max_rows: rows_wanted.min(u16::MAX as usize) as u16,
-                consume_reservation: false,
+                include_taker_origin_reservations: false,
             },
             slab_loader,
             accounts,
@@ -524,6 +520,7 @@ fn quoter_rows<'info>(
         if remaining == 0 {
             break;
         }
+
         // A quoter that fills from one account may only describe that account.
         // Settlement refuses anything else, so a row that names a stranger is a
         // quoter that asks the caller to carry an account it could never move.
@@ -539,6 +536,7 @@ fn quoter_rows<'info>(
                 row.user.sub_account_id
             )?;
         }
+
         let size = row.size.min(remaining);
         if !buffer.push_row(QuotedRowV0 {
             price: row.price,
@@ -553,8 +551,10 @@ fn quoter_rows<'info>(
         })? {
             break;
         }
+
         remaining -= size;
     }
+
     Ok(true)
 }
 
@@ -581,6 +581,7 @@ fn attribute_to_user(
     if admitted == 0 {
         return Ok(());
     }
+
     let Some(user) = user_ref(makers, user) else {
         return Ok(());
     };
@@ -607,6 +608,7 @@ fn attribute_to_user(
             break;
         }
     }
+
     Ok(())
 }
 
@@ -655,6 +657,7 @@ fn margin_cap(
                 // Every slot is taken, so a fill could not open one either.
                 return Ok(0);
             };
+
             // `add_new_position` carries the margin ratio over only when the
             // vacant slot already names this market, which is a position its
             // owner closed and may reopen.
@@ -664,11 +667,13 @@ fn margin_cap(
             } else {
                 0
             };
+
             prospective = crate::state::user::PerpPosition {
                 market_index,
                 max_margin_ratio,
                 ..crate::state::user::PerpPosition::default()
             };
+
             &prospective
         }
     };

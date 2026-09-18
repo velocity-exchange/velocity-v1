@@ -155,6 +155,7 @@ describe('market orders', () => {
 			velocityClient.getUserAccount(),
 			marketIndex
 		);
+
 		svmContextWrapper.printTxLogs(txSig);
 
 		console.log(
@@ -167,6 +168,7 @@ describe('market orders', () => {
 				.getUserAccount()
 				.perpPositions[0].quoteBreakEvenAmount.toString()
 		);
+
 		assert(velocityClient.getQuoteAssetTokenAmount().eq(new BN(9980751)));
 		assert(
 			velocityClient

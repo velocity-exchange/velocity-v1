@@ -28,17 +28,6 @@ import {
 import dotenv from 'dotenv';
 dotenv.config();
 
-// On-chain account extension. A program upgrade that appends fields to a
-// zero-copy struct leaves an existing account at the old, smaller size.
-//
-// `extend_account_devnet` simulates the post-upgrade grow and takes an
-// arbitrary target size. `extend_account` is the real migration crank. It
-// derives the target from the compiled-in struct and does nothing to an account
-// already at that size.
-//
-// A client and the program must both keep working against a grown account. A
-// decode reads only the known prefix, and the program's loaders slice exactly
-// `size_of` bytes.
 describe('account extension', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
 	let svmContextWrapper: LiteSVMContextWrapper;
@@ -151,6 +140,7 @@ describe('account extension', () => {
 		expect(
 			after.data.subarray(0, originalUserAccountSize).equals(before.data)
 		).to.equal(true);
+
 		// The payer covered rent for the added bytes. The runtime rejects the
 		// resize transaction if the account drops below rent exemption.
 		expect(after.lamports).to.be.gt(before.lamports);

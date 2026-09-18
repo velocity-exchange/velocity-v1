@@ -215,6 +215,7 @@ describe('stop limit', () => {
 			svmContextWrapper.provider.wallet.publicKey,
 			1000 * 10 ** 6
 		);
+
 		await svmContextWrapper.sendTransaction(
 			new Transaction().add(ix, mintToIx)
 		);

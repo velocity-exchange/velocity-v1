@@ -250,6 +250,7 @@ describe('amm spread: market order', () => {
 			firstPosition.quoteBreakEvenAmount.toString(),
 			expectedQuoteAssetAmount.toString()
 		);
+
 		assert(firstPosition.quoteEntryAmount.eq(new BN(-1000256)));
 		assert(firstPosition.quoteBreakEvenAmount.eq(new BN(-1000657)));
 
@@ -514,6 +515,7 @@ describe('amm spread: market order', () => {
 			velocityClientUser.getUserAccount(),
 			order
 		);
+
 		svmContextWrapper.printTxLogs(txSig);
 
 		await velocityClient.fetchAccounts();
@@ -587,6 +589,7 @@ describe('amm spread: market order', () => {
 			velocityClientUser.getUserAccount(),
 			order
 		);
+
 		svmContextWrapper.printTxLogs(txSig);
 
 		await velocityClient.fetchAccounts();

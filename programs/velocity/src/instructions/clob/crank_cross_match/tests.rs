@@ -54,6 +54,7 @@ fn the_prefix_is_the_crossed_depth_and_the_makers_it_touches() {
         &[maker(1, 101 * PRICE, UNIT), maker(2, 98 * PRICE, UNIT)],
         &[maker(3, 99 * PRICE, UNIT / 2)],
     );
+
     // Only the 101 bid crosses the 99 ask, and only for the ask's half unit.
     assert_eq!(cross.size, UNIT / 2);
     assert_eq!(cross.buy_quote, 49_500_000);
@@ -87,6 +88,7 @@ fn a_crossed_taker_remainder_is_not_offered_to_the_arb_crank() {
         ],
         &[maker(3, 99 * PRICE, UNIT)],
     );
+
     assert_eq!(cross.size, UNIT / 2);
     assert_eq!(cross.makers, vec![user(2), user(3)]);
 
@@ -100,6 +102,7 @@ fn a_crossed_taker_remainder_is_not_offered_to_the_arb_crank() {
         ],
         &[maker(3, 99 * PRICE, UNIT)],
     );
+
     assert_eq!(cross.size, UNIT / 2);
     assert_eq!(cross.makers, vec![user(2), user(3)]);
 

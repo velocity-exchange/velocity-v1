@@ -6,10 +6,12 @@ fn order(id: u64, price: u64, size: u64, owner: u8, taker_origin: bool) -> Resti
             node_index: id as u32,
             order_id: id,
         },
+
         user: ClobUserRefV0 {
             authority: Pubkey::new_from_array([owner; 32]),
             sub_account_id: 0,
         },
+
         price,
         base_asset_amount: size,
         taker_origin,
@@ -98,6 +100,7 @@ fn a_taker_cross_outranks_a_maker_cross() {
         CrossKind::BidAggresses,
         "the remainder's improvement is settled before any arbitrage"
     );
+
     assert!(crosses
         .iter()
         .any(|cross| cross.kind == CrossKind::ProtocolMiddles));

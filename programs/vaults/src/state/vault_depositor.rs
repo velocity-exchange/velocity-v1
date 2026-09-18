@@ -304,6 +304,7 @@ impl VaultDepositor {
             protocol_fee_payment,
             protocol_fee_shares,
         } = vault.apply_fee(vault_protocol, fee_update, vault_equity, now)?;
+
         // apply_fee can mint fee shares that push total_shares above equity and cause a second
         // vault rebase. That rebase raises vault.shares_base and does not re-sync this depositor.
         // Run the depositor rebase again, so the base-checked calls below, apply_profit_share
@@ -414,6 +415,7 @@ impl VaultDepositor {
             protocol_fee_payment,
             protocol_fee_shares,
         } = vault.apply_fee(vault_protocol, fee_update, vault_equity, now)?;
+
         // apply_fee can cause a further vault rebase. Re-sync this depositor and its pending
         // request (OtterSec #107). Fold any extra divisor into rebase_divisor, so a Shares-unit
         // request still
@@ -531,6 +533,7 @@ impl VaultDepositor {
             protocol_fee_payment,
             protocol_fee_shares,
         } = vault.apply_fee(vault_protocol, fee_update, vault_equity, now)?;
+
         // Re-sync the depositor and its pending request, in case apply_fee raised the vault
         // base (OtterSec #107). calculate_shares_lost and decrease_vault_shares then work in the
         // current base.
@@ -1894,6 +1897,7 @@ mod vault_v1_tests {
         assert_eq!(vd1.get_vault_shares_base(), vault.shares_base);
         assert_eq!(vd2.get_vault_shares_base(), vault.shares_base);
     }
+
     /// A Token-unit share transfer must move the cost basis by the value of the shares that
     /// transfer, not by the caller's raw token request (OtterSec #138).
     ///

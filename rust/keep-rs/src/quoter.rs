@@ -459,6 +459,7 @@ impl QuoterBot {
                 "market {}: no approved book on the quoter slab, skipping quote",
                 snap.market_index
             );
+
             return Ok(());
         };
 
@@ -471,6 +472,7 @@ impl QuoterBot {
             (false, true) => Some(ClobCancelSides::Asks),
             (false, false) => None,
         };
+
         if let Some(sides) = replace_sides {
             tx = tx.cancel_clob_orders(clob, sides);
         }
@@ -514,6 +516,7 @@ impl QuoterBot {
         if orders.is_empty() && replace_sides.is_none() {
             return Ok(());
         }
+
         // Each quote rests through its own maker instruction. The endpoint
         // takes one order, because a maker order goes straight to the book
         // rather than into a batch of slots.

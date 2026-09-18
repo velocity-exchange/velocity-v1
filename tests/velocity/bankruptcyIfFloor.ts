@@ -34,17 +34,6 @@ import {
 	setFeedPriceNoProgram,
 } from './testHelpers';
 
-// Regression for the pending-IF-fee sweep front-run. A permissionless
-// sweepPerpMarketFees sent between a bankruptcy and its resolution must not
-// clear the pending IF fee that resolvePerpBankruptcy consumes as its
-// first-loss tranche. The latch books the debt in the market's
-// `pendingBankruptcyClaims`, and the sweep's IF drain then withholds the whole
-// counter until the debt resolves.
-//
-// The tranche survives the front-run with the standing `bankruptcyIfFloorPct`
-// turned off. Revenue settlement is also not due here, because the quote
-// market's revenue_settle_period is 0, and that no longer turns the sweep into
-// extra socialized loss.
 describe('bankruptcy IF-fee floor', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
 

@@ -119,8 +119,8 @@ rather than merely be withheld from it.
 A taker-origin order claims the base it crosses, best price first. Claimed base is withheld from
 `quote_v0`, `quote_l3_v0`, `execute_v0` and `next_cross_v0`, which is the whole matchable set,
 for every caller except the crank that owes the taker its improvement. That crank asks for it with
-`consume_reservation`. A taker sweeping the side sees the unclaimed remainder of each order and
-fills that.
+`include_taker_origin_reservations`. A taker sweeping the side sees the unclaimed remainder of each
+order and fills that.
 
 Reservations are ordered, and the order is exact. Every taker-origin order on a side is threaded
 onto its own list in rest order, and reservations are allocated down that list, so the remainder
@@ -147,9 +147,10 @@ can match it, so no improvement is within reach, and claiming it would cost the 
 for its whole auction window, which is exactly when it is resting there.
 
 The counterparty is never skipped, only claimed. Consuming it is the fill velocity's cross
-resolution runs. It takes the counterparty's side with `execute_v0` under `consume_reservation`,
-which is an ordinary fill at its own price, settles the pair internally at the counterparty's
-price, and reports the settled base back with `fill_v0` so the remainder shrinks in place.
+resolution runs. It takes the counterparty's side with `execute_v0` under
+`include_taker_origin_reservations`, which is an ordinary fill at its own price, settles the pair
+internally at the counterparty's price, and reports the settled base back with `fill_v0` so the
+remainder shrinks in place.
 
 **A reservation outranks price, including a better-priced order on the claimant's own side.** A
 remainder bidding 101 claims the 99 ask it crosses, and a maker that then bids 102 takes nothing
@@ -401,7 +402,7 @@ took first.
   reservation lapses. There is no separate `TakerOriginGate`. Asking whether a remainder is
   crossed and asking whether cover is claimed are the same computation, so one function answers
   both rather than a gate sitting beside a reservation.
-- `QuoteArgsV0::consume_reservation` / `ExecuteArgsV0::consume_reservation`, which
+- `QuoteArgsV0::include_taker_origin_reservations` and the same field on `ExecuteArgsV0`, which
   `crank_taker_origin_cross` sets to reach claimed depth. The book trusts the flag the way it
   trusts `users`, `caps` and `taker_served_window`: velocity signs the CPI and settles the fills.
 - No stored reservation. The claim is a function of the list and the two prices, recomputed by

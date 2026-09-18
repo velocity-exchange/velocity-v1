@@ -97,10 +97,12 @@ impl AttestClient {
                     .map_err(|e| format!("attest response undecodable: {e}"))?;
                 return self.decode(ok);
             }
+
             let err: AttestErr = response.json().await.unwrap_or(AttestErr {
                 error: status.to_string(),
                 retry_after_ms: None,
             });
+
             // 425: the hold window hasn't run — wait it out and retry.
             if status.as_u16() == 425 && attempt + 1 < MAX_ATTEMPTS {
                 let wait =
@@ -109,8 +111,10 @@ impl AttestClient {
                 tokio::time::sleep(wait).await;
                 continue;
             }
+
             return Err(format!("attest refused ({status}): {}", err.error));
         }
+
         Err("attest retries exhausted".into())
     }
 
@@ -127,6 +131,7 @@ impl AttestClient {
                 self.flow_authority
             ));
         }
+
         let signature: [u8; 64] = base64::engine::general_purpose::STANDARD
             .decode(&ok.signature)
             .map_err(|e| format!("attest signature not base64: {e}"))?

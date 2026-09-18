@@ -94,24 +94,28 @@ impl Metrics {
                 "Simulations a quoter took part in",
                 &QUOTER_LABELS,
             ),
+
             sim_failures: counter(
                 registry,
                 "quoter_sim_failures_total",
                 "Simulations a quoter was proven to have broken",
                 &["quoter", "market", "reason"],
             ),
+
             execute_attempts: counter(
                 registry,
                 "quoter_execute_attempts_total",
                 "Execute legs a quoter took part in",
                 &QUOTER_LABELS,
             ),
+
             execute_failures: counter(
                 registry,
                 "quoter_execute_failures_total",
                 "Execute legs a quoter was proven to have broken",
                 &["quoter", "market", "reason"],
             ),
+
             unattributed: counter(
                 registry,
                 "quoter_sim_failures_unattributed_total",
@@ -119,18 +123,21 @@ impl Metrics {
                  This measures the router's attribution coverage, not a maker",
                 &["reason"],
             ),
+
             attribution_method: counter(
                 registry,
                 "quoter_attribution_method_total",
                 "How a failure was attributed to a quoter",
                 &["method"],
             ),
+
             transitions: counter(
                 registry,
                 "quoter_state_transitions_total",
                 "Admission changes, by cause and who made them",
                 &["quoter", "to", "cause", "actor"],
             ),
+
             cu_consumed: histogram(
                 registry,
                 "quoter_sim_cu_consumed",
@@ -146,6 +153,7 @@ impl Metrics {
                     1_400_000.0,
                 ],
             ),
+
             slip_bps: histogram(
                 registry,
                 "quoter_route_slip_bps",
@@ -153,41 +161,49 @@ impl Metrics {
                  measured from the price the router published",
                 vec![-50.0, -10.0, -2.0, 0.0, 2.0, 10.0, 25.0, 50.0, 100.0],
             ),
+
             health_state: int_gauge(
                 registry,
                 "quoter_health_state",
                 "0 admit, 1 throttled, 2 probation, 3 quarantined, 4 denied",
             ),
+
             pinned: int_gauge(
                 registry,
                 "quoter_pinned",
                 "1 while an operator override is in force",
             ),
+
             sim_failure_rate: gauge(
                 registry,
                 "quoter_sim_failure_rate",
                 "Decayed share of simulations this quoter broke",
             ),
+
             execute_failure_rate: gauge(
                 registry,
                 "quoter_execute_failure_rate",
                 "Decayed share of execute legs this quoter broke",
             ),
+
             clamp_ratio: gauge(
                 registry,
                 "quoter_depth_clamped_ratio",
                 "Decayed share of quoted depth the router had to cut before quoting it",
             ),
+
             fill_shortfall: gauge(
                 registry,
                 "quoter_fill_shortfall_ratio",
                 "Decayed share of allocated base this quoter did not deliver",
             ),
+
             last_success_age: gauge(
                 registry,
                 "quoter_last_success_age_seconds",
                 "Seconds since this quoter last did anything successfully",
             ),
+
             exported: Mutex::new(HashSet::new()),
         }
     }
@@ -260,6 +276,7 @@ impl Metrics {
             if !Self::should_export(&snapshot, now_ms) {
                 continue;
             }
+
             let quoter = snapshot.quoter.to_string();
             let market = snapshot.market.to_string();
             let labels = [quoter.as_str(), market.as_str()];
@@ -291,6 +308,7 @@ impl Metrics {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
+
         for (quoter, market) in exported.difference(&live) {
             let labels = [quoter.as_str(), market.as_str()];
             let _ = self.health_state.remove_label_values(&labels);
@@ -301,6 +319,7 @@ impl Metrics {
             let _ = self.fill_shortfall.remove_label_values(&labels);
             let _ = self.last_success_age.remove_label_values(&labels);
         }
+
         *exported = live;
     }
 
@@ -355,6 +374,7 @@ mod tests {
                 proof: Attribution::Resim,
             },
         ));
+
         assert!(rendered(&registry).contains(r#"quoter_attribution_method_total{method="resim"}"#));
     }
 
@@ -374,6 +394,7 @@ mod tests {
                 set_at_ms: 0,
             },
         );
+
         // Far past the export window, where a healthy quoter is dropped.
         metrics.sync(&health, now_ms() + 10 * EXPORT_TTL_MS);
         let text = rendered(&registry);

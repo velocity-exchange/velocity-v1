@@ -71,6 +71,7 @@ pub fn handle_place_trigger_orders_v1<'c: 'info, 'info>(
             maps: &mut maps,
             escrow: &mut escrow,
         };
+
         arm_triggers(placement, &args.params, clock)?
     };
 

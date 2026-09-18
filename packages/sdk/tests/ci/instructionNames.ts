@@ -1,13 +1,6 @@
 /**
- * Every instruction the SDK builds must exist in the IDL.
- *
- * Anchor types `program.instruction`, so a call to a removed instruction is
- * normally a compile error. A `program.instruction as any` cast defeats that,
- * and the SDK uses the cast wherever the generated types are awkward. The call
- * then compiles, ships, and fails at run time with an unknown instruction.
- *
- * This test reads the call sites out of the source and checks each name against
- * the IDL, which is the one place the program's real surface is written down.
+ * Check that SDK instruction calls exist in the IDL. An `as any` cast hides
+ * missing instructions until runtime.
  */
 import { assert } from 'chai';
 import * as fs from 'fs';
@@ -30,6 +23,7 @@ function tsFilesUnder(dir: string): string[] {
 		if (entry.isDirectory()) {
 			return tsFilesUnder(full);
 		}
+
 		return entry.name.endsWith('.ts') ? [full] : [];
 	});
 }
@@ -45,6 +39,7 @@ function castCallSites(): Array<{ file: string; line: number; name: string }> {
 		if (file.includes(`${path.sep}idl${path.sep}`)) {
 			continue;
 		}
+
 		const source = fs.readFileSync(file, 'utf8');
 		const pattern = /instruction\s+as\s+any\s*\)\s*\.\s*([A-Za-z0-9_]+)/g;
 		let match: RegExpExecArray | null;
@@ -56,18 +51,11 @@ function castCallSites(): Array<{ file: string; line: number; name: string }> {
 			});
 		}
 	}
+
 	return sites;
 }
 
-/**
- * Call sites that already named a missing instruction before this test existed.
- * Each one is a real bug: the call compiles and fails on chain. They are listed
- * rather than fixed here because none of them is a trading path, and fixing an
- * admin endpoint belongs with whatever change owns it.
- *
- * The list may shrink. It must never grow: a new entry means a call site was
- * broken and waved through.
- */
+// Known missing instructions (real bugs, non-trading paths). List may only shrink.
 const KNOWN_BROKEN = new Set([
 	'resetAmmCache',
 	'updatePerpMarketTargetBaseAssetAmountPerLp',
@@ -96,6 +84,7 @@ describe('instruction names', () => {
 			(site) =>
 				!known.has(toSnakeCase(site.name)) && !KNOWN_BROKEN.has(site.name)
 		);
+
 		assert.deepStrictEqual(
 			missing.map((site) => `${site.file}:${site.line} ${site.name}`),
 			[],

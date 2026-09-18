@@ -431,26 +431,27 @@ pub fn update_quote_asset_amount(
 
 /// Releases a booked bankruptcy claim once the position's quote debt is gone.
 ///
+/// allow-verbose: this is the one release point for a market-wide freeze, and
+/// each invariant below is a distinct way that freeze can go stuck for good.
+///
 /// A latched bankrupt debt is booked against the market in
 /// `pending_bankruptcy_claims`, which freezes the fee sweep's IF drain. The
-/// booking must be released by whoever clears the debt. That may be the
-/// bankruptcy resolver, a quote-deposit setoff, or a settle or fill after the
-/// latch is lifted. The position flag makes the release happen once.
+/// booking is released by whoever clears the debt: the bankruptcy resolver, a
+/// quote-deposit setoff, or a settle or fill after the latch lifts. The
+/// position flag makes the release happen once.
 ///
-/// Every writer of `PerpPosition::quote_asset_amount` must call this. There
-/// are two, `update_quote_asset_amount` and `update_position_and_market`. A
-/// missed call strands the counter. `add_new_position` recycles any slot that
-/// reports `is_available()` by overwriting the whole position, `position_flag`
-/// included, so a claim left on a zeroed position is destroyed and the market
-/// is never decremented. The market's IF-fee sweep would then stay frozen for
-/// good.
+/// Every writer of `PerpPosition::quote_asset_amount` must call this. Both
+/// `update_quote_asset_amount` and `update_position_and_market` do. A missed
+/// call strands the counter. `add_new_position` recycles a slot reporting
+/// `is_available()` by overwriting the whole position, `position_flag`
+/// included, so a claim left on a zeroed position is destroyed without
+/// decrementing the market, freezing its IF sweep for good.
 ///
-/// A non-negative quote means no bankrupt debt is left for the tranche to
-/// absorb. `resolve_perp_bankruptcy` takes a negative quote and refuses
-/// anything else. A non-negative quote does not prove solvency, because a
-/// position that holds base can carry either sign.
-/// `flag_perp_bankruptcy_claim` books only a settled claim with zero base. A
-/// later loss on a re-traded account is a new admission and a new booking.
+/// A non-negative quote means no bankrupt debt remains for the tranche to
+/// absorb. It does not prove solvency, since a position holding base can
+/// carry either sign; `resolve_perp_bankruptcy` takes only a negative quote.
+/// `flag_perp_bankruptcy_claim` books only a settled claim with zero base, so
+/// a later loss on a re-traded account is a new admission and a new booking.
 fn release_bankruptcy_claim_if_settled(position: &mut PerpPosition, market: &mut PerpMarket) {
     if position.has_bankruptcy_claim() && position.quote_asset_amount >= 0 {
         position.clear_bankruptcy_claim();
@@ -534,15 +535,11 @@ pub fn increase_open_bids_and_asks(
 /// Releases exactly `base_asset_amount` of the reservation this position holds
 /// on `direction`, or fails.
 ///
-/// [`decrease_open_bids_and_asks`] clamps at zero. The clamp is right for a
-/// number velocity authored itself. The reservation and the order it backs
-/// move together, so the clamp only absorbs rounding. The clamp is wrong for a
-/// number an external quoter reported. A report above the reservation
-/// collapses the whole side and frees the margin behind orders that still
-/// rest, and the clamp makes that silent.
-///
-/// Use this function for a report velocity did not author. Every place a
-/// quoter's answer moves a user's aggregates uses it.
+/// [`decrease_open_bids_and_asks`] clamps at zero, which is right when
+/// velocity authored the number itself, since the reservation and the order
+/// it backs move together and the clamp only absorbs rounding. It is wrong
+/// for an external quoter's report, since a report above the reservation
+/// would silently collapse the whole side and free margin behind resting orders. Use this function for every quoter-reported number instead.
 pub fn release_reserved_open_base(
     position: &mut PerpPosition,
     direction: &PositionDirection,
@@ -604,6 +601,7 @@ pub fn release_reserved_open_orders(position: &mut PerpPosition, count: u8) -> V
         position.market_index,
         position.open_orders
     )?;
+
     position.open_orders -= count;
     Ok(())
 }

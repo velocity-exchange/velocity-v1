@@ -92,11 +92,9 @@ fn is_token_close_account_for_swap_ix(
 }
 
 /// The transaction shape `begin_swap` demands of the instructions after it.
-///
-/// The swap must be top level, the transaction must end with exactly one
-/// `end_swap`, and that `end_swap` must name the same accounts. Instructions
-/// between the two may only belong to the allowlisted routing programs, and
-/// instructions after it may not write anything.
+/// The swap must be top level, and the transaction must end with exactly one
+/// `end_swap` naming the same accounts. Instructions between the two may only belong to
+/// allowlisted routing programs, and later instructions may not write anything.
 struct SwapTransactionShape<'a, 'info> {
     program_id: &'a Pubkey,
     accounts: &'a Swap<'info>,
@@ -136,6 +134,7 @@ impl SwapTransactionShape<'_, '_> {
                     ErrorCode::InvalidSwap,
                     "the transaction must not contain a Velocity instruction after FlashLoanEnd"
                 )?;
+
                 found_end = true;
 
                 self.validate_end_swap_ix(&ix)?;
@@ -251,6 +250,7 @@ impl SwapTransactionShape<'_, '_> {
             whitelisted_programs.push(Token2022::id());
             whitelisted_programs.push(marinade_mainnet::ID);
         }
+
         validate!(
             whitelisted_programs.contains(&ix.program_id),
             ErrorCode::InvalidSwap,
@@ -293,18 +293,15 @@ fn admit_swapper(
 /// Accrue interest on one leg of a swap and prove the market may take one.
 ///
 /// Interest and the deposit, borrow, and utilization TWAPs advance. `None` is
-/// passed, so the oracle TWAPs do not. `end_swap` measures the realized fill
-/// against `last_oracle_price_twap_5min` on this market. A refresh here runs in
-/// the same transaction, from an instruction the swapper controls. It pulls
-/// that anchor toward the live oracle price and widens the band, so an
-/// underpriced swap passes a check the pre-refresh TWAP rejects (OtterSec
-/// #110). `validate_price_bands_for_swap` reads whichever of the two markets
-/// has a zero initial margin ratio, so neither side may refresh before it runs.
-///
-/// `end_swap` advances both markets' oracle TWAPs after its band check, so the
-/// swap still contributes to the EMA. The two halves are separate instructions,
-/// so no in-memory snapshot can cross the check the way the perp fill does for
-/// OtterSec #112.
+/// passed, so the oracle TWAPs do not. `end_swap` checks the realized fill
+/// against `last_oracle_price_twap_5min`. A refresh here, from an instruction
+/// the swapper controls, would pull that anchor toward the live price and
+/// widen the band. An underpriced swap would then pass a check the pre-refresh
+/// TWAP rejects (OtterSec #110). `validate_price_bands_for_swap` picks the
+/// zero-margin-ratio market, so neither side may refresh first.
+/// `end_swap` advances both TWAPs after its band check, so the swap still
+/// contributes to the EMA. The halves are separate instructions, so no
+/// snapshot can cross the check the way the perp fill does (OtterSec #112).
 fn arm_swap_leg(
     spot_market: &mut SpotMarket,
     market_index: u16,
@@ -580,6 +577,7 @@ fn repay_in_leg<'info>(
                 None
             },
         )?;
+
         accounts.in_token_account.reload()?;
         accounts.in_vault.reload()?;
 
@@ -794,12 +792,11 @@ fn credit_out_leg(
     update_revenue_pool_balances(fee.cast()?, &SpotBalanceType::Deposit, out_market, false)?;
 
     // The out leg credits deposits through the plain balance update, not the shared
-    // `_with_limits` path, so the daily deposit cap did not apply to it at all. A swapper
-    // could lift a market's deposit level far above its cap. That locks every other user
-    // out of withdrawing or repaying in that market while liquidation stays live against
-    // them (OtterSec #118). The check runs after the revenue-pool fee credit, so it sees the
-    // whole out-side increase. It passes when the deposit level did not grow, so a swap
-    // that only repays an existing borrow is never rejected.
+    // `_with_limits` path, so the daily deposit cap did not apply. A swapper could
+    // lift a market's deposit level far above its cap, locking other users out of
+    // withdrawing or repaying while liquidation stayed live (OtterSec #118). The
+    // check runs after the revenue-pool fee credit, so it catches the whole
+    // out-side increase, and passes only when the deposit level did not grow.
     math::spot_withdraw::validate_deposit_cap_after_increase(
         out_market,
         deposit_token_amount_before,
@@ -1256,16 +1253,19 @@ pub fn handle_end_swap<'c: 'info, 'info>(
             out_token_account: &mut ctx.accounts.out_token_account,
             out_vault: &mut ctx.accounts.out_spot_market_vault,
         },
+
         maps: &mut maps,
         route,
         markets: SwapMarkets {
             in_index: in_market_index,
             out_index: out_market_index,
         },
+
         request: SwapRequest {
             limit_price,
             reduce_only,
         },
+
         clock,
     };
 

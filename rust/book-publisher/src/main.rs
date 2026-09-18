@@ -105,6 +105,7 @@ fn load_keypair(path: &str) -> Result<Keypair> {
     let bytes: Vec<u8> = serde_json::from_str(
         &std::fs::read_to_string(path).with_context(|| format!("read keypair {path}"))?,
     )?;
+
     Keypair::try_from(bytes.as_slice()).map_err(|e| anyhow!("parse keypair {path}: {e}"))
 }
 
@@ -114,6 +115,7 @@ fn load_or_create_buffer_keypair(dir: &str, market_index: u16) -> Result<Keypair
     if std::path::Path::new(&path).exists() {
         return load_keypair(&path);
     }
+
     let keypair = Keypair::new();
     std::fs::write(&path, serde_json::to_string(&keypair.to_bytes().to_vec())?)?;
     Ok(keypair)
@@ -140,10 +142,9 @@ fn maybe_local_sim<S: ChainSource + 'static>(inner: S, pool: usize) -> Arc<dyn C
 }
 
 /// Compute units requested for `crank_cross_match`. A self-crossed book
-/// measured at about 328,000, because each of the crank's two legs is a whole
-/// router fill with its own quote, split, execute and post-fill checks. The
-/// headroom covers a cross that reaches more sources than a book against
-/// itself.
+/// measured at about 328,000, since each leg is a whole router fill with its
+/// own quote, split, execute and post-fill checks. The headroom covers a
+/// cross that reaches more sources than a book against itself.
 const CROSS_MATCH_COMPUTE_UNITS: u32 = 500_000;
 
 /// Create and initialize a market's quote buffer when it does not exist yet.
@@ -161,10 +162,9 @@ async fn ensure_buffer(
         .flatten()
     {
         // A buffer persists across restarts, so one created before the layout
-        // grew is still on chain and still too small. Every quote into it would
-        // fail on a push. Report that rather than run. The old account holds
-        // rent this process cannot reclaim, so replacing it is the operator's
-        // decision.
+        // grew is still on chain and still too small, and every push into it
+        // would fail. Report that instead of running. The old account's rent
+        // is unreclaimable here, so replacing it is the operator's decision.
         let wanted = program::state::router_quote::RouterQuoteBufferV0::SIZE;
         if existing.data.len() < wanted {
             bail!(
@@ -174,8 +174,10 @@ async fn ensure_buffer(
                 existing.data.len()
             );
         }
+
         return Ok(());
     }
+
     let rent = solana_rent::Rent::default()
         .minimum_balance(program::state::router_quote::RouterQuoteBufferV0::SIZE);
     let ixs = create_quote_buffer_ixs(
@@ -193,6 +195,7 @@ async fn ensure_buffer(
         &[payer, buffer],
         blockhash.hash,
     );
+
     // A legacy message, versioned only because that is what the source takes.
     // Nothing here needs an address table or a v1 message.
     let signature = source.send_transaction(&as_versioned(&tx)?).await?;
@@ -210,6 +213,7 @@ async fn ensure_buffer(
             None => continue,
         }
     }
+
     bail!("buffer creation for market {market_index} never landed")
 }
 
@@ -232,10 +236,10 @@ async fn main() -> Result<()> {
         .collect::<Result<_>>()?;
     let payer = load_keypair(&config.keypair_path)?;
 
-    // Discover quoter programs up front so the feed subscribes to them. The
-    // slab subscription then keeps the approved set fresh.
     let rpc = RpcSource::new(config.rpc_url.clone());
     let mut quoter_programs: Vec<Pubkey> = Vec::new();
+    // Discover quoter programs up front so the feed subscribes to them; the
+    // slab subscription then keeps the approved set fresh.
     for market in &markets {
         for slot in velocity_router_sim::quoter_slab_slots(&rpc, &velocity, *market).await? {
             if slot.quotes() && !quoter_programs.contains(&slot.config.program_id) {
@@ -243,6 +247,7 @@ async fn main() -> Result<()> {
             }
         }
     }
+
     let subscriptions = router_subscriptions(velocity, None, &quoter_programs);
 
     let source: Arc<dyn ChainSource> = match config.transport.as_str() {
@@ -281,6 +286,7 @@ async fn main() -> Result<()> {
                 subscriptions.clone(),
                 sender,
             );
+
             info!(%endpoint, programs = quoter_programs.len() + 1, "yellowstone gRPC subscriptions enabled");
             maybe_local_sim(
                 CachedSource::new(
@@ -297,12 +303,11 @@ async fn main() -> Result<()> {
         other => bail!("unknown transport {other} (rpc | ws | grpc)"),
     };
 
-    // One persistent quote buffer per market.
-    let mut buffers: Vec<(u16, Keypair)> = Vec::new();
+    let mut market_buffers: Vec<(u16, Keypair)> = Vec::new();
     for market in &markets {
         let buffer = load_or_create_buffer_keypair(&config.buffer_dir, *market)?;
         ensure_buffer(&source, &velocity, &payer, &buffer, *market).await?;
-        buffers.push((*market, buffer));
+        market_buffers.push((*market, buffer));
     }
 
     let redis_client = redis::Client::open(config.redis_url.clone())?;
@@ -311,24 +316,22 @@ async fn main() -> Result<()> {
         .await
         .context("connect redis")?;
 
-    // The publisher simulates every market every tick, so it exercises every
-    // registered quoter continuously, including ones no taker is routing to.
-    // That makes it the router stack's health probe, at no extra cost.
     let registry = std::sync::Arc::new(prometheus::Registry::new());
     let metrics = std::sync::Arc::new(Metrics::register(&registry));
     let health = std::sync::Arc::new(Health::with_metrics(Policy::default(), metrics.clone()));
+    // The publisher simulates every market every tick, exercising every
+    // registered quoter continuously, including ones no taker routes to. That
+    // makes it the router stack's health probe, at no extra cost.
     metrics_server::serve(config.metrics_addr, registry, metrics, health.clone());
 
-    // Registry entries seen on the last pass, for the deploy watch. Held
-    // apart from the health layer because the layer holds no chain state.
-    let carried: Arc<Mutex<Vec<EntryRef>>> = Arc::new(Mutex::new(Vec::new()));
+    // Held apart from the health layer, which keeps no chain state.
+    let deploy_watch_entries: Arc<Mutex<Vec<EntryRef>>> = Arc::new(Mutex::new(Vec::new()));
     let mut deploy_watch = DEPLOY_WATCH_TICKS;
-    // What the per-user index published last, so a tick that changed no user's
-    // orders writes nothing. Most ticks change no user's orders.
     let mut user_orders = user_orders::UserOrdersIndex::default();
-    // The index starts empty, so it cannot tell that a user stopped resting
-    // while no process ran. Reading what the last process stored lets each
-    // market's first tick clear the documents the book no longer backs.
+    // The index starts empty, so a tick cannot tell that a user stopped
+    // resting while no process ran; a stale document would then serve
+    // forever. Adopting what the last process stored lets each market's
+    // first tick clear the documents the book no longer backs.
     match user_orders::adopt_stored_users(
         &mut user_orders,
         &mut redis,
@@ -350,7 +353,7 @@ async fn main() -> Result<()> {
 
     loop {
         tick.tick().await;
-        for (market_index, buffer) in &buffers {
+        for (market_index, buffer) in &market_buffers {
             if let Err(err) = publish_market(
                 &source,
                 &mut redis,
@@ -362,7 +365,7 @@ async fn main() -> Result<()> {
                 config.quote_size,
                 config.cross_match,
                 health.as_ref(),
-                &carried,
+                &deploy_watch_entries,
                 &mut user_orders,
             )
             .await
@@ -370,6 +373,7 @@ async fn main() -> Result<()> {
                 warn!(market_index, error = %format!("{err:#}"), "tick failed");
             }
         }
+
         // Expiry is evaluated when a quoter is looked at, so a quarantine on
         // a quoter no market carries needs this to end.
         health.sweep();
@@ -379,7 +383,10 @@ async fn main() -> Result<()> {
         deploy_watch = deploy_watch.saturating_sub(1);
         if deploy_watch == 0 {
             deploy_watch = DEPLOY_WATCH_TICKS;
-            let entries = carried.lock().expect("deploy watch lock").clone();
+            let entries = deploy_watch_entries
+                .lock()
+                .expect("deploy watch lock")
+                .clone();
             if let Err(err) = watch_program_deploys(&source, &health, &entries).await {
                 warn!(error = %format!("{err:#}"), "deploy watch failed");
             }
@@ -453,6 +460,7 @@ async fn publish_market(
             quote_size,
         )
     };
+
     // Read in as many passes as the market's quoters need. One pass holds a
     // fixed number of sources, and the buffer refuses a push past it rather
     // than truncating, so a market that outgrew a single pass would publish
@@ -470,6 +478,7 @@ async fn publish_market(
             "publishing without unhealthy quoters"
         );
     }
+
     {
         let mut seen = carried.lock().expect("deploy watch lock");
         for entry in asks_quote.entries.iter().chain(&bids_quote.entries) {
@@ -479,6 +488,7 @@ async fn publish_market(
             }
         }
     }
+
     let asks = QuoteView {
         market: market_index,
         direction: 0,
@@ -529,6 +539,7 @@ async fn publish_market(
             levels.truncate(100);
         }
     }
+
     let key = format!("{prefix}last_update_orderbook_perp_{market_index}");
     let channel = format!("{prefix}orderbook_perp_{market_index}");
     redis.set::<_, _, ()>(&key, l2_depth100.to_string()).await?;
@@ -543,11 +554,10 @@ async fn publish_market(
             .await?;
     }
 
-    // L3 and best makers, out of the same view the ladders came from. Every
-    // source describes who its depth belongs to. A book does so through its
-    // `quote_l3_v0` leg, and every other source against the one user its
-    // registry entry names. This therefore reads rows rather than decoding a
-    // book.
+    // L3 and best makers, from the same view the ladders came from. A book
+    // describes its depth through `quote_l3_v0`; every other source describes
+    // it against the one user its registry entry names. So this reads rows
+    // rather than decoding a book.
     let l3_bids = payload::view_rows(velocity, &bids, &bids_quote.entries);
     let l3_asks = payload::view_rows(velocity, &asks, &asks_quote.entries);
     if bids_quote.rows_truncated || asks_quote.rows_truncated {
@@ -556,6 +566,7 @@ async fn publish_market(
             "a pass filled its row region; L3 describes part of the book"
         );
     }
+
     let l3 = payload::l3_payload(
         market_index,
         &name,
@@ -566,6 +577,7 @@ async fn publish_market(
         l3_asks.clone(),
         quote_size,
     );
+
     redis
         .set::<_, _, ()>(
             format!("{prefix}last_update_orderbook_l3_perp_{market_index}"),
@@ -633,8 +645,10 @@ async fn publish_market(
                     solana_compute_budget_interface::ComputeBudgetInstruction::set_compute_unit_limit(
                         CROSS_MATCH_COMPUTE_UNITS,
                     ),
+
                     plan.instruction.clone(),
                 ],
+
                 Some(authority),
                 &[payer],
                 blockhash.hash,
@@ -661,5 +675,6 @@ async fn publish_market(
             }
         }
     }
+
     Ok(())
 }

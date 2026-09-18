@@ -8,20 +8,9 @@ use super::*;
 
 /// Create the conditions block that the liquidation relay watches.
 ///
-/// The block is not optional and it is not created later. Relay can only watch
-/// an account that exists, and coverage first matters when someone else gives
-/// this user a position. A maker order that a keeper fills, and a
-/// signed-message order that a filler submits, both do that. The user signs
-/// neither, so there is no later point at which the rent can be charged to
-/// them. The rent is part of what an account costs, and paying it here is what
-/// makes every later sync permissionless.
-///
-/// Nothing is armed yet. The block carries no exposure and no margin map, and
-/// the first sync writes both.
-///
-/// Call this before the `User` is loaded. `load_init` does not write the
-/// discriminator until the instruction exits, so a `load_mut` of the user in
-/// between reads a zeroed one and fails.
+/// Call this before the `User` loads: `load_init` defers the discriminator
+/// write, so a `load_mut` in between reads a zeroed account. Paying its rent
+/// here, before the user signs anything, keeps every later relay sync permissionless.
 fn init_user_conditions(
     user_conditions: &AccountLoader<'_, UserConditionsV0>,
     user_key: Pubkey,
@@ -250,29 +239,11 @@ pub fn handle_delete_user(ctx: Context<DeleteUser>) -> Result<()> {
         Clock::get()?.unix_timestamp,
     )?;
 
-    // OtterSec #128: settle this subaccount's revenue-share rows before the id goes
-    // away for good.
-    //
-    // `revoke_completed_orders` only transitions rows whose `sub_account_id` matches
-    // the `User` it is handed, and `delete_user` retires that id for good. The
-    // allocation counter (`number_of_sub_accounts_created`) has no decrement site, so
-    // the id is never reissued and no later `User` matches those rows. A row left
-    // `open && !completed` was therefore unreachable. The builder's accrued fee was
-    // stranded, and the market's `pending_revenue_share` stayed high for the life of
-    // the market.
-    //
-    // The window is the filled but not yet revoked row, which is the state
-    // `revoke_completed_orders` resolves. `validate_user_deletion` already requires
-    // every order closed, so an open order never reaches here.
-    //
-    // Every order is closed by now, so each row for this subaccount moves to
-    // `Completed`, or is cleared when it carries no fees. The permissionless sweep
-    // pays out of that state and needs no `User`, so it still pays after the account
-    // is gone. Blocking deletion instead would hold the user's rent until a keeper
-    // cranked.
-    //
-    // The escrow is pinned to the authority's PDA by `seeds`, so an empty account
-    // proves this authority has no escrow rather than an omitted account.
+    // OtterSec #128: revoke this subaccount's revenue-share rows before its id
+    // retires. The id is never reissued, so a row left open after that point
+    // is unreachable forever, stranding the builder's fee and holding the
+    // market's `pending_revenue_share` high for good. The escrow PDA is
+    // pinned by `seeds`, so an empty account proves this authority has none.
     if !ctx.accounts.revenue_share_escrow.data_is_empty() {
         let mut escrow = ctx.accounts.revenue_share_escrow.load_zc_mut()?;
         escrow.revoke_completed_orders(user)?;
@@ -500,6 +471,7 @@ mod external_payer_tests {
                 &self.owner,
                 false,
             );
+
             validate_external_payer(
                 &UncheckedAccount::try_from(&authority_info),
                 &Signer::try_from(&payer_info)?,

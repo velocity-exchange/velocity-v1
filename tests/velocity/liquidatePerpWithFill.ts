@@ -253,6 +253,7 @@ describe('liquidate perp (no open orders)', () => {
 				reduceOnly: true,
 				marketIndex: 0,
 			});
+
 			svmContextWrapper.connection.printTxLogs(failToPlaceTxSig);
 			throw new Error('Expected placePerpOrder to throw an error');
 		} catch (error) {

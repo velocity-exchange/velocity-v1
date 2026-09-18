@@ -1,8 +1,5 @@
 /**
- * Parity tests for the crank-fee mirror. Every case here is transcribed from
- * the program's own tests in `state/clob_crank.rs`, so a divergence between
- * `deriveCrankPayments` and `CrankPaymentsV0::derive` fails here rather than
- * surfacing as a client that mispredicts what an attach will write.
+ * Parity test: crank-fee mirror must match state/clob_crank.rs.
  */
 import { assert } from 'chai';
 import {
@@ -74,6 +71,7 @@ describe('crank fee mirror', () => {
 			resourceFeeDenominator: 10,
 			maxPriorityMicroLamportsPerCu: 0,
 		};
+
 		// A third of a lamport still costs one: a payment short by a lamport
 		// buys nothing.
 		assert.equal(transactionCost(tenth, 3, 1), 2_501);
@@ -86,6 +84,7 @@ describe('crank fee mirror', () => {
 			resourceFeeDenominator: 0,
 			maxPriorityMicroLamportsPerCu: 0,
 		};
+
 		assert.equal(transactionCost(off, 1_000_000, 2), 2_500 + 10_000);
 	});
 
@@ -116,6 +115,7 @@ describe('crank fee mirror', () => {
 			requestedComputeUnits: 0,
 			requestedLoadedAccountsDataSize: 64 * 1024 * 1024,
 		});
+
 		assert.equal(unaskedFor, 16_384);
 	});
 

@@ -238,6 +238,11 @@ pub struct SpotMarket {
     /// reach a whole unit is carried on the carveout pools rather than floored
     /// away. See `split_deposit_interest`.
     pub protocol_fee_factor: u32,
+    /// allow-verbose: the donation-resistance logic and the exact outflow-path list are
+    /// load-bearing invariants for insurance-fund accounting. Cutting them below what an
+    /// auditor needs to verify the cap's donation-proofing would drop real information, not
+    /// restate the code.
+    ///
     /// Lowest insurance-fund vault balance since the end of the last revenue
     /// settle. `settle_revenue_to_insurance_fund` starts each period by writing
     /// the live vault balance plus the amount that settle transfers in, and
@@ -772,12 +777,10 @@ pub struct InsuranceFund {
     pub last_revenue_settle_ts: i64,
     /// How often `revenue_pool` may settle into the IF vault (seconds).
     pub revenue_settle_period: i64,
-    /// Fraction of spot deposit-interest gains carved out to the insurance fund
-    /// (staker-owned). precision: IF_FACTOR_PRECISION. (Was `total_factor`; the
-    /// protocol-vs-staker split was removed — the IF is now 100% staker-owned,
-    /// so this is purely the staker IF carveout.) A cut too small to reach a
-    /// whole unit is carried on the carveout pools rather than floored away.
-    /// See `split_deposit_interest`.
+    /// Fraction of spot deposit-interest gains carved out to the insurance fund (staker-owned), in
+    /// `IF_FACTOR_PRECISION`. Was `total_factor` before the protocol/staker split was removed; the IF
+    /// is now 100% staker-owned, so this is the whole staker carveout. A cut too small to reach a
+    /// whole unit is carried on the carveout pools, not floored away. See `split_deposit_interest`.
     pub if_fee_factor: u32,
     /// Was `user_factor` (the old protocol/staker split knob). The IF is now
     /// 100% staker-owned, so the split is gone; slot kept as padding.

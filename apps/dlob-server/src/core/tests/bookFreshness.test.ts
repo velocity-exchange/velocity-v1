@@ -3,11 +3,7 @@ import { sampleBookFreshness } from '../bookFreshness';
 import { resetHealthState, slotDiffWindows } from '../healthCheck';
 
 /**
- * The server holds no order state, so its own liveness says nothing about
- * whether the books it serves are still being written. A publisher that dies
- * leaves every document frozen while the server answers every request with a
- * 200. These cases pin that a frozen book is noticed, and that an absent or
- * fresh one is not mistaken for a fault.
+ * The server detects frozen books even though it holds no order state.
  */
 describe('book freshness', () => {
 	const markets = [{ marketIndex: 0, marketName: 'SOL-PERP' }];
@@ -30,6 +26,7 @@ describe('book freshness', () => {
 			redisHolding(JSON.stringify({ slot: 1_000 })),
 			selectFirst
 		);
+
 		expect(isFlagged('SOL-PERP')).toBe(true);
 	});
 
@@ -40,6 +37,7 @@ describe('book freshness', () => {
 			redisHolding(JSON.stringify({ slot: 9_990 })),
 			selectFirst
 		);
+
 		expect(isFlagged('SOL-PERP')).toBe(false);
 	});
 
@@ -50,6 +48,7 @@ describe('book freshness', () => {
 			redisHolding(JSON.stringify({ slot: 1_000 })),
 			selectFirst
 		);
+
 		expect(isFlagged('SOL-PERP')).toBe(true);
 
 		await sampleBookFreshness(
@@ -58,6 +57,7 @@ describe('book freshness', () => {
 			redisHolding(JSON.stringify({ slot: 10_090 })),
 			selectFirst
 		);
+
 		expect(isFlagged('SOL-PERP')).toBe(false);
 	});
 
@@ -72,6 +72,7 @@ describe('book freshness', () => {
 			redisHolding(undefined),
 			selectFirst
 		);
+
 		expect(isFlagged('SOL-PERP')).toBe(false);
 	});
 
@@ -82,6 +83,7 @@ describe('book freshness', () => {
 			redisHolding(JSON.stringify({ slot: 1 })),
 			selectFirst
 		);
+
 		expect(isFlagged('SOL-PERP')).toBe(false);
 	});
 });

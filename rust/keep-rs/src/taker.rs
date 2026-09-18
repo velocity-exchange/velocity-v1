@@ -146,12 +146,10 @@ impl TakerBot {
 
         let direction = self.choose_direction(market_index, base_position);
 
-        // Market order, auction params left to the program to derive
-        // (direction-correct sanitization). The placement routes it against the
-        // market's book, its quoters and the AMM, so the order trades in the
-        // same instruction. When stuck one-sided the forced order is
-        // `reduce_only` so a chunk larger than the remaining position can't
-        // overshoot flat and re-open the other side.
+        // Market order; the program derives auction params (direction-correct
+        // sanitization) and routes it against the book, quoters, and AMM in
+        // one instruction. A stuck one-sided order goes `reduce_only`, so a
+        // chunk larger than the remaining position can't flip it to the other side.
         let order = OrderParams {
             order_type: OrderType::Market,
             market_type: MarketType::Perp,
@@ -167,6 +165,7 @@ impl TakerBot {
                 target: TARGET,
                 "market {market_index}: no approved book on the quoter slab, skipping take",
             );
+
             return Ok(());
         };
 

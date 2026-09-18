@@ -13,12 +13,9 @@ import { confirmMainnetDirect } from './context';
 import * as ui from './ui';
 
 /**
- * The authority that signs a dispatched instruction. It is the Squads vault PDA
- * under `--multisig`, and the local wallet otherwise. Pass it as the `admin`
- * account on an instruction builder so the listed authority matches the signer.
- * The on-chain `check_warm` and `check_cold` guards then validate it. Without
- * it, a builder that defaults to a fixed role such as the warm admin produces
- * an instruction that the signer cannot satisfy.
+ * The authority that signs a dispatched instruction: the Squads vault PDA
+ * under `--multisig`, or the local wallet otherwise. Pass it as the `admin`
+ * account so the on-chain `check_warm`/`check_cold` guards match the signer.
  */
 export function resolveAdminAuthority(
 	provider: AnchorProvider,

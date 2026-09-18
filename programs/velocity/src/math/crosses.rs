@@ -36,15 +36,14 @@ use crate::state::prop_amm::{
 #[cfg(test)]
 mod tests;
 
-/// Slots an order must rest before a crank may mark its flow as having served
-/// a protection window. The flag is `taker_served_window` on the quoter wire.
+/// Slots an order must rest before a crank may mark its flow as having served a protection window.
+/// The flag is `taker_served_window` on the quoter wire. On a book whose default activation delay
+/// is zero, resting through placement is a zero-length window. A caller could then place a crossing
+/// order, crank the cross in the next transaction, and carry the protected flag on fresh informed
+/// flow. Two slots is above the swift hold, so the crank path never vouches for less protection
+/// than the attested path does.
 ///
-/// A crank cannot vouch for the window by construction alone. On a book whose
-/// default activation delay is zero, resting through placement is a zero-length
-/// window. A caller could then place a crossing order and crank the cross in
-/// the next transaction, so fresh informed flow would carry the protected flag.
-/// Measured age closes that. Two slots is above the swift hold, so the crank
-/// path never vouches for less protection than the attested path does.
+/// allow-verbose: the two-slot figure is a derivation from the activation delay and the swift hold.
 pub const SERVED_WINDOW_MIN_SLOTS: u64 = 2;
 
 /// Whether an order placed at `placed_slot` has rested long enough that a
@@ -82,6 +81,7 @@ impl RestingOrder {
                 node_index: row.node_index,
                 order_id: row.order_id,
             },
+
             user: row.user,
             price: row.price,
             base_asset_amount: row.size,
@@ -182,6 +182,7 @@ pub fn resolve_crosses(
             kind,
         });
     }
+
     crosses
 }
 
@@ -194,6 +195,7 @@ fn next_cross(bids: &[RestingOrder], asks: &[RestingOrder]) -> Option<(usize, us
             let Some(kind) = classify(bid, ask) else {
                 continue;
             };
+
             // A taker's own improvement outranks arbitrage the protocol would
             // take. Among taker crosses the latest to rest goes first. Its
             // improvement is the one at stake, and settling it can free a pair
@@ -214,6 +216,7 @@ fn next_cross(bids: &[RestingOrder], asks: &[RestingOrder]) -> Option<(usize, us
             }
         }
     }
+
     best.map(|(bid, ask, kind, _)| (bid, ask, kind))
 }
 
@@ -226,6 +229,7 @@ fn classify(bid: &RestingOrder, ask: &RestingOrder) -> Option<CrossKind> {
     {
         return None;
     }
+
     Some(match (bid.taker_origin, ask.taker_origin) {
         // The later order to rest arrived into a book that already showed the
         // other, so the earlier price stands.
@@ -236,6 +240,7 @@ fn classify(bid: &RestingOrder, ask: &RestingOrder) -> Option<CrossKind> {
                 CrossKind::AskAggresses
             }
         }
+
         // One side demanded liquidity. Rest time does not arbitrate here,
         // because a maker quote is passive by construction.
         (true, false) => CrossKind::BidAggresses,

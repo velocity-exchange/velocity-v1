@@ -38,6 +38,7 @@ pub struct SweepCrankReservoir<'info> {
             crate::state::clob_crank::CLOB_CRANK_CONDITIONS_PDA_SEED,
             args.market_index.to_le_bytes().as_ref(),
         ],
+
         bump
     )]
     pub crank_conditions: AccountLoader<'info, ClobCrankConditionsV0>,
@@ -64,6 +65,7 @@ pub fn handle_sweep_crank_reservoir(
         lamports,
         rent_minimum,
     )?;
+
     // `pay_keeper_lamports` already wrote the spendable mirror, so the refill
     // condition sees the swept balance. The refill tops the reservoir back up
     // when the sweep took it below the watermark.
@@ -74,5 +76,6 @@ pub fn handle_sweep_crank_reservoir(
         swept,
         market_index
     );
+
     Ok(())
 }

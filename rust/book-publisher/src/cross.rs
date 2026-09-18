@@ -94,10 +94,12 @@ fn cross_levels(bids: &QuotedBook, asks: &QuotedBook, base_precision: u128) -> L
         bid.map(|level| level.size).unwrap_or(0),
         ask.map(|level| level.size).unwrap_or(0),
     );
+
     while let (Some(b), Some(a)) = (bid, ask) {
         if b.price < a.price {
             break;
         }
+
         let take = bid_left.min(ask_left);
         cross.size += take;
         cross.buy_quote += a.price as u128 * take as u128 / base_precision;
@@ -113,6 +115,7 @@ fn cross_levels(bids: &QuotedBook, asks: &QuotedBook, base_precision: u128) -> L
             ask_left = ask.map(|level| level.size).unwrap_or(0);
         }
     }
+
     cross
 }
 
@@ -130,8 +133,10 @@ fn makers_from_rows(book: &QuotedBook, size: u64, makers: &mut Vec<ClobUserRefV0
             if makers.len() >= MAX_CROSS_MAKERS {
                 break;
             }
+
             makers.push(row.user);
         }
+
         // A crossed taker-origin remainder is not depth this cross can count
         // on. The book passes over it while a counterparty crosses it, and that
         // is the situation the crank is resolving.
@@ -139,6 +144,7 @@ fn makers_from_rows(book: &QuotedBook, size: u64, makers: &mut Vec<ClobUserRefV0
             covered = covered.saturating_add(row.size);
         }
     }
+
     covered.min(size)
 }
 
@@ -204,6 +210,7 @@ pub async fn find_cross_plan<S: ChainSource + ?Sized>(
             if cross.size == 0 {
                 continue;
             }
+
             let fees = (cross.buy_quote * fee_numerator).div_ceil(fee_denominator)
                 + (cross.sell_quote * fee_numerator).div_ceil(fee_denominator);
             let Some(surplus) = cross
@@ -212,6 +219,7 @@ pub async fn find_cross_plan<S: ChainSource + ?Sized>(
             else {
                 continue;
             };
+
             if surplus == 0 {
                 continue;
             }
@@ -220,6 +228,7 @@ pub async fn find_cross_plan<S: ChainSource + ?Sized>(
             }
         }
     }
+
     let Some((bid_book, ask_book, cross, estimated_surplus)) = best else {
         return Ok(None);
     };
@@ -236,6 +245,7 @@ pub async fn find_cross_plan<S: ChainSource + ?Sized>(
             .copied()
             .ok_or_else(|| anyhow!("quoter {entry} has no slab slot"))
     };
+
     // A view book's key is the staging entry.
     let legs: Vec<QuoterSlotV0> = if ask_book.key == bid_book.key {
         vec![slot_for(ask_book.key)?]
@@ -251,6 +261,7 @@ pub async fn find_cross_plan<S: ChainSource + ?Sized>(
     for book in [ask_book, bid_book] {
         size = size.min(makers_from_rows(book, size, &mut makers));
     }
+
     if size == 0 {
         return Ok(None);
     }
@@ -279,6 +290,7 @@ pub async fn find_cross_plan<S: ChainSource + ?Sized>(
         for meta in slot.config.registered_accounts() {
             *cpi_union.entry(meta.pubkey).or_default() |= meta.is_writable;
         }
+
         *cpi_union.entry(slot.config.response_account).or_default() |= true;
         cpi_union.entry(slot.config.program_id).or_default();
     }
@@ -299,11 +311,13 @@ pub async fn find_cross_plan<S: ChainSource + ?Sized>(
         }
         .to_account_metas(None)
     };
+
     accounts.push(AccountMeta::new_readonly(*oracle, false));
     accounts.push(AccountMeta::new(
         spot_market_pda(velocity, quote_spot_market_index),
         false,
     ));
+
     for maker in &makers {
         accounts.push(AccountMeta::new(user_pda(velocity, maker), false));
         accounts.push(AccountMeta::new(
@@ -331,6 +345,7 @@ pub async fn find_cross_plan<S: ChainSource + ?Sized>(
             accounts,
             data,
         },
+
         size,
         estimated_surplus,
     }))

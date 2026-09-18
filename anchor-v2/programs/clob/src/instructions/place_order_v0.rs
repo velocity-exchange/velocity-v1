@@ -22,13 +22,10 @@ pub struct PlaceOrderV0 {
 /// [`crate::state::OrderBitFlag::TakerOrigin`].
 pub use clob_wire::PlaceOrderArgsV0;
 
-/// Lower bound on a slot's wall-clock length, in milliseconds.
+/// Floor on a slot's wall-clock length, in milliseconds.
 ///
-/// The cluster targets 400ms per slot and does not hold a faster rate. The
-/// only use of this number is to refuse an order that cannot outlive its own
-/// activation delay, so the bound must be a floor. A slower cluster makes the
-/// refusal catch more orders. A bound above the real rate would refuse an
-/// order that could still activate.
+/// The cluster targets 400ms per slot. This bound must stay at or below that
+/// rate, or the refusal below could reject an order that could still activate.
 const MIN_SLOT_MILLIS: u64 = 400;
 
 /// Place a resting order. Returns the new order's [`OrderRefV0`] as return
@@ -46,6 +43,7 @@ pub fn handle_place_order_v0(
         args.max_ts == 0 || args.max_ts > clock.unix_timestamp,
         ClobError::MaxTsInPast
     );
+
     let delay = match args.activation_delay_slots {
         None => market.default_activation_delay_slots,
         Some(d) => {
@@ -56,6 +54,7 @@ pub fn handle_place_order_v0(
                 d <= market.max_activation_delay_slots,
                 ClobError::InvalidActivationDelay
             );
+
             d
         }
     };

@@ -93,12 +93,10 @@ pub enum ClobError {
 }
 
 impl From<quoter_spec::SpecError> for ClobError {
-    /// A response the market's region cannot hold, or cannot be read at, is a
-    /// program bug rather than a caller error. The region size and every record
-    /// stride are fixed at compile time. The ceilings in `state` make both
-    /// failures unreachable for a market whose config the init and update
-    /// checks accepted. A dangling completed order is the same kind of bug one
-    /// step further in. The walk named a balance change that it never wrote.
+    /// A response the region cannot hold, or cannot be read at, is a program
+    /// bug rather than a caller error. Region size and record strides are fixed
+    /// at compile time. `state`'s ceilings make both unreachable for a validly
+    /// configured market. A dangling completed order is the same kind of bug.
     fn from(error: quoter_spec::SpecError) -> Self {
         match error {
             quoter_spec::SpecError::DanglingCompletedOrder => ClobError::BookInvariantViolated,

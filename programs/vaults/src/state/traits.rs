@@ -49,19 +49,10 @@ pub trait VaultDepositorBase {
     fn get_hurdle_rate_at_basis(&self) -> u32;
     fn set_hurdle_rate_at_basis(&mut self, hurdle_rate: u32);
 
-    /// The profit-share policy that applies to this depositor's unpriced gain.
-    ///
-    /// A fee policy installs for the whole vault at one instant, but the vault cannot settle every
-    /// depositor at that instant. A raised rate would therefore price gain that was earned before
-    /// the raise existed. The depositor keeps the policy that was in force when its high-water
-    /// mark was last set. That policy holds until the depositor realizes the gain. The manager
-    /// moves a depositor onto a new policy with the `apply_profit_share` instruction, which
-    /// realizes the gain at the old policy first.
-    ///
-    /// A policy that is better for the depositor applies at once. `update_vault` therefore keeps
-    /// its immediate effect, because it can only lower the profit share and only raise the hurdle
-    /// rate. The protocol profit share needs no equivalent, because `update_vault_protocol` can
-    /// only lower it.
+    /// The profit-share policy for this depositor's unpriced gain: the policy in force at its last
+    /// high-water mark, held until `apply_profit_share` realizes the gain and moves the depositor
+    /// onto the current one. `update_vault` applies at once, since it can only lower the profit
+    /// share or raise the hurdle rate; `update_vault_protocol` only lowers, so needs no equivalent.
     fn effective_profit_share_policy(&self, vault: &Vault) -> (u32, u32) {
         (
             vault.profit_share.min(self.get_profit_share_at_basis()),
@@ -194,16 +185,10 @@ pub trait VaultDepositorBase {
         let profit_share_shares: u128 =
             vault_amount_to_depositor_shares(profit_share, vault.total_shares, vault_equity)?;
 
-        // Shares are indivisible, so a fee worth less than one share must not settle. Moving zero
-        // shares records the fee as paid while nothing transfers. Rounding up to one whole share
-        // takes far more value than the fee owes. At a high share price, which a rebase followed
-        // by a recovery can produce, a manager who cranks apply_profit_share takes a full share
-        // for each small gain. That captures close to all of a depositor's profit instead of the
-        // contracted rate.
-        //
-        // Defer instead. Transfer nothing and roll back the high-water mark and the fee-paid
-        // advance. The profit is charged later, once it has grown enough that the fee is worth at
-        // least one share (OtterSec #104).
+        // Shares are indivisible, so a fee worth less than one share must not settle. Moving zero shares
+        // records it paid without a transfer; rounding up to a full share takes far more than it owes,
+        // capturing near all of a depositor's profit. Defer instead: roll back the high-water mark and
+        // the fee-paid advance, and charge the profit later once it is worth one share (OtterSec #104).
         if profit_share > 0 && profit_share_shares == 0 {
             self.set_cumulative_profit_share_amount(cumulative_profit_share_before);
             self.set_profit_share_fee_paid(profit_share_fee_paid_before);
@@ -237,14 +222,10 @@ pub trait VaultDepositorBase {
             msg!("vp shares after: {}", vp.protocol_profit_and_fee_shares);
         }
 
-        // Move the depositor onto the vault's current profit share and hurdle rate only after the
-        // gain is realized at the old policy. A `profit_share > 0` test fails on a vault whose
-        // profit share is always 0, because the hurdle rate would then never advance. Compare the
-        // remaining value against the basis instead. A value at or below the basis means the basis
-        // rose to the high-water mark.
-        //
-        // The rule protects depositors and costs managers. A lowered hurdle rate does not reach a
-        // depositor until that depositor passes the old hurdle.
+        // Move the depositor onto the current profit share and hurdle rate only once the gain is realized at
+        // the old policy. A `profit_share > 0` test fails when profit share is always 0, so compare the
+        // remaining value against the basis instead: at or below basis means it rose to the high-water mark.
+        // A lowered hurdle rate protects depositors, reaching one only after it passes the old hurdle.
         let basis = self
             .get_net_deposits()
             .safe_add(self.get_cumulative_profit_share_amount())?;

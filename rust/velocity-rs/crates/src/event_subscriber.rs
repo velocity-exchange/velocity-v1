@@ -118,14 +118,10 @@ pub trait EventRpcProvider: Send + Sync + 'static {
 pub struct EventSubscriber;
 
 impl EventSubscriber {
-    /// Subscribe to velocity events of `sub_account`, backed by Ws APIs
+    /// Subscribe to velocity events of `sub_account`, backed by Ws APIs.
     ///
-    /// * `sub_account` - pubkey of the user's sub-account to subscribe to (use Velocity Program ID to get all program events)
-    ///
-    /// passing the program address `vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P`
-    /// will yield events from all sub-accounts.
-    ///
-    /// Returns a stream of events
+    /// Pass the velocity program address (`PROGRAM_ID`) as `sub_account` to
+    /// get events from every sub-account.
     pub async fn subscribe(
         ws: Arc<PubsubClient>,
         sub_account: Pubkey,
@@ -389,13 +385,11 @@ async fn grpc_log_stream(
 
 /// Whether a polled tx should have its logs walked for Velocity events.
 ///
-/// The decoded message's static account keys are a cheap skip when
-/// `PROGRAM_ID` is absent. A payload these crates cannot deserialize still
-/// has its logs walked, so Velocity events are not dropped. `decode()`
-/// returns `None` for a corrupt payload, and for a wire version newer than
-/// this crate stack. Walking alone is not enough. `parse_velocity_logs`
-/// decodes a payload only while `PROGRAM_ID` is the executing program in the
-/// invocation stack.
+/// The static account keys are a cheap skip when `PROGRAM_ID` is absent. A
+/// payload this crate cannot decode still has its logs walked, so no event
+/// is dropped on a corrupt payload or an unknown wire version.
+/// `parse_velocity_logs` still gates on `PROGRAM_ID` being the executing
+/// program before it decodes a payload.
 fn poll_should_parse_velocity_logs(transaction: &EncodedTransaction, signature: &str) -> bool {
     match transaction.decode() {
         Some(VersionedTransaction { message, .. }) => message
@@ -626,13 +620,12 @@ pub fn parse_velocity_logs<'a>(
     events
 }
 
-/// Try deserialize a velocity event type from raw log string
+/// Try deserialize a velocity event type from a raw log line.
 /// https://github.com/coral-xyz/anchor/blob/9d947cb26b693e85e1fd26072bb046ff8f95bdcf/client/src/lib.rs#L552
 ///
-/// Updates `invocation` from invoke, success and failed lines. Decodes a
-/// payload only while `PROGRAM_ID` is executing. A caller that walks a full
-/// transaction log must reuse one stack across the lines. See
-/// [`parse_velocity_logs`].
+/// Updates `invocation` from invoke, success and failed lines, and decodes
+/// a payload only while `PROGRAM_ID` is executing. Reuse one stack across
+/// a full transaction log; see [`parse_velocity_logs`].
 pub fn try_parse_log(
     invocation: &mut ProgramInvocationStack,
     raw: &str,
@@ -1015,11 +1008,8 @@ mod test {
     fn parses_nested_cpi_logs() {
         let _ = env_logger::try_init();
 
-        // When another program CPIs into velocity, velocity emits its events
-        // as `Program log:` and `Program data:` lines nested under the outer
-        // program's invocation. Build an OrderRecord place and an
-        // OrderActionRecord fill, then confirm both parse out of the
-        // interleaved outer-program logs.
+        // A CPI into velocity nests its `Program log:`/`Program data:` lines
+        // under the outer program's invocation; confirm both records still parse.
         let taker = Pubkey::new_unique();
         let maker = Pubkey::new_unique();
 
@@ -1412,6 +1402,7 @@ mod test {
                 format!("Program {PROGRAM_ID} success"),
             ]),
         );
+
         // The RPC returns a v1 payload. Nothing else differs from a v0 poll.
         tx.transaction = v1_wire_transaction(&signature, &sub_account);
         // Assert the decode as well as the outcome. The log-walk fallback in

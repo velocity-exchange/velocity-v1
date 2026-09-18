@@ -102,14 +102,17 @@ pub fn vamm_quote_levels(
             amm.bid_price(reserve_price, amm.short_spread, amm.reference_price_offset)?
         }
     };
+
     if let Some(limit) = taker_limit {
         let crossed_at_top = match direction {
             Direction::Long => limit < top,
             Direction::Short => limit > top,
         };
+
         if crossed_at_top {
             return Ok(vec![]);
         }
+
         let (reachable, trade_direction) =
             calculate_base_asset_amount_to_trade_to_price(amm, limit, position_direction)?;
         if trade_direction == position_direction {
@@ -119,6 +122,7 @@ pub fn vamm_quote_levels(
             return Ok(vec![]);
         }
     }
+
     let band_edge = {
         let band = (top as u128)
             .safe_mul(LAST_LOOK_BAND as u128)?
@@ -129,46 +133,43 @@ pub fn vamm_quote_levels(
         }
     };
 
-    // Last look. A rival price beyond the vAMM's top becomes a shading rung
-    // when it stays within the band and the taker's limit, best price first.
-    // It applies on every quote. The vAMM wins this flow at its honest price by
-    // price priority, so a fill at the rival's price instead is LP surplus and
-    // costs no maker anything. The depth behind each rung bounds what it
-    // reprices, below. A rung past the taker's limit prices its whole slice
-    // unfillable, so it is dropped here rather than truncated downstream.
+    // Last look: a rival price beyond the vAMM's top becomes a shading rung
+    // when within the band and the taker's limit, best price first. The vAMM
+    // already wins by price priority, so shading to that price is LP surplus
+    // at no maker's cost. A rung past the limit is dropped here as unfillable.
     let rung_edge = match (taker_limit, direction) {
         (Some(limit), Direction::Long) => band_edge.min(limit),
         (Some(limit), Direction::Short) => band_edge.max(limit),
         (None, _) => band_edge,
     };
-    // The best `VAMM_QUOTE_CHECKPOINTS` rival rungs, best first and deduped.
-    // Each one carries the depth the rivals offer at its price.
-    //
-    // A fixed array with an insert sort, rather than a collect and a truncate.
-    // Only this many rungs are ever read, and the collected form grows by
-    // doubling over every level of every rival book. A set that carries many
-    // makers abandons one buffer per doubling, on an allocator that never
-    // reclaims. The insert sort is also the cheaper walk. It is linear in the
-    // rungs kept rather than a sort of the whole set.
+
+    // The best `VAMM_QUOTE_CHECKPOINTS` rival rungs, best first and deduped,
+    // each carrying the rivals' depth at its price. An insert sort keeps this
+    // a fixed array instead of a collect-and-truncate, whose doubling buffers
+    // the allocator never reclaims; the insert sort is linear in rungs kept.
     let mut rival_rungs = [PriceLevel::default(); VAMM_QUOTE_CHECKPOINTS];
     let mut rung_count = 0usize;
     let ranks_before = |a: u64, b: u64| match direction {
         Direction::Long => a < b,
         Direction::Short => a > b,
     };
+
     for level in rival_books.iter().flat_map(|book| book.levels.iter()) {
         let price = level.price;
         let in_band = match direction {
             Direction::Long => price > top && price <= rung_edge,
             Direction::Short => price < top && price >= rung_edge && price > 0,
         };
+
         if !in_band || level.size == 0 {
             continue;
         }
+
         let mut at = 0usize;
         while at < rung_count && ranks_before(rival_rungs[at].price, price) {
             at += 1;
         }
+
         if at < rung_count && rival_rungs[at].price == price {
             // Two rivals at one price offer that price for both their sizes.
             rival_rungs[at].size = rival_rungs[at].size.saturating_add(level.size);
@@ -177,30 +178,32 @@ pub fn vamm_quote_levels(
         if at >= VAMM_QUOTE_CHECKPOINTS {
             continue;
         }
+
         // Shift the worse rungs down one. A full array drops its worst rung.
         let end = if rung_count < VAMM_QUOTE_CHECKPOINTS {
             rung_count
         } else {
             VAMM_QUOTE_CHECKPOINTS - 1
         };
+
         if at < end {
             rival_rungs.copy_within(at..end, at + 1);
         }
+
         rival_rungs[at] = PriceLevel {
             price,
             size: level.size,
         };
+
         rung_count = (rung_count + 1).min(VAMM_QUOTE_CHECKPOINTS);
     }
 
     // Each checkpoint holds a cumulative base and, for a rival rung, its
-    // shading price.
-    //
-    // A rung shades only as far as the rivals at that price or better can
-    // supply. `rival_depth` is that running total. Past it the taker's
-    // alternative is a worse rung, so the curve is priced honestly there, and a
-    // later rung shades it when one carries the depth. Both totals only grow
-    // down the ladder, so the checkpoints stay ordered.
+    // shading price. A rung shades only as far as the rivals at that price
+    // or better can supply; `rival_depth` is that running total. Past it the
+    // taker's alternative is a worse rung, so the curve prices honestly there
+    // until a later rung carries enough depth to shade it. Both totals only
+    // grow down the ladder, so the checkpoints stay ordered.
     let mut checkpoints: Vec<(u64, Option<u64>)> = Vec::with_capacity(VAMM_QUOTE_CHECKPOINTS + 1);
     let mut rival_depth = 0u64;
     for rung in rival_rungs[..rung_count].iter() {
@@ -210,12 +213,14 @@ pub fn vamm_quote_levels(
         if trade_direction != position_direction {
             continue;
         }
+
         let cumulative = cumulative.min(total).min(rival_depth);
         checkpoints.push((cumulative, Some(rung.price)));
         if cumulative == total {
             break;
         }
     }
+
     // Beyond the last rival rung the curve is priced honestly. The checkpoints
     // are equal-size, and the loop below prices them from the swap math.
     let covered = checkpoints.last().map(|c| c.0).unwrap_or(0);
@@ -230,6 +235,7 @@ pub fn vamm_quote_levels(
             } else {
                 total.min(covered.safe_add(chunk.safe_mul(k)?)?)
             };
+
             checkpoints.push((cumulative, None));
             if cumulative == total {
                 break;
@@ -262,6 +268,7 @@ pub fn vamm_quote_levels(
         if cumulative <= previous {
             continue;
         }
+
         let size = cumulative.safe_sub(previous)?;
         let notional = calculate_base_swap_output(amm, cumulative, swap_direction)?
             .quote_asset_amount
@@ -280,14 +287,17 @@ pub fn vamm_quote_levels(
                 .min(honest)
                 .min(bound.unwrap_or(u64::MAX)),
         };
+
         if price == 0 {
             break;
         }
+
         bound = Some(price);
         levels.push(PriceLevel { price, size });
         previous = cumulative;
         previous_notional = notional;
     }
+
     Ok(levels)
 }
 
@@ -322,6 +332,7 @@ impl RouterQuoter for AmmQuoter<'_> {
         if fill.base_filled > 0 {
             self.commit_fill(ctx, &fill)?;
         }
+
         Ok(fill)
     }
 }
@@ -349,6 +360,7 @@ mod tests {
             max_fill_reserve_fraction: 4,
             ..AMM::default()
         };
+
         amm.seed_no_spread_quote_state();
         amm
     }
@@ -484,11 +496,10 @@ mod tests {
         let limit = TOP + TOP / 200;
         let levels = vamm_quote_levels(&amm, Direction::Long, size, 1, &[], Some(limit)).unwrap();
 
-        // The ladder quotes the reachable slice. It is nonzero, it is smaller
-        // than the request, and every rung stays within the limit. A rung is
-        // priced at its slice's true average cost, so the deepest one sits at
-        // or under the limit. The limit bounds where the curve was cut, not
-        // what the last slice costs.
+        // The ladder quotes the reachable slice: nonzero, smaller than the
+        // request, every rung within the limit. Each rung prices at its
+        // slice's true average cost, so the limit bounds where the curve was
+        // cut, not what the last slice costs.
         let quoted: u64 = levels.iter().map(|l| l.size).sum();
         assert!(quoted > 0);
         assert!(quoted < size);
@@ -609,6 +620,7 @@ mod ts_mirror_fixture {
             max_fill_reserve_fraction: 4,
             ..AMM::default()
         };
+
         amm.seed_no_spread_quote_state();
         for (label, direction) in [("long", Direction::Long), ("short", Direction::Short)] {
             let levels =
@@ -619,6 +631,7 @@ mod ts_mirror_fixture {
                 .collect();
             println!("TS_MIRROR {} {}", label, encoded.join(","));
         }
+
         // A take past the per-fill reserve throttle. The ladder covers
         // `calculate_amm_available_liquidity` and not the size asked for, so
         // this is the case that catches a mirror which quotes the room to the

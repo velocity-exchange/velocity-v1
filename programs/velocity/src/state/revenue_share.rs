@@ -213,12 +213,10 @@ impl RevenueShareEscrow {
         num_builders * std::mem::size_of::<BuilderInfo>() // builders data
     }
 
-    /// Upper bound only. The message used to claim a lower bound of 1 that no
-    /// check enforced, which is the invariant OtterSec #114 exploited.
-    /// `handle_initialize_revenue_share_escrow` checks that minimum, where it
-    /// can be applied safely. This function does not check it, because
-    /// `resize` and `change_approved_builder` also call it. An escrow already
-    /// at zero capacity on chain has to stay able to resize its way out.
+    /// Upper bound only. `handle_initialize_revenue_share_escrow` enforces the
+    /// lower bound of 1 at init, the invariant OtterSec #114 exploited when
+    /// unenforced. This skips it because `resize` and `change_approved_builder`
+    /// also call it, and a zero-capacity escrow must stay able to resize out.
     pub fn validate(&self) -> VelocityResult<()> {
         validate!(
             self.orders.len() <= 128 && self.approved_builders.len() <= 128,
@@ -508,17 +506,13 @@ impl<'a> RevenueShareEscrowZeroCopyMut<'a> {
         Err(ErrorCode::RevenueShareEscrowOrdersAccountFull)
     }
 
-    /// True when any builder row for `sub_account_id` is still outstanding,
-    /// which means `open && !completed`. Only a `Completed` row is payable by
-    /// the sweep, so an outstanding one would be stranded if the subaccount id
-    /// were retired (OtterSec #128). Referral rows are keyed by market rather
-    /// than by order id and are not tied to a subaccount, so this does not
-    /// count them.
-    ///
-    /// A row that cannot be read propagates its error instead of being
-    /// skipped. This guards a one-way state change, the retirement of a
-    /// subaccount id, so an unreadable row must abort the deletion rather than
-    /// read as nothing outstanding.
+    /// True when any builder row for `sub_account_id` is still outstanding
+    /// (`open && !completed`). Only a `Completed` row is payable by the sweep,
+    /// so an outstanding one would be stranded if the subaccount id were
+    /// retired (OtterSec #128). Referral rows are keyed by market, not
+    /// subaccount, so they do not count. A row that cannot be read propagates
+    /// its error instead of being skipped, since this guards the one-way
+    /// retirement of a subaccount id and must abort rather than read as nothing outstanding.
     pub fn has_outstanding_orders_for_sub_account(
         &self,
         sub_account_id: u16,
@@ -548,30 +542,19 @@ impl<'a> RevenueShareEscrowZeroCopyMut<'a> {
                     continue;
                 }
                 if rev_share_order.is_open() && !rev_share_order.is_completed() {
-                    // Match by (sub_account_id, order_id) across the whole order
-                    // list, not by the row's stored `user_order_index`. That
-                    // index is captured at placement and can go stale, because
-                    // the order can move to a different slot or a later order
-                    // can occupy that slot. The stale index made this mark a
-                    // still-open fee-bearing row Completed and clear it early
-                    // (OtterSec #82). Order ids are unique among a user's open
-                    // orders, so the scan is exact.
+                    // Match by (sub_account_id, order_id) across the whole list,
+                    // not the row's stale-prone `user_order_index`, which once
+                    // let this mark a still-open fee-bearing row Completed early
+                    // (OtterSec #82). Order ids are unique among open orders.
                     let listed_open = user.orders.iter().any(|user_order| {
                         user_order.status == OrderStatus::Open
                             && user_order.order_id == rev_share_order.order_id
                     });
-                    // A plain CLOB order has no `orders` row at all. Placement
-                    // reserves the position's open-order count and writes
-                    // nothing else, and the place-and-take remainder that
-                    // migrates onto the book does the same. The scan above
-                    // therefore reads a live book order as gone and would clear
-                    // its row while the order still rests. That is the same
-                    // premature completion as OtterSec #82, reached by a
-                    // different route. Velocity records a book-resident order
-                    // only as that count, so while the market has any, this
-                    // reconciler cannot prove this row's order is gone and fails
-                    // closed. The row stays Open, and the first settle after the
-                    // book clears revokes it.
+
+                    // A book-resident order carries no `orders` row, only the
+                    // position's open-order count, so the scan above misreads it
+                    // as gone, the same premature-completion bug as OtterSec #82.
+                    // This reconciler fails closed: the row stays Open until the book clears.
                     let book_resident = rev_share_order.market_type == MarketType::Perp
                         && user.clob_resident_open_orders(rev_share_order.market_index) > 0;
                     if !listed_open && !book_resident {
@@ -782,6 +765,7 @@ mod revoke_completed_orders_tests {
             open_orders: 1,
             ..PerpPosition::default()
         };
+
         let user = User {
             sub_account_id: 0,
             orders: [Order::default(); 32],
@@ -802,6 +786,7 @@ mod revoke_completed_orders_tests {
             let other_market = escrow.get_order_mut(0).unwrap();
             other_market.market_index = 3;
         }
+
         escrow.revoke_completed_orders(&user).unwrap();
         assert!(
             escrow.get_order(0).unwrap().is_available(),

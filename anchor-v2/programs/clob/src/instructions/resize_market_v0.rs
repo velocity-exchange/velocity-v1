@@ -34,6 +34,7 @@ pub fn handle_resize_market_v0(
         args.new_capacity as usize > market.capacity(),
         ClobError::InvalidCapacity
     );
+
     market.resize_to_capacity(args.new_capacity)?;
     market.top_up(ctx.accounts.payer.as_ref())?;
     market.grow_free_list()?;

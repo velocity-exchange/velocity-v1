@@ -46,7 +46,7 @@ own `rust/target/`, so its split solana 4.2 crate tree never unifies with the SB
 | --------------------------- | ----------- | -------------------------------------------------------------------------------------------------------------- |
 | Rust                        | ≥ 1.89      | The Anchor 1.0 MSRV. CI pins 1.91.1 in `RUST_TOOLCHAIN`. Develop on ≥ 1.77 so the 16-byte `u128` alignment guards fire locally |
 | Rust nightly (rustfmt only) | any recent  | `rustup toolchain install nightly --component rustfmt`. Formatting only; builds, clippy and tests stay on stable |
-| Solana CLI                  | ≥ 4.3       | Needed for a `cargo-build-sbf` that can emit SBPFv3. 4.2.2 ships 4.1.0, which cannot. CI pins `4.3.0-rc.1`      |
+| Solana CLI                  | ≥ 4.3       | Needed for a `cargo-build-sbf` that can emit SBPFv3. 4.2.2 ships 4.1.0, which cannot. CI pins `4.3.0`           |
 | Solana platform-tools       | ≥ v1.56     | The SBPFv3 minimum; the repo pins v1.57. Older versions also cannot parse `edition2024` dependencies. See [Troubleshooting](#troubleshooting) |
 | Anchor CLI                  | 1.0.2       | Used for the IDL only. The `.so` is built by `deploy-scripts/build-sbf.sh`, because Anchor pins its own platform-tools |
 | Bun                         | ≥ 1.x       | The only supported JS package manager here, not yarn or npm. The repo pins `bun@1.3.14` in `packageManager`    |

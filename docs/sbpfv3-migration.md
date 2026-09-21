@@ -166,9 +166,8 @@ instructions. Without them `solana-verify` defaults to `--arch v0` and reproduce
 Bumping `VERIFIABLE_BUILD_IMAGE` when a 4.3.x tag ships is still worth doing, to drop the override
 rather than to unblock anything.
 
-`SOLANA_VERSION` in CI is pinned to `4.3.0-rc.1`, a release candidate, because no stable Agave ships
-a compliant `cargo-build-sbf` yet: 4.2.2 ships 4.1.0 with platform-tools v1.54. Move to 4.3.0 final
-when it ships.
+`SOLANA_VERSION` in CI is pinned to `4.3.0`, the first stable Agave whose `cargo-build-sbf` can emit
+SBPFv3. 4.2.2 ships 4.1.0 with platform-tools v1.54, under the v1.56 minimum.
 
 ## Local setup
 

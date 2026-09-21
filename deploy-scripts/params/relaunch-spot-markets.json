@@ -163,14 +163,14 @@
 			"imf_factor": 4600,
 			"liquidator_fee": 7500,
 			"if_liquidation_fee": 77000,
-			"scale_initial_asset_weight_start": "10000000000",
-			"withdraw_guard_threshold": "634492339",
+			"scale_initial_asset_weight_start": "250000000000",
+			"withdraw_guard_threshold": "621841698",
 			"order_tick_size": "10000",
 			"order_step_size": "10000",
 			"if_total_factor": 100000,
-			"max_token_deposits": "1335773346",
+			"max_token_deposits": "32728510460",
 			"max_token_borrows_fraction": 5000,
-			"deposit_cap_usd": 20000,
+			"deposit_cap_usd": 500000,
 			"withdraw_guard_usd": 9500
 		}
 	]

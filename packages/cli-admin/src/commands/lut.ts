@@ -185,7 +185,6 @@ export function registerLut(parent: Command): void {
 					'addresses already present are skipped. The signer must be the table authority. ' +
 					"Defaults to the env's configured table."
 			)
-			.option('--dry-run', 'print what would be added, send nothing', false)
 	).action(async (address: string | undefined, _flags, cmd: Command) => {
 		const opts = readGlobalOpts(cmd);
 		const local = cmd.opts() as { dryRun: boolean };

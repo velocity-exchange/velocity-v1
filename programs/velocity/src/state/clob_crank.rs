@@ -422,11 +422,11 @@ impl ClobCrankConditionsV0 {
         // below are in the shape this program addresses them by.
         self.relay
             .migrate()
-            .map_err(|_| error!(ErrorCode::DefaultError))?;
+            .map_err(|_| error!(ErrorCode::InvalidConditionBlock))?;
 
         self.relay
             .write_resolvers(refs)
-            .map_err(|_| error!(ErrorCode::DefaultError))
+            .map_err(|_| error!(ErrorCode::ConditionResolverListTooLarge))
     }
 
     /// The block region, for `relay_spec::read_block`.
@@ -440,7 +440,7 @@ impl ClobCrankConditionsV0 {
     pub fn init_block(&mut self) -> Result<()> {
         self.relay
             .init(CLOB_CRANK_BLOCK_OFFSET as u32)
-            .map_err(|_| error!(ErrorCode::DefaultError))
+            .map_err(|_| error!(ErrorCode::InvalidConditionBlock))
     }
 
     pub fn set_condition(
@@ -449,12 +449,12 @@ impl ClobCrankConditionsV0 {
         condition: &relay_spec::ConditionV0,
     ) -> Result<()> {
         ConditionBlock::write_condition(&mut self.relay, index, condition)
-            .map_err(|_| error!(ErrorCode::DefaultError))
+            .map_err(|_| error!(ErrorCode::InvalidConditionBlock))
     }
 
     pub fn get_condition(&self, index: usize) -> Result<relay_spec::ConditionV0> {
         ConditionBlock::read_condition(&self.relay, index)
-            .map_err(|_| error!(ErrorCode::DefaultError))
+            .map_err(|_| error!(ErrorCode::InvalidConditionBlock))
     }
 
     pub fn edit_condition(
@@ -463,12 +463,12 @@ impl ClobCrankConditionsV0 {
         f: impl FnOnce(&mut relay_spec::ConditionV0),
     ) -> Result<()> {
         ConditionBlock::update_condition(&mut self.relay, index, f)
-            .map_err(|_| error!(ErrorCode::DefaultError))
+            .map_err(|_| error!(ErrorCode::InvalidConditionBlock))
     }
 
     pub fn clear_condition(&mut self, index: usize) -> Result<()> {
         ConditionBlock::deactivate_condition(&mut self.relay, index)
-            .map_err(|_| error!(ErrorCode::DefaultError))
+            .map_err(|_| error!(ErrorCode::InvalidConditionBlock))
     }
 
     /// Pay `amount` out of the reservoir to the keeper.
@@ -548,7 +548,7 @@ impl ClobCrankConditionsV0 {
         let mut data = conditions.try_borrow_mut_data()?;
         const END: usize = CLOB_CRANK_SPENDABLE_MIRROR_OFFSET + 8;
         data.get_mut(CLOB_CRANK_SPENDABLE_MIRROR_OFFSET..END)
-            .ok_or(ErrorCode::DefaultError)?
+            .ok_or(ErrorCode::ClobCrankAccountTooSmall)?
             .copy_from_slice(&spendable.to_le_bytes());
         Ok(())
     }

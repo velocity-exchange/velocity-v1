@@ -193,7 +193,7 @@ fn find_market_slab<'info>(
         let loader = AccountLoader::<QuoterSlabV0>::try_from(info)?;
         validate!(
             loader.load()?.market == market_index,
-            ErrorCode::DefaultError,
+            ErrorCode::InvalidQuoterConfig,
             "quoter slab {} is for market {}, quote is for market {}",
             loader.key(),
             loader.load()?.market,
@@ -278,7 +278,7 @@ fn quote_one_slot<'info>(
         )
         .map_err(|e| {
             msg!("quoter {} quote failed: {}", entry_key, e);
-            ErrorCode::DefaultError
+            ErrorCode::FailedQuoterCpi
         })?;
     Ok(Some(QuotedSlot {
         priority: slot.config.priority,

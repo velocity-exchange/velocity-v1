@@ -78,7 +78,7 @@ pub fn handle_initialize_revenue_share_escrow<'c: 'info, 'info>(
     // until someone calls the permissionless resize (OtterSec #114).
     validate!(
         num_orders > 0,
-        ErrorCode::DefaultError,
+        ErrorCode::RevenueShareEscrowNeedsOrderSlot,
         "revenue share escrow must be initialized with at least one order slot"
     )?;
 
@@ -121,7 +121,7 @@ pub fn handle_change_approved_builder<'c: 'info, 'info>(
 ) -> Result<()> {
     validate!(
         ctx.accounts.escrow.authority != builder,
-        ErrorCode::DefaultError,
+        ErrorCode::RevenueShareEscrowAuthorityMismatch,
         "Builder cannot be the same as the escrow authority"
     )?;
 

@@ -272,7 +272,7 @@ pub fn split_across_quoters(
 ) -> VelocityResult<Vec<QuoterAllocation>> {
     validate!(
         !books.is_empty(),
-        ErrorCode::DefaultError,
+        ErrorCode::QuoterRouteHasNoBooks,
         "router split needs at least one book"
     )?;
 

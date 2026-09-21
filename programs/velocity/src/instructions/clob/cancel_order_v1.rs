@@ -88,7 +88,7 @@ pub fn handle_cancel_order_v1(
 
     validate!(
         removed.user == user_ref,
-        ErrorCode::DefaultError,
+        ErrorCode::InvalidUserAccount,
         "clob cancelled an order for {}/{} instead of the passed user",
         removed.user.authority,
         removed.user.sub_account_id

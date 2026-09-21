@@ -106,14 +106,14 @@ impl FiredConditionArgV0 {
                         other
                     );
 
-                    Err(ErrorCode::DefaultError.into())
+                    Err(ErrorCode::UnrecognizedCrankCondition.into())
                 }
             };
         }
 
         validate!(
             self.target == ctx.accounts.crank_conditions.key(),
-            ErrorCode::DefaultError,
+            ErrorCode::UnrecognizedCrankCondition,
             "fired condition names {}, which is neither this market's book nor its conditions",
             self.target
         )?;
@@ -123,7 +123,7 @@ impl FiredConditionArgV0 {
             CLOB_CRANK_REFILL => Ok(ClobCrankWork::Refill),
             other => {
                 msg!("conditions slot {} is not a crank velocity serves", other);
-                Err(ErrorCode::DefaultError.into())
+                Err(ErrorCode::UnrecognizedCrankCondition.into())
             }
         }
     }

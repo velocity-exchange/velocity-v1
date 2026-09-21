@@ -14,7 +14,7 @@ pub fn handle_force_delete_user<'c: 'info, 'info>(
     let pyra_program = pubkey!("6JjHXLheGSNvvexgzMthEcgjkcirDrGduc3HAKB2P1v2");
     validate!(
         *ctx.accounts.authority.owner != pyra_program,
-        ErrorCode::DefaultError,
+        ErrorCode::UserCantBeDeleted,
         "pyra accounts are exempt from force_delete_user"
     )?;
 
@@ -56,7 +56,7 @@ pub fn handle_force_delete_user<'c: 'info, 'info>(
 
     validate!(
         !user.perp_positions.iter().any(|p| !p.is_available()),
-        ErrorCode::DefaultError,
+        ErrorCode::UserCantBeDeleted,
         "user must have no perp positions"
     )?;
 
@@ -104,7 +104,7 @@ fn require_deletable(user: &User, state: &State, maps: &mut AccountMaps, slot: u
     let max_equity = QUOTE_PRECISION_I128 / 20;
     validate!(
         user_equity <= max_equity,
-        ErrorCode::DefaultError,
+        ErrorCode::UserCantBeDeleted,
         "user equity must be less than {}",
         max_equity
     )?;
@@ -119,7 +119,7 @@ fn require_deletable(user: &User, state: &State, maps: &mut AccountMaps, slot: u
         validate!(
             // ~3 months (12 weeks)
             time_since_last_active >= Millis::from_secs(7_257_600),
-            ErrorCode::DefaultError,
+            ErrorCode::UserCantBeDeleted,
             "user not inactive for long enough: {} ms",
             time_since_last_active.as_ms()
         )?;

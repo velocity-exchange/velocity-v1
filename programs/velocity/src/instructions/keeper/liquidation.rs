@@ -28,7 +28,7 @@ pub fn handle_liquidate_perp<'c: 'info, 'info>(
             .liquidator
             .load()?
             .is_protocol_user(&state.signer),
-        ErrorCode::DefaultError,
+        ErrorCode::InvalidLiquidation,
         "the protocol user only liquidates via liquidate_perp_with_fill"
     )?;
 
@@ -346,14 +346,14 @@ fn pay_liquidation_crank<'info>(
             .as_ref()
             .ok_or_else(|| -> anchor_lang::error::Error {
                 msg!("program-keeper liquidation requires the market's conditions account");
-                ErrorCode::DefaultError.into()
+                ErrorCode::CrankConditionsAccountRequired.into()
             })?;
 
     let payment = {
         let conditions = reservoir.load()?;
         validate!(
             conditions.market_index == market_index,
-            ErrorCode::DefaultError,
+            ErrorCode::CrankConditionsMarketMismatch,
             "conditions are for market {}, the liquidation is market {}",
             conditions.market_index,
             market_index

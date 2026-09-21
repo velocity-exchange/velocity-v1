@@ -35,7 +35,7 @@ pub fn velocity_maps<'a>(
     let slot_clock = velocity::state::state::State::slot_clock_from_account_info(velocity_state)
         .map_err(|error| {
             msg!("invalid velocity State account: {}", error);
-            velocity::error::ErrorCode::DefaultError
+            velocity::error::ErrorCode::InvalidNativeStateAccount
         })?;
 
     load_maps(

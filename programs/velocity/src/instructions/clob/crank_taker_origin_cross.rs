@@ -207,7 +207,7 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
     let program_keeper_mode = load!(ctx.accounts.filler)?.is_protocol_user(&state.signer);
     validate!(
         !program_keeper_mode || ctx.accounts.crank_conditions.is_some(),
-        ErrorCode::DefaultError,
+        ErrorCode::CrankConditionsAccountRequired,
         "program-keeper crank requires the market's conditions account"
     )?;
 
@@ -215,7 +215,7 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
     // fails on the borrow, which reports nothing about the cause.
     validate!(
         ctx.accounts.filler.key() != ctx.accounts.taker.key(),
-        ErrorCode::DefaultError,
+        ErrorCode::CrossParticipantOverlap,
         "the cranker cannot be the taker of the cross it resolves"
     )?;
 
@@ -261,14 +261,14 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
             && !makers_and_referrer
                 .0
                 .contains_key(&ctx.accounts.taker.key()),
-        ErrorCode::DefaultError,
+        ErrorCode::CrossParticipantOverlap,
         "the counterparty section must not repeat the taker or the cranker"
     )?;
 
     let book_slot = ctx.accounts.quoter_slab.clob_slot(market_index)?;
     validate!(
         book_slot.quotes(),
-        ErrorCode::DefaultError,
+        ErrorCode::ClobQuoterNotActive,
         "CLOB quoter is not active and approved"
     )?;
 

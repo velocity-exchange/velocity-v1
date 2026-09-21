@@ -137,7 +137,7 @@ fn external_deposit_signer(authority: Pubkey, user: &User) -> Result<Option<Pubk
     #[cfg(feature = "mainnet-beta")]
     validate!(
         WHITELISTED_EXTERNAL_DEPOSITORS.contains(&authority),
-        ErrorCode::DefaultError,
+        ErrorCode::ExternalDepositorNotWhitelisted,
         "Not whitelisted external depositor"
     )?;
 
@@ -229,7 +229,7 @@ fn emit_deposit_record(
 fn admit_revenue_pool_deposit(spot_market: &SpotMarket, now: i64) -> Result<()> {
     validate!(
         !spot_market.is_in_settlement(now),
-        ErrorCode::DefaultError,
+        ErrorCode::SpotMarketNotActive,
         "spot market {} not active",
         spot_market.market_index
     )?;

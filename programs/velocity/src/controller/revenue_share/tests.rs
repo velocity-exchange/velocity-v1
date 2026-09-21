@@ -2047,7 +2047,7 @@ fn a_live_market_cannot_forfeit_a_row() {
             true,
             FORFEIT_AFTER + 1,
         ),
-        Err(ErrorCode::DefaultError)
+        Err(ErrorCode::PerpMarketNotInSettlement)
     );
 }
 
@@ -2089,7 +2089,7 @@ fn an_empty_account_of_another_address_is_not_proof() {
     // an unrelated address
     assert_eq!(
         resolve_builder_row(&market, builder_authority, &Pubkey::new_unique(), true, now),
-        Err(ErrorCode::DefaultError)
+        Err(ErrorCode::InvalidRevenueShareRecipient)
     );
     // sub-account 1 of the same beneficiary
     assert_eq!(
@@ -2100,7 +2100,7 @@ fn an_empty_account_of_another_address_is_not_proof() {
             true,
             now,
         ),
-        Err(ErrorCode::DefaultError)
+        Err(ErrorCode::InvalidRevenueShareRecipient)
     );
     // the payout account of a different authority
     assert_eq!(
@@ -2111,7 +2111,7 @@ fn an_empty_account_of_another_address_is_not_proof() {
             true,
             now,
         ),
-        Err(ErrorCode::DefaultError)
+        Err(ErrorCode::InvalidRevenueShareRecipient)
     );
     // only the derived address passes
     assert_eq!(
@@ -2268,7 +2268,7 @@ fn a_referral_row_credits_the_referrer() {
             FORFEIT_AFTER + 1,
             ESCROW_PERIOD,
         ),
-        Err(ErrorCode::DefaultError)
+        Err(ErrorCode::InvalidRevenueShareRecipient)
     );
     assert_eq!(
         super::resolve_revenue_share_forfeit_reason(
@@ -2314,7 +2314,7 @@ fn the_row_must_belong_to_the_market_and_owe_something() {
             FORFEIT_AFTER + 1,
             ESCROW_PERIOD,
         ),
-        Err(ErrorCode::DefaultError)
+        Err(ErrorCode::RevenueShareOrderMarketMismatch)
     );
     // order 1 owes nothing, so there is nothing to write off
     assert_eq!(
@@ -2329,6 +2329,6 @@ fn the_row_must_belong_to_the_market_and_owe_something() {
             FORFEIT_AFTER + 1,
             ESCROW_PERIOD,
         ),
-        Err(ErrorCode::DefaultError)
+        Err(ErrorCode::RevenueShareOrderHasNoFeesAccrued)
     );
 }

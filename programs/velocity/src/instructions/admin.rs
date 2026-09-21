@@ -2545,7 +2545,7 @@ pub fn handle_update_promo_fee_tier(
     // promo tier.
     validate!(
         (promo_fee_tier as usize) <= PERP_FEE_TIER_MAX_INDEX,
-        ErrorCode::DefaultError,
+        ErrorCode::InvalidFeeStructure,
         "promo fee tier {} above max populated tier {}",
         promo_fee_tier,
         PERP_FEE_TIER_MAX_INDEX
@@ -2575,7 +2575,7 @@ pub fn handle_update_transaction_fee_rails(
 ) -> Result<()> {
     validate!(
         rails.resource_fee_denominator > 0 || rails.resource_fee_numerator == 0,
-        ErrorCode::DefaultError,
+        ErrorCode::InvalidFeeStructure,
         "a resource fee rate needs a denominator"
     )?;
 
@@ -2613,7 +2613,7 @@ pub fn handle_update_liquidation_crank_reimbursement(
 
     validate!(
         share_bps <= 10_000,
-        ErrorCode::DefaultError,
+        ErrorCode::InvalidFeeStructure,
         "a share of a liquidation cannot exceed the liquidation"
     )?;
 
@@ -2758,7 +2758,7 @@ pub fn handle_update_oracle_guard_rails(
         )) && (0..=MAX_STALENESS_STORED_UNITS).contains(&legacy_slot_duration_i64_raw(
             oracle_guard_rails.validity.slots_before_stale_for_margin,
         )),
-        ErrorCode::DefaultError,
+        ErrorCode::InvalidOracleStalenessWindow,
         "oracle staleness windows out of range: amm [0, {}], margin [0, {}]",
         MAX_AMM_STALENESS_STORED_UNITS,
         MAX_STALENESS_STORED_UNITS
@@ -2827,14 +2827,14 @@ fn feature_gate_effective_slot(
     let data = account.try_borrow_data()?;
     validate!(
         data.len() == 9,
-        ErrorCode::DefaultError,
+        ErrorCode::InvalidFeatureGateAccount,
         "feature-gate account has the wrong data length"
     )?;
 
     // 0 means the feature is not activated. Any other value is malformed.
     validate!(
         data[0] == 1,
-        ErrorCode::DefaultError,
+        ErrorCode::FeatureGateNotActive,
         "IBRL feature gate {} is not activated yet (data[0] = {})",
         account.key,
         data[0]
@@ -2863,7 +2863,7 @@ fn validated_slot_duration_archive_update(
     validate!(
         previous_slot.is_none_or(|slot| effective_slot >= slot)
             && next_slot.is_none_or(|slot| effective_slot <= slot),
-        ErrorCode::DefaultError,
+        ErrorCode::SlotDurationTransitionInvalid,
         "IBRL transition slots are not monotonic"
     )?;
 
@@ -2875,7 +2875,7 @@ fn validated_slot_duration_archive_update(
         if transition_index > highest {
             validate!(
                 now_slot >= state.slot_duration_transition_slots[highest],
-                ErrorCode::DefaultError,
+                ErrorCode::SlotDurationTransitionInvalid,
                 "previous synchronized IBRL transition is not effective"
             )?;
         }
@@ -2892,7 +2892,7 @@ fn validated_slot_duration_archive_update(
     );
     validate!(
         proposed_clock.slot_duration_at(now_slot).as_ms() <= current_duration_ms,
-        ErrorCode::DefaultError,
+        ErrorCode::SlotDurationSyncRegresses,
         "IBRL synchronization cannot regress the active slot duration"
     )?;
     Ok(proposed_slots)
@@ -2917,7 +2917,7 @@ pub fn handle_sync_state_slot_duration(ctx: Context<SyncStateSlotDuration>) -> R
     if recorded != 0 {
         validate!(
             recorded == effective_slot,
-            ErrorCode::DefaultError,
+            ErrorCode::SlotDurationTransitionInvalid,
             "IBRL transition already recorded at {}, feature account resolves to {}",
             recorded,
             effective_slot
@@ -3271,7 +3271,7 @@ pub fn handle_update_perp_market_taker_fee_addon(
 
     validate!(
         taker_fee_addon_tenth_bps <= MAX_TAKER_FEE_ADDON_TENTH_BPS,
-        ErrorCode::DefaultError,
+        ErrorCode::InvalidFeeStructure,
         "taker fee addon {} greater than max {}",
         taker_fee_addon_tenth_bps,
         MAX_TAKER_FEE_ADDON_TENTH_BPS
@@ -4043,7 +4043,7 @@ fn update_mm_oracle(accounts: &[AccountInfo], data: &[u8], current_slot: u64) ->
     let incoming_price = i64::from_le_bytes(data[0..8].try_into().unwrap());
     if incoming_price <= 0 {
         msg!("MM oracle price is non-positive, not updating");
-        return Err(ErrorCode::DefaultError.into());
+        return Err(ErrorCode::OracleNonPositive.into());
     }
     let incoming_sequence_id = u64::from_le_bytes(data[8..16].try_into().unwrap());
     let source_slot = u64::from_le_bytes(data[16..24].try_into().unwrap());
@@ -4494,7 +4494,7 @@ pub fn handle_update_feature_bit_flags_builder_codes(
     if enable {
         validate!(
             ctx.accounts.admin.key().eq(&state.cold_admin),
-            ErrorCode::DefaultError,
+            ErrorCode::Unauthorized,
             "Only state admin can enable feature bit flags"
         )?;
 
@@ -4557,7 +4557,7 @@ pub fn handle_update_feature_bit_flags_swap_lp_pool(
     if enable {
         validate!(
             ctx.accounts.admin.key().eq(&state.cold_admin),
-            ErrorCode::DefaultError,
+            ErrorCode::Unauthorized,
             "Only state admin can re-enable after kill switch"
         )?;
 
@@ -5884,7 +5884,7 @@ mod native_auth_tests {
             let err = update_mm_oracle(&accounts, &payload, 100).unwrap_err();
             assert_eq!(
                 err,
-                ErrorCode::DefaultError.into(),
+                ErrorCode::OracleNonPositive.into(),
                 "price {incoming} against stored {stored} must be a hard error"
             );
 

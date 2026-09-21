@@ -304,7 +304,7 @@ impl<'a, 'info> ClobMarket<'a, 'info> {
         data.extend_from_slice(discriminator);
         args.serialize(&mut data).map_err(|_| {
             msg!("failed to serialize clob {} args", what);
-            ErrorCode::DefaultError
+            ErrorCode::PropAmmArgsEncodeFailed
         })?;
 
         invoke_signed(
@@ -337,12 +337,12 @@ impl<'a, 'info> ClobMarket<'a, 'info> {
 fn clob_response<R: AnchorDeserialize>(program: &Pubkey, what: &str) -> Result<R> {
     let (writer, response) = get_return_data().ok_or_else(|| -> Error {
         msg!("clob {} returned no response", what);
-        ErrorCode::DefaultError.into()
+        ErrorCode::InvalidQuoterResponse.into()
     })?;
 
     validate!(
         writer == *program,
-        ErrorCode::DefaultError,
+        ErrorCode::InvalidQuoterResponse,
         "clob {} return data written by {} instead of the book's program",
         what,
         writer
@@ -350,7 +350,7 @@ fn clob_response<R: AnchorDeserialize>(program: &Pubkey, what: &str) -> Result<R
 
     R::deserialize(&mut response.as_slice()).map_err(|_| {
         msg!("clob {} returned an undecodable response", what);
-        ErrorCode::DefaultError.into()
+        ErrorCode::InvalidQuoterResponse.into()
     })
 }
 
@@ -371,7 +371,7 @@ impl ClobReader<'_, '_> {
         data.extend_from_slice(&CLOB_NEXT_REMOVAL_V0_DISCRIMINATOR);
         args.serialize(&mut data).map_err(|_| {
             msg!("failed to serialize clob next removal args");
-            ErrorCode::DefaultError
+            ErrorCode::PropAmmArgsEncodeFailed
         })?;
 
         self.ask(data, "next removal")
@@ -395,7 +395,7 @@ impl ClobReader<'_, '_> {
             .serialize(&mut data)
             .map_err(|_| {
                 msg!("failed to serialize clob orders args");
-                ErrorCode::DefaultError
+                ErrorCode::PropAmmArgsEncodeFailed
             })?;
         self.ask::<ClobOrdersV0>(data, "orders")
             .map(|answer| answer.orders)
@@ -574,7 +574,7 @@ impl QuoterConfigV0 {
     pub fn validate_clob_book(&self, market_index: u16, book: &Pubkey) -> Result<()> {
         validate!(
             self.quoter_type == QuoterType::Clob,
-            ErrorCode::DefaultError,
+            ErrorCode::InvalidQuoterConfig,
             "quoter entry is not a CLOB"
         )?;
 
@@ -583,13 +583,13 @@ impl QuoterConfigV0 {
         // a stale entry the pin did not cover.
         validate!(
             self.program_id == crate::ids::clob_program::id(),
-            ErrorCode::DefaultError,
+            ErrorCode::InvalidQuoterConfig,
             "clob quoter runs program {}, not velocity's CLOB",
             self.program_id
         )?;
         validate!(
             self.market == market_index,
-            ErrorCode::DefaultError,
+            ErrorCode::InvalidQuoterConfig,
             "quoter entry is for market {}, call is for market {}",
             self.market,
             market_index
@@ -600,7 +600,7 @@ impl QuoterConfigV0 {
         // is therefore the vetted book binding.
         validate!(
             self.response_account == *book,
-            ErrorCode::DefaultError,
+            ErrorCode::InvalidQuoterConfig,
             "clob market is not the quoter entry's registered book"
         )?;
 

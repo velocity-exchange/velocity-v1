@@ -443,7 +443,7 @@ pub fn pay_taker_origin_crank_reward(
         // the position.
         validate!(
             paid == fee.crank_reward,
-            ErrorCode::DefaultError,
+            ErrorCode::MaxNumberOfPositions,
             "cranker's User cannot hold a position in market {} to be paid in",
             market_index
         )?;

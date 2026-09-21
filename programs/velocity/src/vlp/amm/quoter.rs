@@ -219,7 +219,7 @@ impl<'a> AmmQuoter<'a> {
     pub fn refresh(&mut self, ctx: &QuoteContext) -> VelocityResult<()> {
         let mm_oracle = ctx.mm_oracle.ok_or_else(|| {
             crate::msg!("AmmQuoter::refresh requires ctx.mm_oracle");
-            ErrorCode::DefaultError
+            ErrorCode::AmmQuoterMissingMmOracle
         })?;
 
         // The curve projection is slot-idempotent. A `last_update_slot` at this

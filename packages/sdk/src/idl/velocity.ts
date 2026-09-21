@@ -21390,6 +21390,246 @@ export type Velocity = {
       "code": 6410,
       "name": "orderTypeNotConditional",
       "msg": "A user order slot holds only a trigger order"
+    },
+    {
+      "code": 6411,
+      "name": "propAmmArgsEncodeFailed",
+      "msg": "A quoter CPI's arguments could not be sized or serialized"
+    },
+    {
+      "code": 6412,
+      "name": "quoterCpiAccountMissing",
+      "msg": "An account the quoter entry names is absent from the fill's accounts"
+    },
+    {
+      "code": 6413,
+      "name": "quoterCpiArgsTooLarge",
+      "msg": "A quoter CPI's arguments exceed the byte cap the wire allows"
+    },
+    {
+      "code": 6414,
+      "name": "propAmmResponseAccountBorrowConflict",
+      "msg": "The quoter's response account is already borrowed"
+    },
+    {
+      "code": 6415,
+      "name": "tooManyQuotersConsulted",
+      "msg": "A fill consults more quoters than the route allows"
+    },
+    {
+      "code": 6416,
+      "name": "invalidConditionBlock",
+      "msg": "A relay condition block failed its layout, version or bounds check"
+    },
+    {
+      "code": 6417,
+      "name": "conditionResolverListTooLarge",
+      "msg": "A resolver list exceeds the condition block's region"
+    },
+    {
+      "code": 6418,
+      "name": "routerQuoteSourcesFull",
+      "msg": "The router quote buffer holds no more sources"
+    },
+    {
+      "code": 6419,
+      "name": "routerQuoteLevelsFull",
+      "msg": "A source's book holds no more levels"
+    },
+    {
+      "code": 6420,
+      "name": "routerQuoteRowWithoutSource",
+      "msg": "A router quote row names no source"
+    },
+    {
+      "code": 6421,
+      "name": "relayScratchStageFailed",
+      "msg": "A resolved crank does not fit the relay scratch region"
+    },
+    {
+      "code": 6422,
+      "name": "crankConditionsAccountRequired",
+      "msg": "A program-keeper crank requires the market's conditions account"
+    },
+    {
+      "code": 6423,
+      "name": "crankConditionsMarketMismatch",
+      "msg": "The conditions account is for a different market than the fired order"
+    },
+    {
+      "code": 6424,
+      "name": "perpMarketAccountMismatch",
+      "msg": "The perp market account is for a different market than the caller names"
+    },
+    {
+      "code": 6425,
+      "name": "tooManyForceCancelRefs",
+      "msg": "Force cancel received more order references than it allows"
+    },
+    {
+      "code": 6426,
+      "name": "forceCancelSideMismatch",
+      "msg": "The order rested on a different side than the caller declared"
+    },
+    {
+      "code": 6427,
+      "name": "crossParticipantOverlap",
+      "msg": "A cross names the same account as more than one participant"
+    },
+    {
+      "code": 6428,
+      "name": "clobQuoterNotActive",
+      "msg": "The market's CLOB quoter is not active and approved"
+    },
+    {
+      "code": 6429,
+      "name": "unrecognizedCrankCondition",
+      "msg": "The fired condition is not a crank velocity serves"
+    },
+    {
+      "code": 6430,
+      "name": "quoterExecutorMissingSlab",
+      "msg": "The router executor holds no quoter slab"
+    },
+    {
+      "code": 6431,
+      "name": "quoterExecutorIndexOutOfRange",
+      "msg": "The router executor has no quoter at the index the route names"
+    },
+    {
+      "code": 6432,
+      "name": "failedQuoterCpi",
+      "msg": "A CPI to a quoter program failed"
+    },
+    {
+      "code": 6433,
+      "name": "requiredBaselineQuoterOmitted",
+      "msg": "The fill omits the market's mandatory public book"
+    },
+    {
+      "code": 6434,
+      "name": "quoterRouteHasNoBooks",
+      "msg": "A router split needs at least one book"
+    },
+    {
+      "code": 6435,
+      "name": "ammQuoterMissingMmOracle",
+      "msg": "The AMM quoter refresh requires the market maker oracle"
+    },
+    {
+      "code": 6436,
+      "name": "clobCrankAccountTooSmall",
+      "msg": "The crank conditions account is too small for the reservoir mirror"
+    },
+    {
+      "code": 6437,
+      "name": "revenueShareOrderMarketMismatch",
+      "msg": "The escrow order belongs to a different market"
+    },
+    {
+      "code": 6438,
+      "name": "revenueShareOrderHasNoFeesAccrued",
+      "msg": "The escrow order accrued no fees to forfeit"
+    },
+    {
+      "code": 6439,
+      "name": "tooManyMarketsPassed",
+      "msg": "The caller passed more markets than the instruction allows"
+    },
+    {
+      "code": 6440,
+      "name": "spotMarketNotActive",
+      "msg": "The spot market is not active"
+    },
+    {
+      "code": 6441,
+      "name": "delegateTransferNotAllowed",
+      "msg": "A delegate cannot transfer a deposit"
+    },
+    {
+      "code": 6442,
+      "name": "builderCodesDisabled",
+      "msg": "The builder codes feature is disabled"
+    },
+    {
+      "code": 6443,
+      "name": "perpMarketQuoteSpotMismatch",
+      "msg": "The perp market is not quoted in the given quote spot market"
+    },
+    {
+      "code": 6444,
+      "name": "revenueShareEscrowNeedsOrderSlot",
+      "msg": "A revenue share escrow needs at least one order slot"
+    },
+    {
+      "code": 6445,
+      "name": "relayExecutorInvalid",
+      "msg": "The staged relay executor is malformed"
+    },
+    {
+      "code": 6446,
+      "name": "selfSyncCostAboveCeiling",
+      "msg": "The self-sync price is above the cost ceiling"
+    },
+    {
+      "code": 6447,
+      "name": "selfSyncIntervalAboveCeiling",
+      "msg": "The self-sync interval is above the slot ceiling"
+    },
+    {
+      "code": 6448,
+      "name": "resolverMarginMapMissing",
+      "msg": "The resolver needs the stored margin map accounts"
+    },
+    {
+      "code": 6449,
+      "name": "crankTreasuryWatermarkInvalid",
+      "msg": "The crank treasury watermark or refill target is out of range"
+    },
+    {
+      "code": 6450,
+      "name": "resolverAccountMustBeReadOnly",
+      "msg": "A resolver account must be read only"
+    },
+    {
+      "code": 6451,
+      "name": "invalidFeatureGateAccount",
+      "msg": "The feature gate account has the wrong data length"
+    },
+    {
+      "code": 6452,
+      "name": "featureGateNotActive",
+      "msg": "The feature gate is not activated yet"
+    },
+    {
+      "code": 6453,
+      "name": "slotDurationSyncRegresses",
+      "msg": "A slot duration sync cannot regress the active duration"
+    },
+    {
+      "code": 6454,
+      "name": "slotDurationTransitionInvalid",
+      "msg": "The slot duration transition is already recorded or not effective"
+    },
+    {
+      "code": 6455,
+      "name": "invalidOracleStalenessWindow",
+      "msg": "An oracle staleness window is out of range"
+    },
+    {
+      "code": 6456,
+      "name": "externalDepositorNotWhitelisted",
+      "msg": "The authority is not a whitelisted external depositor"
+    },
+    {
+      "code": 6457,
+      "name": "spotMarketVaultInvariantNotViolated",
+      "msg": "The spot market vault invariant is intact, so there is nothing to settle"
+    },
+    {
+      "code": 6458,
+      "name": "selfSyncIntervalTooShort",
+      "msg": "The self-sync interval is too short for the payment it carries"
     }
   ],
   "types": [

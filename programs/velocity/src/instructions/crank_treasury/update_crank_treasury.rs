@@ -55,7 +55,7 @@ pub fn handle_update_crank_treasury(
 
     validate!(
         refill_watermark_cranks > 0,
-        ErrorCode::DefaultError,
+        ErrorCode::CrankTreasuryWatermarkInvalid,
         "a zero watermark never wakes a refill"
     )?;
 
@@ -65,7 +65,7 @@ pub fn handle_update_crank_treasury(
     // only revert.
     validate!(
         refill_target_cranks > refill_watermark_cranks,
-        ErrorCode::DefaultError,
+        ErrorCode::CrankTreasuryWatermarkInvalid,
         "refill target of {} cranks must exceed the {} that wakes it",
         refill_target_cranks,
         refill_watermark_cranks

@@ -159,7 +159,7 @@ impl StagedCall {
     pub fn arg(mut self, value: impl AnchorSerialize) -> Result<Self> {
         value
             .serialize(&mut self.data)
-            .map_err(|_| ErrorCode::DefaultError)?;
+            .map_err(|_| ErrorCode::RelayExecutorInvalid)?;
         Ok(self)
     }
 
@@ -167,7 +167,7 @@ impl StagedCall {
         let executor_disc: [u8; 8] = std::convert::TryInto::<[u8; 8]>::try_into(self.disc)
             .map_err(|_| {
                 msg!("staged executor discriminator is not 8 bytes");
-                error!(ErrorCode::DefaultError)
+                error!(ErrorCode::RelayExecutorInvalid)
             })?;
         let mut names_placeholder = false;
         let accounts = self
@@ -176,7 +176,7 @@ impl StagedCall {
             .map(|meta| {
                 if meta.is_signer {
                     msg!("staged executor named a signer: {}", meta.pubkey);
-                    return Err(error!(ErrorCode::DefaultError));
+                    return Err(error!(ErrorCode::RelayExecutorInvalid));
                 }
                 if meta.pubkey.to_bytes() == KEEPER_PLACEHOLDER {
                     names_placeholder = true;
@@ -191,7 +191,7 @@ impl StagedCall {
             .collect::<Result<Vec<_>>>()?;
         if !names_placeholder {
             msg!("staged executor names no keeper placeholder");
-            return Err(error!(ErrorCode::DefaultError));
+            return Err(error!(ErrorCode::RelayExecutorInvalid));
         }
 
         Ok(ResolvedCrankV0::new(
@@ -226,7 +226,7 @@ pub fn resolve_into<'info>(
 /// Every resolver names its executor through a generated `DISCRIMINATOR`
 /// constant, which is a slice. A crank spec holds eight bytes.
 pub fn disc8(disc: &[u8]) -> Result<[u8; 8]> {
-    std::convert::TryInto::<[u8; 8]>::try_into(disc).map_err(|_| error!(ErrorCode::DefaultError))
+    std::convert::TryInto::<[u8; 8]>::try_into(disc).map_err(|_| error!(ErrorCode::CastingFailure))
 }
 
 /// Stage a call to one of velocity's own executors, named once.

@@ -736,8 +736,14 @@ accounts/events with the previous TS shapes should note:
   `ReduceOnlyOrderCannotRestOnClob` (6401), `LiquidationConflictsWithClobOrders` (6402),
   `QuoterReportExceedsReservation` (6403), `UnattestedSynchronousTake` (6404), `QuoterSlabFull`
   (6405), `QuoterNotOnSlab` (6406), `CrossMatchLegsDoNotCross` (6407),
-  `TakerExposureNotProtocolOwned` (6408), and `ClobRestUnavailable` (6409), which is the last
-  code. Decode errors by code as before, but expect `Deprecated*` names for retired features.
+  `TakerExposureNotProtocolOwned` (6408), `ClobRestUnavailable` (6409) and
+  `OrderTypeNotConditional` (6410). Codes 6411 to 6458 replace `DefaultError` at the sites this
+  branch added, so a router, CLOB, quoter or crank failure decodes to a name that states the
+  cause. They cover quoter CPI encoding and account wiring, relay condition blocks, crank
+  conditions, cross participants, router quote buffers, feature gates and slot duration sync.
+  `DefaultError` keeps every site Drift already used it for, so its meaning is unchanged on
+  inherited instructions. Decode errors by code as before, but expect `Deprecated*` names for
+  retired features.
 - **`add_insurance_fund_stake`'s `amount` is an upper bound, not the staked amount**
   (if-add-exact-share-pricing): IF shares are indivisible, so the program transfers only the
   portion of `amount` that prices to whole shares and leaves the remainder (always less than one

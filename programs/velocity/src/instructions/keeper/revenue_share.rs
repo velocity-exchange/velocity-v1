@@ -134,7 +134,7 @@ pub fn handle_settle_revenue_share<'c: 'info, 'info>(
 
     validate!(
         state.builder_codes_enabled(),
-        ErrorCode::DefaultError,
+        ErrorCode::BuilderCodesDisabled,
         "builder codes feature is disabled"
     )?;
 
@@ -162,7 +162,7 @@ pub fn handle_settle_revenue_share<'c: 'info, 'info>(
             .get_ref(&market_index)?
             .quote_spot_market_index
             == QUOTE_SPOT_MARKET_INDEX,
-        ErrorCode::DefaultError,
+        ErrorCode::PerpMarketQuoteSpotMismatch,
         "perp market {} is not quoted in the quote spot market",
         market_index
     )?;

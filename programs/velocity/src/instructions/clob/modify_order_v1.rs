@@ -187,7 +187,7 @@ pub fn handle_modify_order_v1<'c: 'info, 'info>(
 
     validate!(
         removed.user == user_ref,
-        ErrorCode::DefaultError,
+        ErrorCode::InvalidUserAccount,
         "clob cancelled an order for {}/{} instead of the passed user",
         removed.user.authority,
         removed.user.sub_account_id
@@ -320,7 +320,7 @@ fn bind_book_for_replacement<'a, 'info>(
         // gate a fresh placement does.
         validate!(
             slot.quotes(),
-            ErrorCode::DefaultError,
+            ErrorCode::ClobQuoterNotActive,
             "CLOB quoter is not active and approved; cancel the order instead"
         )?;
 

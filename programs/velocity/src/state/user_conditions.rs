@@ -226,7 +226,7 @@ impl UserConditionsV0 {
     pub fn init_block(&mut self) -> Result<()> {
         self.relay
             .init(USER_CONDITIONS_BLOCK_OFFSET as u32)
-            .map_err(|_| error!(ErrorCode::DefaultError))
+            .map_err(|_| error!(ErrorCode::InvalidConditionBlock))
     }
 
     pub fn set_condition(
@@ -235,12 +235,12 @@ impl UserConditionsV0 {
         condition: &relay_spec::ConditionV0,
     ) -> Result<()> {
         ConditionBlock::write_condition(&mut self.relay, index, condition)
-            .map_err(|_| error!(ErrorCode::DefaultError))
+            .map_err(|_| error!(ErrorCode::InvalidConditionBlock))
     }
 
     pub fn get_condition(&self, index: usize) -> Result<relay_spec::ConditionV0> {
         ConditionBlock::read_condition(&self.relay, index)
-            .map_err(|_| error!(ErrorCode::DefaultError))
+            .map_err(|_| error!(ErrorCode::InvalidConditionBlock))
     }
 
     pub fn edit_condition(
@@ -249,12 +249,12 @@ impl UserConditionsV0 {
         f: impl FnOnce(&mut relay_spec::ConditionV0),
     ) -> Result<()> {
         ConditionBlock::update_condition(&mut self.relay, index, f)
-            .map_err(|_| error!(ErrorCode::DefaultError))
+            .map_err(|_| error!(ErrorCode::InvalidConditionBlock))
     }
 
     pub fn clear_condition(&mut self, index: usize) -> Result<()> {
         ConditionBlock::deactivate_condition(&mut self.relay, index)
-            .map_err(|_| error!(ErrorCode::DefaultError))
+            .map_err(|_| error!(ErrorCode::InvalidConditionBlock))
     }
 
     /// Write trigger slot `index`'s resolver list and describe where it
@@ -272,7 +272,7 @@ impl UserConditionsV0 {
             index,
             refs,
         )
-        .map_err(|_| ErrorCode::DefaultError.into())
+        .map_err(|_| ErrorCode::ConditionResolverListTooLarge.into())
     }
 
     /// Deactivate the trigger slot watching `(market_index, order_id)`. The
@@ -303,11 +303,11 @@ impl UserConditionsV0 {
         // below are in the shape this program addresses them by.
         self.relay
             .migrate()
-            .map_err(|_| error!(ErrorCode::DefaultError))?;
+            .map_err(|_| error!(ErrorCode::InvalidConditionBlock))?;
 
         self.relay.write_resolvers(refs).map_err(|_| {
             msg!("sync account list of {} exceeds the region", refs.len());
-            error!(ErrorCode::DefaultError)
+            error!(ErrorCode::ConditionResolverListTooLarge)
         })
     }
 

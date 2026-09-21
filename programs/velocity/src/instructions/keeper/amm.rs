@@ -11,7 +11,7 @@ pub fn handle_update_amms<'c: 'info, 'info>(
 ) -> Result<()> {
     if market_indexes.len() > 5 {
         msg!("Too many markets passed, max 5");
-        return Err(ErrorCode::DefaultError.into());
+        return Err(ErrorCode::TooManyMarketsPassed.into());
     }
 
     // up to ~60k compute units (per amm) worst case
@@ -49,7 +49,7 @@ pub fn view_amm_liquidity<'c: 'info, 'info>(
 ) -> Result<()> {
     if market_indexes.len() > 5 {
         msg!("Too many markets passed, max 5");
-        return Err(ErrorCode::DefaultError.into());
+        return Err(ErrorCode::TooManyMarketsPassed.into());
     }
 
     // up to ~60k compute units (per amm) worst case
@@ -149,7 +149,7 @@ fn refresh_cached_market(
 ) -> Result<()> {
     validate!(
         perp_market.oracle_id() == cached_info.oracle_id()?,
-        ErrorCode::DefaultError,
+        ErrorCode::InvalidOracle,
         "oracle id mismatch between amm cache and perp market"
     )?;
 

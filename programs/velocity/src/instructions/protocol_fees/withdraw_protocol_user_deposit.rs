@@ -124,7 +124,7 @@ pub fn handle_withdraw_protocol_user_deposit<'c: 'info, 'info>(
     let position_index = user.get_spot_position_index(market_index)?;
     validate!(
         user.spot_positions[position_index].balance_type == SpotBalanceType::Deposit,
-        ErrorCode::DefaultError,
+        ErrorCode::WrongSpotBalanceType,
         "protocol user holds no deposit in spot market {}",
         market_index
     )?;

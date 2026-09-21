@@ -32475,6 +32475,102 @@ pub mod errors {
         ClobRestUnavailable,
         #[msg("A user order slot holds only a trigger order")]
         OrderTypeNotConditional,
+        #[msg("A quoter CPI's arguments could not be sized or serialized")]
+        PropAmmArgsEncodeFailed,
+        #[msg("An account the quoter entry names is absent from the fill's accounts")]
+        QuoterCpiAccountMissing,
+        #[msg("A quoter CPI's arguments exceed the byte cap the wire allows")]
+        QuoterCpiArgsTooLarge,
+        #[msg("The quoter's response account is already borrowed")]
+        PropAmmResponseAccountBorrowConflict,
+        #[msg("A fill consults more quoters than the route allows")]
+        TooManyQuotersConsulted,
+        #[msg("A relay condition block failed its layout, version or bounds check")]
+        InvalidConditionBlock,
+        #[msg("A resolver list exceeds the condition block's region")]
+        ConditionResolverListTooLarge,
+        #[msg("The router quote buffer holds no more sources")]
+        RouterQuoteSourcesFull,
+        #[msg("A source's book holds no more levels")]
+        RouterQuoteLevelsFull,
+        #[msg("A router quote row names no source")]
+        RouterQuoteRowWithoutSource,
+        #[msg("A resolved crank does not fit the relay scratch region")]
+        RelayScratchStageFailed,
+        #[msg("A program-keeper crank requires the market's conditions account")]
+        CrankConditionsAccountRequired,
+        #[msg("The conditions account is for a different market than the fired order")]
+        CrankConditionsMarketMismatch,
+        #[msg("The perp market account is for a different market than the caller names")]
+        PerpMarketAccountMismatch,
+        #[msg("Force cancel received more order references than it allows")]
+        TooManyForceCancelRefs,
+        #[msg("The order rested on a different side than the caller declared")]
+        ForceCancelSideMismatch,
+        #[msg("A cross names the same account as more than one participant")]
+        CrossParticipantOverlap,
+        #[msg("The market's CLOB quoter is not active and approved")]
+        ClobQuoterNotActive,
+        #[msg("The fired condition is not a crank velocity serves")]
+        UnrecognizedCrankCondition,
+        #[msg("The router executor holds no quoter slab")]
+        QuoterExecutorMissingSlab,
+        #[msg("The router executor has no quoter at the index the route names")]
+        QuoterExecutorIndexOutOfRange,
+        #[msg("A CPI to a quoter program failed")]
+        FailedQuoterCpi,
+        #[msg("The fill omits the market's mandatory public book")]
+        RequiredBaselineQuoterOmitted,
+        #[msg("A router split needs at least one book")]
+        QuoterRouteHasNoBooks,
+        #[msg("The AMM quoter refresh requires the market maker oracle")]
+        AmmQuoterMissingMmOracle,
+        #[msg("The crank conditions account is too small for the reservoir mirror")]
+        ClobCrankAccountTooSmall,
+        #[msg("The escrow order belongs to a different market")]
+        RevenueShareOrderMarketMismatch,
+        #[msg("The escrow order accrued no fees to forfeit")]
+        RevenueShareOrderHasNoFeesAccrued,
+        #[msg("The caller passed more markets than the instruction allows")]
+        TooManyMarketsPassed,
+        #[msg("The spot market is not active")]
+        SpotMarketNotActive,
+        #[msg("A delegate cannot transfer a deposit")]
+        DelegateTransferNotAllowed,
+        #[msg("The builder codes feature is disabled")]
+        BuilderCodesDisabled,
+        #[msg("The perp market is not quoted in the given quote spot market")]
+        PerpMarketQuoteSpotMismatch,
+        #[msg("A revenue share escrow needs at least one order slot")]
+        RevenueShareEscrowNeedsOrderSlot,
+        #[msg("The staged relay executor is malformed")]
+        RelayExecutorInvalid,
+        #[msg("The self-sync price is above the cost ceiling")]
+        SelfSyncCostAboveCeiling,
+        #[msg("The self-sync interval is above the slot ceiling")]
+        SelfSyncIntervalAboveCeiling,
+        #[msg("The resolver needs the stored margin map accounts")]
+        ResolverMarginMapMissing,
+        #[msg("The crank treasury watermark or refill target is out of range")]
+        CrankTreasuryWatermarkInvalid,
+        #[msg("A resolver account must be read only")]
+        ResolverAccountMustBeReadOnly,
+        #[msg("The feature gate account has the wrong data length")]
+        InvalidFeatureGateAccount,
+        #[msg("The feature gate is not activated yet")]
+        FeatureGateNotActive,
+        #[msg("A slot duration sync cannot regress the active duration")]
+        SlotDurationSyncRegresses,
+        #[msg("The slot duration transition is already recorded or not effective")]
+        SlotDurationTransitionInvalid,
+        #[msg("An oracle staleness window is out of range")]
+        InvalidOracleStalenessWindow,
+        #[msg("The authority is not a whitelisted external depositor")]
+        ExternalDepositorNotWhitelisted,
+        #[msg("The spot market vault invariant is intact, so there is nothing to settle")]
+        SpotMarketVaultInvariantNotViolated,
+        #[msg("The self-sync interval is too short for the payment it carries")]
+        SelfSyncIntervalTooShort,
     }
 }
 pub mod events {

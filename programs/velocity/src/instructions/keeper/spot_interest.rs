@@ -83,7 +83,7 @@ pub fn handle_refresh_spot_market_interest<'c: 'info, 'info>(
     // budget.
     validate!(
         market_indexes.len() <= 16,
-        ErrorCode::DefaultError,
+        ErrorCode::TooManyMarketsPassed,
         "too many markets passed, max 16, got {}",
         market_indexes.len()
     )?;
@@ -123,7 +123,7 @@ pub fn handle_pause_spot_market_deposit_withdraw(
 
     validate!(
         matches!(result, Err(ErrorCode::SpotMarketVaultInvariantViolated)),
-        ErrorCode::DefaultError,
+        ErrorCode::SpotMarketVaultInvariantNotViolated,
         "spot market vault amount is valid"
     )?;
 

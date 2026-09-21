@@ -136,7 +136,7 @@ pub fn handle_update_perp_market_clob_quoter(
     // derive it: it has no SOL oracle to price the lamport payout in quote.
     validate!(
         min_cross_surplus > 0,
-        ErrorCode::DefaultError,
+        ErrorCode::InvalidQuoterConfig,
         "min_cross_surplus must cover what the reservoir pays for a cross"
     )?;
 
@@ -205,7 +205,7 @@ fn bind_book_slot<'a, 'info>(
         let book_slot = quoter_slab.clob_slot(market_index)?;
         validate!(
             book_slot.entry == quoter.key(),
-            ErrorCode::DefaultError,
+            ErrorCode::QuoterNotOnSlab,
             "the slab's book slot holds entry {}, not the passed one",
             book_slot.entry
         )?;
@@ -215,7 +215,7 @@ fn bind_book_slot<'a, 'info>(
 
     validate!(
         registered_program == clob_program.key(),
-        ErrorCode::DefaultError,
+        ErrorCode::InvalidQuoterConfig,
         "clob program does not match the quoter entry"
     )?;
 
@@ -244,7 +244,7 @@ fn mirror_book_placement_rules(
     validate!(
         perp_market.market_stats.min_order_size == 0
             || rules.min_order_size <= perp_market.market_stats.min_order_size,
-        ErrorCode::DefaultError,
+        ErrorCode::InvalidQuoterConfig,
         "book minimum order size {} is above the market's {}",
         rules.min_order_size,
         perp_market.market_stats.min_order_size
@@ -256,7 +256,7 @@ fn mirror_book_placement_rules(
     // on the book, so a passing book stays pinned for the attachment's life.
     validate!(
         rules.place_authority == quoter_slab.key().to_bytes(),
-        ErrorCode::DefaultError,
+        ErrorCode::InvalidQuoterConfig,
         "book place authority is not the market's quoter slab"
     )?;
 
@@ -265,14 +265,14 @@ fn mirror_book_placement_rules(
     // revert the whole fill that carried it.
     validate!(
         rules.tick_size == perp_market.order_tick_size,
-        ErrorCode::DefaultError,
+        ErrorCode::InvalidQuoterConfig,
         "book tick {} does not match the market tick {}",
         rules.tick_size,
         perp_market.order_tick_size
     )?;
     validate!(
         rules.step_size == perp_market.order_step_size,
-        ErrorCode::DefaultError,
+        ErrorCode::InvalidQuoterConfig,
         "book step {} does not match the market step {}",
         rules.step_size,
         perp_market.order_step_size

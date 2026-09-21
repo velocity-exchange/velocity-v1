@@ -355,18 +355,18 @@ impl State {
         let (expected_state, _) = Pubkey::find_program_address(&[b"velocity_state"], &crate::id());
         crate::validate!(
             account.key == &expected_state,
-            ErrorCode::DefaultError,
+            ErrorCode::InvalidNativeStateAccount,
             "account is not the velocity State PDA"
         )?;
         crate::validate!(
             account.owner == &crate::id(),
-            ErrorCode::DefaultError,
+            ErrorCode::InvalidNativeStateAccount,
             "State account not owned by the velocity program"
         )?;
         let data = account.try_borrow_data()?;
         crate::validate!(
             data.starts_with(State::DISCRIMINATOR),
-            ErrorCode::DefaultError,
+            ErrorCode::InvalidNativeStateAccount,
             "account is not a velocity State account"
         )?;
         const DISC: usize = 8;
@@ -377,7 +377,7 @@ impl State {
         // one bounds check covers every field read below
         crate::validate!(
             data.len() >= transitions_off + 32,
-            ErrorCode::DefaultError,
+            ErrorCode::InvalidNativeStateAccount,
             "velocity State account data too short"
         )?;
         let base = u16::from_le_bytes([data[base_off], data[base_off + 1]]);

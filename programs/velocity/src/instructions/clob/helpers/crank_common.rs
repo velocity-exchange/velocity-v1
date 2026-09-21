@@ -151,7 +151,7 @@ pub fn crank_clob_removal(
     let program_keeper_mode = is_protocol_user(&ctx.accounts.filler, &ctx.accounts.state)?;
     validate!(
         !program_keeper_mode || ctx.accounts.crank_conditions.is_some(),
-        ErrorCode::DefaultError,
+        ErrorCode::CrankConditionsAccountRequired,
         "program-keeper crank requires the market's conditions account"
     )?;
 
@@ -170,7 +170,7 @@ pub fn crank_clob_removal(
         validate!(
             removed.user.authority == user.authority
                 && removed.user.sub_account_id == user.sub_account_id,
-            ErrorCode::DefaultError,
+            ErrorCode::InvalidUserAccount,
             "clob removed an order for {}/{} but the crank loaded {}",
             removed.user.authority,
             removed.user.sub_account_id,
@@ -201,7 +201,7 @@ pub fn crank_clob_removal(
         let mut market = load_mut!(ctx.accounts.perp_market)?;
         validate!(
             market.market_index == market_index,
-            ErrorCode::DefaultError,
+            ErrorCode::PerpMarketAccountMismatch,
             "perp market {} passed for market {}",
             market.market_index,
             market_index
@@ -351,7 +351,7 @@ pub fn validate_linkage(ctx: &Context<ResolveClobCrank>) -> Result<()> {
         .validate_clob_book(market_index, &ctx.accounts.clob_market.key())?;
     validate!(
         slot.config.program_id == ctx.accounts.clob_program.key(),
-        ErrorCode::DefaultError,
+        ErrorCode::InvalidQuoterConfig,
         "clob program does not match the book slot"
     )?;
 
@@ -434,7 +434,7 @@ pub fn finish_trigger_crank<'info>(
         let mut conditions = load_mut!(conditions)?;
         validate!(
             conditions.user == user.key(),
-            ErrorCode::DefaultError,
+            ErrorCode::InvalidUserAccount,
             "trigger conditions are for user {}, crank is for {}",
             conditions.user,
             user.key()
@@ -449,13 +449,13 @@ pub fn finish_trigger_crank<'info>(
             .as_ref()
             .ok_or_else(|| -> anchor_lang::error::Error {
                 msg!("program-keeper trigger crank requires the market's conditions account");
-                ErrorCode::DefaultError.into()
+                ErrorCode::CrankConditionsAccountRequired.into()
             })?;
         let payment = {
             let conditions = reservoir.load()?;
             validate!(
                 conditions.market_index == market_index,
-                ErrorCode::DefaultError,
+                ErrorCode::CrankConditionsMarketMismatch,
                 "conditions are for market {}, the fired order is market {}",
                 conditions.market_index,
                 market_index
@@ -513,7 +513,7 @@ pub fn find_fired_trigger(
 ) -> Result<Option<crate::state::user_conditions::TriggerSlotMetaV0>> {
     validate!(
         oracle_info.key() == market.oracle,
-        ErrorCode::DefaultError,
+        ErrorCode::InvalidOracle,
         "oracle {} is not market {}'s oracle",
         oracle_info.key(),
         market.market_index

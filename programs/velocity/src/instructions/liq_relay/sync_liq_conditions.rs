@@ -127,7 +127,7 @@ impl SyncLiqConditionsTerms {
     pub fn validate(&self) -> Result<()> {
         validate!(
             self.interval_is_sound(),
-            ErrorCode::DefaultError,
+            ErrorCode::SelfSyncIntervalTooShort,
             "a self-sync paying {} lamports needs an interval of at least {} slots, not {}",
             self.sync_payment_lamports,
             LIQ_SYNC_MIN_FALLBACK_SLOTS,
@@ -676,7 +676,7 @@ pub fn validate_sync_args(args: &SyncLiqConditionsArgs) -> Result<()> {
     // price against protocol funds and collect it by cranking itself.
     validate!(
         args.sync_cost_units <= crate::state::user_conditions::LIQ_SYNC_MAX_COST_UNITS,
-        ErrorCode::DefaultError,
+        ErrorCode::SelfSyncCostAboveCeiling,
         "self-sync priced at {} cost units, above the {} ceiling",
         args.sync_cost_units,
         crate::state::user_conditions::LIQ_SYNC_MAX_COST_UNITS
@@ -687,7 +687,7 @@ pub fn validate_sync_args(args: &SyncLiqConditionsArgs) -> Result<()> {
     // do to an account it does not control.
     validate!(
         args.sync_fallback_slots <= crate::state::user_conditions::LIQ_SYNC_MAX_FALLBACK_SLOTS,
-        ErrorCode::DefaultError,
+        ErrorCode::SelfSyncIntervalAboveCeiling,
         "a self-sync interval of {} slots is above the {} ceiling",
         args.sync_fallback_slots,
         crate::state::user_conditions::LIQ_SYNC_MAX_FALLBACK_SLOTS

@@ -65,7 +65,7 @@ impl RelayScratchV0 {
         )
         .map_err(|e| {
             msg!("staging a resolved crank failed: {:?}", e);
-            error!(ErrorCode::DefaultError)
+            error!(ErrorCode::RelayScratchStageFailed)
         })
     }
 }

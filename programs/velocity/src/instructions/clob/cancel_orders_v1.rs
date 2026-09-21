@@ -93,7 +93,7 @@ pub fn handle_cancel_orders_v1(
 
     validate!(
         removed.user == user_ref,
-        ErrorCode::DefaultError,
+        ErrorCode::InvalidUserAccount,
         "clob swept orders for {}/{} instead of the passed user",
         removed.user.authority,
         removed.user.sub_account_id
@@ -112,7 +112,7 @@ pub fn handle_cancel_orders_v1(
             .all(|direction| {
                 removed.base_for(direction) == 0 && removed.orders_for(direction) == 0
             }),
-        ErrorCode::DefaultError,
+        ErrorCode::InvalidQuoterResponse,
         "clob reported removals on a side that was not swept"
     )?;
 

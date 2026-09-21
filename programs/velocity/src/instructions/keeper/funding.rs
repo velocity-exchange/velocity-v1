@@ -348,7 +348,7 @@ fn book_source<'a, 'info>(
             perp_market.clob_market
         );
 
-        return Err(ErrorCode::DefaultError.into());
+        return Err(ErrorCode::QuoterCpiAccountMissing.into());
     };
     let slot = slab.clob_slot(perp_market.market_index)?;
     slot.config

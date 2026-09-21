@@ -126,7 +126,7 @@ pub fn route_slab<'info>(
         let loader = AccountLoader::<QuoterSlabV0>::try_from(info)?;
         validate!(
             loader.load()?.market == market_index,
-            ErrorCode::DefaultError,
+            ErrorCode::InvalidQuoterConfig,
             "quoter slab {} is for market {}, fill is for market {}",
             loader.key(),
             loader.load()?.market,
@@ -593,7 +593,7 @@ impl<'info> QuotedRoute<'info> {
                 required_clob
             );
 
-            return Err(ErrorCode::DefaultError.into());
+            return Err(ErrorCode::RequiredBaselineQuoterOmitted.into());
         };
         let slots = slab.slots()?;
         // The market names its book by the account the book answers on, and
@@ -610,7 +610,7 @@ impl<'info> QuotedRoute<'info> {
 
         validate!(
             !slot.quotes() || self.consulted.contains(&index),
-            ErrorCode::DefaultError,
+            ErrorCode::RequiredBaselineQuoterOmitted,
             "router fill must include the market's CLOB quoter {}",
             required_clob
         )?;

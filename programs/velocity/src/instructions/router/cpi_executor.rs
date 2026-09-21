@@ -64,7 +64,7 @@ impl<'a, 'info> CpiQuoterExecutor<'a, 'info> {
     fn slab(&self) -> VelocityResult<&'a AccountLoader<'info, QuoterSlabV0>> {
         self.slab.ok_or_else(|| {
             msg!("router executor holds no quoter slab");
-            ErrorCode::DefaultError
+            ErrorCode::QuoterExecutorMissingSlab
         })
     }
 
@@ -72,7 +72,7 @@ impl<'a, 'info> CpiQuoterExecutor<'a, 'info> {
     fn slot_index(&self, index: usize) -> VelocityResult<usize> {
         self.slots.get(index).copied().ok_or_else(|| {
             msg!("router executor index {} out of range", index);
-            ErrorCode::DefaultError
+            ErrorCode::QuoterExecutorIndexOutOfRange
         })
     }
 
@@ -135,7 +135,7 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
         let (book, program) = {
             let slots = slab.slots().map_err(|_| {
                 msg!("router executor failed to load the quoter slab");
-                ErrorCode::DefaultError
+                ErrorCode::InvalidQuoterConfig
             })?;
             let config = &slots[slot].config;
             let book = find_account(self.accounts, &config.response_account).ok_or_else(|| {
@@ -144,7 +144,7 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
                     config.response_account
                 );
 
-                ErrorCode::DefaultError
+                ErrorCode::QuoterCpiAccountMissing
             })?;
             let program = find_account(self.accounts, &config.program_id).ok_or_else(|| {
                 msg!(
@@ -152,13 +152,13 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
                     config.program_id
                 );
 
-                ErrorCode::DefaultError
+                ErrorCode::QuoterCpiAccountMissing
             })?;
 
             (book, program)
         };
         let clob = ClobMarket::from_slab(slab, self.market_index, book, program)
-            .map_err(|_| ErrorCode::DefaultError)?;
+            .map_err(|_| ErrorCode::InvalidQuoterConfig)?;
         clob.cancel_all(ClobCancelAllArgsV0 {
             user,
             sides,
@@ -167,7 +167,7 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
         .map(Some)
         .map_err(|e| {
             msg!("clob cancel_all failed: {}", e);
-            ErrorCode::DefaultError
+            ErrorCode::FailedQuoterCpi
         })
     }
 
@@ -181,7 +181,7 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
         let slot = self.slot_index(index)?;
         let slots = slab.slots().map_err(|_| {
             msg!("router executor failed to load the quoter slab");
-            ErrorCode::DefaultError
+            ErrorCode::InvalidQuoterConfig
         })?;
         let config = &slots[slot].config;
         config
@@ -207,7 +207,7 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
                 // id an off-chain router reads out of the runtime's CPI
                 // brackets does not identify which entry failed. The key does.
                 msg!("quoter {} execute failed: {}", slots[slot].entry, e);
-                ErrorCode::DefaultError
+                ErrorCode::FailedQuoterCpi
             })
     }
 }

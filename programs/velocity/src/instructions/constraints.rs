@@ -310,7 +310,7 @@ pub fn require_view_accounts(
             account.key
         );
 
-        return Err(ErrorCode::DefaultError.into());
+        return Err(ErrorCode::ResolverAccountMustBeReadOnly.into());
     }
 
     Ok(())

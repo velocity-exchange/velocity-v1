@@ -98,12 +98,12 @@ pub fn handle_initialize_quoter_cross_conditions(
 
     validate!(
         expire_fallback_slots > 0,
-        ErrorCode::DefaultError,
+        ErrorCode::InvalidQuoterConfig,
         "fallback interval must be nonzero"
     )?;
     validate!(
         expire_fallback_slots <= QUOTER_CROSS_FALLBACK_MAX_SLOTS,
-        ErrorCode::DefaultError,
+        ErrorCode::InvalidQuoterConfig,
         "fallback interval {} is past the {} slot ceiling",
         expire_fallback_slots,
         QUOTER_CROSS_FALLBACK_MAX_SLOTS
@@ -191,7 +191,8 @@ pub fn handle_initialize_quoter_cross_conditions(
     resolver_accounts.push(AccountRefV0::readonly(quoter.program_id.to_bytes()));
 
     let disc8 = |disc: &[u8]| -> Result<[u8; 8]> {
-        disc.try_into().map_err(|_| error!(ErrorCode::DefaultError))
+        disc.try_into()
+            .map_err(|_| error!(ErrorCode::CastingFailure))
     };
     let spec = CrankSpecV0 {
         resolver_program: crate::ID.to_bytes(),

@@ -75,7 +75,7 @@ pub fn handle_resolve_liquidate_perp_with_fill<'c: 'info, 'info>(
         let stored = ctx.accounts.liq_conditions.load()?.read_sync_accounts();
         validate!(
             !ctx.remaining_accounts.is_empty(),
-            ErrorCode::DefaultError,
+            ErrorCode::ResolverMarginMapMissing,
             "resolver needs the stored margin-map accounts"
         )?;
 

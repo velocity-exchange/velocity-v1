@@ -386,7 +386,7 @@ pub fn resolve_revenue_share_forfeit_reason(
             perp_market.status,
             MarketStatus::Settlement | MarketStatus::Delisted
         ),
-        ErrorCode::DefaultError,
+        ErrorCode::PerpMarketNotInSettlement,
         "market {} must be in Settlement or Delisted to forfeit revenue share, is {:?}",
         market_index,
         perp_market.status
@@ -405,14 +405,14 @@ pub fn resolve_revenue_share_forfeit_reason(
 
     validate!(
         order_market_type == MarketType::Perp && order_market_index == market_index,
-        ErrorCode::DefaultError,
+        ErrorCode::RevenueShareOrderMarketMismatch,
         "order {} is not for perp market {}",
         order_index,
         market_index
     )?;
     validate!(
         fees_accrued > 0,
-        ErrorCode::DefaultError,
+        ErrorCode::RevenueShareOrderHasNoFeesAccrued,
         "order {} owes nothing",
         order_index
     )?;
@@ -442,7 +442,7 @@ pub fn resolve_revenue_share_forfeit_reason(
     );
     validate!(
         beneficiary_user == &expected_beneficiary_user,
-        ErrorCode::DefaultError,
+        ErrorCode::InvalidRevenueShareRecipient,
         "beneficiary_user must be {} (sub-account 0 of {}), got {}",
         expected_beneficiary_user,
         beneficiary,

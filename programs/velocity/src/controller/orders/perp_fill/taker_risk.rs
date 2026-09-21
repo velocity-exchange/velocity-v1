@@ -558,7 +558,7 @@ impl TakerRiskLimits {
 fn check_fill_amounts_coherent(filled: FillAmounts, maker_fills: &MakerFills) -> VelocityResult {
     validate!(
         (filled.base > 0) == (filled.quote > 0),
-        ErrorCode::DefaultError,
+        ErrorCode::ImpossibleFill,
         "invalid fill base = {} quote = {}",
         filled.base,
         filled.quote
@@ -567,7 +567,7 @@ fn check_fill_amounts_coherent(filled: FillAmounts, maker_fills: &MakerFills) ->
     let total_maker_fill = maker_fills.values().map(|(base, _)| base).sum::<i64>();
     validate!(
         total_maker_fill.unsigned_abs() <= filled.base,
-        ErrorCode::DefaultError,
+        ErrorCode::ImpossibleFill,
         "invalid total maker fill {} total fill {}",
         total_maker_fill,
         filled.base

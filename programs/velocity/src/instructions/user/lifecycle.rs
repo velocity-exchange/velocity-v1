@@ -101,7 +101,7 @@ fn validate_external_payer(
     {
         validate!(
             WHITELISTED_EXTERNAL_DEPOSITORS.contains(&payer.key()),
-            ErrorCode::DefaultError,
+            ErrorCode::Unauthorized,
             "Authority is not the payer"
         )?;
     }

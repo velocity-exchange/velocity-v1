@@ -155,7 +155,7 @@ pub fn handle_transfer_deposit_by_delegate<'c: 'info, 'info>(
 
     validate!(
         user_stats.is_delegate_transfer_allowed(),
-        ErrorCode::DefaultError,
+        ErrorCode::DelegateTransferNotAllowed,
         "delegate transfer not allowed"
     )?;
 

@@ -278,7 +278,7 @@ impl<'info> QuoterSlabExt<'info> for AccountLoader<'info, QuoterSlabV0> {
 
             validate!(
                 consulted.len() < MAX_ROUTE_QUOTERS,
-                ErrorCode::DefaultError,
+                ErrorCode::TooManyQuotersConsulted,
                 "a fill may consult at most {} quoters",
                 MAX_ROUTE_QUOTERS
             )?;

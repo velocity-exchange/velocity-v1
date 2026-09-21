@@ -198,7 +198,7 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
         let slot = ctx.accounts.quoter_slab.clob_slot(market_index)?;
         validate!(
             slot.quotes(),
-            ErrorCode::DefaultError,
+            ErrorCode::ClobQuoterNotActive,
             "CLOB quoter is not active and approved"
         )?;
 

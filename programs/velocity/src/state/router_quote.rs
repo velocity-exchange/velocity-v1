@@ -258,7 +258,7 @@ impl RouterQuoteBufferV0 {
         let index = self.source_count as usize;
         validate!(
             index < MAX_QUOTED_SOURCES,
-            ErrorCode::DefaultError,
+            ErrorCode::RouterQuoteSourcesFull,
             "router quote buffer holds at most {} sources",
             MAX_QUOTED_SOURCES
         )?;
@@ -275,7 +275,7 @@ impl RouterQuoteBufferV0 {
             // cap lets that much of it through.
             validate!(
                 written < MAX_LEVELS_PER_SOURCE,
-                ErrorCode::DefaultError,
+                ErrorCode::RouterQuoteLevelsFull,
                 "a source's book holds at most {} levels, got {}",
                 MAX_LEVELS_PER_SOURCE,
                 levels.len()
@@ -320,7 +320,7 @@ impl RouterQuoteBufferV0 {
     pub fn push_row(&mut self, row: QuotedRowV0) -> VelocityResult<bool> {
         let index = (self.source_count as usize).checked_sub(1).ok_or_else(|| {
             msg!("a row needs a source to belong to");
-            ErrorCode::DefaultError
+            ErrorCode::RouterQuoteRowWithoutSource
         })?;
 
         if self.row_count as usize >= MAX_QUOTED_ROWS {

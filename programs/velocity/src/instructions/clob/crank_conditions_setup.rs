@@ -91,7 +91,8 @@ impl ClobCrankConditionKeys {
 }
 
 fn disc8(disc: &[u8]) -> Result<[u8; 8]> {
-    disc.try_into().map_err(|_| error!(ErrorCode::DefaultError))
+    disc.try_into()
+        .map_err(|_| error!(ErrorCode::CastingFailure))
 }
 
 /// What the book's four conditions wake into, and what each one pays.
@@ -152,12 +153,12 @@ impl ClobCrankConditionsV0 {
     ) -> Result<()> {
         validate!(
             payments.all_priced(),
-            ErrorCode::DefaultError,
+            ErrorCode::InvalidQuoterConfig,
             "every crank must be priced: turners have no signal to take unpaid work"
         )?;
         validate!(
             cross_fallback_slots > 0,
-            ErrorCode::DefaultError,
+            ErrorCode::InvalidQuoterConfig,
             "cross fallback interval must be nonzero"
         )?;
 
@@ -203,7 +204,7 @@ impl ClobCrankConditionsV0 {
                     <u32 as core::convert::TryFrom<usize>>::try_from(
                         crate::state::clob_crank::CLOB_CRANK_SPENDABLE_MIRROR_OFFSET,
                     )
-                    .map_err(|_| error!(ErrorCode::DefaultError))?,
+                    .map_err(|_| error!(ErrorCode::CastingFailure))?,
                     8,
                 ),
                 relay_spec::WatchValue::Unsigned(refill_watermark_lamports),

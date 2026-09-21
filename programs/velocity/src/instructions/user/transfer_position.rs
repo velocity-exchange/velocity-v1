@@ -520,7 +520,7 @@ pub fn handle_transfer_perp_position<'c: 'info, 'info>(
 fn admit_vamm_hedger(user: &User) -> Result<()> {
     validate!(
         user.special_user_status == SpecialUserStatus::VammHedger as u8,
-        ErrorCode::DefaultError,
+        ErrorCode::InvalidTransferPerpPosition,
         "user is not a special account user (vamm hedger)"
     )?;
 

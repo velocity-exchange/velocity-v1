@@ -296,7 +296,7 @@ pub use quoter_spec::QuoteResponseV0;
 pub fn write_l3_args(dst: &mut Vec<u8>, args: &L3ArgsV0) -> crate::error::VelocityResult<()> {
     quoter_spec::write_args(dst, args).map_err(|_| {
         msg!("could not serialize l3 args");
-        ErrorCode::DefaultError
+        ErrorCode::PropAmmArgsEncodeFailed
     })?;
 
     Ok(())
@@ -409,7 +409,7 @@ impl<'info> ResponseLocationV0<'info> {
     pub fn borrow(&self) -> crate::error::VelocityResult<std::cell::Ref<'_, &'_ mut [u8]>> {
         self.account.try_borrow_data().map_err(|_| {
             msg!("prop amm response account is already borrowed");
-            ErrorCode::DefaultError
+            ErrorCode::PropAmmResponseAccountBorrowConflict
         })
     }
 
@@ -419,7 +419,7 @@ impl<'info> ResponseLocationV0<'info> {
     fn bytes<'a>(&self, data: &'a [u8]) -> crate::error::VelocityResult<&'a [u8]> {
         data.get(self.start..self.end).ok_or_else(|| {
             msg!("prop amm response pointer out of bounds");
-            ErrorCode::DefaultError
+            ErrorCode::InvalidQuoterResponse
         })
     }
 
@@ -431,7 +431,7 @@ impl<'info> ResponseLocationV0<'info> {
     ) -> crate::error::VelocityResult<ExecuteResponseV0<'a>> {
         ExecuteResponseV0::parse(self.bytes(data)?).map_err(|_| {
             msg!("prop amm quoter returned an undecodable execute response");
-            ErrorCode::DefaultError
+            ErrorCode::InvalidQuoterResponse
         })
     }
 
@@ -442,7 +442,7 @@ impl<'info> ResponseLocationV0<'info> {
     ) -> crate::error::VelocityResult<QuoteResponseV0<'a>> {
         QuoteResponseV0::parse(self.bytes(data)?).map_err(|_| {
             msg!("prop amm quoter returned an undecodable quote response");
-            ErrorCode::DefaultError
+            ErrorCode::InvalidQuoterResponse
         })
     }
 
@@ -454,7 +454,7 @@ impl<'info> ResponseLocationV0<'info> {
     ) -> crate::error::VelocityResult<L3ResponseV0<'a>> {
         L3ResponseV0::parse(self.bytes(data)?).map_err(|_| {
             msg!("prop amm quoter returned an undecodable l3 response");
-            ErrorCode::DefaultError
+            ErrorCode::InvalidQuoterResponse
         })
     }
 
@@ -575,7 +575,7 @@ impl<'info> ExternalQuoterExecutor<'info> for NoExternalQuoters {
         _size: u64,
     ) -> crate::error::VelocityResult<ResponseLocationV0<'info>> {
         msg!("router fill has no external quoter accounts to execute against");
-        Err(ErrorCode::DefaultError)
+        Err(ErrorCode::ImpossibleFill)
     }
 }
 
@@ -589,7 +589,7 @@ impl QuoterConfigV0 {
     fn gate_for_market(&self, market_index: u16) -> Result<()> {
         validate!(
             self.is_active,
-            ErrorCode::DefaultError,
+            ErrorCode::InvalidQuoterConfig,
             "quoter is not active"
         )?;
         validate!(
@@ -723,7 +723,7 @@ impl QuoterConfigV0 {
 
             let info = find_account(accounts, &meta.pubkey).ok_or_else(|| {
                 msg!("prop amm account {} missing from account map", meta.pubkey);
-                ErrorCode::DefaultError
+                ErrorCode::QuoterCpiAccountMissing
             })?;
 
             infos.push(info.clone());
@@ -732,7 +732,7 @@ impl QuoterConfigV0 {
         // CPI needs the callee program's account info too.
         let program_info = find_account(accounts, &self.program_id).ok_or_else(|| {
             msg!("quoter program account missing from account map");
-            ErrorCode::DefaultError
+            ErrorCode::QuoterCpiAccountMissing
         })?;
 
         infos.push(program_info.clone());
@@ -742,12 +742,12 @@ impl QuoterConfigV0 {
         // rather than let the `Vec` double and leak the buffer it grew out of.
         let args_len = quoter_spec::args_size(args).map_err(|_| {
             msg!("prop amm failed to size cpi args");
-            ErrorCode::DefaultError
+            ErrorCode::PropAmmArgsEncodeFailed
         })?;
         let data_len = discriminator.len().saturating_add(args_len);
         validate!(
             data_len <= QUOTER_CPI_DATA_MAX,
-            ErrorCode::DefaultError,
+            ErrorCode::QuoterCpiArgsTooLarge,
             "prop amm cpi args are {} bytes, above the {} the wire allows",
             data_len,
             QUOTER_CPI_DATA_MAX
@@ -757,7 +757,7 @@ impl QuoterConfigV0 {
         instruction.data.extend_from_slice(discriminator);
         quoter_spec::write_args(&mut instruction.data, args).map_err(|_| {
             msg!("prop amm failed to serialize cpi args");
-            ErrorCode::DefaultError
+            ErrorCode::PropAmmArgsEncodeFailed
         })?;
 
         // Signed as the market's slab, the identity every quoter authenticates velocity
@@ -773,12 +773,12 @@ impl QuoterConfigV0 {
         // pointer set by a program the quoter called.
         let (writer, pointer_data) = get_return_data().ok_or_else(|| {
             msg!("prop amm quoter set no return data");
-            ErrorCode::DefaultError
+            ErrorCode::InvalidQuoterResponse
         })?;
 
         validate!(
             writer == self.program_id,
-            ErrorCode::DefaultError,
+            ErrorCode::InvalidQuoterResponse,
             "prop amm return data written by {} instead of quoter program",
             writer
         )?;
@@ -786,31 +786,31 @@ impl QuoterConfigV0 {
         let pointer =
             ResponsePointerV0::deserialize(&mut pointer_data.as_slice()).map_err(|_| {
                 msg!("prop amm quoter returned undecodable response pointer");
-                ErrorCode::DefaultError
+                ErrorCode::InvalidQuoterResponse
             })?;
 
         let response_info = find_account(accounts, &self.response_account).ok_or_else(|| {
             msg!("prop amm response account missing from account map");
-            ErrorCode::DefaultError
+            ErrorCode::QuoterCpiAccountMissing
         })?;
 
         // Only the quoter program can have written an account it owns.
         validate!(
             *response_info.owner == self.program_id,
-            ErrorCode::DefaultError,
+            ErrorCode::InvalidQuoterResponse,
             "prop amm response account not owned by quoter program"
         )?;
 
         let data = response_info
             .try_borrow_data()
-            .map_err(|_| ErrorCode::DefaultError)?;
+            .map_err(|_| ErrorCode::PropAmmResponseAccountBorrowConflict)?;
         let start = pointer.offset as usize;
         let end = start
             .checked_add(pointer.len as usize)
-            .ok_or(ErrorCode::DefaultError)?;
+            .ok_or(ErrorCode::MathError)?;
         validate!(
             end <= data.len(),
-            ErrorCode::DefaultError,
+            ErrorCode::InvalidQuoterResponse,
             "prop amm response pointer out of bounds"
         )?;
 

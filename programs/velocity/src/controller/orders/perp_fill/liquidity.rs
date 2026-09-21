@@ -407,7 +407,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
                     user.sub_account_id
                 );
 
-                ErrorCode::DefaultError
+                ErrorCode::InvalidQuoterResponse
             })
     }
 
@@ -518,7 +518,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
 
         validate!(
             fill.base_filled <= allocation.base,
-            ErrorCode::DefaultError,
+            ErrorCode::QuoterOverfilled,
             "router vAMM overfilled: {} > {}",
             fill.base_filled,
             allocation.base
@@ -530,7 +530,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
                 allocation,
                 BASE_PRECISION_U64
             )?,
-            ErrorCode::DefaultError,
+            ErrorCode::QuoterFillOffQuote,
             "router vAMM filled worse than quoted: fill {}/{} vs quoted {}/{}",
             fill.quote_filled,
             fill.base_filled,
@@ -1219,7 +1219,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         // bitmap rather than miscounting if the caps grow.
         validate!(
             self.makers_and_referrer.0.len() <= u64::BITS as usize,
-            ErrorCode::DefaultError,
+            ErrorCode::TooManyQuoterWireUsers,
             "loaded user map has {} users, past the 64 the obligation bitmap covers",
             self.makers_and_referrer.0.len()
         )?;

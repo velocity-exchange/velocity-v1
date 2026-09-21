@@ -147,13 +147,13 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
     let program_keeper_mode = is_protocol_user(&ctx.accounts.filler, &ctx.accounts.state)?;
     validate!(
         !program_keeper_mode || ctx.accounts.crank_conditions.is_some(),
-        ErrorCode::DefaultError,
+        ErrorCode::CrankConditionsAccountRequired,
         "program-keeper force-cancel requires the market's conditions account"
     )?;
 
     validate!(
         order_refs.len() <= MAX_FORCE_CANCEL_CLOB_ORDERS,
-        ErrorCode::DefaultError,
+        ErrorCode::TooManyForceCancelRefs,
         "pass at most {} order refs, got {}",
         MAX_FORCE_CANCEL_CLOB_ORDERS,
         order_refs.len()
@@ -372,7 +372,7 @@ fn select_cancellable_refs(
         .map(|(order_ref, view)| {
             validate!(
                 view.user == user_ref,
-                ErrorCode::DefaultError,
+                ErrorCode::InvalidUserAccount,
                 "order {} belongs to {}/{}, not the passed user",
                 order_ref.order_ref.order_id,
                 view.user.authority,
@@ -464,7 +464,7 @@ fn unwind_cancelled_orders(
     for (order_ref, removed) in plan.refs.iter().zip(removals.orders.iter()) {
         validate!(
             removed.user == plan.user_ref,
-            ErrorCode::DefaultError,
+            ErrorCode::InvalidUserAccount,
             "clob cancelled an order for a different user"
         )?;
 
@@ -474,7 +474,7 @@ fn unwind_cancelled_orders(
         // apply. The caller was wrong about what it passed, so fail loudly.
         validate!(
             removed.side == order_ref.side,
-            ErrorCode::DefaultError,
+            ErrorCode::ForceCancelSideMismatch,
             "order {} rested on the other side than declared",
             removed.order_id
         )?;
@@ -511,7 +511,7 @@ fn unwind_cancelled_orders(
     if let (Some(sides), Some(swept)) = (plan.sweep, removals.swept) {
         validate!(
             swept.user == plan.user_ref,
-            ErrorCode::DefaultError,
+            ErrorCode::InvalidUserAccount,
             "clob swept orders for a different user"
         )?;
 

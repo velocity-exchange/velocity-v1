@@ -19,7 +19,7 @@ pub fn handle_update_prelaunch_oracle(ctx: Context<UpdatePrelaunchOracle>) -> Re
 
     validate!(
         perp_market.oracle_source == OracleSource::Prelaunch,
-        ErrorCode::DefaultError,
+        ErrorCode::InvalidOracle,
         "wrong oracle source"
     )?;
 

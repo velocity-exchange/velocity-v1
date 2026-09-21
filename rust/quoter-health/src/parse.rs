@@ -105,7 +105,7 @@ fn is_compute_exhausted(line: &str) -> bool {
 /// `Debug` writes `error_code_number: 6385`. The prose form that
 /// `AnchorError::log` writes carries `Error Number: 6385`. Both appear in
 /// logs, from different call sites, so both are read.
-fn anchor_error_number(text: &str) -> Option<u32> {
+pub fn anchor_error_number(text: &str) -> Option<u32> {
     let rest = text
         .split("error_code_number:")
         .nth(1)

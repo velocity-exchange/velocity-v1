@@ -10,7 +10,7 @@ export enum HEALTH_STATUS {
  * Gates a restart-safety duration override. A plain `Number(x) || fallback` lets a
  * negative or infinite value past, which silently disables the kill-switch.
  */
-function positiveDurationMs(
+export function positiveDurationMs(
 	value: string | undefined,
 	fallback: number
 ): number {

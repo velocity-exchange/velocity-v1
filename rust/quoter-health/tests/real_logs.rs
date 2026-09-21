@@ -13,7 +13,9 @@
 use {
     solana_sdk::pubkey::Pubkey,
     std::str::FromStr,
-    velocity_quoter_health::{attribute, EntryRef, FailReason, RouteContext},
+    velocity_quoter_health::{
+        attribute, parse::anchor_error_number, EntryRef, FailReason, RouteContext,
+    },
 };
 
 fn lines(name: &str) -> Vec<String> {
@@ -132,8 +134,8 @@ fn an_anchor_error_is_read_from_the_debug_rendering_velocity_actually_writes() {
         .iter()
         .find(|line| line.contains("quote failed"))
         .expect("the named line");
-    assert!(named.contains("error_code_number: 6129"));
-    assert!(!named.contains("Error Number:"));
+
+    assert_eq!(anchor_error_number(named), Some(6129));
 }
 
 #[test]

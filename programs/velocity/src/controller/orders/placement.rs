@@ -889,3 +889,51 @@ fn clear_placed_builder_order(rev_share_order: &mut Option<&mut RevenueShareOrde
         **order = RevenueShareOrder::default();
     }
 }
+
+#[cfg(test)]
+mod gate_tests {
+    use {
+        super::next_order_slot,
+        crate::{
+            error::ErrorCode,
+            state::user::{MarketType, Order, OrderStatus, OrderType, User},
+        },
+    };
+
+    /// A user holding one live order with the given `user_order_id`.
+    fn user_with_live_order(user_order_id: u8) -> User {
+        let mut user = User::default();
+        user.orders[0] = Order {
+            user_order_id,
+            status: OrderStatus::Open,
+            order_type: OrderType::Limit,
+            market_type: MarketType::Perp,
+            ..Order::default()
+        };
+
+        user
+    }
+
+    #[test]
+    fn a_fresh_user_order_id_takes_the_first_free_slot() {
+        let user = User::default();
+        assert_eq!(next_order_slot(&user, 7), Ok(0));
+    }
+
+    #[test]
+    fn a_live_user_order_id_refuses_reuse() {
+        let user = user_with_live_order(7);
+        assert_eq!(
+            next_order_slot(&user, 7),
+            Err(ErrorCode::UserOrderIdAlreadyInUse)
+        );
+    }
+
+    /// `user_order_id` zero means the caller did not name the order, so the
+    /// same value on two orders is not a collision.
+    #[test]
+    fn a_zero_user_order_id_never_collides() {
+        let user = user_with_live_order(0);
+        assert_eq!(next_order_slot(&user, 0), Ok(1));
+    }
+}

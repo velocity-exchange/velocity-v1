@@ -633,7 +633,7 @@ mod tests {
         assert!(!transitions.is_empty());
         let last = transitions.last().unwrap();
         assert_eq!(last.actor, "auto");
-        assert!(last.detail.contains("sim_fail_rate"));
+        assert_eq!(last.cause, Cause::SimFailureRate);
     }
 
     #[test]

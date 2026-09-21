@@ -66,7 +66,7 @@ const SUB_SWIFT: u16 = 10;
 /// A marketable 1-SOL limit order priced 5% through the oracle in the trade
 /// direction, so it crosses the AMM and the DEPLOYED filler fills it against the
 /// AMM (place_and_take with no makers does NOT fill vs the AMM — fills go through
-/// the filler). Rest it with `place_orders`, then poll for the fill.
+/// the filler). Rest it with `place_and_make`, then poll for the fill.
 fn marketable_limit(px: u64, direction: PositionDirection) -> OrderParams {
     let (amount, price) = match direction {
         PositionDirection::Long => (ONE_SOL, px + px * 5 / 100),
@@ -242,9 +242,12 @@ async fn taker_fills_against_amm() {
 
     let px = ctx.client.oracle_price(SOL_PERP).await.expect("oracle") as u64;
 
-    // Aggressive RELATIVE TO THE LIVE BASELINE so sanitization must clamp both ends
-    // (a long market order: NOT place_and_take, NOT a plain limit — a resting limit
-    // parks as a maker and is never routed to the AMM).
+    // allow-verbose: derivation of the aggression margin below is a bound a
+    // reader cannot reconstruct from the code alone.
+    //
+    // Aggressive RELATIVE TO THE LIVE BASELINE so sanitization must clamp both ends.
+    // place_and_take routes the order through the book; a remainder it cannot fill
+    // in this transaction rests on the CLOB until the deployed filler crosses it.
     //
     // The baseline read here is not the one the program will apply: it recomputes at
     // the placement slot. Size the offset so the request stays past the live
@@ -281,12 +284,13 @@ async fn taker_fills_against_amm() {
         auction_duration: Some(200),
         ..Default::default()
     };
+    let clob = clob_accounts(&ctx.client, 0).await;
     let tx = ctx
         .client
         .init_tx(&sub, false)
         .await
         .unwrap()
-        .place_orders(vec![order])
+        .place_and_take(order, clob, None)
         .build();
     ctx.send_confirmed(tx).await;
 
@@ -525,12 +529,13 @@ async fn taker_fills_against_amm_via_jit() {
         base_asset_amount: ONE_SOL as u64,
         ..Default::default()
     };
+    let clob = clob_accounts(&ctx.client, 0).await;
     let tx = ctx
         .client
         .init_tx(&sub, false)
         .await
         .unwrap()
-        .place_and_take(order, &[], None, None)
+        .place_and_take(order, clob, None)
         .build();
     ctx.send_confirmed(tx).await;
 
@@ -574,6 +579,8 @@ async fn dlob_maker_taker_filled_by_filler() {
     ctx.fund_and_deposit_dusdt(taker, 100).await;
 
     let px = ctx.client.oracle_price(SOL_PERP).await.expect("oracle") as u64;
+    let clob = clob_accounts(&ctx.client, 0).await;
+
     // Maker rests a best bid 5bps under oracle (post-only so it can't cross).
     let maker_bid = px - px * 5 / 10_000;
     let tx = ctx
@@ -581,11 +588,15 @@ async fn dlob_maker_taker_filled_by_filler() {
         .init_tx(&maker, false)
         .await
         .unwrap()
-        .place_orders(vec![NewOrder::limit(SOL_PERP)
-            .amount(ONE_SOL)
-            .price(maker_bid)
-            .post_only(PostOnlyParam::MustPostOnly)
-            .build()])
+        .place_and_make(
+            NewOrder::limit(SOL_PERP)
+                .amount(ONE_SOL)
+                .price(maker_bid)
+                .post_only(PostOnlyParam::MustPostOnly)
+                .build(),
+            clob,
+            None,
+        )
         .build();
     ctx.send_confirmed(tx).await;
 
@@ -597,10 +608,14 @@ async fn dlob_maker_taker_filled_by_filler() {
         .init_tx(&taker, false)
         .await
         .unwrap()
-        .place_orders(vec![NewOrder::limit(SOL_PERP)
-            .amount(-ONE_SOL)
-            .price(taker_ask)
-            .build()])
+        .place_and_make(
+            NewOrder::limit(SOL_PERP)
+                .amount(-ONE_SOL)
+                .price(taker_ask)
+                .build(),
+            clob,
+            None,
+        )
         .build();
     ctx.send_confirmed(tx).await;
 
@@ -765,13 +780,14 @@ async fn bad_perp_trade_gets_liquidated() {
     ctx.fund_and_deposit_dusdt(sub, 20).await;
 
     let px = ctx.client.oracle_price(SOL_PERP).await.expect("oracle") as u64;
+    let clob = clob_accounts(&ctx.client, 0).await;
     // Rest a marketable long; the deployed filler opens it to exactly +1 SOL vs AMM.
     let tx = ctx
         .client
         .init_tx(&sub, false)
         .await
         .unwrap()
-        .place_orders(vec![marketable_limit(px, PositionDirection::Long)])
+        .place_and_make(marketable_limit(px, PositionDirection::Long), clob, None)
         .build();
     if ctx.client.sign_and_send(tx).await.is_err() {
         log::warn!("INCONCLUSIVE: could not place opening order");
@@ -869,12 +885,13 @@ async fn unsettled_pnl_gets_settled() {
     // Open then close a position (filler fills each vs the AMM) to bank realized
     // but unsettled pnl, then wait for the deployed userPnlSettler to settle it.
     let px = ctx.client.oracle_price(SOL_PERP).await.expect("oracle") as u64;
+    let clob = clob_accounts(&ctx.client, 0).await;
     let open = ctx
         .client
         .init_tx(&sub, false)
         .await
         .unwrap()
-        .place_orders(vec![marketable_limit(px, PositionDirection::Long)])
+        .place_and_make(marketable_limit(px, PositionDirection::Long), clob, None)
         .build();
     ctx.send_confirmed(open).await;
     if ctx
@@ -890,7 +907,7 @@ async fn unsettled_pnl_gets_settled() {
         .init_tx(&sub, false)
         .await
         .unwrap()
-        .place_orders(vec![marketable_limit(px, PositionDirection::Short)])
+        .place_and_make(marketable_limit(px, PositionDirection::Short), clob, None)
         .build();
     ctx.send_confirmed(close).await;
     ctx.wait_perp_base_eq(sub, 0, 0, Duration::from_secs(60))

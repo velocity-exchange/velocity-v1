@@ -24,7 +24,7 @@ use velocity_rs::{
         accounts::User, Context, MarketId, NewOrder, PerpPosition, SpotMarketExt, SpotPosition,
     },
     utils::test_envs::{devnet_endpoint, test_keypair},
-    Pubkey, TransactionBuilder, VelocityClient, Wallet,
+    ClobFillAccounts, Pubkey, TransactionBuilder, VelocityClient, Wallet,
 };
 
 /// Token faucet program that mints devnet dUSDT (`init-devnet.ts` default).
@@ -45,6 +45,15 @@ pub const DUSDT_PRECISION: u64 = 1_000_000; // 6 decimals
 pub fn swift_http_endpoint() -> String {
     std::env::var("SWIFT_HTTP_ENDPOINT")
         .unwrap_or_else(|_| "https://swift.master.velocity.exchange".to_string())
+}
+
+/// The market's book accounts, read off its quoter slab. Panics if the
+/// market carries no approved book.
+pub async fn clob_accounts(client: &VelocityClient, market_index: u16) -> ClobFillAccounts {
+    velocity_rs::market_book(client, market_index)
+        .await
+        .expect("approved clob on the quoter slab")
+        .accounts
 }
 
 /// Shared devnet client + funded payer.
@@ -267,12 +276,17 @@ impl TestCtx {
                         (-base, px.saturating_sub(px * 5 / 100))
                     };
                     if let Ok(builder) = self.client.init_tx(&sub, false).await {
+                        let clob = clob_accounts(&self.client, SOL_PERP.index()).await;
                         let tx = builder
-                            .place_orders(vec![NewOrder::limit(SOL_PERP)
-                                .amount(amount)
-                                .price(price)
-                                .reduce_only(true)
-                                .build()])
+                            .place_and_make(
+                                NewOrder::limit(SOL_PERP)
+                                    .amount(amount)
+                                    .price(price)
+                                    .reduce_only(true)
+                                    .build(),
+                                clob,
+                                None,
+                            )
                             .build();
                         // Best-effort: submit the close (the deployed filler fills
                         // it vs the AMM) and poll until flat. Never panic — a reused

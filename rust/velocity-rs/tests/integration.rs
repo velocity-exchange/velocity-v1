@@ -4,9 +4,12 @@
 // `--features rpc_tests` and the required secrets.
 #![cfg(feature = "rpc_tests")]
 
+mod common;
+
 use std::{str::FromStr, time::Duration};
 
 use anchor_lang::Discriminator;
+use common::clob_accounts;
 use futures_util::StreamExt;
 use solana_keypair::Keypair;
 use solana_rpc_client_api::config::RpcSimulateTransactionConfig;
@@ -15,10 +18,10 @@ use velocity_rs::{
     constants::DEFAULT_PUBKEY,
     event_subscriber::RpcClient,
     grpc::grpc_subscriber::AccountFilter,
-    math::constants::{BASE_PRECISION_I64, LAMPORTS_PER_SOL_I64, PRICE_PRECISION_U64},
+    math::constants::{BASE_PRECISION_I64, PRICE_PRECISION_U64},
     types::{
-        accounts::User, solana_sdk::clock::Slot, Context, MarketId, MarketType, NewOrder,
-        OrderParams, OrderType, PositionDirection, PostOnlyParam, SettlePnlMode,
+        accounts::User, solana_sdk::clock::Slot, Context, MarketId, NewOrder, OrderParams,
+        PostOnlyParam, SettlePnlMode,
     },
     utils::test_envs::{devnet_endpoint, mainnet_endpoint, test_keypair},
     GrpcSubscribeOpts, Pubkey, TransactionBuilder, VelocityClient, Wallet,
@@ -183,7 +186,6 @@ async fn client_sync_subscribe_mainnet_grpc() {
 async fn place_and_cancel_orders() {
     let _ = env_logger::try_init();
     let btc_perp = MarketId::perp(1);
-    let sol_spot = MarketId::spot(1);
 
     let wallet: Wallet = test_keypair().into();
     let client = VelocityClient::new(
@@ -198,6 +200,9 @@ async fn place_and_cancel_orders() {
         .get_user_account(&wallet.default_sub_account())
         .await
         .expect("exists");
+    // Spot markets cannot rest an order on the book; the spot leg this test
+    // once placed alongside btc_perp has no successor instruction.
+    let clob = clob_accounts(&client, btc_perp.index()).await;
     let tx = TransactionBuilder::new(
         client.program_data(),
         wallet.default_sub_account(),
@@ -205,20 +210,16 @@ async fn place_and_cancel_orders() {
         false,
     )
     .cancel_all_orders()
-    .place_orders(vec![
+    .place_and_make(
         NewOrder::limit(btc_perp)
             .amount(1 * BASE_PRECISION_I64)
             .price(40 * PRICE_PRECISION_U64)
             .post_only(PostOnlyParam::MustPostOnly)
             .build(),
-        NewOrder::limit(sol_spot)
-            .amount(-1 * LAMPORTS_PER_SOL_I64)
-            .price(400 * PRICE_PRECISION_U64)
-            .post_only(PostOnlyParam::MustPostOnly)
-            .build(),
-    ])
+        clob,
+        None,
+    )
     .cancel_orders(btc_perp.to_parts(), None)
-    .cancel_orders(sol_spot.to_parts(), None)
     .build();
 
     dbg!(tx.clone());
@@ -246,11 +247,12 @@ async fn place_and_take() {
         .amount(1 * BASE_PRECISION_I64)
         .price(40 * PRICE_PRECISION_U64)
         .build();
+    let clob = clob_accounts(&client, sol_perp.index()).await;
     let tx = client
         .init_tx(&wallet.default_sub_account(), false)
         .await
         .unwrap()
-        .place_and_take(order, &[], None, None)
+        .place_and_take(order, clob, None)
         .build();
 
     let result = client.sign_and_send(tx).await;
@@ -337,16 +339,21 @@ async fn settle_pnl_txs() {
     .expect("connects");
 
     let doge_perp = client.market_lookup("doge-perp").expect("exists");
+    let doge_clob = clob_accounts(&client, doge_perp.index()).await;
 
     let tx = client
         .init_tx(&wallet.default_sub_account(), false)
         .await
         .unwrap()
-        .place_orders(vec![NewOrder::limit(doge_perp)
-            .amount(50 * BASE_PRECISION_I64)
-            .price(1000 * PRICE_PRECISION_U64)
-            .post_only(PostOnlyParam::None)
-            .build()])
+        .place_and_make(
+            NewOrder::limit(doge_perp)
+                .amount(50 * BASE_PRECISION_I64)
+                .price(1000 * PRICE_PRECISION_U64)
+                .post_only(PostOnlyParam::None)
+                .build(),
+            doge_clob,
+            None,
+        )
         .settle_pnl(doge_perp.index(), None, None)
         .build();
 
@@ -355,23 +362,30 @@ async fn settle_pnl_txs() {
     assert!(result.is_ok_and(|x| x.err.is_none()));
 
     let sol_perp = client.market_lookup("sol-perp").expect("exists");
+    let sol_clob = clob_accounts(&client, sol_perp.index()).await;
     let tx = client
         .init_tx(&wallet.default_sub_account(), false)
         .await
         .unwrap()
         .with_priority_fee(1, Some(2 * 200_000))
-        .place_orders(vec![
+        .place_and_make(
             NewOrder::limit(doge_perp)
                 .amount(50 * BASE_PRECISION_I64)
                 .price(1000 * PRICE_PRECISION_U64)
                 .post_only(PostOnlyParam::None)
                 .build(),
+            doge_clob,
+            None,
+        )
+        .place_and_make(
             NewOrder::limit(sol_perp)
                 .amount(-1 * BASE_PRECISION_I64)
                 .price(10 * PRICE_PRECISION_U64)
                 .post_only(PostOnlyParam::None)
                 .build(),
-        ])
+            sol_clob,
+            None,
+        )
         .settle_pnl_multi(
             &[sol_perp.index(), doge_perp.index()],
             SettlePnlMode::MustSettle,
@@ -456,6 +470,7 @@ async fn place_order_sim_via_privy_account() {
 
     let isolated_deposit = Some(379918_u64);
     let market_index = taker_order_params.market_index;
+    let clob = clob_accounts(&client, market_index).await;
 
     let message = TransactionBuilder::new(
         client.program_data(),
@@ -464,7 +479,7 @@ async fn place_order_sim_via_privy_account() {
         false,
     )
     .transfer_isolated_perp_position_deposit(isolated_deposit.unwrap() as i64, market_index)
-    .place_orders(vec![taker_order_params])
+    .place_and_take(taker_order_params, clob, None)
     .fee_payer(solana_pubkey::pubkey!(
         "4feEEMTPNnzwRiFeCNsogqXzHj3QyYowkYn4Y5BFv3rH" // some privy fee payer
     ))

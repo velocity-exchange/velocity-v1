@@ -3,6 +3,7 @@ import {
 	evaluateHealth,
 	globalHealthState,
 	HEALTH_CHECK_CONFIG,
+	positiveDurationMs,
 	recordSlotDiffHealth,
 	setHealthStatus,
 	getHealthStatus,
@@ -149,25 +150,17 @@ describe('healthCheck', () => {
 			['', 'empty'],
 			[undefined, 'unset'],
 		])('falls back to the default for a %s override', (raw) => {
-			// Re-derived rather than reading HEALTH_CHECK_CONFIG, which is frozen at
-			// import time; this pins the rule these values are built with.
-			const parsed = Number(raw);
-			const accepted = Number.isFinite(parsed) && parsed > 0;
-			expect(accepted).toBe(false);
+			expect(positiveDurationMs(raw, 42)).toBe(42);
 		});
 
 		it('accepts a finite positive override', () => {
-			const parsed = Number('1500');
-			expect(Number.isFinite(parsed) && parsed > 0).toBe(true);
+			expect(positiveDurationMs('1500', 42)).toBe(1500);
 		});
 
-		it('ships sane defaults', () => {
-			expect(HEALTH_CHECK_CONFIG.KILL_SWITCH_SUSTAIN_MS).toBeGreaterThan(0);
-			expect(HEALTH_CHECK_CONFIG.KILL_SWITCH_SAMPLE_GAP_MS).toBeGreaterThan(0);
-			expect(HEALTH_CHECK_CONFIG.STARTUP_GRACE_MS).toBeGreaterThan(0);
-			expect(Number.isFinite(HEALTH_CHECK_CONFIG.KILL_SWITCH_SUSTAIN_MS)).toBe(
-				true
-			);
+		it('ships the documented defaults', () => {
+			expect(HEALTH_CHECK_CONFIG.KILL_SWITCH_SUSTAIN_MS).toBe(60_000);
+			expect(HEALTH_CHECK_CONFIG.KILL_SWITCH_SAMPLE_GAP_MS).toBe(10_000);
+			expect(HEALTH_CHECK_CONFIG.STARTUP_GRACE_MS).toBe(180_000);
 		});
 	});
 

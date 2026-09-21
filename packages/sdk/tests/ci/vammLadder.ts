@@ -7,7 +7,8 @@ import { BN } from '@coral-xyz/anchor';
 import { assert } from 'chai';
 import { vammQuoteLevels } from '../../src/math/vammLadder';
 import { calculateAmmAvailableLiquidity } from '../../src/math/amm';
-import { PositionDirection } from '../../src/types';
+import { AMM, PositionDirection } from '../../src/types';
+import { mockAMM, mockMarketStats } from '../fixtures/mockAccounts';
 import {
 	AMM_RESERVE_PRECISION,
 	BASE_PRECISION,
@@ -33,12 +34,13 @@ function parse(dump: string): { price: BN; size: BN }[] {
 
 /**
  * The same AMM the Rust fixture builds: 100-unit reserves at peg 50, no
- * spread (`seed_no_spread_quote_state`), reserve bounds 50–200,
+ * spread (`seed_no_spread_quote_state`), reserve bounds 50-200,
  * `max_fill_reserve_fraction` 4 so a 10-unit take clears the per-fill cap.
  */
-function ammFixture() {
+function ammFixture(): AMM {
 	const reserves = AMM_RESERVE_PRECISION.muln(100);
 	return {
+		...mockAMM,
 		baseAssetReserve: reserves,
 		quoteAssetReserve: reserves,
 		terminalQuoteAssetReserve: reserves,
@@ -61,15 +63,26 @@ function ammFixture() {
 		baseAssetAmountWithAmm: ZERO,
 		curveUpdateIntensity: 0,
 		concentrationCoef: ZERO,
-		historicalOracleData: {
-			lastOraclePrice: PRICE_PRECISION.muln(50),
-			lastOraclePriceTwap: PRICE_PRECISION.muln(50),
-			lastOraclePriceTwap5Min: PRICE_PRECISION.muln(50),
-			lastOraclePriceTwapTs: ZERO,
-			lastOracleDelay: ZERO,
-			lastOracleConf: ZERO,
-		},
 	};
+}
+
+/** Asserts two ladders match rung by rung, price and size. */
+function assertLadderMatches(
+	actual: { price: BN; size: BN }[],
+	expected: { price: BN; size: BN }[],
+	label: string
+): void {
+	assert.equal(actual.length, expected.length, `${label}: rung count`);
+	actual.forEach((rung, i) => {
+		assert(
+			rung.price.eq(expected[i].price),
+			`${label}[${i}] price: got ${rung.price}, want ${expected[i].price}`
+		);
+		assert(
+			rung.size.eq(expected[i].size),
+			`${label}[${i}] size: got ${rung.size}, want ${expected[i].size}`
+		);
+	});
 }
 
 describe('vAMM ladder (mirror of vlp/amm/router_adapter.rs)', () => {
@@ -110,7 +123,7 @@ describe('vAMM ladder (mirror of vlp/amm/router_adapter.rs)', () => {
 		const step = new BN(1);
 		for (const direction of [PositionDirection.LONG, PositionDirection.SHORT]) {
 			assert(
-				calculateAmmAvailableLiquidity(amm as never, direction, step).eq(
+				calculateAmmAvailableLiquidity(amm, direction, step).eq(
 					RUST_CAPPED_TOTAL
 				),
 
@@ -124,12 +137,33 @@ describe('vAMM ladder (mirror of vlp/amm/router_adapter.rs)', () => {
 		assert(sideRoom.eq(RUST_CAPPED_TOTAL.muln(2)), 'the wider figure differs');
 	});
 
-	it('exposes the mirror with the same signature the program takes', () => {
-		// Compile-time contract check: the mirror must accept (amm, stats,
-		// oracle, direction, size, step, rivals, limit) exactly like the Rust.
-		assert.equal(typeof vammQuoteLevels, 'function');
-		assert.equal(vammQuoteLevels.length, 6, 'six required params');
-		void ammFixture();
-		void PositionDirection.LONG;
+	it('calls vammQuoteLevels and matches the Rust dump exactly', () => {
+		const amm = ammFixture();
+		const mmOraclePriceData = {
+			price: PRICE_PRECISION.muln(50),
+			confidence: ZERO,
+		};
+		const step = new BN(1);
+		const size = BASE_PRECISION.muln(10);
+
+		const longLevels = vammQuoteLevels(
+			amm,
+			mockMarketStats,
+			mmOraclePriceData,
+			PositionDirection.LONG,
+			size,
+			step
+		);
+		assertLadderMatches(longLevels, parse(RUST_LONG), 'long');
+
+		const shortLevels = vammQuoteLevels(
+			amm,
+			mockMarketStats,
+			mmOraclePriceData,
+			PositionDirection.SHORT,
+			size,
+			step
+		);
+		assertLadderMatches(shortLevels, parse(RUST_SHORT), 'short');
 	});
 });

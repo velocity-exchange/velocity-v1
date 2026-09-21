@@ -31,9 +31,11 @@ import {
 	mockUserUSDCAccount,
 } from './testHelpers';
 import { createTransferInstruction } from '@solana/spl-token';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 
 // EquityBelowFloor
 const EQUITY_BELOW_FLOOR_HEX = '0x18d6';
@@ -52,7 +54,7 @@ describe('equity floor lazy trip', () => {
 	let eventSubscriber: EventSubscriber;
 
 	let bulkAccountLoader: TestBulkAccountLoader;
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 
 	let solOracle: PublicKey;
 	let usdcMint;
@@ -81,44 +83,44 @@ describe('equity floor lazy trip', () => {
 	};
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = startLiteSVM();
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			1
 		);
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			chProgram
 		);
 		await eventSubscriber.subscribe();
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
 		adminUSDC = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			svmContextWrapper
 		);
 		adminWSOL = await createWSolTokenAccountForUser(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			// @ts-ignore
-			bankrunContextWrapper.provider.wallet,
+			svmContextWrapper.provider.wallet,
 			solAmount
 		);
 
-		solOracle = await mockOracleNoProgram(bankrunContextWrapper, 100);
+		solOracle = await mockOracleNoProgram(svmContextWrapper, 100);
 
 		marketIndexes = [];
 		spotMarketIndexes = [0, 1];
 		oracleInfos = [{ publicKey: solOracle, source: OracleSource.PYTH_LAZER }];
 
 		adminVelocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: svmContextWrapper.connection.toConnection(),
+			wallet: svmContextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -150,7 +152,7 @@ describe('equity floor lazy trip', () => {
 
 		[takerVelocityClient, takerWSOL, takerUSDC, takerKeypair] =
 			await createUserWithUSDCAndWSOLAccount(
-				bankrunContextWrapper,
+				svmContextWrapper,
 				usdcMint,
 				chProgram,
 				ZERO,
@@ -161,10 +163,7 @@ describe('equity floor lazy trip', () => {
 				bulkAccountLoader
 			);
 
-		await bankrunContextWrapper.fundKeypair(
-			takerKeypair,
-			10 * LAMPORTS_PER_SOL
-		);
+		await svmContextWrapper.fundKeypair(takerKeypair, 10 * LAMPORTS_PER_SOL);
 		await takerVelocityClient.deposit(usdcAmount, 0, takerUSDC);
 		takerUserPublicKey = await takerVelocityClient.getUserAccountPublicKey();
 
@@ -243,7 +242,7 @@ describe('equity floor lazy trip', () => {
 			// @ts-ignore
 			adminVelocityClient.wallet.payer,
 		]);
-		bankrunContextWrapper.printTxLogs(txSig);
+		svmContextWrapper.printTxLogs(txSig);
 
 		await takerVelocityClient.fetchAccounts();
 		await takerUser.fetchAccounts();

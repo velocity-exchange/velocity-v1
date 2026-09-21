@@ -27,9 +27,11 @@ import {
 } from './testHelpers';
 import { PEG_PRECISION, PerpOperation } from '../../packages/sdk';
 import { JitProxyClient, PriceType } from '../../packages/jit-proxy/src';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 
 // jit-proxy program id
 const JIT_PROXY_PROGRAM_ID = new PublicKey(
@@ -44,7 +46,7 @@ describe('jit proxy smoke test', () => {
 	let eventSubscriber: EventSubscriber;
 
 	let bulkAccountLoader: TestBulkAccountLoader;
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 
 	const mantissaSqrtScale = new BN(Math.sqrt(PRICE_PRECISION.toNumber()));
 	const ammInitialQuoteAssetReserve = new anchor.BN(5 * 10 ** 13).mul(
@@ -64,44 +66,42 @@ describe('jit proxy smoke test', () => {
 	let oracleInfos;
 
 	before(async () => {
-		// startAnchor loads the Anchor.toml workspace programs (velocity, …) from
+		// startLiteSVM loads the Anchor.toml workspace programs (velocity, …) from
 		// target/deploy; jit_proxy is loaded explicitly here (not via Anchor.toml)
-		// so it isn't a hard dependency of every other bankrun test.
-		const context = await startAnchor(
-			'',
-			[{ name: 'jit_proxy', programId: JIT_PROXY_PROGRAM_ID }],
-			[]
-		);
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		// so it isn't a hard dependency of every other LiteSVM test.
+		const context = startLiteSVM({
+			extraPrograms: [{ name: 'jit_proxy', programId: JIT_PROXY_PROGRAM_ID }],
+		});
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			1
 		);
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			chProgram
 		);
 		await eventSubscriber.subscribe();
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			svmContextWrapper
 		);
 
-		solUsd = await mockOracleNoProgram(bankrunContextWrapper, 32.821);
+		solUsd = await mockOracleNoProgram(svmContextWrapper, 32.821);
 
 		marketIndexes = [0];
 		spotMarketIndexes = [0, 1];
 		oracleInfos = [{ publicKey: solUsd, source: OracleSource.PYTH_LAZER }];
 
 		makerVelocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: svmContextWrapper.connection.toConnection(),
+			wallet: svmContextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: { commitment: 'confirmed' },
 			activeSubAccountId: 0,
@@ -160,17 +160,17 @@ describe('jit proxy smoke test', () => {
 	it('JIT maker fills a taker perp auction via jit-proxy', async () => {
 		// --- taker setup ---
 		const keypair = new Keypair();
-		await bankrunContextWrapper.fundKeypair(keypair, 10 ** 9);
+		await svmContextWrapper.fundKeypair(keypair, 10 ** 9);
 		await bulkAccountLoader.load();
 		const wallet = new Wallet(keypair);
 		const takerUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper,
+			svmContextWrapper,
 			keypair.publicKey
 		);
 		const takerVelocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
+			connection: svmContextWrapper.connection.toConnection(),
 			wallet,
 			programID: chProgram.programId,
 			opts: { commitment: 'confirmed' },
@@ -240,7 +240,7 @@ describe('jit proxy smoke test', () => {
 			priceType: PriceType.LIMIT,
 		});
 
-		bankrunContextWrapper.printTxLogs(txSig.txSig);
+		svmContextWrapper.printTxLogs(txSig.txSig);
 
 		// --- assert the fill happened on both sides ---
 		await makerVelocityClientUser.fetchAccounts();

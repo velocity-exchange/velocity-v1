@@ -32,9 +32,11 @@ import {
 	PostOnlyParams,
 	ZERO,
 } from '../../packages/sdk';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 
 describe('post only', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
@@ -45,7 +47,7 @@ describe('post only', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 
 	let usdcMint;
 	let userUSDCAccount;
@@ -67,39 +69,39 @@ describe('post only', () => {
 	let oracleInfos;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = startLiteSVM();
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			1
 		);
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			chProgram
 		);
 
 		await eventSubscriber.subscribe();
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			svmContextWrapper
 		);
 
-		solUsd = await mockOracleNoProgram(bankrunContextWrapper, 1);
+		solUsd = await mockOracleNoProgram(svmContextWrapper, 1);
 
 		marketIndexes = [0];
 		spotMarketIndexes = [0];
 		oracleInfos = [{ publicKey: solUsd, source: OracleSource.PYTH_LAZER }];
 
 		fillerVelocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: svmContextWrapper.connection.toConnection(),
+			wallet: svmContextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -155,7 +157,7 @@ describe('post only', () => {
 			ammInitialBaseAssetReserve,
 			ammInitialQuoteAssetReserve
 		);
-		await setFeedPriceNoProgram(bankrunContextWrapper, 1, solUsd);
+		await setFeedPriceNoProgram(svmContextWrapper, 1, solUsd);
 	});
 
 	after(async () => {
@@ -166,16 +168,16 @@ describe('post only', () => {
 
 	it('long', async () => {
 		const keypair = new Keypair();
-		await bankrunContextWrapper.fundKeypair(keypair, 10 ** 9);
+		await svmContextWrapper.fundKeypair(keypair, 10 ** 9);
 		const wallet = new Wallet(keypair);
 		const userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper,
+			svmContextWrapper,
 			keypair.publicKey
 		);
 		const velocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
+			connection: svmContextWrapper.connection.toConnection(),
 			wallet,
 			programID: chProgram.programId,
 			opts: {
@@ -227,7 +229,7 @@ describe('post only', () => {
 
 		assert(order.postOnly);
 		const newOraclePrice = 0.98;
-		setFeedPriceNoProgram(bankrunContextWrapper, newOraclePrice, solUsd);
+		setFeedPriceNoProgram(svmContextWrapper, newOraclePrice, solUsd);
 		await fillerVelocityClient.moveAmmToPrice(
 			marketIndex,
 			new BN(newOraclePrice * PRICE_PRECISION.toNumber())
@@ -262,16 +264,16 @@ describe('post only', () => {
 
 	it('short', async () => {
 		const keypair = new Keypair();
-		await bankrunContextWrapper.fundKeypair(keypair, 10 ** 9);
+		await svmContextWrapper.fundKeypair(keypair, 10 ** 9);
 		const wallet = new Wallet(keypair);
 		const userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper,
+			svmContextWrapper,
 			keypair.publicKey
 		);
 		const velocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
+			connection: svmContextWrapper.connection.toConnection(),
 			wallet,
 			programID: chProgram.programId,
 			opts: {
@@ -324,7 +326,7 @@ describe('post only', () => {
 		assert(order.postOnly);
 
 		const newOraclePrice = 1.02;
-		setFeedPriceNoProgram(bankrunContextWrapper, newOraclePrice, solUsd);
+		setFeedPriceNoProgram(svmContextWrapper, newOraclePrice, solUsd);
 		await fillerVelocityClient.moveAmmToPrice(
 			marketIndex,
 			new BN(newOraclePrice * PRICE_PRECISION.toNumber())

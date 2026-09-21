@@ -1,14 +1,16 @@
 import * as anchor from '@coral-xyz/anchor';
 import { Program } from '@coral-xyz/anchor';
 import { assert, expect } from 'chai';
-import { startAnchor } from 'solana-bankrun';
 import { BN, loadKeypair, TestClient, Wallet } from '../../packages/sdk/src';
 import {
 	initializeQuoteSpotMarket,
 	mockOracleNoProgram,
 	mockUSDCMint,
 } from './testHelpers';
-import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
 import { VelocityCore } from '../../packages/sdk/src/core/VelocityCore';
 
@@ -29,7 +31,7 @@ import { VelocityCore } from '../../packages/sdk/src/core/VelocityCore';
 describe('mm oracle batch native', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 	let velocityClient: TestClient;
 
 	const marketIndexes = [0, 1, 2, 3];
@@ -39,24 +41,22 @@ describe('mm oracle batch native', () => {
 	/** Advance one slot; combined with the slot each send consumes this clears
 	 * the program's `MM_ORACLE_MIN_SLOT_GAP` of 2. */
 	async function advancePastRateLimit(): Promise<void> {
-		await bankrunContextWrapper.connection.updateSlotAndClock();
+		await svmContextWrapper.connection.updateSlotAndClock();
 	}
 
 	function statsFor(marketIndex: number) {
 		return velocityClient.getPerpMarketAccountOrThrow(marketIndex).marketStats;
 	}
 
-	/** Current bankrun slot as the source-observation slot, so the program's
+	/** Current LiteSVM slot as the source-observation slot, so the program's
 	 * `MM_ORACLE_MAX_SOURCE_AGE_SLOTS` freshness gate never skips a write. */
 	async function sourceSlot(): Promise<BN> {
-		return new BN(
-			(await bankrunContextWrapper.connection.getSlot()).toString()
-		);
+		return new BN((await svmContextWrapper.connection.getSlot()).toString());
 	}
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
-		bankrunContextWrapper = new BankrunContextWrapper(context as any);
+		const context = startLiteSVM();
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 		const defaultIdl = VelocityCore.defaultIdl();
 		(VelocityCore as any).defaultIdl = () => ({
 			...defaultIdl,
@@ -64,17 +64,17 @@ describe('mm oracle batch native', () => {
 		});
 
 		const bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			0
 		);
 
-		const usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		const usdcMint = await mockUSDCMint(svmContextWrapper);
 		const wallet = new Wallet(loadKeypair(process.env.ANCHOR_WALLET));
-		await bankrunContextWrapper.fundKeypair(wallet, 10 ** 9);
+		await svmContextWrapper.fundKeypair(wallet, 10 ** 9);
 
 		velocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
+			connection: svmContextWrapper.connection.toConnection(),
 			wallet,
 			programID: chProgram.programId,
 			opts: { commitment: 'confirmed' },
@@ -94,7 +94,7 @@ describe('mm oracle batch native', () => {
 		await initializeQuoteSpotMarket(velocityClient, usdcMint.publicKey);
 		await velocityClient.fetchAccounts();
 
-		const solUsd = await mockOracleNoProgram(bankrunContextWrapper, 1);
+		const solUsd = await mockOracleNoProgram(svmContextWrapper, 1);
 		for (const marketIndex of marketIndexes) {
 			await velocityClient.initializePerpMarket(
 				marketIndex,
@@ -135,7 +135,7 @@ describe('mm oracle batch native', () => {
 		);
 		await velocityClient.fetchAccounts();
 
-		const slot = Number(await bankrunContextWrapper.connection.getSlot());
+		const slot = Number(await svmContextWrapper.connection.getSlot());
 		for (const marketIndex of marketIndexes) {
 			const stats = statsFor(marketIndex);
 			assert(
@@ -286,7 +286,7 @@ describe('mm oracle batch native', () => {
 		// observed more than MM_ORACLE_MAX_SOURCE_AGE_SLOTS before it lands is
 		// skipped (transaction still succeeds), so a late-landing transaction
 		// cannot make an old observation read as fresh.
-		while ((await bankrunContextWrapper.connection.getSlot()) < 5n) {
+		while ((await svmContextWrapper.connection.getSlot()) < 5n) {
 			await advancePastRateLimit();
 		}
 		await advancePastRateLimit();

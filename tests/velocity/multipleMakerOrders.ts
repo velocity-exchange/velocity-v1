@@ -25,9 +25,11 @@ import {
 	setFeedPriceNoProgram,
 } from './testHelpers';
 import { ContractTier, MARGIN_PRECISION, OrderType } from '../../packages/sdk';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 
 describe('multiple maker orders', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
@@ -37,7 +39,7 @@ describe('multiple maker orders', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 
 	let usdcMint;
 	let userUSDCAccount;
@@ -60,40 +62,40 @@ describe('multiple maker orders', () => {
 	let oracleInfos;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = startLiteSVM();
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			1
 		);
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			chProgram
 		);
 
 		await eventSubscriber.subscribe();
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			svmContextWrapper
 		);
 
-		solUsd = await mockOracleNoProgram(bankrunContextWrapper, 100);
-		dogUsd = await mockOracleNoProgram(bankrunContextWrapper, 0.6899, -4, 0);
+		solUsd = await mockOracleNoProgram(svmContextWrapper, 100);
+		dogUsd = await mockOracleNoProgram(svmContextWrapper, 0.6899, -4, 0);
 
 		marketIndexes = [0, 1];
 		spotMarketIndexes = [0];
 		oracleInfos = [{ publicKey: solUsd, source: OracleSource.PYTH_LAZER }];
 
 		fillerVelocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: svmContextWrapper.connection.toConnection(),
+			wallet: svmContextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -182,7 +184,7 @@ describe('multiple maker orders', () => {
 	it('taker long solUsd', async () => {
 		const [takerVelocityClient, takerUSDCAccount] =
 			await createUserWithUSDCAccount(
-				bankrunContextWrapper,
+				svmContextWrapper,
 				usdcMint,
 				chProgram,
 				usdcAmount,
@@ -196,7 +198,7 @@ describe('multiple maker orders', () => {
 
 		const [makerVelocityClient, makerUSDCAccount] =
 			await createUserWithUSDCAccount(
-				bankrunContextWrapper,
+				svmContextWrapper,
 				usdcMint,
 				chProgram,
 				usdcAmount,
@@ -220,7 +222,7 @@ describe('multiple maker orders', () => {
 
 		const [secondMakerVelocityClient, secondMakerUSDCAccount] =
 			await createUserWithUSDCAccount(
-				bankrunContextWrapper,
+				svmContextWrapper,
 				usdcMint,
 				chProgram,
 				usdcAmount,
@@ -269,10 +271,10 @@ describe('multiple maker orders', () => {
 			},
 		];
 		// Refresh the oracle's posted slot to the current slot before filling. The
-		// oracle was mocked in `before`, and the bankrun slot advances through the
+		// oracle was mocked in `before`, and the LiteSVM slot advances through the
 		// deposits/order-placement above, leaving it stale for the AMM low-risk-fill
 		// validity check ("oracle not valid for low risk fills"). Same price (100).
-		await setFeedPriceNoProgram(bankrunContextWrapper, 100, solUsd);
+		await setFeedPriceNoProgram(svmContextWrapper, 100, solUsd);
 		const txSig = await fillerVelocityClient.fillPerpOrder(
 			await takerVelocityClient.getUserAccountPublicKey(),
 			takerVelocityClient.getUserAccount(),
@@ -280,7 +282,7 @@ describe('multiple maker orders', () => {
 			makerInfo
 		);
 
-		bankrunContextWrapper.printTxLogs(txSig);
+		svmContextWrapper.printTxLogs(txSig);
 
 		const orderActionRecords = eventSubscriber
 			.getEventsArray('OrderActionRecord')
@@ -329,7 +331,7 @@ describe('multiple maker orders', () => {
 			});
 		}
 
-		await setFeedPriceNoProgram(bankrunContextWrapper, 90, solUsd);
+		await setFeedPriceNoProgram(svmContextWrapper, 90, solUsd);
 		await takerVelocityClient.placePerpOrder({
 			marketIndex: 0,
 			orderType: OrderType.LIMIT,
@@ -348,7 +350,7 @@ describe('multiple maker orders', () => {
 		const takerPosition2 = takerVelocityClient.getUser().getPerpPosition(0);
 		assert(takerPosition2.baseAssetAmount.eq(new BN(0)));
 
-		bankrunContextWrapper.printTxLogs(txSig2);
+		svmContextWrapper.printTxLogs(txSig2);
 
 		await takerVelocityClient.unsubscribe();
 		await makerVelocityClient.unsubscribe();
@@ -358,7 +360,7 @@ describe('multiple maker orders', () => {
 	it('taker short dogUsd', async () => {
 		const [takerVelocityClient, takerUSDCAccount] =
 			await createUserWithUSDCAccount(
-				bankrunContextWrapper,
+				svmContextWrapper,
 				usdcMint,
 				chProgram,
 				usdcAmount,
@@ -372,7 +374,7 @@ describe('multiple maker orders', () => {
 
 		const [makerVelocityClient, makerUSDCAccount] =
 			await createUserWithUSDCAccount(
-				bankrunContextWrapper,
+				svmContextWrapper,
 				usdcMint,
 				chProgram,
 				usdcAmount,
@@ -396,7 +398,7 @@ describe('multiple maker orders', () => {
 
 		const [secondMakerVelocityClient, secondMakerUSDCAccount] =
 			await createUserWithUSDCAccount(
-				bankrunContextWrapper,
+				svmContextWrapper,
 				usdcMint,
 				chProgram,
 				usdcAmount,
@@ -424,7 +426,7 @@ describe('multiple maker orders', () => {
 
 		const [thirdMakerVelocityClient, thirdMakerUSDCAccount] =
 			await createUserWithUSDCAccount(
-				bankrunContextWrapper,
+				svmContextWrapper,
 				usdcMint,
 				chProgram,
 				usdcAmount,
@@ -459,7 +461,7 @@ describe('multiple maker orders', () => {
 			}
 		}
 
-		await setFeedPriceNoProgram(bankrunContextWrapper, 0.675, dogUsd);
+		await setFeedPriceNoProgram(svmContextWrapper, 0.675, dogUsd);
 		const takerBaseAssetAmount = new BN(600).mul(BASE_PRECISION);
 		await takerVelocityClient.placePerpOrder({
 			marketIndex: 1,
@@ -494,7 +496,7 @@ describe('multiple maker orders', () => {
 			takerVelocityClient.getOrder(1),
 			makerInfo
 		);
-		bankrunContextWrapper.printTxLogs(txSig);
+		svmContextWrapper.printTxLogs(txSig);
 
 		const orderActionRecords = eventSubscriber
 			.getEventsArray('OrderActionRecord')
@@ -587,7 +589,7 @@ describe('multiple maker orders', () => {
 			});
 		}
 
-		await setFeedPriceNoProgram(bankrunContextWrapper, 0.75, dogUsd);
+		await setFeedPriceNoProgram(svmContextWrapper, 0.75, dogUsd);
 		await takerVelocityClient.placePerpOrder({
 			marketIndex: 1,
 			orderType: OrderType.LIMIT,
@@ -619,7 +621,7 @@ describe('multiple maker orders', () => {
 			dogMarketAfter.amm.baseAssetAmountWithAmm.eq(new BN('-66279600000'))
 		);
 
-		bankrunContextWrapper.printTxLogs(txSig2);
+		svmContextWrapper.printTxLogs(txSig2);
 
 		await takerVelocityClient.unsubscribe();
 		await makerVelocityClient.unsubscribe();

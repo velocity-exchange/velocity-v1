@@ -26,9 +26,11 @@ import {
 	getMaxWithdrawGuardThreshold,
 } from './testHelpers';
 import { ZERO } from '../../packages/sdk';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 import { NATIVE_MINT } from '@solana/spl-token';
 
 describe('spot deposit and withdraw', () => {
@@ -39,7 +41,7 @@ describe('spot deposit and withdraw', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 
 	let solOracle: PublicKey;
 
@@ -62,35 +64,35 @@ describe('spot deposit and withdraw', () => {
 	let oracleInfos: OracleInfo[];
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = startLiteSVM();
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			1
 		);
 
 		eventSubscriber = new EventSubscriber(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			chProgram
 		);
 
 		await eventSubscriber.subscribe();
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
-		await mockUserUSDCAccount(usdcMint, largeUsdcAmount, bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
+		await mockUserUSDCAccount(usdcMint, largeUsdcAmount, svmContextWrapper);
 
-		solOracle = await mockOracleNoProgram(bankrunContextWrapper, 30);
+		solOracle = await mockOracleNoProgram(svmContextWrapper, 30);
 
 		marketIndexes = [];
 		spotMarketIndexes = [0, 1, 2, 3];
 		oracleInfos = [{ publicKey: solOracle, source: OracleSource.PYTH_LAZER }];
 
 		admin = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: svmContextWrapper.connection.toConnection(),
+			wallet: svmContextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -213,7 +215,7 @@ describe('spot deposit and withdraw', () => {
 			2,
 			await getMaxWithdrawGuardThreshold(admin, 2)
 		);
-		bankrunContextWrapper.printTxLogs(txSig);
+		svmContextWrapper.printTxLogs(txSig);
 		await admin.fetchAccounts();
 		const spotMarket = await admin.getSpotMarketAccount(2);
 		assert(spotMarket.marketIndex === 2);
@@ -249,7 +251,7 @@ describe('spot deposit and withdraw', () => {
 	it('First User Deposit USDC Markets', async () => {
 		[firstUserVelocityClient, firstUserVelocityClientUSDCAccount] =
 			await createUserWithUSDCAccount(
-				bankrunContextWrapper,
+				svmContextWrapper,
 				usdcMint,
 				chProgram,
 				usdcAmount.muln(2),
@@ -286,7 +288,7 @@ describe('spot deposit and withdraw', () => {
 			secondUserVelocityClientWSOLAccount,
 			secondUserVelocityClientUSDCAccount,
 		] = await createUserWithUSDCAndWSOLAccount(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			usdcMint,
 			chProgram,
 			solAmount,
@@ -303,7 +305,7 @@ describe('spot deposit and withdraw', () => {
 			marketIndex,
 			secondUserVelocityClientWSOLAccount
 		);
-		bankrunContextWrapper.printTxLogs(txSig);
+		svmContextWrapper.printTxLogs(txSig);
 	});
 
 	it('Second User Withdraw First half USDC', async () => {
@@ -314,7 +316,7 @@ describe('spot deposit and withdraw', () => {
 			marketIndex,
 			secondUserVelocityClientUSDCAccount
 		);
-		bankrunContextWrapper.printTxLogs(txSig);
+		svmContextWrapper.printTxLogs(txSig);
 	});
 
 	it('transfer pools', async () => {

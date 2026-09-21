@@ -69,9 +69,11 @@ import {
 	overWriteSpotMarket,
 	setFeedPriceNoProgram,
 } from './testHelpers';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 import dotenv from 'dotenv';
 import { freshLazerSolHex, mockLazerStorageData } from './pythLazerMock';
 import {
@@ -93,7 +95,7 @@ describe('LP Pool', () => {
 	// @ts-ignore
 	program.coder.accounts = new CustomBorshAccountsCoder(program.idl);
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 	let bulkAccountLoader: TestBulkAccountLoader;
 
 	let userLpTokenAccount: PublicKey;
@@ -120,37 +122,35 @@ describe('LP Pool', () => {
 	let whitelistMint: PublicKey;
 
 	before(async () => {
-		const context = await startAnchor(
-			'',
-			[],
-			[
+		const context = startLiteSVM({
+			accounts: [
 				{
 					address: PYTH_LAZER_STORAGE_ACCOUNT_KEY,
 					info: PYTH_STORAGE_ACCOUNT_INFO,
 				},
-			]
-		);
+			],
+		});
 
 		// @ts-ignore
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			1
 		);
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
-		spotTokenMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
+		spotTokenMint = await mockUSDCMint(svmContextWrapper);
 		spotMarketOracle = await mockOracleNoProgram(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			80,
 			-7,
 			undefined,
 			10000
 		);
 		spotMarketOracle2 = await mockOracleNoProgram(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			80,
 			-7,
 			undefined,
@@ -158,12 +158,12 @@ describe('LP Pool', () => {
 		);
 
 		const keypair = new Keypair();
-		await bankrunContextWrapper.fundKeypair(keypair, 10 ** 9);
+		await svmContextWrapper.fundKeypair(keypair, 10 ** 9);
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
 
 		solUsd = await mockOracleNoProgram(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			80,
 			-7,
 			undefined,
@@ -171,7 +171,7 @@ describe('LP Pool', () => {
 		);
 
 		adminClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
+			connection: svmContextWrapper.connection.toConnection(),
 			wallet: new anchor.Wallet(keypair),
 			programID: program.programId,
 			opts: {
@@ -195,7 +195,7 @@ describe('LP Pool', () => {
 		const userUSDCAccount = await mockUserUSDCAccountWithAuthority(
 			usdcMint,
 			new BN(100_000_000).mul(QUOTE_PRECISION),
-			bankrunContextWrapper,
+			svmContextWrapper,
 			keypair
 		);
 
@@ -309,7 +309,7 @@ describe('LP Pool', () => {
 		const whitelistKeypair = Keypair.generate();
 		const transaction = new Transaction().add(
 			SystemProgram.createAccount({
-				fromPubkey: bankrunContextWrapper.provider.wallet.publicKey,
+				fromPubkey: svmContextWrapper.provider.wallet.publicKey,
 				newAccountPubkey: whitelistKeypair.publicKey,
 				space: MINT_SIZE,
 				lamports: 10_000_000_000,
@@ -318,20 +318,17 @@ describe('LP Pool', () => {
 			createInitializeMint2Instruction(
 				whitelistKeypair.publicKey,
 				0,
-				bankrunContextWrapper.provider.wallet.publicKey,
-				bankrunContextWrapper.provider.wallet.publicKey,
+				svmContextWrapper.provider.wallet.publicKey,
+				svmContextWrapper.provider.wallet.publicKey,
 				TOKEN_PROGRAM_ID
 			)
 		);
 
-		await bankrunContextWrapper.sendTransaction(transaction, [
-			whitelistKeypair,
-		]);
+		await svmContextWrapper.sendTransaction(transaction, [whitelistKeypair]);
 
-		const whitelistMintInfo =
-			await bankrunContextWrapper.connection.getAccountInfo(
-				whitelistKeypair.publicKey
-			);
+		const whitelistMintInfo = await svmContextWrapper.connection.getAccountInfo(
+			whitelistKeypair.publicKey
+		);
 		console.log('whitelistMintInfo', whitelistMintInfo);
 
 		whitelistMint = whitelistKeypair.publicKey;
@@ -348,7 +345,7 @@ describe('LP Pool', () => {
 		)) as LPPoolAccount;
 
 		userLpTokenAccount = await mockAtaTokenAccountForMint(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			lpPool.mint,
 			new BN(0),
 			adminClient.wallet.publicKey
@@ -380,7 +377,7 @@ describe('LP Pool', () => {
 
 		// check mint created correctly
 		const mintInfo = await getMint(
-			bankrunContextWrapper.connection.toConnection(),
+			svmContextWrapper.connection.toConnection(),
 			lpPool.mint as PublicKey
 		);
 		expect(mintInfo.decimals).to.equal(tokenDecimals);
@@ -433,7 +430,7 @@ describe('LP Pool', () => {
 			0
 		);
 		const constituentTokenVault =
-			await bankrunContextWrapper.connection.getAccountInfo(
+			await svmContextWrapper.connection.getAccountInfo(
 				constituentVaultPublicKey
 			);
 		expect(constituentTokenVault).to.not.be.null;
@@ -719,7 +716,7 @@ describe('LP Pool', () => {
 	it('can update constituent target weights', async () => {
 		await adminClient.postPythLazerOracleUpdate(
 			[6],
-			freshLazerSolHex(bankrunContextWrapper.connection.getTime())
+			freshLazerSolHex(svmContextWrapper.connection.getTime())
 		);
 		await adminClient.updatePerpMarketOracle(
 			0,
@@ -880,7 +877,7 @@ describe('LP Pool', () => {
 			getConstituentPublicKey(program.programId, lpPoolKey, 2)
 		)) as ConstituentAccount;
 		await setFeedPriceNoProgram(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			160,
 			spotMarketOracle2,
 			10000
@@ -918,7 +915,7 @@ describe('LP Pool', () => {
 		// Move the oracle price to be half, so its target base should go to zero
 		const parentBalanceBefore = constituentTargetBase.targets[1].targetBase;
 		await setFeedPriceNoProgram(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			40,
 			spotMarketOracle2,
 			10000
@@ -952,7 +949,7 @@ describe('LP Pool', () => {
 			10
 		);
 		await setFeedPriceNoProgram(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			80,
 			spotMarketOracle2,
 			10000
@@ -980,7 +977,7 @@ describe('LP Pool', () => {
 			perpMarket.feeLedger.totalExchangeFee.add(QUOTE_PRECISION.muln(100));
 		await overWritePerpMarket(
 			adminClient,
-			bankrunContextWrapper,
+			svmContextWrapper,
 			perpMarket.pubkey,
 			perpMarket
 		);
@@ -1142,10 +1139,9 @@ describe('LP Pool', () => {
 			lpPoolKey,
 			0
 		);
-		const constituentVault =
-			await bankrunContextWrapper.connection.getTokenAccount(
-				constituentVaultPublicKey
-			);
+		const constituentVault = await svmContextWrapper.connection.getTokenAccount(
+			constituentVaultPublicKey
+		);
 		assert(
 			new BN(constituentVault.amount.toString()).eq(
 				constituent.vaultTokenBalance
@@ -1170,10 +1166,9 @@ describe('LP Pool', () => {
 		);
 
 		/// First remove some liquidity so DLP doesnt have enought to transfer
-		const lpTokenBalance =
-			await bankrunContextWrapper.connection.getTokenAccount(
-				userLpTokenAccount
-			);
+		const lpTokenBalance = await svmContextWrapper.connection.getTokenAccount(
+			userLpTokenAccount
+		);
 
 		const tx = new Transaction();
 		tx.add(
@@ -1193,10 +1188,9 @@ describe('LP Pool', () => {
 		);
 		await adminClient.sendTransaction(tx);
 
-		let constituentVault =
-			await bankrunContextWrapper.connection.getTokenAccount(
-				constituentVaultPublicKey
-			);
+		let constituentVault = await svmContextWrapper.connection.getTokenAccount(
+			constituentVaultPublicKey
+		);
 
 		const expectedTransferAmount = getTokenAmount(
 			adminClient.getPerpMarketAccount(0).amm.feePool.scaledBalance,
@@ -1219,14 +1213,14 @@ describe('LP Pool', () => {
 		);
 		await overWriteSpotMarket(
 			adminClient,
-			bankrunContextWrapper,
+			svmContextWrapper,
 			spotMarket.pubkey,
 			spotMarket
 		);
 		perpMarket.amm.feePool.scaledBalance = ZERO;
 		await overWritePerpMarket(
 			adminClient,
-			bankrunContextWrapper,
+			svmContextWrapper,
 			perpMarket.pubkey,
 			perpMarket
 		);
@@ -1243,7 +1237,7 @@ describe('LP Pool', () => {
 		constituent = (await adminClient.program.account.constituent.fetch(
 			getConstituentPublicKey(program.programId, lpPoolKey, 0)
 		)) as ConstituentAccount;
-		constituentVault = await bankrunContextWrapper.connection.getTokenAccount(
+		constituentVault = await svmContextWrapper.connection.getTokenAccount(
 			constituentVaultPublicKey
 		);
 
@@ -1305,7 +1299,7 @@ describe('LP Pool', () => {
 			);
 		await overWritePerpMarket(
 			adminClient,
-			bankrunContextWrapper,
+			svmContextWrapper,
 			perpMarket.pubkey,
 			perpMarket
 		);
@@ -1336,7 +1330,7 @@ describe('LP Pool', () => {
 
 		// Deposit here to DLP to make sure aum calc work with perp market debt
 		await overWriteMintAccount(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			lpPool.mint,
 			BigInt(lpPool.lastAum.toNumber())
 		);
@@ -1406,7 +1400,7 @@ describe('LP Pool', () => {
 			);
 		await overWritePerpMarket(
 			adminClient,
-			bankrunContextWrapper,
+			svmContextWrapper,
 			perpMarket.pubkey,
 			perpMarket
 		);
@@ -1610,7 +1604,7 @@ describe('LP Pool', () => {
 		// First deposit into wsol account from subaccount 1
 		await adminClient.initializeUserAccount(1);
 		const pubkey = await createWSolTokenAccountForUser(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			adminClient.wallet.payer,
 			new BN(7_000).mul(new BN(10 ** 9))
 		);
@@ -1642,14 +1636,14 @@ describe('LP Pool', () => {
 		spotMarket.cumulativeDepositInterest = new BN(188_718_954_233_794);
 		await overWriteSpotMarket(
 			adminClient,
-			bankrunContextWrapper,
+			svmContextWrapper,
 			spotMarket.pubkey,
 			spotMarket
 		);
 
 		// const curClock =
-		// 	await bankrunContextWrapper.provider.context.banksClient.getClock();
-		// bankrunContextWrapper.provider.context.setClock(
+		// 	await svmContextWrapper.provider.context.banksClient.getClock();
+		// svmContextWrapper.provider.context.setClock(
 		// 	new Clock(
 		// 		curClock.slot,
 		// 		curClock.epochStartTimestamp,
@@ -1698,7 +1692,7 @@ describe('LP Pool', () => {
 			adminClient.wallet.publicKey
 		);
 		const ix = createAssociatedTokenAccountInstruction(
-			bankrunContextWrapper.context.payer.publicKey,
+			svmContextWrapper.context.payer.publicKey,
 			whitelistMintAta,
 			adminClient.wallet.publicKey,
 			whitelistMint
@@ -1706,10 +1700,10 @@ describe('LP Pool', () => {
 		const mintToIx = createMintToInstruction(
 			whitelistMint,
 			whitelistMintAta,
-			bankrunContextWrapper.provider.wallet.publicKey,
+			svmContextWrapper.provider.wallet.publicKey,
 			1
 		);
-		await bankrunContextWrapper.sendTransaction(
+		await svmContextWrapper.sendTransaction(
 			new Transaction().add(ix, mintToIx)
 		);
 

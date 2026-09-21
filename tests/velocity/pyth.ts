@@ -28,16 +28,18 @@ import {
 	User,
 	QUOTE_SPOT_MARKET_INDEX,
 } from '../../packages/sdk/src';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 
 async function updateFundingRateHelper(
 	velocityClient: TestClient,
 	marketIndex: number,
 	priceFeedAddress: PublicKey,
 	prices: Array<number>,
-	context: BankrunContextWrapper,
+	context: LiteSVMContextWrapper,
 	txNonce = 0 // helps prevent race conditions with identical transactions
 ) {
 	for (let i = 0; i < prices.length; i++) {
@@ -162,7 +164,7 @@ describe('pyth-oracle', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 
 	let usdcMint: Keypair;
 	let userUSDCAccount: Keypair;
@@ -175,29 +177,29 @@ describe('pyth-oracle', () => {
 	let userAccount: User;
 	let userAccount2: User;
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = startLiteSVM();
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			1
 		);
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			svmContextWrapper
 		);
 
 		const price = 50000;
-		await mockOracleNoProgram(bankrunContextWrapper, price, -6);
+		await mockOracleNoProgram(svmContextWrapper, price, -6);
 
 		velocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: svmContextWrapper.connection.toConnection(),
+			wallet: svmContextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -240,7 +242,7 @@ describe('pyth-oracle', () => {
 				1,
 				usdcMint,
 				usdcAmount,
-				bankrunContextWrapper,
+				svmContextWrapper,
 				[0, 1],
 				[0],
 				[],
@@ -269,26 +271,22 @@ describe('pyth-oracle', () => {
 		const price = 50000;
 		const expo = -9;
 		const priceFeedAddress = await mockOracleNoProgram(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			price,
 			expo
 		);
 
 		const feedDataBefore = await getFeedDataNoProgram(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			priceFeedAddress
 		);
 		assert.ok(feedDataBefore.price === price);
 		assert.ok(feedDataBefore.exponent === expo);
 		const newPrice = 55000;
 
-		await setFeedPriceNoProgram(
-			bankrunContextWrapper,
-			newPrice,
-			priceFeedAddress
-		);
+		await setFeedPriceNoProgram(svmContextWrapper, newPrice, priceFeedAddress);
 		const feedDataAfter = await getFeedDataNoProgram(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			priceFeedAddress
 		);
 		assert.ok(feedDataAfter.price === newPrice);
@@ -296,9 +294,9 @@ describe('pyth-oracle', () => {
 	});
 
 	it('oracle/vamm: funding rate calc 0hour periodicity', async () => {
-		await bankrunContextWrapper.moveTimeForward(2);
+		await svmContextWrapper.moveTimeForward(2);
 		const priceFeedAddress = await mockOracleNoProgram(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			40,
 			-10
 		);
@@ -320,15 +318,15 @@ describe('pyth-oracle', () => {
 			marketIndex,
 			priceFeedAddress,
 			[42],
-			bankrunContextWrapper,
+			svmContextWrapper,
 			1
 		);
 	});
 
 	it('oracle/vamm: funding rate calc2 0hour periodicity', async () => {
-		await bankrunContextWrapper.moveTimeForward(2);
+		await svmContextWrapper.moveTimeForward(2);
 		const priceFeedAddress = await mockOracleNoProgram(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			40,
 			-10
 		);
@@ -358,7 +356,7 @@ describe('pyth-oracle', () => {
 			marketIndex,
 			priceFeedAddress,
 			[41.501, 41.499],
-			bankrunContextWrapper,
+			svmContextWrapper,
 			2
 		);
 	});
@@ -413,7 +411,7 @@ describe('pyth-oracle', () => {
 			marketIndex,
 			market.oracle,
 			[43.501, 44.499],
-			bankrunContextWrapper,
+			svmContextWrapper,
 			3
 		);
 		await velocityClient.fetchAccounts();

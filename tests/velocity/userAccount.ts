@@ -28,9 +28,11 @@ import {
 	calculatePrice,
 	AMM_RESERVE_PRECISION,
 } from '../../packages/sdk/src';
-import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
-import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 
 describe('User Account', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
@@ -39,7 +41,7 @@ describe('User Account', () => {
 
 	let bulkAccountLoader: TestBulkAccountLoader;
 
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 
 	const ammInitialQuoteAssetAmount = new anchor.BN(2 * 10 ** 9).mul(
 		new BN(10 ** 5)
@@ -59,25 +61,25 @@ describe('User Account', () => {
 	let userAccount: User;
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
+		const context = startLiteSVM();
 
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			1
 		);
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			svmContextWrapper
 		);
 
 		solUsdOracle = await mockOracleNoProgram(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			initialSOLPrice,
 			-10,
 			0.0005,
@@ -85,8 +87,8 @@ describe('User Account', () => {
 		);
 
 		velocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: svmContextWrapper.connection.toConnection(),
+			wallet: svmContextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: {
 				commitment: 'confirmed',
@@ -258,7 +260,7 @@ describe('User Account', () => {
 			convertToNumber(oraclePrice)
 		);
 		await setFeedPriceNoProgram(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			convertToNumber(reservePrice.sub(new BN(250))),
 			solUsdOracle,
 			10000
@@ -267,7 +269,7 @@ describe('User Account', () => {
 
 		await velocityClient.fetchAccounts();
 		const oracleP2 = await getFeedDataNoProgram(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			solUsdOracle
 		);
 		console.log('oracleP2:', oracleP2.price);
@@ -346,7 +348,7 @@ describe('User Account', () => {
 			convertToNumber(oraclePrice)
 		);
 		await setFeedPriceNoProgram(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			convertToNumber(reservePrice.sub(new BN(275))),
 			solUsdOracle,
 			10000
@@ -355,7 +357,7 @@ describe('User Account', () => {
 
 		await velocityClient.fetchAccounts();
 		const oracleP2 = await getFeedDataNoProgram(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			solUsdOracle
 		);
 		console.log('oracleP2:', oracleP2.price);

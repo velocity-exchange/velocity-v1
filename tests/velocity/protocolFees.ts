@@ -1,7 +1,6 @@
 import * as anchor from '@coral-xyz/anchor';
 import { Program } from '@coral-xyz/anchor';
 import { assert } from 'chai';
-import { startAnchor } from 'solana-bankrun';
 import { Keypair, SystemProgram } from '@solana/web3.js';
 import {
 	ASSOCIATED_TOKEN_PROGRAM_ID,
@@ -21,7 +20,10 @@ import {
 	TransferFeeAndPnlPoolDirection,
 	ZERO,
 } from '../../packages/sdk/src';
-import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
+import {
+	LiteSVMContextWrapper,
+	startLiteSVM,
+} from '../../packages/sdk/src/litesvm/litesvmConnection';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
 import {
 	initializeQuoteSpotMarket,
@@ -38,7 +40,7 @@ describe('protocol fees', () => {
 
 	let velocityClient: TestClient;
 	let bulkAccountLoader: TestBulkAccountLoader;
-	let bankrunContextWrapper: BankrunContextWrapper;
+	let svmContextWrapper: LiteSVMContextWrapper;
 
 	let usdcMint: Keypair;
 	let userUSDCAccount: Keypair;
@@ -67,23 +69,23 @@ describe('protocol fees', () => {
 		);
 
 	before(async () => {
-		const context = await startAnchor('', [], []);
-		bankrunContextWrapper = new BankrunContextWrapper(context);
+		const context = startLiteSVM();
+		svmContextWrapper = new LiteSVMContextWrapper(context);
 
 		bulkAccountLoader = new TestBulkAccountLoader(
-			bankrunContextWrapper.connection,
+			svmContextWrapper.connection,
 			'processed',
 			1
 		);
 
-		usdcMint = await mockUSDCMint(bankrunContextWrapper);
+		usdcMint = await mockUSDCMint(svmContextWrapper);
 		userUSDCAccount = await mockUserUSDCAccount(
 			usdcMint,
 			usdcAmount,
-			bankrunContextWrapper
+			svmContextWrapper
 		);
 		solUsd = await mockOracleNoProgram(
-			bankrunContextWrapper,
+			svmContextWrapper,
 			1,
 			-7,
 			undefined,
@@ -91,8 +93,8 @@ describe('protocol fees', () => {
 		);
 
 		velocityClient = new TestClient({
-			connection: bankrunContextWrapper.connection.toConnection(),
-			wallet: bankrunContextWrapper.provider.wallet,
+			connection: svmContextWrapper.connection.toConnection(),
+			wallet: svmContextWrapper.provider.wallet,
 			programID: chProgram.programId,
 			opts: { commitment: 'confirmed' },
 			activeSubAccountId: 0,
@@ -313,10 +315,9 @@ describe('protocol fees', () => {
 		);
 		await velocityClient.fetchAccounts();
 
-		const recipientBalance =
-			await bankrunContextWrapper.connection.getTokenAccount(
-				recipientTokenAccount
-			);
+		const recipientBalance = await svmContextWrapper.connection.getTokenAccount(
+			recipientTokenAccount
+		);
 		assert(
 			new BN(Number(recipientBalance.amount)).eq(poolTokens),
 			`recipient got ${recipientBalance.amount}, expected ${poolTokens} (capped)`

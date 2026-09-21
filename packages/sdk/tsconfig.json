@@ -15,7 +15,7 @@
 		// mocha/chai are the globals the ts-node/ts-mocha test run needs.
 		"types": ["node", "mocha", "chai"],
 		// Unify every @solana/web3.js specifier (including those inside dep .d.ts
-		// like solana-bankrun, which bundles its own copy) onto the single hoisted
+		// like litesvm, which bundles its own copy) onto the single hoisted
 		// root install, so structurally-identical types don't clash nominally.
 		"paths": {
 			"@solana/web3.js": ["../../node_modules/@solana/web3.js"]

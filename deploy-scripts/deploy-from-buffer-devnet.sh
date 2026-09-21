@@ -20,6 +20,10 @@ PROGRAM_SO="${PROGRAM_SO:-target/deploy/velocity.so}"
 SOLANA_RPC="${SOLANA_RPC:-${RPC_URL:-https://api.devnet.solana.com}}"
 
 BUFFER_ACCOUNT_KEYPAIR="${BUFFER_ACCOUNT_KEYPAIR:?Set BUFFER_ACCOUNT_KEYPAIR (output from write-buffer-devnet.sh)}"
+
+# The buffer is what actually reaches the cluster, so gate on the bytecode
+# version here rather than trusting whoever produced the .so.
+bash "$(dirname "$0")/assert-sbpf-version.sh" "$PROGRAM_SO"
 PROGRAM_KEYPAIR="${PROGRAM_KEYPAIR:?Set PROGRAM_KEYPAIR — JSON file for program id $VELOCITY_DEVNET_PROGRAM_ID}"
 
 if [ ! -f "$BUFFER_ACCOUNT_KEYPAIR" ]; then

@@ -111,8 +111,9 @@ fn validate_taker_exposure_exemption(taker: &TakerSide, router: &RouterLeg) -> V
     }
 
     validate!(
-        taker.user.sub_account_id == 0
-            && taker.user.authority == router.standing.protocol_authority,
+        taker
+            .user
+            .is_protocol_user(&router.standing.protocol_authority),
         ErrorCode::TakerExposureNotProtocolOwned,
         "only the protocol user may settle a fill whose taker checks the caller closes"
     )?;
@@ -126,7 +127,7 @@ fn validate_taker_exposure_exemption(taker: &TakerSide, router: &RouterLeg) -> V
 /// fulfillment legs and then revert at the buffered-floor gate.
 /// `validate_clears_buffered_floor` fails closed on any invalid oracle in the
 /// taker's portfolio, whether or not it is this market's, and the legs have
-/// executed by then. `get_maker_orders_info` prunes a floored maker with the
+/// executed by then. The router's maker budget prunes a floored maker with the
 /// same defect, but the taker has no counterpart, so its visible order made
 /// every fill attempt revert for the length of the outage. Withhold the
 /// fill instead and leave the order resting until its oracles recover.
@@ -470,10 +471,10 @@ impl TakerRiskLimits {
     /// floor, and arm the breaker on a reducing fill.
     ///
     /// The invalid-oracle arm of the floor gate is normally unreachable:
-    /// oracle validity cannot change across the fill, and
-    /// `get_maker_orders_info` prunes a floored maker's risk-increasing orders
-    /// while any of its oracles is invalid. What reverts here is a genuine
-    /// value breach, or a fill that flipped a reducing order into new risk.
+    /// oracle validity cannot change across the fill, and the router's maker
+    /// budget sizes a maker to zero while any of its oracles is invalid. What
+    /// reverts here is a genuine value breach, or a fill that flipped a
+    /// reducing order into new risk.
     fn check_maker_equity_floor(
         &self,
         maker: &User,

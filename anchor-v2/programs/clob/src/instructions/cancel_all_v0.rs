@@ -1,23 +1,14 @@
+/// Declared by `clob-wire`. The owner is verified against each node.
+pub use clob_wire::CancelAllArgsV0;
 use {
     crate::{
         book::{BookHeader, ClobBook},
         emit::CancelAllRecord,
-        error::ClobError,
-        state::{CancelAllOutcomeV0, CancelSidesV0, ClobMarketV0},
+        instructions::GatedMarketV0,
+        state::CancelAllOutcomeV0,
     },
     anchor_lang::prelude::*,
 };
-
-#[derive(Accounts)]
-pub struct CancelAllV0 {
-    #[account(mut)]
-    pub market: ClobMarketV0,
-    #[account(address = market.place_authority @ ClobError::InvalidAuthority)]
-    pub place_authority: Signer,
-}
-
-/// Declared by `clob-wire`. The owner is verified against each node.
-pub use clob_wire::CancelAllArgsV0;
 
 /// Withdraw every order one user holds on a side, or on both, in a single call.
 ///
@@ -37,7 +28,7 @@ pub use clob_wire::CancelAllArgsV0;
 /// activation slot, and then reports itself as not exhaustive. `force` removes
 /// those too, which is what liquidation needs.
 pub fn handle_cancel_all_v0(
-    ctx: &mut Context<CancelAllV0>,
+    ctx: &mut Context<GatedMarketV0>,
     args: CancelAllArgsV0,
 ) -> Result<CancelAllOutcomeV0> {
     let clock = Clock::get()?;
@@ -51,7 +42,7 @@ pub fn handle_cancel_all_v0(
         clock.unix_timestamp,
         market_index,
         args.user.sub_account_id,
-        sides_tag(args.sides),
+        args.sides.tag(),
     )?;
     let outcome = market.cancel_all(
         args.user,
@@ -76,13 +67,4 @@ pub fn handle_cancel_all_v0(
         ask_reduce_only_orders: outcome.ask_reduce_only_orders,
         exhaustive: outcome.exhaustive,
     })
-}
-
-/// The tag the wire enum encodes to, for the record's `sides` byte.
-fn sides_tag(sides: CancelSidesV0) -> u8 {
-    match sides {
-        CancelSidesV0::Bids => 0,
-        CancelSidesV0::Asks => 1,
-        CancelSidesV0::Both => 2,
-    }
 }

@@ -736,6 +736,56 @@ pub fn calculate_max_perp_order_size(
     )
 }
 
+/// The same sizing against the account's own slot for `market_index`, or
+/// against the position a fill would open when it holds none.
+///
+/// Returns zero when every slot is taken, because a fill could not open one
+/// either. Nothing is written, so a caller asking what a third party could
+/// fill never spends that party's position slot.
+pub fn max_perp_order_size_for_prospective_position(
+    user: &User,
+    market_index: u16,
+    direction: PositionDirection,
+    maps: &mut AccountMaps,
+) -> VelocityResult<u64> {
+    let held = crate::controller::position::get_position_index(&user.perp_positions, market_index);
+
+    // Holds the synthesized position so the borrow outlives the match.
+    let prospective;
+    let position = match held {
+        Ok(index) => &user.perp_positions[index],
+        Err(_) => {
+            let Some(vacant) = user
+                .perp_positions
+                .iter()
+                .position(|position| position.is_available())
+            else {
+                return Ok(0);
+            };
+
+            // `add_new_position` carries the margin ratio over only when the
+            // vacant slot already names this market, which is a position its
+            // owner closed and may reopen.
+            let vacant = &user.perp_positions[vacant];
+            let max_margin_ratio = if vacant.market_index == market_index {
+                vacant.max_margin_ratio
+            } else {
+                0
+            };
+
+            prospective = PerpPosition {
+                market_index,
+                max_margin_ratio,
+                ..PerpPosition::default()
+            };
+
+            &prospective
+        }
+    };
+
+    calculate_max_perp_order_size_for_position(user, position, market_index, direction, maps)
+}
+
 /// The same sizing, against a position the caller supplies rather than one of
 /// the account's own slots.
 ///
@@ -1238,6 +1288,41 @@ pub fn estimate_price_from_side(side: &Vec<Level>, depth: u64) -> VelocityResult
     Ok(price)
 }
 
+/// The margin tier a maker fill answers to, and whether it adds risk.
+pub struct MakerFillTier {
+    pub requirement: MarginRequirementType,
+    pub risk_increasing: bool,
+}
+
+/// Judge a maker fill from the position it starts at and the base it moves.
+///
+/// A fill that flattens the position, or shrinks it without crossing zero,
+/// only reduces. It answers to maintenance margin and is exempt from the
+/// gates that bar risk-increasing activity. The router asks this before the
+/// fill and the fill asks it after, so both must read one rule.
+pub fn maker_fill_tier(
+    position_before: i64,
+    base_asset_amount_filled: i64,
+) -> VelocityResult<MakerFillTier> {
+    let position_after = position_before.safe_add(base_asset_amount_filled)?;
+
+    let reducing = position_after == 0
+        || (position_after.signum() == position_before.signum()
+            && position_after.abs() < position_before.abs());
+
+    if reducing {
+        return Ok(MakerFillTier {
+            requirement: MarginRequirementType::Maintenance,
+            risk_increasing: false,
+        });
+    }
+
+    Ok(MakerFillTier {
+        requirement: MarginRequirementType::Fill,
+        risk_increasing: true,
+    })
+}
+
 pub fn select_margin_type_for_perp_maker(
     maker: &User,
     base_asset_amount_filled: i64,
@@ -1247,18 +1332,9 @@ pub fn select_margin_type_for_perp_maker(
         .get_perp_position(market_index)
         .map_or(0, |p| p.base_asset_amount);
     let position_before = position_after_fill.safe_sub(base_asset_amount_filled)?;
+    let tier = maker_fill_tier(position_before, base_asset_amount_filled)?;
 
-    if position_after_fill == 0 {
-        return Ok((MarginRequirementType::Maintenance, false));
-    }
-
-    if position_after_fill.signum() == position_before.signum()
-        && position_after_fill.abs() < position_before.abs()
-    {
-        return Ok((MarginRequirementType::Maintenance, false));
-    }
-
-    Ok((MarginRequirementType::Fill, true))
+    Ok((tier.requirement, tier.risk_increasing))
 }
 
 pub fn get_posted_slot_from_clock_slot(slot: u64) -> u8 {

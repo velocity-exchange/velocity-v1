@@ -1,13 +1,11 @@
 import {
 	VelocityClient,
 	getLimitOrderParams,
-	getQuoterSlabPublicKey,
 	isVariant,
 	MarketType,
 	PositionDirection,
 	PostOnlyParams,
 	PriorityFeeSubscriberMap,
-	PublicKey,
 	SignedMsgOrderParamsDelegateMessage,
 	SignedMsgOrderParamsMessage,
 	UserMap,
@@ -223,21 +221,6 @@ export class SwiftMaker {
 								price = signedMsgOrderParams.auctionStartPrice!.add(offset);
 							}
 
-							// The CLOB rests an order at a fixed price, so the
-							// oracle-relative quote is converted to a fixed price
-							// before it is posted.
-							const { slots } = await this.velocityClient.getQuoterSlabAccount(
-								signedMsgOrderParams.marketIndex
-							);
-							const book = slots[0];
-							if (!book || book.entry.equals(PublicKey.default)) {
-								console.error(
-									`perp market ${signedMsgOrderParams.marketIndex} has no CLOB attached`
-								);
-
-								return;
-							}
-
 							const ixs = [
 								await this.velocityClient.getPlaceAndMakePerpOrderIx(
 									getLimitOrderParams({
@@ -250,19 +233,7 @@ export class SwiftMaker {
 											signedMsgOrderParams.baseAssetAmount.divn(2),
 										price,
 										postOnly: PostOnlyParams.MUST_POST_ONLY,
-									}),
-
-									{
-										quoterSlab: getQuoterSlabPublicKey(
-											this.velocityClient.program.programId,
-											signedMsgOrderParams.marketIndex
-										),
-
-										// The book is the account the slot's responses
-										// are written into.
-										clobMarket: book.config.responseAccount,
-										clobProgram: book.config.programId,
-									}
+									})
 								),
 							];
 

@@ -20,6 +20,8 @@ profile = ["anchor-v2-testing/profile"]
 # Anchor v2 alpha (anchor-next). Pinned to an exact rev — the alpha branch moves.
 anchor-lang = { git = "https://github.com/otter-sec/anchor.git", rev = "abacd0e9362d957e7da779fa81b1a10dd9480b28" }
 bytemuck = { version = "1", features = ["derive", "min_const_generics"] }
+# The stack-buffer emit path both quoters use.
+quoter-emit = { package = "quoter-emit-v2", path = "../../../crates/quoter-emit-v2" }
 static_assertions = "1.1.0"
 wincode = { version = "0.6", features = ["derive"] }
 # Declares the quoter wire types this program writes. `wincode-derive` gives
@@ -45,6 +47,7 @@ anchor-lang = { git = "https://github.com/otter-sec/anchor.git", rev = "abacd0e9
 ] }
 anchor-v2-testing = { git = "https://github.com/otter-sec/anchor.git", rev = "abacd0e9362d957e7da779fa81b1a10dd9480b28" }
 litesvm = "0.13.1"
+quoter-test-support = { path = "../quoter-test-support" }
 solana-account = "3.2.0"
 solana-clock = "3"
 solana-pubkey = "3.0"

@@ -2028,23 +2028,46 @@ pub struct ClobFillAccounts {
     pub crank_conditions: Option<Pubkey>,
 }
 
-/// The market's CLOB accounts, read off its quoter slab.
+impl ClobFillAccounts {
+    /// Fill in the crank-conditions PDA. Only `force_cancel_clob_orders` reads
+    /// it, and a builder that leaves it out cancels without a wake hint.
+    pub fn with_crank_conditions(self) -> Self {
+        Self {
+            crank_conditions: Some(constants::derive_clob_crank_conditions(self.market_index)),
+            ..self
+        }
+    }
+}
+
+/// The market's book: the accounts every endpoint that reaches it takes, and
+/// the registration those accounts came from.
 ///
-/// Every endpoint that reaches the book takes these, so each bot that places an
-/// order resolves them the same way. `None` is a market whose slab holds no
-/// approved book: it has no venue, and the caller has nothing to place onto.
-pub async fn market_clob_accounts(
-    velocity: &VelocityClient,
-    market_index: u16,
-) -> Option<ClobFillAccounts> {
+/// The config rides along because a caller that lists the book's makers needs
+/// it, and reading the slab a second time can answer about a different
+/// registration.
+#[derive(Clone, Copy, Debug)]
+pub struct MarketBook {
+    pub accounts: ClobFillAccounts,
+    pub config: program::state::prop_amm::QuoterConfigV0,
+}
+
+/// The market's book, read off its quoter slab.
+///
+/// Every bot that places an order resolves it the same way. `None` is a market
+/// whose slab holds no approved book: it has no venue, and the caller has
+/// nothing to place onto.
+pub async fn market_book(velocity: &VelocityClient, market_index: u16) -> Option<MarketBook> {
     let slots = velocity.get_quoter_slab_slots(market_index).await.ok()?;
-    let book = crate::utils::clob_slot_config(&slots)?;
-    Some(ClobFillAccounts {
-        market_index,
-        quoter_slab: constants::derive_quoter_slab(market_index),
-        clob_market: book.response_account,
-        clob_program: book.program_id,
-        crank_conditions: None,
+    let config = crate::utils::clob_slot_config(&slots)?;
+    Some(MarketBook {
+        accounts: ClobFillAccounts {
+            market_index,
+            quoter_slab: constants::derive_quoter_slab(market_index),
+            clob_market: config.response_account,
+            clob_program: config.program_id,
+            crank_conditions: None,
+        },
+        config,
     })
 }
 
@@ -2504,7 +2527,6 @@ impl<'a> TransactionBuilder<'a> {
                     &user_account.authority,
                     user_account.sub_account_id,
                 ),
-                user_stats: Wallet::derive_stats_account(&user_account.authority),
                 quoter_slab: clob.quoter_slab,
                 clob_market: clob.clob_market,
                 clob_program: clob.clob_program,

@@ -584,14 +584,18 @@ pub fn settle_expired_position(
         &position_delta,
     )?;
 
-    let fee = base_asset_value
-        .safe_mul(fee_structure.fee_tiers[0].fee_numerator as i64)?
-        .safe_div(fee_structure.fee_tiers[0].fee_denominator as i64)?;
+    // The closeout is a taker fill against the expiry price, so it is priced
+    // the way any other taker fill is.
+    let fee = crate::math::fees::conservative_taker_fee(
+        base_asset_value.unsigned_abs(),
+        perp_market,
+        fee_structure,
+    )?;
 
     update_quote_asset_and_break_even_amount(
         &mut user.perp_positions[position_index],
         perp_market,
-        -fee.abs(),
+        -fee.cast::<i64>()?,
     )?;
 
     // Route the closeout taker fee through the market fee ledger with the
@@ -603,14 +607,12 @@ pub fn settle_expired_position(
     // below, not an AMM fill), so ZERO the AMM provision and fold its share
     // into the protocol residual — keeping the full fee accounted as
     // protocol + IF.
-    let gross_closeout_fee = fee.unsigned_abs();
-    if gross_closeout_fee > 0 {
-        let (_amm_fee, if_fee, _protocol_residual) =
-            split_fee_remainder(gross_closeout_fee, fee_structure)?;
-        let protocol_fee = gross_closeout_fee.safe_sub(if_fee)?;
+    if fee > 0 {
+        let (_amm_fee, if_fee, _protocol_residual) = split_fee_remainder(fee, fee_structure)?;
+        let protocol_fee = fee.safe_sub(if_fee)?;
         perp_market
             .fee_ledger
-            .accrue_fill_fees(gross_closeout_fee, protocol_fee, if_fee, 0)?;
+            .accrue_fill_fees(fee, protocol_fee, if_fee, 0)?;
     }
 
     let pnl = user.perp_positions[position_index].quote_asset_amount;
@@ -668,7 +670,7 @@ pub fn settle_expired_position(
             fill_record_id: Some(fill_record_id),
             base_asset_amount_filled: Some(base_asset_amount.unsigned_abs()),
             quote_asset_amount_filled: Some(base_asset_value.unsigned_abs()),
-            taker_fee: Some(fee.unsigned_abs()),
+            taker_fee: Some(fee),
             maker_fee: None,
             referrer_reward: None,
             quote_asset_amount_surplus: None,

@@ -17,7 +17,6 @@ import {
 	QUOTE_SPOT_MARKET_INDEX,
 	isOperationPaused,
 	PerpOperation,
-	VelocityMarketInfo,
 	User,
 	PerpPosition,
 	MarketStatus,
@@ -180,14 +179,6 @@ export class UserPnlSettlerBot implements Bot {
 
 	public async init() {
 		logger.info(`${this.name} initing`);
-
-		const velocityMarkets: VelocityMarketInfo[] = [];
-		for (const perpMarket of this.velocityClient.getPerpMarketAccounts()) {
-			velocityMarkets.push({
-				marketType: 'perp',
-				marketIndex: perpMarket.marketIndex,
-			});
-		}
 
 		await this.priorityFeeSubscriber!.subscribe();
 		await this.velocityClient.subscribe();

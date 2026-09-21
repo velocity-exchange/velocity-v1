@@ -30,13 +30,12 @@ use {
     },
     tokio::sync::mpsc::error::TryRecvError,
     velocity_rs::{
-        constants::{derive_clob_crank_conditions, derive_quoter_slab},
         grpc::{
             grpc_subscriber::{AccountFilter, GrpcConnectionOpts},
             TransactionUpdate,
         },
         jupiter::JupiterSwapApi,
-        market_clob_accounts,
+        market_book,
         market_state::{MarketStateData, SimplifiedMarginCalculation},
         math::{
             constants::{
@@ -65,7 +64,7 @@ use {
             OracleSource, OrderParams, OrderType, PerpPosition, PositionDirection, SpotBalanceType,
             SpotPosition,
         },
-        utils::clob_slot_config,
+        utils::{clob_slot_config, quoter_cpi_section},
         ClobFillAccounts, GrpcSubscribeOpts, MarketState, Pubkey, TransactionBuilder,
         VelocityClient, Wallet,
     },
@@ -1428,7 +1427,7 @@ async fn derisk_subaccount(
                 PositionDirection::Long
             };
 
-            let Some(clob) = market_clob_accounts(velocity, position.market_index).await else {
+            let Some(book) = market_book(velocity, position.market_index).await else {
                 log::warn!(
                     target: TARGET,
                     "market {} has no approved book on its quoter slab; cannot derisk {subaccount}",
@@ -1451,7 +1450,7 @@ async fn derisk_subaccount(
                     max_ts: Some((current_time_millis() / 1000 + 15) as i64), // ~15s
                     ..Default::default()
                 },
-                clob,
+                book.accounts,
                 None,
             );
 
@@ -2744,11 +2743,9 @@ impl PrimaryLiquidationStrategy {
                     .await,
                 );
 
-                vec![
-                    AccountMeta::new_readonly(derive_quoter_slab(market_index), false),
-                    AccountMeta::new(book.response_account, false),
-                    AccountMeta::new_readonly(book.program_id, false),
-                ]
+                quoter_cpi_section(market_index, &slots, |slot| {
+                    slot.config.response_account == book.response_account
+                })
             }
             None => Vec::new(),
         };
@@ -4699,23 +4696,10 @@ async fn resolve_clob_force_cancel(
     // Book accounts for the force-cancel, read from the market's quoter
     // slab. The book slot keeps its config while suspended, so a
     // force-cancel still works on a killed book.
-    let slots = velocity
-        .get_quoter_slab_slots(market_index)
-        .await
-        .map_err(|error| {
-            log::warn!(target: TARGET, "quoter slab for market {market_index} unavailable for force-cancel: {error}");
-        })?;
-    let Some(book) = velocity_rs::utils::clob_slot_config(&slots) else {
-        log::warn!(target: TARGET, "quoter slab for market {market_index} holds no book; cannot force-cancel");
+    let Some(book) = velocity_rs::market_book(velocity, market_index).await else {
+        log::warn!(target: TARGET, "quoter slab for market {market_index} holds no book for force-cancel");
         return Err(());
     };
-    let clob_fill = ClobFillAccounts {
-        market_index,
-        quoter_slab: derive_quoter_slab(market_index),
-        clob_market: book.response_account,
-        clob_program: book.program_id,
-        crank_conditions: Some(derive_clob_crank_conditions(market_index)),
-    };
 
-    Ok(Some((order_refs, clob_fill)))
+    Ok(Some((order_refs, book.accounts.with_crank_conditions())))
 }

@@ -25,8 +25,33 @@ members = [
 # quoters) — excluded for the same reasons; see anchor-v2/Cargo.toml.
 # `integration-tests/` is the phase-2 cross-program litesvm harness (velocity.so
 # + clob.so fixtures) — excluded for the same host-tree isolation reasons.
-exclude = ["rust", "fuzz", "anchor-v2", "integration-tests"]
+# `crates/quoter-emit-v2` is excluded rather than a member: it depends on the
+# anchor v2 fork unconditionally, and only the `anchor-v2` workspace builds it.
+exclude = ["rust", "fuzz", "anchor-v2", "integration-tests", "crates/quoter-emit-v2"]
 resolver = "2"
+
+# Shared by the wire crates under `crates/`, which declare the same types for
+# two workspaces and must not resolve them differently.
+[workspace.dependencies]
+# The address type every program on this wire already has. Velocity reaches it
+# as `Pubkey` — solana-pubkey re-exports `Address as Pubkey`, and solana-address
+# 1.x is a ten-line shim over 2.x — and the v2 programs reach it as `Address`
+# through anchor-lang-v2 and pinocchio. Same struct, same major, so the wire
+# types can be the declaration both sides use rather than a shape they restate.
+# `copy` is not optional: these are small value types that every caller moves
+# by copy, and `Address` gates its `Copy` impl behind that feature.
+# The `wincode` feature is deliberately off. It would make `Address` carry
+# wincode's traits, but which wincode those target moves with this crate's
+# minor: 2.6 targets 0.5 and 2.7 targets 0.6. A tree that resolved one while
+# a wire crate derives against the other gets two unrelated `SchemaRead` traits
+# and a wall of unsatisfied bounds. litesvm and the agave RPC crates hold these
+# trees to 2.6, so `UserRefV0` writes its own wincode schema against `[u8; 32]`
+# instead and the version requirement stays open.
+solana-address = { version = "2.6", features = ["bytemuck", "copy"] }
+wincode = { version = "0.6", features = ["derive"] }
+# The derive is also a layout check: a field reordered into a padding hole
+# stops compiling rather than changing the bytes the other program reads.
+bytemuck = { version = "1.14", features = ["derive"] }
 
 [profile.release]
 lto = "fat"

@@ -31,15 +31,13 @@ import {
 	findDirectionToClose,
 	calculateMarketAvailablePNL,
 	MakerInfo,
-	getUserStatsAccountPublicKey,
 	RECOMMENDED_JUPITER_API,
 	msToSlotsCeilNum,
 	SLOT_DURATION_BASELINE,
+	TopMakersClient,
 } from '@velocity-exchange/sdk';
 import {
-	ComputeBudgetProgram,
 	AddressLookupTableAccount,
-	PublicKey,
 	TransactionInstruction,
 } from '@solana/web3.js';
 import {
@@ -47,13 +45,12 @@ import {
 	createCloseAccountInstruction,
 	getAssociatedTokenAddress,
 } from '@solana/spl-token';
-import axios from 'axios';
 import { logger } from '../logger';
 import { LiquidatorConfig } from '../config';
 import { PriorityFeeSubscriber } from '@velocity-exchange/sdk';
 import {
+	buildVersionedTransactionWithSimulatedCus as buildSimulatedCuTx,
 	checkIfAccountExists,
-	simulateAndGetTxWithCUs,
 	SimulateAndGetTxWithCUsResponse,
 	isSolLstToken,
 } from '../utils';
@@ -65,7 +62,6 @@ const BPS_PRECISION = 10000;
  * writable locks, and the remainder rests for the cross cranks either way.
  */
 const DERISK_MAKERS = 2;
-const TOP_MAKERS_TIMEOUT_MS = 2_000;
 
 export type SpotDeriskMethod = 'jupiter' | 'velocity';
 export type PerpDeriskMethod = 'swift' | 'on-chain';
@@ -156,49 +152,12 @@ export class LiquidatorDerisk {
 		luts: Array<AddressLookupTableAccount>,
 		cuPriceMicroLamports?: number
 	): Promise<SimulateAndGetTxWithCUsResponse> {
-		const fullIxs = [
-			ComputeBudgetProgram.setComputeUnitLimit({
-				units: 1_400_000,
-			}),
-		];
-		if (cuPriceMicroLamports !== undefined) {
-			fullIxs.push(
-				ComputeBudgetProgram.setComputeUnitPrice({
-					microLamports: cuPriceMicroLamports,
-				})
-			);
-		}
-		fullIxs.push(...ixs);
-
-		let resp: SimulateAndGetTxWithCUsResponse;
-		try {
-			const recentBlockhash =
-				await this.velocityClient.connection.getLatestBlockhash('confirmed');
-			resp = await simulateAndGetTxWithCUs({
-				ixs: fullIxs,
-				connection: this.velocityClient.connection,
-				payerPublicKey: this.velocityClient.wallet.publicKey,
-				lookupTableAccounts: luts,
-				cuLimitMultiplier: 1.2,
-				doSimulation: true,
-				dumpTx: false,
-				recentBlockhash: recentBlockhash.blockhash,
-			});
-		} catch (e) {
-			const err = e as Error;
-			logger.error(
-				`error in buildVersionedTransactionWithSimulatedCus: ${err.message}\n${err.stack}`
-			);
-			resp = {
-				cuEstimate: -1,
-				simTxLogs: null,
-				simError: err,
-				simTxDuration: -1,
-				// @ts-ignore
-				tx: undefined,
-			};
-		}
-		return resp;
+		return await buildSimulatedCuTx(
+			this.velocityClient,
+			ixs,
+			luts,
+			cuPriceMicroLamports
+		);
 	}
 
 	private async velocitySpotTrade(
@@ -614,60 +573,15 @@ export class LiquidatorDerisk {
 			return [];
 		}
 
-		// A long sweeps the asks.
-		const side = isVariant(direction, 'long') ? 'ask' : 'bid';
-		let keys: string[];
-		try {
-			const response = await axios.get(
-				`${this.config.dlobServerHttpUrl.replace(
-					/\/$/,
-					''
-				)}/topMakers?marketType=perp&marketIndex=${marketIndex}&side=${side}&limit=${DERISK_MAKERS}`,
-				{ timeout: TOP_MAKERS_TIMEOUT_MS, validateStatus: () => true }
-			);
-
-			if (response.status !== 200 || !Array.isArray(response.data)) {
-				logger.warn(
-					`topMakers for market ${marketIndex} ${side} returned status ${response.status}`
-				);
-
-				return [];
-			}
-
-			keys = response.data as string[];
-		} catch (e) {
-			logger.warn(
-				`Error loading topMakers for market ${marketIndex} ${side}: ${e}`
-			);
-
-			return [];
-		}
-
-		const makers: MakerInfo[] = [];
-		for (const key of keys) {
-			try {
-				const makerUserAccount = (
-					await this.userMap.mustGet(key)
-				).getUserAccountOrThrow();
-
-				makers.push({
-					maker: new PublicKey(key),
-					makerStats: getUserStatsAccountPublicKey(
-						this.velocityClient.program.programId,
-						makerUserAccount.authority
-					),
-
-					makerUserAccount,
-				});
-			} catch (e) {
-				// One maker this keeper cannot load costs that maker's depth.
-				// The rest of the derisk still goes out, and the remainder rests
-				// for the cross cranks.
-				logger.warn(`Skipping book maker ${key}: ${e}`);
-			}
-		}
-
-		return makers;
+		return await new TopMakersClient(
+			this.config.dlobServerHttpUrl
+		).fetchMakerInfos(
+			this.velocityClient.program.programId,
+			this.userMap,
+			marketIndex,
+			direction,
+			DERISK_MAKERS
+		);
 	}
 
 	private async deriskPerpPositions(

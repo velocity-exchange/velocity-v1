@@ -1686,15 +1686,10 @@
     {
       "name": "crank_taker_origin_cross",
       "docs": [
-        "Resolve one taker-origin cross on a market's CLOB. The call is",
-        "permissionless. It consumes the crossing counterparty at that",
-        "counterparty's price, removes the migrated taker remainder from the",
-        "book, and settles the pair at the counterparty's price. The taker",
-        "captures the improvement, rather than whoever lands a transaction at",
-        "the activation slot. The cranker is paid a filler reward in quote out",
-        "of that improvement. The reward is capped so the taker's net price",
-        "still beats the price it was resting at. A cross that cannot clear that",
-        "cap is left resting."
+        "Resolve one taker-origin cross on a market's CLOB. The call is permissionless. It settles the",
+        "crossing counterparty and the migrated remainder at the counterparty's price, so the taker",
+        "captures the improvement. The cranker earns a filler reward from that improvement, capped so",
+        "the taker's net price beats its resting price. A cross that cannot clear the cap is left resting."
       ],
       "discriminator": [
         105,
@@ -1816,15 +1811,8 @@
           "name": "signed_msg_user_orders",
           "docs": [
             "The taker's signed-message record, which carries the route its signer",
-            "chose. The fill below is held to it.",
-            "",
-            "The account is required and its seeds pin it to the taker's own",
-            "authority, even though a remainder off a directly-placed order has no",
-            "such record. An address the program derives cannot be omitted or",
-            "substituted, so a caller cannot hide a route by leaving it out. A record",
-            "that was never created still arrives. It is owned by the system program",
-            "and holds no data, and it reads as unrouted.",
-            "and the discriminator before anything is read out of it."
+            "chose. Derived seeds mean a caller cannot omit or substitute it. An",
+            "absent record arrives system-owned and reads as unrouted."
           ],
           "pda": {
             "seeds": [
@@ -2990,13 +2978,10 @@
     {
       "name": "extend_account",
       "docs": [
-        "Grow a zero-copy account to the size this program build compiles in",
-        "for its type. The account discriminator resolves the type. This is the",
-        "migration crank after an upgrade that appends fields to an account",
-        "struct. It does nothing when the account is already at size. The payer",
-        "covers the rent-exempt shortfall. The authority is the",
-        "`AccountExtension` hot key, or the warm or cold admin. See",
-        "`docs/ACCOUNT-EXTENSION.md`."
+        "Grow a zero-copy account to the size this program build compiles in for its type. This is the",
+        "migration crank after an upgrade that appends fields to an account struct. It does nothing when",
+        "the account is already at size. The authority is the `AccountExtension` hot key, or the warm or",
+        "cold admin. See `docs/ACCOUNT-EXTENSION.md`."
       ],
       "discriminator": [
         234,
@@ -3038,11 +3023,10 @@
     {
       "name": "extend_account_devnet",
       "docs": [
-        "Devnet and test builds only. Grows a zero-copy account to an arbitrary",
-        "larger size, so the extension flow can be exercised before a real",
-        "struct extension exists. Production mainnet builds compile it out.",
-        "`anchor-test` keeps it, so the integration suite can exercise extension",
-        "end to end. That suite builds with default features plus `anchor-test`."
+        "Devnet and test builds only. Grows a zero-copy account to an arbitrary larger size, so the",
+        "extension flow can be exercised before a real struct extension exists. Production mainnet",
+        "builds compile it out. `anchor-test` keeps it, so the integration suite can exercise extension",
+        "end to end."
       ],
       "discriminator": [
         58,
@@ -3129,12 +3113,6 @@
             "The deteriorated account whose CLOB orders are being reclaimed."
           ],
           "writable": true
-        },
-        {
-          "name": "user_stats",
-          "docs": [
-            "Carries the authority-wide equity breaker, which is grounds on its own."
-          ]
         },
         {
           "name": "quoter_slab",
@@ -3492,9 +3470,8 @@
         {
           "name": "beneficiary_user",
           "docs": [
-            "Sub-account 0 of the beneficiary of the row. This is the payout account. The handler proves",
-            "that it does not exist.",
-            "any other address. Anchor `seeds` cannot express this, because the address depends on",
+            "Payout account: sub-account 0 of the row's beneficiary. The handler proves it is absent.",
+            "other address. Anchor `seeds` cannot express this, because the address depends on",
             "`builder_idx` and on `approved_builders`, which the handler reads at run time."
           ]
         }
@@ -6245,9 +6222,8 @@
           "docs": [
             "A spot liquidation settles by handing the liquidator the borrow and the",
             "collateral behind it, so whoever liquidates takes on that inventory and",
-            "its price risk. A protocol keeper has no way to unwind it, so it cannot",
-            "liquidate here. That rules out relay as well. An executor may name no",
-            "signer, so a path that requires one is a signed-keeper path only."
+            "its price risk. A protocol keeper (and so relay) has no way to unwind",
+            "it, so this path requires a signer: an executor names none."
           ],
           "signer": true
         },
@@ -7463,11 +7439,10 @@
     {
       "name": "place_and_make_perp_order_v1",
       "docs": [
-        "Rest a maker limit order on the market's CLOB. The order goes straight to",
-        "the book as a maker quote and never occupies a `User.orders` slot.",
-        "`activation_delay_slots` sets the book speed bump. `None` takes the",
-        "default. A value below the default needs the flow-authority",
-        "attestation."
+        "Rest a maker limit order on the market's CLOB. The order goes straight",
+        "to the book as a maker quote and never occupies a `User.orders` slot.",
+        "`activation_delay_slots` sets the book speed bump, or `None` for the",
+        "default. A value below the default needs the flow-authority attestation."
       ],
       "discriminator": [
         29,
@@ -7627,24 +7602,12 @@
     {
       "name": "place_signed_msg_taker_order",
       "docs": [
-        "Place, route and rest one signed-message taker order.",
-        "",
-        "The instruction does the whole order in one call. It verifies the",
-        "taker's signature, places the order, routes it through the market's",
-        "quoters and books for whatever fills at or better than the order's",
-        "auction start price, and rests what is left on the market's CLOB as a",
-        "taker-origin remainder. A signed-message order never rests in a slot.",
-        "",
-        "The keeper that builds the transaction is a filler. The taker signed a",
-        "message and not a transaction, so the keeper answers for the account",
-        "list it chose. It must carry every quoter the message named, and it",
-        "owes the taker every maker it had room for.",
-        "",
-        "`flow_attestation` is swift's detached signature over the order's own",
-        "signature plus an expiry. It proves the order served the hold, without",
-        "the flow authority signing this keeper-built transaction. An absent",
-        "attestation reads as unattested. On a book with a speed bump the order",
-        "then rests whole instead of filling."
+        "Place, route and rest one signed-message taker order in one call. It verifies the signature. It",
+        "routes through the market's quoters and books at or better than the auction start price. It",
+        "rests any remainder as a taker-origin remainder. The order never occupies a slot.",
+        "`flow_attestation` is swift's detached signature over the order and an expiry. It stands in for",
+        "the flow authority's signature on this keeper-built transaction. An absent attestation reads as",
+        "unattested. A book with a speed bump then rests the order whole instead of filling it."
       ],
       "discriminator": [
         32,
@@ -7768,12 +7731,10 @@
     {
       "name": "place_trigger_orders_v1",
       "docs": [
-        "Arm trigger orders in the user's own order slots.",
-        "",
-        "A slot holds one unfired conditional. Every other order type rests on",
-        "the market's book, so this endpoint refuses it. One margin check covers",
-        "the whole batch, which is what lets a stop loss and a take profit arrive",
-        "together."
+        "Arm trigger orders in the user's own order slots. A slot holds one",
+        "unfired conditional, and every other order type rests on the market's",
+        "book instead. One margin check covers the whole batch, so a stop loss",
+        "and a take profit can arrive together."
       ],
       "discriminator": [
         74,
@@ -8712,12 +8673,10 @@
     {
       "name": "resolve_clob_crank",
       "docs": [
-        "Resolver for every condition a market's CLOB cranks wake on. Those are",
-        "an expired order, a side at its eviction threshold, the book crossing",
-        "itself, and the poll that catches a cross a PropAMM created. Relay",
-        "reports which condition fired, so one resolver answers for all of them",
-        "and stages the executor that fits. It returns a response pointer.",
-        "Simulate it rather than landing it."
+        "Resolver for every condition a market's CLOB cranks wake on. Those are an expired order, a",
+        "side at its eviction threshold, and the book crossing itself. Another is the poll that catches",
+        "a cross a PropAMM created. Relay reports which condition fired, so one resolver stages the",
+        "executor that fits and returns a response pointer. Simulate it rather than landing it."
       ],
       "discriminator": [
         0,
@@ -8770,11 +8729,9 @@
         {
           "name": "clob_market",
           "docs": [
-            "",
-            "It is writable for the book's response tail. The cross resolver asks the",
-            "book for its resting orders through `quote_l3_v0`, which streams the",
-            "answer into that tail. Nothing a resolver sends ever lands, and the tail",
-            "is a scratch region the book rewrites on every quote."
+            "It is writable for the book's response tail, scratch the book rewrites",
+            "every quote as the cross resolver streams resting orders into it",
+            "through `quote_l3_v0`. Nothing a resolver sends lands there."
           ],
           "writable": true,
           "relations": [
@@ -10721,14 +10678,10 @@
     {
       "name": "sync_user_conditions",
       "docs": [
-        "Derive a user's whole relay condition block in one pass. The block",
-        "holds the liquidation thresholds and the trigger watches.",
-        "",
-        "This is the default way to sync a user. `sync_liq_conditions` and",
-        "`sync_trigger_conditions` remain for a caller that wants one half. A",
-        "user with orders and no positions needs no thresholds. Both write the",
-        "same account, so calling them in sequence classifies the same",
-        "`remaining_accounts` twice."
+        "Derive a user's whole relay condition block, the liquidation thresholds and the trigger",
+        "watches, in one pass. `sync_liq_conditions` and `sync_trigger_conditions` remain for a caller",
+        "that wants only one half. Both write the same account, so calling them in sequence classifies",
+        "the same `remaining_accounts` twice."
       ],
       "discriminator": [
         25,
@@ -13467,10 +13420,9 @@
         {
           "name": "clob_market",
           "docs": [
-            "designated. It is writable because the attach registers velocity's",
-            "resolvers on the book itself. The wakes for an expiry, an activation, a",
-            "side at its cap and a crossed book are facts about this account, so the",
-            "conditions that watch for them live on it."
+            "designated. Writable because the attach registers velocity's resolvers",
+            "on it. The conditions for expiry, activation, a side at its cap and a",
+            "crossed book live on this account because those are facts about it."
           ],
           "writable": true,
           "relations": [
@@ -17335,12 +17287,10 @@
     {
       "name": "update_user_vault_owned",
       "docs": [
-        "Mark a User as vault-owned. Its authority is a vault PDA, and its",
-        "equity prices vault depositor shares. The instruction sets the flag and",
-        "never clears it. Only the User's authority may call it, and the vaults",
-        "program CPIs it at vault init. The revenue-share sweep skips a",
-        "vault-owned User, so a builder or referral reward can never enter vault",
-        "NAV (OtterSec #91/#92/#93)."
+        "Mark a User as vault-owned. Its authority is a vault PDA, and its equity prices vault depositor",
+        "shares. The instruction sets the flag once and never clears it. Only the authority may call it,",
+        "and the vaults program CPIs it at vault init. The revenue-share sweep skips a vault-owned User,",
+        "so a builder or referral reward can never enter vault NAV (OtterSec #91/#92/#93)."
       ],
       "discriminator": [
         50,
@@ -21869,12 +21819,10 @@
           {
             "name": "is_writable",
             "docs": [
-              "Whether the account is passed writable to the quoter program.",
-              "",
-              "`is_signer` is not stored. The market's slab is the only account a",
-              "quoter CPI ever receives signer privilege on, and",
-              "[`super::wire::write_quoter_account_metas`] decides that by pubkey match",
-              "rather than by registration."
+              "Whether the account is passed writable to the quoter program. `is_signer`",
+              "is not stored. The market's slab is the only account a quoter CPI ever",
+              "receives signer privilege on, and [`super::wire::write_quoter_account_metas`]",
+              "decides that by pubkey match rather than by registration."
             ],
             "type": "bool"
           },
@@ -22276,16 +22224,10 @@
     {
       "name": "CancelSidesV0",
       "docs": [
-        "Which sides a `cancel_all_v0` withdraws.",
-        "",
-        "Named sides rather than a pair of bools, because the wire must not express",
-        "\"neither\". A maker would then believe the quotes are gone when nothing",
-        "happened.",
-        "",
-        "What the sides mean differs by reader. A book walks them as book sides, a",
-        "caller unwinds them as position directions, and a spline reads them as taker",
-        "directions. Each program adds that reading itself. The tags are the part",
-        "that has to agree."
+        "Which sides a `cancel_all_v0` withdraws. Named sides rather than a pair of bools,",
+        "because the wire must not express \"neither\" and leave a maker believing its quotes",
+        "are gone. What a side means differs by reader. A book walks it as a book side and a",
+        "caller unwinds it as a position direction. The tags are the part that has to agree."
       ],
       "type": {
         "kind": "enum",
@@ -22337,18 +22279,10 @@
           {
             "name": "crank_payments",
             "docs": [
-              "Lamports each executor pays its keeper, mirrored into that crank's",
-              "`min_payment`. This account is also the reservoir those lamports come",
-              "from. Relay's `assert_paid_v0` measures the keeper's lamport balance,",
-              "so a crank that moves no lamports cannot express a fee and turners have",
-              "no signal to take or decline the work. The reservoir lives here rather",
-              "than in a global PDA because the executor already writes this account",
-              "to repair the expiry hint, so it costs no extra account in a crank",
-              "transaction.",
-              "",
-              "[`crate::state::crank_treasury::CrankTreasuryV0`] refills the",
-              "reservoir. An empty reservoir fails the crank rather than paying",
-              "nothing, so the failure names the empty reservoir."
+              "Lamports each executor pays its keeper, mirrored into that crank's `min_payment`.",
+              "This account is also the reservoir they come from, which costs no extra account.",
+              "[`crate::state::crank_treasury::CrankTreasuryV0`] refills it, and an empty",
+              "reservoir fails the crank rather than paying nothing."
             ],
             "type": {
               "defined": {
@@ -22360,44 +22294,28 @@
             "name": "min_cross_surplus",
             "docs": [
               "Floor on the protocol's quote surplus from a cross-match crank, in",
-              "`QUOTE_PRECISION`. A cross costs the protocol SOL, because the",
-              "reservoir pays `crank_payments.cross` to whoever cranked it. A cross",
-              "that clears by a cent is worth declining. Zero keeps the rule that a",
-              "cross only has to be profitable.",
-              "",
-              "The floor is in quote rather than derived from the lamport cost,",
-              "because the conversion needs a SOL price and the cross crank carries no",
-              "SOL oracle. It holds the perp's oracle and its map section only. An",
-              "admin sets this floor to cover the cross payout with margin and",
-              "re-prices it alongside the payments."
+              "`QUOTE_PRECISION`. The reservoir pays `crank_payments.cross` in SOL, so a cross",
+              "that clears by a cent is worth declining. In quote rather than lamports, because",
+              "the cross crank carries no SOL oracle. Zero means profitable is enough."
             ],
             "type": "u64"
           },
           {
             "name": "clob_block_offset",
             "docs": [
-              "Where the book's own condition block sits in the market account, as it",
-              "reported at attach.",
-              "",
-              "A market has two blocks and each one needs its own relay watch. This",
-              "account's block is its first field, at offset 8. The book's block holds",
-              "the four conditions that describe the book. A registrar that watches",
-              "only this account leaves the book's cranks unwoken, so the book's",
-              "offset is captured here for the registrar to find."
+              "Where the book's own condition block sits in the market account, as it reported at",
+              "attach. A market has two blocks and each needs its own relay watch, so a registrar",
+              "that watched only this account would leave the book's cranks unwoken."
             ],
             "type": "u32"
           },
           {
             "name": "top_of_book_offset",
             "docs": [
-              "The region of the book that changes whenever either side's best moves,",
-              "as the book reported it at attach.",
-              "",
-              "A crossing order is a new best, so a relay watch here catches every",
-              "cross as it appears. The book reports the region rather than velocity",
-              "deriving it, so velocity registers the watch without knowing the book's",
-              "layout. The per-quoter cross conditions read this region too. They",
-              "watch the same book for a cross against a PropAMM."
+              "The region of the book that changes whenever either side's best moves, as the book",
+              "reported it at attach. A crossing order is a new best, so a watch here catches",
+              "every cross. The book reports the region rather than velocity deriving it, so",
+              "velocity watches without knowing the book's layout."
             ],
             "type": "u32"
           },
@@ -22423,40 +22341,20 @@
           {
             "name": "refill_watermark_lamports",
             "docs": [
-              "The spendable balance this reservoir wakes its refill at, in lamports.",
-              "",
-              "The attach resolves this from the treasury's watermark setting and this",
-              "market's most expensive crank. It is stored because it is the threshold",
-              "the wake condition carries. Relay compares the mirror against this",
-              "number, so the executor must read the same number rather than recompute",
-              "it. A figure recomputed from a program constant would drift from the",
-              "conditions written before an upgrade. A market would then wake at one",
-              "level while its executor refused at another."
+              "The spendable balance this reservoir wakes its refill at, in lamports. Relay",
+              "compares the mirror against this number, so the executor reads it rather than",
+              "recomputing. A figure from a program constant would drift from conditions written",
+              "before an upgrade, and the market would wake at one level and refuse at another."
             ],
             "type": "u64"
           },
           {
             "name": "spendable_mirror",
             "docs": [
-              "This account's spendable lamports as of the last payment or refill.",
-              "Spendable means the balance less the rent exemption.",
-              "",
-              "A relay watch reads account data, and a lamport balance is account",
-              "metadata rather than data. The mirror is what lets the refill condition",
-              "wake on a draining reservoir. The write costs nothing, because every",
-              "payment already writes this account.",
-              "",
-              "The mirror is advisory. The refill instruction reads the real balance,",
-              "and the resolver refuses to stage a refill against a reservoir that is",
-              "full.",
-              "",
-              "The attach and every payment write it, which covers every way the",
-              "balance falls. A plain lamport transfer into the reservoir is the one",
-              "way the balance can rise without a write, and that leaves the mirror",
-              "low. The condition then stays due, and turners keep resolving it to no",
-              "work until the next payment restates it. That costs simulations rather",
-              "than lamports. The treasury refill exists so that funding a reservoir",
-              "by hand is not the normal path."
+              "This account's spendable lamports as of the last payment or refill, meaning the",
+              "balance less rent exemption. A relay watch reads account data and a lamport",
+              "balance is metadata, so the mirror is what lets the refill condition wake.",
+              "Advisory: the refill instruction reads the real balance."
             ],
             "type": "u64"
           },
@@ -22481,15 +22379,11 @@
     {
       "name": "ClobOrderRefV0",
       "docs": [
-        "Order handle. The node index is an O(1) hint that the book verifies",
-        "against the order id. A stale hint, whose node was freed or reused, fails",
-        "closed rather than acting on whichever order took the slot.",
-        "",
-        "The `Clob` prefix repeats the crate name on purpose. This is the one type",
-        "on this wire that reaches velocity's instruction arguments, so it is the",
-        "one that lands in velocity's IDL. There it sits beside `Order`, `OrderType`",
-        "and `OrderParams`, where a bare `OrderRefV0` names no program. Anchor takes",
-        "the declared name, not the alias, so a rename here renames it there."
+        "Order handle. The node index is an O(1) hint the book verifies against the order",
+        "id, so a stale hint fails closed rather than acting on whichever order took the",
+        "slot. The `Clob` prefix is deliberate: this is the one type here that lands in",
+        "velocity's IDL, beside `Order` and `OrderParams`, where `OrderRefV0` names no",
+        "program."
       ],
       "type": {
         "kind": "struct",
@@ -22996,16 +22890,10 @@
     {
       "name": "CrankCostUnitsV0",
       "docs": [
-        "Cost units each of a market's cranks requests, one field per crank.",
-        "",
-        "These figures are measured. A turner simulates the crank and asks for a",
-        "compute limit based on what the simulation used. The rest of the sum comes",
-        "out of the transaction the turner assembles: signatures, write locks,",
-        "instruction-data bytes, and the loaded-accounts limit. An admin passes",
-        "those totals here.",
-        "",
-        "The unit is the block-packing cost unit, which is what the network prices a",
-        "transaction by. `State.transaction_fee_rails` turns it into lamports."
+        "Cost units each of a market's cranks requests, one field per crank. Measured figures:",
+        "a turner simulates the crank, and the rest of the sum comes from the transaction it",
+        "assembles. The unit is the block-packing cost unit, which",
+        "`State.transaction_fee_rails` turns into lamports."
       ],
       "type": {
         "kind": "struct",
@@ -23013,7 +22901,10 @@
           {
             "name": "removal",
             "docs": [
-              "`evict_worst` / `remove_expired`: one book write and a hint repair."
+              "`evict_worst` / `remove_expired`: one book write and a hint repair. The one crank",
+              "pair whose payment nothing compares against what the protocol collects. A rails",
+              "re-pricing that lifts `removal` past the `flat_filler_fee`'s value in SOL turns",
+              "each reservoir into a faucet."
             ],
             "type": "u32"
           },
@@ -23086,19 +22977,11 @@
     {
       "name": "CrankPaymentsV0",
       "docs": [
-        "What each of a market's cranks pays its keeper, in lamports.",
-        "",
-        "One figure per crank rather than one for the market. A book removal and a",
-        "two-legged cross differ by an order of magnitude in what they request, and",
-        "the network charges a transaction for what it requests. A single figure",
-        "would either underpay the cross, so nobody runs it, or overpay every",
-        "removal.",
-        "",
-        "The attach derives these once from [`CrankCostUnitsV0`] and",
-        "`State.transaction_fee_rails`. They are stored rather than recomputed at",
-        "crank time for two reasons. Pricing costs a crank compute and an extra",
-        "account. A staged executor that could re-derive its own terms could",
-        "re-price its own work."
+        "What each of a market's cranks pays its keeper, in lamports. One figure per crank,",
+        "because a removal and a two-legged cross differ by an order of magnitude and a single",
+        "figure would either underpay the cross or overpay every removal. The attach derives",
+        "them once from [`CrankCostUnitsV0`] and `State.transaction_fee_rails`, because an",
+        "executor that could re-derive its own terms could re-price its own work."
       ],
       "serialization": "bytemuckunsafe",
       "repr": {
@@ -23134,13 +23017,9 @@
           {
             "name": "refill",
             "docs": [
-              "What the treasury pays to have this market's reservoir refilled.",
-              "",
-              "The treasury holds the lamports, but this price is stored with the",
-              "market's other crank prices. The refill condition lives here, and a",
-              "condition has to advertise a floor a turner can filter on. It comes",
-              "from the same rails as every other crank, so a change to the rails",
-              "re-prices it on the market's next attach."
+              "What the treasury pays to have this market's reservoir refilled. Stored with the",
+              "market's other crank prices because the refill condition lives here, and a",
+              "condition has to advertise a floor a turner can filter on."
             ],
             "type": "u32"
           },
@@ -23227,20 +23106,10 @@
           {
             "name": "refill_watermark_cranks",
             "docs": [
-              "Wake the refill when a reservoir can pay fewer than this many.",
-              "",
-              "A refill needs two levels, or it fills by nothing. This is the low one.",
-              "Unlike the target, the attach resolves it to lamports and stores it on",
-              "the market. Relay compares the mirrored balance against it, and a",
-              "condition carries its own threshold. A change to it therefore reaches a",
-              "market on that market's next attach.",
-              "",
-              "Size it for the refill's own round trip. The refill is itself a relay",
-              "crank, so a turner polls for it, simulates it, and then lands it. The",
-              "reservoir keeps paying for ordinary work throughout. Both terms are at",
-              "their worst together. A market-wide move is when cranks fire fastest",
-              "and when the network is slowest to land one. An empty reservoir stops",
-              "cranking at exactly that point, and nothing else reports it."
+              "Wake the refill when a reservoir can pay fewer than this many. The attach resolves it to lamports",
+              "on the market, so a change reaches a market only at its next attach. Size it for the refill's own",
+              "round trip: itself a relay crank a turner polls, simulates and lands, worst together with",
+              "ordinary work at a market-wide move, when an empty reservoir stops cranking unreported."
             ],
             "type": "u16"
           },
@@ -23481,12 +23350,10 @@
     {
       "name": "FeeLedger",
       "docs": [
-        "All of a perp market's fee-split accounting in one ledger.",
-        "Pure counters — token claims live in the pools",
-        "(`protocol_fee_pool`, the quote `revenue_pool`, `AMM.fee_pool`).",
-        "Convention: gross-fee counters record what the taker actually paid",
-        "(post referee discount, pre carve-outs) on both the AMM and the maker-match",
-        "paths."
+        "All of a perp market's fee-split accounting in one ledger. Pure counters. Token claims",
+        "live in the pools (`protocol_fee_pool`, the quote `revenue_pool`, `AMM.fee_pool`).",
+        "Gross-fee counters record what the taker actually paid, post referee discount and pre",
+        "carve-outs, on both the AMM and the maker-match paths."
       ],
       "serialization": "bytemuckunsafe",
       "repr": {
@@ -23532,24 +23399,19 @@
           {
             "name": "amm_protocol_fees_received",
             "docs": [
-              "cumulative fee provision granted to the AMM via `amm_fee_numerator`,",
-              "plus the vAMM maker rebate when `FeatureBitFlags::VammMakerRebate` is",
-              "enabled. This is the AMM's last-resort tranche. Only a bankruptcy draws",
-              "it down and decrements it. Enabling the rebate bit therefore grows the",
-              "bankruptcy clawback cap by the rebates earned. The AMM's own spread and",
-              "trading capital beyond this provision is never used.",
-              "precision: QUOTE_PRECISION"
+              "Cumulative fee provision granted to the AMM via `amm_fee_numerator`, plus the vAMM",
+              "maker rebate when `FeatureBitFlags::VammMakerRebate` is enabled. The AMM's",
+              "last-resort tranche: only a bankruptcy draws it down, so enabling the rebate bit",
+              "grows the bankruptcy clawback cap. precision: QUOTE_PRECISION"
             ],
             "type": "u128"
           },
           {
             "name": "pending_amm_provision",
             "docs": [
-              "AMM fee provision, including the vAMM maker rebate when enabled,",
-              "accrued at fill (already booked into the AMM's",
-              "`total_fee_minus_distributions`) but not yet tokenized into",
-              "`amm.fee_pool` by the sweep. Invariant: `<= amm_protocol_fees_received`.",
-              "precision: QUOTE_PRECISION"
+              "AMM fee provision, including the vAMM maker rebate when enabled, accrued at fill",
+              "but not yet tokenized into `amm.fee_pool` by the sweep. Invariant:",
+              "`<= amm_protocol_fees_received`. precision: QUOTE_PRECISION"
             ],
             "type": "u128"
           }
@@ -23764,13 +23626,8 @@
       "docs": [
         "One order the caller wants reclaimed.",
         "",
-        "The side is declared rather than read, because a node carries no side of",
-        "its own. The book stores the side as the list the node is linked into, and",
-        "reading it costs a walk from the head. A declared side lets the",
-        "risk-reducing test run before the CPI, so a reducing order is passed over",
-        "rather than cancelled and then reverted. The declaration is not trusted. The",
-        "removal the CLOB returns carries the real side, and the handler checks it",
-        "against the declaration."
+        "The side is declared, not read, since a node carries no side of its own.",
+        "It lets the risk-reducing test run before the CPI, but is not trusted: the handler checks it against the real side the CLOB removal returns."
       ],
       "type": {
         "kind": "struct",
@@ -24222,7 +24079,8 @@
             "name": "expire_fallback_slots",
             "docs": [
               "The poll interval behind the reprice watch. It is the discovery floor",
-              "when the maker's declared watch misses a reprice."
+              "when the maker's declared watch misses a reprice. Bounded above by",
+              "[`QUOTER_CROSS_FALLBACK_MAX_SLOTS`]."
             ],
             "type": "u64"
           }
@@ -24349,12 +24207,10 @@
           {
             "name": "if_fee_factor",
             "docs": [
-              "Fraction of spot deposit-interest gains carved out to the insurance fund",
-              "(staker-owned). precision: IF_FACTOR_PRECISION. (Was `total_factor`; the",
-              "protocol-vs-staker split was removed — the IF is now 100% staker-owned,",
-              "so this is purely the staker IF carveout.) A cut too small to reach a",
-              "whole unit is carried on the carveout pools rather than floored away.",
-              "See `split_deposit_interest`."
+              "Fraction of spot deposit-interest gains carved out to the insurance fund (staker-owned), in",
+              "`IF_FACTOR_PRECISION`. Was `total_factor` before the protocol/staker split was removed; the IF",
+              "is now 100% staker-owned, so this is the whole staker carveout. A cut too small to reach a",
+              "whole unit is carried on the carveout pools, not floored away. See `split_deposit_interest`."
             ],
             "type": "u32"
           },
@@ -24858,10 +24714,9 @@
             "name": "target_oracle_delay_fee_bps_per_10_slots",
             "docs": [
               "Bps of fee charged per 10 whole 400ms periods of oracle delay past the",
-              "staleness threshold. One step is 4 seconds of wall clock. The `_slots`",
-              "suffix dates from when a slot was 400ms. `step_fee` takes period counts,",
-              "so the rate does not scale with slot time. A rename changes the IDL, so",
-              "the unit is stated here instead."
+              "staleness threshold. One step is 4 seconds of wall clock. `step_fee`",
+              "takes period counts, not slot time, though the field keeps its legacy",
+              "`_slots` name because renaming would change the IDL."
             ],
             "type": "u8"
           },
@@ -25860,11 +25715,9 @@
           {
             "name": "reject_if_crossed",
             "docs": [
-              "The rule of `place_and_make_perp_order_v1` applies. Refuse the",
-              "replacement rather than rest it crossed. The original is already off the",
-              "book at that point, so a refused replacement leaves the maker with no",
-              "order. That is what a maker who reprices into a crossed book asked",
-              "for."
+              "The rule of `place_and_make_perp_order_v1` applies: refuse rather than",
+              "rest crossed. The original is already off the book, so a refused",
+              "replacement leaves the maker with no order at all."
             ],
             "type": "bool"
           }
@@ -26195,11 +26048,10 @@
           {
             "name": "auction_duration",
             "docs": [
-              "Auction length in wall clock 400ms units (one slot at the 400ms",
-              "baseline, where the raw value is identical to the historical slot",
-              "count). Progress compares `SlotClock::elapsed` against this value's",
-              "wall clock length, so the ramp holds at every slot duration and the",
-              "u8 keeps the full historical 72s range."
+              "Auction length in wall clock 400ms units, one unit per slot at the",
+              "400ms baseline. Progress compares `SlotClock::elapsed` against this",
+              "value's wall clock length, so the ramp holds at every slot duration.",
+              "The u8 keeps the full historical 72s range."
             ],
             "type": "u8"
           },
@@ -26221,15 +26073,10 @@
           {
             "name": "padding",
             "docs": [
-              "Free bytes. These held a route digest while a signed-message order",
-              "could rest in a slot. Such an order now routes at placement and rests",
-              "any remainder on the market's CLOB, so the route travels with the",
-              "message, on",
-              "[`crate::state::signed_msg_user::SignedMsgOrderId::route_digest`].",
-              "",
-              "Kept as padding rather than removed: `Order` is 104 bytes with no",
-              "slack, and it is an array element in `User`, so dropping these bytes",
-              "would change that array's stride and rewrite every existing account."
+              "Free bytes. These held a route digest until routing moved to placement",
+              "and `SignedMsgOrderId::route_digest`. `Order` is 104 bytes with no",
+              "slack and is an array element in `User`. Removing them would rewrite",
+              "every existing account."
             ],
             "type": {
               "array": [
@@ -27141,20 +26988,10 @@
           {
             "name": "taker_fee_addon_tenth_bps",
             "docs": [
-              "Additive per-market taker-fee surcharge in tenth-bps. 10 is 1 basis",
-              "point. The field is unsigned, so it can only raise the fee, for example",
-              "on a toxic-flow market. A discount could push the taker fee below the",
-              "maker rebate it must fund, which reverts every match fill. Promo",
-              "discounts go through `State.promo_fee_tier` instead.",
-              "",
-              "The surcharge applies on top of the tier fee, before `fee_adjustment`",
-              "scales the sum:",
-              "`taker_fee = (tier_fee + surcharge) * (1 +/- fee_adjustment%)`.",
-              "The maker rebate and the post-only path see `fee_adjustment` alone.",
-              "",
-              "The field takes 2 bytes of the former 4-byte `_padding_buffer`, at the",
-              "same offset and alignment on all targets. Existing accounts therefore",
-              "read 0, which is no surcharge, until the admin sets it."
+              "Additive per-market taker-fee surcharge in tenth-bps. 10 is one basis point.",
+              "Unsigned, because a discount could push the taker fee below the maker rebate it",
+              "must fund. Applied on top of the tier fee, before `fee_adjustment` scales the sum.",
+              "Existing accounts read 0, which is no surcharge."
             ],
             "type": "u16"
           },
@@ -27170,28 +27007,10 @@
           {
             "name": "fee_pool_buffer_target",
             "docs": [
-              "The pnl-pool retention buffer the streaming sweep's IF and",
-              "AMM-provision drains leave untouched: `sweep_market_fees` drains",
-              "those pendings only from what the pnl pool holds above",
-              "`max(net_user_pnl, 0) + fee_pool_buffer_target`. The protocol drain",
-              "is EXEMPT — it reserves only `max(net_user_pnl, 0)` and runs first;",
-              "it sweeps every settle, so each drain stays small, and its pending is",
-              "no bankruptcy tranche so retaining it buys nothing.",
-              "",
-              "Why a buffer on top of the user-claims reservation: `net_user_pnl`",
-              "is a mark-to-market snapshot, so a pool swept to the exact mark is",
-              "short on the next adverse oracle tick — and the sweep is a one-way",
-              "valve, so the slack can't be cheaply recalled (IF value returns only",
-              "through capped gated paths, the AMM provision only via bankruptcy",
-              "clawback). The buffer throttles those outflows per sweep; pool tokens",
-              "are fungible (pendings are counters, not segregated tokens), so",
-              "whichever cut lingers keeps settling winners in the meantime. This",
-              "delays materialization, it does not divert anyone's cut. Side",
-              "benefits: an unswept IF cut gives THIS market uncapped market-local",
-              "bankruptcy coverage (tranche 1) instead of capped shared-vault",
-              "coverage, and the buffer damps the IF settle ratchet (value settled",
-              "into the IF accrues to stakers permanently).",
-              "precision: QUOTE_PRECISION"
+              "Pnl-pool retention the streaming sweep's IF and AMM-provision drains leave",
+              "untouched. `net_user_pnl` is a mark-to-market snapshot, so a pool swept to the",
+              "exact mark is short on the next adverse tick, and the sweep is a one-way valve.",
+              "The protocol drain is exempt. precision: QUOTE_PRECISION"
             ],
             "type": "u64"
           },
@@ -27475,30 +27294,10 @@
           {
             "name": "pending_bankruptcy_claims",
             "docs": [
-              "Number of unresolved bankrupt quote debts booked against this market.",
-              "A liquidation that latches a user bankrupt increments it. Both writers",
-              "of `PerpPosition.quote_asset_amount` decrement it when that debt",
-              "reaches zero: `update_quote_asset_amount` and",
-              "`update_position_and_market`. The count tracks the debt, not the latch.",
-              "An un-latched estate that still owes the market stays booked, because",
-              "the debt still resolves through the bankruptcy waterfall.",
-              "",
-              "While the count is above zero the fee sweep withholds the whole",
-              "`pending_if_fee`, not only `get_bankruptcy_if_floor()`. The sweep is",
-              "permissionless, so a caller could otherwise drain the first-loss",
-              "tranche between the latch and the resolution. The loss then falls on",
-              "the shared insurance fund or on socialization. The freeze does not",
-              "depend on open interest or on `bankruptcy_if_floor_pct`. Both can be",
-              "zero exactly when a bankruptcy is pending.",
-              "",
-              "`settle_expired_market_pools_to_revenue_pool` rejects while the count",
-              "is above zero, because that instruction's final sweep bypasses the",
-              "floor.",
-              "",
-              "The field takes 2 of the 6 bytes the Rust compiler inserts to 8-align",
-              "`last_fill_price`. The other 4 stay explicit padding, so every later",
-              "byte offset and the account size are unchanged. Existing accounts read",
-              "0, which is no pending claim."
+              "Number of unresolved bankrupt quote debts booked against this market. The count",
+              "tracks the debt, not the latch. While it is above zero the fee sweep withholds the",
+              "whole `pending_if_fee`, because the sweep is permissionless and could otherwise",
+              "drain the first-loss tranche between the latch and the resolution."
             ],
             "type": "u16"
           },
@@ -27568,16 +27367,10 @@
           {
             "name": "oracle_slot_delay_override",
             "docs": [
-              "Max oracle delay tolerated by an immediate AMM fill, in legacy 400ms",
-              "units. An immediate fill is a JIT fill that skips the auction. A",
-              "positive value is an explicit threshold. `0` disables immediate AMM",
-              "fills. A negative value means unset, and `-1` is the init default.",
-              "",
-              "An unset override resolves by price source. An MM-oracle price gets",
-              "`MM_ORACLE_MIN_WRITE_GAP`, the tightest window the crank can satisfy,",
-              "because the program refuses MM-oracle writes closer together than that.",
-              "An exchange-oracle price gets `0`, because it can be fresh in the same",
-              "slot. See `math::oracle::oracle_validity`."
+              "Max oracle delay tolerated by an immediate AMM fill, in legacy 400ms units. A",
+              "positive value is a threshold, `0` disables immediate AMM fills, and a negative",
+              "value is unset. An unset override resolves by price source. See",
+              "`math::oracle::oracle_validity`."
             ],
             "type": "i8"
           },
@@ -27593,27 +27386,10 @@
           {
             "name": "bankruptcy_if_floor_pct",
             "docs": [
-              "Floor on the unswept IF-fee carveout, as a percentage of open-interest",
-              "notional (PERCENTAGE_PRECISION). The fee sweep's IF drain leaves",
-              "`pending_if_fee` at this floor or above it, so a standing first-loss",
-              "tranche is available to `resolve_perp_bankruptcy` before any user is",
-              "latched bankrupt. Neither a permissionless sweep nor the inline sweep",
-              "on a pnl settle can drain the tranche below it. Notional is valued at",
-              "the market's own oracle TWAP, so a manipulated spot print cannot crush",
-              "the floor.",
-              "",
-              "`0` means `DEFAULT_BANKRUPTCY_IF_FLOOR_PCT`, so every market created",
-              "before the field existed carries the standing tranche without an admin",
-              "call. `BANKRUPTCY_IF_FLOOR_DISABLED` turns the floor off. Read it",
-              "through `get_bankruptcy_if_floor_pct`, never directly.",
-              "",
-              "The floor sizes the tranche off market risk, which is a proxy for the",
-              "loss and can be smaller than it. `pending_bankruptcy_claims` covers",
-              "every latched bankruptcy exactly, by withholding all of",
-              "`pending_if_fee` until it resolves.",
-              "",
-              "The field takes the former 4-byte trailing padding before",
-              "`market_stats`, at the same offset and alignment on all targets."
+              "Floor on the unswept IF-fee carveout, as a percentage of open-interest notional",
+              "(PERCENTAGE_PRECISION). No sweep drains `pending_if_fee` below it, so a first-loss",
+              "tranche stands before any user is latched bankrupt. Notional is valued at the",
+              "oracle TWAP. Read it through `get_bankruptcy_if_floor_pct`, never directly."
             ],
             "type": "u32"
           },
@@ -27635,32 +27411,19 @@
           {
             "name": "pending_revenue_share",
             "docs": [
-              "Aggregate accrued builder/referrer revenue-share owed out of this",
-              "market's `pnl_pool` but not yet paid: incremented as builder and",
-              "referrer fees accrue on fills (mirrors the per-order",
-              "`RevenueShareOrder.fees_accrued` writes) and decremented as",
-              "`sweep_completed_revenue_share_for_market` pays them. The",
-              "permissionless fee sweep reserves it (like `max(net_user_pnl, 0)` and",
-              "the floored IF tranche) so a protocol-fee drain can't move the tokens",
-              "backing already-owed revenue share out of the pnl pool and leave those",
-              "claims temporarily unpayable. precision: QUOTE_PRECISION.",
-              "",
-              "Occupies the 8 bytes Rust naturally inserts to 16-align AMM's leading",
-              "u128 (formerly explicit `_padding_align_amm`): a u64 at the same",
-              "8-aligned offset keeps every downstream byte offset and the total size",
-              "unchanged, so legacy accounts read 0 (nothing owed) until fees accrue."
+              "Aggregate builder and referrer revenue-share owed out of this market's `pnl_pool`",
+              "but not yet paid. The permissionless fee sweep reserves it, so a protocol-fee",
+              "drain cannot move the tokens backing already-owed share and leave those claims",
+              "unpayable. precision: QUOTE_PRECISION"
             ],
             "type": "u64"
           },
           {
             "name": "amm",
             "docs": [
-              "The automated market maker. Last field so future quoter modules can",
-              "land in the trailing region without disturbing earlier byte offsets",
-              "— in the target architecture this account holds back-to-back",
-              "per-quoter state slices (AMM, book state, future propAMM-style",
-              "participants, …) and each module owns a contiguous span starting at",
-              "a known offset."
+              "The automated market maker. Last field, so future quoter modules land in the",
+              "trailing region without disturbing earlier byte offsets. Each module owns a",
+              "contiguous span starting at a known offset."
             ],
             "type": {
               "defined": {
@@ -27683,26 +27446,20 @@
           {
             "name": "clob_market",
             "docs": [
-              "The market's canonical book. This is the CLOB market account, which is",
-              "also the book slot's response account on the slab. When the key is set,",
-              "every router fill must consult the book, so no route can exclude it. A",
-              "dead book must still be passed, but quoting skips it, so killing the",
-              "book does not stop fills. Accounts structs that name both bind them",
-              "with `has_one = clob_market`. `Pubkey::default()` means the market has",
-              "no CLOB requirement. The field comes out of master's reserved tail",
-              "padding, so the account size is unchanged."
+              "The market's canonical book, which is also the book slot's response account on the",
+              "slab. When set, every router fill must consult the book, so no route can exclude",
+              "it. A dead book must still be passed, but quoting skips it. `Pubkey::default()`",
+              "means the market has no CLOB requirement."
             ],
             "type": "pubkey"
           },
           {
             "name": "quoter_slab",
             "docs": [
-              "The market's quoter slab PDA, written at market initialization. The",
-              "address is derivable from the market index. The stored copy lets every",
-              "accounts struct that names both bind them with `has_one = quoter_slab`.",
-              "That is a memcmp instead of a PDA derivation. The compiler also keeps",
-              "the check on every context, instead of each handler having to remember",
-              "it."
+              "The market's quoter slab PDA, written at market initialization. Derivable from the",
+              "market index, but stored so an accounts struct binds them with",
+              "`has_one = quoter_slab`. That is a memcmp instead of a PDA derivation, and the",
+              "compiler keeps the check on every context."
             ],
             "type": "pubkey"
           },
@@ -27854,12 +27611,10 @@
           {
             "name": "reduce_only_clob_orders",
             "docs": [
-              "The number of reduce-only orders the user has resting on the CLOB for",
-              "this market. The book is position-blind, so velocity must tell it which",
-              "resting orders to clamp to the owner's position. This count is that",
-              "signal: it is not zero exactly when the router must pass a `base_cover`",
-              "cap for this user. Velocity arms it when it rests a reduce-only order",
-              "and disarms it when that order leaves the book."
+              "The count of reduce-only orders the user rests on the CLOB for this",
+              "market. The book is position-blind, so this is nonzero exactly when",
+              "the router must pass a `base_cover` cap for this user. Velocity arms",
+              "it when it rests a reduce-only order and disarms it when that order leaves the book."
             ],
             "type": "u16"
           },
@@ -27991,11 +27746,10 @@
           {
             "name": "padding",
             "docs": [
-              "Filler for the alignment gap before the two dust fields. Those fields must",
-              "start at offsets 20 and 24. The host layout and the SBF layout then agree,",
-              "and the packed borsh layout in the IDL reaches the same offsets. The",
-              "size of the struct and every other field offset are unchanged. Do not",
-              "reorder or resize these fields."
+              "Filler for the alignment gap before the two dust fields, which must start",
+              "at offsets 20 and 24. The host layout, the SBF layout, and the packed",
+              "borsh layout in the IDL then agree. The struct size and every other field",
+              "offset are unchanged. Do not reorder or resize these fields."
             ],
             "type": {
               "array": [
@@ -28347,27 +28101,20 @@
           {
             "name": "taker_served_window",
             "docs": [
-              "Whether the flow this view prices for served a protection window. The",
-              "window is the swift hold or the book's activation delay. The real route",
-              "asks the same question. A book with an activation delay quotes no depth",
-              "to unprotected flow, and a protected-flow quoter refuses it. The",
-              "midpoint's `require_attested_flow` is such a quoter. A view for",
-              "unprotected flow must show the same books the fill would get. Swift and",
-              "the book publisher price protected flow and pass `true`."
+              "Whether the flow this view prices for served a protection window: the",
+              "swift hold or the book's activation delay. A protected-flow quoter (e.g.",
+              "midpoint's `require_attested_flow`) hides depth from unprotected flow, so",
+              "the view must match the real route. Swift and the book publisher pass `true`."
             ],
             "type": "bool"
           },
           {
             "name": "include_vamm",
             "docs": [
-              "Quote the vAMM into the buffer as well.",
-              "",
-              "A market with more quoters than one view can carry is read in several",
-              "passes. The vAMM prices against every other book in the same call, so a",
-              "pass that holds a subset would shade the vAMM against a subset, and each",
-              "pass would return a different vAMM. Exactly one pass sets this flag, and",
-              "the caller merges the vAMM from that pass. The passes that clear it also",
-              "stop paying to compute a ladder they would discard."
+              "Quote the vAMM into the buffer as well. A market with more quoters than",
+              "one view can carry is read in several passes, and the vAMM shades against",
+              "every book in the call, so only one pass sets this flag; the caller merges",
+              "the vAMM from that pass, while the rest skip computing a discarded ladder."
             ],
             "type": "bool"
           }
@@ -28618,21 +28365,10 @@
           {
             "name": "approved_program_slot",
             "docs": [
-              "The slot the approved program was last deployed at, read from its",
-              "program-data account when the admin approved this config. Zero when the",
-              "program sits on a loader that cannot redeploy it. Meaningful only in a",
-              "slab slot. The staging copy holds the last approval's figure.",
-              "",
-              "Approval does not freeze the program. A maker may upgrade, and the",
-              "bounds on a quoter hold either way. A `Custom` entry can move only its",
-              "own registered user, at a price held to its own quote and to the taker's",
-              "limit, sized inside its own margin. So an upgrade can lose the maker's",
-              "money and cannot take anyone else's.",
-              "",
-              "What an upgrade can still do is quote and not deliver, which costs the",
-              "taker a fill. That is why the slot is recorded. An off-chain reader",
-              "compares it to the live one and knows the code changed, rather than",
-              "waiting to infer the change from behaviour."
+              "The slot the approved program was last deployed at, read at approval and",
+              "meaningful only in a slab slot. Zero when the loader cannot redeploy the",
+              "program. Approval does not freeze the program, so an off-chain reader",
+              "compares this to the live slot to know the code changed."
             ],
             "type": "u64"
           },
@@ -28640,14 +28376,9 @@
             "name": "book_tick_size",
             "docs": [
               "The book's placement rules, mirrored here by the attach",
-              "(`update_perp_market_clob_quoter`) so the hot paths read a loaded field",
-              "instead of calling `order_rules_v0`. Zero for a non-`Clob` entry and for",
-              "a book no market has attached.",
-              "",
-              "Changing the book's rules requires re-running the attach. A stale mirror",
-              "degrades rather than fails. A wrong tick or minimum drops the remainder",
-              "to the plain cancel. A stale zero delay routes an unattested taker",
-              "synchronously where it should have rested."
+              "(`update_perp_market_clob_quoter`) so the hot paths read a loaded field.",
+              "Zero for a non-`Clob` entry and for a book no market has attached. A",
+              "stale mirror degrades the remainder handling rather than failing a fill."
             ],
             "type": "u64"
           },
@@ -28678,12 +28409,7 @@
               "Account owned by `program_id` that quote and execute responses are",
               "written into. Both legs' index lists must name it. A response is read at",
               "the pointer returned via return data, so a payload is not bound by the",
-              "1024-byte return-data cap.",
-              "",
-              "For a CLOB entry this is the book itself, because the CLOB's response",
-              "region lives in its market account. That is what lets velocity read the",
-              "resting orders an execute may touch without a second registered account",
-              "to trust."
+              "1024-byte return-data cap. For a CLOB entry this is the book itself."
             ],
             "type": "pubkey"
           },
@@ -28693,8 +28419,7 @@
               "Manages the staging entry. For a Custom quoter this is the quoted user's",
               "authority, enforced at creation with no handoff. The maker can therefore",
               "always kill their own quoter, because `is_active` writes through to the",
-              "approved copy. The admin vets the CPI surface by copying it into the",
-              "slab."
+              "approved copy."
             ],
             "type": "pubkey"
           },
@@ -28702,14 +28427,9 @@
             "name": "watch_account",
             "docs": [
               "Maker-declared reprice region: the account bytes whose change means the",
-              "quoter may quote differently now. A midpoint's mid region and a custom",
-              "AMM's parameter block are examples. Relay cross-discovery conditions",
-              "wake on it, and `watch_len == 0` means the maker declared none, which",
-              "leaves discovery to the poll.",
-              "",
-              "It is config like everything else here, vetted by the admin at the copy",
-              "into the slab. A watch that misses reprices costs the maker cross",
-              "latency and never correctness, because the poll is the floor."
+              "quoter may quote differently now. Relay cross-discovery conditions wake",
+              "on it, and `watch_len == 0` means the maker declared none, which leaves",
+              "discovery to the poll. A missed reprice costs cross latency, never correctness."
             ],
             "type": "pubkey"
           },
@@ -28741,8 +28461,7 @@
               "The optional third leg, `quote_l3_v0`. It reports the resting orders",
               "behind a ladder and who each one belongs to. Zero means the quoter does",
               "not implement it, and a reader attributes the whole ladder to",
-              "[`Self::user`]. That is right for every quoter that fills from one",
-              "account. A book is the exception, and this field is how it says so."
+              "[`Self::user`]. A book is the exception, and this field is how it says so."
             ],
             "type": {
               "array": [
@@ -28808,22 +28527,9 @@
             "name": "max_oracle_deviation_bps",
             "docs": [
               "The furthest from oracle a fill on this entry may price, in",
-              "MARGIN_PRECISION units, so one unit is one basis point. Zero means the",
-              "entry declares nothing and the market's own band stands.",
-              "",
-              "A maker sets this to cap what its own program can lose if that program",
-              "is compromised. Velocity already bounds every external leg by the",
-              "market's band. That band is sized for a market rather than for one",
-              "quoter's risk appetite, and this field is how a quoter asks for a",
-              "tighter one.",
-              "",
-              "Unlike the rest of the config it writes through to the approved copy",
-              "without re-vetting. The band applies as the smaller of this and the",
-              "market's, so no value it can hold is wider than the one the admin",
-              "vetted. A maker tightening it during an incident must not wait.",
-              "",
-              "`Custom` entries only. A book fills third parties, so a band on one",
-              "would let its entry authority revert other people's fills."
+              "MARGIN_PRECISION units. Zero means the market's own band stands. It",
+              "writes through to the approved copy without re-vetting, because the band",
+              "applies as the smaller of this and the market's. `Custom` entries only."
             ],
             "type": "u32"
           },
@@ -28958,26 +28664,11 @@
     {
       "name": "QuoterSlabV0",
       "docs": [
-        "One market's approved quoters, in one account.",
-        "",
-        "The slab spends one account lock where per-quoter registry entries spent one",
-        "each. A router fill carries the slab plus each quoter's program and response",
-        "account, so a quoter costs two unshared locks instead of three. That budget",
-        "decides how many quoters a route can hold. A route names the slots it",
-        "consults by carrying their response accounts. The slab itself carries no",
-        "per-transaction selection.",
-        "",
-        "This struct is only the fixed header. The slot region follows it in the",
-        "account's remaining bytes as back-to-back [`QuoterSlotV0`]s, so capacity is",
-        "the account's size rather than a layout constant. The approval flow keeps",
-        "the account right-sized. It grows by exactly the slot an approval needs and",
-        "gives trailing vacancy back on revocation, so a reader pays compute for the",
-        "roster rather than for a guess made at creation. Read the region through",
-        "[`QuoterSlabExt::slots`] or [`QuoterSlabExt::slots_mut`]. A vacant slot is",
-        "all zeroes, which is what a fresh or grown region holds.",
-        "",
-        "Creation through `initialize_quoter_slab` is permissionless. The payer buys",
-        "rent on an all-vacant slab, and only the approval flow writes slots."
+        "One market's approved quoters, in one account. This struct is only the fixed",
+        "header. Read the slot region that follows it through [`QuoterSlabExt::slots`]",
+        "or [`QuoterSlabExt::slots_mut`]. A vacant slot is all zeroes. Creation through",
+        "`initialize_quoter_slab` is permissionless, and only the approval flow writes",
+        "slots."
       ],
       "serialization": "bytemuckunsafe",
       "repr": {
@@ -29023,12 +28714,10 @@
           {
             "name": "clob_market",
             "docs": [
-              "The market's book, which is the `Clob` slot's response account, written",
-              "at approval. It is stored in the header so every accounts struct that",
-              "names both binds them with `has_one = clob_market`, a check the compiler",
-              "keeps on every context. It survives a book suspension, because the",
-              "removal paths must keep reaching a killed book. `Pubkey::default()`",
-              "means no book was ever approved."
+              "The market's book, the `Clob` slot's response account. The header holds it so",
+              "every accounts struct that names both binds them with `has_one = clob_market`.",
+              "It survives a book suspension, because the removal paths must keep reaching a",
+              "killed book. `Pubkey::default()` means no book was ever approved."
             ],
             "type": "pubkey"
           },
@@ -29071,16 +28760,9 @@
       "name": "QuoterV0",
       "docs": [
         "The staging half of the registry: one entry per perp market, quoter program",
-        "and quoted user. The quoted user's authority creates it, and it holds the",
-        "config that authority proposes.",
-        "",
-        "Nothing fills from it. `update_quoter_approved` copies it into the market's",
-        "[`super::QuoterSlabV0`], and a fill reads only that copy. A maker edit here",
-        "therefore never reaches flow until the admin copies again, and the approved",
-        "copy keeps serving its vetted config in the meantime.",
-        "",
-        "The entry's address is also the quoter's identity. A signed route names it,",
-        "a relay condition references it, and its slab slot records it."
+        "and quoted user. Nothing fills from it. `update_quoter_approved` copies it",
+        "into the market's [`super::QuoterSlabV0`], and a fill reads only that copy.",
+        "The entry's address is also the quoter's identity."
       ],
       "serialization": "bytemuckunsafe",
       "repr": {
@@ -29573,10 +29255,9 @@
             "name": "padding",
             "docs": [
               "Pads the header to 128 bytes. The reserve holds two more pubkeys, so",
-              "naming another account in the header does not move `sources` or",
-              "`levels` and break every off-chain decoder of this buffer. The length",
-              "also keeps `(SIZE - 8) % 16 == 0`. See",
-              "docs/alignment-and-native-offsets.md."
+              "naming another account later does not move `sources` or `levels` and",
+              "break every off-chain decoder. The length also keeps",
+              "`(SIZE - 8) % 16 == 0`. See docs/alignment-and-native-offsets.md."
             ],
             "type": {
               "array": [
@@ -30009,12 +29690,10 @@
           {
             "name": "route",
             "docs": [
-              "The route the taker signed for. It names the `QuoterV0` entries of the",
-              "custom quoters, the PropAMMs, that the taker wants used. The CLOB and",
-              "the vAMM are the mandatory baseline of every router fill, so they are",
-              "implicit and never named here. The field is advisory to the program",
-              "today. Swift forwards it to keepers, and that is what makes a routed",
-              "order reach the quoters the taker chose."
+              "The route the taker signed for: the `QuoterV0` entries of the custom",
+              "quoters (PropAMMs) the taker wants used. The CLOB and vAMM are the",
+              "mandatory baseline of every router fill, so they are implicit and",
+              "never named here. The field is advisory today. Swift forwards it to keepers, which is what makes a routed order reach the quoters the taker chose."
             ],
             "type": {
               "option": {
@@ -30790,6 +30469,11 @@
           {
             "name": "if_last_settle_vault_amount",
             "docs": [
+              "allow-verbose: the donation-resistance logic and the exact outflow-path list are",
+              "load-bearing invariants for insurance-fund accounting. Cutting them below what an",
+              "auditor needs to verify the cap's donation-proofing would drop real information, not",
+              "restate the code.",
+              "",
               "Lowest insurance-fund vault balance since the end of the last revenue",
               "settle. `settle_revenue_to_insurance_fund` starts each period by writing",
               "the live vault balance plus the amount that settle transfers in, and",
@@ -31246,12 +30930,10 @@
           {
             "name": "promo_fee_tier",
             "docs": [
-              "Promotional fee-tier floor applied to every account. The effective perp",
-              "fee tier is `max(volume tier, promo_fee_tier)`, clamped to the",
-              "configured tier count, so it never downgrades an account. Zero disables",
-              "it, and a pre-upgrade account reads zero out of former padding. A reset",
-              "to zero puts every account back on its volume tier at its next fill,",
-              "because no per-user state records the promotion."
+              "Promotional fee-tier floor applied to every account. The effective",
+              "perp fee tier is `max(volume tier, promo_fee_tier)`, clamped to the",
+              "tier count. Zero disables it, matching what a pre-upgrade account",
+              "reads from former padding, and needs no per-user reset to take effect."
             ],
             "type": "u8"
           },
@@ -31330,24 +31012,10 @@
           {
             "name": "hot_flow_authority",
             "docs": [
-              "The retail-flow attestation key (swift's). Not a signer of any admin",
-              "instruction. It attests flow through two transports. On a",
-              "swift-built transaction it signs as a named `flow_authority`",
-              "account — a CLOB placement (`place_and_make_perp_order_v1`, a",
-              "modify's replacement leg) accepts a faster-than-default activation",
-              "delay only when that signer is present, and",
-              "`place_and_take_perp_order_v1` takes synchronously on a bumped book",
-              "only with it. For a keeper-built swift fill it signs a detached",
-              "attestation over the order's own signature (`FlowAttestationV0`),",
-              "verified in-program — the key never signs a transaction it did not",
-              "build. Velocity forwards the verdict to quoters on the wire",
-              "(`taker_served_window`); a quoter checks nothing itself. On a book",
-              "with a nonzero default activation delay, only attested flow fills",
-              "against the book in the same transaction; an unattested taker rests",
-              "whole through the window (maker priority — a maker can always",
-              "reprice ahead of unattested aggression). `Pubkey::default()` (unset)",
-              "disables fast activation entirely rather than leaving it open — the",
-              "zero key can neither sign an account nor an attestation."
+              "The retail-flow attestation key (swift's), not an admin signer. It",
+              "signs as `flow_authority` on a swift transaction, or a detached",
+              "`FlowAttestationV0` on a keeper fill, to unlock faster activation.",
+              "`Pubkey::default()` disables that, since the zero key signs neither."
             ],
             "type": "pubkey"
           },
@@ -31355,10 +31023,9 @@
             "name": "transaction_fee_rails",
             "docs": [
               "What one transaction costs the account that sends it, as the network",
-              "prices it now. Every relay crank payment is derived from this, so a",
-              "change to the network's fee model is one write here instead of a",
-              "re-price of every market. Holds `u32`s, so it lands 4-aligned right",
-              "after `hot_flow_authority` (offset 1608) with no alignment slack ahead."
+              "prices it now. Every relay crank payment derives from this, so a fee",
+              "model change is one write here instead of a re-price of every market.",
+              "Holds `u32`s, 4-aligned at offset 1608 with no alignment slack ahead."
             ],
             "type": {
               "defined": {
@@ -31369,25 +31036,10 @@
           {
             "name": "liquidation_crank_reimbursement_bps",
             "docs": [
-              "Most of a liquidation's filled quote value the protocol will spend",
-              "reimbursing whoever cranked it, in basis points.",
-              "",
-              "A crank that nobody can afford to land is a liquidation that does not",
-              "happen, and a fee market moves faster than any figure the protocol can",
-              "keep written down. So the liquidation crank repays what the",
-              "transaction actually cost — its base fee plus the priority fee it",
-              "paid — and this bounds that at a share of what the liquidation",
-              "recovered. Small liquidations stop being worth landing in heavy",
-              "congestion, which is the right answer: the recovery does not cover the",
-              "gas.",
-              "",
-              "Reimbursing a cost the keeper chooses is safe here because it is not a",
-              "cost the keeper keeps: a priority fee goes to the validator, so",
-              "bidding it up buys nothing. A keeper that is also the validator can",
-              "recapture some of it, and this cap is what bounds that to a share the",
-              "protocol chose.",
-              "",
-              "Zero disables reimbursement, leaving the flat payment."
+              "Share of a liquidation's filled quote value that bounds what a crank",
+              "is reimbursed for its actual cost (base fee plus priority fee), in",
+              "basis points. This caps what a keeper that is also the validator",
+              "could recapture through its own priority fee. Zero disables reimbursement, leaving the flat payment."
             ],
             "type": "u16"
           },
@@ -31819,19 +31471,10 @@
     {
       "name": "TransactionFeeRails",
       "docs": [
-        "What the network charges to land one transaction, split the way the fee",
-        "model splits it.",
-        "",
-        "Relay cranks pay their keeper out of a reservoir, and the payment has to",
-        "cover the keeper's own transaction or nobody cranks. The cost is a function",
-        "of what the transaction asks for: a fixed charge to be included, plus a rate",
-        "on the cost units it requests. A crank's cost units differ by an order of",
-        "magnitude between a book removal and a two-legged cross, and the rate is",
-        "the network's to change, so every payment is derived from these fields",
-        "rather than set beside them.",
-        "",
-        "Setting `resource_fee_denominator` to zero prices resource units at nothing,",
-        "which is the fee model that charges per signature alone."
+        "What the network charges to land one transaction: a fixed inclusion",
+        "charge plus a rate on requested cost units, which differ by an order of",
+        "magnitude between a book removal and a two-legged cross. Every crank",
+        "payment derives from these fields, since the network sets the rate."
       ],
       "repr": {
         "kind": "c"
@@ -31871,15 +31514,10 @@
           {
             "name": "max_priority_micro_lamports_per_cu",
             "docs": [
-              "Ceiling on the compute-unit price a crank's priority fee is reimbursed",
-              "against, in micro-lamports per compute unit.",
-              "",
-              "A caller states its own compute-unit price, and a liquidation crank",
-              "repays the priority fee that price bought. Left unbounded, a caller",
-              "that also builds the block sets an arbitrary price, pays the fee to",
-              "itself, and bills the reservoir for it. This caps the per-unit price",
-              "the reservoir will match. Zero disables priority reimbursement, which",
-              "is the safe default until an admin sets a live ceiling."
+              "Ceiling on the compute-unit price a crank's priority fee is",
+              "reimbursed against, in micro-lamports per compute unit. Left",
+              "unbounded, a caller that also builds the block could set an",
+              "arbitrary price and bill the reservoir for it. Zero is the safe default."
             ],
             "type": "u32"
           }
@@ -32070,18 +31708,10 @@
     {
       "name": "UpdateLiquidationCrankReimbursementArgs",
       "docs": [
-        "Sets what the protocol spends to get a liquidation cranked, and the market",
-        "whose oracle prices that spend.",
-        "",
-        "A liquidation crank repays the priority fee its keeper paid, so the crank",
-        "stays worth landing when the fee market moves. The share bounds that repay",
-        "at a fraction of what the liquidation recovers. A recovery too small to",
-        "cover its own gas is left alone. Both fields are needed. A share with no SOL",
-        "market has no way to turn quote into lamports, and a market with no share",
-        "spends nothing.",
-        "",
-        "Zero in either field is a valid setting. It leaves the flat payment, which",
-        "is where every market starts."
+        "What the protocol spends to get a liquidation cranked, and the market",
+        "whose oracle prices that spend. The share repays a keeper's priority",
+        "fee as a fraction of what the liquidation recovers, leaving alone a",
+        "recovery too small to cover its own gas. Zero in either field is valid."
       ],
       "type": {
         "kind": "struct",
@@ -32107,17 +31737,10 @@
     {
       "name": "UpdatePerpMarketClobQuoterArgs",
       "docs": [
-        "Names the market's canonical CLOB quoter entry. Once the entry is set,",
-        "every router fill must carry it in its quoter section, so a route cannot",
-        "exclude the public book. A dead entry is still passed but skipped at quote",
-        "time, so deactivating the book never stops fills. There is no clear path for",
-        "the same reason. Kill the entry instead.",
-        "",
-        "The attach also writes the market's relay crank conditions. Those are the",
-        "evict and expire condition block, plus the lamport reservoir that pays relay",
-        "keepers per crank. A re-attach rewrites them. The attach is the earliest",
-        "point at which the full reference graph exists, that is the book and the",
-        "registry entry, so a new market needs no separate conditions ceremony."
+        "Names the market's canonical CLOB quoter entry. Every router fill must",
+        "then carry it, so no route can exclude the book. A dead entry is still",
+        "passed but skipped at quote time, so deactivating the book never stops",
+        "fills. There is no clear instruction. Kill the entry instead."
       ],
       "type": {
         "kind": "struct",
@@ -32668,17 +32291,10 @@
           {
             "name": "sync_payment_lamports",
             "docs": [
-              "Fee the sync executor pays its keeper out of the protocol crank",
-              "treasury.",
-              "",
-              "Stated by whoever opts in, and capped at",
-              "[`LIQ_SYNC_MAX_COST_UNITS`] when it is priced, because opting in is",
-              "permissionless and the payer is protocol funds rather than the account",
-              "itself. [`Self::last_paid_sync_slot`] bounds how often it can be drawn.",
-              "",
-              "A payment above zero is only sound beside an interval of at least",
-              "[`LIQ_SYNC_MIN_FALLBACK_SLOTS`], because the interval is that bound.",
-              "A block holding a shorter interval pays nothing."
+              "Fee the sync executor pays its keeper out of the protocol crank treasury. Stated by",
+              "whoever opts in and capped at [`LIQ_SYNC_MAX_COST_UNITS`], because opting in is",
+              "permissionless and the payer is protocol funds. A block below",
+              "[`LIQ_SYNC_MIN_FALLBACK_SLOTS`] pays nothing."
             ],
             "type": "u64"
           },
@@ -32692,24 +32308,19 @@
           {
             "name": "positions_digest",
             "docs": [
-              "Digest of the exposures the last sync ran against. The resolver",
-              "compares it to the user's current positions to decide staleness.",
-              "Comparing watched markets instead never converges for a user whose",
-              "exposures arm no condition, such as one in a market with no crank",
-              "reservoir. The level-triggered sync wake then fires forever."
+              "Digest of the exposures the last sync ran against, compared to the user's current",
+              "positions to decide staleness. Comparing watched markets never converges for a user",
+              "whose exposures arm no condition, and the level-triggered wake then fires forever."
             ],
             "type": "u64"
           },
           {
             "name": "last_paid_sync_slot",
             "docs": [
-              "Slot the treasury last paid a keeper for resyncing this account.",
-              "",
-              "A resync is paid at most once per [`Self::sync_fallback_slots`], which",
-              "is the cadence the fallback poll already runs at. Opting in is",
-              "permissionless and the treasury pays. Without this slot anyone could",
-              "crank the same account in a loop and draw the fee every time. The",
-              "instruction succeeds whether or not it had real work to do."
+              "Slot the treasury last paid a keeper for resyncing this account. A resync is paid",
+              "at most once per [`Self::sync_fallback_slots`]. Opting in is permissionless and the",
+              "instruction succeeds whether or not it had work, so without this slot anyone could",
+              "crank the same account in a loop and draw the fee every time."
             ],
             "type": "u64"
           },
@@ -32926,10 +32537,9 @@
             "name": "accelerated_referral_status",
             "docs": [
               "Persistent referral reward status. See [`AcceleratedReferralStatus`].",
-              "This is separate from `referrer_status`, which says whether this",
-              "authority refers or was referred by somebody else. The field comes out",
-              "of former padding, so an account written before the upgrade reads `0`.",
-              "That value is standard status with automatic enrollment allowed."
+              "Separate from `referrer_status`, which says whether this authority",
+              "refers or was referred by somebody else. The field comes from former",
+              "padding, so pre-upgrade accounts read `0`, standard status with automatic enrollment allowed."
             ],
             "type": "u8"
           },

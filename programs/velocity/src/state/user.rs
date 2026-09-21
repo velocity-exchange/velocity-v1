@@ -188,6 +188,14 @@ impl User {
         self.status & (UserStatus::AdvancedLp as u8) > 0
     }
 
+    /// True for the one `User` the protocol owns, sub-account 0 of the
+    /// velocity signer PDA. `initialize_user` takes its authority unchecked,
+    /// so anyone may create sub-account 1 under that PDA. Testing the
+    /// authority alone admits the impostor.
+    pub fn is_protocol_user(&self, protocol_authority: &Pubkey) -> bool {
+        self.sub_account_id == 0 && self.authority.eq(protocol_authority)
+    }
+
     /// True when this User is owned by a Strategy Vault (see
     /// [`UserStatus::VaultOwned`]). Such a User's equity prices vault depositor
     /// shares, so the revenue-share sweep must not credit builder/referrer

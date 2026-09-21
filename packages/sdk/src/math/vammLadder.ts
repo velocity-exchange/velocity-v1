@@ -38,6 +38,7 @@ import {
 	calculateUpdatedAMMSpreadReserves,
 } from './amm';
 import { calculateBidAskPrice } from './amm';
+import { standardizeBaseAssetAmount } from './orders';
 import { RouterPriceLevel, RouterQuoterBook } from './router';
 
 /** Ladder checkpoints per quote (rival rungs + equal-size filler). */
@@ -48,10 +49,6 @@ export const VAMM_QUOTE_CHECKPOINTS = 8;
  * (PERCENTAGE_PRECISION, 5 percent), so a bad price from an approved quoter cannot inflate the book.
  */
 export const LAST_LOOK_BAND = PERCENTAGE_PRECISION.divn(20);
-
-function floorToStep(value: BN, step: BN): BN {
-	return value.sub(value.mod(step));
-}
 
 /**
  * Quote notional the AMM charges for a swap of `base`, on the spread-adjusted
@@ -272,7 +269,7 @@ export function vammQuoteLevels(
 	let previousNotional = ZERO;
 	let bound: BN | undefined;
 	for (const [rawCumulative, shade] of checkpoints) {
-		const cumulative = floorToStep(rawCumulative, step);
+		const cumulative = standardizeBaseAssetAmount(rawCumulative, step);
 		if (cumulative.lte(previous)) {
 			continue;
 		}

@@ -172,20 +172,8 @@ impl Window {
                 self.quoted_base.add(now_ms, hl, quoted_base as f64);
                 self.admitted_base.add(now_ms, hl, admitted_base as f64);
             }
-            Observation::RouteLanded {
-                quoted_price,
-                executed_price,
-                taker_long,
-            } => {
-                // Positive means the taker did worse than the route promised.
-                let delta = executed_price as f64 - quoted_price as f64;
-                let adverse = if taker_long { delta } else { -delta };
-                let bps = if quoted_price == 0 {
-                    0.0
-                } else {
-                    adverse / quoted_price as f64 * 10_000.0
-                };
-
+            Observation::RouteLanded { .. } => {
+                let bps = observation.adverse_slip_bps().unwrap_or_default();
                 self.slip_bps_total.add(now_ms, hl, bps);
                 self.slip_samples.add(now_ms, hl, 1.0);
             }
@@ -581,6 +569,28 @@ pub struct Transition {
     pub actor: String,
     /// The numbers that triggered it, so the record explains itself later.
     pub detail: String,
+}
+
+impl Transition {
+    /// A move the scorer made on its own, with no operator behind it.
+    pub fn auto(
+        quoter: String,
+        at_ms: u64,
+        from: Admission,
+        to: Admission,
+        cause: Cause,
+        detail: String,
+    ) -> Self {
+        Self {
+            quoter,
+            at_ms,
+            from,
+            to,
+            cause,
+            actor: "auto".into(),
+            detail,
+        }
+    }
 }
 
 #[cfg(test)]

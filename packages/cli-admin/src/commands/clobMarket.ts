@@ -4,15 +4,14 @@ import {
 	Keypair,
 	PublicKey,
 	SystemProgram,
-	SYSVAR_RENT_PUBKEY,
 	Transaction,
 	TransactionInstruction,
 } from '@solana/web3.js';
 import { BN } from '@coral-xyz/anchor';
 import {
-	getCrankTreasuryPublicKey,
 	getClobCrankConditionsPublicKey,
 	getPerpMarketPublicKeySync,
+	getQuoterPublicKey,
 	getQuoterSlabPublicKey,
 	QuoterType,
 } from '@velocity-exchange/sdk';
@@ -21,11 +20,6 @@ import {
 	withCrankCostUnitOptions,
 } from '../lib/crankCostUnits';
 import { readGlobalOpts, withGlobalOptions } from '../lib/options';
-
-/** `BPFLoaderUpgradeab1e11111111111111111111111`, which owns a program's data account. */
-const BPF_LOADER_UPGRADEABLE_ID = new PublicKey(
-	'BPFLoaderUpgradeab1e11111111111111111111111'
-);
 
 import { buildAdminClient, buildProvider } from '../lib/provider';
 import { reportDispatch, sendOrPropose } from '../lib/squads';
@@ -436,10 +430,6 @@ export function registerClobMarket(parent: Command): void {
 					client.program.programId,
 					marketIndex
 				);
-				const perpMarket = getPerpMarketPublicKeySync(
-					client.program.programId,
-					marketIndex
-				);
 				const conditions = getClobCrankConditionsPublicKey(
 					client.program.programId,
 					marketIndex
@@ -485,19 +475,15 @@ export function registerClobMarket(parent: Command): void {
 					`book ${book.publicKey.toBase58()} initialized (${space} bytes)`
 				);
 
-				const quoterPda = PublicKey.findProgramAddressSync(
-					[
-						Buffer.from('quoter'),
-						new BN(marketIndex).toArrayLike(Buffer, 'le', 2),
-						clobProgram.toBuffer(),
-						quoterUser.toBuffer(),
-					],
-
-					client.program.programId
-				)[0];
-				const initQuoter = client.program.instruction.initializeQuoter(
+				const quoterPda = getQuoterPublicKey(
+					client.program.programId,
+					marketIndex,
+					clobProgram,
+					quoterUser
+				);
+				const initQuoter = await client.getInitializeQuoterIx(
+					marketIndex,
 					{
-						marketIndex,
 						quoterType: QuoterType.CLOB,
 						responseAccount: book.publicKey,
 						quoteV0Discriminator: Array.from(ixDiscriminator('quote_v0')),
@@ -507,97 +493,42 @@ export function registerClobMarket(parent: Command): void {
 						executeV0Discriminator: Array.from(ixDiscriminator('execute_v0')),
 					},
 
-					{
-						accounts: {
-							state: await client.getStatePublicKey(),
-							payer: wallet,
-							authority: wallet,
-							quoter: quoterPda,
-							perpMarket,
-							// The program refuses a book registration when an approved
-							// quoter's account list already names that book, so the
-							// registration reads the slab as well.
-							quoterSlab,
-							quoterProgram: clobProgram,
-							user: quoterUser,
-							rent: SYSVAR_RENT_PUBKEY,
-							systemProgram: SystemProgram.programId,
-						},
-					}
+					clobProgram,
+					quoterUser,
+					wallet
 				);
 
 				// One unified account list, and each leg names its slice by index.
 				// The quote leg reads the book. The execute leg also carries the
 				// quoter slab, which the book checks velocity's CPI signature
 				// against.
-				const registerAccounts =
-					client.program.instruction.updateQuoterAccounts(
-						{
-							metas: [
-								{ pubkey: book.publicKey, isWritable: true },
-								{ pubkey: quoterSlab, isWritable: false },
-							],
+				const registerAccounts = await client.getUpdateQuoterAccountsIx(
+					quoterPda,
+					[
+						{ pubkey: book.publicKey, isWritable: true },
+						{ pubkey: quoterSlab, isWritable: false },
+					],
 
-							quoteIndexes: Buffer.from([0]),
-							executeIndexes: Buffer.from([0, 1]),
-						},
+					[0],
+					[0, 1],
+					wallet
+				);
 
-						{
-							accounts: {
-								authority: wallet,
-								quoter: quoterPda,
-								// A book's entry answers to the State admin roles, not to
-								// the key that registered it.
-								state: await client.getStatePublicKey(),
-							},
-						}
-					);
 				// Registration reads the slab and approval writes it, so the slab
 				// must exist before either one. It is permissionless and shared by
 				// every quoter on the market, so it is created only when missing.
 				// The creation comes first in the transaction below.
 				const slabIxs = (await provider.connection.getAccountInfo(quoterSlab))
 					? []
-					: [
-							client.program.instruction.initializeQuoterSlab(
-								{ marketIndex },
-								{
-									accounts: {
-										payer: wallet,
-										perpMarket,
-										quoterSlab,
-										rent: SYSVAR_RENT_PUBKEY,
-										systemProgram: SystemProgram.programId,
-									},
-								}
-							),
-					  ];
-				// Approving an entry approves the binary behind it, so the CLOB
-				// program must be frozen. Its program-data account records that.
-				// A program on a loader that cannot upgrade in place has no such
-				// account, and that program can never change.
-				const [clobProgramData] = PublicKey.findProgramAddressSync(
-					[clobProgram.toBuffer()],
-					BPF_LOADER_UPGRADEABLE_ID
-				);
-				const approve = client.program.instruction.updateQuoterApproved(
-					{ approved: true },
-					{
-						accounts: {
-							admin: wallet,
-							state: await client.getStatePublicKey(),
-							quoter: quoterPda,
-							perpMarket,
-							quoterSlab,
-							quoterProgram: clobProgram,
-							quoterProgramData: clobProgramData,
-							// Approval asks the book for its own placement rules, so a
-							// slot that would fail every fill is refused here.
-							clobMarket: book.publicKey,
-							// Approval can grow the slab account.
-							systemProgram: SystemProgram.programId,
-						},
-					}
+					: [await client.getInitializeQuoterSlabIx(marketIndex, wallet)];
+
+				const approve = await client.getUpdateQuoterApprovedIx(
+					quoterPda,
+					true,
+					marketIndex,
+					clobProgram,
+					book.publicKey,
+					wallet
 				);
 
 				await provider.sendAndConfirm(
@@ -615,28 +546,18 @@ export function registerClobMarket(parent: Command): void {
 
 				// The attach names the canonical CLOB and creates the crank
 				// conditions and the reservoir.
-				const attach = client.program.instruction.updatePerpMarketClobQuoter(
+				const attach = await client.getUpdatePerpMarketClobQuoterIx(
+					marketIndex,
+					quoterPda,
+					book.publicKey,
+					clobProgram,
 					{
 						crankCostUnits,
 						expireFallbackSlots: new BN(flags.expireFallbackSlots),
 						minCrossSurplus: new BN(flags.minCrossSurplus),
 					},
 
-					{
-						accounts: {
-							admin: wallet,
-							state: await client.getStatePublicKey(),
-							perpMarket,
-							quoter: quoterPda,
-							quoterSlab,
-							clobMarket: book.publicKey,
-							clobProgram,
-							crankConditions: conditions,
-							treasury: getCrankTreasuryPublicKey(client.program.programId),
-							rent: SYSVAR_RENT_PUBKEY,
-							systemProgram: SystemProgram.programId,
-						},
-					}
+					wallet
 				);
 
 				await provider.sendAndConfirm(new Transaction().add(attach));

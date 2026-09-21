@@ -31,7 +31,7 @@ use {
     velocity_router_sim::{
         find_quote_buffer,
         health::{quote_market, QuoteRequest},
-        quote_view::{perp_market_pda, read_zero_copy, QuoteView},
+        quote_view::{perp_market_pda, read_zero_copy},
         split_across_quoters, Direction, PriceLevel, QuoterBook,
     },
     velocity_rs::program::state::prop_amm::ClobUserRefV0,
@@ -336,17 +336,7 @@ pub async fn route_quote(
                     );
                 }
 
-                view = Some((
-                    QuoteView {
-                        market: query.market_index,
-                        direction: direction as u8,
-                        quoted_size: quoted.quoted_size,
-                        slot: quoted.slot,
-                        books: quoted.books,
-                        rows_truncated: quoted.rows_truncated,
-                    },
-                    route,
-                ));
+                view = Some((quoted.view, route));
 
                 break;
             }

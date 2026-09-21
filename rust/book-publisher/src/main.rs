@@ -25,8 +25,8 @@ use {
     redis::AsyncCommands,
     relay_chain_source::{
         derive_ws_url, feed_channel, spawn_grpc_feed, spawn_ws_feed, CachedSource,
-        CachedSourceConfig, ChainSource, GrpcFeedConfig, LocalSimConfig, LocalSimSource, RpcSource,
-        SignatureOutcome,
+        CachedSourceConfig, ChainSource, FeedReceiver, GrpcFeedConfig, LocalSimConfig,
+        LocalSimSource, ProgramSubscription, RpcSource, SignatureOutcome,
     },
     solana_sdk::{pubkey::Pubkey, signature::Keypair, signer::Signer, transaction::Transaction},
     std::{
@@ -40,7 +40,8 @@ use {
         as_versioned,
         health::{quote_market, watch_program_deploys, QuoteRequest},
         quote_view::{
-            create_quote_buffer_ixs, perp_market_pda, read_zero_copy, state_pda, QuoteView,
+            create_quote_buffer_ixs, fetch_account, fetch_maybe_account, fetch_zero_copy,
+            perp_market_pda, read_zero_copy, state_pda,
         },
         router_subscriptions, Direction,
     },
@@ -141,6 +142,28 @@ fn maybe_local_sim<S: ChainSource + 'static>(inner: S, pool: usize) -> Arc<dyn C
     }
 }
 
+/// A feed-backed cache over `rpc`, ready to hand to the publisher loop. Every
+/// subscribed transport builds the same cache, and differs only in the feed it
+/// spawned.
+fn cached_source(
+    rpc: RpcSource,
+    receiver: FeedReceiver,
+    subscriptions: Vec<ProgramSubscription>,
+    local_sim_pool: usize,
+) -> Arc<dyn ChainSource> {
+    maybe_local_sim(
+        CachedSource::new(
+            rpc,
+            receiver,
+            CachedSourceConfig {
+                indexed_programs: subscriptions,
+                ..CachedSourceConfig::default()
+            },
+        ),
+        local_sim_pool,
+    )
+}
+
 /// Compute units requested for `crank_cross_match`. A self-crossed book
 /// measured at about 328,000, since each leg is a whole router fill with its
 /// own quote, split, execute and post-fill checks. The headroom covers a
@@ -155,11 +178,8 @@ async fn ensure_buffer(
     buffer: &Keypair,
     market_index: u16,
 ) -> Result<()> {
-    if let Some(existing) = source
-        .get_multiple_accounts(&[buffer.pubkey()])
-        .await?
-        .pop()
-        .flatten()
+    if let Some(existing) =
+        fetch_maybe_account(source.as_ref(), &buffer.pubkey(), "quote buffer").await?
     {
         // A buffer persists across restarts, so one created before the layout
         // grew is still on chain and still too small, and every push into it
@@ -260,17 +280,8 @@ async fn main() -> Result<()> {
             let (sender, receiver) = feed_channel();
             spawn_ws_feed(ws_url.clone(), subscriptions.clone(), sender);
             info!(%ws_url, programs = quoter_programs.len() + 1, "websocket subscriptions enabled");
-            maybe_local_sim(
-                CachedSource::new(
-                    rpc,
-                    receiver,
-                    CachedSourceConfig {
-                        indexed_programs: subscriptions,
-                        ..CachedSourceConfig::default()
-                    },
-                ),
-                config.local_sim_pool,
-            )
+
+            cached_source(rpc, receiver, subscriptions, config.local_sim_pool)
         }
         "grpc" => {
             let endpoint = config
@@ -288,17 +299,8 @@ async fn main() -> Result<()> {
             );
 
             info!(%endpoint, programs = quoter_programs.len() + 1, "yellowstone gRPC subscriptions enabled");
-            maybe_local_sim(
-                CachedSource::new(
-                    rpc,
-                    receiver,
-                    CachedSourceConfig {
-                        indexed_programs: subscriptions,
-                        ..CachedSourceConfig::default()
-                    },
-                ),
-                config.local_sim_pool,
-            )
+
+            cached_source(rpc, receiver, subscriptions, config.local_sim_pool)
         }
         other => bail!("unknown transport {other} (rpc | ws | grpc)"),
     };
@@ -410,13 +412,12 @@ async fn publish_market(
     user_orders: &mut user_orders::UserOrdersIndex,
 ) -> Result<()> {
     let authority = &payer.pubkey();
-    let perp_market_account = source
-        .get_multiple_accounts(&[perp_market_pda(velocity, market_index)])
-        .await?
-        .pop()
-        .flatten()
-        .ok_or_else(|| anyhow!("perp market {market_index} not found"))?;
-    let perp_market: PerpMarket = read_zero_copy(&perp_market_account.data)?;
+    let perp_market: PerpMarket = fetch_zero_copy(
+        source.as_ref(),
+        &perp_market_pda(velocity, market_index),
+        "perp market",
+    )
+    .await?;
 
     // The state, which carries the mm-oracle guard rails, and the oracle
     // itself, in one batch.
@@ -439,13 +440,8 @@ async fn publish_market(
     // market account is the source for L3 and for best makers. The slot is
     // vacant until a book is approved.
     let slab_slots = velocity_router_sim::quoter_slab_slots(source, velocity, market_index).await?;
-    let clob_slot = program::state::prop_amm::clob_slot_index(&slab_slots);
-    let clob_book_key = clob_slot.map(|index| slab_slots[index].config.response_account);
-    // The quote view names a quoter source by its staging entry, so the CLOB
-    // label resolves through the slab's book slot rather than the market.
-    let clob_entry = clob_slot
-        .map(|index| slab_slots[index].entry)
-        .unwrap_or_default();
+    let clob_book_key = program::state::prop_amm::clob_slot_index(&slab_slots)
+        .map(|index| slab_slots[index].config.response_account);
 
     // A long taker consumes asks and a short taker consumes bids. Both go
     // through the health layer, so a quoter that breaks the simulation costs
@@ -489,21 +485,13 @@ async fn publish_market(
         }
     }
 
-    let asks = QuoteView {
-        market: market_index,
-        direction: 0,
-        quoted_size: asks_quote.quoted_size,
-        slot: asks_quote.slot,
-        books: asks_quote.books,
-        rows_truncated: asks_quote.rows_truncated,
+    let asks = payload::SideQuote {
+        view: &asks_quote.view,
+        entries: &asks_quote.entries,
     };
-    let bids = QuoteView {
-        market: market_index,
-        direction: 1,
-        quoted_size: bids_quote.quoted_size,
-        slot: bids_quote.slot,
-        books: bids_quote.books,
-        rows_truncated: bids_quote.rows_truncated,
+    let bids = payload::SideQuote {
+        view: &bids_quote.view,
+        entries: &bids_quote.entries,
     };
 
     let ts_ms = SystemTime::now()
@@ -511,7 +499,7 @@ async fn publish_market(
         .unwrap_or_default()
         .as_millis();
     let clock = source.clock().await?;
-    let book_slot = asks.slot.max(bids.slot);
+    let book_slot = asks.view.slot.max(bids.view.slot);
     let decorations = payload::build_decorations(
         &perp_market,
         &state,
@@ -521,15 +509,7 @@ async fn publish_market(
         book_slot,
     )?;
     let name = market_name(&perp_market);
-    let l2 = payload::l2_payload(
-        market_index,
-        &name,
-        &clob_entry,
-        &asks,
-        &bids,
-        &decorations,
-        ts_ms,
-    );
+    let l2 = payload::l2_payload(market_index, &name, asks, bids, &decorations, ts_ms);
 
     // The channel gets the full document and the key gets a depth-100 slice,
     // which matches the TypeScript publisher's split between publish and SET.
@@ -558,9 +538,9 @@ async fn publish_market(
     // describes its depth through `quote_l3_v0`; every other source describes
     // it against the one user its registry entry names. So this reads rows
     // rather than decoding a book.
-    let l3_bids = payload::view_rows(velocity, &bids, &bids_quote.entries);
-    let l3_asks = payload::view_rows(velocity, &asks, &asks_quote.entries);
-    if bids_quote.rows_truncated || asks_quote.rows_truncated {
+    let l3_bids = payload::view_rows(velocity, bids);
+    let l3_asks = payload::view_rows(velocity, asks);
+    if bids.view.rows_truncated || asks.view.rows_truncated {
         warn!(
             market_index,
             "a pass filled its row region; L3 describes part of the book"
@@ -596,12 +576,7 @@ async fn publish_market(
     // the ladders above. A quoted book is what a taker of one size would reach,
     // and a maker that asks after their own orders wants all of them.
     if let Some(book_key) = clob_book_key {
-        let book = source
-            .get_multiple_accounts(&[book_key])
-            .await?
-            .pop()
-            .flatten()
-            .ok_or_else(|| anyhow!("clob market {book_key} not found"))?;
+        let book = fetch_account(source.as_ref(), &book_key, "clob market").await?;
         let written = user_orders::publish(
             user_orders,
             redis,
@@ -630,8 +605,8 @@ async fn publish_market(
             &perp_market.oracle,
             perp_market.quote_spot_market_index,
             program::math::constants::BASE_PRECISION_U64 as u128,
-            &asks,
-            &bids,
+            asks.view,
+            bids.view,
         )
         .await?
         {

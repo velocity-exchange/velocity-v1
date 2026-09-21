@@ -35,19 +35,13 @@ use {
         },
         load_mut,
         math::{
-            constants::QUOTE_SPOT_MARKET_INDEX,
-            margin::{
-                calculate_margin_requirement_and_total_collateral_and_liability_info,
-                calculate_net_equity_for_floor, MarginRequirementType,
-            },
-            orders::is_order_position_reducing,
+            constants::QUOTE_SPOT_MARKET_INDEX, orders::is_order_position_reducing,
             safe_math::SafeMath,
         },
         msg,
         state::{
             clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             events::OrderActionExplanation,
-            margin_calculation::MarginContext,
             perp_market_map::MarketSet,
             prop_amm::{
                 ClobCancelAllArgsV0, ClobCancelAllOutcomeV0, ClobCancelOrderArgsV0,
@@ -111,9 +105,6 @@ pub struct ForceCancelClobOrders<'info> {
     /// The deteriorated account whose CLOB orders are being reclaimed.
     #[account(mut)]
     pub user: AccountLoader<'info, User>,
-    /// Carries the authority-wide equity breaker, which is grounds on its own.
-    #[account(constraint = is_stats_for_user(&user, &user_stats)?)]
-    pub user_stats: AccountLoader<'info, UserStats>,
     /// Not gated on the active and approved flags, because a dead book still
     /// needs a failing maker's orders reclaimed. The header's book pointer
     /// survives a suspension, so the `has_one` still passes on a killed
@@ -191,7 +182,7 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
     // the refs must name this user's risk-increasing orders.
     let plan = {
         let user = &mut load_mut!(ctx.accounts.user)?;
-        if !has_force_cancel_grounds(user, &ctx.accounts.user_stats, &mut maps, market_index)? {
+        if !has_force_cancel_grounds(user, &mut maps, market_index)? {
             return Ok(());
         }
 
@@ -286,41 +277,20 @@ struct SweepDecision {
 
 /// True when this market's risk-increasing orders may be reclaimed.
 ///
-/// The account must fail its initial margin requirement, sit below its equity
-/// floor, or carry a tripped equity breaker. A market that still meets its own
-/// requirement is left alone. Both no-work answers return `false` rather than
+/// The account must fail its initial margin requirement or sit below its
+/// equity floor, which are the grounds `force_cancel_orders` answers to. A
+/// market that still meets its own requirement is left alone. Both no-work
+/// answers return `false` rather than
 /// an error, because a force-cancel put in front of a fill races relay for the
 /// same work.
 fn has_force_cancel_grounds(
     user: &User,
-    user_stats: &AccountLoader<'_, UserStats>,
     maps: &mut AccountMaps,
     market_index: u16,
 ) -> Result<bool> {
-    validate!(
-        !user.is_being_liquidated(),
-        ErrorCode::UserIsBeingLiquidated
-    )?;
-    validate!(!user.is_bankrupt(), ErrorCode::UserBankrupt)?;
+    let grounds = crate::controller::orders::ForceCancelGrounds::measure(user, maps)?;
 
-    let margin_calc = calculate_margin_requirement_and_total_collateral_and_liability_info(
-        user,
-        maps,
-        MarginContext::standard(MarginRequirementType::Initial),
-    )?;
-
-    // Being below the floor authorizes a keeper against the user, so this test
-    // fails closed in the direction opposite the gates that restrict the user.
-    // It counts as grounds only when every oracle is valid and the trusted
-    // value sits below it, so a bad price cannot create authorization.
-    let below_equity_floor = calculate_net_equity_for_floor(user, maps)?
-        .is_some_and(|net_equity| net_equity.proves_below_floor(user));
-    // A tripped breaker is grounds on its own. It is the authority-wide latch,
-    // set permissionlessly, that records a subaccount proven below its floor.
-    // While set, it bars every subaccount from risk-increasing activity, so
-    // risk-increasing orders here cannot fill and only block other people's orders.
-    let breaker_tripped = user_stats.load()?.is_equity_breaker_tripped();
-    if margin_calc.meets_margin_requirement() && !below_equity_floor && !breaker_tripped {
+    if !grounds.any() {
         // There is no work here, which is not a refusal. A force-cancel put in
         // front of a fill races relay for the same work, and the account may
         // have recovered since the caller looked.
@@ -328,21 +298,7 @@ fn has_force_cancel_grounds(
         return Ok(false);
     }
 
-    // The per-market arm of `force_cancel_orders`' skip logic. An isolated position
-    // answers to its own requirement. A cross position answers to the cross
-    // requirement. The breaker outranks both, because it freezes every
-    // subaccount whatever this one market looks like.
-    let market_isolated = user
-        .get_perp_position(market_index)
-        .map(|position| position.is_isolated())
-        .unwrap_or(false);
-    let market_recoverable = !breaker_tripped
-        && if market_isolated {
-            margin_calc.meets_isolated_margin_requirement(market_index)?
-        } else {
-            margin_calc.meets_cross_margin_requirement() && !below_equity_floor
-        };
-    if market_recoverable {
+    if grounds.market_recoverable(user, market_index)? {
         msg!("market {} meets its margin requirement", market_index);
         return Ok(false);
     }

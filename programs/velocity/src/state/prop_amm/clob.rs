@@ -61,21 +61,20 @@ pub trait ClobCancelSidesExt {
 impl ClobCancelSidesExt for ClobCancelSides {
     fn directions(self) -> &'static [crate::controller::position::PositionDirection] {
         use crate::controller::position::PositionDirection;
-        match self {
-            ClobCancelSides::Bids => &[PositionDirection::Long],
-            ClobCancelSides::Asks => &[PositionDirection::Short],
-            ClobCancelSides::Both => &[PositionDirection::Long, PositionDirection::Short],
+        match (self.has_bids(), self.has_asks()) {
+            (true, true) => &[PositionDirection::Long, PositionDirection::Short],
+            (true, false) => &[PositionDirection::Long],
+            (false, true) => &[PositionDirection::Short],
+            (false, false) => &[],
         }
     }
 
     fn includes(self, direction: crate::controller::position::PositionDirection) -> bool {
         use crate::controller::position::PositionDirection;
-        matches!(
-            (self, direction),
-            (ClobCancelSides::Both, _)
-                | (ClobCancelSides::Bids, PositionDirection::Long)
-                | (ClobCancelSides::Asks, PositionDirection::Short)
-        )
+        match direction {
+            PositionDirection::Long => self.has_bids(),
+            PositionDirection::Short => self.has_asks(),
+        }
     }
 }
 
@@ -128,6 +127,21 @@ impl ClobCancelAllOutcomeExt for ClobCancelAllOutcomeV0 {
     }
 }
 
+/// Anchor-default discriminators, `sha256("global:<name>")[..8]`, of the CLOB
+/// instructions velocity calls directly. Place and cancel are velocity-mediated
+/// and are not part of the registry's quote and execute surface, so no entry
+/// stores them. Nothing outside [`ClobMarket`] and [`ClobReader`] should
+/// reference these.
+pub use clob_wire::discriminator::{
+    CANCEL_ALL_V0 as CLOB_CANCEL_ALL_V0_DISCRIMINATOR,
+    CANCEL_ORDER_V0 as CLOB_CANCEL_ORDER_V0_DISCRIMINATOR,
+    EVICT_WORST_V0 as CLOB_EVICT_WORST_V0_DISCRIMINATOR, FILL_V0 as CLOB_FILL_V0_DISCRIMINATOR,
+    NEXT_REMOVAL_V0 as CLOB_NEXT_REMOVAL_V0_DISCRIMINATOR,
+    ORDERS_V0 as CLOB_ORDERS_V0_DISCRIMINATOR, ORDER_RULES_V0 as CLOB_ORDER_RULES_V0_DISCRIMINATOR,
+    PLACE_ORDER_V0 as CLOB_PLACE_ORDER_V0_DISCRIMINATOR,
+    REMOVE_EXPIRED_V0 as CLOB_REMOVE_EXPIRED_V0_DISCRIMINATOR,
+    SET_CRANK_CONDITIONS_V0 as CLOB_SET_CRANK_CONDITIONS_V0_DISCRIMINATOR,
+};
 /// `evict_worst_v0` args on the CLOB wire.
 pub use clob_wire::EvictWorstArgsV0 as ClobEvictWorstArgsV0;
 /// `order_rules_v0`'s answer: what the book requires of an order before it
@@ -147,11 +161,10 @@ pub use clob_wire::{
     CrankConditionsArgsV0 as ClobCrankConditionsArgsV0, CrankResolverV0 as ClobCrankResolverV0,
 };
 /// The one shape every read-only CLOB answer describes an order in, and the
-/// two answers built from it: the best matchable order on each side, and one
-/// view per requested ref.
+/// answer built from it: one view per requested ref. Velocity finds crosses
+/// itself from `quote_l3_v0` rows, so it never calls `next_cross_v0`.
 pub use clob_wire::{
-    NextCrossV0 as ClobNextCrossV0, OrderViewV0 as ClobOrderViewV0,
-    OrdersArgsV0 as ClobOrdersArgsV0, OrdersV0 as ClobOrdersV0,
+    OrderViewV0 as ClobOrderViewV0, OrdersArgsV0 as ClobOrdersArgsV0, OrdersV0 as ClobOrdersV0,
     ORDER_VIEW_CEILING as CLOB_ORDER_VIEW_CEILING,
 };
 /// Which slot of the book's block each registered resolver lands in. Relay
@@ -162,23 +175,6 @@ pub use clob_wire::{
     CRANK_SLOT_CAPACITY as CLOB_CRANK_SLOT_CAPACITY, CRANK_SLOT_CROSS as CLOB_CRANK_SLOT_CROSS,
     CRANK_SLOT_EXPIRY as CLOB_CRANK_SLOT_EXPIRY,
 };
-
-/// Anchor-default discriminators, `sha256("global:<name>")[..8]`, of the CLOB
-/// instructions velocity calls directly. Place and cancel are velocity-mediated
-/// and are not part of the registry's quote and execute surface, so no entry
-/// stores them. Nothing outside [`ClobMarket`] and [`ClobReader`] should
-/// reference these.
-pub const CLOB_PLACE_ORDER_V0_DISCRIMINATOR: [u8; 8] = [100, 204, 57, 226, 245, 228, 61, 187];
-pub const CLOB_CANCEL_ORDER_V0_DISCRIMINATOR: [u8; 8] = [70, 91, 225, 16, 228, 203, 124, 174];
-pub const CLOB_FILL_V0_DISCRIMINATOR: [u8; 8] = [66, 113, 11, 94, 94, 23, 154, 137];
-pub const CLOB_CANCEL_ALL_V0_DISCRIMINATOR: [u8; 8] = [212, 11, 203, 11, 184, 40, 88, 95];
-pub const CLOB_EVICT_WORST_V0_DISCRIMINATOR: [u8; 8] = [106, 60, 27, 129, 80, 27, 37, 73];
-pub const CLOB_REMOVE_EXPIRED_V0_DISCRIMINATOR: [u8; 8] = [241, 135, 215, 18, 254, 107, 179, 119];
-pub const CLOB_NEXT_REMOVAL_V0_DISCRIMINATOR: [u8; 8] = [132, 65, 9, 126, 135, 115, 177, 92];
-pub const CLOB_NEXT_CROSS_V0_DISCRIMINATOR: [u8; 8] = [234, 191, 102, 36, 183, 233, 127, 48];
-pub const CLOB_SET_CRANK_CONDITIONS_V0_DISCRIMINATOR: [u8; 8] = [34, 160, 120, 93, 84, 133, 8, 95];
-pub const CLOB_ORDERS_V0_DISCRIMINATOR: [u8; 8] = [124, 117, 208, 33, 202, 209, 58, 199];
-pub const CLOB_ORDER_RULES_V0_DISCRIMINATOR: [u8; 8] = [201, 129, 212, 105, 18, 69, 149, 252];
 
 /// The velocity-mediated CLOB CPI surface, bound to one book. It holds the
 /// three accounts every call takes and the seeds that let velocity sign as the

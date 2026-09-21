@@ -1,26 +1,18 @@
+/// Declared by `clob-wire`, which owns every shape on this program's
+/// instruction surface. `taker_origin` marks the order
+/// [`crate::state::OrderBitFlag::TakerOrigin`].
+pub use clob_wire::PlaceOrderArgsV0;
 use {
     crate::{
         book::ClobBook,
         emit::emit_pod,
         error::ClobError,
         events::OrderPlaceRecordV0,
-        state::{ClobMarketV0, ClobSideExt, OrderRefV0, PlaceOrderParams},
+        instructions::GatedMarketV0,
+        state::{OrderRefV0, PlaceOrderParams},
     },
     anchor_lang::prelude::*,
 };
-
-#[derive(Accounts)]
-pub struct PlaceOrderV0 {
-    #[account(mut)]
-    pub market: ClobMarketV0,
-    #[account(address = market.place_authority @ ClobError::InvalidAuthority)]
-    pub place_authority: Signer,
-}
-
-/// Declared by `clob-wire`, which owns every shape on this program's
-/// instruction surface. `taker_origin` marks the order
-/// [`crate::state::OrderBitFlag::TakerOrigin`].
-pub use clob_wire::PlaceOrderArgsV0;
 
 /// Floor on a slot's wall-clock length, in milliseconds.
 ///
@@ -31,7 +23,7 @@ const MIN_SLOT_MILLIS: u64 = 400;
 /// Place a resting order. Returns the new order's [`OrderRefV0`] as return
 /// data, so the CPI caller can store the hint.
 pub fn handle_place_order_v0(
-    ctx: &mut Context<PlaceOrderV0>,
+    ctx: &mut Context<GatedMarketV0>,
     args: PlaceOrderArgsV0,
 ) -> Result<OrderRefV0> {
     let clock = Clock::get()?;
@@ -99,7 +91,7 @@ pub fn handle_place_order_v0(
         client_order_id: args.client_order_id,
         market_index: market.market_index,
         sub_account_id: user.sub_account_id,
-        side: args.side.to_u8(),
+        side: args.side.tag(),
         _pad: [0; 3],
     });
 

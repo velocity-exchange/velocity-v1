@@ -418,12 +418,8 @@ impl<'a> PricingRules<'a> {
     /// and pays no referral acceleration.
     pub(crate) fn for_settlement(state: &'a State) -> Self {
         Self {
-            fee_structure: &state.perp_fee_structure,
-            validity_guard_rails: &state.oracle_guard_rails.validity,
-            referrer_is_accelerated: false,
-            promo_fee_tier: state.promo_fee_tier,
             vamm_maker_rebate: false,
-            builder_fee_allowed: false,
+            ..Self::of(state, false)
         }
     }
 
@@ -852,39 +848,6 @@ fn move_taker_position(
 /// Pay the keeper that turned this fill, out of the reward the schedule
 /// carved.
 ///
-/// A keeper with no reward still has its last-active slot stamped, so its
-/// transaction does not revert for idleness.
-fn pay_fill_keeper(
-    filler: &mut FillerSide,
-    settled: &SettledFees,
-    quote_filled: u64,
-    cx: &mut SettleContext,
-) -> VelocityResult {
-    let Some(filler_user) = filler.user.as_mut() else {
-        return Ok(());
-    };
-
-    if settled.fees.filler_reward > 0 {
-        let market_index = cx.market.market_index;
-        let position_index = get_position_index(&filler_user.perp_positions, market_index)
-            .or_else(|_| add_new_position(&mut filler_user.perp_positions, market_index))?;
-        controller::position::update_quote_asset_amount(
-            &mut filler_user.perp_positions[position_index],
-            cx.market,
-            settled.fees.filler_reward.cast()?,
-        )?;
-
-        filler
-            .stats
-            .as_mut()
-            .safe_unwrap()?
-            .update_filler_volume(quote_filled, cx.now)?;
-    }
-
-    filler_user.update_last_active_slot(cx.slot);
-    Ok(())
-}
-
 /// Advance the taker's order by what this leg filled, and unwind the
 /// reservation it held for that size.
 ///
@@ -1271,8 +1234,16 @@ fn pay_matched_keeper(
     quote_filled: u64,
     cx: &mut SettleContext,
 ) -> VelocityResult {
-    if filler.user.is_some() {
-        return pay_fill_keeper(filler, settled, quote_filled, cx);
+    if let Some(filler_user) = filler.user.as_mut() {
+        return credit_filler_perp_pnl(
+            filler_user,
+            filler.stats,
+            cx.market,
+            settled.fees.filler_reward,
+            quote_filled,
+            cx.now,
+            cx.slot,
+        );
     }
     if filler.key != maker.key {
         return Ok(());
@@ -1325,12 +1296,7 @@ pub(crate) fn settle_external_match_fill(
 
     // An external fill has no single maker limit, so the average fill price
     // stands in for the filler-reward tier.
-    let average_price = filled
-        .quote
-        .cast::<u128>()?
-        .safe_mul(BASE_PRECISION_U64.cast()?)?
-        .safe_div(filled.base.cast()?)?
-        .cast::<u64>()?;
+    let average_price = calculate_fill_price(filled.quote, filled.base, BASE_PRECISION_U64)?;
     let tier = RewardTier {
         maker_price: average_price,
         oracle_price: prices.oracle_price,
@@ -1481,11 +1447,7 @@ pub(super) fn note_worst_fill_price(
         return Ok(());
     }
 
-    let price = quote_filled
-        .cast::<u128>()?
-        .safe_mul(BASE_PRECISION_U64.cast()?)?
-        .safe_div(base_filled.cast()?)?
-        .cast::<u64>()?;
+    let price = calculate_fill_price(quote_filled, base_filled, BASE_PRECISION_U64)?;
     *worst = Some(match (*worst, direction) {
         (None, _) => price,
         (Some(seen), PositionDirection::Long) => seen.max(price),

@@ -306,6 +306,39 @@ impl CrankPaymentsV0 {
     }
 }
 
+/// The SOL price that [`CrankPaymentsV0::liquidation_reimbursement`] and
+/// [`CrankPaymentsV0::lamports_to_quote`] convert against.
+///
+/// Every failure returns `None`, which leaves the caller its flat payment. A
+/// crank that lands is worth more than one that reverts over its own tip.
+/// Market index zero is the quote market, whose price would inflate a
+/// reimbursement by roughly the price of SOL.
+pub fn sol_oracle_price(
+    state: &crate::state::state::State,
+    spot_market_map: &crate::state::spot_market_map::SpotMarketMap,
+    oracle_map: &mut crate::state::oracle_map::OracleMap,
+) -> Option<i64> {
+    if state.sol_spot_market_index == 0 {
+        return None;
+    }
+
+    let sol_market = spot_market_map.get_ref(&state.sol_spot_market_index).ok()?;
+    let (oracle_data, validity) = oracle_map
+        .get_price_data_and_validity(
+            crate::state::user::MarketType::Spot,
+            sol_market.market_index,
+            &sol_market.oracle_id(),
+            sol_market.historical_oracle_data.last_oracle_price_twap,
+            sol_market.get_max_confidence_interval_multiplier().ok()?,
+            -1,
+            0,
+            None,
+        )
+        .ok()?;
+
+    matches!(validity, crate::math::oracle::OracleValidity::Valid).then_some(oracle_data.price)
+}
+
 #[account(zero_copy(unsafe))]
 #[derive(Debug)]
 #[repr(C)]
@@ -385,6 +418,12 @@ impl ClobCrankConditionsV0 {
         &mut self,
         refs: &[relay_spec::AccountRefV0],
     ) -> Result<relay_spec::ResolverListV0> {
+        // A block written by an older spec is migrated first, so the slots
+        // below are in the shape this program addresses them by.
+        self.relay
+            .migrate()
+            .map_err(|_| error!(ErrorCode::DefaultError))?;
+
         self.relay
             .write_resolvers(refs)
             .map_err(|_| error!(ErrorCode::DefaultError))
@@ -491,6 +530,14 @@ impl ClobCrankConditionsV0 {
             .ok_or(ErrorCode::MathError)?;
         Self::write_spendable_mirror(conditions, rent_minimum)?;
         Ok(amount)
+    }
+
+    /// Lamports above the reservoir's rent exemption. The minimum comes from
+    /// the account's real length, so an extended account is not under-reserved.
+    pub fn spendable_lamports(conditions: &AccountInfo) -> Result<u64> {
+        Ok(conditions
+            .lamports()
+            .saturating_sub(Rent::get()?.minimum_balance(conditions.data_len())))
     }
 
     /// Restate the spendable balance in account data, so the refill condition sees what

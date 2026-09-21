@@ -7,8 +7,6 @@ import {
 	getUserAccountPublicKey,
 	getUserStatsAccountPublicKey,
 	getVariant,
-	isVariant,
-	MakerInfo,
 	OrderParams,
 	PerpMarkets,
 	PRICE_PRECISION,
@@ -18,6 +16,7 @@ import {
 	SignedMsgOrderParamsDelegateMessage,
 	SignedMsgOrderParamsMessage,
 	SlotSubscriber,
+	TopMakersClient,
 	UserMap,
 } from '@velocity-exchange/sdk';
 import { RuntimeSpec } from 'src/metrics';
@@ -38,7 +37,6 @@ import {
 	TransactionInstruction,
 } from '@solana/web3.js';
 import { getPriorityFeeInstruction } from '../../utils';
-import axios from 'axios';
 import { logger } from '../../logger';
 import { sha256 } from '@noble/hashes/sha256';
 
@@ -232,44 +230,16 @@ export class SwiftPlacer {
 
 					// The placement routes and fills in the same instruction, so a
 					// book maker it could reach has to ride this transaction. A
-					// placement that leaves one out is refused. `/topMakers` names
-					// the book's best resting owners on the side this order takes.
-					const isOrderLong = isVariant(signedMsgOrderParams.direction, 'long');
-					let topMakers: string[] = [];
-					try {
-						const response = await axios.get(
-							`${this.baseDlobUrl}/topMakers?marketType=perp&marketIndex=${
-								signedMsgOrderParams.marketIndex
-							}&side=${isOrderLong ? 'ask' : 'bid'}&limit=2`,
-							{
-								timeout: 2_000,
-								validateStatus: () => true,
-							}
-						);
-						if (response.status !== 200 || !Array.isArray(response.data)) {
-							logger.warn(
-								`Failed to get top makers; status=${response.status}`
-							);
-							return;
-						}
-						topMakers = response.data as string[];
-					} catch (e: any) {
-						logger.warn(`Error fetching top makers: ${e?.message ?? e}`);
-						return;
-					}
-
-					const makerInfos: MakerInfo[] = [];
-					for (const makerKey of topMakers) {
-						const makerUser = await this.userMap.mustGet(makerKey);
-						makerInfos.push({
-							maker: new PublicKey(makerKey),
-							makerStats: getUserStatsAccountPublicKey(
-								this.velocityClient.program.programId,
-								makerUser.getUserAccountOrThrow().authority
-							),
-							makerUserAccount: makerUser.getUserAccountOrThrow(),
-						});
-					}
+					// placement that leaves one out is refused.
+					const makerInfos = await new TopMakersClient(
+						this.baseDlobUrl
+					).fetchMakerInfos(
+						this.velocityClient.program.programId,
+						this.userMap,
+						signedMsgOrderParams.marketIndex,
+						signedMsgOrderParams.direction,
+						2
+					);
 
 					const buildPlacement = () =>
 						this.velocityClient.getPlaceSignedMsgTakerPerpOrderIxs(

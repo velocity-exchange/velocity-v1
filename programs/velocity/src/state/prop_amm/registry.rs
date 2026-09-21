@@ -171,7 +171,7 @@ impl QuoterConfigV0 {
 
     /// The live registered account list.
     pub fn registered_accounts(&self) -> &[AmmAccountMeta] {
-        &self.accounts[..(self.accounts_count as usize).min(MAX_QUOTER_ACCOUNTS)]
+        live(&self.accounts, self.accounts_count)
     }
 
     /// One leg's accounts, resolved through its index list.
@@ -194,13 +194,18 @@ impl QuoterConfigV0 {
     }
 
     pub fn quote_leg_indexes(&self) -> &[u8] {
-        &self.quote_account_indexes[..(self.quote_accounts_count as usize).min(MAX_QUOTER_ACCOUNTS)]
+        live(&self.quote_account_indexes, self.quote_accounts_count)
     }
 
     pub fn execute_leg_indexes(&self) -> &[u8] {
-        &self.execute_account_indexes
-            [..(self.execute_accounts_count as usize).min(MAX_QUOTER_ACCOUNTS)]
+        live(&self.execute_account_indexes, self.execute_accounts_count)
     }
+}
+
+/// The used prefix of a fixed array. Nothing revalidates a stored count on
+/// load, so a count past the end shortens the view rather than panics.
+fn live<T>(items: &[T; MAX_QUOTER_ACCOUNTS], count: u8) -> &[T] {
+    &items[..(count as usize).min(MAX_QUOTER_ACCOUNTS)]
 }
 
 /// The staging half of the registry: one entry per perp market, quoter program

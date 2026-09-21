@@ -12225,7 +12225,6 @@ pub mod accounts {
         pub filler: Pubkey,
         pub filler_stats: Pubkey,
         pub user: Pubkey,
-        pub user_stats: Pubkey,
         pub quoter_slab: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
@@ -12271,11 +12270,6 @@ pub mod accounts {
                     pubkey: self.user,
                     is_signer: false,
                     is_writable: true,
-                },
-                AccountMeta {
-                    pubkey: self.user_stats,
-                    is_signer: false,
-                    is_writable: false,
                 },
                 AccountMeta {
                     pubkey: self.quoter_slab,

@@ -1,31 +1,20 @@
-use {
-    crate::{
-        book::ClobBook,
-        emit::emit_execute_record,
-        error::ClobError,
-        state::{ClobDirectionExt, ClobMarketV0, ResponsePointerV0},
-    },
-    anchor_lang::prelude::*,
-};
-
-#[derive(Accounts)]
-pub struct ExecuteV0 {
-    #[account(mut)]
-    pub market: ClobMarketV0,
-    #[account(address = market.place_authority @ ClobError::InvalidAuthority)]
-    pub place_authority: Signer,
-}
-
 /// Declared in `quoter-spec`: velocity writes these bytes and this program
 /// reads them, so the shape lives in the crate both compile against.
 pub use quoter_spec::ExecuteArgsV0;
+use {
+    crate::{
+        book::ClobBook, emit::emit_execute_record, instructions::GatedMarketV0,
+        state::ResponsePointerV0,
+    },
+    anchor_lang::prelude::*,
+};
 
 /// Quoter interface. Commits a fill. The book streams balance changes, merged
 /// by user, into the market's response tail as it consumes the book. The
 /// returned pointer locates them. Velocity clamps `size` to margin before it
 /// calls, and checks the changes on its own side.
 pub fn handle_execute_v0(
-    ctx: &mut Context<ExecuteV0>,
+    ctx: &mut Context<GatedMarketV0>,
     args: ExecuteArgsV0<'_>,
 ) -> Result<ResponsePointerV0> {
     let clock = Clock::get()?;
@@ -47,7 +36,7 @@ pub fn handle_execute_v0(
         clock.unix_timestamp,
         clock.slot,
         market_index,
-        args.direction.to_u8(),
+        args.direction.tag(),
         &outcome.fills,
         outcome.cancelled_client_order_id.as_slice(),
     )?;

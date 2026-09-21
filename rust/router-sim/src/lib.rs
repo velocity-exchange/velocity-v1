@@ -24,7 +24,7 @@ use {
     anchor_lang::Discriminator,
     anyhow::{Context, Result},
     program::state::{
-        prop_amm::{QuoterSlabV0, QuoterSlotV0, QUOTER_SLAB_PDA_SEED},
+        prop_amm::{QuoterSlabV0, QuoterSlotV0},
         traits::Size,
     },
     relay_chain_source::{AccountFilter, ChainSource, ProgramSubscription, SimOutcome},
@@ -32,17 +32,10 @@ use {
 };
 
 pub mod health;
+pub mod pdas;
 pub mod quote_view;
 
-/// PDA of a market's [`QuoterSlabV0`]. There is one per market, and it holds
-/// every approved quoter config. Fills and quote views read quoters from it.
-pub fn quoter_slab_pda(velocity: &Pubkey, market_index: u16) -> Pubkey {
-    Pubkey::find_program_address(
-        &[QUOTER_SLAB_PDA_SEED, market_index.to_le_bytes().as_ref()],
-        velocity,
-    )
-    .0
-}
+pub use pdas::quoter_slab as quoter_slab_pda;
 
 /// Account-data offset of `QuoterSlabV0::market`. The offset comes from the
 /// struct, so a field reorder cannot turn this filter into a wrong-market match.
@@ -86,13 +79,7 @@ pub async fn quoter_slab_slots<S: ChainSource + ?Sized>(
     market_index: u16,
 ) -> Result<Vec<QuoterSlotV0>> {
     let slab = quoter_slab_pda(velocity_program, market_index);
-    let account = source
-        .get_multiple_accounts(&[slab])
-        .await
-        .context("fetch quoter slab")?
-        .pop()
-        .flatten();
-    match account {
+    match crate::quote_view::fetch_maybe_account(source, &slab, "quoter slab").await? {
         Some(account) => decode_quoter_slab_slots(&account.data),
         None => Ok(Vec::new()),
     }

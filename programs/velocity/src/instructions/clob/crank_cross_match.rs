@@ -387,8 +387,7 @@ fn run_cross_leg<'info>(
             cx.clock.unix_timestamp,
         )?;
 
-        let order_id = taker.next_order_id;
-        taker.next_order_id = taker.next_order_id.wrapping_add(1).max(1);
+        let order_id = crate::get_then_update_id!(taker, next_order_id);
         let quote_before = taker
             .get_perp_position(cx.market_index)
             .map(|position| position.quote_asset_amount)
@@ -648,14 +647,15 @@ fn cross_surplus_floor(
             u64::from(conditions.crank_payments.cross),
         )
     };
-    let payment_quote = sol_oracle_price(state, spot_market_map, oracle_map)
-        .and_then(|sol_price| {
-            crate::state::clob_crank::CrankPaymentsV0::lamports_to_quote(
-                payment_lamports,
-                sol_price,
-            )
-        })
-        .unwrap_or(0);
+    let payment_quote =
+        crate::state::clob_crank::sol_oracle_price(state, spot_market_map, oracle_map)
+            .and_then(|sol_price| {
+                crate::state::clob_crank::CrankPaymentsV0::lamports_to_quote(
+                    payment_lamports,
+                    sol_price,
+                )
+            })
+            .unwrap_or(0);
     Ok(min_surplus.max(payment_quote))
 }
 
@@ -667,37 +667,6 @@ fn pay_cross_keeper<'info>(
     let payment = u64::from(crate::load_mut!(crank_conditions)?.crank_payments.cross);
     ClobCrankConditionsV0::pay_keeper(crank_conditions, &authority.to_account_info(), payment)?;
     Ok(())
-}
-
-/// The validity-gated SOL oracle price, which prices a lamport crank payment in
-/// quote.
-///
-/// Returns `None` when no SOL market is configured, when it is not loaded on
-/// this crank, or when its oracle is not valid. The caller then falls back to
-/// the admin-set floor rather than block the cross.
-fn sol_oracle_price(
-    state: &State,
-    spot_market_map: &crate::state::spot_market_map::SpotMarketMap,
-    oracle_map: &mut crate::state::oracle_map::OracleMap,
-) -> Option<i64> {
-    if state.sol_spot_market_index == 0 {
-        return None;
-    }
-
-    let sol_market = spot_market_map.get_ref(&state.sol_spot_market_index).ok()?;
-    let (oracle_data, validity) = oracle_map
-        .get_price_data_and_validity(
-            crate::state::user::MarketType::Spot,
-            sol_market.market_index,
-            &sol_market.oracle_id(),
-            sol_market.historical_oracle_data.last_oracle_price_twap,
-            sol_market.get_max_confidence_interval_multiplier().ok()?,
-            -1,
-            0,
-            None,
-        )
-        .ok()?;
-    matches!(validity, crate::math::oracle::OracleValidity::Valid).then_some(oracle_data.price)
 }
 
 /// The cross and activation conditions' answer: a crossed taker remainder if
@@ -1177,8 +1146,8 @@ fn quote_entry_sides<'info>(
         let response = located.checked_quote_response(&data, direction)?;
         Ok(crate::state::prop_amm::usable_levels(response.levels).to_vec())
     };
-    let quoter_asks = sanitize_levels(quote(crate::state::prop_amm::Direction::Long)?, true);
-    let quoter_bids = sanitize_levels(quote(crate::state::prop_amm::Direction::Short)?, false);
+    let quoter_asks = quote(crate::state::prop_amm::Direction::Long)?;
+    let quoter_bids = quote(crate::state::prop_amm::Direction::Short)?;
     Ok((quoter_asks, quoter_bids))
 }
 
@@ -1279,34 +1248,7 @@ impl QuoterCross {
     }
 }
 
-/// The longest usable best-first prefix of an untrusted `quote_v0` book. Prices
-/// and sizes must be positive, asks must ascend and bids must descend, and the
-/// prefix ends at the first violation. This is the router's sanitization rule.
-fn sanitize_levels(levels: Vec<PriceLevel>, ascending: bool) -> Vec<PriceLevel> {
-    let mut out: Vec<PriceLevel> = Vec::with_capacity(levels.len());
-    for level in levels {
-        if level.price == 0 || level.size == 0 {
-            break;
-        }
-        if let Some(previous) = out.last() {
-            let monotone = if ascending {
-                level.price >= previous.price
-            } else {
-                level.price <= previous.price
-            };
-
-            if !monotone {
-                break;
-            }
-        }
-
-        out.push(level);
-    }
-
-    out
-}
-
-/// Walk the quoter's sanitized levels against the CLOB's resting rows.
+/// Walk the quoter's levels against the CLOB's resting rows.
 ///
 /// `quoter_is_ask_side` crosses quoter asks with CLOB bids, where the CLOB bid
 /// price is at or above the quoter ask price. Otherwise it crosses CLOB asks
@@ -1329,6 +1271,11 @@ fn find_quoter_clob_cross(
     let mut levels = quoter_levels.iter();
     let mut level = levels.next();
     let mut level_remaining = level.map(|l| l.size).unwrap_or(0);
+
+    // The sum of price times base per leg, converted to quote units once after
+    // the walk. Dividing per level understates each leg by up to one quote unit
+    // per level, which would price the surplus off what the executor measures.
+    let (mut scaled_buy, mut scaled_sell) = (0u128, 0u128);
 
     while let (Some(r), Some(l)) = (row, level) {
         let crossed = if quoter_is_ask_side {
@@ -1358,12 +1305,8 @@ fn find_quoter_clob_cross(
         };
 
         cross.size = cross.size.saturating_add(take);
-        cross.buy_quote = cross
-            .buy_quote
-            .saturating_add(ask_price as u128 * take as u128 / base_precision);
-        cross.sell_quote = cross
-            .sell_quote
-            .saturating_add(bid_price as u128 * take as u128 / base_precision);
+        scaled_buy = scaled_buy.saturating_add(ask_price as u128 * take as u128);
+        scaled_sell = scaled_sell.saturating_add(bid_price as u128 * take as u128);
         clob_remaining -= take;
         level_remaining -= take;
         if clob_remaining == 0 {
@@ -1375,6 +1318,9 @@ fn find_quoter_clob_cross(
             level_remaining = level.map(|l| l.size).unwrap_or(0);
         }
     }
+
+    cross.buy_quote = scaled_buy / base_precision;
+    cross.sell_quote = scaled_sell / base_precision;
 
     Ok(cross)
 }

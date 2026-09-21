@@ -37,6 +37,7 @@ import {
 	VelocityClientMetricsEvents,
 	isVariant,
 	IWallet,
+	ClobAccounts,
 	MakerInfo,
 	MarketType,
 	ModifyOrderParams,
@@ -7560,11 +7561,7 @@ export class VelocityClient {
 		userAccountPublicKey: PublicKey,
 		userAccount: UserAccount,
 		order: Order,
-		clobAccounts: {
-			quoterSlab: PublicKey;
-			clobMarket: PublicKey;
-			clobProgram: PublicKey;
-		},
+		clobAccounts: ClobAccounts,
 
 		routeAccounts: AccountMeta[],
 		txParams?: TxParams,
@@ -7603,11 +7600,7 @@ export class VelocityClient {
 		userAccountPublicKey: PublicKey,
 		userAccount: UserAccount,
 		order: Order,
-		clobAccounts: {
-			quoterSlab: PublicKey;
-			clobMarket: PublicKey;
-			clobProgram: PublicKey;
-		},
+		clobAccounts: ClobAccounts,
 
 		routeAccounts: AccountMeta[],
 		fillerPublicKey?: PublicKey
@@ -7714,8 +7707,8 @@ export class VelocityClient {
 
 	/**
 	 * Keeper instruction: reclaims a deteriorated account's risk-increasing CLOB orders, on the same
-	 * grounds as `forceCancelOrders` plus the authority-wide equity breaker. The account fails initial
-	 * margin, is provably below its equity floor, or its breaker is latched. It leaves risk-reducing
+	 * grounds as `forceCancelOrders`. The account fails initial margin, or is provably below its
+	 * equity floor. It leaves risk-reducing
 	 * orders alone, because cancelling those would only make the account worse. Every "nothing to do"
 	 * outcome succeeds rather than erroring, so it is safe in front of a fill that would otherwise
 	 * revert on this maker, while a keeper or relay races to do the same work.
@@ -7727,14 +7720,11 @@ export class VelocityClient {
 		userAccountPublicKey: PublicKey,
 		userAccount: UserAccount,
 		orderRefs: ForceCancelClobRefV0[],
-		clobAccounts: {
-			quoterSlab: PublicKey;
-			clobMarket: PublicKey;
-			clobProgram: PublicKey;
-		},
+		clobAccounts?: ClobAccounts,
 
 		fillerPublicKey?: PublicKey
 	): Promise<TransactionInstruction> {
+		const clob = clobAccounts ?? (await this.getClobAccounts(marketIndex));
 		const filler = fillerPublicKey ?? (await this.getUserAccountPublicKey());
 
 		const remainingAccounts = this.getRemainingAccounts({
@@ -7752,14 +7742,9 @@ export class VelocityClient {
 					filler,
 					fillerStats: await this.getUserStatsAccountPublicKey(),
 					user: userAccountPublicKey,
-					userStats: getUserStatsAccountPublicKey(
-						this.program.programId,
-						userAccount.authority
-					),
-
-					quoterSlab: clobAccounts.quoterSlab,
-					clobMarket: clobAccounts.clobMarket,
-					clobProgram: clobAccounts.clobProgram,
+					quoterSlab: clob.quoterSlab,
+					clobMarket: clob.clobMarket,
+					clobProgram: clob.clobProgram,
 					crankConditions: getClobCrankConditionsPublicKey(
 						this.program.programId,
 						marketIndex
@@ -8062,11 +8047,7 @@ export class VelocityClient {
 	 */
 	public async placeAndTakePerpOrder(
 		orderParams: OptionalOrderParams,
-		clobAccounts?: {
-			quoterSlab: PublicKey;
-			clobMarket: PublicKey;
-			clobProgram: PublicKey;
-		},
+		clobAccounts?: ClobAccounts,
 
 		makerInfo?: MakerInfo | MakerInfo[],
 		successCondition?: PlaceAndTakeOrderSuccessCondition,
@@ -8122,11 +8103,7 @@ export class VelocityClient {
 	 */
 	public async preparePlaceAndTakePerpOrderWithAdditionalOrders(
 		orderParams: OptionalOrderParams,
-		clobAccounts?: {
-			quoterSlab: PublicKey;
-			clobMarket: PublicKey;
-			clobProgram: PublicKey;
-		},
+		clobAccounts?: ClobAccounts,
 
 		makerInfo?: MakerInfo | MakerInfo[],
 		bracketOrdersParams = new Array<OptionalOrderParams>(),
@@ -8349,11 +8326,7 @@ export class VelocityClient {
 	 */
 	public async placeAndTakePerpWithAdditionalOrders(
 		orderParams: OptionalOrderParams,
-		clobAccounts?: {
-			quoterSlab: PublicKey;
-			clobMarket: PublicKey;
-			clobProgram: PublicKey;
-		},
+		clobAccounts?: ClobAccounts,
 
 		makerInfo?: MakerInfo | MakerInfo[],
 		bracketOrdersParams = new Array<OptionalOrderParams>(),
@@ -8422,11 +8395,7 @@ export class VelocityClient {
 	 */
 	public async getPlaceAndTakePerpOrderIx(
 		orderParams: OptionalOrderParams,
-		clobAccounts?: {
-			quoterSlab: PublicKey;
-			clobMarket: PublicKey;
-			clobProgram: PublicKey;
-		},
+		clobAccounts?: ClobAccounts,
 
 		makerInfo?: MakerInfo | MakerInfo[],
 		successCondition?: PlaceAndTakeOrderSuccessCondition,
@@ -8470,18 +8439,7 @@ export class VelocityClient {
 			writablePerpMarketIndexes: [orderParams.marketIndex],
 		});
 
-		for (const maker of makerInfo) {
-			remainingAccounts.push({
-				pubkey: maker.maker,
-				isWritable: true,
-				isSigner: false,
-			});
-			remainingAccounts.push({
-				pubkey: maker.makerStats,
-				isWritable: true,
-				isSigner: false,
-			});
-		}
+		remainingAccounts.push(...this.makerAccountMetas(makerInfo));
 
 		const takerRevenueShareMetas = await this.getTakerRevenueShareAccountMetas(
 			this.getUserAccount(subAccountId)?.authority ?? this.authority,
@@ -8490,20 +8448,11 @@ export class VelocityClient {
 		);
 
 		remainingAccounts.push(...takerRevenueShareMetas);
-		// v1 routes, so its tail carries the quoter section, and the market's canonical
-		// CLOB is mandatory there. The program resolves a quoter's registered CPI accounts
-		// from the remaining accounts, and the accounts the remainder leg names are not part
-		// of those.
+		// The market's canonical CLOB is mandatory in the quoter section. The
+		// accounts the remainder leg names are not part of it.
 		remainingAccounts.push(
-			{ pubkey: clob.quoterSlab, isWritable: false, isSigner: false },
-			{ pubkey: clob.clobMarket, isWritable: true, isSigner: false },
-			{ pubkey: clob.clobProgram, isWritable: false, isSigner: false }
+			...this.quoterSectionMetas(clob, extraQuoterAccounts)
 		);
-
-		// Any further quoters the taker wants competing for this fill.
-		if (extraQuoterAccounts) {
-			remainingAccounts.push(...extraQuoterAccounts);
-		}
 
 		let optionalParams = null;
 		if (auctionDurationPercentage || successCondition) {
@@ -8541,11 +8490,7 @@ export class VelocityClient {
 	 */
 	public async placeAndMakePerpOrder(
 		orderParams: OptionalOrderParams,
-		clobAccounts: {
-			quoterSlab: PublicKey;
-			clobMarket: PublicKey;
-			clobProgram: PublicKey;
-		},
+		clobAccounts: ClobAccounts,
 
 		txParams?: TxParams,
 		subAccountId?: number,
@@ -8579,16 +8524,14 @@ export class VelocityClient {
 	 */
 	public async getPlaceAndMakePerpOrderIx(
 		orderParams: OptionalOrderParams,
-		clobAccounts: {
-			quoterSlab: PublicKey;
-			clobMarket: PublicKey;
-			clobProgram: PublicKey;
-		},
+		clobAccounts?: ClobAccounts,
 
 		subAccountId?: number,
 		activationDelaySlots?: number | null
 	): Promise<TransactionInstruction> {
 		orderParams = getOrderParams(orderParams, { marketType: MarketType.PERP });
+		const clob =
+			clobAccounts ?? (await this.getClobAccounts(orderParams.marketIndex));
 		const userStatsPublicKey = this.getUserStatsAccountPublicKey();
 		const user = await this.getUserAccountPublicKey(subAccountId);
 
@@ -8606,7 +8549,7 @@ export class VelocityClient {
 			userStats: userStatsPublicKey,
 			authority: this.wallet.publicKey,
 			remainingAccounts,
-			clobAccounts,
+			clobAccounts: clob,
 			activationDelaySlots,
 		});
 	}
@@ -8794,11 +8737,7 @@ export class VelocityClient {
 			fillerStats: PublicKey;
 		},
 
-		clobAccounts?: {
-			quoterSlab: PublicKey;
-			clobMarket: PublicKey;
-			clobProgram: PublicKey;
-		},
+		clobAccounts?: ClobAccounts,
 
 		flowAttestation?: FlowAttestationV0,
 		makerInfo?: MakerInfo | MakerInfo[]
@@ -8846,11 +8785,7 @@ export class VelocityClient {
 			fillerStats: PublicKey;
 		},
 
-		clobAccounts?: {
-			quoterSlab: PublicKey;
-			clobMarket: PublicKey;
-			clobProgram: PublicKey;
-		},
+		clobAccounts?: ClobAccounts,
 
 		/** Swift's detached attestation (`/attest`) for this order; absent rests the whole order on a bumped book. */
 		flowAttestation?: FlowAttestationV0,
@@ -8911,18 +8846,7 @@ export class VelocityClient {
 			writableSpotMarketIndexes,
 		});
 
-		for (const maker of makerInfos) {
-			remainingAccounts.push({
-				pubkey: maker.maker,
-				isWritable: true,
-				isSigner: false,
-			});
-			remainingAccounts.push({
-				pubkey: maker.makerStats,
-				isWritable: true,
-				isSigner: false,
-			});
-		}
+		remainingAccounts.push(...this.makerAccountMetas(makerInfos));
 
 		if (hasBuilderParams(signedMessage)) {
 			remainingAccounts.push({
@@ -9572,6 +9496,91 @@ export class VelocityClient {
 	}
 
 	/**
+	 * Adds the escrow and builder accounts an on-chain settle needs to sweep
+	 * completed builder and referral fees on `marketIndexes`.
+	 *
+	 * A missing escrow entry means the cache is stale. The escrow PDA still goes
+	 * in when the user holds any builder order, so the program can clean up.
+	 */
+	private pushRevenueShareSettleAccounts(
+		remainingAccounts: AccountMeta[],
+		settleeUserAccount: UserAccount,
+		marketIndexes: number[],
+		revenueShareEscrowMap?: RevenueShareEscrowMap
+	): void {
+		if (!revenueShareEscrowMap) {
+			return;
+		}
+
+		const escrowPk = getRevenueShareEscrowAccountPublicKey(
+			this.program.programId,
+			settleeUserAccount.authority
+		);
+
+		const pushEscrowOnce = () => {
+			if (!remainingAccounts.find((a) => a.pubkey.equals(escrowPk))) {
+				remainingAccounts.push({
+					pubkey: escrowPk,
+					isSigner: false,
+					isWritable: true,
+				});
+			}
+		};
+
+		const escrow = revenueShareEscrowMap.get(
+			settleeUserAccount.authority.toBase58()
+		);
+
+		if (!escrow) {
+			if (settleeUserAccount.orders.some(hasBuilder)) {
+				pushEscrowOnce();
+			}
+
+			return;
+		}
+
+		const builders = new Map<number, PublicKey>();
+		for (const order of escrow.orders) {
+			const eligibleBuilder =
+				isBuilderOrderCompleted(order) &&
+				!isBuilderOrderReferral(order) &&
+				order.feesAccrued.gt(ZERO) &&
+				marketIndexes.includes(order.marketIndex);
+			if (eligibleBuilder && !builders.has(order.builderIdx)) {
+				builders.set(
+					order.builderIdx,
+					escrow.approvedBuilders[order.builderIdx].authority
+				);
+			}
+		}
+
+		if (builders.size > 0) {
+			pushEscrowOnce();
+			this.addBuilderToRemainingAccounts(
+				Array.from(builders.values()),
+				remainingAccounts
+			);
+		}
+
+		const hasReferralForRequestedMarkets = escrow.orders.some(
+			(o) =>
+				isBuilderOrderReferral(o) &&
+				o.feesAccrued.gt(ZERO) &&
+				marketIndexes.includes(o.marketIndex)
+		);
+
+		if (hasReferralForRequestedMarkets) {
+			pushEscrowOnce();
+			if (escrowHasReferrer(escrow)) {
+				this.addBuilderToRemainingAccounts(
+					[escrow.referrer],
+					remainingAccounts
+				);
+			}
+		}
+	}
+
+	/**
 	 * Builds the `settlePnl` instruction. See `settlePNL` for semantics. When
 	 * `revenueShareEscrowMap` is passed, inspects the settlee's `RevenueShareEscrow` for
 	 * completed, unpaid builder-fee or referral-reward orders on `marketIndex` and, if found,
@@ -9597,88 +9606,12 @@ export class VelocityClient {
 			writableSpotMarketIndexes: [QUOTE_SPOT_MARKET_INDEX],
 		});
 
-		if (revenueShareEscrowMap) {
-			const escrow = revenueShareEscrowMap.get(
-				settleeUserAccount.authority.toBase58()
-			);
-			if (escrow) {
-				const escrowPk = getRevenueShareEscrowAccountPublicKey(
-					this.program.programId,
-					settleeUserAccount.authority
-				);
-
-				const builders = new Map<number, PublicKey>();
-				for (const order of escrow.orders) {
-					const eligibleBuilder =
-						isBuilderOrderCompleted(order) &&
-						!isBuilderOrderReferral(order) &&
-						order.feesAccrued.gt(ZERO) &&
-						order.marketIndex === marketIndex;
-					if (eligibleBuilder && !builders.has(order.builderIdx)) {
-						builders.set(
-							order.builderIdx,
-							escrow.approvedBuilders[order.builderIdx].authority
-						);
-					}
-				}
-				if (builders.size > 0) {
-					if (!remainingAccounts.find((a) => a.pubkey.equals(escrowPk))) {
-						remainingAccounts.push({
-							pubkey: escrowPk,
-							isSigner: false,
-							isWritable: true,
-						});
-					}
-					this.addBuilderToRemainingAccounts(
-						Array.from(builders.values()),
-						remainingAccounts
-					);
-				}
-
-				// Include escrow and referrer accounts if referral rewards exist for this market
-				const hasReferralForMarket = escrow.orders.some(
-					(o) =>
-						isBuilderOrderReferral(o) &&
-						o.feesAccrued.gt(ZERO) &&
-						o.marketIndex === marketIndex
-				);
-
-				if (hasReferralForMarket) {
-					if (!remainingAccounts.find((a) => a.pubkey.equals(escrowPk))) {
-						remainingAccounts.push({
-							pubkey: escrowPk,
-							isSigner: false,
-							isWritable: true,
-						});
-					}
-					if (escrowHasReferrer(escrow)) {
-						this.addBuilderToRemainingAccounts(
-							[escrow.referrer],
-							remainingAccounts
-						);
-					}
-				}
-			} else {
-				// Stale-cache fallback: if the user has any builder orders, include escrow PDA. This allows
-				// the program to lazily clean up any completed builder orders.
-				for (const order of settleeUserAccount.orders) {
-					if (hasBuilder(order)) {
-						const escrowPk = getRevenueShareEscrowAccountPublicKey(
-							this.program.programId,
-							settleeUserAccount.authority
-						);
-						if (!remainingAccounts.find((a) => a.pubkey.equals(escrowPk))) {
-							remainingAccounts.push({
-								pubkey: escrowPk,
-								isSigner: false,
-								isWritable: true,
-							});
-						}
-						break;
-					}
-				}
-			}
-		}
+		this.pushRevenueShareSettleAccounts(
+			remainingAccounts,
+			settleeUserAccount,
+			[marketIndex],
+			revenueShareEscrowMap
+		);
 
 		return await VelocityCore.buildSettlePnlInstruction({
 			program: this.program,
@@ -9836,94 +9769,12 @@ export class VelocityClient {
 			writableSpotMarketIndexes: [QUOTE_SPOT_MARKET_INDEX],
 		});
 
-		if (revenueShareEscrowMap) {
-			const escrow = revenueShareEscrowMap.get(
-				settleeUserAccount.authority.toBase58()
-			);
-			const builders = new Map<number, PublicKey>();
-			if (escrow) {
-				for (const order of escrow.orders) {
-					const eligibleBuilder =
-						isBuilderOrderCompleted(order) &&
-						!isBuilderOrderReferral(order) &&
-						order.feesAccrued.gt(ZERO) &&
-						marketIndexes.includes(order.marketIndex);
-					if (eligibleBuilder && !builders.has(order.builderIdx)) {
-						builders.set(
-							order.builderIdx,
-							escrow.approvedBuilders[order.builderIdx].authority
-						);
-					}
-				}
-				if (builders.size > 0) {
-					const escrowPk = getRevenueShareEscrowAccountPublicKey(
-						this.program.programId,
-						settleeUserAccount.authority
-					);
-					if (!remainingAccounts.find((a) => a.pubkey.equals(escrowPk))) {
-						remainingAccounts.push({
-							pubkey: escrowPk,
-							isSigner: false,
-							isWritable: true,
-						});
-					}
-					this.addBuilderToRemainingAccounts(
-						Array.from(builders.values()),
-						remainingAccounts
-					);
-				}
-
-				// Include escrow and referrer accounts when there are referral rewards
-				// for any of the markets we are settling, so on-chain sweep can find them.
-				const hasReferralForRequestedMarkets = escrow.orders.some(
-					(o) =>
-						isBuilderOrderReferral(o) &&
-						o.feesAccrued.gt(ZERO) &&
-						marketIndexes.includes(o.marketIndex)
-				);
-
-				if (hasReferralForRequestedMarkets) {
-					const escrowPk = getRevenueShareEscrowAccountPublicKey(
-						this.program.programId,
-						settleeUserAccount.authority
-					);
-					if (!remainingAccounts.find((a) => a.pubkey.equals(escrowPk))) {
-						remainingAccounts.push({
-							pubkey: escrowPk,
-							isSigner: false,
-							isWritable: true,
-						});
-					}
-
-					// Add referrer's User and RevenueShare accounts
-					if (escrowHasReferrer(escrow)) {
-						this.addBuilderToRemainingAccounts(
-							[escrow.referrer],
-							remainingAccounts
-						);
-					}
-				}
-			} else {
-				// Stale-cache fallback: if the user has any builder orders, include escrow PDA. This allows
-				// the program to lazily clean up any completed builder orders.
-				for (const order of settleeUserAccount.orders) {
-					if (hasBuilder(order)) {
-						const escrowPk = getRevenueShareEscrowAccountPublicKey(
-							this.program.programId,
-							settleeUserAccount.authority
-						);
-						if (!remainingAccounts.find((a) => a.pubkey.equals(escrowPk))) {
-							remainingAccounts.push({
-								pubkey: escrowPk,
-								isSigner: false,
-								isWritable: true,
-							});
-						}
-						break;
-					}
-				}
-			}
-		}
+		this.pushRevenueShareSettleAccounts(
+			remainingAccounts,
+			settleeUserAccount,
+			marketIndexes,
+			revenueShareEscrowMap
+		);
 
 		return await this.program.instruction.settleMultiplePnls(
 			marketIndexes,
@@ -10170,18 +10021,7 @@ export class VelocityClient {
 			writablePerpMarketIndexes: [marketIndex],
 		});
 
-		for (const makerInfo of makerInfos) {
-			remainingAccounts.push({
-				pubkey: makerInfo.maker,
-				isSigner: false,
-				isWritable: true,
-			});
-			remainingAccounts.push({
-				pubkey: makerInfo.makerStats,
-				isSigner: false,
-				isWritable: true,
-			});
-		}
+		remainingAccounts.push(...this.makerAccountMetas(makerInfos));
 
 		// The quoter section: the market's slab plus the consulted quoters'
 		// registered CPI accounts. The market names its own book, so the caller
@@ -10190,14 +10030,8 @@ export class VelocityClient {
 		if (!perpMarket.clobMarket.equals(PublicKey.default)) {
 			const clob = await this.getClobAccounts(marketIndex);
 			remainingAccounts.push(
-				{ pubkey: clob.quoterSlab, isWritable: false, isSigner: false },
-				{ pubkey: clob.clobMarket, isWritable: true, isSigner: false },
-				{ pubkey: clob.clobProgram, isWritable: false, isSigner: false }
+				...this.quoterSectionMetas(clob, extraQuoterAccounts)
 			);
-
-			if (extraQuoterAccounts) {
-				remainingAccounts.push(...extraQuoterAccounts);
-			}
 		}
 
 		return await this.program.instruction.liquidatePerpWithFill(marketIndex, {
@@ -13228,6 +13062,30 @@ export class VelocityClient {
 		return decodeQuoterSlab(info.data);
 	}
 
+	/** The writable `(User, UserStats)` pair each named maker contributes. */
+	private makerAccountMetas(makerInfos: MakerInfo[]): AccountMeta[] {
+		return makerInfos.flatMap((makerInfo) => [
+			{ pubkey: makerInfo.maker, isWritable: true, isSigner: false },
+			{ pubkey: makerInfo.makerStats, isWritable: true, isSigner: false },
+		]);
+	}
+
+	/**
+	 * The quoter section of a routing instruction's remaining accounts. The
+	 * program resolves each quoter's registered CPI accounts from it.
+	 */
+	private quoterSectionMetas(
+		clob: ClobAccounts,
+		extraQuoterAccounts?: AccountMeta[]
+	): AccountMeta[] {
+		return [
+			{ pubkey: clob.quoterSlab, isWritable: false, isSigner: false },
+			{ pubkey: clob.clobMarket, isWritable: true, isSigner: false },
+			{ pubkey: clob.clobProgram, isWritable: false, isSigner: false },
+			...(extraQuoterAccounts ?? []),
+		];
+	}
+
 	/**
 	 * The accounts every CLOB order instruction takes, resolved from the market.
 	 *
@@ -13236,11 +13094,7 @@ export class VelocityClient {
 	 * program and account), and the remaining one is a PDA — so there is no
 	 * configuration for a client to carry and get wrong.
 	 */
-	private async getClobAccounts(marketIndex: number): Promise<{
-		quoterSlab: PublicKey;
-		clobMarket: PublicKey;
-		clobProgram: PublicKey;
-	}> {
+	public async getClobAccounts(marketIndex: number): Promise<ClobAccounts> {
 		const { slots } = await this.getQuoterSlabAccount(marketIndex);
 		const book = slots[0];
 		if (

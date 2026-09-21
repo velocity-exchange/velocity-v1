@@ -1,26 +1,18 @@
-use {
-    crate::{
-        book::ClobBook,
-        state::{ClobMarketV0, ResponsePointerV0},
-    },
-    anchor_lang::prelude::*,
-};
-
-#[derive(Accounts)]
-pub struct QuoteV0 {
-    /// Mutable only for the response tail. The book itself is not changed.
-    #[account(mut)]
-    pub market: ClobMarketV0,
-}
-
 /// Declared in `quoter-spec`: velocity writes these bytes and this program
 /// reads them, so the shape lives in the crate both compile against.
 pub use quoter_spec::QuoteArgsV0;
+use {
+    crate::{book::ClobBook, instructions::ResponseMarketV0, state::ResponsePointerV0},
+    anchor_lang::prelude::*,
+};
 
 /// Quoter interface. Reports price levels for a taker of `direction` and
 /// `size`. The book streams the levels into the market's response tail as it
 /// aggregates them. The returned pointer locates them.
-pub fn handle_quote_v0(ctx: &mut Context<QuoteV0>, args: QuoteArgsV0) -> Result<ResponsePointerV0> {
+pub fn handle_quote_v0(
+    ctx: &mut Context<ResponseMarketV0>,
+    args: QuoteArgsV0,
+) -> Result<ResponsePointerV0> {
     let clock = Clock::get()?;
     ctx.accounts.market.quote(
         args.direction,

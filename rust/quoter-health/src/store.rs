@@ -37,6 +37,12 @@ pub fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// What an automatic change wants on the record if it moved the admission.
+struct AutoChange {
+    cause: Cause,
+    detail: String,
+}
+
 /// One quoter's record.
 #[derive(Debug, Default)]
 pub struct Entry {
@@ -220,6 +226,32 @@ impl Health {
         f(entry.value_mut())
     }
 
+    /// Apply `change` to a quoter's entry and report the admission move it
+    /// made. `None` when the admission is where it was, which is the common
+    /// case and writes nothing to the audit trail.
+    fn transition_on(
+        &self,
+        quoter: &Pubkey,
+        now: u64,
+        change: impl FnOnce(&mut Entry) -> AutoChange,
+    ) -> Option<Transition> {
+        self.with_entry(quoter, |entry| {
+            let before = entry.state.admission;
+            let AutoChange { cause, detail } = change(entry);
+
+            (before != entry.state.admission).then(|| {
+                Transition::auto(
+                    quoter.to_string(),
+                    now,
+                    before,
+                    entry.state.admission,
+                    cause,
+                    detail,
+                )
+            })
+        })
+    }
+
     /// Record one observation and advance that quoter's ladder.
     pub fn record(&self, report: Report) {
         self.record_at(now_ms(), report)
@@ -231,7 +263,7 @@ impl Health {
         }
 
         let policy = self.policy;
-        let transition = self.with_entry(&report.quoter, |entry| {
+        let transition = self.transition_on(&report.quoter, now, |entry| {
             entry.state.last_seen_ms = now;
             entry.market = report.market;
             if matches!(
@@ -245,16 +277,10 @@ impl Health {
             entry
                 .window
                 .record(now, policy.half_life_ms, report.observation);
-
-            let before = entry.state.admission;
             advance(now, &mut entry.state, &entry.window, &policy);
-            (before != entry.state.admission).then(|| Transition {
-                quoter: report.quoter.to_string(),
-                at_ms: now,
-                from: before,
-                to: entry.state.admission,
+
+            AutoChange {
                 cause: entry.state.last_cause.unwrap_or(Cause::CleanStreak),
-                actor: "auto".into(),
                 detail: format!(
                     "sim_fail_rate={:.3} exec_fail_rate={:.3} violations={:.1} \
                      mean_cu={:.0} clamp={:.2} slip_bps={:.1}",
@@ -265,7 +291,7 @@ impl Health {
                     entry.window.clamp_ratio(now, policy.half_life_ms),
                     entry.window.mean_slip_bps(now, policy.half_life_ms),
                 ),
-            })
+            }
         });
 
         if let Some(transition) = transition {
@@ -336,18 +362,13 @@ impl Health {
     pub fn observe_program_slot(&self, quoter: &Pubkey, slot: u64) {
         let now = now_ms();
         let policy = self.policy;
-        let transition = self.with_entry(quoter, |entry| {
-            let before = entry.state.admission;
+        let transition = self.transition_on(quoter, now, |entry| {
             on_program_upgrade(now, slot, &mut entry.state, &mut entry.window, &policy);
-            (before != entry.state.admission).then(|| Transition {
-                quoter: quoter.to_string(),
-                at_ms: now,
-                from: before,
-                to: entry.state.admission,
+
+            AutoChange {
                 cause: Cause::ProgramUpgraded,
-                actor: "auto".into(),
                 detail: format!("deploy_slot={slot}"),
-            })
+            }
         });
 
         if let Some(transition) = transition {
@@ -410,15 +431,14 @@ impl Health {
             let before = entry.state.admission;
             advance(now, &mut entry.state, &entry.window, &policy);
             if before != entry.state.admission {
-                transitions.push(Transition {
+                transitions.push(Transition::auto(
                     quoter,
-                    at_ms: now,
-                    from: before,
-                    to: entry.state.admission,
-                    cause: entry.state.last_cause.unwrap_or(Cause::QuarantineExpired),
-                    actor: "auto".into(),
-                    detail: String::new(),
-                });
+                    now,
+                    before,
+                    entry.state.admission,
+                    entry.state.last_cause.unwrap_or(Cause::QuarantineExpired),
+                    String::new(),
+                ));
             }
         }
         for transition in transitions {

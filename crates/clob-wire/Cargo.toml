@@ -12,11 +12,14 @@ repository = "https://github.com/velocity-exchange/velocity-v1/crates/clob-wire/
 # speaks, so they are declared there and used here rather than restated.
 quoter-spec = { path = "../quoter-spec" }
 
+# `CLOB_PROGRAM_ID` is an `Address`.
+solana-address.workspace = true
+
 # Serialization is per-consumer for the same reason it is in `quoter-spec`:
 # velocity encodes with anchor's borsh and needs the IDL plumbing, and the
 # book writes the bytes itself and must not be handed a borsh dependency.
 anchor-lang = { version = "1.0.2", optional = true }
-wincode = { version = "0.6", features = ["derive"] }
+wincode.workspace = true
 
 [features]
 default = []

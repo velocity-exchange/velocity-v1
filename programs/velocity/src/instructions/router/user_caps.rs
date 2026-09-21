@@ -140,7 +140,7 @@
 
 use {
     crate::{
-        controller::position::{add_new_position, get_position_index, PositionDirection},
+        controller::position::PositionDirection,
         instructions::{
             optional_accounts::AccountMaps,
             router::quoted_route::{route_slab, QuoteInputs},
@@ -529,14 +529,27 @@ impl CapInputs<'_, '_> {
             .safe_mul(reference_price.max(0).cast()?)?
             .safe_div(BASE_PRECISION_U64.cast()?)?;
 
+        // The tier this fill answers to, read from the same rule the fill
+        // itself reads. A fill that only reduces is exempt from the gates
+        // below, so a floored maker can still deleverage through the book.
+        let signed_fill = match resting_side {
+            ClobSide::Ask => resting.cast::<i64>()?.safe_mul(-1)?,
+            ClobSide::Bid => resting.cast::<i64>()?,
+        };
+        let tier = crate::math::orders::maker_fill_tier(
+            position.map_or(0, |position| position.base_asset_amount),
+            signed_fill,
+        )?;
+
         // Two checks answer without pricing anything. An authority-wide latch
         // bars every subaccount from risk-increasing activity. A floor the
         // program cannot verify cannot authorise one either.
-        if self
-            .makers_and_referrer_stats
-            .get_ref(&maker.authority)
-            .map(|stats| stats.is_equity_breaker_tripped())
-            .unwrap_or(false)
+        if tier.risk_increasing
+            && self
+                .makers_and_referrer_stats
+                .get_ref(&maker.authority)
+                .map(|stats| stats.is_equity_breaker_tripped())
+                .unwrap_or(false)
         {
             return Ok(0);
         }
@@ -545,7 +558,9 @@ impl CapInputs<'_, '_> {
         // program cannot verify, or one already breached, leaves no budget.
         let mut budget = i128::MAX;
         if let Some(net_equity) = calculate_net_equity_for_floor(&maker, self.maps)? {
-            if !net_equity.all_oracles_valid || !net_equity.clears_buffered_floor(&maker) {
+            if tier.risk_increasing
+                && (!net_equity.all_oracles_valid || !net_equity.clears_buffered_floor(&maker))
+            {
                 return Ok(0);
             }
             if maker.equity_floor > 0 {
@@ -562,13 +577,13 @@ impl CapInputs<'_, '_> {
         let margin_type_config = if position.is_some_and(|position| position.is_isolated()) {
             MarginTypeConfig::IsolatedPositionOverride {
                 market_index,
-                margin_requirement_type: MarginRequirementType::Fill,
+                margin_requirement_type: tier.requirement,
                 default_isolated_margin_requirement_type: MarginRequirementType::Maintenance,
                 cross_margin_requirement_type: MarginRequirementType::Maintenance,
             }
         } else {
             MarginTypeConfig::CrossMarginOverride {
-                margin_requirement_type: MarginRequirementType::Fill,
+                margin_requirement_type: tier.requirement,
                 default_margin_requirement_type: MarginRequirementType::Maintenance,
             }
         };
@@ -618,19 +633,15 @@ impl CapInputs<'_, '_> {
         market_index: u16,
         maker_direction: PositionDirection,
     ) -> Result<u64> {
-        let position_index = {
-            let mut maker = self.makers_and_referrer.get_ref_mut(quoter_user_key)?;
-            get_position_index(&maker.perp_positions, market_index)
-                .or_else(|_| add_new_position(&mut maker.perp_positions, market_index))?
-        };
         let maker = self.makers_and_referrer.get_ref(quoter_user_key)?;
-        Ok(crate::math::orders::calculate_max_perp_order_size(
-            &maker,
-            position_index,
-            market_index,
-            maker_direction,
-            self.maps,
-        )?)
+        Ok(
+            crate::math::orders::max_perp_order_size_for_prospective_position(
+                &maker,
+                market_index,
+                maker_direction,
+                self.maps,
+            )?,
+        )
     }
 
     /// The most base the book may fill against this user's reduce-only orders on

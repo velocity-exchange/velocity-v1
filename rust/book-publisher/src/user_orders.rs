@@ -50,6 +50,7 @@ use {
         },
         hash::{Hash, Hasher},
     },
+    velocity_router_sim::pdas,
 };
 
 /// What the last tick published, so this one can skip what has not moved.
@@ -128,7 +129,7 @@ pub fn changed_users(
     // set that reshuffled without changing would publish for nothing.
     let mut by_user: HashMap<Pubkey, Vec<Value>> = HashMap::new();
     for (node_index, node) in live_orders(book_account_data) {
-        let user = user_pda(velocity, &node.user_ref());
+        let user = pdas::user_of(velocity, &node.user_ref());
         by_user
             .entry(user)
             .or_default()
@@ -326,19 +327,6 @@ async fn write_user(
     Ok(())
 }
 
-/// The velocity `User` PDA a node's identity derives to.
-fn user_pda(velocity: &Pubkey, user: &clob_state::UserRefV0) -> Pubkey {
-    Pubkey::find_program_address(
-        &[
-            b"user",
-            user.authority.as_array(),
-            &user.sub_account_id.to_le_bytes(),
-        ],
-        velocity,
-    )
-    .0
-}
-
 #[cfg(test)]
 mod tests {
     use {
@@ -412,7 +400,7 @@ mod tests {
         assert_eq!(changed.len(), 1);
         assert_eq!(
             changed[0].0,
-            user_pda(&velocity(), &node(2, 20, 3).user_ref())
+            pdas::user_of(&velocity(), &node(2, 20, 3).user_ref())
         );
     }
 
@@ -436,8 +424,8 @@ mod tests {
     #[test]
     fn a_carried_over_document_is_cleared_on_the_first_tick() {
         let mut index = UserOrdersIndex::default();
-        let gone = user_pda(&velocity(), &node(1, 10, 5).user_ref());
-        let resting = user_pda(&velocity(), &node(2, 20, 7).user_ref());
+        let gone = pdas::user_of(&velocity(), &node(1, 10, 5).user_ref());
+        let resting = pdas::user_of(&velocity(), &node(2, 20, 7).user_ref());
         index.carried_over.insert(0, HashSet::from([gone, resting]));
 
         let changed =

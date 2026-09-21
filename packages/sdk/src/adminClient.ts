@@ -44,8 +44,10 @@ import {
 	MarketType,
 	SpotMarketAccount,
 	UserAccount,
+	CrankCostUnitsV0,
+	QuoterType,
 } from './types';
-import { DEFAULT_MARKET_NAME, encodeName } from './userName';
+import { DEFAULT_MARKET_NAME, DEFAULT_USER_NAME, encodeName } from './userName';
 import { BN } from './isomorphic/anchor';
 import * as anchor from './isomorphic/anchor';
 import {
@@ -70,6 +72,10 @@ import {
 	getConstituentCorrelationsPublicKey,
 	getCrankTreasuryPublicKey,
 	getClobCrankConditionsPublicKey,
+	getProgramDataAddress,
+	getQuoterPublicKey,
+	getQuoterSlabPublicKey,
+	getUserConditionsPublicKey,
 } from './addresses/pda';
 import { squareRootBN } from './math/utils';
 import {
@@ -5534,6 +5540,264 @@ export class AdminClient extends VelocityClient {
 				},
 			}
 		);
+	}
+
+	/**
+	 * Builds the `initializeQuoter` instruction, which creates a market's staging
+	 * `QuoterV0` registry entry. Nothing fills from it until an admin approves it
+	 * into the market's slab. A CLOB entry passes the slab, because the program
+	 * refuses a book an approved entry already names. Any other type passes null.
+	 * @param quoterProgram - The program velocity calls the quote and execute legs on.
+	 * @param user - The `User` a Custom entry quotes for. A CLOB entry passes the default pubkey.
+	 * @param authority - Creates and manages the entry, and pays its rent. Defaults to the wallet.
+	 */
+	public async getInitializeQuoterIx(
+		marketIndex: number,
+		args: {
+			quoterType: QuoterType;
+			responseAccount: PublicKey;
+			quoteV0Discriminator: number[];
+			quoteL3V0Discriminator: number[];
+			executeV0Discriminator: number[];
+		},
+
+		quoterProgram: PublicKey,
+		user: PublicKey,
+		authority?: PublicKey
+	): Promise<TransactionInstruction> {
+		const signer = authority ?? this.wallet.publicKey;
+		const isClob = 'clob' in (args.quoterType as object);
+
+		return await this.program.instruction.initializeQuoter(
+			{ marketIndex, ...args },
+			{
+				accounts: {
+					state: await this.getStatePublicKey(),
+					payer: signer,
+					authority: signer,
+					quoter: getQuoterPublicKey(
+						this.program.programId,
+						marketIndex,
+						quoterProgram,
+						user
+					),
+
+					perpMarket: await getPerpMarketPublicKey(
+						this.program.programId,
+						marketIndex
+					),
+
+					quoterSlab: isClob
+						? getQuoterSlabPublicKey(this.program.programId, marketIndex)
+						: null,
+					quoterProgram,
+					user,
+					rent: SYSVAR_RENT_PUBKEY,
+					systemProgram: SystemProgram.programId,
+				},
+			}
+		);
+	}
+
+	/**
+	 * Builds the `initializeQuoterSlab` instruction, which creates a market's
+	 * `QuoterSlabV0`. There is one slab per market and every approved quoter config
+	 * lives in it. Permissionless, and `payer` pays the rent.
+	 */
+	public async getInitializeQuoterSlabIx(
+		marketIndex: number,
+		payer?: PublicKey
+	): Promise<TransactionInstruction> {
+		return await this.program.instruction.initializeQuoterSlab(
+			{ marketIndex },
+			{
+				accounts: {
+					payer: payer ?? this.wallet.publicKey,
+					perpMarket: await getPerpMarketPublicKey(
+						this.program.programId,
+						marketIndex
+					),
+
+					quoterSlab: getQuoterSlabPublicKey(
+						this.program.programId,
+						marketIndex
+					),
+
+					rent: SYSVAR_RENT_PUBKEY,
+					systemProgram: SystemProgram.programId,
+				},
+			}
+		);
+	}
+
+	/**
+	 * Builds the `updateQuoterAccounts` instruction, which replaces a staging entry's
+	 * registered CPI account list whole. The approved slab copy keeps serving until the
+	 * admin approves again. A book entry answers to the State admin roles rather than to
+	 * the key that registered it, and a Custom entry answers to its own stored authority.
+	 * @param quoteIndexes - Indexes into `metas` forwarded to `quoteV0` and `quoteL3V0`, in CPI order.
+	 * @param executeIndexes - Indexes into `metas` forwarded to `executeV0`, in CPI order.
+	 */
+	public async getUpdateQuoterAccountsIx(
+		quoter: PublicKey,
+		metas: { pubkey: PublicKey; isWritable: boolean }[],
+		quoteIndexes: number[],
+		executeIndexes: number[],
+		authority?: PublicKey
+	): Promise<TransactionInstruction> {
+		return await this.program.instruction.updateQuoterAccounts(
+			{
+				metas,
+				quoteIndexes: Buffer.from(quoteIndexes),
+				executeIndexes: Buffer.from(executeIndexes),
+			},
+
+			{
+				accounts: {
+					authority: authority ?? this.wallet.publicKey,
+					quoter,
+					state: await this.getStatePublicKey(),
+				},
+			}
+		);
+	}
+
+	/**
+	 * Builds the `updateQuoterApproved` instruction, which copies a staging entry into the
+	 * market's slab, or pulls that approval. Approval approves the binary behind the entry,
+	 * so it reads the program-data account that records whether the program can redeploy.
+	 * A book approval also asks the book for its own placement rules.
+	 * @param clobMarket - The book, for approving a CLOB entry. Pass null for every other case.
+	 */
+	public async getUpdateQuoterApprovedIx(
+		quoter: PublicKey,
+		approved: boolean,
+		marketIndex: number,
+		quoterProgram: PublicKey,
+		clobMarket: PublicKey | null,
+		admin?: PublicKey
+	): Promise<TransactionInstruction> {
+		const quoterProgramData = getProgramDataAddress(quoterProgram);
+
+		return await this.program.instruction.updateQuoterApproved(
+			{ approved },
+			{
+				accounts: {
+					admin: admin ?? this.wallet.publicKey,
+					state: await this.getStatePublicKey(),
+					quoter,
+					perpMarket: await getPerpMarketPublicKey(
+						this.program.programId,
+						marketIndex
+					),
+
+					quoterSlab: getQuoterSlabPublicKey(
+						this.program.programId,
+						marketIndex
+					),
+
+					quoterProgram,
+					quoterProgramData: approved ? quoterProgramData : null,
+					clobMarket: approved ? clobMarket : null,
+					systemProgram: SystemProgram.programId,
+				},
+			}
+		);
+	}
+
+	/**
+	 * Builds the `updatePerpMarketClobQuoter` instruction, which names a market's canonical
+	 * book and creates its crank conditions and keeper-payment reservoir. The reservoir
+	 * starts holding rent and nothing more, and the crank treasury refills it.
+	 */
+	public async getUpdatePerpMarketClobQuoterIx(
+		marketIndex: number,
+		quoter: PublicKey,
+		clobMarket: PublicKey,
+		clobProgram: PublicKey,
+		args: {
+			crankCostUnits: CrankCostUnitsV0;
+			expireFallbackSlots: BN;
+			minCrossSurplus: BN;
+		},
+
+		admin?: PublicKey
+	): Promise<TransactionInstruction> {
+		return await this.program.instruction.updatePerpMarketClobQuoter(args, {
+			accounts: {
+				admin: admin ?? this.wallet.publicKey,
+				state: await this.getStatePublicKey(),
+				perpMarket: await getPerpMarketPublicKey(
+					this.program.programId,
+					marketIndex
+				),
+
+				quoter,
+				quoterSlab: getQuoterSlabPublicKey(this.program.programId, marketIndex),
+				clobMarket,
+				clobProgram,
+				crankConditions: getClobCrankConditionsPublicKey(
+					this.program.programId,
+					marketIndex
+				),
+
+				treasury: getCrankTreasuryPublicKey(this.program.programId),
+				rent: SYSVAR_RENT_PUBKEY,
+				systemProgram: SystemProgram.programId,
+			},
+		});
+	}
+
+	/**
+	 * Builds the `UserStats` and sub-account 0 instructions for the protocol `User`, whose
+	 * authority is the velocity signer PDA. Neither instruction needs an authority
+	 * signature, so any payer can create it. It holds the fees the protocol keeps.
+	 * @param name - Sub-account name. Defaults to the SDK's default user name.
+	 * @param payer - Pays the rent for both accounts. Defaults to the wallet.
+	 */
+	public async getInitializeProtocolUserIxs(
+		name?: string,
+		payer?: PublicKey
+	): Promise<TransactionInstruction[]> {
+		const authority = this.getSignerPublicKey();
+		const rentPayer = payer ?? this.wallet.publicKey;
+		const protocolUser = getUserAccountPublicKeySync(
+			this.program.programId,
+			authority,
+			0
+		);
+
+		const userStatsIx = await this.getInitializeUserStatsIx({
+			externalWallet: rentPayer,
+			authority,
+		});
+
+		const userIx = await this.program.instruction.initializeUser(
+			0,
+			encodeName(name ?? DEFAULT_USER_NAME),
+			{
+				accounts: {
+					user: protocolUser,
+					userConditions: getUserConditionsPublicKey(
+						this.program.programId,
+						protocolUser
+					),
+
+					userStats: getUserStatsAccountPublicKey(
+						this.program.programId,
+						authority
+					),
+
+					state: await this.getStatePublicKey(),
+					authority,
+					payer: rentPayer,
+					rent: SYSVAR_RENT_PUBKEY,
+					systemProgram: SystemProgram.programId,
+				},
+			}
+		);
+
+		return [userStatsIx, userIx];
 	}
 
 	/**

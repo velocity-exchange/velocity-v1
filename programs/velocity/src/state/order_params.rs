@@ -61,6 +61,25 @@ pub enum OrderParamsBitFlag {
     ImmediateOrCancel = 0b00000001,
 }
 
+/// The auction parameters an order carried before a sanitizing pass ran. The
+/// duration floor measures against the range the order asked for, and the
+/// caller reports a change by comparing against these.
+struct AuctionBounds {
+    duration: Option<u8>,
+    start_price: Option<i64>,
+    end_price: Option<i64>,
+}
+
+impl AuctionBounds {
+    fn read(params: &OrderParams) -> Self {
+        AuctionBounds {
+            duration: params.auction_duration,
+            start_price: params.auction_start_price,
+            end_price: params.auction_end_price,
+        }
+    }
+}
+
 impl OrderParams {
     pub fn has_valid_auction_params(&self) -> VelocityResult<bool> {
         if self.auction_duration.is_some()
@@ -95,9 +114,7 @@ impl OrderParams {
             return Ok(false);
         }
 
-        let auction_duration = self.auction_duration;
-        let auction_start_price = self.auction_start_price;
-        let auction_end_price = self.auction_end_price;
+        let requested = AuctionBounds::read(self);
 
         // A limit order with an oracle offset is refused at validation, so
         // this pass prices auctions off the fixed limit price only. An offset
@@ -129,50 +146,43 @@ impl OrderParams {
         let new_auction_start_price = oracle_price.safe_add(auction_start_price_offset)?;
 
         if self.auction_duration.unwrap_or(0) == 0 {
-            match self.direction {
+            let est_vamm_price: u64 = match self.direction {
                 PositionDirection::Long => {
                     let ask_premium = perp_market
                         .amm
                         .last_ask_premium(&perp_market.market_stats)?;
-                    let est_ask = oracle_price.safe_add(ask_premium)?.cast()?;
-
-                    if self.price <= est_ask {
-                        // if auction duration is empty and limit doesnt cross vamm premium, return early
-                        return Ok(false);
-                    } else {
-                        let new_auction_start_price = new_auction_start_price.min(est_ask as i64);
-                        msg!(
-                            "Updating auction start price to {}",
-                            new_auction_start_price
-                        );
-
-                        self.auction_start_price = Some(new_auction_start_price);
-                        msg!("Updating auction end price to {}", self.price);
-                        self.auction_end_price = Some(self.price as i64);
-                    }
+                    oracle_price.safe_add(ask_premium)?.cast()?
                 }
                 PositionDirection::Short => {
                     let bid_discount = perp_market
                         .amm
                         .last_bid_discount(&perp_market.market_stats)?;
-                    let est_bid = oracle_price.safe_sub(bid_discount)?.cast()?;
-
-                    if self.price >= est_bid {
-                        // if auction duration is empty and limit doesnt cross vamm discount, return early
-                        return Ok(false);
-                    } else {
-                        let new_auction_start_price = new_auction_start_price.max(est_bid as i64);
-                        msg!(
-                            "Updating auction start price to {}",
-                            new_auction_start_price
-                        );
-
-                        self.auction_start_price = Some(new_auction_start_price);
-                        msg!("Updating auction end price to {}", self.price);
-                        self.auction_end_price = Some(self.price as i64);
-                    }
+                    oracle_price.safe_sub(bid_discount)?.cast()?
                 }
+            };
+
+            let crosses_vamm = match self.direction {
+                PositionDirection::Long => self.price > est_vamm_price,
+                PositionDirection::Short => self.price < est_vamm_price,
+            };
+
+            if !crosses_vamm {
+                return Ok(false);
             }
+
+            let new_auction_start_price = match self.direction {
+                PositionDirection::Long => new_auction_start_price.min(est_vamm_price as i64),
+                PositionDirection::Short => new_auction_start_price.max(est_vamm_price as i64),
+            };
+
+            msg!(
+                "Updating auction start price to {}",
+                new_auction_start_price
+            );
+
+            self.auction_start_price = Some(new_auction_start_price);
+            msg!("Updating auction end price to {}", self.price);
+            self.auction_end_price = Some(self.price as i64);
         } else {
             match self.auction_start_price {
                 Some(auction_start_price) => {
@@ -234,18 +244,32 @@ impl OrderParams {
             }
         }
 
+        self.apply_auction_duration(perp_market, oracle_price, is_signed_msg, requested)
+    }
+
+    /// Widen the auction duration to the floor the sanitized band asks for, then
+    /// report whether this pass moved any of the three auction parameters.
+    ///
+    /// A signed-message duration is left alone while it stays within about 4
+    /// seconds of the derived one, so the client keeps its chosen fill path.
+    fn apply_auction_duration(
+        &mut self,
+        perp_market: &PerpMarket,
+        oracle_price: i64,
+        is_signed_msg: bool,
+        requested: AuctionBounds,
+    ) -> VelocityResult<bool> {
         let auction_duration_before = self.auction_duration;
         let new_auction_duration = get_auction_duration(
-            self.get_duration_floor_price_diff(auction_start_price, auction_end_price)?,
+            self.get_duration_floor_price_diff(requested.start_price, requested.end_price)?,
             oracle_price.unsigned_abs(),
             perp_market.contract_tier,
         )?;
 
-        // Allow about 4 seconds of slop, in 400ms units, before this overwrites a
-        // signed-message duration.
         let duration_tolerance = Millis::from_secs(4)
             .div_periods(Millis::UNIT)
             .min(u8::MAX as u64) as u8;
+
         if auction_duration_before
             .unwrap_or(0)
             .abs_diff(new_auction_duration)
@@ -264,9 +288,9 @@ impl OrderParams {
             );
         }
 
-        Ok(auction_duration != self.auction_duration
-            || auction_start_price != self.auction_start_price
-            || auction_end_price != self.auction_end_price)
+        Ok(requested.duration != self.auction_duration
+            || requested.start_price != self.auction_start_price
+            || requested.end_price != self.auction_end_price)
     }
 
     pub fn get_auction_start_price_offset(self, oracle_price: i64) -> VelocityResult<i64> {
@@ -324,9 +348,7 @@ impl OrderParams {
         is_market_order: bool,
         is_signed_msg: bool,
     ) -> VelocityResult<bool> {
-        let auction_duration = self.auction_duration;
-        let auction_start_price = self.auction_start_price;
-        let auction_end_price = self.auction_end_price;
+        let requested = AuctionBounds::read(self);
 
         if self.auction_duration.is_none()
             || self.auction_start_price.is_none()
@@ -474,39 +496,7 @@ impl OrderParams {
             }
         }
 
-        let auction_duration_before = self.auction_duration;
-        let new_auction_duration = get_auction_duration(
-            self.get_duration_floor_price_diff(auction_start_price, auction_end_price)?,
-            oracle_price.unsigned_abs(),
-            perp_market.contract_tier,
-        )?;
-
-        // Allow about 4 seconds of slop, in 400ms units, before this overwrites a
-        // signed-message duration.
-        let duration_tolerance = Millis::from_secs(4)
-            .div_periods(Millis::UNIT)
-            .min(u8::MAX as u64) as u8;
-        if auction_duration_before
-            .unwrap_or(0)
-            .abs_diff(new_auction_duration)
-            > duration_tolerance
-            || !is_signed_msg
-        {
-            self.auction_duration = Some(
-                auction_duration_before
-                    .unwrap_or(0)
-                    .max(new_auction_duration),
-            );
-
-            msg!(
-                "Updating auction duration to {}",
-                self.auction_duration.safe_unwrap()?
-            );
-        }
-
-        Ok(auction_duration != self.auction_duration
-            || auction_start_price != self.auction_start_price
-            || auction_end_price != self.auction_end_price)
+        self.apply_auction_duration(perp_market, oracle_price, is_signed_msg, requested)
     }
 
     pub fn derive_market_order_auction_params(
@@ -516,21 +506,18 @@ impl OrderParams {
         limit_price: u64,
         start_buffer: i64,
     ) -> VelocityResult<(i64, i64, u8)> {
-        let (mut auction_start_price, mut auction_end_price) = if limit_price != 0 {
-            let (auction_start_price_offset, auction_end_price_offset) =
-                OrderParams::get_perp_baseline_start_end_price_offset(perp_market, direction, 2)?;
-            let auction_start_price = oracle_price.safe_add(auction_start_price_offset)?;
-            let auction_end_price = oracle_price.safe_add(auction_end_price_offset)?;
+        // A limit price bounds the auction, so the end offset may reach twice the baseline buffer.
+        let end_buffer_scalar = if limit_price != 0 { 2 } else { 1 };
 
-            (auction_start_price, auction_end_price)
-        } else {
-            let (auction_start_price_offset, auction_end_price_offset) =
-                OrderParams::get_perp_baseline_start_end_price_offset(perp_market, direction, 1)?;
-            let auction_start_price = oracle_price.safe_add(auction_start_price_offset)?;
-            let auction_end_price = oracle_price.safe_add(auction_end_price_offset)?;
+        let (auction_start_price_offset, auction_end_price_offset) =
+            OrderParams::get_perp_baseline_start_end_price_offset(
+                perp_market,
+                direction,
+                end_buffer_scalar,
+            )?;
 
-            (auction_start_price, auction_end_price)
-        };
+        let mut auction_start_price = oracle_price.safe_add(auction_start_price_offset)?;
+        let mut auction_end_price = oracle_price.safe_add(auction_end_price_offset)?;
 
         if start_buffer != 0 {
             let start_buffer_price = oracle_price

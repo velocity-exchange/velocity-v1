@@ -83,8 +83,6 @@ pub fn manager_repay<'info>(
     let deposit_oracle = *maps
         .oracle_map
         .get_price_data(&deposit_spot_market.oracle_id())?;
-    let _repay_decimals = repay_spot_market.decimals;
-    let _deposit_decimals = deposit_spot_market.decimals;
     // The equity read walks every market the vault holds, so it takes the
     // whole map set. The two market borrows end first.
     drop(repay_spot_market);

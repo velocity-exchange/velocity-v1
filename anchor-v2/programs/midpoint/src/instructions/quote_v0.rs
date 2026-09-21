@@ -22,21 +22,21 @@ pub struct QuoteV0 {
 pub use quoter_spec::QuoteArgsV0;
 
 /// Report whether this quoter has anything to say to this caller. The gate
-/// covers settleability, self-trade, and protected flow when configured.
-/// The mid-staleness and pause gates live in `MidpointQuoterV0::is_quoting`,
-/// which the quote and fill walks apply.
+/// covers settleability, self-trade, protected flow when configured, and the
+/// mid's distance from velocity's oracle price. A mid outside the band
+/// answers nothing, so a compromised hot key cannot draw flow onto an
+/// off-market price. Staleness and pause live in `is_quoting`.
 ///
-/// The protected-flow branch reads `taker_served_window` off the wire.
-/// Velocity asserts the flow served a protection window, either the swift
-/// hold's co-signature off the instructions sysvar, or the book's
-/// activation delay, where a crank filled an order that rested through it.
-/// This program trusts that claim as it trusts `users` and `caps`: it
-/// authenticates its caller, and the caller is the settlement engine.
-pub fn caller_gate(
+/// Velocity asserts `taker_served_window`, meaning the flow served the swift
+/// hold or the book's activation delay. This program trusts that claim as it
+/// trusts `users` and `caps`, because it authenticates its caller and the
+/// caller is the settlement engine.
+pub fn is_open(
     quoter: &MidpointQuoterV0,
     users: &[UserRefV0],
     taker: Option<&UserRefV0>,
     taker_served_window: bool,
+    reference_price: i64,
 ) -> Result<bool> {
     // The caps address a user by its index in this set, and the exclusion
     // bitmap holds one bit per slot up to the capacity. A longer set carries
@@ -57,7 +57,7 @@ pub fn caller_gate(
         return Ok(false);
     }
 
-    Ok(true)
+    Ok(quoter.mid_within_deviation(reference_price))
 }
 
 /// Quoter interface. Price the levels a taker of `direction` and `size` takes
@@ -65,20 +65,14 @@ pub fn caller_gate(
 /// quoter's response tail, and the returned pointer locates them.
 pub fn handle_quote_v0(ctx: &mut Context<QuoteV0>, args: QuoteArgsV0) -> Result<ResponsePointerV0> {
     let clock = Clock::get()?;
-    let open = caller_gate(
+    let open = is_open(
         &ctx.accounts.quoter,
         args.users,
         args.taker.as_ref(),
         args.taker_served_window,
+        args.reference_price,
     )?;
 
-    // A mid outside the band of velocity's oracle quotes nothing, so a
-    // compromised hot key cannot draw flow onto an off-market price.
-    let open = open
-        && ctx
-            .accounts
-            .quoter
-            .mid_within_deviation(args.reference_price);
     ctx.accounts.quoter.write_quote_response(
         args.direction,
         args.size,

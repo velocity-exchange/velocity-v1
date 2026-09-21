@@ -43,9 +43,7 @@ pub(super) fn stage_refill(ctx: &Context<ResolveClobCrank>) -> Result<Option<Sta
         )
     };
     let conditions_info = ctx.accounts.crank_conditions.to_account_info();
-    let spendable = conditions_info
-        .lamports()
-        .saturating_sub(Rent::get()?.minimum_balance(conditions_info.data_len()));
+    let spendable = ClobCrankConditionsV0::spendable_lamports(&conditions_info)?;
     if spendable > watermark {
         return Ok(None);
     }

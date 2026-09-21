@@ -797,7 +797,6 @@ fn force_cancel_clob_ix(
         filler: filler_user,
         filler_stats,
         user,
-        user_stats,
         quoter_slab: fixture.quoter_slab,
         clob_market: fixture.clob_market,
         clob_program: clob_id(),

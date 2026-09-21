@@ -299,6 +299,12 @@ impl UserConditionsV0 {
         &mut self,
         refs: &[relay_spec::AccountRefV0],
     ) -> Result<relay_spec::ResolverListV0> {
+        // A block written by an older spec is migrated first, so the slots
+        // below are in the shape this program addresses them by.
+        self.relay
+            .migrate()
+            .map_err(|_| error!(ErrorCode::DefaultError))?;
+
         self.relay.write_resolvers(refs).map_err(|_| {
             msg!("sync account list of {} exceeds the region", refs.len());
             error!(ErrorCode::DefaultError)

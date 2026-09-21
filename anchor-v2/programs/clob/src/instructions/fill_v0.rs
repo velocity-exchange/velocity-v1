@@ -1,24 +1,16 @@
+/// Declared by `clob-wire`.
+pub use clob_wire::FillArgsV0;
 use {
     crate::{
         book::ClobBook,
         emit::emit_execute_record,
         error::ClobError,
         events::FillSlimV0,
-        state::{ClobMarketV0, FillOutcomeV0, FilledOrder},
+        instructions::GatedMarketV0,
+        state::{FillOutcomeV0, FilledOrder},
     },
     anchor_lang::prelude::*,
 };
-
-#[derive(Accounts)]
-pub struct FillV0 {
-    #[account(mut)]
-    pub market: ClobMarketV0,
-    #[account(address = market.place_authority @ ClobError::InvalidAuthority)]
-    pub place_authority: Signer,
-}
-
-/// Declared by `clob-wire`.
-pub use clob_wire::FillArgsV0;
 
 /// Report fills the caller made against taker remainders resting here.
 ///
@@ -36,7 +28,7 @@ pub use clob_wire::FillArgsV0;
 ///
 /// The gate matches `execute_v0` for the same reason. Only velocity can settle
 /// a fill, so only velocity may tell the book that one happened.
-pub fn handle_fill_v0(ctx: &mut Context<FillV0>, args: FillArgsV0) -> Result<FillOutcomeV0> {
+pub fn handle_fill_v0(ctx: &mut Context<GatedMarketV0>, args: FillArgsV0) -> Result<FillOutcomeV0> {
     let clock = Clock::get()?;
     let market = &mut ctx.accounts.market;
     let market_index = market.market_index;

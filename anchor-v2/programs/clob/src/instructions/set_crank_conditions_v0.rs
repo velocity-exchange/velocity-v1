@@ -17,32 +17,24 @@
 //! The place authority signs, because a book's flow already belongs to that
 //! key.
 
+/// Declared by `clob-wire`.
+pub use clob_wire::{CrankAccountV0, CrankBlockV0, CrankConditionsArgsV0, CrankResolverV0};
 use {
     crate::{
         error::ClobError,
+        instructions::GatedMarketV0,
         state::{
-            ClobMarketV0, CRANK_ACTIVATION, CRANK_BLOCK_OFFSET, CRANK_CAPACITY, CRANK_CROSS,
-            CRANK_EXPIRY, CRANK_RESOLVER_CAPACITY, SIDE_COUNTS_BYTES, SIDE_COUNTS_OFFSET,
-            TOP_OF_BOOK_BYTES, TOP_OF_BOOK_OFFSET,
+            CRANK_ACTIVATION, CRANK_BLOCK_OFFSET, CRANK_CAPACITY, CRANK_CROSS, CRANK_EXPIRY,
+            CRANK_RESOLVER_CAPACITY, SIDE_COUNTS_BYTES, SIDE_COUNTS_OFFSET, TOP_OF_BOOK_BYTES,
+            TOP_OF_BOOK_OFFSET,
         },
     },
     anchor_lang::prelude::*,
     relay_spec::{AccountRefV0, ConditionBlock, ConditionV0, CrankSpecV0},
 };
 
-#[derive(Accounts)]
-pub struct SetCrankConditionsV0 {
-    #[account(mut)]
-    pub market: ClobMarketV0,
-    #[account(address = market.place_authority @ ClobError::InvalidAuthority)]
-    pub place_authority: Signer,
-}
-
-/// Declared by `clob-wire`.
-pub use clob_wire::{CrankAccountV0, CrankBlockV0, CrankConditionsArgsV0, CrankResolverV0};
-
 pub fn handle_set_crank_conditions_v0(
-    ctx: &mut Context<SetCrankConditionsV0>,
+    ctx: &mut Context<GatedMarketV0>,
     args: CrankConditionsArgsV0,
 ) -> Result<CrankBlockV0> {
     require!(

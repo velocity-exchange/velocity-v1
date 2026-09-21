@@ -1,10 +1,9 @@
 use {
     crate::Vault,
     anchor_lang::prelude::*,
-    std::collections::BTreeSet,
     velocity::{
         cpi::accounts::RefreshSpotMarketInterest as VelocityRefreshSpotMarketInterest,
-        instructions::optional_accounts::load_maps, state::user::User,
+        state::user::User,
     },
 };
 
@@ -52,15 +51,11 @@ pub fn spot_markets_that_price_equity<'info>(
         .collect();
 
     if !isolated_perp_market_indexes.is_empty() {
-        let slot_clock =
-            velocity::state::state::State::slot_clock_from_account_info(velocity_state)?;
-        let maps = load_maps(
-            &mut remaining_accounts.iter().peekable(),
-            &BTreeSet::new(),
-            &BTreeSet::new(),
-            slot,
-            slot_clock,
+        let maps = crate::state::account_maps::velocity_maps(
+            remaining_accounts,
+            velocity_state,
             None,
+            slot,
         )?;
 
         for perp_market_index in isolated_perp_market_indexes {

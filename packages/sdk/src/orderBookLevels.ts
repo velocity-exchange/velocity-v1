@@ -81,6 +81,33 @@ function cloneL2Level(level: L2Level): L2Level {
 	};
 }
 
+/** Adds every source size in `from` to the matching entry of `into`. */
+function addSourceSizes(into: L2Level, from: L2Level): void {
+	for (const [source, size] of Object.entries(from.sources) as [
+		liquiditySource,
+		BN,
+	][]) {
+		const existingSize = into.sources[source];
+		into.sources[source] = existingSize ? existingSize.add(size) : size;
+	}
+}
+
+/**
+ * Appends `level` at `price`, or merges it into the last level when that level
+ * already sits at `price`. The caller passes levels in price order.
+ */
+function pushOrMergeLevel(levels: L2Level[], price: BN, level: L2Level): void {
+	const last = levels[levels.length - 1];
+	if (last && last.price.eq(price)) {
+		last.size = last.size.add(level.size);
+		addSourceSizes(last, level);
+
+		return;
+	}
+
+	levels.push({ price, size: level.size, sources: { ...level.sources } });
+}
+
 function groupL2Levels(
 	levels: L2Level[],
 	grouping: BN,
@@ -89,40 +116,11 @@ function groupL2Levels(
 ): L2Level[] {
 	const groupedLevels: L2Level[] = [];
 	for (const level of levels) {
-		const price = standardizePrice(level.price, grouping, direction);
-		const size = level.size;
-		if (
-			groupedLevels.length > 0 &&
-			groupedLevels[groupedLevels.length - 1].price.eq(price)
-		) {
-			// Clones things so we don't mutate the original
-			const currentLevel = cloneL2Level(
-				groupedLevels[groupedLevels.length - 1]
-			);
-
-			currentLevel.size = currentLevel.size.add(size);
-			for (const [source, size] of Object.entries(level.sources) as [
-				liquiditySource,
-				BN,
-			][]) {
-				const existingSize = currentLevel.sources[source];
-				if (existingSize) {
-					currentLevel.sources[source] = existingSize.add(size);
-				} else {
-					currentLevel.sources[source] = size;
-				}
-			}
-
-			groupedLevels[groupedLevels.length - 1] = currentLevel;
-		} else {
-			const groupedLevel = {
-				price: price,
-				size,
-				sources: level.sources,
-			};
-
-			groupedLevels.push(groupedLevel);
-		}
+		pushOrMergeLevel(
+			groupedLevels,
+			standardizePrice(level.price, grouping, direction),
+			level
+		);
 
 		if (groupedLevels.length === depth) {
 			break;
@@ -142,17 +140,7 @@ const mergeByPrice = (bidsOrAsks: L2Level[]) => {
 		const existing = merged.get(key);
 		if (existing) {
 			existing.size = existing.size.add(level.size);
-			for (const [source, size] of Object.entries(level.sources) as [
-				liquiditySource,
-				BN,
-			][]) {
-				const existingSize = existing.sources[source];
-				if (existingSize) {
-					existing.sources[source] = existingSize.add(size);
-				} else {
-					existing.sources[source] = size;
-				}
-			}
+			addSourceSizes(existing, level);
 		} else {
 			merged.set(key, cloneL2Level(level));
 		}
@@ -206,34 +194,8 @@ export function uncrossL2(
 	const newBids: L2Level[] = [];
 	const newAsks: L2Level[] = [];
 
-	const updateLevels = (newPrice: BN, oldLevel: L2Level, levels: L2Level[]) => {
-		if (levels.length > 0 && levels[levels.length - 1].price.eq(newPrice)) {
-			levels[levels.length - 1].size = levels[levels.length - 1].size.add(
-				oldLevel.size
-			);
-
-			for (const [source, size] of Object.entries(oldLevel.sources) as [
-				liquiditySource,
-				BN,
-			][]) {
-				const existingSize = levels[levels.length - 1].sources[source];
-				if (existingSize) {
-					levels[levels.length - 1].sources = {
-						...levels[levels.length - 1].sources,
-						[source]: existingSize.add(size),
-					};
-				} else {
-					levels[levels.length - 1].sources[source] = size;
-				}
-			}
-		} else {
-			levels.push({
-				price: newPrice,
-				size: oldLevel.size,
-				sources: oldLevel.sources,
-			});
-		}
-	};
+	const updateLevels = (newPrice: BN, oldLevel: L2Level, levels: L2Level[]) =>
+		pushOrMergeLevel(levels, newPrice, oldLevel);
 
 	// This is the best estimate of the premium in the market vs oracle to filter crossing around
 	const referencePrice = oraclePrice.add(markTwap5Min.sub(oracleTwap5Min));

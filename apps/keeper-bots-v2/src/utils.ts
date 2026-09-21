@@ -1,10 +1,10 @@
-import { base64, bs58 } from '@project-serum/anchor/dist/cjs/utils/bytes';
-import fs from 'fs';
+import { base64 } from '@project-serum/anchor/dist/cjs/utils/bytes';
 import { logger } from './logger';
 import {
 	BN,
 	VelocityClient,
 	VelocityEnv,
+	VelocityMarketInfo,
 	MarketType,
 	OraclePriceData,
 	PERCENTAGE_PRECISION,
@@ -21,6 +21,10 @@ import {
 	PerpMarketConfig,
 	OracleInfo,
 	PythLazerSubscriber,
+	PriorityFeeSubscriberMap,
+	decodeName,
+	loadKeypair,
+	getSizeOfTransaction as getTransactionByteSize,
 } from '@velocity-exchange/sdk';
 import {
 	createAssociatedTokenAccountInstruction,
@@ -40,6 +44,8 @@ import {
 	VersionedTransaction,
 } from '@solana/web3.js';
 import { webhookMessage } from './webhook';
+
+export { decodeName, loadKeypair };
 
 // devnet only
 export const TOKEN_FAUCET_PROGRAM_ID = new PublicKey(
@@ -137,31 +143,6 @@ export function convertToMarketType(input: string): MarketType {
 	}
 }
 
-export function loadKeypair(privateKey: string): Keypair {
-	// try to load privateKey as a filepath
-	let loadedKey: Uint8Array;
-	if (fs.existsSync(privateKey)) {
-		logger.info(`loading private key from ${privateKey}`);
-		privateKey = fs.readFileSync(privateKey).toString();
-	}
-
-	if (privateKey.includes('[') && privateKey.includes(']')) {
-		logger.info(`Trying to load private key as numbers array`);
-		loadedKey = Uint8Array.from(JSON.parse(privateKey));
-	} else if (privateKey.includes(',')) {
-		logger.info(`Trying to load private key as comma separated numbers`);
-		loadedKey = Uint8Array.from(
-			privateKey.split(',').map((val) => Number(val))
-		);
-	} else {
-		logger.info(`Trying to load private key as base58 string`);
-		privateKey = privateKey.replace(/\s/g, '');
-		loadedKey = new Uint8Array(bs58.decode(privateKey));
-	}
-
-	return Keypair.fromSecretKey(Uint8Array.from(loadedKey));
-}
-
 export function getWallet(privateKeyOrFilepath: string): [Keypair, Wallet] {
 	const keypair = loadKeypair(privateKeyOrFilepath);
 	return [keypair, new Wallet(keypair)];
@@ -173,11 +154,6 @@ export function sleepMs(ms: number) {
 
 export function sleepS(s: number) {
 	return sleepMs(s * 1000);
-}
-
-export function decodeName(bytes: number[]): string {
-	const buffer = Buffer.from(bytes);
-	return buffer.toString('utf8').trim();
 }
 
 export async function waitForAllSubscribesToFinish(
@@ -502,6 +478,65 @@ export async function simulateAndGetTxWithCUs(
 	};
 }
 
+/**
+ * Simulates `ixs` and returns a versioned transaction carrying the measured compute
+ * unit limit. On a simulation failure it returns a `-1` estimate, which tells the
+ * caller to fall back to the maximum limit.
+ */
+export async function buildVersionedTransactionWithSimulatedCus(
+	velocityClient: VelocityClient,
+	ixs: Array<TransactionInstruction>,
+	luts: Array<AddressLookupTableAccount>,
+	cuPriceMicroLamports?: number
+): Promise<SimulateAndGetTxWithCUsResponse> {
+	const fullIxs = [
+		ComputeBudgetProgram.setComputeUnitLimit({
+			units: 1_400_000, // the simulation overwrites this
+		}),
+	];
+
+	if (cuPriceMicroLamports !== undefined) {
+		fullIxs.push(
+			ComputeBudgetProgram.setComputeUnitPrice({
+				microLamports: cuPriceMicroLamports,
+			})
+		);
+	}
+
+	fullIxs.push(...ixs);
+
+	try {
+		const recentBlockhash = await velocityClient.connection.getLatestBlockhash(
+			'confirmed'
+		);
+
+		return await simulateAndGetTxWithCUs({
+			ixs: fullIxs,
+			connection: velocityClient.connection,
+			payerPublicKey: velocityClient.wallet.publicKey,
+			lookupTableAccounts: luts,
+			cuLimitMultiplier: 1.2,
+			doSimulation: true,
+			dumpTx: false,
+			recentBlockhash: recentBlockhash.blockhash,
+		});
+	} catch (e) {
+		const err = e as Error;
+		logger.error(
+			`error in buildVersionedTransactionWithSimulatedCus, using max CUs: ${err.message}\n${err.stack}`
+		);
+
+		return {
+			cuEstimate: -1,
+			simTxLogs: null,
+			simError: err,
+			simTxDuration: -1,
+			// @ts-ignore
+			tx: undefined,
+		};
+	}
+}
+
 export function handleSimResultError(
 	simResult: SimulateAndGetTxWithCUsResponse,
 	errorCodesToSuppress: number[],
@@ -631,6 +666,64 @@ export function getVelocityPriorityFeeEndpoint(
 	}
 }
 
+/** The endpoint fields a bot reads to reach a priority fee source. */
+export type PriorityFeeEndpointConfig = {
+	priorityFeeEndpoint?: string;
+	velocityEnv: VelocityEnv;
+};
+
+/**
+ * Lists the markets a bot tracks priority fees for.
+ * @param include which market types to list; both default to false.
+ */
+export function priorityFeeMarkets(
+	velocityClient: VelocityClient,
+	include: { perp?: boolean; spot?: boolean }
+): VelocityMarketInfo[] {
+	const markets: VelocityMarketInfo[] = [];
+
+	if (include.perp) {
+		for (const perpMarket of velocityClient.getPerpMarketAccounts()) {
+			markets.push({
+				marketType: 'perp',
+				marketIndex: perpMarket.marketIndex,
+			});
+		}
+	}
+
+	if (include.spot) {
+		for (const spotMarket of velocityClient.getSpotMarketAccounts()) {
+			markets.push({
+				marketType: 'spot',
+				marketIndex: spotMarket.marketIndex,
+			});
+		}
+	}
+
+	return markets;
+}
+
+/**
+ * Subscribes a priority fee map for `velocityMarkets`. The endpoint comes from the
+ * configured value first, then from the default for the configured environment. A
+ * hardcoded environment here would point every deployment at the production dlob.
+ */
+export async function subscribePriorityFeeMap(
+	velocityMarkets: VelocityMarketInfo[],
+	globalConfig: PriorityFeeEndpointConfig
+): Promise<PriorityFeeSubscriberMap> {
+	const priorityFeeSubscriberMap = new PriorityFeeSubscriberMap({
+		velocityPriorityFeeEndpoint:
+			globalConfig.priorityFeeEndpoint ??
+			getVelocityPriorityFeeEndpoint(globalConfig.velocityEnv),
+		velocityMarkets,
+		frequencyMs: 10_000,
+	});
+	await priorityFeeSubscriberMap.subscribe();
+
+	return priorityFeeSubscriberMap;
+}
+
 export const getAllPythOracleUpdateIxs = async (
 	marketIndex: number,
 	velocityClient: VelocityClient,
@@ -692,72 +785,31 @@ export const shuffle = <T>(array: T[]): T[] => {
 	return array;
 };
 
+/**
+ * Wraps the SDK's transaction sizer and also reports the account count the
+ * instructions reference before any lookup table resolves them.
+ */
 export function getSizeOfTransaction(
 	instructions: TransactionInstruction[],
 	versionedTransaction = true,
 	addressLookupTables: AddressLookupTableAccount[] = []
 ): { bytes: number; accounts: number } {
-	const programs = new Set<string>();
-	const signers = new Set<string>();
-	let accounts = new Set<string>();
-
-	instructions.map((ix) => {
-		programs.add(ix.programId.toBase58());
+	const accounts = new Set<string>();
+	for (const ix of instructions) {
 		accounts.add(ix.programId.toBase58());
-		ix.keys.map((key) => {
-			if (key.isSigner) {
-				signers.add(key.pubkey.toBase58());
-			}
+		for (const key of ix.keys) {
 			accounts.add(key.pubkey.toBase58());
-		});
-	});
-
-	const instruction_sizes: number = instructions
-		.map(
-			(ix) =>
-				1 +
-				getSizeOfCompressedU16(ix.keys.length) +
-				ix.keys.length +
-				getSizeOfCompressedU16(ix.data.length) +
-				ix.data.length
-		)
-		.reduce((a, b) => a + b, 0);
-
-	let numberOfAddressLookups = 0;
-	const totalNumberOfAccounts = accounts.size;
-	if (addressLookupTables.length > 0) {
-		const lookupTableAddresses = addressLookupTables
-			.map((addressLookupTable) =>
-				addressLookupTable.state.addresses.map((address) => address.toBase58())
-			)
-			.flat();
-		accounts = new Set(
-			[...accounts].filter((account) => !lookupTableAddresses.includes(account))
-		);
-		accounts = new Set([...accounts, ...programs, ...signers]);
-		numberOfAddressLookups = totalNumberOfAccounts - accounts.size;
+		}
 	}
 
 	return {
-		bytes:
-			getSizeOfCompressedU16(signers.size) +
-			signers.size * 64 + // array of signatures
-			3 +
-			getSizeOfCompressedU16(accounts.size) +
-			32 * accounts.size + // array of account addresses
-			32 + // recent blockhash
-			getSizeOfCompressedU16(instructions.length) +
-			instruction_sizes + // array of instructions
-			(versionedTransaction ? 1 + getSizeOfCompressedU16(0) : 0) +
-			(versionedTransaction ? 32 * addressLookupTables.length : 0) +
-			(versionedTransaction && addressLookupTables.length > 0 ? 2 : 0) +
-			numberOfAddressLookups,
-		accounts: totalNumberOfAccounts,
+		bytes: getTransactionByteSize(
+			instructions,
+			versionedTransaction,
+			addressLookupTables
+		),
+		accounts: accounts.size,
 	};
-}
-
-function getSizeOfCompressedU16(n: number) {
-	return 1 + Number(n >= 128) + Number(n >= 16384);
 }
 
 export async function checkIfAccountExists(

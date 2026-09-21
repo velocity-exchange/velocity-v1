@@ -72,6 +72,11 @@ tighter than the room to that bound: at the default fraction of 100 a client tha
 would over-allocate the vAMM by more than an order of magnitude, in the split preview, the depth
 chart and any vAMM-versus-maker routing.
 
+`calculateMaxBaseAssetAmountFillable` is deprecated and now delegates to
+`calculateAmmAvailableLiquidity`. It omitted the half-the-side cap the program applies, so it
+reported up to twice the depth one fill can take. `calculateBaseAssetAmountForAmmToFulfill` reads it
+and therefore returned the same inflated figure. Its argument order is unchanged.
+
 `RouterAllocation.scaledQuote` reports the sum of price times base before the division into quote
 units. The program holds a fill to that scalar, so a client that predicts whether a fill is
 accepted needs it.
@@ -100,6 +105,11 @@ reports garbage.
 
 `math/router` exports `quoterOracleBand`, `makerPriceBreachesOracleBand` and
 `isReportWithinReservation`, the three predicates a client needs to tell whether a fill is accepted.
+
+The three accounts a CLOB order instruction takes are the exported type `ClobAccounts`, and
+`VelocityClient.getClobAccounts(marketIndex)` is public, so a caller resolves them from a market
+index rather than from the slab. `getPlaceAndMakePerpOrderIx` and `getForceCancelClobOrdersIx` take
+them optionally and resolve them when they are omitted, as `getPlaceAndTakePerpOrderIx` already did.
 
 ## The book
 
@@ -245,6 +255,12 @@ Attestation has two transports. `placeAndTakePerpOrderV1`, `placeAndMakePerpOrde
 takes a `flowAttestation` argument, which is swift's detached signature over the order's own
 signature plus an expiry, verified in-program. The flow authority never signs a keeper-built
 transaction, and an attested fill pays no second signature fee.
+
+`VelocityCore`'s instruction statics are re-exports of the builders in `core/instructions/`, so each
+one takes exactly what its builder takes. `VelocityCore.buildPlaceAndTakePerpOrderInstruction` and
+`buildPlaceAndMakePerpOrderInstruction` had re-declared their argument type without `flowAuthority`,
+which left a `VelocityCore` caller unable to attest a flow. Every static keeps its name and call
+shape.
 
 The quoter wire carries the verdict. `QuoteArgsV0` and `ExecuteArgsV0` carry `taker_served_window`,
 which velocity sets for attested flow, and for the protocol cranks only when the orders they settle
@@ -457,6 +473,11 @@ by simulating the real fill. One call returns verified books plus the orders beh
 users a fill has to carry. `RouterQuoteBufferV0` holds the answer, read out of post-simulation state.
 A market with more quoters than one transaction can carry is read in passes.
 
+`TopMakersClient` reads the dlob-server's `/topMakers` and returns the `MakerInfo[]` a routed
+placement must carry for the book's best resting owners on one side. It returns an empty list when
+the request fails and skips a maker whose account does not load, so a caller loses that maker's
+depth rather than the fill.
+
 ## Liquidation and the mark TWAP
 
 `liquidatePerpWithFill` fills its forced order through the router, so a liquidation reaches the
@@ -482,6 +503,13 @@ reserved tail space.
 
 New endpoints take a single args struct (`PlaceAndTakePerpOrderV1Args`, `TriggerMarketOrderV1Args`,
 `PlaceTriggerOrdersV1Args`, `UpdateQuoterApprovedArgs` and the rest).
+
+`AdminClient` gains the quoter registry builders the CLI needs: `getInitializeQuoterIx`,
+`getInitializeQuoterSlabIx`, `getUpdateQuoterAccountsIx`, `getUpdateQuoterApprovedIx` and
+`getUpdatePerpMarketClobQuoterIx`. `getInitializeProtocolUserIxs(name, payer)` creates the protocol
+`User` and its `UserStats` under the velocity signer PDA. New PDA helpers:
+`getQuoterCrossConditionsPublicKey` and `getProgramDataAddress`, beside the exported
+`BPF_LOADER_UPGRADEABLE_ID`.
 
 The admin CLI gains the `quoter` and `clob-market` command groups plus `fees withdraw-protocol-user`.
 `clob-market update-config` retunes a live book's mutable config. The CLI creates a market's slab

@@ -34,17 +34,18 @@ use {
         RouteContext,
     },
     velocity_rs::{
-        constants::{derive_quoter_slab, PROGRAM_ID},
+        constants::PROGRAM_ID,
         dlob::{DLOBNotifier, DLOB},
         event_subscriber::{parse_velocity_logs, VelocityEvent},
         grpc::{
             grpc_subscriber::{AccountFilter, GrpcConnectionOpts},
             AccountUpdate, TransactionUpdate,
         },
+        market_book,
         priority_fee_subscriber::PriorityFeeSubscriber,
         program::{
             math::time::Millis,
-            state::prop_amm::{ClobUserRefV0, QuoterConfigV0, QuoterSlotV0},
+            state::prop_amm::{ClobUserRefV0, QuoterConfigV0},
             FlowAttestationV0,
         },
         slot_clock_from_state,
@@ -53,8 +54,8 @@ use {
             accounts::User, CommitmentConfig, MarketId, MarketStatus, OrderType, PositionDirection,
             RpcSendTransactionConfig, SdkResult, StateExt, VersionedMessage, VersionedTransaction,
         },
-        utils::clob_slot_config,
-        ClobFillAccounts, GrpcSubscribeOpts, Pubkey, TransactionBuilder, VelocityClient, Wallet,
+        utils::quoter_cpi_section,
+        GrpcSubscribeOpts, Pubkey, TransactionBuilder, VelocityClient, Wallet,
     },
 };
 
@@ -887,43 +888,11 @@ async fn route_quoter_metas(
     // the market's book. `PerpMarket.clob_market` stores the book account itself,
     // so the book slot matches by its response account. A named entry with no
     // live slot is dropped, the same way the program drops it.
-    let consulted: Vec<&QuoterSlotV0> = slots
-        .iter()
-        .filter(|slot| {
-            (clob_market != Pubkey::default() && slot.config.response_account == clob_market)
-                || route.contains(&slot.entry)
-        })
-        .filter(|slot| slot.quotes())
-        .collect();
-
-    // Writability is the OR across slots. The BTreeMap dedups a key two slots
-    // register and keeps the build deterministic. Each leg resolves its
-    // accounts by index into this full list, so the whole list must ride,
-    // not one leg's subset.
-    let mut cpi_union: BTreeMap<Pubkey, bool> = BTreeMap::new();
-    for slot in &consulted {
-        for meta in slot.config.registered_accounts() {
-            *cpi_union.entry(meta.pubkey).or_default() |= meta.is_writable;
-        }
-
-        *cpi_union.entry(slot.config.response_account).or_default() |= true;
-        cpi_union.entry(slot.config.program_id).or_default();
-    }
-
-    Some(
-        std::iter::once(AccountMeta::new_readonly(
-            derive_quoter_slab(market_index),
-            false,
-        ))
-        .chain(cpi_union.iter().map(|(key, writable)| {
-            if *writable {
-                AccountMeta::new(*key, false)
-            } else {
-                AccountMeta::new_readonly(*key, false)
-            }
-        }))
-        .collect(),
-    )
+    Some(quoter_cpi_section(market_index, &slots, |slot| {
+        slot.quotes()
+            && ((clob_market != Pubkey::default() && slot.config.response_account == clob_market)
+                || route.contains(&slot.entry))
+    }))
 }
 
 /// Place a swift order on-chain when this bot found no resting cross for it.
@@ -965,21 +934,9 @@ async fn try_swift_place(
         }
     };
 
-    let book_config = velocity
-        .get_quoter_slab_slots(market_index)
-        .await
-        .ok()
-        .and_then(|slots| clob_slot_config(&slots));
-    let Some(book_config) = book_config else {
+    let Some(book) = market_book(velocity, market_index).await else {
         log::warn!(target: TARGET, "no approved clob on the quoter slab for market {market_index}; cannot place signed-message order");
         return;
-    };
-    let clob_place = ClobFillAccounts {
-        market_index,
-        quoter_slab: derive_quoter_slab(market_index),
-        clob_market: book_config.response_account,
-        clob_program: book_config.program_id,
-        crank_conditions: None,
     };
 
     // The book's own makers. The placement routes as it places, and a fill
@@ -989,7 +946,7 @@ async fn try_swift_place(
     let taker_params = swift_order.order_params();
     let maker_accounts = clob_makers(
         velocity,
-        &book_config,
+        &book.config,
         taker_params.direction,
         taker_params.base_asset_amount,
         ClobUserRefV0 {
@@ -1009,7 +966,7 @@ async fn try_swift_place(
     let Some(quoter_metas) = route_quoter_metas(
         velocity,
         market_index,
-        book_config.response_account,
+        book.config.response_account,
         swift_order.route(),
         &swift_order,
     )
@@ -1050,7 +1007,7 @@ async fn try_swift_place(
         &swift_order,
         &taker_account_data,
         &maker_accounts,
-        clob_place,
+        book.accounts,
         flow_attestation,
     );
 

@@ -425,21 +425,15 @@ const SOURCES_PER_PASS: usize = program::state::router_quote::MAX_QUOTED_SOURCES
 
 /// A market's whole book, read in as many passes as it takes.
 pub struct MarketQuote {
-    /// Every source across every pass, vAMM included exactly once.
-    pub books: Vec<crate::quote_view::QuotedBook>,
-    /// The entries behind those sources, for attributing their levels.
+    /// Every source across every pass, vAMM included exactly once. Its `slot`
+    /// is the earliest pass, so it is the age of the oldest thing in the
+    /// merged book, and `rows_truncated` is set if any pass filled its row
+    /// region.
+    pub view: QuoteView,
+    /// The entries behind the view's sources, for attributing their levels.
     pub entries: Vec<CarriedEntry>,
-    /// Slot of the earliest pass. Passes run at different slots, so this is
-    /// the age of the oldest thing in the merged book.
-    pub slot: u64,
-    /// Size the books were quoted at. It truncates a resting book. A PropAMM
-    /// and the vAMM price against it, so their levels mean nothing without it.
-    pub quoted_size: u64,
     pub units_consumed: u64,
     pub excluded: Vec<Pubkey>,
-    /// A pass filled its row region, so some book's orders are described
-    /// only in part. The ladders are whole either way.
-    pub rows_truncated: bool,
 }
 
 /// One simulated call: the entries it carries, and whether the DLOB makers
@@ -563,13 +557,17 @@ pub async fn quote_market<S: ChainSource>(
     }
 
     let mut merged = MarketQuote {
-        books: Vec::new(),
+        view: QuoteView {
+            market: request.market_index,
+            direction: request.direction as u8,
+            quoted_size: request.size,
+            slot: u64::MAX,
+            books: Vec::new(),
+            rows_truncated: false,
+        },
         entries: Vec::new(),
-        slot: u64::MAX,
-        quoted_size: request.size,
         units_consumed: 0,
         excluded: Vec::new(),
-        rows_truncated: false,
     };
 
     for planned in &plan.passes {
@@ -579,10 +577,10 @@ pub async fn quote_market<S: ChainSource>(
             ..*request
         };
         let quoted = quote_with_health(source, health, &pass).await?;
-        merged.slot = merged.slot.min(quoted.view.slot);
+        merged.view.slot = merged.view.slot.min(quoted.view.slot);
+        merged.view.books.extend(quoted.view.books);
+        merged.view.rows_truncated |= quoted.view.rows_truncated;
         merged.units_consumed += quoted.units_consumed;
-        merged.books.extend(quoted.view.books);
-        merged.rows_truncated |= quoted.view.rows_truncated;
         merged.entries.extend(quoted.entries);
         for key in quoted.excluded {
             if !merged.excluded.contains(&key) {
@@ -591,8 +589,8 @@ pub async fn quote_market<S: ChainSource>(
         }
     }
 
-    if merged.slot == u64::MAX {
-        merged.slot = 0;
+    if merged.view.slot == u64::MAX {
+        merged.view.slot = 0;
     }
 
     Ok(merged)
@@ -774,6 +772,75 @@ mod pass_tests {
         assert!(planned.contains(&wide));
         for accounts in accounts_per_pass(&entries, &plan) {
             assert!(accounts <= PASS_ACCOUNT_BUDGET);
+        }
+    }
+}
+
+/// The velocity error codes [`FailReason`] carries, pinned to the program's
+/// own enum.
+///
+/// `velocity-quoter-health` takes no velocity dependency, so it transcribes
+/// both the numbers and the variant names. A variant added above one of them
+/// renumbers it, and a renamed variant stops matching the log text. Either
+/// makes every contract violation classify as `Cpi`, which stops quarantining
+/// a misbehaving quoter.
+#[cfg(test)]
+mod fail_reason_pin {
+    use {program::error::ErrorCode, velocity_quoter_health::observe::FailReason};
+
+    /// The first code anchor gives a program's own errors.
+    const ANCHOR_ERROR_OFFSET: u32 = 6000;
+
+    fn quoter_errors() -> [(ErrorCode, FailReason, &'static str); 6] {
+        [
+            (
+                ErrorCode::InvalidQuoterConfig,
+                FailReason::Config,
+                "InvalidQuoterConfig",
+            ),
+            (
+                ErrorCode::InvalidQuoterAuthority,
+                FailReason::Config,
+                "InvalidQuoterAuthority",
+            ),
+            (
+                ErrorCode::InvalidQuoterResponse,
+                FailReason::InvalidResponse,
+                "InvalidQuoterResponse",
+            ),
+            (
+                ErrorCode::QuoterOverfilled,
+                FailReason::Overfilled,
+                "QuoterOverfilled",
+            ),
+            (
+                ErrorCode::QuoterFillOffQuote,
+                FailReason::OffQuote,
+                "QuoterFillOffQuote",
+            ),
+            (
+                ErrorCode::QuoterSubjectNotPermitted,
+                FailReason::SubjectNotPermitted,
+                "QuoterSubjectNotPermitted",
+            ),
+        ]
+    }
+
+    #[test]
+    fn each_quoter_error_code_maps_to_its_reason() {
+        for (code, reason, name) in quoter_errors() {
+            assert_eq!(
+                FailReason::from_velocity_code(code as u32 + ANCHOR_ERROR_OFFSET),
+                Some(reason),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn each_quoter_error_keeps_the_name_the_log_parser_reads() {
+        for (code, _, name) in quoter_errors() {
+            assert_eq!(format!("{code:?}"), name);
         }
     }
 }

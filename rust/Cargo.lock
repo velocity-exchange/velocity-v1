@@ -1561,6 +1561,7 @@ version = "0.1.0"
 dependencies = [
  "anchor-lang",
  "quoter-spec",
+ "solana-address 2.6.1",
  "wincode 0.6.1",
 ]
 

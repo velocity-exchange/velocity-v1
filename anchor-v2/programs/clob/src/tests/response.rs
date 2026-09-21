@@ -18,10 +18,10 @@ use {
         book::{ClobBook, NodeArena},
         error::ClobError,
         state::{
-            CancelledRemainderV0, ClobMarketV0, ClobSideExt, CompletedOrderV0, Direction,
-            ExecuteResponseV0, MarketConfigV0, PartiallyFilledOrderV0, PriceLevel, QuoteResponseV0,
-            RemovedOrderV0, ResponsePointerV0, Side, UserBalanceChangeV0, UserCapsV0, UserRefV0,
-            CANCELLED_BYTES, CHANGE_BYTES, COMPLETED_BYTES, COUNT_BYTES, EXECUTE_FILLS_CEILING,
+            CancelledRemainderV0, ClobMarketV0, CompletedOrderV0, Direction, ExecuteResponseV0,
+            MarketConfigV0, PartiallyFilledOrderV0, PriceLevel, QuoteResponseV0, RemovedOrderV0,
+            ResponsePointerV0, Side, UserBalanceChangeV0, UserCapsV0, UserRefV0, CANCELLED_BYTES,
+            CHANGE_BYTES, COMPLETED_BYTES, COUNT_BYTES, EXECUTE_FILLS_CEILING,
             EXECUTE_USERS_CEILING, PRICE_LEVEL_BYTES, QUOTE_LEVELS_CEILING, REMOVED_ORDER_BYTES,
             RESPONSE_BUFFER_BYTES, RESPONSE_LEN_BYTES, RESPONSE_OFFSET, USER_CAPS_BYTES,
             USER_CAPS_CAPACITY, USER_REF_BYTES, USER_SET_CAPACITY, USER_SET_MAX_BYTES,
@@ -491,7 +491,7 @@ fn wire_widths_match_the_response_types() {
     assert_eq!(encode(&removed).len(), REMOVED_ORDER_BYTES);
     // Side, the taker-origin flag, the reduce-only flag, then the expiry.
     let tail = REMOVED_ORDER_BYTES - 3 - core::mem::size_of::<i64>();
-    assert_eq!(encode(&removed)[tail..tail + 3], [Side::Ask.to_u8(), 1, 1]);
+    assert_eq!(encode(&removed)[tail..tail + 3], [Side::Ask.tag(), 1, 1]);
     assert_eq!(encode(&removed)[tail + 3..], 4i64.to_le_bytes());
     assert_eq!(
         encode(&RemovedOrderV0 {
@@ -500,7 +500,7 @@ fn wire_widths_match_the_response_types() {
             reduce_only: false,
             ..removed
         })[tail..tail + 3],
-        [Side::Bid.to_u8(), 0, 0]
+        [Side::Bid.tag(), 0, 0]
     );
 
     // Every record is one fixed stride: a change carries no ids, so it cannot

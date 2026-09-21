@@ -5,8 +5,8 @@ version = "0.1.0"
 edition = "2021"
 [dependencies]
 quoter-spec = { package = "quoter-spec-v2", path = "../quoter-spec-v2" }
-bytemuck = { version = "1.14", features = ["derive"] }
-solana-address = { version = "2.6", features = ["bytemuck", "copy"] }
+bytemuck.workspace = true
+solana-address.workspace = true
 anchor-lang-v2 = { package = "anchor-lang", git = "https://github.com/otter-sec/anchor.git", rev = "abacd0e9362d957e7da779fa81b1a10dd9480b28", optional = true }
 [features]
 default = []

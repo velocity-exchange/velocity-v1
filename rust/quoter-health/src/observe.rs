@@ -20,8 +20,8 @@ use {
 ///
 /// A code follows the variant's position in that enum, so a variant added
 /// above one of these renumbers it. This crate takes no velocity dependency,
-/// so the numbers below are a copy. Re-read them from `error.rs` whenever the
-/// enum gains a variant anywhere but the end.
+/// so the numbers below are a copy. `velocity-router-sim`'s `fail_reason_pin`
+/// tests hold the copy to the enum.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum FailReason {
     /// The quoter's CPI returned an error.
@@ -158,6 +158,32 @@ pub enum Observation {
         executed_price: u64,
         taker_long: bool,
     },
+}
+
+impl Observation {
+    /// How much worse than the published quote the fill executed, in basis
+    /// points of the quoted price. A positive value means the taker did worse
+    /// than the route promised. `None` for any other observation, and for a
+    /// quote of zero, which has no scale to measure against.
+    pub fn adverse_slip_bps(self) -> Option<f64> {
+        let Self::RouteLanded {
+            quoted_price,
+            executed_price,
+            taker_long,
+        } = self
+        else {
+            return None;
+        };
+
+        if quoted_price == 0 {
+            return None;
+        }
+
+        let delta = executed_price as f64 - quoted_price as f64;
+        let adverse = if taker_long { delta } else { -delta };
+
+        Some(adverse / quoted_price as f64 * 10_000.0)
+    }
 }
 
 /// A failure no quoter was proven to have caused.

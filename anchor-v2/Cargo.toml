@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["programs/clob", "programs/midpoint"]
+members = ["programs/clob", "programs/midpoint", "programs/quoter-test-support"]
 
 # SEPARATE workspace from the program workspace at the repo root (which is
 # `exclude = ["anchor-v2"]`). Hosts Anchor v2-line programs (CLOB, Midpoint,

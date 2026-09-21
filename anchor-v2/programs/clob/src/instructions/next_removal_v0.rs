@@ -15,26 +15,21 @@
 //! Read-only. A caller simulates this to find work, then sends the removal it
 //! names.
 
+/// Declared by `clob-wire`.
+pub use clob_wire::{ClobRemovalKindV0, NextRemovalArgsV0, OrderViewV0};
 use {
     crate::{
         book::{ClobBook, NodeArena},
+        instructions::MarketViewV0,
         state::{ClobMarketV0, OrderBitFlag, Side},
     },
     anchor_lang::prelude::*,
 };
 
-#[derive(Accounts)]
-pub struct NextRemovalV0Accounts {
-    pub market: ClobMarketV0,
-}
-
-/// Declared by `clob-wire`.
-pub use clob_wire::{ClobRemovalKindV0, NextRemovalArgsV0, OrderViewV0};
-
 /// The next order of `kind` this book would let a caller remove, or
 /// [`OrderViewV0::NONE`].
 pub fn handle_next_removal_v0(
-    ctx: &mut Context<NextRemovalV0Accounts>,
+    ctx: &mut Context<MarketViewV0>,
     args: NextRemovalArgsV0,
 ) -> Result<OrderViewV0> {
     let clock = Clock::get()?;

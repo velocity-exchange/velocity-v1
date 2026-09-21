@@ -134,6 +134,11 @@ impl CrankTreasuryV0 {
 // on x86_64 and SBF.
 const _: () = assert!((CrankTreasuryV0::SIZE - 8).is_multiple_of(16));
 
+// `SIZE` is the allocation, which is the discriminator plus the struct. A
+// literal that drifts from the struct sizes `pay_out`'s rent floor against a
+// length the account does not have.
+const _: () = assert!(CrankTreasuryV0::SIZE == 8 + std::mem::size_of::<CrankTreasuryV0>());
+
 #[cfg(test)]
 mod tests {
     use super::*;

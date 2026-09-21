@@ -29,7 +29,6 @@ import {
 	UserClobOrdersClient,
 	ForceCancelClobRefV0,
 	ClobSide,
-	getQuoterSlabPublicKey,
 } from '@velocity-exchange/sdk';
 
 import { PrometheusExporter } from '@opentelemetry/exporter-prometheus';
@@ -56,16 +55,15 @@ import {
 	perpTierIsAsSafeAs,
 } from '@velocity-exchange/sdk';
 import {
-	ComputeBudgetProgram,
 	PublicKey,
 	AddressLookupTableAccount,
 	TransactionInstruction,
 } from '@solana/web3.js';
 import { getAssociatedTokenAddressSync } from '@solana/spl-token';
 import {
+	buildVersionedTransactionWithSimulatedCus as buildSimulatedCuTx,
 	calculateAccountValueUsd,
 	handleSimResultError,
-	simulateAndGetTxWithCUs,
 	SimulateAndGetTxWithCUsResponse,
 } from '../utils';
 import { LiquidatorDerisk } from './liquidatorDerisk';
@@ -535,49 +533,12 @@ export class LiquidatorBot implements Bot {
 		luts: Array<AddressLookupTableAccount>,
 		cuPriceMicroLamports?: number
 	): Promise<SimulateAndGetTxWithCUsResponse> {
-		const fullIxs = [
-			ComputeBudgetProgram.setComputeUnitLimit({
-				units: 1_400_000, // will be overwriten in sim
-			}),
-		];
-		if (cuPriceMicroLamports !== undefined) {
-			fullIxs.push(
-				ComputeBudgetProgram.setComputeUnitPrice({
-					microLamports: cuPriceMicroLamports,
-				})
-			);
-		}
-		fullIxs.push(...ixs);
-
-		let resp: SimulateAndGetTxWithCUsResponse;
-		try {
-			const recentBlockhash =
-				await this.velocityClient.connection.getLatestBlockhash('confirmed');
-			resp = await simulateAndGetTxWithCUs({
-				ixs: fullIxs,
-				connection: this.velocityClient.connection,
-				payerPublicKey: this.velocityClient.wallet.publicKey,
-				lookupTableAccounts: luts,
-				cuLimitMultiplier: 1.2,
-				doSimulation: true,
-				dumpTx: false,
-				recentBlockhash: recentBlockhash.blockhash,
-			});
-		} catch (e) {
-			const err = e as Error;
-			logger.error(
-				`error in buildVersionedTransactionWithSimulatedCus, using max CUs: ${err.message}\n${err.stack}`
-			);
-			resp = {
-				cuEstimate: -1,
-				simTxLogs: null,
-				simError: err,
-				simTxDuration: -1,
-				// @ts-ignore
-				tx: undefined,
-			};
-		}
-		return resp;
+		return await buildSimulatedCuTx(
+			this.velocityClient,
+			ixs,
+			luts,
+			cuPriceMicroLamports
+		);
 	}
 
 	public async init() {
@@ -1617,43 +1578,6 @@ export class LiquidatorBot implements Bot {
 		return sentTx;
 	}
 
-	/// The CLOB accounts a `forceCancelClobOrders` needs, resolved from the
-	/// market. The quoter slab's slot 0 holds the book's approved config, which
-	/// names the book account and its program. Returns undefined when the market
-	/// has no CLOB attached.
-	private async resolveClobAccounts(marketIndex: number): Promise<
-		| {
-				quoterSlab: PublicKey;
-				clobMarket: PublicKey;
-				clobProgram: PublicKey;
-		  }
-		| undefined
-	> {
-		const perpMarket = this.velocityClient.getPerpMarketAccount(marketIndex);
-		if (!perpMarket || perpMarket.clobMarket.equals(PublicKey.default)) {
-			return undefined;
-		}
-
-		const { slots } = await this.velocityClient.getQuoterSlabAccount(
-			marketIndex
-		);
-		const book = slots[0];
-		if (!book || book.entry.equals(PublicKey.default)) {
-			return undefined;
-		}
-
-		return {
-			quoterSlab: getQuoterSlabPublicKey(
-				this.velocityClient.program.programId,
-				marketIndex
-			),
-
-			// The book is the account the slot's responses are written into.
-			clobMarket: book.config.responseAccount,
-			clobProgram: book.config.programId,
-		};
-	}
-
 	/// Build a `forceCancelClobOrders` instruction for the liquidatee's resting
 	/// CLOB orders in `perpMarketIndex`. The caller puts it before a perp
 	/// liquidation. Returns undefined when there is nothing to cancel, when no
@@ -1682,11 +1606,6 @@ export class LiquidatorBot implements Bot {
 				// A long rests as a bid, a short as an ask.
 				side: isVariant(order.direction, 'long') ? ClobSide.BID : ClobSide.ASK,
 			}));
-			const clobAccounts = await this.resolveClobAccounts(perpMarketIndex);
-			if (!clobAccounts) {
-				return undefined;
-			}
-
 			const filler = await this.velocityClient.getUserAccountPublicKey(
 				liquidatorSubAccountId
 			);
@@ -1696,7 +1615,7 @@ export class LiquidatorBot implements Bot {
 				user.userAccountPublicKey,
 				user.getUserAccountOrThrow(),
 				orderRefs,
-				clobAccounts,
+				undefined,
 				filler
 			);
 		} catch (err) {

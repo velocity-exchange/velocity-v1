@@ -868,10 +868,11 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         // One-sided, because `validate_change_notional` already holds every change inside
         // a quoted prefix trimmed to the taker's effective limit, and a second band there
         // would refuse fills at the price the taker asked for.
-        let change_price = (change.quote_size as u128)
-            .safe_mul(BASE_PRECISION_U64.cast()?)?
-            .safe_div(change.base_size.cast()?)?
-            .cast::<u64>()?;
+        let change_price = crate::math::orders::calculate_fill_price(
+            change.quote_size,
+            change.base_size,
+            BASE_PRECISION_U64,
+        )?;
         validate!(
             !crate::math::orders::limit_price_breaches_maker_oracle_price_bands(
                 change_price,

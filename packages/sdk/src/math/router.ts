@@ -11,6 +11,7 @@ import {
 	MARGIN_PRECISION,
 	ZERO,
 } from '../constants/numericConstants';
+import { standardizeBaseAssetAmount } from './orders';
 
 /** Levels read per book. The walk ignores the rest. Mirrors `MAX_LEVELS_PER_BOOK`. */
 export const MAX_LEVELS_PER_BOOK = 128;
@@ -53,11 +54,6 @@ export const VAMM_PRIORITY = 0;
 export const CLOB_PRIORITY = 10;
 export const CUSTOM_PRIORITY = 20;
 
-/** Floor `value` to a multiple of `step`. */
-function floorToStep(value: BN, step: BN): BN {
-	return value.sub(value.mod(step));
-}
-
 /**
  * Notional rounded toward the bound safe for the taker. Mirrors
  * `quote_notional`. A long rounds up, a short rounds down.
@@ -93,7 +89,7 @@ class Cursor {
 		while (this.index < cap) {
 			const level = this.levels[this.index];
 			const available = BN.max(level.size.sub(this.consumed), ZERO);
-			const usable = floorToStep(available, this.step);
+			const usable = standardizeBaseAssetAmount(available, this.step);
 			const degenerate = level.price.lte(ZERO) || usable.eq(ZERO);
 			if (this.index > 0) {
 				const prev = this.levels[this.index - 1].price;
@@ -233,7 +229,7 @@ export function splitAcrossQuoters(
 				continue;
 			}
 
-			const demand = floorToStep(BN.min(remaining, total), step);
+			const demand = standardizeBaseAssetAmount(BN.min(remaining, total), step);
 			if (demand.eq(ZERO)) {
 				// Nothing step-sized left to give at this tier.
 				remaining = ZERO;
@@ -247,7 +243,10 @@ export function splitAcrossQuoters(
 					continue;
 				}
 
-				const share = floorToStep(demand.mul(available).div(total), step);
+				const share = standardizeBaseAssetAmount(
+					demand.mul(available).div(total),
+					step
+				);
 				if (share.eq(ZERO)) {
 					continue;
 				}
@@ -264,7 +263,10 @@ export function splitAcrossQuoters(
 					continue;
 				}
 
-				const amount = floorToStep(BN.min(dust, available), step);
+				const amount = standardizeBaseAssetAmount(
+					BN.min(dust, available),
+					step
+				);
 				if (amount.eq(ZERO)) {
 					continue;
 				}
@@ -350,7 +352,7 @@ export function quotedPrefix(
 			break;
 		}
 
-		const usable = floorToStep(level.size, step);
+		const usable = standardizeBaseAssetAmount(level.size, step);
 		if (usable.eq(ZERO)) {
 			continue;
 		}

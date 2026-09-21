@@ -668,7 +668,8 @@ const runBot = async () => {
 		bots.push(
 			new IFRevenueSettlerBot(
 				velocityClient,
-				config.botConfigs!.ifRevenueSettler!
+				config.botConfigs!.ifRevenueSettler!,
+				config.global
 			)
 		);
 	}
@@ -681,7 +682,8 @@ const runBot = async () => {
 		bots.push(
 			new ProtocolFeeCollectorBot(
 				new AdminClient(velocityClientConfig),
-				config.botConfigs!.protocolFeeCollector!
+				config.botConfigs!.protocolFeeCollector!,
+				config.global
 			)
 		);
 	}
@@ -693,7 +695,8 @@ const runBot = async () => {
 		bots.push(
 			new FundingRateUpdaterBot(
 				velocityClient,
-				config.botConfigs!.fundingRateUpdater!
+				config.botConfigs!.fundingRateUpdater!,
+				config.global
 			)
 		);
 	}

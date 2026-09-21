@@ -7,6 +7,10 @@
 
 use super::*;
 
+/// Pay the keeper its reward on its own perp seat.
+///
+/// A keeper with no reward still has its last-active slot stamped, so its
+/// transaction does not revert for idleness.
 pub fn credit_filler_perp_pnl(
     filler: &mut User,
     filler_stats: &mut Option<&mut UserStats>,
@@ -91,25 +95,24 @@ pub fn force_cancel_orders(
     Ok(())
 }
 
-/// What authorizes a keeper to force-cancel an account's orders, and which of
-/// them it may cancel.
-struct ForceCancelScope {
-    margin_calc: MarginCalculation,
-    /// Whether the cross-margin scope still meets initial margin. Its orders
-    /// are then out of the keeper's reach, because the scope answers for them.
-    cross_margin_meets_initial_margin_requirement: bool,
+/// Why a keeper may act against an account.
+///
+/// Two grounds, either of which authorizes: the account fails initial margin,
+/// or it is proven below its equity floor. The floor arm fails closed in the
+/// direction opposite the gates that restrict the user, so a bad price cannot
+/// manufacture authorization.
+///
+/// The authority-wide equity breaker is deliberately not a ground. It bars the
+/// authority from risk-increasing activity, which is a different question from
+/// whether one subaccount can carry the orders it already rests. Every
+/// force-cancel surface answers the same two grounds.
+pub(crate) struct ForceCancelGrounds {
+    pub(crate) margin_calc: MarginCalculation,
+    below_equity_floor: bool,
 }
 
-impl ForceCancelScope {
-    /// Hold the keeper to the grounds that let it act against this account.
-    ///
-    /// A below-floor account is grounds for a keeper to act, so the floor test
-    /// fails closed. The floor counts only when every oracle is valid and the
-    /// trusted value sits below it. A bad price then cannot manufacture
-    /// authorization. Under oracle degradation the keeper falls back to the
-    /// margin arm, which keeps force-cancel available on a margin-breached
-    /// account.
-    fn authorize(user: &User, maps: &mut AccountMaps) -> VelocityResult<Self> {
+impl ForceCancelGrounds {
+    pub(crate) fn measure(user: &User, maps: &mut AccountMaps) -> VelocityResult<Self> {
         validate!(
             !user.is_being_liquidated(),
             ErrorCode::UserIsBeingLiquidated
@@ -126,18 +129,58 @@ impl ForceCancelScope {
         let below_equity_floor = calculate_net_equity_for_floor(user, maps)?
             .is_some_and(|net_equity| net_equity.proves_below_floor(user));
 
-        validate!(
-            !margin_calc.meets_margin_requirement() || below_equity_floor,
-            ErrorCode::SufficientCollateral
-        )?;
-
-        let cross_margin_meets_initial_margin_requirement =
-            margin_calc.meets_cross_margin_requirement() && !below_equity_floor;
-
         Ok(Self {
             margin_calc,
-            cross_margin_meets_initial_margin_requirement,
+            below_equity_floor,
         })
+    }
+
+    /// True when either ground stands.
+    pub(crate) fn any(&self) -> bool {
+        !self.margin_calc.meets_margin_requirement() || self.below_equity_floor
+    }
+
+    /// True when this market answers for its own orders, so they are out of
+    /// the keeper's reach.
+    pub(crate) fn market_recoverable(
+        &self,
+        user: &User,
+        market_index: u16,
+    ) -> VelocityResult<bool> {
+        if user
+            .get_perp_position(market_index)
+            .map(|position| position.is_isolated())
+            .unwrap_or(false)
+        {
+            return self
+                .margin_calc
+                .meets_isolated_margin_requirement(market_index);
+        }
+
+        Ok(self.cross_margin_recoverable())
+    }
+
+    /// True when the cross-margin scope still answers for its own orders.
+    pub(crate) fn cross_margin_recoverable(&self) -> bool {
+        self.margin_calc.meets_cross_margin_requirement() && !self.below_equity_floor
+    }
+}
+
+/// What authorizes a keeper to force-cancel an account's orders, and which of
+/// them it may cancel.
+struct ForceCancelScope(ForceCancelGrounds);
+
+impl ForceCancelScope {
+    /// Hold the keeper to the grounds that let it act against this account.
+    ///
+    /// Under oracle degradation the floor arm goes quiet and the keeper falls
+    /// back to the margin arm, which keeps force-cancel available on a
+    /// margin-breached account.
+    fn authorize(user: &User, maps: &mut AccountMaps) -> VelocityResult<Self> {
+        let grounds = ForceCancelGrounds::measure(user, maps)?;
+        validate!(grounds.any(), ErrorCode::SufficientCollateral)?;
+
+        Ok(Self(grounds))
     }
 
     /// The flat reward this order earns the keeper, or `None` when the order
@@ -189,7 +232,7 @@ impl ForceCancelScope {
             token_amount,
         )?;
 
-        if is_position_reducing || self.cross_margin_meets_initial_margin_requirement {
+        if is_position_reducing || self.0.cross_margin_recoverable() {
             return Ok(None);
         }
 
@@ -218,14 +261,7 @@ impl ForceCancelScope {
             return Ok(None);
         }
 
-        let meets_margin_requirement = if position.is_isolated() {
-            self.margin_calc
-                .meets_isolated_margin_requirement(market_index)?
-        } else {
-            self.cross_margin_meets_initial_margin_requirement
-        };
-
-        if meets_margin_requirement {
+        if self.0.market_recoverable(user, market_index)? {
             return Ok(None);
         }
 

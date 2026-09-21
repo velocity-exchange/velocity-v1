@@ -2,13 +2,14 @@ import { Command } from 'commander';
 import { PublicKey, SystemProgram, SYSVAR_RENT_PUBKEY } from '@solana/web3.js';
 import { BN } from '@coral-xyz/anchor';
 import {
-	getCrankTreasuryPublicKey,
 	getClobCrankConditionsPublicKey,
 	getPerpMarketPublicKeySync,
+	getQuoterCrossConditionsPublicKey,
 	getQuoterPublicKey,
 	getQuoterSlabPublicKey,
 	QuoterType,
 } from '@velocity-exchange/sdk';
+import { parseEnable } from '../lib/args';
 import {
 	readCrankCostUnits,
 	withCrankCostUnitOptions,
@@ -16,22 +17,6 @@ import {
 import { readGlobalOpts, withGlobalOptions } from '../lib/options';
 import { buildAdminClient, buildProvider } from '../lib/provider';
 import { reportDispatch, sendOrPropose } from '../lib/squads';
-
-/** `BPFLoaderUpgradeab1e11111111111111111111111`, which owns a program's data account. */
-const BPF_LOADER_UPGRADEABLE_ID = new PublicKey(
-	'BPFLoaderUpgradeab1e11111111111111111111111'
-);
-
-/** Parse a CLI truthy/falsy flag argument (`true|false|on|off|1|0|enable|disable`). */
-function parseEnable(value: string): boolean {
-	const v = value.trim().toLowerCase();
-	if (['true', 'on', '1', 'enable', 'enabled', 'yes'].includes(v)) return true;
-	if (['false', 'off', '0', 'disable', 'disabled', 'no'].includes(v))
-		return false;
-	throw new Error(
-		`expected true|false (got "${value}"). Use on/off, 1/0, enable/disable.`
-	);
-}
 
 function parseQuoterType(value: string): QuoterType {
 	switch (value.toLowerCase()) {
@@ -190,11 +175,10 @@ export function registerQuoter(parent: Command): void {
 					quoterProgram,
 					user
 				);
-				const quoterType = parseQuoterType(flags.type);
-				const ix = client.program.instruction.initializeQuoter(
+				const ix = await client.getInitializeQuoterIx(
+					marketIndex,
 					{
-						marketIndex,
-						quoterType,
+						quoterType: parseQuoterType(flags.type),
 						responseAccount: new PublicKey(responseAccountArg),
 						quoteV0Discriminator: parseDiscriminator(quoteDisc),
 						quoteL3V0Discriminator: flags.l3Disc
@@ -203,30 +187,9 @@ export function registerQuoter(parent: Command): void {
 						executeV0Discriminator: parseDiscriminator(executeDisc),
 					},
 
-					{
-						accounts: {
-							state: await client.getStatePublicKey(),
-							payer: authority,
-							authority,
-							quoter: quoterPda,
-							perpMarket: getPerpMarketPublicKeySync(
-								client.program.programId,
-								marketIndex
-							),
-
-							// The program refuses a book registration when an approved
-							// quoter's account list already names that book, so a
-							// book registration must read the slab. No other quoter
-							// type reads it.
-							quoterSlab: isClobEntry(quoterType)
-								? getQuoterSlabPublicKey(client.program.programId, marketIndex)
-								: null,
-							quoterProgram,
-							user,
-							rent: SYSVAR_RENT_PUBKEY,
-							systemProgram: SystemProgram.programId,
-						},
-					}
+					quoterProgram,
+					user,
+					authority
 				);
 				const result = await sendOrPropose(
 					provider,
@@ -267,21 +230,9 @@ export function registerQuoter(parent: Command): void {
 				client.program.programId,
 				marketIndex
 			);
-			const ix = client.program.instruction.initializeQuoterSlab(
-				{ marketIndex },
-				{
-					accounts: {
-						payer: provider.wallet.publicKey,
-						perpMarket: getPerpMarketPublicKeySync(
-							client.program.programId,
-							marketIndex
-						),
-
-						quoterSlab,
-						rent: SYSVAR_RENT_PUBKEY,
-						systemProgram: SystemProgram.programId,
-					},
-				}
+			const ix = await client.getInitializeQuoterSlabIx(
+				marketIndex,
+				provider.wallet.publicKey
 			);
 			const result = await sendOrPropose(provider, [ix], undefined, '');
 			reportDispatch(
@@ -329,25 +280,15 @@ export function registerQuoter(parent: Command): void {
 			const provider = buildProvider(opts);
 			const client = await buildAdminClient(opts, false);
 			try {
-				const ix = client.program.instruction.updateQuoterAccounts(
-					{
-						metas: metas.map(parseAccountMeta),
-						quoteIndexes: Buffer.from(parseIndexList(flags.quoteIndexes)),
-						executeIndexes: Buffer.from(parseIndexList(flags.executeIndexes)),
-					},
-
-					{
-						accounts: {
-							authority: flags.authority
-								? new PublicKey(flags.authority)
-								: provider.wallet.publicKey,
-							quoter: new PublicKey(quoterArg),
-							// A book's entry answers to the State admin roles rather
-							// than to the key that registered it. A Custom entry
-							// answers to its own stored authority and ignores this.
-							state: await client.getStatePublicKey(),
-						},
-					}
+				// A book's entry answers to the State admin roles rather than to the
+				// key that registered it. A Custom entry answers to its own stored
+				// authority and ignores this one.
+				const ix = await client.getUpdateQuoterAccountsIx(
+					new PublicKey(quoterArg),
+					metas.map(parseAccountMeta),
+					parseIndexList(flags.quoteIndexes),
+					parseIndexList(flags.executeIndexes),
+					flags.authority ? new PublicKey(flags.authority) : undefined
 				);
 				const result = await sendOrPropose(
 					provider,
@@ -558,43 +499,18 @@ export function registerQuoter(parent: Command): void {
 				const entry = await (client.program.account as any).quoterV0.fetch(
 					quoterKey
 				);
-				const quoterProgram = new PublicKey(entry.config.programId);
-				const [programData] = PublicKey.findProgramAddressSync(
-					[quoterProgram.toBuffer()],
-					BPF_LOADER_UPGRADEABLE_ID
-				);
-				const ix = client.program.instruction.updateQuoterApproved(
-					{ approved: on },
-					{
-						accounts: {
-							admin: flags.admin
-								? new PublicKey(flags.admin)
-								: provider.wallet.publicKey,
-							state: await client.getStatePublicKey(),
-							quoter: quoterKey,
-							perpMarket: getPerpMarketPublicKeySync(
-								client.program.programId,
-								entry.config.market
-							),
-
-							quoterSlab: getQuoterSlabPublicKey(
-								client.program.programId,
-								entry.config.market
-							),
-
-							quoterProgram,
-							quoterProgramData: on ? programData : null,
-							// A book approval asks the book for its own placement
-							// rules, so a slot that would fail every fill is refused
-							// rather than approved. No other type reads a book.
-							clobMarket:
-								on && isClobEntry(entry.config.quoterType)
-									? new PublicKey(entry.config.responseAccount)
-									: null,
-							// Approval can grow the slab account.
-							systemProgram: SystemProgram.programId,
-						},
-					}
+				// A book approval asks the book for its own placement rules, so a slot
+				// that would fail every fill is refused rather than approved. No other
+				// type reads a book.
+				const ix = await client.getUpdateQuoterApprovedIx(
+					quoterKey,
+					on,
+					entry.config.market,
+					new PublicKey(entry.config.programId),
+					isClobEntry(entry.config.quoterType)
+						? new PublicKey(entry.config.responseAccount)
+						: null,
+					flags.admin ? new PublicKey(flags.admin) : undefined
 				);
 				const result = await sendOrPropose(
 					provider,
@@ -731,42 +647,18 @@ export function registerQuoter(parent: Command): void {
 						) as { config: { programId: PublicKey } }
 					).config.programId
 				);
-				const ix = client.program.instruction.updatePerpMarketClobQuoter(
+				const ix = await client.getUpdatePerpMarketClobQuoterIx(
+					marketIndex,
+					new PublicKey(quoterArg),
+					new PublicKey(clobMarket),
+					clobProgramId,
 					{
 						crankCostUnits,
 						expireFallbackSlots: new BN(expireFallbackSlots ?? 1500),
 						minCrossSurplus: new BN(flags.minCrossSurplus),
 					},
 
-					{
-						accounts: {
-							admin: flags.admin
-								? new PublicKey(flags.admin)
-								: provider.wallet.publicKey,
-							state: await client.getStatePublicKey(),
-							perpMarket: getPerpMarketPublicKeySync(
-								client.program.programId,
-								marketIndex
-							),
-
-							quoter: new PublicKey(quoterArg),
-							quoterSlab: getQuoterSlabPublicKey(
-								client.program.programId,
-								marketIndex
-							),
-
-							clobMarket: new PublicKey(clobMarket),
-							clobProgram: clobProgramId,
-							crankConditions: getClobCrankConditionsPublicKey(
-								client.program.programId,
-								marketIndex
-							),
-
-							treasury: getCrankTreasuryPublicKey(client.program.programId),
-							rent: SYSVAR_RENT_PUBKEY,
-							systemProgram: SystemProgram.programId,
-						},
-					}
+					flags.admin ? new PublicKey(flags.admin) : undefined
 				);
 				const result = await sendOrPropose(
 					provider,
@@ -971,10 +863,10 @@ export function registerQuoter(parent: Command): void {
 					client.program.programId,
 					entry.config.market
 				);
-				const crossConditions = PublicKey.findProgramAddressSync(
-					[Buffer.from('quoter_cross_conditions'), quoterKey.toBuffer()],
-					client.program.programId
-				)[0];
+				const crossConditions = getQuoterCrossConditionsPublicKey(
+					client.program.programId,
+					quoterKey
+				);
 				const ix = client.program.instruction.initializeQuoterCrossConditions(
 					{ expireFallbackSlots: new BN(flags.fallbackSlots) },
 					{

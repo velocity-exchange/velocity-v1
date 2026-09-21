@@ -3,8 +3,8 @@ use {
         emit::emit_pod,
         error::MidpointError,
         events::{MidpointExecuteRecordV0, MIDPOINT_EVENT_VERSION},
-        instructions::quote_v0::caller_gate,
-        state::{Direction, MidpointQuoterV0, ResponsePointerV0},
+        instructions::quote_v0::is_open,
+        state::{MidpointQuoterV0, ResponsePointerV0},
     },
     anchor_lang::prelude::*,
 };
@@ -31,20 +31,14 @@ pub fn handle_execute_v0(
     args: ExecuteArgsV0<'_>,
 ) -> Result<ResponsePointerV0> {
     let clock = Clock::get()?;
-    let open = caller_gate(
+    let open = is_open(
         &ctx.accounts.quoter,
         args.users,
         args.taker.as_ref(),
         args.taker_served_window,
+        args.reference_price,
     )?;
 
-    // A mid outside the band of velocity's oracle fills nothing, so a
-    // compromised hot key cannot settle the maker at an off-market price.
-    let open = open
-        && ctx
-            .accounts
-            .quoter
-            .mid_within_deviation(args.reference_price);
     let quoter = &mut ctx.accounts.quoter;
 
     let mut change = None;
@@ -63,11 +57,7 @@ pub fn handle_execute_v0(
                 quote_size: fill.quote,
                 configured_market_index: quoter.market_index,
                 sub_account_id: quoter.user_sub_account_id,
-                direction: match args.direction {
-                    Direction::Long => 0,
-                    Direction::Short => 1,
-                },
-
+                direction: args.direction.tag(),
                 version: MIDPOINT_EVENT_VERSION,
                 _pad: [0; 2],
             });

@@ -24,7 +24,10 @@ pub fn handle_liquidate_perp<'c: 'info, 'info>(
     // liquidation takes on. The unsigned program-keeper mode therefore exists
     // for the with-fill flavor only, where the liquidator is only the filler.
     validate!(
-        ctx.accounts.liquidator.load()?.authority != state.signer,
+        !ctx.accounts
+            .liquidator
+            .load()?
+            .is_protocol_user(&state.signer),
         ErrorCode::DefaultError,
         "the protocol user only liquidates via liquidate_perp_with_fill"
     )?;
@@ -156,7 +159,13 @@ pub fn handle_liquidate_perp_with_fill<'c: 'info, 'info>(
     // lamports for the crank; every other relay executor closes the same loop.
     // Only a crank that filled something is paid, since paying a no-op success
     // (exit or shortage) would let anyone drain the reservoir by looping on it.
-    if filled_quote > 0 && ctx.accounts.liquidator.load()?.authority == state.signer {
+    if filled_quote > 0
+        && ctx
+            .accounts
+            .liquidator
+            .load()?
+            .is_protocol_user(&state.signer)
+    {
         pay_liquidation_crank(&ctx, &state, &mut maps, market_index, filled_quote)?;
     }
 
@@ -417,7 +426,9 @@ fn liquidation_reimbursement<'info>(
         return Ok(0);
     }
 
-    let Some(sol_price) = crank_sol_price(state, spot_market_map, oracle_map)? else {
+    let Some(sol_price) =
+        crate::state::clob_crank::sol_oracle_price(state, spot_market_map, oracle_map)
+    else {
         return Ok(0);
     };
 
@@ -445,38 +456,6 @@ fn liquidation_reimbursement<'info>(
         state.liquidation_crank_reimbursement_bps,
     )
     .map_err(Into::into)
-}
-
-/// The SOL price that converts a quote reimbursement into lamports.
-///
-/// `None` declines the reimbursement. An oracle drives this value transfer, so
-/// it takes the same validity gate as any other. An unusable price pays the flat
-/// figure alone and does not revert the crank.
-fn crank_sol_price(
-    state: &State,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
-) -> Result<Option<i64>> {
-    let Ok(sol_market) = spot_market_map.get_ref(&state.sol_spot_market_index) else {
-        return Ok(None);
-    };
-    let (oracle_data, validity) = oracle_map.get_price_data_and_validity(
-        MarketType::Spot,
-        sol_market.market_index,
-        &sol_market.oracle_id(),
-        sol_market.historical_oracle_data.last_oracle_price_twap,
-        sol_market.get_max_confidence_interval_multiplier()?,
-        -1,
-        0,
-        None,
-    )?;
-
-    if !matches!(validity, crate::math::oracle::OracleValidity::Valid) {
-        msg!("sol oracle is not valid for pricing the crank; paying the flat figure");
-        return Ok(None);
-    }
-
-    Ok(Some(oracle_data.price))
 }
 
 #[access_control(

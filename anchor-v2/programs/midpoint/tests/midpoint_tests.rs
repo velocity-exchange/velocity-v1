@@ -6,16 +6,11 @@
 #![allow(clippy::result_large_err)]
 
 use {
-    anchor_v2_testing::{
-        Keypair, LiteSVM, Message, Signer, VersionedMessage, VersionedTransaction,
-    },
+    anchor_v2_testing::{Keypair, LiteSVM, Signer},
     litesvm::types::{FailedTransactionMetadata, TransactionMetadata},
     midpoint::{
         accounts,
-        anchor_lang::{
-            prelude::Address,
-            solana_program::instruction::{AccountMeta, Instruction},
-        },
+        anchor_lang::solana_program::instruction::{AccountMeta, Instruction},
         instruction,
         state::{
             CancelSidesV0, Direction, MidpointQuoterV0, QuoterConfigV0, SplineLevelInputV0,
@@ -24,6 +19,7 @@ use {
         CancelAllArgsV0, ExecuteArgsV0, QuoteArgsV0, SetLevelsArgsV0, SetMidArgsV0,
         UpdateQuoterArgsV0,
     },
+    quoter_test_support::{addr, system_program},
     solana_clock::Clock,
     solana_pubkey::Pubkey,
 };
@@ -42,14 +38,6 @@ fn program_id() -> Pubkey {
     "eb3Kwmht4evPGGonNHCQs1h7ng63ZUwZ9TyV1qPo23D"
         .parse()
         .unwrap()
-}
-
-fn addr(pk: Pubkey) -> Address {
-    Address::new_from_array(pk.to_bytes())
-}
-
-fn system_program() -> Pubkey {
-    "11111111111111111111111111111111".parse().unwrap()
 }
 
 struct Ctx {
@@ -151,11 +139,7 @@ fn send_signed_by(
             .push(AccountMeta::new_readonly(co_signer.pubkey(), true));
     }
 
-    ctx.svm.expire_blockhash();
-    let blockhash = ctx.svm.latest_blockhash();
-    let msg = Message::new_with_blockhash(&[ix.clone()], Some(&ctx.payer.pubkey()), &blockhash);
-    let mut signers: Vec<&dyn anchor_v2_testing::Signer> = vec![&ctx.payer];
-    let known: Vec<&Keypair> = [
+    let candidates: Vec<&Keypair> = [
         &ctx.authority,
         &ctx.user_authority,
         &ctx.hot,
@@ -164,38 +148,14 @@ fn send_signed_by(
     .into_iter()
     .chain(co_signer)
     .collect();
-    for kp in known {
-        let needed = ix
-            .accounts
-            .iter()
-            .any(|m| m.is_signer && m.pubkey.to_bytes() == kp.pubkey().to_bytes());
-        let already = signers
-            .iter()
-            .any(|signer| signer.pubkey().to_bytes() == kp.pubkey().to_bytes());
-        if needed && !already {
-            signers.push(kp);
-        }
-    }
 
-    let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &signers).unwrap();
-    ctx.svm.send_transaction(tx)
-}
-
-fn parse_u32(b: &[u8]) -> u32 {
-    u32::from_le_bytes(b[..4].try_into().unwrap())
+    quoter_test_support::send(&mut ctx.svm, &ctx.payer, &candidates, ix, None)
 }
 
 fn read_response(ctx: &Ctx, meta: &TransactionMetadata) -> Vec<u8> {
-    assert_eq!(
-        meta.return_data.program_id.to_bytes(),
-        program_id().to_bytes()
-    );
-
-    let offset = parse_u32(&meta.return_data.data) as usize;
-    assert_eq!(offset, RESPONSE_OFFSET);
-    let len = parse_u32(&meta.return_data.data[4..]) as usize;
-    let account = ctx.svm.get_account(&ctx.quoter).unwrap();
-    account.data[offset..offset + len].to_vec()
+    let response = quoter_test_support::read_response(&ctx.svm, program_id(), ctx.quoter, meta);
+    assert_eq!(response.offset, RESPONSE_OFFSET);
+    response.bytes
 }
 
 /// The quote response, through the layout's own parser rather than a second

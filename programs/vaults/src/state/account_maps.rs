@@ -20,6 +20,36 @@ pub trait AccountMapProvider<'a> {
     ) -> VelocityResult<AccountMaps<'a>>;
 }
 
+/// Velocity's account maps over the accounts a vault instruction carries.
+///
+/// The slot clock comes from velocity's `State` rather than a fixed 400ms
+/// baseline. On a faster chain that baseline shrinks every oracle staleness
+/// window, and a vault would then fail on an oracle the rest of the protocol
+/// accepts.
+pub fn velocity_maps<'a>(
+    accounts: &'a [AccountInfo<'a>],
+    velocity_state: &AccountInfo,
+    writable_spot_market_index: Option<u16>,
+    slot: u64,
+) -> VelocityResult<AccountMaps<'a>> {
+    let slot_clock = velocity::state::state::State::slot_clock_from_account_info(velocity_state)
+        .map_err(|error| {
+            msg!("invalid velocity State account: {}", error);
+            velocity::error::ErrorCode::DefaultError
+        })?;
+
+    load_maps(
+        &mut accounts.iter().peekable(),
+        &BTreeSet::new(),
+        &writable_spot_market_index
+            .map(get_writable_spot_market_set)
+            .unwrap_or_default(),
+        slot,
+        slot_clock,
+        None,
+    )
+}
+
 impl<'info, T: anchor_lang::Bumps> AccountMapProvider<'info> for Context<'info, T> {
     fn load_maps(
         &self,
@@ -29,34 +59,19 @@ impl<'info, T: anchor_lang::Bumps> AccountMapProvider<'info> for Context<'info, 
         has_fee_update: bool,
         velocity_state: &AccountInfo,
     ) -> VelocityResult<AccountMaps<'info>> {
-        // if [`VaultProtocol`] exists it will be the last index in the remaining_accounts, so we need to skip it.
-        let mut end_index = self.remaining_accounts.len() - (has_vault_protocol as usize);
-        // if there is a [`FeeUpdate`], we need to skip one more account
-        end_index -= has_fee_update as usize;
+        // `VaultProtocol` rides last in `remaining_accounts` and `FeeUpdate`
+        // sits before it, so neither reaches the map loaders.
+        let tail = self
+            .remaining_accounts
+            .len()
+            .saturating_sub(has_vault_protocol as usize)
+            .saturating_sub(has_fee_update as usize);
 
-        // Every vault path that loads maps carries velocity's State, so the live
-        // slot clock is always available. The parameter is not optional, so no
-        // path can fall back to a fixed 400ms baseline. On a faster chain that
-        // baseline shrinks every oracle staleness window, and this instruction
-        // would then fail on an oracle the rest of the protocol accepts.
-        let slot_clock = velocity::state::state::State::slot_clock_from_account_info(
+        velocity_maps(
+            &self.remaining_accounts[..tail],
             velocity_state,
-        )
-        .map_err(|error| {
-            msg!("invalid velocity State account: {}", error);
-            velocity::error::ErrorCode::DefaultError
-        })?;
-
-        let remaining_accounts_iter = &mut self.remaining_accounts[..end_index].iter().peekable();
-        load_maps(
-            remaining_accounts_iter,
-            &BTreeSet::new(),
-            &writable_spot_market_index
-                .map(get_writable_spot_market_set)
-                .unwrap_or_default(),
+            writable_spot_market_index,
             slot,
-            slot_clock,
-            None,
         )
     }
 }

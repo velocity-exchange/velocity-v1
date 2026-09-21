@@ -1,15 +1,7 @@
 import { PublicKey } from '@solana/web3.js';
 import { BN } from '@coral-xyz/anchor';
 import { PositionDirection, UserClobOrder } from '../types';
-
-// `WebSocket` is a global in a browser and in node 22. The SDK supports node
-// 20, where it is not, so the `ws` package supplies it there.
-let WebSocketImpl: typeof WebSocket;
-if (typeof globalThis !== 'undefined' && (globalThis as any).WebSocket) {
-	WebSocketImpl = (globalThis as any).WebSocket;
-} else {
-	WebSocketImpl = require('ws');
-}
+import { WebSocketImpl } from '../isomorphic/webSocket';
 
 /** How long to wait before rebuilding a socket that closed. */
 const RECONNECT_DELAY_MS = 1_000;

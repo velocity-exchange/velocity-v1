@@ -11,12 +11,12 @@ use {
         ACTIVE_SLOT,
     },
     crate::{
-        book::{walk_side, BookHeader, ClobBook, NodeArena, Walk, NIL},
+        book::{walk_side, BookHeader, ClobBook, NodeArena, Walk},
         error::ClobError,
         state::{
             CancelAllOutcome, CancelSidesV0, ClobMarketV0, Direction, MarketConfigV0, OrderBitFlag,
             PlaceOrderParams, Side, UserCapsV0, UserRefV0, BASE_PRECISION,
-            CANCEL_ALL_ORDERS_CEILING,
+            CANCEL_ALL_ORDERS_CEILING, NIL,
         },
     },
     anchor_lang::prelude::*,

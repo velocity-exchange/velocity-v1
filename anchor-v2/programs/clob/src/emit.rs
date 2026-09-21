@@ -1,25 +1,16 @@
 //! Event emission without a heap allocation.
 //!
-//! Anchor's `emit!` goes through `Event::data()`, which returns a `Vec<u8>` in
-//! both of anchor v2's event flavours. The bytemuck flavour allocates a buffer
-//! of the right size and copies the struct into it. The wincode flavour
-//! allocates a 256-byte guess and reallocates upward when the payload is
-//! larger. The execute record is larger from about 15 fills on. What reaches
-//! the runtime is `[discriminator][body]`, handed to `sol_log_data` as one
-//! field. Everything here builds those bytes in a stack buffer and calls the
-//! syscall directly.
-//!
-//! These helpers pass one field rather than two. `sol_log_data` base64-encodes
-//! each slice it is given into a separate entry of a space-separated list.
-//! Decoders such as velocity's `EventSubscriber` and the TypeScript SDK
-//! base64-decode the whole `Program data:` line as one blob. The discriminator
-//! and the body therefore have to be contiguous, so these helpers concatenate
-//! them.
+//! The fixed-size path lives in `quoter-emit-v2`, which both anchor v2 quoters
+//! share, and this module re-exports it. What stays here is what only this
+//! program needs: a stack buffer and a streaming encoder for the two
+//! variable-length records, whose payloads carry per-order detail and cannot
+//! be one `bytemuck` copy.
 //!
 //! The emitted bytes are identical to the bytes `Event::data()` returns. That
 //! is the contract with every decoder, and `tests::emit` pins each event
 //! against the trait implementation.
 
+pub use quoter_emit::{assert_pod_matches_event, emit_pod, pod_log_bytes, DISCRIMINATOR_BYTES};
 use {
     crate::{
         error::ClobError,
@@ -32,10 +23,25 @@ use {
     anchor_lang::prelude::*,
 };
 
-/// Anchor derives every event discriminator as the first 8 bytes of
-/// `sha256("event:<TypeName>")`. [`emit_pod`] checks that the type it is handed
-/// agrees, so this constant is the prefix width.
-pub const DISCRIMINATOR_BYTES: usize = 8;
+/// Emit one of the three order-removal records. The records carry the same
+/// eight fields, and each keeps its own discriminator so a reader can tell a
+/// cancel from an eviction from an expiry.
+macro_rules! emit_removal {
+    ($ty:ident, $removed:expr, $clock:expr, $market_index:expr) => {
+        $crate::emit::emit_pod!($ty {
+            authority: $removed.user.authority,
+            ts: $clock.unix_timestamp,
+            order_id: $removed.order_id,
+            price: $removed.price,
+            base_asset_amount: $removed.base_asset_amount,
+            market_index: $market_index,
+            sub_account_id: $removed.user.sub_account_id,
+            client_order_id: $removed.client_order_id,
+        })
+    };
+}
+
+pub(crate) use emit_removal;
 
 /// Widest [`ExecuteRecordV0`] log: discriminator, fixed prefix, and both
 /// sequences at their widest, `EXECUTE_FILLS_CEILING` fills and
@@ -63,41 +69,6 @@ pub const CANCEL_ALL_RECORD_LOG_BYTES: usize = DISCRIMINATOR_BYTES
     + 2 * core::mem::size_of::<u8>()
     + COUNT_BYTES
     + CANCEL_ALL_ORDERS_CEILING as usize * CLIENT_ORDER_ID_BYTES;
-
-/// `[discriminator][body]` for a fixed-size `#[event(bytemuck)]` record.
-/// `N` is the record's full log width; call through [`emit_pod`], which
-/// derives `N` from the type and checks the discriminator width at compile
-/// time. A wrong `N` would truncate or pad the event.
-pub fn pod_log_bytes<E, const N: usize>(record: &E) -> [u8; N]
-where
-    E: Discriminator + bytemuck::Pod,
-{
-    let mut bytes = [0u8; N];
-    bytes[..DISCRIMINATOR_BYTES].copy_from_slice(E::DISCRIMINATOR);
-    bytes[DISCRIMINATOR_BYTES..].copy_from_slice(bytemuck::bytes_of(record));
-    bytes
-}
-
-/// Emit a fixed-size `#[event(bytemuck)]` record. It logs the same bytes as
-/// `emit!`, built on the stack. It takes the record's struct literal, so a call
-/// site reads the way an `emit!` call site reads.
-macro_rules! emit_pod {
-    ($ty:ident { $($field:tt)* }) => {{
-        const LOG_BYTES: usize =
-            $crate::emit::DISCRIMINATOR_BYTES + ::core::mem::size_of::<$ty>();
-        const _: () = ::core::assert!(
-            <$ty as anchor_lang::Discriminator>::DISCRIMINATOR.len()
-                == $crate::emit::DISCRIMINATOR_BYTES,
-            "event discriminator is not 8 bytes wide",
-        );
-
-        anchor_lang::sol_log_data(&[&$crate::emit::pod_log_bytes::<$ty, LOG_BYTES>(&$ty {
-            $($field)*
-        })]);
-    }};
-}
-
-pub(crate) use emit_pod;
 
 /// Append-only stack buffer holding one `sol_log_data` field.
 ///

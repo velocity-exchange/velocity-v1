@@ -1499,6 +1499,19 @@ export type StateAccount = {
 	slotDurationTransitionSlots: BN[];
 };
 
+/**
+ * The three accounts every CLOB order instruction on a perp market takes.
+ * `VelocityClient.getClobAccounts` resolves them from a market index.
+ */
+export type ClobAccounts = {
+	/** the market's quoter slab PDA, which lists the approved quoters */
+	quoterSlab: PublicKey;
+	/** the book account the slab's slot 0 writes its responses into */
+	clobMarket: PublicKey;
+	/** the program that owns `clobMarket` */
+	clobProgram: PublicKey;
+};
+
 /** Decoded mirror of the on-chain `PerpMarket` zero-copy account. */
 export type PerpMarketAccount = {
 	status: MarketStatus;

@@ -7,21 +7,8 @@ license = "Apache-2.0"
 repository = "https://github.com/velocity-exchange/velocity-v1/crates/quoter-spec/"
 
 [dependencies]
-# The address type every program on this wire already has. Velocity reaches it
-# as `Pubkey` — solana-pubkey re-exports `Address as Pubkey`, and solana-address
-# 1.x is a ten-line shim over 2.x — and the v2 programs reach it as `Address`
-# through anchor-lang-v2 and pinocchio. Same struct, same major, so the types
-# below can be the declaration both sides use rather than a shape they restate.
-# `copy` is not optional: these are small value types that every caller moves
-# by copy, and `Address` gates its `Copy` impl behind that feature.
-# The `wincode` feature is deliberately off. It would make `Address` carry
-# wincode's traits, but which wincode those target moves with this crate's
-# minor: 2.6 targets 0.5 and 2.7 targets 0.6. A tree that resolved one while
-# this crate derives against the other gets two unrelated `SchemaRead` traits
-# and a wall of unsatisfied bounds. litesvm and the agave RPC crates hold this
-# crate's trees to 2.6, so `UserRefV0` writes its own wincode schema against
-# `[u8; 32]` instead and the version requirement stays open.
-solana-address = { version = "2.6", features = ["bytemuck", "copy"] }
+# See the root `[workspace.dependencies]` for why the pin is 2.6.
+solana-address.workspace = true
 
 # Serialization is per-consumer, because the two halves of the wire do not agree
 # on a framework: both ends read the responses with wincode, but velocity also
@@ -38,14 +25,12 @@ solana-address = { version = "2.6", features = ["bytemuck", "copy"] }
 # serialization, so the derive and the IDL support are separate features — and
 # the v2 programs enable neither, so no anchor code reaches them.
 anchor-lang = { version = "1.0.2", optional = true }
-wincode = { version = "0.6", features = ["derive"] }
+wincode.workspace = true
 
 # The records are cast onto the response region at both ends of the wire, so
-# every one of them is `Pod`. The derive is also the layout check: a field
-# reordered into a padding hole stops compiling here rather than changing the
-# bytes the other program reads. `solana-address/bytemuck` is what makes
-# `Address` usable in a `Pod` record.
-bytemuck = { version = "1", features = ["derive"] }
+# every one of them is `Pod`. `solana-address/bytemuck` is what makes `Address`
+# usable in a `Pod` record.
+bytemuck.workspace = true
 
 [features]
 default = []

@@ -38,6 +38,11 @@ pub use {anchor_lang, instructions::*, relay_spec};
 
 declare_id!("BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU");
 
+// Velocity refuses a quoter config whose program is not this key, and reads the
+// key from `clob-wire`. A divergence here would brick every CLOB path at
+// runtime, so it fails the build instead.
+const _: () = assert!(clob_wire::is_clob_program_id(ID.to_bytes()));
+
 #[program]
 pub mod clob {
     use super::*;
@@ -62,35 +67,35 @@ pub mod clob {
     }
 
     pub fn place_order_v0(
-        ctx: &mut Context<PlaceOrderV0>,
+        ctx: &mut Context<GatedMarketV0>,
         args: PlaceOrderArgsV0,
     ) -> Result<state::OrderRefV0> {
         instructions::place_order_v0::handle_place_order_v0(ctx, args)
     }
 
     pub fn cancel_order_v0(
-        ctx: &mut Context<CancelOrderV0>,
+        ctx: &mut Context<GatedMarketV0>,
         args: CancelOrderArgsV0,
     ) -> Result<state::RemovedOrderV0> {
         instructions::cancel_order_v0::handle_cancel_order_v0(ctx, args)
     }
 
     pub fn cancel_all_v0(
-        ctx: &mut Context<CancelAllV0>,
+        ctx: &mut Context<GatedMarketV0>,
         args: CancelAllArgsV0,
     ) -> Result<state::CancelAllOutcomeV0> {
         instructions::cancel_all_v0::handle_cancel_all_v0(ctx, args)
     }
 
     pub fn evict_worst_v0(
-        ctx: &mut Context<EvictWorstV0>,
+        ctx: &mut Context<GatedMarketV0>,
         args: EvictWorstArgsV0,
     ) -> Result<state::RemovedOrderV0> {
         instructions::evict_worst_v0::handle_evict_worst_v0(ctx, args)
     }
 
     pub fn remove_expired_v0(
-        ctx: &mut Context<RemoveExpiredV0>,
+        ctx: &mut Context<GatedMarketV0>,
         args: RemoveExpiredArgsV0,
     ) -> Result<state::RemovedOrderV0> {
         instructions::remove_expired_v0::handle_remove_expired_v0(ctx, args)
@@ -99,7 +104,7 @@ pub mod clob {
     /// Read-only. Names the order the book lets a caller remove next. A caller
     /// simulates it to find work, then sends the removal it names.
     pub fn next_removal_v0(
-        ctx: &mut Context<NextRemovalV0Accounts>,
+        ctx: &mut Context<MarketViewV0>,
         args: NextRemovalArgsV0,
     ) -> Result<OrderViewV0> {
         instructions::next_removal_v0::handle_next_removal_v0(ctx, args)
@@ -108,21 +113,21 @@ pub mod clob {
     /// Read-only. Reports what the book requires of an order before it holds
     /// one. A caller builds against these rules instead of learning them from
     /// a rejection.
-    pub fn order_rules_v0(ctx: &mut Context<OrderRulesV0Accounts>) -> Result<OrderRulesV0> {
+    pub fn order_rules_v0(ctx: &mut Context<MarketViewV0>) -> Result<OrderRulesV0> {
         instructions::order_rules_v0::handle_order_rules_v0(ctx)
     }
 
     /// Read-only. Reports what the book holds for a set of refs, one answer
     /// per ref. A ref that no longer names a live order comes back as
     /// `OrderViewV0::NONE`.
-    pub fn orders_v0(ctx: &mut Context<OrdersV0Accounts>, args: OrdersArgsV0) -> Result<OrdersV0> {
+    pub fn orders_v0(ctx: &mut Context<MarketViewV0>, args: OrdersArgsV0) -> Result<OrdersV0> {
         instructions::orders_v0::handle_orders_v0(ctx, args)
     }
 
     /// Read-only. Reports the best matchable order on each side. Any cross
     /// settles between those two orders. A caller simulates it, like
     /// `next_removal_v0`.
-    pub fn next_cross_v0(ctx: &mut Context<NextCrossV0Accounts>) -> Result<NextCrossV0> {
+    pub fn next_cross_v0(ctx: &mut Context<MarketViewV0>) -> Result<NextCrossV0> {
         instructions::next_cross_v0::handle_next_cross_v0(ctx)
     }
 
@@ -131,7 +136,7 @@ pub mod clob {
     /// what to do. Returns the account offset the condition block sits at, for
     /// the watch registration.
     pub fn set_crank_conditions_v0(
-        ctx: &mut Context<SetCrankConditionsV0>,
+        ctx: &mut Context<GatedMarketV0>,
         args: CrankConditionsArgsV0,
     ) -> Result<CrankBlockV0> {
         instructions::set_crank_conditions_v0::handle_set_crank_conditions_v0(ctx, args)
@@ -145,27 +150,30 @@ pub mod clob {
     }
 
     pub fn quote_v0(
-        ctx: &mut Context<QuoteV0>,
+        ctx: &mut Context<ResponseMarketV0>,
         args: QuoteArgsV0<'_>,
     ) -> Result<state::ResponsePointerV0> {
         instructions::quote_v0::handle_quote_v0(ctx, args)
     }
 
     pub fn quote_l3_v0(
-        ctx: &mut Context<QuoteL3V0>,
+        ctx: &mut Context<ResponseMarketV0>,
         args: L3ArgsV0,
     ) -> Result<state::ResponsePointerV0> {
         instructions::quote_l3_v0::handle_quote_l3_v0(ctx, args)
     }
 
     pub fn execute_v0(
-        ctx: &mut Context<ExecuteV0>,
+        ctx: &mut Context<GatedMarketV0>,
         args: ExecuteArgsV0<'_>,
     ) -> Result<state::ResponsePointerV0> {
         instructions::execute_v0::handle_execute_v0(ctx, args)
     }
 
-    pub fn fill_v0(ctx: &mut Context<FillV0>, args: FillArgsV0) -> Result<state::FillOutcomeV0> {
+    pub fn fill_v0(
+        ctx: &mut Context<GatedMarketV0>,
+        args: FillArgsV0,
+    ) -> Result<state::FillOutcomeV0> {
         instructions::fill_v0::handle_fill_v0(ctx, args)
     }
 }

@@ -33,6 +33,7 @@ pub use quoter_spec::BASE_PRECISION;
 use {
     crate::error::MidpointError,
     anchor_lang::prelude::*,
+    bytemuck::Zeroable,
     quoter_spec::{ExecuteWriter, QuoteWriter},
     static_assertions::const_assert_eq,
 };
@@ -49,14 +50,13 @@ pub const MAX_SPLINE_LEVELS: usize = 64;
 /// The execute response is one balance change. Both fit with room to spare.
 pub const RESPONSE_BUFFER_BYTES: usize = 2048;
 
-pub const ZERO_ADDRESS: Address = Address::new_from_array([0u8; 32]);
-
 /// Which sides a `cancel_all_v0` withdraws. It is the same wire enum and the
 /// same borsh tags the CLOB uses. Named sides replace a pair of bools because
 /// the wire must not express "neither".
 pub use quoter_spec::CancelSidesV0;
 /// Taker direction on the quoter interface. `quoter-spec` declares it once.
 pub use quoter_spec::DirectionV0 as Direction;
+pub use quoter_spec::ZERO_ADDRESS;
 
 /// What the wire's named sides mean to a spline. The spline holds no orders,
 /// so it reads a side as the flow that consumes its rungs.
@@ -138,6 +138,12 @@ pub struct SplineLevelV0 {
 }
 
 const_assert_eq!(core::mem::size_of::<SplineLevelV0>(), 24);
+
+/// One side's rung array and its live count, borrowed together.
+struct SideMut<'a> {
+    levels: &'a mut [SplineLevelV0; MAX_SPLINE_LEVELS],
+    count: &'a mut u8,
+}
 
 /// A maker's spline-level input on the wire. The program owns `filled`, so
 /// the setter takes only the shape.
@@ -366,12 +372,33 @@ impl MidpointQuoterV0 {
         }
     }
 
-    /// The side a taker of `direction` consumes.
-    pub fn side_levels(&self, direction: Direction) -> &[SplineLevelV0] {
+    /// The whole rung array of the side a taker of `direction` consumes,
+    /// live prefix and zeroed tail together.
+    fn side(&self, direction: Direction) -> &[SplineLevelV0; MAX_SPLINE_LEVELS] {
         match direction {
-            Direction::Long => &self.asks[..self.ask_count as usize],
-            Direction::Short => &self.bids[..self.bid_count as usize],
+            Direction::Long => &self.asks,
+            Direction::Short => &self.bids,
         }
+    }
+
+    /// The same side and its live count, borrowed together so a write can
+    /// resize the ladder.
+    fn side_mut(&mut self, direction: Direction) -> SideMut<'_> {
+        match direction {
+            Direction::Long => SideMut {
+                levels: &mut self.asks,
+                count: &mut self.ask_count,
+            },
+            Direction::Short => SideMut {
+                levels: &mut self.bids,
+                count: &mut self.bid_count,
+            },
+        }
+    }
+
+    /// The live rungs of the side a taker of `direction` consumes.
+    pub fn side_levels(&self, direction: Direction) -> &[SplineLevelV0] {
+        &self.side(direction)[..self.side_count(direction) as usize]
     }
 
     /// Whether this quoter quotes right now. It checks the pause flag, an
@@ -452,12 +479,9 @@ impl MidpointQuoterV0 {
     /// [`MidpointQuoterV0::validate_consumption`].
     pub fn apply_fill(&mut self, direction: Direction, fill: &SplineFill) -> Result<()> {
         let count = self.side_count(direction) as usize;
-        let levels = match direction {
-            Direction::Long => &mut self.asks[..count],
-            Direction::Short => &mut self.bids[..count],
-        };
+        let side = self.side_mut(direction);
 
-        for (level, consumed) in levels.iter_mut().zip(fill.consumed.iter()) {
+        for (level, consumed) in side.levels[..count].iter_mut().zip(fill.consumed.iter()) {
             level.filled = level.filled.saturating_add(*consumed);
         }
 
@@ -488,76 +512,50 @@ impl MidpointQuoterV0 {
             previous = Some(input.offset_ppm);
         }
 
-        let (levels, count) = match direction {
-            Direction::Long => (&mut self.asks[..], &mut self.ask_count),
-            Direction::Short => (&mut self.bids[..], &mut self.bid_count),
-        };
-
-        for (slot, input) in levels.iter_mut().zip(inputs.iter()) {
+        let side = self.side_mut(direction);
+        for (slot, input) in side.levels.iter_mut().zip(inputs.iter()) {
             *slot = SplineLevelV0 {
                 offset_ppm: input.offset_ppm,
                 size: input.size,
                 filled: 0,
             };
         }
-        for slot in levels.iter_mut().skip(inputs.len()) {
-            *slot = SplineLevelV0 {
-                offset_ppm: 0,
-                size: 0,
-                filled: 0,
-            };
+
+        for slot in side.levels.iter_mut().skip(inputs.len()) {
+            *slot = SplineLevelV0::zeroed();
         }
 
-        *count = inputs.len() as u8;
+        *side.count = inputs.len() as u8;
         Ok(())
     }
 
-    /// Withdraw one side's standing intent. It zeroes the live rungs and
-    /// drops the count to zero. It returns the number of rungs it cleared.
-    ///
-    /// The write covers only the live prefix. The tail past `count` is already
-    /// zero by the ladder invariant, so a maker who runs eight rungs pays for
+    /// Withdraw one side's standing intent. It zeroes the live rungs, drops
+    /// the count to zero, and returns the number of rungs it cleared. The tail
+    /// past `count` is already zero, so a maker who runs eight rungs pays for
     /// eight rather than for the ladder's capacity.
     pub fn clear_side(&mut self, direction: Direction) -> u8 {
         let count = self.side_count(direction) as usize;
-        let (levels, stored) = match direction {
-            Direction::Long => (&mut self.asks[..], &mut self.ask_count),
-            Direction::Short => (&mut self.bids[..], &mut self.bid_count),
-        };
-
-        levels[..count].fill(SplineLevelV0 {
-            offset_ppm: 0,
-            size: 0,
-            filled: 0,
-        });
-
-        *stored = 0;
+        let side = self.side_mut(direction);
+        side.levels[..count].fill(SplineLevelV0::zeroed());
+        *side.count = 0;
         count as u8
     }
 
     /// Post-condition of [`Self::clear_side`]. The side's count is zero and
-    /// every rung the withdrawal wrote is zeroed.
-    ///
-    /// The check covers the `cleared` rungs rather than the whole ladder. The
-    /// tail past the old count was already zero by the ladder invariant, and a
-    /// withdrawal never writes there. Every other mutating instruction still
-    /// runs the full [`Self::validate`], which catches a tail that anything
-    /// else corrupted.
+    /// every rung the withdrawal wrote is zeroed. The check covers the
+    /// `cleared` rungs alone, because the tail past the old count was already
+    /// zero. Every other mutating instruction runs the full
+    /// [`Self::validate`], which catches a tail that anything else corrupted.
     pub fn validate_cleared_side(&self, direction: Direction, cleared: u8) -> Result<()> {
         require!(
             self.side_count(direction) == 0,
             MidpointError::InvariantViolated
         );
 
-        let levels = match direction {
-            Direction::Long => &self.asks,
-            Direction::Short => &self.bids,
-        };
-
         require!(
-            levels[..(cleared as usize).min(MAX_SPLINE_LEVELS)]
+            self.side(direction)[..(cleared as usize).min(MAX_SPLINE_LEVELS)]
                 .iter()
-                .all(|level| level.offset_ppm == 0 && level.size == 0 && level.filled == 0),
+                .all(|level| *level == SplineLevelV0::zeroed()),
             MidpointError::InvariantViolated
         );
 
@@ -663,7 +661,7 @@ impl MidpointQuoterV0 {
         }
         for level in &levels[count..] {
             require!(
-                level.offset_ppm == 0 && level.size == 0 && level.filled == 0,
+                *level == SplineLevelV0::zeroed(),
                 MidpointError::InvariantViolated
             );
         }
@@ -754,7 +752,7 @@ impl MidpointQuoterV0 {
             // Past the caller's worst acceptable price. Offsets ascend
             // strictly, so every later rung prices further from the mid and is
             // worse.
-            if worse_than_limit(direction, price, limit_price) {
+            if direction.worse_than_limit(price, limit_price) {
                 break;
             }
 
@@ -813,27 +811,10 @@ impl MidpointQuoterV0 {
     }
 }
 
-/// Whether a rung at `price` is past the caller's worst acceptable price.
-/// Zero is no bound. A rung exactly at the limit is acceptable, so the
-/// comparison is strict.
-fn worse_than_limit(direction: Direction, price: u64, limit_price: u64) -> bool {
-    if limit_price == 0 {
-        return false;
-    }
-
-    match direction {
-        Direction::Long => price > limit_price,
-        Direction::Short => price < limit_price,
-    }
-}
-
 /// Point at the `len` bytes the writer just streamed. The response region
 /// always starts at [`RESPONSE_OFFSET`].
 fn response_pointer(len: usize) -> ResponsePointerV0 {
-    ResponsePointerV0 {
-        offset: RESPONSE_OFFSET as u32,
-        len: len as u32,
-    }
+    ResponsePointerV0::at(RESPONSE_OFFSET, len)
 }
 
 #[cfg(test)]
@@ -1170,12 +1151,10 @@ mod tests {
 
         assert_eq!(quoter.clear_side(Direction::Short), 2);
         assert_eq!(quoter.bid_count, 0);
-        assert!(quoter.bids.iter().all(|level| *level
-            == SplineLevelV0 {
-                offset_ppm: 0,
-                size: 0,
-                filled: 0
-            }));
+        assert!(quoter
+            .bids
+            .iter()
+            .all(|level| *level == SplineLevelV0::zeroed()));
         // The ask side is untouched and still quotes.
         assert_eq!(quoter.ask_count, 1);
         assert_eq!(quoter.asks[0].size, 2 * UNIT);

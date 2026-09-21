@@ -239,17 +239,9 @@ impl Metrics {
                     .inc();
             }
             Observation::DepthClamped { .. } => {}
-            Observation::RouteLanded {
-                quoted_price,
-                executed_price,
-                taker_long,
-            } => {
-                let delta = executed_price as f64 - quoted_price as f64;
-                let adverse = if taker_long { delta } else { -delta };
-                if quoted_price > 0 {
-                    self.slip_bps
-                        .with_label_values(&labels)
-                        .observe(adverse / quoted_price as f64 * 10_000.0);
+            Observation::RouteLanded { .. } => {
+                if let Some(bps) = report.observation.adverse_slip_bps() {
+                    self.slip_bps.with_label_values(&labels).observe(bps);
                 }
             }
         }

@@ -335,9 +335,7 @@ fn write_market_crank_conditions(
     // field. A mirror left at zero on an account that already holds lamports
     // keeps the condition due forever, while the resolver keeps answering that
     // there is no work.
-    conditions.spendable_mirror = crank_conditions
-        .to_account_info()
-        .lamports()
-        .saturating_sub(Rent::get()?.minimum_balance(ClobCrankConditionsV0::SIZE));
+    conditions.spendable_mirror =
+        ClobCrankConditionsV0::spendable_lamports(&crank_conditions.to_account_info())?;
     Ok(())
 }

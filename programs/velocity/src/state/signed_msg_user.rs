@@ -126,6 +126,18 @@ pub struct SignedMsgUserOrdersFixed {
 unsafe impl bytemuck::Pod for SignedMsgUserOrdersFixed {}
 unsafe impl bytemuck::Zeroable for SignedMsgUserOrdersFixed {}
 
+fn entry_at(data: &[u8], index: u32) -> &SignedMsgOrderId {
+    let size = std::mem::size_of::<SignedMsgOrderId>();
+    let start = index as usize * size;
+    bytemuck::from_bytes(&data[start..start + size])
+}
+
+fn entry_at_mut(data: &mut [u8], index: u32) -> &mut SignedMsgOrderId {
+    let size = std::mem::size_of::<SignedMsgOrderId>();
+    let start = index as usize * size;
+    bytemuck::from_bytes_mut(&mut data[start..start + size])
+}
+
 pub struct SignedMsgUserOrdersZeroCopy<'a> {
     pub fixed: Ref<'a, SignedMsgUserOrdersFixed>,
     pub data: Ref<'a, [u8]>,
@@ -137,9 +149,7 @@ impl<'a> SignedMsgUserOrdersZeroCopy<'a> {
     }
 
     pub fn get(&self, index: u32) -> &SignedMsgOrderId {
-        let size = std::mem::size_of::<SignedMsgOrderId>();
-        let start = index as usize * size;
-        bytemuck::from_bytes(&self.data[start..start + size])
+        entry_at(&self.data, index)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &SignedMsgOrderId> + '_ {
@@ -176,15 +186,11 @@ impl<'a> SignedMsgUserOrdersZeroCopyMut<'a> {
     }
 
     pub fn get(&self, index: u32) -> &SignedMsgOrderId {
-        let size = std::mem::size_of::<SignedMsgOrderId>();
-        let start = index as usize * size;
-        bytemuck::from_bytes(&self.data[start..start + size])
+        entry_at(&self.data, index)
     }
 
     pub fn get_mut(&mut self, index: u32) -> &mut SignedMsgOrderId {
-        let size = std::mem::size_of::<SignedMsgOrderId>();
-        let start = index as usize * size;
-        bytemuck::from_bytes_mut(&mut self.data[start..start + size])
+        entry_at_mut(&mut self.data, index)
     }
 
     /// Replay check and stale sweep in one pass.
@@ -286,16 +292,22 @@ impl<'a> SignedMsgUserOrdersZeroCopyMut<'a> {
         clob_order_id: u64,
         route_digest: crate::state::order_params::RouteDigest,
     ) -> bool {
-        for i in 0..self.len() {
-            let entry = self.get_mut(i);
-            if entry.uuid == uuid {
-                entry.clob_order_id = clob_order_id;
-                entry.route_digest = route_digest;
-                return true;
-            }
-        }
+        let Some(entry) = self.find_entry_mut(|entry| entry.uuid == uuid) else {
+            return false;
+        };
 
-        false
+        entry.clob_order_id = clob_order_id;
+        entry.route_digest = route_digest;
+        true
+    }
+
+    fn find_entry_mut(
+        &mut self,
+        matches: impl Fn(&SignedMsgOrderId) -> bool,
+    ) -> Option<&mut SignedMsgOrderId> {
+        let index = (0..self.len()).find(|&i| matches(self.get(i)))?;
+
+        Some(self.get_mut(index))
     }
 
     /// Release the entry's hold once its order leaves the book, so the stale
@@ -309,16 +321,13 @@ impl<'a> SignedMsgUserOrdersZeroCopyMut<'a> {
             return false;
         }
 
-        for i in 0..self.len() {
-            let entry = self.get_mut(i);
-            if entry.clob_order_id == clob_order_id {
-                entry.clob_order_id = 0;
-                entry.route_digest = crate::state::order_params::NO_ROUTE_DIGEST;
-                return true;
-            }
-        }
+        let Some(entry) = self.find_entry_mut(|entry| entry.clob_order_id == clob_order_id) else {
+            return false;
+        };
 
-        false
+        entry.clob_order_id = 0;
+        entry.route_digest = crate::state::order_params::NO_ROUTE_DIGEST;
+        true
     }
 }
 

@@ -16,14 +16,9 @@
 
 /// Declared by `clob-wire`.
 pub use clob_wire::OrderRulesV0;
-use {crate::state::ClobMarketV0, anchor_lang::prelude::*};
+use {crate::instructions::MarketViewV0, anchor_lang::prelude::*};
 
-#[derive(Accounts)]
-pub struct OrderRulesV0Accounts {
-    pub market: ClobMarketV0,
-}
-
-pub fn handle_order_rules_v0(ctx: &mut Context<OrderRulesV0Accounts>) -> Result<OrderRulesV0> {
+pub fn handle_order_rules_v0(ctx: &mut Context<MarketViewV0>) -> Result<OrderRulesV0> {
     let market = &ctx.accounts.market;
     Ok(OrderRulesV0 {
         min_order_size: market.min_order_size,

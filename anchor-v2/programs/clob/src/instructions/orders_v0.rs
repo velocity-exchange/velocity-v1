@@ -16,27 +16,19 @@
 //! here first. One such decision is whether the cancel would make an account
 //! worse.
 
+/// Declared by `clob-wire`.
+pub use clob_wire::{OrdersArgsV0, OrdersV0, ORDER_VIEW_CEILING};
 use {
     crate::{
         book::NodeArena,
         error::ClobError,
-        state::{order_view, ClobMarketV0, OrderBitFlag, OrderViewV0},
+        instructions::MarketViewV0,
+        state::{order_view, OrderBitFlag, OrderViewV0},
     },
     anchor_lang::prelude::*,
 };
 
-#[derive(Accounts)]
-pub struct OrdersV0Accounts {
-    pub market: ClobMarketV0,
-}
-
-/// Declared by `clob-wire`.
-pub use clob_wire::{OrdersArgsV0, OrdersV0, ORDER_VIEW_CEILING};
-
-pub fn handle_orders_v0(
-    ctx: &mut Context<OrdersV0Accounts>,
-    args: OrdersArgsV0,
-) -> Result<OrdersV0> {
+pub fn handle_orders_v0(ctx: &mut Context<MarketViewV0>, args: OrdersArgsV0) -> Result<OrdersV0> {
     require!(
         args.refs.len() <= ORDER_VIEW_CEILING,
         ClobError::InvalidConfig

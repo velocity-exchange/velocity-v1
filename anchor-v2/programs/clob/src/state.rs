@@ -54,7 +54,7 @@ const_assert_eq!(CRANK_CROSS, clob_wire::CRANK_SLOT_CROSS as usize);
 /// program hands it.
 pub const CRANK_RESOLVER_CAPACITY: usize = 8;
 
-pub const ZERO_ADDRESS: Address = Address::new_from_array([0u8; 32]);
+pub use quoter_spec::ZERO_ADDRESS;
 
 /// [`ClobHeaderV0::reservation_grace_slots`] a fresh market starts with.
 ///
@@ -207,7 +207,6 @@ pub use quoter_spec::{DirectionV0 as Direction, SideV0 as Side};
 /// type takes no inherent impl, and a trait keeps every call site reading as
 /// it did.
 pub trait ClobSideExt {
-    fn to_u8(self) -> u8;
     fn is_worse_price(self, resting: u64, candidate: u64) -> bool;
     fn side_bit(self) -> u8;
     fn opposite(self) -> Side;
@@ -217,7 +216,6 @@ pub trait ClobSideExt {
 /// The same for the direction.
 pub trait ClobDirectionExt {
     fn book_side(self) -> Side;
-    fn to_u8(self) -> u8;
 }
 
 impl ClobDirectionExt for Direction {
@@ -225,23 +223,9 @@ impl ClobDirectionExt for Direction {
     fn book_side(self) -> Side {
         self.side()
     }
-
-    fn to_u8(self) -> u8 {
-        match self {
-            Direction::Long => 0,
-            Direction::Short => 1,
-        }
-    }
 }
 
 impl ClobSideExt for Side {
-    fn to_u8(self) -> u8 {
-        match self {
-            Side::Bid => 0,
-            Side::Ask => 1,
-        }
-    }
-
     /// Whether `resting` is a worse price for this side's makers than
     /// `candidate`. It marks the point where a new order at `candidate` takes
     /// priority. Bids rank high to low and asks rank low to high.
@@ -453,10 +437,7 @@ pub const RESPONSE_OFFSET: usize = 8 + core::mem::size_of::<ClobHeaderV0>() - RE
 
 /// The pointer `quote_v0`/`execute_v0` return for a response of `len` bytes.
 pub fn response_pointer(len: usize) -> ResponsePointerV0 {
-    ResponsePointerV0 {
-        offset: RESPONSE_OFFSET as u32,
-        len: len as u32,
-    }
+    ResponsePointerV0::at(RESPONSE_OFFSET, len)
 }
 
 /// Account-data offset of the order-node tail. It is `[disc][H][len: u32]`
@@ -517,20 +498,18 @@ pub trait CancelSidesExt {
 impl CancelSidesExt for CancelSidesV0 {
     /// The sides to walk, in book order.
     fn sides(self) -> &'static [Side] {
-        match self {
-            CancelSidesV0::Bids => &[Side::Bid],
-            CancelSidesV0::Asks => &[Side::Ask],
-            CancelSidesV0::Both => &[Side::Bid, Side::Ask],
+        match (self.has_bids(), self.has_asks()) {
+            (true, true) => &[Side::Bid, Side::Ask],
+            (true, false) => &[Side::Bid],
+            (false, _) => &[Side::Ask],
         }
     }
 
     fn includes(self, side: Side) -> bool {
-        matches!(
-            (self, side),
-            (CancelSidesV0::Both, _)
-                | (CancelSidesV0::Bids, Side::Bid)
-                | (CancelSidesV0::Asks, Side::Ask)
-        )
+        match side {
+            Side::Bid => self.has_bids(),
+            Side::Ask => self.has_asks(),
+        }
     }
 }
 
@@ -578,6 +557,22 @@ pub struct RemovedOrder {
     pub taker_origin: bool,
     pub reduce_only: bool,
     pub max_ts: i64,
+}
+
+impl From<RemovedOrder> for RemovedOrderV0 {
+    fn from(removed: RemovedOrder) -> Self {
+        Self {
+            user: removed.user,
+            order_id: removed.order_id,
+            client_order_id: removed.client_order_id,
+            price: removed.price,
+            base_asset_amount: removed.base_asset_amount,
+            side: removed.side,
+            taker_origin: removed.taker_origin,
+            reduce_only: removed.reduce_only,
+            max_ts: removed.max_ts,
+        }
+    }
 }
 
 /// What `execute` hands back. It names where the wire response was written,

@@ -22,10 +22,7 @@ use {
     crate::{
         error::ErrorCode,
         instructions::optional_accounts::{load_maps, AccountMaps},
-        math::margin::{
-            calculate_margin_requirement_and_total_collateral_and_liability_info,
-            calculate_net_equity_for_floor, MarginRequirementType,
-        },
+        math::margin::calculate_margin_requirement_and_total_collateral_and_liability_info,
         state::{
             clob_crank::LIQUIDATION_FLAT_PAYMENT_MIN_FILLED_QUOTE,
             margin_calculation::MarginContext, perp_market_map::MarketSet, prop_amm::QuoterSlabExt,
@@ -163,14 +160,8 @@ fn find_cancel_target(
     maps: &mut AccountMaps,
 ) -> Result<Option<u16>> {
     let user = crate::load!(user_loader)?;
-    let initial = calculate_margin_requirement_and_total_collateral_and_liability_info(
-        &user,
-        maps,
-        MarginContext::standard(MarginRequirementType::Initial),
-    )?;
-    let below_floor = calculate_net_equity_for_floor(&user, maps)?
-        .is_some_and(|net_equity| net_equity.proves_below_floor(&user));
-    Ok(if initial.meets_margin_requirement() && !below_floor {
+    let grounds = crate::controller::orders::ForceCancelGrounds::measure(&user, maps)?;
+    Ok(if !grounds.any() {
         None
     } else {
         // One market per wake. Relay comes back for the rest while
@@ -195,7 +186,6 @@ fn stage_force_cancel<'info>(
     market_index: u16,
     stored: Vec<relay_spec::AccountRefV0>,
 ) -> Result<Option<crate::instructions::StagedCall>> {
-    let user_stats = crate::state::pdas::user_stats(&crate::load!(user_loader)?.authority);
     let (protocol_user, protocol_user_stats) = crate::state::pdas::protocol_user_pair();
     let quoter_slab = crate::state::pdas::quoter_slab(market_index);
     let Some(slab_info) = crate::state::prop_amm::find_account(remaining_accounts, &quoter_slab)
@@ -230,7 +220,6 @@ fn stage_force_cancel<'info>(
                 filler: protocol_user,
                 filler_stats: protocol_user_stats,
                 user: user_loader.key(),
-                user_stats,
                 quoter_slab,
                 clob_market,
                 clob_program,

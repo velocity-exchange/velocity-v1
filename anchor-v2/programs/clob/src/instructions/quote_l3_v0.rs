@@ -1,21 +1,10 @@
-use {
-    crate::{
-        book::ClobBook,
-        state::{ClobMarketV0, ResponsePointerV0},
-    },
-    anchor_lang::prelude::*,
-};
-
-#[derive(Accounts)]
-pub struct QuoteL3V0 {
-    /// Mutable only for the response tail. The book itself is not changed.
-    #[account(mut)]
-    pub market: ClobMarketV0,
-}
-
 /// Declared in `quoter-spec`: velocity writes these bytes and this program
 /// reads them, so the shape lives in the crate both compile against.
 pub use quoter_spec::L3ArgsV0;
+use {
+    crate::{book::ClobBook, instructions::ResponseMarketV0, state::ResponsePointerV0},
+    anchor_lang::prelude::*,
+};
 
 /// Quoter interface, optional leg. Reports the resting orders behind the
 /// ladder `quote_v0` would return, one row per order, streamed into the
@@ -25,7 +14,7 @@ pub use quoter_spec::L3ArgsV0;
 /// somebody else. A caller that must carry those users' accounts, or draw
 /// the book, reads them here instead of decoding this account from outside.
 pub fn handle_quote_l3_v0(
-    ctx: &mut Context<QuoteL3V0>,
+    ctx: &mut Context<ResponseMarketV0>,
     args: L3ArgsV0,
 ) -> Result<ResponsePointerV0> {
     let clock = Clock::get()?;

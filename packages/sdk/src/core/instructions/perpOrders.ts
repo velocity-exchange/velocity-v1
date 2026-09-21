@@ -4,6 +4,7 @@ import type {
 	TransactionInstruction,
 } from '@solana/web3.js';
 import type { VelocityProgram } from '../../config';
+import type { ClobAccounts } from '../../types';
 
 /**
  * Builds a `placeTriggerOrdersV1` instruction, arming trigger orders in the user's own order slots. A slot holds one unfired conditional, so every entry must be a `TriggerMarket` or a `TriggerLimit` on a perp market, or the program returns `OrderTypeNotConditional`.
@@ -61,11 +62,7 @@ export async function buildPlaceAndTakePerpOrderInstruction(args: {
 	userStats: PublicKey;
 	authority: PublicKey;
 	remainingAccounts: AccountMeta[];
-	clobAccounts: {
-		quoterSlab: PublicKey;
-		clobMarket: PublicKey;
-		clobProgram: PublicKey;
-	};
+	clobAccounts: ClobAccounts;
 
 	/** The flow authority, when it signs this transaction. Its presence attests the
 	 * flow, so a take on a book with a speed bump fills synchronously. */
@@ -127,11 +124,7 @@ export async function buildPlaceAndMakePerpOrderInstruction(args: {
 	userStats: PublicKey;
 	authority: PublicKey;
 	remainingAccounts: AccountMeta[];
-	clobAccounts: {
-		quoterSlab: PublicKey;
-		clobMarket: PublicKey;
-		clobProgram: PublicKey;
-	};
+	clobAccounts: ClobAccounts;
 
 	activationDelaySlots?: number | null;
 	/** The flow authority, when it signs this transaction. It is required for an

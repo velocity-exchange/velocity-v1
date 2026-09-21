@@ -35,7 +35,7 @@ use {
     crate::{Config, UseMarkets},
     std::time::Duration,
     velocity_rs::{
-        market_clob_accounts,
+        market_book,
         math::constants::{BASE_PRECISION_U64, PRICE_PRECISION_U64, QUOTE_PRECISION},
         program::state::prop_amm::ClobCancelSides,
         types::{
@@ -453,7 +453,7 @@ impl QuoterBot {
         // below.
         tx.force_include_markets(&[MarketId::perp(snap.market_index)], &[]);
 
-        let Some(clob) = market_clob_accounts(&self.velocity, snap.market_index).await else {
+        let Some(book) = market_book(&self.velocity, snap.market_index).await else {
             log::warn!(
                 target: TARGET,
                 "market {}: no approved book on the quoter slab, skipping quote",
@@ -474,7 +474,7 @@ impl QuoterBot {
         };
 
         if let Some(sides) = replace_sides {
-            tx = tx.cancel_clob_orders(clob, sides);
+            tx = tx.cancel_clob_orders(book.accounts, sides);
         }
 
         let mut orders = Vec::new();
@@ -524,9 +524,9 @@ impl QuoterBot {
             tx = if order.reduce_only {
                 // The rebalance leg is a taker order, not a quote. It routes
                 // and trades rather than resting.
-                tx.place_and_take(order, clob, None)
+                tx.place_and_take(order, book.accounts, None)
             } else {
-                tx.place_and_make(order, clob, None)
+                tx.place_and_make(order, book.accounts, None)
             };
         }
 

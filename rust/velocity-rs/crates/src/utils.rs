@@ -1,8 +1,13 @@
 //! SDK utility functions
 
 use crate::{
-    constants::ED25519_PROGRAM_ID,
-    solana_sdk::{account::Account, instruction::Instruction, keypair::Keypair, pubkey::Pubkey},
+    constants::{derive_quoter_slab, ED25519_PROGRAM_ID},
+    solana_sdk::{
+        account::Account,
+        instruction::{AccountMeta, Instruction},
+        keypair::Keypair,
+        pubkey::Pubkey,
+    },
 };
 use anchor_lang::Discriminator;
 use base64::Engine;
@@ -10,6 +15,7 @@ use bytemuck::{bytes_of, Pod, Zeroable};
 use program::state::prop_amm::{QuoterConfigV0, QuoterSlabV0, QuoterSlotV0};
 use serde_json::json;
 use solana_message::AddressLookupTableAccount;
+use std::collections::BTreeMap;
 
 use crate::{
     constants::PROGRAM_ID,
@@ -205,6 +211,43 @@ pub fn decode_quoter_slab_slots(data: &[u8]) -> SdkResult<Vec<QuoterSlotV0>> {
 /// keep working on a killed or de-listed book.
 pub fn clob_slot_config(slots: &[QuoterSlotV0]) -> Option<QuoterConfigV0> {
     program::state::prop_amm::clob_slot_index(slots).map(|index| slots[index].config)
+}
+
+/// The quoter section that a router fill carries. It holds the market's quoter
+/// slab, then the union of the consulted slots' CPI accounts.
+///
+/// A slot contributes its registered accounts, its response account as
+/// writable, and its program as read only. Writability is the OR across slots,
+/// and the map dedups a key that two slots register. Each leg resolves its
+/// accounts by index into this full list, so the whole list must ride.
+pub fn quoter_cpi_section(
+    market_index: u16,
+    slots: &[QuoterSlotV0],
+    consulted: impl Fn(&QuoterSlotV0) -> bool,
+) -> Vec<AccountMeta> {
+    let mut union: BTreeMap<Pubkey, bool> = BTreeMap::new();
+
+    for slot in slots.iter().filter(|slot| consulted(slot)) {
+        for meta in slot.config.registered_accounts() {
+            *union.entry(meta.pubkey).or_default() |= meta.is_writable;
+        }
+
+        *union.entry(slot.config.response_account).or_default() |= true;
+        union.entry(slot.config.program_id).or_default();
+    }
+
+    std::iter::once(AccountMeta::new_readonly(
+        derive_quoter_slab(market_index),
+        false,
+    ))
+    .chain(union.into_iter().map(|(key, writable)| {
+        if writable {
+            AccountMeta::new(key, false)
+        } else {
+            AccountMeta::new_readonly(key, false)
+        }
+    }))
+    .collect()
 }
 
 /// Derive pyth lazer oracle pubkey for Velocity program

@@ -413,18 +413,23 @@ impl<'info> ResponseLocationV0<'info> {
         })
     }
 
+    /// The response bytes the quoter wrote, checked against the account length.
+    /// The quoter reports the pointer, so a length past the end is an error
+    /// rather than a panic.
+    fn bytes<'a>(&self, data: &'a [u8]) -> crate::error::VelocityResult<&'a [u8]> {
+        data.get(self.start..self.end).ok_or_else(|| {
+            msg!("prop amm response pointer out of bounds");
+            ErrorCode::DefaultError
+        })
+    }
+
     /// Read the execute response in place out of a guard taken by
     /// [`Self::borrow`].
     pub fn execute_response<'a>(
         &self,
         data: &'a [u8],
     ) -> crate::error::VelocityResult<ExecuteResponseV0<'a>> {
-        let bytes = data.get(self.start..self.end).ok_or_else(|| {
-            msg!("prop amm response pointer out of bounds");
-            ErrorCode::DefaultError
-        })?;
-
-        ExecuteResponseV0::parse(bytes).map_err(|_| {
+        ExecuteResponseV0::parse(self.bytes(data)?).map_err(|_| {
             msg!("prop amm quoter returned an undecodable execute response");
             ErrorCode::DefaultError
         })
@@ -435,12 +440,7 @@ impl<'info> ResponseLocationV0<'info> {
         &self,
         data: &'a [u8],
     ) -> crate::error::VelocityResult<QuoteResponseV0<'a>> {
-        let bytes = data.get(self.start..self.end).ok_or_else(|| {
-            msg!("prop amm response pointer out of bounds");
-            ErrorCode::DefaultError
-        })?;
-
-        QuoteResponseV0::parse(bytes).map_err(|_| {
+        QuoteResponseV0::parse(self.bytes(data)?).map_err(|_| {
             msg!("prop amm quoter returned an undecodable quote response");
             ErrorCode::DefaultError
         })
@@ -452,12 +452,7 @@ impl<'info> ResponseLocationV0<'info> {
         &self,
         data: &'a [u8],
     ) -> crate::error::VelocityResult<L3ResponseV0<'a>> {
-        let bytes = data.get(self.start..self.end).ok_or_else(|| {
-            msg!("prop amm response pointer out of bounds");
-            ErrorCode::DefaultError
-        })?;
-
-        L3ResponseV0::parse(bytes).map_err(|_| {
+        L3ResponseV0::parse(self.bytes(data)?).map_err(|_| {
             msg!("prop amm quoter returned an undecodable l3 response");
             ErrorCode::DefaultError
         })

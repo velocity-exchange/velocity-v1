@@ -61,3 +61,14 @@ export function parseBnArg(name: string, raw: string): BN {
 	}
 	return new BN(raw, 10);
 }
+
+/** Parse a CLI truthy/falsy flag argument (`true|false|on|off|1|0|enable|disable`). */
+export function parseEnable(value: string): boolean {
+	const v = value.trim().toLowerCase();
+	if (['true', 'on', '1', 'enable', 'enabled', 'yes'].includes(v)) return true;
+	if (['false', 'off', '0', 'disable', 'disabled', 'no'].includes(v))
+		return false;
+	throw new Error(
+		`expected true|false (got "${value}"). Use on/off, 1/0, enable/disable.`
+	);
+}

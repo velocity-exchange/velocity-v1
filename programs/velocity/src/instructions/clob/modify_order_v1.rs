@@ -215,6 +215,11 @@ pub fn handle_modify_order_v1<'c: 'info, 'info>(
         clock.slot,
     )?;
 
+    // Reduce-only CLOB orders are taker-origin by construction. Every path
+    // that fills or removes one relies on that to keep the reduce-only
+    // counter balanced, so a modify must preserve it.
+    let taker_origin = removed.reduce_only;
+
     let order_ref = clob.place(ClobPlaceOrderArgsV0 {
         side: removed.side,
         price: terms.price,
@@ -222,10 +227,7 @@ pub fn handle_modify_order_v1<'c: 'info, 'info>(
         activation_delay_slots: params.activation_delay_slots,
         max_ts: terms.max_ts,
         user: user_ref,
-        // Reduce-only CLOB orders are taker-origin by construction. Every path
-        // that fills or removes one relies on that to keep the reduce-only
-        // counter balanced, so a modify must preserve it.
-        taker_origin: removed.reduce_only,
+        taker_origin,
         // The id stays the same, so a reprice reads as one order moved rather
         // than two orders. A placed trigger's shadow slot keeps the id it
         // armed under; a new id here would orphan the shadow.
@@ -259,7 +261,7 @@ pub fn handle_modify_order_v1<'c: 'info, 'info>(
             base_asset_amount_filled: 0,
             max_ts: terms.max_ts,
             slot: clock.slot,
-            taker_origin: removed.taker_origin,
+            taker_origin,
         },
         is_isolated_position,
     )?;

@@ -15,24 +15,19 @@
 //! Read-only. A caller simulates this to find work, then sends the match it
 //! names.
 
+/// Declared by `clob-wire`.
+pub use clob_wire::{NextCrossV0, OrderViewV0};
 use {
     crate::{
-        book::{is_live, ClobBook, CrossReservation, NodeArena, NIL},
+        book::{is_live, walk_side_ref, CrossReservation, Walk},
+        instructions::MarketViewV0,
         state::{ClobMarketV0, Side},
     },
     anchor_lang::prelude::*,
 };
 
-#[derive(Accounts)]
-pub struct NextCrossV0Accounts {
-    pub market: ClobMarketV0,
-}
-
-/// Declared by `clob-wire`.
-pub use clob_wire::{NextCrossV0, OrderViewV0};
-
 /// The best matchable order on each side.
-pub fn handle_next_cross_v0(ctx: &mut Context<NextCrossV0Accounts>) -> Result<NextCrossV0> {
+pub fn handle_next_cross_v0(ctx: &mut Context<MarketViewV0>) -> Result<NextCrossV0> {
     let clock = Clock::get()?;
     let market = &ctx.accounts.market;
     Ok(NextCrossV0 {
@@ -44,32 +39,27 @@ pub fn handle_next_cross_v0(ctx: &mut Context<NextCrossV0Accounts>) -> Result<Ne
 /// Walk one side from its best price to the first order a match may consume.
 ///
 /// A speed-bumped order is skipped rather than treated as a stop. The depth
-/// behind it is matchable now, and skipping it excludes no taker. The caller
-/// supplies a taker only when it sends the match.
+/// behind it is matchable now, and skipping it excludes no taker.
 ///
-/// An order that a crossing taker remainder claims whole is also skipped.
-/// Only the crank settling that remainder may take it. This walk still
-/// returns the crossing order itself, since hiding it would hide the cross.
+/// An order a crossing taker remainder claims whole is skipped too, because
+/// only the crank settling that remainder may take it. The walk still returns
+/// the crossing order itself, since hiding it would hide the cross.
 fn head(market: &ClobMarketV0, side: Side, slot: u64, now: i64) -> OrderViewV0 {
     let mut reservation = CrossReservation::new(market, side, slot, now, false);
-    let mut cursor = market.best(side);
-    while cursor != NIL {
-        let Ok(node) = market.read_node(cursor) else {
-            return OrderViewV0::NONE;
-        };
-
-        if is_live(&node, slot, now) {
-            let Ok(claimed) = reservation.claimed(market, &node) else {
-                return OrderViewV0::NONE;
-            };
-
-            if claimed < node.base_asset_amount {
-                return crate::state::order_view(&node, cursor);
-            }
+    let mut found = OrderViewV0::NONE;
+    let walk = walk_side_ref(market, side, |index, node| {
+        if !is_live(node, slot, now) || reservation.claimed(market, node)? >= node.base_asset_amount
+        {
+            return Ok(Walk::Continue);
         }
 
-        cursor = node.next;
+        found = crate::state::order_view(node, index);
+        Ok(Walk::Stop)
+    });
+
+    if walk.is_err() {
+        return OrderViewV0::NONE;
     }
 
-    OrderViewV0::NONE
+    found
 }

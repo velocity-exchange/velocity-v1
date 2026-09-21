@@ -9,7 +9,7 @@ use super::*;
 
 /// Outcome of a single [`place_perp_order`] call.
 ///
-/// Batch placement (`place_orders` / `place_scale_orders`) defers the margin
+/// Batch placement (`enforce_batch_margin`) defers the margin
 /// check until after every order is placed, so it needs to know what risk each
 /// individual placement introduced. This struct carries that back: whether the
 /// order increased the user's risk, and — when it did against an isolated

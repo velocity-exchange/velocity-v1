@@ -26,32 +26,47 @@ use {
     serde_json::{json, Map, Value},
     solana_sdk::pubkey::Pubkey,
     std::collections::BTreeMap,
-    velocity_router_sim::quote_view::{CarriedEntry, QuoteView},
+    velocity_router_sim::{
+        pdas,
+        quote_view::{CarriedEntry, QuoteView},
+    },
 };
 
 /// Aggregated levels for one side: price → (source label → size).
 type SideLevels = BTreeMap<u64, BTreeMap<&'static str, u128>>;
 
-fn source_label(kind: QuotedSourceKind, key: &Pubkey, clob_entry: &Pubkey) -> &'static str {
+/// One side's quote view and the entries that produced it. A source's label
+/// comes off its entry, so the two travel together and the L2 and L3 documents
+/// of one tick cannot disagree about a source.
+#[derive(Clone, Copy)]
+pub struct SideQuote<'a> {
+    pub view: &'a QuoteView,
+    pub entries: &'a [CarriedEntry],
+}
+
+/// The `sources` key a source's depth is published under.
+///
+/// A quoter is a book unless its entry says it fills from one account, and an
+/// entry the view did not carry is not a book. The registered quoter type
+/// decides, so a second book registered on the slab still labels as `clob`.
+fn source_label(kind: QuotedSourceKind, key: &Pubkey, entries: &[CarriedEntry]) -> &'static str {
     match kind {
         QuotedSourceKind::Vamm => "vamm",
         QuotedSourceKind::DlobOrder => "dlob",
-        QuotedSourceKind::Quoter => {
-            if key == clob_entry {
-                "clob"
-            } else {
-                "propamm"
-            }
-        }
+        QuotedSourceKind::Quoter => entries
+            .iter()
+            .find(|entry| entry.quoter == *key)
+            .filter(|entry| !entry.attributes_to_one_maker())
+            .map_or("propamm", |_| "clob"),
     }
 }
 
-fn aggregate(view: &QuoteView, clob_entry: &Pubkey) -> SideLevels {
-    let mut side: SideLevels = BTreeMap::new();
-    for book in &view.books {
-        let label = source_label(book.kind, &book.key, clob_entry);
+fn aggregate(side: SideQuote) -> SideLevels {
+    let mut levels_by_price: SideLevels = BTreeMap::new();
+    for book in &side.view.books {
+        let label = source_label(book.kind, &book.key, side.entries);
         for level in &book.levels {
-            *side
+            *levels_by_price
                 .entry(level.price)
                 .or_default()
                 .entry(label)
@@ -59,7 +74,7 @@ fn aggregate(view: &QuoteView, clob_entry: &Pubkey) -> SideLevels {
         }
     }
 
-    side
+    levels_by_price
 }
 
 fn levels_json<'a>(
@@ -154,14 +169,13 @@ pub fn build_decorations(
 pub fn l2_payload(
     market_index: u16,
     market_name: &str,
-    clob_entry: &Pubkey,
-    asks: &QuoteView,
-    bids: &QuoteView,
+    asks: SideQuote,
+    bids: SideQuote,
     decorations: &Decorations,
     ts_ms: u128,
 ) -> Value {
-    let ask_levels = aggregate(asks, clob_entry);
-    let bid_levels = aggregate(bids, clob_entry);
+    let ask_levels = aggregate(asks);
+    let bid_levels = aggregate(bids);
 
     let best_ask = ask_levels.keys().next().copied();
     let best_bid = bid_levels.keys().next_back().copied();
@@ -195,7 +209,7 @@ pub fn l2_payload(
         "marketType": "perp",
         "marketIndex": market_index,
         "ts": ts_ms as u64,
-        "slot": asks.slot.max(bids.slot),
+        "slot": asks.view.slot.max(bids.view.slot),
         "bestAskPrice": opt_string(best_ask),
         "bestBidPrice": opt_string(best_bid),
         // An empty book falls back to the numeric oracle price, exactly as
@@ -320,20 +334,6 @@ pub fn grouped_payloads(l2: &Value, tick_size: u64) -> Vec<(u64, Value)> {
     documents
 }
 
-/// The `User` a wire identity derives to. Both PDAs come off the same pair,
-/// which is why the book stores identity this way.
-fn user_pda(velocity: &Pubkey, user: &ClobUserRefV0) -> Pubkey {
-    Pubkey::find_program_address(
-        &[
-            b"user",
-            user.authority.as_ref(),
-            user.sub_account_id.to_le_bytes().as_ref(),
-        ],
-        velocity,
-    )
-    .0
-}
-
 /// One attributed line of a book: depth, and the account that settles it.
 ///
 /// Every source a taker can reach appears here, the same way every one of
@@ -375,7 +375,6 @@ impl BookRow {
     }
 }
 
-/// Resting CLOB orders on one side, best first.
 /// Every attributed line of one side, out of the quote view.
 ///
 /// The view answers this now: each source carries the orders behind its
@@ -384,26 +383,13 @@ impl BookRow {
 /// ladder against that account. So the publisher reads rows rather than
 /// decoding a book, and a book may change its data structures without
 /// changing this file.
-pub fn view_rows(velocity: &Pubkey, view: &QuoteView, entries: &[CarriedEntry]) -> Vec<BookRow> {
-    view.books
+pub fn view_rows(velocity: &Pubkey, side: SideQuote) -> Vec<BookRow> {
+    side.view
+        .books
         .iter()
         .flat_map(|book| {
             let quoter = (book.kind == QuotedSourceKind::Quoter).then_some(book.key);
-            let source = match book.kind {
-                QuotedSourceKind::Quoter => entries
-                    .iter()
-                    .find(|entry| entry.quoter == book.key)
-                    .map(|entry| {
-                        if entry.attributes_to_one_maker() {
-                            "propamm"
-                        } else {
-                            "clob"
-                        }
-                    })
-                    .unwrap_or("propamm"),
-                QuotedSourceKind::DlobOrder => "dlob",
-                QuotedSourceKind::Vamm => "vamm",
-            };
+            let source = source_label(book.kind, &book.key, side.entries);
 
             // The vAMM names no user because it settles against the market's
             // own AMM, so its rungs are attributed to the market account and
@@ -431,7 +417,7 @@ pub fn view_rows(velocity: &Pubkey, view: &QuoteView, entries: &[CarriedEntry]) 
                 .map(move |row| BookRow {
                     price: row.price,
                     size: row.size,
-                    maker: user_pda(velocity, &row.user),
+                    maker: pdas::user_of(velocity, &row.user),
                     quoter,
                     // A book row is an order: it has an id, a queue position
                     // and it can be cancelled. A quoted rung is none of those.
@@ -469,7 +455,6 @@ fn merge_side(is_ask: bool, mut rows: Vec<BookRow>) -> Vec<BookRow> {
 /// be cancelled or holds a queue position. The vAMM contributes nothing: it
 /// has no maker to attribute to. DLOB L3 stays with the TypeScript publisher
 /// until the DLOB dies.
-#[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
 pub fn l3_payload(
     market_index: u16,
@@ -560,6 +545,10 @@ mod tests {
         }
     }
 
+    fn side_rows(velocity: &Pubkey, view: &QuoteView, entries: &[CarriedEntry]) -> Vec<BookRow> {
+        view_rows(velocity, SideQuote { view, entries })
+    }
+
     fn book(kind: QuotedSourceKind, key: Pubkey, levels: &[(u64, u64)]) -> QuotedBook {
         QuotedBook {
             key,
@@ -636,12 +625,18 @@ mod tests {
             vec![book(QuotedSourceKind::Quoter, clob_entry, &[(97, 4)])],
         );
 
+        let entries = [clob(clob_entry)];
         let payload = l2_payload(
             7,
             "SOL-PERP",
-            &clob_entry,
-            &asks,
-            &bids,
+            SideQuote {
+                view: &asks,
+                entries: &entries,
+            },
+            SideQuote {
+                view: &bids,
+                entries: &entries,
+            },
             &decorations(),
             1_234,
         );
@@ -675,10 +670,27 @@ mod tests {
     #[test]
     fn non_canonical_quoters_label_as_propamm() {
         let clob_entry = Pubkey::new_unique();
-        let custom = Pubkey::new_unique();
-        let asks = view(0, vec![book(QuotedSourceKind::Quoter, custom, &[(100, 1)])]);
+        let custom_key = Pubkey::new_unique();
+        let asks = view(
+            0,
+            vec![book(QuotedSourceKind::Quoter, custom_key, &[(100, 1)])],
+        );
         let bids = view(1, vec![]);
-        let payload = l2_payload(0, "X", &clob_entry, &asks, &bids, &decorations(), 0);
+        let entries = [clob(clob_entry), custom(custom_key, Pubkey::new_unique())];
+        let payload = l2_payload(
+            0,
+            "X",
+            SideQuote {
+                view: &asks,
+                entries: &entries,
+            },
+            SideQuote {
+                view: &bids,
+                entries: &entries,
+            },
+            &decorations(),
+            0,
+        );
         assert_eq!(payload["asks"][0]["sources"]["propamm"], "1");
         assert!(payload["bestBidPrice"].is_null());
         // One-sided book has no mark: falls back to the numeric oracle.
@@ -706,7 +718,21 @@ mod tests {
                 &[(97, 4), (95, 2)],
             )],
         );
-        let l2 = l2_payload(3, "SOL-PERP", &clob_entry, &asks, &bids, &decorations(), 9);
+        let entries = [clob(clob_entry)];
+        let l2 = l2_payload(
+            3,
+            "SOL-PERP",
+            SideQuote {
+                view: &asks,
+                entries: &entries,
+            },
+            SideQuote {
+                view: &bids,
+                entries: &entries,
+            },
+            &decorations(),
+            9,
+        );
         let grouped = grouped_payloads(&l2, 2);
         assert_eq!(grouped.len(), GROUPING_OPTIONS.len());
 
@@ -744,7 +770,7 @@ mod tests {
         let quoter = Pubkey::new_unique();
         let a = user_ref(1, 0);
         let b = user_ref(2, 2);
-        let bids = view_rows(
+        let bids = side_rows(
             &velocity,
             &view(
                 1,
@@ -756,7 +782,7 @@ mod tests {
             ),
             &[clob(quoter)],
         );
-        let asks = view_rows(
+        let asks = side_rows(
             &velocity,
             &view(
                 0,
@@ -796,7 +822,7 @@ mod tests {
         let makers: Vec<UserRefV0> = (0..6).map(|seed| user_ref(seed as u8 + 1, 0)).collect();
         // The first maker owns the two best bids — deduped to one entry; six
         // distinct asks cap at four.
-        let bids = view_rows(
+        let bids = side_rows(
             &velocity,
             &view(
                 1,
@@ -817,7 +843,7 @@ mod tests {
             .enumerate()
             .map(|(i, maker)| (100 + i as u64, 1, 10 + i as u64, *maker))
             .collect();
-        let asks = view_rows(
+        let asks = side_rows(
             &velocity,
             &view(
                 0,
@@ -868,7 +894,7 @@ mod tests {
         let quoter = Pubkey::new_unique();
         let velocity = Pubkey::new_unique();
         let user = user_ref(9, 1);
-        let rows = view_rows(
+        let rows = side_rows(
             &velocity,
             &view(
                 0,
@@ -882,7 +908,7 @@ mod tests {
         );
 
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].maker, user_pda(&velocity, &user));
+        assert_eq!(rows[0].maker, pdas::user_of(&velocity, &user));
         assert_eq!(rows[0].quoter, Some(quoter));
         assert_eq!(rows[0].source, "propamm");
         assert!(
@@ -898,7 +924,7 @@ mod tests {
         let quoter = Pubkey::new_unique();
         let velocity = Pubkey::new_unique();
         let maker = user_ref(4, 0);
-        let rows = view_rows(
+        let rows = side_rows(
             &velocity,
             &view(
                 0,
@@ -912,7 +938,7 @@ mod tests {
         );
 
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].maker, user_pda(&velocity, &maker));
+        assert_eq!(rows[0].maker, pdas::user_of(&velocity, &maker));
         assert_eq!(rows[0].source, "clob");
         assert_eq!(rows[0].order_id, Some(42));
     }
@@ -921,7 +947,7 @@ mod tests {
     fn a_dlob_order_is_a_row_against_its_maker() {
         let velocity = Pubkey::new_unique();
         let maker = user_ref(5, 3);
-        let rows = view_rows(
+        let rows = side_rows(
             &velocity,
             &view(
                 0,
@@ -935,7 +961,7 @@ mod tests {
         );
 
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].maker, user_pda(&velocity, &maker));
+        assert_eq!(rows[0].maker, pdas::user_of(&velocity, &maker));
         assert_eq!(rows[0].quoter, None);
         assert_eq!(rows[0].source, "dlob");
         assert_eq!(rows[0].order_id, Some(7));
@@ -947,7 +973,7 @@ mod tests {
         // own AMM — which is an account, and the one this depth settles
         // against. A reader asking who is in this book gets the whole book.
         let market = Pubkey::new_unique();
-        let rows = view_rows(
+        let rows = side_rows(
             &Pubkey::new_unique(),
             &view(
                 0,

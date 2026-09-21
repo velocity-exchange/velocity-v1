@@ -1789,40 +1789,13 @@ export function calculateQuoteAssetAmountSwapped(
 }
 
 /**
- * Caps how much base asset the AMM is willing to fill in one instruction: the smaller of
- * `amm.maxFillReserveFraction`'s share of the current base reserve and the room remaining to
- * the AMM's min/max reserve bound on the taker's side, then rounded down to `orderStepSize`.
- * This is a per-fill risk limit distinct from `calculateMaxBaseAssetAmountToTrade` (which sizes
- * against a limit price) — it bounds how much of the AMM's own liquidity can move at once
- * regardless of price.
- * @param amm AMM state (`baseAssetReserve`, `minBaseAssetReserve`, `maxBaseAssetReserve`, `maxFillReserveFraction`).
- * @param orderStepSize Order step size to standardize the result to, BASE_PRECISION (1e9).
- * @param orderDirection Direction of the order being filled against the AMM.
- * @returns Max fillable base asset amount, BASE_PRECISION (1e9), standardized to `orderStepSize`.
+ * @deprecated Use {@link calculateAmmAvailableLiquidity}, which takes the same values in a
+ * different argument order. This name stays for compatibility and delegates to it.
  */
 export function calculateMaxBaseAssetAmountFillable(
 	amm: AMM,
 	orderStepSize: BN,
 	orderDirection: PositionDirection
 ): BN {
-	const maxFillSize = amm.baseAssetReserve.div(
-		new BN(amm.maxFillReserveFraction)
-	);
-	let maxBaseAssetAmountOnSide: BN;
-	if (isVariant(orderDirection, 'long')) {
-		maxBaseAssetAmountOnSide = BN.max(
-			ZERO,
-			amm.baseAssetReserve.sub(amm.minBaseAssetReserve)
-		);
-	} else {
-		maxBaseAssetAmountOnSide = BN.max(
-			ZERO,
-			amm.maxBaseAssetReserve.sub(amm.baseAssetReserve)
-		);
-	}
-
-	return standardizeBaseAssetAmount(
-		BN.min(maxFillSize, maxBaseAssetAmountOnSide),
-		orderStepSize
-	);
+	return calculateAmmAvailableLiquidity(amm, orderDirection, orderStepSize);
 }

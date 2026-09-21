@@ -5,6 +5,7 @@ import type {
 	TransactionInstruction,
 } from '@solana/web3.js';
 import type { VelocityProgram } from '../../config';
+import type { ClobAccounts } from '../../types';
 
 /**
  * Builds a `triggerMarketOrderV1` instruction, which fires an armed stop-market straight
@@ -28,24 +29,23 @@ import type { VelocityProgram } from '../../config';
  * @param args.triggerConditions the user's relay trigger conditions PDA. Omit to pass the
  *   program id as a placeholder.
  */
-export async function buildTriggerMarketOrderV1Instruction(args: {
-	program: VelocityProgram;
-	marketIndex: number;
-	orderId: number;
-	state: PublicKey;
-	filler: PublicKey;
-	fillerStats: PublicKey;
-	user: PublicKey;
-	userStats: PublicKey;
-	authority: PublicKey;
-	quoterSlab: PublicKey;
-	clobMarket: PublicKey;
-	clobProgram: PublicKey;
-	remainingAccounts: AccountMeta[];
-	signedRoute?: PublicKey[];
-	crankConditions?: PublicKey;
-	triggerConditions?: PublicKey;
-}): Promise<TransactionInstruction> {
+export async function buildTriggerMarketOrderV1Instruction(
+	args: {
+		program: VelocityProgram;
+		marketIndex: number;
+		orderId: number;
+		state: PublicKey;
+		filler: PublicKey;
+		fillerStats: PublicKey;
+		user: PublicKey;
+		userStats: PublicKey;
+		authority: PublicKey;
+		remainingAccounts: AccountMeta[];
+		signedRoute?: PublicKey[];
+		crankConditions?: PublicKey;
+		triggerConditions?: PublicKey;
+	} & ClobAccounts
+): Promise<TransactionInstruction> {
 	// An omitted optional account is encoded as the program id, which is anchor's
 	// `None`.
 	const omitted = args.program.programId;

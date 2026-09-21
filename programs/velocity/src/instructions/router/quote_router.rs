@@ -613,19 +613,8 @@ fn attribute_to_user(
 }
 
 /// The base a maker can support on `direction` given its margin right now. It
-/// is the same bound the fill's pre-execute clamp uses.
-///
-/// A fill opens the position slot before it sizes the order, because the margin
-/// walk sizes an order against the position it will settle into. This view has
-/// to answer the same number without writing anything: it is a view, and a
-/// caller must not spend a third party's position slot by asking what that
-/// party could fill. So it sizes against the position a fill *would* open
-/// rather than opening one.
-///
-/// The two agree. `add_new_position` writes `market_index` and the margin ratio
-/// a closed position for the same market left behind, and defaults the rest,
-/// which is what is built here. The margin walk skips a vacant slot, and a
-/// freshly opened position contributes nothing to it either.
+/// is the same bound the fill's pre-execute clamp uses, sized against the
+/// position a fill would open rather than opening one.
 fn margin_cap(
     makers: &crate::state::user_map::UserMap,
     user: &Pubkey,
@@ -640,47 +629,8 @@ fn margin_cap(
         return Ok(0);
     };
 
-    // Holds the synthesized position when the maker has none for this market,
-    // so the borrow below outlives the match.
-    let prospective;
-    let position = match crate::controller::position::get_position_index(
-        &maker.perp_positions,
-        market_index,
-    ) {
-        Ok(index) => &maker.perp_positions[index],
-        Err(_) => {
-            let Some(vacant) = maker
-                .perp_positions
-                .iter()
-                .position(|position| position.is_available())
-            else {
-                // Every slot is taken, so a fill could not open one either.
-                return Ok(0);
-            };
-
-            // `add_new_position` carries the margin ratio over only when the
-            // vacant slot already names this market, which is a position its
-            // owner closed and may reopen.
-            let vacant = &maker.perp_positions[vacant];
-            let max_margin_ratio = if vacant.market_index == market_index {
-                vacant.max_margin_ratio
-            } else {
-                0
-            };
-
-            prospective = crate::state::user::PerpPosition {
-                market_index,
-                max_margin_ratio,
-                ..crate::state::user::PerpPosition::default()
-            };
-
-            &prospective
-        }
-    };
-
-    crate::math::orders::calculate_max_perp_order_size_for_position(
+    crate::math::orders::max_perp_order_size_for_prospective_position(
         &maker,
-        position,
         market_index,
         maker_direction,
         maps,

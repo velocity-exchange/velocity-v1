@@ -10,10 +10,10 @@ repository = "https://github.com/velocity-exchange/velocity-v1/crates/clob-state
 # `UserRefV0` and `SideV0` — a node's identity and its side are the quoter
 # interface's types, not this crate's to restate.
 quoter-spec = { path = "../quoter-spec" }
-bytemuck = { version = "1.14", features = ["derive"] }
+bytemuck.workspace = true
 # Spelled `Address` here and `Pubkey` in velocity; one type either way. See
 # `quoter-spec`'s note on the two names.
-solana-address = { version = "2.6", features = ["bytemuck", "copy"] }
+solana-address.workspace = true
 
 [features]
 default = []

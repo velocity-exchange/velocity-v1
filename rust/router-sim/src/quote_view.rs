@@ -16,6 +16,10 @@
 //! passed, the view still returns the CLOB, every PropAMM after the margin
 //! clamp, and the vAMM shaded against them.
 
+pub use crate::pdas::{
+    perp_market as perp_market_pda, spot_market as spot_market_pda, state as state_pda,
+    user_stats as user_stats_pda, velocity_signer as velocity_signer_pda,
+};
 use {
     crate::{quoter_slab_pda, quoter_slab_slots},
     anchor_lang::{Discriminator, InstructionData, ToAccountMetas},
@@ -45,34 +49,6 @@ use {
     velocity_quoter_health::EntryRef,
 };
 
-pub fn state_pda(velocity: &Pubkey) -> Pubkey {
-    Pubkey::find_program_address(&[b"velocity_state"], velocity).0
-}
-
-pub fn velocity_signer_pda(velocity: &Pubkey) -> Pubkey {
-    Pubkey::find_program_address(&[b"velocity_signer"], velocity).0
-}
-
-pub fn perp_market_pda(velocity: &Pubkey, market_index: u16) -> Pubkey {
-    Pubkey::find_program_address(
-        &[b"perp_market", market_index.to_le_bytes().as_ref()],
-        velocity,
-    )
-    .0
-}
-
-pub fn spot_market_pda(velocity: &Pubkey, market_index: u16) -> Pubkey {
-    Pubkey::find_program_address(
-        &[b"spot_market", market_index.to_le_bytes().as_ref()],
-        velocity,
-    )
-    .0
-}
-
-pub fn user_stats_pda(velocity: &Pubkey, authority: &Pubkey) -> Pubkey {
-    Pubkey::find_program_address(&[b"user_stats", authority.as_ref()], velocity).0
-}
-
 /// Read a zero-copy account on the host. The function checks the discriminator,
 /// then makes an unaligned pod copy. Account bytes carry no alignment guarantee.
 pub fn read_zero_copy<T: bytemuck::Pod + Discriminator>(data: &[u8]) -> Result<T> {
@@ -90,6 +66,43 @@ pub fn read_zero_copy<T: bytemuck::Pod + Discriminator>(data: &[u8]) -> Result<T
     }
 
     Ok(bytemuck::pod_read_unaligned(&data[8..8 + size]))
+}
+
+/// Fetch one account. `Ok(None)` when it does not exist yet. `what` names the
+/// account in the error a failed fetch carries.
+pub async fn fetch_maybe_account<S: ChainSource + ?Sized>(
+    source: &S,
+    key: &Pubkey,
+    what: &str,
+) -> Result<Option<solana_account::Account>> {
+    Ok(source
+        .get_multiple_accounts(&[*key])
+        .await
+        .with_context(|| format!("fetch {what} {key}"))?
+        .pop()
+        .flatten())
+}
+
+/// Fetch one account that must exist.
+pub async fn fetch_account<S: ChainSource + ?Sized>(
+    source: &S,
+    key: &Pubkey,
+    what: &str,
+) -> Result<solana_account::Account> {
+    fetch_maybe_account(source, key, what)
+        .await?
+        .ok_or_else(|| anyhow!("{what} {key} not found"))
+}
+
+/// Fetch one zero-copy account that must exist, and decode it.
+pub async fn fetch_zero_copy<S, T>(source: &S, key: &Pubkey, what: &str) -> Result<T>
+where
+    S: ChainSource + ?Sized,
+    T: bytemuck::Pod + Discriminator,
+{
+    let account = fetch_account(source, key, what).await?;
+
+    read_zero_copy(&account.data)
 }
 
 /// One source's verified book, decoded from the quote buffer.
@@ -246,29 +259,55 @@ pub const PACKET_DATA_SIZE: usize = 1280 - 40 - 8;
 /// quoter slab, and velocity as the program the message invokes.
 pub const PASS_FIXED_ACCOUNTS: usize = 3 + 3 + 1 + 1;
 
+/// The CPI accounts a set of quoter slots is consulted through, keyed by
+/// account and valued by writability.
+///
+/// Each slot contributes its registered accounts, its response account as
+/// writable, and its program as read only. Writability is the OR across
+/// slots. The whole registered list rides, not the quote leg's subset, since
+/// each leg resolves by index into it, which keeps any registered signer.
+pub fn quoter_cpi_union(slots: &[QuoterSlotV0]) -> BTreeMap<Pubkey, bool> {
+    let mut union: BTreeMap<Pubkey, bool> = BTreeMap::new();
+    for slot in slots {
+        for meta in slot.config.registered_accounts() {
+            *union.entry(meta.pubkey).or_default() |= meta.is_writable;
+        }
+
+        *union.entry(slot.config.response_account).or_default() |= true;
+        union.entry(slot.config.program_id).or_default();
+    }
+
+    union
+}
+
+/// The union as account metas, in key order.
+pub fn cpi_account_metas(union: &BTreeMap<Pubkey, bool>) -> Vec<AccountMeta> {
+    union
+        .iter()
+        .map(|(key, writable)| {
+            if *writable {
+                AccountMeta::new(*key, false)
+            } else {
+                AccountMeta::new_readonly(*key, false)
+            }
+        })
+        .collect()
+}
+
 /// Static account keys a pass carrying `slots` needs.
 ///
 /// This counts the same set [`build_quote_router_ix`] assembles, without
-/// building it. The set is the union of the slots' registered CPI accounts,
-/// plus two accounts for every user a quoter must load. The count rounds up
-/// where the builder would deduplicate further, because a pass planned too
-/// small publishes nothing.
+/// building it, so the planner and the builder cannot disagree about which
+/// accounts a pass holds. The count still rounds up where the message would
+/// deduplicate further, because a pass planned too small publishes nothing.
 pub fn pass_account_cost(slots: &[QuoterSlotV0]) -> usize {
-    let mut cpi: BTreeSet<Pubkey> = BTreeSet::new();
-    let mut users: BTreeSet<Pubkey> = BTreeSet::new();
-    for slot in slots {
-        for meta in slot.config.registered_accounts() {
-            cpi.insert(meta.pubkey);
-        }
+    let users: BTreeSet<Pubkey> = slots
+        .iter()
+        .filter(|slot| slot.config.quoter_type == QuoterType::Custom)
+        .map(|slot| slot.config.user)
+        .collect();
 
-        cpi.insert(slot.config.response_account);
-        cpi.insert(slot.config.program_id);
-        if slot.config.quoter_type == QuoterType::Custom {
-            users.insert(slot.config.user);
-        }
-    }
-
-    PASS_FIXED_ACCOUNTS + cpi.len() + 2 * users.len()
+    PASS_FIXED_ACCOUNTS + quoter_cpi_union(slots).len() + 2 * users.len()
 }
 
 /// The instructions that create and initialize a quote buffer for one authority
@@ -387,13 +426,7 @@ pub async fn build_quote_router_ix<S: ChainSource>(
         taker_served_window,
     } = *params;
     let perp_market_key = perp_market_pda(velocity, market_index);
-    let perp_market_account = source
-        .get_multiple_accounts(&[perp_market_key])
-        .await?
-        .pop()
-        .flatten()
-        .ok_or_else(|| anyhow!("perp market {market_index} not found"))?;
-    let perp_market: PerpMarket = read_zero_copy(&perp_market_account.data)?;
+    let perp_market: PerpMarket = fetch_zero_copy(source, &perp_market_key, "perp market").await?;
     let quote_spot_market = spot_market_pda(velocity, perp_market.quote_spot_market_index);
 
     // The slots this pass consults, in slab order. That is the order the
@@ -431,20 +464,7 @@ pub async fn build_quote_router_ix<S: ChainSource>(
         })
         .collect::<Result<_>>()?;
 
-    // The union of the consulted slots' registered CPI accounts, plus each
-    // slot's writable response account and program. Writability is the OR
-    // across slots. The whole registered list rides, not the quote leg's
-    // subset, since each leg resolves by index into it, which keeps any registered signer.
-    let mut cpi_union: BTreeMap<Pubkey, bool> = BTreeMap::new();
-    for slot in &slots {
-        for meta in slot.config.registered_accounts() {
-            let writable = cpi_union.entry(meta.pubkey).or_default();
-            *writable |= meta.is_writable;
-        }
-
-        *cpi_union.entry(slot.config.response_account).or_default() |= true;
-        cpi_union.entry(slot.config.program_id).or_default();
-    }
+    let cpi_union = quoter_cpi_union(&slots);
 
     let mut accounts = program::accounts::QuoteRouter {
         state: state_pda(velocity),
@@ -474,13 +494,7 @@ pub async fn build_quote_router_ix<S: ChainSource>(
         false,
     ));
 
-    for (key, writable) in &cpi_union {
-        accounts.push(if *writable {
-            AccountMeta::new(*key, false)
-        } else {
-            AccountMeta::new_readonly(*key, false)
-        });
-    }
+    accounts.extend(cpi_account_metas(&cpi_union));
 
     Ok(QuoteRouterIx {
         instruction: Instruction {

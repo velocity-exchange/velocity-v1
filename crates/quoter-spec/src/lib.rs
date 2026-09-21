@@ -119,6 +119,10 @@ use {
     },
 };
 
+/// The all-zero key. A quoter uses it to mean "no key set", which its own
+/// validation then refuses where a real key is required.
+pub const ZERO_ADDRESS: Pubkey = Pubkey::new_from_array([0u8; 32]);
+
 /// A velocity user in derivable form: the wallet and sub-account index that both
 /// the `User` and `UserStats` PDAs derive from. An off-chain reader can reach every
 /// user-derived account from a quoter's state alone. A stored `User` key cannot,
@@ -530,6 +534,25 @@ impl DirectionV0 {
             DirectionV0::Short => SideV0::Bid,
         }
     }
+
+    /// The wire tag, which is also the byte an event record carries.
+    pub const fn tag(self) -> u8 {
+        match self {
+            DirectionV0::Long => 0,
+            DirectionV0::Short => 1,
+        }
+    }
+
+    /// Whether a level at `price` is past the caller's worst acceptable price.
+    /// Zero is no bound. A level exactly at the limit is acceptable, so the
+    /// comparison is strict.
+    pub fn worse_than_limit(self, price: u64, limit_price: u64) -> bool {
+        limit_price != 0
+            && match self {
+                DirectionV0::Long => price > limit_price,
+                DirectionV0::Short => price < limit_price,
+            }
+    }
 }
 
 /// Where in the quoter's response account it wrote the response. Return data of
@@ -548,6 +571,18 @@ pub struct ResponsePointerV0 {
     pub len: u32,
 }
 
+impl ResponsePointerV0 {
+    /// Point at the `len` bytes a quoter streamed at `offset`. The offset is
+    /// the quoter's own, because each account puts its response region
+    /// somewhere different.
+    pub fn at(offset: usize, len: usize) -> Self {
+        Self {
+            offset: offset as u32,
+            len: len as u32,
+        }
+    }
+}
+
 /// Which sides a `cancel_all_v0` withdraws. Named sides rather than a pair of bools,
 /// because the wire must not express "neither" and leave a maker believing its quotes
 /// are gone. What a side means differs by reader. A book walks it as a book side and a
@@ -564,6 +599,25 @@ pub enum CancelSidesV0 {
     Both,
 }
 
+impl CancelSidesV0 {
+    /// The wire tag, which is also the byte an event record carries.
+    pub const fn tag(self) -> u8 {
+        match self {
+            CancelSidesV0::Bids => 0,
+            CancelSidesV0::Asks => 1,
+            CancelSidesV0::Both => 2,
+        }
+    }
+
+    pub const fn has_bids(self) -> bool {
+        matches!(self, Self::Bids | Self::Both)
+    }
+
+    pub const fn has_asks(self) -> bool {
+        matches!(self, Self::Asks | Self::Both)
+    }
+}
+
 /// Which side an order rests on: a bid makes its owner long, an ask short.
 #[cfg_attr(
     feature = "anchor-derive",
@@ -574,6 +628,17 @@ pub enum CancelSidesV0 {
 pub enum SideV0 {
     Bid,
     Ask,
+}
+
+impl SideV0 {
+    /// The wire tag, which is also the byte an event record carries and the
+    /// index of this side's per-side arrays in the book.
+    pub const fn tag(self) -> u8 {
+        match self {
+            SideV0::Bid => 0,
+            SideV0::Ask => 1,
+        }
+    }
 }
 
 /// Base units in one whole base asset. It is the denominator that turns a base

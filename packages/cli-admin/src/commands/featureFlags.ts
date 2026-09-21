@@ -1,19 +1,9 @@
 import { Command } from 'commander';
 import { PublicKey } from '@solana/web3.js';
+import { parseEnable } from '../lib/args';
 import { readGlobalOpts, withGlobalOptions } from '../lib/options';
 import { buildAdminClient, buildProvider } from '../lib/provider';
 import { reportDispatch, sendOrPropose } from '../lib/squads';
-
-/** Parse a CLI truthy/falsy flag argument (`true|false|on|off|1|0|enable|disable`). */
-function parseEnable(value: string): boolean {
-	const v = value.trim().toLowerCase();
-	if (['true', 'on', '1', 'enable', 'enabled', 'yes'].includes(v)) return true;
-	if (['false', 'off', '0', 'disable', 'disabled', 'no'].includes(v))
-		return false;
-	throw new Error(
-		`expected true|false (got "${value}"). Use on/off, 1/0, enable/disable.`
-	);
-}
 
 export function registerFeatureFlags(parent: Command): void {
 	const ff = parent

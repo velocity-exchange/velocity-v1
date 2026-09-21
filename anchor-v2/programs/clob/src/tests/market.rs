@@ -4,11 +4,11 @@
 
 use {
     crate::{
-        book::{BookHeader, ClobBook, NodeArena, NIL},
+        book::{BookHeader, ClobBook, NodeArena},
         error::ClobError,
         state::{
             ClobHeaderV0, ClobMarketV0, ClobSideExt, MarketConfigV0, OrderBitFlag, OrderRefV0,
-            PlaceOrderParams, Side, UserRefV0,
+            PlaceOrderParams, Side, UserRefV0, NIL,
         },
     },
     anchor_lang::{
@@ -229,7 +229,7 @@ pub fn assert_consistent(book: &ClobMarketV0) {
 
             last_price = Some(node.price);
             if node.is_taker_origin() {
-                taker_origin[side.to_u8() as usize] += 1;
+                taker_origin[side.tag() as usize] += 1;
             }
 
             prev = cursor;
@@ -283,7 +283,7 @@ pub fn assert_consistent(book: &ClobMarketV0) {
 #[track_caller]
 fn assert_claimants_listed(book: &ClobMarketV0, taker_origin: [usize; 2]) {
     for side in [Side::Bid, Side::Ask] {
-        let list = side.to_u8() as usize;
+        let list = side.tag() as usize;
         let mut cursor = book.first_claimant(side);
         let mut prev = NIL;
         let mut count = 0usize;

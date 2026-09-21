@@ -35,7 +35,7 @@ use {
     crate::{Config, UseMarkets},
     std::time::{Duration, SystemTime, UNIX_EPOCH},
     velocity_rs::{
-        market_clob_accounts,
+        market_book,
         types::{
             accounts::User, MarketId, MarketType, OrderParams, OrderType, PerpPosition,
             PositionDirection,
@@ -160,7 +160,7 @@ impl TakerBot {
             ..Default::default()
         };
 
-        let Some(clob) = market_clob_accounts(&self.velocity, market_index).await else {
+        let Some(book) = market_book(&self.velocity, market_index).await else {
             log::warn!(
                 target: TARGET,
                 "market {market_index}: no approved book on the quoter slab, skipping take",
@@ -179,7 +179,7 @@ impl TakerBot {
         // The order touches a market we may hold no position in; force-include it
         // so the place ix sees the perp market account (same reason as the quoter).
         tx.force_include_markets(&[MarketId::perp(market_index)], &[]);
-        tx = tx.place_and_take(order, clob, None);
+        tx = tx.place_and_take(order, book.accounts, None);
         let msg = tx.build();
 
         if self.config.dry {

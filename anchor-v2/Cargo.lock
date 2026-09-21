@@ -765,7 +765,9 @@ dependencies = [
  "clob-state-v2",
  "clob-wire-v2",
  "litesvm",
+ "quoter-emit-v2",
  "quoter-spec-v2",
+ "quoter-test-support",
  "relay-spec",
  "solana-account",
  "solana-clock",
@@ -1644,7 +1646,9 @@ dependencies = [
  "anchor-v2-testing",
  "bytemuck",
  "litesvm",
+ "quoter-emit-v2",
  "quoter-spec-v2",
+ "quoter-test-support",
  "solana-clock",
  "solana-pubkey 3.0.0",
  "static_assertions",
@@ -1948,6 +1952,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "quoter-emit-v2"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+ "bytemuck",
+]
+
+[[package]]
 name = "quoter-spec-v2"
 version = "0.1.0"
 dependencies = [
@@ -1955,6 +1967,16 @@ dependencies = [
  "bytemuck",
  "solana-address 2.7.0",
  "wincode 0.6.1",
+]
+
+[[package]]
+name = "quoter-test-support"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+ "anchor-v2-testing",
+ "litesvm",
+ "solana-pubkey 3.0.0",
 ]
 
 [[package]]

@@ -1,0 +1,15 @@
+[package]
+name = "quoter-test-support"
+description = "litesvm harness shared by the CLOB and midpoint integration tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+anchor-lang = { git = "https://github.com/otter-sec/anchor.git", rev = "abacd0e9362d957e7da779fa81b1a10dd9480b28" }
+anchor-v2-testing = { git = "https://github.com/otter-sec/anchor.git", rev = "abacd0e9362d957e7da779fa81b1a10dd9480b28" }
+litesvm = "0.13.1"
+solana-pubkey = "3.0"
+
+[lints.rust.unexpected_cfgs]
+level = "allow"

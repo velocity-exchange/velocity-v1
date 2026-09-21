@@ -38,6 +38,29 @@ extern crate anchor_lang_v2 as anchor_lang;
 
 pub use quoter_spec::{CancelSidesV0, SideV0, UserRefV0};
 
+/// The CLOB program, `BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU`. Velocity
+/// refuses a quoter config that names any other program. The CLOB asserts its
+/// own `declare_id!` against these bytes, so a divergence fails that build.
+pub const CLOB_PROGRAM_ID: solana_address::Address = solana_address::Address::new_from_array([
+    154, 89, 161, 4, 195, 203, 187, 235, 187, 150, 76, 246, 47, 233, 123, 46, 134, 65, 53, 146, 67,
+    69, 241, 41, 109, 179, 123, 27, 35, 234, 1, 163,
+]);
+
+/// Compile-time equality against [`CLOB_PROGRAM_ID`]. Array `PartialEq` is not
+/// const, so the bytes are compared one at a time.
+pub const fn is_clob_program_id(bytes: [u8; 32]) -> bool {
+    let id = CLOB_PROGRAM_ID.to_bytes();
+    let mut index = 0;
+    while index < 32 {
+        if bytes[index] != id[index] {
+            return false;
+        }
+        index += 1;
+    }
+
+    true
+}
+
 /// Order handle. The node index is an O(1) hint the book verifies against the order
 /// id, so a stale hint fails closed rather than acting on whichever order took the
 /// slot. The `Clob` prefix is deliberate: this is the one type here that lands in
@@ -556,4 +579,21 @@ pub enum ClobRemovalKindV0 {
 #[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub struct NextRemovalArgsV0 {
     pub kind: ClobRemovalKindV0,
+}
+
+/// Anchor-default instruction discriminators, `sha256("global:<name>")[..8]`,
+/// of the calls velocity makes into the book. Anchor derives them from the
+/// handler name, so a rename on the book's side is silent here. The CLOB
+/// asserts every one of them against its own derived value in a unit test.
+pub mod discriminator {
+    pub const PLACE_ORDER_V0: [u8; 8] = [100, 204, 57, 226, 245, 228, 61, 187];
+    pub const CANCEL_ORDER_V0: [u8; 8] = [70, 91, 225, 16, 228, 203, 124, 174];
+    pub const FILL_V0: [u8; 8] = [66, 113, 11, 94, 94, 23, 154, 137];
+    pub const CANCEL_ALL_V0: [u8; 8] = [212, 11, 203, 11, 184, 40, 88, 95];
+    pub const EVICT_WORST_V0: [u8; 8] = [106, 60, 27, 129, 80, 27, 37, 73];
+    pub const REMOVE_EXPIRED_V0: [u8; 8] = [241, 135, 215, 18, 254, 107, 179, 119];
+    pub const NEXT_REMOVAL_V0: [u8; 8] = [132, 65, 9, 126, 135, 115, 177, 92];
+    pub const SET_CRANK_CONDITIONS_V0: [u8; 8] = [34, 160, 120, 93, 84, 133, 8, 95];
+    pub const ORDERS_V0: [u8; 8] = [124, 117, 208, 33, 202, 209, 58, 199];
+    pub const ORDER_RULES_V0: [u8; 8] = [201, 129, 212, 105, 18, 69, 149, 252];
 }

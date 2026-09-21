@@ -49,11 +49,7 @@ use {
             StagedCall,
         },
         load, load_mut,
-        math::{
-            casting::Cast,
-            crosses::{resolve_crosses, Cross, CrossKind, RestingOrder},
-            safe_math::SafeMath,
-        },
+        math::crosses::{resolve_crosses, Cross, CrossKind, RestingOrder},
         msg,
         state::{
             clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
@@ -208,7 +204,7 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
     } = args;
     let clock = Clock::get()?;
     let state = ctx.accounts.state.load()?;
-    let program_keeper_mode = load!(ctx.accounts.filler)?.authority == state.signer;
+    let program_keeper_mode = load!(ctx.accounts.filler)?.is_protocol_user(&state.signer);
     validate!(
         !program_keeper_mode || ctx.accounts.crank_conditions.is_some(),
         ErrorCode::DefaultError,
@@ -240,11 +236,23 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
     // bind, because `L3RowV0` names the book's handle and not the order id.
     let mut rev_share_escrow = {
         let taker_authority = crate::load!(ctx.accounts.taker)?.authority;
-        crate::instructions::optional_accounts::get_revenue_share_escrow_account(
-            remaining_accounts_iter,
-            &taker_authority,
-        )?
+        if state.builder_codes_enabled() {
+            crate::instructions::optional_accounts::get_revenue_share_escrow_account(
+                remaining_accounts_iter,
+                &taker_authority,
+            )?
+        } else {
+            None
+        }
     };
+
+    // A referred taker earns the same accelerated rate here as on any other
+    // fill path. The status rides the account tail after the escrow.
+    let referrer_is_accelerated =
+        crate::instructions::optional_accounts::get_referrer_accelerated_status(
+            remaining_accounts_iter,
+            rev_share_escrow.as_ref(),
+        )?;
 
     validate!(
         !makers_and_referrer
@@ -296,6 +304,7 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
         makers_and_referrer_stats: &makers_and_referrer_stats,
         clock: &clock,
         program_keeper_mode,
+        referrer_is_accelerated,
     };
 
     // Two crossed remainders are the one case the router cannot reach. The
@@ -337,11 +346,11 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
         &mut rev_share_escrow,
     )?;
 
-    let fill_price = quote_filled
-        .cast::<u128>()?
-        .safe_mul(crate::math::constants::BASE_PRECISION_U64.cast()?)?
-        .safe_div(base_filled.cast()?)?
-        .cast::<u64>()?;
+    let fill_price = crate::math::orders::calculate_fill_price(
+        quote_filled,
+        base_filled,
+        crate::math::constants::BASE_PRECISION_U64,
+    )?;
     // The router fill applies the oracle gates and the shared post-fill checks
     // itself, so this branch only prices the cross. It is measured against the
     // price the fill reached, which is known only after the fill.
@@ -399,6 +408,8 @@ struct TakerOriginContext<'a, 'info> {
     /// True when the protocol `User` cranks. The reservoir then pays the
     /// keeper its lamports.
     program_keeper_mode: bool,
+    /// True when the taker's referrer earns the accelerated rate.
+    referrer_is_accelerated: bool,
 }
 
 /// The cross this crank settles, and its two rows.
@@ -641,7 +652,7 @@ fn route_and_fill_remainder<'info>(
             // reservation the fill must unwind as it fills.
             reserved: true,
             mode: FillMode::Fill,
-            referrer_is_accelerated: false,
+            referrer_is_accelerated: cx.referrer_is_accelerated,
         },
         cx.state,
         cx.clock,

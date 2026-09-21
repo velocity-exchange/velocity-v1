@@ -26,16 +26,13 @@ pub fn can_sign_for_user(user: &AccountLoader<User>, signer: &Signer) -> anchor_
     })
 }
 
-/// Tests whether the `User` is the one the protocol owns: sub-account 0 of
-/// the velocity signer PDA, which nobody signs for. Testing only the
-/// authority is not enough, because `initialize_user` takes it unchecked, so
-/// anyone can create sub-account 1+ under that PDA, and crank paths waive the caller's signature for the protocol `User`.
+/// [`User::is_protocol_user`] for two loaders. Crank paths waive the caller's
+/// signature for the protocol `User`, so they ask this before trusting one.
 pub fn is_protocol_user(
     user: &AccountLoader<User>,
     state: &AccountLoader<State>,
 ) -> anchor_lang::Result<bool> {
-    let user = user.load()?;
-    Ok(user.sub_account_id == 0 && user.authority.eq(&state.load()?.signer))
+    Ok(user.load()?.is_protocol_user(&state.load()?.signer))
 }
 
 /// `can_sign_for_user`, relaxed for the cranks that run in two modes. Either

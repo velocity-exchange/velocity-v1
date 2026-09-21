@@ -34,10 +34,10 @@ import { ConfirmOptions, Signer } from '@solana/web3.js';
 import {
 	chunks,
 	getAllPythOracleUpdateIxs,
-	getVelocityPriorityFeeEndpoint,
 	handleSimResultError,
 	simulateAndGetTxWithCUs,
 	SimulateAndGetTxWithCUsResponse,
+	subscribePriorityFeeMap,
 } from '../utils';
 import { PythLazerSubscriber } from '../pythLazerSubscriber';
 import { BundleSender } from '../bundleSender';
@@ -454,18 +454,10 @@ export class MakerBidAskTwapCrank implements Bot {
 			this.crankIntervalStartTime[DEFAULT_INTERVAL_GROUP] = 0;
 		}
 
-		this.priorityFeeSubscriberMap = new PriorityFeeSubscriberMap({
-			// Prefer an explicitly-configured endpoint (PRIORITY_FEE_ENDPOINT, e.g.
-			// the in-cluster dlob-server), falling back to the per-env default.
-			// A hardcoded 'mainnet-beta' here would point every env at the prod
-			// dlob, so resolve the endpoint from the actual configured env.
-			velocityPriorityFeeEndpoint:
-				this.globalConfig.priorityFeeEndpoint ??
-				getVelocityPriorityFeeEndpoint(this.globalConfig.velocityEnv!),
+		this.priorityFeeSubscriberMap = await subscribePriorityFeeMap(
 			velocityMarkets,
-			frequencyMs: 10_000,
-		});
-		await this.priorityFeeSubscriberMap.subscribe();
+			this.globalConfig
+		);
 	}
 
 	public async reset() {

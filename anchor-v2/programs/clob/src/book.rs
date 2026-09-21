@@ -20,10 +20,10 @@
 //!
 //! ## Traversal
 //!
-//! Both walks over a side go through [`walk_side`]. They are the placement
-//! scan and the quote/execute sweep. `walk_side` validates each hop and
-//! refuses to walk further than the arena can hold, so a corrupt list cannot
-//! spin forever.
+//! Every walk over a side goes through [`walk_side`], or through
+//! [`walk_side_ref`] where the caller holds only `&`. Both validate each hop
+//! and refuse to walk further than the arena can hold, so a corrupt list
+//! cannot spin forever.
 //!
 //! ## Invariants
 //!
@@ -74,18 +74,15 @@ use {
             MarketConfigV0, OrderBitFlag, OrderNodeV0, OrderRefV0, PartiallyFilledOrderV0,
             PlaceOrderParams, PriceLevel, RemovedOrder, ResponsePointerV0, Side,
             UserBalanceChangeV0, UserCapsV0, UserRefV0, BASE_PRECISION, CANCEL_ALL_ORDERS_CEILING,
-            EXECUTE_FILLS_CEILING, EXECUTE_USERS_CEILING, L3_ROWS_CEILING, QUOTE_LEVELS_CEILING,
-            USER_CAPS_CAPACITY, USER_EXCLUSION_BITMAP_BYTES, USER_SET_CAPACITY, ZERO_ADDRESS,
+            EXECUTE_FILLS_CEILING, EXECUTE_USERS_CEILING, L3_ROWS_CEILING, NIL,
+            QUOTE_LEVELS_CEILING, USER_CAPS_CAPACITY, USER_EXCLUSION_BITMAP_BYTES,
+            USER_SET_CAPACITY, ZERO_ADDRESS,
         },
     },
     anchor_lang::{address_eq, prelude::*},
     quoter_spec::{ExecuteWriter, L3Writer, QuoteWriter},
     relay_spec::ConditionBlock,
 };
-
-/// Null link sentinel. The account zero-inits and 0 is a valid node index,
-/// so `initialize` must thread the free list before the book is usable.
-pub const NIL: u32 = u32::MAX;
 
 /// Two conditions that must agree, such as a `NIL` best link and a zero count.
 /// Written inline the test reads `(a == b) == (c == d)`, which looks like a typo
@@ -289,12 +286,7 @@ impl BookHeader for ClobMarketV0 {
         // `cancel_all` and in a deep `execute` can land here, and a full-arena
         // walk per removal put both over the compute budget on a large market.
         for side in [Side::Bid, Side::Ask] {
-            let mut cursor = self.best(side);
-            let mut hops = 0usize;
-            while cursor != NIL {
-                let node = self.read_node(cursor)?;
-                hops += 1;
-                require!(hops <= self.capacity(), ClobError::BookInvariantViolated);
+            walk_side_ref(self, side, |_, node| {
                 if node.max_ts != 0 && node.max_ts < min_ts {
                     min_ts = node.max_ts;
                 }
@@ -305,8 +297,8 @@ impl BookHeader for ClobMarketV0 {
                     min_slot = node.activation_slot;
                 }
 
-                cursor = node.next;
-            }
+                Ok(Walk::Continue)
+            })?;
         }
 
         if expiry {
@@ -355,22 +347,22 @@ impl BookHeader for ClobMarketV0 {
     }
 
     fn first_claimant(&self, side: Side) -> u32 {
-        self.taker_origin_head[side.to_u8() as usize]
+        self.taker_origin_head[side.tag() as usize]
     }
 
     fn last_claimant(&self, side: Side) -> u32 {
-        self.taker_origin_tail[side.to_u8() as usize]
+        self.taker_origin_tail[side.tag() as usize]
     }
 
     fn claimant_count(&self, side: Side) -> u16 {
-        self.taker_origin_count[side.to_u8() as usize]
+        self.taker_origin_count[side.tag() as usize]
     }
 
     /// Appends to the tail, which keeps the list in rest order because
     /// `next_order_id` only increases. [`CrossReservation`] serves claimants in
     /// that order, so the oldest remainder is paid first.
     fn link_claimant(&mut self, side: Side, index: u32) -> Result<()> {
-        let list = side.to_u8() as usize;
+        let list = side.tag() as usize;
         let tail = self.taker_origin_tail[list];
         self.update_node(index, |node| {
             node.taker_origin_prev = tail;
@@ -398,7 +390,7 @@ impl BookHeader for ClobMarketV0 {
     /// consumed order therefore all maintain the list without knowing it
     /// exists.
     fn unlink_claimant(&mut self, side: Side, index: u32, node: &OrderNodeV0) -> Result<()> {
-        let list = side.to_u8() as usize;
+        let list = side.tag() as usize;
         let (prev, next) = (node.taker_origin_prev, node.taker_origin_next);
         if prev == NIL {
             require!(
@@ -529,6 +521,33 @@ where
         }
 
         cursor = next;
+    }
+
+    Ok(())
+}
+
+/// The read-only form of [`walk_side`], for a caller that holds only `&`.
+///
+/// The visitor cannot unlink, so this walk reads the successor after the
+/// visit rather than before it. The hop guard is the same, so a list
+/// corrupted into a cycle errors out instead of spending the whole compute
+/// budget.
+pub(crate) fn walk_side_ref<F>(book: &ClobMarketV0, side: Side, mut visit: F) -> Result<()>
+where
+    F: FnMut(u32, &OrderNodeV0) -> Result<Walk>,
+{
+    let max_hops = book.capacity();
+    let mut hops = 0usize;
+    let mut cursor = book.best(side);
+    while cursor != NIL {
+        let node = book.read_node(cursor)?;
+        hops += 1;
+        require!(hops <= max_hops, ClobError::BookInvariantViolated);
+        if matches!(visit(cursor, &node)?, Walk::Stop) {
+            break;
+        }
+
+        cursor = node.next;
     }
 
     Ok(())
@@ -1128,7 +1147,7 @@ impl ClobBook for ClobMarketV0 {
                 return Ok(Walk::Stop);
             }
 
-            if worse_than_limit(side, node.price, limit_price) {
+            if direction.worse_than_limit(node.price, limit_price) {
                 return Ok(Walk::Stop);
             }
 
@@ -2328,27 +2347,17 @@ fn best_actionable_price(
     slot: u64,
     now: i64,
 ) -> Result<Option<u64>> {
-    let mut cursor = book.best(side);
-    let mut hops = 0usize;
-    while cursor != NIL {
-        let node = book.read_node(cursor)?;
-        hops += 1;
-        require!(hops <= book.capacity(), ClobError::BookInvariantViolated);
-        if is_live(&node, slot, now) {
-            return Ok(Some(node.price));
+    let mut best = None;
+    walk_side_ref(book, side, |_, node| {
+        if !is_live(node, slot, now) {
+            return Ok(Walk::Continue);
         }
 
-        cursor = node.next;
-    }
+        best = Some(node.price);
+        Ok(Walk::Stop)
+    })?;
 
-    Ok(None)
-}
-
-/// Whether a level at `price` is past the caller's worst acceptable price. Zero is
-/// no bound. A level exactly at the limit is acceptable, so the comparison is
-/// strict, matching the caller's own at-or-better check.
-fn worse_than_limit(side: Side, price: u64, limit_price: u64) -> bool {
-    limit_price != 0 && side.is_worse_price(price, limit_price)
+    Ok(best)
 }
 
 /// Append one wincode `PriceLevel` to the quote response, re-checking on the way

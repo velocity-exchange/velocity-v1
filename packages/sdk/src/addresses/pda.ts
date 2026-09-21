@@ -639,6 +639,22 @@ export function getUserConditionsPublicKey(
 	)[0];
 }
 
+/** The upgradeable BPF loader, which owns every program that can redeploy in place. */
+export const BPF_LOADER_UPGRADEABLE_ID = new PublicKey(
+	'BPFLoaderUpgradeab1e11111111111111111111111'
+);
+
+/**
+ * A program's program-data account, which records the slot it was last deployed
+ * at. Its absence means the program can never change.
+ */
+export function getProgramDataAddress(programId: PublicKey): PublicKey {
+	return PublicKey.findProgramAddressSync(
+		[programId.toBuffer()],
+		BPF_LOADER_UPGRADEABLE_ID
+	)[0];
+}
+
 /**
  * The program-wide resolver staging account, from seed `["relay_scratch"]`.
  * Every resolver names it at index 0. It holds no durable state and runs only under simulation.
@@ -701,6 +717,25 @@ export function getQuoterSlabPublicKey(
 		[
 			Buffer.from(anchor.utils.bytes.utf8.encode('quoter_slab')),
 			new anchor.BN(marketIndex).toArrayLike(Buffer, 'le', 2),
+		],
+
+		programId
+	)[0];
+}
+
+/**
+ * A quoter entry's `QuoterCrossConditionsV0` PDA, from seeds
+ * `["quoter_cross_conditions", quoter]`. It holds the relay conditions block
+ * that wakes a cross crank for that one entry.
+ */
+export function getQuoterCrossConditionsPublicKey(
+	programId: PublicKey,
+	quoter: PublicKey
+): PublicKey {
+	return PublicKey.findProgramAddressSync(
+		[
+			Buffer.from(anchor.utils.bytes.utf8.encode('quoter_cross_conditions')),
+			quoter.toBuffer(),
 		],
 
 		programId

@@ -122,6 +122,7 @@ export * from './util/digest';
 export * from './util/promiseTimeout';
 export * from './math/spotBalance';
 export * from './velocityClientConfig';
+export * from './clob/topMakersClient';
 export * from './clob/userOrdersClient';
 export * from './orderBookLevels';
 export * from './userMap/userMap';

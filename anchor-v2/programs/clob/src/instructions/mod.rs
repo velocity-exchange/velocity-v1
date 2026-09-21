@@ -1,5 +1,7 @@
 //! One file per instruction: context struct at the top, handler below.
 
+mod market_accounts;
+
 pub mod cancel_all_v0;
 pub mod cancel_order_v0;
 pub mod close_market_v0;
@@ -21,7 +23,7 @@ pub mod update_market_v0;
 
 pub use {
     cancel_all_v0::*, cancel_order_v0::*, close_market_v0::*, evict_worst_v0::*, execute_v0::*,
-    fill_v0::*, initialize_market_v0::*, next_cross_v0::*, next_removal_v0::*, order_rules_v0::*,
-    orders_v0::*, place_order_v0::*, quote_l3_v0::*, quote_v0::*, remove_expired_v0::*,
-    resize_market_v0::*, set_crank_conditions_v0::*, update_market_v0::*,
+    fill_v0::*, initialize_market_v0::*, market_accounts::*, next_cross_v0::*, next_removal_v0::*,
+    order_rules_v0::*, orders_v0::*, place_order_v0::*, quote_l3_v0::*, quote_v0::*,
+    remove_expired_v0::*, resize_market_v0::*, set_crank_conditions_v0::*, update_market_v0::*,
 };

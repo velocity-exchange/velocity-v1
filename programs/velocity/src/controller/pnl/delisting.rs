@@ -779,19 +779,19 @@ pub mod delisting_test {
         settle_expired_position(0, &mut taker, &taker_key, &mut maps, &clock, &state).unwrap();
 
         assert_eq!(taker.spot_positions[0].scaled_balance > 100000000000, true);
-        assert_eq!(taker.spot_positions[0].scaled_balance, 139480200000);
+        assert_eq!(taker.spot_positions[0].scaled_balance, 139480199000);
 
         let market = maps.perp_market_map.get_ref_mut(&0).unwrap();
-        assert_eq!(market.pnl_pool.scaled_balance, 960519800000);
+        assert_eq!(market.pnl_pool.scaled_balance, 960519801000);
         // A permissionless expiry closeout charges a taker fee (OtterSec #44). The
         // fee accrues to the market fee ledger, split into IF and protocol, with
         // AMM provision zeroed since there is no AMM counterparty. It does not
         // linger in the pnl pool for delisting to sweep into the revenue pool.
         // The default fee structure zeros both numerators, so the fee lands as protocol residual.
-        assert_eq!(market.fee_ledger.pending_protocol_fee, 19799);
+        assert_eq!(market.fee_ledger.pending_protocol_fee, 19800);
         assert_eq!(market.fee_ledger.pending_if_fee, 0);
         assert_eq!(market.fee_ledger.pending_amm_provision, 0);
-        assert_eq!(market.fee_ledger.total_exchange_fee, 19799);
+        assert_eq!(market.fee_ledger.total_exchange_fee, 19800);
         drop(market);
 
         assert_eq!(taker.perp_positions[0].open_orders, 0);
@@ -1132,10 +1132,10 @@ pub mod delisting_test {
         settle_expired_position(0, &mut taker, &taker_key, &mut maps, &clock, &state).unwrap();
 
         assert_eq!(taker.spot_positions[0].scaled_balance > 100000000000, true);
-        assert_eq!(taker.spot_positions[0].scaled_balance, 159480200000);
+        assert_eq!(taker.spot_positions[0].scaled_balance, 159480199000);
 
         let market = maps.perp_market_map.get_ref_mut(&0).unwrap();
-        assert_eq!(market.pnl_pool.scaled_balance, 940519800000);
+        assert_eq!(market.pnl_pool.scaled_balance, 940519801000);
         drop(market);
 
         assert_eq!(taker.perp_positions[0].open_orders, 0);
@@ -1322,7 +1322,10 @@ pub mod delisting_test {
         assert_eq!(taker.spot_positions[0].scaled_balance > 100000000000, true);
 
         let market = maps.perp_market_map.get_ref_mut(&0).unwrap();
-        assert_eq!(market.pnl_pool.scaled_balance, 15602000000); // no settle fee since base_asse_value=0 (since price is negative)
+        // A negative expiry price leaves a small closeout notional. The fee
+        // rounds up, as it does on every other taker fill, so it is one quote
+        // unit rather than zero.
+        assert_eq!(market.pnl_pool.scaled_balance, 15602001000);
         assert_eq!(market.amm.fee_pool.scaled_balance, 0);
         drop(market);
 
@@ -1623,7 +1626,7 @@ pub mod delisting_test {
 
             // shorts lose
             assert_eq!(orig_short_balance, 200000000000000);
-            assert_eq!(shorter.spot_positions[0].scaled_balance, 198992601401000);
+            assert_eq!(shorter.spot_positions[0].scaled_balance, 198992601400000);
 
             assert_eq!(
                 shorter.spot_positions[0].scaled_balance < orig_short_balance,
@@ -1631,10 +1634,10 @@ pub mod delisting_test {
             );
 
             let shorter_loss = orig_short_balance - shorter.spot_positions[0].scaled_balance;
-            assert_eq!(shorter_loss, 1007398599000); //$1020 loss
+            assert_eq!(shorter_loss, 1007398600000); //$1020 loss
 
             let market = maps.perp_market_map.get_ref_mut(&0).unwrap();
-            assert_eq!(market.pnl_pool.scaled_balance, 2007398599000); //$2020
+            assert_eq!(market.pnl_pool.scaled_balance, 2007398600000); //$2020
             assert_eq!(market.amm.fee_pool.scaled_balance, 0);
             drop(market);
 
@@ -1660,7 +1663,7 @@ pub mod delisting_test {
         assert_eq!(margin_requirement, 10000);
 
         let market = maps.perp_market_map.get_ref_mut(&0).unwrap();
-        assert_eq!(market.pnl_pool.scaled_balance, 2007398599000);
+        assert_eq!(market.pnl_pool.scaled_balance, 2007398600000);
         assert_eq!(longer.spot_positions[0].scaled_balance, 20000000000000);
         assert_eq!(longer.perp_positions[0].quote_asset_amount, -40001000000);
         drop(market);
@@ -1668,10 +1671,10 @@ pub mod delisting_test {
         settle_expired_position(0, &mut longer, &taker_key, &mut maps, &clock, &state).unwrap();
 
         assert_eq!(longer.spot_positions[0].scaled_balance > 100000000000, true);
-        assert_eq!(longer.spot_positions[0].scaled_balance, 21980198801000);
+        assert_eq!(longer.spot_positions[0].scaled_balance, 21980198800000);
 
         let market = maps.perp_market_map.get_ref_mut(&0).unwrap();
-        assert_eq!(market.pnl_pool.scaled_balance, 27199798000); //fee from settling
+        assert_eq!(market.pnl_pool.scaled_balance, 27199800000); //fee from settling
         assert_eq!(market.amm.fee_pool.scaled_balance, 0);
         drop(market);
 
@@ -2676,7 +2679,7 @@ pub mod delisting_test {
             settle_expired_position(0, &mut liquidator, &liq_key, &mut maps, &clock, &state)
                 .unwrap();
 
-            assert_eq!(liquidator.spot_positions[0].scaled_balance, 20151890000000);
+            assert_eq!(liquidator.spot_positions[0].scaled_balance, 20151889999000);
             // avoid the social loss :p
             // made 79 bucks
 
@@ -2717,7 +2720,7 @@ pub mod delisting_test {
             assert_eq!(market.cumulative_funding_rate_long, 17249955000);
             assert_eq!(market.cumulative_funding_rate_short, -17249955000);
 
-            assert_eq!(market.pnl_pool.scaled_balance, 20848110000000); //$20920
+            assert_eq!(market.pnl_pool.scaled_balance, 20848110001000); //$20920
             assert_eq!(market.amm.fee_pool.scaled_balance, 0);
             drop(market);
 
@@ -2765,7 +2768,7 @@ pub mod delisting_test {
             .unwrap();
 
             let market = maps.perp_market_map.get_ref_mut(&0).unwrap();
-            assert_eq!(market.pnl_pool.scaled_balance, 20848110000000);
+            assert_eq!(market.pnl_pool.scaled_balance, 20848110001000);
             assert_eq!(longer.spot_positions[0].scaled_balance, 20000000000000);
             assert_eq!(longer.perp_positions[0].quote_asset_amount, 200000000);
             assert_eq!(longer.perp_positions[0].quote_asset_amount, 200000000);
@@ -2790,10 +2793,10 @@ pub mod delisting_test {
             assert_eq!(longer.perp_positions[0].last_cumulative_funding_rate, 0);
 
             assert_eq!(longer.spot_positions[0].scaled_balance > 100000000000, true);
-            assert_eq!(longer.spot_positions[0].scaled_balance, 40790389200000); //$40775
+            assert_eq!(longer.spot_positions[0].scaled_balance, 40790389199000); //$40775
 
             let market = maps.perp_market_map.get_ref_mut(&0).unwrap();
-            assert_eq!(market.pnl_pool.scaled_balance, 57720800000); // fees collected
+            assert_eq!(market.pnl_pool.scaled_balance, 57720802000); // fees collected
             assert_eq!(market.amm.fee_pool.scaled_balance, 0);
 
             assert_eq!(market.number_of_users_with_base, 0);

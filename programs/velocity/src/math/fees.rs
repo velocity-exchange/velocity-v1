@@ -280,6 +280,25 @@ fn calculate_taker_fee(
     Ok(taker_fee)
 }
 
+/// The taker fee on `quote_asset_amount` at tier 0, for a path that has no
+/// user tier to read.
+///
+/// Tier 0 is the dearest tier, so this never sits below what a routed fill
+/// charges the same notional. It carries the market add-on and the fee
+/// adjustment, which a bare tier multiply omits.
+pub fn conservative_taker_fee(
+    quote_asset_amount: u64,
+    market: &crate::state::perp_market::PerpMarket,
+    fee_structure: &FeeStructure,
+) -> VelocityResult<u64> {
+    calculate_taker_fee(
+        quote_asset_amount,
+        &fee_structure.fee_tiers[0],
+        market.fee_adjustment,
+        market.taker_fee_addon_tenth_bps,
+    )
+}
+
 fn calculate_maker_rebate(
     quote_asset_amount: u64,
     fee_tier: &FeeTier,

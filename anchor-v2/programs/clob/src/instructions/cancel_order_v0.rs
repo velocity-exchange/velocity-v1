@@ -1,58 +1,29 @@
+/// Declared by `clob-wire`. The owner is verified against the node.
+pub use clob_wire::CancelOrderArgsV0;
 use {
     crate::{
         book::{BookHeader, ClobBook},
-        emit::emit_pod,
-        error::ClobError,
+        emit::emit_removal,
         events::OrderCancelRecordV0,
-        state::{ClobMarketV0, RemovedOrderV0},
+        instructions::GatedMarketV0,
+        state::RemovedOrderV0,
     },
     anchor_lang::prelude::*,
 };
-
-#[derive(Accounts)]
-pub struct CancelOrderV0 {
-    #[account(mut)]
-    pub market: ClobMarketV0,
-    #[account(address = market.place_authority @ ClobError::InvalidAuthority)]
-    pub place_authority: Signer,
-}
-
-/// Declared by `clob-wire`. The owner is verified against the node.
-pub use clob_wire::CancelOrderArgsV0;
 
 /// Cancel a resting order. Returns the removed order as return data, so
 /// velocity can decrement the maker's open-order aggregates by the remaining
 /// size on the correct side.
 pub fn handle_cancel_order_v0(
-    ctx: &mut Context<CancelOrderV0>,
+    ctx: &mut Context<GatedMarketV0>,
     args: CancelOrderArgsV0,
 ) -> Result<RemovedOrderV0> {
     let clock = Clock::get()?;
     let market = &mut ctx.accounts.market;
     let removed = market.cancel(args.user, args.order_ref, clock.slot, args.force)?;
-    // The removal path takes no clock. An activation hint that the chain
-    // already reached is dropped here.
     market.expire_activation_hint(clock.slot)?;
-    emit_pod!(OrderCancelRecordV0 {
-        authority: removed.user.authority,
-        ts: clock.unix_timestamp,
-        order_id: removed.order_id,
-        price: removed.price,
-        base_asset_amount: removed.base_asset_amount,
-        market_index: market.market_index,
-        sub_account_id: removed.user.sub_account_id,
-        client_order_id: removed.client_order_id,
-    });
 
-    Ok(RemovedOrderV0 {
-        user: removed.user,
-        order_id: removed.order_id,
-        client_order_id: removed.client_order_id,
-        price: removed.price,
-        base_asset_amount: removed.base_asset_amount,
-        side: removed.side,
-        taker_origin: removed.taker_origin,
-        reduce_only: removed.reduce_only,
-        max_ts: removed.max_ts,
-    })
+    emit_removal!(OrderCancelRecordV0, removed, clock, market.market_index);
+
+    Ok(removed.into())
 }

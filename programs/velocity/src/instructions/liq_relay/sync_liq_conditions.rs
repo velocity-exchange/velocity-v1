@@ -185,12 +185,6 @@ struct MarketInputs {
     /// source has a registered layout.
     watch: Option<OracleWatchV0>,
     oracle_source: Option<OracleSource>,
-    /// The maintenance margin ratio for a perp, or the maintenance asset
-    /// weight for a spot market.
-    maintenance_ratio: u32,
-    /// The same ratio at the initial tier, which the force-cancel gate answers
-    /// to.
-    initial_ratio: u32,
     /// The oracle price in `PRICE_PRECISION`. The raw oracle field matches it
     /// only on a six-decimal feed.
     price: i128,
@@ -340,8 +334,6 @@ fn collect_sync_inputs<'info>(
                 entry.oracle = Some(market.oracle);
                 entry.oracle_source = Some(market.oracle_source);
                 entry.has_clob = market.clob_market != Pubkey::default();
-                entry.maintenance_ratio = market.margin_ratio_maintenance;
-                entry.initial_ratio = market.margin_ratio_initial;
                 oracle_of_market.insert(market.oracle, (true, market.market_index));
                 market_refs.push(AccountRefV0::writable(info.key.to_bytes()));
                 continue;
@@ -351,8 +343,6 @@ fn collect_sync_inputs<'info>(
                 let entry = spots.entry(market.market_index).or_default();
                 entry.oracle = Some(market.oracle);
                 entry.oracle_source = Some(market.oracle_source);
-                entry.maintenance_ratio = market.maintenance_asset_weight;
-                entry.initial_ratio = market.initial_asset_weight;
                 entry.decimals = market.decimals;
                 entry.cumulative_deposit_interest = market.cumulative_deposit_interest;
                 oracle_of_market.insert(market.oracle, (false, market.market_index));

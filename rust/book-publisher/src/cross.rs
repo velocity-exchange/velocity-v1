@@ -35,11 +35,11 @@ use {
         instruction::{AccountMeta, Instruction},
         pubkey::Pubkey,
     },
-    std::collections::BTreeMap,
     velocity_router_sim::{
+        pdas,
         quote_view::{
-            perp_market_pda, read_zero_copy, spot_market_pda, state_pda, user_stats_pda,
-            velocity_signer_pda, QuoteView, QuotedBook,
+            cpi_account_metas, fetch_zero_copy, perp_market_pda, quoter_cpi_union, read_zero_copy,
+            spot_market_pda, state_pda, user_stats_pda, QuoteView, QuotedBook,
         },
         quoter_slab_pda, quoter_slab_slots,
     },
@@ -49,29 +49,6 @@ use {
 /// small. The walk stops before admitting an unstaged maker, so the sized
 /// cross is always covered by the passed user set.
 const MAX_CROSS_MAKERS: usize = 8;
-
-fn user_pda(velocity: &Pubkey, user: &ClobUserRefV0) -> Pubkey {
-    Pubkey::find_program_address(
-        &[
-            b"user",
-            user.authority.as_ref(),
-            user.sub_account_id.to_le_bytes().as_ref(),
-        ],
-        velocity,
-    )
-    .0
-}
-
-fn crank_conditions_pda(velocity: &Pubkey, market_index: u16) -> Pubkey {
-    Pubkey::find_program_address(
-        &[
-            b"clob_crank_conditions",
-            market_index.to_le_bytes().as_ref(),
-        ],
-        velocity,
-    )
-    .0
-}
 
 /// The crossing prefix between one book's bids and another's asks. It holds
 /// the matchable size and each leg's gross quote.
@@ -190,13 +167,7 @@ pub async fn find_cross_plan<S: ChainSource + ?Sized>(
 
     // The conservative fee estimate is the tier-0 taker fee on both legs.
     let state_key = state_pda(velocity);
-    let state_account = source
-        .get_multiple_accounts(&[state_key])
-        .await?
-        .pop()
-        .flatten()
-        .ok_or_else(|| anyhow!("state account missing"))?;
-    let state: State = read_zero_copy(&state_account.data)?;
+    let state: State = fetch_zero_copy(source, &state_key, "state").await?;
     let tier = state.perp_fee_structure.fee_tiers[0];
     let (fee_numerator, fee_denominator) = (
         tier.fee_numerator as u128,
@@ -274,26 +245,14 @@ pub async fn find_cross_plan<S: ChainSource + ?Sized>(
     // named, because each leg assembles its route from the tail and a route
     // without the slab consults nothing external. The perp market is named
     // only.
-    let signer = velocity_signer_pda(velocity);
-    let protocol_user = Pubkey::find_program_address(
-        &[b"user", signer.as_ref(), 0u16.to_le_bytes().as_ref()],
-        velocity,
-    )
-    .0;
-    let protocol_user_stats = user_stats_pda(velocity, &signer);
+    let protocol = pdas::protocol_user_pair(velocity);
 
-    let mut cpi_union: BTreeMap<Pubkey, bool> = BTreeMap::new();
+    // The slab rides read-only on its own, because the executor consults it
+    // whether or not a leg registered it.
+    let mut cpi_union = quoter_cpi_union(&legs);
     cpi_union
         .entry(quoter_slab_pda(velocity, market_index))
         .or_default();
-    for slot in &legs {
-        for meta in slot.config.registered_accounts() {
-            *cpi_union.entry(meta.pubkey).or_default() |= meta.is_writable;
-        }
-
-        *cpi_union.entry(slot.config.response_account).or_default() |= true;
-        cpi_union.entry(slot.config.program_id).or_default();
-    }
 
     // Named accounts through the executor's own client struct, so a change
     // to its `#[derive(Accounts)]` shape breaks this builder at compile time.
@@ -302,9 +261,9 @@ pub async fn find_cross_plan<S: ChainSource + ?Sized>(
         program::accounts::CrankCrossMatch {
             state: state_key,
             authority: *payout,
-            taker: protocol_user,
-            taker_stats: protocol_user_stats,
-            crank_conditions: crank_conditions_pda(velocity, market_index),
+            taker: protocol.user,
+            taker_stats: protocol.stats,
+            crank_conditions: pdas::clob_crank_conditions(velocity, market_index),
             perp_market: perp_market_pda(velocity, market_index),
             quoter_slab: quoter_slab_pda(velocity, market_index),
             instructions_sysvar: solana_sdk::sysvar::instructions::ID,
@@ -319,19 +278,13 @@ pub async fn find_cross_plan<S: ChainSource + ?Sized>(
     ));
 
     for maker in &makers {
-        accounts.push(AccountMeta::new(user_pda(velocity, maker), false));
+        accounts.push(AccountMeta::new(pdas::user_of(velocity, maker), false));
         accounts.push(AccountMeta::new(
             user_stats_pda(velocity, &maker.authority),
             false,
         ));
     }
-    for (key, writable) in &cpi_union {
-        accounts.push(if *writable {
-            AccountMeta::new(*key, false)
-        } else {
-            AccountMeta::new_readonly(*key, false)
-        });
-    }
+    accounts.extend(cpi_account_metas(&cpi_union));
 
     use anchor_lang::InstructionData;
     let data = program::instruction::CrankCrossMatch {

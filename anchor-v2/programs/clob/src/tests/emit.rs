@@ -10,7 +10,7 @@
 use {
     crate::{
         emit::{
-            pod_log_bytes, write_execute_record, CancelAllRecord, LogBuf, DISCRIMINATOR_BYTES,
+            assert_pod_matches_event, write_execute_record, CancelAllRecord, LogBuf,
             EXECUTE_RECORD_LOG_BYTES,
         },
         events::{
@@ -24,19 +24,6 @@ use {
 
 fn authority() -> Address {
     Address::new_from_array([0xAB; 32])
-}
-
-/// `pod_log_bytes` with the width the `emit_pod!` macro computes.
-macro_rules! assert_pod_matches_event {
-    ($ty:ident { $($field:tt)* }) => {{
-        const LOG_BYTES: usize = DISCRIMINATOR_BYTES + core::mem::size_of::<$ty>();
-        let record = $ty { $($field)* };
-        assert_eq!(
-            pod_log_bytes::<$ty, LOG_BYTES>(&record).as_slice(),
-            Event::data(&record).as_slice(),
-            concat!(stringify!($ty), " emit path diverged from Event::data()"),
-        );
-    }};
 }
 
 #[test]

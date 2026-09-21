@@ -13,11 +13,11 @@ use {
         events::{ExecuteRecordV0, FillSlimV0, OrdersCancelRecordV0},
         instruction, relay_spec,
         state::{
-            CancelSidesV0, ClobDirectionExt, ClobHeaderV0, ClobMarketV0, ClobSideExt, Direction,
-            MarketConfigV0, OrderBitFlag, OrderNodeV0, OrderRefV0, Side, UserCapsV0, UserRefV0,
-            BASE_PRECISION, CANCEL_ALL_ORDERS_CEILING, CRANK_ACTIVATION, CRANK_BLOCK_OFFSET,
-            CRANK_CAPACITY, CRANK_CONDITIONS, CRANK_CROSS, CRANK_EXPIRY, EXECUTE_FILLS_CEILING,
-            ORDERS_OFFSET, REMOVED_ORDER_BYTES, RESERVATION_GRACE_SLOTS_CEILING,
+            CancelSidesV0, ClobHeaderV0, ClobMarketV0, Direction, MarketConfigV0, OrderBitFlag,
+            OrderNodeV0, OrderRefV0, Side, UserCapsV0, UserRefV0, BASE_PRECISION,
+            CANCEL_ALL_ORDERS_CEILING, CRANK_ACTIVATION, CRANK_BLOCK_OFFSET, CRANK_CAPACITY,
+            CRANK_CONDITIONS, CRANK_CROSS, CRANK_EXPIRY, EXECUTE_FILLS_CEILING, ORDERS_OFFSET,
+            REMOVED_ORDER_BYTES, RESERVATION_GRACE_SLOTS_CEILING,
         },
         CancelAllArgsV0, CancelOrderArgsV0, ClobRemovalKindV0, CrankAccountV0,
         CrankConditionsArgsV0, CrankResolverV0, EvictWorstArgsV0, ExecuteArgsV0, NextRemovalArgsV0,
@@ -25,6 +25,7 @@ use {
         ResizeMarketArgsV0, UpdateMarketArgsV0,
     },
     litesvm::types::{FailedTransactionMetadata, TransactionMetadata},
+    quoter_test_support::{addr, parse_u32, system_program},
     solana_clock::Clock,
     solana_pubkey::Pubkey,
 };
@@ -43,14 +44,6 @@ fn program_id() -> Pubkey {
     "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
         .parse()
         .unwrap()
-}
-
-fn addr(pk: Pubkey) -> Address {
-    Address::new_from_array(pk.to_bytes())
-}
-
-fn system_program() -> Pubkey {
-    "11111111111111111111111111111111".parse().unwrap()
 }
 
 struct Ctx {
@@ -163,35 +156,13 @@ fn send_with_budget(
     ix: Instruction,
     compute_unit_limit: Option<u32>,
 ) -> Result<TransactionMetadata, FailedTransactionMetadata> {
-    // Fresh blockhash per send so identical instruction streams don't dedupe.
-    ctx.svm.expire_blockhash();
-    let blockhash = ctx.svm.latest_blockhash();
-    let ixs: Vec<Instruction> = compute_unit_limit
-        .map(|limit| Instruction {
-            program_id: "ComputeBudget111111111111111111111111111111"
-                .parse()
-                .unwrap(),
-            accounts: Vec::new(),
-            // Tag 2 is SetComputeUnitLimit(u32).
-            data: [&[2u8][..], &limit.to_le_bytes()[..]].concat(),
-        })
-        .into_iter()
-        .chain(core::iter::once(ix.clone()))
-        .collect();
-    let msg = Message::new_with_blockhash(&ixs, Some(&ctx.payer.pubkey()), &blockhash);
-    let mut signers: Vec<&dyn anchor_v2_testing::Signer> = vec![&ctx.payer];
-    for kp in [&ctx.admin, &ctx.place_auth, &ctx.market_kp] {
-        let needed = ix
-            .accounts
-            .iter()
-            .any(|m| m.is_signer && m.pubkey.to_bytes() == kp.pubkey().to_bytes());
-        if needed && kp.pubkey() != ctx.payer.pubkey() {
-            signers.push(kp);
-        }
-    }
-
-    let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &signers).unwrap();
-    ctx.svm.send_transaction(tx)
+    quoter_test_support::send(
+        &mut ctx.svm,
+        &ctx.payer,
+        &[&ctx.admin, &ctx.place_auth, &ctx.market_kp],
+        ix,
+        compute_unit_limit,
+    )
 }
 
 /// Tests key users by a bare address; the wire wants the derivable form.
@@ -204,7 +175,7 @@ fn uref(user: Address) -> UserRefV0 {
 
 fn place_ix(ctx: &Ctx, mut args: PlaceOrderArgsV0, user: Address) -> Instruction {
     args.user = uref(user);
-    instruction::PlaceOrderV0 { args }.to_instruction(accounts::PlaceOrderV0 {
+    instruction::PlaceOrderV0 { args }.to_instruction(accounts::GatedMarketV0 {
         market: addr(ctx.market),
         place_authority: addr(ctx.place_auth.pubkey()),
     })
@@ -235,9 +206,6 @@ fn taker_origin_args(side: Side, price: u64, size: u64) -> PlaceOrderArgsV0 {
 
 // --- wire parsing (borsh-compatible LE layouts) ---
 
-fn parse_u32(b: &[u8]) -> u32 {
-    u32::from_le_bytes(b[..4].try_into().unwrap())
-}
 fn parse_u64(b: &[u8]) -> u64 {
     u64::from_le_bytes(b[..8].try_into().unwrap())
 }
@@ -251,15 +219,7 @@ fn parse_order_ref(b: &[u8]) -> OrderRefV0 {
 
 /// Read the response bytes the returned pointer designates.
 fn read_response(ctx: &Ctx, meta: &TransactionMetadata) -> Vec<u8> {
-    assert_eq!(
-        meta.return_data.program_id.to_bytes(),
-        program_id().to_bytes()
-    );
-
-    let offset = parse_u32(&meta.return_data.data) as usize;
-    let len = parse_u32(&meta.return_data.data[4..]) as usize;
-    let account = ctx.svm.get_account(&ctx.market).unwrap();
-    account.data[offset..offset + len].to_vec()
+    quoter_test_support::read_response(&ctx.svm, program_id(), ctx.market, meta).bytes
 }
 
 /// QuoteResponseV0 { levels: Vec<PriceLevel { price: u64, size: u64 }> }
@@ -317,6 +277,37 @@ fn quote_meta_users(
     quote_meta_limited(ctx, direction, size, users, 0)
 }
 
+/// A `quote_v0` argument list at the harness defaults: a served window, no
+/// caps, no reference price, no user set, no taker and no limit. Each caller
+/// overrides the fields its own test is about. `size` is in whole base units.
+fn quote_args(direction: Direction, size: u64) -> QuoteArgsV0<'static> {
+    QuoteArgsV0 {
+        taker_served_window: true,
+        include_taker_origin_reservations: false,
+        caps: UserCapsV0::EMPTY,
+        reference_price: 0,
+        direction,
+        size: size.saturating_mul(UNIT),
+        users: &[],
+        taker: None,
+        limit_price: 0,
+    }
+}
+
+/// The same defaults for `execute_v0`, which takes no limit price.
+fn execute_args(direction: Direction, size: u64) -> ExecuteArgsV0<'static> {
+    ExecuteArgsV0 {
+        taker_served_window: true,
+        include_taker_origin_reservations: false,
+        caps: UserCapsV0::EMPTY,
+        reference_price: 0,
+        direction,
+        size: size.saturating_mul(UNIT),
+        users: &[],
+        taker: None,
+    }
+}
+
 /// [`quote_meta_users`] with a worst-acceptable-price bound; zero is none.
 fn quote_meta_limited(
     ctx: &mut Ctx,
@@ -327,18 +318,12 @@ fn quote_meta_limited(
 ) -> Result<TransactionMetadata, FailedTransactionMetadata> {
     let ix = instruction::QuoteV0 {
         args: QuoteArgsV0 {
-            taker_served_window: true,
-            include_taker_origin_reservations: false,
-            caps: UserCapsV0::EMPTY,
-            reference_price: 0,
-            direction,
-            size: size.saturating_mul(UNIT),
             users: &user_set(users),
-            taker: None,
             limit_price,
+            ..quote_args(direction, size)
         },
     }
-    .to_instruction(accounts::QuoteV0 {
+    .to_instruction(accounts::ResponseMarketV0 {
         market: addr(ctx.market),
     });
 
@@ -364,18 +349,11 @@ fn quote(ctx: &mut Ctx, direction: Direction, size: u64) -> Vec<(u64, u64)> {
 fn quote_consuming(ctx: &mut Ctx, direction: Direction, size: u64) -> Vec<(u64, u64)> {
     let ix = instruction::QuoteV0 {
         args: QuoteArgsV0 {
-            taker_served_window: true,
             include_taker_origin_reservations: true,
-            caps: UserCapsV0::EMPTY,
-            reference_price: 0,
-            direction,
-            size: size.saturating_mul(UNIT),
-            users: &[],
-            taker: None,
-            limit_price: 0,
+            ..quote_args(direction, size)
         },
     }
-    .to_instruction(accounts::QuoteV0 {
+    .to_instruction(accounts::ResponseMarketV0 {
         market: addr(ctx.market),
     });
 
@@ -391,17 +369,11 @@ fn execute_consuming(
 ) -> Vec<([u8; 32], u64, u64, Vec<u64>)> {
     let ix = instruction::ExecuteV0 {
         args: ExecuteArgsV0 {
-            taker_served_window: true,
             include_taker_origin_reservations: true,
-            caps: UserCapsV0::EMPTY,
-            reference_price: 0,
-            direction,
-            size: size.saturating_mul(UNIT),
-            users: &[],
-            taker: None,
+            ..execute_args(direction, size)
         },
     }
-    .to_instruction(accounts::ExecuteV0 {
+    .to_instruction(accounts::GatedMarketV0 {
         market: addr(ctx.market),
         place_authority: addr(ctx.place_auth.pubkey()),
     });
@@ -433,17 +405,11 @@ fn execute_meta_users(
 ) -> Result<TransactionMetadata, FailedTransactionMetadata> {
     let ix = instruction::ExecuteV0 {
         args: ExecuteArgsV0 {
-            taker_served_window: true,
-            include_taker_origin_reservations: false,
-            caps: UserCapsV0::EMPTY,
-            reference_price: 0,
-            direction,
-            size: size.saturating_mul(UNIT),
             users: &user_set(users),
-            taker: None,
+            ..execute_args(direction, size)
         },
     }
-    .to_instruction(accounts::ExecuteV0 {
+    .to_instruction(accounts::GatedMarketV0 {
         market: addr(ctx.market),
         place_authority: addr(ctx.place_auth.pubkey()),
     });
@@ -480,7 +446,7 @@ fn evict_worst(
     let ix = instruction::EvictWorstV0 {
         args: EvictWorstArgsV0 { side },
     }
-    .to_instruction(accounts::EvictWorstV0 {
+    .to_instruction(accounts::GatedMarketV0 {
         market: addr(ctx.market),
         place_authority: addr(ctx.place_auth.pubkey()),
     });
@@ -494,7 +460,7 @@ fn next_removal(ctx: &mut Ctx, kind: ClobRemovalKindV0) -> OrderViewV0 {
     let ix = instruction::NextRemovalV0 {
         args: NextRemovalArgsV0 { kind },
     }
-    .to_instruction(accounts::NextRemovalV0Accounts {
+    .to_instruction(accounts::MarketViewV0 {
         market: addr(ctx.market),
     });
 
@@ -510,7 +476,7 @@ fn remove_expired(
     let ix = instruction::RemoveExpiredV0 {
         args: RemoveExpiredArgsV0 { order_ref },
     }
-    .to_instruction(accounts::RemoveExpiredV0 {
+    .to_instruction(accounts::GatedMarketV0 {
         market: addr(ctx.market),
         place_authority: addr(ctx.place_auth.pubkey()),
     });
@@ -589,6 +555,20 @@ fn program_data(meta: &TransactionMetadata) -> Vec<u8> {
     bytes
 }
 
+fn cancel_ix(ctx: &Ctx, order_ref: OrderRefV0, user: Address) -> Instruction {
+    instruction::CancelOrderV0 {
+        args: CancelOrderArgsV0 {
+            order_ref,
+            user: uref(user),
+            force: false,
+        },
+    }
+    .to_instruction(accounts::GatedMarketV0 {
+        market: addr(ctx.market),
+        place_authority: addr(ctx.place_auth.pubkey()),
+    })
+}
+
 fn cancel_all_ix(ctx: &Ctx, user: Address, sides: CancelSidesV0) -> Instruction {
     instruction::CancelAllV0 {
         args: CancelAllArgsV0 {
@@ -597,7 +577,7 @@ fn cancel_all_ix(ctx: &Ctx, user: Address, sides: CancelSidesV0) -> Instruction 
             force: false,
         },
     }
-    .to_instruction(accounts::CancelAllV0 {
+    .to_instruction(accounts::GatedMarketV0 {
         market: addr(ctx.market),
         place_authority: addr(ctx.place_auth.pubkey()),
     })
@@ -720,18 +700,7 @@ fn cancel_verifies_hint_and_user() {
     let order_ref = place(&mut ctx, place_args(Side::Bid, 50, 1), user);
 
     let cancel = |ctx: &mut Ctx, user: Address, order_ref: OrderRefV0| {
-        let ix = instruction::CancelOrderV0 {
-            args: CancelOrderArgsV0 {
-                order_ref,
-                user: uref(user),
-                force: false,
-            },
-        }
-        .to_instruction(accounts::CancelOrderV0 {
-            market: addr(ctx.market),
-            place_authority: addr(ctx.place_auth.pubkey()),
-        });
-
+        let ix = cancel_ix(ctx, order_ref, user);
         send(ctx, ix)
     };
 
@@ -812,7 +781,7 @@ fn place_rejects_off_grid_undersized_and_bad_authority() {
             ..place_args(Side::Bid, 100, 10)
         },
     }
-    .to_instruction(accounts::PlaceOrderV0 {
+    .to_instruction(accounts::GatedMarketV0 {
         market: addr(ctx.market),
         place_authority: addr(rando.pubkey()),
     });
@@ -840,17 +809,11 @@ fn execute_rejects_unauthorized_caller() {
     ctx.svm.warp_to_slot(11);
 
     let args = || ExecuteArgsV0 {
-        taker_served_window: true,
-        include_taker_origin_reservations: false,
-        caps: UserCapsV0::EMPTY,
-        reference_price: 0,
-        direction: Direction::Long,
         size: 5,
-        users: &[],
-        taker: None,
+        ..execute_args(Direction::Long, 0)
     };
     let execute_ix = |authority: Pubkey| {
-        instruction::ExecuteV0 { args: args() }.to_instruction(accounts::ExecuteV0 {
+        instruction::ExecuteV0 { args: args() }.to_instruction(accounts::GatedMarketV0 {
             market: addr(ctx.market),
             place_authority: addr(authority),
         })
@@ -947,7 +910,7 @@ fn hard_cap_rejects_placement_and_crank_evicts_tail() {
         parse_removed(&meta.return_data.data);
     assert_eq!(
         (evicted_user, price, base, side, taker_origin),
-        (user.to_bytes(), 100, 1, Side::Bid.to_u8(), false)
+        (user.to_bytes(), 100, 1, Side::Bid.tag(), false)
     );
 
     place(&mut ctx, place_args(Side::Bid, 200, 1), user);
@@ -1080,7 +1043,7 @@ fn set_crank_conditions(ctx: &mut Ctx, resolver: Pubkey) -> u32 {
             ],
         },
     }
-    .to_instruction(accounts::SetCrankConditionsV0 {
+    .to_instruction(accounts::GatedMarketV0 {
         market: addr(ctx.market),
         place_authority: addr(ctx.place_auth.pubkey()),
     });
@@ -1219,7 +1182,7 @@ fn the_book_hosts_the_conditions_that_watch_its_own_state() {
             }],
         },
     }
-    .to_instruction(accounts::SetCrankConditionsV0 {
+    .to_instruction(accounts::GatedMarketV0 {
         market: addr(ctx.market),
         place_authority: addr(ctx.place_auth.pubkey()),
     });
@@ -1265,7 +1228,7 @@ fn registering_a_resolver_is_place_authority_only() {
             accounts: vec![],
         },
     }
-    .to_instruction(accounts::SetCrankConditionsV0 {
+    .to_instruction(accounts::GatedMarketV0 {
         market: addr(ctx.market),
         place_authority: addr(stranger.pubkey()),
     });
@@ -1284,7 +1247,7 @@ fn orders(ctx: &mut Ctx, refs: &[OrderRefV0]) -> Vec<OrderViewV0> {
             refs: refs.to_vec(),
         },
     }
-    .to_instruction(accounts::OrdersV0Accounts {
+    .to_instruction(accounts::MarketViewV0 {
         market: addr(ctx.market),
     });
 
@@ -1359,7 +1322,7 @@ fn the_book_describes_the_orders_a_caller_holds_refs_for() {
             refs: vec![ask; clob::ORDER_VIEW_CEILING + 1],
         },
     }
-    .to_instruction(accounts::OrdersV0Accounts {
+    .to_instruction(accounts::MarketViewV0 {
         market: addr(ctx.market),
     });
 
@@ -1415,7 +1378,7 @@ fn expired_orders_are_skipped_and_cranked_off() {
     let (removed_user, _, _, _, base, side, taker_origin) = parse_removed(&meta.return_data.data);
     assert_eq!(
         (removed_user, base, side, taker_origin),
-        (user.to_bytes(), 5, Side::Ask.to_u8(), false)
+        (user.to_bytes(), 5, Side::Ask.tag(), false)
     );
 
     let state = market_state(&ctx);
@@ -1623,7 +1586,7 @@ fn the_l3_read_flags_the_orders_that_can_end_a_walk() {
             include_taker_origin_reservations: false,
         },
     }
-    .to_instruction(accounts::QuoteL3V0 {
+    .to_instruction(accounts::ResponseMarketV0 {
         market: addr(ctx.market),
     });
 
@@ -1846,18 +1809,11 @@ fn cu_benchmarks() {
     // Quote sweeping the entire side (level cap applies).
     let ix = instruction::QuoteV0 {
         args: QuoteArgsV0 {
-            taker_served_window: true,
-            include_taker_origin_reservations: false,
-            caps: UserCapsV0::EMPTY,
-            reference_price: 0,
-            direction: Direction::Short,
             size: u64::MAX,
-            users: &[],
-            taker: None,
-            limit_price: 0,
+            ..quote_args(Direction::Short, 0)
         },
     }
-    .to_instruction(accounts::QuoteV0 {
+    .to_instruction(accounts::ResponseMarketV0 {
         market: addr(ctx.market),
     });
 
@@ -1870,19 +1826,8 @@ fn cu_benchmarks() {
     let mut ctx2 = setup();
     let u2 = addr(Pubkey::new_unique());
     let oref = place(&mut ctx2, place_args(Side::Bid, 500, 10), u2);
-    let cancel_ix = instruction::CancelOrderV0 {
-        args: CancelOrderArgsV0 {
-            order_ref: oref,
-            user: uref(u2),
-            force: false,
-        },
-    }
-    .to_instruction(accounts::CancelOrderV0 {
-        market: addr(ctx2.market),
-        place_authority: addr(ctx2.place_auth.pubkey()),
-    });
-
-    let cancel_empty = send(&mut ctx2, cancel_ix).unwrap().compute_units_consumed;
+    let ix = cancel_ix(&ctx2, oref, u2);
+    let cancel_empty = send(&mut ctx2, ix).unwrap().compute_units_consumed;
 
     // Cancel out of a nearly-full side (relink cost at depth).
     let mut refs = Vec::new();
@@ -1891,19 +1836,8 @@ fn cu_benchmarks() {
     }
 
     let mid_ref = refs[refs.len() / 2];
-    let cancel_ix = instruction::CancelOrderV0 {
-        args: CancelOrderArgsV0 {
-            order_ref: mid_ref,
-            user: uref(u2),
-            force: false,
-        },
-    }
-    .to_instruction(accounts::CancelOrderV0 {
-        market: addr(ctx2.market),
-        place_authority: addr(ctx2.place_auth.pubkey()),
-    });
-
-    let cancel_full = send(&mut ctx2, cancel_ix).unwrap().compute_units_consumed;
+    let ix = cancel_ix(&ctx2, mid_ref, u2);
+    let cancel_full = send(&mut ctx2, ix).unwrap().compute_units_consumed;
 
     let empty_place = {
         let mut c = setup();
@@ -1952,18 +1886,7 @@ fn cu_benchmark_cancel_all() {
     let per_order_cu: u64 = refs
         .iter()
         .map(|order_ref| {
-            let ix = instruction::CancelOrderV0 {
-                args: CancelOrderArgsV0 {
-                    order_ref: *order_ref,
-                    user: uref(mine),
-                    force: false,
-                },
-            }
-            .to_instruction(accounts::CancelOrderV0 {
-                market: addr(ctx.market),
-                place_authority: addr(ctx.place_auth.pubkey()),
-            });
-
+            let ix = cancel_ix(&ctx, *order_ref, mine);
             send(&mut ctx, ix).unwrap().compute_units_consumed
         })
         .sum();
@@ -2082,18 +2005,9 @@ fn an_execute_at_the_ceilings_fits_the_response_and_emits_the_record() {
     advance_slot(&mut ctx, 1);
 
     let ix = instruction::ExecuteV0 {
-        args: ExecuteArgsV0 {
-            taker_served_window: true,
-            include_taker_origin_reservations: false,
-            caps: UserCapsV0::EMPTY,
-            reference_price: 0,
-            direction: Direction::Long,
-            size: (fills as u64).saturating_mul(UNIT),
-            users: &[],
-            taker: None,
-        },
+        args: execute_args(Direction::Long, fills as u64),
     }
-    .to_instruction(accounts::ExecuteV0 {
+    .to_instruction(accounts::GatedMarketV0 {
         market: addr(ctx.market),
         place_authority: addr(ctx.place_auth.pubkey()),
     });
@@ -2109,7 +2023,7 @@ fn an_execute_at_the_ceilings_fits_the_response_and_emits_the_record() {
         ts: clock.unix_timestamp,
         slot: clock.slot,
         market_index: 0,
-        direction: Direction::Long.to_u8(),
+        direction: Direction::Long.tag(),
         fills: orders
             .iter()
             .enumerate()
@@ -2193,18 +2107,11 @@ fn resize_grows_arena_and_per_side_capacity() {
 fn quote_taker(ctx: &mut Ctx, direction: Direction, size: u64, taker: Address) -> Vec<(u64, u64)> {
     let ix = instruction::QuoteV0 {
         args: QuoteArgsV0 {
-            taker_served_window: true,
-            include_taker_origin_reservations: false,
-            caps: UserCapsV0::EMPTY,
-            reference_price: 0,
-            direction,
-            size: size.saturating_mul(UNIT),
-            users: &[],
             taker: Some(uref(taker)),
-            limit_price: 0,
+            ..quote_args(direction, size)
         },
     }
-    .to_instruction(accounts::QuoteV0 {
+    .to_instruction(accounts::ResponseMarketV0 {
         market: addr(ctx.market),
     });
 
@@ -2220,17 +2127,11 @@ fn execute_taker(
 ) -> Vec<([u8; 32], u64, u64, Vec<u64>)> {
     let ix = instruction::ExecuteV0 {
         args: ExecuteArgsV0 {
-            taker_served_window: true,
-            include_taker_origin_reservations: false,
-            caps: UserCapsV0::EMPTY,
-            reference_price: 0,
-            direction,
-            size: size.saturating_mul(UNIT),
-            users: &[],
             taker: Some(uref(taker)),
+            ..execute_args(direction, size)
         },
     }
-    .to_instruction(accounts::ExecuteV0 {
+    .to_instruction(accounts::GatedMarketV0 {
         market: addr(ctx.market),
         place_authority: addr(ctx.place_auth.pubkey()),
     });
@@ -2267,18 +2168,7 @@ fn cancel(
     order_ref: OrderRefV0,
     user: Address,
 ) -> Result<TransactionMetadata, FailedTransactionMetadata> {
-    let ix = instruction::CancelOrderV0 {
-        args: CancelOrderArgsV0 {
-            order_ref,
-            user: uref(user),
-            force: false,
-        },
-    }
-    .to_instruction(accounts::CancelOrderV0 {
-        market: addr(ctx.market),
-        place_authority: addr(ctx.place_auth.pubkey()),
-    });
-
+    let ix = cancel_ix(ctx, order_ref, user);
     send(ctx, ix)
 }
 
@@ -2316,7 +2206,7 @@ fn the_taker_origin_flag_round_trips_through_place_and_removal() {
         parse_removed(&meta.return_data.data);
     assert_eq!(
         (order_id, client_order_id, price, base, side, taker_origin),
-        (remainder.order_id, 7_777, 101, 5, Side::Bid.to_u8(), true)
+        (remainder.order_id, 7_777, 101, 5, Side::Bid.tag(), true)
     );
 
     let meta = cancel(&mut ctx, ordinary, user).unwrap();
@@ -2362,7 +2252,7 @@ fn a_crossed_taker_remainder_and_the_depth_it_crosses_are_both_withheld() {
     let (_, _, _, price, base, side, taker_origin) = parse_removed(&meta.return_data.data);
     assert_eq!(
         (price, base, side, taker_origin),
-        (101, 5, Side::Bid.to_u8(), true)
+        (101, 5, Side::Bid.tag(), true)
     );
     assert_eq!(market_state(&ctx).bid_count, 0);
 }
@@ -2586,18 +2476,11 @@ fn cu_benchmark_quote_with_a_taker_origin_head() {
 
     let ix = instruction::QuoteV0 {
         args: QuoteArgsV0 {
-            taker_served_window: true,
-            include_taker_origin_reservations: false,
-            caps: UserCapsV0::EMPTY,
-            reference_price: 0,
-            direction: Direction::Short,
             size: u64::MAX,
-            users: &[],
-            taker: None,
-            limit_price: 0,
+            ..quote_args(Direction::Short, 0)
         },
     }
-    .to_instruction(accounts::QuoteV0 {
+    .to_instruction(accounts::ResponseMarketV0 {
         market: addr(ctx.market),
     });
 
@@ -2646,18 +2529,11 @@ fn cu_benchmark_quote_and_execute_with_claimants_resting() {
 
         let ix = instruction::QuoteV0 {
             args: QuoteArgsV0 {
-                taker_served_window: true,
-                include_taker_origin_reservations: false,
-                caps: UserCapsV0::EMPTY,
-                reference_price: 0,
-                direction: Direction::Short,
                 size: u64::MAX,
-                users: &[],
-                taker: None,
-                limit_price: 0,
+                ..quote_args(Direction::Short, 0)
             },
         }
-        .to_instruction(accounts::QuoteV0 {
+        .to_instruction(accounts::ResponseMarketV0 {
             market: addr(ctx.market),
         });
 
@@ -2709,7 +2585,7 @@ fn quote_l3_reports_the_orders_behind_the_ladder() {
                 include_taker_origin_reservations: false,
             },
         }
-        .to_instruction(accounts::QuoteL3V0 {
+        .to_instruction(accounts::ResponseMarketV0 {
             market: addr(ctx.market),
         });
 
@@ -2754,7 +2630,7 @@ fn quote_l3_reports_the_orders_behind_the_ladder() {
             include_taker_origin_reservations: false,
         },
     }
-    .to_instruction(accounts::QuoteL3V0 {
+    .to_instruction(accounts::ResponseMarketV0 {
         market: addr(ctx.market),
     });
 
@@ -3051,7 +2927,7 @@ fn the_order_rules_report_what_the_sides_hold() {
     let user = addr(Pubkey::new_unique());
 
     let rules = |ctx: &mut Ctx| {
-        let ix = instruction::OrderRulesV0 {}.to_instruction(accounts::OrderRulesV0Accounts {
+        let ix = instruction::OrderRulesV0 {}.to_instruction(accounts::MarketViewV0 {
             market: addr(ctx.market),
         });
         let meta = send(ctx, ix).unwrap();

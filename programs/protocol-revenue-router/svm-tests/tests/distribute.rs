@@ -202,6 +202,24 @@ impl Env {
         )
     }
 
+    fn set_treasury(&mut self, treasury: Pubkey) -> TxResult {
+        let accounts = router_accounts::AdminUpdate {
+            config: self.router_config,
+            admin: self.admin.pubkey(),
+        };
+        let admin = self.admin.insecure_clone();
+        self.send(
+            &[ix(
+                ROUTER_ID,
+                accounts,
+                router_args::SetTreasury {
+                    new_treasury: treasury,
+                },
+            )],
+            &[&admin],
+        )
+    }
+
     fn distribute(&mut self, cranker: &Keypair) -> TxResult {
         let payer = self.payer.pubkey();
         self.distribute_with_payer(cranker, payer)
@@ -412,5 +430,44 @@ fn the_cranker_may_also_be_the_payer() {
     env.distribute_with_payer(&cranker, payer)
         .expect("distribute with cranker as payer");
 
+    assert_eq!(env.balance(&env.redemption_vault), 6_000 * USDT);
+}
+
+#[test]
+fn set_treasury_rejects_keys_whose_ata_would_alias_a_leg() {
+    let Some(mut env) = setup() else { return };
+
+    let router_config = env.router_config;
+    assert_error(env.set_treasury(router_config), "InvalidTreasury");
+    let redemption_config = env.redemption_config;
+    assert_error(env.set_treasury(redemption_config), "InvalidTreasury");
+
+    let fresh = Pubkey::new_unique();
+    env.set_treasury(fresh).expect("set_treasury to a wallet");
+    assert_eq!(env.router_config().treasury, fresh);
+}
+
+#[test]
+fn distribute_pays_the_treasury_before_the_redemption_cpi() {
+    let Some(mut env) = setup() else { return };
+
+    env.fund_router(10_000 * USDT);
+    let cranker = env.cranker.insecure_clone();
+    let logs = env.distribute(&cranker).expect("distribute").logs;
+
+    // The router ATA must hold only the pool share by the time the external
+    // program is given signer authority over it.
+    let position = |needle: &str| {
+        logs.iter()
+            .position(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("no log line containing {needle:?}:\n{}", logs.join("\n")))
+    };
+    let treasury_transfer = position(&format!("Program {} invoke [2]", spl_token::ID));
+    let redemption_cpi = position(&format!("Program {} invoke [2]", dfx_redemption::ID));
+    assert!(
+        treasury_transfer < redemption_cpi,
+        "treasury transfer (log {treasury_transfer}) must precede the redemption CPI (log {redemption_cpi})"
+    );
+    assert_eq!(env.treasury_balance(), 4_000 * USDT);
     assert_eq!(env.balance(&env.redemption_vault), 6_000 * USDT);
 }

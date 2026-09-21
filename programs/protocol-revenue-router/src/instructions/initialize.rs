@@ -2,6 +2,7 @@ use {
     crate::{
         errors::RouterError,
         events::RouterInitialized,
+        instructions::set_treasury::validate_treasury,
         state::{RouterConfig, Tier, ROUTER_CONFIG_SEED},
     },
     anchor_lang::prelude::*,
@@ -40,9 +41,10 @@ pub fn initialize(
     treasury: Pubkey,
     tiers: Vec<Tier>,
 ) -> Result<()> {
-    for key in [admin, cranker, treasury] {
+    for key in [admin, cranker] {
         require_keys_neq!(key, Pubkey::default(), RouterError::InvalidAuthority);
     }
+    validate_treasury(&treasury, &ctx.accounts.config.key())?;
 
     let config = &mut ctx.accounts.config;
     config.bump = ctx.bumps.config;

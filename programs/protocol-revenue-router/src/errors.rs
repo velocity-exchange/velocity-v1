@@ -22,4 +22,6 @@ pub enum RouterError {
     TiersLockedForPeriod,
     #[msg("Arithmetic overflow")]
     ArithmeticOverflow,
+    #[msg("Treasury cannot be the router config or the redemption config")]
+    InvalidTreasury,
 }

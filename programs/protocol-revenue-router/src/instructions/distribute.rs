@@ -35,11 +35,16 @@ pub struct Distribute<'info> {
     /// CHECK: only used as the ATA wallet; locked to the admin-set treasury
     #[account(address = config.treasury)]
     pub treasury: UncheckedAccount<'info>,
+    // Aliasing either leg's account would misroute funds: the SPL self-transfer
+    // is a no-op, and the redemption vault would swallow the treasury share.
     #[account(
         init_if_needed,
         payer = payer,
         associated_token::mint = usdt_mint,
-        associated_token::authority = treasury
+        associated_token::authority = treasury,
+        constraint = treasury_ata.key() != router_ata.key()
+            && treasury_ata.key() != redemption_vault.key()
+            @ RouterError::InvalidTreasury
     )]
     pub treasury_ata: Box<Account<'info, TokenAccount>>,
     #[account(mut)]
@@ -101,6 +106,23 @@ pub fn distribute(ctx: Context<Distribute>) -> Result<()> {
     let seeds: &[&[u8]] = &[ROUTER_CONFIG_SEED, &[bump]];
     let signer_seeds = &[seeds];
 
+    // Treasury leg first, so the external program only ever gets signer authority
+    // over an ATA holding exactly the pool share.
+    if to_treasury > 0 {
+        token::transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.key(),
+                Transfer {
+                    from: ctx.accounts.router_ata.to_account_info(),
+                    to: ctx.accounts.treasury_ata.to_account_info(),
+                    authority: ctx.accounts.config.to_account_info(),
+                },
+                signer_seeds,
+            ),
+            to_treasury,
+        )?;
+    }
+
     if to_pool > 0 {
         dfx_redemption::cpi::contribute(
             CpiContext::new_with_signer(
@@ -118,21 +140,6 @@ pub fn distribute(ctx: Context<Distribute>) -> Result<()> {
             ),
             to_pool,
             dfx_redemption::types::ContributionSource::ProtocolFees,
-        )?;
-    }
-
-    if to_treasury > 0 {
-        token::transfer(
-            CpiContext::new_with_signer(
-                ctx.accounts.token_program.key(),
-                Transfer {
-                    from: ctx.accounts.router_ata.to_account_info(),
-                    to: ctx.accounts.treasury_ata.to_account_info(),
-                    authority: ctx.accounts.config.to_account_info(),
-                },
-                signer_seeds,
-            ),
-            to_treasury,
         )?;
     }
 

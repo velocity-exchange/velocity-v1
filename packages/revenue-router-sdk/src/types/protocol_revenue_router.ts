@@ -692,6 +692,11 @@ export type ProtocolRevenueRouter = {
 			name: 'arithmeticOverflow';
 			msg: 'Arithmetic overflow';
 		},
+		{
+			code: 6009;
+			name: 'invalidTreasury';
+			msg: 'Treasury cannot be the router config or the redemption config';
+		},
 	];
 	types: [
 		{

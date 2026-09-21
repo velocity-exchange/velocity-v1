@@ -83,6 +83,7 @@ export class VelocityStateWatcher {
 	}
 
 	public unsubscribe() {
+		this.notifiedMessage = undefined;
 		if (this.interval) {
 			clearInterval(this.interval);
 			this.interval = undefined;
@@ -217,7 +218,9 @@ export class VelocityStateWatcher {
 		) {
 			this._lastTriggered = true;
 			// Stays triggered until the pod restarts, so notify once per distinct
-			// change instead of on every interval tick.
+			// change instead of on every interval tick. Delivery is best-effort:
+			// webhookMessage swallows its own errors, so a dropped post is not
+			// retried -- the same line is in the pod log either way.
 			if (
 				this.config.stateChecks.onStateChange &&
 				message !== this.notifiedMessage

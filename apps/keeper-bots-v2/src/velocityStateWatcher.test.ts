@@ -1,25 +1,20 @@
 import { expect } from 'chai';
 import { VelocityStateWatcher } from './velocityStateWatcher';
 
-// Minimal stand-in for VelocityClient: only what the watcher reads.
-function stubClient(numberOfSpotMarkets: number) {
-	return {
-		isSubscribed: true,
-		getStateAccount: () => ({ numberOfMarkets: 1, numberOfSpotMarkets }),
-		getPerpMarketAccounts: () => [],
-		getSpotMarketAccounts: () => [],
-	};
-}
-
 describe('VelocityStateWatcher', () => {
 	it('notifies once per change, not on every tick', () => {
 		let spotMarkets = 4;
 		const messages: string[] = [];
-		const client = stubClient(spotMarkets);
-		client.getStateAccount = () => ({
-			numberOfMarkets: 1,
-			numberOfSpotMarkets: spotMarkets,
-		});
+		// Minimal stand-in for VelocityClient: only what the watcher reads.
+		const client = {
+			isSubscribed: true,
+			getStateAccount: () => ({
+				numberOfMarkets: 1,
+				numberOfSpotMarkets: spotMarkets,
+			}),
+			getPerpMarketAccounts: () => [],
+			getSpotMarketAccounts: () => [],
+		};
 
 		const watcher = new VelocityStateWatcher({
 			velocityClient: client as any,
@@ -51,5 +46,11 @@ describe('VelocityStateWatcher', () => {
 		expect(messages[0]).to.contain('4 -> 5');
 		// health stays failed so the pod still restarts
 		expect(watcher.triggered).to.equal(true);
+
+		// a further change is a different message, so it still gets through
+		spotMarkets = 6;
+		tick();
+		expect(messages).to.have.lengthOf(2);
+		expect(messages[1]).to.contain('4 -> 6');
 	});
 });

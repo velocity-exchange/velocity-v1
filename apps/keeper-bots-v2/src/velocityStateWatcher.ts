@@ -40,6 +40,7 @@ export class VelocityStateWatcher {
 
 	private _lastTriggered: boolean;
 	private _lastTriggeredStates: StateChecks;
+	private notifiedMessage?: string;
 
 	constructor(private config: VelocityStateWatcherConfig) {
 		this._lastTriggeredStates = {
@@ -82,6 +83,7 @@ export class VelocityStateWatcher {
 	}
 
 	public unsubscribe() {
+		this.notifiedMessage = undefined;
 		if (this.interval) {
 			clearInterval(this.interval);
 			this.interval = undefined;
@@ -215,7 +217,15 @@ export class VelocityStateWatcher {
 			spotMarketStatus
 		) {
 			this._lastTriggered = true;
-			if (this.config.stateChecks.onStateChange) {
+			// Stays triggered until the pod restarts, so notify once per distinct
+			// change instead of on every interval tick. Delivery is best-effort:
+			// webhookMessage swallows its own errors, so a dropped post is not
+			// retried -- the same line is in the pod log either way.
+			if (
+				this.config.stateChecks.onStateChange &&
+				message !== this.notifiedMessage
+			) {
+				this.notifiedMessage = message;
 				this.config.stateChecks.onStateChange(message, {
 					newPerpMarkets,
 					newSpotMarkets,
@@ -225,6 +235,7 @@ export class VelocityStateWatcher {
 			}
 		} else {
 			this._lastTriggered = false;
+			this.notifiedMessage = undefined;
 		}
 	}
 }

@@ -13,7 +13,9 @@ no-entrypoint = []
 cpi = ["no-entrypoint"]
 anchor-test = []
 mainnet-beta = []
-default = []
+# Like programs/velocity: the mainnet init gate is ON by default, so a build
+# that forgets to opt out is locked down, not left permissionless.
+default = ["mainnet-beta"]
 idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build", "anchor-spl/token_2022"]
 
 [dependencies]

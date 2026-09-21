@@ -461,12 +461,21 @@ export class ProtocolFeeCollectorBot implements Bot {
 					// marketType/marketIndex only pick a priority fee bucket here
 					const firstPerpMarket =
 						this.adminClient.getPerpMarketAccounts()[0]?.marketIndex ?? 0;
-					const result = await this.sendIx(
-						await this.buildDistributeIx(),
-						'perp',
-						firstPerpMarket,
-						'distribute'
-					);
+					// Building the ix reads RouterConfig over RPC and can throw; that
+					// must count as a failed distribute, not escape to the outer catch.
+					let result: { sent: boolean } = { sent: false };
+					try {
+						result = await this.sendIx(
+							await this.buildDistributeIx(),
+							'perp',
+							firstPerpMarket,
+							'distribute'
+						);
+					} catch (e: any) {
+						logger.error(
+							`${this.name}: could not build distribute ix: ${e.message}`
+						);
+					}
 					if (!result.sent && !this.dryRun) {
 						this.unhealthyReason = 'distribute failed';
 						await webhookMessage(

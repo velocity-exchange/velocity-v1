@@ -11,8 +11,9 @@ pub fn set_tiers(ctx: Context<AdminUpdate>, tiers: Vec<Tier>) -> Result<()> {
     let config = &mut ctx.accounts.config;
     let now_day = Clock::get()?.unix_timestamp / SECONDS_PER_DAY;
     // A ladder must never change part-way through a period it has already priced.
+    // `<=` mirrors roll_period: a clock reading earlier than period_day never unlocks.
     require!(
-        !(now_day == config.period_day && config.period_fees > 0),
+        !(now_day <= config.period_day && config.period_fees > 0),
         RouterError::TiersLockedForPeriod
     );
     config.set_tiers(&tiers)?;

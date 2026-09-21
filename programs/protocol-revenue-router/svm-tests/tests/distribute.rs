@@ -4,8 +4,10 @@
 //! real dfx-redemption program so the CPI, the cap clamp and the tier ladder
 //! are exercised end to end.
 //!
-//! Build both programs first: `anchor build -p protocol_revenue_router` here,
-//! and `anchor build` in dfx-claim (or point `DFX_REDEMPTION_SO` at its `.so`).
+//! Build both programs first: `anchor build --ignore-keys -p protocol_revenue_router -- --features anchor-test`
+//! here (the default build enables the mainnet init gate, which these tests do
+//! not sign for), and `anchor build` in dfx-claim (or point `DFX_REDEMPTION_SO`
+//! at its `.so`).
 
 use {
     anchor_lang::{AccountDeserialize, InstructionData, ToAccountMetas},

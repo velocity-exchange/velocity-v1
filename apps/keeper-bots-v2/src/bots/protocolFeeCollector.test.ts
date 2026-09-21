@@ -128,12 +128,28 @@ describe('ProtocolFeeCollectorBot router distribute step', () => {
 		expect((bot as any).unhealthyReason).to.equal('distribute failed');
 		expect(await bot.healthCheck()).to.equal(false);
 	});
+
+	it('marks the bot unhealthy when the distribute ix cannot be built', async () => {
+		const { bot, calls } = makeBot({
+			withdrawResult: { sent: true, confirmedSlot: 42 },
+		});
+		(bot as any).buildDistributeIx = async () => {
+			throw new Error('RouterConfig is not initialized');
+		};
+
+		await (bot as any).tryCollectProtocolFees();
+
+		expect(labels(calls)).to.not.include('distribute');
+		expect((bot as any).unhealthyReason).to.equal('distribute failed');
+	});
 });
 
 describe('revenue-router SDK', () => {
 	it('derives a deterministic router config PDA', () => {
-		expect(getRouterConfigPda().toBase58()).to.equal(
-			getRouterConfigPda().toBase58()
-		);
+		const expected = PublicKey.findProgramAddressSync(
+			[Buffer.from('router_config')],
+			new PublicKey('39PAxdVaWHYH62bR5AWTkMVd52Y4QeJLjQ8TChupghgT')
+		)[0];
+		expect(getRouterConfigPda().toBase58()).to.equal(expected.toBase58());
 	});
 });

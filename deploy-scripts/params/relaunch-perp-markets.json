@@ -158,7 +158,42 @@
 			"lp_pool_id": 0,
 			"funding_clamp_threshold": 5,
 			"funding_ramp_slope": 1000000,
-			"taker_fee_addon_tenth_bps": 15
+			"taker_fee_addon_tenth_bps": 0
+		},
+		{
+			"name": "ZEC-PERP",
+			"market_index": 4,
+			"oracle_source": "PythLazer",
+			"contract_tier": "C",
+			"lazer_feed_id": 66,
+			"mm_oracle_feed_id": null,
+			"oi_cap_usd": 180000,
+			"amm_base_asset_reserve": "24187107900000",
+			"amm_quote_asset_reserve": "24187107900000",
+			"amm_peg_multiplier": "1497260000",
+			"amm_periodicity": 3600,
+			"margin_ratio_initial": 1000,
+			"margin_ratio_maintenance": 500,
+			"imf_factor": 642,
+			"liquidator_fee": 10000,
+			"if_liquidation_fee": 10000,
+			"max_open_interest": "120219000000",
+			"quote_max_insurance": "5000000000",
+			"max_revenue_withdraw_per_period": "100000000",
+			"base_spread": 1000,
+			"max_spread": 20000,
+			"order_step_size": "1000000",
+			"concentration_coef_scale": "100",
+			"order_tick_size": "10000",
+			"min_order_size": "1000000",
+			"curve_update_intensity": 120,
+			"amm_jit_intensity": 0,
+			"oracle_slot_delay_override": null,
+			"active_status": true,
+			"lp_pool_id": 0,
+			"funding_clamp_threshold": 5,
+			"funding_ramp_slope": 1000000,
+			"taker_fee_addon_tenth_bps": 0
 		}
 	]
 }

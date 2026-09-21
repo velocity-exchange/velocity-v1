@@ -520,11 +520,6 @@ export function registerFees(parent: Command): void {
 				'--if-split <pct>',
 				'insurance fund share of the fee remainder, percent'
 			)
-			.option(
-				'--dry-run',
-				'print the resulting structure and expected proposal rent/fees, send nothing',
-				false
-			)
 	).action(
 		async (
 			tier0bp: string,

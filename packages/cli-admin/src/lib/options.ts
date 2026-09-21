@@ -3,6 +3,7 @@ import * as os from 'os';
 import { GlobalOpts } from './provider';
 import { VelocityEnv } from '@velocity-exchange/sdk';
 import { resolveProfile } from './config';
+import { setDryRun } from './squads';
 
 /**
  * Attach shared global options to every subcommand.
@@ -45,11 +46,19 @@ export function withGlobalOptions(cmd: Command): Command {
 		.option(
 			'-y, --yes',
 			'skip the interactive confirmation for mainnet direct sends'
+		)
+		.option(
+			'--dry-run',
+			'build and price the instructions, send nothing: prints each instruction, the dispatch route (direct send or vault proposal) and the expected rent/fees',
+			false
 		);
 }
 
 export function readGlobalOpts(cmd: Command): GlobalOpts {
 	const opts = cmd.optsWithGlobals();
+	// Set the process-wide flag here rather than passing it through every
+	// command. Every dispatching command calls this before sendOrPropose.
+	setDryRun(opts.dryRun === true);
 	const selected = resolveProfile(opts.profile as string | undefined);
 	const profile = selected?.profile;
 
@@ -66,6 +75,7 @@ export function readGlobalOpts(cmd: Command): GlobalOpts {
 		throw new Error(`unknown env "${env}" (expected mainnet-beta or devnet)`);
 	}
 	return {
+		dryRun: opts.dryRun === true,
 		url:
 			(opts.url as string) ??
 			profile?.url ??

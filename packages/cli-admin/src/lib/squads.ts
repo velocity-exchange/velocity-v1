@@ -44,15 +44,14 @@ export type DispatchResult =
 	  };
 
 /**
- * Process-wide dry-run flag. Armed by `readGlobalOpts` so that `--dry-run` works
- * on every state-changing command without wiring the flag through ~58 call
- * sites. `sendOrPropose` is the only path that signs or proposes, so gating it
- * there covers the whole CLI: a command cannot accept `--dry-run` and silently
- * send anyway.
+ * Process-wide dry-run flag. `readGlobalOpts` sets it, so `--dry-run` works on
+ * every state-changing command without passing the flag through ~58 call sites.
+ * `sendOrPropose` is the only path that signs or proposes, so gating it there
+ * covers the whole CLI. No command can accept `--dry-run` and send anyway.
  *
- * Commands that print a richer preview (wallet swap's quote, lut extend's
- * account diff) still read `dryRun` from their own opts and return before ever
- * reaching dispatch; this is the fallback for everything else.
+ * Commands that print a fuller preview, such as `wallet swap`'s quote and
+ * `lut extend`'s account diff, read `dryRun` from their own opts and return
+ * before they reach dispatch. This is the fallback for everything else.
  */
 let DRY_RUN = false;
 

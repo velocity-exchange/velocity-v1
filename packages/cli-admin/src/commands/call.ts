@@ -46,11 +46,11 @@ function buildIxFromPayload(
 	const idlArgs = idlIx.args as Array<{ name: string; type: unknown }>;
 
 	// Validate the payload against the IDL before building. Anchor serializes a
-	// missing numeric arg as 0, so a typo or a snake_case key (the IDL is
-	// exposed camelCase by the Anchor client) would otherwise ship a silent
-	// zero: `initializePythLazerOracle` with `feed_id` instead of `feedId`
-	// proposed feed 0. Both directions are checked so neither a missing nor an
-	// unrecognised key can reach the chain.
+	// missing numeric arg as 0, so a typo or a snake_case key ships a silent
+	// zero. The Anchor client exposes IDL fields in camelCase, so
+	// `initializePythLazerOracle` written with `feed_id` instead of `feedId`
+	// proposed feed 0. This checks both directions, so neither a missing key
+	// nor an unrecognised one reaches the chain.
 	const supplied = Object.keys(payload.args ?? {});
 	const known = new Set(idlArgs.map((a) => a.name));
 	const unknownKeys = supplied.filter((k) => !known.has(k));
@@ -170,7 +170,7 @@ export function registerCall(parent: Command): void {
 }
 
 /** Best-effort coerce a JSON value into the runtime type Anchor expects. */
-/** An `{ option: T }` arg may legitimately be absent; every other arg may not. */
+/** An `{ option: T }` arg may be absent. Every other arg may not. */
 function isOptionType(type: unknown): boolean {
 	return (
 		typeof type === 'object' && type !== null && 'option' in (type as object)

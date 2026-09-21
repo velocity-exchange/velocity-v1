@@ -56,8 +56,8 @@ export function withGlobalOptions(cmd: Command): Command {
 
 export function readGlobalOpts(cmd: Command): GlobalOpts {
 	const opts = cmd.optsWithGlobals();
-	// Arm the process-wide flag here rather than threading it through every
-	// command: every dispatching command calls this before sendOrPropose.
+	// Set the process-wide flag here rather than passing it through every
+	// command. Every dispatching command calls this before sendOrPropose.
 	setDryRun(opts.dryRun === true);
 	const selected = resolveProfile(opts.profile as string | undefined);
 	const profile = selected?.profile;

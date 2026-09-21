@@ -8,10 +8,10 @@ import velocityIdl from '@velocity-exchange/sdk/src/idl/velocity.json';
  * Shared decoding for admin instructions.
  *
  * `multisig inspect` decodes a proposal that already exists on chain. `--dry-run`
- * needs the same rendering BEFORE anything is proposed, so that a wrong argument
- * is caught without spending a proposal: an `initializePythLazerOracle` built
- * with a snake_case `feed_id` key serialized feedId 0 and was only visible after
- * proposing. These helpers back both paths.
+ * needs the same rendering before anything is proposed, so a wrong argument shows
+ * up while it is still free to fix. An `initializePythLazerOracle` built with a
+ * snake_case `feed_id` key serialized feedId 0, and nothing revealed that until
+ * the proposal was already up. Both paths use these helpers.
  */
 
 function formatValue(value: unknown): string {
@@ -94,9 +94,9 @@ function flatten(
 	return out;
 }
 /**
- * The JSON IDL names fields snake_case; the Anchor client (and therefore the
- * payload files and `multisig inspect`) uses camelCase. Render camelCase so the
- * dry run shows the names a payload must actually use.
+ * The JSON IDL names fields in snake_case. The Anchor client uses camelCase, and
+ * so do the payload files and `multisig inspect`. Render camelCase so the dry run
+ * shows the names a payload has to use.
  */
 function camel(name: string): string {
 	return name.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase());
@@ -116,8 +116,8 @@ const VELOCITY_PROGRAM_ID = new PublicKey(
 
 /**
  * Print each instruction as its decoded name, arguments and named accounts.
- * Instructions this program cannot decode are reported as such rather than
- * silently skipped.
+ * An instruction this program cannot decode prints as undecodable rather than
+ * dropping out of the output.
  */
 export function renderInstructions(
 	instructions: TransactionInstruction[],
@@ -137,12 +137,12 @@ export function renderInstructions(
 			);
 		}
 
-		// Always surface the account count. The Squads executor allocates a fixed
-		// buffer to reconstruct the inner transaction and a large multi-hop swap
-		// route overflows it: 83- and 85-account routes have failed with an
-		// access violation where a 49-account route executed fine. That count is
-		// the only warning, and it matters most on exactly the instructions this
-		// decoder cannot read.
+		// Print the account count on every instruction. The Squads executor
+		// allocates a fixed buffer to reconstruct the inner transaction, and a
+		// large multi-hop swap route overflows it. Routes with 83 and 85 accounts
+		// failed with an access violation where a 49-account route executed fine.
+		// That count is the only warning, and the instructions this decoder
+		// cannot read are the ones most likely to carry it.
 		const count = `${ix.keys.length} account${ix.keys.length === 1 ? '' : 's'}`;
 		ui.line(
 			`   ${pc.dim(count)}${

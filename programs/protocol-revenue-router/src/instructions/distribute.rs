@@ -77,13 +77,13 @@ pub fn distribute(ctx: Context<Distribute>) -> Result<()> {
         .config
         .roll_period(clock.unix_timestamp / SECONDS_PER_DAY);
 
-    let total = ctx.accounts.router_ata.amount;
-    if total == 0 {
+    let incoming = ctx.accounts.router_ata.amount;
+    if incoming == 0 {
         return Ok(());
     }
 
     let config = &ctx.accounts.config;
-    let mut to_pool = pool_share(config.active_tiers(), config.period_fees, total as u128);
+    let mut to_pool = pool_share(config.active_tiers(), config.period_fees, incoming as u128);
 
     // Count USDT already sitting unrecognised in the vault: `contribute` recognises
     // it first, so it eats cap room this contribution would otherwise use.
@@ -100,7 +100,7 @@ pub fn distribute(ctx: Context<Distribute>) -> Result<()> {
     to_pool = to_pool.min(cap_room as u128);
 
     let to_pool = to_pool as u64;
-    let to_treasury = total - to_pool;
+    let to_treasury = incoming - to_pool;
 
     let bump = ctx.accounts.config.bump;
     let seeds: &[&[u8]] = &[ROUTER_CONFIG_SEED, &[bump]];
@@ -144,14 +144,14 @@ pub fn distribute(ctx: Context<Distribute>) -> Result<()> {
     }
 
     let config = &mut ctx.accounts.config;
-    config.period_fees = add(config.period_fees, total)?;
-    config.lifetime_fees = add(config.lifetime_fees, total)?;
+    config.period_fees = add(config.period_fees, incoming)?;
+    config.lifetime_fees = add(config.lifetime_fees, incoming)?;
     config.lifetime_to_pool = add(config.lifetime_to_pool, to_pool)?;
     config.lifetime_to_treasury = add(config.lifetime_to_treasury, to_treasury)?;
 
     emit!(FeesDistributed {
         ts: clock.unix_timestamp,
-        total,
+        total: incoming,
         to_pool,
         to_treasury,
         cap_room_after: cap_room - to_pool,

@@ -20,9 +20,9 @@ pub fn pool_entitlement(tiers: &[Tier], x: u128) -> u128 {
     acc
 }
 
-/// Pool share of `total` arriving when `period_fees` has already been distributed today.
-pub fn pool_share(tiers: &[Tier], period_fees: u128, total: u128) -> u128 {
-    pool_entitlement(tiers, period_fees + total) - pool_entitlement(tiers, period_fees)
+/// Pool share of `incoming` when `period_fees` has already been distributed today.
+pub fn pool_share(tiers: &[Tier], period_fees: u128, incoming: u128) -> u128 {
+    pool_entitlement(tiers, period_fees + incoming) - pool_entitlement(tiers, period_fees)
 }
 
 #[cfg(test)]

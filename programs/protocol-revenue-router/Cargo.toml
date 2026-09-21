@@ -1,0 +1,21 @@
+[package]
+name = "protocol-revenue-router"
+version = "0.1.0"
+description = "Routes Velocity perp protocol fees between the DFX recovery pool and the treasury"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "protocol_revenue_router"
+
+[features]
+no-entrypoint = []
+cpi = ["no-entrypoint"]
+anchor-test = []
+mainnet-beta = []
+default = []
+idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build", "anchor-spl/token_2022"]
+
+[dependencies]
+anchor-lang = { version = "1.0.2", features = ["init-if-needed"] }
+anchor-spl = { version = "1.0.2", default-features = false, features = ["associated_token", "token"] }

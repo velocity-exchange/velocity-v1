@@ -1,0 +1,1350 @@
+{
+  "address": "rdemKHu2ueeKkhwmM2GfJFaqD3zsrj7s3oGMN3dQMJT",
+  "metadata": {
+    "name": "dfx_redemption",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "DFX burn-on-redeem program"
+  },
+  "instructions": [
+    {
+      "name": "contribute",
+      "discriminator": [
+        82,
+        33,
+        68,
+        131,
+        32,
+        0,
+        205,
+        95
+      ],
+      "accounts": [
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "contribution_ledger",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  116,
+                  114,
+                  105,
+                  98,
+                  117,
+                  116,
+                  105,
+                  111,
+                  110,
+                  95,
+                  108,
+                  101,
+                  100,
+                  103,
+                  101,
+                  114
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "usdt_mint",
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "usdt_vault",
+          "writable": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "depositor",
+          "signer": true
+        },
+        {
+          "name": "depositor_usdt",
+          "writable": true
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        },
+        {
+          "name": "source",
+          "type": {
+            "defined": {
+              "name": "ContributionSource"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "initialize_config",
+      "discriminator": [
+        208,
+        127,
+        21,
+        1,
+        194,
+        190,
+        196,
+        70
+      ],
+      "accounts": [
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "usdt_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "config"
+              },
+              {
+                "kind": "const",
+                "value": [
+                  6,
+                  221,
+                  246,
+                  225,
+                  215,
+                  101,
+                  161,
+                  147,
+                  217,
+                  203,
+                  225,
+                  70,
+                  206,
+                  235,
+                  121,
+                  172,
+                  28,
+                  180,
+                  133,
+                  237,
+                  95,
+                  91,
+                  55,
+                  145,
+                  58,
+                  140,
+                  245,
+                  133,
+                  126,
+                  255,
+                  0,
+                  169
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "usdt_mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "dfx_mint"
+        },
+        {
+          "name": "usdt_mint"
+        },
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "associated_token_program",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        }
+      ],
+      "args": [
+        {
+          "name": "total_exploited_amount",
+          "type": "u64"
+        },
+        {
+          "name": "redemption_threshold",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "initialize_contribution_ledger",
+      "discriminator": [
+        130,
+        50,
+        248,
+        11,
+        64,
+        59,
+        67,
+        201
+      ],
+      "accounts": [
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "contribution_ledger",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  116,
+                  114,
+                  105,
+                  98,
+                  117,
+                  116,
+                  105,
+                  111,
+                  110,
+                  95,
+                  108,
+                  101,
+                  100,
+                  103,
+                  101,
+                  114
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "router_program",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "redeem",
+      "discriminator": [
+        184,
+        12,
+        86,
+        149,
+        70,
+        196,
+        97,
+        225
+      ],
+      "accounts": [
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "dfx_mint",
+          "writable": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "usdt_mint",
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "redeemer_dfx",
+          "writable": true
+        },
+        {
+          "name": "usdt_vault",
+          "writable": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "redeemer_usdt",
+          "writable": true
+        },
+        {
+          "name": "redeemer",
+          "signer": true
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": [
+        {
+          "name": "dfx_amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "set_admin",
+      "discriminator": [
+        251,
+        163,
+        0,
+        52,
+        91,
+        194,
+        187,
+        92
+      ],
+      "accounts": [
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "admin",
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "new_admin",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "set_depositor",
+      "discriminator": [
+        112,
+        201,
+        181,
+        13,
+        221,
+        224,
+        254,
+        89
+      ],
+      "accounts": [
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "contribution_ledger",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  116,
+                  114,
+                  105,
+                  98,
+                  117,
+                  116,
+                  105,
+                  111,
+                  110,
+                  95,
+                  108,
+                  101,
+                  100,
+                  103,
+                  101,
+                  114
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "slot",
+          "type": "u8"
+        },
+        {
+          "name": "key",
+          "type": "pubkey"
+        },
+        {
+          "name": "allowed_sources",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "set_paused",
+      "discriminator": [
+        91,
+        60,
+        125,
+        192,
+        176,
+        225,
+        166,
+        218
+      ],
+      "accounts": [
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "paused",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "name": "set_router_program",
+      "discriminator": [
+        240,
+        130,
+        230,
+        87,
+        116,
+        50,
+        248,
+        200
+      ],
+      "accounts": [
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "contribution_ledger",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  116,
+                  114,
+                  105,
+                  98,
+                  117,
+                  116,
+                  105,
+                  111,
+                  110,
+                  95,
+                  108,
+                  101,
+                  100,
+                  103,
+                  101,
+                  114
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "new_router_program",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "sync_extra_backing",
+      "discriminator": [
+        186,
+        45,
+        45,
+        242,
+        190,
+        221,
+        50,
+        227
+      ],
+      "accounts": [
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "usdt_mint",
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "usdt_vault",
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "caller",
+          "signer": true
+        }
+      ],
+      "args": []
+    }
+  ],
+  "accounts": [
+    {
+      "name": "Config",
+      "discriminator": [
+        155,
+        12,
+        170,
+        224,
+        30,
+        250,
+        204,
+        130
+      ]
+    },
+    {
+      "name": "ContributionLedger",
+      "discriminator": [
+        143,
+        22,
+        67,
+        94,
+        33,
+        213,
+        165,
+        70
+      ]
+    }
+  ],
+  "events": [
+    {
+      "name": "AdminUpdated",
+      "discriminator": [
+        69,
+        82,
+        49,
+        171,
+        43,
+        3,
+        80,
+        161
+      ]
+    },
+    {
+      "name": "BackingSynced",
+      "discriminator": [
+        183,
+        241,
+        102,
+        79,
+        64,
+        144,
+        235,
+        78
+      ]
+    },
+    {
+      "name": "ConfigInitialized",
+      "discriminator": [
+        181,
+        49,
+        200,
+        156,
+        19,
+        167,
+        178,
+        91
+      ]
+    },
+    {
+      "name": "Contributed",
+      "discriminator": [
+        196,
+        199,
+        157,
+        136,
+        180,
+        222,
+        100,
+        118
+      ]
+    },
+    {
+      "name": "ContributionLedgerInitialized",
+      "discriminator": [
+        33,
+        41,
+        54,
+        23,
+        170,
+        227,
+        77,
+        38
+      ]
+    },
+    {
+      "name": "DepositorUpdated",
+      "discriminator": [
+        104,
+        166,
+        132,
+        92,
+        72,
+        121,
+        162,
+        41
+      ]
+    },
+    {
+      "name": "DfxRedeemed",
+      "discriminator": [
+        213,
+        74,
+        194,
+        221,
+        87,
+        188,
+        148,
+        202
+      ]
+    },
+    {
+      "name": "PausedUpdated",
+      "discriminator": [
+        209,
+        89,
+        200,
+        35,
+        126,
+        183,
+        132,
+        23
+      ]
+    },
+    {
+      "name": "RouterProgramUpdated",
+      "discriminator": [
+        13,
+        184,
+        151,
+        16,
+        31,
+        253,
+        218,
+        10
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "InvalidAmount",
+      "msg": "Amount must be greater than zero"
+    },
+    {
+      "code": 6001,
+      "name": "InvalidThreshold",
+      "msg": "Redemption threshold must be less than total exploited amount"
+    },
+    {
+      "code": 6002,
+      "name": "Unauthorized",
+      "msg": "Caller is not authorized"
+    },
+    {
+      "code": 6003,
+      "name": "BackingCapExceeded",
+      "msg": "Backing cap exceeded"
+    },
+    {
+      "code": 6004,
+      "name": "InsufficientVaultBalance",
+      "msg": "Insufficient USDT in vault"
+    },
+    {
+      "code": 6005,
+      "name": "RedemptionNotStarted",
+      "msg": "Redemption has not started"
+    },
+    {
+      "code": 6006,
+      "name": "Paused",
+      "msg": "Redemption is paused"
+    },
+    {
+      "code": 6007,
+      "name": "NoOutstandingSupply",
+      "msg": "No DFX supply is outstanding"
+    },
+    {
+      "code": 6008,
+      "name": "InsufficientRecognizedBacking",
+      "msg": "Recognized backing is insufficient"
+    },
+    {
+      "code": 6009,
+      "name": "RedemptionRoundsToZero",
+      "msg": "Redemption amount rounds to zero USDT"
+    },
+    {
+      "code": 6010,
+      "name": "InvalidAuthority",
+      "msg": "Invalid authority"
+    },
+    {
+      "code": 6011,
+      "name": "ArithmeticOverflow",
+      "msg": "Arithmetic overflow"
+    },
+    {
+      "code": 6012,
+      "name": "InvalidDepositorSlot",
+      "msg": "Depositor slot is out of range"
+    },
+    {
+      "code": 6013,
+      "name": "InvalidSourceMask",
+      "msg": "Source mask contains reserved or router-only bits"
+    },
+    {
+      "code": 6014,
+      "name": "DepositorNotAllowed",
+      "msg": "Depositor is not allowed to contribute this source"
+    }
+  ],
+  "types": [
+    {
+      "name": "AdminUpdated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "previous_admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "new_admin",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "BackingSynced",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "ts",
+            "type": "i64"
+          },
+          {
+            "name": "caller",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "unrecognized_vault_balance",
+            "type": "u64"
+          },
+          {
+            "name": "lifetime_recognized_backing",
+            "type": "u64"
+          },
+          {
+            "name": "recognized_backing_remaining",
+            "type": "u64"
+          },
+          {
+            "name": "redemption_started",
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Config",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "dfx_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "usdt_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "usdt_vault",
+            "type": "pubkey"
+          },
+          {
+            "name": "total_exploited_amount",
+            "type": "u64"
+          },
+          {
+            "name": "redemption_threshold",
+            "type": "u64"
+          },
+          {
+            "name": "lifetime_recognized_backing",
+            "type": "u64"
+          },
+          {
+            "name": "recognized_backing_remaining",
+            "type": "u64"
+          },
+          {
+            "name": "total_redeemed_usdt",
+            "type": "u64"
+          },
+          {
+            "name": "redemption_started",
+            "type": "bool"
+          },
+          {
+            "name": "paused",
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ConfigInitialized",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "dfx_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "usdt_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "usdt_vault",
+            "type": "pubkey"
+          },
+          {
+            "name": "total_exploited_amount",
+            "type": "u64"
+          },
+          {
+            "name": "redemption_threshold",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Contributed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "ts",
+            "type": "i64"
+          },
+          {
+            "name": "contribution_source",
+            "type": {
+              "defined": {
+                "name": "ContributionSource"
+              }
+            }
+          },
+          {
+            "name": "depositor",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "amount_recognized",
+            "type": "u64"
+          },
+          {
+            "name": "cumulative_for_source",
+            "type": "u64"
+          },
+          {
+            "name": "recognized_backing_remaining",
+            "type": "u64"
+          },
+          {
+            "name": "lifetime_recognized_backing",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ContributionLedger",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "depositors",
+            "type": {
+              "array": [
+                {
+                  "defined": {
+                    "name": "Depositor"
+                  }
+                },
+                6
+              ]
+            }
+          },
+          {
+            "name": "router_program",
+            "type": "pubkey"
+          },
+          {
+            "name": "cumulative_protocol_fees",
+            "type": "u64"
+          },
+          {
+            "name": "cumulative_tether",
+            "type": "u64"
+          },
+          {
+            "name": "cumulative_seed_capital",
+            "type": "u64"
+          },
+          {
+            "name": "cumulative_other",
+            "type": "u64"
+          },
+          {
+            "name": "_reserved",
+            "type": {
+              "array": [
+                "u8",
+                128
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "ContributionLedgerInitialized",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "ts",
+            "type": "i64"
+          },
+          {
+            "name": "admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "router_program",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ContributionSource",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "ProtocolFees"
+          },
+          {
+            "name": "Tether"
+          },
+          {
+            "name": "SeedCapital"
+          },
+          {
+            "name": "Other"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Depositor",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "key",
+            "type": "pubkey"
+          },
+          {
+            "name": "allowed_sources",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "DepositorUpdated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "ts",
+            "type": "i64"
+          },
+          {
+            "name": "slot",
+            "type": "u8"
+          },
+          {
+            "name": "key",
+            "type": "pubkey"
+          },
+          {
+            "name": "allowed_sources",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "DfxRedeemed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "ts",
+            "type": "i64"
+          },
+          {
+            "name": "redeemer",
+            "type": "pubkey"
+          },
+          {
+            "name": "dfx_amount",
+            "type": "u64"
+          },
+          {
+            "name": "usdt_amount",
+            "type": "u64"
+          },
+          {
+            "name": "outstanding_supply_before",
+            "type": "u64"
+          },
+          {
+            "name": "recognized_backing_remaining",
+            "type": "u64"
+          },
+          {
+            "name": "total_redeemed_usdt",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PausedUpdated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "paused",
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "RouterProgramUpdated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "ts",
+            "type": "i64"
+          },
+          {
+            "name": "previous",
+            "type": "pubkey"
+          },
+          {
+            "name": "new",
+            "type": "pubkey"
+          }
+        ]
+      }
+    }
+  ]
+}

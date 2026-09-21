@@ -308,6 +308,7 @@ This is **Velocity Protocol v1** — a Solana perpetuals and spot trading protoc
 - **`pyth/`** — Pyth V1 account layout types, an optional dependency of `velocity` pulled in only by the `fuzz-fixtures` feature (plus a dev-dependency for tests).
 - **`jit-proxy/`** — Just-in-time fill/arb proxy program; CPIs into `velocity` (depends on it with the `cpi` feature).
 - **`token_faucet/`** — Devnet/test token minting utility.
+- **`protocol-revenue-router/`** — Splits Velocity's withdrawn perp protocol fees between the DFX recovery pool and the treasury on a daily marginal tier ladder. CPIs `dfx_redemption::contribute` via `declare_program!` against the vendored IDL at `idls/dfx_redemption.json`. It is deliberately absent from `Anchor.toml [programs.localnet]` (bankrun would load it into every suite); its litesvm integration tests live in the standalone workspace `programs/protocol-revenue-router/svm-tests/` (`cargo test --manifest-path programs/protocol-revenue-router/svm-tests/Cargo.toml`). Its TS client is `packages/revenue-router-sdk`; regenerate the IDL + types with `bun run program:idl:revenue-router`.
 
 Switchboard oracle support and external spot-fulfillment venues (Serum, Phoenix, OpenBook) were removed from the protocol; there is no `programs/switchboard*` or `programs/openbook_v2`. The `OracleSource` enum keeps `DeprecatedSwitchboard`/`DeprecatedSwitchboardOnDemand` variants only to preserve ABI discriminants — both error out in `get_oracle_price`.
 

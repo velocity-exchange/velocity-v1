@@ -57,7 +57,7 @@
     },
     "apps/dlob-server": {
       "name": "@velocity-exchange/dlob-server",
-      "version": "0.1.37",
+      "version": "0.1.38",
       "dependencies": {
         "@aws-sdk/client-athena": "3.1065.0",
         "@aws-sdk/client-kinesis": "3.1065.0",
@@ -115,7 +115,7 @@
     },
     "apps/keeper-bots-v2": {
       "name": "@velocity-exchange/keeper-bots-v2",
-      "version": "0.2.22",
+      "version": "0.2.23",
       "dependencies": {
         "@coral-xyz/anchor": "0.29.0",
         "@noble/hashes": "1.7.1",
@@ -137,6 +137,7 @@
         "@types/node": "24.0.0",
         "@velocity-exchange/common": "0.10.1",
         "@velocity-exchange/jit-proxy": "workspace:*",
+        "@velocity-exchange/revenue-router-sdk": "workspace:*",
         "@velocity-exchange/sdk": "workspace:*",
         "async": "3.2.5",
         "async-mutex": "0.3.2",
@@ -177,7 +178,7 @@
     },
     "apps/usermap-server": {
       "name": "@velocity-exchange/usermap-server",
-      "version": "0.1.26",
+      "version": "0.1.27",
       "dependencies": {
         "@coral-xyz/anchor": "0.29.0",
         "@grpc/grpc-js": "1.14.4",
@@ -218,7 +219,7 @@
     },
     "packages/cli-admin": {
       "name": "@velocity-exchange/admin-cli",
-      "version": "0.15.2",
+      "version": "0.15.3",
       "bin": {
         "velocity-admin": "lib/index.js",
       },
@@ -241,7 +242,7 @@
     },
     "packages/jit-proxy": {
       "name": "@velocity-exchange/jit-proxy",
-      "version": "0.3.19",
+      "version": "0.3.20",
       "dependencies": {
         "@velocity-exchange/sdk": "workspace:*",
         "tweetnacl-util": "0.15.1",
@@ -257,9 +258,23 @@
         "@solana/web3.js": "1.99.0",
       },
     },
+    "packages/revenue-router-sdk": {
+      "name": "@velocity-exchange/revenue-router-sdk",
+      "version": "0.1.0",
+      "devDependencies": {
+        "@coral-xyz/anchor": "npm:@anchor-lang/core@1.0.1",
+        "@types/bn.js": "5.1.6",
+        "@types/node": "20.19.42",
+        "typescript": "5.4.5",
+      },
+      "peerDependencies": {
+        "@coral-xyz/anchor": "npm:@anchor-lang/core@1.0.1",
+        "@solana/web3.js": "1.99.0",
+      },
+    },
     "packages/sdk": {
       "name": "@velocity-exchange/sdk",
-      "version": "0.23.1",
+      "version": "0.24.0",
       "dependencies": {
         "@anchor-lang/core": "1.0.1",
         "@coral-xyz/anchor": "npm:@anchor-lang/core@1.0.1",
@@ -330,7 +345,7 @@
     },
     "packages/vaults-sdk": {
       "name": "@velocity-exchange/vaults-sdk",
-      "version": "0.1.30",
+      "version": "0.1.31",
       "dependencies": {
         "@metaplex-foundation/js": "0.20.1",
         "@velocity-exchange/sdk": "workspace:*",
@@ -1398,6 +1413,8 @@
     "@velocity-exchange/jit-proxy": ["@velocity-exchange/jit-proxy@workspace:packages/jit-proxy"],
 
     "@velocity-exchange/keeper-bots-v2": ["@velocity-exchange/keeper-bots-v2@workspace:apps/keeper-bots-v2"],
+
+    "@velocity-exchange/revenue-router-sdk": ["@velocity-exchange/revenue-router-sdk@workspace:packages/revenue-router-sdk"],
 
     "@velocity-exchange/sdk": ["@velocity-exchange/sdk@workspace:packages/sdk"],
 

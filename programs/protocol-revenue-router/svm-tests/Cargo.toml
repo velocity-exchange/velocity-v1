@@ -1,0 +1,29 @@
+# Standalone workspace, like `fuzz/*`: litesvm's solana 3.x tree must never
+# unify with the program workspace's SBF build (it bumped serde_json and
+# solana-curve25519 for every program when resolved together).
+[workspace]
+
+[package]
+name = "protocol-revenue-router-svm-tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dev-dependencies]
+protocol-revenue-router = { path = "..", features = ["no-entrypoint"] }
+anchor-lang = "1.0.2"
+litesvm = "0.12"
+solana-account = "3"
+solana-clock = "3"
+solana-instruction = "3"
+solana-keypair = "3"
+solana-program-pack = "3"
+solana-pubkey = "3"
+solana-signer = "3"
+solana-system-interface = "3"
+solana-transaction = "3"
+spl-token = { version = "9", features = ["no-entrypoint"] }
+spl-associated-token-account = { version = "8", features = ["no-entrypoint"] }

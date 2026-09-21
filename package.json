@@ -75,6 +75,7 @@
 		"program:idl": "anchor idl build --skip-lint -p velocity -o target/idl/velocity.json -- --no-default-features --features no-entrypoint,anchor-test && cp target/idl/velocity.json packages/sdk/src/idl/velocity.json && anchor idl type packages/sdk/src/idl/velocity.json --out packages/sdk/src/idl/velocity.ts",
 		"program:idl:vaults": "anchor idl build --skip-lint -p vaults -o packages/vaults-sdk/src/idl/vaults.json && anchor idl type packages/vaults-sdk/src/idl/vaults.json --out packages/vaults-sdk/src/types/vaults.ts && bun run prettify:fix",
 		"program:idl:jit-proxy": "anchor idl build --skip-lint -p jit-proxy -o packages/jit-proxy/src/idl/jit_proxy.json && anchor idl type packages/jit-proxy/src/idl/jit_proxy.json --out packages/jit-proxy/src/types/jit_proxy.ts && bun run prettify:fix",
+		"program:idl:revenue-router": "anchor idl build --skip-lint -p protocol_revenue_router -o packages/revenue-router-sdk/src/idl/protocol_revenue_router.json && anchor idl type packages/revenue-router-sdk/src/idl/protocol_revenue_router.json --out packages/revenue-router-sdk/src/types/protocol_revenue_router.ts && bun run prettify:fix",
 		"rust:build": "cargo build --locked --manifest-path rust/Cargo.toml",
 		"release": "bash deploy-scripts/release.sh",
 		"verify-buffer": "bash deploy-scripts/verify-buffer.sh",

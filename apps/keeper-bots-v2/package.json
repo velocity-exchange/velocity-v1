@@ -42,7 +42,8 @@
 		"@opentelemetry/instrumentation": "0.46.0",
 		"@coral-xyz/anchor": "0.29.0",
 		"@noble/hashes": "1.7.1",
-		"@velocity-exchange/sdk": "workspace:*"
+		"@velocity-exchange/sdk": "workspace:*",
+		"@velocity-exchange/revenue-router-sdk": "workspace:*"
 	},
 	"devDependencies": {
 		"@types/chai": "4.3.11",

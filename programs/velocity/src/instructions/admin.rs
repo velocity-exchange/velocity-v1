@@ -202,30 +202,68 @@ fn name_is_reserved_quote(name: &[u8; 32]) -> bool {
     }
 }
 
-fn initialize_spot_market_inner(
+/// Arguments to `initialize_spot_market`.
+///
+/// Named rather than positional: twenty-one arguments, mostly `u32`, with
+/// adjacent same-typed pairs like `initial_asset_weight` and
+/// `maintenance_asset_weight`. Transposed positionally, a pair compiles and
+/// lists a market with the wrong risk profile. Named fields make it a compile
+/// error. Borsh is still positional, so adding a field needs a new instruction.
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug)]
+pub struct InitializeSpotMarketArgs {
+    pub optimal_utilization: u32,
+    pub optimal_borrow_rate: u32,
+    pub max_borrow_rate: u32,
+    /// precision: X/200, so 1 is 0.5%. 0 disables the floor.
+    pub min_borrow_rate: u8,
+    pub oracle_source: OracleSource,
+    pub initial_asset_weight: u32,
+    pub maintenance_asset_weight: u32,
+    pub initial_liability_weight: u32,
+    pub maintenance_liability_weight: u32,
+    pub imf_factor: u32,
+    pub liquidator_fee: u32,
+    pub if_liquidation_fee: u32,
+    pub active_status: bool,
+    pub asset_tier: AssetTier,
+    pub scale_initial_asset_weight_start: u64,
+    pub withdraw_guard_threshold: u64,
+    pub order_tick_size: u64,
+    pub order_step_size: u64,
+    pub if_total_factor: u32,
+    /// precision: token mint precision. 0 is no limit.
+    pub max_token_deposits: u64,
+    pub name: [u8; 32],
+}
+
+pub fn handle_initialize_spot_market(
     ctx: Context<InitializeSpotMarket>,
-    optimal_utilization: u32,
-    optimal_borrow_rate: u32,
-    max_borrow_rate: u32,
-    oracle_source: OracleSource,
-    initial_asset_weight: u32,
-    maintenance_asset_weight: u32,
-    initial_liability_weight: u32,
-    maintenance_liability_weight: u32,
-    imf_factor: u32,
-    liquidator_fee: u32,
-    if_liquidation_fee: u32,
-    active_status: bool,
-    asset_tier: AssetTier,
-    scale_initial_asset_weight_start: u64,
-    withdraw_guard_threshold: u64,
-    order_tick_size: u64,
-    order_step_size: u64,
-    if_total_factor: u32,
-    name: [u8; 32],
-    min_borrow_rate: u8,
-    max_token_deposits: u64,
+    args: InitializeSpotMarketArgs,
 ) -> Result<()> {
+    let InitializeSpotMarketArgs {
+        optimal_utilization,
+        optimal_borrow_rate,
+        max_borrow_rate,
+        min_borrow_rate,
+        oracle_source,
+        initial_asset_weight,
+        maintenance_asset_weight,
+        initial_liability_weight,
+        maintenance_liability_weight,
+        imf_factor,
+        liquidator_fee,
+        if_liquidation_fee,
+        active_status,
+        asset_tier,
+        scale_initial_asset_weight_start,
+        withdraw_guard_threshold,
+        order_tick_size,
+        order_step_size,
+        if_total_factor,
+        max_token_deposits,
+        name,
+    } = args;
+
     let mut state = ctx.accounts.state.load_mut()?;
     let spot_market_pubkey = ctx.accounts.spot_market.key();
 
@@ -480,125 +518,6 @@ fn initialize_spot_market_inner(
     Ok(())
 }
 
-/// Arguments to `initialize_spot_market_v2`.
-///
-/// The positional form takes twenty arguments, mostly `u32`, with adjacent
-/// same-typed pairs like `initial_asset_weight` and `maintenance_asset_weight`.
-/// Transposing a pair compiles and lists a market with the wrong risk profile.
-/// Named fields make it a compile error. Borsh is still positional, so adding a
-/// field needs a new instruction.
-#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug)]
-pub struct InitializeSpotMarketParams {
-    pub optimal_utilization: u32,
-    pub optimal_borrow_rate: u32,
-    pub max_borrow_rate: u32,
-    /// precision: X/200, so 1 is 0.5%. 0 disables the floor.
-    pub min_borrow_rate: u8,
-    pub oracle_source: OracleSource,
-    pub initial_asset_weight: u32,
-    pub maintenance_asset_weight: u32,
-    pub initial_liability_weight: u32,
-    pub maintenance_liability_weight: u32,
-    pub imf_factor: u32,
-    pub liquidator_fee: u32,
-    pub if_liquidation_fee: u32,
-    pub active_status: bool,
-    pub asset_tier: AssetTier,
-    pub scale_initial_asset_weight_start: u64,
-    pub withdraw_guard_threshold: u64,
-    pub order_tick_size: u64,
-    pub order_step_size: u64,
-    pub if_total_factor: u32,
-    /// precision: token mint precision. 0 is no limit.
-    pub max_token_deposits: u64,
-    pub name: [u8; 32],
-}
-
-/// Positional form, kept so existing callers keep working.
-///
-/// `min_borrow_rate` and `max_token_deposits` did not exist here, so they were
-/// hardcoded to 0 and every listing shipped follow-up instructions to set them.
-/// Passing 0 preserves that behaviour exactly; `initialize_spot_market_v2`
-/// accepts them up front.
-#[allow(clippy::too_many_arguments)]
-pub fn handle_initialize_spot_market(
-    ctx: Context<InitializeSpotMarket>,
-    optimal_utilization: u32,
-    optimal_borrow_rate: u32,
-    max_borrow_rate: u32,
-    oracle_source: OracleSource,
-    initial_asset_weight: u32,
-    maintenance_asset_weight: u32,
-    initial_liability_weight: u32,
-    maintenance_liability_weight: u32,
-    imf_factor: u32,
-    liquidator_fee: u32,
-    if_liquidation_fee: u32,
-    active_status: bool,
-    asset_tier: AssetTier,
-    scale_initial_asset_weight_start: u64,
-    withdraw_guard_threshold: u64,
-    order_tick_size: u64,
-    order_step_size: u64,
-    if_total_factor: u32,
-    name: [u8; 32],
-) -> Result<()> {
-    initialize_spot_market_inner(
-        ctx,
-        optimal_utilization,
-        optimal_borrow_rate,
-        max_borrow_rate,
-        oracle_source,
-        initial_asset_weight,
-        maintenance_asset_weight,
-        initial_liability_weight,
-        maintenance_liability_weight,
-        imf_factor,
-        liquidator_fee,
-        if_liquidation_fee,
-        active_status,
-        asset_tier,
-        scale_initial_asset_weight_start,
-        withdraw_guard_threshold,
-        order_tick_size,
-        order_step_size,
-        if_total_factor,
-        name,
-        0,
-        0,
-    )
-}
-
-pub fn handle_initialize_spot_market_v2(
-    ctx: Context<InitializeSpotMarket>,
-    params: InitializeSpotMarketParams,
-) -> Result<()> {
-    initialize_spot_market_inner(
-        ctx,
-        params.optimal_utilization,
-        params.optimal_borrow_rate,
-        params.max_borrow_rate,
-        params.oracle_source,
-        params.initial_asset_weight,
-        params.maintenance_asset_weight,
-        params.initial_liability_weight,
-        params.maintenance_liability_weight,
-        params.imf_factor,
-        params.liquidator_fee,
-        params.if_liquidation_fee,
-        params.active_status,
-        params.asset_tier,
-        params.scale_initial_asset_weight_start,
-        params.withdraw_guard_threshold,
-        params.order_tick_size,
-        params.order_step_size,
-        params.if_total_factor,
-        params.name,
-        params.min_borrow_rate,
-        params.max_token_deposits,
-    )
-}
-
 #[access_control(
     spot_market_valid(&ctx.accounts.spot_market)
 )]
@@ -624,37 +543,80 @@ pub fn handle_update_spot_market_pool_id(
     Ok(())
 }
 
-fn initialize_perp_market_inner(
+/// Arguments to `initialize_perp_market`.
+///
+/// Named rather than positional: twenty-eight arguments with adjacent
+/// same-typed pairs that nothing cross-checks, so a transposition lists a
+/// market with the wrong risk profile and no error. Named fields make it a
+/// compile error. Borsh is still positional, so adding a field needs a new
+/// instruction.
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug)]
+pub struct InitializePerpMarketArgs {
+    pub market_index: u16,
+    pub amm_base_asset_reserve: u128,
+    pub amm_quote_asset_reserve: u128,
+    pub amm_periodicity: i64,
+    pub amm_peg_multiplier: u128,
+    pub oracle_source: OracleSource,
+    pub contract_tier: ContractTier,
+    pub margin_ratio_initial: u32,
+    pub margin_ratio_maintenance: u32,
+    pub liquidator_fee: u32,
+    pub if_liquidation_fee: u32,
+    pub imf_factor: u32,
+    pub active_status: bool,
+    pub base_spread: u32,
+    pub max_spread: u32,
+    pub max_open_interest: u128,
+    pub max_revenue_withdraw_per_period: u64,
+    pub quote_max_insurance: u64,
+    pub order_step_size: u64,
+    pub order_tick_size: u64,
+    pub min_order_size: u64,
+    pub concentration_coef_scale: u128,
+    pub curve_update_intensity: u8,
+    pub amm_jit_intensity: u8,
+    pub name: [u8; 32],
+    pub lp_pool_id: u8,
+    pub funding_clamp_threshold: u32,
+    pub funding_ramp_slope: u32,
+}
+
+pub fn handle_initialize_perp_market(
     ctx: Context<InitializePerpMarket>,
-    market_index: u16,
-    amm_base_asset_reserve: u128,
-    amm_quote_asset_reserve: u128,
-    amm_periodicity: i64,
-    amm_peg_multiplier: u128,
-    oracle_source: OracleSource,
-    contract_tier: ContractTier,
-    margin_ratio_initial: u32,
-    margin_ratio_maintenance: u32,
-    liquidator_fee: u32,
-    if_liquidation_fee: u32,
-    imf_factor: u32,
-    active_status: bool,
-    base_spread: u32,
-    max_spread: u32,
-    max_open_interest: u128,
-    max_revenue_withdraw_per_period: u64,
-    quote_max_insurance: u64,
-    order_step_size: u64,
-    order_tick_size: u64,
-    min_order_size: u64,
-    concentration_coef_scale: u128,
-    curve_update_intensity: u8,
-    amm_jit_intensity: u8,
-    name: [u8; 32],
-    lp_pool_id: u8,
-    funding_clamp_threshold: u32,
-    funding_ramp_slope: u32,
+    args: InitializePerpMarketArgs,
 ) -> Result<()> {
+    let InitializePerpMarketArgs {
+        market_index,
+        amm_base_asset_reserve,
+        amm_quote_asset_reserve,
+        amm_periodicity,
+        amm_peg_multiplier,
+        oracle_source,
+        contract_tier,
+        margin_ratio_initial,
+        margin_ratio_maintenance,
+        liquidator_fee,
+        if_liquidation_fee,
+        imf_factor,
+        active_status,
+        base_spread,
+        max_spread,
+        max_open_interest,
+        max_revenue_withdraw_per_period,
+        quote_max_insurance,
+        order_step_size,
+        order_tick_size,
+        min_order_size,
+        concentration_coef_scale,
+        curve_update_intensity,
+        amm_jit_intensity,
+        name,
+        lp_pool_id,
+        funding_clamp_threshold,
+        funding_ramp_slope,
+    } = args;
+
     msg!("perp market {}", market_index);
     let perp_market_pubkey = ctx.accounts.perp_market.to_account_info().key;
     let perp_market = &mut ctx.accounts.perp_market.load_init()?;
@@ -1035,147 +997,6 @@ fn initialize_perp_market_inner(
     crate::validation::perp_market::validate_perp_market(perp_market)?;
 
     Ok(())
-}
-
-/// Arguments to `initialize_perp_market_v2`.
-///
-/// The positional form takes twenty-eight arguments with adjacent same-typed
-/// pairs that nothing cross-checks, so a transposition lists a market with the
-/// wrong risk profile and no error. Named fields make it a compile error.
-/// Borsh is still positional, so adding a field needs a new instruction.
-#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug)]
-pub struct InitializePerpMarketParams {
-    pub market_index: u16,
-    pub amm_base_asset_reserve: u128,
-    pub amm_quote_asset_reserve: u128,
-    pub amm_periodicity: i64,
-    pub amm_peg_multiplier: u128,
-    pub oracle_source: OracleSource,
-    pub contract_tier: ContractTier,
-    pub margin_ratio_initial: u32,
-    pub margin_ratio_maintenance: u32,
-    pub liquidator_fee: u32,
-    pub if_liquidation_fee: u32,
-    pub imf_factor: u32,
-    pub active_status: bool,
-    pub base_spread: u32,
-    pub max_spread: u32,
-    pub max_open_interest: u128,
-    pub max_revenue_withdraw_per_period: u64,
-    pub quote_max_insurance: u64,
-    pub order_step_size: u64,
-    pub order_tick_size: u64,
-    pub min_order_size: u64,
-    pub concentration_coef_scale: u128,
-    pub curve_update_intensity: u8,
-    pub amm_jit_intensity: u8,
-    pub name: [u8; 32],
-    pub lp_pool_id: u8,
-    pub funding_clamp_threshold: u32,
-    pub funding_ramp_slope: u32,
-}
-
-/// Positional form, kept so existing callers keep working.
-#[allow(clippy::too_many_arguments)]
-pub fn handle_initialize_perp_market(
-    ctx: Context<InitializePerpMarket>,
-    market_index: u16,
-    amm_base_asset_reserve: u128,
-    amm_quote_asset_reserve: u128,
-    amm_periodicity: i64,
-    amm_peg_multiplier: u128,
-    oracle_source: OracleSource,
-    contract_tier: ContractTier,
-    margin_ratio_initial: u32,
-    margin_ratio_maintenance: u32,
-    liquidator_fee: u32,
-    if_liquidation_fee: u32,
-    imf_factor: u32,
-    active_status: bool,
-    base_spread: u32,
-    max_spread: u32,
-    max_open_interest: u128,
-    max_revenue_withdraw_per_period: u64,
-    quote_max_insurance: u64,
-    order_step_size: u64,
-    order_tick_size: u64,
-    min_order_size: u64,
-    concentration_coef_scale: u128,
-    curve_update_intensity: u8,
-    amm_jit_intensity: u8,
-    name: [u8; 32],
-    lp_pool_id: u8,
-    funding_clamp_threshold: u32,
-    funding_ramp_slope: u32,
-) -> Result<()> {
-    initialize_perp_market_inner(
-        ctx,
-        market_index,
-        amm_base_asset_reserve,
-        amm_quote_asset_reserve,
-        amm_periodicity,
-        amm_peg_multiplier,
-        oracle_source,
-        contract_tier,
-        margin_ratio_initial,
-        margin_ratio_maintenance,
-        liquidator_fee,
-        if_liquidation_fee,
-        imf_factor,
-        active_status,
-        base_spread,
-        max_spread,
-        max_open_interest,
-        max_revenue_withdraw_per_period,
-        quote_max_insurance,
-        order_step_size,
-        order_tick_size,
-        min_order_size,
-        concentration_coef_scale,
-        curve_update_intensity,
-        amm_jit_intensity,
-        name,
-        lp_pool_id,
-        funding_clamp_threshold,
-        funding_ramp_slope,
-    )
-}
-
-pub fn handle_initialize_perp_market_v2(
-    ctx: Context<InitializePerpMarket>,
-    params: InitializePerpMarketParams,
-) -> Result<()> {
-    initialize_perp_market_inner(
-        ctx,
-        params.market_index,
-        params.amm_base_asset_reserve,
-        params.amm_quote_asset_reserve,
-        params.amm_periodicity,
-        params.amm_peg_multiplier,
-        params.oracle_source,
-        params.contract_tier,
-        params.margin_ratio_initial,
-        params.margin_ratio_maintenance,
-        params.liquidator_fee,
-        params.if_liquidation_fee,
-        params.imf_factor,
-        params.active_status,
-        params.base_spread,
-        params.max_spread,
-        params.max_open_interest,
-        params.max_revenue_withdraw_per_period,
-        params.quote_max_insurance,
-        params.order_step_size,
-        params.order_tick_size,
-        params.min_order_size,
-        params.concentration_coef_scale,
-        params.curve_update_intensity,
-        params.amm_jit_intensity,
-        params.name,
-        params.lp_pool_id,
-        params.funding_clamp_threshold,
-        params.funding_ramp_slope,
-    )
 }
 
 pub fn handle_delete_initialized_perp_market(

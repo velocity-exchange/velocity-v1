@@ -74,8 +74,8 @@ function structFromParams(
 	overrides: Record<string, unknown>
 ): Record<string, unknown> {
 	// Anchor lowercases the first letter of type names when it loads an IDL, so
-	// the on-chain `InitializeSpotMarketParams` reads back as
-	// `initializeSpotMarketParams`. Match either spelling.
+	// the on-chain `InitializeSpotMarketArgs` reads back as
+	// `initializeSpotMarketArgs`. Match either spelling.
 	const wanted = typeName.charAt(0).toLowerCase() + typeName.slice(1);
 	const def = idl.types?.find(
 		(t: any) => t.name === typeName || t.name === wanted
@@ -555,11 +555,11 @@ export function registerMarket(parent: Command): void {
 					body: {
 						instructions: [
 							{
-								ix: 'initializeSpotMarketV2',
+								ix: 'initializeSpotMarket',
 								args: {
-									params: structFromParams(
+									args: structFromParams(
 										client.program.idl,
-										'InitializeSpotMarketParams',
+										'InitializeSpotMarketArgs',
 										spot,
 										{
 											oracle_source: { pythLazer: {} },
@@ -602,11 +602,11 @@ export function registerMarket(parent: Command): void {
 					body: {
 						instructions: [
 							{
-								ix: 'initializePerpMarketV2',
+								ix: 'initializePerpMarket',
 								args: {
-									params: structFromParams(
+									args: structFromParams(
 										client.program.idl,
-										'InitializePerpMarketParams',
+										'InitializePerpMarketArgs',
 										perp,
 										{
 											oracle_source: { pythLazer: {} },

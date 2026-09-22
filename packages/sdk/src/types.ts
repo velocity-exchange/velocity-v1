@@ -2715,12 +2715,12 @@ export type TransferFeeAndPnlPoolRecord = {
 };
 
 /**
- * Every argument to `initializeSpotMarketV2`, by name.
+ * Every argument to `initializeSpotMarket`, by name.
  *
- * Mirrors the on-chain `InitializeSpotMarketParams`. Field order matters: borsh
+ * Mirrors the on-chain `InitializeSpotMarketArgs`. Field order matters: borsh
  * lays the struct out positionally, so this must stay in the IDL's order.
  */
-export type InitializeSpotMarketParams = {
+export type InitializeSpotMarketArgs = {
 	optimalUtilization: number;
 	optimalBorrowRate: number;
 	maxBorrowRate: number;
@@ -2747,12 +2747,12 @@ export type InitializeSpotMarketParams = {
 };
 
 /**
- * Every argument to `initializePerpMarketV2`, by name.
+ * Every argument to `initializePerpMarket`, by name.
  *
- * Mirrors the on-chain `InitializePerpMarketParams`. Field order matters: borsh
+ * Mirrors the on-chain `InitializePerpMarketArgs`. Field order matters: borsh
  * lays the struct out positionally, so this must stay in the IDL's order.
  */
-export type InitializePerpMarketParams = {
+export type InitializePerpMarketArgs = {
 	marketIndex: number;
 	ammBaseAssetReserve: BN;
 	ammQuoteAssetReserve: BN;

@@ -571,8 +571,8 @@ For an end-to-end smoke test, use a second wallet to call
   not strip these properties.
 
 - The dUSDT oracle is a two-step init. `handle_initialize_spot_market`
-  (`programs/velocity/src/instructions/admin.rs:287-298`) requires the quote spot market to use
+  (`programs/velocity/src/instructions/admin.rs:318-325`) requires the quote spot market to use
   `OracleSource::QuoteAsset` with `oracle = Pubkey::default()`. Switching to `PythLazerStableCoin`
   afterwards happens in Phase E through `update_spot_market_oracle`, which itself reads the new
-  oracle (`programs/velocity/src/instructions/admin.rs:1056-1061`), so the USDT lazer PDA must
+  oracle (`programs/velocity/src/instructions/admin.rs:1155-1160`), so the USDT lazer PDA must
   already hold a posted price. That is why Phase C+ runs before Phase E and must succeed.

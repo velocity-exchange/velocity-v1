@@ -60,8 +60,8 @@ import {
 	getSpotMarketPublicKey,
 	AssetTier,
 	ContractTier,
-	InitializePerpMarketParams,
-	InitializeSpotMarketParams,
+	InitializePerpMarketArgs,
+	InitializeSpotMarketArgs,
 	PEG_PRECISION,
 	BASE_PRECISION,
 	ZERO,
@@ -1557,25 +1557,25 @@ export function getProtocolFeeTotal(
 }
 
 /**
- * Fill out `InitializePerpMarketParams` from a handful of overrides.
+ * Fill out `InitializePerpMarketArgs` from a handful of overrides.
  *
- * `initializePerpMarketV2` takes a struct with all twenty-eight fields present,
- * which is the point: there are no silent defaults at a listing. Tests are the
- * opposite case, where most callers only care about three or four values, so
- * this supplies the same defaults the positional `initializePerpMarket` has
- * always applied. Keeping them here rather than in the SDK means production
- * callers still have to state every field.
+ * `getInitializePerpMarketIx` takes a struct with all twenty-eight fields
+ * present, which is the point: there are no silent defaults at a listing. Tests
+ * are the opposite case, where most callers only care about three or four
+ * values, so this supplies the same defaults the positional
+ * `initializePerpMarket` helper applies. Keeping them here rather than in the
+ * SDK means production callers still have to state every field.
  */
 export function perpMarketParams(
-	overrides: Partial<InitializePerpMarketParams> &
+	overrides: Partial<InitializePerpMarketArgs> &
 		Pick<
-			InitializePerpMarketParams,
+			InitializePerpMarketArgs,
 			| 'marketIndex'
 			| 'ammBaseAssetReserve'
 			| 'ammQuoteAssetReserve'
 			| 'ammPeriodicity'
 		>
-): InitializePerpMarketParams {
+): InitializePerpMarketArgs {
 	return {
 		ammPegMultiplier: PEG_PRECISION,
 		oracleSource: OracleSource.PYTH_LAZER,
@@ -1606,16 +1606,16 @@ export function perpMarketParams(
 }
 
 /**
- * Fill out `InitializeSpotMarketParams`, mirroring `perpMarketParams`.
+ * Fill out `InitializeSpotMarketArgs`, mirroring `perpMarketParams`.
  *
  * `minBorrowRate` and `maxTokenDeposits` default to 0, which is what the
  * positional `initializeSpotMarket` hardcodes, so a params built here and the
  * positional call produce the same market.
  */
 export function spotMarketParams(
-	overrides: Partial<InitializeSpotMarketParams> &
-		Pick<InitializeSpotMarketParams, 'oracleSource'>
-): InitializeSpotMarketParams {
+	overrides: Partial<InitializeSpotMarketArgs> &
+		Pick<InitializeSpotMarketArgs, 'oracleSource'>
+): InitializeSpotMarketArgs {
 	return {
 		optimalUtilization: SPOT_MARKET_RATE_PRECISION.divn(2).toNumber(),
 		optimalBorrowRate: SPOT_MARKET_RATE_PRECISION.toNumber(),

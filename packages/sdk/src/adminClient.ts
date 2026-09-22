@@ -33,8 +33,8 @@ import {
 	MarketStatus,
 	ContractTier,
 	AssetTier,
-	InitializePerpMarketParams,
-	InitializeSpotMarketParams,
+	InitializePerpMarketArgs,
+	InitializeSpotMarketArgs,
 	TxParams,
 	AddAmmConstituentMappingDatum,
 	SwapReduceOnly,
@@ -231,27 +231,31 @@ export class AdminClient extends VelocityClient {
 			marketIndex ?? this.getStateAccount().numberOfSpotMarkets;
 
 		const initializeIx = await this.getInitializeSpotMarketIx(
+			{
+				optimalUtilization,
+				optimalBorrowRate: optimalRate,
+				maxBorrowRate: maxRate,
+				minBorrowRate: 0,
+				oracleSource,
+				initialAssetWeight,
+				maintenanceAssetWeight,
+				initialLiabilityWeight,
+				maintenanceLiabilityWeight,
+				imfFactor,
+				liquidatorFee,
+				ifLiquidationFee,
+				activeStatus,
+				assetTier,
+				scaleInitialAssetWeightStart,
+				withdrawGuardThreshold,
+				orderTickSize,
+				orderStepSize,
+				ifTotalFactor,
+				maxTokenDeposits: ZERO,
+				name: encodeName(name),
+			},
 			mint,
-			optimalUtilization,
-			optimalRate,
-			maxRate,
 			oracle,
-			oracleSource,
-			initialAssetWeight,
-			maintenanceAssetWeight,
-			initialLiabilityWeight,
-			maintenanceLiabilityWeight,
-			imfFactor,
-			liquidatorFee,
-			ifLiquidationFee,
-			activeStatus,
-			assetTier,
-			scaleInitialAssetWeightStart,
-			withdrawGuardThreshold,
-			orderTickSize,
-			orderStepSize,
-			ifTotalFactor,
-			name,
 			marketIndex
 		);
 
@@ -270,122 +274,26 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
-	 * Builds the `initializeSpotMarket` instruction without sending it. See `initializeSpotMarket`
-	 * for parameter units and the cold-admin-if-`activeStatus` rule. Looks up `mint`'s owning
-	 * token program on-chain (throws if the mint account doesn't exist) and resolves the admin
-	 * signer to `wallet.publicKey` when `useHotWalletAdmin` is set, otherwise to `state.coldAdmin`
-	 * (or the wallet if not yet subscribed).
+	 * Builds the `initializeSpotMarket` instruction without sending it.
+	 *
+	 * Takes every market parameter by name. Positionally there are twenty-one of
+	 * them, mostly numbers, with adjacent same-typed pairs like
+	 * `initialAssetWeight` and `maintenanceAssetWeight`, so a transposition lists
+	 * a market with the wrong risk profile and no error; an object makes it a
+	 * type error.
+	 *
+	 * Looks up `mint`'s owning token program on-chain (throws if the mint account
+	 * doesn't exist) and resolves the admin signer to `wallet.publicKey` when
+	 * `useHotWalletAdmin` is set, otherwise to `state.coldAdmin` (or the wallet if
+	 * not yet subscribed). Requires cold admin when `args.activeStatus` is `true`.
+	 * @param args - Every market parameter, by name.
+	 * @param mint - Spot market mint. Its owner selects the token program.
+	 * @param oracle - Oracle account for `args.oracleSource`.
+	 * @param marketIndex - Defaults to `state.numberOfSpotMarkets`.
 	 * @returns The unsigned `initializeSpotMarket` instruction.
 	 */
 	public async getInitializeSpotMarketIx(
-		mint: PublicKey,
-		optimalUtilization: number,
-		optimalRate: number,
-		maxRate: number,
-		oracle: PublicKey,
-		oracleSource: OracleSource,
-		initialAssetWeight: number,
-		maintenanceAssetWeight: number,
-		initialLiabilityWeight: number,
-		maintenanceLiabilityWeight: number,
-		imfFactor = 0,
-		liquidatorFee = 0,
-		ifLiquidationFee = 0,
-		activeStatus = true,
-		assetTier = AssetTier.COLLATERAL,
-		scaleInitialAssetWeightStart = ZERO,
-		withdrawGuardThreshold = ZERO,
-		orderTickSize = ONE,
-		orderStepSize = ONE,
-		ifTotalFactor = 0,
-		name = DEFAULT_MARKET_NAME,
-		marketIndex?: number
-	): Promise<TransactionInstruction> {
-		const spotMarketIndex =
-			marketIndex ?? this.getStateAccount().numberOfSpotMarkets;
-		const spotMarket = await getSpotMarketPublicKey(
-			this.program.programId,
-			spotMarketIndex
-		);
-
-		const spotMarketVault = await getSpotMarketVaultPublicKey(
-			this.program.programId,
-			spotMarketIndex
-		);
-
-		const insuranceFundVault = await getInsuranceFundVaultPublicKey(
-			this.program.programId,
-			spotMarketIndex
-		);
-
-		const mintAccountInfo = await this.connection.getAccountInfo(mint);
-		if (!mintAccountInfo) {
-			throw new Error(`Mint account ${mint.toString()} not found`);
-		}
-		const tokenProgram = mintAccountInfo.owner;
-
-		const nameBuffer = encodeName(name);
-		const initializeIx = await this.program.instruction.initializeSpotMarket(
-			optimalUtilization,
-			optimalRate,
-			maxRate,
-			oracleSource,
-			initialAssetWeight,
-			maintenanceAssetWeight,
-			initialLiabilityWeight,
-			maintenanceLiabilityWeight,
-			imfFactor,
-			liquidatorFee,
-			ifLiquidationFee,
-			activeStatus,
-			assetTier,
-			scaleInitialAssetWeightStart,
-			withdrawGuardThreshold,
-			orderTickSize,
-			orderStepSize,
-			ifTotalFactor,
-			nameBuffer,
-			{
-				accounts: {
-					admin: this.useHotWalletAdmin
-						? this.wallet.publicKey
-						: this.isSubscribed
-						? this.getStateAccount().coldAdmin
-						: this.wallet.publicKey,
-					state: await this.getStatePublicKey(),
-					spotMarket,
-					spotMarketVault,
-					insuranceFundVault,
-					velocitySigner: this.getSignerPublicKey(),
-					spotMarketMint: mint,
-					oracle,
-					rent: SYSVAR_RENT_PUBKEY,
-					systemProgram: anchor.web3.SystemProgram.programId,
-					tokenProgram,
-				},
-			}
-		);
-
-		return initializeIx;
-	}
-
-	/**
-	 * Builds `initializeSpotMarketV2`, the named-argument form of
-	 * `initializeSpotMarket`.
-	 *
-	 * The positional instruction takes twenty arguments with adjacent same-typed
-	 * pairs, so a transposition lists a market with the wrong risk profile and no
-	 * error. A `params` object makes it a type error. It also accepts
-	 * `minBorrowRate` and `maxTokenDeposits`, which the positional form hardcodes
-	 * to 0 and every listing then set with follow-ups.
-	 * @param params - Every market parameter, by name.
-	 * @param mint - Spot market mint. Its owner selects the token program.
-	 * @param oracle - Oracle account for `params.oracleSource`.
-	 * @param marketIndex - Defaults to `state.numberOfSpotMarkets`.
-	 * @returns The unsigned `initializeSpotMarketV2` instruction.
-	 */
-	public async getInitializeSpotMarketV2Ix(
-		params: InitializeSpotMarketParams,
+		args: InitializeSpotMarketArgs,
 		mint: PublicKey,
 		oracle: PublicKey,
 		marketIndex?: number
@@ -412,7 +320,7 @@ export class AdminClient extends VelocityClient {
 		}
 		const tokenProgram = mintAccountInfo.owner;
 
-		return await this.program.instruction.initializeSpotMarketV2(params, {
+		return await this.program.instruction.initializeSpotMarket(args, {
 			accounts: {
 				admin: this.useHotWalletAdmin
 					? this.wallet.publicKey
@@ -431,27 +339,6 @@ export class AdminClient extends VelocityClient {
 				tokenProgram,
 			},
 		});
-	}
-
-	/**
-	 * Sends `initializeSpotMarketV2`. See `getInitializeSpotMarketV2Ix`.
-	 * @returns Transaction signature.
-	 */
-	public async initializeSpotMarketV2(
-		params: InitializeSpotMarketParams,
-		mint: PublicKey,
-		oracle: PublicKey,
-		marketIndex?: number
-	): Promise<TransactionSignature> {
-		const ix = await this.getInitializeSpotMarketV2Ix(
-			params,
-			mint,
-			oracle,
-			marketIndex
-		);
-		const tx = await this.buildTransaction(ix);
-		const { txSig } = await this.sendTransaction(tx, [], this.opts);
-		return txSig;
 	}
 
 	/**
@@ -590,38 +477,40 @@ export class AdminClient extends VelocityClient {
 	): Promise<TransactionSignature> {
 		const currentPerpMarketIndex = this.getStateAccount().numberOfMarkets;
 
-		const initializeMarketIxs = await this.getInitializePerpMarketIx(
-			marketIndex,
-			priceOracle,
-			baseAssetReserve,
-			quoteAssetReserve,
-			periodicity,
-			pegMultiplier,
-			oracleSource,
-			contractTier,
-			marginRatioInitial,
-			marginRatioMaintenance,
-			liquidatorFee,
-			ifLiquidatorFee,
-			imfFactor,
-			activeStatus,
-			baseSpread,
-			maxSpread,
-			maxOpenInterest,
-			maxRevenueWithdrawPerPeriod,
-			quoteMaxInsurance,
-			orderStepSize,
-			orderTickSize,
-			minOrderSize,
-			concentrationCoefScale,
-			curveUpdateIntensity,
-			ammJitIntensity,
-			name,
-			lpPoolId,
-			fundingClampThreshold,
-			fundingRampSlope
+		const initializeMarketIx = await this.getInitializePerpMarketIx(
+			{
+				marketIndex,
+				ammBaseAssetReserve: baseAssetReserve,
+				ammQuoteAssetReserve: quoteAssetReserve,
+				ammPeriodicity: periodicity,
+				ammPegMultiplier: pegMultiplier,
+				oracleSource,
+				contractTier,
+				marginRatioInitial,
+				marginRatioMaintenance,
+				liquidatorFee,
+				ifLiquidationFee: ifLiquidatorFee,
+				imfFactor,
+				activeStatus,
+				baseSpread,
+				maxSpread,
+				maxOpenInterest,
+				maxRevenueWithdrawPerPeriod,
+				quoteMaxInsurance,
+				orderStepSize,
+				orderTickSize,
+				minOrderSize,
+				concentrationCoefScale,
+				curveUpdateIntensity,
+				ammJitIntensity,
+				name: encodeName(name),
+				lpPoolId,
+				fundingClampThreshold,
+				fundingRampSlope,
+			},
+			priceOracle
 		);
-		const tx = await this.buildTransaction(initializeMarketIxs);
+		const tx = await this.buildTransaction(initializeMarketIx);
 
 		const { txSig } = await this.sendTransaction(tx, [], this.opts);
 
@@ -640,119 +529,29 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
-	 * Builds the `initializePerpMarket` instruction without sending it. See `initializePerpMarket`
-	 * for parameter units and the cold-admin-if-`activeStatus` rule.
-	 * @returns Single-element array containing the unsigned `initializePerpMarket` instruction.
+	 * Builds the `initializePerpMarket` instruction without sending it.
+	 *
+	 * Takes every market parameter by name, including `marketIndex`. Positionally
+	 * there are twenty-eight of them, with adjacent same-typed pairs that nothing
+	 * cross-checks, so a transposition lists a market with the wrong risk profile
+	 * and no error; an object makes it a type error.
+	 *
+	 * See `initializePerpMarket` for parameter units. Requires cold admin when
+	 * `args.activeStatus` is `true`.
+	 * @param args - Every market parameter, by name, including `marketIndex`.
+	 * @param priceOracle - Oracle account for `args.oracleSource`.
+	 * @returns The unsigned `initializePerpMarket` instruction.
 	 */
 	public async getInitializePerpMarketIx(
-		marketIndex: number,
-		priceOracle: PublicKey,
-		baseAssetReserve: BN,
-		quoteAssetReserve: BN,
-		periodicity: BN,
-		pegMultiplier: BN = PEG_PRECISION,
-		oracleSource: OracleSource = OracleSource.PYTH_LAZER,
-		contractTier: ContractTier = ContractTier.SPECULATIVE,
-		marginRatioInitial = 2000,
-		marginRatioMaintenance = 500,
-		liquidatorFee = 0,
-		ifLiquidatorFee = 10000,
-		imfFactor = 0,
-		activeStatus = true,
-		baseSpread = 0,
-		maxSpread = 142500,
-		maxOpenInterest = ZERO,
-		maxRevenueWithdrawPerPeriod = ZERO,
-		quoteMaxInsurance = ZERO,
-		orderStepSize = BASE_PRECISION.divn(10000),
-		orderTickSize = PRICE_PRECISION.divn(100000),
-		minOrderSize = BASE_PRECISION.divn(10000),
-		concentrationCoefScale = ONE,
-		curveUpdateIntensity = 0,
-		ammJitIntensity = 0,
-		name = DEFAULT_MARKET_NAME,
-		lpPoolId: number = 0,
-		fundingClampThreshold = 0,
-		fundingRampSlope = 0
-	): Promise<TransactionInstruction[]> {
-		const perpMarketPublicKey = await getPerpMarketPublicKey(
-			this.program.programId,
-			marketIndex
-		);
-
-		const ixs: TransactionInstruction[] = [];
-
-		const nameBuffer = encodeName(name);
-		const initPerpIx = await this.program.instruction.initializePerpMarket(
-			marketIndex,
-			baseAssetReserve,
-			quoteAssetReserve,
-			periodicity,
-			pegMultiplier,
-			oracleSource,
-			contractTier,
-			marginRatioInitial,
-			marginRatioMaintenance,
-			liquidatorFee,
-			ifLiquidatorFee,
-			imfFactor,
-			activeStatus,
-			baseSpread,
-			maxSpread,
-			maxOpenInterest,
-			maxRevenueWithdrawPerPeriod,
-			quoteMaxInsurance,
-			orderStepSize,
-			orderTickSize,
-			minOrderSize,
-			concentrationCoefScale,
-			curveUpdateIntensity,
-			ammJitIntensity,
-			nameBuffer,
-			lpPoolId,
-			fundingClampThreshold,
-			fundingRampSlope,
-			{
-				accounts: {
-					state: await this.getStatePublicKey(),
-					admin: this.useHotWalletAdmin
-						? this.wallet.publicKey
-						: this.isSubscribed
-						? this.getStateAccount().coldAdmin
-						: this.wallet.publicKey,
-					oracle: priceOracle,
-					perpMarket: perpMarketPublicKey,
-					rent: SYSVAR_RENT_PUBKEY,
-					systemProgram: anchor.web3.SystemProgram.programId,
-				},
-			}
-		);
-		ixs.push(initPerpIx);
-		return ixs;
-	}
-
-	/**
-	 * Builds `initializePerpMarketV2`, the named-argument form of
-	 * `initializePerpMarket`.
-	 *
-	 * The positional instruction takes twenty-eight arguments with adjacent
-	 * same-typed pairs that nothing cross-checks, so a transposition lists a
-	 * market with the wrong risk profile and no error. A `params` object makes it
-	 * a type error.
-	 * @param params - Every market parameter, by name, including `marketIndex`.
-	 * @param priceOracle - Oracle account for `params.oracleSource`.
-	 * @returns The unsigned `initializePerpMarketV2` instruction.
-	 */
-	public async getInitializePerpMarketV2Ix(
-		params: InitializePerpMarketParams,
+		args: InitializePerpMarketArgs,
 		priceOracle: PublicKey
 	): Promise<TransactionInstruction> {
 		const perpMarketPublicKey = await getPerpMarketPublicKey(
 			this.program.programId,
-			params.marketIndex
+			args.marketIndex
 		);
 
-		return await this.program.instruction.initializePerpMarketV2(params, {
+		return await this.program.instruction.initializePerpMarket(args, {
 			accounts: {
 				state: await this.getStatePublicKey(),
 				admin: this.useHotWalletAdmin
@@ -766,20 +565,6 @@ export class AdminClient extends VelocityClient {
 				systemProgram: anchor.web3.SystemProgram.programId,
 			},
 		});
-	}
-
-	/**
-	 * Sends `initializePerpMarketV2`. See `getInitializePerpMarketV2Ix`.
-	 * @returns Transaction signature.
-	 */
-	public async initializePerpMarketV2(
-		params: InitializePerpMarketParams,
-		priceOracle: PublicKey
-	): Promise<TransactionSignature> {
-		const ix = await this.getInitializePerpMarketV2Ix(params, priceOracle);
-		const tx = await this.buildTransaction(ix);
-		const { txSig } = await this.sendTransaction(tx, [], this.opts);
-		return txSig;
 	}
 
 	/**

@@ -798,55 +798,9 @@ pub mod velocity {
 
     pub fn initialize_spot_market(
         ctx: Context<InitializeSpotMarket>,
-        optimal_utilization: u32,
-        optimal_borrow_rate: u32,
-        max_borrow_rate: u32,
-        oracle_source: OracleSource,
-        initial_asset_weight: u32,
-        maintenance_asset_weight: u32,
-        initial_liability_weight: u32,
-        maintenance_liability_weight: u32,
-        imf_factor: u32,
-        liquidator_fee: u32,
-        if_liquidation_fee: u32,
-        active_status: bool,
-        asset_tier: AssetTier,
-        scale_initial_asset_weight_start: u64,
-        withdraw_guard_threshold: u64,
-        order_tick_size: u64,
-        order_step_size: u64,
-        if_total_factor: u32,
-        name: [u8; 32],
+        args: InitializeSpotMarketArgs,
     ) -> Result<()> {
-        handle_initialize_spot_market(
-            ctx,
-            optimal_utilization,
-            optimal_borrow_rate,
-            max_borrow_rate,
-            oracle_source,
-            initial_asset_weight,
-            maintenance_asset_weight,
-            initial_liability_weight,
-            maintenance_liability_weight,
-            imf_factor,
-            liquidator_fee,
-            if_liquidation_fee,
-            active_status,
-            asset_tier,
-            scale_initial_asset_weight_start,
-            withdraw_guard_threshold,
-            order_tick_size,
-            order_step_size,
-            if_total_factor,
-            name,
-        )
-    }
-
-    pub fn initialize_spot_market_v2(
-        ctx: Context<InitializeSpotMarket>,
-        params: InitializeSpotMarketParams,
-    ) -> Result<()> {
-        handle_initialize_spot_market_v2(ctx, params)
+        handle_initialize_spot_market(ctx, args)
     }
 
     pub fn delete_initialized_spot_market(
@@ -858,73 +812,9 @@ pub mod velocity {
 
     pub fn initialize_perp_market<'c: 'info, 'info>(
         ctx: Context<'info, InitializePerpMarket<'info>>,
-        market_index: u16,
-        amm_base_asset_reserve: u128,
-        amm_quote_asset_reserve: u128,
-        amm_periodicity: i64,
-        amm_peg_multiplier: u128,
-        oracle_source: OracleSource,
-        contract_tier: ContractTier,
-        margin_ratio_initial: u32,
-        margin_ratio_maintenance: u32,
-        liquidator_fee: u32,
-        if_liquidation_fee: u32,
-        imf_factor: u32,
-        active_status: bool,
-        base_spread: u32,
-        max_spread: u32,
-        max_open_interest: u128,
-        max_revenue_withdraw_per_period: u64,
-        quote_max_insurance: u64,
-        order_step_size: u64,
-        order_tick_size: u64,
-        min_order_size: u64,
-        concentration_coef_scale: u128,
-        curve_update_intensity: u8,
-        amm_jit_intensity: u8,
-        name: [u8; 32],
-        lp_pool_id: u8,
-        funding_clamp_threshold: u32,
-        funding_ramp_slope: u32,
+        args: InitializePerpMarketArgs,
     ) -> Result<()> {
-        handle_initialize_perp_market(
-            ctx,
-            market_index,
-            amm_base_asset_reserve,
-            amm_quote_asset_reserve,
-            amm_periodicity,
-            amm_peg_multiplier,
-            oracle_source,
-            contract_tier,
-            margin_ratio_initial,
-            margin_ratio_maintenance,
-            liquidator_fee,
-            if_liquidation_fee,
-            imf_factor,
-            active_status,
-            base_spread,
-            max_spread,
-            max_open_interest,
-            max_revenue_withdraw_per_period,
-            quote_max_insurance,
-            order_step_size,
-            order_tick_size,
-            min_order_size,
-            concentration_coef_scale,
-            curve_update_intensity,
-            amm_jit_intensity,
-            name,
-            lp_pool_id,
-            funding_clamp_threshold,
-            funding_ramp_slope,
-        )
-    }
-
-    pub fn initialize_perp_market_v2<'c: 'info, 'info>(
-        ctx: Context<'info, InitializePerpMarket<'info>>,
-        params: InitializePerpMarketParams,
-    ) -> Result<()> {
-        handle_initialize_perp_market_v2(ctx, params)
+        handle_initialize_perp_market(ctx, args)
     }
 
     pub fn initialize_amm_cache<'c: 'info, 'info>(

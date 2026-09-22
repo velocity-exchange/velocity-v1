@@ -5,6 +5,8 @@ import {
 	BN,
 	getTokenAmount,
 	loadKeypair,
+	InitializePerpMarketArgs,
+	InitializeSpotMarketArgs,
 	OracleSource,
 	SpotBalanceType,
 	PERCENTAGE_PRECISION,
@@ -27,14 +29,14 @@ import {
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
 
 /**
- * `initialize_{spot,perp}_market_v2` take a params struct where the positional
- * form takes twenty and twenty-eight arguments. Both forms call the same body,
- * so the risk is not that the body is wrong, it is that a wrapper passes an
- * argument to the wrong slot. These tests build the same market both ways and
- * compare the resulting accounts field by field, which is the only check that
- * actually catches a transposition.
+ * `initialize_{spot,perp}_market` take an args struct. The SDK also keeps a
+ * positional convenience form, which maps twenty and twenty-eight arguments
+ * onto that struct, so the risk is not that the handler is wrong, it is that
+ * the mapping puts an argument in the wrong field. These tests build the same
+ * market both ways and compare the resulting accounts field by field, which is
+ * the only check that actually catches a transposition.
  */
-describe('initialize market v2', () => {
+describe('initialize market', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
 
 	let bulkAccountLoader: TestBulkAccountLoader;
@@ -96,11 +98,28 @@ describe('initialize market v2', () => {
 		solUsd = await mockOracleNoProgram(svmContextWrapper, 1);
 	});
 
+	/** Sends an args-struct init, which the SDK only exposes as an instruction. */
+	const sendInitPerp = async (args: InitializePerpMarketArgs, oracle) => {
+		const ix = await velocityClient.getInitializePerpMarketIx(args, oracle);
+		const tx = await velocityClient.buildTransaction(ix);
+		await velocityClient.sendTransaction(tx, [], velocityClient.opts);
+	};
+
+	const sendInitSpot = async (args: InitializeSpotMarketArgs, mint, oracle) => {
+		const ix = await velocityClient.getInitializeSpotMarketIx(
+			args,
+			mint,
+			oracle
+		);
+		const tx = await velocityClient.buildTransaction(ix);
+		await velocityClient.sendTransaction(tx, [], velocityClient.opts);
+	};
+
 	after(async () => {
 		await velocityClient.unsubscribe();
 	});
 
-	it('perp v1 and v2 build the same market', async () => {
+	it('positional and args forms build the same perp market', async () => {
 		const reserve = new BN(1000);
 
 		await velocityClient.initializePerpMarket(
@@ -112,7 +131,7 @@ describe('initialize market v2', () => {
 		);
 		await velocityClient.fetchAccounts();
 
-		await velocityClient.initializePerpMarketV2(
+		await sendInitPerp(
 			perpMarketParams({
 				marketIndex: 1,
 				ammBaseAssetReserve: reserve,
@@ -153,12 +172,12 @@ describe('initialize market v2', () => {
 		assert.deepEqual(Array.from(v1.name), Array.from(v2.name));
 	});
 
-	it('spot v2 sets the fields the positional form hardcodes to zero', async () => {
+	it('args form sets the fields the positional form hardcodes to zero', async () => {
 		const oracle = await mockOracleNoProgram(svmContextWrapper, 1);
 		const maxTokenDeposits = new BN(123_456_789);
 		const minBorrowRate = 1; // 1/200 = 0.5%
 
-		await velocityClient.initializeSpotMarketV2(
+		await sendInitSpot(
 			spotMarketParams({
 				oracleSource: OracleSource.PYTH_LAZER,
 				minBorrowRate,
@@ -182,14 +201,14 @@ describe('initialize market v2', () => {
 		assert.equal(quote.minBorrowRate, 0);
 	});
 
-	it('spot v2 rejects a borrow floor above the max, in the right units', async () => {
+	it('rejects a borrow floor above the max, in the right units', async () => {
 		// `minBorrowRate` is X/200 (1 => 0.5%), the other three are
 		// PERCENTAGE_PRECISION. Validating without scaling makes 255 read as
 		// 0.0255% instead of 127.5%, so any floor passes against any max.
 		const oracle = await mockOracleNoProgram(svmContextWrapper, 1);
 		let threw = false;
 		try {
-			await velocityClient.initializeSpotMarketV2(
+			await sendInitSpot(
 				spotMarketParams({
 					oracleSource: OracleSource.PYTH_LAZER,
 					minBorrowRate: 255, // 127.5%

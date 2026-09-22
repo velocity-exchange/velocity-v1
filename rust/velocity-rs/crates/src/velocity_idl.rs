@@ -264,6 +264,16 @@ pub mod instructions {
     #[automatically_derived]
     impl anchor_lang::InstructionData for DepositIntoPerpMarketFeePool {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct DepositIntoPerpMarketPnlPool {
+        pub amount: u64,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for DepositIntoPerpMarketPnlPool {
+        const DISCRIMINATOR: &[u8] = &[224, 20, 50, 106, 186, 1, 182, 15];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for DepositIntoPerpMarketPnlPool {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct DepositIntoSpotMarketRevenuePool {
         pub amount: u64,
     }
@@ -486,6 +496,16 @@ pub mod instructions {
     #[automatically_derived]
     impl anchor_lang::InstructionData for InitializePerpMarket {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct InitializePerpMarketV2 {
+        pub params: InitializePerpMarketParams,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for InitializePerpMarketV2 {
+        const DISCRIMINATOR: &[u8] = &[72, 38, 168, 149, 169, 144, 164, 247];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for InitializePerpMarketV2 {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct InitializePrelaunchOracle {
         pub params: PrelaunchOracleParams,
     }
@@ -581,6 +601,16 @@ pub mod instructions {
     }
     #[automatically_derived]
     impl anchor_lang::InstructionData for InitializeSpotMarket {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct InitializeSpotMarketV2 {
+        pub params: InitializeSpotMarketParams,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for InitializeSpotMarketV2 {
+        const DISCRIMINATOR: &[u8] = &[107, 163, 97, 225, 217, 152, 243, 182];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for InitializeSpotMarketV2 {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct InitializeUser {
         pub sub_account_id: u16,
@@ -3409,6 +3439,85 @@ pub mod types {
         FeeWithdraw,
         AccountExtension,
         VammQuoteManagement,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct InitializePerpMarketParams {
+        pub market_index: u16,
+        pub amm_base_asset_reserve: u128,
+        pub amm_quote_asset_reserve: u128,
+        pub amm_periodicity: i64,
+        pub amm_peg_multiplier: u128,
+        pub oracle_source: OracleSource,
+        pub contract_tier: ContractTier,
+        pub margin_ratio_initial: u32,
+        pub margin_ratio_maintenance: u32,
+        pub liquidator_fee: u32,
+        pub if_liquidation_fee: u32,
+        pub imf_factor: u32,
+        pub active_status: bool,
+        pub base_spread: u32,
+        pub max_spread: u32,
+        pub max_open_interest: u128,
+        pub max_revenue_withdraw_per_period: u64,
+        pub quote_max_insurance: u64,
+        pub order_step_size: u64,
+        pub order_tick_size: u64,
+        pub min_order_size: u64,
+        pub concentration_coef_scale: u128,
+        pub curve_update_intensity: u8,
+        pub amm_jit_intensity: u8,
+        pub name: [u8; 32],
+        pub lp_pool_id: u8,
+        pub funding_clamp_threshold: u32,
+        pub funding_ramp_slope: u32,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct InitializeSpotMarketParams {
+        pub optimal_utilization: u32,
+        pub optimal_borrow_rate: u32,
+        pub max_borrow_rate: u32,
+        pub min_borrow_rate: u8,
+        pub oracle_source: OracleSource,
+        pub initial_asset_weight: u32,
+        pub maintenance_asset_weight: u32,
+        pub initial_liability_weight: u32,
+        pub maintenance_liability_weight: u32,
+        pub imf_factor: u32,
+        pub liquidator_fee: u32,
+        pub if_liquidation_fee: u32,
+        pub active_status: bool,
+        pub asset_tier: AssetTier,
+        pub scale_initial_asset_weight_start: u64,
+        pub withdraw_guard_threshold: u64,
+        pub order_tick_size: u64,
+        pub order_step_size: u64,
+        pub if_total_factor: u32,
+        pub max_token_deposits: u64,
+        pub name: [u8; 32],
     }
     #[repr(C)]
     #[derive(
@@ -8765,6 +8874,106 @@ pub mod accounts {
     }
     #[repr(C)]
     #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct DepositIntoPerpMarketPnlPool {
+        pub state: Pubkey,
+        pub perp_market: Pubkey,
+        pub admin: Pubkey,
+        pub source_vault: Pubkey,
+        pub velocity_signer: Pubkey,
+        pub quote_spot_market: Pubkey,
+        pub spot_market_vault: Pubkey,
+        pub token_program: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for DepositIntoPerpMarketPnlPool {
+        const DISCRIMINATOR: &[u8] = &[185, 9, 179, 196, 92, 152, 90, 48];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for DepositIntoPerpMarketPnlPool {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for DepositIntoPerpMarketPnlPool {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for DepositIntoPerpMarketPnlPool {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for DepositIntoPerpMarketPnlPool {}
+    #[automatically_derived]
+    impl ToAccountMetas for DepositIntoPerpMarketPnlPool {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.perp_market,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.admin,
+                    is_signer: true,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.source_vault,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.velocity_signer,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.quote_spot_market,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.spot_market_vault,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.token_program,
+                    is_signer: false,
+                    is_writable: false,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for DepositIntoPerpMarketPnlPool {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for DepositIntoPerpMarketPnlPool {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
     pub struct DepositIntoSpotMarketRevenuePool {
         pub state: Pubkey,
         pub spot_market: Pubkey,
@@ -10475,6 +10684,94 @@ pub mod accounts {
     }
     #[repr(C)]
     #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct InitializePerpMarketV2 {
+        pub admin: Pubkey,
+        pub state: Pubkey,
+        pub perp_market: Pubkey,
+        pub oracle: Pubkey,
+        pub rent: Pubkey,
+        pub system_program: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for InitializePerpMarketV2 {
+        const DISCRIMINATOR: &[u8] = &[194, 12, 252, 138, 77, 121, 31, 48];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for InitializePerpMarketV2 {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for InitializePerpMarketV2 {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for InitializePerpMarketV2 {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for InitializePerpMarketV2 {}
+    #[automatically_derived]
+    impl ToAccountMetas for InitializePerpMarketV2 {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.admin,
+                    is_signer: true,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.perp_market,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.oracle,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.rent,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.system_program,
+                    is_signer: false,
+                    is_writable: false,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for InitializePerpMarketV2 {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for InitializePerpMarketV2 {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
     pub struct InitializePrelaunchOracle {
         pub admin: Pubkey,
         pub prelaunch_oracle: Pubkey,
@@ -11168,6 +11465,124 @@ pub mod accounts {
     }
     #[automatically_derived]
     impl anchor_lang::AccountDeserialize for InitializeSpotMarket {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct InitializeSpotMarketV2 {
+        pub spot_market: Pubkey,
+        pub spot_market_mint: Pubkey,
+        pub spot_market_vault: Pubkey,
+        pub insurance_fund_vault: Pubkey,
+        pub velocity_signer: Pubkey,
+        pub state: Pubkey,
+        pub oracle: Pubkey,
+        pub admin: Pubkey,
+        pub rent: Pubkey,
+        pub system_program: Pubkey,
+        pub token_program: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for InitializeSpotMarketV2 {
+        const DISCRIMINATOR: &[u8] = &[245, 71, 23, 230, 224, 8, 74, 229];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for InitializeSpotMarketV2 {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for InitializeSpotMarketV2 {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for InitializeSpotMarketV2 {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for InitializeSpotMarketV2 {}
+    #[automatically_derived]
+    impl ToAccountMetas for InitializeSpotMarketV2 {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.spot_market,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.spot_market_mint,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.spot_market_vault,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.insurance_fund_vault,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.velocity_signer,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.oracle,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.admin,
+                    is_signer: true,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.rent,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.system_program,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.token_program,
+                    is_signer: false,
+                    is_writable: false,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for InitializeSpotMarketV2 {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for InitializeSpotMarketV2 {
         fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
             let given_disc = &buf[..8];
             if Self::DISCRIMINATOR != given_disc {

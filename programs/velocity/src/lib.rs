@@ -842,6 +842,13 @@ pub mod velocity {
         )
     }
 
+    pub fn initialize_spot_market_v2(
+        ctx: Context<InitializeSpotMarket>,
+        params: InitializeSpotMarketParams,
+    ) -> Result<()> {
+        handle_initialize_spot_market_v2(ctx, params)
+    }
+
     pub fn delete_initialized_spot_market(
         ctx: Context<DeleteInitializedSpotMarket>,
         market_index: u16,
@@ -911,6 +918,13 @@ pub mod velocity {
             funding_clamp_threshold,
             funding_ramp_slope,
         )
+    }
+
+    pub fn initialize_perp_market_v2<'c: 'info, 'info>(
+        ctx: Context<'info, InitializePerpMarket<'info>>,
+        params: InitializePerpMarketParams,
+    ) -> Result<()> {
+        handle_initialize_perp_market_v2(ctx, params)
     }
 
     pub fn initialize_amm_cache<'c: 'info, 'info>(
@@ -1021,6 +1035,13 @@ pub mod velocity {
         amount: u64,
     ) -> Result<()> {
         handle_deposit_into_perp_market_fee_pool(ctx, amount)
+    }
+
+    pub fn deposit_into_perp_market_pnl_pool<'c: 'info, 'info>(
+        ctx: Context<'info, DepositIntoMarketPnlPool<'info>>,
+        amount: u64,
+    ) -> Result<()> {
+        handle_deposit_into_perp_market_pnl_pool(ctx, amount)
     }
 
     pub fn update_perp_market_pnl_pool<'c: 'info, 'info>(

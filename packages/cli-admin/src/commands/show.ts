@@ -15,6 +15,7 @@ import {
 import pc from 'picocolors';
 import { readGlobalOpts, withGlobalOptions } from '../lib/options';
 import { buildAdminClient, buildProvider } from '../lib/provider';
+import { getTokenBalancesBatched, uiAmount } from '../lib/rpc';
 import * as ui from '../lib/ui';
 
 /** Render `numerator / denominator` as basis points (e.g. taker fee). */
@@ -309,6 +310,15 @@ export function registerShow(parent: Command): void {
 			markets.sort((a, b) => a.marketIndex - b.marketIndex);
 			const filter =
 				market !== undefined ? Number.parseInt(market, 10) : undefined;
+			const shown = markets.filter(
+				(m) => filter === undefined || m.marketIndex === filter
+			);
+			// One batched read for every insurance fund vault, rather than a
+			// `getTokenAccountBalance` per market inside the render loop.
+			const ifBalances = await getTokenBalancesBatched(
+				provider.connection,
+				shown.map((m) => m.insuranceFund.vault)
+			);
 			for (const m of markets) {
 				if (filter !== undefined && m.marketIndex !== filter) {
 					continue;
@@ -321,10 +331,10 @@ export function registerShow(parent: Command): void {
 					Number(getTokenAmount(m.borrowBalance, m, SpotBalanceType.BORROW)) /
 					div;
 				const cap = Number(m.maxTokenDeposits.toString()) / div;
-				const ifBal = await provider.connection
-					.getTokenAccountBalance(m.insuranceFund.vault)
-					.then((r) => r.value.uiAmountString)
-					.catch(() => 'n/a');
+				const ifBal = uiAmount(
+					ifBalances.get(m.insuranceFund.vault.toBase58()),
+					m.decimals
+				);
 				console.log(
 					`${decodeName(m.name)} (spot ${m.marketIndex}, ${JSON.stringify(
 						m.status

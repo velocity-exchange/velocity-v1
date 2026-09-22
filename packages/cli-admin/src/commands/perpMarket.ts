@@ -343,6 +343,57 @@ export function registerPerpMarket(parent: Command): void {
 
 	withGlobalOptions(
 		pm
+			.command('deposit-pnl-pool <market> <amount>')
+			.description(
+				'Seed a perp market pnl pool: transfers <amount> (raw quote base units, QUOTE_PRECISION) from the signer into the quote spot vault and credits perp_market.pnl_pool by the same amount, in one instruction. Prefer this over `call updatePerpMarketPnlPool`, which credits without moving tokens and so has to be paired with a separate raw transfer that nothing links to it. Requires the VaultDeposit hot key, or warm/cold.'
+			)
+			.option(
+				'--source-vault <pubkey>',
+				"token account to fund from (default: the signer's ATA for the quote mint)"
+			)
+	).action(async (market: string, amount: string, _flags, cmd: Command) => {
+		const marketIndex = parseMarketIndex(market);
+		const amountValue = parseBnArg('amount', amount);
+		const opts = readGlobalOpts(cmd);
+		const local = cmd.opts() as { sourceVault?: string };
+		const provider = buildProvider(opts);
+		const client = await buildAdminClient(opts);
+		try {
+			const multisigPda = opts.multisig
+				? new PublicKey(opts.multisig)
+				: undefined;
+			const admin = resolveAdminAuthority(provider, multisigPda);
+			const quoteSpotMarket = client.getQuoteSpotMarketAccount();
+			const sourceVault = local.sourceVault
+				? new PublicKey(local.sourceVault)
+				: deriveAssociatedTokenAccount(
+						quoteSpotMarket.mint,
+						admin,
+						(client as any).getTokenProgramForSpotMarket(quoteSpotMarket)
+				  );
+			const ix = await client.getDepositIntoPerpMarketPnlPoolIx(
+				marketIndex,
+				amountValue,
+				sourceVault,
+				admin
+			);
+			const result = await sendOrPropose(
+				provider,
+				[ix],
+				multisigPda,
+				'velocity-admin perp-market deposit-pnl-pool'
+			);
+			reportDispatch(
+				`perp-market[${marketIndex}] pnl pool += ${amountValue.toString()} (from ${sourceVault.toBase58()})`,
+				result
+			);
+		} finally {
+			await client.unsubscribe();
+		}
+	});
+
+	withGlobalOptions(
+		pm
 			.command('sync-amm-summary-stats <market>')
 			.description(
 				'Recompute amm.total_fee_minus_distributions from live pool balances, net user pnl and pending fees, and apply the delta to total_fee / total_mm_fee. This reconciles drifted fee accounting against reality; it does not inject capital, so a market that genuinely lost money stays negative. Requires the AmmCrank hot key, or warm/cold.'

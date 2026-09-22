@@ -33,6 +33,8 @@ import {
 	MarketStatus,
 	ContractTier,
 	AssetTier,
+	InitializePerpMarketParams,
+	InitializeSpotMarketParams,
 	TxParams,
 	AddAmmConstituentMappingDatum,
 	SwapReduceOnly,
@@ -368,6 +370,91 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
+	 * Builds `initializeSpotMarketV2`, the named-argument form of
+	 * `initializeSpotMarket`.
+	 *
+	 * The positional instruction takes twenty arguments with adjacent same-typed
+	 * pairs, so a transposition lists a market with the wrong risk profile and no
+	 * error. A `params` object makes it a type error. It also accepts
+	 * `minBorrowRate` and `maxTokenDeposits`, which the positional form hardcodes
+	 * to 0 and every listing then set with follow-ups.
+	 * @param params - Every market parameter, by name.
+	 * @param mint - Spot market mint. Its owner selects the token program.
+	 * @param oracle - Oracle account for `params.oracleSource`.
+	 * @param marketIndex - Defaults to `state.numberOfSpotMarkets`.
+	 * @returns The unsigned `initializeSpotMarketV2` instruction.
+	 */
+	public async getInitializeSpotMarketV2Ix(
+		params: InitializeSpotMarketParams,
+		mint: PublicKey,
+		oracle: PublicKey,
+		marketIndex?: number
+	): Promise<TransactionInstruction> {
+		const spotMarketIndex =
+			marketIndex ?? this.getStateAccount().numberOfSpotMarkets;
+
+		const spotMarket = await getSpotMarketPublicKey(
+			this.program.programId,
+			spotMarketIndex
+		);
+		const spotMarketVault = await getSpotMarketVaultPublicKey(
+			this.program.programId,
+			spotMarketIndex
+		);
+		const insuranceFundVault = await getInsuranceFundVaultPublicKey(
+			this.program.programId,
+			spotMarketIndex
+		);
+
+		const mintAccountInfo = await this.connection.getAccountInfo(mint);
+		if (!mintAccountInfo) {
+			throw new Error(`Mint account ${mint.toString()} not found`);
+		}
+		const tokenProgram = mintAccountInfo.owner;
+
+		return await this.program.instruction.initializeSpotMarketV2(params, {
+			accounts: {
+				admin: this.useHotWalletAdmin
+					? this.wallet.publicKey
+					: this.isSubscribed
+					? this.getStateAccount().coldAdmin
+					: this.wallet.publicKey,
+				state: await this.getStatePublicKey(),
+				spotMarket,
+				spotMarketVault,
+				insuranceFundVault,
+				velocitySigner: this.getSignerPublicKey(),
+				spotMarketMint: mint,
+				oracle,
+				rent: SYSVAR_RENT_PUBKEY,
+				systemProgram: anchor.web3.SystemProgram.programId,
+				tokenProgram,
+			},
+		});
+	}
+
+	/**
+	 * Sends `initializeSpotMarketV2`. See `getInitializeSpotMarketV2Ix`.
+	 * @returns Transaction signature.
+	 */
+	public async initializeSpotMarketV2(
+		params: InitializeSpotMarketParams,
+		mint: PublicKey,
+		oracle: PublicKey,
+		marketIndex?: number
+	): Promise<TransactionSignature> {
+		const ix = await this.getInitializeSpotMarketV2Ix(
+			params,
+			mint,
+			oracle,
+			marketIndex
+		);
+		const tx = await this.buildTransaction(ix);
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+		return txSig;
+	}
+
+	/**
 	 * Closes a mis-initialized spot market and refunds rent to the admin. Requires warm admin
 	 * (`check_warm`). On-chain the handler only allows deleting the **most recently created**
 	 * market (`marketIndex == state.numberOfSpotMarkets - 1`), still in `Initialized` status
@@ -642,6 +729,57 @@ export class AdminClient extends VelocityClient {
 		);
 		ixs.push(initPerpIx);
 		return ixs;
+	}
+
+	/**
+	 * Builds `initializePerpMarketV2`, the named-argument form of
+	 * `initializePerpMarket`.
+	 *
+	 * The positional instruction takes twenty-eight arguments with adjacent
+	 * same-typed pairs that nothing cross-checks, so a transposition lists a
+	 * market with the wrong risk profile and no error. A `params` object makes it
+	 * a type error.
+	 * @param params - Every market parameter, by name, including `marketIndex`.
+	 * @param priceOracle - Oracle account for `params.oracleSource`.
+	 * @returns The unsigned `initializePerpMarketV2` instruction.
+	 */
+	public async getInitializePerpMarketV2Ix(
+		params: InitializePerpMarketParams,
+		priceOracle: PublicKey
+	): Promise<TransactionInstruction> {
+		const perpMarketPublicKey = await getPerpMarketPublicKey(
+			this.program.programId,
+			params.marketIndex
+		);
+
+		return await this.program.instruction.initializePerpMarketV2(params, {
+			accounts: {
+				state: await this.getStatePublicKey(),
+				admin: this.useHotWalletAdmin
+					? this.wallet.publicKey
+					: this.isSubscribed
+					? this.getStateAccount().coldAdmin
+					: this.wallet.publicKey,
+				oracle: priceOracle,
+				perpMarket: perpMarketPublicKey,
+				rent: SYSVAR_RENT_PUBKEY,
+				systemProgram: anchor.web3.SystemProgram.programId,
+			},
+		});
+	}
+
+	/**
+	 * Sends `initializePerpMarketV2`. See `getInitializePerpMarketV2Ix`.
+	 * @returns Transaction signature.
+	 */
+	public async initializePerpMarketV2(
+		params: InitializePerpMarketParams,
+		priceOracle: PublicKey
+	): Promise<TransactionSignature> {
+		const ix = await this.getInitializePerpMarketV2Ix(params, priceOracle);
+		const tx = await this.buildTransaction(ix);
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+		return txSig;
 	}
 
 	/**
@@ -1649,6 +1787,83 @@ export class AdminClient extends VelocityClient {
 		];
 
 		return await this.program.instruction.depositIntoPerpMarketFeePool(amount, {
+			accounts: {
+				admin,
+				state: await this.getStatePublicKey(),
+				perpMarket: await getPerpMarketPublicKey(
+					this.program.programId,
+					perpMarketIndex
+				),
+				sourceVault,
+				velocitySigner: this.getSignerPublicKey(),
+				quoteSpotMarket: spotMarket.pubkey,
+				spotMarketVault: spotMarket.vault,
+				tokenProgram: TOKEN_PROGRAM_ID,
+			},
+			remainingAccounts,
+		});
+	}
+
+	/**
+	 * Tops up a perp market's PnL pool: transfers `amount` from `sourceVault` (a token
+	 * account the caller controls) into the quote spot market's vault via CPI and credits
+	 * the same amount to `perpMarket.pnlPool`, in one instruction. Requires the
+	 * `VaultDeposit` hot key (or warm/cold).
+	 *
+	 * Prefer this over `updatePerpMarketPnlPool` for funding. That one credits the pool
+	 * without moving tokens, so it has to be paired with a separate raw transfer, and
+	 * nothing links the two: tokens can sit in the vault unclaimed, or a credit smaller
+	 * than the transfer can strand the difference silently. Here the amount transferred
+	 * and the amount credited are the same value.
+	 * @param perpMarketIndex - Perp market whose PnL pool to fund.
+	 * @param amount - Amount to deposit, quote spot market's native decimals (QUOTE_PRECISION, 1e6, for the standard USDC quote market).
+	 * @param sourceVault - Token account to transfer `amount` from; `admin` must be its authority.
+	 * @returns Transaction signature.
+	 */
+	public async depositIntoPerpMarketPnlPool(
+		perpMarketIndex: number,
+		amount: BN,
+		sourceVault: PublicKey
+	): Promise<TransactionSignature> {
+		const ix = await this.getDepositIntoPerpMarketPnlPoolIx(
+			perpMarketIndex,
+			amount,
+			sourceVault
+		);
+
+		const tx = await this.buildTransaction(ix);
+
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+
+		return txSig;
+	}
+
+	/**
+	 * Builds the `depositIntoPerpMarketPnlPool` instruction without sending it. See
+	 * `depositIntoPerpMarketPnlPool`.
+	 * @param admin - Overrides the `admin` signer account. The instruction accepts the
+	 *   `VaultDeposit` hot role as well as warm/cold, so pass the key that will actually
+	 *   sign at execution. Defaults to `state.coldAdmin`.
+	 * @returns The unsigned `depositIntoPerpMarketPnlPool` instruction.
+	 */
+	public async getDepositIntoPerpMarketPnlPoolIx(
+		perpMarketIndex: number,
+		amount: BN,
+		sourceVault: PublicKey,
+		admin = this.isSubscribed
+			? this.getStateAccount().coldAdmin
+			: this.wallet.publicKey
+	): Promise<TransactionInstruction> {
+		const spotMarket = this.getQuoteSpotMarketAccount();
+		const remainingAccounts = [
+			{
+				pubkey: spotMarket.mint,
+				isWritable: false,
+				isSigner: false,
+			},
+		];
+
+		return await this.program.instruction.depositIntoPerpMarketPnlPool(amount, {
 			accounts: {
 				admin,
 				state: await this.getStatePublicKey(),

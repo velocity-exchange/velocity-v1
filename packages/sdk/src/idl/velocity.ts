@@ -1825,6 +1825,117 @@ export type Velocity = {
       ]
     },
     {
+      "name": "depositIntoPerpMarketPnlPool",
+      "discriminator": [
+        224,
+        20,
+        50,
+        106,
+        186,
+        1,
+        182,
+        15
+      ],
+      "accounts": [
+        {
+          "name": "state",
+          "writable": true
+        },
+        {
+          "name": "perpMarket",
+          "writable": true
+        },
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "sourceVault",
+          "writable": true
+        },
+        {
+          "name": "velocitySigner"
+        },
+        {
+          "name": "quoteSpotMarket",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  116,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  0,
+                  0
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "spotMarketVault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  116,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  0,
+                  0
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "tokenProgram"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
       "name": "depositIntoSpotMarketRevenuePool",
       "discriminator": [
         92,
@@ -3673,6 +3784,79 @@ export type Velocity = {
       ]
     },
     {
+      "name": "initializePerpMarketV2",
+      "discriminator": [
+        72,
+        38,
+        168,
+        149,
+        169,
+        144,
+        164,
+        247
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "state",
+          "writable": true
+        },
+        {
+          "name": "perpMarket",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  114,
+                  112,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "oracle"
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "initializePerpMarketParams"
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "initializePrelaunchOracle",
       "discriminator": [
         169,
@@ -4383,6 +4567,159 @@ export type Velocity = {
               "u8",
               32
             ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "initializeSpotMarketV2",
+      "discriminator": [
+        107,
+        163,
+        97,
+        225,
+        217,
+        152,
+        243,
+        182
+      ],
+      "accounts": [
+        {
+          "name": "spotMarket",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  116,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "spotMarketMint"
+        },
+        {
+          "name": "spotMarketVault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  116,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "insuranceFundVault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  105,
+                  110,
+                  115,
+                  117,
+                  114,
+                  97,
+                  110,
+                  99,
+                  101,
+                  95,
+                  102,
+                  117,
+                  110,
+                  100,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "velocitySigner"
+        },
+        {
+          "name": "state",
+          "writable": true
+        },
+        {
+          "name": "oracle"
+        },
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "tokenProgram"
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "initializeSpotMarketParams"
+            }
           }
         }
       ]
@@ -19083,6 +19420,267 @@ export type Velocity = {
           },
           {
             "name": "vammQuoteManagement"
+          }
+        ]
+      }
+    },
+    {
+      "name": "initializePerpMarketParams",
+      "docs": [
+        "Arguments to `initialize_perp_market_v2`.",
+        "",
+        "The positional form takes twenty-eight arguments with adjacent same-typed",
+        "pairs that nothing cross-checks, so a transposition lists a market with the",
+        "wrong risk profile and no error. Named fields make it a compile error.",
+        "Borsh is still positional, so adding a field needs a new instruction."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "ammBaseAssetReserve",
+            "type": "u128"
+          },
+          {
+            "name": "ammQuoteAssetReserve",
+            "type": "u128"
+          },
+          {
+            "name": "ammPeriodicity",
+            "type": "i64"
+          },
+          {
+            "name": "ammPegMultiplier",
+            "type": "u128"
+          },
+          {
+            "name": "oracleSource",
+            "type": {
+              "defined": {
+                "name": "oracleSource"
+              }
+            }
+          },
+          {
+            "name": "contractTier",
+            "type": {
+              "defined": {
+                "name": "contractTier"
+              }
+            }
+          },
+          {
+            "name": "marginRatioInitial",
+            "type": "u32"
+          },
+          {
+            "name": "marginRatioMaintenance",
+            "type": "u32"
+          },
+          {
+            "name": "liquidatorFee",
+            "type": "u32"
+          },
+          {
+            "name": "ifLiquidationFee",
+            "type": "u32"
+          },
+          {
+            "name": "imfFactor",
+            "type": "u32"
+          },
+          {
+            "name": "activeStatus",
+            "type": "bool"
+          },
+          {
+            "name": "baseSpread",
+            "type": "u32"
+          },
+          {
+            "name": "maxSpread",
+            "type": "u32"
+          },
+          {
+            "name": "maxOpenInterest",
+            "type": "u128"
+          },
+          {
+            "name": "maxRevenueWithdrawPerPeriod",
+            "type": "u64"
+          },
+          {
+            "name": "quoteMaxInsurance",
+            "type": "u64"
+          },
+          {
+            "name": "orderStepSize",
+            "type": "u64"
+          },
+          {
+            "name": "orderTickSize",
+            "type": "u64"
+          },
+          {
+            "name": "minOrderSize",
+            "type": "u64"
+          },
+          {
+            "name": "concentrationCoefScale",
+            "type": "u128"
+          },
+          {
+            "name": "curveUpdateIntensity",
+            "type": "u8"
+          },
+          {
+            "name": "ammJitIntensity",
+            "type": "u8"
+          },
+          {
+            "name": "name",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "lpPoolId",
+            "type": "u8"
+          },
+          {
+            "name": "fundingClampThreshold",
+            "type": "u32"
+          },
+          {
+            "name": "fundingRampSlope",
+            "type": "u32"
+          }
+        ]
+      }
+    },
+    {
+      "name": "initializeSpotMarketParams",
+      "docs": [
+        "Arguments to `initialize_spot_market_v2`.",
+        "",
+        "The positional form takes twenty arguments, mostly `u32`, with adjacent",
+        "same-typed pairs like `initial_asset_weight` and `maintenance_asset_weight`.",
+        "Transposing a pair compiles and lists a market with the wrong risk profile.",
+        "Named fields make it a compile error. Borsh is still positional, so adding a",
+        "field needs a new instruction."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "optimalUtilization",
+            "type": "u32"
+          },
+          {
+            "name": "optimalBorrowRate",
+            "type": "u32"
+          },
+          {
+            "name": "maxBorrowRate",
+            "type": "u32"
+          },
+          {
+            "name": "minBorrowRate",
+            "docs": [
+              "precision: X/200, so 1 is 0.5%. 0 disables the floor."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "oracleSource",
+            "type": {
+              "defined": {
+                "name": "oracleSource"
+              }
+            }
+          },
+          {
+            "name": "initialAssetWeight",
+            "type": "u32"
+          },
+          {
+            "name": "maintenanceAssetWeight",
+            "type": "u32"
+          },
+          {
+            "name": "initialLiabilityWeight",
+            "type": "u32"
+          },
+          {
+            "name": "maintenanceLiabilityWeight",
+            "type": "u32"
+          },
+          {
+            "name": "imfFactor",
+            "type": "u32"
+          },
+          {
+            "name": "liquidatorFee",
+            "type": "u32"
+          },
+          {
+            "name": "ifLiquidationFee",
+            "type": "u32"
+          },
+          {
+            "name": "activeStatus",
+            "type": "bool"
+          },
+          {
+            "name": "assetTier",
+            "type": {
+              "defined": {
+                "name": "assetTier"
+              }
+            }
+          },
+          {
+            "name": "scaleInitialAssetWeightStart",
+            "type": "u64"
+          },
+          {
+            "name": "withdrawGuardThreshold",
+            "type": "u64"
+          },
+          {
+            "name": "orderTickSize",
+            "type": "u64"
+          },
+          {
+            "name": "orderStepSize",
+            "type": "u64"
+          },
+          {
+            "name": "ifTotalFactor",
+            "type": "u32"
+          },
+          {
+            "name": "maxTokenDeposits",
+            "docs": [
+              "precision: token mint precision. 0 is no limit."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "name",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
           }
         ]
       }

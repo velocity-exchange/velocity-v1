@@ -15,6 +15,7 @@ import {
 	SpotBalanceType,
 } from '@velocity-exchange/sdk';
 import { readGlobalOpts, withGlobalOptions } from '../lib/options';
+import { getTokenBalancesBatched } from '../lib/rpc';
 import { buildAdminClient, buildProvider } from '../lib/provider';
 import { reportDispatch, reportDryRun, sendOrPropose } from '../lib/squads';
 import { deriveAssociatedTokenAccount, resolveAuthority } from '../lib/userOps';
@@ -645,25 +646,36 @@ export function registerWallet(parent: Command): void {
 
 			console.log('insurance fund stakes:');
 			any = false;
-			for (const market of markets) {
-				const stakePda = getInsuranceFundStakeAccountPublicKey(
+			// Both reads are hoisted out of the loop: every stake account in one
+			// getMultipleAccounts, every insurance fund vault balance in another.
+			// The loop body was previously two sequential round trips per market.
+			const stakePdas = markets.map((market: any) =>
+				getInsuranceFundStakeAccountPublicKey(
 					client.program.programId,
 					owner,
 					market.marketIndex
-				);
-				const stake = await (
-					client.program.account as any
-				).insuranceFundStake.fetchNullable(stakePda);
+				)
+			);
+			const stakes: any[] = await (
+				client.program.account as any
+			).insuranceFundStake
+				.fetchMultiple(stakePdas)
+				.catch(() => stakePdas.map(() => null));
+			const ifVaultBalances = await getTokenBalancesBatched(
+				provider.connection,
+				markets.map((market: any) => market.insuranceFund.vault)
+			);
+			for (let mi = 0; mi < markets.length; mi++) {
+				const market = markets[mi];
+				const stake = stakes[mi];
 				if (!stake || new BN(stake.ifShares).isZero()) {
 					continue;
 				}
 				const totalShares = new BN(market.insuranceFund.totalShares);
 				const vaultBalance = new BN(
 					(
-						await provider.connection.getTokenAccountBalance(
-							market.insuranceFund.vault
-						)
-					).value.amount
+						ifVaultBalances.get(market.insuranceFund.vault.toBase58()) ?? 0n
+					).toString()
 				);
 				const amount = totalShares.isZero()
 					? new BN(0)

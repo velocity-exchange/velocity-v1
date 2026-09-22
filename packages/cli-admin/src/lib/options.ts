@@ -4,6 +4,7 @@ import { GlobalOpts } from './provider';
 import { VelocityEnv } from '@velocity-exchange/sdk';
 import { resolveProfile } from './config';
 import { setDryRun } from './squads';
+import { setAgentMode } from './ui';
 
 /**
  * Attach shared global options to every subcommand.
@@ -48,6 +49,11 @@ export function withGlobalOptions(cmd: Command): Command {
 			'skip the interactive confirmation for mainnet direct sends'
 		)
 		.option(
+			'--agent',
+			'render for a program, not a terminal: no colour, no alignment padding, no truncated addresses, tables as tab-separated rows and labelled rows as key=value',
+			false
+		)
+		.option(
 			'--dry-run',
 			'build and price the instructions, send nothing: prints each instruction, the dispatch route (direct send or vault proposal) and the expected rent/fees',
 			false
@@ -59,6 +65,7 @@ export function readGlobalOpts(cmd: Command): GlobalOpts {
 	// Set the process-wide flag here rather than passing it through every
 	// command. Every dispatching command calls this before sendOrPropose.
 	setDryRun(opts.dryRun === true);
+	setAgentMode(opts.agent === true);
 	const selected = resolveProfile(opts.profile as string | undefined);
 	const profile = selected?.profile;
 

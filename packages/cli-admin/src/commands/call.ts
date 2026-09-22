@@ -2,9 +2,16 @@ import { Command } from 'commander';
 import { BN } from '@coral-xyz/anchor';
 import { PublicKey, TransactionInstruction } from '@solana/web3.js';
 import * as fs from 'fs';
+import * as path from 'path';
 import { readGlobalOpts, withGlobalOptions } from '../lib/options';
 import { buildAdminClient, buildProvider } from '../lib/provider';
-import { reportDispatch, reportDryRun, sendOrPropose } from '../lib/squads';
+import {
+	InstructionGroup,
+	reportDispatch,
+	reportDryRun,
+	sendOrPropose,
+	sendOrProposeBatch,
+} from '../lib/squads';
 
 /**
  * Generic IDL-driven dispatcher.
@@ -71,7 +78,9 @@ function buildIxFromPayload(
 		);
 	}
 
-	const args = idlArgs.map((a) => coerceArg(payload.args?.[a.name], a.type));
+	const args = idlArgs.map((a) =>
+		coerceArg(payload.args?.[a.name], a.type, client.program.idl)
+	);
 	const accounts = Object.fromEntries(
 		Object.entries(payload.accounts ?? {}).map(([k, v]) => [
 			k,
@@ -113,6 +122,61 @@ export function registerCall(parent: Command): void {
 			}
 		}
 	);
+
+	withGlobalOptions(
+		parent
+			.command('propose-batch <payloadFiles...>')
+			.description(
+				'Propose several payload files as ONE Squads batch: one proposal, one ' +
+					'approval round, one timelock, N inner transactions executed in order. ' +
+					'Each file becomes one inner transaction, in the order given, and only ' +
+					'each file has to fit the 1232-byte transaction limit, the total does ' +
+					'not. Files use the `batch` payload shape, { instructions: [...] }. ' +
+					'Use this instead of several `batch` calls when the actions belong to ' +
+					'one change, such as listing a market. Requires --multisig.'
+			)
+	).action(async (payloadFiles: string[], _flags, cmd: Command) => {
+		const opts = readGlobalOpts(cmd);
+		const provider = buildProvider(opts);
+		const client = await buildAdminClient(opts, false);
+		try {
+			if (!opts.multisig) {
+				throw new Error(
+					'propose-batch builds a Squads batch, so it needs --multisig ' +
+						'(or a profile that sets one). For a direct send use `batch`.'
+				);
+			}
+			const groups: InstructionGroup[] = payloadFiles.map((file) => {
+				const payload = JSON.parse(fs.readFileSync(file, 'utf-8')) as {
+					instructions?: Array<IxPayload & { ix: string }>;
+				};
+				if (!payload.instructions || payload.instructions.length === 0) {
+					throw new Error(`${file}: payload has no instructions`);
+				}
+				return {
+					label: `${path.basename(file)} (${payload.instructions
+						.map((e) => e.ix)
+						.join(', ')})`,
+					instructions: payload.instructions.map((entry) =>
+						buildIxFromPayload(client, entry.ix, entry)
+					),
+				};
+			});
+			const total = groups.reduce((a, g) => a + g.instructions.length, 0);
+			const label = `batch ${groups.length} transaction(s), ${total} ix(s)`;
+			const result = await sendOrProposeBatch(
+				provider,
+				groups,
+				new PublicKey(opts.multisig),
+				`velocity-admin propose-batch: ${groups.length} tx, ${total} ix`
+			);
+			reportDispatch(label, result);
+		} finally {
+			if ((client as any).isSubscribed) {
+				await client.unsubscribe();
+			}
+		}
+	});
 
 	withGlobalOptions(
 		parent
@@ -177,7 +241,29 @@ function isOptionType(type: unknown): boolean {
 	);
 }
 
-function coerceArg(value: unknown, type: unknown): unknown {
+/**
+ * Resolve a `{ defined: ... }` IDL type to its struct definition, if it is one.
+ *
+ * Anchor lowercases the first letter of type names when it loads an IDL, and
+ * spells the reference as either a bare string or `{ name }` depending on
+ * version, so both are tried.
+ */
+function resolveStruct(type: unknown, idl: any): any | undefined {
+	const defined = (type as any)?.defined;
+	if (!defined) {
+		return undefined;
+	}
+	const name: string =
+		typeof defined === 'string' ? defined : defined?.name ?? '';
+	if (!name) {
+		return undefined;
+	}
+	const alt = name.charAt(0).toLowerCase() + name.slice(1);
+	const def = idl?.types?.find((t: any) => t.name === name || t.name === alt);
+	return def?.type?.fields ? def : undefined;
+}
+
+function coerceArg(value: unknown, type: unknown, idl?: any): unknown {
 	if (value === undefined || value === null) {
 		return value;
 	}
@@ -199,6 +285,19 @@ function coerceArg(value: unknown, type: unknown): unknown {
 			return String(value);
 		}
 	}
-	// Pass-through for vec/option/struct/enum — caller must already shape these.
+	// A struct argument is coerced field by field against its IDL definition.
+	// Without this a `u64` inside a params struct stays a JSON string and the
+	// borsh encoder fails with `src.toArrayLike is not a function`, which says
+	// nothing about which field was wrong.
+	const struct = resolveStruct(type, idl);
+	if (struct && value && typeof value === 'object') {
+		const src = value as Record<string, unknown>;
+		const out: Record<string, unknown> = {};
+		for (const field of struct.type.fields) {
+			out[field.name] = coerceArg(src[field.name], field.type, idl);
+		}
+		return out;
+	}
+	// Pass-through for vec/option/enum: caller must already shape these.
 	return value;
 }

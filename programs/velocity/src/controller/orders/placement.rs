@@ -1,13 +1,15 @@
 //! Placing a perp order.
 //!
 //! One order is built from its params, then either written into a slot of
-//! `user.orders` or handed back as a detached value. Both paths run the same
-//! preconditions, the same margin gate and the same open-interest guard, so
-//! the two cannot drift.
+//! `user.orders` as an armed trigger, or handed back as a detached value that
+//! routes now. [`build_perp_order`]
+//! resolves the order, and [`BuiltPerpOrder::admit`] runs every gate and
+//! record that follows it. The two paths differ only in the
+//! [`OrderHold`] they pass, so neither can drop a check the other runs.
 
 use super::*;
 
-/// Outcome of a single [`place_perp_order`] call.
+/// Outcome of a single [`place_perp_trigger_order`] call.
 ///
 /// Batch placement (`enforce_batch_margin`) defers the margin
 /// check until after every order is placed, so it needs to know what risk each
@@ -28,7 +30,7 @@ pub struct PlaceOrderResult {
 
 /// A perp `Order` built from its params, ready to place or route detached.
 /// [`build_perp_order`] returns this. It holds no slot and touches no
-/// open-order counter, so an ephemeral taker can route it without ever
+/// open-order counter, so a detached taker can route it without ever
 /// entering `user.orders`.
 pub struct BuiltPerpOrder {
     pub order: Order,
@@ -39,7 +41,7 @@ pub struct BuiltPerpOrder {
 
 impl BuiltPerpOrder {
     /// The built order, and what the position it lands in makes of it.
-    fn of(
+    fn new(
         order: Order,
         user: &User,
         position_index: usize,
@@ -60,14 +62,120 @@ impl BuiltPerpOrder {
             force_reduce_only,
         })
     }
+
+    /// Run every gate and record that follows the build, and report the
+    /// isolated scope the order lands in. `None` is cross margin.
+    ///
+    /// Both placement paths end here, so neither can drop a check the other
+    /// runs. The hold decides only where the order's reservation lives while
+    /// margin measures it.
+    fn admit(
+        &self,
+        hold: OrderHold,
+        user: &mut User,
+        user_key: &Pubkey,
+        maps: &mut AccountMaps,
+        clock: &Clock,
+        options: &mut PlaceOrderOptions,
+    ) -> VelocityResult<Option<u16>> {
+        options.update_risk_increasing(self.risk_increasing);
+
+        if let OrderHold::Slot(order_index) = hold {
+            commit_order_to_slot(user, order_index, &self.order, self.position_index)?;
+        }
+
+        let isolated_market_index = user.perp_positions[self.position_index]
+            .is_isolated()
+            .then_some(self.order.market_index);
+
+        // Bulk placement passes `enforce_margin_check == false` and runs one
+        // accumulated check after the batch, in `place_orders`. An early
+        // risk-increasing order must not pass under the weaker check a later
+        // no-op order would present.
+        if options.enforce_margin_check && !options.is_liquidation() {
+            self.check_margin(
+                hold,
+                user,
+                maps,
+                options.risk_increasing,
+                isolated_market_index,
+            )?;
+        }
+
+        if self.force_reduce_only {
+            validate_order_for_force_reduce_only(
+                &self.order,
+                user.perp_positions[self.position_index].base_asset_amount,
+            )?;
+        }
+
+        let market = &maps.perp_market_map.get_ref(&self.order.market_index)?;
+        validate_open_interest_after_order(market, &self.order, self.risk_increasing)?;
+
+        if options.emit_place_record {
+            emit_place_records(
+                user_key,
+                &self.order,
+                options.explanation,
+                maps.oracle_map.get_price_data(&market.oracle_id())?.price,
+                clock.unix_timestamp,
+            )?;
+        }
+
+        user.update_last_active_slot(clock.slot);
+
+        Ok(isolated_market_index)
+    }
+
+    /// Hold the user to margin with this order's exposure counted.
+    fn check_margin(
+        &self,
+        hold: OrderHold,
+        user: &mut User,
+        maps: &mut AccountMaps,
+        risk_increasing: bool,
+        isolated_market_index: Option<u16>,
+    ) -> VelocityResult {
+        match hold {
+            // The slot already carries the reservation, so the user reads as
+            // the check needs it.
+            OrderHold::Slot(_) => meets_place_order_margin_requirement(
+                user,
+                maps,
+                risk_increasing,
+                isolated_market_index,
+            ),
+            // A detached order reserves nothing, so the check models the
+            // reservation and then reverses it.
+            OrderHold::Detached => check_prospective_order_margin(
+                user,
+                self.position_index,
+                &ProspectiveReservation::of(&self.order),
+                risk_increasing,
+                isolated_market_index,
+                maps,
+            ),
+        }
+    }
+}
+
+/// Where a built order lives once it is admitted.
+#[derive(Clone, Copy)]
+enum OrderHold {
+    /// The order takes this slot of `user.orders` and keeps the exposure it
+    /// reserves there.
+    Slot(usize),
+    /// The order is handed back as a value. It holds no slot and reserves
+    /// nothing, so only a remainder that later rests reserves anything.
+    Detached,
 }
 
 /// Build a perp `Order` from its params and mint its id, without storing it.
 ///
 /// This is the shared core of order construction. It writes no slot, changes
 /// no open-order counter, reserves no `open_bids` or `open_asks`, and runs no
-/// margin check. The caller runs those, because a slot placement and an
-/// ephemeral detached fill need them differently.
+/// margin check. The caller runs those, because a slot placement and a
+/// detached fill need them differently.
 ///
 /// Returns `None` for the two soft skips that are not errors. Those are an
 /// already expired `max_ts`, and a `TryPostOnly` order that would cross. Both
@@ -86,26 +194,31 @@ pub fn build_perp_order(
     options: &PlaceOrderOptions,
     rev_share_order: &mut Option<&mut RevenueShareOrder>,
 ) -> VelocityResult<Option<BuiltPerpOrder>> {
+    validate!(
+        params.market_type == MarketType::Perp,
+        ErrorCode::InvalidOrderMarketType,
+        "must be perp order"
+    )?;
+
     let now = clock.unix_timestamp;
-    let slot: u64 = clock.slot;
     let market_index = params.market_index;
 
     // The market's own gates, and the one value the sizing below reads. The
     // borrow ends with this block. A maximum-size order prices against every
     // market the user holds, so it needs the map free.
-    let (force_reduce_only, order_step_size) = {
+    let gates = {
         let market = maps.perp_market_map.get_ref(&market_index)?;
         perp_placement_market_gates(&market, user, now)?
     };
 
     let position_index = get_position_index(&user.perp_positions, market_index)
         .or_else(|_| add_new_position(&mut user.perp_positions, market_index))?;
-    let (existing_position_direction, base_asset_amount) = resolve_order_size(
+    let sizing = resolve_order_size(
         user,
         position_index,
         &params,
         options,
-        order_step_size,
+        gates.order_step_size,
         maps,
     )?;
 
@@ -118,19 +231,12 @@ pub fn build_perp_order(
         return skip_placement(rev_share_order);
     };
 
-    validate!(
-        params.market_type == MarketType::Perp,
-        ErrorCode::InvalidOrderMarketType,
-        "must be perp order"
-    )?;
-
-    let reduce_only = params.reduce_only || force_reduce_only;
+    let reduce_only = params.reduce_only || gates.force_reduce_only;
     let resolved = ResolvedOrderFields {
         order_id: get_then_update_id!(user, next_order_id),
-        slot,
-        order_slot: options.get_order_slot(slot),
-        existing_position_direction,
-        base_asset_amount,
+        slot: clock.slot,
+        order_slot: options.get_order_slot(clock.slot),
+        sizing,
         reduce_only,
         auction,
         bit_flags: new_order_bit_flags(
@@ -141,13 +247,13 @@ pub fn build_perp_order(
             user.perp_positions[position_index].is_isolated(),
         ),
     };
-    let new_order = assemble_perp_order(&params, market, resolved)?;
+    let new_order = Order::new_perp(&params, market, resolved)?;
 
     if !validate_built_order(
         &new_order,
         market,
         state,
-        slot,
+        clock.slot,
         oracle_price_data.price,
         params.post_only,
     )? {
@@ -155,7 +261,7 @@ pub fn build_perp_order(
         return skip_placement(rev_share_order);
     }
 
-    BuiltPerpOrder::of(new_order, user, position_index, force_reduce_only).map(Some)
+    BuiltPerpOrder::new(new_order, user, position_index, gates.force_reduce_only).map(Some)
 }
 
 /// Report a placement that stops before it produces an order.
@@ -169,16 +275,19 @@ fn skip_placement<T>(
     Ok(None)
 }
 
-/// The gates every perp placement passes before the order is sized, and the
-/// step size the sizing rounds to.
-///
-/// Returns whether the market forces the order reduce-only, and the market's
-/// order step size.
+/// What a market lets through, and the step size an order rounds to.
+struct PerpPlacementGates {
+    /// The market admits only orders that shrink a position.
+    force_reduce_only: bool,
+    order_step_size: u64,
+}
+
+/// The gates every perp placement passes before the order is sized.
 fn perp_placement_market_gates(
     market: &PerpMarket,
     user: &User,
     now: i64,
-) -> VelocityResult<(bool, u64)> {
+) -> VelocityResult<PerpPlacementGates> {
     validate!(
         !matches!(market.status, MarketStatus::Initialized),
         ErrorCode::MarketBeingInitialized,
@@ -198,10 +307,20 @@ fn perp_placement_market_gates(
         "Market is in settlement mode",
     )?;
 
-    Ok((market.is_reduce_only()?, market.order_step_size))
+    Ok(PerpPlacementGates {
+        force_reduce_only: market.is_reduce_only()?,
+        order_step_size: market.order_step_size,
+    })
 }
 
-/// The base the order carries and the direction the position already runs.
+/// The base an order carries, against the position it lands on.
+struct OrderSizing {
+    /// The direction the position already runs, unless the caller overrode it.
+    existing_position_direction: PositionDirection,
+    base_asset_amount: u64,
+}
+
+/// Size the order against its position.
 ///
 /// A `u64::MAX` size means the largest order the user can carry, which prices
 /// against every market the user holds.
@@ -212,7 +331,7 @@ fn resolve_order_size(
     options: &PlaceOrderOptions,
     order_step_size: u64,
     maps: &mut AccountMaps,
-) -> VelocityResult<(PositionDirection, u64)> {
+) -> VelocityResult<OrderSizing> {
     validate!(
         params.base_asset_amount >= order_step_size,
         ErrorCode::OrderAmountTooSmall,
@@ -243,15 +362,24 @@ fn resolve_order_size(
         None => PositionDirection::Short,
     };
 
-    Ok((existing_position_direction, base_asset_amount))
+    Ok(OrderSizing {
+        existing_position_direction,
+        base_asset_amount,
+    })
 }
 
-/// The auction one order runs, and the time the order lives.
+/// The price ramp an order auctions over, and how long the ramp runs.
+#[derive(Clone, Copy)]
+pub(super) struct AuctionPrices {
+    pub start_price: i64,
+    pub end_price: i64,
+    pub duration: u8,
+}
+
+/// An order's auction, and the time the order lives.
 #[derive(Clone, Copy)]
 struct OrderAuction {
-    start_price: i64,
-    end_price: i64,
-    duration: u8,
+    prices: AuctionPrices,
     max_ts: i64,
 }
 
@@ -282,7 +410,7 @@ fn resolve_auction_and_max_ts(
         )?;
     }
 
-    let (start_price, end_price, duration) = get_auction_params(
+    let prices = get_auction_params(
         params,
         oracle_price_data,
         market.order_tick_size,
@@ -293,7 +421,7 @@ fn resolve_auction_and_max_ts(
 
     let max_ts = match params.max_ts {
         Some(max_ts) => max_ts,
-        None => default_order_max_ts(params.order_type, now, duration)?,
+        None => default_order_max_ts(params.order_type, now, prices.duration)?,
     };
 
     if max_ts != 0 && max_ts < now {
@@ -301,12 +429,7 @@ fn resolve_auction_and_max_ts(
         return Ok(None);
     }
 
-    Ok(Some(OrderAuction {
-        start_price,
-        end_price,
-        duration,
-        max_ts,
-    }))
+    Ok(Some(OrderAuction { prices, max_ts }))
 }
 
 /// The time in force an auctioned order gets when its params name none.
@@ -367,59 +490,60 @@ struct ResolvedOrderFields {
     /// The slot the order counts as placed on, which a signed message order
     /// backdates.
     order_slot: u64,
-    existing_position_direction: PositionDirection,
-    base_asset_amount: u64,
+    sizing: OrderSizing,
     reduce_only: bool,
     auction: OrderAuction,
     bit_flags: u8,
 }
 
-/// Write one perp order from its params and the fields resolved for it.
-fn assemble_perp_order(
-    params: &OrderParams,
-    market: &PerpMarket,
-    resolved: ResolvedOrderFields,
-) -> VelocityResult<Order> {
-    Ok(Order {
-        status: OrderStatus::Open,
-        order_type: params.order_type,
-        market_type: params.market_type,
-        slot: resolved.order_slot,
-        order_id: resolved.order_id,
-        user_order_id: params.user_order_id,
-        market_index: params.market_index,
-        price: get_price_for_perp_order(
-            params.price,
-            params.direction,
-            params.post_only,
-            &market.amm,
-            market.order_tick_size,
-        )?,
+impl Order {
+    /// One perp order, from its params and the fields resolved for it.
+    fn new_perp(
+        params: &OrderParams,
+        market: &PerpMarket,
+        resolved: ResolvedOrderFields,
+    ) -> VelocityResult<Order> {
+        Ok(Order {
+            status: OrderStatus::Open,
+            order_type: params.order_type,
+            market_type: params.market_type,
+            slot: resolved.order_slot,
+            order_id: resolved.order_id,
+            user_order_id: params.user_order_id,
+            market_index: params.market_index,
+            price: get_price_for_perp_order(
+                params.price,
+                params.direction,
+                params.post_only,
+                &market.amm,
+                market.order_tick_size,
+            )?,
 
-        existing_position_direction: resolved.existing_position_direction,
-        base_asset_amount: resolved.base_asset_amount,
-        base_asset_amount_filled: 0,
-        quote_asset_amount_filled: 0,
-        direction: params.direction,
-        reduce_only: resolved.reduce_only,
-        trigger_price: standardize_price(
-            params.trigger_price.unwrap_or(0),
-            market.order_tick_size,
-            params.direction,
-        )?,
+            existing_position_direction: resolved.sizing.existing_position_direction,
+            base_asset_amount: resolved.sizing.base_asset_amount,
+            base_asset_amount_filled: 0,
+            quote_asset_amount_filled: 0,
+            direction: params.direction,
+            reduce_only: resolved.reduce_only,
+            trigger_price: standardize_price(
+                params.trigger_price.unwrap_or(0),
+                market.order_tick_size,
+                params.direction,
+            )?,
 
-        trigger_condition: params.trigger_condition,
-        post_only: params.post_only != PostOnlyParam::None,
-        oracle_price_offset: params.oracle_price_offset.unwrap_or(0),
-        immediate_or_cancel: params.is_immediate_or_cancel(),
-        auction_start_price: resolved.auction.start_price,
-        auction_end_price: resolved.auction.end_price,
-        auction_duration: resolved.auction.duration,
-        max_ts: resolved.auction.max_ts,
-        posted_slot_tail: get_posted_slot_from_clock_slot(resolved.slot),
-        bit_flags: resolved.bit_flags,
-        padding: [0; 5],
-    })
+            trigger_condition: params.trigger_condition,
+            post_only: params.post_only != PostOnlyParam::None,
+            oracle_price_offset: params.oracle_price_offset.unwrap_or(0),
+            immediate_or_cancel: params.is_immediate_or_cancel(),
+            auction_start_price: resolved.auction.prices.start_price,
+            auction_end_price: resolved.auction.prices.end_price,
+            auction_duration: resolved.auction.prices.duration,
+            max_ts: resolved.auction.max_ts,
+            posted_slot_tail: get_posted_slot_from_clock_slot(resolved.slot),
+            bit_flags: resolved.bit_flags,
+            padding: [0; 5],
+        })
+    }
 }
 
 /// Whether the built order may be placed.
@@ -443,7 +567,15 @@ fn validate_built_order(
     }
 }
 
-pub fn place_perp_order(
+/// Arm a perp trigger order in a slot of `user.orders`, where it waits for
+/// its condition. A live order rests on the market's book instead, through
+/// [`create_detached_perp_order`], so a slot now holds only conditionals.
+///
+/// The order carries no auction. [`get_auction_params`] and
+/// `OrderParams::update_perp_auction_params` both decline a trigger type, and
+/// [`crate::math::auction::calculate_auction_params_for_trigger_order`] gives
+/// the order its auction when it fires. Only `max_ts` is resolved here.
+pub fn place_perp_trigger_order(
     state: &State,
     user: &mut User,
     user_key: Pubkey,
@@ -453,17 +585,21 @@ pub fn place_perp_order(
     mut options: PlaceOrderOptions,
     rev_share_order: &mut Option<&mut RevenueShareOrder>,
 ) -> VelocityResult<PlaceOrderResult> {
-    let now = clock.unix_timestamp;
-    let slot: u64 = clock.slot;
+    validate!(
+        params.is_trigger_order(),
+        ErrorCode::OrderTypeNotConditional,
+        "a live order rests on the market's book, not in a user order slot"
+    )?;
 
     validate_placement_preconditions(state, user, maps, &options, &params)?;
 
     if options.try_expire_orders {
-        expire_orders(user, &user_key, maps, now, slot)?;
+        expire_orders(user, &user_key, maps, clock.unix_timestamp, clock.slot)?;
     }
 
-    let new_order_index = next_order_slot(user, params.user_order_id)?;
-    let market_index = params.market_index;
+    // Taken before the build, because a full order list must refuse the
+    // placement rather than mint an id for an order with nowhere to go.
+    let order_index = next_order_slot(user, params.user_order_id)?;
 
     let Some(built) =
         build_perp_order(state, user, maps, clock, params, &options, rev_share_order)?
@@ -471,55 +607,18 @@ pub fn place_perp_order(
         return Ok(PlaceOrderResult::default());
     };
 
-    let BuiltPerpOrder {
-        order: new_order,
-        position_index,
-        risk_increasing,
-        force_reduce_only,
-    } = built;
-
-    commit_order_to_slot(user, new_order_index, &new_order, position_index)?;
-    options.update_risk_increasing(risk_increasing);
-
-    let isolated_market_index = user.perp_positions[position_index]
-        .is_isolated()
-        .then_some(market_index);
-
-    // Single-order placement checks margin here. Bulk placement passes
-    // `enforce_margin_check == false` and instead runs one accumulated check
-    // after the whole batch (see `place_orders`), so an early risk-increasing
-    // order cannot be admitted under a weaker check by a later no-op order.
-    if options.enforce_margin_check && !options.is_liquidation() {
-        meets_place_order_margin_requirement(
-            user,
-            maps,
-            options.risk_increasing,
-            isolated_market_index,
-        )?;
-    }
-
-    if force_reduce_only {
-        validate_order_for_force_reduce_only(
-            &user.orders[new_order_index],
-            user.perp_positions[position_index].base_asset_amount,
-        )?;
-    }
-
-    let market = &maps.perp_market_map.get_ref(&market_index)?;
-    validate_open_interest_after_order(market, &new_order, risk_increasing)?;
-    emit_place_records(
+    let isolated_market_index = built.admit(
+        OrderHold::Slot(order_index),
+        user,
         &user_key,
-        &new_order,
-        options.explanation,
-        maps.oracle_map.get_price_data(&market.oracle_id())?.price,
-        now,
+        maps,
+        clock,
+        &mut options,
     )?;
 
-    user.update_last_active_slot(slot);
-
     Ok(PlaceOrderResult {
-        risk_increasing,
-        isolated_market_index: isolated_market_index.filter(|_| risk_increasing),
+        risk_increasing: built.risk_increasing,
+        isolated_market_index: isolated_market_index.filter(|_| built.risk_increasing),
     })
 }
 
@@ -674,30 +773,47 @@ fn emit_place_records(
     })
 }
 
+/// The exposure an order would hold open on its position, for a check that
+/// runs before anything is reserved.
+pub struct ProspectiveReservation {
+    pub direction: PositionDirection,
+    pub base_asset_amount: u64,
+    /// Whether the exposure reaches `open_bids` or `open_asks`. An unfired
+    /// trigger order reserves the open-order slot alone.
+    pub update_open_bids_and_asks: bool,
+}
+
+impl ProspectiveReservation {
+    pub fn of(order: &Order) -> Self {
+        Self {
+            direction: order.direction,
+            base_asset_amount: order.base_asset_amount,
+            update_open_bids_and_asks: order.update_open_bids_and_asks(),
+        }
+    }
+}
+
 /// Whether `user` can carry one more order of this shape, without keeping any
 /// of it.
 ///
 /// The margin engine prices the user with the prospective exposure, so the
 /// check models the reservation and then reverses it. The model covers the
 /// aggregates and the per-open-order flat term. The user is left as it was.
-/// Both the ephemeral create and the remainder rest gate through here, so the
+/// Both the detached create and the remainder rest gate through here, so the
 /// two paths cannot drift.
-#[allow(clippy::too_many_arguments)]
 pub fn check_prospective_order_margin(
     user: &mut User,
     position_index: usize,
-    direction: &PositionDirection,
-    base_asset_amount: u64,
-    update_open_bids_and_asks: bool,
+    reservation: &ProspectiveReservation,
     risk_increasing: bool,
     isolated_market_index: Option<u16>,
     maps: &mut AccountMaps,
 ) -> VelocityResult<()> {
     increase_open_bids_and_asks(
         &mut user.perp_positions[position_index],
-        direction,
-        base_asset_amount,
-        update_open_bids_and_asks,
+        &reservation.direction,
+        reservation.base_asset_amount,
+        reservation.update_open_bids_and_asks,
     )?;
 
     // The requirement carries a flat term per open order, so the model
@@ -709,34 +825,26 @@ pub fn check_prospective_order_margin(
     user.perp_positions[position_index].open_orders = open_orders_before;
     decrease_open_bids_and_asks(
         &mut user.perp_positions[position_index],
-        direction,
-        base_asset_amount,
-        update_open_bids_and_asks,
+        &reservation.direction,
+        reservation.base_asset_amount,
+        reservation.update_open_bids_and_asks,
     )?;
 
     checked
 }
 
-/// Validate and create a perp order that never touches `user.orders`.
-///
-/// This is the straight-to-book path. It runs the same preconditions, margin
-/// gate, open-interest guard and place records that `place_perp_order` runs,
-/// and it returns the order as a value. Nothing is placed. No slot is written,
-/// and no `open_bids` or `open_asks` reservation is kept. What does change on
-/// the user are the facts of the order coming into existence: the id counter,
-/// a builder-order row when one applies, and the activity stamp. The caller
-/// routes the returned order through
+/// Create a perp order that never touches `user.orders`. The order comes back
+/// as a value, holding no slot and no `open_bids` or `open_asks` reservation.
+/// It still mints an id, writes a builder-order row when one applies, and
+/// stamps activity. The caller routes it through
 /// `FillTarget::Detached { reserved: false }` and rests only its remainder on
-/// the CLOB. Returns `None` on the same soft skips as `place_perp_order`,
-/// which are an expired `max_ts` and a `TryPostOnly` order that would cross.
+/// the CLOB. `None` is [`build_perp_order`]'s soft skip.
 ///
-/// The caller sweeps expired slot orders first, with `expire_orders`. This
-/// function never touches `user.orders`, and the sweep matters to the gate. An
-/// expired order still holds its reservation, and releasing it can be what
-/// lets the new order pass. This function does not read
-/// `options.try_expire_orders`.
+/// The caller sweeps expired slot orders first. An expired order still holds
+/// its reservation, and releasing it can be what lets this one pass the
+/// margin gate. `options.try_expire_orders` is not read here.
 #[allow(clippy::too_many_arguments)]
-pub fn create_ephemeral_perp_order(
+pub fn create_detached_perp_order(
     state: &State,
     user: &mut User,
     user_key: Pubkey,
@@ -746,12 +854,7 @@ pub fn create_ephemeral_perp_order(
     mut options: PlaceOrderOptions,
     rev_share_order: &mut Option<&mut RevenueShareOrder>,
 ) -> VelocityResult<Option<Order>> {
-    let now = clock.unix_timestamp;
-    let slot: u64 = clock.slot;
-
     validate_placement_preconditions(state, user, maps, &options, &params)?;
-
-    let market_index = params.market_index;
 
     let Some(built) =
         build_perp_order(state, user, maps, clock, params, &options, rev_share_order)?
@@ -759,59 +862,16 @@ pub fn create_ephemeral_perp_order(
         return Ok(None);
     };
 
-    let BuiltPerpOrder {
-        order,
-        position_index,
-        risk_increasing,
-        force_reduce_only,
-    } = built;
+    built.admit(
+        OrderHold::Detached,
+        user,
+        &user_key,
+        maps,
+        clock,
+        &mut options,
+    )?;
 
-    options.update_risk_increasing(risk_increasing);
-
-    let isolated_market_index = user.perp_positions[position_index]
-        .is_isolated()
-        .then_some(market_index);
-
-    // The ephemeral order never carries a reservation into the fill. The fill
-    // unwinds nothing for it, and only the rested remainder reserves, in
-    // `try_place_remainder_on_clob`. The check itself is the one
-    // `place_perp_order` runs.
-    if options.enforce_margin_check && !options.is_liquidation() {
-        check_prospective_order_margin(
-            user,
-            position_index,
-            &order.direction,
-            order.base_asset_amount,
-            order.update_open_bids_and_asks(),
-            options.risk_increasing,
-            isolated_market_index,
-            maps,
-        )?;
-    }
-
-    if force_reduce_only {
-        validate_order_for_force_reduce_only(
-            &order,
-            user.perp_positions[position_index].base_asset_amount,
-        )?;
-    }
-
-    let market = &maps.perp_market_map.get_ref(&market_index)?;
-    validate_open_interest_after_order(market, &order, risk_increasing)?;
-
-    if options.emit_place_record {
-        emit_place_records(
-            &user_key,
-            &order,
-            options.explanation,
-            maps.oracle_map.get_price_data(&market.oracle_id())?.price,
-            now,
-        )?;
-    }
-
-    user.update_last_active_slot(slot);
-
-    Ok(Some(order))
+    Ok(Some(built.order))
 }
 
 pub(super) fn get_auction_params(
@@ -819,12 +879,18 @@ pub(super) fn get_auction_params(
     oracle_price_data: &OraclePriceData,
     tick_size: u64,
     min_auction_duration: u8,
-) -> VelocityResult<(i64, i64, u8)> {
+) -> VelocityResult<AuctionPrices> {
+    const NO_AUCTION: AuctionPrices = AuctionPrices {
+        start_price: 0,
+        end_price: 0,
+        duration: 0,
+    };
+
     if !matches!(
         params.order_type,
         OrderType::Market | OrderType::Oracle | OrderType::Limit
     ) {
-        return Ok((0_i64, 0_i64, 0_u8));
+        return Ok(NO_AUCTION);
     }
 
     if params.order_type == OrderType::Limit {
@@ -834,28 +900,32 @@ pub(super) fn get_auction_params(
             params.auction_duration,
         ) {
             (Some(auction_start_price), Some(auction_end_price), Some(auction_duration)) => {
-                let auction_duration = if auction_duration == 0 {
+                let duration = if auction_duration == 0 {
                     auction_duration
                 } else {
                     // if auction is non-zero, force it to be at least min_auction_duration
                     auction_duration.max(min_auction_duration)
                 };
 
-                Ok((
-                    standardize_price_i64(
+                Ok(AuctionPrices {
+                    start_price: standardize_price_i64(
                         auction_start_price,
                         tick_size.cast()?,
                         params.direction,
                     )?,
-                    standardize_price_i64(auction_end_price, tick_size.cast()?, params.direction)?,
-                    auction_duration,
-                ))
+                    end_price: standardize_price_i64(
+                        auction_end_price,
+                        tick_size.cast()?,
+                        params.direction,
+                    )?,
+                    duration,
+                })
             }
-            _ => Ok((0_i64, 0_i64, 0_u8)),
+            _ => Ok(NO_AUCTION),
         };
     }
 
-    let auction_duration = params
+    let duration = params
         .auction_duration
         .unwrap_or(0)
         .max(min_auction_duration);
@@ -872,11 +942,15 @@ pub(super) fn get_auction_params(
             _ => calculate_auction_prices(oracle_price_data, params.direction, params.price)?,
         };
 
-    Ok((
-        standardize_price_i64(auction_start_price, tick_size.cast()?, params.direction)?,
-        standardize_price_i64(auction_end_price, tick_size.cast()?, params.direction)?,
-        auction_duration,
-    ))
+    Ok(AuctionPrices {
+        start_price: standardize_price_i64(
+            auction_start_price,
+            tick_size.cast()?,
+            params.direction,
+        )?,
+        end_price: standardize_price_i64(auction_end_price, tick_size.cast()?, params.direction)?,
+        duration,
+    })
 }
 
 /// Clears a builder-order row that `add_builder_order` wrote for a placement that then

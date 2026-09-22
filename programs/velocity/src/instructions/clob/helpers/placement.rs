@@ -377,7 +377,7 @@ pub fn try_place_remainder_on_clob<'info>(
 
     // Can the user carry this order? Nothing is committed here. The margin
     // engine prices the user with the prospective exposure, so the check models
-    // the reservation and then reverses it. `create_ephemeral_perp_order` runs
+    // the reservation and then reverses it. `create_detached_perp_order` runs
     // the same reserve, check and reverse. The user claims the order only after
     // the book holds it, in the commit below, so a refused placement has
     // nothing to unwind.
@@ -413,9 +413,11 @@ pub fn try_place_remainder_on_clob<'info>(
             && crate::controller::orders::check_prospective_order_margin(
                 &mut user,
                 position_index,
-                &direction,
-                base_asset_amount,
-                true,
+                &crate::controller::orders::ProspectiveReservation {
+                    direction,
+                    base_asset_amount,
+                    update_open_bids_and_asks: true,
+                },
                 risk_increasing,
                 isolated_market_index,
                 maps,

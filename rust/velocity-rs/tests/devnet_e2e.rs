@@ -690,7 +690,7 @@ async fn mark_twap_crank_advances() {
 // Nightly-safe: warn-skips (never fails) if `POST /orders` is non-200 OR the
 // connection drops OR the deployed maker doesn't fill in time. The `POST /orders`
 // 502s that previously kept this `#[ignore]`d were NOT flaky ALB/cloudfront — they
-// were the swift-server panicking in `simulate_place_perp_order`: `State` is
+// were the swift-server panicking in `simulate_detached_perp_order`: `State` is
 // `#[account(zero_copy)]` (16-aligned off-chain), so deserializing it from a
 // non-16-aligned buffer panicked with `TargetAlignmentGreaterAndInputNotAligned`
 // and dropped the connection (proxy → 502). Fixed in `swift/src/util/local_sim.rs`

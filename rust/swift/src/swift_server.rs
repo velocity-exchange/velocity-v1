@@ -673,6 +673,7 @@ pub async fn deposit_trade(
         if !server_params.simulate_taker_order_local(
             &signed_order_info.order_params,
             &user,
+            signed_order_info.slot,
             max_margin_ratio,
             &context,
         ) {
@@ -1153,11 +1154,18 @@ impl ServerParams {
         &self,
         order_params: &OrderParams,
         user: &velocity_rs::types::accounts::User,
+        signing_slot: Slot,
         max_margin_ratio: Option<u16>,
         context: &RequestContext,
     ) -> bool {
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.simulate_taker_order_local_inner(order_params, user, max_margin_ratio, context)
+            self.simulate_taker_order_local_inner(
+                order_params,
+                user,
+                signing_slot,
+                max_margin_ratio,
+                context,
+            )
         })) {
             Ok(ok) => ok,
             Err(panic) => {
@@ -1180,6 +1188,7 @@ impl ServerParams {
         &self,
         order_params: &OrderParams,
         user: &velocity_rs::types::accounts::User,
+        signing_slot: Slot,
         max_margin_ratio: Option<u16>,
         context: &RequestContext,
     ) -> bool {
@@ -1215,11 +1224,12 @@ impl ServerParams {
             }
         };
 
-        match crate::util::local_sim::simulate_place_perp_order(
+        match crate::util::local_sim::simulate_detached_perp_order(
             user,
             accounts,
             &state_bytes,
             *order_params,
+            signing_slot,
             max_margin_ratio,
         ) {
             Ok(()) => true,
@@ -1315,7 +1325,13 @@ impl ServerParams {
 
         // TODO: isolated deposits need changes for local simming
         if isolated_deposit.is_none()
-            && self.simulate_taker_order_local(taker_order_params, &user, max_margin_ratio, context)
+            && self.simulate_taker_order_local(
+                taker_order_params,
+                &user,
+                slot,
+                max_margin_ratio,
+                context,
+            )
         {
             sim_result = SimulationStatus::Success;
             log::info!(
@@ -1709,8 +1725,9 @@ impl ServerParams {
             }
         };
 
-        // Mirrors the on-chain `place_perp_order` sanitize step: returns true
-        // when the program would adjust the auction params at placement time.
+        // Mirrors `OrderParams::update_perp_auction_params`, the sanitize step
+        // every placement runs: returns true when the program would adjust the
+        // auction params at placement time.
         let mut params = order_params.clone();
         match params.update_perp_auction_params(&perp_market, oracle_data.data.price, true) {
             Ok(sanitized) => sanitized,

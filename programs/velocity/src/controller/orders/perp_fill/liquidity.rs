@@ -1158,7 +1158,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
     }
 
     /// The taker's once-per-order open-orders counter. Only a taker that reserved at
-    /// placement unwinds one. A fresh ephemeral taker never incremented one, so a
+    /// placement unwinds one. A fresh detached taker never incremented one, so a
     /// decrement would underflow the per-position `u8`.
     fn decrement_taker_open_orders(&mut self) -> VelocityResult {
         if !self.taker.reserved || self.taker.order.get_base_asset_amount_unfilled(None)? != 0 {

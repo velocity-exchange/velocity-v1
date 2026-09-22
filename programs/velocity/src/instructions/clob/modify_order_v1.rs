@@ -165,7 +165,7 @@ pub fn handle_modify_order_v1<'c: 'info, 'info>(
         validate_replacement_preconditions(&state, user, &mut maps)?;
         // Expired slot orders release their reservations, and that release
         // can be what lets the replacement pass the margin gate below. The
-        // ephemeral placement path runs the same sweep before it builds an
+        // detached placement path runs the same sweep before it builds an
         // order.
         controller::orders::expire_orders(
             user,
@@ -280,7 +280,7 @@ pub fn handle_modify_order_v1<'c: 'info, 'info>(
 /// The account gates every placement passes before its order is built.
 ///
 /// A modify builds no `Order`, so it never reaches the copy of these gates in
-/// `create_ephemeral_perp_order`. Without them an account flagged as being
+/// `create_detached_perp_order`. Without them an account flagged as being
 /// liquidated could reprice or upsize a resting book order while a liquidator
 /// works on it.
 fn validate_replacement_preconditions(

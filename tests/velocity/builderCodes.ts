@@ -1765,7 +1765,7 @@ describe('builder codes', () => {
 			builderFeeTenthBps: builderFeeBps,
 		}) as OrderParams;
 
-		// place via the normal (non-swift) place_perp_order path
+		// place via the normal (non-swift) placePerpOrder path
 		await userClient.placePerpOrder(orderParams);
 		await userClient.fetchAccounts();
 

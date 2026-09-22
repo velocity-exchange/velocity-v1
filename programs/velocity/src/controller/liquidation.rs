@@ -7,7 +7,7 @@ use {
     crate::{
         controller::{
             funding::settle_funding_payment,
-            orders::{self, create_ephemeral_perp_order},
+            orders::{self, create_detached_perp_order},
             position::{
                 get_position_index, update_position_and_market, update_quote_asset_amount,
                 update_quote_asset_and_break_even_amount, update_settled_pnl, PositionDirection,
@@ -1222,7 +1222,7 @@ pub fn place_liquidation_order<'info>(
     // The forced order never occupies a slot. A liquidation fills what it
     // builds in the same instruction and rests no remainder, so a slot would
     // be written and cancelled without anything ever reading it.
-    let order = create_ephemeral_perp_order(
+    let order = create_detached_perp_order(
         state,
         &mut user,
         *user_key,

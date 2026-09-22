@@ -46,8 +46,8 @@ struct TakeShape {
     limit_price: u64,
 }
 
-/// Everything the router needs to fill one ephemeral taker order.
-struct EphemeralTake<'a, 'info> {
+/// Everything the router needs to fill one detached taker order.
+struct DetachedTake<'a, 'info> {
     order: &'a mut Order,
     accounts: &'a PlaceAndTakeAccounts<'a, 'info>,
     maps: &'a mut AccountMaps<'info>,
@@ -176,10 +176,10 @@ fn validate_order_can_rest(order: &Order) -> Result<()> {
     Ok(())
 }
 
-/// Build the ephemeral taker order, and return the escrow and referral status
+/// Build the detached taker order, and return the escrow and referral status
 /// the fill still needs. Returns `None` for the order when nothing was built:
 /// an order whose `max_ts` already passed builds nothing.
-fn create_ephemeral_take<'a>(
+fn create_detached_take<'a>(
     accounts: &PlaceAndTakeAccounts<'_, 'a>,
     account_info_iter: &mut Peekable<Iter<'a, AccountInfo<'a>>>,
     maps: &mut AccountMaps<'a>,
@@ -218,7 +218,7 @@ fn create_ephemeral_take<'a>(
         clock.slot,
     )?;
 
-    let order = controller::orders::create_ephemeral_perp_order(
+    let order = controller::orders::create_detached_perp_order(
         state,
         &mut user,
         user_key,
@@ -272,7 +272,7 @@ fn read_take_shape(
 /// carries what the take wants, at what bound, and which loaded users the
 /// quoters may fill it against.
 fn quote_take_route<'a, 'info>(
-    take: &mut EphemeralTake<'_, 'info>,
+    take: &mut DetachedTake<'_, 'info>,
     users: &'a [crate::state::prop_amm::ClobUserRefV0],
     shape: &TakeShape,
     mark: &RouteMark,
@@ -319,9 +319,9 @@ struct RouteMark {
     margin_ratio_initial: u32,
 }
 
-/// Fill the ephemeral order against the route the router just priced.
+/// Fill the detached order against the route the router just priced.
 fn fill_against_route(
-    take: &mut EphemeralTake<'_, '_>,
+    take: &mut DetachedTake<'_, '_>,
     router: &mut crate::math::router::RouterLeg<'_, '_, '_>,
     state: &State,
     mode: FillMode,
@@ -329,7 +329,7 @@ fn fill_against_route(
 ) -> Result<u64> {
     let filled = controller::orders::fill_perp_order(
         controller::orders::FillRequest {
-            // Ephemeral taker: it never reserved, so the fill unwinds
+            // Detached taker: it never reserved, so the fill unwinds
             // nothing.
             order: take.order,
             reserved: false,
@@ -356,15 +356,15 @@ fn fill_against_route(
     Ok(filled.base)
 }
 
-/// Quote the route the taker named and fill the ephemeral order against it.
+/// Quote the route the taker named and fill the detached order against it.
 /// Returns the base filled.
 ///
 /// The taker signed a transaction naming the registry entries it wants
 /// consulted, so the accounts it passed are its route. No third party chose
 /// that route, so nothing here needs to constrain one. The keeper path and the
 /// signed route carry that problem.
-fn fill_ephemeral_take(
-    take: &mut EphemeralTake<'_, '_>,
+fn fill_detached_take(
+    take: &mut DetachedTake<'_, '_>,
     state: &State,
     clock: &Clock,
     mode: FillMode,
@@ -432,7 +432,7 @@ fn fill_ephemeral_take(
 /// Rest what the take did not fill, then hold the caller's success condition
 /// against the result.
 ///
-/// An unfilled IOC needs no cancel. The order is ephemeral and never
+/// An unfilled IOC needs no cancel. The order is detached and never
 /// persisted, so dropping it is enough. A restable remainder lives on the book
 /// and not in `User.orders`, so it migrates instead. `restable_remainder_price`
 /// is the whole rule, shared with every keeper route. Otherwise a remainder's
@@ -497,7 +497,7 @@ fn settle_take_remainder<'info>(
     )
 }
 
-/// The v1 `place_and_take` body. The taker order is ephemeral: it is built on
+/// The v1 `place_and_take` body. The taker order is detached: it is built on
 /// the stack, margin-checked, filled through the router, and never written into
 /// `User.orders`. A restable remainder rests on the market's CLOB.
 pub fn place_and_take_perp_order_v1<'info>(
@@ -532,7 +532,7 @@ pub fn place_and_take_perp_order_v1<'info>(
     let (success_condition, auction_duration_percentage) =
         parse_optional_params(request.optional_params);
 
-    let (order, mut escrow, referrer_is_accelerated) = create_ephemeral_take(
+    let (order, mut escrow, referrer_is_accelerated) = create_detached_take(
         &accounts,
         remaining_accounts_iter,
         &mut maps,
@@ -541,7 +541,7 @@ pub fn place_and_take_perp_order_v1<'info>(
         params,
     )?;
 
-    let Some(mut ephemeral_order) = order else {
+    let Some(mut detached_order) = order else {
         // An order whose `max_ts` already passed builds nothing. It is the one
         // soft skip reachable here. The other skip, a failed try-post-only, is
         // refused above. Nothing was placed or filled, so enforce the success
@@ -555,16 +555,16 @@ pub fn place_and_take_perp_order_v1<'info>(
     );
 
     let base_asset_amount_filled = if !request.synchronous_take {
-        validate_order_can_rest(&ephemeral_order)?;
+        validate_order_can_rest(&detached_order)?;
         0u64
     } else {
         // The tail is a subslice, not a collected list. What the sections above
         // consumed is the difference in the iterator's remaining length. A
         // collected list clones every account, and the subslice clones none.
         let tail_from = accounts.remaining_accounts.len() - remaining_accounts_iter.len();
-        fill_ephemeral_take(
-            &mut EphemeralTake {
-                order: &mut ephemeral_order,
+        fill_detached_take(
+            &mut DetachedTake {
+                order: &mut detached_order,
                 accounts: &accounts,
                 maps: &mut maps,
                 makers: &makers_and_referrer,
@@ -585,7 +585,7 @@ pub fn place_and_take_perp_order_v1<'info>(
         &accounts,
         &clob,
         &mut maps,
-        &ephemeral_order,
+        &detached_order,
         &TakeOutcome {
             base_asset_amount_filled,
             is_immediate_or_cancel,

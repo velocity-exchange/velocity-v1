@@ -131,7 +131,7 @@ pub fn handle_place_and_make_perp_order_v1<'c: 'info, 'info>(
             clock.unix_timestamp,
             clock.slot,
         )?;
-        controller::orders::create_ephemeral_perp_order(
+        controller::orders::create_detached_perp_order(
             &state,
             &mut user,
             user_key,
@@ -139,7 +139,7 @@ pub fn handle_place_and_make_perp_order_v1<'c: 'info, 'info>(
             &clock,
             params,
             // The order rests straight on the CLOB, and its CLOB placement
-            // record is the one statement about it. Suppress the ephemeral
+            // record is the one statement about it. Suppress the detached
             // place record, which would be a second copy.
             PlaceOrderOptions {
                 emit_place_record: false,

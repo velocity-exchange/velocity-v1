@@ -232,7 +232,7 @@ pub(crate) struct TakerSide<'a> {
     /// already read them.
     pub existing_position_params_before: Option<(u64, u64)>,
     /// Whether the taker owns an `open_bids`/`open_asks` + `open_orders`
-    /// reservation the fill must unwind. False for a fresh ephemeral taker
+    /// reservation the fill must unwind. False for a fresh detached taker
     /// that never reserved.
     pub reserved: bool,
 }
@@ -240,7 +240,7 @@ pub(crate) struct TakerSide<'a> {
 impl<'a> TakerSide<'a> {
     /// Bind the taker to the position this fill settles into.
     ///
-    /// An ephemeral taker holds only the empty position `build_perp_order`
+    /// A detached taker holds only the empty position `build_perp_order`
     /// added, which `get_position_index` skips as available.
     /// `add_new_position` reuses that same slot, so the fill settles into it.
     /// A slot order always has a findable position from its placement, so the
@@ -851,7 +851,7 @@ fn move_taker_position(
 /// Advance the taker's order by what this leg filled, and unwind the
 /// reservation it held for that size.
 ///
-/// Only a reservation the taker actually took is unwound. A fresh ephemeral
+/// Only a reservation the taker actually took is unwound. A fresh detached
 /// taker never reserved, and unwinding here would release a co-resident
 /// order's `open_bids` or `open_asks`.
 ///

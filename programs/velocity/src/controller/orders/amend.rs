@@ -422,7 +422,7 @@ pub fn modify_order(
     if let Some(order_params) = order_params {
         validate_spot_dlob_trading_enabled_for_market_type(order_params.market_type)?;
 
-        place_perp_order(
+        place_perp_trigger_order(
             state,
             &mut user,
             user_key,

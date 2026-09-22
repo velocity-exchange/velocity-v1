@@ -469,7 +469,7 @@ pub fn validate_and_load_builder<'a>(
 }
 
 /// Adds a [`RevenueShareOrder`] to the escrow for the order about to be placed and returns a
-/// mutable reference to it, suitable to pass to `controller::orders::place_perp_order` as the
+/// mutable reference to it, suitable to pass to `controller::orders::place_perp_trigger_order` as the
 /// `rev_share_order` argument. Returns `Ok(None)` when the order carries no builder code
 /// (`builder_idx`/`builder_fee_bps` is `None`), when there is no escrow, or when the escrow's
 /// order list is full.

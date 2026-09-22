@@ -58,7 +58,7 @@ pub fn trigger_and_route_order(
     let oracle_price = oracle_price_data.price;
 
     // The transform runs on a copy of the slot's order, not on the slot.
-    // Freeing the slot then never reserves exposure the ephemeral fill does
+    // Freeing the slot then never reserves exposure the detached fill does
     // not rest.
     let mut fired = user.orders[order_index];
     {
@@ -333,7 +333,7 @@ fn arm_trigger_order(
 /// Whether the fired order increases the account's risk.
 ///
 /// The check applies the order's worst-case exposure to the position,
-/// measures, then removes the exposure again. The ephemeral fill does not rest
+/// measures, then removes the exposure again. The detached fill does not rest
 /// the order, so the reservation must not stay.
 fn fired_order_increases_risk(
     user: &mut User,

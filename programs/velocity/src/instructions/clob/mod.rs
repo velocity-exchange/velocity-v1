@@ -5,7 +5,7 @@
 //! and the open-order counters. Fills and culls unwind through the router
 //! fill's execute response. Every other path unwinds here.
 //!
-//! The user routes. A v1 live order is ephemeral. The handler builds it on the
+//! The user routes. A v1 live order is detached. The handler builds it on the
 //! stack, checks margin, and never writes it into `User.orders`.
 //! - [`place_and_make_v1`]: the maker route. A post-only limit rests straight
 //!   on the book as a maker quote. It names no taker and matches nothing on

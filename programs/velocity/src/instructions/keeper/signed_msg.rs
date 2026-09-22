@@ -225,7 +225,7 @@ fn fill_signed_msg_taker_order<'c: 'info, 'info>(
     sections.run_fill(
         &fill_accounts(ctx),
         controller::orders::FillRequest {
-            // The taker order is ephemeral. It never reserved, so the fill
+            // The taker order is detached. It never reserved, so the fill
             // unwinds no exposure for it.
             order: &mut placed.order,
             reserved: false,
@@ -428,7 +428,7 @@ pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
     };
 
     // The sidecars go first. Each builder row is keyed to
-    // `taker.next_order_id`, the id `place_perp_order` assigns, so the main
+    // `taker.next_order_id`, the id the placement assigns, so the main
     // order takes the trailing id.
     place_bracket_orders(&mut taker, &message, &mut builder, env)?;
     let placed = place_entry_order(&mut taker, &mut message, &mut order_id, &mut builder, env)?;
@@ -687,7 +687,7 @@ fn place_bracket_orders(
             entry.market_index,
         )?;
 
-        controller::orders::place_perp_order(
+        controller::orders::place_perp_trigger_order(
             env.state,
             taker.user,
             taker.key,
@@ -756,7 +756,7 @@ fn place_entry_order(
         env.clock.slot,
     )?;
 
-    let Some(order) = controller::orders::create_ephemeral_perp_order(
+    let Some(order) = controller::orders::create_detached_perp_order(
         env.state,
         taker.user,
         taker.key,
@@ -805,7 +805,7 @@ fn place_entry_order(
 /// loader instead, so the two cannot share one borrow. This carries what crosses it.
 pub struct PlacedSignedMsgOrder {
     pub order_id: u32,
-    /// The ephemeral taker order. It never enters `user.orders`. The fill leg
+    /// The detached taker order. It never enters `user.orders`. The fill leg
     /// routes it detached and mutates its filled amounts here. The rest leg
     /// reads its remainder from here to migrate onto the CLOB.
     pub order: crate::state::user::Order,

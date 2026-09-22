@@ -205,7 +205,7 @@ pub(crate) fn determine_if_user_order_is_position_decreasing(
     market_index: u16,
     order: &Order,
 ) -> VelocityResult<bool> {
-    // A fresh ephemeral taker has no position yet. Opening one is not
+    // A fresh detached taker has no position yet. Opening one is not
     // decreasing, so a missing position reads as base zero.
     let position_base_asset_amount_before = get_position_index(&user.perp_positions, market_index)
         .map(|position_index| user.perp_positions[position_index].base_asset_amount)

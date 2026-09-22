@@ -107,7 +107,7 @@ pub struct FillRequest<'a> {
     pub order: &'a mut Order,
     /// Whether the order already holds an `open_bids`/`open_asks` and
     /// `open_orders` reservation. True for an order lifted off the book,
-    /// false for an ephemeral taker routed straight to the book. Unwinding
+    /// false for a detached taker routed straight to the book. Unwinding
     /// a false reservation would underflow another order's counter.
     pub reserved: bool,
     pub mode: FillMode,
@@ -147,7 +147,7 @@ impl<'a> Taker<'a> {
         }
     }
 
-    /// An ephemeral taker's empty position, added by `build_perp_order`, is
+    /// A detached taker's empty position, added by `build_perp_order`, is
     /// skipped by `get_position_index` and reused by `add_new_position`. A
     /// slot order always finds its position, so the fallback never fires.
     /// Binding can add a position, so it runs only after the fill is admitted.

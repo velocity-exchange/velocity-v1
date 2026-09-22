@@ -2812,23 +2812,24 @@ mod get_auction_params_min_duration_floor {
     fn floors_preserved_client_duration_to_mainnet_min() {
         let params = aggressive_5_slot_market_order();
         // tick_size = 1 is identity, so the only change is the duration floor.
-        let (start, end, duration) = get_auction_params(&params, &oracle(), 1, 10).unwrap();
-        assert_eq!(start, 99_700_000);
-        assert_eq!(end, 100_300_000);
+        let auction = get_auction_params(&params, &oracle(), 1, 10).unwrap();
+        assert_eq!(auction.start_price, 99_700_000);
+        assert_eq!(auction.end_price, 100_300_000);
         // The client asked for 5 slots and the sanitizer preserved it, but the
         // placed order is floored to the mainnet minimum of 10.
-        assert_eq!(duration, 10);
-        assert_ne!(duration, params.auction_duration.unwrap());
+        assert_eq!(auction.duration, 10);
+        assert_ne!(auction.duration, params.auction_duration.unwrap());
     }
     #[test]
     fn preserves_client_duration_only_when_floor_is_low_enough() {
         let params = aggressive_5_slot_market_order();
         // Lowering state.min_perp_auction_duration to <= the client's choice is
         // what actually lets a 5-slot auction survive end-to-end.
-        let (_, _, duration) = get_auction_params(&params, &oracle(), 1, 5).unwrap();
-        assert_eq!(duration, 5);
-        let (_, _, duration) = get_auction_params(&params, &oracle(), 1, 3).unwrap();
-        assert_eq!(duration, 5);
+        let auction = get_auction_params(&params, &oracle(), 1, 5).unwrap();
+        assert_eq!(auction.duration, 5);
+
+        let auction = get_auction_params(&params, &oracle(), 1, 3).unwrap();
+        assert_eq!(auction.duration, 5);
     }
 }
 

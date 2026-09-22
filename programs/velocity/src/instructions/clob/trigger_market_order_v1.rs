@@ -429,7 +429,7 @@ fn route_fill_fired_order<'info>(
 
     controller::orders::fill_perp_order(
         controller::orders::FillRequest {
-            // The fired order is ephemeral. It reserved nothing, so the fill
+            // The fired order is detached. It reserved nothing, so the fill
             // unwinds no exposure for it.
             order: fired,
             reserved: false,

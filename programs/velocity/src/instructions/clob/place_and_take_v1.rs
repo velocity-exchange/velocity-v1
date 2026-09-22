@@ -1,6 +1,6 @@
 //! `place_and_take_perp_order_v1`, the CLOB-aware taker route.
 //!
-//! The taker's order is ephemeral. The handler builds it on the stack, checks
+//! The taker's order is detached. The handler builds it on the stack, checks
 //! margin, and fills it through the router across the vAMM and the quoter
 //! books. It never writes the order into `User.orders`. The restable remainder
 //! rests on the market's CLOB taker-origin, because an order that can rest and

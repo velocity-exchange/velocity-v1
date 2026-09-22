@@ -222,7 +222,7 @@ impl TakerRiskLimits {
                 taker.order,
             )?,
 
-            // A fresh ephemeral taker has no position yet. It opens a
+            // A fresh detached taker has no position yet. It opens a
             // cross-margin one, so a missing position is not isolated.
             is_isolated: taker
                 .user

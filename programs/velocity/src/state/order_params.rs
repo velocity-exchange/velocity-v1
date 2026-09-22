@@ -1095,7 +1095,7 @@ pub struct PlaceOrderOptions {
     /// Emit the `Place` `OrderActionRecord` and `OrderRecord` for the built
     /// order. A maker resting straight on the CLOB clears this flag: its
     /// CLOB placement record is the one statement about the order, and an
-    /// ephemeral place record would duplicate it.
+    /// detached place record would duplicate it.
     pub emit_place_record: bool,
 }
 

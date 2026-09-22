@@ -115,12 +115,6 @@ fn arm_trigger(
     clock: &Clock,
 ) -> Result<PlaceOrderResult> {
     validate!(
-        params.is_trigger_order(),
-        ErrorCode::OrderTypeNotConditional,
-        "a live order rests on the market's book, not in a user order slot"
-    )?;
-
-    validate!(
         params.market_type == MarketType::Perp,
         ErrorCode::InvalidOrder,
         "only a perp market arms a trigger"
@@ -162,7 +156,7 @@ fn arm_trigger(
         emit_place_record: true,
     };
 
-    Ok(controller::orders::place_perp_order(
+    Ok(controller::orders::place_perp_trigger_order(
         placement.state,
         placement.user,
         placement.user_key,

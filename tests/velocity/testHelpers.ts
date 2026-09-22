@@ -67,7 +67,10 @@ import {
 	ZERO,
 	ONE,
 } from '../../packages/sdk/src';
-import { encodeName, DEFAULT_MARKET_NAME } from '../../packages/sdk/src/userName';
+import {
+	encodeName,
+	DEFAULT_MARKET_NAME,
+} from '../../packages/sdk/src/userName';
 import {
 	LiteSVMContextWrapper,
 	LiteSVMConnection,

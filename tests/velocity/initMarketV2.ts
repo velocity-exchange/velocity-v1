@@ -144,7 +144,9 @@ describe('initialize market v2', () => {
 		assert.ok(v1.amm.quoteAssetReserve.eq(v2.amm.quoteAssetReserve));
 		assert.ok(v1.amm.pegMultiplier.eq(v2.amm.pegMultiplier));
 		assert.ok(
-			v1.insuranceClaim.quoteMaxInsurance.eq(v2.insuranceClaim.quoteMaxInsurance)
+			v1.insuranceClaim.quoteMaxInsurance.eq(
+				v2.insuranceClaim.quoteMaxInsurance
+			)
 		);
 		assert.deepEqual(v1.contractTier, v2.contractTier);
 		assert.deepEqual(v1.oracleSource, v2.oracleSource);
@@ -246,7 +248,9 @@ describe('initialize market v2', () => {
 		// pairing is the whole reason this instruction exists.
 		assert.ok(
 			pnlAfter.sub(pnlBefore).eq(amount),
-			`pnl pool moved ${pnlAfter.sub(pnlBefore).toString()}, expected ${amount.toString()}`
+			`pnl pool moved ${pnlAfter
+				.sub(pnlBefore)
+				.toString()}, expected ${amount.toString()}`
 		);
 		assert.equal(
 			(vaultAfter - vaultBefore).toString(),

@@ -1,7 +1,7 @@
 //! P6 `orders-matching` — host-tier property harnesses for Family IV
-//! (fill bounds / order & auction / matching math).
+//! (fill bounds / order sizing / worst price).
 //!
-//! Every property fuzzes a pure velocity `math::{orders,auction,matching}`
+//! Every property fuzzes a pure velocity `math::{orders,worst_price}`
 //! function directly (no LiteSVM). The `StdFixture` only exists to satisfy
 //! `#[fuzz_fixture]`'s `TestContext`/action requirements — the math is
 //! stateless so `action_noop` is the sole (trivial) action.
@@ -15,18 +15,15 @@ use {
     velocity::{
         controller::position::PositionDirection,
         math::{
-            auction::{calculate_auction_price, is_auction_complete},
-            constants::BASE_PRECISION_U64,
-            matching::{calculate_fill_for_matched_orders, do_orders_cross},
+            constants::DEFAULT_MARKET_ORDER_SLIPPAGE_FRACTION,
             orders::{
                 is_multiple_of_step_size, is_new_order_risk_increasing, is_order_position_reducing,
                 standardize_base_asset_amount, standardize_base_asset_amount_ceil,
                 standardize_base_asset_amount_with_remainder_i128, standardize_price,
-                validate_fill_price,
             },
-            time::SlotClock,
+            worst_price::derive_worst_price,
         },
-        state::user::{Order, OrderType},
+        state::{oracle::OraclePriceData, user::Order},
     },
 };
 
@@ -144,129 +141,42 @@ fn prop_standardize_price(
     }
 }
 
-/// Property 2 (Family IV): fixed-auction price is monotone in slot and always
-/// within `[auction_start_price, auction_end_price]`; once the auction is
-/// complete (`is_auction_complete`) the price pins to the end price.
-#[cfg(feature = "prop_auction_price")]
+/// Property 2 (Family IV): a named worst price is returned unchanged. An
+/// unnamed one sits `oracle / DEFAULT_MARKET_ORDER_SLIPPAGE_FRACTION` through
+/// the oracle, on the side that lets a taker in `direction` cross.
+#[cfg(feature = "prop_worst_price")]
 #[crucible_fuzz]
-fn prop_auction_price(
+fn prop_worst_price(
     fixture: &mut StdFixture,
-    // Prices are taken as u64 and cast to i64: crucible's `#[range]` maps a
-    // signed field via `start + (raw % size)`, and `%` preserves the sign of a
-    // negative raw i64 — so an i64 range does NOT guarantee positivity. A u64
-    // range does (`raw % size` is always non-negative), and the auction math
-    // casts start/end back to u64, which would error on a negative price.
-    #[range(1..1_000_000_000_000u64)] price_a: u64,
-    #[range(1..1_000_000_000_000u64)] price_b: u64,
-    #[range(1..200u8)] duration: u8,
-    #[range(0..500u64)] slot: u64,
+    // A u64 range, cast to i64: crucible maps a signed range with `%`, which
+    // keeps the sign of a negative raw value.
+    #[range(1..1_000_000_000_000u64)] oracle_price: u64,
+    #[range(0..2_000_000_000_000u64)] named_price: u64,
     is_long: bool,
 ) {
     let _ = &fixture.ctx;
 
-    // Order the two prices; Long ramps lo→hi, Short ramps hi→lo (the fixed
-    // auction math requires end≥start for Long and start≥end for Short).
-    let lo = price_a.min(price_b) as i64;
-    let hi = price_a.max(price_b) as i64;
-    let (start, end) = if is_long { (lo, hi) } else { (hi, lo) };
-
-    // tick_size 1 makes standardize_price a no-op so monotonicity is exact.
-    let tick = 1u64;
-    let order = Order {
-        order_type: OrderType::Market,
-        direction: dir(is_long),
-        slot: 0,
-        auction_duration: duration,
-        auction_start_price: start,
-        auction_end_price: end,
-        ..Order::default()
+    let oracle = OraclePriceData {
+        price: oracle_price as i64,
+        ..OraclePriceData::default()
     };
+    let worst = derive_worst_price(&oracle, dir(is_long), named_price).unwrap();
 
-    // The 400ms baseline clock: this fixture sets no IBRL transition.
-    let clock = SlotClock::default();
-    let p0 = calculate_auction_price(&order, slot, tick, None, clock).unwrap();
-    let p1 = calculate_auction_price(&order, slot + 1, tick, None, clock).unwrap();
+    if named_price > 0 {
+        fuzz_assert_eq!(worst, named_price);
+        return;
+    }
 
-    // Always within the [lo, hi] band.
-    fuzz_assert_le!(lo as u64, p0);
-    fuzz_assert_le!(p0, hi as u64);
-
-    // Monotone in slot: Long non-decreasing, Short non-increasing.
-    if is_long {
-        fuzz_assert_le!(p0, p1);
+    let slippage = oracle_price / DEFAULT_MARKET_ORDER_SLIPPAGE_FRACTION as u64;
+    let expected = if is_long {
+        oracle_price + slippage
     } else {
-        fuzz_assert_le!(p1, p0);
-    }
-
-    // Auction completeness: complete iff slots_elapsed > duration; once
-    // complete the price equals the end price.
-    let complete = is_auction_complete(0, duration, slot, clock).unwrap();
-    fuzz_assert_eq!(complete, slot > duration as u64);
-    if slot >= duration as u64 {
-        fuzz_assert_eq!(p0, end as u64);
-    }
+        oracle_price - slippage
+    };
+    fuzz_assert_eq!(worst, expected);
 }
 
-/// Property 3 (Family IV): a matched fill respects BOTH sides' limits and the
-/// maker fill amount equals the taker fill amount. The fill executes at the
-/// maker's limit price; when the orders cross, the taker is price-improved and
-/// `validate_fill_price` (with its is_taker rounding) accepts both sides.
-#[cfg(feature = "prop_matched_fill")]
-#[crucible_fuzz]
-fn prop_matched_fill(
-    fixture: &mut StdFixture,
-    #[range(1_000_000..1_000_000_000_000u64)] maker_price: u64,
-    #[range(1_000_000..1_000_000_000_000u64)] taker_price: u64,
-    #[range(1_000_000_000..1_000_000_000_000_000u64)] maker_base: u64,
-    #[range(1_000_000_000..1_000_000_000_000_000u64)] taker_base: u64,
-    maker_is_long: bool,
-) {
-    let _ = &fixture.ctx;
-
-    let maker_direction = dir(maker_is_long);
-    let taker_direction = maker_direction.opposite();
-    let base_decimals = 9u32; // BASE_PRECISION == 1e9
-
-    let (base, quote) = calculate_fill_for_matched_orders(
-        maker_base,
-        maker_price,
-        taker_base,
-        base_decimals,
-        maker_direction,
-    )
-    .unwrap();
-
-    // Maker fill amount == taker fill amount == min(sizes).
-    fuzz_assert_eq!(base, maker_base.min(taker_base));
-
-    // The maker always fills at its own limit price (rounding favors the
-    // maker), so validate_fill_price accepts the maker side unconditionally.
-    fuzz_assert!(validate_fill_price(
-        quote,
-        base,
-        BASE_PRECISION_U64,
-        maker_direction,
-        maker_price,
-        false,
-    )
-    .is_ok());
-
-    // When the orders cross, the taker never fills worse than its own limit.
-    let crosses = do_orders_cross(maker_direction, maker_price, taker_price);
-    if crosses && base > 0 {
-        fuzz_assert!(validate_fill_price(
-            quote,
-            base,
-            BASE_PRECISION_U64,
-            taker_direction,
-            taker_price,
-            true,
-        )
-        .is_ok());
-    }
-}
-
-/// Property 4 (Family IV): fillable size never exceeds the order's remaining
+/// Property 3 (Family IV): fillable size never exceeds the order's remaining
 /// size; reduce-only orders can never fill more than the opposing position
 /// (so they never increase it); `is_order_position_reducing` and
 /// `is_new_order_risk_increasing` agree with their definitions and with each
@@ -305,11 +215,6 @@ fn prop_fill_bounds_reduce_only(
         .get_base_asset_amount_unfilled(Some(position))
         .unwrap();
     fuzz_assert_le!(unfilled, order_base - filled);
-
-    // A matched fill against this remaining size can never exceed it.
-    let (fill_base, _) =
-        calculate_fill_for_matched_orders(unfilled, 1_000_000, order_base, 9, d).unwrap();
-    fuzz_assert_le!(fill_base, unfilled);
 
     // Reduce-only never increases the position: fillable ≤ |existing position|.
     if reduce_only && position != 0 {

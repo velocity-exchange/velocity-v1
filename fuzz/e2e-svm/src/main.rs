@@ -89,7 +89,6 @@ const D_CANCEL_ORDER_BY_USER_ID: [u8; 8] = [107, 211, 250, 133, 18, 37, 57, 100]
 const D_MODIFY_ORDER: [u8; 8] = [47, 124, 117, 255, 201, 197, 130, 94];
 const D_MODIFY_ORDER_BY_USER_ID: [u8; 8] = [158, 77, 4, 253, 252, 194, 161, 179];
 const D_PLACE_ORDERS: [u8; 8] = [60, 63, 50, 123, 12, 197, 60, 190];
-const D_PLACE_SCALE_ORDERS: [u8; 8] = [129, 249, 70, 55, 177, 250, 252, 94];
 // User config setters ([user(w), authority(s)], except allow_delegate_transfer
 // which takes [user_stats(w), authority(s)]).
 const D_UPDATE_USER_CUSTOM_MARGIN_RATIO: [u8; 8] = [21, 221, 140, 187, 32, 129, 11, 123];
@@ -2656,77 +2655,6 @@ impl Fixture {
         let mut buf = Vec::new();
         batch.serialize(&mut buf).unwrap();
         self.send_order_ix(user_idx, D_PLACE_ORDERS, buf)
-    }
-
-    /// `place_scale_orders(ScaleOrderParams)` — the price-ladder expansion.
-    pub fn action_place_scale_orders(
-        &mut self,
-        #[range(0..NUM_USERS)] user_idx: usize,
-        #[range(0..2u8)] dir: u8,
-        #[range(1..10_000_000_000u64)] total_base: u64,
-        #[range(1..3_000_000u64)] price_a: u64,
-        #[range(1..3_000_000u64)] price_b: u64,
-        #[range(0..12u8)] order_count: u8,
-        #[range(0..3u8)] distribution: u8,
-        #[range(0..2u8)] respect_validation: u8,
-    ) -> bool {
-        use velocity::{
-            controller::position::PositionDirection,
-            state::{
-                order_params::PostOnlyParam,
-                scale_order_params::{ScaleOrderParams, SizeDistribution},
-                user::MarketType,
-            },
-        };
-
-        let direction = if dir == 0 {
-            PositionDirection::Long
-        } else {
-            PositionDirection::Short
-        };
-        // `ScaleOrderParams::validate` rejects outright unless: order_count in
-        // [2, MAX_OPEN_ORDERS], start != end, the price ladder runs DOWN for a
-        // long / UP for a short, and total_base >= order_step_size*order_count.
-        // Blind params therefore never get past validation into the ladder
-        // expansion. `respect_validation` keeps both sides: a conforming ladder
-        // reaches the real work, a raw one keeps the rejection branches covered.
-        let (lo, hi) = if price_a <= price_b {
-            (price_a, price_b)
-        } else {
-            (price_b, price_a)
-        };
-        let (start_price, end_price, order_count, total_base) = if respect_validation == 1 {
-            let count = order_count.max(2);
-            let (s, e) = match direction {
-                PositionDirection::Long => (hi.max(lo + 1), lo),
-                PositionDirection::Short => (lo, hi.max(lo + 1)),
-            };
-            // order_step_size is 1_000_000 for this market.
-            (s, e, count, total_base.max(1_000_000 * count as u64))
-        } else {
-            (price_a, price_b, order_count, total_base)
-        };
-
-        let params = ScaleOrderParams {
-            market_type: MarketType::Perp,
-            direction,
-            market_index: 0,
-            total_base_asset_amount: total_base,
-            start_price,
-            end_price,
-            order_count,
-            size_distribution: match distribution {
-                0 => SizeDistribution::Flat,
-                1 => SizeDistribution::Ascending,
-                _ => SizeDistribution::Descending,
-            },
-            reduce_only: false,
-            post_only: PostOnlyParam::MustPostOnly,
-            ..Default::default()
-        };
-        let mut buf = Vec::new();
-        params.serialize(&mut buf).unwrap();
-        self.send_order_ix(user_idx, D_PLACE_SCALE_ORDERS, buf)
     }
 
     // ---- user config setters ---------------------------------------------
@@ -5923,7 +5851,6 @@ mod smoke {
         let _ = f.action_warp(100, 1);
         let _ = f.action_cancel_orders(0, 0, 0, 0, 0, 0, 0);
         let _ = f.action_place_orders(0, 2, 0, 10_000_000);
-        let _ = f.action_place_scale_orders(0, 0, 10_000_000, 900_000, 950_000, 3, 0, 0);
         let _ = f.action_update_user_custom_margin_ratio(0, 2_000);
         let _ = f.action_update_user_margin_trading_enabled(0, 1);
         let _ = f.action_update_user_idle(0, 1, 1, 0);
@@ -6058,11 +5985,6 @@ mod smoke {
         println!(
             "delete_signed_msg_orders {}",
             i.action_delete_signed_msg_user_orders(0)
-        );
-        let mut j = Fixture::setup();
-        println!(
-            "place_scale_orders       {}",
-            j.action_place_scale_orders(0, 0, 10_000_000, 900_000, 950_000, 3, 0, 1)
         );
         let mut k = Fixture::setup();
         println!(
@@ -6274,10 +6196,6 @@ mod smoke {
             f.action_place_perp_order(1, 1, 10_000_000, 0, 1, 0, 2, 0)
         );
         run!("place_orders", f.action_place_orders(0, 2, 0, 10_000_000));
-        run!(
-            "place_scale_orders",
-            f.action_place_scale_orders(0, 0, 10_000_000, 900_000, 950_000, 3, 0, 1)
-        );
         run!(
             "initialize_sub_account",
             f.action_initialize_sub_account(0, 1)
@@ -6699,10 +6617,6 @@ mod smoke {
         assert!(
             f.action_initialize_referrer_name(0, 0),
             "initialize_referrer_name"
-        );
-        assert!(
-            f.action_place_scale_orders(0, 0, 10_000_000, 900_000, 950_000, 3, 0, 1),
-            "place_scale_orders (validation-conforming ladder)"
         );
 
         // Best-effort: gated on protocol state this test does not build.

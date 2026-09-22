@@ -395,12 +395,9 @@ mod regr_271_pause {
             market_type: MarketType::Perp,
             direction: PositionDirection::Long,
             base_asset_amount: 1_000_000_000,
-            price: 0,
+            price: 1_010_000,
             market_index: 0,
             post_only: PostOnlyParam::None,
-            auction_duration: Some(10),
-            auction_start_price: Some(1_000_000),
-            auction_end_price: Some(1_010_000),
             ..Default::default()
         };
         let msg_struct = SignedMsgOrderParamsMessage {

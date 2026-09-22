@@ -95,11 +95,11 @@ pub fn restable_remainder_price(
                 // zero and drops the rest. The absolute price the fill settles
                 // at is the oracle plus the offset.
                 oracle_price?
-                    .checked_add(order.auction_end_price)?
+                    .checked_add(order.oracle_price_offset)?
                     .max(0)
                     .unsigned_abs()
             } else {
-                order.auction_end_price.max(0).unsigned_abs()
+                order.price
             }
         }
         _ => return None,
@@ -479,7 +479,7 @@ pub fn try_place_remainder_on_clob<'info>(
         )?;
 
         user.perp_positions[position_index].open_orders += 1;
-        user.increment_open_orders(false);
+        user.increment_open_orders();
         // A reduce-only rest arms the position's counter. The router then caps
         // its fills to the position it may reduce, until the order leaves the
         // book.
@@ -584,7 +584,7 @@ mod restable_remainder_price_tests {
             order_type: OrderType::TriggerMarket,
             direction,
             bit_flags: OrderBitFlag::OracleTriggerMarket as u8,
-            auction_end_price: offset,
+            oracle_price_offset: offset,
             ..Order::default()
         }
     }
@@ -614,13 +614,13 @@ mod restable_remainder_price_tests {
     }
 
     #[test]
-    fn plain_market_uses_the_absolute_auction_bound() {
-        // Without the OracleTriggerMarket flag the auction bound is already
+    fn plain_market_uses_its_absolute_worst_price() {
+        // Without the OracleTriggerMarket flag the worst price is already
         // absolute, so no oracle is needed.
         let order = Order {
             status: OrderStatus::Open,
             order_type: OrderType::Market,
-            auction_end_price: 104_000_000,
+            price: 104_000_000,
             ..Order::default()
         };
 

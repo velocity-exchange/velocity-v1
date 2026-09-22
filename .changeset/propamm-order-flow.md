@@ -270,6 +270,39 @@ instructions sysvar, and its `quote_v0` and `execute_v0` account lists carry nei
 the velocity State account. `quoteRouter` takes `taker_served_window` as an argument, so a view for
 unprotected flow shows no depth from a bumped book or a protected quoter, matching the fill's route.
 
+## Order auctions are gone
+
+An order no longer ramps its price from a start to an end over a duration. The ramp existed
+because an order rested in the DLOB and competing fillers watched it cross their price. An order
+routes to the book now, so the ramp only made the fill price depend on how long the sender took
+to land the transaction.
+
+`Order.price` is the worst price the order accepts, for every order type. A market order's `price`
+is its cap, and the sender chooses how far from the oracle it sits. A market order that names no
+price takes `DEFAULT_MARKET_ORDER_SLIPPAGE_FRACTION` (oracle / 200, which is 0.5 percent). An oracle-relative order holds the bound in `oracle_price_offset`.
+
+`OrderParams` and `ModifyOrderParams` lose `auctionDuration`, `auctionStartPrice` and
+`auctionEndPrice`, and gain `activationDelaySlots`. That sets how long a rested remainder waits
+before the book will take it, which is the duration knob the ramp used to serve. A taker-origin
+remainder is crossed at the counterparty's price, so a longer wait can only improve the fill.
+
+On `Order`, `auctionStartPrice` and `auctionEndPrice` are renamed `clobNodeIndex` and
+`clobOrderId`, which is what a placed-trigger shadow already stored in them, and `auctionDuration`
+becomes `unusedAuctionDuration`. The account layout is unchanged.
+
+`math/auction` is deleted. `math/worstPrice` replaces it with `deriveWorstPrice`.
+`isFallbackAvailableLiquiditySource` moves to `math/orders`. `getLimitPrice`, `hasLimitPrice`,
+`isRestingLimitOrder`, `isRestingSignedMsgLimitOrder` and `signedMsgOrderMaxSlot` lose their
+auction and slot arguments, and `hasAuctionPrice` is removed. `SIGNED_MSG_FILL_WINDOW_MS` and
+`DEFAULT_MARKET_ORDER_SLIPPAGE_FRACTION` are new.
+
+Off-chain fill prediction must stop interpolating a price against elapsed slots and read the
+order's own bound.
+
+Nothing re-prices a signed order at placement any more, so the swift feed drops `will_sanitize`
+from every order message and `SwiftOrderSubscriber.subscribe` drops its `acceptSanitized`
+argument. A maker that filtered on the flag receives the flow it was filtering.
+
 ## Signed-message orders
 
 A signed-message order is routed when it is placed, and whatever it cannot fill rests on the market's

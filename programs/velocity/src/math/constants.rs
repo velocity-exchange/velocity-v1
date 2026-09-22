@@ -300,7 +300,12 @@ pub const FUNDING_RATE_OFFSET_PERCENTAGE: i64 =
 pub const FUNDING_RATE_CLAMP_DENOMINATOR: i64 = 2000; // 2000 => 0.05%
 
 // ORDERS
-pub const AUCTION_DERIVE_PRICE_FRACTION: i64 = 200;
+/// A market order that names no expiry lives this long.
+pub const DEFAULT_MARKET_ORDER_LIFETIME_SECONDS: i64 = 30;
+
+/// A market order that names no price fills at most `oracle / this` away
+/// from the oracle. 200 is 0.5 percent.
+pub const DEFAULT_MARKET_ORDER_SLIPPAGE_FRACTION: i64 = 200;
 
 // WITHDRAWS
 pub const SPOT_MARKET_TOKEN_TWAP_WINDOW: i64 = TWENTY_FOUR_HOUR;

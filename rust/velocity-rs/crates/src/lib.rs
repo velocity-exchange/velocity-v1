@@ -103,8 +103,6 @@ pub mod oraclemap;
 pub mod slot_subscriber;
 pub mod usermap;
 
-pub mod dlob;
-
 /// Full slot clock from an already read `State`, including every synchronized
 /// IBRL transition. Mirrors the program's `State::slot_clock`. Prefer this over
 /// the raw `State.slot_duration_ms` field, which lags the live duration until
@@ -381,14 +379,10 @@ impl VelocityClient {
     /// Subscribe to swift order feed(s) for given `markets`
     ///
     /// * `markets` - list of markets to watch for swift orders
-    /// * `accept_sanitized` - set to `Some(true)` to view *sanitized order flow
     /// * `accept_deposit_trades` - set to `Some(true)` to view 'deposit+trade' order flow
     /// * `swift_ws_url` - optional custom swift Ws endpoint
     ///
     /// ## DEV
-    /// - *a sanitized order may have its auction params modified by the program when
-    ///   placed onchain. Makers should understand the time/price implications to accept these.
-    ///
     /// - 'deposit+trade' orders require fillers to send an attached, preceding deposit tx
     ///   before the swift order
     ///
@@ -396,14 +390,12 @@ impl VelocityClient {
     pub async fn subscribe_swift_orders(
         &self,
         markets: &[MarketId],
-        accept_sanitized: Option<bool>,
         accept_deposit_trades: Option<bool>,
         swift_ws_url: Option<String>,
     ) -> SdkResult<SwiftOrderStream> {
         swift_order_subscriber::subscribe_swift_orders(
             self,
             markets,
-            accept_sanitized.is_some_and(|x| x),
             accept_deposit_trades.is_some_and(|x| x),
             swift_ws_url,
         )

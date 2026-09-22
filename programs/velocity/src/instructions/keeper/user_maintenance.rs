@@ -270,16 +270,12 @@ pub struct UserOpenOrderCounts {
 /// because `clob_resident_open_orders` counts it, so it counts exactly once.
 pub fn count_user_open_orders(user: &User) -> UserOpenOrderCounts {
     let mut open_orders = 0_u8;
-    let mut open_auctions = 0_u8;
+    let open_auctions = 0_u8;
 
     for order in user.orders.iter() {
         let book_resident = order.market_type == MarketType::Perp && order.is_placed_on_clob();
         if order.status == OrderStatus::Open && !book_resident {
             open_orders = open_orders.saturating_add(1);
-        }
-
-        if order.has_auction() {
-            open_auctions = open_auctions.saturating_add(1);
         }
     }
 

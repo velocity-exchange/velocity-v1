@@ -34,9 +34,8 @@ use {
         instructions::optional_accounts::AccountMaps,
         load, load_mut,
         math::{
-            auction::{calculate_auction_params_for_trigger_order, calculate_auction_prices},
             casting::Cast,
-            constants::BASE_PRECISION_U64,
+            constants::{BASE_PRECISION_U64, DEFAULT_MARKET_ORDER_LIFETIME_SECONDS},
             fees::{self, FillFees},
             liquidation::validate_user_not_being_liquidated,
             margin::*,
@@ -47,7 +46,8 @@ use {
             orders::*,
             safe_math::SafeMath,
             safe_unwrap::SafeUnwrap,
-            time::{legacy_slot_duration_u8_raw, Millis, SlotClock},
+            time::{Millis, SlotClock},
+            worst_price::derive_worst_price,
         },
         print_error,
         state::{

@@ -9067,8 +9067,8 @@ export class VelocityClient {
 	 * Modifies an open order by closing it and replacing it in one instruction. Only fields present
 	 * (non-`undefined`) in `orderParams` are changed.
 	 * @param orderParams - `newBaseAmount` is BASE_PRECISION (1e9). `newLimitPrice`,
-	 * `newTriggerPrice`, `newOraclePriceOffset`, `auctionStartPrice` and `auctionEndPrice` are
-	 * PRICE_PRECISION (1e6), the last three signed. `auctionDuration` is in fixed 400ms units.
+	 * `newTriggerPrice` and `newOraclePriceOffset` are PRICE_PRECISION (1e6), both signed.
+	 * `activationDelaySlots` is how long the rested remainder waits before the book will take it.
 	 * `policy` is a bitmask of `ModifyOrderPolicy`, for example `MustModify` or `ExcludePreviousFill`.
 	 * @param orderParams.bitFlags - Bitmask, see `OrderParamsBitFlag`.
 	 * @param orderParams.maxTs - Unix timestamp after which the order expires.
@@ -9084,9 +9084,7 @@ export class VelocityClient {
 			newOraclePriceOffset?: BN;
 			newTriggerPrice?: BN;
 			newTriggerCondition?: OrderTriggerCondition;
-			auctionDuration?: number;
-			auctionStartPrice?: BN;
-			auctionEndPrice?: BN;
+			activationDelaySlots?: number;
 			reduceOnly?: boolean;
 			postOnly?: PostOnlyParams;
 			bitFlags?: number;
@@ -9124,9 +9122,7 @@ export class VelocityClient {
 			newOraclePriceOffset,
 			newTriggerPrice,
 			newTriggerCondition,
-			auctionDuration,
-			auctionStartPrice,
-			auctionEndPrice,
+			activationDelaySlots,
 			reduceOnly,
 			postOnly,
 			bitFlags,
@@ -9140,9 +9136,7 @@ export class VelocityClient {
 			newOraclePriceOffset?: BN;
 			newTriggerPrice?: BN;
 			newTriggerCondition?: OrderTriggerCondition;
-			auctionDuration?: number;
-			auctionStartPrice?: BN;
-			auctionEndPrice?: BN;
+			activationDelaySlots?: number;
 			reduceOnly?: boolean;
 			postOnly?: PostOnlyParams;
 			bitFlags?: number;
@@ -9177,9 +9171,7 @@ export class VelocityClient {
 			oraclePriceOffset: newOraclePriceOffset || null,
 			triggerPrice: newTriggerPrice || null,
 			triggerCondition: newTriggerCondition || null,
-			auctionDuration: auctionDuration || null,
-			auctionStartPrice: auctionStartPrice || null,
-			auctionEndPrice: auctionEndPrice || null,
+			activationDelaySlots: activationDelaySlots || null,
 			reduceOnly: reduceOnly != undefined ? reduceOnly : null,
 			postOnly: postOnly != undefined ? postOnly : null,
 			bitFlags: bitFlags != undefined ? bitFlags : null,
@@ -9237,9 +9229,7 @@ export class VelocityClient {
 			newOraclePriceOffset?: BN;
 			newTriggerPrice?: BN;
 			newTriggerCondition?: OrderTriggerCondition;
-			auctionDuration?: number;
-			auctionStartPrice?: BN;
-			auctionEndPrice?: BN;
+			activationDelaySlots?: number;
 			reduceOnly?: boolean;
 			postOnly?: PostOnlyParams;
 			bitFlags?: number;
@@ -9276,9 +9266,7 @@ export class VelocityClient {
 			newOraclePriceOffset,
 			newTriggerPrice,
 			newTriggerCondition,
-			auctionDuration,
-			auctionStartPrice,
-			auctionEndPrice,
+			activationDelaySlots,
 			reduceOnly,
 			postOnly,
 			bitFlags,
@@ -9292,9 +9280,7 @@ export class VelocityClient {
 			newOraclePriceOffset?: BN;
 			newTriggerPrice?: BN;
 			newTriggerCondition?: OrderTriggerCondition;
-			auctionDuration?: number;
-			auctionStartPrice?: BN;
-			auctionEndPrice?: BN;
+			activationDelaySlots?: number;
 			reduceOnly?: boolean;
 			postOnly?: PostOnlyParams;
 			bitFlags?: number;
@@ -9317,9 +9303,7 @@ export class VelocityClient {
 			oraclePriceOffset: newOraclePriceOffset || null,
 			triggerPrice: newTriggerPrice || null,
 			triggerCondition: newTriggerCondition || null,
-			auctionDuration: auctionDuration || null,
-			auctionStartPrice: auctionStartPrice || null,
-			auctionEndPrice: auctionEndPrice || null,
+			activationDelaySlots: activationDelaySlots || null,
 			reduceOnly: reduceOnly || false,
 			postOnly: postOnly || null,
 			bitFlags: bitFlags || null,

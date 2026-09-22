@@ -194,8 +194,6 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
         &fired,
         market_index,
         &maps.perp_market_map,
-        &state,
-        clock,
     )?;
 
     route_fill_fired_order(
@@ -294,8 +292,6 @@ fn read_fired_route_inputs(
     fired: &Order,
     market_index: u16,
     perp_market_map: &crate::state::perp_market_map::PerpMarketMap<'_>,
-    state: &State,
-    clock: &Clock,
 ) -> Result<FiredRouteInputs> {
     let user = load!(user)?;
     let position_base = user
@@ -312,9 +308,7 @@ fn read_fired_route_inputs(
         taker: user.clob_user_ref(),
         limit_price: FillMode::Fill.quote_limit_price(
             fired,
-            clock.slot,
             perp_market_map.get_ref(&market_index)?.order_tick_size,
-            state.slot_clock(),
         ),
     })
 }

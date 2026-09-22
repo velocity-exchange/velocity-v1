@@ -35,7 +35,6 @@ use {
     },
     velocity_rs::{
         constants::PROGRAM_ID,
-        dlob::{DLOBNotifier, DLOB},
         event_subscriber::{parse_velocity_logs, VelocityEvent},
         grpc::{
             grpc_subscriber::{AccountFilter, GrpcConnectionOpts},
@@ -63,7 +62,6 @@ const TARGET: &str = "filler";
 
 pub struct FillerBot {
     velocity: VelocityClient,
-    dlob: &'static DLOB,
     filler_subaccount: Pubkey,
     slot_rx: tokio::sync::mpsc::Receiver<u64>,
     swift_order_stream: SwiftOrderStream,
@@ -84,7 +82,6 @@ impl FillerBot {
         metrics: Arc<Metrics>,
         feed_health: Arc<FeedHealth>,
     ) -> Self {
-        let dlob: &'static DLOB = Box::leak(Box::new(DLOB::default()));
         let tx_worker = TxWorker::new(
             velocity.clone(),
             metrics.clone(),
@@ -137,7 +134,7 @@ impl FillerBot {
         let swift_ws_url = std::env::var("SWIFT_WS_URL").ok();
         log::info!(target: TARGET, "subscribing swift orders (ws url override: {swift_ws_url:?})");
         let swift_order_stream = velocity
-            .subscribe_swift_orders(&market_ids, Some(true), None, swift_ws_url)
+            .subscribe_swift_orders(&market_ids, None, swift_ws_url)
             .await
             .expect("subscribed swift orders");
         feed_health.set_swift_connected(true);
@@ -146,7 +143,6 @@ impl FillerBot {
         velocity.subscribe_blockhashes().await.expect("subscribed");
         let slot_rx = setup_grpc(
             velocity.clone(),
-            dlob,
             tx_worker_ref.clone(),
             market_ids.clone(),
             filler_subaccount,
@@ -177,7 +173,6 @@ impl FillerBot {
 
         FillerBot {
             velocity,
-            dlob,
             filler_subaccount,
             slot_rx,
             swift_order_stream,
@@ -206,7 +201,6 @@ impl FillerBot {
             .filter(|flow| *flow != Pubkey::default())
             .and_then(crate::attest::AttestClient::from_env)
             .map(|client| &*Box::leak(Box::new(client)));
-        let dlob = self.dlob;
         let market_ids = self.market_ids;
         let filler_subaccount = self.filler_subaccount;
         let config = self.config.clone();
@@ -230,7 +224,6 @@ impl FillerBot {
         let mut slot = startup_slot.unwrap_or(0);
         let mut slot_is_known = startup_slot.is_some();
         let mut slot_clock = velocity.slot_clock();
-        dlob.update_slot_clock(slot_clock);
         // The AMM staleness window as wall clock. The on-chain value is in 400ms
         // baseline units. The comparison sites integrate oracle age across slot
         // duration regimes, which mirrors `oracle_validity`.
@@ -366,7 +359,7 @@ impl FillerBot {
                     // Keep the same websocket URL override as the first subscription.
                     // Otherwise a reconnect switches to the default host.
                     match velocity
-                        .subscribe_swift_orders(&market_ids, Some(true), None, std::env::var("SWIFT_WS_URL").ok())
+                        .subscribe_swift_orders(&market_ids, None, std::env::var("SWIFT_WS_URL").ok())
                         .await
                     {
                         Ok(stream) => {
@@ -413,7 +406,6 @@ impl FillerBot {
                         // clock. slot_clock() would substitute the 400ms baseline instead.
                         if let Ok(state) = velocity.state_account() {
                             slot_clock = slot_clock_from_state(&state);
-                            dlob.update_slot_clock(slot_clock);
                         }
                         use_median_trigger_price = velocity
                             .state_account()
@@ -461,7 +453,7 @@ impl FillerBot {
                         );
                         // keep the same ws url override as the initial subscription
                         match velocity
-                            .subscribe_swift_orders(&market_ids, Some(true), None, std::env::var("SWIFT_WS_URL").ok())
+                            .subscribe_swift_orders(&market_ids, None, std::env::var("SWIFT_WS_URL").ok())
                             .await
                         {
                             Ok(stream) => {
@@ -522,7 +514,6 @@ impl FillerBot {
                     .as_secs() as i64;
                 if swift_order_expired(
                     order_slot,
-                    order_params.auction_duration.unwrap_or(0),
                     order_params.max_ts.unwrap_or(0),
                     slot,
                     now_ts,
@@ -630,7 +621,6 @@ const MAX_CONSECUTIVE_ORACLE_MISSES: u32 = 300;
 fn on_slot_update_fn(
     velocity: VelocityClient,
     market_ids: Vec<MarketId>,
-    dlob_notifier: DLOBNotifier,
     slot_tx: tokio::sync::mpsc::Sender<u64>,
 ) -> impl Fn(u64) + Send + Sync + 'static {
     // single gRPC dispatch thread: the mutex is uncontended
@@ -656,62 +646,10 @@ fn on_slot_update_fn(
                 .lock()
                 .unwrap()
                 .insert(market.index(), 0);
-            dlob_notifier.slot_and_oracle_update(*market, new_slot, oracle_price_data.price as u64);
         }
         if let Err(err) = slot_tx.try_send(new_slot) {
             log::debug!(target: TARGET, "failed slot update: {err:?}");
         }
-    }
-}
-
-fn on_account_update_fn(
-    dlob_notifier: DLOBNotifier,
-    velocity: VelocityClient,
-) -> impl Fn(&AccountUpdate) + Send + Sync + 'static {
-    move |update| {
-        // Skip closed / empty-data updates rather than panic on `&data[8..]`.
-        let Some(new_user) = velocity_rs::utils::try_deser_zero_copy::<User>(update.data) else {
-            if update.lamports == 0 {
-                // account closed/deleted: diff its last known state against an empty
-                // account so its open orders are removed from the book
-                if let Some(old_user) = velocity
-                    .backend()
-                    .account_map()
-                    .account_data_and_slot::<User>(&update.pubkey)
-                {
-                    dlob_notifier.user_update(
-                        update.pubkey,
-                        Some(&old_user.data),
-                        &User::default(),
-                        update.slot,
-                    );
-                }
-            }
-            return;
-        };
-        // always feed the DLOB with the same lineage the account_map stores (this hook
-        // runs before the account_map write): a slot-based skip here while the map still
-        // accepts the update would desync `old_user` from the book and strand orders
-        let existing = velocity
-            .backend()
-            .account_map()
-            .account_data_and_slot::<User>(&update.pubkey);
-        if let Some(ref existing) = existing {
-            if existing.slot > update.slot {
-                log::debug!(
-                    target: TARGET,
-                    "out of order user update: {} > {}",
-                    existing.slot,
-                    update.slot
-                );
-            }
-        }
-        dlob_notifier.user_update(
-            update.pubkey,
-            existing.as_ref().map(|x| &x.data),
-            &new_user,
-            update.slot,
-        );
     }
 }
 
@@ -1071,23 +1009,19 @@ fn with_spot_interest_cranks<'a>(
 /// Syncs User orders and UserStat accounts
 pub async fn setup_grpc(
     velocity: VelocityClient,
-    dlob: &'static DLOB,
     tx_worker_ref: TxSender,
     market_ids: Vec<MarketId>,
     filler_subaccount: Pubkey,
 ) -> tokio::sync::mpsc::Receiver<u64> {
-    let dlob_notifier = dlob.spawn_notifier();
-
     let _ = tokio::try_join!(
         sync_stats_accounts(&velocity),
-        sync_user_accounts(&velocity, Some(&dlob_notifier)),
+        sync_user_accounts(&velocity),
     );
 
     let (slot_tx, slot_rx) = tokio::sync::mpsc::channel(64);
 
     subscribe_grpc(
         velocity,
-        dlob_notifier,
         slot_tx,
         tx_worker_ref,
         market_ids,
@@ -1145,7 +1079,6 @@ pub async fn sync_stats_accounts(
 /// map alone.
 pub async fn sync_user_accounts(
     velocity: &VelocityClient,
-    dlob_notifier: Option<&DLOBNotifier>,
 ) -> Result<(), solana_rpc_client_api::client_error::Error> {
     let sync_result = get_program_accounts_decoded(
         velocity,
@@ -1167,10 +1100,6 @@ pub async fn sync_user_accounts(
         Ok(accounts) => {
             for (pubkey, account) in accounts {
                 let user = velocity_rs::utils::deser_zero_copy::<User>(&account.data);
-                if let Some(dlob_notifier) = dlob_notifier {
-                    dlob_notifier.user_update(pubkey, None, &user, 0);
-                }
-
                 velocity.backend().account_map().on_account_fn()(&AccountUpdate {
                     pubkey,
                     data: &account.data,
@@ -1225,7 +1154,6 @@ async fn get_program_accounts_decoded(
 
 async fn subscribe_grpc(
     velocity: VelocityClient,
-    dlob_notifier: DLOBNotifier,
     slot_tx: tokio::sync::mpsc::Sender<u64>,
     transaction_tx: TxSender,
     market_ids: Vec<MarketId>,
@@ -1250,13 +1178,8 @@ async fn subscribe_grpc(
                 .on_slot(on_slot_update_fn(
                     velocity.clone(),
                     market_ids,
-                    dlob_notifier.clone(),
                     slot_tx.clone(),
-                ))
-                .on_account(
-                    AccountFilter::partial().with_discriminator(User::DISCRIMINATOR),
-                    on_account_update_fn(dlob_notifier.clone(), velocity.clone()),
-                ),
+                )),
             true,
         )
         .await;
@@ -1417,7 +1340,7 @@ impl TxWorker {
                                 &intent,
                                 None,
                                 "no_fills",
-                                intent.crosses_and_slot().1,
+                                intent.sent_slot(),
                                 None,
                                 intent.expected_fill_count(),
                                 0,
@@ -1470,7 +1393,7 @@ impl TxWorker {
                             &intent,
                             None,
                             "sim_failed",
-                            intent.crosses_and_slot().1,
+                            intent.sent_slot(),
                             None,
                             intent.expected_fill_count(),
                             0,
@@ -1494,7 +1417,7 @@ impl TxWorker {
                             &intent,
                             None,
                             "no_fills",
-                            intent.crosses_and_slot().1,
+                            intent.sent_slot(),
                             None,
                             intent.expected_fill_count(),
                             0,
@@ -1521,7 +1444,7 @@ impl TxWorker {
                         &intent,
                         None,
                         "sim_rpc_error",
-                        intent.crosses_and_slot().1,
+                        intent.sent_slot(),
                         None,
                         intent.expected_fill_count(),
                         0,
@@ -1567,7 +1490,7 @@ impl TxWorker {
                         &intent,
                         None,
                         "send_error",
-                        intent.crosses_and_slot().1,
+                        intent.sent_slot(),
                         None,
                         intent.expected_fill_count(),
                         0,
@@ -1611,7 +1534,7 @@ impl TxWorker {
 
             let intent_label = intent.label();
             let expected_fill_count = intent.expected_fill_count();
-            let (_, sent_slot) = intent.crosses_and_slot();
+            let sent_slot = intent.sent_slot();
             let _ = tokio::time::sleep(Duration::from_secs(1)).await;
             match velocity
                 .rpc()

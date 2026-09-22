@@ -50,8 +50,6 @@ export interface SwiftOrderMessage {
 	order_signature: string;
 	/** Swift order UUID */
 	uuid: string;
-	/** Whether the order auction params are likely to be sanitized on submission to program */
-	will_sanitize?: boolean;
 	/** Base64 string of a prerequisite deposit tx. The swift order_message should be bundled
 	 * after the deposit when present  */
 	depositTx?: string;
@@ -145,7 +143,6 @@ export class SwiftOrderSubscriber {
 				| SignedMsgOrderParamsDelegateMessage,
 			isDelegateSigner?: boolean
 		) => Promise<void>,
-		acceptSanitized = false,
 		acceptDepositTrade = false
 	): Promise<void> {
 		this.onOrder = onOrder;
@@ -173,10 +170,6 @@ export class SwiftOrderSubscriber {
 
 				if (message['order']) {
 					const order = message['order'] as SwiftOrderMessage;
-					// ignore likely sanitized orders by default
-					if (order.will_sanitize === true && !acceptSanitized) {
-						return;
-					}
 					// order has a prerequisite deposit tx attached
 					if (message['deposit']) {
 						order.depositTx = message['deposit'];

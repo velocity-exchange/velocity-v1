@@ -735,7 +735,7 @@ async fn subscribe_redis_pubsub(
 
         log::info!(
             target: "redis",
-            "topic={topic} uuid={} market_type={} market_index={} direction={:?} base={} price={} order_type={:?} taker_authority={} signer={} taker_subaccount={} will_sanitize={} deposit_present={} recv_lag_ms={forward_latency} receivers={receiver_count}",
+            "topic={topic} uuid={} market_type={} market_index={} direction={:?} base={} price={} order_type={:?} taker_authority={} signer={} taker_subaccount={} deposit_present={} recv_lag_ms={forward_latency} receivers={receiver_count}",
             order_metadata.uuid(),
             order_params.market_type.as_str(),
             order_params.market_index,
@@ -746,7 +746,6 @@ async fn subscribe_redis_pubsub(
             order_metadata.taker_authority,
             order_metadata.signing_authority,
             taker_subaccount,
-            order_metadata.will_sanitize,
             deposit.is_some(),
         );
         let mut message = WsMessage::new(topic).set_order(&order_metadata);

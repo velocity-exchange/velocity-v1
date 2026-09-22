@@ -240,8 +240,6 @@ fn read_take_shape(
     user_loader: &AccountLoader<'_, User>,
     maps: &AccountMaps,
     mode: FillMode,
-    clock: &Clock,
-    state: &State,
 ) -> Result<TakeShape> {
     let user = load!(user_loader)?;
     let position_base = user
@@ -259,11 +257,9 @@ fn read_take_shape(
         taker: user.clob_user_ref(),
         limit_price: mode.quote_limit_price(
             order,
-            clock.slot,
             maps.perp_market_map
                 .get_ref(&order.market_index)?
                 .order_tick_size,
-            state.slot_clock(),
         ),
     })
 }
@@ -372,14 +368,7 @@ fn fill_detached_take(
     referrer_is_accelerated: bool,
 ) -> Result<u64> {
     let market_index = take.market_index;
-    let shape = read_take_shape(
-        take.order,
-        take.accounts.user,
-        take.maps,
-        mode,
-        clock,
-        state,
-    )?;
+    let shape = read_take_shape(take.order, take.accounts.user, take.maps, mode)?;
 
     let mark = {
         let market = take.maps.perp_market_map.get_ref(&market_index)?;
@@ -529,7 +518,9 @@ pub fn place_and_take_perp_order_v1<'info>(
     // PerpMarket-level oracle stats internally before reading peg /
     // reserves.
 
-    let (success_condition, auction_duration_percentage) =
+    // The second byte set a fraction of the auction ramp to price at. It is
+    // still decoded so the wire format holds, and it is ignored.
+    let (success_condition, _unused_auction_fraction) =
         parse_optional_params(request.optional_params);
 
     let (order, mut escrow, referrer_is_accelerated) = create_detached_take(
@@ -549,10 +540,7 @@ pub fn place_and_take_perp_order_v1<'info>(
         return validate_place_and_take_success_condition(success_condition, 0, false);
     };
 
-    let mode = FillMode::PlaceAndTake(
-        is_immediate_or_cancel || request.optional_params.is_some(),
-        auction_duration_percentage,
-    );
+    let mode = FillMode::PlaceAndTake(is_immediate_or_cancel || request.optional_params.is_some());
 
     let base_asset_amount_filled = if !request.synchronous_take {
         validate_order_can_rest(&detached_order)?;

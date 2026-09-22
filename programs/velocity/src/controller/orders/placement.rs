@@ -190,7 +190,7 @@ pub fn build_perp_order(
     user: &mut User,
     maps: &mut AccountMaps,
     clock: &Clock,
-    mut params: OrderParams,
+    params: OrderParams,
     options: &PlaceOrderOptions,
     rev_share_order: &mut Option<&mut RevenueShareOrder>,
 ) -> VelocityResult<Option<BuiltPerpOrder>> {
@@ -224,9 +224,7 @@ pub fn build_perp_order(
 
     let market = &maps.perp_market_map.get_ref(&market_index)?;
     let oracle_price_data = maps.oracle_map.get_price_data(&market.oracle_id())?;
-    let Some(auction) =
-        resolve_auction_and_max_ts(state, market, oracle_price_data, &mut params, options, now)?
-    else {
+    let Some(terms) = resolve_order_terms(oracle_price_data, &params, now)? else {
         // The order id is not consumed yet, so the next placement reuses it.
         return skip_placement(rev_share_order);
     };
@@ -238,7 +236,8 @@ pub fn build_perp_order(
         order_slot: options.get_order_slot(clock.slot),
         sizing,
         reduce_only,
-        auction,
+        worst_price: terms.worst_price,
+        max_ts: terms.max_ts,
         bit_flags: new_order_bit_flags(
             &params,
             options,
@@ -368,21 +367,6 @@ fn resolve_order_size(
     })
 }
 
-/// The price ramp an order auctions over, and how long the ramp runs.
-#[derive(Clone, Copy)]
-pub(super) struct AuctionPrices {
-    pub start_price: i64,
-    pub end_price: i64,
-    pub duration: u8,
-}
-
-/// An order's auction, and the time the order lives.
-#[derive(Clone, Copy)]
-struct OrderAuction {
-    prices: AuctionPrices,
-    max_ts: i64,
-}
-
 /// Resolve the order's auction and its time in force.
 ///
 /// A crossing limit order without an auction duration gets its auction params
@@ -390,38 +374,34 @@ struct OrderAuction {
 ///
 /// `None` means the order has already expired, which is not an error. The
 /// caller skips the placement.
-fn resolve_auction_and_max_ts(
-    state: &State,
-    market: &PerpMarket,
-    oracle_price_data: &OraclePriceData,
-    params: &mut OrderParams,
-    options: &PlaceOrderOptions,
-    now: i64,
-) -> VelocityResult<Option<OrderAuction>> {
-    // Downstream auction-param / price / validation logic reads the AMM's
-    // cached spread state directly (refreshed by the keeper crank / fill
-    // setup), matching pre-decoupling behaviour where order placement quoted
-    // off the last-cranked spread rather than recomputing it here.
-    if !options.is_liquidation() {
-        params.update_perp_auction_params(
-            market,
-            oracle_price_data.price,
-            options.is_signed_msg_order(),
-        )?;
-    }
+/// The price the order fills no worse than, and the time it lives.
+#[derive(Clone, Copy)]
+struct OrderTerms {
+    worst_price: u64,
+    max_ts: i64,
+}
 
-    let prices = get_auction_params(
-        params,
-        oracle_price_data,
-        market.order_tick_size,
-        // The stored minimum is already in the auction's 400ms wall-clock
-        // units.
-        legacy_slot_duration_u8_raw(state.min_perp_auction_duration),
-    )?;
+/// Resolve the order's worst price and its time in force.
+///
+/// A market order that names no price takes its cap from
+/// [`derive_worst_price`]. Every other type carries a price it chose. A trigger order is stamped when it fires, not
+/// here, because the oracle it is measured against moves while it waits.
+///
+/// `None` means the order has already expired, which is not an error. The
+/// caller skips the placement.
+fn resolve_order_terms(
+    oracle_price_data: &OraclePriceData,
+    params: &OrderParams,
+    now: i64,
+) -> VelocityResult<Option<OrderTerms>> {
+    let worst_price = match params.order_type {
+        OrderType::Market => derive_worst_price(oracle_price_data, params.direction, params.price)?,
+        _ => params.price,
+    };
 
     let max_ts = match params.max_ts {
         Some(max_ts) => max_ts,
-        None => default_order_max_ts(params.order_type, now, prices.duration)?,
+        None => default_order_max_ts(params.order_type, now)?,
     };
 
     if max_ts != 0 && max_ts < now {
@@ -429,7 +409,10 @@ fn resolve_auction_and_max_ts(
         return Ok(None);
     }
 
-    Ok(Some(OrderAuction { prices, max_ts }))
+    Ok(Some(OrderTerms {
+        worst_price,
+        max_ts,
+    }))
 }
 
 /// The time in force an auctioned order gets when its params name none.
@@ -440,21 +423,11 @@ fn resolve_auction_and_max_ts(
 /// historical `auction_duration_slots / 2 + 10` exactly. A 400ms unit is one
 /// historical slot, so units/2 equals ms/800. An order type that runs no
 /// auction never expires by default.
-fn default_order_max_ts(
-    order_type: OrderType,
-    now: i64,
-    auction_duration: u8,
-) -> VelocityResult<i64> {
+fn default_order_max_ts(order_type: OrderType, now: i64) -> VelocityResult<i64> {
     match order_type {
-        OrderType::Market | OrderType::Oracle => now.safe_add(
-            30_i64.max(
-                Millis::from_stored_units(auction_duration as u64)
-                    .as_ms()
-                    .safe_div(800)?
-                    .cast::<i64>()?
-                    .safe_add(10_i64)?,
-            ),
-        ),
+        OrderType::Market | OrderType::Oracle => {
+            now.safe_add(DEFAULT_MARKET_ORDER_LIFETIME_SECONDS)
+        }
         _ => Ok(0_i64),
     }
 }
@@ -492,7 +465,10 @@ struct ResolvedOrderFields {
     order_slot: u64,
     sizing: OrderSizing,
     reduce_only: bool,
-    auction: OrderAuction,
+    /// The worst price the order fills at. A market order takes the bound
+    /// [`derive_worst_price`] resolves; every other type names its own.
+    worst_price: u64,
+    max_ts: i64,
     bit_flags: u8,
 }
 
@@ -512,7 +488,7 @@ impl Order {
             user_order_id: params.user_order_id,
             market_index: params.market_index,
             price: get_price_for_perp_order(
-                params.price,
+                resolved.worst_price,
                 params.direction,
                 params.post_only,
                 &market.amm,
@@ -535,10 +511,10 @@ impl Order {
             post_only: params.post_only != PostOnlyParam::None,
             oracle_price_offset: params.oracle_price_offset.unwrap_or(0),
             immediate_or_cancel: params.is_immediate_or_cancel(),
-            auction_start_price: resolved.auction.prices.start_price,
-            auction_end_price: resolved.auction.prices.end_price,
-            auction_duration: resolved.auction.prices.duration,
-            max_ts: resolved.auction.max_ts,
+            clob_node_index: 0,
+            clob_order_id: 0,
+            unused_auction_duration: 0,
+            max_ts: resolved.max_ts,
             posted_slot_tail: get_posted_slot_from_clock_slot(resolved.slot),
             bit_flags: resolved.bit_flags,
             padding: [0; 5],
@@ -678,7 +654,7 @@ fn commit_order_to_slot(
     order: &Order,
     position_index: usize,
 ) -> VelocityResult {
-    user.increment_open_orders(order.has_auction());
+    user.increment_open_orders();
     user.orders[order_index] = *order;
     user.perp_positions[position_index].open_orders += 1;
     increase_open_bids_and_asks(
@@ -872,85 +848,6 @@ pub fn create_detached_perp_order(
     )?;
 
     Ok(Some(built.order))
-}
-
-pub(super) fn get_auction_params(
-    params: &OrderParams,
-    oracle_price_data: &OraclePriceData,
-    tick_size: u64,
-    min_auction_duration: u8,
-) -> VelocityResult<AuctionPrices> {
-    const NO_AUCTION: AuctionPrices = AuctionPrices {
-        start_price: 0,
-        end_price: 0,
-        duration: 0,
-    };
-
-    if !matches!(
-        params.order_type,
-        OrderType::Market | OrderType::Oracle | OrderType::Limit
-    ) {
-        return Ok(NO_AUCTION);
-    }
-
-    if params.order_type == OrderType::Limit {
-        return match (
-            params.auction_start_price,
-            params.auction_end_price,
-            params.auction_duration,
-        ) {
-            (Some(auction_start_price), Some(auction_end_price), Some(auction_duration)) => {
-                let duration = if auction_duration == 0 {
-                    auction_duration
-                } else {
-                    // if auction is non-zero, force it to be at least min_auction_duration
-                    auction_duration.max(min_auction_duration)
-                };
-
-                Ok(AuctionPrices {
-                    start_price: standardize_price_i64(
-                        auction_start_price,
-                        tick_size.cast()?,
-                        params.direction,
-                    )?,
-                    end_price: standardize_price_i64(
-                        auction_end_price,
-                        tick_size.cast()?,
-                        params.direction,
-                    )?,
-                    duration,
-                })
-            }
-            _ => Ok(NO_AUCTION),
-        };
-    }
-
-    let duration = params
-        .auction_duration
-        .unwrap_or(0)
-        .max(min_auction_duration);
-
-    let (auction_start_price, auction_end_price) =
-        match (params.auction_start_price, params.auction_end_price) {
-            (Some(auction_start_price), Some(auction_end_price)) => {
-                (auction_start_price, auction_end_price)
-            }
-            _ if params.order_type == OrderType::Oracle => {
-                msg!("Oracle order must specify auction start and end price offsets");
-                return Err(ErrorCode::InvalidOrderAuction);
-            }
-            _ => calculate_auction_prices(oracle_price_data, params.direction, params.price)?,
-        };
-
-    Ok(AuctionPrices {
-        start_price: standardize_price_i64(
-            auction_start_price,
-            tick_size.cast()?,
-            params.direction,
-        )?,
-        end_price: standardize_price_i64(auction_end_price, tick_size.cast()?, params.direction)?,
-        duration,
-    })
 }
 
 /// Clears a builder-order row that `add_builder_order` wrote for a placement that then

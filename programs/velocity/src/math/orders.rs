@@ -18,7 +18,6 @@ use {
             safe_math::SafeMath,
             spot_balance::get_strict_token_value,
             spot_withdraw::get_max_withdraw_for_market_with_token_amount,
-            time::SlotClock,
         },
         math_error, msg, print_error,
         state::{
@@ -384,13 +383,10 @@ pub fn should_cancel_reduce_only_order(
 pub fn order_breaches_maker_oracle_price_bands(
     order: &Order,
     oracle_price: i64,
-    slot: u64,
     tick_size: u64,
     margin_ratio_initial: u32,
-    slot_clock: SlotClock,
 ) -> VelocityResult<bool> {
-    let order_limit_price =
-        order.force_get_limit_price(Some(oracle_price), None, slot, tick_size, slot_clock)?;
+    let order_limit_price = order.force_get_limit_price(Some(oracle_price), None, tick_size)?;
     limit_price_breaches_maker_oracle_price_bands(
         order_limit_price,
         order.direction,

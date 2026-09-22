@@ -393,7 +393,6 @@ pub mod fulfill_order {
                 direction: PositionDirection::Short,
                 base_asset_amount: BASE_PRECISION_U64,
                 slot: 0,
-                auction_duration: 0,
                 price: 101_900_000, // 101.9: crosses projected bid, not stale bid
                 ..Order::default()
             }),
@@ -570,7 +569,6 @@ pub mod fulfill_order {
                 direction: PositionDirection::Short,
                 base_asset_amount: BASE_PRECISION_U64,
                 slot: 0,
-                auction_duration: 0,
                 price: 101_900_000,
                 ..Order::default()
             }),
@@ -740,7 +738,6 @@ pub mod fulfill_order {
                 direction: PositionDirection::Short,
                 base_asset_amount: BASE_PRECISION_U64,
                 slot: 0,
-                auction_duration: 0,
                 price: 103_000_000, // 103: above the projected bid near 102, never crosses
                 ..Order::default()
             }),
@@ -904,9 +901,6 @@ pub mod fulfill_order {
                 direction: PositionDirection::Long,
                 base_asset_amount: BASE_PRECISION_U64,
                 slot: 0,
-                auction_start_price: 0,
-                auction_end_price: 100 * PRICE_PRECISION_I64,
-                auction_duration: 5,
                 price: 150 * PRICE_PRECISION_U64,
                 ..Order::default()
             }),
@@ -1085,7 +1079,6 @@ pub mod fulfill_order {
                 direction: PositionDirection::Short,
                 base_asset_amount: BASE_PRECISION_U64,
                 slot: 0,
-                auction_duration: 0,
                 price: 100 * PRICE_PRECISION_U64 - (PRICE_PRECISION_U64 / 10), // 99.9
                 post_only: true,
                 ..Order::default()
@@ -1271,7 +1264,6 @@ pub mod fulfill_order {
                 direction: PositionDirection::Long,
                 base_asset_amount: BASE_PRECISION_U64,
                 slot: 0,
-                auction_duration: 0,
                 price: 100 * PRICE_PRECISION_U64 + (PRICE_PRECISION_U64 / 10), // 100.1
                 post_only: true,
                 ..Order::default()
@@ -1465,9 +1457,6 @@ pub mod fulfill_order {
                 direction: PositionDirection::Long,
                 base_asset_amount: BASE_PRECISION_U64,
                 slot: 0,
-                auction_start_price: 0,
-                auction_end_price: 100 * PRICE_PRECISION_I64,
-                auction_duration: 0,
                 price: 150 * PRICE_PRECISION_U64,
                 order_id: 1,
                 ..Order::default()
@@ -1780,9 +1769,6 @@ pub mod fulfill_order {
                 direction: PositionDirection::Long,
                 base_asset_amount: BASE_PRECISION_U64,
                 slot: 0,
-                auction_start_price: 0,
-                auction_end_price: 100 * PRICE_PRECISION_I64,
-                auction_duration: 0,
                 price: 150 * PRICE_PRECISION_U64,
                 ..Order::default()
             }),
@@ -1885,7 +1871,7 @@ pub mod fill_order {
             math::{
                 constants::{
                     AMM_RESERVE_PRECISION, BASE_PRECISION_I64, BASE_PRECISION_U64, PEG_PRECISION,
-                    PRICE_PRECISION_I64, PRICE_PRECISION_U64, SPOT_BALANCE_PRECISION_U64,
+                    PRICE_PRECISION_U64, SPOT_BALANCE_PRECISION_U64,
                     SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
                 },
                 time::SlotClock,
@@ -2007,9 +1993,6 @@ pub mod fill_order {
                 direction: PositionDirection::Long,
                 base_asset_amount: BASE_PRECISION_U64,
                 slot: 0,
-                auction_start_price: 0,
-                auction_end_price: 102 * PRICE_PRECISION_I64,
-                auction_duration: 5,
                 price: 102 * PRICE_PRECISION_U64,
                 ..Order::default()
             }),
@@ -2577,24 +2560,14 @@ pub mod update_trigger_order_params {
             ..OraclePriceData::default()
         };
         let slot = 10;
-        let min_auction_duration = 10;
-        update_trigger_order_params(
-            &mut order,
-            &oracle_price_data,
-            slot,
-            min_auction_duration,
-            None,
-            SlotClock::baseline(),
-        )
-        .unwrap();
+        update_trigger_order_params(&mut order, &oracle_price_data, slot, SlotClock::baseline())
+            .unwrap();
         assert_eq!(order.slot, slot);
-        assert_eq!(order.auction_duration, min_auction_duration);
         assert_eq!(
             order.trigger_condition,
             OrderTriggerCondition::TriggeredAbove
         );
-        assert_eq!(order.auction_start_price, 100000000);
-        assert_eq!(order.auction_end_price, 100500000);
+        assert_eq!(order.oracle_price_offset, 500000);
         let mut order = Order {
             order_type: OrderType::TriggerMarket,
             direction: PositionDirection::Short,
@@ -2602,23 +2575,14 @@ pub mod update_trigger_order_params {
             ..Order::default()
         };
 
-        update_trigger_order_params(
-            &mut order,
-            &oracle_price_data,
-            slot,
-            min_auction_duration,
-            None,
-            SlotClock::baseline(),
-        )
-        .unwrap();
+        update_trigger_order_params(&mut order, &oracle_price_data, slot, SlotClock::baseline())
+            .unwrap();
         assert_eq!(order.slot, slot);
-        assert_eq!(order.auction_duration, min_auction_duration);
         assert_eq!(
             order.trigger_condition,
             OrderTriggerCondition::TriggeredBelow
         );
-        assert_eq!(order.auction_start_price, 100000000);
-        assert_eq!(order.auction_end_price, 99500000);
+        assert_eq!(order.oracle_price_offset, -500000);
         let mut order = Order {
             order_type: OrderType::TriggerMarket,
             direction: PositionDirection::Short,
@@ -2629,8 +2593,6 @@ pub mod update_trigger_order_params {
             &mut order,
             &oracle_price_data,
             slot,
-            min_auction_duration,
-            None,
             SlotClock::baseline(),
         );
 
@@ -2645,8 +2607,6 @@ pub mod update_trigger_order_params {
             &mut order,
             &oracle_price_data,
             slot,
-            min_auction_duration,
-            None,
             SlotClock::baseline(),
         );
 
@@ -2768,68 +2728,6 @@ mod order_is_low_risk_for_amm {
             .is_low_risk_for_amm(mm_oracle_delay, clock_slot, false, false)
             .unwrap();
         assert!(!is_low);
-    }
-}
-
-/// The signed-message sanitizer relaxation (`state::order_params`) preserves a
-/// client's fully-specified auction tuple on A/B markets — including a short
-/// `auction_duration`. But the duration the order is *placed* with is not the
-/// value the sanitizer leaves behind: `get_auction_params` independently floors
-/// it to `state.min_perp_auction_duration` at build time. On mainnet (program
-/// `vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P`, state PDA
-/// `2etx5NvPNxeMZ7EfHE6GjJfW2imRYEUANehNS1WB4CVW`) that floor is 10 as of
-/// 2026-07-10, so a client's 5-slot signed-message auction is placed as a
-/// 10-slot auction. These tests pin that end-to-end behavior so the "5 stays 5"
-/// unit tests in `state::order_params::tests` don't read as the whole story.
-mod get_auction_params_min_duration_floor {
-    use crate::{
-        controller::orders::get_auction_params,
-        state::{oracle::OraclePriceData, order_params::OrderParams, user::OrderType},
-        PositionDirection, PRICE_PRECISION_I64,
-    };
-
-    fn oracle() -> OraclePriceData {
-        OraclePriceData {
-            price: 100 * PRICE_PRECISION_I64,
-            ..OraclePriceData::default()
-        }
-    }
-
-    /// A fully-specified, aggressive 5-slot market auction — the shape a
-    /// signed-message order has after the A/B sanitizer preserves it.
-    fn aggressive_5_slot_market_order() -> OrderParams {
-        OrderParams {
-            order_type: OrderType::Market,
-            direction: PositionDirection::Long,
-            auction_duration: Some(5),
-            auction_start_price: Some(99_700_000),
-            auction_end_price: Some(100_300_000),
-            price: 100_300_000,
-            ..OrderParams::default()
-        }
-    }
-    #[test]
-    fn floors_preserved_client_duration_to_mainnet_min() {
-        let params = aggressive_5_slot_market_order();
-        // tick_size = 1 is identity, so the only change is the duration floor.
-        let auction = get_auction_params(&params, &oracle(), 1, 10).unwrap();
-        assert_eq!(auction.start_price, 99_700_000);
-        assert_eq!(auction.end_price, 100_300_000);
-        // The client asked for 5 slots and the sanitizer preserved it, but the
-        // placed order is floored to the mainnet minimum of 10.
-        assert_eq!(auction.duration, 10);
-        assert_ne!(auction.duration, params.auction_duration.unwrap());
-    }
-    #[test]
-    fn preserves_client_duration_only_when_floor_is_low_enough() {
-        let params = aggressive_5_slot_market_order();
-        // Lowering state.min_perp_auction_duration to <= the client's choice is
-        // what actually lets a 5-slot auction survive end-to-end.
-        let auction = get_auction_params(&params, &oracle(), 1, 5).unwrap();
-        assert_eq!(auction.duration, 5);
-
-        let auction = get_auction_params(&params, &oracle(), 1, 3).unwrap();
-        assert_eq!(auction.duration, 5);
     }
 }
 
@@ -3255,7 +3153,6 @@ pub mod builder_fee_margin_gate {
                 direction: PositionDirection::Short,
                 base_asset_amount: BASE_PRECISION_U64,
                 slot: 0,
-                auction_duration: 0,
                 price: 90 * PRICE_PRECISION_U64,
                 bit_flags: OrderBitFlag::HasBuilder as u8,
                 ..Order::default()
@@ -3607,7 +3504,6 @@ mod taker_floor_unverifiable_withholds_fill {
                 direction,
                 base_asset_amount: order_base,
                 slot: 0,
-                auction_duration: 0,
                 price,
                 ..Order::default()
             }),

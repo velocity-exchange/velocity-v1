@@ -4807,9 +4807,7 @@ pub mod types {
         pub trigger_price: Option<u64>,
         pub trigger_condition: Option<OrderTriggerCondition>,
         pub oracle_price_offset: Option<i64>,
-        pub auction_duration: Option<u8>,
-        pub auction_start_price: Option<i64>,
-        pub auction_end_price: Option<i64>,
+        pub activation_delay_slots: Option<u32>,
         pub policy: Option<u8>,
     }
     #[repr(C)]
@@ -4923,8 +4921,8 @@ pub mod types {
         pub base_asset_amount_filled: u64,
         pub quote_asset_amount_filled: u64,
         pub trigger_price: u64,
-        pub auction_start_price: i64,
-        pub auction_end_price: i64,
+        pub clob_node_index: i64,
+        pub clob_order_id: i64,
         pub max_ts: i64,
         pub oracle_price_offset: i64,
         pub order_id: u32,
@@ -4939,7 +4937,7 @@ pub mod types {
         pub post_only: bool,
         pub immediate_or_cancel: bool,
         pub trigger_condition: OrderTriggerCondition,
-        pub auction_duration: u8,
+        pub unused_auction_duration: u8,
         pub posted_slot_tail: u8,
         pub bit_flags: u8,
         #[serde(skip)]
@@ -5103,9 +5101,7 @@ pub mod types {
         pub trigger_price: Option<u64>,
         pub trigger_condition: OrderTriggerCondition,
         pub oracle_price_offset: Option<i64>,
-        pub auction_duration: Option<u8>,
-        pub auction_start_price: Option<i64>,
-        pub auction_end_price: Option<i64>,
+        pub activation_delay_slots: Option<u32>,
         pub builder_idx: Option<u8>,
         pub builder_fee_tenth_bps: Option<u16>,
     }

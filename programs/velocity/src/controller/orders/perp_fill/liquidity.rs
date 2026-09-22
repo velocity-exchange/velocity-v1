@@ -82,9 +82,7 @@ impl FillMarketSetup {
         let taker_limit_price = conditions.mode.get_limit_price(
             taker.order,
             conditions.valid_oracle_price,
-            slot,
             quote_inputs.tick_size,
-            quote_inputs.slot_clock,
         )?;
 
         amm_quoter.refresh(&quote_inputs.ctx(slot))?;
@@ -1012,7 +1010,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         )?;
 
         for clob_order_id in completed_order_ids {
-            maker.decrement_open_orders(false);
+            maker.decrement_open_orders();
             maker.release_placed_trigger_slot(
                 self.market_index,
                 clob_order_id,
@@ -1091,7 +1089,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
                 1,
             )?;
 
-            maker.decrement_open_orders(false);
+            maker.decrement_open_orders();
             maker.release_placed_trigger_slot(
                 self.market_index,
                 cancelled.order_id,
@@ -1165,8 +1163,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
             return Ok(());
         }
 
-        let has_auction = self.taker.order.has_auction();
-        self.taker.user.decrement_open_orders(has_auction);
+        self.taker.user.decrement_open_orders();
         self.taker.user.perp_positions[self.taker.position_index].open_orders -= 1;
         Ok(())
     }

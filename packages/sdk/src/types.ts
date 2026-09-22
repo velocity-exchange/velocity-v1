@@ -2158,12 +2158,12 @@ export type Order = {
 	immediateOrCancel: boolean;
 	/** if set, the limit price is `oraclePrice + oraclePriceOffset`; PRICE_PRECISION (1e6), signed */
 	oraclePriceOffset: BN;
-	/** auction length in wall clock 400ms units (one slot at the 400ms baseline); only relevant for market/oracle orders */
-	auctionDuration: number;
-	/** PRICE_PRECISION (1e6), signed; only relevant for market/oracle orders */
-	auctionStartPrice: BN;
-	/** PRICE_PRECISION (1e6), signed; only relevant for market/oracle orders */
-	auctionEndPrice: BN;
+	/** free byte; it held the auction length until an order stopped resting to auction */
+	unusedAuctionDuration: number;
+	/** the CLOB node a placed-trigger shadow points at, when `OrderBitFlag.PlacedOnClob` is set; zero otherwise */
+	clobNodeIndex: BN;
+	/** the CLOB order id that shadow points at, under the same condition */
+	clobOrderId: BN;
 	/** unix timestamp after which the order expires */
 	maxTs: BN;
 	/** bitmask, see `OrderBitFlag` */
@@ -2194,14 +2194,10 @@ export type OrderParams = {
 	triggerCondition: OrderTriggerCondition;
 	/** signed offset from the oracle price, PRICE_PRECISION (1e6); when set, the order's effective limit price tracks the oracle. Only `ORACLE` orders accept it. The program refuses a `LIMIT` order that carries one (`InvalidOrderOracleOffset`) */
 	oraclePriceOffset: BN | null;
-	/** wall clock 400ms units (one slot at the 400ms baseline); only used for market/oracle orders */
-	auctionDuration: number | null;
 	/** unix timestamp after which the order expires */
 	maxTs: BN | null;
-	/** PRICE_PRECISION (1e6) or oracle-offset units depending on the order, signed; only used for market/oracle orders */
-	auctionStartPrice: BN | null;
-	/** PRICE_PRECISION (1e6) or oracle-offset units depending on the order, signed; only used for market/oracle orders */
-	auctionEndPrice: BN | null;
+	/** how many slots the rested remainder waits before the book will take it; null takes the book default, and the book caps it at `maxActivationDelaySlots` */
+	activationDelaySlots: number | null;
 	/** index into the placing user's RevenueShareEscrow.approved_builders list (non-swift builder codes) */
 	builderIdx?: number | null;
 	/** builder fee on this order, in tenths of a bps, e.g. 100 = 0.01% */
@@ -2305,10 +2301,8 @@ export const DefaultOrderParams: OrderParams = {
 	triggerPrice: null,
 	triggerCondition: OrderTriggerCondition.ABOVE,
 	oraclePriceOffset: null,
-	auctionDuration: null,
 	maxTs: null,
-	auctionStartPrice: null,
-	auctionEndPrice: null,
+	activationDelaySlots: null,
 	builderIdx: null,
 	builderFeeTenthBps: null,
 };

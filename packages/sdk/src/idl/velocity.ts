@@ -25870,21 +25870,9 @@ export type Velocity = {
             }
           },
           {
-            "name": "auctionDuration",
+            "name": "activationDelaySlots",
             "type": {
-              "option": "u8"
-            }
-          },
-          {
-            "name": "auctionStartPrice",
-            "type": {
-              "option": "i64"
-            }
-          },
-          {
-            "name": "auctionEndPrice",
-            "type": {
-              "option": "i64"
+              "option": "u32"
             }
           },
           {
@@ -26153,18 +26141,20 @@ export type Velocity = {
             "type": "u64"
           },
           {
-            "name": "auctionStartPrice",
+            "name": "clobNodeIndex",
             "docs": [
-              "The start price for the auction. Only relevant for market/oracle orders",
-              "precision: PRICE_PRECISION"
+              "The CLOB node this order's shadow points at, when",
+              "[`OrderBitFlag::PlacedOnClob`] is set. Zero otherwise. Read it through",
+              "[`Order::clob_order_ref`], which casts it back to `u32`. The width is",
+              "what `Order`'s fixed 104-byte layout leaves here."
             ],
             "type": "i64"
           },
           {
-            "name": "auctionEndPrice",
+            "name": "clobOrderId",
             "docs": [
-              "The end price for the auction. Only relevant for market/oracle orders",
-              "precision: PRICE_PRECISION"
+              "The CLOB order id this order's shadow points at, under the same",
+              "conditions as [`Order::clob_node_index`]. Cast back to `u64`."
             ],
             "type": "i64"
           },
@@ -26292,12 +26282,11 @@ export type Velocity = {
             }
           },
           {
-            "name": "auctionDuration",
+            "name": "unusedAuctionDuration",
             "docs": [
-              "Auction length in wall clock 400ms units, one unit per slot at the",
-              "400ms baseline. Progress compares `SlotClock::elapsed` against this",
-              "value's wall clock length, so the ramp holds at every slot duration.",
-              "The u8 keeps the full historical 72s range."
+              "Free byte. It held the auction length until an order stopped resting",
+              "to auction. `Order` is 104 bytes with no slack and is an array element",
+              "in `User`, so the byte cannot move."
             ],
             "type": "u8"
           },
@@ -26866,21 +26855,16 @@ export type Velocity = {
             }
           },
           {
-            "name": "auctionDuration",
+            "name": "activationDelaySlots",
+            "docs": [
+              "How many slots the order's rested remainder waits before the book will",
+              "take it. `None` takes the book's default. A longer wait gives more",
+              "counterparties the chance to cross it, and a taker-origin remainder is",
+              "crossed at the counterparty's price, so the wait can only improve the",
+              "fill. The book caps it at `max_activation_delay_slots`."
+            ],
             "type": {
-              "option": "u8"
-            }
-          },
-          {
-            "name": "auctionStartPrice",
-            "type": {
-              "option": "i64"
-            }
-          },
-          {
-            "name": "auctionEndPrice",
-            "type": {
-              "option": "i64"
+              "option": "u32"
             }
           },
           {
@@ -32419,15 +32403,13 @@ export type Velocity = {
           {
             "name": "openAuctions",
             "docs": [
-              "number of open orders with auction"
+              "Always zero. These counted orders that ran an auction. Nothing",
+              "auctions now, and `User` is a fixed layout, so the two stay."
             ],
             "type": "u8"
           },
           {
             "name": "hasOpenAuction",
-            "docs": [
-              "Whether or not user has open order with auction"
-            ],
             "type": "bool"
           },
           {

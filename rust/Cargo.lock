@@ -2138,22 +2138,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dlob-builder"
-version = "0.1.0"
-dependencies = [
- "axum 0.7.9",
- "dotenv",
- "env_logger",
- "serde",
- "solana-commitment-config",
- "solana-keypair",
- "tokio",
- "tower 0.4.13",
- "tower-http 0.5.2",
- "velocity-rs",
-]
-
-[[package]]
 name = "dotenv"
 version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -5,7 +5,6 @@ use {
         get_then_update_id,
         instructions::optional_accounts::AccountMaps,
         math::{
-            auction::{calculate_auction_price, is_auction_complete},
             casting::Cast,
             constants::{
                 ACCELERATED_REFERRAL_ENROLLMENT_ENABLED, OPEN_ORDER_MARGIN_REQUIREMENT,
@@ -27,7 +26,6 @@ use {
                 get_signed_token_amount, get_strict_token_value, get_token_amount, get_token_value,
             },
             stats::calculate_rolling_sum,
-            time::SlotClock,
         },
         math_error, msg, safe_increment,
         state::{
@@ -140,9 +138,9 @@ pub struct User {
     pub open_orders: u8,
     /// Whether or not user has open order
     pub has_open_order: bool,
-    /// number of open orders with auction
+    /// Always zero. These counted orders that ran an auction. Nothing
+    /// auctions now, and `User` is a fixed layout, so the two stay.
     pub open_auctions: u8,
-    /// Whether or not user has open order with auction
     pub has_open_auction: bool,
     pub pool_id: u8,
     /// Whether the user is a special user (vamm hedger, etc)
@@ -616,26 +614,14 @@ impl User {
         self.idle = false;
     }
 
-    pub fn increment_open_orders(&mut self, is_auction: bool) {
+    pub fn increment_open_orders(&mut self) {
         self.open_orders = self.open_orders.saturating_add(1);
         self.has_open_order = self.open_orders > 0;
-        if is_auction {
-            self.increment_open_auctions();
-        }
     }
 
-    pub fn increment_open_auctions(&mut self) {
-        self.open_auctions = self.open_auctions.saturating_add(1);
-        self.has_open_auction = self.open_auctions > 0;
-    }
-
-    pub fn decrement_open_orders(&mut self, is_auction: bool) {
+    pub fn decrement_open_orders(&mut self) {
         self.open_orders = self.open_orders.saturating_sub(1);
         self.has_open_order = self.open_orders > 0;
-        if is_auction {
-            self.open_auctions = self.open_auctions.saturating_sub(1);
-            self.has_open_auction = self.open_auctions > 0;
-        }
     }
 
     /// How many of this market's open perp orders rest on a CLOB instead of in
@@ -705,7 +691,7 @@ impl User {
         self.perp_positions[position_index].open_orders = self.perp_positions[position_index]
             .open_orders
             .saturating_sub(1);
-        self.decrement_open_orders(false);
+        self.decrement_open_orders();
         // The order left the book, so disarm the reduce-only counter it
         // armed.
         if reduce_only {
@@ -754,7 +740,7 @@ impl User {
                 1,
             )?;
 
-            self.decrement_open_orders(false);
+            self.decrement_open_orders();
         }
 
         // The order left the book, so disarm the reduce-only counter it
@@ -842,9 +828,6 @@ impl User {
             };
 
             order.set_clob_order_ref(0, 0);
-            order.auction_start_price = 0;
-            order.auction_end_price = 0;
-            order.auction_duration = 0;
             order.base_asset_amount = remaining_base;
             order.base_asset_amount_filled = 0;
             order.quote_asset_amount_filled = 0;
@@ -854,7 +837,7 @@ impl User {
         // The armed slot is a live order again, so it takes back the
         // open-order count its CLOB order carried. The evict crank's unwind
         // decremented that count. An untriggered order adds no bids or asks.
-        self.increment_open_orders(false);
+        self.increment_open_orders();
         self.get_perp_position_mut(market_index)?.open_orders += 1;
         Ok(true)
     }
@@ -1723,12 +1706,14 @@ pub struct Order {
     /// At what price the order will be triggered. Only relevant for trigger orders
     /// precision: PRICE_PRECISION
     pub trigger_price: u64,
-    /// The start price for the auction. Only relevant for market/oracle orders
-    /// precision: PRICE_PRECISION
-    pub auction_start_price: i64,
-    /// The end price for the auction. Only relevant for market/oracle orders
-    /// precision: PRICE_PRECISION
-    pub auction_end_price: i64,
+    /// The CLOB node this order's shadow points at, when
+    /// [`OrderBitFlag::PlacedOnClob`] is set. Zero otherwise. Read it through
+    /// [`Order::clob_order_ref`], which casts it back to `u32`. The width is
+    /// what `Order`'s fixed 104-byte layout leaves here.
+    pub clob_node_index: i64,
+    /// The CLOB order id this order's shadow points at, under the same
+    /// conditions as [`Order::clob_node_index`]. Cast back to `u64`.
+    pub clob_order_id: i64,
     /// The time when the order will expire
     pub max_ts: i64,
     /// If set, the order limit price is the oracle price + this offset
@@ -1758,11 +1743,10 @@ pub struct Order {
     pub immediate_or_cancel: bool,
     /// Whether the order is triggered above or below the trigger price. Only relevant for trigger orders
     pub trigger_condition: OrderTriggerCondition,
-    /// Auction length in wall clock 400ms units, one unit per slot at the
-    /// 400ms baseline. Progress compares `SlotClock::elapsed` against this
-    /// value's wall clock length, so the ramp holds at every slot duration.
-    /// The u8 keeps the full historical 72s range.
-    pub auction_duration: u8,
+    /// Free byte. It held the auction length until an order stopped resting
+    /// to auction. `Order` is 104 bytes with no slack and is an array element
+    /// in `User`, so the byte cannot move.
+    pub unused_auction_duration: u8,
     /// Last 8 bits of the slot the order was posted onchain (not order slot for signed msg orders)
     pub posted_slot_tail: u8,
     /// Bitflags for further classification
@@ -1794,19 +1778,9 @@ impl Order {
         &self,
         valid_oracle_price: Option<i64>,
         fallback_price: Option<u64>,
-        slot: u64,
         tick_size: u64,
-        slot_clock: SlotClock,
     ) -> VelocityResult<Option<u64>> {
-        let price = if self.has_auction_price(self.slot, self.auction_duration, slot, slot_clock)? {
-            Some(calculate_auction_price(
-                self,
-                slot,
-                tick_size,
-                valid_oracle_price,
-                slot_clock,
-            )?)
-        } else if self.has_oracle_price_offset() {
+        let price = if self.has_oracle_price_offset() {
             let oracle_price = valid_oracle_price.ok_or_else(|| {
                 msg!("Could not find oracle too calculate oracle offset limit price");
                 ErrorCode::OracleNotFound
@@ -1836,17 +1810,9 @@ impl Order {
         &self,
         valid_oracle_price: Option<i64>,
         fallback_price: Option<u64>,
-        slot: u64,
         tick_size: u64,
-        slot_clock: SlotClock,
     ) -> VelocityResult<u64> {
-        match self.get_limit_price(
-            valid_oracle_price,
-            fallback_price,
-            slot,
-            tick_size,
-            slot_clock,
-        )? {
+        match self.get_limit_price(valid_oracle_price, fallback_price, tick_size)? {
             Some(price) => Ok(price),
             None => {
                 let caller = Location::caller();
@@ -1860,30 +1826,8 @@ impl Order {
         }
     }
 
-    pub fn has_limit_price(self, slot: u64, slot_clock: SlotClock) -> VelocityResult<bool> {
-        Ok(self.price > 0
-            || self.has_oracle_price_offset()
-            || !is_auction_complete(self.slot, self.auction_duration, slot, slot_clock)?)
-    }
-
-    pub fn is_auction_complete(self, slot: u64, slot_clock: SlotClock) -> VelocityResult<bool> {
-        is_auction_complete(self.slot, self.auction_duration, slot, slot_clock)
-    }
-
-    pub fn has_auction(&self) -> bool {
-        self.auction_duration != 0
-    }
-
-    pub fn has_auction_price(
-        &self,
-        order_slot: u64,
-        auction_duration: u8,
-        slot: u64,
-        slot_clock: SlotClock,
-    ) -> VelocityResult<bool> {
-        let auction_complete = is_auction_complete(order_slot, auction_duration, slot, slot_clock)?;
-        let has_auction_prices = self.auction_start_price != 0 || self.auction_end_price != 0;
-        Ok(!auction_complete && has_auction_prices)
+    pub fn has_limit_price(self) -> bool {
+        self.price > 0 || self.has_oracle_price_offset()
     }
 
     /// Passing in an existing_position forces the function to consider the order's reduce only status
@@ -2009,20 +1953,14 @@ impl Order {
         self.is_bit_flag_set(OrderBitFlag::PlacedOnClob)
     }
 
-    /// The CLOB `OrderRef` a placed trigger slot shadows. The auction fields
-    /// hold it. A trigger-limit resting on the CLOB can never auction, so
-    /// those fields are dead while [`OrderBitFlag::PlacedOnClob`] is set.
-    /// Using them leaves `Order`'s layout untouched.
+    /// The CLOB `OrderRef` a placed trigger slot shadows.
     pub fn clob_order_ref(&self) -> (u32, u64) {
-        (
-            self.auction_start_price as u32,
-            self.auction_end_price as u64,
-        )
+        (self.clob_node_index as u32, self.clob_order_id as u64)
     }
 
     pub fn set_clob_order_ref(&mut self, node_index: u32, clob_order_id: u64) {
-        self.auction_start_price = node_index as i64;
-        self.auction_end_price = clob_order_id as i64;
+        self.clob_node_index = node_index as i64;
+        self.clob_order_id = clob_order_id as i64;
     }
 
     pub fn is_available(&self) -> bool {
@@ -2083,9 +2021,9 @@ impl Default for Order {
             trigger_price: 0,
             trigger_condition: OrderTriggerCondition::Above,
             oracle_price_offset: 0,
-            auction_start_price: 0,
-            auction_end_price: 0,
-            auction_duration: 0,
+            clob_node_index: 0,
+            clob_order_id: 0,
+            unused_auction_duration: 0,
             max_ts: 0,
             posted_slot_tail: 0,
             bit_flags: 0,

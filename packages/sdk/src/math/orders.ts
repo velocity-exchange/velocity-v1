@@ -9,6 +9,8 @@ import {
 	MarketTypeStr,
 	OrderBitFlag,
 	OrderType,
+	OracleValidity,
+	PerpOperation,
 	StateAccount,
 } from '../types';
 import {
@@ -24,20 +26,17 @@ import { MMOraclePriceData, OraclePriceData } from '../oracles/types';
 import {
 	SlotDurationState,
 	elapsedMillis,
-	millisFromStoredUnits,
+	millis,
 	slotAtOrAfterDuration,
 } from './time';
-import {
-	getAuctionPrice,
-	isAuctionComplete,
-	isFallbackAvailableLiquiditySource,
-} from './auction';
 import {
 	calculateMaxBaseAssetAmountFillable,
 	calculateMaxBaseAssetAmountToTrade,
 	calculateUpdatedAMM,
 } from './amm';
 import { calculateSizePremiumLiabilityWeight } from './margin';
+import { getOracleValidity } from './oracles';
+import { isAmmDrawdownPause, isOperationPaused } from './exchangeStatus';
 
 /** Rounds `baseAssetAmount` down to the nearest multiple of `stepSize` (always truncates toward zero — never rounds up), matching the on-chain order/fill step-size standardization. @param baseAssetAmount Amount to round, BASE_PRECISION (1e9). @param stepSize Market's order step size, BASE_PRECISION (1e9). @returns Amount rounded down to a `stepSize` multiple, BASE_PRECISION (1e9). */
 export function standardizeBaseAssetAmount(
@@ -104,20 +103,10 @@ export function standardizePrice(
 export function getLimitPrice<T extends MarketTypeStr>(
 	order: Order,
 	oraclePriceData: T extends 'spot' ? OraclePriceData : MMOraclePriceData,
-	slot: number,
 	fallbackPrice?: BN,
-	tickSize: BN = ONE,
-	slotDurationState: SlotDurationState = {}
+	tickSize: BN = ONE
 ): BN | undefined {
-	if (hasAuctionPrice(order, slot, slotDurationState)) {
-		return getAuctionPrice(
-			order,
-			slot,
-			oraclePriceData.price,
-			tickSize,
-			slotDurationState
-		);
-	} else if (!order.oraclePriceOffset.eq(ZERO)) {
+	if (!order.oraclePriceOffset.eq(ZERO)) {
 		const limitPrice = BN.max(
 			oraclePriceData.price.add(order.oraclePriceOffset),
 			tickSize
@@ -132,29 +121,9 @@ export function getLimitPrice<T extends MarketTypeStr>(
 	}
 }
 
-/** True if the order has any way to resolve a limit price right now: a fixed `price`, a nonzero oracle offset, or an auction still in progress. */
-export function hasLimitPrice(
-	order: Order,
-	slot: number,
-	slotDurationState: SlotDurationState = {}
-): boolean {
-	return (
-		order.price.gt(ZERO) ||
-		!order.oraclePriceOffset.eq(ZERO) ||
-		!isAuctionComplete(order, slot, slotDurationState)
-	);
-}
-
-/** True if the order still has an active (incomplete) auction with a nonzero start or end price. */
-export function hasAuctionPrice(
-	order: Order,
-	slot: number,
-	slotDurationState: SlotDurationState = {}
-): boolean {
-	return (
-		!isAuctionComplete(order, slot, slotDurationState) &&
-		(!order.auctionStartPrice.eq(ZERO) || !order.auctionEndPrice.eq(ZERO))
-	);
+/** True if the order has any way to resolve a limit price right now: a fixed `price` or a nonzero oracle offset. */
+export function hasLimitPrice(order: Order): boolean {
+	return order.price.gt(ZERO) || !order.oraclePriceOffset.eq(ZERO);
 }
 
 /**
@@ -189,8 +158,7 @@ export function isFillableByVAMM(
 			calculateBaseAssetAmountForAmmToFulfill(
 				order,
 				market,
-				mmOraclePriceData,
-				slot
+				mmOraclePriceData
 			).gt(ZERO)) ||
 		isOrderExpired(order, ts)
 	);
@@ -237,14 +205,12 @@ export function isLowRiskForAmm(
  * @param order Order to evaluate.
  * @param market Perp market the order is on.
  * @param mmOraclePriceData Current MM oracle price data.
- * @param slot Current slot.
  * @returns Fillable base asset amount, BASE_PRECISION (1e9).
  */
 export function calculateBaseAssetAmountForAmmToFulfill(
 	order: Order,
 	market: PerpMarketAccount,
-	mmOraclePriceData: MMOraclePriceData,
-	slot: number
+	mmOraclePriceData: MMOraclePriceData
 ): BN {
 	if (mustBeTriggered(order) && !isTriggered(order)) {
 		return ZERO;
@@ -253,7 +219,6 @@ export function calculateBaseAssetAmountForAmmToFulfill(
 	const limitPrice = getLimitPrice(
 		order,
 		mmOraclePriceData,
-		slot,
 		undefined,
 		market.orderTickSize
 	);
@@ -383,20 +348,27 @@ export function isOrderExpired(
 
 /**
  * Last slot a signed-message (swift) order may still be placed on chain.
- * Mirrors `max_slot` in `place_signed_msg_taker_order`: the message slot
- * plus the auction duration, integrated across slot duration transitions.
+ * Mirrors `max_slot` in `place_signed_msg_taker_order`: the message slot plus
+ * `SIGNED_MSG_FILL_WINDOW_MS`, integrated across slot duration transitions.
  */
 export function signedMsgOrderMaxSlot(
 	state: SlotDurationState,
-	orderSlot: BN,
-	auctionDuration: number
+	orderSlot: BN
 ): BN {
 	return slotAtOrAfterDuration(
 		state,
 		orderSlot,
-		millisFromStoredUnits(auctionDuration)
+		millis(SIGNED_MSG_FILL_WINDOW_MS)
 	);
 }
+
+/**
+ * How long a keeper may take to land a signed message. Mirrors the program's
+ * `SIGNED_MSG_FILL_WINDOW`. The order's worst price was measured against the
+ * oracle at signing, so a message landing later no longer describes the
+ * market the signer agreed to.
+ */
+export const SIGNED_MSG_FILL_WINDOW_MS = 30_000;
 
 /**
  * Mirrors `place_signed_msg_taker_order`'s `order_slot > clock.slot` gate.
@@ -416,14 +388,11 @@ export function signedMsgOrderSlotReached(
 export const SIGNED_MSG_RESTING_LIMIT_MAX_LEAD_MS = 30_000;
 
 /**
- * True if a signed-message (swift) order is a limit order with no auction:
- * the program treats its message slot as a deadline, not an auction start.
+ * True if a signed-message (swift) order rests from placement. The program
+ * treats such an order's message slot as a placement deadline.
  */
-export function isRestingSignedMsgLimitOrder(
-	orderType: OrderType,
-	auctionDuration: number | null | undefined
-): boolean {
-	return isVariant(orderType, 'limit') && !auctionDuration;
+export function isRestingSignedMsgLimitOrder(orderType: OrderType): boolean {
+	return isVariant(orderType, 'limit');
 }
 
 /**
@@ -435,14 +404,13 @@ export function signedMsgOrderPlaceable(
 	order: {
 		slot: BN;
 		orderType: OrderType;
-		auctionDuration: number | null | undefined;
 	},
 	currentSlot: number
 ): boolean {
 	if (signedMsgOrderSlotReached(order.slot, currentSlot)) {
 		return true;
 	}
-	if (!isRestingSignedMsgLimitOrder(order.orderType, order.auctionDuration)) {
+	if (!isRestingSignedMsgLimitOrder(order.orderType)) {
 		return false;
 	}
 	return elapsedMillis(state, new BN(currentSlot), order.slot).lten(
@@ -473,17 +441,9 @@ export function isTriggered(order: Order): boolean {
 	]);
 }
 
-/** True if a limit order currently rests on the book — i.e. it's `postOnly`, or its auction (if any) has completed. Always false for non-limit orders. */
-export function isRestingLimitOrder(
-	order: Order,
-	slot: number,
-	slotDurationState: SlotDurationState = {}
-): boolean {
-	if (!isLimitOrder(order)) {
-		return false;
-	}
-
-	return order.postOnly || isAuctionComplete(order, slot, slotDurationState);
+/** True if the order rests on the book. A limit order rests from placement; nothing else does. */
+export function isRestingLimitOrder(order: Order): boolean {
+	return isLimitOrder(order);
 }
 
 /** True if the order was submitted via the signed-message (swift/off-chain relay) path (`OrderBitFlag.SignedMessage`). */
@@ -634,3 +594,82 @@ export function getRouteDigest(route?: PublicKey[] | null): number[] {
 
 	return digest;
 }
+
+export function isFallbackAvailableLiquiditySource(
+	order: Order,
+	mmOraclePriceData: MMOraclePriceData,
+	slot: number,
+	state: StateAccount,
+	market: PerpMarketAccount,
+	isLiquidation?: boolean
+): boolean {
+	if (isOperationPaused(market.pausedOperations, PerpOperation.AMM_FILL)) {
+		return false;
+	}
+
+	if (isAmmDrawdownPause(market)) {
+		return false;
+	}
+
+	// MM-oracle volatility gate (M15): mirrors `amm_fill_gates_ok`'s
+	// `mm_oracle_not_too_volatile`. We already use safe MM oracle data, but the AMM isn't
+	// available if we *could* have used the MM oracle yet fell back due to a >1% price diff —
+	// early volatility protection. Only applies when the MM oracle is enabled and at least as
+	// recent as the exchange oracle; skipped when those flags weren't populated.
+	if (
+		mmOraclePriceData.isMMOracleEnabled &&
+		mmOraclePriceData.isMMOracleAsRecent &&
+		mmOraclePriceData.isMMExchangeDiffBpsHigh
+	) {
+		return false;
+	}
+
+	const oracleValidity = getOracleValidity(
+		market!,
+		{
+			price: mmOraclePriceData.price,
+			slot: mmOraclePriceData.slot,
+			confidence: mmOraclePriceData.confidence,
+			hasSufficientNumberOfDataPoints:
+				mmOraclePriceData.hasSufficientNumberOfDataPoints,
+		},
+		state.oracleGuardRails,
+		new BN(slot),
+		undefined,
+		mmOraclePriceData.isMMSourcedPrice ?? false,
+		state
+	);
+	if (oracleValidity <= OracleValidity.StaleForAMMLowRisk) {
+		return false;
+	}
+
+	if (oracleValidity == OracleValidity.Valid) {
+		return true;
+	}
+
+	const isOrderLowRiskForAmm = isLowRiskForAmm(
+		order,
+		mmOraclePriceData,
+		isLiquidation
+	);
+
+	if (!isOrderLowRiskForAmm) {
+		return false;
+	} else {
+		return true;
+	}
+}
+
+/**
+ * Dispatches to the correct in-progress auction price for `order` based on its order type:
+ * fixed-price auction (`getAuctionPriceForFixedAuction`) for market/triggerLimit/plain-limit
+ * orders, or oracle-offset auction (`getAuctionPriceForOracleOffsetAuction`) for
+ * oracle-pegged limit/oracle/oracle-triggered-market orders. The result is always
+ * standardized to `tickSize`.
+ * @param order Order whose auction price to compute.
+ * @param slot Current slot.
+ * @param oraclePrice Use `MMOraclePriceData` source for perp orders, `OraclePriceData` for spot; PRICE_PRECISION (1e6).
+ * @param tickSize Market's order tick size, PRICE_PRECISION (1e6). Defaults to `ONE` (no effective standardization).
+ * @returns Auction price at the current slot, PRICE_PRECISION (1e6).
+ * @throws if `order.orderType` doesn't match any known auction pricing path.
+ */

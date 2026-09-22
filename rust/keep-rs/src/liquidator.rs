@@ -1604,7 +1604,7 @@ async fn setup_grpc(
 
     let _ = tokio::try_join!(
         crate::filler::sync_stats_accounts(&velocity),
-        crate::filler::sync_user_accounts(&velocity, None),
+        crate::filler::sync_user_accounts(&velocity),
     );
 
     let mut oracle_to_market = HashMap::<Pubkey, Vec<(MarketId, OracleSource)>>::default();

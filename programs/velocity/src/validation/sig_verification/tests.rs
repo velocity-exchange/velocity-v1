@@ -2,11 +2,18 @@ mod sig_verification {
     use {
         crate::{
             controller::position::PositionDirection,
+            state::{
+                order_params::{
+                    expected_signed_msg_network, OrderParams, SignedMsgOrderParamsDelegateMessage,
+                    SignedMsgOrderParamsMessage, SignedMsgTriggerOrderParams,
+                },
+                user::{MarketType, OrderType},
+            },
             validation::sig_verification::{
                 deserialize_into_verified_message, verify_and_decode_signed_msg,
             },
         },
-        anchor_lang::prelude::Pubkey,
+        anchor_lang::{prelude::Pubkey, AnchorSerialize},
         std::str::FromStr,
     };
 
@@ -21,6 +28,68 @@ mod sig_verification {
         message
     }
 
+    /// The eight bytes the verifier skips before the message body.
+    const MESSAGE_DISCRIMINATOR: [u8; 8] = [200, 213, 166, 94, 34, 52, 245, 93];
+
+    /// The order every fixture carries, unless the test changes it.
+    fn fixture_order_params() -> OrderParams {
+        OrderParams {
+            order_type: OrderType::Market,
+            market_type: MarketType::Perp,
+            direction: PositionDirection::Long,
+            user_order_id: 1,
+            base_asset_amount: 1_000_000_000,
+            price: 224_000_000,
+            ..OrderParams::default()
+        }
+    }
+
+    fn tpsl(trigger_price: u64, base_asset_amount: u64) -> Option<SignedMsgTriggerOrderParams> {
+        Some(SignedMsgTriggerOrderParams {
+            trigger_price,
+            base_asset_amount,
+        })
+    }
+
+    /// A payload built from the message rather than from bytes. A layout change
+    /// then moves the fixture with it, instead of leaving it describing
+    /// something the program no longer reads.
+    fn non_delegate_payload(build: impl FnOnce(&mut SignedMsgOrderParamsMessage)) -> Vec<u8> {
+        let mut message = SignedMsgOrderParamsMessage {
+            signed_msg_order_params: fixture_order_params(),
+            sub_account_id: 0,
+            slot: 1000,
+            uuid: *b"Hp6TjS0k",
+            network: Some(expected_signed_msg_network()),
+            ..SignedMsgOrderParamsMessage::default()
+        };
+        build(&mut message);
+
+        let mut payload = MESSAGE_DISCRIMINATOR.to_vec();
+        message.serialize(&mut payload).unwrap();
+        payload
+    }
+
+    /// [`non_delegate_payload`] for a message a delegate signed.
+    fn delegate_payload(build: impl FnOnce(&mut SignedMsgOrderParamsDelegateMessage)) -> Vec<u8> {
+        let mut message = SignedMsgOrderParamsDelegateMessage {
+            signed_msg_order_params: OrderParams {
+                direction: PositionDirection::Short,
+                ..fixture_order_params()
+            },
+            taker_pubkey: Pubkey::default(),
+            slot: 2345,
+            uuid: *b"CRO3irG1",
+            network: Some(expected_signed_msg_network()),
+            ..SignedMsgOrderParamsDelegateMessage::default()
+        };
+        build(&mut message);
+
+        let mut payload = MESSAGE_DISCRIMINATOR.to_vec();
+        message.serialize(&mut payload).unwrap();
+        payload
+    }
+
     /// The in-program verifier accepts a real signature over the hex payload,
     /// and refuses a wrong signer or a tampered signature — the checks the
     /// native ed25519 precompile used to make.
@@ -29,15 +98,7 @@ mod sig_verification {
         use ed25519_dalek::{Signer, SigningKey};
 
         // A valid non-delegate order, hex-encoded: the taker signs the hex.
-        let order = with_network_tag(
-            with_order_params_builder_none(vec![
-                200, 213, 166, 94, 34, 52, 245, 93, 0, 1, 0, 1, 0, 202, 154, 59, 0, 0, 0, 0, 0,
-                248, 89, 13, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 10, 1, 192, 181, 74, 13, 0,
-                0, 0, 0, 1, 0, 248, 89, 13, 0, 0, 0, 0, 0, 0, 232, 3, 0, 0, 0, 0, 0, 0, 72, 112,
-                54, 84, 106, 83, 48, 107, 0, 0,
-            ]),
-            false,
-        );
+        let order = non_delegate_payload(|_| {});
         let hex_payload = hex::encode(&order).into_bytes();
 
         let signing = SigningKey::from_bytes(&[7u8; 32]);
@@ -69,73 +130,13 @@ mod sig_verification {
         assert!(verify_and_decode_signed_msg(&forged, &other_pk, false).is_err());
     }
 
-    /// The fixtures below encode the embedded `OrderParams` with its pre-builder-codes layout.
-    /// Builder-codes support appended two trailing `Option` fields (`builder_idx`,
-    /// `builder_fee_tenth_bps`) to `OrderParams`, which in these fixtures is a 49-byte auction
-    /// order starting right after the 8-byte discriminator. Splice in their `None` encodings
-    /// (`0, 0`) at the end of the embedded `OrderParams` (offset 8 + 49 = 57) so the trailing
-    /// envelope fields stay aligned.
-    fn with_order_params_builder_none(mut payload: Vec<u8>) -> Vec<u8> {
-        payload.splice(57..57, [0u8, 0u8]);
-        payload
-    }
-
-    /// Re-emit a fixture carrying this build's network tag.
-    ///
-    /// The tag is required, and every fixture here predates it. The bytes are
-    /// decoded the way the verifier decodes them, tagged, and written back,
-    /// so each fixture still states its own layout.
-    fn with_network_tag(payload: Vec<u8>, is_delegate_signer: bool) -> Vec<u8> {
-        use {
-            crate::state::order_params::{
-                expected_signed_msg_network, SignedMsgOrderParamsDelegateMessage,
-                SignedMsgOrderParamsMessage,
-            },
-            anchor_lang::{AnchorDeserialize, AnchorSerialize},
-        };
-
-        let mut owned = payload;
-        let min_len = if is_delegate_signer {
-            std::mem::size_of::<SignedMsgOrderParamsDelegateMessage>()
-        } else {
-            std::mem::size_of::<SignedMsgOrderParamsMessage>()
-        };
-
-        if owned.len() < min_len {
-            owned.resize(min_len, 0);
-        }
-
-        let mut tagged = owned[..8].to_vec();
-        if is_delegate_signer {
-            let mut message =
-                SignedMsgOrderParamsDelegateMessage::deserialize(&mut &owned[8..]).unwrap();
-            message.network = Some(expected_signed_msg_network());
-            message.serialize(&mut tagged).unwrap();
-        } else {
-            let mut message = SignedMsgOrderParamsMessage::deserialize(&mut &owned[8..]).unwrap();
-            message.network = Some(expected_signed_msg_network());
-            message.serialize(&mut tagged).unwrap();
-        }
-
-        tagged
-    }
-
     #[test]
     fn test_deserialize_into_verified_message_non_delegate() {
         let signature = [1u8; 64];
-        let payload = vec![
-            200, 213, 166, 94, 34, 52, 245, 93, 0, 1, 0, 1, 0, 202, 154, 59, 0, 0, 0, 0, 0, 248,
-            89, 13, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 10, 1, 192, 181, 74, 13, 0, 0, 0, 0,
-            1, 0, 248, 89, 13, 0, 0, 0, 0, 0, 0, 232, 3, 0, 0, 0, 0, 0, 0, 72, 112, 54, 84, 106,
-            83, 48, 107, 0, 0,
-        ];
+        let payload = non_delegate_payload(|_| {});
 
         // Test deserialization with non-delegate signer
-        let result = deserialize_into_verified_message(
-            with_network_tag(with_order_params_builder_none(payload), false),
-            &signature,
-            false,
-        );
+        let result = deserialize_into_verified_message(payload, &signature, false);
         assert!(result.is_ok());
 
         let verified_message = result.unwrap();
@@ -160,28 +161,24 @@ mod sig_verification {
         assert_eq!(order_params.price, 224000000u64);
         assert_eq!(order_params.market_index, 0);
         assert_eq!(order_params.reduce_only, false);
-        assert_eq!(order_params.auction_duration, Some(10));
-        assert_eq!(order_params.auction_start_price, Some(223000000i64));
-        assert_eq!(order_params.auction_end_price, Some(224000000i64));
     }
 
     #[test]
     fn test_deserialize_into_verified_message_non_delegate_with_tpsl() {
         let signature = [1u8; 64];
-        let payload = vec![
-            200, 213, 166, 94, 34, 52, 245, 93, 0, 1, 0, 3, 0, 96, 254, 205, 0, 0, 0, 0, 64, 85,
-            32, 14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 10, 1, 128, 133, 181, 13, 0, 0, 0, 0,
-            1, 64, 85, 32, 14, 0, 0, 0, 0, 2, 0, 41, 9, 0, 0, 0, 0, 0, 0, 67, 82, 79, 51, 105, 114,
-            71, 49, 1, 0, 28, 78, 14, 0, 0, 0, 0, 0, 96, 254, 205, 0, 0, 0, 0, 1, 64, 58, 105, 13,
-            0, 0, 0, 0, 0, 96, 254, 205, 0, 0, 0, 0,
-        ];
+        let payload = non_delegate_payload(|m| {
+            m.sub_account_id = 2;
+            m.slot = 2345;
+            m.uuid = *b"CRO3irG1";
+            m.signed_msg_order_params.user_order_id = 3;
+            m.signed_msg_order_params.base_asset_amount = 3_456_000_000;
+            m.signed_msg_order_params.price = 237_000_000;
+            m.take_profit_order_params = tpsl(240_000_000, 3_456_000_000);
+            m.stop_loss_order_params = tpsl(225_000_000, 3_456_000_000);
+        });
 
         // Test deserialization with delegate signer
-        let result = deserialize_into_verified_message(
-            with_network_tag(with_order_params_builder_none(payload), false),
-            &signature,
-            false,
-        );
+        let result = deserialize_into_verified_message(payload, &signature, false);
         assert!(result.is_ok());
 
         let verified_message = result.unwrap();
@@ -214,28 +211,25 @@ mod sig_verification {
         assert_eq!(order_params.price, 237000000u64);
         assert_eq!(order_params.market_index, 0);
         assert_eq!(order_params.reduce_only, false);
-        assert_eq!(order_params.auction_duration, Some(10));
-        assert_eq!(order_params.auction_start_price, Some(230000000i64));
-        assert_eq!(order_params.auction_end_price, Some(237000000i64));
     }
 
     #[test]
     fn test_deserialize_into_verified_message_non_delegate_with_max_margin_ratio() {
         let signature = [1u8; 64];
-        let payload = vec![
-            200, 213, 166, 94, 34, 52, 245, 93, 0, 1, 0, 3, 0, 96, 254, 205, 0, 0, 0, 0, 64, 85,
-            32, 14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 10, 1, 128, 133, 181, 13, 0, 0, 0, 0,
-            1, 64, 85, 32, 14, 0, 0, 0, 0, 2, 0, 41, 9, 0, 0, 0, 0, 0, 0, 67, 82, 79, 51, 105, 114,
-            71, 49, 1, 0, 28, 78, 14, 0, 0, 0, 0, 0, 96, 254, 205, 0, 0, 0, 0, 1, 64, 58, 105, 13,
-            0, 0, 0, 0, 0, 96, 254, 205, 0, 0, 0, 0, 1, 1,
-        ];
+        let payload = non_delegate_payload(|m| {
+            m.sub_account_id = 2;
+            m.slot = 2345;
+            m.uuid = *b"CRO3irG1";
+            m.signed_msg_order_params.user_order_id = 3;
+            m.signed_msg_order_params.base_asset_amount = 3_456_000_000;
+            m.signed_msg_order_params.price = 237_000_000;
+            m.take_profit_order_params = tpsl(240_000_000, 3_456_000_000);
+            m.stop_loss_order_params = tpsl(225_000_000, 3_456_000_000);
+            m.max_margin_ratio = Some(1);
+        });
 
         // Test deserialization with delegate signer
-        let result = deserialize_into_verified_message(
-            with_network_tag(with_order_params_builder_none(payload), false),
-            &signature,
-            false,
-        );
+        let result = deserialize_into_verified_message(payload, &signature, false);
         assert!(result.is_ok());
 
         let verified_message = result.unwrap();
@@ -269,28 +263,25 @@ mod sig_verification {
         assert_eq!(order_params.price, 237000000u64);
         assert_eq!(order_params.market_index, 0);
         assert_eq!(order_params.reduce_only, false);
-        assert_eq!(order_params.auction_duration, Some(10));
-        assert_eq!(order_params.auction_start_price, Some(230000000i64));
-        assert_eq!(order_params.auction_end_price, Some(237000000i64));
     }
 
     #[test]
     fn test_deserialize_into_verified_message_non_delegate_with_isolated_position_deposit() {
         let signature = [1u8; 64];
-        let payload = vec![
-            200, 213, 166, 94, 34, 52, 245, 93, 0, 1, 0, 3, 0, 96, 254, 205, 0, 0, 0, 0, 64, 85,
-            32, 14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 10, 1, 128, 133, 181, 13, 0, 0, 0, 0,
-            1, 64, 85, 32, 14, 0, 0, 0, 0, 2, 0, 41, 9, 0, 0, 0, 0, 0, 0, 67, 82, 79, 51, 105, 114,
-            71, 49, 1, 0, 28, 78, 14, 0, 0, 0, 0, 0, 96, 254, 205, 0, 0, 0, 0, 1, 64, 58, 105, 13,
-            0, 0, 0, 0, 0, 96, 254, 205, 0, 0, 0, 0, 0, 0, 0, 1, 1,
-        ];
+        let payload = non_delegate_payload(|m| {
+            m.sub_account_id = 2;
+            m.slot = 2345;
+            m.uuid = *b"CRO3irG1";
+            m.signed_msg_order_params.user_order_id = 3;
+            m.signed_msg_order_params.base_asset_amount = 3_456_000_000;
+            m.signed_msg_order_params.price = 237_000_000;
+            m.take_profit_order_params = tpsl(240_000_000, 3_456_000_000);
+            m.stop_loss_order_params = tpsl(225_000_000, 3_456_000_000);
+            m.isolated_position_deposit = Some(1);
+        });
 
         // Test deserialization with delegate signer
-        let result = deserialize_into_verified_message(
-            with_network_tag(with_order_params_builder_none(payload), false),
-            &signature,
-            false,
-        );
+        let result = deserialize_into_verified_message(payload, &signature, false);
         assert!(result.is_ok());
 
         let verified_message = result.unwrap();
@@ -322,28 +313,20 @@ mod sig_verification {
         assert_eq!(order_params.price, 237000000u64);
         assert_eq!(order_params.market_index, 0);
         assert_eq!(order_params.reduce_only, false);
-        assert_eq!(order_params.auction_duration, Some(10));
-        assert_eq!(order_params.auction_start_price, Some(230000000i64));
-        assert_eq!(order_params.auction_end_price, Some(237000000i64));
     }
 
     #[test]
     fn test_deserialize_into_verified_message_delegate() {
         let signature = [1u8; 64];
-        let payload = vec![
-            66, 101, 102, 56, 199, 37, 158, 35, 0, 1, 1, 2, 0, 202, 154, 59, 0, 0, 0, 0, 64, 85,
-            32, 14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 10, 1, 0, 28, 78, 14, 0, 0, 0, 0, 1,
-            128, 151, 47, 14, 0, 0, 0, 0, 242, 208, 117, 159, 92, 135, 34, 224, 147, 14, 64, 92, 7,
-            25, 145, 237, 79, 35, 72, 24, 140, 13, 25, 189, 134, 243, 232, 5, 89, 37, 166, 242, 41,
-            9, 0, 0, 0, 0, 0, 0, 67, 82, 79, 51, 105, 114, 71, 49, 0, 0,
-        ];
+        let payload = delegate_payload(|m| {
+            m.taker_pubkey =
+                Pubkey::from_str("HLr2UfL422cakKkaBG4z1bMZrcyhmzX2pHdegjM6fYXB").unwrap();
+            m.signed_msg_order_params.user_order_id = 2;
+            m.signed_msg_order_params.price = 237_000_000;
+        });
 
         // Test deserialization with delegate signer
-        let result = deserialize_into_verified_message(
-            with_network_tag(with_order_params_builder_none(payload), true),
-            &signature,
-            true,
-        );
+        let result = deserialize_into_verified_message(payload, &signature, true);
         assert!(result.is_ok());
 
         let verified_message = result.unwrap();
@@ -371,30 +354,22 @@ mod sig_verification {
         assert_eq!(order_params.price, 237000000u64);
         assert_eq!(order_params.market_index, 0);
         assert_eq!(order_params.reduce_only, false);
-        assert_eq!(order_params.auction_duration, Some(10));
-        assert_eq!(order_params.auction_start_price, Some(240000000i64));
-        assert_eq!(order_params.auction_end_price, Some(238000000i64));
     }
 
     #[test]
     fn test_deserialize_into_verified_message_delegate_with_tpsl() {
         let signature = [1u8; 64];
-        let payload = vec![
-            66, 101, 102, 56, 199, 37, 158, 35, 0, 1, 1, 2, 0, 202, 154, 59, 0, 0, 0, 0, 64, 85,
-            32, 14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 10, 1, 0, 28, 78, 14, 0, 0, 0, 0, 1,
-            128, 151, 47, 14, 0, 0, 0, 0, 241, 148, 164, 10, 232, 65, 33, 157, 18, 12, 251, 132,
-            245, 208, 37, 127, 112, 55, 83, 186, 54, 139, 1, 135, 220, 180, 208, 219, 189, 94, 79,
-            148, 41, 9, 0, 0, 0, 0, 0, 0, 67, 82, 79, 51, 105, 114, 71, 49, 1, 128, 133, 181, 13,
-            0, 0, 0, 0, 0, 202, 154, 59, 0, 0, 0, 0, 1, 128, 178, 230, 14, 0, 0, 0, 0, 0, 202, 154,
-            59, 0, 0, 0, 0,
-        ];
+        let payload = delegate_payload(|m| {
+            m.taker_pubkey =
+                Pubkey::from_str("HG2iQKnRkkasrLptwMZewV6wT7KPstw9wkA8yyu8Nx3m").unwrap();
+            m.signed_msg_order_params.user_order_id = 2;
+            m.signed_msg_order_params.price = 237_000_000;
+            m.take_profit_order_params = tpsl(230_000_000, 1_000_000_000);
+            m.stop_loss_order_params = tpsl(250_000_000, 1_000_000_000);
+        });
 
         // Test deserialization with delegate signer
-        let result = deserialize_into_verified_message(
-            with_network_tag(with_order_params_builder_none(payload), true),
-            &signature,
-            true,
-        );
+        let result = deserialize_into_verified_message(payload, &signature, true);
         assert!(result.is_ok());
 
         let verified_message = result.unwrap();
@@ -430,30 +405,23 @@ mod sig_verification {
         assert_eq!(order_params.price, 237000000u64);
         assert_eq!(order_params.market_index, 0);
         assert_eq!(order_params.reduce_only, false);
-        assert_eq!(order_params.auction_duration, Some(10));
-        assert_eq!(order_params.auction_start_price, Some(240000000i64));
-        assert_eq!(order_params.auction_end_price, Some(238000000i64));
     }
 
     #[test]
     fn test_deserialize_into_verified_message_delegate_with_max_margin_ratio() {
         let signature = [1u8; 64];
-        let payload = vec![
-            66, 101, 102, 56, 199, 37, 158, 35, 0, 1, 1, 2, 0, 202, 154, 59, 0, 0, 0, 0, 64, 85,
-            32, 14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 10, 1, 0, 28, 78, 14, 0, 0, 0, 0, 1,
-            128, 151, 47, 14, 0, 0, 0, 0, 241, 148, 164, 10, 232, 65, 33, 157, 18, 12, 251, 132,
-            245, 208, 37, 127, 112, 55, 83, 186, 54, 139, 1, 135, 220, 180, 208, 219, 189, 94, 79,
-            148, 41, 9, 0, 0, 0, 0, 0, 0, 67, 82, 79, 51, 105, 114, 71, 49, 1, 128, 133, 181, 13,
-            0, 0, 0, 0, 0, 202, 154, 59, 0, 0, 0, 0, 1, 128, 178, 230, 14, 0, 0, 0, 0, 0, 202, 154,
-            59, 0, 0, 0, 0, 1, 1,
-        ];
+        let payload = delegate_payload(|m| {
+            m.taker_pubkey =
+                Pubkey::from_str("HG2iQKnRkkasrLptwMZewV6wT7KPstw9wkA8yyu8Nx3m").unwrap();
+            m.signed_msg_order_params.user_order_id = 2;
+            m.signed_msg_order_params.price = 237_000_000;
+            m.take_profit_order_params = tpsl(230_000_000, 1_000_000_000);
+            m.stop_loss_order_params = tpsl(250_000_000, 1_000_000_000);
+            m.max_margin_ratio = Some(1);
+        });
 
         // Test deserialization with delegate signer
-        let result = deserialize_into_verified_message(
-            with_network_tag(with_order_params_builder_none(payload), true),
-            &signature,
-            true,
-        );
+        let result = deserialize_into_verified_message(payload, &signature, true);
         assert!(result.is_ok());
 
         let verified_message = result.unwrap();
@@ -493,28 +461,26 @@ mod sig_verification {
         assert_eq!(order_params.price, 237000000u64);
         assert_eq!(order_params.market_index, 0);
         assert_eq!(order_params.reduce_only, false);
-        assert_eq!(order_params.auction_duration, Some(10));
-        assert_eq!(order_params.auction_start_price, Some(240000000i64));
-        assert_eq!(order_params.auction_end_price, Some(238000000i64));
     }
 
     #[test]
     fn test_deserialize_into_verified_message_delegate_with_max_margin_ratio_and_builder_params() {
         let signature = [1u8; 64];
-        let payload = vec![
-            200, 213, 166, 94, 34, 52, 245, 93, 0, 1, 0, 3, 0, 96, 254, 205, 0, 0, 0, 0, 64, 85,
-            32, 14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 10, 1, 128, 133, 181, 13, 0, 0, 0, 0,
-            1, 64, 85, 32, 14, 0, 0, 0, 0, 2, 0, 41, 9, 0, 0, 0, 0, 0, 0, 67, 82, 79, 51, 105, 114,
-            71, 49, 1, 0, 28, 78, 14, 0, 0, 0, 0, 0, 96, 254, 205, 0, 0, 0, 0, 0, 1, 255, 255, 1,
-            1, 1, 58, 0,
-        ];
+        let payload = non_delegate_payload(|m| {
+            m.sub_account_id = 2;
+            m.slot = 2345;
+            m.uuid = *b"CRO3irG1";
+            m.signed_msg_order_params.user_order_id = 3;
+            m.signed_msg_order_params.base_asset_amount = 3_456_000_000;
+            m.signed_msg_order_params.price = 237_000_000;
+            m.take_profit_order_params = tpsl(240_000_000, 3_456_000_000);
+            m.max_margin_ratio = Some(65535);
+            m.builder_idx = Some(1);
+            m.builder_fee_tenth_bps = Some(58);
+        });
 
         // Test deserialization with delegate signer
-        let result = deserialize_into_verified_message(
-            with_network_tag(with_order_params_builder_none(payload), false),
-            &signature,
-            false,
-        );
+        let result = deserialize_into_verified_message(payload, &signature, false);
         assert!(result.is_ok());
 
         let verified_message = result.unwrap();
@@ -544,30 +510,23 @@ mod sig_verification {
         assert_eq!(order_params.price, 237000000u64);
         assert_eq!(order_params.market_index, 0);
         assert_eq!(order_params.reduce_only, false);
-        assert_eq!(order_params.auction_duration, Some(10));
-        assert_eq!(order_params.auction_start_price, Some(230000000i64));
-        assert_eq!(order_params.auction_end_price, Some(237000000i64));
     }
 
     #[test]
     fn test_deserialize_into_verified_message_delegate_with_isolated_position_deposit() {
         let signature = [1u8; 64];
-        let payload = vec![
-            66, 101, 102, 56, 199, 37, 158, 35, 0, 1, 1, 2, 0, 202, 154, 59, 0, 0, 0, 0, 64, 85,
-            32, 14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 10, 1, 0, 28, 78, 14, 0, 0, 0, 0, 1,
-            128, 151, 47, 14, 0, 0, 0, 0, 241, 148, 164, 10, 232, 65, 33, 157, 18, 12, 251, 132,
-            245, 208, 37, 127, 112, 55, 83, 186, 54, 139, 1, 135, 220, 180, 208, 219, 189, 94, 79,
-            148, 41, 9, 0, 0, 0, 0, 0, 0, 67, 82, 79, 51, 105, 114, 71, 49, 1, 128, 133, 181, 13,
-            0, 0, 0, 0, 0, 202, 154, 59, 0, 0, 0, 0, 1, 128, 178, 230, 14, 0, 0, 0, 0, 0, 202, 154,
-            59, 0, 0, 0, 0, 0, 0, 0, 1, 1,
-        ];
+        let payload = delegate_payload(|m| {
+            m.taker_pubkey =
+                Pubkey::from_str("HG2iQKnRkkasrLptwMZewV6wT7KPstw9wkA8yyu8Nx3m").unwrap();
+            m.signed_msg_order_params.user_order_id = 2;
+            m.signed_msg_order_params.price = 237_000_000;
+            m.take_profit_order_params = tpsl(230_000_000, 1_000_000_000);
+            m.stop_loss_order_params = tpsl(250_000_000, 1_000_000_000);
+            m.isolated_position_deposit = Some(1);
+        });
 
         // Test deserialization with delegate signer
-        let result = deserialize_into_verified_message(
-            with_network_tag(with_order_params_builder_none(payload), true),
-            &signature,
-            true,
-        );
+        let result = deserialize_into_verified_message(payload, &signature, true);
         assert!(result.is_ok());
 
         let verified_message = result.unwrap();
@@ -602,9 +561,6 @@ mod sig_verification {
         assert_eq!(order_params.price, 237000000u64);
         assert_eq!(order_params.market_index, 0);
         assert_eq!(order_params.reduce_only, false);
-        assert_eq!(order_params.auction_duration, Some(10));
-        assert_eq!(order_params.auction_start_price, Some(240000000i64));
-        assert_eq!(order_params.auction_end_price, Some(238000000i64));
     }
 
     /// The network tag and the signed route: a message tagged for this build

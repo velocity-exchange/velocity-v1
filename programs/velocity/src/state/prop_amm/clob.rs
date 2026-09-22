@@ -494,7 +494,7 @@ impl crate::state::user::User {
         // the counter by the same amount.
         self.perp_positions[position_index]
             .disarm_reduce_only_clob_by(swept.reduce_only_orders().min(u16::MAX as u32) as u16);
-        (0..orders).for_each(|_| self.decrement_open_orders(false));
+        (0..orders).for_each(|_| self.decrement_open_orders());
         let shadows = self.release_swept_trigger_shadows(clob, market_index, sides)?;
         if shadows > 0 {
             crate::msg!("released {} placed-trigger shadows", shadows);

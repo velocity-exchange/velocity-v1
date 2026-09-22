@@ -184,9 +184,9 @@ export function decodeUser(buffer: Buffer): UserAccount {
 		offset += 8;
 		const triggerPrice = readUnsignedBigInt64LE(buffer, offset);
 		offset += 8;
-		const auctionStartPrice = readSignedBigInt64LE(buffer, offset);
+		const clobNodeIndex = readSignedBigInt64LE(buffer, offset);
 		offset += 8;
-		const auctionEndPrice = readSignedBigInt64LE(buffer, offset);
+		const clobOrderId = readSignedBigInt64LE(buffer, offset);
 		offset += 8;
 		const maxTs = readSignedBigInt64LE(buffer, offset);
 		offset += 8;
@@ -271,7 +271,7 @@ export function decodeUser(buffer: Buffer): UserAccount {
 			);
 		}
 		offset += 1;
-		const auctionDuration = buffer.readUInt8(offset);
+		const unusedAuctionDuration = buffer.readUInt8(offset);
 		offset += 1;
 		const postedSlotTail = buffer.readUint8(offset);
 		offset += 1;
@@ -289,8 +289,8 @@ export function decodeUser(buffer: Buffer): UserAccount {
 			baseAssetAmountFilled,
 			quoteAssetAmountFilled,
 			triggerPrice,
-			auctionStartPrice,
-			auctionEndPrice,
+			clobNodeIndex,
+			clobOrderId,
 			maxTs,
 			oraclePriceOffset,
 			orderId,
@@ -305,7 +305,7 @@ export function decodeUser(buffer: Buffer): UserAccount {
 			postOnly,
 			immediateOrCancel,
 			triggerCondition,
-			auctionDuration,
+			unusedAuctionDuration,
 			bitFlags,
 			postedSlotTail,
 			padding,

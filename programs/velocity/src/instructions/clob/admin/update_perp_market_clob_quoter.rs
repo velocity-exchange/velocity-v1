@@ -313,6 +313,10 @@ fn write_market_crank_conditions(
     expire_fallback_slots: u64,
     refill_watermark_lamports: u64,
 ) -> Result<()> {
+    // Read before the loader borrow, because the read borrows the data too.
+    let spendable_lamports =
+        ClobCrankConditionsV0::spendable_lamports(&crank_conditions.to_account_info())?;
+
     let mut conditions = crank_conditions
         .load_init()
         .or_else(|_| load_mut!(crank_conditions))?;
@@ -335,7 +339,6 @@ fn write_market_crank_conditions(
     // field. A mirror left at zero on an account that already holds lamports
     // keeps the condition due forever, while the resolver keeps answering that
     // there is no work.
-    conditions.spendable_mirror =
-        ClobCrankConditionsV0::spendable_lamports(&crank_conditions.to_account_info())?;
+    conditions.spendable_mirror = spendable_lamports;
     Ok(())
 }

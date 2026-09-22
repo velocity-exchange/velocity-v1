@@ -66,7 +66,7 @@ export * from './jupiter/jupiterClient';
 export * from './swap/UnifiedSwapClient';
 export * from './swap/types';
 export * from './swap/routeInstructions';
-export * from './math/auction';
+export * from './math/worstPrice';
 export * from './math/crankFee';
 export * from './math/builder';
 export * from './math/spotMarket';

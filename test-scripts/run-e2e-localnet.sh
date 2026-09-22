@@ -120,28 +120,24 @@ echo "== relay at $RELAY_REV ($RELAY_SRC) =="
 
 if [ "${1:-}" != "--skip-build" ]; then
   echo "== building programs + publisher =="
-  # Nothing here goes through `anchor build`, deliberately. Anchor always
-  # uses cargo-build-sbf's default platform-tools (v1.52 as of 3.1.14) and
-  # only exposes --solana-version for verifiable builds, while every .so this
-  # harness deploys must come from v1.54 — the v1.52 default miscompiles
-  # velocity's initialize paths into a 4KB stack-frame overflow ("Access
-  # violation in stack frame 3"), which this very harness is what caught.
-  # The two toolchains also cannot coexist: installing either removes the
-  # other, so a run that used both would reinstall a toolchain every time
-  # and, worse, would silently link whichever one happened to be present.
-  # IDLs come from `program:idl`, which builds them with the host toolchain.
+  # Nothing here goes through `anchor build`, because anchor uses
+  # cargo-build-sbf's default platform-tools and cannot build SBPFv3. Every
+  # .so this harness deploys is SBPFv3 from the platform-tools that
+  # `deploy-scripts/build-sbf.sh` pins. Agave 4.2 activates SIMD-0500 at
+  # genesis, so the validator refuses to run a v0 program. IDLs come from
+  # `program:idl`, which builds them with the host toolchain.
   bun run program:idl
-  cargo-build-sbf --tools-version v1.54 --manifest-path programs/velocity/Cargo.toml -- --no-default-features --features no-entrypoint,anchor-test
+  bash deploy-scripts/build-sbf.sh test velocity
   # The pyth stub rides velocity's build as a no-entrypoint library, so it
   # needs its own build WITH the entrypoint to be invocable on a validator.
-  cargo-build-sbf --tools-version v1.54 --manifest-path programs/pyth/Cargo.toml -- --no-default-features --features anchor-test
+  cargo-build-sbf --arch v3 --tools-version v1.57 --manifest-path programs/pyth/Cargo.toml --sbf-out-dir target/deploy -- --no-default-features --features anchor-test
   anchor idl build --skip-lint -p pyth -o target/idl/pyth.json -- --no-default-features --features anchor-test
   bun run program:build:clob
   bun run program:build:midpoint
   cargo build --manifest-path rust/Cargo.toml -p book-publisher
   cargo build --manifest-path rust/Cargo.toml -p swift-server
   # relay: the program the watches live on, and the turner that cranks them.
-  (cd "$RELAY_SRC/programs" && cargo-build-sbf --tools-version v1.54 --manifest-path relay/Cargo.toml)
+  (cd "$RELAY_SRC/programs" && cargo-build-sbf --arch v3 --tools-version v1.57 --manifest-path relay/Cargo.toml)
   cargo build --manifest-path "$RELAY_SRC/Cargo.toml" -p relay-crank-turner
   (cd packages/sdk && bun run build >/dev/null)
 else
@@ -177,6 +173,11 @@ for port in "$RPC_PORT" "$REDIS_PORT"; do
     echo "== port $port busy, killing $pids =="
     kill $pids 2>/dev/null || true
     sleep 2
+  fi
+
+  if lsof -ti "tcp:$port" >/dev/null 2>&1; then
+    echo "port $port is still held by another process; set RPC_PORT or REDIS_PORT" >&2
+    exit 1
   fi
 done
 

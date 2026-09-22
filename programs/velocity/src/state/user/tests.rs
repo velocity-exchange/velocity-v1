@@ -1671,32 +1671,22 @@ mod get_base_asset_amount_unfilled {
 mod open_orders {
     use crate::state::user::User;
 
+    /// The auction counters stay at zero. Nothing auctions, and `User` is a
+    /// fixed layout, so the two fields remain.
     #[test]
-    fn test() {
+    fn the_counter_tracks_orders_and_the_auction_fields_stay_zero() {
         let mut user = User::default();
 
-        user.increment_open_orders(false);
+        user.increment_open_orders();
+        user.increment_open_orders();
 
-        assert_eq!(user.open_orders, 1);
+        assert_eq!(user.open_orders, 2);
         assert!(user.has_open_order);
         assert_eq!(user.open_auctions, 0);
         assert!(!user.has_open_auction);
 
-        user.increment_open_orders(true);
-
-        assert_eq!(user.open_orders, 2);
-        assert!(user.has_open_order);
-        assert_eq!(user.open_auctions, 1);
-        assert!(user.has_open_auction);
-
-        user.decrement_open_orders(false);
-
-        assert_eq!(user.open_orders, 1);
-        assert!(user.has_open_order);
-        assert_eq!(user.open_auctions, 1);
-        assert!(user.has_open_auction);
-
-        user.decrement_open_orders(true);
+        user.decrement_open_orders();
+        user.decrement_open_orders();
 
         assert_eq!(user.open_orders, 0);
         assert!(!user.has_open_order);

@@ -1036,14 +1036,11 @@ fn a_fill_that_leaves_out_a_reachable_book_maker_is_refused() {
         market_type: MarketType::Perp,
         direction: PositionDirection::Long,
         base_asset_amount: UNIT,
-        price: 0,
+        // Both book levels sit inside the taker's worst price, so the walk
+        // reaches the deeper one.
+        price: 101 * PRICE,
         market_index: 0,
         post_only: PostOnlyParam::None,
-        // No auction left to run, so both book levels are inside the taker's
-        // limit from the first slot and the walk reaches the deeper one.
-        auction_duration: Some(0),
-        auction_start_price: Some((101 * PRICE) as i64),
-        auction_end_price: Some((101 * PRICE) as i64),
         ..OrderParams::default()
     };
     let message = SignedMsgOrderParamsMessage {
@@ -1208,7 +1205,6 @@ fn a_taker_that_signs_fills_in_full_at_the_price_present() {
                     direction: PositionDirection::Long,
                     base_asset_amount: UNIT,
                     price: 105 * PRICE,
-                    auction_end_price: Some((105 * PRICE) as i64),
                     market_index: 0,
                     post_only: PostOnlyParam::None,
                     ..OrderParams::default()
@@ -1795,7 +1791,6 @@ fn router_fill_without_the_markets_clob_quoter_fails() {
                     direction: PositionDirection::Long,
                     base_asset_amount: UNIT,
                     price: 105 * PRICE,
-                    auction_end_price: Some((105 * PRICE) as i64),
                     market_index: 0,
                     post_only: PostOnlyParam::None,
                     ..OrderParams::default()
@@ -4050,13 +4045,12 @@ fn force_cancel_reclaims_a_failing_makers_clob_orders() {
     );
 }
 
-/// The authority-wide latch is grounds by itself. Relay proves one
-/// subaccount below its floor and trips it; from then on every subaccount is
-/// barred from risk-increasing activity, so the orders this one is resting
-/// cannot legally fill and anyone may reclaim them — without re-deriving the
-/// breach, which is what the latch exists to record.
+/// The authority-wide latch is not grounds by itself. A force cancel answers
+/// only to a breached margin requirement or a proven equity floor breach, the
+/// same two grounds `force_cancel_orders` answers to. A healthy subaccount
+/// under a tripped latch keeps its resting orders.
 #[test]
-fn a_tripped_equity_breaker_is_grounds_on_its_own() {
+fn a_tripped_equity_breaker_is_not_grounds_on_its_own() {
     let mut fixture = setup();
     let order_ref = place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 2);
 
@@ -4108,19 +4102,20 @@ fn a_tripped_equity_breaker_is_grounds_on_its_own() {
     send(&mut fixture.svm, &keeper, ix, &[]).expect("healthy is a no-op");
     assert_eq!(clob_ask_count(&fixture), 1);
 
-    // Latch set: the same call now reclaims the order.
+    // Latch set: the same call is still a no-op.
     set_tripped_user_stats(
         &mut fixture.svm,
         maker_stats,
         &fixture.clob_maker_authority.pubkey(),
     );
 
+    fixture.svm.expire_blockhash();
     let ix = build(&fixture);
-    send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
-    assert_eq!(clob_ask_count(&fixture), 0);
+    send(&mut fixture.svm, &keeper, ix, &[]).expect("the latch alone is a no-op");
+    assert_eq!(clob_ask_count(&fixture), 1);
     let maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
-    assert_eq!(maker.perp_positions[0].open_asks, 0);
-    assert_eq!(maker.perp_positions[0].open_orders, 0);
+    assert_eq!(maker.perp_positions[0].open_asks, -((UNIT / 2) as i64));
+    assert_eq!(maker.perp_positions[0].open_orders, 1);
 }
 
 /// A risk-*reducing* order is passed over, not cancelled and not fatal.
@@ -5120,13 +5115,9 @@ fn place_and_take_rests_the_remainder_on_the_clob() {
 /// A market order's remainder rests on the book too, at the worst price the
 /// order already agreed to.
 ///
-/// It used to keep DLOB behaviour on this route while the keeper route rested
-/// it, so the same order ended up in a different place depending on which one
-/// reached it. That is not a fallback once the DLOB is gone — it is an order
-/// nothing will fill. A market order's own `price` is zero, so it rests at
-/// `auction_end_price`, which is safe because a migrated remainder is
-/// taker-origin: nobody can take it at that bound while a counterparty
-/// crosses it, and the cross settles at the counterparty's price.
+/// A migrated remainder is taker-origin. Nobody can take it at that bound
+/// while a counterparty crosses it, and the cross settles at the
+/// counterparty's price.
 #[test]
 fn place_and_take_rests_a_market_order_remainder_on_the_clob() {
     use velocity::state::order_params::{OrderParams, PostOnlyParam};
@@ -5198,12 +5189,8 @@ fn place_and_take_rests_a_market_order_remainder_on_the_clob() {
                     direction: PositionDirection::Long,
                     base_asset_amount: UNIT,
                     // A market order's bound: the worst fill it agreed to, and
-                    // the only price its remainder can rest at. The auction is
-                    // over before the order is placed, so the bound is also
-                    // the price the order is standing at when it rests.
-                    auction_start_price: Some((101 * PRICE) as i64),
-                    auction_end_price: Some((101 * PRICE) as i64),
-                    auction_duration: Some(0),
+                    // the only price its remainder can rest at.
+                    price: 101 * PRICE,
                     market_index: 0,
                     post_only: PostOnlyParam::None,
                     ..OrderParams::default()
@@ -5565,7 +5552,6 @@ fn fill_long_through_midpoint(
                     direction: PositionDirection::Long,
                     base_asset_amount: size,
                     price: 105 * PRICE,
-                    auction_end_price: Some((105 * PRICE) as i64),
                     market_index: 0,
                     post_only: PostOnlyParam::None,
                     ..OrderParams::default()
@@ -5741,7 +5727,6 @@ fn router_fill_splits_across_clob_midpoint_and_vamm() {
                     direction: PositionDirection::Long,
                     base_asset_amount: UNIT + UNIT / 2,
                     price: 105 * PRICE,
-                    auction_end_price: Some((105 * PRICE) as i64),
                     market_index: 0,
                     post_only: velocity::state::order_params::PostOnlyParam::None,
                     ..velocity::state::order_params::OrderParams::default()
@@ -7536,7 +7521,7 @@ fn place_and_make_v1_rests_a_maker_order_on_the_book() {
 
 // ---------------------------------------------------------------------------
 // Taker-origin crosses: a migrated taker remainder, and the crank that hands
-// it the improvement its auction window earned.
+// it the improvement its activation window earned.
 // ---------------------------------------------------------------------------
 
 /// Pause the vAMM for fills. A place-and-take that finds no liquidity is how
@@ -7654,12 +7639,9 @@ fn signed_msg_taker_signature_is_verified_in_program() {
         market_type: MarketType::Perp,
         direction: PositionDirection::Long,
         base_asset_amount: UNIT,
-        price: 0,
+        price: 101 * PRICE,
         market_index: 0,
         post_only: PostOnlyParam::None,
-        auction_duration: Some(10),
-        auction_start_price: Some((99 * PRICE) as i64),
-        auction_end_price: Some((101 * PRICE) as i64),
         ..OrderParams::default()
     };
     let message = SignedMsgOrderParamsMessage {
@@ -7823,12 +7805,9 @@ fn a_swift_fill_takes_a_bumped_book_only_with_the_attestation() {
             market_type: MarketType::Perp,
             direction: PositionDirection::Long,
             base_asset_amount: UNIT,
-            price: 0,
+            price: 101 * PRICE,
             market_index: 0,
             post_only: PostOnlyParam::None,
-            auction_duration: Some(10),
-            auction_start_price: Some((99 * PRICE) as i64),
-            auction_end_price: Some((101 * PRICE) as i64),
             ..OrderParams::default()
         };
         let message = SignedMsgOrderParamsMessage {
@@ -8389,7 +8368,7 @@ fn a_partly_filled_remainder_keeps_its_id_and_its_queue_position() {
 /// The window binds the taker who opened it.
 ///
 /// A remainder its owner can pull the moment a maker lines up offers nothing to
-/// line up against, so an auction needs the order to still be there when it
+/// line up against, so the window needs the order to still be there when it
 /// ends. Liquidation is the one thing that must never wait: force-cancel passes
 /// `force` and reaches a bound order, because an account in distress cannot be
 /// held hostage by its own resting orders.
@@ -10489,7 +10468,6 @@ fn vamm_take(
                     direction,
                     base_asset_amount: base,
                     price: limit,
-                    auction_end_price: Some(limit as i64),
                     market_index: 0,
                     post_only: PostOnlyParam::None,
                     ..OrderParams::default()

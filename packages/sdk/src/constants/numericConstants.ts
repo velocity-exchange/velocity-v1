@@ -53,6 +53,13 @@ export const QUOTE_PRECISION_EXP = new BN(6);
 /** Exponent for `FUNDING_RATE_BUFFER_PRECISION` (1e3) — the extra precision funding rates carry beyond `PRICE_PRECISION`. */
 export const FUNDING_RATE_BUFFER_PRECISION_EXP = new BN(3);
 /** Exponent for `PRICE_PRECISION` (1e6). */
+/**
+ * A market order that names no price fills at most `oracle / this` away from
+ * the oracle. 200 is 0.5 percent. Mirrors the program's
+ * `DEFAULT_MARKET_ORDER_SLIPPAGE_FRACTION`.
+ */
+export const DEFAULT_MARKET_ORDER_SLIPPAGE_FRACTION = new BN(200);
+
 export const PRICE_PRECISION_EXP = new BN(6);
 /** Exponent for `FUNDING_RATE_PRECISION` (1e9) = `PRICE_PRECISION_EXP` + `FUNDING_RATE_BUFFER_PRECISION_EXP`. */
 export const FUNDING_RATE_PRECISION_EXP = PRICE_PRECISION_EXP.add(

@@ -86,7 +86,6 @@ pub struct OrderMetadataAndMessage {
     pub ts: u64,
     pub market_index: u16,
     pub market_type: MarketType,
-    pub will_sanitize: bool,
     pub order_message_str: String,
 }
 
@@ -148,7 +147,6 @@ impl OrderMetadataAndMessage {
             "signing_authority": self.signing_authority.to_string(),
             "uuid": self.uuid(),
             "ts": self.ts,
-            "will_sanitize": self.will_sanitize,
         })
     }
 }
@@ -369,6 +367,23 @@ mod tests {
     }
 
     /// A representative `OrderParams` shared by the wire fixtures.
+    fn sample_authority_message() -> SignedMsgOrderParamsMessage {
+        SignedMsgOrderParamsMessage {
+            signed_msg_order_params: sample_order_params(),
+            sub_account_id: 0,
+            slot: 369631527,
+            uuid: [115, 56, 108, 117, 74, 76, 90, 101],
+            take_profit_order_params: None,
+            stop_loss_order_params: None,
+            max_margin_ratio: None,
+            builder_fee_tenth_bps: None,
+            builder_idx: None,
+            isolated_position_deposit: None,
+            network: None,
+            route: None,
+        }
+    }
+
     fn sample_order_params() -> OrderParams {
         OrderParams {
             order_type: OrderType::Market,
@@ -385,9 +400,7 @@ mod tests {
             trigger_price: None,
             trigger_condition: OrderTriggerCondition::Above,
             oracle_price_offset: None,
-            auction_duration: Some(50),
-            auction_start_price: Some(2102419643),
-            auction_end_price: Some(2081603607),
+            activation_delay_slots: None,
             builder_idx: None,
             builder_fee_tenth_bps: None,
         }
@@ -439,15 +452,24 @@ mod tests {
         }
     }
 
+    /// Built the way the delegated case is: construct, borsh, hex, sign, JSON.
+    /// A recorded payload would pin a layout rather than the verifier.
     #[test]
     fn deserialize_incoming_signed_message() {
-        let message = r#"{
+        let signer = test_keypair(31);
+        let hex_msg = encode_message(&SignedOrderType::authority(sample_authority_message()));
+        let signature = sign_hex(&signer, &hex_msg);
+
+        let message = format!(
+            r#"{{
             "market_index": 2,
             "market_type": "perp",
-            "message": "c8d5a65e2234f55d0001000080841e00000000000000000000000000020000000000000000013201abe72e7c000000000162d06c7d00000000000066190816000000005a645349472d634c0000",
-            "signature": "LiwPgg6VXxOWfCI/PGQpv2c2PqDs11zgSrqDCOvHq1S0yvE0KZeQa84u7Pb0tanN2KO4Ac8laT7odaAyWxRDBA==",
-            "taker_pubkey": "4rmhwytmKH1XsgGAUyUUH7U64HS5FtT6gM8HGKAfwcFE"
-        }"#;
+            "message": "{hex_msg}",
+            "signature": "{signature}",
+            "taker_pubkey": "{taker}"
+        }}"#,
+            taker = signer.pubkey()
+        );
 
         let actual: IncomingSignedMessage = serde_json::from_str(&message).expect("deserializes");
         assert!(actual.verify_signature().is_ok());
@@ -456,26 +478,20 @@ mod tests {
 
     #[test]
     fn deserialize_incoming_signed_message_with_taker_authority() {
-        let message = r#"{
+        let signer = test_keypair(32);
+        let hex_msg = encode_message(&SignedOrderType::authority(sample_authority_message()));
+        let signature = sign_hex(&signer, &hex_msg);
+
+        let message = format!(
+            r#"{{
             "market_index": 2,
             "market_type": "perp",
-            "message": "c8d5a65e2234f55d0001000080841e00000000000000000000000000020000000000000000013201abe72e7c000000000162d06c7d00000000000066190816000000005a645349472d634c0000",
-            "signature": "LiwPgg6VXxOWfCI/PGQpv2c2PqDs11zgSrqDCOvHq1S0yvE0KZeQa84u7Pb0tanN2KO4Ac8laT7odaAyWxRDBA==",
-            "taker_authority": "4rmhwytmKH1XsgGAUyUUH7U64HS5FtT6gM8HGKAfwcFE"
-        }"#;
-
-        let actual: IncomingSignedMessage = serde_json::from_str(&message).expect("deserializes");
-        assert!(actual.verify_signature().is_ok());
-        assert!(actual.signing_authority == Pubkey::default());
-
-        let message = r#"{
-            "market_index": 2,
-            "market_type": "perp",
-            "message": "c8d5a65e2234f55d0001000080841e00000000000000000000000000020000000000000000013201abe72e7c000000000162d06c7d00000000000066190816000000005a645349472d634c0000",
-            "signature": "LiwPgg6VXxOWfCI/PGQpv2c2PqDs11zgSrqDCOvHq1S0yvE0KZeQa84u7Pb0tanN2KO4Ac8laT7odaAyWxRDBA==",
-            "taker_pubkey": "2Ym3QkbXGEZSLDSERE6zCuar6fMCHTzvmw2He3MSL1s9",
-            "taker_authority": "4rmhwytmKH1XsgGAUyUUH7U64HS5FtT6gM8HGKAfwcFE"
-        }"#;
+            "message": "{hex_msg}",
+            "signature": "{signature}",
+            "taker_authority": "{taker}"
+        }}"#,
+            taker = signer.pubkey()
+        );
 
         let actual: IncomingSignedMessage = serde_json::from_str(&message).expect("deserializes");
         assert!(actual.verify_signature().is_ok());
@@ -538,11 +554,12 @@ mod tests {
             market_type: MarketType::Perp,
             signing_authority: Pubkey::new_unique(),
             taker_authority: Pubkey::new_unique(),
-            order_message_str: "c8d5a65e2234f55d0001010080841e00000000000000000000000000020000000000000000013201bb60507d000000000117c0127c000000000000272108160000000073386c754a4c5a650000".to_string(),
+            order_message_str: encode_message(&SignedOrderType::authority(
+                sample_authority_message(),
+            )),
             order_signature: [1u8; 64],
             ts: 55555,
             uuid: nanoid!(8).as_bytes().try_into().unwrap(),
-            will_sanitize: true,
         }
         .encode();
         let order_metadata = OrderMetadataAndMessage::decode(&encoded).unwrap();
@@ -582,7 +599,6 @@ mod tests {
             uuid: order_params.uuid,
             order_message_str: hex_msg.clone(),
             ts: 55555,
-            will_sanitize: false,
         }
         .jsonify();
 
@@ -607,8 +623,6 @@ mod tests {
             order_metadata_json["signing_authority"],
             signing_authority.to_string(),
         );
-
-        assert_eq!(order_metadata_json["will_sanitize"], false,);
     }
 
     /// Shared order params for the `_v0`/`_v1` round-trip fixtures: an authority order with
@@ -629,9 +643,7 @@ mod tests {
             trigger_price: None,
             trigger_condition: OrderTriggerCondition::Above,
             oracle_price_offset: None,
-            auction_duration: Some(10),
-            auction_start_price: Some(230000000),
-            auction_end_price: Some(237000000),
+            activation_delay_slots: None,
             builder_idx: None,
             builder_fee_tenth_bps: None,
         }
@@ -679,12 +691,6 @@ mod tests {
             SignedOrderType::Authority { inner: m, raw } => {
                 assert_eq!(raw, Some(hex));
                 assert_eq!(m, order);
-                assert_eq!(m.signed_msg_order_params.auction_duration, Some(10));
-                assert_eq!(
-                    m.signed_msg_order_params.auction_start_price,
-                    Some(230000000)
-                );
-                assert_eq!(m.signed_msg_order_params.auction_end_price, Some(237000000));
                 assert_eq!(m.sub_account_id, 2);
                 assert_eq!(m.slot, 2345);
                 assert_eq!(
@@ -745,12 +751,6 @@ mod tests {
             SignedOrderType::Authority { inner: m, raw } => {
                 assert_eq!(Some(hex), raw);
                 assert_eq!(m, order);
-                assert_eq!(m.signed_msg_order_params.auction_duration, Some(10));
-                assert_eq!(
-                    m.signed_msg_order_params.auction_start_price,
-                    Some(230000000)
-                );
-                assert_eq!(m.signed_msg_order_params.auction_end_price, Some(237000000));
                 assert_eq!(m.sub_account_id, 2);
                 assert_eq!(m.slot, 2345);
                 assert_eq!(

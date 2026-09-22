@@ -234,7 +234,7 @@ pub fn crank_clob_removal(
         )?;
 
         release_reserved_open_orders(&mut user.perp_positions[position_index], 1)?;
-        user.decrement_open_orders(false);
+        user.decrement_open_orders();
         // The order left the book, so disarm the reduce-only counter it armed.
         if removed.reduce_only {
             user.perp_positions[position_index].disarm_reduce_only_clob();

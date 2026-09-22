@@ -143,7 +143,7 @@ pub mod amm_jit {
             instructions::optional_accounts::AccountMaps,
             math::constants::{
                 AMM_RESERVE_PRECISION, BASE_PRECISION_I64, BASE_PRECISION_U64, PEG_PRECISION,
-                PRICE_PRECISION, PRICE_PRECISION_I64, PRICE_PRECISION_U64, QUOTE_PRECISION_I64,
+                PRICE_PRECISION, PRICE_PRECISION_U64, QUOTE_PRECISION_I64,
                 SPOT_BALANCE_PRECISION_U64, SPOT_CUMULATIVE_INTEREST_PRECISION,
                 SPOT_WEIGHT_PRECISION,
             },
@@ -306,10 +306,7 @@ pub mod amm_jit {
                 direction: PositionDirection::Long,
                 base_asset_amount: BASE_PRECISION_U64,
                 slot: 0,
-                auction_start_price: 0,
-                auction_end_price: 105 * PRICE_PRECISION_I64,
                 price: 105 * PRICE_PRECISION_U64,
-                auction_duration: 0,
                 ..Order::default()
             }),
 

@@ -210,11 +210,6 @@ pub struct SignedOrderInfo {
     /// Signature over the serialized `order` payload
     #[serde(rename = "order_signature", deserialize_with = "deser_signature")]
     pub signature: Signature,
-    /// true if the order params are highly likely to be sanitized (improved) by the program when placed
-    ///
-    /// MMs wishing to fill a sanitized order should understand the potential time/price bound changes
-    #[serde(default)]
-    pub will_sanitize: bool,
     /// Taker signed (pre)deposit tx
     ///
     /// taker requires posting collateral before placing the swift order
@@ -327,7 +322,6 @@ impl SignedOrderInfo {
             signer,
             order,
             signature,
-            will_sanitize: false,
             pre_deposit,
         }
     }
@@ -347,7 +341,6 @@ impl SignedOrderInfo {
             signature,
             signer: taker_authority,
             taker_authority,
-            will_sanitize: false,
             pre_deposit: None,
         }
     }
@@ -368,7 +361,6 @@ impl SignedOrderInfo {
             signature,
             signer: signing_authority,
             taker_authority,
-            will_sanitize: false,
             pre_deposit: None,
         }
     }
@@ -405,12 +397,8 @@ pub type SwiftOrderStream = ReceiverStream<SignedOrderInfo>;
 ///
 /// * `client` - Velocity client instance
 /// * `markets` - markets to listen on for new swift orders
-/// * `accept_sanitized` - set to true to receive *sanitized order flow (default: false)
 /// * `accept_deposit_trades` - set to true to receive 'deposit+trade' order flow (default: false)
 /// * `swift_ws_override` - custom swift Ws server endpoint
-///
-/// * a sanitized order may have its auction params modified by the program when
-///   placed onchain. Makers should understand the time/price implications to accept these.
 ///
 /// * deposit+trade orders require fillers to send an attached, preceding deposit tx
 ///   before the swift order
@@ -419,7 +407,6 @@ pub type SwiftOrderStream = ReceiverStream<SignedOrderInfo>;
 pub async fn subscribe_swift_orders(
     client: &VelocityClient,
     markets: &[MarketId],
-    accept_sanitized: bool,
     accept_deposit_trades: bool,
     swift_ws_override: Option<String>,
 ) -> SdkResult<SwiftOrderStream> {
@@ -571,16 +558,6 @@ pub async fn subscribe_swift_orders(
                                 order.pre_deposit = Some(deposit.to_string());
                             }
 
-                            // drop only orders actually flagged for sanitization;
-                            // unflagged flow is always deliverable
-                            if order.will_sanitize && !accept_sanitized {
-                                log::debug!(
-                                    target: LOG_TARGET,
-                                    "skipping sanitized order: {}",
-                                    order.uuid
-                                );
-                                continue;
-                            }
                             if let Err(err) = tx.try_send(order) {
                                 log::error!(target: LOG_TARGET, "order chan failed: {err:?}");
                                 break;
@@ -726,9 +703,7 @@ mod tests {
             trigger_price: None,
             trigger_condition: OrderTriggerCondition::Above,
             oracle_price_offset: None,
-            auction_duration: Some(50),
-            auction_start_price: Some(2_102_419_643),
-            auction_end_price: Some(2_081_603_607),
+            activation_delay_slots: None,
             builder_idx: None,
             builder_fee_tenth_bps: None,
         }
@@ -840,14 +815,35 @@ mod tests {
         assert!(!signed_message.using_delegate_signing());
     }
 
+    /// A message that arrived from the wire signs over the bytes it arrived as,
+    /// not a re-serialization, so the encoding must survive a layout change.
     #[test]
     fn test_swift_order_encode_for_signing() {
-        let msg = "{\"channel\":\"swift_orders_perp_2\",\"order\":{\"market_index\":2,\"market_type\":\"perp\",\"order_message\":\"c8d5a65e2234f55d0001010080841e0000000000000000000000000002000000000000000001320124c6aa950000000001786b2f94000000000000bb64a9150000000074735730364f6d380000\",\"order_signature\":\"SaOaLJ1i0MqZ2cXdp00jGe2EJFa32eOfiQynFU7mclhT86yhIa4/tWXq7r6l7QPN0Jl6frfsZl0nNOvKZxZpAA==\",\"signing_authority\":\"4rmhwytmKH1XsgGAUyUUH7U64HS5FtT6gM8HGKAfwcFE\",\"taker_authority\":\"4rmhwytmKH1XsgGAUyUUH7U64HS5FtT6gM8HGKAfwcFE\",\"ts\":1740456840770,\"uuid\":\"tsW06Om8\"}}";
+        let uuid = *b"tsW06Om8";
+        let signed_order = sample_authority_order(uuid, 2);
+        let order_message =
+            hex::encode(SignedOrderType::authority(signed_order.clone()).to_borsh());
+
+        let msg = format!(
+            r#"{{
+            "channel":"swift_orders_perp_2",
+            "order":{{
+                "market_index":2,
+                "market_type":"perp",
+                "order_message":"{order_message}",
+                "order_signature":"SaOaLJ1i0MqZ2cXdp00jGe2EJFa32eOfiQynFU7mclhT86yhIa4/tWXq7r6l7QPN0Jl6frfsZl0nNOvKZxZpAA==",
+                "signing_authority":"4rmhwytmKH1XsgGAUyUUH7U64HS5FtT6gM8HGKAfwcFE",
+                "taker_authority":"4rmhwytmKH1XsgGAUyUUH7U64HS5FtT6gM8HGKAfwcFE",
+                "ts":1740456840770,
+                "uuid":"tsW06Om8"
+            }}
+        }}"#
+        );
+
         let order_notification: OrderNotification = serde_json::from_str(&msg).unwrap();
-        let signed_message = order_notification.order;
         assert_eq!(
-            signed_message.encode_for_signing().as_slice(),
-            b"c8d5a65e2234f55d0001010080841e0000000000000000000000000002000000000000000001320124c6aa950000000001786b2f94000000000000bb64a9150000000074735730364f6d380000"
+            order_notification.order.encode_for_signing().as_slice(),
+            order_message.as_bytes()
         );
     }
 
@@ -919,9 +915,7 @@ mod tests {
                 trigger_price: None,
                 trigger_condition: OrderTriggerCondition::Above,
                 oracle_price_offset: None,
-                auction_duration: Some(50),
-                auction_start_price: Some(2102419643),
-                auction_end_price: Some(2081603607),
+                activation_delay_slots: None,
                 builder_idx: None,
                 builder_fee_tenth_bps: None,
             },

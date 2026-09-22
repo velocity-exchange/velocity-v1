@@ -315,7 +315,7 @@ fn release_order_reservation(
         ..
     } = user.orders[order_index];
 
-    user.decrement_open_orders(user.orders[order_index].has_auction());
+    user.decrement_open_orders();
 
     // only decrease open/bids ask if it's not a trigger order or if it's been triggered
     let update_open_bids_and_asks = user.orders[order_index].update_open_bids_and_asks();
@@ -471,9 +471,6 @@ fn merge_modify_order_params_with_existing_order(
         return Ok(None);
     };
 
-    let (auction_duration, auction_start_price, auction_end_price) =
-        merged_auction(modify_order_params);
-
     Ok(Some(OrderParams {
         order_type: existing_order.order_type,
         market_type: existing_order.market_type,
@@ -502,9 +499,7 @@ fn merge_modify_order_params_with_existing_order(
         oracle_price_offset: modify_order_params
             .oracle_price_offset
             .or(Some(existing_order.oracle_price_offset)),
-        auction_duration,
-        auction_start_price,
-        auction_end_price,
+        activation_delay_slots: modify_order_params.activation_delay_slots,
         builder_idx: None,
         builder_fee_tenth_bps: None,
     }))
@@ -561,23 +556,4 @@ fn merged_trigger_condition(
                 OrderTriggerCondition::Below
             }
         })
-}
-
-/// The auction the modified order runs, as `(duration, start price, end
-/// price)`.
-///
-/// An auction needs all three, so a partial set runs no auction at all.
-fn merged_auction(
-    modify_order_params: &ModifyOrderParams,
-) -> (Option<u8>, Option<i64>, Option<i64>) {
-    match (
-        modify_order_params.auction_duration,
-        modify_order_params.auction_start_price,
-        modify_order_params.auction_end_price,
-    ) {
-        (Some(duration), Some(start_price), Some(end_price)) => {
-            (Some(duration), Some(start_price), Some(end_price))
-        }
-        _ => (None, None, None),
-    }
 }

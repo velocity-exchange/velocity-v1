@@ -70,7 +70,7 @@ pub fn handle_place_signed_msg_taker_order<'c: 'info, 'info>(
         market_index,
     )?;
 
-    let filled = if synchronous_take {
+    let _filled = if synchronous_take {
         fill_signed_msg_taker_order(
             &ctx,
             &mut sections,
@@ -84,7 +84,7 @@ pub fn handle_place_signed_msg_taker_order<'c: 'info, 'info>(
         0
     };
 
-    rest_signed_msg_remainder(&ctx, &placed, filled, &mut sections.maps, &clock)?;
+    rest_signed_msg_remainder(&ctx, &placed, &mut sections.maps, &clock)?;
 
     if let Some(ref mut escrow) = sections.escrow {
         let taker = load_mut!(ctx.accounts.user)?;
@@ -181,7 +181,7 @@ fn fill_signed_msg_taker_order<'c: 'info, 'info>(
     // Zero progress prices the auction at its start. A signed-message order
     // takes only genuine improvement now and rests the rest, so it never pays
     // its own slippage bound to whoever lands first.
-    let mode = FillMode::PlaceAndTake(placed.is_immediate_or_cancel, 0);
+    let mode = FillMode::PlaceAndTake(placed.is_immediate_or_cancel);
     let order = {
         // The order lives on `placed`, not `user.orders`. It is the taker order
         // this leg fills detached.
@@ -284,7 +284,6 @@ fn fill_accounts<'a, 'info>(
 fn rest_signed_msg_remainder<'c: 'info, 'info>(
     ctx: &Context<'info, PlaceSignedMsgTakerOrder<'info>>,
     placed: &PlacedSignedMsgOrder,
-    base_asset_amount_filled: u64,
     maps: &mut AccountMaps,
     clock: &Clock,
 ) -> Result<()> {
@@ -298,10 +297,8 @@ fn rest_signed_msg_remainder<'c: 'info, 'info>(
         // The order lives on `placed`, not `user.orders`. Its filled amounts
         // were updated in place by the fill leg.
         let order = &placed.order;
-        if base_asset_amount_filled == 0 && !order.has_auction() {
-            return Ok(());
-        }
-
+        // `restable_remainder` is the single decision. It answers `None` for a
+        // post-only order, for a type that cannot rest, and for a zero price.
         crate::instructions::restable_remainder(&user, order, market_index, None)
     };
 
@@ -501,22 +498,15 @@ fn signed_msg_order_slot(
     env: &PlacementEnv<'_, '_>,
 ) -> Result<Option<SignedMsgOrderId>> {
     let params = &message.signed_msg_order_params;
-    if params.market_type != MarketType::Perp || !params.has_valid_auction_params()? {
+    if params.market_type != MarketType::Perp {
         msg!("First order must be a perp taker order");
         return Err(print_error!(ErrorCode::InvalidSignedMsgOrderParam)().into());
     }
 
-    let auction_duration_units = if params.order_type == OrderType::Limit {
-        params.auction_duration.unwrap_or(0)
-    } else {
-        params.auction_duration.safe_unwrap()?
-    };
-
-    // A limit order with no auction rests from placement. Its message slot is a placement deadline
-    // rather than an auction start, and `max_slot` below equals it. A client stamps that deadline
-    // ahead by its signing budget of about 14 seconds, so the order may be placed before the slot
-    // arrives. The lead is bounded.
-    let is_resting_limit = params.order_type == OrderType::Limit && auction_duration_units == 0;
+    // A limit order rests from placement. Its message slot is a placement deadline, and `max_slot`
+    // below equals it. A client stamps that deadline ahead by its signing budget of about 14
+    // seconds, so the order may be placed before the slot arrives. The lead is bounded.
+    let is_resting_limit = params.order_type == OrderType::Limit;
     let max_resting_limit_lead = Millis::from_secs(30);
     // About 200 seconds of wall-clock age, integrated per slot duration regime.
     let max_order_age = Millis::from_secs(200);
@@ -554,12 +544,12 @@ fn signed_msg_order_slot(
         return Err(print_error!(ErrorCode::InvalidSignedMsgOrderParam)().into());
     }
 
-    // Resolve the first slot that reaches the auction duration across every
-    // known future transition. Placement expiry then cannot disagree with
-    // auction completion at a gate boundary.
+    // How long a keeper may take to land the message. Past it the order is
+    // stale: the oracle its worst price was measured against has moved, and
+    // the price the signer agreed to no longer describes the market.
     let max_slot = env.state.slot_clock().slot_at_or_after_duration(
         order_slot,
-        Millis::from_stored_units(auction_duration_units as u64),
+        crate::state::signed_msg_user::SIGNED_MSG_FILL_WINDOW,
     );
 
     if max_slot < env.clock.slot {

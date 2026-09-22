@@ -216,14 +216,7 @@ pub async fn process_order_wrapper(
     let (status, resp) = match process_order(server_params, incoming_message, false, &context).await
     {
         Ok(order_metadata) => {
-            let metrics_labels = &[
-                context.market_type,
-                &context.market_index.to_string(),
-                match order_metadata.will_sanitize {
-                    true => "true",
-                    false => "false",
-                },
-            ];
+            let metrics_labels = &[context.market_type, &context.market_index.to_string()];
             let topic = format!("swift_orders_{}_{}", metrics_labels[0], metrics_labels[1]);
             let payload = order_metadata.encode();
             // The order is now attestable. A keeper may request the
@@ -413,7 +406,7 @@ pub async fn process_order(
     // live oracle. Replaces the on-chain sanitizer for signed A/B orders, which
     // the program now preserves verbatim. Skips itself (fail open) if the
     // server's own oracle is stale — see validate_auction_within_oracle_band.
-    server_params.validate_auction_within_oracle_band(&order_params, current_slot, context)?;
+    server_params.validate_worst_price_within_oracle_band(&order_params, current_slot, context)?;
 
     if !skip_sim {
         match server_params
@@ -465,9 +458,6 @@ pub async fn process_order(
     }
 
     if let Some(order_message_str) = signed_msg.raw() {
-        // If fat fingered order that requires sanitization, then just send the order
-        let will_sanitize =
-            server_params.simulate_will_auction_params_sanitize(&order_params, context);
         let order_metadata = OrderMetadataAndMessage {
             market_index: order_params.market_index,
             market_type: order_params.market_type,
@@ -477,7 +467,6 @@ pub async fn process_order(
             order_signature: taker_signature.into(),
             ts: context.recv_ts,
             uuid,
-            will_sanitize,
         };
 
         server_params
@@ -527,7 +516,7 @@ pub async fn send_heartbeat(server_params: &'static ServerParams) {
             server_params
                 .metrics
                 .order_type_counter
-                .with_label_values(&["_", "heartbeat", "_"])
+                .with_label_values(&["_", "heartbeat"])
                 .inc();
             server_params
                 .metrics
@@ -691,14 +680,7 @@ pub async fn deposit_trade(
     // TODO: deposit tx should enable sim to pass, if it didn't before otherwise order is invalid
     let (status, resp) = match process_order(server_params, req.swift_order, true, &context).await {
         Ok(order_metadata) => {
-            let metrics_labels = &[
-                context.market_type,
-                &context.market_index.to_string(),
-                match order_metadata.will_sanitize {
-                    true => "true",
-                    false => "false",
-                },
-            ];
+            let metrics_labels = &[context.market_type, &context.market_index.to_string()];
             let topic = format!(
                 "swift_orders_deposit_{}_{}",
                 metrics_labels[0], metrics_labels[1]
@@ -1040,68 +1022,33 @@ fn validate_signed_order_params(
         }
     }
 
-    // has_valid_auction_params
-    if taker_order_params.auction_duration.is_some()
-        && taker_order_params.auction_start_price.is_some()
-        && taker_order_params.auction_end_price.is_some()
-    {
-        let start_price = taker_order_params.auction_start_price.unwrap();
-        let end_price = taker_order_params.auction_end_price.unwrap();
-
-        if taker_order_params.direction == PositionDirection::Long && start_price <= end_price
-            || taker_order_params.direction == PositionDirection::Short && start_price >= end_price
-        {
-            Ok(())
-        } else {
-            log::info!(target: "server", "auction price reversed");
-            Err(ErrorCode::InvalidOrderAuction)
-        }
-    } else if taker_order_params.order_type == OrderType::Limit
-        && taker_order_params.auction_duration.is_none()
-        && taker_order_params.auction_start_price.is_none()
-        && taker_order_params.auction_end_price.is_none()
-    {
-        Ok(())
-    } else {
-        Err(ErrorCode::InvalidOrderAuction)
-    }
-}
-
-/// True when the order carries a fully-specified auction (duration + start +
-/// end), i.e. there are prices to bound against the oracle.
-fn has_bounded_auction(order_params: &OrderParams) -> bool {
-    order_params.auction_duration.is_some()
-        && order_params.auction_start_price.is_some()
-        && order_params.auction_end_price.is_some()
+    Ok(())
 }
 
 /// Pure check: are the order's auction start & end prices within `band_bps` of
 /// `oracle_price`? `OrderType::Oracle` auctions carry oracle-relative offsets
-/// (already stale-immune); every other type carries absolute prices, which are
+/// (already stale-immune); every other type carries an absolute price, which is
 /// normalised to a signed distance from oracle before comparison. Returns true
-/// when there is nothing to bound (band disabled, no auction, or bad oracle).
-fn auction_within_oracle_band(
+/// when there is nothing to bound (band disabled, no price, or bad oracle).
+fn worst_price_within_oracle_band(
     order_params: &OrderParams,
     oracle_price: i64,
     band_bps: u32,
 ) -> bool {
-    if band_bps == 0 || oracle_price <= 0 || !has_bounded_auction(order_params) {
+    if band_bps == 0 || oracle_price <= 0 {
         return true;
     }
-    let start = order_params.auction_start_price.unwrap();
-    let end = order_params.auction_end_price.unwrap();
 
     let band = (oracle_price as i128 * band_bps as i128 / 10_000) as i64;
-    let is_offset = order_params.order_type == OrderType::Oracle;
-    let distance_from_oracle = |p: i64| {
-        if is_offset {
-            p
-        } else {
-            p.saturating_sub(oracle_price)
-        }
+    let distance_from_oracle = if order_params.order_type == OrderType::Oracle {
+        order_params.oracle_price_offset.unwrap_or(0)
+    } else if order_params.price == 0 {
+        return true;
+    } else {
+        (order_params.price as i64).saturating_sub(oracle_price)
     };
 
-    distance_from_oracle(start).abs() <= band && distance_from_oracle(end).abs() <= band
+    distance_from_oracle.abs() <= band
 }
 
 #[derive(Debug)]
@@ -1543,14 +1490,14 @@ impl ServerParams {
     /// swift-side oracle must not start bouncing otherwise-valid orders. Every
     /// rejection logs the oracle's staleness (oracle slot vs current slot) for
     /// debuggability.
-    fn validate_auction_within_oracle_band(
+    fn validate_worst_price_within_oracle_band(
         &self,
         order_params: &OrderParams,
         current_slot: Slot,
         context: &RequestContext,
     ) -> Result<(), (axum::http::StatusCode, ProcessOrderResponse)> {
         let band_bps = self.config.auction_oracle_band_bps;
-        if band_bps == 0 || !has_bounded_auction(order_params) {
+        if band_bps == 0 {
             return Ok(());
         }
 
@@ -1615,19 +1562,19 @@ impl ServerParams {
             return Ok(());
         }
 
-        if auction_within_oracle_band(order_params, oracle.data.price, band_bps) {
+        if worst_price_within_oracle_band(order_params, oracle.data.price, band_bps) {
             return Ok(());
         }
         record("reject");
 
         log::warn!(
             target: "server",
-            "{}: rejecting order — auction outside oracle band: start={:?} end={:?} \
+            "{}: rejecting order — worst price outside oracle band: price={} offset={:?} \
              oracle_price={} oracle_slot={oracle_slot} current_slot={current_slot} \
              oracle_staleness_slots={oracle_staleness_slots} band_bps={band_bps}",
             context.log_prefix,
-            order_params.auction_start_price,
-            order_params.auction_end_price,
+            order_params.price,
+            order_params.oracle_price_offset,
             oracle.data.price,
         );
         Err((
@@ -1692,62 +1639,12 @@ impl ServerParams {
             .inc_by(base * price);
     }
 
-    fn simulate_will_auction_params_sanitize(
-        &self,
-        order_params: &OrderParams,
-        context: &RequestContext,
-    ) -> bool {
-        let perp_market = match self
-            .velocity
-            .try_get_perp_market_account(order_params.market_index)
-        {
-            Ok(m) => m,
-            Err(err) => {
-                log::debug!(
-                    target: "sim",
-                    "{}: couldn't get perp market: {err:?}",
-                    context.log_prefix
-                );
-                return false;
-            }
-        };
-
-        let market_id = MarketId::new(order_params.market_index, order_params.market_type);
-        let oracle_data = match self.velocity.try_get_oracle_price_data_and_slot(market_id) {
-            Some(p) => p,
-            None => {
-                log::debug!(
-                    target: "sim",
-                    "{}: oracle price is None",
-                    context.log_prefix
-                );
-                return false;
-            }
-        };
-
-        // Mirrors `OrderParams::update_perp_auction_params`, the sanitize step
-        // every placement runs: returns true when the program would adjust the
-        // auction params at placement time.
-        let mut params = order_params.clone();
-        match params.update_perp_auction_params(&perp_market, oracle_data.data.price, true) {
-            Ok(sanitized) => sanitized,
-            Err(err) => {
-                log::debug!(
-                    target: "sim",
-                    "{}: local sim failed: {err:?}",
-                    context.log_prefix
-                );
-                true
-            }
-        }
-    }
-
     async fn publish_order(
         &self,
         topic: &str,
         payload: &String,
         uuid: &str,
-        metrics_labels: &[&str; 3],
+        metrics_labels: &[&str; 2],
         context: &RequestContext,
     ) -> (axum::http::StatusCode, ProcessOrderResponse) {
         let mut conn = self.redis_pool.clone();
@@ -2082,93 +1979,81 @@ mod tests {
         market_type: MarketType,
         base_asset_amount: u64,
         direction: PositionDirection,
-        auction_params: Option<(u8, i64, i64)>, // (duration, start_price, end_price)
+        price: u64,
+        oracle_price_offset: Option<i64>,
     ) -> OrderParams {
-        let (auction_duration, auction_start_price, auction_end_price) =
-            auction_params.unwrap_or((0, 0, 0));
         OrderParams {
             market_index: 0,
             market_type,
             order_type,
             base_asset_amount,
-            price: 1_000,
+            price,
             direction,
-            auction_duration: if auction_duration > 0 {
-                Some(auction_duration)
-            } else {
-                None
-            },
-            auction_start_price: if auction_start_price > 0 {
-                Some(auction_start_price)
-            } else {
-                None
-            },
-            auction_end_price: if auction_end_price > 0 {
-                Some(auction_end_price)
-            } else {
-                None
-            },
+            oracle_price_offset,
             ..Default::default()
         }
     }
 
     #[test]
-    fn test_auction_within_oracle_band() {
+    fn test_worst_price_within_oracle_band() {
         let oracle = 10_000_i64; // arbitrary price units; the check is proportional
         let band_bps = 300; // 3% -> band of 300 price units
 
-        // Absolute (Market) auction hugging oracle: start -1%, end +1% -> inside.
-        let near = create_test_order_params(
-            OrderType::Market,
-            MarketType::Perp,
-            1_000_000_000,
-            PositionDirection::Long,
-            Some((5, 9_900, 10_100)),
-        );
-        assert!(auction_within_oracle_band(&near, oracle, band_bps));
+        let order = |price: u64, offset: Option<i64>| {
+            create_test_order_params(
+                if offset.is_some() {
+                    OrderType::Oracle
+                } else {
+                    OrderType::Market
+                },
+                MarketType::Perp,
+                1_000_000_000,
+                PositionDirection::Long,
+                price,
+                offset,
+            )
+        };
 
-        // Fat-finger end at +10% -> outside the band -> rejected.
-        let far = create_test_order_params(
-            OrderType::Market,
-            MarketType::Perp,
-            1_000_000_000,
-            PositionDirection::Long,
-            Some((5, 9_900, 11_000)),
-        );
-        assert!(!auction_within_oracle_band(&far, oracle, band_bps));
+        // A worst price 1% above oracle is inside the band.
+        assert!(worst_price_within_oracle_band(
+            &order(10_100, None),
+            oracle,
+            band_bps
+        ));
+
+        // A fat-finger 10% above is outside it.
+        assert!(!worst_price_within_oracle_band(
+            &order(11_000, None),
+            oracle,
+            band_bps
+        ));
 
         // band_bps == 0 disables the guard entirely.
-        assert!(auction_within_oracle_band(&far, oracle, 0));
+        assert!(worst_price_within_oracle_band(
+            &order(11_000, None),
+            oracle,
+            0
+        ));
 
-        // A resting limit with no auction has nothing to bound.
-        let no_auction = create_test_order_params(
-            OrderType::Limit,
-            MarketType::Perp,
-            1_000_000_000,
-            PositionDirection::Long,
-            None,
-        );
-        assert!(auction_within_oracle_band(&no_auction, oracle, band_bps));
+        // An order naming no price has nothing to bound.
+        assert!(worst_price_within_oracle_band(
+            &order(0, None),
+            oracle,
+            band_bps
+        ));
 
-        // Oracle-type auctions carry oracle-relative offsets: +2% end offset is
-        // inside, +5% is outside — no dependence on absolute oracle level.
-        let offset_near = create_test_order_params(
-            OrderType::Oracle,
-            MarketType::Perp,
-            1_000_000_000,
-            PositionDirection::Long,
-            Some((5, 1, 200)),
-        );
-        assert!(auction_within_oracle_band(&offset_near, oracle, band_bps));
-
-        let offset_far = create_test_order_params(
-            OrderType::Oracle,
-            MarketType::Perp,
-            1_000_000_000,
-            PositionDirection::Long,
-            Some((5, 1, 500)),
-        );
-        assert!(!auction_within_oracle_band(&offset_far, oracle, band_bps));
+        // An oracle-relative order carries an offset, so the check does not
+        // depend on the absolute oracle level.
+        assert!(worst_price_within_oracle_band(
+            &order(0, Some(200)),
+            oracle,
+            band_bps
+        ));
+        assert!(!worst_price_within_oracle_band(
+            &order(0, Some(500)),
+            oracle,
+            band_bps
+        ));
     }
 
     #[test]
@@ -2181,7 +2066,8 @@ mod tests {
             MarketType::Perp,
             min_order_size,
             PositionDirection::Long,
-            Some((1, 99, 100)),
+            1_000,
+            None,
         );
         assert!(validate_signed_order_params(&params, min_order_size).is_ok());
 
@@ -2191,7 +2077,8 @@ mod tests {
             MarketType::Spot,
             min_order_size,
             PositionDirection::Long,
-            Some((1, 99, 100)),
+            1_000,
+            None,
         );
         assert_eq!(
             validate_signed_order_params(&params, min_order_size),
@@ -2209,7 +2096,8 @@ mod tests {
             MarketType::Perp,
             min_order_size,
             PositionDirection::Long,
-            Some((1, 99, 100)),
+            1_000,
+            None,
         );
         assert!(validate_signed_order_params(&params, min_order_size).is_ok());
 
@@ -2219,84 +2107,12 @@ mod tests {
             MarketType::Perp,
             min_order_size - 1,
             PositionDirection::Long,
+            1_000,
             None,
         );
         assert_eq!(
             validate_signed_order_params(&params, min_order_size),
             Err(ErrorCode::InvalidOrderSizeTooSmall)
-        );
-    }
-
-    #[test]
-    fn test_validate_auction_params() {
-        let min_order_size = 1 * LAMPORTS_PER_SOL;
-
-        // Test valid auction params for long position
-        let params = create_test_order_params(
-            OrderType::Limit,
-            MarketType::Perp,
-            min_order_size,
-            PositionDirection::Long,
-            Some((100, 1000, 1100)), // start < end for long
-        );
-        assert!(validate_signed_order_params(&params, min_order_size).is_ok());
-
-        // Test valid auction params for short position
-        let params = create_test_order_params(
-            OrderType::Limit,
-            MarketType::Perp,
-            min_order_size,
-            PositionDirection::Short,
-            Some((100, 1100, 1000)), // start > end for short
-        );
-        assert!(validate_signed_order_params(&params, min_order_size).is_ok());
-
-        // Test invalid auction params for long position
-        let params = create_test_order_params(
-            OrderType::Limit,
-            MarketType::Perp,
-            min_order_size,
-            PositionDirection::Long,
-            Some((100, 1100, 1000)), // start > end for long (invalid)
-        );
-        assert_eq!(
-            validate_signed_order_params(&params, min_order_size),
-            Err(ErrorCode::InvalidOrderAuction)
-        );
-
-        // Test invalid auction params for short position
-        let params = create_test_order_params(
-            OrderType::Limit,
-            MarketType::Perp,
-            min_order_size,
-            PositionDirection::Short,
-            Some((100, 1000, 1100)), // start < end for short (invalid)
-        );
-        assert_eq!(
-            validate_signed_order_params(&params, min_order_size),
-            Err(ErrorCode::InvalidOrderAuction)
-        );
-
-        // Test limit order with no auction params
-        let params = create_test_order_params(
-            OrderType::Limit,
-            MarketType::Perp,
-            min_order_size,
-            PositionDirection::Long,
-            None,
-        );
-        assert!(validate_signed_order_params(&params, min_order_size).is_ok());
-
-        let params = create_test_order_params(
-            OrderType::Limit,
-            MarketType::Perp,
-            min_order_size,
-            PositionDirection::Long,
-            Some((100, 1000, 1100)),
-        );
-        assert_eq!(
-            validate_signed_order_params(&params, min_order_size),
-            Ok(())
         );
     }
 

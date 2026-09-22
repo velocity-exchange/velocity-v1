@@ -80,7 +80,7 @@ impl SwiftServerMetrics {
                 "swift_order_types_count",
                 "Number of orders by market index and type",
             ),
-            &["market_type", "market_index", "sanitized"],
+            &["market_type", "market_index"],
         )
         .unwrap();
         let order_notional_usd = CounterVec::new(

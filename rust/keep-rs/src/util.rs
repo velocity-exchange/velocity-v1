@@ -20,9 +20,11 @@ use {
             perp_market_index_to_pyth_lazer_feed_id, pyth_lazer_feed_id_to_perp_market_index,
             pyth_lazer_feed_id_to_spot_market_index, spot_market_index_to_pyth_lazer_feed_id,
         },
-        dlob::{L3Order, MakerCrosses},
         math::constants::PRICE_PRECISION,
-        program::math::time::{Millis, SlotClock, SlotDuration},
+        program::{
+            math::time::{Millis, SlotClock, SlotDuration},
+            state::signed_msg_user::SIGNED_MSG_FILL_WINDOW,
+        },
         types::{MarketId, MarketType, OraclePriceData, OracleSource, OrderParams, OrderType},
         Pubkey,
     },
@@ -113,14 +115,16 @@ pub enum TxIntent {
         /// so `taker_order_id` alone is ambiguous across users)
         taker_user: Pubkey,
         has_trigger: bool,
-        maker_crosses: MakerCrosses,
+        /// The slot the fill was built against.
+        slot: u64,
     },
     SwiftFill {
         uuid: [u8; 8],
         market_index: u16,
         /// taker subaccount the fill was sent for (disambiguates the swift uuid across users)
         taker_user: Pubkey,
-        maker_crosses: MakerCrosses,
+        /// The slot the fill was built against.
+        slot: u64,
     },
     /// place-only swift order: order placed on-chain (no immediate fill) so the normal
     /// per-slot fill path can pick it up while it remains live
@@ -200,20 +204,8 @@ impl TxIntent {
     pub fn label(&self) -> &'static str {
         match self {
             TxIntent::None => "none",
-            TxIntent::AuctionFill { maker_crosses, .. } => {
-                if maker_crosses.has_vamm_cross {
-                    "auction_fill_vamm"
-                } else {
-                    "auction_fill"
-                }
-            }
-            TxIntent::SwiftFill { maker_crosses, .. } => {
-                if maker_crosses.has_vamm_cross {
-                    "swift_fill_vamm"
-                } else {
-                    "swift_fill"
-                }
-            }
+            TxIntent::AuctionFill { .. } => "auction_fill",
+            TxIntent::SwiftFill { .. } => "swift_fill",
             TxIntent::SwiftPlace { .. } => "swift_place",
             TxIntent::LimitUncross { .. } => "limit_uncross",
             TxIntent::VAMMTakerFill { .. } => "vamm_taker",
@@ -231,12 +223,11 @@ impl TxIntent {
     pub fn expected_fill_count(&self) -> usize {
         match self {
             TxIntent::None => 0,
-            TxIntent::AuctionFill { maker_crosses, .. } => {
-                maker_crosses.orders.len() + if maker_crosses.has_vamm_cross { 1 } else { 0 }
-            }
-            TxIntent::SwiftFill { maker_crosses, .. } => {
-                maker_crosses.orders.len() + if maker_crosses.has_vamm_cross { 1 } else { 0 }
-            }
+            // The router decides how many sources a fill reaches, and the
+            // keeper learns the count from the fill records rather than
+            // predicting it.
+            TxIntent::AuctionFill { .. } => 1,
+            TxIntent::SwiftFill { .. } => 1,
             // place-only: no fill expected in this tx (the fill happens later via the slot loop)
             TxIntent::SwiftPlace { .. } => 0,
             TxIntent::VAMMTakerFill { .. } => 1,
@@ -261,26 +252,23 @@ impl TxIntent {
         }
     }
 
-    pub fn crosses_and_slot(&self) -> (Vec<(L3Order, u64)>, u64) {
+    /// The slot the intent was built against.
+    pub fn sent_slot(&self) -> u64 {
         match self {
-            TxIntent::None => (vec![], 0),
-            TxIntent::AuctionFill { maker_crosses, .. } => {
-                (maker_crosses.orders.to_vec(), maker_crosses.slot)
-            }
-            TxIntent::SwiftFill { maker_crosses, .. } => {
-                (maker_crosses.orders.to_vec(), maker_crosses.slot)
-            }
-            TxIntent::SwiftPlace { slot, .. } => (vec![], *slot),
-            Self::VAMMTakerFill { slot, .. } => (vec![], *slot),
-            Self::LimitUncross { slot, .. } => (vec![], *slot),
-            Self::LiquidateWithFill { slot, .. } => (vec![], *slot),
-            Self::LiquidatePerp { slot, .. } => (vec![], *slot),
-            Self::LiquidatePerpPnlForDeposit { slot, .. } => (vec![], *slot),
-            Self::LiquidateBorrowForPerpPnl { slot, .. } => (vec![], *slot),
-            Self::LiquidateSpot { slot, .. } => (vec![], *slot),
-            TxIntent::Derisk { .. } => (vec![], 0),
-            TxIntent::SettlePnl { .. } => (vec![], 0),
-            TxIntent::Trigger { slot, .. } => (vec![], *slot),
+            TxIntent::None => 0,
+            TxIntent::AuctionFill { slot, .. } => *slot,
+            TxIntent::SwiftFill { slot, .. } => *slot,
+            TxIntent::SwiftPlace { slot, .. } => *slot,
+            Self::VAMMTakerFill { slot, .. } => *slot,
+            Self::LimitUncross { slot, .. } => *slot,
+            Self::LiquidateWithFill { slot, .. } => *slot,
+            Self::LiquidatePerp { slot, .. } => *slot,
+            Self::LiquidatePerpPnlForDeposit { slot, .. } => *slot,
+            Self::LiquidateBorrowForPerpPnl { slot, .. } => *slot,
+            Self::LiquidateSpot { slot, .. } => *slot,
+            TxIntent::Derisk { .. } => 0,
+            TxIntent::SettlePnl { .. } => 0,
+            TxIntent::Trigger { slot, .. } => *slot,
         }
     }
 
@@ -488,11 +476,11 @@ pub enum SwiftSlotWait {
     TooFarAhead,
 }
 
-/// True if a swift order is a limit order with no auction. Such an order rests from
-/// placement, so the program treats its message slot as a placement deadline and not as an
-/// auction start. The program accepts it ahead of that slot. See [`swift_slot_wait`].
+/// True if a swift order rests from placement. The program treats such an
+/// order's message slot as a placement deadline rather than a fill deadline,
+/// and accepts it ahead of that slot. See [`swift_slot_wait`].
 pub fn is_resting_swift_limit(order_params: &OrderParams) -> bool {
-    order_params.order_type == OrderType::Limit && order_params.auction_duration.unwrap_or(0) == 0
+    order_params.order_type == OrderType::Limit
 }
 
 /// For an auction order, `place_signed_msg_taker_order` rejects `order_slot > clock.slot`
@@ -575,7 +563,6 @@ pub fn should_poll_swift(
 /// gate first.
 pub fn swift_order_expired(
     order_slot: u64,
-    auction_duration: u8,
     max_ts: i64,
     current_slot: u64,
     now_ts: i64,
@@ -586,10 +573,7 @@ pub fn swift_order_expired(
         return true;
     }
     // placement deadline: program no-ops once max_slot < current_slot
-    let max_slot = slot_clock.slot_at_or_after_duration(
-        order_slot,
-        Millis::from_stored_units(auction_duration as u64),
-    );
+    let max_slot = slot_clock.slot_at_or_after_duration(order_slot, SIGNED_MSG_FILL_WINDOW);
     if current_slot > max_slot {
         return true;
     }
@@ -1028,7 +1012,7 @@ mod tests {
             is_resting_swift_limit, preview_pyth_lazer_oracle, should_poll_swift,
             swift_order_expired, swift_slot_wait, swift_slot_wait_if_known, OrderParams,
             OrderSlotLimiter, OrderType, PendingTxMeta, PendingTxs, Pubkey, PythPriceUpdate,
-            SwiftSlotWait, TxIntent,
+            SwiftSlotWait, TxIntent, SIGNED_MSG_FILL_WINDOW,
         },
         pyth_lazer_protocol::{
             message::SolanaMessage,
@@ -1241,19 +1225,14 @@ mod tests {
     }
 
     #[test]
-    fn resting_swift_limit_is_a_limit_with_no_auction() {
+    fn a_limit_order_rests_and_a_market_order_does_not() {
         let mut params = OrderParams {
             order_type: OrderType::Limit,
-            auction_duration: None,
             ..Default::default()
         };
         assert!(is_resting_swift_limit(&params));
-        params.auction_duration = Some(0);
-        assert!(is_resting_swift_limit(&params));
-        params.auction_duration = Some(10);
-        assert!(!is_resting_swift_limit(&params));
+
         params.order_type = OrderType::Market;
-        params.auction_duration = None;
         assert!(!is_resting_swift_limit(&params));
     }
 
@@ -1299,65 +1278,15 @@ mod tests {
         assert!(!should_poll_swift(false, false, false));
     }
 
+    /// The fill window binds before the signed-message staleness window, so
+    /// an order stops being placeable long before it reads as stale.
     #[test]
-    fn swift_expiry_placement_deadline_binds_before_staleness() {
-        // `auction_duration` is a u8 (<=255), so the placement deadline
-        // (order_slot + auction_duration) always binds before the 500-slot signed-message
-        // window. The order is unplaceable one slot past the deadline, well before slot 500.
-        assert!(!swift_order_expired(
-            0,
-            255,
-            0,
-            255,
-            0,
-            SlotClock::baseline()
-        ));
-        assert!(swift_order_expired(
-            0,
-            255,
-            0,
-            256,
-            0,
-            SlotClock::baseline()
-        ));
-    }
+    fn the_fill_window_binds_before_staleness() {
+        let clock = SlotClock::baseline();
+        let deadline = clock.slot_at_or_after_duration(0, SIGNED_MSG_FILL_WINDOW);
 
-    #[test]
-    fn swift_expiry_placement_deadline() {
-        // max_slot = order_slot + auction_duration = 130. Program rejects once max_slot < slot.
-        assert!(!swift_order_expired(
-            100,
-            30,
-            0,
-            130,
-            0,
-            SlotClock::baseline()
-        )); // exactly at deadline: still placeable
-        assert!(swift_order_expired(
-            100,
-            30,
-            0,
-            131,
-            0,
-            SlotClock::baseline()
-        )); // one past: gone
-            // Zero auction duration (limit order default): only placeable in the signing slot.
-        assert!(!swift_order_expired(
-            100,
-            0,
-            0,
-            100,
-            0,
-            SlotClock::baseline()
-        ));
-        assert!(swift_order_expired(
-            100,
-            0,
-            0,
-            101,
-            0,
-            SlotClock::baseline()
-        ));
+        assert!(!swift_order_expired(0, 0, deadline, 0, clock));
+        assert!(swift_order_expired(0, 0, deadline + 1, 0, clock));
     }
 
     #[test]
@@ -1365,7 +1294,6 @@ mod tests {
         // max_ts == 0 disables the ts check.
         assert!(!swift_order_expired(
             100,
-            200,
             0,
             100,
             i64::MAX,
@@ -1374,7 +1302,6 @@ mod tests {
         // now == max_ts is still valid; now > max_ts expires.
         assert!(!swift_order_expired(
             100,
-            200,
             5_000,
             100,
             5_000,
@@ -1382,7 +1309,6 @@ mod tests {
         ));
         assert!(swift_order_expired(
             100,
-            200,
             5_000,
             100,
             5_001,

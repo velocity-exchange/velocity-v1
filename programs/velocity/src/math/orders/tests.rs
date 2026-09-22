@@ -135,7 +135,6 @@ mod order_breaches_oracle_price_limits {
         math::{
             constants::{MARGIN_PRECISION, PRICE_PRECISION_I64, PRICE_PRECISION_U64},
             orders::order_breaches_maker_oracle_price_bands,
-            time::SlotClock,
         },
         state::{perp_market::PerpMarket, user::Order},
     };
@@ -154,17 +153,14 @@ mod order_breaches_oracle_price_limits {
 
         let oracle_price = 100 * PRICE_PRECISION_I64;
 
-        let slot = 0;
         let tick_size = 1;
 
         let margin_ratio_initial = MARGIN_PRECISION / 20;
         let result = order_breaches_maker_oracle_price_bands(
             &order,
             oracle_price,
-            slot,
             tick_size,
             margin_ratio_initial,
-            SlotClock::baseline(),
         )
         .unwrap();
 
@@ -185,17 +181,14 @@ mod order_breaches_oracle_price_limits {
 
         let oracle_price = 100 * PRICE_PRECISION_I64;
 
-        let slot = 0;
         let tick_size = 1;
 
         let margin_ratio_initial = MARGIN_PRECISION / 20;
         let result = order_breaches_maker_oracle_price_bands(
             &order,
             oracle_price,
-            slot,
             tick_size,
             margin_ratio_initial,
-            SlotClock::baseline(),
         )
         .unwrap();
 
@@ -218,17 +211,14 @@ mod order_breaches_oracle_price_limits {
 
         let oracle_price = 100 * PRICE_PRECISION_I64;
 
-        let slot = 0;
         let tick_size = 1;
 
         let margin_ratio_initial = MARGIN_PRECISION / 20;
         let result = order_breaches_maker_oracle_price_bands(
             &order,
             oracle_price,
-            slot,
             tick_size,
             margin_ratio_initial,
-            SlotClock::baseline(),
         )
         .unwrap();
 
@@ -251,17 +241,14 @@ mod order_breaches_oracle_price_limits {
 
         let oracle_price = 100 * PRICE_PRECISION_I64;
 
-        let slot = 0;
         let tick_size = 1;
 
         let margin_ratio_initial = MARGIN_PRECISION / 20;
         let result = order_breaches_maker_oracle_price_bands(
             &order,
             oracle_price,
-            slot,
             tick_size,
             margin_ratio_initial,
-            SlotClock::baseline(),
         )
         .unwrap();
 
@@ -284,17 +271,14 @@ mod order_breaches_oracle_price_limits {
 
         let oracle_price = 100 * PRICE_PRECISION_I64;
 
-        let slot = 0;
         let tick_size = 1;
 
         let margin_ratio_initial = MARGIN_PRECISION / 20;
         let result = order_breaches_maker_oracle_price_bands(
             &order,
             oracle_price,
-            slot,
             tick_size,
             margin_ratio_initial,
-            SlotClock::baseline(),
         )
         .unwrap();
 
@@ -317,17 +301,14 @@ mod order_breaches_oracle_price_limits {
 
         let oracle_price = 100 * PRICE_PRECISION_I64;
 
-        let slot = 0;
         let tick_size = 1;
 
         let margin_ratio_initial = MARGIN_PRECISION / 20;
         let result = order_breaches_maker_oracle_price_bands(
             &order,
             oracle_price,
-            slot,
             tick_size,
             margin_ratio_initial,
-            SlotClock::baseline(),
         )
         .unwrap();
 

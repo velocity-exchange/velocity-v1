@@ -72,7 +72,6 @@ use {
             position::calculate_base_asset_value_and_pnl_with_oracle_price,
             router::RouterLeg,
             safe_math::SafeMath,
-            safe_unwrap::SafeUnwrap,
             spot_withdraw::validate_spot_market_vault_amount,
             time::Millis,
         },
@@ -343,12 +342,7 @@ impl RouteContext<'_, '_> {
 
             unfilled: order.get_base_asset_amount_unfilled(position_base)?,
             taker: user.clob_user_ref(),
-            limit_price: mode.quote_limit_price(
-                order,
-                self.clock.slot,
-                tick_size,
-                self.state.slot_clock(),
-            ),
+            limit_price: mode.quote_limit_price(order, tick_size),
 
             reference_price: self.maps.oracle_map.get_price_data(&oracle_id)?.price,
             margin_ratio_initial,

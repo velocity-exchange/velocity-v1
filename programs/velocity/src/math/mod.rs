@@ -6,7 +6,6 @@
 //! `liquidation.rs` = liquidation fee and amount math. `fees.rs` = taker/maker fee tiers.
 //! AMM pricing math lives in `crate::vlp::amm::math`.
 
-pub mod auction;
 pub mod bankruptcy;
 pub mod bn;
 pub mod casting;
@@ -34,3 +33,4 @@ pub mod spot_swap;
 pub mod spot_withdraw;
 pub mod stats;
 pub mod time;
+pub mod worst_price;

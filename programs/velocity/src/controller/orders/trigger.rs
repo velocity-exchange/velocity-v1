@@ -62,8 +62,8 @@ pub fn trigger_and_route_order(
     // not rest.
     let mut fired = user.orders[order_index];
     {
-        let perp_market = maps.perp_market_map.get_ref(&market_index)?;
-        arm_trigger_order(&mut fired, &oracle_price_data, &perp_market, state, slot)?;
+        let _perp_market = maps.perp_market_map.get_ref(&market_index)?;
+        update_trigger_order_params(&mut fired, &oracle_price_data, slot, state.slot_clock())?;
     }
 
     let is_risk_increasing = fired_order_increases_risk(user, &fired, oracle_price)?;
@@ -307,29 +307,6 @@ fn validate_trigger_condition(order: &Order, trigger_price: u64) -> VelocityResu
 
 /// Turn a dormant trigger order into the live market order it fires as.
 ///
-/// Trigger-order auction params quote off the AMM's cached spread state,
-/// which the keeper crank and the fill setup refresh for this slot.
-fn arm_trigger_order(
-    order: &mut Order,
-    oracle_price_data: &OraclePriceData,
-    perp_market: &PerpMarket,
-    state: &State,
-    slot: u64,
-) -> VelocityResult {
-    update_trigger_order_params(
-        order,
-        oracle_price_data,
-        slot,
-        // The minimum auction lasts 8 seconds, counted in the stored 400ms
-        // unit.
-        Millis::from_secs(8)
-            .div_periods(Millis::UNIT)
-            .min(u8::MAX as u64) as u8,
-        Some(perp_market),
-        state.slot_clock(),
-    )
-}
-
 /// Whether the fired order increases the account's risk.
 ///
 /// The check applies the order's worst-case exposure to the position,
@@ -524,8 +501,7 @@ fn pay_and_record_trigger(
 /// the now-empty position and rebuilds it.
 fn free_fired_order_slot(user: &mut User, order_index: usize, market_index: u16) -> VelocityResult {
     let position_index = get_position_index(&user.perp_positions, market_index)?;
-    let slot_had_auction = user.orders[order_index].has_auction();
-    user.decrement_open_orders(slot_had_auction);
+    user.decrement_open_orders();
     user.perp_positions[position_index].open_orders = user.perp_positions[position_index]
         .open_orders
         .saturating_sub(1);
@@ -537,8 +513,6 @@ pub(super) fn update_trigger_order_params(
     order: &mut Order,
     oracle_price_data: &OraclePriceData,
     slot: u64,
-    min_auction_duration: u8,
-    perp_market: Option<&PerpMarket>,
     slot_clock: SlotClock,
 ) -> VelocityResult {
     order.trigger_condition = match order.trigger_condition {
@@ -558,28 +532,23 @@ pub(super) fn update_trigger_order_params(
 
     order.slot = slot;
 
-    let (auction_duration, auction_start_price, auction_end_price) =
-        calculate_auction_params_for_trigger_order(
-            order,
-            oracle_price_data,
-            min_auction_duration,
-            perp_market,
-        )?;
-
-    msg!(
-        "new auction duration {} start price {} end price {}",
-        auction_duration,
-        auction_start_price,
-        auction_end_price
-    );
-
-    order.auction_duration = auction_duration;
-    order.auction_start_price = auction_start_price;
-    order.auction_end_price = auction_end_price;
+    // The worst price is stamped now rather than when the order was armed.
+    // The oracle it is measured against moved while the order waited.
+    let worst_price = derive_worst_price(oracle_price_data, order.direction, order.price)?;
 
     if matches!(order.order_type, OrderType::TriggerMarket) {
+        // A fired trigger-market is a market order priced off the oracle it
+        // fired against, so it holds its bound as an offset.
         order.add_bit_flag(OrderBitFlag::OracleTriggerMarket);
+        order.oracle_price_offset = worst_price
+            .cast::<i64>()?
+            .safe_sub(oracle_price_data.price)?;
+        order.price = 0;
+    } else {
+        order.price = worst_price;
     }
+
+    msg!("fired trigger worst price {}", worst_price);
 
     Ok(())
 }

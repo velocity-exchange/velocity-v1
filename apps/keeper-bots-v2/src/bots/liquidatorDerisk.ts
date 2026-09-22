@@ -639,7 +639,6 @@ export class LiquidatorDerisk {
 						),
 
 						undefined,
-						undefined,
 						userAccount.subAccountId
 					);
 				} catch (e) {

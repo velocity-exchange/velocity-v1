@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { Keypair } from '@solana/web3.js';
 import { VelocityCore } from '../../src/core/VelocityCore';
+import { PlaceAndTakeOrderSuccessCondition } from '../../src/types';
 
 describe('VelocityCore perp order instruction builders', () => {
 	const pk = () => Keypair.generate().publicKey;
@@ -30,7 +31,7 @@ describe('VelocityCore perp order instruction builders', () => {
 		const ix = await VelocityCore.buildPlaceAndTakePerpOrderInstruction({
 			program,
 			orderParams: { m: 0 },
-			optionalParams: 256,
+			successCondition: PlaceAndTakeOrderSuccessCondition.FULL_FILL,
 			state: pk(),
 			user: pk(),
 			userStats: pk(),
@@ -42,7 +43,7 @@ describe('VelocityCore perp order instruction builders', () => {
 		// The args ride one struct.
 		expect(called[0][0]).toEqual({
 			params: { m: 0 },
-			successCondition: 256,
+			successCondition: PlaceAndTakeOrderSuccessCondition.FULL_FILL,
 		});
 
 		const accounts = called[0][1].accounts;

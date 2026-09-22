@@ -6,7 +6,7 @@ mod tests;
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum FillMode {
     Fill,
-    PlaceAndTake(bool),
+    PlaceAndTake,
     Liquidation,
 }
 
@@ -37,9 +37,5 @@ impl FillMode {
 
     pub fn is_liquidation(&self) -> bool {
         self == &FillMode::Liquidation
-    }
-
-    pub fn is_ioc(&self) -> bool {
-        matches!(self, FillMode::PlaceAndTake(true))
     }
 }

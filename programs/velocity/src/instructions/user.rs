@@ -94,8 +94,8 @@ use {
             oracle::{OraclePriceData, StrictOraclePrice},
             oracle_map::OracleMap,
             order_params::{
-                parse_optional_params, ModifyOrderParams, OrderParams,
-                PlaceAndTakeOrderSuccessCondition, PlaceOrderOptions, PostOnlyParam,
+                ModifyOrderParams, OrderParams, PlaceAndTakeOrderSuccessCondition,
+                PlaceOrderOptions, PostOnlyParam,
             },
             paused_operations::{PerpOperation, SpotOperation},
             perp_market::PerpMarket,

@@ -22,7 +22,7 @@ pub struct PlaceAndTakeAccounts<'a, 'info> {
 /// rests the order whole instead, which is maker priority.
 pub struct PlaceAndTakeRequest {
     pub params: OrderParams,
-    pub optional_params: Option<u32>,
+    pub success_condition: Option<PlaceAndTakeOrderSuccessCondition>,
     pub taker_served_window: bool,
     pub synchronous_take: bool,
 }
@@ -64,29 +64,27 @@ struct DetachedTake<'a, 'info> {
 struct TakeOutcome {
     base_asset_amount_filled: u64,
     is_immediate_or_cancel: bool,
-    success_condition: u8,
+    success_condition: Option<PlaceAndTakeOrderSuccessCondition>,
 }
 
-/// Enforce the caller's success condition against what the take filled. The
-/// legacy and v1 bodies share the same wire encoding for the condition, so
-/// they share the rule.
+/// Enforce the caller's success condition against what the take filled.
 fn validate_place_and_take_success_condition(
-    success_condition: u8,
+    success_condition: Option<PlaceAndTakeOrderSuccessCondition>,
     base_asset_amount_filled: u64,
     order_unfilled: bool,
 ) -> Result<()> {
-    if success_condition == PlaceAndTakeOrderSuccessCondition::PartialFill as u8 {
-        validate!(
+    match success_condition {
+        Some(PlaceAndTakeOrderSuccessCondition::PartialFill) => validate!(
             base_asset_amount_filled > 0,
             ErrorCode::PlaceAndTakeOrderSuccessConditionFailed,
             "no partial fill"
-        )?;
-    } else if success_condition == PlaceAndTakeOrderSuccessCondition::FullFill as u8 {
-        validate!(
+        )?,
+        Some(PlaceAndTakeOrderSuccessCondition::FullFill) => validate!(
             base_asset_amount_filled > 0 && !order_unfilled,
             ErrorCode::PlaceAndTakeOrderSuccessConditionFailed,
             "no full fill"
-        )?;
+        )?,
+        None => {}
     }
 
     Ok(())
@@ -154,7 +152,7 @@ fn validate_unattested_take(request: &PlaceAndTakeRequest) -> Result<()> {
     )?;
 
     validate!(
-        parse_optional_params(request.optional_params).0 == 0,
+        request.success_condition.is_none(),
         ErrorCode::UnattestedSynchronousTake,
         "a success condition needs attested flow on a book with a speed bump"
     )?;
@@ -518,10 +516,7 @@ pub fn place_and_take_perp_order_v1<'info>(
     // PerpMarket-level oracle stats internally before reading peg /
     // reserves.
 
-    // The second byte set a fraction of the auction ramp to price at. It is
-    // still decoded so the wire format holds, and it is ignored.
-    let (success_condition, _unused_auction_fraction) =
-        parse_optional_params(request.optional_params);
+    let success_condition = request.success_condition;
 
     let (order, mut escrow, referrer_is_accelerated) = create_detached_take(
         &accounts,
@@ -540,7 +535,7 @@ pub fn place_and_take_perp_order_v1<'info>(
         return validate_place_and_take_success_condition(success_condition, 0, false);
     };
 
-    let mode = FillMode::PlaceAndTake(is_immediate_or_cancel || request.optional_params.is_some());
+    let mode = FillMode::PlaceAndTake;
 
     let base_asset_amount_filled = if !request.synchronous_take {
         validate_order_can_rest(&detached_order)?;

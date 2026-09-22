@@ -6194,7 +6194,6 @@ export class VelocityClient {
 			undefined,
 			undefined,
 			undefined,
-			undefined,
 			subAccountId
 		);
 	}
@@ -8031,8 +8030,8 @@ export class VelocityClient {
 	/**
 	 * Places a perp order and routes it across every liquidity source the market has. A restable remainder
 	 * rests on the market's CLOB. `orderParams.postOnly` must be `PostOnlyParams.NONE`, because the handler
-	 * rejects a post-only order here; `placeAndMakePerpOrder` takes those. An immediate-or-cancel order, or one
-	 * carrying `successCondition` or `auctionDurationPercentage`, is cancelled in the same instruction when it is still open after the fill attempt.
+	 * rejects a post-only order here; `placeAndMakePerpOrder` takes those. An immediate-or-cancel order is
+	 * cancelled in the same instruction when it is still open after the fill attempt.
 	 * @param orderParams - `baseAssetAmount` is BASE_PRECISION (1e9). `price`, `triggerPrice` and
 	 * `oraclePriceOffset` (signed) are PRICE_PRECISION (1e6).
 	 * @param clobAccounts - The market's quoter slab, book and CLOB program. The route reaches book and
@@ -8040,8 +8039,6 @@ export class VelocityClient {
 	 * @param makerInfo - The `(User, UserStats)` pairs the fill settles against. A fill settles only for
 	 * users the transaction carries, so a book that names a maker this list omits stops at that maker.
 	 * @param successCondition - Require the fill to be a `PartialFill` or `FullFill`. The instruction reverts with `PlaceAndTakeOrderSuccessConditionFailed` otherwise. Omit for no check.
-	 * @param auctionDurationPercentage - Percent (0-100, default 100) of the order's auction that must have
-	 * elapsed before this attempt may cross the AMM or makers at the current auction price. It is packed onchain into the same `u32` as `successCondition`.
 	 * @param subAccountId - Sub-account to place the order for; defaults to the active sub-account.
 	 * @param takerEscrow - Decoded escrow that avoids the automatic `UserStats` lookup.
 	 */
@@ -8051,7 +8048,6 @@ export class VelocityClient {
 
 		makerInfo?: MakerInfo | MakerInfo[],
 		successCondition?: PlaceAndTakeOrderSuccessCondition,
-		auctionDurationPercentage?: number,
 		txParams?: TxParams,
 		subAccountId?: number,
 		takerEscrow?: RevenueShareEscrowAccount
@@ -8063,7 +8059,6 @@ export class VelocityClient {
 					clobAccounts,
 					makerInfo,
 					successCondition,
-					auctionDurationPercentage,
 					subAccountId,
 					undefined,
 					takerEscrow
@@ -8092,7 +8087,6 @@ export class VelocityClient {
 	 * @param settlePnl - If `true` and the order is perp, also builds a settle-PnL transaction for the market.
 	 * @param exitEarlyIfSimFails - If `true`, simulates the place-and-take transaction first and
 	 * returns `null` without building the real transactions if the simulation fails.
-	 * @param auctionDurationPercentage - See `placeAndTakePerpOrder`.
 	 * @param optionalIxs - Extra instructions prepended to the place-and-take transaction (and to
 	 * the cancel/settle-PnL transactions).
 	 * @param isolatedPositionDepositAmount - If set and the order increases the position, a
@@ -8112,7 +8106,6 @@ export class VelocityClient {
 		cancelExistingOrders?: boolean,
 		settlePnl?: boolean,
 		exitEarlyIfSimFails?: boolean,
-		auctionDurationPercentage?: number,
 		optionalIxs?: TransactionInstruction[],
 		isolatedPositionDepositAmount?: BN
 	): Promise<{
@@ -8147,7 +8140,6 @@ export class VelocityClient {
 				clobAccounts,
 				makerInfo,
 				undefined,
-				auctionDurationPercentage,
 				subAccountId
 			);
 
@@ -8399,7 +8391,6 @@ export class VelocityClient {
 
 		makerInfo?: MakerInfo | MakerInfo[],
 		successCondition?: PlaceAndTakeOrderSuccessCondition,
-		auctionDurationPercentage?: number,
 		subAccountId?: number,
 		overrides?: {
 			authority?: PublicKey;
@@ -8454,18 +8445,12 @@ export class VelocityClient {
 			...this.quoterSectionMetas(clob, extraQuoterAccounts)
 		);
 
-		let optionalParams = null;
-		if (auctionDurationPercentage || successCondition) {
-			optionalParams =
-				((auctionDurationPercentage ?? 100) << 8) | (successCondition ?? 0);
-		}
-
 		const authority = overrides?.authority ?? this.wallet.publicKey;
 
 		return await VelocityCore.buildPlaceAndTakePerpOrderInstruction({
 			program: this.program,
 			orderParams,
-			optionalParams,
+			successCondition: successCondition ?? null,
 			state: await this.getStatePublicKey(),
 			user,
 			userStats: userStatsPublicKey,
@@ -9008,7 +8993,6 @@ export class VelocityClient {
 				reduceOnly: true,
 				price: limitPrice,
 			},
-			undefined,
 			undefined,
 			undefined,
 			undefined,

@@ -2708,7 +2708,7 @@ impl<'a> TransactionBuilder<'a> {
         mut self,
         order: OrderParams,
         clob: ClobFillAccounts,
-        success_condition: Option<u32>,
+        success_condition: Option<PlaceAndTakeOrderSuccessCondition>,
     ) -> Self {
         assert!(
             order.market_type == MarketType::Perp,

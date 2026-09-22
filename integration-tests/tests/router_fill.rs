@@ -4630,7 +4630,11 @@ fn an_unattested_taker_on_a_bumped_book_rests_instead_of_filling() {
         12,
     );
 
-    let build = |bit_flags: u8, success_condition: Option<u32>, attest: bool| {
+    let build = |bit_flags: u8,
+                 success_condition: Option<
+        velocity::state::order_params::PlaceAndTakeOrderSuccessCondition,
+    >,
+                 attest: bool| {
         let mut accounts = velocity::accounts::PlaceAndTakeV1 {
             state: state_pda(),
             user: taker_user,
@@ -4677,7 +4681,14 @@ fn an_unattested_taker_on_a_bumped_book_rests_instead_of_filling() {
     };
 
     // A synchronous shape is refused rather than silently rested.
-    for ix in [build(1, None, false), build(0, Some(2), false)] {
+    for ix in [
+        build(1, None, false),
+        build(
+            0,
+            Some(velocity::state::order_params::PlaceAndTakeOrderSuccessCondition::FullFill),
+            false,
+        ),
+    ] {
         let err = send_with_ixs(
             &mut fixture.svm,
             &taker_authority,
@@ -5072,7 +5083,7 @@ fn place_and_take_rests_the_remainder_on_the_clob() {
         data: velocity::instruction::PlaceAndTakePerpOrderV1 {
             args: PlaceAndTakePerpOrderV1Args {
                 params,
-                success_condition: Some(0),
+                success_condition: None,
             },
         }
         .data(),

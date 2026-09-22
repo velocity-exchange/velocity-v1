@@ -17,7 +17,7 @@ use {
             PlaceAndTakeRequest,
         },
         state::{
-            order_params::OrderParams,
+            order_params::{OrderParams, PlaceAndTakeOrderSuccessCondition},
             prop_amm::QuoterSlabV0,
             state::State,
             user::{User, UserStats},
@@ -73,9 +73,7 @@ pub struct PlaceAndTakeV1<'info> {
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
 pub struct PlaceAndTakePerpOrderV1Args {
     pub params: OrderParams,
-    /// Bit 0 selects a `PlaceAndTakeOrderSuccessCondition`. The field is a u32
-    /// for wire compatibility with the v0 `optional_params`.
-    pub success_condition: Option<u32>,
+    pub success_condition: Option<PlaceAndTakeOrderSuccessCondition>,
 }
 
 #[access_control(
@@ -87,7 +85,7 @@ pub fn handle_place_and_take_perp_order_v1<'c: 'info, 'info>(
 ) -> Result<()> {
     let PlaceAndTakePerpOrderV1Args {
         params,
-        success_condition: optional_params,
+        success_condition,
     } = args;
     let (taker_served_window, synchronous_take) = {
         let attested = ctx.accounts.flow_authority.is_some();
@@ -109,7 +107,7 @@ pub fn handle_place_and_take_perp_order_v1<'c: 'info, 'info>(
         },
         PlaceAndTakeRequest {
             params,
-            optional_params,
+            success_condition,
             taker_served_window,
             synchronous_take,
         },

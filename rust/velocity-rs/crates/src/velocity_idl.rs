@@ -5380,6 +5380,23 @@ pub mod types {
         pub params: OrderParams,
         pub activation_delay_slots: Option<u32>,
     }
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub enum PlaceAndTakeOrderSuccessCondition {
+        #[default]
+        PartialFill,
+        FullFill,
+    }
     #[repr(C)]
     #[derive(
         AnchorSerialize,
@@ -5395,7 +5412,7 @@ pub mod types {
     )]
     pub struct PlaceAndTakePerpOrderV1Args {
         pub params: OrderParams,
-        pub success_condition: Option<u32>,
+        pub success_condition: Option<PlaceAndTakeOrderSuccessCondition>,
     }
     #[repr(C)]
     #[derive(

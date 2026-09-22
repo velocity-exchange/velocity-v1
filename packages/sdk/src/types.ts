@@ -2413,9 +2413,9 @@ export enum AcceleratedReferralStatus {
 }
 
 /** Which fill outcome counts as "success" for a `placeAndTake*` instruction's on-chain success check. */
-export enum PlaceAndTakeOrderSuccessCondition {
-	PartialFill = 1,
-	FullFill = 2,
+export class PlaceAndTakeOrderSuccessCondition {
+	static readonly PARTIAL_FILL = { partialFill: {} };
+	static readonly FULL_FILL = { fullFill: {} };
 }
 
 type ExactType<T> = Pick<T, keyof T>;

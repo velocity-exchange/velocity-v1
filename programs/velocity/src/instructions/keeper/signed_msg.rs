@@ -178,10 +178,7 @@ fn fill_signed_msg_taker_order<'c: 'info, 'info>(
     clock: &Clock,
 ) -> Result<u64> {
     let market_index = placed.market_index;
-    // Zero progress prices the auction at its start. A signed-message order
-    // takes only genuine improvement now and rests the rest, so it never pays
-    // its own slippage bound to whoever lands first.
-    let mode = FillMode::PlaceAndTake(placed.is_immediate_or_cancel);
+    let mode = FillMode::PlaceAndTake;
     let order = {
         // The order lives on `placed`, not `user.orders`. It is the taker order
         // this leg fills detached.

@@ -391,7 +391,7 @@ fn push_opt_u8(buf: &mut Vec<u8>, some: bool, value: u8) {
 /// `velocity::state::order_params::ModifyOrderParams`:
 ///   direction, base_asset_amount, price, reduce_only, post_only, bit_flags,
 ///   max_ts, trigger_price, trigger_condition, oracle_price_offset,
-///   auction_duration, auction_start_price, auction_end_price, policy.
+///   activation_delay_slots, policy.
 /// The fields this harness does not drive are always `None`.
 #[allow(clippy::too_many_arguments)]
 fn modify_params_bytes(
@@ -417,9 +417,7 @@ fn modify_params_bytes(
     push_opt(&mut b, false, &[]); // trigger_price
     push_opt_u8(&mut b, false, 0); // trigger_condition
     push_opt(&mut b, false, &[]); // oracle_price_offset
-    push_opt_u8(&mut b, false, 0); // auction_duration
-    push_opt(&mut b, false, &[]); // auction_start_price
-    push_opt(&mut b, false, &[]); // auction_end_price
+    push_opt(&mut b, false, &[]); // activation_delay_slots
     push_opt_u8(&mut b, with_policy, policy);
     b
 }
@@ -2037,7 +2035,7 @@ impl Fixture {
         #[range(0..2u8)] dir: u8,
         #[range(1..1_000_000_000u64)] base: u64,
         #[range(0..2u8)] with_success_condition: u8,
-        #[range(0..3u32)] success_condition: u32,
+        #[range(0..2u8)] success_condition: u8,
     ) -> bool {
         use velocity::{
             controller::position::PositionDirection,
@@ -2067,11 +2065,7 @@ impl Fixture {
         };
         let mut args = Vec::new();
         params.serialize(&mut args).unwrap();
-        push_opt(
-            &mut args,
-            with_success_condition == 1,
-            &success_condition.to_le_bytes(),
-        );
+        push_opt(&mut args, with_success_condition == 1, &[success_condition]);
 
         let mut accounts = vec![
             AccountMeta::new_readonly(self.state_pda(), false),
@@ -5170,22 +5164,18 @@ impl Fixture {
     /// program finds its authenticating precompile at `ix_idx - 1`, which is
     /// the only arrangement it accepts.
     ///
-    /// The order must be a *perp taker* order with valid auction params, and
+    /// The order must be a *perp taker* order with a worst price, and
     /// its `slot` must be within 500 slots of the clock, so those are pinned
     /// rather than fuzzed — every one of them is an outright rejection, and
     /// leaving them open would spend the whole budget re-deriving that. What
     /// stays fuzzer-driven is the part with real state behind it: direction,
-    /// size, auction shape, and the optional take-profit / stop-loss legs that
+    /// size, and the optional take-profit / stop-loss legs that
     /// place *additional* orders through the same call.
     pub fn action_place_signed_msg_taker_order(
         &mut self,
         #[range(0..NUM_USERS)] user_idx: usize,
         #[range(0..2u8)] dir: u8,
         #[range(1..2_000_000_000u64)] base: u64,
-        // A LONG auction window. `place_and_make` can only fill a taker order
-        // whose `max_slot = order_slot + auction_duration` has not passed, so a
-        // 1-30 slot window closes before the fuzzer gets to emit the maker leg.
-        #[range(30..220u8)] auction_duration: u8,
         #[range(0..2u8)] with_tp: u8,
         #[range(0..2u8)] with_sl: u8,
         #[range(0..2u8)] with_max_margin_ratio: u8,
@@ -5209,11 +5199,10 @@ impl Fixture {
         } else {
             PositionDirection::Short
         };
-        // Auction must run start -> end in the direction's favour, or
-        // `has_valid_auction_params` rejects before anything interesting runs.
-        let (auction_start_price, auction_end_price) = match direction {
-            PositionDirection::Long => (900_000i64, 1_100_000i64),
-            PositionDirection::Short => (1_100_000i64, 900_000i64),
+        // A worst price 10 percent through the oracle, so the take can fill.
+        let worst_price = match direction {
+            PositionDirection::Long => 1_100_000u64,
+            PositionDirection::Short => 900_000u64,
         };
 
         let params = OrderParams {
@@ -5221,12 +5210,9 @@ impl Fixture {
             market_type: MarketType::Perp,
             direction,
             base_asset_amount: base,
-            price: 0,
+            price: worst_price,
             market_index: 0,
             post_only: PostOnlyParam::None,
-            auction_duration: Some(auction_duration),
-            auction_start_price: Some(auction_start_price),
-            auction_end_price: Some(auction_end_price),
             ..Default::default()
         };
 
@@ -5358,10 +5344,9 @@ impl Fixture {
         let taker = self.users[taker_idx].clone();
 
         // The maker MUST take the opposite side of the taker, and must be priced
-        // where the auction already is, or `fill_perp_order` finds no cross and
-        // the handler returns having done nothing — which is what left this at
-        // 16%. A taker long runs its auction 900k -> 1.1M, so a maker ask at
-        // 900k crosses on the first slot rather than only at the very end.
+        // inside the taker's worst price, or `fill_perp_order` finds no cross
+        // and the handler returns having done nothing. A taker long accepts up
+        // to 1.1M, so a maker ask at 900k crosses.
         //
         // `dir` now only decides whether to deliberately probe the WRONG side,
         // so the no-cross branch stays reachable without being the default.
@@ -6098,7 +6083,7 @@ mod smoke {
         assert!(f.action_deposit(1, 500_000 * QUOTE_PRECISION as u64, 0, 0));
         assert!(f.action_init_signed_msg_user_orders(0, 8));
         assert!(
-            f.action_place_signed_msg_taker_order(0, 0, 10_000_000, 10, 0, 0, 0, 0, 0),
+            f.action_place_signed_msg_taker_order(0, 0, 10_000_000, 0, 0, 0, 0, 0),
             "signed-msg taker order rejected; run with FUZZ_DEBUG=1 for the program logs"
         );
         assert_eq!(f.signed_uuids.len(), 1, "uuid should have been recorded");
@@ -6113,7 +6098,7 @@ mod smoke {
             "signed pyth lazer update (spot feed) rejected"
         );
         assert!(f.action_init_signed_msg_user_orders(1, 8));
-        assert!(f.action_place_signed_msg_taker_order(1, 1, 10_000_000, 10, 1, 1, 1, 500, 0));
+        assert!(f.action_place_signed_msg_taker_order(1, 1, 10_000_000, 1, 1, 1, 500, 0));
 
         // ...and a maker crossing it by uuid.
         assert!(
@@ -6460,7 +6445,7 @@ mod smoke {
         );
         run!(
             "place_signed_msg_taker_order",
-            f.action_place_signed_msg_taker_order(0, 0, 10_000_000, 10, 0, 0, 0, 0, 0)
+            f.action_place_signed_msg_taker_order(0, 0, 10_000_000, 0, 0, 0, 0, 0)
         );
         run!(
             "place_and_make_signed_msg",

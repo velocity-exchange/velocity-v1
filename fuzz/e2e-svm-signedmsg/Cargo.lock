@@ -911,13 +911,14 @@ dependencies = [
 
 [[package]]
 name = "brine-ed25519"
-version = "0.9.0"
+version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "521613852b9ff057440780f968789cae80e9f81756078cd4b74a19b2f0ccf1e2"
+checksum = "fb50edc4cf7a2eb8bdd300e2c370724c1fb8772666734f6ef79c2873152e52c6"
 dependencies = [
  "curve25519-dalek",
  "sha2 0.10.9",
  "solana-address 2.6.1",
+ "solana-define-syscall 5.2.0",
  "solana-program-error",
 ]
 
@@ -1097,6 +1098,7 @@ version = "0.1.0"
 dependencies = [
  "anchor-lang",
  "quoter-spec",
+ "solana-address 2.6.1",
  "wincode 0.6.1",
 ]
 
@@ -3328,7 +3330,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 [[package]]
 name = "relay-anchor"
 version = "0.1.0"
-source = "git+https://github.com/velocity-exchange/relay?rev=e4b1115#e4b11156d83ea469041a80d281103de5c8e1797d"
+source = "git+https://github.com/velocity-exchange/relay?rev=a6c958b#a6c958b660491cb1ce893d4cb3256d80e5bb50e6"
 dependencies = [
  "relay-spec",
 ]
@@ -3336,7 +3338,7 @@ dependencies = [
 [[package]]
 name = "relay-spec"
 version = "0.1.0"
-source = "git+https://github.com/velocity-exchange/relay?rev=e4b1115#e4b11156d83ea469041a80d281103de5c8e1797d"
+source = "git+https://github.com/velocity-exchange/relay?rev=a6c958b#a6c958b660491cb1ce893d4cb3256d80e5bb50e6"
 dependencies = [
  "bytemuck",
 ]

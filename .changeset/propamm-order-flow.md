@@ -296,6 +296,12 @@ becomes `unusedAuctionDuration`. The account layout is unchanged.
 auction and slot arguments, and `hasAuctionPrice` is removed. `SIGNED_MSG_FILL_WINDOW_MS` and
 `DEFAULT_MARKET_ORDER_SLIPPAGE_FRACTION` are new.
 
+`placeAndTakePerpOrder`, `getPlaceAndTakePerpOrderIx` and
+`preparePlaceAndTakePerpOrderWithAdditionalOrders` drop `auctionDurationPercentage`, so every later
+positional argument moves one place left. `PlaceAndTakeOrderSuccessCondition` is a variant class
+(`PARTIAL_FILL`, `FULL_FILL`), and `buildPlaceAndTakePerpOrderInstruction` takes `successCondition`
+in place of the packed `optionalParams`.
+
 Off-chain fill prediction must stop interpolating a price against elapsed slots and read the
 order's own bound.
 

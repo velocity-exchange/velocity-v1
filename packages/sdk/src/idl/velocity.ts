@@ -27901,6 +27901,24 @@ export type Velocity = {
       }
     },
     {
+      "name": "placeAndTakeOrderSuccessCondition",
+      "docs": [
+        "What a place-and-take must fill. The instruction reverts when the take",
+        "falls short of it."
+      ],
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "partialFill"
+          },
+          {
+            "name": "fullFill"
+          }
+        ]
+      }
+    },
+    {
       "name": "placeAndTakePerpOrderV1Args",
       "type": {
         "kind": "struct",
@@ -27915,12 +27933,12 @@ export type Velocity = {
           },
           {
             "name": "successCondition",
-            "docs": [
-              "Bit 0 selects a `PlaceAndTakeOrderSuccessCondition`. The field is a u32",
-              "for wire compatibility with the v0 `optional_params`."
-            ],
             "type": {
-              "option": "u32"
+              "option": {
+                "defined": {
+                  "name": "placeAndTakeOrderSuccessCondition"
+                }
+              }
             }
           }
         ]

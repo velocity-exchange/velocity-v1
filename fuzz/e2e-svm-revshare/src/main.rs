@@ -917,7 +917,7 @@ fn regr_256_reused_order_id_stale_builder_fee(fixture: &mut Regr256, #[range(0..
     };
     let mut tbuf = Vec::new();
     taker_params.serialize(&mut tbuf).unwrap();
-    tbuf.push(0u8); // optional_params: Option<u32>::None
+    tbuf.push(0u8); // success_condition: None
     let _fill_outcome = fixture
         .ctx
         .raw_call(Instruction {

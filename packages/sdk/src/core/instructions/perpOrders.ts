@@ -4,7 +4,10 @@ import type {
 	TransactionInstruction,
 } from '@solana/web3.js';
 import type { VelocityProgram } from '../../config';
-import type { ClobAccounts } from '../../types';
+import type {
+	ClobAccounts,
+	PlaceAndTakeOrderSuccessCondition,
+} from '../../types';
 
 /**
  * Builds a `placeTriggerOrdersV1` instruction, arming trigger orders in the user's own order slots. A slot holds one unfired conditional, so every entry must be a `TriggerMarket` or a `TriggerLimit` on a perp market, or the program returns `OrderTypeNotConditional`.
@@ -35,17 +38,16 @@ export async function buildPlaceTriggerOrdersInstruction(args: {
 }
 
 /**
- * allow-verbose: enumerates every taker-side semantic (postOnly gate, optionalParams
- * packed-u32 layout, remainingAccounts ordering, clobAccounts shape) a caller must
- * reproduce exactly.
+ * allow-verbose: enumerates every taker-side semantic (postOnly gate, successCondition,
+ * remainingAccounts ordering, clobAccounts shape) a caller must reproduce exactly.
  *
  * Builds a `placeAndTakePerpOrderV1` instruction: places an order and routes it as a
  * taker against the market's book, its quoters and the AMM.
  * `orderParams.postOnly` must be `PostOnlyParam.None` (`InvalidOrderPostOnly` otherwise).
  * A restable remainder rests on the book. Any portion left unfilled is auto-cancelled
- * when the order is (or becomes, via `optionalParams`) immediate-or-cancel.
+ * when the order is immediate-or-cancel.
  * @param args.orderParams - an `OrderParams` object; `baseAssetAmount` is BASE_PRECISION (1e9), `price`/`triggerPrice`/`oraclePriceOffset` are PRICE_PRECISION (1e6).
- * @param args.optionalParams - packed `u32` combining a `PlaceAndTakeOrderSuccessCondition` (fail the tx if not at least partially/fully filled) and an auction-duration percentage override; `null` for default behavior. Passing any non-null value also forces IOC cancel-remainder semantics.
+ * @param args.successCondition - a `PlaceAndTakeOrderSuccessCondition`. The instruction reverts unless the take fills at least partially or fully. `null` for no check.
  * @param args.authority - signer that must own or be a registered delegate of `user`.
  * @param args.remainingAccounts - writable perp market + oracle `AccountMeta[]` for `orderParams.marketIndex`, followed by maker/referrer `(User, UserStats)` pairs, followed by the taker's `RevenueShareEscrow` account if builder codes are enabled.
  * @param args.clobAccounts - the market's CLOB accounts, which are `quoterSlab`, a
@@ -56,7 +58,7 @@ export async function buildPlaceTriggerOrdersInstruction(args: {
 export async function buildPlaceAndTakePerpOrderInstruction(args: {
 	program: VelocityProgram;
 	orderParams: any;
-	optionalParams: number | null;
+	successCondition: PlaceAndTakeOrderSuccessCondition | null;
 	state: PublicKey;
 	user: PublicKey;
 	userStats: PublicKey;
@@ -73,7 +75,7 @@ export async function buildPlaceAndTakePerpOrderInstruction(args: {
 		// program decodes as `None`.
 		const omitted = args.program.programId;
 		return await args.program.instruction.placeAndTakePerpOrderV1(
-			{ params: args.orderParams, successCondition: args.optionalParams },
+			{ params: args.orderParams, successCondition: args.successCondition },
 			{
 				accounts: {
 					state: args.state,

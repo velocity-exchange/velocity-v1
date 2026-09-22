@@ -22,7 +22,7 @@ fn every_mode_reads_the_orders_own_worst_price() {
 
     for mode in [
         FillMode::Fill,
-        FillMode::PlaceAndTake(false),
+        FillMode::PlaceAndTake,
         FillMode::Liquidation,
     ] {
         let limit_price = mode

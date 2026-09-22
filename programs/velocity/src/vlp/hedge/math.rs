@@ -63,14 +63,13 @@ pub mod perp_lp_pool_settlement {
         perp_market: &PerpMarket,
         quote_spot_market: &SpotMarket,
     ) -> Result<()> {
-        if result.amount_transferred > ctx.max_settle_quote_amount {
-            msg!(
-                "Amount to settle exceeds maximum allowed, {} > {}",
-                result.amount_transferred,
-                ctx.max_settle_quote_amount
-            );
-            return Err(ErrorCode::LpPoolSettleInvariantBreached.into());
-        }
+        validate!(
+            result.amount_transferred <= ctx.max_settle_quote_amount,
+            ErrorCode::LpPoolSettleInvariantBreached,
+            "Amount to settle exceeds maximum allowed, {} > {}",
+            result.amount_transferred,
+            ctx.max_settle_quote_amount
+        )?;
 
         if result.direction == SettlementDirection::ToLpPool {
             if result.fee_pool_used > 0 {

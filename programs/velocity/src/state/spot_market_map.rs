@@ -204,10 +204,12 @@ impl<'a> SpotMarketMap<'a> {
 
             let market_index = u16::from_le_bytes(*array_ref![data, 700, 2]);
 
-            if spot_market_map.0.contains_key(&market_index) {
-                msg!("Can not include same market index twice {}", market_index);
-                return Err(ErrorCode::InvalidSpotMarketAccount);
-            }
+            crate::validate!(
+                !(spot_market_map.0.contains_key(&market_index)),
+                ErrorCode::InvalidSpotMarketAccount,
+                "Can not include same market index twice {}",
+                market_index
+            )?;
 
             let account_info = account_info_iter.next().safe_unwrap()?;
             let is_writable = account_info.is_writable;
@@ -281,10 +283,12 @@ impl<'a> SpotMarketMap<'a> {
             writable_markets.insert(market_index);
         }
 
-        if !must_be_writable && is_writable {
-            msg!("spot market {} not expected to be writeable", market_index);
-            return Err(ErrorCode::SpotMarketWrongMutability);
-        }
+        crate::validate!(
+            !(!must_be_writable && is_writable),
+            ErrorCode::SpotMarketWrongMutability,
+            "spot market {} not expected to be writeable",
+            market_index
+        )?;
 
         map.insert(market_index, account_loader);
 

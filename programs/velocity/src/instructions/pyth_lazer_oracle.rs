@@ -148,10 +148,11 @@ pub fn handle_update_pyth_lazer_oracle<'c: 'info, 'info>(
         }
 
         let price = price.mantissa_i64();
-        if price == 0 {
-            msg!("Pyth lazer price is zero, not enough publishers");
-            return Err(ErrorCode::InvalidPythLazerMessage.into());
-        }
+        validate!(
+            price != 0,
+            ErrorCode::InvalidPythLazerMessage,
+            "Pyth lazer price is zero, not enough publishers"
+        )?;
 
         let exponent = exponent.ok_or(ErrorCode::InvalidPythLazerMessage)?;
 

@@ -305,10 +305,13 @@ pub fn calculate_swap_output(
     let invariant_sqrt_u192 = U192::from(invariant_sqrt);
     let invariant = invariant_sqrt_u192.safe_mul(invariant_sqrt_u192)?;
 
-    if direction == SwapDirection::Remove && swap_amount > input_asset_reserve {
-        msg!("{:?} > {:?}", swap_amount, input_asset_reserve);
-        return Err(ErrorCode::TradeSizeTooLarge);
-    }
+    validate!(
+        !(direction == SwapDirection::Remove && swap_amount > input_asset_reserve),
+        ErrorCode::TradeSizeTooLarge,
+        "{:?} > {:?}",
+        swap_amount,
+        input_asset_reserve
+    )?;
 
     let new_input_asset_reserve = if let SwapDirection::Add = direction {
         input_asset_reserve.safe_add(swap_amount)?

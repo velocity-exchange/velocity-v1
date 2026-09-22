@@ -63,10 +63,13 @@ fn pay_init_user_fee<'info>(
     }
 
     let payer_lamports = payer.to_account_info().try_lamports()?;
-    if payer_lamports < init_fee {
-        msg!("payer lamports {} init fee {}", payer_lamports, init_fee);
-        return Err(ErrorCode::CantPayUserInitFee.into());
-    }
+    validate!(
+        payer_lamports >= init_fee,
+        ErrorCode::CantPayUserInitFee,
+        "payer lamports {} init fee {}",
+        payer_lamports,
+        init_fee
+    )?;
 
     invoke(
         &transfer(&payer.key(), &user.key(), init_fee),

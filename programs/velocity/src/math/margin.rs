@@ -832,10 +832,12 @@ pub fn meets_place_order_margin_requirement(
         MarginContext::standard_with_config(margin_type_config).strict(true),
     )?;
 
-    if !calculation.meets_margin_requirement() {
-        msg!("margin calculation: {:?}", calculation);
-        return Err(ErrorCode::InsufficientCollateral);
-    }
+    validate!(
+        calculation.meets_margin_requirement(),
+        ErrorCode::InsufficientCollateral,
+        "margin calculation: {:?}",
+        calculation
+    )?;
 
     if risk_increasing {
         if let Some(net_equity) = calculate_net_equity_for_floor(user, maps)? {

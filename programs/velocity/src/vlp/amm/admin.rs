@@ -220,10 +220,11 @@ pub fn handle_override_amm_cache_info<'c: 'info, 'info>(
     }
 
     if let Some(amm_inventory_limit) = override_params.amm_inventory_limit {
-        if amm_inventory_limit < 0 {
-            msg!("amm_inventory_limit must be non-negative");
-            return Err(ErrorCode::DefaultError.into());
-        }
+        validate!(
+            amm_inventory_limit >= 0,
+            ErrorCode::DefaultError,
+            "amm_inventory_limit must be non-negative"
+        )?;
         cache_entry.amm_inventory_limit = amm_inventory_limit;
     }
 
@@ -888,15 +889,14 @@ pub fn handle_update_k(ctx: Context<AdminUpdateK>, sqrt_k: u128) -> Result<()> {
         .unsigned_abs()
         .gt(&MAX_UPDATE_K_PRICE_CHANGE);
 
-    if price_change_too_large {
-        msg!(
-            "{:?} -> {:?} (> {:?})",
-            price_before,
-            price_after,
-            MAX_UPDATE_K_PRICE_CHANGE
-        );
-        return Err(ErrorCode::InvalidUpdateK.into());
-    }
+    validate!(
+        !(price_change_too_large),
+        ErrorCode::InvalidUpdateK,
+        "{:?} -> {:?} (> {:?})",
+        price_before,
+        price_after,
+        MAX_UPDATE_K_PRICE_CHANGE
+    )?;
 
     let k_sqrt_check = bn::U192::from(amm.base_asset_reserve)
         .safe_mul(bn::U192::from(amm.quote_asset_reserve))?
@@ -907,10 +907,14 @@ pub fn handle_update_k(ctx: Context<AdminUpdateK>, sqrt_k: u128) -> Result<()> {
         .cast::<i128>()?
         .safe_sub(amm.sqrt_k.cast::<i128>()?)?;
 
-    if k_err.unsigned_abs() > 100 {
-        msg!("k_err={:?}, {:?} != {:?}", k_err, k_sqrt_check, amm.sqrt_k);
-        return Err(ErrorCode::InvalidUpdateK.into());
-    }
+    validate!(
+        k_err.unsigned_abs() <= 100,
+        ErrorCode::InvalidUpdateK,
+        "k_err={:?}, {:?} != {:?}",
+        k_err,
+        k_sqrt_check,
+        amm.sqrt_k
+    )?;
 
     let peg_multiplier_after = amm.peg_multiplier;
     let base_asset_reserve_after = amm.base_asset_reserve;

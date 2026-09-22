@@ -4041,10 +4041,11 @@ fn update_mm_oracle(accounts: &[AccountInfo], data: &[u8], current_slot: u64) ->
     // repeated negatives could walk the stored price to zero and reset the
     // bootstrap path and the step cap with it.
     let incoming_price = i64::from_le_bytes(data[0..8].try_into().unwrap());
-    if incoming_price <= 0 {
-        msg!("MM oracle price is non-positive, not updating");
-        return Err(ErrorCode::OracleNonPositive.into());
-    }
+    validate!(
+        incoming_price > 0,
+        ErrorCode::OracleNonPositive,
+        "MM oracle price is non-positive, not updating"
+    )?;
     let incoming_sequence_id = u64::from_le_bytes(data[8..16].try_into().unwrap());
     let source_slot = u64::from_le_bytes(data[16..24].try_into().unwrap());
 

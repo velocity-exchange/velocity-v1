@@ -9,10 +9,11 @@ pub fn handle_update_amms<'c: 'info, 'info>(
     ctx: Context<'info, UpdateAMM<'info>>,
     market_indexes: Vec<u16>,
 ) -> Result<()> {
-    if market_indexes.len() > 5 {
-        msg!("Too many markets passed, max 5");
-        return Err(ErrorCode::TooManyMarketsPassed.into());
-    }
+    validate!(
+        market_indexes.len() <= 5,
+        ErrorCode::TooManyMarketsPassed,
+        "Too many markets passed, max 5"
+    )?;
 
     // up to ~60k compute units (per amm) worst case
 
@@ -47,10 +48,11 @@ pub fn view_amm_liquidity<'c: 'info, 'info>(
     ctx: Context<'info, UpdateAMM<'info>>,
     market_indexes: Vec<u16>,
 ) -> Result<()> {
-    if market_indexes.len() > 5 {
-        msg!("Too many markets passed, max 5");
-        return Err(ErrorCode::TooManyMarketsPassed.into());
-    }
+    validate!(
+        market_indexes.len() <= 5,
+        ErrorCode::TooManyMarketsPassed,
+        "Too many markets passed, max 5"
+    )?;
 
     // up to ~60k compute units (per amm) worst case
 

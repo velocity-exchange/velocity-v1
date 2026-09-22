@@ -553,14 +553,13 @@ pub fn handle_update_amm_constituent_mapping_data(
                 && existing_datum.constituent_index == datum.constituent_index
         });
 
-        if existing_datum.is_none() {
-            msg!(
-                "AmmConstituentDatum not found for perp_market_index {} and constituent_index {}",
-                datum.perp_market_index,
-                datum.constituent_index
-            );
-            return Err(ErrorCode::InvalidAmmConstituentMappingArgument.into());
-        }
+        validate!(
+            existing_datum.is_some(),
+            ErrorCode::InvalidAmmConstituentMappingArgument,
+            "AmmConstituentDatum not found for perp_market_index {} and constituent_index {}",
+            datum.perp_market_index,
+            datum.constituent_index
+        )?;
 
         amm_mapping.weights[existing_datum.unwrap()] = AmmConstituentDatum {
             perp_market_index: datum.perp_market_index,
@@ -595,14 +594,13 @@ pub fn handle_remove_amm_constituent_mapping_data(
             && existing_datum.constituent_index == constituent_index
     });
 
-    if position.is_none() {
-        msg!(
-            "Not found for perp_market_index {} and constituent_index {}",
-            perp_market_index,
-            constituent_index
-        );
-        return Err(ErrorCode::InvalidAmmConstituentMappingArgument.into());
-    }
+    validate!(
+        position.is_some(),
+        ErrorCode::InvalidAmmConstituentMappingArgument,
+        "Not found for perp_market_index {} and constituent_index {}",
+        perp_market_index,
+        constituent_index
+    )?;
 
     amm_mapping.weights.remove(position.unwrap());
     amm_mapping.weights.shrink_to_fit();

@@ -458,19 +458,21 @@ impl MarginCalculation {
     }
 
     pub fn can_exit_cross_margin_liquidation(&self) -> VelocityResult<bool> {
-        if !self.is_liquidation_mode() {
-            msg!("liquidation mode not enabled");
-            return Err(ErrorCode::InvalidMarginCalculation);
-        }
+        validate!(
+            self.is_liquidation_mode(),
+            ErrorCode::InvalidMarginCalculation,
+            "liquidation mode not enabled"
+        )?;
 
         Ok(self.meets_cross_margin_requirement_with_buffer())
     }
 
     pub fn can_exit_isolated_margin_liquidation(&self, market_index: u16) -> VelocityResult<bool> {
-        if !self.is_liquidation_mode() {
-            msg!("liquidation mode not enabled");
-            return Err(ErrorCode::InvalidMarginCalculation);
-        }
+        validate!(
+            self.is_liquidation_mode(),
+            ErrorCode::InvalidMarginCalculation,
+            "liquidation mode not enabled"
+        )?;
 
         Ok(self
             .isolated_margin_calculations
@@ -480,10 +482,11 @@ impl MarginCalculation {
     }
 
     pub fn cross_margin_margin_shortage(&self) -> VelocityResult<u128> {
-        if self.context.margin_buffer == 0 {
-            msg!("margin buffer mode not enabled");
-            return Err(ErrorCode::InvalidMarginCalculation);
-        }
+        validate!(
+            self.context.margin_buffer != 0,
+            ErrorCode::InvalidMarginCalculation,
+            "margin buffer mode not enabled"
+        )?;
 
         Ok(self
             .margin_requirement_plus_buffer
@@ -494,10 +497,11 @@ impl MarginCalculation {
     }
 
     pub fn isolated_margin_shortage(&self, market_index: u16) -> VelocityResult<u128> {
-        if self.context.margin_buffer == 0 {
-            msg!("margin buffer mode not enabled");
-            return Err(ErrorCode::InvalidMarginCalculation);
-        }
+        validate!(
+            self.context.margin_buffer != 0,
+            ErrorCode::InvalidMarginCalculation,
+            "margin buffer mode not enabled"
+        )?;
 
         self.isolated_margin_calculations
             .get(&market_index)

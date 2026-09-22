@@ -186,10 +186,11 @@ pub fn get_whitelist_token<'a>(
     account_info_iter: &mut Peekable<Iter<'a, AccountInfo<'a>>>,
 ) -> VelocityResult<Account<'a, TokenAccount>> {
     let token_account_info = account_info_iter.peek();
-    if token_account_info.is_none() {
-        msg!("Could not find whitelist token");
-        return Err(ErrorCode::InvalidWhitelistToken);
-    }
+    validate!(
+        token_account_info.is_some(),
+        ErrorCode::InvalidWhitelistToken,
+        "Could not find whitelist token"
+    )?;
 
     let token_account_info = token_account_info.safe_unwrap()?;
     let whitelist_token: Account<TokenAccount> =

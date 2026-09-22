@@ -2391,10 +2391,11 @@ pub fn liquidate_spot_with_swap_begin(
         .saturating_mul(max_pct_allowed)
         .safe_div(LIQUIDATION_PCT_PRECISION)?;
 
-    if max_liability_allowed_to_be_transferred == 0 {
-        msg!("max_liability_allowed_to_be_transferred == 0");
-        return Err(ErrorCode::InvalidLiquidation);
-    }
+    validate!(
+        max_liability_allowed_to_be_transferred != 0,
+        ErrorCode::InvalidLiquidation,
+        "max_liability_allowed_to_be_transferred == 0"
+    )?;
 
     // Size the swap bound against the time-ramped max-pct-to-liquidate throttle
     // (`max_liability_allowed_to_be_transferred`), NOT the uncapped
@@ -3593,15 +3594,14 @@ pub fn liquidate_perp_pnl_for_deposit(
         margin_calculation.clone()
     };
 
-    if is_contract_tier_violation {
-        msg!(
-            "liquidating contract tier={:?} pnl is riskier than outstanding {:?} & {:?}",
-            contract_tier,
-            safest_tier_perp_liability,
-            safest_tier_spot_liability
-        );
-        return Err(ErrorCode::TierViolationLiquidatingPerpPnl);
-    }
+    validate!(
+        !(is_contract_tier_violation),
+        ErrorCode::TierViolationLiquidatingPerpPnl,
+        "liquidating contract tier={:?} pnl is riskier than outstanding {:?} & {:?}",
+        contract_tier,
+        safest_tier_perp_liability,
+        safest_tier_spot_liability
+    )?;
 
     let margin_shortage = liquidation_mode.margin_shortage(&intermediate_margin_calculation)?;
 

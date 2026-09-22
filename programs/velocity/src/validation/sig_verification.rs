@@ -213,18 +213,18 @@ pub fn verify_flow_attestation(
     order_signature: &[u8; 64],
     now: i64,
 ) -> Result<()> {
-    if *flow_authority == anchor_lang::prelude::Pubkey::default() {
-        msg!("no flow authority is configured; attestation impossible");
-        return Err(ErrorCode::SigVerificationFailed.into());
-    }
-    if now > attestation.expiry_ts {
-        msg!(
-            "flow attestation expired at {}, now {}",
-            attestation.expiry_ts,
-            now
-        );
-        return Err(ErrorCode::SigVerificationFailed.into());
-    }
+    crate::validate!(
+        *flow_authority != anchor_lang::prelude::Pubkey::default(),
+        ErrorCode::SigVerificationFailed,
+        "no flow authority is configured; attestation impossible"
+    )?;
+    crate::validate!(
+        now <= attestation.expiry_ts,
+        ErrorCode::SigVerificationFailed,
+        "flow attestation expired at {}, now {}",
+        attestation.expiry_ts,
+        now
+    )?;
 
     brine_ed25519::verify(
         &brine_ed25519::Address::new_from_array(flow_authority.to_bytes()),

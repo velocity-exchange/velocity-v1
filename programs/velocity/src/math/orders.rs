@@ -645,29 +645,27 @@ pub fn validate_fill_price(
         base_precision,
     )?;
 
-    if order_direction == PositionDirection::Long && fill_price > order_limit_price {
-        msg!(
-            "long order fill price ({} = {}/{} * 1000) > limit price ({}) is_taker={}",
-            fill_price,
-            quote_asset_amount,
-            base_asset_amount,
-            order_limit_price,
-            is_taker
-        );
-        return Err(ErrorCode::InvalidOrderFillPrice);
-    }
+    validate!(
+        !(order_direction == PositionDirection::Long && fill_price > order_limit_price),
+        ErrorCode::InvalidOrderFillPrice,
+        "long order fill price ({} = {}/{} * 1000) > limit price ({}) is_taker={}",
+        fill_price,
+        quote_asset_amount,
+        base_asset_amount,
+        order_limit_price,
+        is_taker
+    )?;
 
-    if order_direction == PositionDirection::Short && fill_price < order_limit_price {
-        msg!(
-            "short order fill price ({} = {}/{} * 1000) < limit price ({}) is_taker={}",
-            fill_price,
-            quote_asset_amount,
-            base_asset_amount,
-            order_limit_price,
-            is_taker
-        );
-        return Err(ErrorCode::InvalidOrderFillPrice);
-    }
+    validate!(
+        !(order_direction == PositionDirection::Short && fill_price < order_limit_price),
+        ErrorCode::InvalidOrderFillPrice,
+        "short order fill price ({} = {}/{} * 1000) < limit price ({}) is_taker={}",
+        fill_price,
+        quote_asset_amount,
+        base_asset_amount,
+        order_limit_price,
+        is_taker
+    )?;
 
     Ok(())
 }

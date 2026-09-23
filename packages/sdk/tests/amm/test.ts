@@ -1040,8 +1040,8 @@ describe('AMM Tests', () => {
 
 		assert(reserves4[0].baseAssetReserve.eq(new BN('1100068201')));
 		assert(reserves4[0].quoteAssetReserve.eq(new BN('909034546')));
-		assert(reserves4[1].baseAssetReserve.eq(new BN('995530969')));
-		assert(reserves4[1].quoteAssetReserve.eq(new BN('1004489090')));
+		assert(reserves4[1].baseAssetReserve.eq(new BN('995474661')));
+		assert(reserves4[1].quoteAssetReserve.eq(new BN('1004545908')));
 
 		const p1RF = calculatePrice(
 			reserves4[0].baseAssetReserve,
@@ -1056,7 +1056,7 @@ describe('AMM Tests', () => {
 		);
 
 		assert(p1RF.eq(new BN(11199437)));
-		assert(p2RF.eq(new BN(13674954)));
+		assert(p2RF.eq(new BN(13676501)));
 		// no ref price offset at 100
 		mockAmm.curveUpdateIntensity = 100;
 		const reserves5 = calculateSpreadReserves(
@@ -1068,8 +1068,8 @@ describe('AMM Tests', () => {
 
 		assert(reserves5[0].baseAssetReserve.eq(new BN('1100068201')));
 		assert(reserves5[0].quoteAssetReserve.eq(new BN('909034546')));
-		assert(reserves5[1].baseAssetReserve.eq(new BN('995530969')));
-		assert(reserves5[1].quoteAssetReserve.eq(new BN('1004489090')));
+		assert(reserves5[1].baseAssetReserve.eq(new BN('995474661')));
+		assert(reserves5[1].quoteAssetReserve.eq(new BN('1004545908')));
 
 		const p1RFNone = calculatePrice(
 			reserves5[0].baseAssetReserve,
@@ -1084,7 +1084,7 @@ describe('AMM Tests', () => {
 		);
 
 		assert(p1RFNone.eq(new BN(11199437)));
-		assert(p2RFNone.eq(new BN(13674954)));
+		assert(p2RFNone.eq(new BN(13676501)));
 		assert(p1RF.sub(p1RFNone).eq(new BN(0)));
 		assert(p2RF.sub(p2RFNone).eq(new BN(0))); // todo?
 	});

@@ -2837,10 +2837,7 @@ pub fn handle_update_perp_bid_ask_twap<'c: 'info, 'info>(
         &state,
         slot,
     )?;
-    // This ix samples the AMM's bid/ask into the mark TWAP, so the curve is
-    // projected onto this slot's oracle first, as fills and the funding
-    // update do. Slot-idempotent, and gated on oracle validity and
-    // affordability like every other refresh.
+    // Project the curve onto this slot's oracle before sampling its quote.
     crate::vlp::amm::refresh::refresh_for_mark_sample(
         perp_market,
         &mm_oracle_price_data,
@@ -2888,15 +2885,17 @@ pub fn handle_update_perp_bid_ask_twap<'c: 'info, 'info>(
         let crate::state::perp_market::PerpMarket {
             amm, market_stats, ..
         } = &mut **perp_market;
-        // Refresh the AMM's cached spread state against this slot's oracle,
-        // then fold it (plus DLOB liquidity) into the mark TWAP.
-        crate::vlp::amm::math::spread::update_amm_quote_state(
-            amm,
-            market_stats,
-            &mm_oracle_price_data,
-            reserve_price,
-            slot,
-        )?;
+        // `refresh_for_mark_sample` already refreshed the quote state, except
+        // on a Settlement market, where validity is None and it skips.
+        if validity.is_none() {
+            crate::vlp::amm::math::spread::update_amm_quote_state(
+                amm,
+                market_stats,
+                &mm_oracle_price_data,
+                reserve_price,
+                slot,
+            )?;
+        }
         market_stats.update_mark_twap_crank(
             amm,
             now,

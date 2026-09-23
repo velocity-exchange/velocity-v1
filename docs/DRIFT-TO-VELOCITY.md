@@ -2471,12 +2471,19 @@ apart from the doc comment on `MarketStats.last_reference_price_offset`.
   `MarketStats.last_reference_price_offset` is still written but no longer read by the quote math.
 - **Oracle guard.** After the admin spread adjustments and the offset, `compute_quote_state`
   widens whichever side would otherwise quote through the oracle, so the bid stays at or below it
-  and the ask at or above it. It only ever widens a spread. Like the existing oracle retreat, it
+  and the ask at or above it. It covers both readings of the quote: the marginal price at the
+  spread reserves, `reserve_price * (1 + s/2)^2`, and the linear `reserve_price * (1 + s)` that
+  routing and the mark TWAP crank read through `AMM::bid_ask_price`. It only ever widens a spread,
+  and caps the pair at 100%, so a side can widen only by 100% minus the opposite spread. When the
+  requirement is larger, that side still quotes through the oracle. With a zero opposite spread and
+  offset that takes an oracle past about twice the reserve price or under a quarter of it; a wide
+  opposite spread or an offset brings the limit closer. Like the existing oracle retreat, it
   applies only when `curve_update_intensity > 0`. A market at 0 never repegs and quotes off its
   curve alone.
 - **Mark TWAP crank.** `update_perp_bid_ask_twap` runs `project_and_apply` before refreshing the
   quote state and sampling the AMM bid/ask into the mark TWAP, as fills and `update_funding_rate`
-  already do. It had sampled a curve whose peg could be minutes stale.
+  already do. It had sampled a curve whose peg could be minutes stale. The handler also stops
+  refreshing the quote state a second time, so the crank costs about the same compute as before.
 - **Funding k step.** The funding-imbalance k update clamps `curve_update_intensity` at 100, as
   repeg already does, so values above 100 no longer enlarge the k step.
 

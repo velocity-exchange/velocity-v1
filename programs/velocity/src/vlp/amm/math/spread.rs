@@ -59,6 +59,7 @@ use {
         validate,
         vlp::amm::math::amm::_calculate_market_open_bids_asks,
     },
+    num_integer::Roots,
     std::cmp::{max, min, Ordering},
 };
 
@@ -159,7 +160,6 @@ fn compute_quote_state(
             reserve_price,
             market_stats.last_24h_avg_funding_rate,
             liquidity_fraction_after_deadband,
-            market_stats.min_order_size,
             market_stats
                 .historical_oracle_data
                 .last_oracle_price_twap_5min,
@@ -351,19 +351,31 @@ fn validate_amm_quote_state(amm: &AMM) -> VelocityResult<()> {
 }
 
 /// Keep the final quote on the correct side of the oracle: the bid at or below
-/// it and the ask at or above it, so the AMM never quotes a price the market
-/// can immediately arbitrage against it. Only ever widens a spread.
+/// it and the ask at or above it. Only ever widens a spread.
 ///
-/// A side quotes at `reserve_price * (1 + s / 2)^2` for its signed composite
-/// spread `s` (`offset - short` for the bid, `offset + long` for the ask; see
-/// [`compute_spread_reserves_for_direction`]). With
-/// `r = sqrt(oracle / reserve_price)`, the bid stays at or below the oracle
-/// when `short >= offset + 2 * (1 - r)`, and the ask stays at or above it when
-/// `long >= 2 * (r - 1) - offset`. `r` is rounded down for the bid and up for
-/// the ask, and a binding requirement gets one extra unit for the truncation
-/// in the reserve delta. A widened side is capped so the pair stays within
-/// `BID_ASK_SPREAD_PRECISION`, which only binds at divergences the oracle
-/// validity gates already reject.
+/// The marginal price at the spread reserves is
+/// `reserve_price * (1 + s / 2)^2` for the side's signed composite spread `s`
+/// (`offset - short` for the bid, `offset + long` for the ask; see
+/// [`compute_spread_reserves_for_direction`]). A finite fill executes worse
+/// than this for the taker. With `r = sqrt(oracle / reserve_price)`, the bid
+/// stays at or below the oracle when `short >= offset + 2 * (1 - r)`, and the
+/// ask at or above it when `long >= 2 * (r - 1) - offset`. `r` is rounded down
+/// for the bid and up for the ask, and a binding requirement gets one extra
+/// unit for the truncation in the reserve delta.
+///
+/// Routing (`AmmQuoter::best_price`) and the mark TWAP crank read the quote
+/// through [`AMM::bid_ask_price`], `reserve_price * (1 + s)`. That reading
+/// needs `long >= ceil(oracle / reserve_price) - 1 - offset` and
+/// `short >= 1 + offset - floor(oracle / reserve_price)` in spread units. Each
+/// side takes the larger requirement.
+///
+/// A widened side is capped so the pair stays within
+/// `BID_ASK_SPREAD_PRECISION`, so it can widen only by 100% minus the opposite
+/// spread. When the requirement is larger, the guard returns the capped pair
+/// and that side still quotes through the oracle; callers do not detect this.
+/// With a zero opposite spread and a zero offset the cap binds past about twice
+/// the reserve price (ask) or under a quarter of it (bid). A wide opposite
+/// spread or an offset against the side brings the limit closer.
 fn apply_oracle_guard(
     long_spread: u32,
     short_spread: u32,
@@ -375,16 +387,18 @@ fn apply_oracle_guard(
         return Ok((long_spread, short_spread));
     }
 
-    // r^2 = oracle / reserve_price, scaled by BID_ASK_SPREAD_PRECISION^2.
-    let scaled_ratio_numerator = U192::from(oracle_price.cast::<u64>()?)
-        .safe_mul(U192::from(BID_ASK_SPREAD_PRECISION))?
-        .safe_mul(U192::from(BID_ASK_SPREAD_PRECISION))?;
-    let reserve_price_u192 = U192::from(reserve_price);
-    let scaled_ratio = scaled_ratio_numerator.safe_div(reserve_price_u192)?;
-    let ratio_is_exact = scaled_ratio.safe_mul(reserve_price_u192)? == scaled_ratio_numerator;
-    let r_floor_u192 = scaled_ratio.integer_sqrt();
-    let r_is_exact = ratio_is_exact && r_floor_u192.safe_mul(r_floor_u192)? == scaled_ratio;
-    let r_floor = r_floor_u192.try_to_u128()?.cast::<i128>()?;
+    // r^2 = oracle / reserve_price, scaled by BID_ASK_SPREAD_PRECISION^2. The
+    // numerator is at most i64::MAX * 1e12 (about 9.2e30), inside u128.
+    let scaled_ratio_numerator = oracle_price
+        .cast::<u128>()?
+        .safe_mul(BID_ASK_SPREAD_PRECISION.cast::<u128>()?)?
+        .safe_mul(BID_ASK_SPREAD_PRECISION.cast::<u128>()?)?;
+    let reserve_price_u128 = reserve_price.cast::<u128>()?;
+    let scaled_ratio = scaled_ratio_numerator.safe_div(reserve_price_u128)?;
+    let ratio_is_exact = scaled_ratio.safe_mul(reserve_price_u128)? == scaled_ratio_numerator;
+    let r_floor_u128 = scaled_ratio.nth_root(2);
+    let r_is_exact = ratio_is_exact && r_floor_u128.safe_mul(r_floor_u128)? == scaled_ratio;
+    let r_floor = r_floor_u128.cast::<i128>()?;
     let r_ceil = if r_is_exact {
         r_floor
     } else {
@@ -400,8 +414,21 @@ fn apply_oracle_guard(
             Ok(requirement)
         }
     };
-    let min_short = with_margin(offset.safe_add(precision.safe_sub(r_floor)?.safe_mul(2)?)?)?;
-    let min_long = with_margin(r_ceil.safe_sub(precision)?.safe_mul(2)?.safe_sub(offset)?)?;
+    // executed price, reserve_price * (1 + s/2)^2
+    let squared_min_short =
+        with_margin(offset.safe_add(precision.safe_sub(r_floor)?.safe_mul(2)?)?)?;
+    let squared_min_long = with_margin(r_ceil.safe_sub(precision)?.safe_mul(2)?.safe_sub(offset)?)?;
+
+    // quoted price read by routing and the mark TWAP, reserve_price * (1 + s)
+    let linear_ratio_numerator = oracle_price.cast::<i128>()?.safe_mul(precision)?;
+    let reserve_price_i128 = reserve_price.cast::<i128>()?;
+    let linear_ratio_floor = linear_ratio_numerator.safe_div(reserve_price_i128)?;
+    let linear_ratio_ceil = linear_ratio_numerator.safe_div_ceil(reserve_price_i128)?;
+    let linear_min_short = precision.safe_add(offset)?.safe_sub(linear_ratio_floor)?;
+    let linear_min_long = linear_ratio_ceil.safe_sub(precision)?.safe_sub(offset)?;
+
+    let min_short = squared_min_short.max(linear_min_short);
+    let min_long = squared_min_long.max(linear_min_long);
 
     let mut long = long_spread.cast::<i128>()?;
     let mut short = short_spread.cast::<i128>()?;
@@ -1386,7 +1413,6 @@ pub(crate) fn calculate_reference_price_offset(
     reserve_price: u64,
     last_24h_avg_funding_rate: i64,
     liquidity_fraction: i128,
-    _min_order_size: u64,
     oracle_twap_fast: i64,
     mark_twap_fast: u64,
     oracle_twap_slow: i64,
@@ -1436,7 +1462,7 @@ pub(crate) fn calculate_reference_price_offset(
     }
 
     // size from inventory alone: linear up to u_ref, max_offset_pct beyond it
-    let offset_pct = max_offset_pct
+    max_offset_pct
         .cast::<i128>()?
         .safe_mul(
             liquidity_fraction
@@ -1446,18 +1472,7 @@ pub(crate) fn calculate_reference_price_offset(
         )?
         .safe_div(REFERENCE_PRICE_OFFSET_FULL_INVENTORY_PCT)?
         .safe_mul(liquidity_fraction.signum())?
-        .cast::<i64>()?;
-
-    let clamped_offset_pct = offset_pct.clamp(-max_offset_pct, max_offset_pct);
-
-    validate!(
-        clamped_offset_pct.abs() <= max_offset_pct,
-        ErrorCode::InvalidAmmDetected,
-        "clamp offset pct failed {}",
-        clamped_offset_pct
-    )?;
-
-    clamped_offset_pct.cast()
+        .cast()
 }
 
 /// Pure form of the legacy `calculate_spread_reserves` mutator: takes the

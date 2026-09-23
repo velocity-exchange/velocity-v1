@@ -13,7 +13,8 @@ Mirror the program's vAMM quoting fixes.
   sign gate. `REFERENCE_PRICE_OFFSET_FULL_INVENTORY_PCT` is added. The sign-flip smoothing is
   removed.
 - `calculateSpread` applies the oracle guard (`applyOracleGuard`) when `curveUpdateIntensity > 0`,
-  so neither quote crosses the oracle. `calculateReferencePriceOffsetForAmm` computes the offset
+  so neither quote crosses the oracle, whether read as the marginal price at the spread reserves
+  or through `calculateBidAskPrice`. `calculateReferencePriceOffsetForAmm` computes the offset
   from AMM state.
 - `calculateSpreadBN` now matches the program where they had drifted apart: the inventory
   adjustment floors at `max(baseSpread / 2, vol)`, the cap applies by safety priority, and the

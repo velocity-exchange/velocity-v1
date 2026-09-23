@@ -894,12 +894,19 @@ pub fn update_amm_larg_conf_w_neg_tfmd_test() {
     assert_eq!((oracle_price_data.price as u64) < ask, true);
 }
 
-/// `update_perp_bid_ask_twap` samples the AMM quote into the mark TWAP, so it
-/// must refresh the curve onto the current oracle first. Sampling a stale peg
-/// biases the mark TWAP and, through it, funding.
-#[test]
-pub fn refresh_for_mark_sample_repegs_a_stale_curve() {
-    let oracle_price = 19_000 * PRICE_PRECISION_I64;
+/// A market with a stale curve (reserve price about 18_807, users net short)
+/// and an oracle at `oracle_price`.
+fn mark_sample_fixture(
+    oracle_price: i64,
+    total_fee_minus_distributions: i128,
+    oracle_delay: i64,
+) -> (
+    PerpMarket,
+    MMOraclePriceData,
+    Option<OracleValidity>,
+    i64,
+    u64,
+) {
     let mut market = PerpMarket {
         market_stats: MarketStats {
             historical_oracle_data: HistoricalOracleData {
@@ -921,7 +928,7 @@ pub fn refresh_for_mark_sample_repegs_a_stale_curve() {
             max_spread: 55500,
             curve_update_intensity: 100,
             concentration_coef: 31020710,
-            total_fee_minus_distributions: 1_000_000 * QUOTE_PRECISION as i128,
+            total_fee_minus_distributions,
             ..AMM::default()
         },
         status: MarketStatus::Active,
@@ -952,7 +959,7 @@ pub fn refresh_for_mark_sample_repegs_a_stale_curve() {
     let oracle_price_data = OraclePriceData {
         price: oracle_price,
         confidence: 0,
-        delay: 1,
+        delay: oracle_delay,
         has_sufficient_number_of_data_points: true,
         sequence_id: None,
     };
@@ -966,6 +973,37 @@ pub fn refresh_for_mark_sample_repegs_a_stale_curve() {
         .unwrap();
     let validity =
         compute_amm_refresh_validity(&market, &mm_oracle_price_data, &state, slot).unwrap();
+    (market, mm_oracle_price_data, validity, now, slot)
+}
+
+/// Bid and ask read through `bid_ask_price`, as routing and the mark TWAP do.
+fn read_quote(market: &PerpMarket) -> (u64, u64) {
+    let amm = &market.amm;
+    amm.bid_ask_price(
+        amm.reserve_price().unwrap(),
+        amm.long_spread,
+        amm.short_spread,
+        amm.reference_price_offset,
+    )
+    .unwrap()
+}
+
+/// `update_perp_bid_ask_twap` samples the AMM quote into the mark TWAP, so it
+/// must refresh the curve onto the current oracle first. Sampling a stale peg
+/// biases the mark TWAP and, through it, funding.
+#[test]
+pub fn refresh_for_mark_sample_repegs_a_stale_curve() {
+    let (mut market, mm_oracle_price_data, validity, now, slot) = mark_sample_fixture(
+        19_000 * PRICE_PRECISION_I64,
+        1_000_000 * QUOTE_PRECISION as i128,
+        1,
+    );
+    let oracle_price = mm_oracle_price_data.get_price();
+    assert!(is_oracle_valid_for_action(
+        validity.unwrap(),
+        Some(VelocityAction::FillOrderAmmLowRisk)
+    )
+    .unwrap());
 
     // The curve sits about 1% below the oracle.
     let stale_price = market.amm.reserve_price().unwrap();
@@ -993,4 +1031,73 @@ pub fn refresh_for_mark_sample_repegs_a_stale_curve() {
     let peg_after = market.amm.peg_multiplier;
     refresh_for_mark_sample(&mut market, &mm_oracle_price_data, validity, now, slot).unwrap();
     assert_eq!(market.amm.peg_multiplier, peg_after);
+}
+
+/// A repeg down costs the pool here (it is long against net-short users), and
+/// with almost no fees to pay for it the curve stays stale and the AMM is not marked
+/// fresh. The quote state is still rebuilt, and the oracle guard keeps the
+/// stale quote from crossing the oracle.
+#[test]
+pub fn refresh_for_mark_sample_keeps_the_curve_when_the_repeg_is_unaffordable() {
+    let (mut market, mm_oracle_price_data, validity, now, slot) =
+        mark_sample_fixture(18_600 * PRICE_PRECISION_I64, 1, 1);
+    let oracle_price = mm_oracle_price_data.get_price() as u64;
+    assert!(is_oracle_valid_for_action(
+        validity.unwrap(),
+        Some(VelocityAction::FillOrderAmmLowRisk)
+    )
+    .unwrap());
+
+    refresh_for_mark_sample(&mut market, &mm_oracle_price_data, validity, now, slot).unwrap();
+    assert_eq!(market.amm.peg_multiplier, 19_400 * PEG_PRECISION);
+    assert_ne!(market.amm.last_update_slot, slot);
+    assert_eq!(market.amm.last_spread_update_slot, slot);
+    assert!(market.amm.last_oracle_reserve_price_spread_pct > 5_000);
+
+    let (bid, ask) = read_quote(&market);
+    assert!(
+        bid <= oracle_price && ask >= oracle_price,
+        "{bid} {ask} {oracle_price}"
+    );
+}
+
+/// A stale oracle still repegs the curve (`UpdateAMMCurve` rejects only a
+/// nonpositive price) but does not mark the AMM fresh for fills.
+#[test]
+pub fn refresh_for_mark_sample_repegs_on_a_stale_oracle_without_marking_fresh() {
+    let (mut market, mm_oracle_price_data, validity, now, slot) = mark_sample_fixture(
+        19_000 * PRICE_PRECISION_I64,
+        1_000_000 * QUOTE_PRECISION as i128,
+        100,
+    );
+    let validity_value = validity.unwrap();
+    assert!(
+        !is_oracle_valid_for_action(validity_value, Some(VelocityAction::FillOrderAmmLowRisk))
+            .unwrap()
+    );
+
+    refresh_for_mark_sample(&mut market, &mm_oracle_price_data, validity, now, slot).unwrap();
+    assert_ne!(market.amm.peg_multiplier, 19_400 * PEG_PRECISION);
+    assert_ne!(market.amm.last_update_slot, slot);
+    assert_eq!(market.amm.last_spread_update_slot, slot);
+    assert!(!market.market_stats.last_oracle_valid);
+}
+
+/// No validity (a Settlement market) leaves the curve and quote state alone.
+#[test]
+pub fn refresh_for_mark_sample_does_nothing_without_validity() {
+    let (mut market, mm_oracle_price_data, _, now, slot) = mark_sample_fixture(
+        19_000 * PRICE_PRECISION_I64,
+        1_000_000 * QUOTE_PRECISION as i128,
+        1,
+    );
+    let before = market;
+    refresh_for_mark_sample(&mut market, &mm_oracle_price_data, None, now, slot).unwrap();
+    assert_eq!(market.amm.peg_multiplier, before.amm.peg_multiplier);
+    assert_eq!(market.amm.last_update_slot, before.amm.last_update_slot);
+    assert_eq!(
+        market.amm.last_spread_update_slot,
+        before.amm.last_spread_update_slot
+    );
+    assert_eq!(market.amm.long_spread, before.amm.long_spread);
 }

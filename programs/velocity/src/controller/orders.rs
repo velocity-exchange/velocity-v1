@@ -1268,12 +1268,9 @@ pub fn fill_perp_order(
             .elapsed_slot_delta(mm_oracle_price_data.get_delay().max(0) as u64, slot)
             > state.oracle_guard_rails.validity.stale_for_margin_ms();
 
-        // No AMM mutation here — `fulfill_perp_order_step` constructs an
-        // `AmmQuoter` and calls `Quoter::setup` before quoting, which is
-        // the sole non-admin AMM-refresh entrypoint. PerpMarket-level
-        // oracle bookkeeping (TWAPs, reference-price-offset,
-        // last_oracle_valid) is PerpMarket's own concern and stays here
-        // (no AMM reacharound — PerpMarket reading its own AMM field).
+        // No curve projection here. `fulfill_perp_order_step` projects it in
+        // `Quoter::setup` before quoting. The oracle TWAPs and quote state
+        // refresh below.
         let amm_refresh_validity =
             crate::vlp::amm::refresh::compute_amm_refresh_validity_with_guard_rails(
                 market,

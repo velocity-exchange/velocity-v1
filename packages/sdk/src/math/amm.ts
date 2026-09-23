@@ -672,8 +672,13 @@ export function calculateReferencePriceOffset(
 		.mul(PRICE_PRECISION)
 		.div(reservePrice);
 
-	// Only apply when inventory is consistent with recent and 24h market premium
-	if (!sigNum(liquidityFraction).eq(sigNum(markPremiumAvgPct))) {
+	// Only apply when inventory is consistent with recent and 24h market premium.
+	// A zero premium never applies: `sigNum` maps 0 to +1, where the program's
+	// `signum` gives 0.
+	if (
+		markPremiumAvgPct.isZero() ||
+		!sigNum(liquidityFraction).eq(sigNum(markPremiumAvgPct))
+	) {
 		return ZERO;
 	}
 
@@ -1122,6 +1127,23 @@ export function calculateSpreadBN(
 	// Scale the loaded side by `factor` (a plain multiplier) the way the program
 	// does, `spread * factor_int / PRECISION` in integers, and record the
 	// positive change as steering.
+	const scaleLoadedInt = (factorInt: BN) => {
+		if (loadedLong) {
+			const before = longSpread;
+			longSpread = new BN(longSpread)
+				.mul(factorInt)
+				.div(BID_ASK_SPREAD_PRECISION)
+				.toNumber();
+			steeringLong += Math.max(0, longSpread - before);
+		} else if (loadedShort) {
+			const before = shortSpread;
+			shortSpread = new BN(shortSpread)
+				.mul(factorInt)
+				.div(BID_ASK_SPREAD_PRECISION)
+				.toNumber();
+			steeringShort += Math.max(0, shortSpread - before);
+		}
+	};
 	const scaleLoaded = (factor: number) => {
 		const factorInt = Math.round(factor * precision);
 		if (loadedLong) {
@@ -1167,9 +1189,25 @@ export function calculateSpreadBN(
 			totalFeeMinusDistributions
 		);
 		spreadTerms.effectiveLeverage = effectiveLeverage;
-		const spreadScale = Math.min(MAX_SPREAD_SCALE, 1 + effectiveLeverage);
-		spreadTerms.effectiveLeverageCapped = spreadScale;
-		scaleLoaded(spreadScale);
+		// The multiplier itself is computed in integers in the program's order
+		// (`calculate_spread_leverage_scale`), so rounding matches exactly.
+		const netBaseAssetValue = quoteAssetReserve
+			.sub(terminalQuoteAssetReserve)
+			.mul(pegMultiplier)
+			.div(AMM_TIMES_PEG_TO_QUOTE_PRECISION_RATIO);
+		const localBaseAssetValue = baseAssetAmountWithAmm
+			.mul(reservePrice)
+			.div(AMM_TO_QUOTE_PRECISION_RATIO.mul(PRICE_PRECISION));
+		const leverageInt = BN.max(ZERO, localBaseAssetValue.sub(netBaseAssetValue))
+			.mul(BID_ASK_SPREAD_PRECISION)
+			.div(BN.max(ZERO, totalFeeMinusDistributions).add(ONE));
+		const leverageScale = BN.min(
+			BID_ASK_SPREAD_PRECISION.muln(MAX_SPREAD_SCALE),
+			BID_ASK_SPREAD_PRECISION.add(leverageInt).add(ONE)
+		);
+		spreadTerms.effectiveLeverageCapped =
+			leverageScale.toNumber() / BID_ASK_SPREAD_PRECISION.toNumber();
+		scaleLoadedInt(leverageScale);
 	}
 	spreadTerms.longSpreadwEL = longSpread;
 	spreadTerms.shortSpreadwEL = shortSpread;
@@ -1531,8 +1569,19 @@ export function applyOracleGuard(
 	const offset = new BN(referencePriceOffset);
 	const withMargin = (requirement: BN) =>
 		requirement.gt(ZERO) ? requirement.add(ONE) : requirement;
-	const minShort = withMargin(offset.add(precision.sub(rFloor).muln(2)));
-	const minLong = withMargin(rCeil.sub(precision).muln(2).sub(offset));
+	// executed price, reservePrice * (1 + s/2)^2
+	const squaredMinShort = withMargin(offset.add(precision.sub(rFloor).muln(2)));
+	const squaredMinLong = withMargin(rCeil.sub(precision).muln(2).sub(offset));
+	// quoted price read by routing and the mark TWAP, reservePrice * (1 + s)
+	const linearNumerator = oraclePrice.mul(precision);
+	const linearFloor = linearNumerator.div(reservePrice);
+	const linearCeil = linearFloor.mul(reservePrice).eq(linearNumerator)
+		? linearFloor
+		: linearFloor.add(ONE);
+	const linearMinShort = precision.add(offset).sub(linearFloor);
+	const linearMinLong = linearCeil.sub(precision).sub(offset);
+	const minShort = BN.max(squaredMinShort, linearMinShort);
+	const minLong = BN.max(squaredMinLong, linearMinLong);
 
 	let long = longSpread;
 	let short = shortSpread;

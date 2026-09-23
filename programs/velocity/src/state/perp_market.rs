@@ -701,13 +701,11 @@ impl PerpMarket {
         })
     }
 
-    /// PerpMarket-level oracle bookkeeping: refresh the oracle TWAPs,
-    /// mirror the latest reference price offset into `MarketStats`, and stamp
-    /// `last_oracle_valid`. Called from the
-    /// `update_amms` keeper crank and the bid-ask-twap keeper ix. This is a
-    /// PerpMarket-side concern — it does NOT mutate AMM fields. It does read
-    /// the AMM (for `reserve_price` and the spread snapshot used to derive
-    /// the offset).
+    /// Refresh the oracle TWAPs and the AMM's cached quote state (spreads,
+    /// reference price offset, spread reserves) against the current curve,
+    /// mirror the offset into `MarketStats`, and stamp `last_oracle_valid`.
+    /// Leaves the peg and the base and quote reserves alone. Does nothing when
+    /// `oracle_validity` is None.
     ///
     /// Callers that then *gate* on a TWAP this would move must not use this
     /// composed form — see [`Self::refresh_amm_quote_state`].

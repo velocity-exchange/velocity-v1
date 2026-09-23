@@ -776,7 +776,6 @@ fn amm_ref_price_decay_tail_test() {
         reserve_price,
         perp_market.market_stats.last_24h_avg_funding_rate,
         signed_liquidity_ratio,
-        perp_market.market_stats.min_order_size,
         perp_market
             .market_stats
             .historical_oracle_data
@@ -950,7 +949,6 @@ fn amm_ref_price_offset_decay_logic() {
         reserve_price,
         perp_market.market_stats.last_24h_avg_funding_rate,
         signed_liquidity_ratio,
-        perp_market.market_stats.min_order_size,
         perp_market
             .market_stats
             .historical_oracle_data
@@ -1132,7 +1130,6 @@ fn amm_negative_ref_price_offset_decay_logic() {
         reserve_price,
         perp_market.market_stats.last_24h_avg_funding_rate,
         signed_liquidity_ratio,
-        perp_market.market_stats.min_order_size,
         perp_market
             .market_stats
             .historical_oracle_data
@@ -1320,7 +1317,6 @@ fn amm_perp_ref_offset() {
         reserve_price,
         perp_market.market_stats.last_24h_avg_funding_rate,
         signed_liquidity_ratio,
-        perp_market.market_stats.min_order_size,
         perp_market
             .market_stats
             .historical_oracle_data

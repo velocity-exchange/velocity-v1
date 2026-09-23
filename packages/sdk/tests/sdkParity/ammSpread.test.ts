@@ -1,4 +1,6 @@
 import * as _ from 'lodash';
+import * as fs from 'fs';
+import * as path from 'path';
 import { assert } from 'chai';
 import {
 	BN,
@@ -10,6 +12,8 @@ import {
 	calculateBidAskPrice,
 	calculateBidPrice,
 	calculatePrice,
+	calculateReferencePriceOffset,
+	calculateSpreadBN,
 	calculateReservePrice,
 	calculateSpread,
 	calculateSpreadReserves,
@@ -387,5 +391,78 @@ describe('oracle guard keeps quotes on the right side of the oracle', () => {
 		} as MMOraclePriceData;
 		const [bid] = calculateBidAskPrice(amm, market.marketStats, oracle, false);
 		assert(bid.lte(oracle.price), `bid ${bid} above oracle ${oracle.price}`);
+	});
+});
+
+// Shared with the program's `parity_fixtures` tests: both implementations assert
+// against the same expected outputs, which come from the program.
+describe('spread math parity with the program fixtures', () => {
+	const rows = (file: string): string[][] =>
+		fs
+			.readFileSync(path.join(__dirname, 'fixtures', file), 'utf8')
+			.trim()
+			.split('\n')
+			.slice(1)
+			.map((line) => line.split(','));
+	const bn = (x: string) => new BN(x);
+
+	it('calculateSpreadBN matches calculate_spread', () => {
+		for (const [i, c] of rows('calculate_spread.csv').entries()) {
+			const out = calculateSpreadBN(
+				Number(c[0]),
+				bn(c[1]),
+				bn(c[2]),
+				Number(c[3]),
+				bn(c[4]),
+				bn(c[5]),
+				bn(c[6]),
+				bn(c[7]),
+				bn(c[8]),
+				bn(c[9]),
+				bn(c[10]),
+				bn(c[11]),
+				bn(c[12]),
+				bn(c[13]),
+				bn(c[14]),
+				bn(c[15]),
+				bn(c[16]),
+				bn(c[17]),
+				bn(c[18]),
+				Number(c[19]),
+				bn(c[20]),
+				bn(c[21]),
+				Number(c[22])
+			);
+			assert.deepEqual(out, [Number(c[23]), Number(c[24])], `row ${i + 1}`);
+		}
+	});
+
+	it('applyOracleGuard matches apply_oracle_guard', () => {
+		for (const [i, c] of rows('apply_oracle_guard.csv').entries()) {
+			const out = applyOracleGuard(
+				Number(c[0]),
+				Number(c[1]),
+				Number(c[2]),
+				bn(c[3]),
+				bn(c[4])
+			);
+			assert.deepEqual(out, [Number(c[5]), Number(c[6])], `row ${i + 1}`);
+		}
+	});
+
+	it('calculateReferencePriceOffset matches calculate_reference_price_offset', () => {
+		for (const [i, c] of rows('reference_price_offset.csv').entries()) {
+			const out = calculateReferencePriceOffset(
+				bn(c[0]),
+				bn(c[1]),
+				bn(c[2]),
+				bn(c[3]),
+				bn(c[4]),
+				bn(c[5]),
+				bn(c[6]),
+				Number(c[7])
+			);
+			assert.equal(out.toNumber(), Number(c[8]), `row ${i + 1}`);
+		}
 	});
 });

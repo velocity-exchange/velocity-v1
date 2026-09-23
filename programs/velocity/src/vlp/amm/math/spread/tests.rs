@@ -264,7 +264,6 @@ mod test {
                 rev_price,
                 1,
                 liquidity_fraction,
-                1,
                 4216 * 10000,
                 4217 * 10000,
                 4216 * 10000,
@@ -279,7 +278,6 @@ mod test {
                 rev_price,
                 -43_000_000,
                 liquidity_fraction,
-                1,
                 4216 * 10000,
                 4214 * 10000,
                 4216 * 10000,
@@ -290,7 +288,7 @@ mod test {
         };
 
         let res =
-            calculate_reference_price_offset(rev_price, 0, 0, 0, 0, 0, 0, 0, max_offset).unwrap();
+            calculate_reference_price_offset(rev_price, 0, 0, 0, 0, 0, 0, max_offset).unwrap();
         assert_eq!(res, 0);
 
         // size comes from inventory alone: linear up to 10% of liquidity
@@ -309,7 +307,6 @@ mod test {
             rev_price,
             1,
             full / 2,
-            1,
             4216 * 10000,
             4223 * 10000,
             4216 * 10000,
@@ -326,7 +323,6 @@ mod test {
             rev_price,
             -43_000_000,
             full / 2,
-            1,
             4216 * 10000,
             4218 * 10000,
             4216 * 10000,
@@ -341,7 +337,6 @@ mod test {
             rev_price,
             -10_000_000,
             -full,
-            1,
             4216 * 10000,
             4123 * 10000,
             6 * 10000,
@@ -356,7 +351,6 @@ mod test {
             rev_price,
             -1,
             full,
-            1,
             4216 * 10000,
             4123 * 10000,
             4123 * 10000,
@@ -2719,6 +2713,18 @@ mod test {
 
                 // the quotes the curve actually produces sit on the right side
                 let (bid, ask) = quoted_prices(&amm, g_long, g_short, offset);
+                // and so does the linear reading routing and the mark TWAP use
+                let (read_bid, read_ask) = amm
+                    .bid_ask_price(reserve_price, g_long, g_short, offset)
+                    .unwrap();
+                assert!(
+                    read_bid as i64 <= oracle,
+                    "read bid {read_bid} above oracle {oracle}"
+                );
+                assert!(
+                    read_ask as i64 >= oracle,
+                    "read ask {read_ask} below oracle {oracle}"
+                );
                 assert!(
                     bid as i64 <= oracle,
                     "bid {bid} above oracle {oracle} (reserve {reserve_price}, long {long}, \
@@ -2731,14 +2737,27 @@ mod test {
                 );
 
                 // and a widened side is widened by no more than a few units of
-                // rounding: four units less would cross the oracle again
+                // rounding: four units less would cross the oracle again in the
+                // executed or the read price
                 if g_short > short && g_short - 4 > short {
                     let (bid_less, _) = quoted_prices(&amm, g_long, g_short - 4, offset);
-                    assert!(bid_less as i64 > oracle, "short widened more than needed");
+                    let (read_less, _) = amm
+                        .bid_ask_price(reserve_price, g_long, g_short - 4, offset)
+                        .unwrap();
+                    assert!(
+                        bid_less as i64 > oracle || read_less as i64 > oracle,
+                        "short widened more than needed"
+                    );
                 }
                 if g_long > long && g_long - 4 > long {
                     let (_, ask_less) = quoted_prices(&amm, g_long - 4, g_short, offset);
-                    assert!((ask_less as i64) < oracle, "long widened more than needed");
+                    let (_, read_less) = amm
+                        .bid_ask_price(reserve_price, g_long - 4, g_short, offset)
+                        .unwrap();
+                    assert!(
+                        (ask_less as i64) < oracle || (read_less as i64) < oracle,
+                        "long widened more than needed"
+                    );
                 }
                 if g_long > long || g_short > short {
                     widened += 1;
@@ -2784,6 +2803,19 @@ mod test {
         }
 
         #[test]
+        fn oracle_guard_covers_the_linear_quote_readers() {
+            // Curve 2% below the oracle. The executed ask needs 19_903 units,
+            // but `bid_ask_price` (routing, mark TWAP) reads the ask linearly and
+            // needs 20_000; with only 19_903 it would read 1_019_903, below the
+            // 1_020_000 oracle.
+            let (long, _) = apply_oracle_guard(100, 100, 0, 1_000_000, 1_020_000).unwrap();
+            assert_eq!(long, 20_000);
+            let amm = AMM::default();
+            let (_, read_ask) = amm.bid_ask_price(1_000_000, long, 100, 0).unwrap();
+            assert!(read_ask >= 1_020_000, "read ask {read_ask}");
+        }
+
+        #[test]
         fn oracle_guard_holds_the_line_against_the_offset() {
             // an offset lifting the bid by 1bp at the oracle: short moves up to it
             assert_eq!(
@@ -2805,6 +2837,62 @@ mod test {
             let (long, short) = apply_oracle_guard(0, 250, 0, 1_000_000, 3_000_000).unwrap();
             assert_eq!(short, 250);
             assert_eq!(long as u64 + short as u64, BID_ASK_SPREAD_PRECISION);
+        }
+
+        /// Whether the guarded quote sits on the correct side of the oracle, read
+        /// both linearly and as the marginal price at the spread reserves.
+        fn guarded_quote_is_safe(
+            long: u32,
+            short: u32,
+            offset: i32,
+            reserve_price: u64,
+            oracle: u64,
+        ) -> bool {
+            let (long, short) =
+                apply_oracle_guard(long, short, offset, reserve_price, oracle as i64).unwrap();
+            let (bid, ask) = AMM::default()
+                .bid_ask_price(reserve_price, long, short, offset)
+                .unwrap();
+            let p = 2 * BID_ASK_SPREAD_PRECISION_I128;
+            let r = reserve_price as i128;
+            let bid_factor = p + offset as i128 - short as i128;
+            let ask_factor = p + offset as i128 + long as i128;
+            let marginal_bid = r * bid_factor * bid_factor / (p * p);
+            let marginal_ask = r * ask_factor * ask_factor / (p * p);
+            bid <= oracle
+                && ask >= oracle
+                && marginal_bid <= oracle as i128
+                && marginal_ask >= oracle as i128
+        }
+
+        #[test]
+        fn oracle_guard_saturates_when_the_requirement_exceeds_the_remaining_budget() {
+            let r = 1_000_000_u64;
+            // zero opposite spread and offset: safe between about 1/4x and 2x
+            for oracle in [
+                250_100, 300_000, 500_000, 990_000, 1_010_000, 1_500_000, 1_999_000,
+            ] {
+                assert!(guarded_quote_is_safe(0, 0, 0, r, oracle), "oracle {oracle}");
+            }
+            assert!(!guarded_quote_is_safe(0, 0, 0, r, 200_000));
+            assert!(!guarded_quote_is_safe(0, 0, 0, r, 2_100_000));
+
+            // a wide opposite spread uses up the budget well inside that range
+            assert_eq!(
+                apply_oracle_guard(100, 800_000, 0, r, 1_500_000).unwrap(),
+                (200_000, 800_000)
+            );
+            assert!(!guarded_quote_is_safe(100, 800_000, 0, r, 1_500_000));
+            assert_eq!(
+                apply_oracle_guard(800_000, 100, 0, r, 500_000).unwrap(),
+                (800_000, 200_000)
+            );
+            assert!(!guarded_quote_is_safe(800_000, 100, 0, r, 500_000));
+
+            // an offset against the side moves the limit too: a -50% offset
+            // leaves the ask unable to reach an oracle at 1.6x
+            assert!(guarded_quote_is_safe(0, 0, 0, r, 1_600_000));
+            assert!(!guarded_quote_is_safe(0, 0, -500_000, r, 1_600_000));
         }
 
         fn quote_state_amm(curve_update_intensity: u8) -> AMM {
@@ -2911,7 +2999,6 @@ mod test {
                     rev_price,
                     premium_sign * 1_000_000,
                     liquidity_fraction,
-                    1,
                     4216 * 10000,
                     mark,
                     4216 * 10000,
@@ -2939,6 +3026,117 @@ mod test {
             assert_eq!(with_premium(1, 50_000), max_offset / 2);
             assert_eq!(with_premium(1, 100_000), max_offset);
             assert_eq!(with_premium(1, 300_000), max_offset);
+        }
+    }
+
+    /// Shared parity fixtures: the SDK asserts against the same files
+    /// (packages/sdk/tests/sdkParity/fixtures), so the two implementations
+    /// cannot drift apart without a failing test on at least one side.
+    mod parity_fixtures {
+        use super::*;
+
+        fn rows(csv: &str) -> impl Iterator<Item = Vec<&str>> {
+            csv.lines()
+                .skip(1)
+                .filter(|l| !l.trim().is_empty())
+                .map(|l| l.split(',').collect())
+        }
+
+        #[test]
+        fn calculate_spread_matches_fixtures() {
+            let csv = include_str!(concat!(
+                "../../../../../../../packages/sdk/tests/sdkParity/fixtures/",
+                "calculate_spread.csv"
+            ));
+            let mut n = 0;
+            for c in rows(csv) {
+                let out = calculate_spread(
+                    c[0].parse().unwrap(),
+                    c[1].parse().unwrap(),
+                    c[2].parse().unwrap(),
+                    c[3].parse().unwrap(),
+                    c[4].parse().unwrap(),
+                    c[5].parse().unwrap(),
+                    c[6].parse().unwrap(),
+                    c[7].parse().unwrap(),
+                    c[8].parse().unwrap(),
+                    c[9].parse().unwrap(),
+                    c[10].parse().unwrap(),
+                    c[11].parse().unwrap(),
+                    c[12].parse().unwrap(),
+                    c[13].parse().unwrap(),
+                    c[14].parse().unwrap(),
+                    c[15].parse().unwrap(),
+                    c[16].parse().unwrap(),
+                    c[17].parse().unwrap(),
+                    c[18].parse().unwrap(),
+                    c[19].parse().unwrap(),
+                    c[20].parse().unwrap(),
+                    c[21].parse().unwrap(),
+                    c[22].parse().unwrap(),
+                )
+                .unwrap();
+                assert_eq!(
+                    out,
+                    (c[23].parse().unwrap(), c[24].parse().unwrap()),
+                    "row {}",
+                    n + 1
+                );
+                n += 1;
+            }
+            assert!(n > 0);
+        }
+
+        #[test]
+        fn apply_oracle_guard_matches_fixtures() {
+            let csv = include_str!(concat!(
+                "../../../../../../../packages/sdk/tests/sdkParity/fixtures/",
+                "apply_oracle_guard.csv"
+            ));
+            let mut n = 0;
+            for c in rows(csv) {
+                let out = apply_oracle_guard(
+                    c[0].parse().unwrap(),
+                    c[1].parse().unwrap(),
+                    c[2].parse().unwrap(),
+                    c[3].parse().unwrap(),
+                    c[4].parse().unwrap(),
+                )
+                .unwrap();
+                assert_eq!(
+                    out,
+                    (c[5].parse().unwrap(), c[6].parse().unwrap()),
+                    "row {}",
+                    n + 1
+                );
+                n += 1;
+            }
+            assert!(n > 0);
+        }
+
+        #[test]
+        fn reference_price_offset_matches_fixtures() {
+            let csv = include_str!(concat!(
+                "../../../../../../../packages/sdk/tests/sdkParity/fixtures/",
+                "reference_price_offset.csv"
+            ));
+            let mut n = 0;
+            for c in rows(csv) {
+                let out = calculate_reference_price_offset(
+                    c[0].parse().unwrap(),
+                    c[1].parse().unwrap(),
+                    c[2].parse().unwrap(),
+                    c[3].parse().unwrap(),
+                    c[4].parse().unwrap(),
+                    c[5].parse().unwrap(),
+                    c[6].parse().unwrap(),
+                    c[7].parse().unwrap(),
+                )
+                .unwrap();
+                assert_eq!(out, c[8].parse::<i32>().unwrap(), "row {}", n + 1);
+                n += 1;
+            }
+            assert!(n > 0);
         }
     }
 }

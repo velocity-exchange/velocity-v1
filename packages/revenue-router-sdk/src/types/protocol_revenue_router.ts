@@ -413,6 +413,54 @@ export type ProtocolRevenueRouter = {
 					name: 'usdtMint';
 				},
 				{
+					name: 'redemptionConfig';
+					pda: {
+						seeds: [
+							{
+								kind: 'const';
+								value: [99, 111, 110, 102, 105, 103];
+							},
+						];
+						program: {
+							kind: 'const';
+							value: [
+								12,
+								182,
+								230,
+								179,
+								197,
+								130,
+								96,
+								52,
+								110,
+								202,
+								3,
+								235,
+								74,
+								170,
+								167,
+								197,
+								70,
+								141,
+								235,
+								46,
+								61,
+								200,
+								152,
+								253,
+								111,
+								105,
+								234,
+								245,
+								235,
+								80,
+								14,
+								28,
+							];
+						};
+					};
+				},
+				{
 					name: 'payer';
 					writable: true;
 					signer: true;
@@ -696,6 +744,11 @@ export type ProtocolRevenueRouter = {
 			code: 6009;
 			name: 'invalidTreasury';
 			msg: 'Treasury cannot be the router config or the redemption config';
+		},
+		{
+			code: 6010;
+			name: 'usdtMintMismatch';
+			msg: "USDT mint does not match the redemption config's mint";
 		},
 	];
 	types: [

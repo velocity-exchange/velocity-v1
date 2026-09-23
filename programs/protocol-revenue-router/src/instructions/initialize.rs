@@ -1,5 +1,6 @@
 use {
     crate::{
+        dfx_redemption,
         errors::RouterError,
         events::RouterInitialized,
         instructions::set_treasury::validate_treasury,
@@ -19,7 +20,11 @@ pub struct Initialize<'info> {
         space = 8 + RouterConfig::INIT_SPACE
     )]
     pub config: Account<'info, RouterConfig>,
+    // There is no mint setter, so a wrong mint here would strand every future fee.
+    #[account(address = redemption_config.usdt_mint @ RouterError::UsdtMintMismatch)]
     pub usdt_mint: Account<'info, Mint>,
+    #[account(seeds = [b"config"], bump, seeds::program = dfx_redemption::ID)]
+    pub redemption_config: Box<Account<'info, dfx_redemption::accounts::Config>>,
     // The singleton init is locked to a fixed key only on a real mainnet build,
     // so devnet/localnet and the test build can still initialize freely.
     #[cfg_attr(

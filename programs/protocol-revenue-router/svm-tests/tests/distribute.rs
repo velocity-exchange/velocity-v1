@@ -4,10 +4,10 @@
 //! real dfx-redemption program so the CPI, the cap clamp and the tier ladder
 //! are exercised end to end.
 //!
-//! Build both programs first: `anchor build --ignore-keys -p protocol_revenue_router -- --features anchor-test`
-//! here (the default build enables the mainnet init gate, which these tests do
-//! not sign for), and `anchor build` in dfx-claim (or point `DFX_REDEMPTION_SO`
-//! at its `.so`).
+//! Build the router first: `anchor build --ignore-keys -p protocol_revenue_router -- --features anchor-test`
+//! (the default build enables the mainnet init gate, which these tests do not
+//! sign for). The redemption program loads from `fixtures/dfx_redemption.so`,
+//! or from `DFX_REDEMPTION_SO` when set; see the README to refresh it.
 
 use {
     anchor_lang::{AccountDeserialize, InstructionData, ToAccountMetas},
@@ -38,8 +38,8 @@ const ROUTER_SO: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../../target/deploy/protocol_revenue_router.so"
 );
-const DEFAULT_REDEMPTION_SO: &str =
-    "/Users/chestersim/Desktop/dfx-claim/target/deploy/dfx_redemption.so";
+const FIXTURE_REDEMPTION_SO: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/dfx_redemption.so");
 
 const USDT: u64 = 1_000_000;
 const TOTAL_EXPLOITED: u64 = 20_000 * USDT;
@@ -78,23 +78,22 @@ struct Env {
     redemption_vault: Pubkey,
 }
 
-/// `None` when the redemption `.so` has not been built, so the suite degrades
-/// to a skip instead of a failure on a machine without dfx-claim.
-fn setup() -> Option<Env> {
+fn setup() -> Env {
+    let mut env = setup_without_router();
+    env.initialize_router(ladder()).expect("router initialize");
+    env
+}
+
+/// Both programs loaded and the redemption side initialized, router not yet.
+fn setup_without_router() -> Env {
     let redemption_so =
-        std::env::var("DFX_REDEMPTION_SO").unwrap_or_else(|_| DEFAULT_REDEMPTION_SO.to_string());
-    if !std::path::Path::new(&redemption_so).exists() {
-        eprintln!(
-            "skipping: {redemption_so} not found (build dfx-redemption or set DFX_REDEMPTION_SO)"
-        );
-        return None;
-    }
+        std::env::var("DFX_REDEMPTION_SO").unwrap_or_else(|_| FIXTURE_REDEMPTION_SO.to_string());
 
     let mut svm = LiteSVM::new();
     svm.add_program_from_file(ROUTER_ID, ROUTER_SO)
         .expect("load protocol_revenue_router.so (run `anchor build -p protocol_revenue_router`)");
     svm.add_program_from_file(dfx_redemption::ID, &redemption_so)
-        .expect("load dfx_redemption.so");
+        .unwrap_or_else(|e| panic!("load {redemption_so}: {e:?}"));
 
     let payer = Keypair::new();
     let admin = Keypair::new();
@@ -135,9 +134,7 @@ fn setup() -> Option<Env> {
         .expect("redemption initialize_config");
     env.initialize_ledger()
         .expect("initialize_contribution_ledger");
-    env.initialize_router(ladder()).expect("router initialize");
-
-    Some(env)
+    env
 }
 
 impl Env {
@@ -175,9 +172,15 @@ impl Env {
     }
 
     fn initialize_router(&mut self, tiers: Vec<Tier>) -> TxResult {
+        let usdt_mint = self.usdt_mint;
+        self.initialize_router_with_mint(tiers, usdt_mint)
+    }
+
+    fn initialize_router_with_mint(&mut self, tiers: Vec<Tier>, usdt_mint: Pubkey) -> TxResult {
         let accounts = router_accounts::Initialize {
             config: self.router_config,
-            usdt_mint: self.usdt_mint,
+            usdt_mint,
+            redemption_config: self.redemption_config,
             payer: self.payer.pubkey(),
             system_program: system_program::ID,
         };
@@ -353,7 +356,7 @@ fn assert_error(result: TxResult, needle: &str) {
 
 #[test]
 fn distribute_clamps_the_pool_share_to_the_remaining_cap() {
-    let Some(mut env) = setup() else { return };
+    let mut env = setup();
 
     env.fund_router(120_000 * USDT);
     let cranker = env.cranker.insecure_clone();
@@ -375,7 +378,7 @@ fn distribute_clamps_the_pool_share_to_the_remaining_cap() {
 
 #[test]
 fn distribute_uses_the_first_tier_when_cap_room_is_ample() {
-    let Some(mut env) = setup() else { return };
+    let mut env = setup();
 
     env.fund_router(10_000 * USDT);
     let cranker = env.cranker.insecure_clone();
@@ -387,7 +390,7 @@ fn distribute_uses_the_first_tier_when_cap_room_is_ample() {
 
 #[test]
 fn distribute_rejects_an_unknown_signer() {
-    let Some(mut env) = setup() else { return };
+    let mut env = setup();
 
     env.fund_router(10_000 * USDT);
     let stranger = Keypair::new();
@@ -397,7 +400,7 @@ fn distribute_rejects_an_unknown_signer() {
 
 #[test]
 fn tiers_are_locked_for_the_rest_of_the_distributing_day() {
-    let Some(mut env) = setup() else { return };
+    let mut env = setup();
 
     env.fund_router(10_000 * USDT);
     let cranker = env.cranker.insecure_clone();
@@ -422,7 +425,7 @@ fn tiers_are_locked_for_the_rest_of_the_distributing_day() {
 
 #[test]
 fn the_cranker_may_also_be_the_payer() {
-    let Some(mut env) = setup() else { return };
+    let mut env = setup();
 
     env.fund_router(10_000 * USDT);
     let cranker = env.cranker.insecure_clone();
@@ -435,7 +438,7 @@ fn the_cranker_may_also_be_the_payer() {
 
 #[test]
 fn set_treasury_rejects_keys_whose_ata_would_alias_a_leg() {
-    let Some(mut env) = setup() else { return };
+    let mut env = setup();
 
     let router_config = env.router_config;
     assert_error(env.set_treasury(router_config), "InvalidTreasury");
@@ -449,7 +452,7 @@ fn set_treasury_rejects_keys_whose_ata_would_alias_a_leg() {
 
 #[test]
 fn distribute_pays_the_treasury_before_the_redemption_cpi() {
-    let Some(mut env) = setup() else { return };
+    let mut env = setup();
 
     env.fund_router(10_000 * USDT);
     let cranker = env.cranker.insecure_clone();
@@ -470,4 +473,60 @@ fn distribute_pays_the_treasury_before_the_redemption_cpi() {
     );
     assert_eq!(env.treasury_balance(), 4_000 * USDT);
     assert_eq!(env.balance(&env.redemption_vault), 6_000 * USDT);
+}
+
+#[test]
+fn initialize_rejects_a_mint_other_than_the_redemption_mint() {
+    let mut env = setup_without_router();
+
+    let other_mint = Keypair::new();
+    let authority = env.admin.pubkey();
+    env.create_mint(&other_mint, &authority);
+    assert_error(
+        env.initialize_router_with_mint(ladder(), other_mint.pubkey()),
+        "UsdtMintMismatch",
+    );
+
+    env.initialize_router(ladder())
+        .expect("initialize with the redemption mint");
+    assert_eq!(env.router_config().usdt_mint, env.usdt_mint);
+}
+
+#[test]
+fn distribute_leaves_cap_room_for_usdt_already_in_the_vault() {
+    let mut env = setup();
+
+    // 5k lands in the vault outside `contribute`; contribute's pre-sync
+    // recognises it first, leaving 15k of the 20k cap for this contribution.
+    let stray = 5_000 * USDT;
+    let mint_to = token_ix::mint_to(
+        &spl_token::ID,
+        &env.usdt_mint,
+        &env.redemption_vault,
+        &env.admin.pubkey(),
+        &[],
+        stray,
+    )
+    .unwrap();
+    let admin = env.admin.insecure_clone();
+    env.send(&[mint_to], &[&admin]).expect("mint into vault");
+
+    env.fund_router(120_000 * USDT);
+    let cranker = env.cranker.insecure_clone();
+    env.distribute(&cranker).expect("distribute");
+
+    let to_pool = TOTAL_EXPLOITED - stray;
+    assert_eq!(env.router_config().lifetime_to_pool, to_pool as u128);
+    assert_eq!(env.treasury_balance(), 120_000 * USDT - to_pool);
+    assert_eq!(env.balance(&env.redemption_vault), TOTAL_EXPLOITED);
+    assert_eq!(env.balance(&env.router_ata), 0);
+
+    let acct = env
+        .svm
+        .get_account(&env.redemption_config)
+        .expect("redemption config");
+    let rc = dfx_redemption::accounts::Config::try_deserialize(&mut acct.data.as_slice())
+        .expect("decode redemption Config");
+    assert_eq!(rc.lifetime_recognized_backing, TOTAL_EXPLOITED);
+    assert_eq!(rc.recognized_backing_remaining, TOTAL_EXPLOITED);
 }

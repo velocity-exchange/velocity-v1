@@ -24,4 +24,6 @@ pub enum RouterError {
     ArithmeticOverflow,
     #[msg("Treasury cannot be the router config or the redemption config")]
     InvalidTreasury,
+    #[msg("USDT mint does not match the redemption config's mint")]
+    UsdtMintMismatch,
 }

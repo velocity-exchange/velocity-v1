@@ -957,6 +957,11 @@
       "code": 6014,
       "name": "DepositorNotAllowed",
       "msg": "Depositor is not allowed to contribute this source"
+    },
+    {
+      "code": 6015,
+      "name": "DepositorAlreadySet",
+      "msg": "Depositor key is already set in another slot"
     }
   ],
   "types": [
@@ -1126,10 +1131,6 @@
             "type": "u64"
           },
           {
-            "name": "amount_recognized",
-            "type": "u64"
-          },
-          {
             "name": "cumulative_for_source",
             "type": "u64"
           },
@@ -1171,6 +1172,14 @@
             "type": "pubkey"
           },
           {
+            "name": "router_config",
+            "docs": [
+              "`router_program`'s config PDA, the only signer allowed to contribute `ProtocolFees`.",
+              "Stored so `contribute` compares keys instead of re-deriving the PDA."
+            ],
+            "type": "pubkey"
+          },
+          {
             "name": "cumulative_protocol_fees",
             "type": "u64"
           },
@@ -1191,7 +1200,7 @@
             "type": {
               "array": [
                 "u8",
-                128
+                96
               ]
             }
           }

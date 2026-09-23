@@ -41,6 +41,8 @@ pyth_lazer = { path = "../../programs/pyth-lazer", features = ["no-entrypoint"] 
 litesvm = { version = "=0.15.2", features = ["precompiles"] }
 
 anchor-lang = "1.0"
+anyhow = "1"
+sha2 = "0.10"
 arbitrary = { version = "1", features = ["derive"] }
 libafl = { version = "0.15.1", features = ["std", "cli", "prelude"] }
 libafl_bolts = { version = "0.15.1", features = ["std"] }

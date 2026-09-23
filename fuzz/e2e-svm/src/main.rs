@@ -28,7 +28,7 @@
 //!    withdraw limiter). Vault token authority = the `velocity_signer` PDA.
 
 use {
-    anchor_lang::AnchorSerialize,
+    anchor_lang::{AnchorSerialize, InstructionData, ToAccountMetas},
     crucible_fuzzer::*,
     solana_instruction::{AccountMeta, Instruction},
     solana_keypair::Keypair,
@@ -58,6 +58,9 @@ use {
 // through `raw_call`.
 crucible_idl_gen::declare_fuzz_program!(velocity_idl = "../../packages/sdk/src/idl/velocity.json");
 
+mod clob;
+mod orders;
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -79,7 +82,6 @@ const D_INITIALIZE_USER_STATS: [u8; 8] = [254, 243, 72, 98, 251, 130, 168, 213];
 const D_INITIALIZE_USER: [u8; 8] = [111, 17, 185, 250, 60, 122, 38, 254];
 const D_DEPOSIT: [u8; 8] = [242, 35, 198, 137, 82, 225, 242, 182];
 const D_WITHDRAW: [u8; 8] = [183, 18, 70, 156, 148, 109, 161, 34];
-const D_PLACE_PERP_ORDER: [u8; 8] = [69, 161, 93, 202, 120, 126, 76, 185];
 const D_CANCEL_ORDER: [u8; 8] = [95, 129, 237, 240, 8, 49, 223, 132];
 const D_SETTLE_PNL: [u8; 8] = [43, 61, 234, 45, 15, 95, 152, 153];
 // Order-management surface (all three take the same [state, user(w), authority(s)]).
@@ -88,9 +90,9 @@ const D_CANCEL_ORDERS_BY_IDS: [u8; 8] = [134, 19, 144, 165, 94, 240, 210, 94];
 const D_CANCEL_ORDER_BY_USER_ID: [u8; 8] = [107, 211, 250, 133, 18, 37, 57, 100];
 const D_MODIFY_ORDER: [u8; 8] = [47, 124, 117, 255, 201, 197, 130, 94];
 const D_MODIFY_ORDER_BY_USER_ID: [u8; 8] = [158, 77, 4, 253, 252, 194, 161, 179];
-const D_PLACE_ORDERS: [u8; 8] = [60, 63, 50, 123, 12, 197, 60, 190];
 // User config setters ([user(w), authority(s)], except allow_delegate_transfer
-// which takes [user_stats(w), authority(s)]).
+// which takes [user_stats(w), authority(s)], and SETTERS_READING_STATE, which
+// add state).
 const D_UPDATE_USER_CUSTOM_MARGIN_RATIO: [u8; 8] = [21, 221, 140, 187, 32, 129, 11, 123];
 const D_UPDATE_USER_MARGIN_TRADING_ENABLED: [u8; 8] = [194, 92, 204, 223, 246, 188, 31, 203];
 const D_UPDATE_USER_REDUCE_ONLY: [u8; 8] = [199, 71, 42, 67, 144, 19, 86, 109];
@@ -100,31 +102,28 @@ const D_UPDATE_USER_DELEGATE: [u8; 8] = [139, 205, 141, 141, 113, 36, 94, 187];
 const D_UPDATE_USER_ALLOW_DELEGATE_TRANSFER: [u8; 8] = [235, 106, 172, 39, 223, 238, 167, 204];
 const D_UPDATE_USER_PERP_POSITION_CUSTOM_MARGIN_RATIO: [u8; 8] =
     [121, 137, 157, 155, 89, 186, 145, 113];
+
+/// Setters that name `state` after the authority.
+const SETTERS_READING_STATE: [[u8; 8]; 2] =
+    [D_UPDATE_USER_MARGIN_TRADING_ENABLED, D_UPDATE_USER_POOL_ID];
+
 // Permissionless / keeper-style pokes that need no extra fixture state. Each
 // takes [state, authority(s), filler(w), user(w)] (log_user_balances omits filler).
 const D_UPDATE_USER_IDLE: [u8; 8] = [253, 133, 67, 22, 103, 161, 20, 100];
 const D_FORCE_CANCEL_ORDERS: [u8; 8] = [64, 181, 196, 63, 222, 72, 64, 232];
 const D_LOG_USER_BALANCES: [u8; 8] = [162, 21, 35, 251, 32, 57, 161, 210];
 // Account lifecycle.
-const D_DELETE_USER: [u8; 8] = [186, 85, 17, 249, 219, 231, 98, 251];
 const D_RECLAIM_RENT: [u8; 8] = [218, 200, 19, 197, 227, 89, 192, 22];
 // Fill engine + settlement/funding cranks (reachable once orders can cross and
 // the oracle can move — see Fixture::perp_oracle_pda).
-const D_FILL_PERP_ORDER: [u8; 8] = [13, 188, 248, 103, 134, 217, 106, 240];
-const D_PLACE_AND_TAKE_PERP_ORDER: [u8; 8] = [213, 51, 1, 187, 108, 220, 230, 224];
-const D_PLACE_AND_MAKE_PERP_ORDER: [u8; 8] = [149, 117, 11, 237, 47, 95, 89, 237];
-const D_TRIGGER_ORDER: [u8; 8] = [63, 112, 51, 233, 232, 47, 240, 199];
-const D_REVERT_FILL: [u8; 8] = [236, 238, 176, 69, 239, 10, 181, 193];
 const D_SETTLE_MULTIPLE_PNLS: [u8; 8] = [127, 66, 117, 57, 40, 50, 152, 127];
 const D_SETTLE_FUNDING_PAYMENT: [u8; 8] = [222, 90, 202, 94, 28, 45, 115, 183];
 const D_UPDATE_FUNDING_RATE: [u8; 8] = [201, 178, 116, 212, 166, 144, 72, 238];
-const D_UPDATE_PERP_BID_ASK_TWAP: [u8; 8] = [247, 23, 255, 65, 212, 90, 221, 194];
 const D_UPDATE_AMMS: [u8; 8] = [201, 106, 217, 253, 4, 175, 228, 97];
 // Insurance-fund staking lifecycle.
 const D_INITIALIZE_IF_STAKE: [u8; 8] = [187, 179, 243, 70, 248, 90, 92, 147];
 const D_ADD_IF_STAKE: [u8; 8] = [251, 144, 115, 11, 222, 47, 62, 236];
 const D_REQUEST_REMOVE_IF_STAKE: [u8; 8] = [142, 70, 204, 92, 73, 106, 180, 52];
-const D_CANCEL_REQUEST_REMOVE_IF_STAKE: [u8; 8] = [97, 235, 78, 62, 212, 42, 241, 127];
 const D_REMOVE_IF_STAKE: [u8; 8] = [128, 166, 142, 9, 254, 187, 143, 174];
 // Revenue / fee plumbing.
 const D_DEPOSIT_INTO_REVENUE_POOL: [u8; 8] = [92, 40, 151, 42, 122, 254, 139, 246];
@@ -140,7 +139,6 @@ const D_INITIALIZE_REFERRER_NAME: [u8; 8] = [235, 126, 231, 10, 42, 164, 26, 61]
 // Keeper pokes.
 const D_PAUSE_SPOT_MARKET_DEPOSIT_WITHDRAW: [u8; 8] = [183, 119, 59, 170, 137, 35, 242, 86];
 const D_TRIP_EQUITY_FLOOR_BREAKER: [u8; 8] = [133, 184, 25, 80, 193, 52, 162, 249];
-const D_FORCE_DELETE_USER: [u8; 8] = [2, 241, 195, 172, 227, 24, 254, 158];
 const D_UPDATE_USER_QUOTE_ASSET_IF_STAKE: [u8; 8] = [251, 101, 156, 7, 2, 63, 30, 23];
 // Spot market 1 / cross-market: liquidation, swaps, pool migration.
 const D_LIQUIDATE_SPOT: [u8; 8] = [107, 0, 128, 41, 35, 229, 251, 18];
@@ -175,8 +173,6 @@ const D_UPDATE_PYTH_LAZER_ORACLE: [u8; 8] = [218, 237, 170, 245, 39, 143, 166, 3
 /// A Lazer `SolanaMessage` prefixes its envelope with a 4-byte format magic, so
 /// every offset inside it is shifted by 4 relative to the signed-msg layout.
 const LAZER_MAGIC_LEN: u16 = 4;
-const D_PLACE_SIGNED_MSG_TAKER_ORDER: [u8; 8] = [32, 79, 101, 139, 25, 6, 98, 15];
-const D_PLACE_AND_MAKE_SIGNED_MSG_PERP_ORDER: [u8; 8] = [16, 26, 123, 131, 94, 29, 175, 98];
 const D_INIT_SIGNED_MSG_WS_DELEGATES: [u8; 8] = [40, 132, 96, 219, 184, 193, 80, 8];
 const D_CHANGE_SIGNED_MSG_WS_DELEGATE: [u8; 8] = [252, 202, 252, 219, 179, 27, 84, 138];
 // Revenue-share / builder-code escrow lifecycle.
@@ -203,9 +199,6 @@ fn system_program_id() -> Pubkey {
 }
 fn rent_sysvar_id() -> Pubkey {
     Pubkey::from_str_const("SysvarRent111111111111111111111111111111111")
-}
-fn clock_sysvar_id() -> Pubkey {
-    Pubkey::from_str_const("SysvarC1ock11111111111111111111111111111111")
 }
 /// A bare SPL-Token `Transfer` (tag 3): `[source(w), destination(w), authority(s)]`.
 ///
@@ -261,29 +254,19 @@ fn ed25519_program_id() -> Pubkey {
 //
 // `place_signed_msg_taker_order` authenticates an *off-chain* order: the taker
 // signs the order params with their wallet key, a keeper relays it, and the
-// program proves authenticity by cross-checking a native Ed25519Program
-// instruction that must sit immediately before it in the same transaction.
-//
-// That is why this whole surface read 0% until now — it is not reachable with a
-// single instruction, no matter what the fuzzer mutates. The envelope has to be
-// byte-exact, because `verify_and_decode_ed25519_msg` re-derives every offset
-// and rejects on any mismatch.
+// program verifies the signature itself. The envelope has to be byte-exact,
+// because the program re-derives every offset and rejects on any mismatch.
 //
 // The message the program is handed (`signed_msg_order_params_message_bytes`)
-// is self-framing — the signature, the signer and the payload all live inside
-// it, and the Ed25519Program instruction merely *points* at them:
+// is self-framing:
 //
 //     msg[  0.. 64]  ed25519 signature over msg[98..]
 //     msg[ 64.. 96]  signer pubkey (taker authority, or delegate)
 //     msg[ 96.. 98]  u16 LE length of the payload that follows
 //     msg[ 98..  N]  ASCII-hex of (8-byte manual discriminator || borsh message)
 //
-// The hex layer is not decoration: the program calls `hex::decode` on the
-// payload before borsh-deserializing it, so the bytes that actually get *signed*
-// are the hex characters, not the borsh bytes.
-const SIGNED_MSG_SIG_OFF: u16 = 0;
-const SIGNED_MSG_PUBKEY_OFF: u16 = 64;
-const SIGNED_MSG_SIZE_OFF: u16 = 96;
+// The program hex-decodes the payload before borsh-deserializing it, so the
+// signed bytes are the hex characters, not the borsh bytes.
 const SIGNED_MSG_PAYLOAD_OFF: u16 = 98;
 
 /// Offset of the message within the velocity instruction's data:
@@ -298,37 +281,6 @@ fn hex_encode(bytes: &[u8]) -> Vec<u8> {
         out.push(D[(b & 0x0f) as usize]);
     }
     out
-}
-
-/// Build the native Ed25519Program instruction that authenticates the velocity
-/// instruction at `velocity_ix_index` within the same transaction.
-///
-/// All three `*_instruction_index` fields point at the *velocity* instruction
-/// (not at this one): the precompile reads the signature, pubkey and message
-/// out of the relayed instruction's data. `verify_and_decode_ed25519_msg`
-/// independently recomputes each of these offsets and rejects any that differ,
-/// so they have to be derived from the same layout constants above.
-fn ed25519_verify_ix(velocity_ix_index: u16, payload_len: u16) -> Instruction {
-    let mut data = Vec::with_capacity(16);
-    data.push(1u8); // number of signatures
-    data.push(0u8); // padding
-    let base = SIGNED_MSG_IX_DATA_OFF;
-    for v in [
-        base + SIGNED_MSG_SIG_OFF,
-        velocity_ix_index,
-        base + SIGNED_MSG_PUBKEY_OFF,
-        velocity_ix_index,
-        base + SIGNED_MSG_PAYLOAD_OFF,
-        payload_len,
-        velocity_ix_index,
-    ] {
-        data.extend_from_slice(&v.to_le_bytes());
-    }
-    Instruction {
-        program_id: ed25519_program_id(),
-        accounts: vec![],
-        data,
-    }
 }
 
 /// Assemble the self-framing signed message described above.
@@ -362,6 +314,35 @@ fn velocity_program_id() -> Pubkey {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Whether a sent transaction succeeded. Under `FUZZ_DEBUG` a failure prints
+/// its program log, which is the only record of why an action was refused.
+trait Landed {
+    fn landed(self) -> bool;
+}
+
+impl Landed for anyhow::Result<crucible_test_context::TxOutcome> {
+    fn landed(self) -> bool {
+        let debug = std::env::var_os("FUZZ_DEBUG").is_some();
+        match self {
+            Ok(outcome) if outcome.is_success() => true,
+            Ok(outcome) => {
+                if debug {
+                    eprintln!("tx failed:\n  {}", outcome.logs().join("\n  "));
+                }
+
+                false
+            }
+            Err(err) => {
+                if debug {
+                    eprintln!("tx not sent: {err:#}");
+                }
+
+                false
+            }
+        }
+    }
+}
 
 fn ix_data(disc: [u8; 8], args: &[u8]) -> Vec<u8> {
     let mut v = Vec::with_capacity(8 + args.len());
@@ -597,6 +578,11 @@ struct Fixture {
     pool1_vault_b_pda: Pubkey,
     /// The VLP `AmmCache`, injected (see `inject_amm_cache`).
     amm_cache_pda: Pubkey,
+    /// The market's CLOB book, which every perp fill routes through.
+    clob: clob::ClobAccounts,
+    /// Book orders the harness placed, so cancel, modify and the keeper
+    /// cranks can name a real one.
+    book_orders: Vec<orders::BookOrder>,
     crank: Rc<Keypair>,
     /// Warm admin (see `build_state`). Used only to establish preconditions that
     /// no permissionless instruction can create, never as a fuzzed identity.
@@ -655,17 +641,6 @@ struct Fixture {
     /// exactly once and then take the "order already exists" early-return
     /// forever. Bumping it per placement keeps every attempt live.
     signed_uuid_seq: u64,
-    /// uuids of recently placed signed-msg taker orders, newest last.
-    ///
-    /// `place_and_make_signed_msg_perp_order` looks its counterparty up *by
-    /// uuid* in the taker's `SignedMsgUserOrders` ring and fails outright with
-    /// `SignedMsgOrderDoesNotExist` otherwise — so a fuzzer-invented uuid can
-    /// only ever reach that rejection. Recording what was actually placed is
-    /// the same trick `pick_order_id` uses for order ids.
-    /// `(taker_idx, uuid, taker_is_long)` — the direction is needed so the
-    /// maker can be placed on the OPPOSITE side; a same-side maker can never
-    /// cross and only ever reaches the no-fill path.
-    signed_uuids: Vec<(usize, [u8; 8], bool)>,
 }
 
 // ---------------------------------------------------------------------------
@@ -886,6 +861,7 @@ fn build_perp_market(pubkey: Pubkey, quote_spot_index: u16, oracle: Pubkey) -> P
     // Real, movable oracle (see Fixture::perp_oracle_pda).
     m.oracle = anchor_pk(oracle);
     m.market_index = 0;
+    m.quoter_slab = anchor_pk(clob::quoter_slab_pda());
     m.quote_spot_market_index = quote_spot_index;
     m.status = MarketStatus::Active;
     // Multiplier 1 -> a 2% confidence band, which is what real markets run.
@@ -953,6 +929,39 @@ fn build_perp_market(pubkey: Pubkey, quote_spot_index: u16, oracle: Pubkey) -> P
     m.hedge_config.status = 1;
     m.hedge_config.fee_transfer_scalar = 1;
     m
+}
+
+fn direction_of(dir: u8) -> velocity::controller::position::PositionDirection {
+    use velocity::controller::position::PositionDirection;
+    if dir == 0 {
+        PositionDirection::Long
+    } else {
+        PositionDirection::Short
+    }
+}
+
+/// A price 10 percent through the $1 oracle when `cross`, else 10 percent
+/// away from it on the order's own side.
+fn order_price(direction: velocity::controller::position::PositionDirection, cross: bool) -> u64 {
+    use velocity::controller::position::PositionDirection;
+    match (direction, cross) {
+        (PositionDirection::Long, true) | (PositionDirection::Short, false) => 1_100_000,
+        (PositionDirection::Long, false) | (PositionDirection::Short, true) => 900_000,
+    }
+}
+
+/// An order `owner_idx` rests in `direction`, on the book side it takes.
+fn placement(
+    owner_idx: usize,
+    direction: velocity::controller::position::PositionDirection,
+) -> orders::Placement {
+    use velocity::{controller::position::PositionDirection, state::prop_amm::ClobSide};
+    let side = match direction {
+        PositionDirection::Long => ClobSide::Bid,
+        PositionDirection::Short => ClobSide::Ask,
+    };
+
+    orders::Placement { owner_idx, side }
 }
 
 /// Convert a solana-3.0 Pubkey into the anchor-lang Pubkey type used by the
@@ -1317,8 +1326,20 @@ impl Fixture {
             fresh.push(kp);
         }
 
+        let clob = clob::install(
+            &mut ctx,
+            &admin,
+            state_pda,
+            perp_market_pda,
+            perp_market.order_step_size,
+            perp_market.market_stats.min_order_size,
+            users[0].user_pda,
+        );
+
         Fixture {
             ctx,
+            clob,
+            book_orders: Vec::new(),
             program_id,
             signer_pda,
             usdc_mint,
@@ -1350,7 +1371,6 @@ impl Fixture {
             prev_funding: None,
             prev_reduce_only: vec![None; NUM_USERS],
             signed_uuid_seq: 0,
-            signed_uuids: Vec::new(),
         }
     }
 
@@ -1358,6 +1378,17 @@ impl Fixture {
 
     fn state_pda(&self) -> Pubkey {
         Pubkey::find_program_address(&[b"velocity_state"], &self.program_id).0
+    }
+
+    /// The authority's `RevenueShareEscrow`, which may not exist. Deleting a
+    /// user names it either way.
+    fn revenue_share_escrow_pda(&self, authority: &Pubkey) -> Pubkey {
+        use velocity::state::revenue_share::REVENUE_SHARE_ESCROW_PDA_SEED;
+        Pubkey::find_program_address(
+            &[REVENUE_SHARE_ESCROW_PDA_SEED.as_bytes(), authority.as_ref()],
+            &self.program_id,
+        )
+        .0
     }
 
     // ---- actions -------------------------------------------------------
@@ -1404,8 +1435,7 @@ impl Fixture {
             })
             .signers(&[&user.keypair])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     /// Withdraw USDC from spot market 0.
@@ -1450,17 +1480,15 @@ impl Fixture {
             })
             .signers(&[&user.keypair])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     /// Place a perp order.
     ///
-    /// Unlike the original version (which hard-coded `MustPostOnly` at a price
-    /// that could never cross the $1 oracle, so no order ever filled), the
-    /// fuzzer now chooses the order type, the post-only policy, and whether the
-    /// price sits inside or outside the spread. Crossing orders are what make
-    /// the fill engine, JIT/AMM participation, and taker-fee paths reachable.
+    /// The fuzzer chooses the order type, the post-only policy, and whether
+    /// the price crosses the $1 oracle. A trigger order waits in a slot. A
+    /// posting limit order rests on the book. Any other order takes, and its
+    /// restable remainder rests on the book.
     #[allow(clippy::too_many_arguments)]
     pub fn action_place_perp_order(
         &mut self,
@@ -1473,27 +1501,13 @@ impl Fixture {
         #[range(1..40u8)] user_order_id: u8,
         #[range(0..2u8)] reduce_only: u8,
     ) -> bool {
-        use velocity::{
-            controller::position::PositionDirection,
-            state::{
-                order_params::{OrderParams, PostOnlyParam},
-                user::{MarketType, OrderType},
-            },
+        use velocity::state::{
+            order_params::{OrderParams, PostOnlyParam},
+            user::{MarketType, OrderType},
         };
 
-        let direction = if dir == 0 {
-            PositionDirection::Long
-        } else {
-            PositionDirection::Short
-        };
-        // `cross == 1` prices the order through the oracle so it can match;
-        // otherwise it rests away from the mark, as before.
-        let price = match (direction, cross) {
-            (PositionDirection::Long, 1) => 1_100_000u64, // bid above mark -> crosses asks
-            (PositionDirection::Long, _) => 900_000u64,   // resting bid
-            (PositionDirection::Short, 1) => 900_000u64,  // ask below mark -> crosses bids
-            (PositionDirection::Short, _) => 1_100_000u64, // resting ask
-        };
+        let direction = direction_of(dir);
+        let price = order_price(direction, cross == 1);
         let order_type = match order_kind {
             0 => OrderType::Limit,
             1 => OrderType::Market,
@@ -1504,6 +1518,11 @@ impl Fixture {
             order_type,
             OrderType::TriggerLimit | OrderType::TriggerMarket
         );
+        let post_only = match post_only_sel {
+            0 => PostOnlyParam::None,
+            1 => PostOnlyParam::MustPostOnly,
+            _ => PostOnlyParam::TryPostOnly,
+        };
         let params = OrderParams {
             order_type,
             market_type: MarketType::Perp,
@@ -1513,19 +1532,33 @@ impl Fixture {
             price,
             market_index: 0,
             reduce_only: reduce_only == 1,
-            post_only: match post_only_sel {
-                0 => PostOnlyParam::None,
-                1 => PostOnlyParam::MustPostOnly,
-                _ => PostOnlyParam::TryPostOnly,
-            },
-            // Trigger orders REQUIRE a trigger price; non-trigger orders are
-            // rejected outright if one is supplied.
-            trigger_price: if is_trigger { Some(price) } else { None },
+            post_only,
+            // A trigger order needs a trigger price. Any other order is refused
+            // when it names one.
+            trigger_price: is_trigger.then_some(price),
             ..Default::default()
         };
-        let mut buf = Vec::new();
-        params.serialize(&mut buf).unwrap();
-        self.send_order_ix(user_idx, D_PLACE_PERP_ORDER, buf)
+
+        let user = self.users[user_idx].clone();
+        let ix = if is_trigger {
+            self.place_trigger_orders_ix(user_idx, vec![params])
+        } else if order_type == OrderType::Limit && post_only != PostOnlyParam::None {
+            self.place_and_make_ix(user_idx, params, None)
+        } else {
+            self.place_and_take_ix(
+                user_idx,
+                OrderParams {
+                    post_only: PostOnlyParam::None,
+                    ..params
+                },
+                None,
+            )
+        };
+        self.send_order_ixs(
+            vec![ix],
+            &user.keypair,
+            Some(placement(user_idx, direction)),
+        )
     }
 
     /// Rewrite the perp oracle account host-side (a fixture poke, not an
@@ -1661,8 +1694,7 @@ impl Fixture {
             })
             .signers(&[&user.keypair])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     /// `settle_multiple_pnls(Vec<market_index>, SettlePnlMode)` — the batch
@@ -1695,8 +1727,7 @@ impl Fixture {
             })
             .signers(&[&user.keypair])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     /// `settle_funding_payment` — `[state, user(w)]` + markets. Permissionless,
@@ -1729,8 +1760,7 @@ impl Fixture {
             // Permissionless ix, but a transaction still needs a fee payer.
             .signers(&[&self.crank.clone()])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false);
+            .landed();
         // `settle_funding_payment` is a pure no-op when there is nothing owed,
         // so with a fresh oracle and an active market it must NEVER revert.
         // A revert here strands funding for that user.
@@ -1782,8 +1812,7 @@ impl Fixture {
             })
             .signers(&[&self.crank.clone()])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false);
+            .landed();
         if should_work && !ok {
             self.crank_failures.push("update_funding_rate");
         }
@@ -1921,19 +1950,22 @@ impl Fixture {
         self.ctx
             .raw_call(Instruction {
                 program_id: self.program_id,
-                accounts: vec![
-                    AccountMeta::new_readonly(self.state_pda(), false),
-                    AccountMeta::new(self.perp_market_pda, false),
-                    AccountMeta::new_readonly(self.perp_oracle_pda, false),
-                    AccountMeta::new_readonly(keeper.stats_pda, false),
-                    AccountMeta::new_readonly(keeper.keypair.pubkey(), true),
-                ],
-                data: ix_data(D_UPDATE_PERP_BID_ASK_TWAP, &[]),
+                accounts: velocity::accounts::UpdatePerpBidAskTwap {
+                    state: self.state_pda(),
+                    perp_market: self.perp_market_pda,
+                    oracle: self.perp_oracle_pda,
+                    keeper_stats: keeper.stats_pda,
+                    authority: keeper.keypair.pubkey(),
+                    quoter_slab: Some(self.clob.quoter_slab),
+                    clob_market: Some(self.clob.book),
+                    clob_program: Some(self.clob.program),
+                }
+                .to_account_metas(None),
+                data: velocity::instruction::UpdatePerpBidAskTwap {}.data(),
             })
             .signers(&[&keeper.keypair])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     /// `update_amms(Vec<market_index>)` — `[state, authority(s)]` + markets. The
@@ -1962,72 +1994,18 @@ impl Fixture {
             })
             .signers(&[&keeper.keypair])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     // ---- the fill engine --------------------------------------------------
     //
-    // Reachable only now that orders can cross. Each of these is a *counterparty*
-    // instruction: one user acts as filler/maker against another's order, which
-    // is the entire matching/settlement surface the harness previously could not
-    // touch at all.
+    // Every perp fill routes through the market's book, its quoters and the
+    // vAMM in one router pass. A take fills against book orders the other
+    // users rest, so these are the counterparty instructions that reach the
+    // whole matching and settlement surface.
 
-    /// `fill_perp_order(Option<order_id>, Option<maker_order_id>)` —
-    /// `[state, authority(s), filler(w), filler_stats(w), user(w), user_stats(w)]`.
-    /// The maker (if any) is passed via remaining_accounts after the markets.
-    pub fn action_fill_perp_order(
-        &mut self,
-        #[range(0..NUM_USERS)] taker_idx: usize,
-        #[range(0..NUM_USERS)] filler_idx: usize,
-        #[range(0..2u8)] with_order_id: u8,
-        #[range(0..8usize)] nth_order: usize,
-        #[range(0..2u8)] with_maker: u8,
-    ) -> bool {
-        let taker = self.users[taker_idx].clone();
-        let filler = self.users[(filler_idx + 1) % NUM_USERS].clone();
-        // A real open order id (see pick_order_id) — otherwise the handler stops
-        // at the lookup and the matching engine is never entered.
-        let order_id = self.pick_order_id(taker_idx, nth_order);
-        let mut args = Vec::new();
-        push_opt(
-            &mut args,
-            with_order_id == 1 && order_id.is_some(),
-            &order_id.unwrap_or(0).to_le_bytes(),
-        );
-        push_opt(&mut args, false, &[]); // _maker_order_id (unused by the handler)
-
-        let mut accounts = vec![
-            AccountMeta::new_readonly(self.state_pda(), false),
-            AccountMeta::new_readonly(filler.keypair.pubkey(), true),
-            AccountMeta::new(filler.user_pda, false),
-            AccountMeta::new(filler.stats_pda, false),
-            AccountMeta::new(taker.user_pda, false),
-            AccountMeta::new(taker.stats_pda, false),
-        ];
-        accounts.extend(self.market_ras(false));
-        if with_maker == 1 {
-            // A maker is the (user, user_stats) pair of a third party — here the
-            // remaining user, so a genuine two-sided match is possible.
-            let maker = self.users[(taker_idx + 1) % NUM_USERS].clone();
-            accounts.push(AccountMeta::new(maker.user_pda, false));
-            accounts.push(AccountMeta::new(maker.stats_pda, false));
-        }
-        self.ctx
-            .raw_call(Instruction {
-                program_id: self.program_id,
-                accounts,
-                data: ix_data(D_FILL_PERP_ORDER, &args),
-            })
-            .signers(&[&filler.keypair])
-            .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
-    }
-
-    /// `place_and_take_perp_order(params, Option<success_condition>)` —
-    /// `[state, user(w), user_stats(w), authority(s)]`. Places an aggressive
-    /// order and immediately takes against the book/AMM in one instruction.
+    /// `place_and_take_perp_order_v1`: an aggressive order that takes at once.
+    /// An unfilled restable remainder rests on the book.
     pub fn action_place_and_take_perp_order(
         &mut self,
         #[range(0..NUM_USERS)] user_idx: usize,
@@ -2036,232 +2014,297 @@ impl Fixture {
         #[range(0..2u8)] with_success_condition: u8,
         #[range(0..2u8)] success_condition: u8,
     ) -> bool {
-        use velocity::{
-            controller::position::PositionDirection,
-            state::{
-                order_params::{OrderParams, PostOnlyParam},
-                user::{MarketType, OrderType},
-            },
+        use velocity::state::{
+            order_params::{OrderParams, PlaceAndTakeOrderSuccessCondition, PostOnlyParam},
+            user::{MarketType, OrderType},
         };
 
-        let user = self.users[user_idx].clone();
-        let direction = if dir == 0 {
-            PositionDirection::Long
-        } else {
-            PositionDirection::Short
-        };
-        // Aggressive price: cross the mark so the take leg can actually fill.
-        let price = if dir == 0 { 1_200_000u64 } else { 800_000u64 };
+        let direction = direction_of(dir);
         let params = OrderParams {
             order_type: OrderType::Limit,
             market_type: MarketType::Perp,
             direction,
             base_asset_amount: base,
-            price,
+            price: order_price(direction, true),
             market_index: 0,
             post_only: PostOnlyParam::None,
             ..Default::default()
         };
-        let mut args = Vec::new();
-        params.serialize(&mut args).unwrap();
-        push_opt(&mut args, with_success_condition == 1, &[success_condition]);
+        let success_condition =
+            (with_success_condition == 1).then_some(if success_condition == 0 {
+                PlaceAndTakeOrderSuccessCondition::PartialFill
+            } else {
+                PlaceAndTakeOrderSuccessCondition::FullFill
+            });
 
-        let mut accounts = vec![
-            AccountMeta::new_readonly(self.state_pda(), false),
-            AccountMeta::new(user.user_pda, false),
-            AccountMeta::new(user.stats_pda, false),
-            AccountMeta::new_readonly(user.keypair.pubkey(), true),
-        ];
-        accounts.extend(self.market_ras(false));
-        self.ctx
-            .raw_call(Instruction {
-                program_id: self.program_id,
-                accounts,
-                data: ix_data(D_PLACE_AND_TAKE_PERP_ORDER, &args),
-            })
-            .signers(&[&user.keypair])
-            .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+        let user = self.users[user_idx].clone();
+        let ix = self.place_and_take_ix(user_idx, params, success_condition);
+        self.send_order_ixs(
+            vec![ix],
+            &user.keypair,
+            Some(placement(user_idx, direction)),
+        )
     }
 
-    /// `place_and_make_perp_order(params, taker_order_id)` —
-    /// `[state, user(w), user_stats(w), taker(w), taker_stats(w), authority(s)]`.
-    /// The maker side of a two-sided match against a named taker order.
+    /// `place_and_make_perp_order_v1`: a maker order that rests on the book.
+    ///
+    /// `cross` prices it through the oracle. A must-post-only order is then
+    /// refused, and one that does not post rests crossed for the cross cranks.
+    /// `expiry_sel` gives it a lifetime, so the expiry crank has work.
+    #[allow(clippy::too_many_arguments)]
     pub fn action_place_and_make_perp_order(
         &mut self,
         #[range(0..NUM_USERS)] maker_idx: usize,
         #[range(0..2u8)] dir: u8,
         #[range(1..1_000_000_000u64)] base: u64,
-        #[range(0..8usize)] nth_taker_order: usize,
+        #[range(0..2u8)] cross: u8,
+        #[range(0..3u8)] post_only_sel: u8,
+        #[range(0..3u8)] expiry_sel: u8,
+        #[range(0..4u32)] activation_delay_slots: u32,
     ) -> bool {
-        use velocity::{
-            controller::position::PositionDirection,
-            state::{
-                order_params::{OrderParams, PostOnlyParam},
-                user::{MarketType, OrderType},
-            },
+        use velocity::state::{
+            order_params::{OrderParams, PostOnlyParam},
+            user::{MarketType, OrderType},
         };
 
-        let maker = self.users[maker_idx].clone();
-        // Pick a counterparty that actually HAS an open order rather than
-        // assuming the next user does. Hardcoding `(maker_idx + 1)` means the
-        // action silently no-ops whenever that particular user's book is empty,
-        // which is most of the time.
-        let (taker_idx, taker_order_id) = match (0..NUM_USERS)
-            .map(|k| (maker_idx + 1 + k) % NUM_USERS)
-            .filter(|i| *i != maker_idx)
-            .find_map(|i| self.pick_order_id(i, nth_taker_order).map(|id| (i, id)))
-        {
-            Some(v) => v,
-            None => return false,
-        };
-        let taker = self.users[taker_idx].clone();
-        let direction = if dir == 0 {
-            PositionDirection::Long
-        } else {
-            PositionDirection::Short
-        };
-        let price = if dir == 0 { 1_000_000u64 } else { 1_000_000u64 };
+        let now = self
+            .ctx
+            .svm
+            .get_sysvar::<anchor_lang::prelude::Clock>()
+            .unix_timestamp;
+        let direction = direction_of(dir);
         let params = OrderParams {
             order_type: OrderType::Limit,
             market_type: MarketType::Perp,
             direction,
             base_asset_amount: base,
-            price,
+            price: order_price(direction, cross == 1),
             market_index: 0,
-            // `place_and_make` requires an IOC **post-only** limit order
-            // specifically (InvalidOrderIOCPostOnly otherwise) — post-only alone
-            // is not enough, the ImmediateOrCancel bit must be set too.
-            post_only: PostOnlyParam::MustPostOnly,
-            bit_flags: velocity::state::order_params::OrderParamsBitFlag::ImmediateOrCancel as u8,
+            post_only: match post_only_sel {
+                0 => PostOnlyParam::MustPostOnly,
+                1 => PostOnlyParam::TryPostOnly,
+                _ => PostOnlyParam::None,
+            },
+            max_ts: match expiry_sel {
+                0 => None,
+                1 => Some(now + 30),
+                _ => Some(now + 3_600),
+            },
             ..Default::default()
         };
-        let mut args = Vec::new();
-        params.serialize(&mut args).unwrap();
-        args.extend_from_slice(&taker_order_id.to_le_bytes());
 
-        let mut accounts = vec![
-            AccountMeta::new_readonly(self.state_pda(), false),
-            AccountMeta::new(maker.user_pda, false),
-            AccountMeta::new(maker.stats_pda, false),
-            AccountMeta::new(taker.user_pda, false),
-            AccountMeta::new(taker.stats_pda, false),
-            AccountMeta::new_readonly(maker.keypair.pubkey(), true),
-        ];
-        accounts.extend(self.market_ras(false));
-        self.ctx
-            .raw_call(Instruction {
-                program_id: self.program_id,
-                accounts,
-                data: ix_data(D_PLACE_AND_MAKE_PERP_ORDER, &args),
-            })
-            .signers(&[&maker.keypair])
-            .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+        let maker = self.users[maker_idx].clone();
+        let ix = self.place_and_make_ix(maker_idx, params, Some(activation_delay_slots));
+        self.send_order_ixs(
+            vec![ix],
+            &maker.keypair,
+            Some(placement(maker_idx, direction)),
+        )
     }
 
-    /// `trigger_order(order_id)` — `[state, authority(s), filler(w), user(w),
-    /// user_stats]`. Fires a conditional (TriggerLimit/TriggerMarket) order once
-    /// the oracle crosses its trigger price, which `action_move_oracle_price`
-    /// now makes possible.
+    /// Fire a trigger order waiting in a `user.orders` slot. A trigger-market
+    /// takes at once, and a trigger-limit rests on the book.
+    ///
+    /// `trigger_order` does work only once the trigger condition holds, and
+    /// the fuzzer rarely places a trigger and then moves the oracle across it
+    /// within one iteration. So when the user has no trigger order, one is
+    /// placed priced off the live oracle, which meets `Above` the moment it
+    /// rests.
     pub fn action_trigger_order(
         &mut self,
         #[range(0..NUM_USERS)] user_idx: usize,
         #[range(0..NUM_USERS)] filler_idx: usize,
         #[range(0..8usize)] nth_order: usize,
+        #[range(0..2u8)] limit: u8,
     ) -> bool {
-        let user = self.users[user_idx].clone();
-        let filler = self.users[(filler_idx + 1) % NUM_USERS].clone();
-        // COMPOUND: guarantee a *triggerable* trigger order exists.
-        //
-        // `trigger_order` does real work only when the trigger condition is
-        // actually met; otherwise it returns early. Waiting for the fuzzer to
-        // (a) place a trigger order and (b) move the oracle across its trigger
-        // price, in that order, within one iteration is vanishingly unlikely —
-        // which is why this handler sat at 10%. Place one priced off the LIVE
-        // oracle so the default `Above` condition (`oracle_price >
-        // trigger_price`) is already satisfied.
+        use velocity::state::user::OrderType;
+
         if self
             .pick_order_id_filtered(user_idx, nth_order, true)
             .is_none()
         {
-            use velocity::{
-                controller::position::PositionDirection,
-                state::{
-                    order_params::{OrderParams, PostOnlyParam},
-                    user::{MarketType, OrderTriggerCondition, OrderType},
-                },
-            };
-            let oracle_price = match read_zc::<PythLazerOracle>(&self.ctx, &self.perp_oracle_pda) {
-                Some(o) if o.price > 1 => o.price as u64,
-                _ => return false,
-            };
-            // Strictly below the oracle, so `Above` is met the moment it rests.
-            let trigger_price = oracle_price.saturating_sub(oracle_price / 100).max(1);
-            let params = OrderParams {
-                order_type: OrderType::TriggerMarket,
-                market_type: MarketType::Perp,
-                direction: PositionDirection::Long,
-                base_asset_amount: 10_000_000,
-                price: 0,
-                market_index: 0,
-                post_only: PostOnlyParam::None,
-                trigger_price: Some(trigger_price),
-                trigger_condition: OrderTriggerCondition::Above,
-                ..Default::default()
-            };
-            let mut buf = Vec::new();
-            if params.serialize(&mut buf).is_ok() {
-                let _ = self.send_order_ix(user_idx, D_PLACE_PERP_ORDER, buf);
-            }
+            self.place_armed_trigger(user_idx, limit == 1);
         }
-        // trigger_order takes a bare (non-Option) order id AND rejects
-        // non-trigger orders, so restrict the pick to trigger types.
-        let order_id = match self.pick_order_id_filtered(user_idx, nth_order, true) {
-            Some(id) => id,
-            None => return false,
+
+        let Some(order_id) = self.pick_order_id_filtered(user_idx, nth_order, true) else {
+            return false;
         };
-        let mut accounts = vec![
-            AccountMeta::new_readonly(self.state_pda(), false),
-            AccountMeta::new_readonly(filler.keypair.pubkey(), true),
-            AccountMeta::new(filler.user_pda, false),
-            AccountMeta::new(user.user_pda, false),
-            AccountMeta::new_readonly(user.stats_pda, false),
-        ];
-        accounts.extend(self.market_ras(false));
-        self.ctx
-            .raw_call(Instruction {
-                program_id: self.program_id,
-                accounts,
-                data: ix_data(D_TRIGGER_ORDER, &order_id.to_le_bytes()),
-            })
-            .signers(&[&filler.keypair])
-            .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+        let is_limit = self
+            .read_user(&self.users[user_idx].user_pda)
+            .and_then(|user| user.orders.into_iter().find(|o| o.order_id == order_id))
+            .is_some_and(|order| order.order_type == OrderType::TriggerLimit);
+
+        let filler_idx = (filler_idx + 1) % NUM_USERS;
+        let filler = self.users[filler_idx].clone();
+        let ix = if is_limit {
+            self.trigger_limit_ix(filler_idx, user_idx, order_id)
+        } else {
+            self.trigger_market_ix(filler_idx, user_idx, order_id)
+        };
+        let long = velocity::controller::position::PositionDirection::Long;
+        self.send_order_ixs(vec![ix], &filler.keypair, Some(placement(user_idx, long)))
     }
 
-    /// `revert_fill` — `[state, authority(s), filler(w), filler_stats(w)]`. The
-    /// filler-reward clawback path taken when a fill turns out to be invalid.
-    pub fn action_revert_fill(&mut self, #[range(0..NUM_USERS)] filler_idx: usize) -> bool {
+    /// Place a long trigger order whose `Above` condition already holds.
+    fn place_armed_trigger(&mut self, user_idx: usize, limit: bool) {
+        use velocity::{
+            controller::position::PositionDirection,
+            state::{
+                order_params::{OrderParams, PostOnlyParam},
+                user::{MarketType, OrderTriggerCondition, OrderType},
+            },
+        };
+
+        let oracle_price = match read_zc::<PythLazerOracle>(&self.ctx, &self.perp_oracle_pda) {
+            Some(o) if o.price > 1 => o.price as u64,
+            _ => return,
+        };
+        let params = OrderParams {
+            order_type: if limit {
+                OrderType::TriggerLimit
+            } else {
+                OrderType::TriggerMarket
+            },
+            market_type: MarketType::Perp,
+            direction: PositionDirection::Long,
+            base_asset_amount: 10_000_000,
+            price: if limit { oracle_price } else { 0 },
+            market_index: 0,
+            post_only: PostOnlyParam::None,
+            trigger_price: Some(oracle_price.saturating_sub(oracle_price / 100).max(1)),
+            trigger_condition: OrderTriggerCondition::Above,
+            ..Default::default()
+        };
+
+        let user = self.users[user_idx].clone();
+        let ix = self.place_trigger_orders_ix(user_idx, vec![params]);
+        let _ = self.send_order_ixs(vec![ix], &user.keypair, None);
+    }
+
+    // ---- the book ---------------------------------------------------------
+    //
+    // A book order is named by the `(node_index, order_id)` its placement
+    // returned. The harness remembers the ones it placed; one that has since
+    // filled or left the book is refused by the instruction, which is a path
+    // too.
+
+    /// `cancel_order_v1`: the owner pulls one book order.
+    pub fn action_cancel_book_order(&mut self, #[range(0..32usize)] nth: usize) -> bool {
+        let Some(order) = self.pick_book_order(nth) else {
+            return false;
+        };
+
+        let owner = self.users[order.owner_idx].clone();
+        let ix = self.cancel_book_order_ix(order);
+        self.send_order_ixs(vec![ix], &owner.keypair, None)
+    }
+
+    /// `cancel_orders_v1`: the owner pulls a whole side, or both.
+    pub fn action_cancel_book_orders(
+        &mut self,
+        #[range(0..NUM_USERS)] user_idx: usize,
+        #[range(0..3u8)] sides_sel: u8,
+    ) -> bool {
+        use velocity::state::prop_amm::ClobCancelSides;
+
+        let sides = match sides_sel {
+            0 => ClobCancelSides::Bids,
+            1 => ClobCancelSides::Asks,
+            _ => ClobCancelSides::Both,
+        };
+        let user = self.users[user_idx].clone();
+        let ix = self.cancel_book_side_ix(user_idx, sides);
+        self.send_order_ixs(vec![ix], &user.keypair, None)
+    }
+
+    /// `modify_order_v1`: reprice or resize a book order in place.
+    pub fn action_modify_book_order(
+        &mut self,
+        #[range(0..32usize)] nth: usize,
+        #[range(0..2u8)] with_price: u8,
+        #[range(0..2u8)] cross: u8,
+        #[range(0..2u8)] with_base: u8,
+        #[range(1..1_000_000_000u64)] base: u64,
+    ) -> bool {
+        use velocity::{controller::position::PositionDirection, state::prop_amm::ClobSide};
+
+        let Some(order) = self.pick_book_order(nth) else {
+            return false;
+        };
+
+        let direction = match order.side {
+            ClobSide::Bid => PositionDirection::Long,
+            ClobSide::Ask => PositionDirection::Short,
+        };
+        let price = (with_price == 1).then(|| order_price(direction, cross == 1));
+        let base = (with_base == 1).then_some(base);
+        // A modify takes the order off the book and rests its replacement,
+        // which comes back as a new ref.
+        let owner = self.users[order.owner_idx].clone();
+        let ix = self.modify_book_order_ix(order, price, base);
+        let replacement = orders::Placement {
+            owner_idx: order.owner_idx,
+            side: order.side,
+        };
+        self.send_order_ixs(vec![ix], &owner.keypair, Some(replacement))
+    }
+
+    /// `crank_clob_remove_expired`: a keeper reclaims a book order past its
+    /// `max_ts` and is paid for it. Warp first to let a lifetime run out.
+    pub fn action_remove_expired_book_order(
+        &mut self,
+        #[range(0..NUM_USERS)] filler_idx: usize,
+        #[range(0..32usize)] nth: usize,
+    ) -> bool {
+        let Some(order) = self.pick_book_order(nth) else {
+            return false;
+        };
+
         let filler = self.users[filler_idx].clone();
-        self.ctx
-            .raw_call(Instruction {
-                program_id: self.program_id,
-                accounts: vec![
-                    AccountMeta::new_readonly(self.state_pda(), false),
-                    AccountMeta::new_readonly(filler.keypair.pubkey(), true),
-                    AccountMeta::new(filler.user_pda, false),
-                    AccountMeta::new(filler.stats_pda, false),
-                ],
-                data: ix_data(D_REVERT_FILL, &[]),
-            })
-            .signers(&[&filler.keypair])
-            .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+        let ix = self.remove_expired_ix(filler_idx, order);
+        self.send_order_ixs(vec![ix], &filler.keypair, None)
+    }
+
+    /// `crank_clob_evict`: a keeper evicts the worst order on a full side.
+    pub fn action_evict_book_order(
+        &mut self,
+        #[range(0..NUM_USERS)] filler_idx: usize,
+        #[range(0..NUM_USERS)] owner_idx: usize,
+        #[range(0..2u8)] ask: u8,
+    ) -> bool {
+        use velocity::state::prop_amm::ClobSide;
+
+        let side = if ask == 1 {
+            ClobSide::Ask
+        } else {
+            ClobSide::Bid
+        };
+        let filler = self.users[filler_idx].clone();
+        let ix = self.evict_ix(filler_idx, owner_idx, side);
+        self.send_order_ixs(vec![ix], &filler.keypair, None)
+    }
+
+    /// `force_cancel_clob_orders`: a keeper sweeps a failing account's book
+    /// orders. `setup` rests an order and then breaks initial margin, the same
+    /// compound state `action_force_cancel_orders` builds.
+    pub fn action_force_cancel_book_orders(
+        &mut self,
+        #[range(0..NUM_USERS)] target_idx: usize,
+        #[range(0..NUM_USERS)] filler_idx: usize,
+        #[range(0..2u8)] setup: u8,
+    ) -> bool {
+        if setup == 1 {
+            let _ = self.action_place_and_make_perp_order(target_idx, 0, 10_000_000, 0, 0, 0, 0);
+            let _ = self.action_borrow_to_margin_limit(target_idx, 100);
+            for _ in 0..12 {
+                let _ = self.action_move_spot_1_oracle_price(1, 99, 0, 0, 0);
+            }
+        }
+
+        let filler_idx = (filler_idx + 1) % NUM_USERS;
+        let filler = self.users[filler_idx].clone();
+        let ix = self.force_cancel_book_ix(filler_idx, target_idx);
+        self.send_order_ixs(vec![ix], &filler.keypair, None)
     }
 
     // ---- order management (same account set as cancel_order) --------------
@@ -2435,8 +2478,8 @@ impl Fixture {
     /// Pick a REAL open order id belonging to `user_idx`, or `None`.
     ///
     /// Blind-fuzzing an order id is nearly always a miss: ids are monotonic and
-    /// sparse, so `fill_perp_order`/`trigger_order`/`place_and_make` spend their
-    /// budget on the "order not found" branch and never reach the matching logic.
+    /// sparse, so `trigger_order`, `cancel_order` and `modify_order` spend their
+    /// budget on the "order not found" branch and never reach the real work.
     /// Reading the id back out of the User account is what lets those handlers
     /// get past their lookup and into the real work. `nth` keeps the choice
     /// fuzzer-driven (which of the open orders) while staying valid.
@@ -2461,12 +2504,14 @@ impl Fixture {
             .orders
             .iter()
             .filter(|o| o.status == OrderStatus::Open)
+            // A fired trigger-limit keeps its slot as the shadow of the book
+            // order it placed, and cannot fire again.
             .filter(|o| {
                 !trigger_only
-                    || matches!(
+                    || (matches!(
                         o.order_type,
                         OrderType::TriggerLimit | OrderType::TriggerMarket
-                    )
+                    ) && !o.is_placed_on_clob())
             })
             .map(|o| o.order_id)
             .collect();
@@ -2499,8 +2544,7 @@ impl Fixture {
             })
             .signers(&[&user.keypair])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     /// `cancel_orders(market_type, market_index, direction)` — the bulk cancel.
@@ -2613,8 +2657,9 @@ impl Fixture {
         self.send_order_ix(user_idx, D_MODIFY_ORDER_BY_USER_ID, args)
     }
 
-    /// `place_orders(Vec<OrderParams>)` — the batch-place path, including the
-    /// per-batch order-count limits.
+    /// Rest `n` post-only orders in one transaction. Nothing batches maker
+    /// orders into one instruction any more, so each is its own
+    /// `place_and_make_perp_order_v1`, and the margin gate runs once per order.
     pub fn action_place_orders(
         &mut self,
         #[range(0..NUM_USERS)] user_idx: usize,
@@ -2622,39 +2667,30 @@ impl Fixture {
         #[range(0..2u8)] dir: u8,
         #[range(1..1_000_000_000u64)] base: u64,
     ) -> bool {
-        use velocity::{
-            controller::position::PositionDirection,
-            state::{
-                order_params::{OrderParams, PostOnlyParam},
-                user::{MarketType, OrderType},
-            },
+        use velocity::state::{
+            order_params::{OrderParams, PostOnlyParam},
+            user::{MarketType, OrderType},
         };
 
-        let (direction, price) = if dir == 0 {
-            (PositionDirection::Long, 900_000u64)
-        } else {
-            (PositionDirection::Short, 1_100_000u64)
-        };
-        let mut batch = Vec::new();
-        for k in 0..n {
-            batch.push(OrderParams {
-                order_type: OrderType::Limit,
-                market_type: MarketType::Perp,
-                direction,
-                // 0 means "unset". A fixed 1..n collides with ids placed by the
-                // other order actions and the whole batch is rejected with
-                // UserOrderIdAlreadyInUse before a single order is placed.
-                user_order_id: 0,
-                base_asset_amount: base,
-                price,
-                market_index: 0,
-                post_only: PostOnlyParam::MustPostOnly,
-                ..Default::default()
-            });
-        }
-        let mut buf = Vec::new();
-        batch.serialize(&mut buf).unwrap();
-        self.send_order_ix(user_idx, D_PLACE_ORDERS, buf)
+        let direction = direction_of(dir);
+        let ixs = (0..n)
+            .map(|_| {
+                let params = OrderParams {
+                    order_type: OrderType::Limit,
+                    market_type: MarketType::Perp,
+                    direction,
+                    base_asset_amount: base,
+                    price: order_price(direction, false),
+                    market_index: 0,
+                    post_only: PostOnlyParam::MustPostOnly,
+                    ..Default::default()
+                };
+                self.place_and_make_ix(user_idx, params, None)
+            })
+            .collect();
+
+        let user = self.users[user_idx].clone();
+        self.send_order_ixs(ixs, &user.keypair, None)
     }
 
     // ---- user config setters ---------------------------------------------
@@ -2701,6 +2737,10 @@ impl Fixture {
             AccountMeta::new(target_pda, false),
             AccountMeta::new_readonly(user.keypair.pubkey(), true),
         ];
+        if SETTERS_READING_STATE.contains(&disc) {
+            accounts.push(AccountMeta::new_readonly(self.state_pda(), false));
+        }
+
         accounts.extend(self.market_ras(false));
         self.ctx
             .raw_call(Instruction {
@@ -2710,8 +2750,7 @@ impl Fixture {
             })
             .signers(&[&user.keypair])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     /// Custom (tighter-than-market) initial margin ratio.
@@ -2829,8 +2868,7 @@ impl Fixture {
             })
             .signers(&[&user.keypair])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     // ---- permissionless pokes (one user cranks another) -------------------
@@ -2860,8 +2898,7 @@ impl Fixture {
             })
             .signers(&[&filler.keypair])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     /// Mark an inactive account idle (permissionless keeper crank).
@@ -2911,8 +2948,7 @@ impl Fixture {
                 })
                 .signers(&[&filler.keypair])
                 .send()
-                .map(|o| o.is_success())
-                .unwrap_or(false);
+                .landed();
         }
         self.send_filler_ix(target_idx, filler_idx, D_UPDATE_USER_IDLE)
     }
@@ -2964,8 +3000,7 @@ impl Fixture {
             })
             .signers(&[&signer.keypair])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     // ---- account lifecycle ------------------------------------------------
@@ -3004,21 +3039,23 @@ impl Fixture {
             let user = self.users[user_idx].clone();
             (user.keypair.clone(), user.user_pda, user.stats_pda)
         };
+        let accounts = velocity::accounts::DeleteUser {
+            user: user_pda,
+            user_stats: stats_pda,
+            state: self.state_pda(),
+            authority: authority.pubkey(),
+            revenue_share_escrow: self.revenue_share_escrow_pda(&authority.pubkey()),
+        }
+        .to_account_metas(None);
         self.ctx
             .raw_call(Instruction {
                 program_id: self.program_id,
-                accounts: vec![
-                    AccountMeta::new(user_pda, false),
-                    AccountMeta::new(stats_pda, false),
-                    AccountMeta::new(self.state_pda(), false),
-                    AccountMeta::new(authority.pubkey(), true),
-                ],
-                data: ix_data(D_DELETE_USER, &[]),
+                accounts,
+                data: velocity::instruction::DeleteUser {}.data(),
             })
             .signers(&[&authority])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     /// `reclaim_rent` — shrink an over-allocated User account and refund rent.
@@ -3038,8 +3075,7 @@ impl Fixture {
             })
             .signers(&[&user.keypair])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     // ---- insurance fund staking -------------------------------------------
@@ -3086,8 +3122,7 @@ impl Fixture {
             })
             .signers(&[&user.keypair])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     /// `add_insurance_fund_stake(market_index, amount)`.
@@ -3119,8 +3154,7 @@ impl Fixture {
             })
             .signers(&[&user.keypair])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     /// `request_remove_insurance_fund_stake(market_index, amount)` — starts the
@@ -3152,8 +3186,7 @@ impl Fixture {
             })
             .signers(&[&user.keypair])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     /// `cancel_request_remove_insurance_fund_stake(market_index)`.
@@ -3163,22 +3196,30 @@ impl Fixture {
     ) -> bool {
         let user = self.users[user_idx].clone();
         let stake = self.if_stake_pda(&user.keypair.pubkey());
+        let accounts = velocity::accounts::CancelRequestRemoveInsuranceFundStake {
+            state: self.state_pda(),
+            spot_market: self.spot_market_pda,
+            insurance_fund_stake: stake,
+            user_stats: user.stats_pda,
+            authority: user.keypair.pubkey(),
+            spot_market_vault: self.spot_vault_pda,
+            insurance_fund_vault: self.if_vault_pda,
+            velocity_signer: self.signer_pda,
+            token_program: token_program_id(),
+        }
+        .to_account_metas(None);
         self.ctx
             .raw_call(Instruction {
                 program_id: self.program_id,
-                accounts: vec![
-                    AccountMeta::new(self.spot_market_pda, false),
-                    AccountMeta::new(stake, false),
-                    AccountMeta::new(user.stats_pda, false),
-                    AccountMeta::new_readonly(user.keypair.pubkey(), true),
-                    AccountMeta::new(self.if_vault_pda, false),
-                ],
-                data: ix_data(D_CANCEL_REQUEST_REMOVE_IF_STAKE, &0u16.to_le_bytes()),
+                accounts,
+                data: velocity::instruction::CancelRequestRemoveInsuranceFundStake {
+                    market_index: 0,
+                }
+                .data(),
             })
             .signers(&[&user.keypair])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     /// `remove_insurance_fund_stake(market_index)` — completes the unstake once
@@ -3224,8 +3265,7 @@ impl Fixture {
             })
             .signers(&[&user.keypair])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     // ---- revenue / fee plumbing -------------------------------------------
@@ -3254,8 +3294,7 @@ impl Fixture {
             })
             .signers(&[&user.keypair])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     /// `settle_revenue_to_insurance_fund(spot_market_index)` — permissionless
@@ -3293,8 +3332,7 @@ impl Fixture {
             })
             .signers(&[&self.crank.clone()])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     /// `sweep_perp_market_fees(perp_market_index)` — moves the perp market's
@@ -3314,8 +3352,7 @@ impl Fixture {
             })
             .signers(&[&self.crank.clone()])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     /// `update_spot_market_cumulative_interest` — the interest crank.
@@ -3338,8 +3375,7 @@ impl Fixture {
             })
             .signers(&[&self.crank.clone()])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     // ---- sub-accounts -----------------------------------------------------
@@ -3386,8 +3422,7 @@ impl Fixture {
             })
             .signers(&[&user.keypair])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     /// `transfer_deposit(market_index, amount)` — move collateral between two
@@ -3433,8 +3468,7 @@ impl Fixture {
             })
             .signers(&[&user.keypair])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     // ---- account bootstrap for a fresh authority --------------------------
@@ -3462,8 +3496,7 @@ impl Fixture {
             })
             .signers(&[&kp])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     /// `initialize_user` for a fresh authority (requires its stats first, so the
@@ -3503,8 +3536,7 @@ impl Fixture {
             })
             .signers(&[&kp])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     /// `initialize_referrer_name(name)` — claims a referral handle, PDA-seeded on
@@ -3535,8 +3567,7 @@ impl Fixture {
             })
             .signers(&[&user.keypair])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     /// `transfer_perp_position(market_index, Option<amount>)` — move a perp
@@ -3587,8 +3618,7 @@ impl Fixture {
             })
             .signers(&[&user.keypair])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     /// `transfer_deposit_by_delegate(market_index, amount, equity_floor_delta)` —
@@ -3645,8 +3675,7 @@ impl Fixture {
             })
             .signers(&[&delegate.keypair])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     // ---- keeper pokes -----------------------------------------------------
@@ -3668,8 +3697,7 @@ impl Fixture {
             })
             .signers(&[&crank])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     /// `trip_equity_floor_breaker` — flags a user whose equity fell through the
@@ -3726,8 +3754,7 @@ impl Fixture {
             })
             .signers(&[&crank])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     /// `force_delete_user` — keeper-driven teardown of an abandoned account
@@ -3770,25 +3797,26 @@ impl Fixture {
             (user.keypair.pubkey(), user.user_pda, user.stats_pda)
         };
         let crank = self.crank.clone();
-        let mut accounts = vec![
-            AccountMeta::new(user_pda, false),
-            AccountMeta::new(stats_pda, false),
-            AccountMeta::new(self.state_pda(), false),
-            AccountMeta::new(authority, false),
-            AccountMeta::new(crank.pubkey(), true), // keeper
-            AccountMeta::new_readonly(self.signer_pda, false),
-        ];
+        let mut accounts = velocity::accounts::ForceDeleteUser {
+            user: user_pda,
+            user_stats: stats_pda,
+            state: self.state_pda(),
+            authority,
+            keeper: crank.pubkey(),
+            velocity_signer: self.signer_pda,
+            revenue_share_escrow: self.revenue_share_escrow_pda(&authority),
+        }
+        .to_account_metas(None);
         accounts.extend(self.market_ras(false));
         self.ctx
             .raw_call(Instruction {
                 program_id: self.program_id,
                 accounts,
-                data: ix_data(D_FORCE_DELETE_USER, &[]),
+                data: velocity::instruction::ForceDeleteUser {}.data(),
             })
             .signers(&[&crank])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     /// `update_user_quote_asset_insurance_stake` — refreshes the cached IF stake
@@ -3815,8 +3843,7 @@ impl Fixture {
             })
             .signers(&[&crank])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     // ---- spot market 1: price moves, liquidation, swaps --------------------
@@ -4044,8 +4071,7 @@ impl Fixture {
             })
             .signers(&[&liq.keypair])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     /// `begin_swap` + `end_swap`, batched into ONE transaction.
@@ -4129,8 +4155,7 @@ impl Fixture {
             })
             .signers(&[&liq.keypair])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     /// `resolve_perp_bankruptcy(quote_spot_market_index, market_index)` — the perp
@@ -4161,8 +4186,7 @@ impl Fixture {
             })
             .signers(&[&liq.keypair])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     pub fn action_swap(
@@ -4314,20 +4338,23 @@ impl Fixture {
         let (_a_m, asset_vault, _, asset_token) = self.spot_of(asset_market_index, &liq);
         let (_l_m, liab_vault, _, liab_token) = self.spot_of(liability_market_index, &liq);
 
+        // Begin and end share one account list.
         let accounts = |extra: Vec<AccountMeta>| {
-            let mut a = vec![
-                AccountMeta::new_readonly(self.state_pda(), false),
-                AccountMeta::new_readonly(liq.keypair.pubkey(), true),
-                AccountMeta::new(liq.user_pda, false),
-                AccountMeta::new(victim.user_pda, false),
-                AccountMeta::new(liab_vault, false),
-                AccountMeta::new(asset_vault, false),
-                AccountMeta::new(liab_token, false),
-                AccountMeta::new(asset_token, false),
-                AccountMeta::new_readonly(token_program_id(), false),
-                AccountMeta::new_readonly(self.signer_pda, false),
-                AccountMeta::new_readonly(instructions_sysvar_id(), false),
-            ];
+            let mut a = velocity::accounts::LiquidateSpotWithSwap {
+                state: self.state_pda(),
+                authority: liq.keypair.pubkey(),
+                liquidator: liq.user_pda,
+                user: victim.user_pda,
+                liability_spot_market_vault: liab_vault,
+                asset_spot_market_vault: asset_vault,
+                liability_token_account: liab_token,
+                asset_token_account: asset_token,
+                token_program: token_program_id(),
+                velocity_signer: self.signer_pda,
+                instructions: instructions_sysvar_id(),
+                liquidator_stats: liq.stats_pda,
+            }
+            .to_account_metas(None);
             a.extend(extra);
             a
         };
@@ -4576,8 +4603,7 @@ impl Fixture {
             })
             .signers(&[&user.keypair])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     /// `withdraw_from_isolated_perp_position(spot_market_index, perp_market_index, amount)`.
@@ -4611,8 +4637,7 @@ impl Fixture {
             })
             .signers(&[&user.keypair])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     /// `transfer_isolated_perp_position_deposit(spot_market_index)` — move an
@@ -4661,8 +4686,7 @@ impl Fixture {
             })
             .signers(&[&user.keypair])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     // ---- protocol fee withdrawal ------------------------------------------
@@ -4741,8 +4765,7 @@ impl Fixture {
             })
             .signers(&[&crank])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     /// `withdraw_protocol_fees_perp(market_index, amount)` — same shape, plus the
@@ -4782,16 +4805,15 @@ impl Fixture {
             })
             .signers(&[&crank])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     // ---- signed-message + revenue-share account lifecycle -----------------
     //
     // These are the account create/resize/delete halves of two subsystems the
     // harness previously could not touch at all. The ORDER-placing signed-msg
-    // instructions additionally need an ed25519 pre-instruction, which
-    // `build_signed_msg_envelope` + `ed25519_verify_ix` now supply.
+    // instruction additionally needs the envelope `build_signed_msg_envelope`
+    // supplies.
 
     fn signed_msg_orders_pda(&self, authority: &Pubkey) -> Pubkey {
         Pubkey::find_program_address(&[b"SIGNED_MSG", authority.as_ref()], &self.program_id).0
@@ -4828,8 +4850,7 @@ impl Fixture {
             })
             .signers(&[&user.keypair])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     /// `resize_signed_msg_user_orders(num_orders)` — grows/shrinks the ring.
@@ -4853,8 +4874,7 @@ impl Fixture {
             })
             .signers(&[&user.keypair])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     /// `delete_signed_msg_user_orders`.
@@ -4876,8 +4896,7 @@ impl Fixture {
             })
             .signers(&[&user.keypair])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     /// `update_pyth_lazer_oracle` — the REAL signed oracle-update path.
@@ -5082,15 +5101,12 @@ impl Fixture {
             })
             .signers(&[&self.crank.clone()])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     /// `place_signed_msg_taker_order` — the off-chain-signed ("swift") order path.
-    ///
-    /// Batched as `[ed25519_verify, place_signed_msg_taker_order]` so the
-    /// program finds its authenticating precompile at `ix_idx - 1`, which is
-    /// the only arrangement it accepts.
+    /// The other fuzz user relays it as the keeper, and the order routes like
+    /// any take, so its remainder rests on the book.
     ///
     /// The order must be a *perp taker* order with a worst price, and
     /// its `slot` must be within 500 slots of the clock, so those are pinned
@@ -5171,10 +5187,8 @@ impl Fixture {
             builder_idx: None,
             builder_fee_tenth_bps: None,
             isolated_position_deposit: None,
-            // Unset: the placement then takes the program's own network and
-            // routes through the mandatory baseline, which is what this
-            // harness drives.
-            network: None,
+            // The host build names the same cluster as the loaded program.
+            network: Some(velocity::state::order_params::expected_signed_msg_network()),
             route: None,
         };
         let mut borsh_message = Vec::new();
@@ -5183,154 +5197,39 @@ impl Fixture {
         }
         let envelope = build_signed_msg_envelope(&user.keypair, &borsh_message);
 
-        let mut args = (envelope.len() as u32).to_le_bytes().to_vec();
-        args.extend_from_slice(&envelope);
-        args.push(0); // is_delegate_signer
-
-        let mut accounts = vec![
-            AccountMeta::new_readonly(self.state_pda(), false),
-            AccountMeta::new(user.user_pda, false),
-            AccountMeta::new(user.stats_pda, false),
-            AccountMeta::new(self.signed_msg_orders_pda(&user.keypair.pubkey()), false),
-            AccountMeta::new_readonly(self.crank.pubkey(), true),
-            AccountMeta::new_readonly(instructions_sysvar_id(), false),
-        ];
-        accounts.extend(self.market_ras(true));
-
-        // The velocity instruction lands at index 1 (the precompile is at 0), so
-        // that is what the ed25519 offsets have to reference.
-        let hex_len = (envelope.len() - SIGNED_MSG_PAYLOAD_OFF as usize) as u16;
-        if self
-            .ctx
-            .raw_call(ed25519_verify_ix(1, hex_len))
-            .add_transaction()
-            .is_err()
-        {
-            return false;
+        let keeper_idx = (user_idx + 1) % NUM_USERS;
+        let keeper = self.users[keeper_idx].clone();
+        let mut accounts = velocity::accounts::PlaceSignedMsgTakerOrder {
+            state: self.state_pda(),
+            user: user.user_pda,
+            user_stats: user.stats_pda,
+            signed_msg_user_orders: self.signed_msg_orders_pda(&user.keypair.pubkey()),
+            authority: keeper.keypair.pubkey(),
+            ix_sysvar: instructions_sysvar_id(),
+            filler: keeper.user_pda,
+            filler_stats: keeper.stats_pda,
+            quoter_slab: self.clob.quoter_slab,
+            clob_market: self.clob.book,
+            clob_program: self.clob.program,
         }
-        if self
-            .ctx
-            .raw_call(Instruction {
-                program_id: self.program_id,
-                accounts,
-                data: ix_data(D_PLACE_SIGNED_MSG_TAKER_ORDER, &args),
-            })
-            .signers(&[&self.crank.clone()])
-            .add_transaction()
-            .is_err()
-        {
-            return false;
-        }
-        let ok = self
-            .ctx
-            .send_batch()
-            .map(|o| o.map(|o| o.is_success()).unwrap_or(false))
-            .unwrap_or(false);
-        if ok {
-            // Only a *placed* uuid is worth handing to place_and_make; a failed
-            // one would just drive that action into its not-found branch.
-            self.signed_uuids
-                .push((user_idx, uuid, direction == PositionDirection::Long));
-            if self.signed_uuids.len() > 16 {
-                self.signed_uuids.remove(0);
+        .to_account_metas(None);
+        accounts.extend(self.route_remaining_accounts(user_idx));
+        let ix = Instruction {
+            program_id: self.program_id,
+            accounts,
+            data: velocity::instruction::PlaceSignedMsgTakerOrder {
+                signed_msg_order_params_message_bytes: envelope,
+                is_delegate_signer: false,
+                flow_attestation: None,
             }
-        }
-        ok
-    }
-
-    /// `place_and_make_signed_msg_perp_order` — a maker crossing a signed-msg taker.
-    ///
-    /// Must be an IOC post-only Limit order (the handler rejects anything else
-    /// up front), and the uuid has to name a taker order that is actually
-    /// resting in that taker's `SignedMsgUserOrders` ring, so both come from
-    /// recorded state rather than from the fuzzer.
-    pub fn action_place_and_make_signed_msg(
-        &mut self,
-        #[range(0..NUM_USERS)] maker_idx: usize,
-        #[range(0..16usize)] nth_uuid: usize,
-        #[range(1..2_000_000_000u64)] base: u64,
-        #[range(0..2u8)] dir: u8,
-        #[range(0..2u8)] post_only_sel: u8,
-    ) -> bool {
-        use velocity::{
-            controller::position::PositionDirection,
-            state::{
-                order_params::{OrderParams, OrderParamsBitFlag, PostOnlyParam},
-                user::{MarketType, OrderType},
-            },
+            .data(),
         };
 
-        if self.signed_uuids.is_empty() {
-            return false;
-        }
-        let (taker_idx, uuid, taker_is_long) =
-            self.signed_uuids[nth_uuid % self.signed_uuids.len()];
-        if taker_idx == maker_idx {
-            return false; // a user cannot make against their own taker order
-        }
-        let maker = self.users[maker_idx].clone();
-        let taker = self.users[taker_idx].clone();
-
-        // The maker MUST take the opposite side of the taker, and must be priced
-        // inside the taker's worst price, or `fill_perp_order` finds no cross
-        // and the handler returns having done nothing. A taker long accepts up
-        // to 1.1M, so a maker ask at 900k crosses.
-        //
-        // `dir` now only decides whether to deliberately probe the WRONG side,
-        // so the no-cross branch stays reachable without being the default.
-        let cross = dir == 0;
-        let direction = if taker_is_long == cross {
-            PositionDirection::Short
-        } else {
-            PositionDirection::Long
-        };
-        let price = if taker_is_long {
-            900_000u64
-        } else {
-            1_100_000u64
-        };
-        let params = OrderParams {
-            order_type: OrderType::Limit,
-            market_type: MarketType::Perp,
-            direction,
-            base_asset_amount: base,
-            price,
-            market_index: 0,
-            post_only: if post_only_sel == 0 {
-                PostOnlyParam::MustPostOnly
-            } else {
-                PostOnlyParam::TryPostOnly
-            },
-            bit_flags: OrderParamsBitFlag::ImmediateOrCancel as u8,
-            ..Default::default()
-        };
-        let mut args = Vec::new();
-        if params.serialize(&mut args).is_err() {
-            return false;
-        }
-        args.extend_from_slice(&uuid);
-
-        let mut accounts = vec![
-            AccountMeta::new_readonly(self.state_pda(), false),
-            AccountMeta::new(maker.user_pda, false),
-            AccountMeta::new(maker.stats_pda, false),
-            AccountMeta::new(taker.user_pda, false),
-            AccountMeta::new(taker.stats_pda, false),
-            AccountMeta::new_readonly(self.signed_msg_orders_pda(&taker.keypair.pubkey()), false),
-            AccountMeta::new_readonly(maker.keypair.pubkey(), true),
-        ];
-        accounts.extend(self.market_ras(true));
-
-        self.ctx
-            .raw_call(Instruction {
-                program_id: self.program_id,
-                accounts,
-                data: ix_data(D_PLACE_AND_MAKE_SIGNED_MSG_PERP_ORDER, &args),
-            })
-            .signers(&[&maker.keypair])
-            .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+        self.send_order_ixs(
+            vec![ix],
+            &keeper.keypair,
+            Some(placement(user_idx, direction)),
+        )
     }
 
     /// `initialize_signed_msg_ws_delegates(Vec<pubkey>)`.
@@ -5361,8 +5260,7 @@ impl Fixture {
             })
             .signers(&[&user.keypair])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     /// `change_signed_msg_ws_delegate_status(delegate, add)`.
@@ -5388,8 +5286,7 @@ impl Fixture {
             })
             .signers(&[&user.keypair])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     /// `initialize_revenue_share`.
@@ -5410,8 +5307,7 @@ impl Fixture {
             })
             .signers(&[&user.keypair])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     /// `initialize_revenue_share_escrow(num_orders)` — the builder-code escrow.
@@ -5438,8 +5334,7 @@ impl Fixture {
             })
             .signers(&[&user.keypair])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     /// `resize_revenue_share_escrow_orders(num_orders)`.
@@ -5463,8 +5358,7 @@ impl Fixture {
             })
             .signers(&[&user.keypair])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     /// `change_approved_builder(builder, max_fee_bps, add)`.
@@ -5493,8 +5387,7 @@ impl Fixture {
             })
             .signers(&[&user.keypair])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     /// `update_user_stats_referrer_status` — refreshes the referrer flags on
@@ -5516,8 +5409,7 @@ impl Fixture {
             })
             .signers(&[&user.keypair])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     /// Grant/revoke `SpecialUserStatus::VammHedger` on a user (fixture poke).
@@ -5584,8 +5476,7 @@ impl Fixture {
             })
             .signers(&[&user.keypair])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     /// Advance the clock by MONTHS, not seconds.
@@ -5673,11 +5564,13 @@ impl Fixture {
         true
     }
 
-    /// Native entrypoint opcode 0 — update_mm_oracle (`[0xFF×4, 0, price, seq]`).
+    /// Native entrypoint opcode 0 — update_mm_oracle (`[0xFF×4, 0, price, seq, slot]`).
     pub fn action_native_mm_oracle(&mut self, #[range(1..10_000_000i64)] price: i64) -> bool {
+        // Payload: `i64 price | u64 sequence_id | u64 source_slot`.
         let mut data = vec![0xFF, 0xFF, 0xFF, 0xFF, 0u8];
         data.extend_from_slice(&price.to_le_bytes());
         data.extend_from_slice(&self.mm_seq.to_le_bytes());
+        data.extend_from_slice(&self.ctx.slot().to_le_bytes());
         self.mm_seq += 1;
         self.ctx
             .raw_call(Instruction {
@@ -5685,15 +5578,13 @@ impl Fixture {
                 accounts: vec![
                     AccountMeta::new(self.perp_market_pda, false),
                     AccountMeta::new_readonly(self.crank.pubkey(), true),
-                    AccountMeta::new_readonly(clock_sysvar_id(), false),
                     AccountMeta::new_readonly(self.state_pda(), false),
                 ],
                 data,
             })
             .signers(&[&self.crank])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     /// Native entrypoint opcode 1 — update_amm_spread_adjustment
@@ -5712,8 +5603,7 @@ impl Fixture {
             })
             .signers(&[&self.crank])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 }
 
@@ -5857,10 +5747,9 @@ mod smoke {
         let _ = f.action_force_cancel_orders(0, 1, 1);
         let _ = f.action_log_user_balances(0, 1);
         let _ = f.action_place_and_take_perp_order(0, 0, 10_000_000, 0, 0);
-        let _ = f.action_place_and_make_perp_order(1, 1, 10_000_000, 1);
-        let _ = f.action_fill_perp_order(0, 1, 0, 0, 1);
-        let _ = f.action_trigger_order(0, 1, 1);
-        let _ = f.action_revert_fill(1);
+        let _ = f.action_place_and_make_perp_order(1, 1, 10_000_000, 0, 0, 1, 0);
+        let _ = f.action_cancel_book_order(0);
+        let _ = f.action_trigger_order(0, 1, 1, 0);
         let _ = f.action_settle_funding_payment(0);
         let _ = f.action_update_funding_rate(0);
         let _ = f.action_update_perp_bid_ask_twap(0, 1);
@@ -5994,10 +5883,35 @@ mod smoke {
     }
 
     /// The signed-message ("swift") envelope is byte-exact or it is nothing:
-    /// every offset in the ed25519 pre-instruction is re-derived and re-checked
-    /// by the program. This test is what proves the layout, because under
-    /// fuzzing a malformed envelope is indistinguishable from a legitimately
-    /// rejected order.
+    /// the program re-derives and re-checks every offset. This test is what
+    /// proves the layout, because under fuzzing a malformed envelope is
+    /// indistinguishable from a legitimately rejected order.
+    /// A maker order rests on the book, the harness remembers its ref, and a
+    /// taker fills against it. Every book action depends on that ref.
+    #[test]
+    fn a_book_order_rests_is_remembered_and_fills() {
+        let mut f = Fixture::setup();
+        assert!(f.action_deposit(0, 500_000 * QUOTE_PRECISION as u64, 0, 0));
+        assert!(f.action_deposit(1, 500_000 * QUOTE_PRECISION as u64, 0, 0));
+
+        assert!(
+            f.action_place_and_make_perp_order(1, 1, 10_000_000, 0, 0, 0, 0),
+            "maker ask rests; run with FUZZ_DEBUG=1 for the program logs"
+        );
+        assert_eq!(
+            f.book_orders.len(),
+            1,
+            "the resting order's ref is remembered"
+        );
+
+        assert!(f.action_place_and_take_perp_order(0, 0, 10_000_000, 1, 1));
+        let taker = f.read_user(&f.users[0].user_pda).unwrap();
+        assert_eq!(taker.perp_positions[0].base_asset_amount, 10_000_000);
+
+        assert!(f.action_place_and_make_perp_order(1, 1, 10_000_000, 0, 0, 0, 0));
+        assert!(f.action_cancel_book_order(f.book_orders.len() - 1));
+    }
+
     #[test]
     fn signed_msg_taker_order_reachable() {
         let mut f = Fixture::setup();
@@ -6008,7 +5922,11 @@ mod smoke {
             f.action_place_signed_msg_taker_order(0, 0, 10_000_000, 0, 0, 0, 0, 0),
             "signed-msg taker order rejected; run with FUZZ_DEBUG=1 for the program logs"
         );
-        assert_eq!(f.signed_uuids.len(), 1, "uuid should have been recorded");
+        let taker = f.read_user(&f.users[0].user_pda).unwrap();
+        assert_eq!(
+            taker.perp_positions[0].base_asset_amount, 10_000_000,
+            "the signed order filled through the router"
+        );
 
         assert!(f.action_update_amm_cache(), "update_amm_cache rejected");
         assert!(
@@ -6021,12 +5939,6 @@ mod smoke {
         );
         assert!(f.action_init_signed_msg_user_orders(1, 8));
         assert!(f.action_place_signed_msg_taker_order(1, 1, 10_000_000, 1, 1, 1, 500, 0));
-
-        // ...and a maker crossing it by uuid.
-        assert!(
-            f.action_place_and_make_signed_msg(1, 0, 10_000_000, 0, 0),
-            "place_and_make against a recorded signed-msg uuid rejected"
-        );
     }
 
     /// A real, *successful* spot liquidation — not just "the call did not panic".
@@ -6076,13 +5988,14 @@ mod smoke {
         );
     }
 
-    /// PoC: `force_delete_user` is unconditionally dead (AccountBorrowFailed).
+    /// `force_delete_user` reaps an abandoned empty account.
     ///
-    /// Drives the REAL instruction end-to-end through LiteSVM against an account
-    /// that satisfies every guard the handler checks, and shows it still fails
-    /// with a runtime borrow error rather than reaching any of them.
+    /// The handler once held its shared `State` borrow into the `load_mut` at
+    /// its end, so it failed with `AccountBorrowFailed` against every account
+    /// that satisfied its guards. This drives the real instruction against
+    /// such an account.
     #[test]
-    fn poc_force_delete_user_account_borrow_failed() {
+    fn force_delete_user_reaps_an_abandoned_account() {
         let mut f = Fixture::setup();
 
         // A `fresh` authority: bootstrapped empty, so equity is 0 — comfortably
@@ -6101,14 +6014,16 @@ mod smoke {
         );
 
         let crank = f.crank.clone();
-        let mut accounts = vec![
-            AccountMeta::new(user_pda, false),
-            AccountMeta::new(stats_pda, false),
-            AccountMeta::new(f.state_pda(), false),
-            AccountMeta::new(kp.pubkey(), false),
-            AccountMeta::new(crank.pubkey(), true), // hot UserFlag key
-            AccountMeta::new_readonly(f.signer_pda, false),
-        ];
+        let mut accounts = velocity::accounts::ForceDeleteUser {
+            user: user_pda,
+            user_stats: stats_pda,
+            state: f.state_pda(),
+            authority: kp.pubkey(),
+            keeper: crank.pubkey(),
+            velocity_signer: f.signer_pda,
+            revenue_share_escrow: f.revenue_share_escrow_pda(&kp.pubkey()),
+        }
+        .to_account_metas(None);
         accounts.extend(f.market_ras(false));
 
         let out = f
@@ -6116,31 +6031,20 @@ mod smoke {
             .raw_call(Instruction {
                 program_id: f.program_id,
                 accounts,
-                data: ix_data(D_FORCE_DELETE_USER, &[]),
+                data: velocity::instruction::ForceDeleteUser {}.data(),
             })
             .signers(&[&crank])
             .send()
             .expect("tx submitted");
 
-        let logs = out.logs().join("\n");
-        println!("success = {}", out.is_success());
-        println!("error_code = {:?}", out.error_code());
-        println!("logs:\n{}", logs);
-
         assert!(
-            !out.is_success(),
-            "force_delete_user unexpectedly succeeded — the borrow bug may be fixed"
+            out.is_success(),
+            "force_delete_user failed:\n{}",
+            out.logs().join("\n")
         );
-        // The point of the PoC: it is NOT a logic rejection. No guard was
-        // reached; the account-data borrow failed at the bottom of the handler.
         assert!(
-            logs.contains("AccountBorrowFailed") || logs.contains("already borrowed"),
-            "expected AccountBorrowFailed, got: {logs}"
-        );
-        // And the user account still exists — nothing was reaped.
-        assert!(
-            f.read_user(&user_pda).is_some(),
-            "user should still exist after the failed delete"
+            f.read_user(&user_pda).is_none(),
+            "the user account is reaped"
         );
     }
 
@@ -6148,8 +6052,13 @@ mod smoke {
     fn action_census() {
         let mut f = Fixture::setup();
         let mut results: Vec<(&str, bool)> = Vec::new();
+        let debug = std::env::var_os("FUZZ_DEBUG").is_some();
         macro_rules! run {
             ($name:expr, $e:expr) => {
+                if debug {
+                    eprintln!("== {}", $name);
+                }
+
                 results.push(($name, $e));
             };
         }
@@ -6253,15 +6162,41 @@ mod smoke {
         );
         run!(
             "place_and_make",
-            f.action_place_and_make_perp_order(1, 1, 10_000_000, 0)
+            f.action_place_and_make_perp_order(1, 1, 10_000_000, 0, 0, 0, 0)
         );
-        run!("fill_perp_order", f.action_fill_perp_order(0, 0, 1, 0, 1));
+        run!(
+            "modify_book_order",
+            f.action_modify_book_order(f.book_orders.len() - 1, 1, 0, 0, 0)
+        );
+        run!(
+            "cancel_book_order",
+            f.action_cancel_book_order(f.book_orders.len() - 1)
+        );
+        run!(
+            "place_orders(maker)",
+            f.action_place_orders(1, 2, 1, 10_000_000)
+        );
+        run!("cancel_book_orders", f.action_cancel_book_orders(1, 2));
+        run!(
+            "place_and_make(expiring)",
+            f.action_place_and_make_perp_order(1, 1, 10_000_000, 0, 0, 1, 0)
+        );
+        run!("warp(expiry)", f.action_warp(200, 1));
+        run!(
+            "remove_expired_book_order",
+            f.action_remove_expired_book_order(0, f.book_orders.len() - 1)
+        );
+        run!("evict_book_order", f.action_evict_book_order(0, 1, 1));
         run!(
             "place_trigger_order",
             f.action_place_perp_order(0, 0, 10_000_000, 2, 0, 0, 9, 0)
         );
-        run!("trigger_order", f.action_trigger_order(0, 0, 0));
-        run!("revert_fill", f.action_revert_fill(0));
+        run!("trigger_order", f.action_trigger_order(0, 0, 0, 0));
+        run!("trigger_order(limit)", f.action_trigger_order(0, 0, 0, 1));
+        run!(
+            "force_cancel_book_orders",
+            f.action_force_cancel_book_orders(1, 0, 0)
+        );
 
         // ---- cranks ----
         run!("warp", f.action_warp(4_000, 1));
@@ -6364,10 +6299,6 @@ mod smoke {
         run!(
             "place_signed_msg_taker_order",
             f.action_place_signed_msg_taker_order(0, 0, 10_000_000, 0, 0, 0, 0, 0)
-        );
-        run!(
-            "place_and_make_signed_msg",
-            f.action_place_and_make_signed_msg(1, 0, 10_000_000, 0, 0)
         );
         run!(
             "post_pyth_lazer_update",
@@ -6499,6 +6430,11 @@ mod smoke {
 
         // Actions that legitimately cannot succeed in THIS scenario.
         const EXPECTED_CONDITIONAL: &[&str] = &[
+            // Needs a book side past its evict threshold with a worse order
+            // than the one arriving.
+            "evict_book_order",
+            // Needs an account below its margin requirement with book orders.
+            "force_cancel_book_orders",
             // Needs the victim below maintenance margin; the census account is healthy.
             "liquidate_spot",
             "liquidate_borrow_for_perp_pnl",
@@ -7489,27 +7425,12 @@ fn invariant_solvency(fixture: &mut Fixture) {
     // --- Family XIV: spot-position order reservations — REMOVED (unreachable). ---
     //
     // It asserted that `SpotPosition::{open_orders, open_bids, open_asks}` agrees
-    // with the user's open SPOT orders. There can never be one in this fork:
+    // with the user's open SPOT orders. No instruction places a spot order, and
+    // the only write to a spot `open_orders` is the decrement on the cancel path,
+    // so the triple is pinned at 0 and the assert never evaluated. Family XII
+    // covers the perp triple, which is reachable.
     //
-    //   * `place_orders` calls `validate_spot_dlob_trading_enabled_for_market_type`,
-    //     which returns `SpotDlobTradingDisabled` for `MarketType::Spot`
-    //     unconditionally (controller/orders.rs:850-857; call sites orders.rs:935,
-    //     instructions/keeper.rs:235, instructions/user.rs:3120).
-    //   * `place_perp_order` rejects a non-perp market type at
-    //     controller/orders.rs:298-302 (`InvalidOrderMarketType`).
-    //   * There is no `place_spot_order` instruction.
-    //   * The ONLY write to a spot `open_orders` anywhere in the program is a
-    //     DECREMENT, on the cancel path at controller/orders.rs:838. There is no
-    //     increment outside math/orders/tests.rs. So the triple is pinned at 0 and
-    //     the guard at the top of the loop `continue`d on every position, every
-    //     iteration — the assert never evaluated once.
-    //
-    // The original rationale ("spot orders are reachable, `place_orders` takes a
-    // `MarketType`") confused the parameter existing with the value being
-    // accepted. Family XII covers the perp triple, which IS reachable.
-    //
-    // Do not re-add unless spot DLOB trading is enabled in the program; at that
-    // point restore it as a near-copy of Family XII.
+    // Restore it as a near-copy of Family XII if the program gains spot orders.
 
     // --- Family XV: market accounts live at their canonical PDAs. ---
     //
@@ -8310,8 +8231,7 @@ mod repay_rounding_2 {
             })
             .signers(&[&crank])
             .send()
-            .map(|o| o.is_success())
-            .unwrap_or(false)
+            .landed()
     }
 
     /// Does accrued borrow interest fix it, or make it worse?

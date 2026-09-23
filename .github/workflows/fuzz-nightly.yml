@@ -211,6 +211,15 @@ jobs:
           bash deploy-scripts/build-sbf.sh devnet velocity
           ls -la target/deploy/velocity.so
 
+      # Every perp fill routes through the market's CLOB book, so the SVM
+      # harnesses load clob.so beside velocity.so.
+      - name: Build CLOB program (.so)
+        env:
+          RUSTFLAGS: ''
+        run: |
+          bun run program:build:clob
+          ls -la anchor-v2/target/deploy/clob.so
+
       - name: Install crucible CLI (pinned)
         run: cargo install --git https://github.com/asymmetric-research/crucible --rev daeaa4d4a4e334175c4f171daacc7e177ad2fae0 crucible-fuzz-cli --locked || cargo install --git https://github.com/asymmetric-research/crucible --rev daeaa4d4a4e334175c4f171daacc7e177ad2fae0 crucible-fuzz-cli
 

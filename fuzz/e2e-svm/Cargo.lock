@@ -1771,6 +1771,7 @@ name = "e2e_svm_fuzz"
 version = "0.1.0"
 dependencies = [
  "anchor-lang",
+ "anyhow",
  "arbitrary",
  "bytemuck",
  "byteorder",
@@ -1783,6 +1784,7 @@ dependencies = [
  "libafl_bolts",
  "litesvm",
  "pyth_lazer",
+ "sha2 0.10.9",
  "solana-instruction",
  "solana-keypair",
  "solana-pubkey 3.0.0",

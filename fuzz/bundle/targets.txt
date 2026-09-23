@@ -28,5 +28,10 @@
 # merge inherited the whole backlog and the main corpus stayed frozen at its
 # 2026-07-28 contents. These lineages start that corpus over. Do not drop the
 # suffix — that would re-point the campaign at the stale first-generation corpus.
-svm e2e-svm invariant_solvency _c2
+#
+# _c3 = corpus generation 3, e2e-svm only. Its generation-2 corpus drives order
+# instructions the program no longer has, so every input that reached the fill
+# engine now fails as an unknown instruction. The harness routes orders through
+# the market's CLOB book, and this lineage starts that corpus over.
+svm e2e-svm invariant_solvency _c3
 svm e2e-svm-liq invariant_liq _c2

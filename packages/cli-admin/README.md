@@ -56,7 +56,7 @@ velocity-admin whoami                                # which on-chain authoritie
 velocity-admin show config
 velocity-admin show state   # every field of the State account, with the exchange-status, feature, LP-pool feature and solvency bitmasks decoded to bit names
 velocity-admin show fees    # every fee users pay: trading tiers, filler reward, split, per-market adjustments + liquidation fees
-velocity-admin show perp-markets [market]  # per-market risk + quoting params: OI cap, margins, spreads, jit/curve intensity, funding clamp, fee/pnl pool balances (the vAMM capital view)
+velocity-admin show perp-markets [market]  # per-market risk + quoting params: OI cap, margins, spreads + spread adjustments, jit/curve intensity, funding clamp, fee/pnl pool balances (the vAMM capital view)
 velocity-admin show spot-markets [market]  # per-market lending params: deposit cap + headroom, weights, rate curve, withdraw guard, IF vault balance
 
 velocity-admin audit withdrawals [market] [--hours <n>] [--min-usd <n>] [--limit <n>] [--history-pages <n>] [--json]  # read-only; the Spot Withdraw Breaker alert dump: breaker consumption per market at Grafana parity, then every withdrawal on the audited market attributed to the Velocity sub-account that made it (not the fee payer, which is usually our sponsor wallet), with each withdrawer's lifetime flows, PnL decomposition, live positions, 30d volume and account age. Facts only, no verdict. Defaults to the worst-consumed market
@@ -75,7 +75,7 @@ velocity-admin auth init-config [--initial-warm <pk>]
 velocity-admin perp-market set-status <market> <status>
 velocity-admin perp-market set-fee-buffer <market> <amount>
 velocity-admin perp-market set-bankruptcy-if-floor <market> <pct>  # PERCENTAGE_PRECISION (1e6); 0 selects the 10 bps default, "disabled" turns the floor off
-velocity-admin perp-market set-spread-adjustment <market> <spreadAdjustment> <inventorySpreadAdjustment>  # VammQuoteManagement/warm/cold; both -100..100. Negative values need `--` first: set-spread-adjustment 0 -- -50 -25
+velocity-admin perp-market set-spread-adjustment <markets> <spreadAdjustment> <inventorySpreadAdjustment>  # VammQuoteManagement/warm/cold; both -100..100. <markets> is 0, 0,1,4 or all, one tx. Negative values need `--` first: set-spread-adjustment all -- -50 -25
 velocity-admin perp-market set-funding-dead-zone <market> <threshold> <slope>
 velocity-admin perp-market set-oracle-slot-delay <market> <slots>
 velocity-admin perp-market deposit-fee-pool <market> <amount> [--source-vault <pk>]  # VaultDeposit hot key (or warm/cold); funds amm.fee_pool + total_fee_minus_distributions, raw quote base units

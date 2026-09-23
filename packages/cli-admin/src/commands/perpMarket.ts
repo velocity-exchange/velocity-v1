@@ -1,7 +1,12 @@
 import { Command } from 'commander';
 import { PublicKey } from '@solana/web3.js';
 import { BANKRUPTCY_IF_FLOOR_DISABLED } from '@velocity-exchange/sdk';
-import { parseBnArg, parseIntArg, parseMarketIndex } from '../lib/args';
+import {
+	parseBnArg,
+	parseIntArg,
+	parseMarketIndex,
+	parseMarketList,
+} from '../lib/args';
 import { readGlobalOpts, withGlobalOptions } from '../lib/options';
 import { buildAdminClient, buildProvider } from '../lib/provider';
 import {
@@ -117,20 +122,20 @@ export function registerPerpMarket(parent: Command): void {
 	withGlobalOptions(
 		pm
 			.command(
-				'set-spread-adjustment <market> <spreadAdjustment> <inventorySpreadAdjustment>'
+				'set-spread-adjustment <markets> <spreadAdjustment> <inventorySpreadAdjustment>'
 			)
 			.description(
-				'Set the vAMM final-spread and inventory-spread percentage adjustments. Both values must be integers in [-100, 100]; -100 removes the component, 0 leaves it unchanged, and 100 doubles it. Negative values must follow a `--` separator so they are not parsed as flags. Requires VammQuoteManagement, warm, or cold.'
+				'Set the vAMM final-spread and inventory-spread percentage adjustments. <markets> is one index, a comma-separated list (0,1,4), or `all`; every market lands in one transaction (or one proposal). Both values must be integers in [-100, 100]; -100 removes the component, 0 leaves it unchanged, and 100 doubles it. Negative values must follow a `--` separator so they are not parsed as flags. Requires VammQuoteManagement, warm, or cold.'
 			)
 	).action(
 		async (
-			market: string,
+			markets: string,
 			spreadAdjustment: string,
 			inventorySpreadAdjustment: string,
 			_flags,
 			cmd: Command
 		) => {
-			const marketIndex = parseMarketIndex(market);
+			const parsed = parseMarketList(markets);
 			const spread = parseIntArg(
 				'spreadAdjustment',
 				spreadAdjustment,
@@ -151,23 +156,42 @@ export function registerPerpMarket(parent: Command): void {
 				const multisigPda = opts.multisig
 					? new PublicKey(opts.multisig)
 					: undefined;
-				const ix = await client.getUpdatePerpMarketAmmSpreadAdjustmentIx(
-					marketIndex,
-					spread,
-					inventorySpread,
-					// referencePriceOffset is ignored onchain: amm.reference_price_offset
-					// is a per-crank output, not an admin-set value.
-					0,
-					resolveAdminAuthority(provider, multisigPda)
+				let marketIndexes: number[];
+				if (parsed === 'all') {
+					const state = await (client.program.account as any).state.fetch(
+						await client.getStatePublicKey()
+					);
+					marketIndexes = Array.from(
+						{ length: state.numberOfMarkets },
+						(_, i) => i
+					);
+				} else {
+					marketIndexes = parsed;
+				}
+				const admin = resolveAdminAuthority(provider, multisigPda);
+				const ixs = await Promise.all(
+					marketIndexes.map((marketIndex) =>
+						client.getUpdatePerpMarketAmmSpreadAdjustmentIx(
+							marketIndex,
+							spread,
+							inventorySpread,
+							// referencePriceOffset is ignored onchain: amm.reference_price_offset
+							// is a per-crank output, not an admin-set value.
+							0,
+							admin
+						)
+					)
 				);
 				const result = await sendOrPropose(
 					provider,
-					[ix],
+					ixs,
 					multisigPda,
 					'velocity-admin perp-market set-spread-adjustment'
 				);
 				reportDispatch(
-					`perp-market[${marketIndex}] amm_spread_adjustment = ${spread}, amm_inventory_spread_adjustment = ${inventorySpread}`,
+					`perp-market[${marketIndexes.join(
+						','
+					)}] amm_spread_adjustment = ${spread}, amm_inventory_spread_adjustment = ${inventorySpread}`,
 					result
 				);
 			} finally {

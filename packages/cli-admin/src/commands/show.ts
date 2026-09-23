@@ -33,6 +33,15 @@ function pct1e6(value: number): string {
 	return `${trimZeros((value / 1_000_000) * 100)}%`;
 }
 
+/** `$1,234.56`, thousands-separated, as in `audit`. */
+function usd(v: number, dp = 2): string {
+	const abs = Math.abs(v).toLocaleString('en-US', {
+		minimumFractionDigits: dp,
+		maximumFractionDigits: dp,
+	});
+	return `${v < 0 ? '-' : ''}$${abs}`;
+}
+
 function trimZeros(n: number): string {
 	return n.toFixed(4).replace(/\.?0+$/, '');
 }
@@ -228,12 +237,19 @@ export function registerShow(parent: Command): void {
 			markets.sort((a, b) => a.marketIndex - b.marketIndex);
 			const filter =
 				market !== undefined ? Number.parseInt(market, 10) : undefined;
+			const quoteSpot = (client as any).getQuoteSpotMarketAccount();
+			const quote = (raw: any) => Number(raw.toString()) / 1e6;
+			// Spread fields are BID_ASK_SPREAD_PRECISION (1e6 = 100%), so /100 is bps.
+			const bps = (v: number) => `${trimZeros(v / 100)}bp`;
+			// -100..100 scales the spread by 0x..2x.
+			const adj = (v: number) => {
+				const text = `${v > 0 ? '+' : ''}${v} (${trimZeros(1 + v / 100)}x)`;
+				return v === 0 ? pc.dim(text) : pc.yellow(text);
+			};
 			for (const m of markets) {
 				if (filter !== undefined && m.marketIndex !== filter) {
 					continue;
 				}
-				const quoteSpot = (client as any).getQuoteSpotMarketAccount();
-				const q = (bn: any) => trimZeros(Number(bn.toString()) / 1_000_000);
 				const feePool = getTokenAmount(
 					m.amm.feePool.scaledBalance,
 					quoteSpot,
@@ -250,44 +266,69 @@ export function registerShow(parent: Command): void {
 						Number(m.amm.baseAssetReserve.toString())) *
 					(Number(m.amm.pegMultiplier.toString()) / 1e6);
 				const maxOiBase = Number(m.maxOpenInterest.toString()) / 1e9;
-				console.log(
-					`${decodeName(m.name)} (perp ${m.marketIndex}, ${JSON.stringify(
-						m.status
-					)})`
+				const status = Object.keys(m.status)[0] ?? 'unknown';
+
+				ui.header(
+					`${pc.dim(`[${m.marketIndex}]`)} ${ui.safe(decodeName(m.name))}`,
+					`${
+						status === 'active' ? pc.green(status) : pc.yellow(status)
+					} ${pc.dim('·')} ${usd(price, 4)}`
 				);
-				console.log(
-					`  oracle: ${m.oracle.toBase58()} reservePrice=$${trimZeros(price)}`
+				ui.kv('oracle', pc.dim(m.oracle.toBase58()));
+				ui.kv(
+					'max OI',
+					`${ui.count(Number(trimZeros(maxOiBase)))} base ${pc.dim(
+						`(~${usd(maxOiBase * price)})`
+					)} · insurance ${usd(quote(m.insuranceClaim.quoteMaxInsurance))}`
 				);
-				console.log(
-					`  max OI: ${trimZeros(maxOiBase)} base (~$${trimZeros(
-						maxOiBase * price
-					)})  quote_max_insurance: $${q(m.insuranceClaim.quoteMaxInsurance)}`
-				);
-				console.log(
-					`  margins: init ${m.marginRatioInitial / 100}% maint ${
+				ui.kv(
+					'margins',
+					`init ${m.marginRatioInitial / 100}% · maint ${
 						m.marginRatioMaintenance / 100
-					}%  imf: ${m.imfFactor}  liq fees: ${pct1e6(
-						m.liquidatorFee
-					)}/${pct1e6(m.ifLiquidationFee)} (liquidator/IF)`
+					}% · imf ${m.imfFactor}`
 				);
-				console.log(
-					`  spreads: base ${m.amm.baseSpread / 100}bp max ${
-						m.amm.maxSpread / 100
-					}bp  jit: ${m.amm.ammJitIntensity}  curve intensity: ${
+				ui.kv(
+					'liq fees',
+					`liquidator ${pct1e6(m.liquidatorFee)} · if ${pct1e6(
+						m.ifLiquidationFee
+					)}`
+				);
+				ui.kv(
+					'spreads',
+					`base ${bps(m.amm.baseSpread)} · max ${bps(m.amm.maxSpread)} ${pc.dim(
+						`· live long ${bps(m.amm.longSpread)} short ${bps(
+							m.amm.shortSpread
+						)}`
+					)}`
+				);
+				ui.kv(
+					'spread adj',
+					`spread ${adj(m.amm.ammSpreadAdjustment)} · inventory ${adj(
+						m.amm.ammInventorySpreadAdjustment
+					)}`
+				);
+				ui.kv(
+					'amm',
+					`jit ${m.amm.ammJitIntensity} · curve intensity ${
 						m.amm.curveUpdateIntensity
-					}`
+					} · sqrt_k ${ui.count(
+						Number(trimZeros(Number(m.amm.sqrtK.toString()) / 1e9))
+					)}`
 				);
-				console.log(
-					`  funding: clamp ${m.fundingClampThreshold}bp slope ${
+				ui.kv(
+					'funding',
+					`clamp ${m.fundingClampThreshold}bp · slope ${
 						Number(m.fundingRampSlope) / 1e6
 					}x`
 				);
-				console.log(
-					`  pools: fee $${trimZeros(Number(feePool) / 1e6)} pnl $${trimZeros(
+				ui.kv(
+					'pools',
+					`fee ${usd(Number(feePool) / 1e6)} · pnl ${usd(
 						Number(pnlPool) / 1e6
-					)}  sqrt_k ${trimZeros(Number(m.amm.sqrtK.toString()) / 1e9)}`
+					)}`
 				);
 			}
+			console.log('');
 		} finally {
 			await client.unsubscribe();
 		}

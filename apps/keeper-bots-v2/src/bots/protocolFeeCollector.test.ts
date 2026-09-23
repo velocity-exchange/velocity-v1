@@ -23,11 +23,17 @@ const QUOTE_SPOT_MARKET = {
 	protocolFeePool: { scaledBalance: ZERO },
 };
 
+const SPOT_MARKET_WITH_FEES = {
+	...QUOTE_SPOT_MARKET,
+	protocolFeePool: { scaledBalance: new BN(10).pow(new BN(13)) },
+};
+
 function makeBot(opts: {
 	withdrawResult: { sent: boolean; confirmedSlot?: number };
 	distributeResult?: { sent: boolean; confirmedSlot?: number };
 	routerOk?: boolean;
 	runOnce?: boolean;
+	spotRecipient?: PublicKey;
 }): { bot: ProtocolFeeCollectorBot; calls: SendCall[] } {
 	const bot = Object.create(ProtocolFeeCollectorBot.prototype) as any;
 	const calls: SendCall[] = [];
@@ -44,13 +50,16 @@ function makeBot(opts: {
 		wallet: { publicKey: PublicKey.default },
 		getStateAccount: () => ({
 			protocolFeeRecipientPerp: getRouterConfigPda(),
-			protocolFeeRecipientSpot: PublicKey.default,
+			protocolFeeRecipientSpot: opts.spotRecipient ?? PublicKey.default,
 		}),
 		getPerpMarketAccounts: () => [PERP_MARKET],
-		getSpotMarketAccounts: () => [QUOTE_SPOT_MARKET],
+		getSpotMarketAccounts: () => [
+			opts.spotRecipient ? SPOT_MARKET_WITH_FEES : QUOTE_SPOT_MARKET,
+		],
 		getSpotMarketAccountOrThrow: () => QUOTE_SPOT_MARKET,
 		getSweepPerpMarketFeesIx: async () => ({}),
 		getWithdrawProtocolFeesPerpIx: async () => ({}),
+		getWithdrawProtocolFeesSpotIx: async () => ({}),
 	};
 
 	bot.checkRouterConfig = async () => opts.routerOk ?? true;
@@ -117,6 +126,29 @@ describe('ProtocolFeeCollectorBot router distribute step', () => {
 		await (bot as any).tryCollectProtocolFees();
 
 		expect(labels(calls)).to.not.include('distribute');
+	});
+
+	it('withdraws spot fees to an ordinary spot recipient', async () => {
+		const { bot, calls } = makeBot({
+			withdrawResult: { sent: true, confirmedSlot: 42 },
+			spotRecipient: PublicKey.unique(),
+		});
+
+		await (bot as any).tryCollectProtocolFees();
+
+		expect(labels(calls)).to.include('withdrawProtocolFeesSpot');
+	});
+
+	it('skips spot withdrawals when the spot recipient is the router config', async () => {
+		const { bot, calls } = makeBot({
+			withdrawResult: { sent: true, confirmedSlot: 42 },
+			spotRecipient: getRouterConfigPda(),
+		});
+
+		await (bot as any).tryCollectProtocolFees();
+
+		expect(labels(calls)).to.not.include('withdrawProtocolFeesSpot');
+		expect(labels(calls)).to.include('distribute');
 	});
 
 	it('marks the bot unhealthy when distribute fails', async () => {

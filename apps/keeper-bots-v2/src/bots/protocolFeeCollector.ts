@@ -418,6 +418,14 @@ export class ProtocolFeeCollectorBot implements Bot {
 				logger.info(
 					`${this.name}: state.protocolFeeRecipientSpot is unset, skipping spot withdrawals`
 				);
+			} else if (state.protocolFeeRecipientSpot.equals(getRouterConfigPda())) {
+				// The router treats everything in its ATA as perp revenue, so spot
+				// fees sent there would be misrouted and misreported.
+				logger.error(
+					`${
+						this.name
+					}: state.protocolFeeRecipientSpot is the router config ${getRouterConfigPda().toBase58()}, skipping spot withdrawals`
+				);
 			} else {
 				for (const spotMarket of this.adminClient.getSpotMarketAccounts()) {
 					const available = getTokenAmount(

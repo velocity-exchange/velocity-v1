@@ -13,7 +13,6 @@ use {
         borsh::{BorshDeserialize, BorshSerialize},
         *,
     },
-    std::ops::Div,
 };
 
 #[cfg(test)]

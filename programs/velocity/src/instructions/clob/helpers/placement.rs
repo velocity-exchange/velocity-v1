@@ -301,7 +301,8 @@ pub fn try_place_remainder_on_clob<'info>(
     // crossed, and the cross crank matches it.
     reject_if_crossed: bool,
     // The book clamps a fill against a reduce-only order to the owner's
-    // `base_cover` cap.
+    // `base_cover` cap. A reduce-only `base_asset_amount` must already be
+    // clamped to the position, as `restable_remainder` does.
     reduce_only: bool,
     // `None` takes the book's default speed bump. The caller attests a
     // below-default value before it reaches here.
@@ -360,10 +361,9 @@ pub fn try_place_remainder_on_clob<'info>(
         let isolated_market_index = (risk_increasing
             && user.perp_positions[position_index].is_isolated())
         .then_some(market_index);
-        // A reducing or reduce-only remainder skips the gate, as on the trigger
-        // path. Refusing it would remove the order that shrinks the position.
-        let gate_margin = risk_increasing && !reduce_only;
-        if gate_margin
+        // A reducing remainder skips the gate. Refusing it would remove the
+        // order that shrinks the position.
+        if risk_increasing
             && crate::controller::orders::check_prospective_order_margin(
                 &mut user,
                 position_index,

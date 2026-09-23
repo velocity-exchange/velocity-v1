@@ -3370,6 +3370,220 @@ fn trigger_limit_lifecycle_places_re_arms_on_evict_and_frees_on_expiry() {
     assert_eq!(clob_ask_count(&fixture), 0);
 }
 
+/// The accounts a reduce-only sell-stop fires with.
+struct ReduceOnlyStop {
+    filler_user: Pubkey,
+    filler_stats: Pubkey,
+    maker_stats: Pubkey,
+}
+
+/// Arms a reduce-only sell-stop of half a unit for the book maker, which holds
+/// `position_base`, and moves the oracle through the trigger.
+fn arm_reduce_only_sell_stop(fixture: &mut Fixture, position_base: i64) -> ReduceOnlyStop {
+    use velocity::state::user::OrderTriggerCondition;
+
+    let clock: solana_clock::Clock = fixture.svm.get_sysvar();
+    let mut order = Order::default();
+    order.order_id = 1;
+    order.status = OrderStatus::Open;
+    order.order_type = OrderType::TriggerLimit;
+    order.market_type = MarketType::Perp;
+    order.market_index = 0;
+    order.direction = PositionDirection::Short;
+    order.base_asset_amount = UNIT / 2;
+    order.price = 97 * PRICE;
+    order.trigger_price = 98 * PRICE;
+    order.trigger_condition = OrderTriggerCondition::Below;
+    order.reduce_only = true;
+    order.max_ts = clock.unix_timestamp + 1_000;
+    let mut maker = armed_trigger_user(
+        &fixture.clob_maker_authority.pubkey(),
+        10_000 * SPOT_BALANCE_PRECISION_U64,
+        order,
+    );
+    maker.perp_positions[0].base_asset_amount = position_base;
+    set_user_account(&mut fixture.svm, fixture.clob_maker_user, &maker);
+
+    let maker_stats = Pubkey::new_unique();
+    set_user_stats_account(
+        &mut fixture.svm,
+        maker_stats,
+        &fixture.clob_maker_authority.pubkey(),
+    );
+
+    let filler_user = Pubkey::new_unique();
+    let filler_stats = Pubkey::new_unique();
+    set_user_account(
+        &mut fixture.svm,
+        filler_user,
+        &trading_user(&fixture.keeper.pubkey(), 0, None),
+    );
+
+    set_user_stats_account(&mut fixture.svm, filler_stats, &fixture.keeper.pubkey());
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (97 * PRICE_PRECISION) as i64,
+        12,
+    );
+
+    fixture.svm.warp_to_slot(12);
+    ReduceOnlyStop {
+        filler_user,
+        filler_stats,
+        maker_stats,
+    }
+}
+
+/// A reduce-only stop larger than the position rests only the position. The
+/// margin gate exempts it, so its reservation must fit what its fills can
+/// reach.
+#[test]
+fn a_reduce_only_trigger_rests_at_most_the_position_it_reduces() {
+    let mut fixture = setup();
+    let stop = arm_reduce_only_sell_stop(&mut fixture, (UNIT / 4) as i64);
+
+    let keeper = fixture.keeper.insecure_clone();
+    let ix = trigger_limit_order_v1_ix(
+        &fixture,
+        1,
+        stop.filler_user,
+        stop.filler_stats,
+        stop.maker_stats,
+    );
+    send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
+
+    let maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+    assert!(maker.orders[0].is_placed_on_clob());
+    assert_eq!(maker.perp_positions[0].open_asks, -((UNIT / 4) as i64));
+    let asks = clob_side(&fixture, Direction::Long);
+    assert_eq!(asks.len(), 1);
+    assert_eq!(asks[0].size, UNIT / 4);
+}
+
+/// A reduce-only stop with no position left to reduce is cancelled rather
+/// than rested, and the keeper earns nothing for it.
+#[test]
+fn a_reduce_only_trigger_with_nothing_to_reduce_is_cancelled() {
+    let mut fixture = setup();
+    let stop = arm_reduce_only_sell_stop(&mut fixture, 0);
+
+    let keeper = fixture.keeper.insecure_clone();
+    let ix = trigger_limit_order_v1_ix(
+        &fixture,
+        1,
+        stop.filler_user,
+        stop.filler_stats,
+        stop.maker_stats,
+    );
+    send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
+
+    let maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+    assert_eq!(maker.orders[0].status, OrderStatus::Canceled);
+    assert_eq!(maker.perp_positions[0].open_asks, 0);
+    assert_eq!(maker.perp_positions[0].open_orders, 0);
+    assert_eq!(maker.open_orders, 0);
+    assert_eq!(maker.perp_positions[0].quote_asset_amount, 0);
+    assert_eq!(clob_ask_count(&fixture), 0);
+}
+
+fn modify_order_v1_ix(
+    fixture: &Fixture,
+    order_ref: ClobOrderRefV0,
+    base_asset_amount: Option<u64>,
+) -> Instruction {
+    let mut accounts = velocity::accounts::ModifyOrderV1 {
+        state: state_pda(),
+        user: fixture.clob_maker_user,
+        authority: fixture.clob_maker_authority.pubkey(),
+        quoter_slab: fixture.quoter_slab,
+        clob_market: fixture.clob_market,
+        clob_program: clob_id(),
+        flow_authority: None,
+    }
+    .to_account_metas(None);
+    accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+    accounts.push(AccountMeta::new(spot_market_pda(0), false));
+    accounts.push(AccountMeta::new(perp_market_pda(0), false));
+    Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: velocity::instruction::ModifyOrderV1 {
+            params: velocity::instructions::ModifyOrderV1Params {
+                market_index: 0,
+                order_ref,
+                price: None,
+                base_asset_amount,
+                max_ts: None,
+                activation_delay_slots: None,
+                reject_if_crossed: false,
+            },
+        }
+        .data(),
+    }
+}
+
+/// A modify cannot upsize a reduce-only order past the position it reduces,
+/// and refuses one once no position is left.
+#[test]
+fn a_reduce_only_modify_is_clamped_to_the_position() {
+    let mut fixture = setup();
+    let stop = arm_reduce_only_sell_stop(&mut fixture, (UNIT / 4) as i64);
+
+    let keeper = fixture.keeper.insecure_clone();
+    let ix = trigger_limit_order_v1_ix(
+        &fixture,
+        1,
+        stop.filler_user,
+        stop.filler_stats,
+        stop.maker_stats,
+    );
+    send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
+
+    let maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+    let (node_index, order_id) = maker.orders[0].clob_order_ref();
+    fixture.svm.warp_to_slot(100);
+    fixture.svm.expire_blockhash();
+
+    let authority = fixture.clob_maker_authority.insecure_clone();
+    let ix = modify_order_v1_ix(
+        &fixture,
+        ClobOrderRefV0 {
+            node_index,
+            order_id,
+        },
+        Some(10 * UNIT),
+    );
+    send(&mut fixture.svm, &authority, ix, &[]).unwrap();
+
+    let maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+    assert_eq!(maker.perp_positions[0].open_asks, -((UNIT / 4) as i64));
+    assert_eq!(maker.orders[0].base_asset_amount, UNIT / 4);
+    let asks = clob_side(&fixture, Direction::Long);
+    assert_eq!(asks.len(), 1);
+    assert_eq!(asks[0].size, UNIT / 4);
+
+    let (node_index, order_id) = maker.orders[0].clob_order_ref();
+    let mut maker = maker;
+    maker.perp_positions[0].base_asset_amount = 0;
+    set_user_account(&mut fixture.svm, fixture.clob_maker_user, &maker);
+    fixture.svm.expire_blockhash();
+    let ix = modify_order_v1_ix(
+        &fixture,
+        ClobOrderRefV0 {
+            node_index,
+            order_id,
+        },
+        None,
+    );
+    let err = send(&mut fixture.svm, &authority, ix, &[]).expect_err("nothing to reduce");
+    assert!(
+        format!("{:?}", err.meta.logs).contains("no position left to reduce"),
+        "unexpected: {:?}",
+        err.meta.logs
+    );
+}
+
 /// A sweep frees placed-trigger shadows too. The handler can't match returned
 /// order ids for this (the wire is aggregate), so it re-checks each shadow's
 /// node against the post-sweep book — this pins that the shadow ends up

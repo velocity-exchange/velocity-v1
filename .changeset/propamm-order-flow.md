@@ -365,7 +365,11 @@ order rests rather than routing to a fill.
 
 `PerpPosition.reduceOnlyClobOrders` counts the reduce-only orders the owner has resting on the CLOB.
 While it is nonzero the router caps that user's reduce-only fills to the position they reduce, so a
-reduce-only stop can rest its remainder on the book without over-filling.
+reduce-only stop can rest its remainder on the book without over-filling. A reduce-only order also
+rests at most the position it reduces. A fired reduce-only trigger-limit rests only that much, and
+one with no position left to reduce is cancelled with `ReduceOnlyOrderIncreasedPosition`.
+`modify_order_v1` clamps a reduce-only replacement the same way, and refuses one with no position
+left to reduce.
 
 A resting remainder claims the depth it crosses, and claimed depth is withheld from every book read,
 `quote_v0`, `quote_l3_v0`, `execute_v0` and `next_cross_v0`. A client therefore sees less depth than

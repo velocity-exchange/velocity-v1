@@ -15,6 +15,10 @@
 //! Such an order is never re-armed, so an underfunded stop cannot repeat
 //! forever. The keeper earns the same flat reward from the user.
 //!
+//! A reduce-only trigger rests at most the position it can reduce. With no
+//! position left to reduce, it is cancelled with
+//! `ReduceOnlyOrderIncreasedPosition` and the keeper earns nothing.
+//!
 //! Re-triggering after an eviction runs behind an edge gate, which is
 //! [`OrderBitFlag::AwaitingTriggerRecross`]. While the flag is set, a crank
 //! that observes the price on the non-trigger side clears it and places
@@ -250,11 +254,9 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
             return Ok(());
         }
 
-        // The gate below exempts a reduce-only order. The book itself is
-        // position-blind, but the router carries an authoritative `base_cover`
-        // per user. A reduce-only order therefore rests flagged, and the book
-        // clamps every fill against that cover to the position the order may
-        // reduce. A reduce-only trigger rests here like any other trigger.
+        // The gate below exempts a reduce-only order. The book is
+        // position-blind, but the router sends it an authoritative `base_cover`
+        // per user, and the book clamps every reduce-only fill to that cover.
         let Some(reserved) = reserve_and_gate_trigger(
             user,
             &user_stats,
@@ -558,7 +560,11 @@ struct ReservedTrigger {
 /// Reserves the worst-case aggregates for the resting order, then gates
 /// exactly like `trigger_order`.
 ///
+/// A reduce-only order rests at most the position it can reduce, so the
+/// margin exemption it gets is true of its reservation as well as its fills.
+///
 /// `None` means the gate cancelled the order instead of placing it. That
+/// happens to a reduce-only trigger with no position left to reduce. It also
 /// happens to a risk-increasing, non-reduce-only trigger on an account that
 /// fails initial margin, the buffered equity floor, or the authority equity
 /// breaker. The order is never re-armed, so an underfunded stop cannot repeat
@@ -578,7 +584,30 @@ fn reserve_and_gate_trigger(
 ) -> Result<Option<ReservedTrigger>> {
     let reduce_only = user.orders[order_index].reduce_only;
     let direction = user.orders[order_index].direction;
-    let base_asset_amount = user.orders[order_index].get_base_asset_amount_unfilled(None)?;
+    let position_base = user
+        .get_perp_position(market_index)
+        .map(|position| position.base_asset_amount)
+        .unwrap_or(0);
+    let base_asset_amount =
+        user.orders[order_index].get_base_asset_amount_unfilled(Some(position_base))?;
+    if base_asset_amount == 0 {
+        cancel_order(
+            order_index,
+            user,
+            user_key,
+            maps,
+            now,
+            slot,
+            OrderActionExplanation::ReduceOnlyOrderIncreasedPosition,
+            Some(filler_key),
+            0,
+            false,
+        )?;
+
+        user.update_last_active_slot(slot);
+        return Ok(None);
+    }
+
     let (_, worst_case_before) = user
         .get_perp_position(market_index)?
         .worst_case_liability_value(oracle_price)?;
@@ -592,7 +621,7 @@ fn reserve_and_gate_trigger(
         .worst_case_liability_value(oracle_price)?;
     let is_risk_increasing = worst_case_after > worst_case_before;
 
-    if is_risk_increasing && !user.orders[order_index].reduce_only {
+    if is_risk_increasing && !reduce_only {
         let margin_calc = calculate_margin_requirement_and_total_collateral_and_liability_info(
             user,
             maps,

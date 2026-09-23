@@ -42,7 +42,8 @@ use {
         load_mut,
         math::{
             liquidation::validate_user_not_being_liquidated,
-            margin::meets_place_order_margin_requirement, orders::is_new_order_risk_increasing,
+            margin::meets_place_order_margin_requirement,
+            orders::{is_new_order_risk_increasing, reduce_only_cover},
         },
         msg,
         state::{
@@ -193,7 +194,11 @@ pub fn handle_modify_order_v1<'c: 'info, 'info>(
         removed.user.sub_account_id
     )?;
 
-    let terms = resolve_replacement_terms(&params, &removed)?;
+    let position_base = crate::load!(ctx.accounts.user)?
+        .get_perp_position(params.market_index)
+        .map(|position| position.base_asset_amount)
+        .unwrap_or(0);
+    let terms = resolve_replacement_terms(&params, &removed, position_base)?;
 
     // The replacement is a placement, so a reduce-only account may only carry
     // a reduce-only order. The replacement takes the removed order's flag, so
@@ -347,16 +352,20 @@ struct ReplacementTerms {
     price: u64,
     base_asset_amount: u64,
     max_ts: i64,
-    /// Carried from the cancelled order. The replacement cannot change it, and
-    /// a reduce-only order never increases risk.
+    /// Carried from the cancelled order. The replacement cannot change it.
     reduce_only: bool,
 }
 
 /// Read the replacement's terms from the parameters and the removed order. A
 /// `None` parameter keeps the removed order's value.
+///
+/// A reduce-only replacement rests at most the position it can reduce. The
+/// margin gate exempts it, and that is sound only while its reservation fits
+/// the position its fills are capped to.
 fn resolve_replacement_terms(
     params: &ModifyOrderV1Params,
     removed: &ClobRemovedOrderV0,
+    position_base: i64,
 ) -> Result<ReplacementTerms> {
     // The side is not modifiable. Turning a bid into an ask is a different
     // order and a different risk decision, so it goes through a cancel and a
@@ -364,9 +373,22 @@ fn resolve_replacement_terms(
     // putting the replacement on the wrong book side.
     let direction = removed.side.to_position_direction();
     let price = params.price.unwrap_or(removed.price);
-    let base_asset_amount = params
+    let requested_base_asset_amount = params
         .base_asset_amount
         .unwrap_or(removed.base_asset_amount);
+    let base_asset_amount = if removed.reduce_only {
+        requested_base_asset_amount.min(reduce_only_cover(position_base, direction))
+    } else {
+        requested_base_asset_amount
+    };
+
+    validate!(
+        base_asset_amount > 0 || !removed.reduce_only,
+        ErrorCode::InvalidOrder,
+        "reduce-only modify has no position left to reduce: position {}",
+        position_base
+    )?;
+
     // `None` keeps the expiry the order rested with. The removal response
     // reports it, which is the last moment it is knowable.
     let max_ts = params.max_ts.unwrap_or(removed.max_ts);

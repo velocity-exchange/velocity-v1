@@ -393,14 +393,18 @@ export function publishGroupings(
 			asks: aggregatedAsks,
 		});
 
+		const channel = `orderbook_${marketType}_${
+			marketArgs.marketIndex
+		}_grouped_${group}${indicativeQuotesRedisClient ? '_indicative' : ''}`;
+
 		fireAndForgetRedis(
-			redisClient.publish(
-				`${clientPrefix}orderbook_${marketType}_${
-					marketArgs.marketIndex
-				}_grouped_${group}${indicativeQuotesRedisClient ? '_indicative' : ''}`,
-				l2Formatted_grouped20
-			),
+			redisClient.publish(`${clientPrefix}${channel}`, l2Formatted_grouped20),
 			'orderbook grouped publish'
+		);
+		// The ws manager sends this to a new subscriber before the first live tick.
+		fireAndForgetRedis(
+			redisClient.set(`last_update_${channel}`, l2Formatted_grouped20),
+			'orderbook grouped snapshot set'
 		);
 	});
 }

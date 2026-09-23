@@ -247,7 +247,10 @@ fn parse_balance_changes(b: &[u8]) -> Vec<([u8; 32], u64, u64, Vec<u64>)> {
                 *change.user.authority.as_array(),
                 change.base_size / UNIT,
                 change.quote_size,
-                response.completed_for(i).collect(),
+                response
+                    .completed_for(i)
+                    .map(|entry| entry.order_id)
+                    .collect(),
             )
         })
         .collect()

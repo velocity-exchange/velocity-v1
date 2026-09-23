@@ -8,17 +8,18 @@
 
 use {
     crate::{
-        controller::position::{
-            add_new_position, get_position_index, increase_open_bids_and_asks, PositionDirection,
-        },
+        controller::position::PositionDirection,
         error::ErrorCode,
         instructions::optional_accounts::AccountMaps,
         load_mut,
-        math::orders::is_order_position_reducing,
+        math::{margin::meets_place_order_margin_requirement, orders::is_order_position_reducing},
         msg,
         state::{
-            prop_amm::{ClobMarket, ClobPlaceOrderArgsV0, ClobSide, QuoterSlabExt, QuoterSlabV0},
-            user::User,
+            prop_amm::{
+                ClobMarket, ClobPlaceOrderArgsV0, ClobSide, ClobUserRefV0, QuoterSlabExt,
+                QuoterSlabV0,
+            },
+            user::{OrderReservation, ReleaseCheck, User},
         },
         validate,
     },
@@ -338,51 +339,16 @@ pub fn try_place_remainder_on_clob<'info>(
         }
     };
 
-    // The margin check models the reservation and reverses it, as
-    // `create_detached_perp_order` does. The user claims the order only once
-    // the book holds it, so a refused placement has nothing to unwind.
-    let user_ref = {
-        let mut user = load_mut!(user_loader)?;
-        if user.is_bankrupt() {
-            return Ok(None);
-        }
-
-        let position_index = get_position_index(&user.perp_positions, market_index)
-            .or_else(|_| add_new_position(&mut user.perp_positions, market_index))?;
-        if user.perp_positions[position_index].open_orders == u8::MAX {
-            return Ok(None);
-        }
-
-        let risk_increasing = !is_order_position_reducing(
-            &direction,
-            base_asset_amount,
-            user.perp_positions[position_index].base_asset_amount,
-        )?;
-        let isolated_market_index = (risk_increasing
-            && user.perp_positions[position_index].is_isolated())
-        .then_some(market_index);
-        // A reducing remainder skips the gate. Refusing it would remove the
-        // order that shrinks the position.
-        if risk_increasing
-            && crate::controller::orders::check_prospective_order_margin(
-                &mut user,
-                position_index,
-                &crate::controller::orders::ProspectiveReservation {
-                    direction,
-                    base_asset_amount,
-                    update_open_bids_and_asks: true,
-                },
-                risk_increasing,
-                isolated_market_index,
-                maps,
-            )
-            .is_err()
-        {
-            msg!("remainder fails the placement margin gate; stays cancelled");
-            return Ok(None);
-        }
-
-        user.clob_user_ref()
+    let Some(reserved) = reserve_remainder(
+        user_loader,
+        maps,
+        &OrderReservation::book_order(market_index, direction, base_asset_amount, reduce_only),
+        direction,
+        base_asset_amount,
+        clock.slot,
+    )?
+    else {
+        return Ok(None);
     };
 
     let side = match direction {
@@ -390,47 +356,21 @@ pub fn try_place_remainder_on_clob<'info>(
         PositionDirection::Short => ClobSide::Ask,
     };
 
-    // A failed CPI aborts the transaction. `clob_admits_rest` caught every
-    // rejection it can, which leaves `OrderWouldCross` for a post-only maker.
+    // A failed CPI aborts the transaction, which unwinds the reservation with
+    // it. `clob_admits_rest` caught every rejection it can, which leaves
+    // `OrderWouldCross` for a post-only maker.
     let order_ref = clob.place(ClobPlaceOrderArgsV0 {
         side,
         price,
         base_asset_amount,
         activation_delay_slots,
         max_ts,
-        user: user_ref,
+        user: reserved.user_ref,
         taker_origin,
         client_order_id,
         reject_if_crossed,
         reduce_only,
     })?;
-
-    // The book holds the order, so the user claims it. The check above reversed
-    // its model, so a position it added reads as available again, and adding it
-    // again revives the same slot.
-    let is_isolated_position = {
-        let mut user = load_mut!(user_loader)?;
-        let position_index = get_position_index(&user.perp_positions, market_index)
-            .or_else(|_| add_new_position(&mut user.perp_positions, market_index))?;
-        increase_open_bids_and_asks(
-            &mut user.perp_positions[position_index],
-            &direction,
-            base_asset_amount,
-            true,
-        )?;
-
-        user.perp_positions[position_index].open_orders += 1;
-        user.increment_open_orders();
-        // The armed counter caps the router's fills to the position it reduces.
-        if reduce_only {
-            user.perp_positions[position_index].arm_reduce_only_clob();
-        }
-
-        user.update_last_active_slot(clock.slot);
-        // The order now holds `open_orders` on this position, so its margin
-        // regime cannot change while it rests. The record states it.
-        user.perp_positions[position_index].is_isolated()
-    };
 
     super::emit_clob_place_record(
         clock.unix_timestamp,
@@ -446,7 +386,7 @@ pub fn try_place_remainder_on_clob<'info>(
             slot: clock.slot,
             taker_origin,
         },
-        is_isolated_position,
+        reserved.is_isolated_position,
     )?;
 
     msg!(
@@ -456,6 +396,60 @@ pub fn try_place_remainder_on_clob<'info>(
     );
 
     Ok(Some(order_ref.order_id))
+}
+
+/// What a remainder's owner holds once its reservation is taken.
+struct ReservedRemainder {
+    user_ref: ClobUserRefV0,
+    /// The order holds `open_orders` on the position, so its margin regime
+    /// cannot change while it rests. The place record states it.
+    is_isolated_position: bool,
+}
+
+/// Reserve a remainder on its owner's account before it goes to the book,
+/// and gate margin the way a placement does.
+///
+/// `None` leaves the account as it was. That happens to a bankrupt owner, to a
+/// position at its order limit, and to a risk-increasing remainder the account
+/// cannot carry. A reducing remainder skips the margin gate, because refusing
+/// it would remove the order that shrinks the position.
+fn reserve_remainder(
+    user_loader: &AccountLoader<User>,
+    maps: &mut AccountMaps,
+    reservation: &OrderReservation,
+    direction: PositionDirection,
+    base_asset_amount: u64,
+    slot: u64,
+) -> Result<Option<ReservedRemainder>> {
+    let mut user = load_mut!(user_loader)?;
+    let position = user.get_perp_position(reservation.market_index).ok();
+    if user.is_bankrupt() || position.is_some_and(|position| position.open_orders == u8::MAX) {
+        return Ok(None);
+    }
+
+    let risk_increasing = !is_order_position_reducing(
+        &direction,
+        base_asset_amount,
+        position.map_or(0, |position| position.base_asset_amount),
+    )?;
+
+    let position_index = user.reserve_orders(reservation)?;
+    let is_isolated_position = user.perp_positions[position_index].is_isolated();
+
+    if risk_increasing {
+        let isolated_market_index = is_isolated_position.then_some(reservation.market_index);
+        if meets_place_order_margin_requirement(&user, maps, true, isolated_market_index).is_err() {
+            user.release_orders(reservation, ReleaseCheck::HeldToReservation)?;
+            msg!("remainder fails the placement margin gate; stays cancelled");
+            return Ok(None);
+        }
+    }
+
+    user.update_last_active_slot(slot);
+    Ok(Some(ReservedRemainder {
+        user_ref: user.clob_user_ref(),
+        is_isolated_position,
+    }))
 }
 
 #[cfg(test)]

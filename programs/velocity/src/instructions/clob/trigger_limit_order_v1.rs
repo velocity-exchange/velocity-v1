@@ -49,10 +49,7 @@ use {
     crate::{
         controller::{
             orders::{cancel_order, pay_keeper_flat_reward_for_perps},
-            position::{
-                decrease_open_bids_and_asks, get_position_index, increase_open_bids_and_asks,
-                PositionDirection,
-            },
+            position::PositionDirection,
         },
         error::ErrorCode,
         instructions::{
@@ -83,7 +80,7 @@ use {
                 QuoterSlabV0, WireDirectionExt,
             },
             state::State,
-            user::{MarketType, OrderBitFlag, OrderType, User, UserStats},
+            user::{MarketType, OrderBitFlag, OrderReservation, OrderType, User, UserStats},
         },
         validate,
     },
@@ -331,14 +328,7 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
     })?;
 
     // Mark the slot as the placed shadow.
-    mark_slot_placed(
-        &ctx.accounts.user,
-        order_id,
-        &order_ref,
-        market_index,
-        reduce_only,
-        slot,
-    )?;
+    mark_slot_placed(&ctx.accounts.user, order_id, &order_ref, slot)?;
 
     // A trigger that fired is an order that started resting, and it rests
     // under the id it armed under. The slot it came from is now a shadow, so
@@ -557,18 +547,10 @@ struct ReservedTrigger {
     reduce_only: bool,
 }
 
-/// Reserves the worst-case aggregates for the resting order, then gates
-/// exactly like `trigger_order`.
+/// Reserves the resting order on the account, or cancels the trigger.
 ///
-/// A reduce-only order rests at most the position it can reduce, so the
-/// margin exemption it gets is true of its reservation as well as its fills.
-///
-/// `None` means the gate cancelled the order instead of placing it. That
-/// happens to a reduce-only trigger with no position left to reduce. It also
-/// happens to a risk-increasing, non-reduce-only trigger on an account that
-/// fails initial margin, the buffered equity floor, or the authority equity
-/// breaker. The order is never re-armed, so an underfunded stop cannot repeat
-/// forever.
+/// `None` means the gate cancelled the order instead of placing it. The order
+/// is never re-armed, so an underfunded stop cannot repeat forever.
 #[allow(clippy::too_many_arguments)]
 fn reserve_and_gate_trigger(
     user: &mut User,
@@ -582,6 +564,60 @@ fn reserve_and_gate_trigger(
     now: i64,
     slot: u64,
 ) -> Result<Option<ReservedTrigger>> {
+    let explanation = match gate_trigger(
+        user,
+        user_stats,
+        order_index,
+        market_index,
+        oracle_price,
+        maps,
+    )? {
+        TriggerGate::Rest(reserved) => return Ok(Some(reserved)),
+        TriggerGate::Cancel(explanation) => explanation,
+    };
+
+    cancel_order(
+        order_index,
+        user,
+        user_key,
+        maps,
+        now,
+        slot,
+        explanation,
+        Some(filler_key),
+        0,
+        false,
+    )?;
+
+    user.update_last_active_slot(slot);
+    Ok(None)
+}
+
+/// What the gate decided for a fired trigger.
+enum TriggerGate {
+    /// The book order's reservation is taken, and the slot's is released.
+    Rest(ReservedTrigger),
+    /// The account still holds the armed slot's reservation, which the cancel
+    /// releases.
+    Cancel(OrderActionExplanation),
+}
+
+/// Moves the fired order's reservation from its slot to the book, then gates
+/// exactly like `trigger_order`.
+///
+/// A reduce-only order rests at most the position it can reduce, so the margin
+/// exemption it gets is true of its reservation as well as its fills. With no
+/// position left to reduce, it is cancelled. A risk-increasing, non-reduce-only
+/// order is cancelled on an account that fails initial margin, the buffered
+/// equity floor, or the authority equity breaker.
+fn gate_trigger(
+    user: &mut User,
+    user_stats: &UserStats,
+    order_index: usize,
+    market_index: u16,
+    oracle_price: i64,
+    maps: &mut AccountMaps<'_>,
+) -> Result<TriggerGate> {
     let reduce_only = user.orders[order_index].reduce_only;
     let direction = user.orders[order_index].direction;
     let position_base = user
@@ -591,97 +627,72 @@ fn reserve_and_gate_trigger(
     let base_asset_amount =
         user.orders[order_index].get_base_asset_amount_unfilled(Some(position_base))?;
     if base_asset_amount == 0 {
-        cancel_order(
-            order_index,
-            user,
-            user_key,
-            maps,
-            now,
-            slot,
+        return Ok(TriggerGate::Cancel(
             OrderActionExplanation::ReduceOnlyOrderIncreasedPosition,
-            Some(filler_key),
-            0,
-            false,
-        )?;
-
-        user.update_last_active_slot(slot);
-        return Ok(None);
+        ));
     }
 
+    let armed = OrderReservation::armed_trigger(market_index);
+    let placed =
+        OrderReservation::book_order(market_index, direction, base_asset_amount, reduce_only);
     let (_, worst_case_before) = user
         .get_perp_position(market_index)?
         .worst_case_liability_value(oracle_price)?;
-    {
-        let user_position = user.get_perp_position_mut(market_index)?;
-        increase_open_bids_and_asks(user_position, &direction, base_asset_amount, true)?;
-    }
+    user.replace_reservation(&armed, &placed)?;
 
     let (_, worst_case_after) = user
         .get_perp_position(market_index)?
         .worst_case_liability_value(oracle_price)?;
-    let is_risk_increasing = worst_case_after > worst_case_before;
-
-    if is_risk_increasing && !reduce_only {
-        let margin_calc = calculate_margin_requirement_and_total_collateral_and_liability_info(
-            user,
-            maps,
-            MarginContext::standard(MarginRequirementType::Initial),
-        )?;
-        let net_equity = calculate_net_equity_for_floor(user, maps)?;
-
-        // A floor that cannot be verified rejects the trigger rather than
-        // cancelling it. A cancel is irreversible, so a brief oracle fault must
-        // not destroy a resting order the account may carry. The keeper retries
-        // once the feed recovers, and the gate then answers either way.
-        if let Some(net_equity) = net_equity {
-            validate!(
-                net_equity.all_oracles_valid,
-                ErrorCode::InvalidOracle,
-                "cannot verify equity floor {} + buffer {} with an invalid oracle (authority {} subaccount {})",
-                user.equity_floor,
-                user.equity_floor_buffer,
-                user.authority,
-                user.sub_account_id
-            )?;
-        }
-
-        if !margin_calc.meets_margin_requirement()
-            || net_equity.is_some_and(|net_equity| !net_equity.clears_buffered_floor(user))
-            || user_stats.is_equity_breaker_tripped()
-        {
-            // The slot reads as untriggered, so `cancel_order` does not
-            // unwind the aggregates reserved above. Release them first.
-            let position_index = get_position_index(&user.perp_positions, market_index)?;
-            decrease_open_bids_and_asks(
-                &mut user.perp_positions[position_index],
-                &direction,
-                base_asset_amount,
-                true,
-            )?;
-
-            cancel_order(
-                order_index,
-                user,
-                user_key,
-                maps,
-                now,
-                slot,
-                OrderActionExplanation::InsufficientFreeCollateral,
-                Some(filler_key),
-                0,
-                false,
-            )?;
-
-            user.update_last_active_slot(slot);
-            return Ok(None);
-        }
+    if worst_case_after > worst_case_before
+        && !reduce_only
+        && !account_carries_risk_increase(user, user_stats, maps)?
+    {
+        user.replace_reservation(&placed, &armed)?;
+        return Ok(TriggerGate::Cancel(
+            OrderActionExplanation::InsufficientFreeCollateral,
+        ));
     }
 
-    Ok(Some(ReservedTrigger {
+    Ok(TriggerGate::Rest(ReservedTrigger {
         direction,
         base_asset_amount,
         reduce_only,
     }))
+}
+
+/// Whether the account may take on more risk: it meets initial margin, clears
+/// its buffered equity floor, and its authority's equity breaker is not set.
+///
+/// A floor that cannot be verified fails the crank rather than cancelling the
+/// trigger. A cancel is irreversible, so a brief oracle fault must not destroy
+/// a resting order. The keeper retries once the feed recovers.
+fn account_carries_risk_increase(
+    user: &User,
+    user_stats: &UserStats,
+    maps: &mut AccountMaps<'_>,
+) -> Result<bool> {
+    let margin_calc = calculate_margin_requirement_and_total_collateral_and_liability_info(
+        user,
+        maps,
+        MarginContext::standard(MarginRequirementType::Initial),
+    )?;
+
+    let net_equity = calculate_net_equity_for_floor(user, maps)?;
+    if let Some(net_equity) = net_equity {
+        validate!(
+            net_equity.all_oracles_valid,
+            ErrorCode::InvalidOracle,
+            "cannot verify equity floor {} + buffer {} with an invalid oracle (authority {} subaccount {})",
+            user.equity_floor,
+            user.equity_floor_buffer,
+            user.authority,
+            user.sub_account_id
+        )?;
+    }
+
+    Ok(margin_calc.meets_margin_requirement()
+        && net_equity.is_none_or(|net_equity| net_equity.clears_buffered_floor(user))
+        && !user_stats.is_equity_breaker_tripped())
 }
 
 /// Pays the crank its flat reward out of the user.
@@ -725,8 +736,6 @@ fn mark_slot_placed(
     user_loader: &AccountLoader<'_, User>,
     order_id: u32,
     order_ref: &ClobOrderRefV0,
-    market_index: u16,
-    reduce_only: bool,
     slot: u64,
 ) -> Result<()> {
     let mut user = load_mut!(user_loader)?;
@@ -739,13 +748,6 @@ fn mark_slot_placed(
         .ok_or(ErrorCode::OrderDoesNotExist)?;
     user.orders[order_index].set_clob_order_ref(order_ref.node_index, order_ref.order_id);
     user.orders[order_index].add_bit_flag(OrderBitFlag::PlacedOnClob);
-    // A reduce-only trigger now rests on the book. Arm the counter so the
-    // router caps its fills until it leaves the book.
-    if reduce_only {
-        let position_index = get_position_index(&user.perp_positions, market_index)?;
-        user.perp_positions[position_index].arm_reduce_only_clob();
-    }
-
     user.update_last_active_slot(slot);
     Ok(())
 }

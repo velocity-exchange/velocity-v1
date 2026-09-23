@@ -428,79 +428,30 @@ impl crate::state::user::User {
         }
     }
 
-    /// Unwind this user's reserve for everything a bulk sweep took, and report
-    /// how many orders that was. It releases once per side by the summed base,
-    /// over both directions whatever sides the caller asked for. A report above
-    /// the reservation fails. [`Self::exit_swept_orders`] is the lenient sibling.
-    pub fn unwind_swept_orders(
+    /// Release this user's reservation for everything a bulk sweep took, and
+    /// report how many orders that was. Both callers are exits, one by the
+    /// owner and one forced by a keeper, so the release clamps at the
+    /// reservation instead of failing.
+    pub fn release_swept_orders(
         &mut self,
         clob: &ClobReader,
         market_index: u16,
         sides: ClobCancelSides,
         swept: &ClobCancelAllOutcomeV0,
     ) -> Result<u32> {
-        self.unwind_swept(clob, market_index, sides, swept, true)
-    }
+        use crate::state::user::{OrderReservation, ReleaseCheck};
 
-    /// [`Self::unwind_swept_orders`] for the owner's own exit. The release
-    /// clamps at the reservation instead of failing, because a book that
-    /// reports garbage must not be able to keep its maker on it.
-    pub fn exit_swept_orders(
-        &mut self,
-        clob: &ClobReader,
-        market_index: u16,
-        sides: ClobCancelSides,
-        swept: &ClobCancelAllOutcomeV0,
-    ) -> Result<u32> {
-        self.unwind_swept(clob, market_index, sides, swept, false)
-    }
+        self.release_orders(
+            &OrderReservation::swept(market_index, swept)?,
+            ReleaseCheck::ClampedForExit,
+        )?;
 
-    fn unwind_swept(
-        &mut self,
-        clob: &ClobReader,
-        market_index: u16,
-        sides: ClobCancelSides,
-        swept: &ClobCancelAllOutcomeV0,
-        held_to_reservation: bool,
-    ) -> Result<u32> {
-        use crate::controller::position::{
-            decrease_open_bids_and_asks, get_position_index, release_reserved_open_base_for_exit,
-            PositionDirection,
-        };
-
-        let position_index = get_position_index(&self.perp_positions, market_index)?;
-        for direction in [PositionDirection::Long, PositionDirection::Short] {
-            if held_to_reservation {
-                decrease_open_bids_and_asks(
-                    &mut self.perp_positions[position_index],
-                    &direction,
-                    swept.base_for(direction),
-                    true,
-                )?;
-            } else {
-                release_reserved_open_base_for_exit(
-                    &mut self.perp_positions[position_index],
-                    &direction,
-                    swept.base_for(direction),
-                )?;
-            }
-        }
-
-        let orders = swept.orders();
-        self.perp_positions[position_index].open_orders = self.perp_positions[position_index]
-            .open_orders
-            .saturating_sub(orders.min(u8::MAX as u32) as u8);
-        // The sweep took this many reduce-only orders off the book, so disarm
-        // the counter by the same amount.
-        self.perp_positions[position_index]
-            .disarm_reduce_only_clob_by(swept.reduce_only_orders().min(u16::MAX as u32) as u16);
-        (0..orders).for_each(|_| self.decrement_open_orders());
         let shadows = self.release_swept_trigger_shadows(clob, market_index, sides)?;
         if shadows > 0 {
             crate::msg!("released {} placed-trigger shadows", shadows);
         }
 
-        Ok(orders)
+        Ok(swept.orders())
     }
 
     /// Free this user's placed-trigger shadows on `sides` whose live orders a

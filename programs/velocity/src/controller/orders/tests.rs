@@ -985,7 +985,9 @@ pub mod fulfill_order {
         assert_eq!(taker_position.quote_entry_amount, -101010109);
         assert_eq!(taker_position.quote_break_even_amount, -101060615);
         assert_eq!(taker_position.open_bids, 0);
-        assert_eq!(taker_position.open_orders, 0);
+        // A fill gives back only the base it filled. The count is given back
+        // by the path that sees the order leave its book.
+        assert_eq!(taker_position.open_orders, 1);
         assert_eq!(taker_stats.fees.total_fee_paid, 50506);
         assert_eq!(taker_stats.fees.total_referee_discount, 0);
         assert_eq!(taker_stats.fees.total_token_discount, 0);

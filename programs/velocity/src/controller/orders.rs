@@ -71,8 +71,8 @@ use {
             state::{FeeStructure, *},
             traits::Size,
             user::{
-                MarketType, Order, OrderBitFlag, OrderStatus, OrderTriggerCondition, OrderType,
-                User, UserStats,
+                MarketType, Order, OrderBitFlag, OrderReservation, OrderStatus,
+                OrderTriggerCondition, OrderType, ReleaseCheck, User, UserStats,
             },
         },
         validate,

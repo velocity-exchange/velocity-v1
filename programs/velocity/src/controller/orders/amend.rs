@@ -302,59 +302,38 @@ fn emit_cancel_record(
 
 /// Release what the cancelled order reserved, and retire its slot.
 ///
-/// A trigger order that never fired reserved nothing, so only its open-order
-/// count is released.
+/// A cancel is an exit, so a perp release clamps at the reservation. An order
+/// left from the old venue then stays cancellable whatever its aggregates read.
 fn release_order_reservation(
     user: &mut User,
     order_index: usize,
     is_perp_order: bool,
 ) -> VelocityResult {
-    let Order {
-        market_index: order_market_index,
-        direction: order_direction,
-        ..
-    } = user.orders[order_index];
-
-    user.decrement_open_orders();
-
-    // only decrease open/bids ask if it's not a trigger order or if it's been triggered
-    let update_open_bids_and_asks = user.orders[order_index].update_open_bids_and_asks();
-
     if is_perp_order {
-        // Decrement open orders for existing position
-        let position_index = get_position_index(&user.perp_positions, order_market_index)?;
-
-        if update_open_bids_and_asks {
-            let base_asset_amount_unfilled =
-                user.orders[order_index].get_base_asset_amount_unfilled(None)?;
-            position::decrease_open_bids_and_asks(
-                &mut user.perp_positions[position_index],
-                &order_direction,
-                base_asset_amount_unfilled.cast()?,
-                update_open_bids_and_asks,
-            )?;
-        }
-
-        user.perp_positions[position_index].open_orders -= 1;
+        let reservation = OrderReservation::of_order(&user.orders[order_index])?;
+        user.release_orders(&reservation, ReleaseCheck::ClampedForExit)?;
     } else {
-        let spot_position_index = user.get_spot_position_index(order_market_index)?;
-
-        if update_open_bids_and_asks {
-            let base_asset_amount_unfilled =
-                user.orders[order_index].get_base_asset_amount_unfilled(None)?;
-            decrease_spot_open_bids_and_asks(
-                &mut user.spot_positions[spot_position_index],
-                &order_direction,
-                base_asset_amount_unfilled,
-                update_open_bids_and_asks,
-            )?;
-        }
-
-        user.spot_positions[spot_position_index].open_orders -= 1;
+        release_spot_order_reservation(user, order_index)?;
     }
 
     user.orders[order_index].status = OrderStatus::Canceled;
+    Ok(())
+}
 
+/// A spot order holds its count and its unfilled base on its spot position.
+fn release_spot_order_reservation(user: &mut User, order_index: usize) -> VelocityResult {
+    let order = user.orders[order_index];
+    user.decrement_open_orders();
+
+    let spot_position_index = user.get_spot_position_index(order.market_index)?;
+    decrease_spot_open_bids_and_asks(
+        &mut user.spot_positions[spot_position_index],
+        &order.direction,
+        order.get_base_asset_amount_unfilled(None)?,
+        order.update_open_bids_and_asks(),
+    )?;
+
+    user.spot_positions[spot_position_index].open_orders -= 1;
     Ok(())
 }
 

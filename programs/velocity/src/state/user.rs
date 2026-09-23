@@ -47,8 +47,11 @@ use {
 
 #[cfg(test)]
 mod isolated_transfer_tests;
+mod order_reservation;
 #[cfg(test)]
 mod tests;
+
+pub use order_reservation::{OrderReservation, ReleaseCheck};
 
 #[derive(Clone, Copy, BorshSerialize, BorshDeserialize, PartialEq, Debug, Eq)]
 #[borsh(use_discriminant = true)]
@@ -662,96 +665,19 @@ impl User {
             .find(|market_index| self.clob_resident_open_orders(*market_index) > 0)
     }
 
-    /// Take one removed CLOB order off its owner's aggregates: the reserve
-    /// its remaining size held, the position's open-order slot, the
-    /// reduce-only counter it armed, and the placed-trigger shadow if one
-    /// shadows it.
-    ///
-    /// The reserve release clamps rather than fails. See
-    /// [`crate::controller::position::release_reserved_open_base_for_exit`].
-    /// The owner chose this exit or a keeper forced it, so a book that reports
-    /// a wrong size must not be able to keep a maker on the book. The crank
-    /// paths hold the release to the reservation instead and do not use this.
-    /// There the report is the book's own word against margin it frees.
-    pub fn cleanup_removed_clob_order(
+    /// Take a CLOB order that left the book off its owner's account, and free
+    /// the placed-trigger slot that shadows it, if one does. `reservation` is
+    /// what the order still held, which for a consumed order is no base.
+    pub fn close_book_order(
         &mut self,
-        market_index: u16,
-        direction: &PositionDirection,
-        base_asset_amount: u64,
-        reduce_only: bool,
+        reservation: &OrderReservation,
+        check: ReleaseCheck,
         clob_order_id: u64,
-    ) -> VelocityResult<()> {
-        let position_index = get_position_index(&self.perp_positions, market_index)?;
-        crate::controller::position::release_reserved_open_base_for_exit(
-            &mut self.perp_positions[position_index],
-            direction,
-            base_asset_amount,
-        )?;
-
-        self.perp_positions[position_index].open_orders = self.perp_positions[position_index]
-            .open_orders
-            .saturating_sub(1);
-        self.decrement_open_orders();
-        // The order left the book, so disarm the reduce-only counter it
-        // armed.
-        if reduce_only {
-            self.perp_positions[position_index].disarm_reduce_only_clob();
-        }
-
-        self.release_placed_trigger_slot(market_index, clob_order_id, OrderStatus::Canceled);
-        Ok(())
-    }
-
-    /// Take an order that has left the book off its owner's aggregates. What it
-    /// still reserved comes off, along with the open-order slot. This runs for
-    /// an order a fill consumed outright, leaving only the slot to unwind. It
-    /// also runs for one the book culled for falling under its minimum.
-    ///
-    /// `leftover` is the book's report, so it is held to what velocity
-    /// reserved for this user, not clamped to it. A report above the
-    /// reservation would free margin behind orders that still rest.
-    /// [`Self::cleanup_removed_clob_order`] is the lenient sibling for an exit
-    /// the owner chose or a keeper forced.
-    ///
-    /// `release_slot` is false when the fill already took the slot. A router
-    /// fill releases it as soon as its order reaches zero unfilled. A
-    /// fully-consumed order therefore arrives here with the slot already gone.
-    /// Taking it again would free another order's slot instead.
-    pub fn unwind_removed_clob_order(
-        &mut self,
-        market_index: u16,
-        direction: &PositionDirection,
-        leftover: u64,
-        clob_order_id: u64,
-        release_slot: bool,
-        reduce_only: bool,
-    ) -> VelocityResult<()> {
-        let position_index = get_position_index(&self.perp_positions, market_index)?;
-        if leftover > 0 {
-            crate::controller::position::release_reserved_open_base(
-                &mut self.perp_positions[position_index],
-                direction,
-                leftover,
-            )?;
-        }
-        if release_slot {
-            crate::controller::position::release_reserved_open_orders(
-                &mut self.perp_positions[position_index],
-                1,
-            )?;
-
-            self.decrement_open_orders();
-        }
-
-        // The order left the book, so disarm the reduce-only counter it
-        // armed. This runs only for a removed order: a partial fill shrinks
-        // the order in place and never lands here.
-        if reduce_only {
-            self.perp_positions[position_index].disarm_reduce_only_clob();
-        }
-
-        self.release_placed_trigger_slot(market_index, clob_order_id, OrderStatus::Canceled);
-        Ok(())
+        shadow_status: OrderStatus,
+    ) -> VelocityResult<usize> {
+        let position_index = self.release_orders(reservation, check)?;
+        self.release_placed_trigger_slot(reservation.market_index, clob_order_id, shadow_status);
+        Ok(position_index)
     }
 
     /// The slot shadowing CLOB order `clob_order_id` on `market_index`. That
@@ -788,7 +714,8 @@ impl User {
     }
 
     /// Flip the slot shadowing an evicted CLOB order back to `Armed`, carrying
-    /// the unfilled remainder. The re-arm is eager. The evict crank runs
+    /// the unfilled remainder. No accounting moves. The caller moves the
+    /// order's reservation from the book back to the slot. The re-arm is eager. The evict crank runs
     /// through velocity with this `User` loaded, so the flip happens in the
     /// same transaction as the eviction. Re-triggering is edge-gated through
     /// [`OrderBitFlag::AwaitingTriggerRecross`]. A level-triggered re-arm
@@ -834,11 +761,6 @@ impl User {
             order.slot = slot;
         }
 
-        // The armed slot is a live order again, so it takes back the
-        // open-order count its CLOB order carried. The evict crank's unwind
-        // decremented that count. An untriggered order adds no bids or asks.
-        self.increment_open_orders();
-        self.get_perp_position_mut(market_index)?.open_orders += 1;
         Ok(true)
     }
 
@@ -1411,26 +1333,6 @@ impl PerpPosition {
             PositionDirection::Long => self.open_bids.max(0).unsigned_abs(),
             PositionDirection::Short => self.open_asks.min(0).unsigned_abs(),
         }
-    }
-
-    /// Record that one more reduce-only order now rests on the CLOB. Velocity
-    /// calls this when it rests a reduce-only remainder or fired trigger.
-    pub fn arm_reduce_only_clob(&mut self) {
-        self.reduce_only_clob_orders = self.reduce_only_clob_orders.saturating_add(1);
-    }
-
-    /// Record that one reduce-only CLOB order left the book. Velocity calls
-    /// this when such an order fills out, cancels, is evicted or expires. The
-    /// count saturates at zero, so a double disarm never wraps the counter and
-    /// leaves the user wrongly uncapped.
-    pub fn disarm_reduce_only_clob(&mut self) {
-        self.reduce_only_clob_orders = self.reduce_only_clob_orders.saturating_sub(1);
-    }
-
-    /// Disarm many at once, for a bulk sweep that reports how many reduce-only
-    /// orders it removed rather than removing them one at a time.
-    pub fn disarm_reduce_only_clob_by(&mut self, count: u16) {
-        self.reduce_only_clob_orders = self.reduce_only_clob_orders.saturating_sub(count);
     }
 
     /// True when the router must pass a reduce-only `base_cover` cap for this

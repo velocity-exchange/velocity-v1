@@ -17,7 +17,7 @@ use {
             prop_amm::{
                 ClobCancelOrderArgsV0, ClobMarket, ClobOrderRefV0, QuoterSlabV0, WireDirectionExt,
             },
-            user::User,
+            user::{OrderReservation, OrderStatus, ReleaseCheck, User},
         },
         validate,
     },
@@ -98,12 +98,16 @@ pub fn handle_cancel_order_v1(
     // placement reserved. This also frees a placed trigger's shadow slot. A
     // user cancels a placed trigger through this path.
     let mut user = load_mut!(ctx.accounts.user)?;
-    user.cleanup_removed_clob_order(
-        params.market_index,
-        &removed.side.to_position_direction(),
-        removed.base_asset_amount,
-        removed.reduce_only,
+    user.close_book_order(
+        &OrderReservation::book_order(
+            params.market_index,
+            removed.side.to_position_direction(),
+            removed.base_asset_amount,
+            removed.reduce_only,
+        ),
+        ReleaseCheck::ClampedForExit,
         removed.order_id,
+        OrderStatus::Canceled,
     )?;
 
     user.update_last_active_slot(clock.slot);

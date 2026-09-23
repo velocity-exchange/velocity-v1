@@ -130,10 +130,7 @@ pub fn handle_cancel_orders_v1(
 
     {
         let mut user = load_mut!(ctx.accounts.user)?;
-        // This is the owner's own exit, so the release clamps at the
-        // reservation instead of failing. A book that reports wrong totals must
-        // not be able to keep its maker's margin reserved.
-        user.exit_swept_orders(&clob.reader(), params.market_index, params.sides, &removed)?;
+        user.release_swept_orders(&clob.reader(), params.market_index, params.sides, &removed)?;
         user.update_last_active_slot(clock.slot);
     }
 

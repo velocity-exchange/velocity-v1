@@ -3404,7 +3404,7 @@ fn arm_reduce_only_sell_stop(fixture: &mut Fixture, position_base: i64) -> Reduc
     maker.perp_positions[0].base_asset_amount = position_base;
     set_user_account(&mut fixture.svm, fixture.clob_maker_user, &maker);
 
-    let maker_stats = Pubkey::new_unique();
+    let maker_stats = maker_stats_address(fixture);
     set_user_stats_account(
         &mut fixture.svm,
         maker_stats,
@@ -3484,6 +3484,75 @@ fn a_reduce_only_trigger_with_nothing_to_reduce_is_cancelled() {
     assert_eq!(maker.perp_positions[0].open_orders, 0);
     assert_eq!(maker.open_orders, 0);
     assert_eq!(maker.perp_positions[0].quote_asset_amount, 0);
+    assert_eq!(clob_ask_count(&fixture), 0);
+}
+
+/// A take that consumes a reduce-only book order disarms its owner's
+/// reduce-only count. A count left armed would spend one of the router's cap
+/// slots on this maker for every later fill.
+#[test]
+fn a_consumed_reduce_only_order_disarms_its_owner() {
+    let mut fixture = setup();
+    pause_amm_fill(&mut fixture.svm);
+    let stop = arm_reduce_only_sell_stop(&mut fixture, (UNIT / 4) as i64);
+
+    let keeper = fixture.keeper.insecure_clone();
+    let ix = trigger_limit_order_v1_ix(
+        &fixture,
+        1,
+        stop.filler_user,
+        stop.filler_stats,
+        stop.maker_stats,
+    );
+    send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
+    let maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+    assert_eq!(maker.perp_positions[0].reduce_only_clob_orders, 1);
+
+    fixture.svm.warp_to_slot(40);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (97 * PRICE_PRECISION) as i64,
+        40,
+    );
+
+    let taker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let mut ix = take_ix(
+        &fixture,
+        &taker,
+        OrderParams {
+            order_type: OrderType::Market,
+            market_type: MarketType::Perp,
+            direction: PositionDirection::Long,
+            base_asset_amount: UNIT / 4,
+            price: 105 * PRICE,
+            market_index: 0,
+            post_only: PostOnlyParam::None,
+            ..OrderParams::default()
+        },
+    );
+    let book_accounts = ix.accounts.split_off(ix.accounts.len() - 3);
+    ix.accounts
+        .push(AccountMeta::new(fixture.clob_maker_user, false));
+    ix.accounts.push(AccountMeta::new(stop.maker_stats, false));
+    ix.accounts.extend(book_accounts);
+
+    let authority = taker.authority.insecure_clone();
+    send_with_ixs(
+        &mut fixture.svm,
+        &authority,
+        &[compute_unit_limit_ix(400_000), ix],
+        &[],
+    )
+    .unwrap();
+
+    let maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+    assert_eq!(maker.perp_positions[0].base_asset_amount, 0);
+    assert_eq!(maker.perp_positions[0].reduce_only_clob_orders, 0);
+    assert_eq!(maker.perp_positions[0].open_orders, 0);
+    assert_eq!(maker.perp_positions[0].open_asks, 0);
+    assert_eq!(maker.open_orders, 0);
+    assert_eq!(maker.orders[0].status, OrderStatus::Filled);
     assert_eq!(clob_ask_count(&fixture), 0);
 }
 

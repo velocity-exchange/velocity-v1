@@ -50,7 +50,7 @@ use {
             },
             spot_market_map::{get_writable_spot_market_set, SpotMarketMap},
             state::State,
-            user::{User, UserStats},
+            user::{OrderReservation, OrderStatus, ReleaseCheck, User, UserStats},
         },
         validate,
     },
@@ -479,15 +479,18 @@ fn unwind_cancelled_orders(
             removed.order_id
         )?;
 
-        let direction = removed.side.to_position_direction();
-        // The cleanup also frees a placed trigger's shadow permanently. A
-        // failing account must not re-arm.
-        user.cleanup_removed_clob_order(
-            market_index,
-            &direction,
-            removed.base_asset_amount,
-            removed.reduce_only,
+        // A placed trigger's shadow is freed for good. A failing account must
+        // not re-arm.
+        user.close_book_order(
+            &OrderReservation::book_order(
+                market_index,
+                removed.side.to_position_direction(),
+                removed.base_asset_amount,
+                removed.reduce_only,
+            ),
+            ReleaseCheck::ClampedForExit,
             removed.order_id,
+            OrderStatus::Canceled,
         )?;
 
         total_fee = total_fee.safe_add(state.perp_fee_structure.flat_filler_fee)?;
@@ -503,11 +506,9 @@ fn unwind_cancelled_orders(
         )?;
     }
 
-    // The sweep unwinds by its per-side totals. That is the same arithmetic as
-    // one unwind per order, at a fixed cost. Each placement reserved its own
-    // amount, so the sum cannot exceed what is reserved. The unwind covers both
-    // directions whatever sides were asked for, so the reserve moves by exactly
-    // what left the book.
+    // The sweep releases its per-side totals, which is one release per order
+    // at a fixed cost. It covers both directions whatever sides were asked
+    // for, so the reserve moves by exactly what left the book.
     if let (Some(sides), Some(swept)) = (plan.sweep, removals.swept) {
         validate!(
             swept.user == plan.user_ref,
@@ -515,7 +516,7 @@ fn unwind_cancelled_orders(
             "clob swept orders for a different user"
         )?;
 
-        let orders = user.unwind_swept_orders(&clob.reader(), market_index, sides, &swept)?;
+        let orders = user.release_swept_orders(&clob.reader(), market_index, sides, &swept)?;
         total_fee = total_fee.safe_add(
             state
                 .perp_fee_structure

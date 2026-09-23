@@ -28,12 +28,7 @@
 
 use {
     crate::{
-        controller::{
-            orders::pay_keeper_flat_reward_for_perps,
-            position::{
-                get_position_index, release_reserved_open_base, release_reserved_open_orders,
-            },
-        },
+        controller::orders::pay_keeper_flat_reward_for_perps,
         error::ErrorCode,
         instructions::{constraints::*, relay_harness::StagedCall},
         load_mut, msg,
@@ -48,7 +43,7 @@ use {
                 QuoterCpiScratch, QuoterSlabExt, QuoterSlabV0, QuoterType, WireDirectionExt,
             },
             state::State,
-            user::{User, UserStats},
+            user::{OrderReservation, ReleaseCheck, User, UserStats},
         },
         validate,
     },
@@ -223,40 +218,41 @@ pub fn crank_clob_removal(
 
         drop(filler);
 
-        // The removal report is the book's, so its size and its slot are held
-        // to what velocity reserved for this user rather than clamped to it. An
-        // over-report would free the margin behind orders that still rest.
-        let position_index = get_position_index(&user.perp_positions, market_index)?;
-        release_reserved_open_base(
-            &mut user.perp_positions[position_index],
-            &removed.side.to_position_direction(),
+        // The removal report is the book's, so it is held to what velocity
+        // reserved for this user rather than clamped to it. An over-report
+        // would free the margin behind orders that still rest.
+        let removed_order = OrderReservation::book_order(
+            market_index,
+            removed.side.to_position_direction(),
             removed.base_asset_amount,
-        )?;
+            removed.reduce_only,
+        );
 
-        release_reserved_open_orders(&mut user.perp_positions[position_index], 1)?;
-        user.decrement_open_orders();
-        // The order left the book, so disarm the reduce-only counter it armed.
-        if removed.reduce_only {
-            user.perp_positions[position_index].disarm_reduce_only_clob();
-        }
-
-        // A placed trigger's shadow slot follows its CLOB order. Eviction
-        // re-arms it with the unfilled remainder, behind an edge gate on a
-        // price recross. Expiry frees it.
-        if is_evict {
+        // An evicted placed trigger re-arms with the unfilled remainder, behind
+        // an edge gate on a price recross. Its slot takes the order back.
+        let re_arms = is_evict
+            && user
+                .find_placed_trigger_slot(market_index, removed.order_id)
+                .is_some();
+        let position_index = if re_arms {
             user.re_arm_placed_trigger_slot(
                 market_index,
                 removed.order_id,
                 removed.base_asset_amount,
                 clock.slot,
             )?;
+            user.replace_reservation(
+                &removed_order,
+                &OrderReservation::armed_trigger(market_index),
+            )?
         } else {
-            user.release_placed_trigger_slot(
-                market_index,
+            user.close_book_order(
+                &removed_order,
+                ReleaseCheck::HeldToReservation,
                 removed.order_id,
                 crate::state::user::OrderStatus::Canceled,
-            );
-        }
+            )?
+        };
 
         // An eviction reads differently from a cancel. The order left the book
         // because the book ran out of room, and a placed trigger re-arms rather

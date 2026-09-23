@@ -100,7 +100,7 @@ pub fn trigger_and_route_order(
         clock,
     )?;
 
-    free_fired_order_slot(user, order_index, market_index)?;
+    free_fired_order_slot(user, order_index)?;
 
     user.update_last_active_slot(slot);
 
@@ -318,27 +318,16 @@ fn fired_order_increases_risk(
     oracle_price: i64,
 ) -> VelocityResult<bool> {
     let market_index = fired.market_index;
-    let update_open_bids_and_asks = fired.update_open_bids_and_asks();
-
     let (_, worst_case_before) = user
         .get_perp_position(market_index)?
         .worst_case_liability_value(oracle_price)?;
-    increase_open_bids_and_asks(
-        user.get_perp_position_mut(market_index)?,
-        &fired.direction,
-        fired.base_asset_amount,
-        update_open_bids_and_asks,
-    )?;
 
+    let reservation = OrderReservation::of_order(fired)?;
+    user.reserve_orders(&reservation)?;
     let (_, worst_case_after) = user
         .get_perp_position(market_index)?
         .worst_case_liability_value(oracle_price)?;
-    decrease_open_bids_and_asks(
-        user.get_perp_position_mut(market_index)?,
-        &fired.direction,
-        fired.base_asset_amount,
-        update_open_bids_and_asks,
-    )?;
+    user.release_orders(&reservation, ReleaseCheck::HeldToReservation)?;
 
     Ok(worst_case_after > worst_case_before)
 }
@@ -494,17 +483,12 @@ fn pay_and_record_trigger(
     Ok(())
 }
 
-/// Free the armed slot the fired order left behind.
-///
-/// The order is now a detached value. An untriggered trigger reserved no
-/// exposure, so only the order count is released. The caller's fill tolerates
-/// the now-empty position and rebuilds it.
-fn free_fired_order_slot(user: &mut User, order_index: usize, market_index: u16) -> VelocityResult {
-    let position_index = get_position_index(&user.perp_positions, market_index)?;
-    user.decrement_open_orders();
-    user.perp_positions[position_index].open_orders = user.perp_positions[position_index]
-        .open_orders
-        .saturating_sub(1);
+/// Free the armed slot the fired order left behind. The order is now a
+/// detached value. The caller's fill tolerates the now-empty position and
+/// rebuilds it.
+fn free_fired_order_slot(user: &mut User, order_index: usize) -> VelocityResult {
+    let reservation = OrderReservation::of_order(&user.orders[order_index])?;
+    user.release_orders(&reservation, ReleaseCheck::HeldToReservation)?;
     user.orders[order_index] = Order::default();
     Ok(())
 }

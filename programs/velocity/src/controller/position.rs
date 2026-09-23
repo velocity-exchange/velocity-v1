@@ -563,10 +563,9 @@ pub fn release_reserved_open_base(
 /// names more.
 ///
 /// This is the lenient form of [`release_reserved_open_base`]. Use it only on
-/// the paths an owner signs to remove their own orders from a book. Those
-/// paths run against a book that may be dead or de-listed, so a failure would
-/// trap a maker's orders on the book they need to leave. The log line keeps
-/// the clamp from being silent.
+/// an exit, which the owner chose or a keeper forced. An exit may run against
+/// a book that is dead or de-listed, so a failure would trap the orders the
+/// owner needs to remove. The log line keeps the clamp from being silent.
 pub fn release_reserved_open_base_for_exit(
     position: &mut PerpPosition,
     direction: &PositionDirection,
@@ -575,7 +574,7 @@ pub fn release_reserved_open_base_for_exit(
     let reserved = position.reserved_open_base(*direction);
     if base_asset_amount > reserved {
         msg!(
-            "clob reported {} base on the {:?} side of market {}, above the {} reserved; \
+            "exit released {} base on the {:?} side of market {}, above the {} reserved; \
              releasing the reservation and letting the exit through",
             base_asset_amount,
             direction,

@@ -278,7 +278,17 @@ pub struct CancelledRemainderV0 {
     /// on the order the caller knows. See [`CompletedOrderV0::client_order_id`].
     pub client_order_id: u32,
     pub user: UserRefV0,
-    pub _pad: [u8; 2],
+    /// [`L3_ROW_FLAG_REDUCE_ONLY`] when the order was reduce-only.
+    pub flags: u8,
+    pub _pad: [u8; 1],
+}
+
+impl CancelledRemainderV0 {
+    /// Whether the removed order was reduce-only. The caller disarms the
+    /// owner's reduce-only count with it.
+    pub fn is_reduce_only(&self) -> bool {
+        self.flags & L3_ROW_FLAG_REDUCE_ONLY != 0
+    }
 }
 
 /// One resting order a fill fully consumed, naming the balance change it belongs
@@ -292,14 +302,25 @@ pub struct CancelledRemainderV0 {
 pub struct CompletedOrderV0 {
     pub order_id: u64,
     /// Which entry of [`ExecuteResponseV0::changes`] this order belongs to. Changes
-    /// merge by user, so three consumed orders of one maker point at one change. An
-    /// index rather than a 34-byte [`UserRefV0`]. [`ExecuteResponseV0::parse`] refuses
-    /// an index past the end, which would unwind another user's live margin.
-    pub change_index: u32,
+    /// merge by user, and a transaction cannot lock enough users to overflow a `u16`.
+    /// [`ExecuteResponseV0::parse`] refuses an index past the end, which would unwind
+    /// another user's live margin.
+    pub change_index: u16,
+    /// [`L3_ROW_FLAG_REDUCE_ONLY`] when the order was reduce-only.
+    pub flags: u8,
+    pub _pad: [u8; 1],
     /// The caller's own id for this order, minted when it asked for the placement.
     /// Reporting it lets the caller close its record without holding a map between
     /// the two id spaces. Zero when the caller supplied none.
     pub client_order_id: u32,
+}
+
+impl CompletedOrderV0 {
+    /// Whether the consumed order was reduce-only. The caller disarms the
+    /// owner's reduce-only count with it.
+    pub fn is_reduce_only(&self) -> bool {
+        self.flags & L3_ROW_FLAG_REDUCE_ONLY != 0
+    }
 }
 
 /// The one order a fill left resting with less size than it found. A balance change
@@ -394,12 +415,14 @@ impl<'a> ExecuteResponseV0<'a> {
         Ok(response)
     }
 
-    /// The order ids the fill consumed for `change_index`.
-    pub fn completed_for(&self, change_index: usize) -> impl Iterator<Item = u64> + '_ {
+    /// The orders the fill consumed for `change_index`.
+    pub fn completed_for(
+        &self,
+        change_index: usize,
+    ) -> impl Iterator<Item = &'a CompletedOrderV0> + '_ {
         self.completed
             .iter()
             .filter(move |entry| entry.change_index as usize == change_index)
-            .map(|entry| entry.order_id)
     }
 
     /// How many orders the fill consumed for `change_index`.
@@ -420,7 +443,7 @@ impl<'a> ExecuteResponseV0<'a> {
         let mut ids = self
             .completed
             .iter()
-            .filter(|entry| entry.change_index == index)
+            .filter(|entry| entry.change_index as u32 == index)
             .map(|entry| entry.client_order_id)
             .chain(
                 self.partial
@@ -1075,7 +1098,8 @@ mod tests {
             price: 101,
             client_order_id: 420,
             user: user(9, 1),
-            _pad: [0; 2],
+            flags: L3_ROW_FLAG_REDUCE_ONLY,
+            _pad: [0; 1],
         }]
     }
 
@@ -1085,11 +1109,15 @@ mod tests {
                 order_id: 9,
                 change_index: 0,
                 client_order_id: 90,
+                flags: 0,
+                _pad: [0; 1],
             },
             CompletedOrderV0 {
                 order_id: 10,
                 change_index: 0,
                 client_order_id: 100,
+                flags: 0,
+                _pad: [0; 1],
             },
         ]
     }
@@ -1136,7 +1164,14 @@ mod tests {
         })
         .unwrap();
         let response = ExecuteResponseV0::parse(&bytes).unwrap();
-        assert_eq!(response.completed_for(0).collect::<Vec<_>>(), vec![9, 10]);
+        assert_eq!(
+            response
+                .completed_for(0)
+                .map(|entry| entry.order_id)
+                .collect::<Vec<_>>(),
+            vec![9, 10]
+        );
+        assert!(response.cancelled[0].is_reduce_only());
         assert_eq!(response.completed_for(1).count(), 0);
     }
 
@@ -1152,6 +1187,8 @@ mod tests {
                 order_id: 1,
                 change_index: 9,
                 client_order_id: 0,
+                flags: 0,
+                _pad: [0; 1],
             }],
 
             partial: &[],
@@ -1300,6 +1337,8 @@ mod tests {
                     order_id: 1,
                     change_index: 1,
                     client_order_id: 0,
+                    flags: 0,
+                    _pad: [0; 1],
                 }],
                 &[],
             ),

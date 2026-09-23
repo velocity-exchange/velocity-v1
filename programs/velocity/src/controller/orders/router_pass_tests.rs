@@ -532,6 +532,8 @@ pub mod amm_jit {
                     &[CompletedOrderV0 {
                         order_id: 1,
                         change_index: 0,
+                        flags: 0,
+                        _pad: [0; 1],
                         client_order_id: 0,
                     }]
                 } else {

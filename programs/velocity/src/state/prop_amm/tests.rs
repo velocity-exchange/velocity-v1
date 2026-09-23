@@ -413,18 +413,22 @@ fn the_reader_agrees_with_the_specs_writer() {
             authority,
             sub_account_id: 1,
         },
-
-        _pad: [0; 2],
+        flags: 0,
+        _pad: [0; 1],
     }];
     let completed = [
         CompletedOrderV0 {
             order_id: 9,
             change_index: 0,
+            flags: 0,
+            _pad: [0; 1],
             client_order_id: 0,
         },
         CompletedOrderV0 {
             order_id: 10,
             change_index: 1,
+            flags: 0,
+            _pad: [0; 1],
             client_order_id: 0,
         },
     ];
@@ -441,8 +445,20 @@ fn the_reader_agrees_with_the_specs_writer() {
     assert_eq!(response.changes, changes.as_slice());
     assert_eq!(response.cancelled, cancelled.as_slice());
     // Each consumed order resolves back to the change that named it.
-    assert_eq!(response.completed_for(0).collect::<Vec<_>>(), vec![9]);
-    assert_eq!(response.completed_for(1).collect::<Vec<_>>(), vec![10]);
+    assert_eq!(
+        response
+            .completed_for(0)
+            .map(|entry| entry.order_id)
+            .collect::<Vec<_>>(),
+        vec![9]
+    );
+    assert_eq!(
+        response
+            .completed_for(1)
+            .map(|entry| entry.order_id)
+            .collect::<Vec<_>>(),
+        vec![10]
+    );
     assert_eq!(response.completed_count(0), 1);
 }
 

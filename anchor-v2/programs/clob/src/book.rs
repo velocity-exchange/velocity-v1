@@ -1539,7 +1539,9 @@ impl ClobBook for ClobMarketV0 {
                 // every consumed order.
                 completed.push(CompletedOrderV0 {
                     order_id: node.order_id,
-                    change_index,
+                    change_index: u16::try_from(change_index).map_err(|_| ClobError::MathError)?,
+                    flags: removed_order_flags(node),
+                    _pad: [0; 1],
                     client_order_id: node.client_order_id,
                 });
 
@@ -1559,7 +1561,8 @@ impl ClobBook for ClobMarketV0 {
                         price: node.price,
                         client_order_id: node.client_order_id,
                         user: node.user_ref(),
-                        _pad: [0; 2],
+                        flags: removed_order_flags(node),
+                        _pad: [0; 1],
                     });
 
                     owes_expiry_repair |= holds_expiry_hint(book, node);
@@ -1846,6 +1849,16 @@ enum Settleable {
     /// chance to carry it, and it is big enough to be worth the right. The walk
     /// ends here.
     Withheld,
+}
+
+/// The flags a fill reports on an order it removed. The caller keeps a count of
+/// the owner's reduce-only orders and disarms it from this.
+fn removed_order_flags(node: &OrderNodeV0) -> u8 {
+    if node.is_reduce_only() {
+        quoter_spec::L3_ROW_FLAG_REDUCE_ONLY
+    } else {
+        0
+    }
 }
 
 /// The facts about an order a caller cannot see from its price and size.

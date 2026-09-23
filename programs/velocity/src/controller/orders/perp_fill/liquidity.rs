@@ -10,7 +10,7 @@ use {
     crate::{
         controller::{
             funding::settle_funding_payment,
-            position::{self, get_position_index, PositionDirection},
+            position::{get_position_index, PositionDirection},
         },
         error::{ErrorCode, VelocityResult},
         instructions::optional_accounts::AccountMaps,
@@ -26,7 +26,7 @@ use {
             perp_market::PerpMarket,
             prop_amm::{ClobUserRefV0, Direction, PriceLevel, QuoterType},
             quoter::{MarketQuoteInputs as QuoteInputs, QuoterFill, RouterQuoter},
-            user::{OrderStatus, User, UserStats},
+            user::{OrderReservation, OrderStatus, ReleaseCheck, User, UserStats},
             user_map::{UserMap, UserStatsMap},
         },
         validate,
@@ -953,12 +953,7 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         let is_isolated = maker.perp_positions[maker_position_index].is_isolated();
         self.note_maker_fill(&maker_key, base_filled, is_isolated)?;
         if leg.maker_aggregates_tracked {
-            self.release_completed_book_orders(
-                &mut maker,
-                maker_position_index,
-                response.completed_for(change_index),
-                completed,
-            )?;
+            self.release_completed_book_orders(&mut maker, response.completed_for(change_index))?;
         }
 
         Ok(())
@@ -995,30 +990,29 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
     /// Release the reservations the orders this change consumed outright held.
     ///
     /// Only a quoter whose makers are margin-reserved through velocity owes
-    /// this. A fully-consumed order may also be a placed trigger's live half,
-    /// and the shadow slot frees with it.
-    fn release_completed_book_orders(
+    /// this. The fill already released each order's base, so what is left is
+    /// its count. A fully-consumed order may also be a placed trigger's live
+    /// half, and the shadow slot frees with it.
+    fn release_completed_book_orders<'r>(
         &self,
         maker: &mut User,
-        position_index: usize,
-        completed_order_ids: impl Iterator<Item = u64>,
-        completed: usize,
+        mut completed_orders: impl Iterator<Item = &'r crate::state::prop_amm::CompletedOrderV0>,
     ) -> VelocityResult {
-        position::release_reserved_open_orders(
-            &mut maker.perp_positions[position_index],
-            completed.cast()?,
-        )?;
-
-        for clob_order_id in completed_order_ids {
-            maker.decrement_open_orders();
-            maker.release_placed_trigger_slot(
-                self.market_index,
-                clob_order_id,
-                OrderStatus::Filled,
-            );
-        }
-
-        Ok(())
+        completed_orders.try_for_each(|completed| {
+            maker
+                .close_book_order(
+                    &OrderReservation::book_order(
+                        self.market_index,
+                        self.maker_direction,
+                        0,
+                        completed.is_reduce_only(),
+                    ),
+                    ReleaseCheck::HeldToReservation,
+                    completed.order_id,
+                    OrderStatus::Filled,
+                )
+                .map(|_| ())
+        })
     }
 
     /// Hold one culled remainder to the subject rule and to the market's own
@@ -1077,24 +1071,17 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
             let maker_key = self.resolve_user(&cancelled.user)?;
             self.check_cull(leg, cancelled, &maker_key, market)?;
             let mut maker = self.makers_and_referrer.get_ref_mut(&maker_key)?;
-            let maker_position_index =
-                get_position_index(&maker.perp_positions, self.market_index)?;
-            position::release_reserved_open_base(
-                &mut maker.perp_positions[maker_position_index],
-                &self.maker_direction,
-                cancelled.base_asset_amount,
-            )?;
-            position::release_reserved_open_orders(
-                &mut maker.perp_positions[maker_position_index],
-                1,
-            )?;
-
-            maker.decrement_open_orders();
-            maker.release_placed_trigger_slot(
-                self.market_index,
+            let maker_position_index = maker.close_book_order(
+                &OrderReservation::book_order(
+                    self.market_index,
+                    self.maker_direction,
+                    cancelled.base_asset_amount,
+                    cancelled.is_reduce_only(),
+                ),
+                ReleaseCheck::HeldToReservation,
                 cancelled.order_id,
                 OrderStatus::Canceled,
-            );
+            )?;
 
             let is_isolated = maker.perp_positions[maker_position_index].is_isolated();
             drop(maker);
@@ -1155,19 +1142,6 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         )
     }
 
-    /// The taker's once-per-order open-orders counter. Only a taker that reserved at
-    /// placement unwinds one. A fresh detached taker never incremented one, so a
-    /// decrement would underflow the per-position `u8`.
-    fn decrement_taker_open_orders(&mut self) -> VelocityResult {
-        if !self.taker.reserved || self.taker.order.get_base_asset_amount_unfilled(None)? != 0 {
-            return Ok(());
-        }
-
-        self.taker.user.decrement_open_orders();
-        self.taker.user.perp_positions[self.taker.position_index].open_orders -= 1;
-        Ok(())
-    }
-
     /// Report what the pass moved, and apply what a settled pass owes.
     ///
     /// A pass that moved nothing owes none of it: the mark TWAP has no trade to
@@ -1189,7 +1163,6 @@ impl<'a, 'o, 'm, 's> PerpFill<'a, 'o, 'm, 's> {
         }
 
         self.update_mark_twap_and_volume(market)?;
-        self.decrement_taker_open_orders()?;
         self.check_withheld_obligation(venue, filler_key)?;
         Ok(filled)
     }

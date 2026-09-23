@@ -845,16 +845,11 @@ fn move_taker_position(
     Ok(())
 }
 
-/// Pay the keeper that turned this fill, out of the reward the schedule
-/// carved.
+/// Advance the taker's order by what this leg filled, and give back the base
+/// it reserved for that size.
 ///
-/// Advance the taker's order by what this leg filled, and unwind the
-/// reservation it held for that size.
-///
-/// Only a reservation the taker actually took is unwound. A fresh detached
-/// taker never reserved, and unwinding here would release a co-resident
-/// order's `open_bids` or `open_asks`.
-///
+/// Only a taker resting on a book reserved anything. A detached taker did not,
+/// and a release here would free another order's `open_bids` or `open_asks`.
 /// The caller emits the fill record after this, so the record reports the
 /// order as advanced.
 fn advance_taker_order(
@@ -867,12 +862,9 @@ fn advance_taker_order(
         settled.mark_builder_order_complete(filler);
     }
     if taker.reserved {
-        decrease_open_bids_and_asks(
-            &mut taker.user.perp_positions[taker.position_index],
-            &taker.direction,
-            filled.base,
-            taker.order.update_open_bids_and_asks(),
-        )?;
+        taker
+            .user
+            .release_filled_base(taker.position_index, taker.direction, filled.base)?;
     }
 
     Ok(())
@@ -1332,21 +1324,18 @@ pub(crate) fn settle_external_match_fill(
     Ok((filled.base, filled.quote))
 }
 
-/// Release the open-base a quoter's maker reserved for the size this leg filled.
+/// Give back the base a book maker reserved for the size this leg filled.
 ///
-/// The maker's leg is the quoter's own claim about a user it does not own, so it is held to that user's reservation rather than clamped to it.
-/// Every external settlement (the router fill and both cross cranks) passes through this one place, so a caller cannot settle one without the bound.
-/// CLOB orders are margin-reserved through velocity at placement, so their fills release those aggregates. Custom PropAMM depth is never reserved.
+/// The leg is the quoter's claim about a user it does not own, so the release
+/// is held to that user's reservation. Custom PropAMM depth is never reserved.
 fn release_external_maker_reservation(maker: &mut MakerSide, base_filled: u64) -> VelocityResult {
     if !maker.reserved {
         return Ok(());
     }
 
-    position::release_reserved_open_base(
-        &mut maker.user.perp_positions[maker.position_index],
-        &maker.direction,
-        base_filled,
-    )
+    maker
+        .user
+        .release_filled_base(maker.position_index, maker.direction, base_filled)
 }
 
 /// What one match leg's fill record says that the spine cannot.

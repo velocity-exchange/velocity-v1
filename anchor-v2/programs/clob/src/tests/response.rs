@@ -94,14 +94,17 @@ fn cull(
         price,
         client_order_id: client_id(order_id),
         user,
-        _pad: [0; 2],
+        flags: 0,
+        _pad: [0; 1],
     }
 }
 
-fn done(change_index: u32, order_id: u64) -> CompletedOrderV0 {
+fn done(change_index: u16, order_id: u64) -> CompletedOrderV0 {
     CompletedOrderV0 {
         order_id,
         change_index,
+        flags: 0,
+        _pad: [0; 1],
         client_order_id: client_id(order_id),
     }
 }
@@ -774,7 +777,7 @@ fn a_market_at_the_execute_ceilings_streams_a_full_width_response() {
     let completed: Vec<_> = orders
         .iter()
         .enumerate()
-        .map(|(i, order)| done(i as u32, order.order_id))
+        .map(|(i, order)| done(i as u16, order.order_id))
         .collect();
     let expected = encode_execute(&changes, &[], &completed, &[]);
     assert_eq!(streamed(&book, outcome.response), expected);
@@ -967,15 +970,68 @@ fn the_streamed_response_parses_back() {
     // Each consumed order resolves back to the change that owns it, which is
     // the whole point of naming the change from the id.
     assert_eq!(
-        response.completed_for(0).collect::<Vec<_>>(),
+        response
+            .completed_for(0)
+            .map(|entry| entry.order_id)
+            .collect::<Vec<_>>(),
         vec![first.order_id, last.order_id]
     );
     assert_eq!(
-        response.completed_for(1).collect::<Vec<_>>(),
+        response
+            .completed_for(1)
+            .map(|entry| entry.order_id)
+            .collect::<Vec<_>>(),
         vec![middle.order_id]
     );
 
     assert!(response.cancelled.is_empty());
+}
+
+/// A consumed order reports whether it was reduce-only. The caller counts its
+/// owner's reduce-only orders, and a consumed one it cannot see would stay
+/// counted after it left the book.
+#[test]
+fn a_consumed_order_reports_its_reduce_only_flag() {
+    let market = TestMarket::new(16);
+    let mut book = market.book();
+    let (reducer, maker) = (user(0xA), user(0xB));
+    book.place(crate::state::PlaceOrderParams {
+        reduce_only: true,
+        ..super::market::params(Side::Ask, 100, 5, reducer)
+    })
+    .expect("placement succeeds");
+    place(&mut book, Side::Ask, 101, 5, maker);
+
+    let mut caps = UserCapsV0::EMPTY;
+    caps.len = 1;
+    caps.caps[0] = crate::state::UserCapV0 {
+        index: 0,
+        quote_cap: u64::MAX,
+        base_cap: 5,
+    };
+
+    let outcome = book
+        .execute(
+            Direction::Long,
+            10,
+            &[reducer, maker],
+            &caps,
+            0,
+            None,
+            false,
+            0,
+            0,
+        )
+        .unwrap();
+    let bytes = streamed(&book, outcome.response);
+    let response = ExecuteResponseV0::parse(&bytes).unwrap();
+
+    let flags: Vec<bool> = response
+        .completed
+        .iter()
+        .map(|entry| entry.is_reduce_only())
+        .collect();
+    assert_eq!(flags, vec![true, false]);
 }
 
 /// A quote is a promise `execute` has to keep, so the two must be able to

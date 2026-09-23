@@ -65,7 +65,7 @@ use {
             revenue_share::RevenueShareEscrowZeroCopyMut,
             signed_msg_user::{SignedMsgUserOrdersLoader, SIGNED_MSG_PDA_SEED},
             state::State,
-            user::{User, UserStats},
+            user::{OrderReservation, OrderStatus, ReleaseCheck, User, UserStats},
             user_map::{load_user_maps, UserMap, UserStatsMap},
         },
         validate,
@@ -775,18 +775,17 @@ fn report_fill_to_book<'info>(
         .copied()
         .ok_or(ErrorCode::NoTakerOriginCross)?;
     if filled.removed {
-        // The router released the slot itself if it exhausted the order, so
-        // only a culled remainder still owes one. This reads what the fill
-        // returned, because a detached fill does not write back to `order`.
-        let release_slot = base_filled < subject_order.base_asset_amount;
         let mut taker = load_mut!(cx.accounts.taker)?;
-        taker.unwind_removed_clob_order(
-            cx.market_index,
-            &cx.taker_direction,
-            filled.culled_base_asset_amount,
+        taker.close_book_order(
+            &OrderReservation::book_order(
+                cx.market_index,
+                cx.taker_direction,
+                filled.culled_base_asset_amount,
+                subject_order.reduce_only,
+            ),
+            ReleaseCheck::HeldToReservation,
             subject_order.order_ref.order_id,
-            release_slot,
-            subject_order.reduce_only,
+            OrderStatus::Canceled,
         )?;
 
         return Ok(0);
@@ -1395,33 +1394,30 @@ fn report_pair_fill_to_book<'info>(
             continue;
         }
 
-        let direction = if owner_is_taker {
-            cx.taker_direction
+        let (mut owner, direction, resting) = if owner_is_taker {
+            (
+                load_mut!(cx.accounts.taker)?,
+                cx.taker_direction,
+                pair.aggressor,
+            )
         } else {
-            cx.taker_direction.opposite()
+            (
+                cx.makers_and_referrer.get_ref_mut(&pair.maker_key)?,
+                cx.taker_direction.opposite(),
+                pair.counterparty,
+            )
         };
-
-        if owner_is_taker {
-            let mut taker = load_mut!(cx.accounts.taker)?;
-            taker.unwind_removed_clob_order(
+        owner.close_book_order(
+            &OrderReservation::book_order(
                 cx.market_index,
-                &direction,
+                direction,
                 leg.culled_base_asset_amount,
-                leg.order_id,
-                true,
-                pair.aggressor.reduce_only,
-            )?;
-        } else {
-            let mut maker = cx.makers_and_referrer.get_ref_mut(&pair.maker_key)?;
-            maker.unwind_removed_clob_order(
-                cx.market_index,
-                &direction,
-                leg.culled_base_asset_amount,
-                leg.order_id,
-                true,
-                pair.counterparty.reduce_only,
-            )?;
-        }
+                resting.reduce_only,
+            ),
+            ReleaseCheck::HeldToReservation,
+            leg.order_id,
+            OrderStatus::Canceled,
+        )?;
     }
 
     Ok(())

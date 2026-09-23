@@ -9,9 +9,9 @@
 //! This handler cancels and then replaces in one instruction. The CLOB has no
 //! in-place mutation, and a modify is a new order at the back of its price
 //! level either way. The single instruction buys atomicity and one margin gate
-//! over the net change. The cancelled size is unwound from the open-order
-//! aggregates before the replacement reserves its own, so a same-size reprice
-//! never has to pass margin for double the exposure. Place-then-cancel does.
+//! over the net change. The replacement's reservation replaces the cancelled
+//! order's before the gate runs, so a same-size reprice never has to pass
+//! margin for double the exposure. Place-then-cancel does.
 //!
 //! The replacement leg follows `place_and_make_perp_order_v1`, with the same
 //! margin gate, the same activation-delay attestation rule and the same wake
@@ -27,13 +27,7 @@
 
 use {
     crate::{
-        controller::{
-            self,
-            position::{
-                add_new_position, decrease_open_bids_and_asks, get_position_index,
-                increase_open_bids_and_asks, PositionDirection,
-            },
-        },
+        controller::{self, position::PositionDirection},
         error::ErrorCode,
         instructions::{
             constraints::*,
@@ -41,9 +35,11 @@ use {
         },
         load_mut,
         math::{
+            casting::Cast,
             liquidation::validate_user_not_being_liquidated,
             margin::meets_place_order_margin_requirement,
             orders::{is_new_order_risk_increasing, reduce_only_cover},
+            safe_math::SafeMath,
         },
         msg,
         state::{
@@ -54,7 +50,7 @@ use {
                 ClobRemovedOrderV0, QuoterSlabExt, QuoterSlabV0, WireDirectionExt,
             },
             state::State,
-            user::{Order, User},
+            user::{Order, OrderReservation, User},
         },
         validate,
     },
@@ -409,8 +405,8 @@ fn resolve_replacement_terms(
     })
 }
 
-/// Re-reserve the aggregates net of the cancel, then gate margin the way a
-/// placement does. Both legs run inside this transaction, so a failure unwinds
+/// Replace the cancelled order's reservation with the replacement's, then gate
+/// margin the way a placement does. Both legs run inside this transaction, so a failure unwinds
 /// the cancel with it and the maker is never left flat.
 ///
 /// Reports whether the position is isolated, for the place record. The
@@ -433,14 +429,18 @@ fn reserve_replacement_margin<'info>(
         "user bankrupt"
     )?;
 
-    let position_index = get_position_index(&user.perp_positions, market_index)
-        .or_else(|_| add_new_position(&mut user.perp_positions, market_index))?;
-    decrease_open_bids_and_asks(
-        &mut user.perp_positions[position_index],
-        &terms.direction,
+    let removed = OrderReservation::book_order(
+        market_index,
+        terms.direction,
         cancelled_base_asset_amount,
-        true,
-    )?;
+        terms.reduce_only,
+    );
+    let replacement = OrderReservation::book_order(
+        market_index,
+        terms.direction,
+        terms.base_asset_amount,
+        terms.reduce_only,
+    );
 
     // The same predicate every placement uses, read at the same point: the
     // position net of the cancel, before the replacement reserves. Counting
@@ -452,25 +452,17 @@ fn reserve_replacement_margin<'info>(
         reduce_only: terms.reduce_only,
         ..Order::default()
     };
-    let position = &user.perp_positions[position_index];
+    let position = user.get_perp_position(market_index)?;
     let risk_increasing = is_new_order_risk_increasing(
         &prospective,
         position.base_asset_amount,
-        position.open_bids,
-        position.open_asks,
+        position.open_bids.safe_sub(removed.open_bids.cast()?)?,
+        position.open_asks.safe_add(removed.open_asks.cast()?)?,
     )?;
 
-    increase_open_bids_and_asks(
-        &mut user.perp_positions[position_index],
-        &terms.direction,
-        terms.base_asset_amount,
-        true,
-    )?;
-
-    // One order leaves and one arrives, so the order count does not change.
-    // Neither the position counter nor `User.open_orders` moves. A placed
-    // trigger's shadow slot keeps its parameters; only its CLOB ref changes,
-    // written by the re-stamp below.
+    // A placed trigger's shadow slot keeps its parameters. Only its CLOB ref
+    // changes, written by the re-stamp below.
+    let position_index = user.replace_reservation(&removed, &replacement)?;
     let isolated_market_index = (risk_increasing
         && user.perp_positions[position_index].is_isolated())
     .then_some(market_index);

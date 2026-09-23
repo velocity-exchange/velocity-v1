@@ -67,11 +67,10 @@ impl BuiltPerpOrder {
     /// isolated scope the order lands in. `None` is cross margin.
     ///
     /// Both placement paths end here, so neither can drop a check the other
-    /// runs. The hold decides only where the order's reservation lives while
-    /// margin measures it.
+    /// runs. The caller holds the order's reservation on `user`, so margin
+    /// measures the account with the order counted.
     fn admit(
         &self,
-        hold: OrderHold,
         user: &mut User,
         user_key: &Pubkey,
         maps: &mut AccountMaps,
@@ -79,10 +78,6 @@ impl BuiltPerpOrder {
         options: &mut PlaceOrderOptions,
     ) -> VelocityResult<Option<u16>> {
         options.update_risk_increasing(self.risk_increasing);
-
-        if let OrderHold::Slot(order_index) = hold {
-            commit_order_to_slot(user, order_index, &self.order, self.position_index)?;
-        }
 
         let isolated_market_index = user.perp_positions[self.position_index]
             .is_isolated()
@@ -93,8 +88,7 @@ impl BuiltPerpOrder {
         // risk-increasing order must not pass under the weaker check a later
         // no-op order would present.
         if options.enforce_margin_check && !options.is_liquidation() {
-            self.check_margin(
-                hold,
+            meets_place_order_margin_requirement(
                 user,
                 maps,
                 options.risk_increasing,
@@ -126,48 +120,6 @@ impl BuiltPerpOrder {
 
         Ok(isolated_market_index)
     }
-
-    /// Hold the user to margin with this order's exposure counted.
-    fn check_margin(
-        &self,
-        hold: OrderHold,
-        user: &mut User,
-        maps: &mut AccountMaps,
-        risk_increasing: bool,
-        isolated_market_index: Option<u16>,
-    ) -> VelocityResult {
-        match hold {
-            // The slot already carries the reservation, so the user reads as
-            // the check needs it.
-            OrderHold::Slot(_) => meets_place_order_margin_requirement(
-                user,
-                maps,
-                risk_increasing,
-                isolated_market_index,
-            ),
-            // A detached order reserves nothing, so the check models the
-            // reservation and then reverses it.
-            OrderHold::Detached => check_prospective_order_margin(
-                user,
-                self.position_index,
-                &ProspectiveReservation::of(&self.order),
-                risk_increasing,
-                isolated_market_index,
-                maps,
-            ),
-        }
-    }
-}
-
-/// Where a built order lives once it is admitted.
-#[derive(Clone, Copy)]
-enum OrderHold {
-    /// The order takes this slot of `user.orders` and keeps the exposure it
-    /// reserves there.
-    Slot(usize),
-    /// The order is handed back as a value. It holds no slot and reserves
-    /// nothing, so only a remainder that later rests reserves anything.
-    Detached,
 }
 
 /// Build a perp `Order` from its params and mint its id, without storing it.
@@ -408,13 +360,10 @@ fn resolve_order_terms(
     }))
 }
 
-/// The `max_ts` an order gets when its params name none.
-///
-/// A market or oracle order lives `DEFAULT_MARKET_ORDER_LIFETIME_SECONDS`, so
-/// a remainder that rests on the book cannot outlast the market its worst
-/// price was set against. `max_ts` only ends the order. How long the book
-/// holds a remainder before it can fill is `activation_delay_slots`. Every
-/// other order type lives until it is cancelled.
+/// The `max_ts` an order gets when its params name none. A market or oracle
+/// order lives `DEFAULT_MARKET_ORDER_LIFETIME_SECONDS`, so its rested remainder
+/// cannot outlast its worst price. `max_ts` ends an order and never delays a
+/// fill. Every other order type lives until it is cancelled.
 fn default_order_max_ts(order_type: OrderType, now: i64) -> VelocityResult<i64> {
     match order_type {
         OrderType::Market | OrderType::Oracle => {
@@ -573,14 +522,8 @@ pub fn place_perp_trigger_order(
         return Ok(PlaceOrderResult::default());
     };
 
-    let isolated_market_index = built.admit(
-        OrderHold::Slot(order_index),
-        user,
-        &user_key,
-        maps,
-        clock,
-        &mut options,
-    )?;
+    commit_order_to_slot(user, order_index, &built.order)?;
+    let isolated_market_index = built.admit(user, &user_key, maps, clock, &mut options)?;
 
     Ok(PlaceOrderResult {
         risk_increasing: built.risk_increasing,
@@ -637,22 +580,11 @@ fn next_order_slot(user: &User, user_order_id: u8) -> VelocityResult<usize> {
     Ok(new_order_index)
 }
 
-/// Write the order into its slot and reserve the exposure it holds open.
-fn commit_order_to_slot(
-    user: &mut User,
-    order_index: usize,
-    order: &Order,
-    position_index: usize,
-) -> VelocityResult {
-    user.increment_open_orders();
+/// Write the order into its slot and reserve what it holds open.
+fn commit_order_to_slot(user: &mut User, order_index: usize, order: &Order) -> VelocityResult {
     user.orders[order_index] = *order;
-    user.perp_positions[position_index].open_orders += 1;
-    increase_open_bids_and_asks(
-        &mut user.perp_positions[position_index],
-        &order.direction,
-        order.base_asset_amount,
-        order.update_open_bids_and_asks(),
-    )
+    user.reserve_orders(&OrderReservation::of_order(order)?)?;
+    Ok(())
 }
 
 /// Hold the market to its open-interest cap with the new order added.
@@ -739,66 +671,6 @@ fn emit_place_records(
     })
 }
 
-/// The exposure an order would hold open on its position, for a check that
-/// runs before anything is reserved.
-pub struct ProspectiveReservation {
-    pub direction: PositionDirection,
-    pub base_asset_amount: u64,
-    /// Whether the exposure reaches `open_bids` or `open_asks`. An unfired
-    /// trigger order reserves the open-order slot alone.
-    pub update_open_bids_and_asks: bool,
-}
-
-impl ProspectiveReservation {
-    pub fn of(order: &Order) -> Self {
-        Self {
-            direction: order.direction,
-            base_asset_amount: order.base_asset_amount,
-            update_open_bids_and_asks: order.update_open_bids_and_asks(),
-        }
-    }
-}
-
-/// Whether `user` can carry one more order of this shape, without keeping any
-/// of it.
-///
-/// The margin engine prices the user with the prospective exposure, so the
-/// check models the reservation and then reverses it. The model covers the
-/// aggregates and the per-open-order flat term. The user is left as it was.
-/// Both the detached create and the remainder rest gate through here, so the
-/// two paths cannot drift.
-pub fn check_prospective_order_margin(
-    user: &mut User,
-    position_index: usize,
-    reservation: &ProspectiveReservation,
-    risk_increasing: bool,
-    isolated_market_index: Option<u16>,
-    maps: &mut AccountMaps,
-) -> VelocityResult<()> {
-    increase_open_bids_and_asks(
-        &mut user.perp_positions[position_index],
-        &reservation.direction,
-        reservation.base_asset_amount,
-        reservation.update_open_bids_and_asks,
-    )?;
-
-    // The requirement carries a flat term per open order, so the model
-    // counts the prospective one too.
-    let open_orders_before = user.perp_positions[position_index].open_orders;
-    user.perp_positions[position_index].open_orders = open_orders_before.saturating_add(1);
-    let checked =
-        meets_place_order_margin_requirement(user, maps, risk_increasing, isolated_market_index);
-    user.perp_positions[position_index].open_orders = open_orders_before;
-    decrease_open_bids_and_asks(
-        &mut user.perp_positions[position_index],
-        &reservation.direction,
-        reservation.base_asset_amount,
-        reservation.update_open_bids_and_asks,
-    )?;
-
-    checked
-}
-
 /// Create a perp order that never touches `user.orders`. The order comes back
 /// as a value, holding no slot and no `open_bids` or `open_asks` reservation.
 /// It still mints an id, writes a builder-order row when one applies, and
@@ -828,14 +700,11 @@ pub fn create_detached_perp_order(
         return Ok(None);
     };
 
-    built.admit(
-        OrderHold::Detached,
-        user,
-        &user_key,
-        maps,
-        clock,
-        &mut options,
-    )?;
+    // The order is admitted as if it rested, then handed back holding nothing.
+    let reservation = OrderReservation::of_order(&built.order)?;
+    user.reserve_orders(&reservation)?;
+    built.admit(user, &user_key, maps, clock, &mut options)?;
+    user.release_orders(&reservation, ReleaseCheck::HeldToReservation)?;
 
     Ok(Some(built.order))
 }

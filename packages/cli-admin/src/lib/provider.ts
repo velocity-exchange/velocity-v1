@@ -16,6 +16,8 @@ export type GlobalOpts = {
 	keypair: string;
 	env: VelocityEnv;
 	multisig?: string;
+	/** `--dry-run`: build and price the instructions, send nothing. */
+	dryRun?: boolean;
 	/**
 	 * True when `env` came from a flag or profile. A declared env contradicting the RPC
 	 * genesis hash is fatal. An undeclared one is replaced by the detected cluster.

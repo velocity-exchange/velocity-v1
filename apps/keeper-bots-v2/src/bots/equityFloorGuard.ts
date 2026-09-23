@@ -310,8 +310,9 @@ export class EquityFloorGuardBot implements Bot {
 				const authorityKey = userAccount.authority.toBase58();
 				seen.add(userKey);
 
-				// Net equity is what the onchain checks and the trip proof see.
-				const equity = user.getNetUsdValue();
+				// The onchain floor checks read getFloorNetEquity. getNetUsdValue has
+				// a different composition and no oracle-validity verdict.
+				const equity = user.getFloorNetEquity(slot).value;
 				const headroom = equity.sub(userAccount.equityFloor);
 				const bufferedHeadroom = headroom.sub(userAccount.equityFloorBuffer);
 				const level = getEquityFloorLevel(

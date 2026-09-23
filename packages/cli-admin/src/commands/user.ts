@@ -98,11 +98,6 @@ export function registerUser(parent: Command): void {
 				'total number of sub-accounts that should exist',
 				'1'
 			)
-			.option(
-				'--dry-run',
-				'print what would be created and the expected rent/fees, send nothing',
-				false
-			)
 	).action(async (name: string, _flags, cmd: Command) => {
 		const opts = readGlobalOpts(cmd);
 		const local = cmd.opts() as {
@@ -258,11 +253,6 @@ export function registerUser(parent: Command): void {
 				'--allow-transfer <true|false>',
 				'also set the authority-wide allowDelegateTransfer flag on UserStats'
 			)
-			.option(
-				'--dry-run',
-				'print the instructions and expected proposal rent/fees, send nothing',
-				false
-			)
 	).action(async (delegate: string, _flags, cmd: Command) => {
 		const opts = readGlobalOpts(cmd);
 		const local = cmd.opts() as {
@@ -389,11 +379,6 @@ export function registerUser(parent: Command): void {
 				"source token account (default: the authority's ATA for the market mint)"
 			)
 			.option('--reduce-only', 'only reduce an existing borrow', false)
-			.option(
-				'--dry-run',
-				'print the instruction and expected proposal rent/fees, send nothing',
-				false
-			)
 	).action(async (market: string, amount: string, _flags, cmd: Command) => {
 		const opts = readGlobalOpts(cmd);
 		const local = cmd.opts() as {
@@ -482,11 +467,6 @@ export function registerUser(parent: Command): void {
 				"destination token account (default: the authority's ATA for the market mint; must exist)"
 			)
 			.option('--reduce-only', 'never flip the position into a borrow', false)
-			.option(
-				'--dry-run',
-				'print the instruction and expected proposal rent/fees, send nothing',
-				false
-			)
 	).action(async (market: string, amount: string, _flags, cmd: Command) => {
 		const opts = readGlobalOpts(cmd);
 		const local = cmd.opts() as {

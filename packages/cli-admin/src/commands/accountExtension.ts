@@ -57,11 +57,6 @@ export function registerAccountExtension(parent: Command): void {
 				'extend instructions per transaction in --type mode',
 				'8'
 			)
-			.option(
-				'--dry-run',
-				'report which accounts would be extended and the rent cost, send nothing',
-				false
-			)
 	).action(async (account: string | undefined, _flags, cmd: Command) => {
 		const opts = readGlobalOpts(cmd);
 		const local = cmd.opts() as {

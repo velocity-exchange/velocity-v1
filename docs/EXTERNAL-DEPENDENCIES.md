@@ -14,15 +14,14 @@ Two questions this doc is meant to answer directly:
 including every program they call, every account owner they deserialize, and their full resolved
 crate graph.
 
-**Not covered:** the off-chain services and clients, which live in sibling repos and are not part
-of the on-chain trust surface. §5 lists the off-chain components Velocity depends on for
-*liveness* and points at where they live, but does not enumerate their dependencies. The
-TypeScript SDK's npm tree is likewise out of scope. It is a client library, and a compromise
-there does not move funds on its own.
+**Not covered:** the off-chain services and clients, which live in sibling repos and cannot move
+funds without a signed instruction the program validates. §5 lists the off-chain components
+Velocity depends on for *liveness* and points at where they live, but does not enumerate their
+dependencies. The TypeScript SDK's npm tree is likewise out of scope; it is a client library, and
+a compromise there does not move funds on its own.
 
-Program IDs below are mainnet unless noted. Every ID was read from source, not from memory. See
-[Regenerating and re-verifying this doc](#7-regenerating-and-re-verifying-this-doc) for how to
-re-verify them.
+Program IDs below are mainnet unless noted. Every ID was read from source, not from memory;
+see §7 for how to re-verify.
 
 ---
 
@@ -34,11 +33,11 @@ a perp fill.
 
 | Program | ID | Caller | Used for | Trust assumption | Failure mode |
 |---|---|---|---|---|---|
-| System | `11111111111111111111111111111111` | `velocity` | PDA create, allocate, assign, and transfer (`controller/pda.rs`) | Part of the runtime. It is not independently trusted | None separable from the chain halting |
-| SPL Token | `TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA` | `velocity`, `vaults` | `transfer_checked`, `burn`, `mint_to`, `close_account`, `initialize_account3` (`controller/token.rs`) | The program is frozen and heavily audited | A defect would be systemic to Solana. Velocity has no independent mitigation |
-| SPL Token-2022 | `TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb` | `velocity`, `vaults` | The same operations, through `anchor_spl::token_interface` | The SPL authority can upgrade it. Extension semantics behave as documented | See [Token-2022 extensions](#token-2022-extensions). This is the largest CPI-side risk in the SPL set |
-| Associated Token Account | `ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL` | `velocity` | Protocol-fee withdrawal accounts. It is also whitelisted inside swap flows | Standard derivation | Withdrawal instructions fail. No fund risk |
-| Metaplex Token Metadata | `metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s` | `vaults` only | `create_metadata_accounts_v3` in `initialize_tokenized_vault_depositor` | The Metaplex upgrade authority | Tokenized vault depositors cannot be created. Existing vault funds and the perps program are unaffected |
+| System | `11111111111111111111111111111111` | `velocity` | PDA create / allocate / assign / transfer (`controller/pda.rs`) | Part of the runtime; not independently trusted | None separable from the chain halting |
+| SPL Token | `TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA` | `velocity`, `vaults` | `transfer_checked`, `burn`, `mint_to`, `close_account`, `initialize_account3` (`controller/token.rs`) | Program is frozen and heavily audited | A defect would be systemic to Solana; Velocity has no independent mitigation |
+| SPL Token-2022 | `TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb` | `velocity`, `vaults` | Same operations, through `anchor_spl::token_interface` | Upgradeable by the SPL authority; extension semantics behave as documented | See "Token-2022 extensions" below; this is the largest CPI-side risk |
+| Associated Token Account | `ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL` | `velocity` | Protocol-fee withdrawal accounts; also whitelisted inside swap flows | Standard derivation | Withdrawal instructions fail; no fund risk |
+| Metaplex Token Metadata | `metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s` | `vaults` only | `create_metadata_accounts_v3` in `initialize_tokenized_vault_depositor` | Metaplex upgrade authority | Tokenized vault depositors cannot be created. Existing vault funds and the entire perps program are unaffected |
 | CLOB | `BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU` | `velocity` | The order book behind every perp market: place, modify, cancel, quote, execute, and the removal cranks (`instructions/clob/`, `state/prop_amm/`) | Velocity wrote and deploys this program. `initialize_quoter` pins a `Clob` entry to this ID, so an admin can give a market a book but cannot choose the code the book runs | Fills that need the book revert. The vAMM and the remaining quoters still price |
 | Approved `Custom` quoters | Per market, registered in `QuoterSlabV0` | `velocity` | `quote_v0`, `execute_v0`, and the optional `quote_l3_v0` legs of a router fill | A `Custom` entry is a warm-admin approval of a third-party program. Its responses are validated rather than trusted, and it may move only the one user its registration consented for | A bad response fails the fill, not the market. See [Approved quoter programs](#approved-quoter-programs) |
 
@@ -62,16 +61,15 @@ direction is inbound and adds no external trust.
 
 ### Token-2022 extensions
 
-Token-2022 is a single program ID over a variable feature set. Two of its extensions change what a
-transfer means.
+Token-2022 is a single program ID hiding a variable feature set. Two of its extensions change
+what a transfer means:
 
-- Transfer fee: the recipient receives less than the amount sent, which would under-credit a
-  deposit without reporting an error. `validate_mint_fee` (`controller/token.rs`) rejects a mint
-  that charges one.
-- Transfer hook: `transfer_checked_with_transfer_hook` (`controller/token.rs`) forwards
+- **Transfer fee.** The recipient receives less than the amount sent, which would silently
+  under-credit a deposit. Guarded by `validate_mint_fee` (`controller/token.rs:219`).
+- **Transfer hook.** `transfer_checked_with_transfer_hook` (`controller/token.rs:234`) forwards
   `remaining_accounts` into the transfer instruction, so a mint configured with a hook pulls an
-  arbitrary third-party program into Velocity's CPI. That program is not enumerable in advance.
-  It is whatever the mint author set.
+  **arbitrary third-party program** into Velocity's CPI. That program is not enumerable in advance:
+  it is whatever the mint author set.
 
 The mitigation is administrative rather than programmatic. Only mints an admin lists as a spot
 market can reach these paths, so the real control is spot-market listing review. Treat "does this
@@ -81,10 +79,9 @@ mint have a transfer hook, and what does the hook program do?" as a required lis
 
 ## 2. Programs Velocity reads but never calls
 
-Velocity reads oracle prices by deserializing account data. No CPI is involved, so the oracle
-program cannot execute code in Velocity's context. Its data still drives every margin,
-liquidation, and funding decision, which makes this the highest-consequence dependency in the
-system.
+Oracle prices are read by deserializing account data. No CPI is involved, so the oracle program
+cannot execute code in Velocity's context. But its data drives every margin, liquidation, and
+funding decision, which makes this the highest-consequence dependency in the system.
 
 ### 2.1 Pyth Lazer: primary price source
 
@@ -92,42 +89,40 @@ system.
 |---|---|
 | Trusted signer storage | `3rdJbqfnagQ4yx9HXJViD4zc4xpiSqmFsKpPuSCQVyQL` (address-locked in `instructions/pyth_lazer_oracle.rs`) |
 | Reference program ID | `pytd2yyk641x7ak7mkaasSJVXh6YYZnC7wTmtgAyxPt` (`ids.rs::pyth_lazer_program`) |
-| Path | Off-chain signed message → Ed25519 sigverify instruction → `update_pyth_lazer_oracle` → Velocity-owned `PythLazerOracle` PDA |
+| Path | An off-chain signed message, then an Ed25519 sigverify instruction, then `update_pyth_lazer_oracle`, which writes a Velocity-owned `PythLazerOracle` PDA |
 
 Prices arrive as messages signed off-chain by Pyth's signer set. `handle_update_pyth_lazer_oracle`
 verifies the signature by introspecting the preceding Ed25519 instruction through the instructions
 sysvar, checks it against the signer set in the Storage account, then writes the price into a PDA
 that Velocity owns. Reads at fill time hit Velocity's own account.
 
-**Trust assumptions:** Pyth's signer keys are not compromised, Pyth's publishers report honestly,
-and the Storage account's signer set is correct.
+**Trust assumptions:** Pyth's signer keys are not compromised; Pyth's publishers report honestly;
+the Storage account's signer set is correct.
 
 **Failure modes:**
 
 | Failure | Effect | Mitigation |
 |---|---|---|
-| Feed freezes (publisher or relay stalls) | Prices go stale while markets move | `PYTH_LAZER_MAX_STALENESS_SECONDS`, oracle validity gating per `VelocityAction`, and monotonic `next_timestamp` rejection. This class of failure has occurred in production. See the filler Lazer feed watchdog work |
+| Feed freezes (publisher or relay stalls) | Prices go stale while markets move | `PYTH_LAZER_MAX_STALENESS_SECONDS`; oracle validity gating per `VelocityAction`; monotonic `next_timestamp` rejection. This class of failure has occurred in production; see the filler Lazer feed watchdog work |
 | Signer key compromise | Attacker sets an arbitrary price and drains via liquidations or mispriced fills | Oracle guard rails: confidence-interval multiplier, TWAP price bands, divergence checks. These bound but do not eliminate the damage |
-| Velocity's keeper stops cranking updates | Prices go stale even though Pyth is healthy | This is a liveness dependency on Velocity's own infrastructure rather than on Pyth. See §5 |
+| Velocity's keeper stops cranking updates | Prices go stale even though Pyth is healthy | Liveness dependency on our own infrastructure, not on Pyth; see §5 |
 
-The dependency is composite. A healthy price requires Pyth to publish **and** a Velocity keeper to
-land the update transaction.
+Note the composite dependency: a healthy price requires **both** Pyth to publish **and** a Velocity
+keeper to land the update transaction.
 
 ### 2.2 Pyth V1 push oracle
 
 `FsJ3A3u2vn5cTVofAjvy6y5kwABJAqYWpe4975bi2epH` (mainnet), `gSbePebfvPy7tRqimPoVecS2UsBvYv46ynrzWocc92s`
 (devnet).
 
-This is the only external program allowed to own an oracle account. The
-`EXTERNAL_ORACLE_PROGRAM_IDS` list in `state/oracle_map.rs` holds one entry. Velocity reads the
-account by direct deserialization.
+The **only** external program allowed to own an oracle account: `EXTERNAL_ORACLE_PROGRAM_IDS` in
+`state/oracle_map.rs:52` is a one-element list. Read by direct deserialization.
 
 **Trust assumption:** Pyth's on-chain program and its publisher set.
-
-**Failure modes:** a stale price, a wide confidence interval, or a divergent aggregate. The same
-guard rails handle all three as they do for Lazer: `get_price_data_and_validity`,
-`is_oracle_valid_for_action`, per-market `is_recent_oracle_valid` and
-`get_max_confidence_interval_multiplier`, and TWAP-based price bands.
+**Failure modes:** stale price, wide confidence, or a divergent aggregate. All three are handled by
+the same guard rails as Lazer: `get_price_data_and_validity`, `is_oracle_valid_for_action`,
+per-market `is_recent_oracle_valid` and `get_max_confidence_interval_multiplier`, and TWAP-based
+price bands.
 
 ### 2.3 Sources that are not external
 
@@ -136,8 +131,8 @@ Listed here so the inventory is complete and nobody mistakes them for third-part
 | Source | Owner | Notes |
 |---|---|---|
 | `PrelaunchOracle` | Velocity | Admin/keeper-written account for pre-launch markets |
-| MM oracle | Velocity | A keeper-posted price on `PerpMarket`. It is used only when it beats the exchange oracle on validity, sequence ID, and divergence checks (`state/oracle.rs`) |
-| `QuoteAsset` | n/a | Hardcoded to $1. No account is read |
+| MM oracle | Velocity | Keeper-posted price on `PerpMarket`; used only when it beats the exchange oracle on validity, sequence ID, and divergence checks (`state/oracle.rs`) |
+| `QuoteAsset` | n/a | Hardcoded to $1; no account read |
 
 ---
 
@@ -156,9 +151,9 @@ belongs to a hardcoded whitelist.
 | Jupiter v3 | `JUP3c2Uh3WA4Ng34tw6kPd2G4C5BB21Xo36Je1s32Ph` | |
 | DFlow aggregator v4 | `DF1ow4tspfHX9JwWJsAb9epbkA8hmpSEAtxXy1V27QBH` | |
 | Titan Argos v1 | `T1TANpTeScyeqVzzgNViGDNrkQ6qHz9KrSBS4aNXvGT` | |
-| Serum / OpenBook | `srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX` | Swap routing only. External **spot fulfillment** venues were removed. Only the internal AMM and DLOB remain (`state/fulfillment_params/mod.rs`) |
+| Serum / OpenBook | `srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX` | Swap routing only. External **spot fulfillment** venues were removed; only the internal AMM/DLOB remains (`state/fulfillment_params/mod.rs`) |
 | Marinade | `MarBmsSgKXdrN1egZf5sqe1TMai9K1rChYNDJgjq7aD` | Allowed only when no delegate is signing |
-| Lighthouse | `L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95` | An assertion program. It is allowed after `end_swap` |
+| Lighthouse | `L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95` | Assertion program; allowed after `end_swap` |
 | ATA, Token, Token-2022 | see §1 | Allowed only when no delegate is signing |
 
 Source of truth: `ids.rs::WHITELISTED_SWAP_PROGRAMS` plus the per-instruction additions in
@@ -175,11 +170,11 @@ configuration.
 
 ---
 
-## 4. Solana runtime surface
+## 4. Solana runtime dependencies
 
 | Dependency | Used for |
 |---|---|
-| Clock sysvar | Timestamps and slots throughout. Newer handlers read it by syscall rather than as an account |
+| Clock sysvar | Timestamps and slots throughout; read by syscall, not as an account, in newer handlers |
 | Rent sysvar | PDA funding in `controller/pda.rs` |
 | Instructions sysvar | Ed25519 signature verification for Pyth Lazer and signed-message (swift) orders; whitelist introspection for swaps |
 | Ed25519 native program | Signature verification instruction that must precede `update_pyth_lazer_oracle` and signed-message order placement |
@@ -194,13 +189,13 @@ this class of change.
 ## 5. Off-chain dependencies (liveness, not solvency)
 
 None of these can move funds on their own, because every action they take goes through a signed
-instruction the program validates. The protocol still does not function correctly without them.
+instruction the program validates. But the protocol does not function correctly without them.
 
 | Component | Where it lives | What stops if it stops |
 |---|---|---|
-| Oracle cranker | `rust/keep-rs`, internal bot suite | Prices go stale and markets gate into reduced functionality |
-| Filler / keeper bots | `apps/keeper-bots-v2`, `rust/keep-rs` | Orders stop filling. Funding and PnL settlement stall |
-| Liquidator | Internal bot suite (off-repo) | Underwater positions are not liquidated, and bad debt accrues |
+| Oracle cranker | `rust/keep-rs`, internal bot suite | Prices go stale; markets gate into reduced functionality |
+| Filler / keeper bots | `apps/keeper-bots-v2`, `rust/keep-rs` | Orders stop filling; funding and PnL settlement stall |
+| Liquidator | Internal bot suite (off-repo) | Underwater positions are not liquidated; bad debt accrues |
 | Swift server | `rust/swift` | Signed-message order submission stops |
 | DLOB server | `apps/dlob-server` | Clients lose the order book view and auction-param endpoint |
 | vAMM crank | Internal service (off-repo) | vAMM spread does not widen on anomalous flow |
@@ -223,7 +218,7 @@ Deployment and monitoring for these live in `infrastructure-v3`.
 | `borsh` | 1.6.1 | Serialization |
 | `bytemuck` | 1.25.0 | Zero-copy account casting |
 | `pyth-client` | 0.2.2 | Pyth V1 account layouts |
-| `pyth_lazer` | local (`programs/pyth-lazer`) | Lazer message, payload, signature, and storage types. It is linked as a library, **not** a CPI target |
+| `pyth_lazer` | local (`programs/pyth-lazer`) | Lazer message, payload, signature, storage types. Linked as a library, **not** a CPI target |
 | `uint` | 0.9.5 | 256-bit integer math |
 | `num-traits`, `num-integer` | 0.2.19, 0.1.46 | Numeric traits |
 | `arrayref` | 0.3.9 | Slice-to-array conversion |
@@ -234,7 +229,7 @@ Deployment and monitoring for these live in `infrastructure-v3`.
 | `static_assertions` | 1.1.0 | Compile-time layout guards |
 | `solana-security-txt` | 1.1.2 | On-chain contact metadata |
 
-The `fuzz-fixtures` feature additionally pulls in `bytes` and the local `pyth` crate. It is off in
+The `fuzz-fixtures` feature also pulls in `bytes` and the local `pyth` crate. It is off in
 every SBF, devnet, and mainnet build invocation, so it never reaches a deployed artifact.
 
 ### 6.2 Transitive closure
@@ -245,13 +240,13 @@ every SBF, devnet, and mainnet build invocation, so it never reaches a deployed 
 | `vaults` | 246 (adds `mpl-token-metadata` and its dependencies, plus the local `velocity-macros`) |
 
 The graph is dominated by three roots: `anchor-lang`, `anchor-spl`, and `solana-program`. Nearly
-every `solana-*` and `spl-*` entry in Appendix A arrives through one of them. The non-Solana,
-non-Anchor crates that are genuinely third-party surface are the direct dependencies in §6.1 plus
-their small tails (`serde`, `thiserror`, `bytemuck`, the `digest`/`sha2` hashing stack, and the
+every `solana-*` and `spl-*` entry in Appendix A arrives through one of them. The genuinely
+third-party code, outside Solana and Anchor, is the set of direct dependencies in §6.1 plus their
+small tails (`serde`, `thiserror`, `bytemuck`, the `digest`/`sha2` hashing stack, and the
 `curve25519-dalek` / `k256` / `zeroize` cryptography stack that `solana-program` brings in).
 
 23 crates are proc macros. They execute at compile time and do not ship in the `.so`, but they do
-run code on build machines, so they belong in the supply-chain picture.
+run code on build machines, so they belong in the supply-chain picture:
 
 `anchor-attribute-*`, `anchor-derive-*`, `borsh-derive`, `bytemuck_derive`, `derive_more`,
 `enumflags2_derive`, `num-derive`, `num_enum_derive`, `rustversion`, `serde_derive`,
@@ -261,7 +256,7 @@ run code on build machines, so they belong in the supply-chain picture.
 ### 6.3 Pinning and verification
 
 - Versions are pinned by the committed root `Cargo.lock`. The `rust/` workspace has its own
-  separate `Cargo.lock`, and the two never unify (root `Cargo.toml` sets `exclude = ["rust"]`).
+  separate `Cargo.lock`; the two never unify (root `Cargo.toml` sets `exclude = ["rust"]`).
 - Reproducible builds go through `deploy-scripts/verified-build.sh`, which wraps
   `solana-verify build --library-name velocity`. Verify a deployed artifact against source with
   the matching `solana-verify verify-from-repo`.

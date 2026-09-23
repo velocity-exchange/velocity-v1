@@ -43,9 +43,35 @@ function buildIxFromPayload(
 	if (!idlIx) {
 		throw new Error(`unknown instruction "${ixName}"`);
 	}
-	const args = (idlIx.args as Array<{ name: string; type: unknown }>).map((a) =>
-		coerceArg(payload.args?.[a.name], a.type)
-	);
+	const idlArgs = idlIx.args as Array<{ name: string; type: unknown }>;
+
+	// Validate the payload against the IDL before building. Anchor serializes a
+	// missing numeric arg as 0, so a typo or a snake_case key ships a silent
+	// zero. The Anchor client exposes IDL fields in camelCase, so
+	// `initializePythLazerOracle` written with `feed_id` instead of `feedId`
+	// proposed feed 0. This checks both directions, so neither a missing key
+	// nor an unrecognised one reaches the chain.
+	const supplied = Object.keys(payload.args ?? {});
+	const known = new Set(idlArgs.map((a) => a.name));
+	const unknownKeys = supplied.filter((k) => !known.has(k));
+	if (unknownKeys.length > 0) {
+		throw new Error(
+			`${ixName}: unknown arg(s) ${unknownKeys.join(', ')}. ` +
+				`Expected camelCase names: ${idlArgs.map((a) => a.name).join(', ')}`
+		);
+	}
+	const missing = idlArgs
+		.filter((a) => !isOptionType(a.type))
+		.filter((a) => payload.args?.[a.name] === undefined)
+		.map((a) => a.name);
+	if (missing.length > 0) {
+		throw new Error(
+			`${ixName}: missing required arg(s) ${missing.join(', ')}. ` +
+				`Expected camelCase names: ${idlArgs.map((a) => a.name).join(', ')}`
+		);
+	}
+
+	const args = idlArgs.map((a) => coerceArg(payload.args?.[a.name], a.type));
 	const accounts = Object.fromEntries(
 		Object.entries(payload.accounts ?? {}).map(([k, v]) => [
 			k,
@@ -98,11 +124,6 @@ export function registerCall(parent: Command): void {
 					'`call` payload shape plus the camelCase ix name. Same rules as `call`: ' +
 					'no PDA derivation, no implicit accounts.'
 			)
-			.option(
-				'--dry-run',
-				'print the instructions and expected proposal rent/fees, send nothing',
-				false
-			)
 	).action(async (payloadFile: string, _flags, cmd: Command) => {
 		const opts = readGlobalOpts(cmd);
 		const local = cmd.opts() as { dryRun: boolean };
@@ -149,6 +170,13 @@ export function registerCall(parent: Command): void {
 }
 
 /** Best-effort coerce a JSON value into the runtime type Anchor expects. */
+/** An `{ option: T }` arg may be absent. Every other arg may not. */
+function isOptionType(type: unknown): boolean {
+	return (
+		typeof type === 'object' && type !== null && 'option' in (type as object)
+	);
+}
+
 function coerceArg(value: unknown, type: unknown): unknown {
 	if (value === undefined || value === null) {
 		return value;

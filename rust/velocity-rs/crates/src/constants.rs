@@ -503,6 +503,7 @@ generate_pyth_lazer_mappings! {
         (1, 1),   // BTC
         (2, 2),   // ETH
         (110, 3), // HYPE
+        (66, 4),  // ZEC
     ];
     fn pyth_lazer_feed_id_to_perp_market_index;
     fn perp_market_index_to_pyth_lazer_feed_id;
@@ -519,6 +520,7 @@ generate_pyth_lazer_mappings! {
         (6, 1), // SOL
         (1, 2), // wBTC, shares the BTC perp feed
         (2, 3), // wETH, shares the ETH perp feed
+        (66, 4), // ZEC
     ];
     fn pyth_lazer_feed_id_to_spot_market_index;
     fn spot_market_index_to_pyth_lazer_feed_id;

@@ -142,18 +142,36 @@
 			"max_token_borrows_fraction": 0,
 			"deposit_cap_usd": 750000,
 			"withdraw_guard_usd": 9500
+		},
+		{
+			"name": "ZEC",
+			"market_index": 4,
+			"mint": "A7bdiYdS5GjqGFtxf17ppRHtDKPkkRqbKtR27dxvQXaS",
+			"decimals": 8,
+			"oracle_source": "PythLazer",
+			"lazer_feed_id": 66,
+			"asset_tier": "Collateral",
+			"active_status": true,
+			"optimal_utilization": 750000,
+			"optimal_borrow_rate": 150000,
+			"max_borrow_rate": 1500000,
+			"min_borrow_rate": 1,
+			"initial_asset_weight": 4500,
+			"maintenance_asset_weight": 6500,
+			"initial_liability_weight": 15000,
+			"maintenance_liability_weight": 13000,
+			"imf_factor": 4600,
+			"liquidator_fee": 7500,
+			"if_liquidation_fee": 77000,
+			"scale_initial_asset_weight_start": "250000000000",
+			"withdraw_guard_threshold": "621841698",
+			"order_tick_size": "10000",
+			"order_step_size": "10000",
+			"if_total_factor": 100000,
+			"max_token_deposits": "32728510460",
+			"max_token_borrows_fraction": 5000,
+			"deposit_cap_usd": 500000,
+			"withdraw_guard_usd": 9500
 		}
-	],
-	"_new_collateral_2026_08_29": {
-		"assets": "wBTC (index 2) and wETH (index 3), pending init. JLP and jitoSOL are deferred: neither has a 1-minute price series for the adverse-window measurement, and both are LST/pool-token assets that must pass the separate liquidation-executability gate before they can be collateral.",
-		"caps": "Deposit caps are set well below the formula output (quote IF vault / tail: $6.0M wBTC, $4.5M wETH). The formula sizes each asset against the full insurance fund, i.e. single-market stress; SOL's live cap already consumes the vault at its own tail, so correlated capacity is uncovered. Launch caps of $1.0M and $750k sit ~20x above the seeded deposits and ~6x below the formula. Raising a cap later is one instruction with no user impact.",
-		"weights": "Asset weights are 7500/8500, one notch below the pre-hack Drift values and live SOL (8000/9000). Raising a weight later is free; lowering one derates existing depositors' collateral, so the cheap direction to be wrong in is low.",
-		"tails": "Measured p99.99 worst forward drop over a 5-minute liquidator clear window, Binance 1m klines 2024-01 through 2026-06: BTC 2.278% (used 3%), ETH 3.517% (used 4%). Rounding is up to the next whole percent, the rule that reproduces the shipped SOL params (measured 4.01%, used 5%). Regenerated from scratch on 2026-08-29; the risk repo's SOL reproduction gate passed and the outputs were byte-identical to the committed results.",
-		"oracles": "wBTC uses Pyth Lazer feed 1 and wETH feed 2, the same oracle accounts the BTC and ETH perp markets already use. Both are live and cranked, so no new oracle infrastructure is needed.",
-		"open": [
-			"Mint choice is inherited from the pre-hack Drift row (Wormhole wBTC). Treasury also holds cbBTC, zBTC and LBTC; custody-backed and bridge-backed representations are different risk classes and the choice is a council decision, not a parameter default.",
-			"The measured tail is for native BTC/ETH on a centralised venue. It does not model bridge failure (not tail-shaped) or thin on-chain liquidity for the wrapped asset; the inherited imf_factor partially prices the latter.",
-			"Other base params (liability weights, rate curve, imf_factor, liquidation fees, tick/step) are the pre-hack Drift values, each already at or stricter than the live SOL equivalent."
-		]
-	}
+	]
 }

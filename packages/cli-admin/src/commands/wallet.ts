@@ -175,11 +175,6 @@ export function registerWallet(parent: Command): void {
 				'refuse to wrap if fewer than this many SOL would remain in the wallet for rent and fees',
 				'2'
 			)
-			.option(
-				'--dry-run',
-				'print the instructions and expected proposal rent/fees, send nothing',
-				false
-			)
 	).action(async (lamportsArg: string, _flags, cmd: Command) => {
 		const opts = readGlobalOpts(cmd);
 		const local = cmd.opts() as {
@@ -278,11 +273,6 @@ export function registerWallet(parent: Command): void {
 			.option(
 				'--only-direct-routes',
 				'single-hop routes only: fewer accounts, more robust against staleness',
-				false
-			)
-			.option(
-				'--dry-run',
-				'print the quote, instructions and expected proposal rent/fees, send nothing',
 				false
 			)
 	).action(
@@ -411,11 +401,6 @@ export function registerWallet(parent: Command): void {
 				'--to-token-account',
 				'treat <recipient> as the destination token account itself (e.g. a program ' +
 					'vault) instead of deriving its ATA; no account creation is attempted',
-				false
-			)
-			.option(
-				'--dry-run',
-				'print the instructions and expected proposal rent/fees, send nothing',
 				false
 			)
 	).action(

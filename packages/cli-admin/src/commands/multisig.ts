@@ -18,6 +18,7 @@ import { readGlobalOpts, withGlobalOptions } from '../lib/options';
 import { buildAdminClient, buildProvider } from '../lib/provider';
 import { confirmMainnetDirect } from '../lib/context';
 import * as ui from '../lib/ui';
+import { flatten } from '../lib/decode';
 
 const { Permission, Permissions } = multisig.types;
 
@@ -782,11 +783,6 @@ export function registerMultisig(parent: Command): void {
 					'collector configured. The rent goes to the rent collector, not to the ' +
 					'original proposer. An approved proposal that never executed is never closed.'
 			)
-			.option(
-				'--dry-run',
-				'list closable proposals and expected rent, close nothing',
-				false
-			)
 	).action(async (_flags, cmd: Command) => {
 		const opts = readGlobalOpts(cmd);
 		const local = cmd.opts() as { dryRun: boolean };
@@ -919,91 +915,6 @@ function accountFlags(
 			return i - staticLen < writableFromTables && i < totalKeys;
 		},
 	};
-}
-
-/**
- * Renders one decoded value as a single line, sanitized because instruction
- * arguments and account fields are chain data and a borsh string can carry a terminal escape.
- */
-function formatValue(value: unknown): string {
-	return ui.safe(renderValue(value));
-}
-
-function renderValue(value: unknown): string {
-	if (value === null || value === undefined) {
-		return String(value);
-	}
-	if (value instanceof PublicKey) {
-		return value.toBase58();
-	}
-	if (Buffer.isBuffer(value)) {
-		return `0x${value.toString('hex')}`;
-	}
-	if (typeof value === 'object') {
-		const obj = value as Record<string, unknown>;
-		// Anchor renders a unit enum variant as { variantName: {} }.
-		const keys = Object.keys(obj);
-		if (
-			keys.length === 1 &&
-			typeof obj[keys[0]] === 'object' &&
-			obj[keys[0]] !== null &&
-			Object.keys(obj[keys[0]] as object).length === 0
-		) {
-			return keys[0];
-		}
-		if (typeof (obj as { toString?: unknown }).toString === 'function') {
-			const s = String(value);
-			if (s !== '[object Object]') {
-				return s;
-			}
-		}
-		return JSON.stringify(value);
-	}
-	return String(value);
-}
-
-/** True for a value that renders as one line instead of being flattened. */
-function isLeaf(value: unknown): boolean {
-	if (value === null || value === undefined) {
-		return true;
-	}
-	if (typeof value !== 'object') {
-		return true;
-	}
-	if (value instanceof PublicKey || Buffer.isBuffer(value)) {
-		return true;
-	}
-
-	// A BN, or a similar object that stringifies to a meaningful value.
-	return (
-		!Array.isArray(value) &&
-		String(value) !== '[object Object]' &&
-		Object.keys(value).length > 0 &&
-		formatValue(value) !== JSON.stringify(value)
-	);
-}
-
-/** Flatten a decoded struct to `path: value` lines, in field order. */
-function flatten(
-	value: unknown,
-	prefix = ''
-): { path: string; value: string }[] {
-	if (isLeaf(value)) {
-		return [{ path: prefix || 'value', value: formatValue(value) }];
-	}
-	const out: { path: string; value: string }[] = [];
-	const entries = Array.isArray(value)
-		? value.map((v, i) => [String(i), v] as const)
-		: Object.entries(value as Record<string, unknown>);
-	for (const [key, child] of entries) {
-		out.push(
-			...flatten(child, prefix ? `${key}` : key).map((e) => ({
-				path: prefix ? `${prefix}.${e.path}` : e.path,
-				value: e.value,
-			}))
-		);
-	}
-	return out;
 }
 
 /** Fields whose rendered value differs between two decoded accounts. */

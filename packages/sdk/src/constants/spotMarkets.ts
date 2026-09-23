@@ -124,6 +124,19 @@ export const MainnetSpotMarkets: SpotMarketConfig[] = [
 			'0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace',
 		pythLazerId: 2,
 	},
+	{
+		symbol: 'ZEC',
+		marketIndex: 4,
+		poolId: 0,
+		oracle: new PublicKey('AqpaPcu6PYHrYNySrVptnQnwxVCNxWVFuCgCsr8R1eLQ'),
+		oracleSource: OracleSource.PYTH_LAZER,
+		mint: new PublicKey('A7bdiYdS5GjqGFtxf17ppRHtDKPkkRqbKtR27dxvQXaS'),
+		precision: new BN(10).pow(EIGHT),
+		precisionExp: EIGHT,
+		pythFeedId:
+			'0xbe9b59d178f0d6a97ab4c343bff2aa69caa1eaae3e9048a65788c529b125bb24',
+		pythLazerId: 66,
+	},
 ];
 
 /** Spot market registries keyed by `VelocityEnv`, for looking up a deployment's markets without hardcoding the environment. */

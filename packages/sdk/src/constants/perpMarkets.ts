@@ -118,6 +118,19 @@ export const MainnetPerpMarkets: PerpMarketConfig[] = [
 			'0x4279e31cc369bbcc2faf022b382b080e32a8e689ff20fbc530d2a603eb6cd98b',
 		pythLazerId: 110,
 	},
+	{
+		fullName: 'Zcash',
+		category: ['Privacy'],
+		symbol: 'ZEC-PERP',
+		baseAssetSymbol: 'ZEC',
+		marketIndex: 4,
+		oracle: new PublicKey('AqpaPcu6PYHrYNySrVptnQnwxVCNxWVFuCgCsr8R1eLQ'),
+		launchTs: 1789948800000,
+		oracleSource: OracleSource.PYTH_LAZER,
+		pythFeedId:
+			'0xbe9b59d178f0d6a97ab4c343bff2aa69caa1eaae3e9048a65788c529b125bb24',
+		pythLazerId: 66,
+	},
 ];
 
 /** Perp market registries keyed by `VelocityEnv`, for looking up a deployment's markets without hardcoding the environment. */

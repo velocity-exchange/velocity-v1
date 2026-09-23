@@ -1,6 +1,8 @@
-## Market Maker Example
+# Market maker example
 
-Place and cancel fixed limit and floating limit orders
+Places and cancels fixed limit and floating (oracle offset) limit orders on sol-perp, using
+the wallet's sub-account 0, and requotes every 400ms. `RPC_URL` defaults to
+`https://api.mainnet-beta.solana.com`.
 
 Run mainnet WebSocket example
 ```shell
@@ -19,3 +21,5 @@ GRPC_URL="" \
 GRPC_X_TOKEN="" \
  cargo run --release -- --grpc
 ```
+
+Unset `MAINNET` to run against devnet.

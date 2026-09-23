@@ -50,10 +50,10 @@ use {
         instructions::{
             constraints::*,
             optional_accounts::{
-                add_builder_order, get_referrer_accelerated_status,
-                get_revenue_share_escrow_account, load_escrow_owner_sub_accounts, load_maps,
-                validate_and_load_builder, AccountMaps,
+                add_builder_order, get_revenue_share_escrow_account,
+                load_escrow_owner_sub_accounts, load_maps, validate_and_load_builder, AccountMaps,
             },
+            RouteFillAccounts, RoutedOrder,
         },
         load, load_mut,
         math::{
@@ -70,7 +70,6 @@ use {
             },
             orders::{estimate_price_from_side, filter_bids_asks_by_oracle_divergence, Level},
             position::calculate_base_asset_value_and_pnl_with_oracle_price,
-            router::RouterLeg,
             safe_math::SafeMath,
             spot_withdraw::validate_spot_market_vault_amount,
             time::Millis,
@@ -155,31 +154,11 @@ pub use {
     signed_msg::*, spot_interest::*, user_maintenance::*,
 };
 
-/// The named accounts a router fill acts on: whose order it is, and who turns
-/// it. Everything else the fill reads arrives in [`FillSections`].
-pub struct FillAccounts<'a, 'info> {
-    pub state: &'a AccountLoader<'info, State>,
-    pub filler: &'a AccountLoader<'info, User>,
-    pub filler_stats: &'a AccountLoader<'info, UserStats>,
-    pub user: &'a AccountLoader<'info, User>,
-    pub user_stats: &'a AccountLoader<'info, UserStats>,
-}
-
-/// The leftover accounts of a router fill, split into the sections it reads.
-/// Every fill path lays the sections out in the same order: the market and
-/// oracle accounts, the maker and referrer set, the taker's revenue-share
-/// escrow, and then the quoter tail.
+/// The leftover accounts of a router fill: the market maps, then the
+/// sections [`RouteFillAccounts`] reads.
 struct FillSections<'info> {
     maps: AccountMaps<'info>,
-    makers_and_referrer: UserMap<'info>,
-    makers_and_referrer_stats: UserStatsMap<'info>,
-    escrow: Option<RevenueShareEscrowZeroCopyMut<'info>>,
-    referrer_is_accelerated: bool,
-    /// The quoter section: the market's `QuoterSlabV0` plus the union of the
-    /// consulted quoters' registered CPI accounts. A subslice rather than a
-    /// collected list, since the iterator's remaining length already tells how
-    /// much the sections above consumed, and borrowing avoids cloning every account.
-    tail: &'info [AccountInfo<'info>],
+    route: RouteFillAccounts<'info>,
 }
 
 impl<'info> FillSections<'info> {
@@ -199,178 +178,11 @@ impl<'info> FillSections<'info> {
             state.slot_clock(),
             Some(state.oracle_guard_rails),
         )?;
-        let (makers_and_referrer, makers_and_referrer_stats) = load_user_maps(iter, true)?;
-        let escrow = if state.builder_codes_enabled() {
-            get_revenue_share_escrow_account(iter, &load!(taker)?.authority)?
-        } else {
-            None
-        };
-        let referrer_is_accelerated = get_referrer_accelerated_status(iter, escrow.as_ref())?;
+
         Ok(Self {
             maps,
-            makers_and_referrer,
-            makers_and_referrer_stats,
-            escrow,
-            referrer_is_accelerated,
-            tail: &remaining_accounts[remaining_accounts.len() - iter.len()..],
+            route: RouteFillAccounts::read(remaining_accounts, iter, state, taker)?,
         })
-    }
-
-    /// The set of loaded users. A quoter must not fill outside it.
-    fn wire_users(&self) -> Result<Vec<crate::state::prop_amm::ClobUserRefV0>> {
-        Ok(crate::state::prop_amm::quoter_wire_users(
-            self.makers_and_referrer.user_ref_index()?.into_keys().map(
-                |(authority, sub_account_id)| crate::state::prop_amm::ClobUserRefV0 {
-                    authority,
-                    sub_account_id,
-                },
-            ),
-        )?)
-    }
-
-    /// Size every counterparty the quote may use, then quote the route.
-    ///
-    /// The sizing runs before the quote, so a quoter never publishes depth this
-    /// fill would refuse to settle against.
-    fn quote_route<'a>(
-        &mut self,
-        inputs: crate::instructions::QuoteInputs<'a>,
-        claim: Option<crate::instructions::RouteClaim<'_>>,
-        taker_key: &Pubkey,
-        clock: &Clock,
-        scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
-    ) -> Result<crate::instructions::RouteQuote<'a, 'info>> {
-        crate::instructions::quote_route(
-            self.tail,
-            inputs,
-            claim,
-            &mut crate::instructions::CapInputs {
-                taker_key,
-                makers_and_referrer: &self.makers_and_referrer,
-                makers_and_referrer_stats: &self.makers_and_referrer_stats,
-                maps: &mut self.maps,
-                slot: clock.slot,
-                now: clock.unix_timestamp,
-            },
-            scratch,
-        )
-    }
-
-    /// Hand an assembled route to the perp fill, and report the base it moved.
-    fn run_fill(
-        &mut self,
-        accounts: &FillAccounts<'_, 'info>,
-        request: controller::orders::FillRequest<'_>,
-        router: &mut RouterLeg<'_, '_, 'info>,
-        clock: &Clock,
-    ) -> Result<u64> {
-        let filled = controller::orders::fill_perp_order(
-            request,
-            &*accounts.state.load()?,
-            clock,
-            controller::orders::PerpFillAccounts {
-                user: accounts.user,
-                user_stats: accounts.user_stats,
-                filler: accounts.filler,
-                filler_stats: accounts.filler_stats,
-                rev_share_escrow: &mut self.escrow.as_mut(),
-            },
-            &mut controller::orders::FillParties {
-                maps: &mut self.maps,
-                makers_and_referrer: &self.makers_and_referrer,
-                makers_and_referrer_stats: &self.makers_and_referrer_stats,
-            },
-            router,
-        )?;
-
-        Ok(filled.base)
-    }
-}
-
-/// The market, price and clock facts every leg of a router fill reads.
-struct RouteContext<'a, 'info> {
-    market_index: u16,
-    maps: &'a mut AccountMaps<'info>,
-    state: &'a State,
-    clock: &'a Clock,
-}
-
-/// What the router needs to know about the taker order it is about to fill.
-struct RoutedOrder {
-    direction: Direction,
-    /// Base the order still has to fill.
-    unfilled: u64,
-    taker: crate::state::prop_amm::ClobUserRefV0,
-    /// The worst price this fill accepts, or zero for no bound.
-    limit_price: u64,
-    /// The mark a quoter prices a capped maker's loss against.
-    reference_price: i64,
-    /// The market's initial margin ratio, which a quoter's oracle band
-    /// defaults to.
-    margin_ratio_initial: u32,
-}
-
-impl RouteContext<'_, '_> {
-    /// Read the route facts off one taker order of `user`.
-    ///
-    /// The order is passed in rather than looked up, because a signed-message
-    /// order never enters `user.orders` and the caller holds it.
-    fn routed_order(
-        &mut self,
-        user: &User,
-        order: &crate::state::user::Order,
-        mode: FillMode,
-    ) -> Result<RoutedOrder> {
-        let position_base = user
-            .get_perp_position(self.market_index)
-            .map(|position| position.base_asset_amount)
-            .ok();
-        let (tick_size, oracle_id, margin_ratio_initial) = {
-            let market = self.maps.perp_market_map.get_ref(&self.market_index)?;
-            (
-                market.order_tick_size,
-                market.oracle_id(),
-                market.margin_ratio_initial,
-            )
-        };
-
-        Ok(RoutedOrder {
-            direction: match order.direction {
-                PositionDirection::Long => Direction::Long,
-                PositionDirection::Short => Direction::Short,
-            },
-
-            unfilled: order.get_base_asset_amount_unfilled(position_base)?,
-            taker: user.clob_user_ref(),
-            limit_price: mode.quote_limit_price(order, tick_size),
-
-            reference_price: self.maps.oracle_map.get_price_data(&oracle_id)?.price,
-            margin_ratio_initial,
-        })
-    }
-}
-
-impl RoutedOrder {
-    /// The inputs the route is quoted from. The caller owns `users`, because
-    /// the inputs borrow it.
-    fn quote_inputs<'a>(
-        &self,
-        market_index: u16,
-        users: &'a [crate::state::prop_amm::ClobUserRefV0],
-        taker_served_window: bool,
-    ) -> crate::instructions::QuoteInputs<'a> {
-        crate::instructions::QuoteInputs {
-            market_index,
-            margin_ratio_initial: self.margin_ratio_initial,
-            direction: self.direction,
-            size: self.unfilled,
-            users,
-            reference_price: self.reference_price,
-            taker: self.taker,
-            limit_price: self.limit_price,
-            taker_served_window,
-            include_taker_origin_reservations: false,
-        }
     }
 }
 

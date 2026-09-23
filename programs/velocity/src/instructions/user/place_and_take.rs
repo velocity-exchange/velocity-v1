@@ -35,15 +35,6 @@ pub struct ClobRemainderRoute<'a, 'info> {
     pub clob_program: &'a AccountInfo<'info>,
 }
 
-/// What the take asks the router for: its direction, the base still unfilled,
-/// the taker's book reference, and the price bound the router must respect.
-struct TakeShape {
-    direction: crate::state::prop_amm::Direction,
-    unfilled: u64,
-    taker: crate::state::prop_amm::ClobUserRefV0,
-    limit_price: u64,
-}
-
 /// Everything the router needs to fill one detached taker order.
 struct DetachedTake<'a, 'info> {
     order: &'a mut Order,
@@ -55,7 +46,6 @@ struct DetachedTake<'a, 'info> {
     /// The registry entries the taker named: the tail of `remaining_accounts`
     /// that the sections above did not consume.
     tail: &'info [AccountInfo<'info>],
-    market_index: u16,
 }
 
 /// What a take filled, and what the caller demanded of it.
@@ -231,124 +221,6 @@ fn create_detached_take<'a>(
     Ok((order, escrow, referrer_is_accelerated))
 }
 
-/// Read what the take asks the router for.
-fn read_take_shape(
-    order: &Order,
-    user_loader: &AccountLoader<'_, User>,
-    maps: &AccountMaps,
-    mode: FillMode,
-) -> Result<TakeShape> {
-    let user = load!(user_loader)?;
-    let position_base = user
-        .get_perp_position(order.market_index)
-        .map(|position| position.base_asset_amount)
-        .ok();
-
-    Ok(TakeShape {
-        direction: match order.direction {
-            PositionDirection::Long => crate::state::prop_amm::Direction::Long,
-            PositionDirection::Short => crate::state::prop_amm::Direction::Short,
-        },
-
-        unfilled: order.get_base_asset_amount_unfilled(position_base)?,
-        taker: user.clob_user_ref(),
-        limit_price: mode.quote_limit_price(
-            order,
-            maps.perp_market_map
-                .get_ref(&order.market_index)?
-                .order_tick_size,
-        ),
-    })
-}
-
-/// Describe the take to the quoters, then size and quote it. The description
-/// carries what the take wants, at what bound, and which loaded users the
-/// quoters may fill it against.
-fn quote_take_route<'a, 'info>(
-    take: &mut DetachedTake<'_, 'info>,
-    users: &'a [crate::state::prop_amm::ClobUserRefV0],
-    shape: &TakeShape,
-    mark: &RouteMark,
-    taker_served_window: bool,
-    clock: &Clock,
-    scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
-) -> Result<crate::instructions::RouteQuote<'a, 'info>> {
-    let taker_key = take.accounts.user.key();
-    let inputs = crate::instructions::QuoteInputs {
-        market_index: take.market_index,
-        direction: shape.direction,
-        size: shape.unfilled,
-        users,
-        reference_price: mark.reference_price,
-        margin_ratio_initial: mark.margin_ratio_initial,
-        taker: shape.taker,
-        limit_price: shape.limit_price,
-        taker_served_window,
-        include_taker_origin_reservations: false,
-    };
-
-    crate::instructions::quote_route(
-        take.tail,
-        inputs,
-        // The taker signed this transaction, so they picked the account list
-        // themselves and no route binds the filler.
-        None,
-        &mut crate::instructions::CapInputs {
-            taker_key: &taker_key,
-            makers_and_referrer: take.makers,
-            makers_and_referrer_stats: take.maker_stats,
-            maps: take.maps,
-            slot: clock.slot,
-            now: clock.unix_timestamp,
-        },
-        scratch,
-    )
-}
-
-/// The market facts a route is priced against: the mark a capped maker's
-/// loss is measured from, and the band a quoter's levels default to.
-struct RouteMark {
-    reference_price: i64,
-    margin_ratio_initial: u32,
-}
-
-/// Fill the detached order against the route the router just priced.
-fn fill_against_route(
-    take: &mut DetachedTake<'_, '_>,
-    router: &mut crate::math::router::RouterLeg<'_, '_, '_>,
-    state: &State,
-    mode: FillMode,
-    referrer_is_accelerated: bool,
-) -> Result<u64> {
-    let filled = controller::orders::fill_perp_order(
-        controller::orders::FillRequest {
-            // Detached taker: it never reserved, so the fill unwinds
-            // nothing.
-            order: take.order,
-            reserved: false,
-            mode,
-            referrer_is_accelerated,
-        },
-        state,
-        &Clock::get()?,
-        controller::orders::PerpFillAccounts {
-            user: take.accounts.user,
-            user_stats: take.accounts.user_stats,
-            filler: &take.accounts.user.clone(),
-            filler_stats: &take.accounts.user_stats.clone(),
-            rev_share_escrow: &mut take.escrow.as_mut(),
-        },
-        &mut controller::orders::FillParties {
-            maps: take.maps,
-            makers_and_referrer: take.makers,
-            makers_and_referrer_stats: take.maker_stats,
-        },
-        router,
-    )?;
-
-    Ok(filled.base)
-}
-
 /// Quote the route the taker named and fill the detached order against it.
 /// Returns the base filled.
 ///
@@ -364,55 +236,51 @@ fn fill_detached_take(
     taker_served_window: bool,
     referrer_is_accelerated: bool,
 ) -> Result<u64> {
-    let market_index = take.market_index;
-    let shape = read_take_shape(take.order, take.accounts.user, take.maps, mode)?;
-
-    let mark = {
-        let market = take.maps.perp_market_map.get_ref(&market_index)?;
-        let oracle_id = market.oracle_id();
-        let margin_ratio_initial = market.margin_ratio_initial;
-        drop(market);
-        RouteMark {
-            reference_price: take.maps.oracle_map.get_price_data(&oracle_id)?.price,
-            margin_ratio_initial,
-        }
-    };
-
-    let users =
-        crate::state::prop_amm::quoter_wire_users(take.makers.user_ref_index()?.into_keys().map(
-            |(authority, sub_account_id)| crate::state::prop_amm::ClobUserRefV0 {
-                authority,
-                sub_account_id,
-            },
-        ))?;
-
-    // One set of CPI buffers for the fill: the quote legs below and the
-    // execute legs the router runs later all refill the same allocation,
-    // because velocity's heap never gives a freed one back.
-    let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
-    let quoted = quote_take_route(
-        take,
-        &users,
-        &shape,
-        &mark,
-        taker_served_window,
-        clock,
-        &mut cpi_scratch,
+    let order = crate::instructions::RoutedOrder::read(
+        &*load!(take.accounts.user)?,
+        take.order,
+        take.maps,
+        mode,
     )?;
-    let mut books = quoted.books(clock, &mut cpi_scratch)?;
-    let mut router = books.for_fill(crate::instructions::FillerStanding {
-        protocol_authority: state.signer,
-        taker_exposure_closed_by_caller: false,
-        // The taker signs a place-and-take, so the taker chose the account
-        // list and no filler obligation applies.
-        obligation: crate::math::router::FillerObligation {
-            taker_signed: true,
-            tx_accounts: None,
-            unrouted_quoters: 0,
-        },
-    });
 
-    fill_against_route(take, &mut router, state, mode, referrer_is_accelerated)
+    let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
+    let filled = crate::instructions::RouteFill {
+        state,
+        clock,
+        tail: take.tail,
+        scratch: &mut cpi_scratch,
+    }
+    .run(
+        crate::instructions::RouteRequest {
+            order,
+            taker_served_window,
+            include_taker_origin_reservations: false,
+            claim: None,
+            filler: crate::instructions::FillerTerms::TAKER_SIGNED,
+        },
+        controller::orders::FillRequest {
+            // Detached taker: it never reserved, so the fill unwinds
+            // nothing.
+            order: take.order,
+            reserved: false,
+            mode,
+            referrer_is_accelerated,
+        },
+        controller::orders::PerpFillAccounts {
+            user: take.accounts.user,
+            user_stats: take.accounts.user_stats,
+            filler: take.accounts.user,
+            filler_stats: take.accounts.user_stats,
+            rev_share_escrow: &mut take.escrow.as_mut(),
+        },
+        &mut controller::orders::FillParties {
+            maps: take.maps,
+            makers_and_referrer: take.makers,
+            makers_and_referrer_stats: take.maker_stats,
+        },
+    )?;
+
+    Ok(filled.amounts.base)
 }
 
 /// Rest what the take did not fill, then hold the caller's success condition
@@ -542,7 +410,6 @@ pub fn place_and_take_perp_order_v1<'info>(
                 maker_stats: &makers_and_referrer_stats,
                 escrow: &mut escrow,
                 tail: &accounts.remaining_accounts[tail_from..],
-                market_index: params.market_index,
             },
             &state,
             &clock,

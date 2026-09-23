@@ -57,16 +57,12 @@ use {
         error::ErrorCode,
         instructions::{
             constraints::*,
-            optional_accounts::{tx_writable_lock_count, AccountMaps},
-            quote_route,
+            optional_accounts::AccountMaps,
             relay_harness::{resolve_into, StagedCall},
-            CapInputs, QuoteInputs,
+            route_direction, FillerTerms, RouteFill, RouteMark, RouteRequest, RoutedOrder,
         },
         load, load_mut,
-        math::{
-            casting::Cast, constants::MARGIN_PRECISION_U128, router::FillerObligation,
-            safe_math::SafeMath,
-        },
+        math::{casting::Cast, constants::MARGIN_PRECISION_U128, safe_math::SafeMath},
         msg,
         state::{
             clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
@@ -362,10 +358,6 @@ fn run_cross_leg<'info>(
         });
     }
 
-    let direction = match taker_direction {
-        PositionDirection::Long => Direction::Long,
-        PositionDirection::Short => Direction::Short,
-    };
     let limit_price = leg_limit_price(
         taker_direction,
         cx.band_oracle_price,
@@ -409,15 +401,6 @@ fn run_cross_leg<'info>(
         ..Order::default()
     };
 
-    let users =
-        crate::state::prop_amm::quoter_wire_users(
-            cx.makers_and_referrer.user_ref_index()?.into_keys().map(
-                |(authority, sub_account_id)| crate::state::prop_amm::ClobUserRefV0 {
-                    authority,
-                    sub_account_id,
-                },
-            ),
-        )?;
     // A cheap check first. When the route consults a `Custom` quoter, no window was served,
     // because a prop-AMM has no rest to wait out. This skips the expensive CPI that checking
     // rested depth on the other quoters would otherwise require.
@@ -442,61 +425,44 @@ fn run_cross_leg<'info>(
                     )?)
             })?
     };
-    let quoted = quote_route(
-        cx.tail,
-        QuoteInputs {
-            market_index: cx.market_index,
-            direction,
-            size,
-            users: &users,
-            reference_price: cx.band_oracle_price,
-            taker: taker_ref,
-            limit_price,
+    let filled = RouteFill {
+        state: cx.state,
+        clock: cx.clock,
+        tail: cx.tail,
+        scratch: cpi_scratch,
+    }
+    .run(
+        RouteRequest {
+            order: RoutedOrder {
+                direction: route_direction(taker_direction),
+                unfilled: size,
+                taker: taker_ref,
+                limit_price,
+                mark: RouteMark {
+                    reference_price: cx.band_oracle_price,
+                    margin_ratio_initial: cx.margin_ratio_initial,
+                },
+            },
             taker_served_window,
             // The depth a taker-origin order reserves is that taker's
             // improvement, not arbitrage for the protocol to middle. Reading
             // the book without it stops this crank reaching that cover.
             include_taker_origin_reservations: false,
-            margin_ratio_initial: cx.margin_ratio_initial,
+            claim: None,
+            // The taker is the protocol, so nobody is owed a maker. A book that
+            // stops at an owner the transaction does not carry only makes the
+            // cross smaller, and the surplus floor decides if it is worth landing.
+            filler: FillerTerms {
+                taker_exposure_closed_by_caller: true,
+                ..FillerTerms::keeper(Some(&cx.accounts.instructions_sysvar.to_account_info()))?
+            },
         },
-        None,
-        &mut CapInputs {
-            taker_key: &cx.accounts.taker.key(),
-            makers_and_referrer: cx.makers_and_referrer,
-            makers_and_referrer_stats: cx.makers_and_referrer_stats,
-            maps,
-            slot: cx.clock.slot,
-            now: cx.clock.unix_timestamp,
-        },
-        cpi_scratch,
-    )?;
-    let mut books = quoted.books(cx.clock, cpi_scratch)?;
-    let mut router = books.for_fill(crate::instructions::FillerStanding {
-        protocol_authority: cx.state.signer,
-        taker_exposure_closed_by_caller: true,
-        obligation: FillerObligation {
-            // The taker is the protocol, not a user trusting a cranker with its
-            // order, so nobody is owed a maker here. A book that stops at an
-            // owner the transaction does not carry only makes the cross smaller.
-            // The surplus floor then decides whether the smaller cross is worth
-            // landing.
-            taker_signed: false,
-            tx_accounts: Some(tx_writable_lock_count(
-                &cx.accounts.instructions_sysvar.to_account_info(),
-            )?),
-
-            unrouted_quoters: 0,
-        },
-    });
-    let filled = controller::orders::fill_perp_order(
         controller::orders::FillRequest {
             order: &mut order,
             reserved: false,
             mode: FillMode::Fill,
             referrer_is_accelerated: false,
         },
-        cx.state,
-        cx.clock,
         controller::orders::PerpFillAccounts {
             user: &cx.accounts.taker,
             user_stats: &cx.accounts.taker_stats,
@@ -509,7 +475,6 @@ fn run_cross_leg<'info>(
             makers_and_referrer: cx.makers_and_referrer,
             makers_and_referrer_stats: cx.makers_and_referrer_stats,
         },
-        &mut router,
     )?;
 
     // Read straight after the fill, with no second settle. The fill's own
@@ -520,9 +485,9 @@ fn run_cross_leg<'info>(
         .map(|position| position.quote_asset_amount)
         .unwrap_or(0);
     Ok(CrossLegFill {
-        base_filled: filled.base,
+        base_filled: filled.amounts.base,
         quote_delta: quote_after.safe_sub(quote_before)?,
-        worst_price: router.worst_fill_price.unwrap_or(0),
+        worst_price: filled.worst_fill_price.unwrap_or(0),
     })
 }
 

@@ -20,7 +20,7 @@
 
 use {
     crate::{
-        controller::{self, position::PositionDirection},
+        controller,
         error::ErrorCode,
         instructions::constraints::*,
         load,
@@ -28,7 +28,7 @@ use {
             clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             fill_mode::FillMode,
             perp_market_map::{get_writable_perp_market_set, MarketSet},
-            prop_amm::{ClobUserRefV0, Direction, QuoterSlabExt, QuoterSlabV0},
+            prop_amm::{QuoterSlabExt, QuoterSlabV0},
             state::State,
             user::{Order, User, UserStats},
         },
@@ -151,7 +151,7 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
         state.slot_clock(),
         Some(state.oracle_guard_rails),
     )?;
-    let mut tail = read_route_tail(
+    let mut route_accounts = crate::instructions::RouteFillAccounts::read(
         remaining_accounts,
         remaining_accounts_iter,
         &state,
@@ -189,19 +189,11 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
         return Ok(());
     };
 
-    let route_inputs = read_fired_route_inputs(
-        &ctx.accounts.user,
-        &fired,
-        market_index,
-        &maps.perp_market_map,
-    )?;
-
     route_fill_fired_order(
         &ctx,
         &state,
         &mut maps,
-        &mut tail,
-        &route_inputs,
+        &mut route_accounts,
         &mut fired,
         &signed_route,
         market_index,
@@ -227,92 +219,6 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
     Ok(())
 }
 
-/// What the caller staged after the market maps.
-///
-/// A trigger crank carries the same tail a fill carries: maker accounts,
-/// the taker's builder escrow, and the quoter accounts that decide whether the fired order fills here at all.
-struct RouteTail<'info> {
-    makers_and_referrer: crate::state::user_map::UserMap<'info>,
-    makers_and_referrer_stats: crate::state::user_map::UserStatsMap<'info>,
-    /// The quoter section, which is everything the maps, the makers and the
-    /// escrow left behind.
-    accounts: &'info [AccountInfo<'info>],
-    escrow: Option<crate::state::revenue_share::RevenueShareEscrowZeroCopyMut<'info>>,
-    referrer_is_accelerated: bool,
-}
-
-/// Reads the tail out of the remaining accounts, in the order a fill reads it.
-fn read_route_tail<'info>(
-    remaining_accounts: &'info [AccountInfo<'info>],
-    remaining_accounts_iter: &mut std::iter::Peekable<std::slice::Iter<'info, AccountInfo<'info>>>,
-    state: &State,
-    user: &AccountLoader<'info, User>,
-) -> Result<RouteTail<'info>> {
-    let (makers_and_referrer, makers_and_referrer_stats) =
-        crate::state::user_map::load_user_maps(remaining_accounts_iter, true)?;
-
-    let escrow = if state.builder_codes_enabled() {
-        crate::instructions::optional_accounts::get_revenue_share_escrow_account(
-            remaining_accounts_iter,
-            &load!(user)?.authority,
-        )?
-    } else {
-        None
-    };
-    let referrer_is_accelerated =
-        crate::instructions::optional_accounts::get_referrer_accelerated_status(
-            remaining_accounts_iter,
-            escrow.as_ref(),
-        )?;
-
-    let tail_from = remaining_accounts.len() - remaining_accounts_iter.len();
-    Ok(RouteTail {
-        makers_and_referrer,
-        makers_and_referrer_stats,
-        accounts: &remaining_accounts[tail_from..],
-        escrow,
-        referrer_is_accelerated,
-    })
-}
-
-/// What the fired order asks a route for.
-struct FiredRouteInputs {
-    direction: Direction,
-    /// The base still to fill, held to the position a reduce-only order may
-    /// reduce.
-    unfilled: u64,
-    taker: ClobUserRefV0,
-    /// The worst price the fill accepts, stamped when the order fired.
-    limit_price: u64,
-}
-
-/// Reads the fired order against the market, as the route needs it.
-fn read_fired_route_inputs(
-    user: &AccountLoader<'_, User>,
-    fired: &Order,
-    market_index: u16,
-    perp_market_map: &crate::state::perp_market_map::PerpMarketMap<'_>,
-) -> Result<FiredRouteInputs> {
-    let user = load!(user)?;
-    let position_base = user
-        .get_perp_position(market_index)
-        .map(|position| position.base_asset_amount)
-        .ok();
-    Ok(FiredRouteInputs {
-        direction: match fired.direction {
-            PositionDirection::Long => Direction::Long,
-            PositionDirection::Short => Direction::Short,
-        },
-
-        unfilled: fired.get_base_asset_amount_unfilled(position_base)?,
-        taker: user.clob_user_ref(),
-        limit_price: FillMode::Fill.quote_limit_price(
-            fired,
-            perp_market_map.get_ref(&market_index)?.order_tick_size,
-        ),
-    })
-}
-
 /// Routes the fired order against the book, and fills what the route reaches.
 ///
 /// A caller routes the fill only by staging a quoter tail. A keeper that read
@@ -332,8 +238,7 @@ fn route_fill_fired_order<'info>(
     ctx: &Context<'info, TriggerMarketOrderV1<'info>>,
     state: &State,
     maps: &mut crate::instructions::optional_accounts::AccountMaps<'info>,
-    tail: &mut RouteTail<'info>,
-    route_inputs: &FiredRouteInputs,
+    route_accounts: &mut crate::instructions::RouteFillAccounts<'info>,
     fired: &mut Order,
     signed_route: &[Pubkey],
     market_index: u16,
@@ -346,105 +251,65 @@ fn route_fill_fired_order<'info>(
         market_index,
     )?;
 
-    if route_inputs.unfilled == 0 || tail.accounts.is_empty() || !synchronous_take {
+    if route_accounts.quoters.is_empty() || !synchronous_take {
         return Ok(());
     }
 
-    let (route_reference_price, route_margin_ratio_initial) = {
-        let market = maps.perp_market_map.get_ref(&market_index)?;
-        let oracle_id = market.oracle_id();
-        let margin_ratio_initial = market.margin_ratio_initial;
-        drop(market);
-        (
-            maps.oracle_map.get_price_data(&oracle_id)?.price,
-            margin_ratio_initial,
-        )
-    };
-    let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
-    let users = crate::state::prop_amm::quoter_wire_users(
-        tail.makers_and_referrer.user_ref_index()?.into_keys().map(
-            |(authority, sub_account_id)| ClobUserRefV0 {
-                authority,
-                sub_account_id,
-            },
-        ),
+    let order = crate::instructions::RoutedOrder::read(
+        &*load!(ctx.accounts.user)?,
+        fired,
+        maps,
+        FillMode::Fill,
     )?;
-    let quoted = crate::instructions::quote_route(
-        tail.accounts,
-        crate::instructions::QuoteInputs {
-            market_index,
-            direction: route_inputs.direction,
-            size: route_inputs.unfilled,
-            users: &users,
-            reference_price: route_reference_price,
-            taker: route_inputs.taker,
-            limit_price: route_inputs.limit_price,
+    if order.unfilled == 0 {
+        return Ok(());
+    }
+
+    let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
+    crate::instructions::RouteFill {
+        state,
+        clock,
+        tail: route_accounts.quoters,
+        scratch: &mut cpi_scratch,
+    }
+    .run(
+        crate::instructions::RouteRequest {
+            order,
             taker_served_window,
             include_taker_origin_reservations: false,
-            margin_ratio_initial: route_margin_ratio_initial,
+            claim: Some(crate::instructions::RouteClaim {
+                quoters: signed_route,
+                digest: crate::state::order_params::NO_ROUTE_DIGEST,
+            }),
+            // A trigger crank is not a signed transaction. The owner does not
+            // sign, so the keeper answers for what its account list left out.
+            filler: crate::instructions::FillerTerms::keeper(
+                ctx.accounts
+                    .ix_sysvar
+                    .as_ref()
+                    .map(|sysvar| sysvar.as_ref()),
+            )?,
         },
-        Some(crate::instructions::RouteClaim {
-            quoters: signed_route,
-            digest: crate::state::order_params::NO_ROUTE_DIGEST,
-        }),
-        &mut crate::instructions::CapInputs {
-            taker_key: &ctx.accounts.user.key(),
-            makers_and_referrer: &tail.makers_and_referrer,
-            makers_and_referrer_stats: &tail.makers_and_referrer_stats,
-            maps,
-            slot: clock.slot,
-            now: clock.unix_timestamp,
-        },
-        &mut cpi_scratch,
-    )?;
-
-    let obligation = crate::math::router::FillerObligation {
-        // A trigger crank is not a signed transaction. The owner does not
-        // sign, so the keeper answers for what its account list left out.
-        taker_signed: false,
-        tx_accounts: match &ctx.accounts.ix_sysvar {
-            Some(sysvar) => Some(
-                crate::instructions::optional_accounts::tx_writable_lock_count(
-                    &sysvar.to_account_info(),
-                )?,
-            ),
-            None => None,
-        },
-
-        unrouted_quoters: quoted.unrouted_quoters,
-    };
-
-    let mut books = quoted.books(clock, &mut cpi_scratch)?;
-    let mut router = books.for_fill(crate::instructions::FillerStanding {
-        protocol_authority: state.signer,
-        taker_exposure_closed_by_caller: false,
-        obligation,
-    });
-
-    controller::orders::fill_perp_order(
         controller::orders::FillRequest {
             // The fired order is detached. It reserved nothing, so the fill
             // unwinds no exposure for it.
             order: fired,
             reserved: false,
             mode: FillMode::Fill,
-            referrer_is_accelerated: tail.referrer_is_accelerated,
+            referrer_is_accelerated: route_accounts.referrer_is_accelerated,
         },
-        state,
-        clock,
         controller::orders::PerpFillAccounts {
             user: &ctx.accounts.user,
             user_stats: &ctx.accounts.user_stats,
             filler: &ctx.accounts.filler,
             filler_stats: &ctx.accounts.filler_stats,
-            rev_share_escrow: &mut tail.escrow.as_mut(),
+            rev_share_escrow: &mut route_accounts.escrow.as_mut(),
         },
         &mut controller::orders::FillParties {
             maps,
-            makers_and_referrer: &tail.makers_and_referrer,
-            makers_and_referrer_stats: &tail.makers_and_referrer_stats,
+            makers_and_referrer: &route_accounts.makers_and_referrer,
+            makers_and_referrer_stats: &route_accounts.makers_and_referrer_stats,
         },
-        &mut router,
     )?;
 
     Ok(())

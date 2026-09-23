@@ -92,7 +92,7 @@ pub fn handle_place_signed_msg_taker_order<'c: 'info, 'info>(
 
     rest_signed_msg_remainder(&ctx, &placed, &mut sections.maps, &clock)?;
 
-    if let Some(ref mut escrow) = sections.escrow {
+    if let Some(ref mut escrow) = sections.route.escrow {
         let taker = load_mut!(ctx.accounts.user)?;
         escrow.revoke_completed_orders(&taker)?;
     }
@@ -129,11 +129,11 @@ fn run_placement_leg<'c: 'info, 'info>(
             state,
             clock,
         },
-        sections.escrow.take(),
+        sections.route.escrow.take(),
         is_delegate_signer,
     )?;
 
-    sections.escrow = escrow;
+    sections.route.escrow = escrow;
     Ok(placed)
 }
 
@@ -183,94 +183,61 @@ fn fill_signed_msg_taker_order<'c: 'info, 'info>(
     taker_served_window: bool,
     clock: &Clock,
 ) -> Result<u64> {
-    let market_index = placed.market_index;
     let mode = FillMode::PlaceAndTake;
-    let order = {
-        // The order lives on `placed`, not `user.orders`. It is the taker order
-        // this leg fills detached.
-        let user = load!(ctx.accounts.user)?;
-        RouteContext {
-            market_index,
-            maps: &mut sections.maps,
-            state,
-            clock,
-        }
-        .routed_order(&user, &placed.order, mode)?
-    };
+    let order = RoutedOrder::read(
+        &*load!(ctx.accounts.user)?,
+        &placed.order,
+        &mut sections.maps,
+        mode,
+    )?;
 
     if order.unfilled == 0 {
         return Ok(0);
     }
 
-    let users = sections.wire_users()?;
-    let inputs = order.quote_inputs(market_index, &users, taker_served_window);
-
     let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
-    let quoted = sections.quote_route(
-        inputs,
-        Some(crate::instructions::RouteClaim {
-            quoters: &placed.route,
-            digest: placed.route_digest,
-        }),
-        &ctx.accounts.user.key(),
+    let filled = crate::instructions::RouteFill {
+        state,
         clock,
-        &mut cpi_scratch,
-    )?;
-    let obligation = keeper_obligation(ctx, quoted.unrouted_quoters)?;
-
-    let mut books = quoted.books(clock, &mut cpi_scratch)?;
-    let mut router = books.for_fill(crate::instructions::FillerStanding {
-        protocol_authority: state.signer,
-        obligation,
-        taker_exposure_closed_by_caller: false,
-    });
-
-    sections.run_fill(
-        &fill_accounts(ctx),
+        tail: sections.route.quoters,
+        scratch: &mut cpi_scratch,
+    }
+    .run(
+        crate::instructions::RouteRequest {
+            order,
+            taker_served_window,
+            include_taker_origin_reservations: false,
+            claim: Some(crate::instructions::RouteClaim {
+                quoters: &placed.route,
+                digest: placed.route_digest,
+            }),
+            filler: crate::instructions::FillerTerms::keeper(Some(
+                &ctx.accounts.ix_sysvar.to_account_info(),
+            ))?,
+        },
         controller::orders::FillRequest {
             // The taker order is detached. It never reserved, so the fill
             // unwinds no exposure for it.
             order: &mut placed.order,
             reserved: false,
             mode,
-            referrer_is_accelerated: sections.referrer_is_accelerated,
+            referrer_is_accelerated: sections.route.referrer_is_accelerated,
         },
-        &mut router,
-        clock,
-    )
-}
+        controller::orders::PerpFillAccounts {
+            user: &ctx.accounts.user,
+            user_stats: &ctx.accounts.user_stats,
+            filler: &ctx.accounts.filler,
+            filler_stats: &ctx.accounts.filler_stats,
+            rev_share_escrow: &mut sections.route.escrow.as_mut(),
+        },
+        &mut controller::orders::FillParties {
+            maps: &mut sections.maps,
+            makers_and_referrer: &sections.route.makers_and_referrer,
+            makers_and_referrer_stats: &sections.route.makers_and_referrer_stats,
+        },
+    )?;
 
-/// What the keeper answers for on a signed-message fill.
-///
-/// A signed message is not a signed transaction. The keeper chose the account
-/// list, so it answers for what that list left out.
-fn keeper_obligation<'c: 'info, 'info>(
-    ctx: &Context<'info, PlaceSignedMsgTakerOrder<'info>>,
-    unrouted_quoters: usize,
-) -> Result<crate::math::router::FillerObligation> {
-    Ok(crate::math::router::FillerObligation {
-        taker_signed: false,
-        tx_accounts: Some(
-            crate::instructions::optional_accounts::tx_writable_lock_count(
-                &ctx.accounts.ix_sysvar.to_account_info(),
-            )?,
-        ),
-
-        unrouted_quoters,
-    })
-}
-
-/// The taker, the filler and their stats, as the shared fill body wants them.
-fn fill_accounts<'a, 'info>(
-    ctx: &'a Context<'info, PlaceSignedMsgTakerOrder<'info>>,
-) -> FillAccounts<'a, 'info> {
-    FillAccounts {
-        state: &ctx.accounts.state,
-        filler: &ctx.accounts.filler,
-        filler_stats: &ctx.accounts.filler_stats,
-        user: &ctx.accounts.user,
-        user_stats: &ctx.accounts.user_stats,
-    }
+    Ok(filled.amounts.base)
 }
 
 /// Rest what the route could not fill, on the market's book.

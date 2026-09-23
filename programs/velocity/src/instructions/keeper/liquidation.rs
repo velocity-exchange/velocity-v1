@@ -208,73 +208,32 @@ impl<'info> LiquidationBooks<'_, 'info> {
         maps: &mut AccountMaps<'info>,
         clock: &Clock,
     ) -> Result<controller::orders::FillAmounts> {
-        let market_index = self.market_index;
-        let routed = {
-            let user = load!(self.user)?;
-            RouteContext {
-                market_index,
-                maps,
-                state: self.state,
-                clock,
-            }
-            .routed_order(&user, order, FillMode::Liquidation)?
-        };
+        let routed = RoutedOrder::read(&*load!(self.user)?, order, maps, FillMode::Liquidation)?;
 
         let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
-        let users = crate::state::prop_amm::quoter_wire_users(
-            self.makers_and_referrer.user_ref_index()?.into_keys().map(
-                |(authority, sub_account_id)| crate::state::prop_amm::ClobUserRefV0 {
-                    authority,
-                    sub_account_id,
-                },
-            ),
-        )?;
-        let inputs = routed.quote_inputs(
-            market_index,
-            &users,
-            self.served_window(&routed, clock.slot, &mut cpi_scratch)?,
-        );
-        let quoted = crate::instructions::quote_route(
-            self.tail,
-            inputs,
-            // A liquidation order is written by the program, not signed by
-            // its owner, so there is no route for a filler to substitute.
-            None,
-            &mut crate::instructions::CapInputs {
-                taker_key: &self.user.key(),
-                makers_and_referrer: self.makers_and_referrer,
-                makers_and_referrer_stats: self.makers_and_referrer_stats,
-                maps,
-                slot: clock.slot,
-                now: clock.unix_timestamp,
+        let taker_served_window = self.served_window(&routed, clock.slot, &mut cpi_scratch)?;
+        let filled = crate::instructions::RouteFill {
+            state: self.state,
+            clock,
+            tail: self.tail,
+            scratch: &mut cpi_scratch,
+        }
+        .run(
+            crate::instructions::RouteRequest {
+                order: routed,
+                taker_served_window,
+                include_taker_origin_reservations: false,
+                // A liquidation order is written by the program, not signed by
+                // its owner, so there is no route for a filler to substitute.
+                claim: None,
+                // The liquidated account never signs its own liquidation, so
+                // the caller answers for what its account list left out.
+                filler: crate::instructions::FillerTerms::keeper(
+                    self.instructions_sysvar
+                        .as_ref()
+                        .map(|sysvar| sysvar.as_ref()),
+                )?,
             },
-            &mut cpi_scratch,
-        )?;
-
-        let obligation = crate::math::router::FillerObligation {
-            // The liquidated account never signs its own liquidation, so the
-            // caller answers for what its account list left out.
-            taker_signed: false,
-            tx_accounts: match self.instructions_sysvar {
-                Some(sysvar) => Some(
-                    crate::instructions::optional_accounts::tx_writable_lock_count(
-                        &sysvar.to_account_info(),
-                    )?,
-                ),
-                None => None,
-            },
-
-            unrouted_quoters: quoted.unrouted_quoters,
-        };
-
-        let mut books = quoted.books(clock, &mut cpi_scratch)?;
-        let mut router = books.for_fill(crate::instructions::FillerStanding {
-            protocol_authority: self.state.signer,
-            taker_exposure_closed_by_caller: false,
-            obligation,
-        });
-
-        Ok(controller::orders::fill_perp_order(
             controller::orders::FillRequest {
                 // The forced order never reserved `open_bids`/`open_asks`, so
                 // the fill must not unwind a reservation for it.
@@ -283,8 +242,6 @@ impl<'info> LiquidationBooks<'_, 'info> {
                 mode: FillMode::Liquidation,
                 referrer_is_accelerated: false,
             },
-            self.state,
-            clock,
             controller::orders::PerpFillAccounts {
                 user: self.user,
                 user_stats: self.user_stats,
@@ -297,8 +254,9 @@ impl<'info> LiquidationBooks<'_, 'info> {
                 makers_and_referrer: self.makers_and_referrer,
                 makers_and_referrer_stats: self.makers_and_referrer_stats,
             },
-            &mut router,
-        )?)
+        )?;
+
+        Ok(filled.amounts)
     }
 
     /// Whether the depth this liquidation can reach has measurably rested.

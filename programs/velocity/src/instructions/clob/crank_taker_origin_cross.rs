@@ -59,7 +59,7 @@ use {
             pdas,
             perp_market_map::{get_writable_perp_market_set, MarketSet, PerpMarketMap},
             prop_amm::{
-                ClobFillArgsV0, ClobFillRequestV0, ClobMarket, ClobSide, ClobUserRefV0, Direction,
+                ClobFillArgsV0, ClobFillRequestV0, ClobMarket, ClobSide, ClobUserRefV0,
                 QuoterSlabExt, WireDirectionExt,
             },
             revenue_share::RevenueShareEscrowZeroCopyMut,
@@ -557,42 +557,28 @@ fn route_and_fill_remainder<'info>(
     let mut order =
         controller::orders::taker_origin_order(cx.market_index, cx.taker_direction, subject_order);
 
-    let (route_reference_price, route_margin_ratio_initial) = {
-        let market = maps.perp_market_map.get_ref(&cx.market_index)?;
-        let oracle_id = market.oracle_id();
-        let margin_ratio_initial = market.margin_ratio_initial;
-        drop(market);
-        (
-            maps.oracle_map.get_price_data(&oracle_id)?.price,
-            margin_ratio_initial,
-        )
-    };
-    let direction = match cx.taker_direction {
-        PositionDirection::Long => Direction::Long,
-        PositionDirection::Short => Direction::Short,
-    };
+    let mark = crate::instructions::RouteMark::read(maps, cx.market_index)?;
 
-    // Reuse the CPI scratch the book read filled. Its buffers clear and refill
-    // per leg, so one fill pays for one set of buffers.
-    let users = crate::state::prop_amm::quoter_wire_users(
-        cx.makers_and_referrer
-            .user_ref_index()?
-            .into_keys()
-            .map(|(authority, sub_account_id)| ClobUserRefV0 {
-                authority,
-                sub_account_id,
-            }),
-    )?;
-    let quoted = crate::instructions::quote_route(
+    // The taker is its own filler, so no reward comes out of the taker fee. The
+    // cranker is paid below, out of the improvement it delivered. A crank that
+    // improves nothing earns nothing.
+    let filled = crate::instructions::RouteFill {
+        state: cx.state,
+        clock: cx.clock,
         tail,
-        crate::instructions::QuoteInputs {
-            market_index: cx.market_index,
-            direction,
-            size: subject_order.base_asset_amount,
-            users: &users,
-            reference_price: route_reference_price,
-            taker: cx.taker_ref,
-            limit_price: subject_order.price,
+        // Reuse the CPI scratch the book read filled. Its buffers clear and
+        // refill per leg, so one fill pays for one set of buffers.
+        scratch: cpi_scratch,
+    }
+    .run(
+        crate::instructions::RouteRequest {
+            order: crate::instructions::RoutedOrder {
+                direction: crate::instructions::route_direction(cx.taker_direction),
+                unfilled: subject_order.base_asset_amount,
+                taker: cx.taker_ref,
+                limit_price: subject_order.price,
+                mark,
+            },
             // The window is measured from the subject's own rest, not assumed
             // from the crank. On a zero-delay book, rest through placement is
             // a zero-length window, and a caller can place and crank in the
@@ -601,52 +587,20 @@ fn route_and_fill_remainder<'info>(
                 subject_order.placed_slot,
                 cx.clock.slot,
             ),
-
             // This crank owes the taker the improvement, so it is the one
             // caller that may fill the depth its order reserves.
             include_taker_origin_reservations: true,
-            margin_ratio_initial: route_margin_ratio_initial,
-        },
-        Some(crate::instructions::RouteClaim {
-            quoters: route_claim.quoters,
-            digest: route_claim.digest,
-        }),
-        &mut crate::instructions::CapInputs {
-            taker_key: &cx.accounts.taker.key(),
-            makers_and_referrer: cx.makers_and_referrer,
-            makers_and_referrer_stats: cx.makers_and_referrer_stats,
-            maps,
-            slot: cx.clock.slot,
-            now: cx.clock.unix_timestamp,
-        },
-        cpi_scratch,
-    )?;
-    let obligation = crate::math::router::FillerObligation {
-        // The taker is not here to choose the account list, so the cranker
-        // answers for what it left out, as a keeper fill does.
-        taker_signed: false,
-        tx_accounts: Some(
-            crate::instructions::optional_accounts::tx_writable_lock_count(
+            claim: Some(crate::instructions::RouteClaim {
+                quoters: route_claim.quoters,
+                digest: route_claim.digest,
+            }),
+            // The taker is not here to choose the account list, so the cranker
+            // answers for what it left out, as a keeper fill does.
+            filler: crate::instructions::FillerTerms::keeper(Some(
                 &cx.accounts.instructions_sysvar.to_account_info(),
-            )?,
-        ),
-
-        unrouted_quoters: quoted.unrouted_quoters,
-    };
-
-    // The taker is its own filler, so no reward comes out of the taker fee. The
-    // cranker is paid below, out of the improvement it delivered. A crank that
-    // improves nothing earns nothing.
-    let mut books = quoted.books(cx.clock, cpi_scratch)?;
-    let mut router = books.for_fill(crate::instructions::FillerStanding {
-        protocol_authority: cx.state.signer,
-        taker_exposure_closed_by_caller: false,
-        obligation,
-    });
-    let filled = controller::orders::fill_perp_order(
+            ))?,
+        },
         controller::orders::FillRequest {
-            // The remainder rested on the book first, so it holds an
-            // `open_bids`/`open_asks` reservation this fill unwinds.
             order: &mut order,
             // The remainder rested on the book first, so it holds a
             // reservation the fill must unwind as it fills.
@@ -654,8 +608,6 @@ fn route_and_fill_remainder<'info>(
             mode: FillMode::Fill,
             referrer_is_accelerated: cx.referrer_is_accelerated,
         },
-        cx.state,
-        cx.clock,
         controller::orders::PerpFillAccounts {
             user: &cx.accounts.taker,
             user_stats: &cx.accounts.taker_stats,
@@ -668,8 +620,8 @@ fn route_and_fill_remainder<'info>(
             makers_and_referrer: cx.makers_and_referrer,
             makers_and_referrer_stats: cx.makers_and_referrer_stats,
         },
-        &mut router,
-    )?;
+    )?
+    .amounts;
 
     // Nothing beat the resting price. The revert leaves the remainder resting
     // as it was, so an unprofitable crank costs the taker nothing and pays the

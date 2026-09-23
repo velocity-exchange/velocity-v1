@@ -134,13 +134,7 @@ pub fn update_amms(
         let validity =
             compute_amm_refresh_validity(market, &mm_oracle_price_data, state, clock_slot)?;
         snap_to_oracle(market, &mm_oracle_price_data, validity, clock_slot, now)?;
-        market.update_oracle_derived_stats(
-            &mm_oracle_price_data,
-            validity,
-            now,
-            clock_slot,
-            state.slot_clock(),
-        )?;
+        market.update_oracle_derived_stats(&mm_oracle_price_data, validity, now, clock_slot)?;
     }
 
     Ok(updated)
@@ -176,7 +170,6 @@ pub fn update_amm(
         validity,
         clock.unix_timestamp,
         clock.slot,
-        state.slot_clock(),
     )?;
 
     Ok(outcome)
@@ -197,13 +190,7 @@ pub fn _update_amm(
 ) -> VelocityResult<i128> {
     let validity = compute_amm_refresh_validity(market, mm_oracle_price_data, state, clock_slot)?;
     let outcome: i128 = snap_to_oracle(market, mm_oracle_price_data, validity, clock_slot, now)?;
-    market.update_oracle_derived_stats(
-        mm_oracle_price_data,
-        validity,
-        now,
-        clock_slot,
-        SlotClock::baseline(),
-    )?;
+    market.update_oracle_derived_stats(mm_oracle_price_data, validity, now, clock_slot)?;
     Ok(outcome)
 }
 
@@ -374,13 +361,7 @@ pub fn update_amm_and_check_validity(
     // requested action. AMM mutation happens later in the liquidation
     // fill flow via `Quoter::setup` — not here.
     let validity = compute_amm_refresh_validity(market, mm_oracle_price_data, state, clock_slot)?;
-    market.update_oracle_derived_stats(
-        mm_oracle_price_data,
-        validity,
-        now,
-        clock_slot,
-        state.slot_clock(),
-    )?;
+    market.update_oracle_derived_stats(mm_oracle_price_data, validity, now, clock_slot)?;
 
     // 1 hour EMA
     let risk_ema_price = market

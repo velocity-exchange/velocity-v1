@@ -1304,7 +1304,6 @@ pub fn fill_perp_order(
             amm_refresh_validity,
             now,
             slot,
-            state.slot_clock(),
         )?;
 
         reserve_price_before = market.amm.reserve_price()?;
@@ -2233,7 +2232,6 @@ fn fulfill_perp_order(
                 &mm_oracle_pd,
                 projected_reserve_price,
                 slot,
-                slot_clock,
             )?;
         }
         determine_perp_fulfillment_methods(

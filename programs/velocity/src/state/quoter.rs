@@ -87,8 +87,8 @@ pub struct QuoteContext<'a> {
     /// resting post-auction).
     pub slot: u64,
     /// Cluster slot clock (`State::slot_clock()`). Used to scale
-    /// slot denominated windows calibrated to the 400ms baseline (e.g. the
-    /// reference price offset smoothing budget) across IBRL transitions.
+    /// slot denominated windows calibrated to the 400ms baseline across IBRL
+    /// transitions.
     pub slot_clock: SlotClock,
     /// Base-asset precision divisor: when computing `quote_amount` from a
     /// base amount filled at a price, the formula is

@@ -196,9 +196,7 @@ export class DLOBSubscriberIO extends DLOBSubscriber {
 								marketArgs.marketIndex,
 								this.slotSource.getSlot()
 							),
-							true,
-							new BN(this.slotSource.getSlot()),
-							this.velocityClient.getStateAccount()
+							true
 						);
 
 						bestBid =

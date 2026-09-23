@@ -1324,6 +1324,7 @@ long carry a one-line summary here and a link into §6.2.
 | slot-duration-sync | Audit follow-up to `slot-duration-scaling`. New `State.slot_duration_transition_slots: [u64; 4]`, the permissionless `sync_state_slot_duration` replacing the warm-admin setter, and auction durations redefined as wall-clock 400ms units. [Details](#slot-duration-sync) |
 | spot-bankruptcy-revenue-pool | See the `#238 spot-bankruptcy-revenue-pool` row above |
 | spot-oracle-twap-ts-init | Fix a Medium audit finding (OtterSec #121): a freshly initialized spot market carried `last_oracle_price_twap_ts == 0`, which collapsed both `StrictOraclePrice` bounds on its first refresh. [Details](#spot-oracle-twap-ts-init) |
+| spread-quote-fixes | vAMM quoting fixes. The vol spread discounts the 20bp Pyth Lazer confidence floor, the reference price offset is sized by inventory alone, a final guard keeps both quotes on the correct side of the oracle, and `update_perp_bid_ask_twap` refreshes the curve before sampling the mark TWAP. No layout change. Several SDK spread helpers drop their `latestSlot` / `slotDurationState` parameters. [Details](#spread-quote-fixes) |
 | stale-curve-fill-routing | See the `#317 stale-curve-fill-routing` row above |
 | swap-twap-write-after-check | Restore the oracle-TWAP refresh that the #110 and #111 fix dropped from the two split begin and end swap lanes, on the far side of their own gates. `begin_swap` and `liquidate_spot_with_swap_begin` pass `None` so neither can refresh the anchor its band check reads, which closed the finding but left both lanes contributing nothing to the oracle EMA, so a swap-heavy market depended on other paths and on the permissionless crank to keep its TWAP fresh. `end_swap` now advances both markets' oracle TWAPs through `update_spot_market_twap_stats` after `validate_price_bands_for_swap`, and `liquidate_spot_with_swap_end` does the same after every check in its lane. The check still reads the pre-swap value, and `begin_swap`'s instruction introspection forbids any Velocity instruction after the end instruction, so nothing else in the transaction can read the new value. `begin_swap` leaves `last_oracle_price_twap_ts` alone, so the deferred update still weights the full elapsed interval, and the deposit, borrow and utilization TWAPs were already advanced in the begin instruction and are a no-op in the end instruction. This grants no capability a caller did not already have, since `update_spot_market_cumulative_interest` is permissionless and advances the same TWAPs. Program-internal ordering only, with no account-layout, IDL, error-code or SDK change |
 | swift-resting-limit-placement | `place_signed_msg_taker_order` accepts a resting limit, meaning a limit order with no auction, ahead of its message slot. For such an order the message slot is the placement deadline rather than an auction start, so `max_slot = order_slot + 0`, and with the #470 gate rejecting `order_slot > clock.slot` the order was placeable in exactly one slot and never landed. Clients stamp a no-auction limit its whole signing budget, about 14s, ahead (`@velocity-exchange/common` `MINIMUM_SWIFT_NON_AUCTION_ORDER_SIGNING_BUDGET_MS`), which under Drift was placed before the stamp arrived. The future-slot rejection now applies only to orders with an auction. A resting limit stamped ahead is accepted while the lead is within 30s (`max_resting_limit_lead`, and the UI stamps about 14s), and still rejected with `InvalidSignedMsgOrderParam` (6288) beyond it. The stored order slot is unchanged at `min(clock.slot, message slot)`, and the `max_slot < clock.slot` no-op still applies after the stamp. keep-rs places a resting limit on arrival instead of deferring it, since its 10s deferral bound dropped the roughly 14s stamp outright. The TS filler mirrors the gate via the new SDK `signedMsgOrderPlaceable` (§4.6) but still ignores no-auction signed-msg orders in `dlobBuilder`, so keep-rs remains the placer of resting swift limits. Rollout: deploy the program upgrade before the keep-rs release, because keep-rs against the old program sends a place tx per resting swift limit that fails with 6288, which is the same net outcome as dropping it plus the fee. Side effect: a resting limit's `SignedMsgOrderId.max_slot` is now its future stamp, so the entry occupies the per-user id ring for the lead plus the eviction buffer, about 18s for the UI's stamp and up to about 34s at the bound, instead of about 4s. A burst of resting swift limits can therefore reach `SignedMsgUserOrdersAccountFull` sooner. No account-layout, IDL or error-code change |
@@ -2449,6 +2450,49 @@ jumps to the live price, and `initialize_spot_market` writes a non-zero
 change, since the SDK reads the stored TWAP for the spot band rather than projecting it, and
 its `lastOraclePriceTwapTs` consumers are all perp-side (`marketStats`) where the timestamp was
 always stamped.
+
+#### spread-quote-fixes
+
+Behavioral changes to how the vAMM builds its quote. Account layouts and the IDL are unchanged,
+apart from the doc comment on `MarketStats.last_reference_price_offset`.
+
+- **Confidence floor.** `calculate_lazer_conf` floors Pyth Lazer confidence at `price / 500`
+  (20bp), and over a week of mainnet updates the posted confidence never rose above that floor.
+  The previous confidence ramp turned 20bp into 16.2bp of spread on each side of every market.
+  The vol spread now uses `c = min(conf, conf / 20 + max(0, conf - 20bp))`, which is 1bp at the
+  floor, adds about a bp per bp of confidence above it, and meets the raw confidence at 4%. The vol
+  base uses `c` in place of the raw confidence. `SPREAD_CONF_FULL_WEIGHT_THRESHOLD` is removed and
+  `LAZER_CONF_FLOOR_PCT` is added, in the program and the SDK.
+- **Reference price offset.** The offset was `premium * liquidity_fraction / 2` with both inputs
+  at 1e6 precision and no rescale, so any nonzero inventory hit the cap. It is now
+  `sign(inventory) * max_offset * min(1, liquidity_fraction / 10%)`, with the premium used only as
+  a sign gate. `REFERENCE_PRICE_OFFSET_FULL_INVENTORY_PCT` (10%) is new. The sign-flip smoothing
+  is removed because the offset now passes through zero continuously.
+  `MarketStats.last_reference_price_offset` is still written but no longer read by the quote math.
+- **Oracle guard.** After the admin spread adjustments and the offset, `compute_quote_state`
+  widens whichever side would otherwise quote through the oracle, so the bid stays at or below it
+  and the ask at or above it. It only ever widens a spread. Like the existing oracle retreat, it
+  applies only when `curve_update_intensity > 0`. A market at 0 never repegs and quotes off its
+  curve alone.
+- **Mark TWAP crank.** `update_perp_bid_ask_twap` runs `project_and_apply` before refreshing the
+  quote state and sampling the AMM bid/ask into the mark TWAP, as fills and `update_funding_rate`
+  already do. It had sampled a curve whose peg could be minutes stale.
+- **Funding k step.** The funding-imbalance k update clamps `curve_update_intensity` at 100, as
+  repeg already does, so values above 100 no longer enlarge the k step.
+
+SDK: `calculateVolSpreadBN`, `calculateSpreadBN`, `calculateReferencePriceOffset`,
+`calculateSpread` and `calculateSpreadReserves` mirror the above. `calculateSpreadBN` now floors the
+inventory adjustment at `max(baseSpread / 2, vol)` and caps by safety priority, as the program
+does. `calculateSpreadReserves` computes the reserve delta exactly, as
+`compute_spread_reserves_for_direction` does. New exports: `applyOracleGuard`,
+`calculateSpreadConfComponent`, `calculateReferencePriceOffsetForAmm`, `LAZER_CONF_FLOOR_PCT`,
+`REFERENCE_PRICE_OFFSET_FULL_INVENTORY_PCT`. The `latestSlot` and `slotDurationState` parameters,
+which only fed the removed smoothing, are dropped from `calculateSpreadReserves`,
+`calculateUpdatedAMMSpreadReserves`, `calculateBidAskPrice`, `calculateBidPrice`,
+`calculateAskPrice`, `calculateBaseAssetValue`, `calculateTradeAcquiredAmounts`,
+`calculateTradeSlippage`, `calculateTargetPriceTrade`, `calculateAllEstimatedFundingRate`,
+`calculateLongShortFundingRate`, `calculateLongShortFundingRateAndLiveTwaps`,
+`getVammL2Generator` and `DLOBSubscriber.getL2`. Callers passing them need to drop the arguments.
 
 #### swap-provider-interface
 

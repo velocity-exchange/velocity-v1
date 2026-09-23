@@ -3,7 +3,7 @@ import { assert } from 'chai';
 import {
 	BN,
 	MMOraclePriceData,
-	SPREAD_CONF_FULL_WEIGHT_THRESHOLD,
+	LAZER_CONF_FLOOR_PCT,
 	ZERO,
 	calculateAskPrice,
 	calculateBidPrice,
@@ -24,14 +24,12 @@ import { mockPerpMarkets } from '../dlob/helpers';
 // skewed long_spread to 111985 (~11.2%) on chain and put the vAMM ask ~$82.1 against
 // a ~$73.96 oracle. The SDK reported a zero-width spread for the same state.
 //
-// The short side of that capture predates program commit 440349868 (24 Aug 2026),
-// which ramped the confidence contribution to the vol spread. Under the current
-// program the confidence floor dominates the short side: with this snapshot's
-// inputs `calculate_long_short_vol_spread` returns (1620, 1620), so the short
-// spread can no longer sit at the 440 originally recorded here. The long side is
-// driven by inventory skew and is unchanged by the ramp.
+// The short side is the vol floor. This snapshot's confidence (20bp) is the Lazer
+// floor, which the vol spread discounts to 1/20, so the short spread is about 1bp
+// (103, from the program's own `calculate_spread` with these inputs). The long
+// side is driven by inventory skew.
 const ON_CHAIN_LONG_SPREAD = 111985;
-const CONF_FLOORED_SHORT_SPREAD = 1620;
+const SHORT_SPREAD = 103;
 
 // Anchored to the market's own lastMarkPriceTwapTs / lastOraclePriceTwapTs so the
 // `now`-derived inputs (liveOracleStd, oracle conf pct) match the on-chain crank.
@@ -117,7 +115,7 @@ describe('AMM spread parity with update_spreads', () => {
 		);
 
 		assertCloseTo(longSpread, ON_CHAIN_LONG_SPREAD, 2);
-		assertCloseTo(shortSpread, CONF_FLOORED_SHORT_SPREAD, 5);
+		assertCloseTo(shortSpread, SHORT_SPREAD, 5);
 	});
 
 	it('quotes an ask above the reserve price when baseSpread is 0', () => {
@@ -186,6 +184,24 @@ describe('AMM spread parity with update_spreads', () => {
 		assert(shortSpread === 150, `expected 150, got ${shortSpread}`);
 	});
 
+	it('does not apply the oracle guard on the curveUpdateIntensity == 0 branch', () => {
+		const market = devnetSolPerp();
+		market.amm.curveUpdateIntensity = 0;
+		market.amm.baseSpread = 175;
+
+		// The snapshot oracle sits ~4.7bp above the reserve price. A market with
+		// curveUpdateIntensity 0 never repegs and quotes off its curve alone, so
+		// the spread stays at half the base spread on both sides.
+		const [longSpread, shortSpread] = calculateSpread(
+			market.amm,
+			market.marketStats,
+			oracle,
+			NOW
+		);
+		assert(longSpread === 87, `expected 87, got ${longSpread}`);
+		assert(shortSpread === 87, `expected 87, got ${shortSpread}`);
+	});
+
 	it('requires oracle data whenever curveUpdateIntensity is nonzero', () => {
 		const market = devnetSolPerp();
 
@@ -218,11 +234,10 @@ describe('AMM spread parity with update_spreads', () => {
 });
 
 // Isolates the confidence component of `calculateVolSpreadBN`: with zero std the vol
-// base is the confidence itself and the intensity factor floors at 0.01, so the term
-// competing with the confidence component is conf/100, which the ramp (>= conf/20)
-// always dominates. `max()` therefore returns the confidence component. Expected
-// values are the ones asserted by the program's own
-// `confidence_component_ramps_continuously` test.
+// base is the confidence component itself and the intensity factor floors at 0.01, so
+// the term competing with it is component/100. `max()` therefore returns the confidence
+// component. Expected values are the ones asserted by the program's own
+// `confidence_component_discounts_the_lazer_floor` test.
 function confComponent(confidencePct: number): number {
 	const [longVolSpread, shortVolSpread] = calculateVolSpreadBN(
 		new BN(confidencePct),
@@ -241,24 +256,32 @@ function confComponent(confidencePct: number): number {
 }
 
 describe('vol spread confidence component parity with calculate_spread_conf_component', () => {
-	const threshold = SPREAD_CONF_FULL_WEIGHT_THRESHOLD.toNumber();
+	const floor = LAZER_CONF_FLOOR_PCT.toNumber();
 
-	it('matches the program at and around the full-weight threshold', () => {
-		assert(threshold === 2500, `expected 2500, got ${threshold}`);
+	it('matches the program around the Lazer confidence floor', () => {
+		assert(floor === 2000, `expected 2000, got ${floor}`);
 		assert(confComponent(0) === 0);
-		assert(confComponent(threshold / 2) === 656);
-		assert(confComponent(threshold - 1) === 2498);
-		assert(confComponent(threshold) === threshold);
-		assert(confComponent(threshold + 1) === threshold + 1);
+		assert(confComponent(1000) === 50);
+		assert(confComponent(floor) === 100);
+		assert(confComponent(floor + 1) === 101);
+		assert(confComponent(2500) === 625);
+		assert(confComponent(4000) === 2200);
+		assert(confComponent(10000) === 8500);
+		assert(confComponent(40000) === 40000);
+		assert(confComponent(50000) === 50000);
 	});
 
-	it('ramps monotonically and never exceeds the confidence itself', () => {
+	it('is continuous and monotone, never exceeding the confidence itself', () => {
 		let previous = 0;
-		for (let confidence = 0; confidence <= threshold + 1; confidence++) {
+		for (let confidence = 0; confidence <= 60_000; confidence++) {
 			const component = confComponent(confidence);
 			assert(
 				component >= previous,
 				`component fell from ${previous} to ${component} at conf ${confidence}`
+			);
+			assert(
+				component - previous <= 2,
+				`component jumped from ${previous} to ${component} at conf ${confidence}`
 			);
 			assert(
 				component <= confidence,
@@ -266,11 +289,5 @@ describe('vol spread confidence component parity with calculate_spread_conf_comp
 			);
 			previous = component;
 		}
-	});
-
-	it('does not step off the old 1/20 cliff just below the threshold', () => {
-		// The pre-ramp SDK divided by a flat 20 anywhere below the threshold,
-		// returning 102 here against the program's 1691.
-		assert(confComponent(2045) === 1691, `got ${confComponent(2045)}`);
 	});
 });

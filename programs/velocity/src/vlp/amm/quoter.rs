@@ -431,7 +431,6 @@ impl<'a> Quoter for AmmQuoter<'a> {
             mm_oracle,
             reserve_price,
             ctx.slot,
-            ctx.slot_clock,
         )?;
         Ok(())
     }
@@ -658,14 +657,13 @@ impl<'a> AmmQuoter<'a> {
         let quote_asset_reserve_before = self.amm.quote_asset_reserve;
         let sqrt_k_before = self.amm.sqrt_k;
 
+        // Values above 100 only size the reference price offset, so the k
+        // step is capped at its full-intensity bound, as repeg caps it.
+        let k_update_intensity = self.amm.curve_update_intensity.min(100) as i128;
         let k_pct_upper_bound = crate::math::constants::K_BPS_UPDATE_SCALE
-            + crate::math::constants::MAX_K_BPS_INCREASE
-                * (self.amm.curve_update_intensity as i128)
-                / 100;
+            + crate::math::constants::MAX_K_BPS_INCREASE * k_update_intensity / 100;
         let k_pct_lower_bound = crate::math::constants::K_BPS_UPDATE_SCALE
-            - crate::math::constants::MAX_K_BPS_INCREASE
-                * (self.amm.curve_update_intensity as i128)
-                / 100;
+            - crate::math::constants::MAX_K_BPS_INCREASE * k_update_intensity / 100;
 
         let (k_scale_numerator, k_scale_denominator) =
             crate::vlp::amm::math::cp_curve::calculate_budgeted_k_scale(

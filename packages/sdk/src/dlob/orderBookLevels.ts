@@ -271,7 +271,6 @@ export function createL2Levels(
  * @param topOfBookQuoteAmounts quote-notional breakpoints (QUOTE_PRECISION, 1e6) used to size the
  *   first levels more granularly near the top of book — see `DEFAULT_TOP_OF_BOOK_QUOTE_AMOUNTS` /
  *   `MAJORS_TOP_OF_BOOK_QUOTE_AMOUNTS`; defaults to `[]` (all levels evenly sized)
- * @param latestSlot most recent known slot, improves spread-reserve accuracy when provided; optional
  * @returns a generator pair (`getL2Bids`/`getL2Asks`) yielding vAMM `L2Level`s, best price first,
  *   each tagged with `sources.vamm`
  */
@@ -281,18 +280,12 @@ export function getVammL2Generator({
 	numOrders,
 	now = new BN(Math.floor(Date.now() / 1000)),
 	topOfBookQuoteAmounts = [],
-	latestSlot,
-	slotDurationState,
 }: {
 	marketAccount: PerpMarketAccount;
 	mmOraclePriceData: MMOraclePriceData;
 	numOrders: number;
 	now?: BN;
 	topOfBookQuoteAmounts?: BN[];
-	latestSlot?: BN;
-	// required: reference-price-offset smoothing integrates the complete clock
-	// across any transition boundary.
-	slotDurationState: SlotDurationState;
 }): L2OrderBookGenerator {
 	const updatedAmm = calculateUpdatedAMM(marketAccount.amm, mmOraclePriceData);
 	const paused = isOperationPaused(
@@ -317,9 +310,7 @@ export function getVammL2Generator({
 		updatedAmm,
 		marketAccount.marketStats,
 		mmOraclePriceData,
-		now,
-		latestSlot,
-		slotDurationState
+		now
 	);
 
 	const numBaseOrders = Math.max(1, numOrders - topOfBookQuoteAmounts.length);

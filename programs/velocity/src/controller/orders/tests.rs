@@ -9760,13 +9760,7 @@ fn oracle_derived_stats_refresh_can_flip_the_5min_divergence_verdict() {
     .unwrap();
 
     market
-        .update_oracle_derived_stats(
-            &mm_oracle_price_data,
-            validity,
-            now,
-            slot,
-            SlotClock::baseline(),
-        )
+        .update_oracle_derived_stats(&mm_oracle_price_data, validity, now, slot)
         .unwrap();
 
     let post_refresh_twap_5min = market

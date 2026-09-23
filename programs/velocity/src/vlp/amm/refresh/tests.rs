@@ -208,7 +208,6 @@ pub fn update_amm_test() {
             &mm_oracle_price_data,
             reserve_price,
             slot,
-            SlotClock::baseline(),
         )
         .unwrap();
     }
@@ -239,104 +238,6 @@ pub fn update_amm_test() {
         453311 // overriden by max spread baseline
                // (market.amm.max_spread) as u64
     );
-}
-
-/// Regression for the reference-price-offset smoothing in `update_amm_quote_state`.
-///
-/// The smoothing step is capped by the slots elapsed since the last spread
-/// refresh, which is tracked by `last_spread_update_slot`. Both the keeper crank
-/// (`snap_to_oracle`) and the fill-time `AmmQuoter::setup` advance
-/// `last_update_slot` to the current slot before the refresh runs, so measuring
-/// the elapsed count off `last_update_slot` instead yields 0 and floors the step
-/// at its minimum of 10.
-///
-/// The fixture forces the smoothing branch: a computed target offset of 0
-/// (neutral inventory gives a zero `liquidity_fraction`, which short-circuits
-/// `calculate_reference_price_offset`) against a negative prior offset is a sign
-/// flip. With `last_update_slot == slot` and the spreads last refreshed 50 slots
-/// ago, the step is `min(10_000, 50 * 1000) / 10 == 1000`. Reading
-/// `last_update_slot` (the bug) collapses it to the floor of 10.
-#[test]
-pub fn reference_price_offset_smoothing_uses_spread_update_slot() {
-    let slot: u64 = 1_000_000;
-    let prior_offset: i32 = -10_000;
-
-    let mut market = PerpMarket {
-        market_stats: MarketStats {
-            mark_std: PRICE_PRECISION as u64,
-            historical_oracle_data: HistoricalOracleData {
-                last_oracle_price_twap: 18_807_668_638,
-                last_oracle_price_twap_5min: 18_807_668_638,
-                ..HistoricalOracleData::default()
-            },
-            // Opposite sign to the (zero) computed target, so smoothing engages.
-            last_reference_price_offset: prior_offset,
-            ..MarketStats::default()
-        },
-        amm: AMM {
-            base_asset_reserve: 65 * AMM_RESERVE_PRECISION,
-            quote_asset_reserve: 63015384615,
-            terminal_quote_asset_reserve: 64 * AMM_RESERVE_PRECISION,
-            sqrt_k: 64 * AMM_RESERVE_PRECISION,
-            peg_multiplier: 19_400 * PEG_PRECISION,
-            base_asset_amount_with_amm: 0, // neutral inventory: computed offset is 0
-            base_spread: 250,
-            curve_update_intensity: 200, // > 100 enables smoothing and a positive max offset
-            max_spread: 55500,
-            concentration_coef: 31020710,
-            last_update_slot: slot,             // already advanced this crank
-            last_spread_update_slot: slot - 50, // spreads last refreshed 50 slots ago
-            ..AMM::default()
-        },
-        status: MarketStatus::Initialized,
-        contract_tier: ContractTier::B,
-        margin_ratio_initial: 555,
-        ..PerpMarket::default()
-    };
-
-    let (_, terminal_base) = amm::calculate_terminal_reserves(&market.amm).unwrap();
-    let (min_base, max_base) =
-        amm::calculate_bid_ask_bounds(market.amm.concentration_coef, terminal_base).unwrap();
-    market.amm.min_base_asset_reserve = min_base;
-    market.amm.max_base_asset_reserve = max_base;
-
-    let reserve_price = market.amm.reserve_price().unwrap();
-    let validity = ValidityGuardRails {
-        slots_before_stale_for_amm: legacy_slot_duration_i64(10),
-        slots_before_stale_for_margin: legacy_slot_duration_i64(120),
-        confidence_interval_max_size: 1000,
-        too_volatile_ratio: 5,
-    };
-    let oracle_price_data = OraclePriceData {
-        price: 18_807_668_638,
-        confidence: 0,
-        delay: 1,
-        has_sufficient_number_of_data_points: true,
-        sequence_id: None,
-    };
-    let mm_oracle_price_data = market
-        .get_mm_oracle_price_data(oracle_price_data, slot, &validity, SlotClock::baseline())
-        .unwrap();
-
-    {
-        let PerpMarket {
-            amm, market_stats, ..
-        } = &mut market;
-        crate::vlp::amm::math::spread::update_amm_quote_state(
-            amm,
-            market_stats,
-            &mm_oracle_price_data,
-            reserve_price,
-            slot,
-            SlotClock::baseline(),
-        )
-        .unwrap();
-    }
-
-    // 50 elapsed slots scale the step to 1000. The bug reads `last_update_slot`
-    // (== slot), collapsing the step to the floor of 10 (offset would be -9990).
-    let step = (market.amm.reference_price_offset - prior_offset).unsigned_abs();
-    assert_eq!(step, 1000, "offset {}", market.amm.reference_price_offset);
 }
 
 #[test]
@@ -492,7 +393,6 @@ pub fn update_amm_larg_conf_test() {
             &mm_oracle_price_data,
             reserve_price_after,
             slot,
-            SlotClock::baseline(),
         )
         .unwrap();
     }
@@ -534,7 +434,6 @@ pub fn update_amm_larg_conf_test() {
             &mm_oracle_price_data,
             mrk,
             slot,
-            SlotClock::baseline(),
         )
         .unwrap();
     }
@@ -548,13 +447,13 @@ pub fn update_amm_larg_conf_test() {
         )
         .unwrap();
 
-    assert_eq!(ask, 18949999248);
-    assert_eq!(bid, 18409173899);
+    assert_eq!(ask, 18917294498);
+    assert_eq!(bid, 18376469149);
     assert_eq!(mrk, 18849999999);
 
-    assert_eq!(market.amm.long_spread, 5305);
+    assert_eq!(market.amm.long_spread, 3570);
     assert_eq!(market.amm.peg_multiplier, 19443664550);
-    assert_eq!(market.amm.short_spread, 23386);
+    assert_eq!(market.amm.short_spread, 25121);
 
     // add move lower
     let oracle_price_data = OraclePriceData {
@@ -604,12 +503,11 @@ pub fn update_amm_larg_conf_test() {
             &mm_oracle_price_data,
             mrk,
             slot,
-            SlotClock::baseline(),
         )
         .unwrap();
     }
-    assert_eq!(market.amm.long_spread, 5313);
-    assert_eq!(market.amm.short_spread, 25018);
+    assert_eq!(market.amm.long_spread, 3578);
+    assert_eq!(market.amm.short_spread, 26753);
 
     let (bid, ask) = market
         .amm
@@ -621,9 +519,9 @@ pub fn update_amm_larg_conf_test() {
         )
         .unwrap();
 
-    assert_eq!(bid, 18349161239);
+    assert_eq!(bid, 18316508539);
     assert_eq!(mrk, 18819999999);
-    assert_eq!(ask, 18919990658);
+    assert_eq!(ask, 18887337958);
     assert_eq!((oracle_price_data.price as u64) > bid, true);
     assert_eq!((oracle_price_data.price as u64) < ask, true);
 
@@ -659,12 +557,11 @@ pub fn update_amm_larg_conf_test() {
             &mm_oracle_price_data,
             mrk,
             slot,
-            SlotClock::baseline(),
         )
         .unwrap();
     }
-    assert_eq!(market.amm.long_spread, 6428);
-    assert_eq!(market.amm.short_spread, 23738);
+    assert_eq!(market.amm.long_spread, 4749);
+    assert_eq!(market.amm.short_spread, 25417);
 
     let (bid, ask) = market
         .amm
@@ -676,9 +573,9 @@ pub fn update_amm_larg_conf_test() {
         )
         .unwrap();
 
-    assert_eq!(bid, 18376179625);
+    assert_eq!(bid, 18344575808);
     assert_eq!(mrk, 18822999999);
-    assert_eq!(ask, 18943994242);
+    assert_eq!(ask, 18912390425);
     assert_eq!((oracle_price_data.price as u64) > bid, true);
     assert_eq!((oracle_price_data.price as u64) < ask, true);
 }
@@ -768,7 +665,6 @@ pub fn update_amm_larg_conf_w_neg_tfmd_test() {
             &mm_oracle_price_data,
             reserve_price_after,
             slot,
-            SlotClock::baseline(),
         )
         .unwrap();
     }
@@ -819,7 +715,6 @@ pub fn update_amm_larg_conf_w_neg_tfmd_test() {
             &mm_oracle_price_data,
             mrk,
             slot,
-            SlotClock::baseline(),
         )
         .unwrap();
     }
@@ -833,12 +728,12 @@ pub fn update_amm_larg_conf_w_neg_tfmd_test() {
         )
         .unwrap();
 
-    assert_eq!(bid, 18524950599);
+    assert_eq!(bid, 18524931749);
     assert_eq!(mrk, 18849999999);
-    assert_eq!(ask, 19065775948);
+    assert_eq!(ask, 19065757098);
 
-    assert_eq!(market.amm.long_spread, 11447);
-    assert_eq!(market.amm.short_spread, 17244);
+    assert_eq!(market.amm.long_spread, 11446);
+    assert_eq!(market.amm.short_spread, 17245);
 
     // add move lower
     msg!("SHOULD LOWER K");
@@ -907,12 +802,11 @@ pub fn update_amm_larg_conf_w_neg_tfmd_test() {
             &mm_oracle_price_data,
             mrk,
             slot,
-            SlotClock::baseline(),
         )
         .unwrap();
     }
-    assert_eq!(market.amm.long_spread, 11397);
-    assert_eq!(market.amm.short_spread, 18698);
+    assert_eq!(market.amm.long_spread, 11123);
+    assert_eq!(market.amm.short_spread, 18972);
 
     let (bid, ask) = market
         .amm
@@ -938,10 +832,10 @@ pub fn update_amm_larg_conf_w_neg_tfmd_test() {
     assert_eq!(market.market_stats.mark_std, 1_000_000);
 
     let orc = oracle_price_data.price as u64;
-    assert_eq!(bid, 18476808623);
+    assert_eq!(bid, 18471649513);
     assert_eq!(orc, 18820000000);
     assert_eq!(mrk, 18828870851);
-    assert_eq!(ask, 19043463492);
+    assert_eq!(ask, 19038304381);
 
     assert_eq!(bid <= orc, true);
 
@@ -977,12 +871,11 @@ pub fn update_amm_larg_conf_w_neg_tfmd_test() {
             &mm_oracle_price_data,
             mrk,
             slot,
-            SlotClock::baseline(),
         )
         .unwrap();
     }
-    assert_eq!(market.amm.long_spread, 11685);
-    assert_eq!(market.amm.short_spread, 18426);
+    assert_eq!(market.amm.long_spread, 11575);
+    assert_eq!(market.amm.short_spread, 18536);
 
     let (bid, ask) = market
         .amm
@@ -994,9 +887,9 @@ pub fn update_amm_larg_conf_w_neg_tfmd_test() {
         )
         .unwrap();
 
-    assert_eq!(bid, 18481640718);
+    assert_eq!(bid, 18479569575);
     assert_eq!(mrk, 18828576061);
-    assert_eq!(ask, 19048587972);
+    assert_eq!(ask, 19046516828);
     assert_eq!((oracle_price_data.price as u64) > bid, true);
     assert_eq!((oracle_price_data.price as u64) < ask, true);
 }

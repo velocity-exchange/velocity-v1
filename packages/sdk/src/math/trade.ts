@@ -68,7 +68,6 @@ export type PriceImpactUnit =
  * @param {AssetType} [inputAssetType] - Whether `amount` denominates base or quote; defaults to `'quote'`
  * @param {MMOraclePriceData} mmOraclePriceData - MM oracle price data used for spread reserve calc
  * @param {boolean} [useSpread] - Whether to consider the bid/ask spread when computing slippage; defaults to `true`
- * @param {BN} [latestSlot] - Slot used for spread-reserve staleness/decay calc when `useSpread` is true
  * @return {[BN, BN, BN, BN]} `[pctAvgSlippage, pctMaxSlippage, entryPrice, newPrice]`, all
  *   PRICE_PRECISION (1e6): `pctAvgSlippage` is the percentage change from the pre-trade price to
  *   `entryPrice` (average execution slippage); `pctMaxSlippage` is the percentage change from the
@@ -81,27 +80,15 @@ export function calculateTradeSlippage(
 	market: PerpMarketAccount,
 	inputAssetType: AssetType = 'quote',
 	mmOraclePriceData: MMOraclePriceData,
-	useSpread = true,
-	latestSlot?: BN,
-	slotDurationState?: SlotDurationState
+	useSpread = true
 ): [BN, BN, BN, BN] {
 	let oldPrice: BN;
 
 	if (useSpread && market.amm.baseSpread > 0) {
 		if (isVariant(direction, 'long')) {
-			oldPrice = calculateAskPrice(
-				market,
-				mmOraclePriceData,
-				latestSlot,
-				slotDurationState
-			);
+			oldPrice = calculateAskPrice(market, mmOraclePriceData);
 		} else {
-			oldPrice = calculateBidPrice(
-				market,
-				mmOraclePriceData,
-				latestSlot,
-				slotDurationState
-			);
+			oldPrice = calculateBidPrice(market, mmOraclePriceData);
 		}
 	} else {
 		oldPrice = calculateReservePrice(market, mmOraclePriceData);
@@ -116,9 +103,7 @@ export function calculateTradeSlippage(
 			market,
 			inputAssetType,
 			mmOraclePriceData,
-			useSpread,
-			latestSlot,
-			slotDurationState
+			useSpread
 		);
 
 	const entryPrice = acquiredQuoteAssetAmount
@@ -133,9 +118,7 @@ export function calculateTradeSlippage(
 				market.amm,
 				market.marketStats,
 				direction,
-				mmOraclePriceData,
-				latestSlot,
-				slotDurationState
+				mmOraclePriceData
 			);
 		amm = {
 			baseAssetReserve,
@@ -184,7 +167,6 @@ export function calculateTradeSlippage(
  * @param {MMOraclePriceData} mmOraclePriceData - MM oracle price data used for spread reserve calc
  * @param {boolean} [useSpread] - Whether to swap against the spread-adjusted reserves (bid/ask)
  *   rather than the raw reserves; defaults to `true`
- * @param {BN} [latestSlot] - Slot used for spread-reserve staleness/decay calc when `useSpread` is true
  * @return {[BN, BN, BN]} `[acquiredBase, acquiredQuote, acquiredQuoteAssetAmount]` — the change
  *   in the AMM's base and quote reserves (signed, `AMM_RESERVE_PRECISION` (1e9)), and the
  *   resulting user-facing quote amount swapped, `QUOTE_PRECISION` (1e6)
@@ -195,9 +177,7 @@ export function calculateTradeAcquiredAmounts(
 	market: PerpMarketAccount,
 	inputAssetType: AssetType = 'quote',
 	mmOraclePriceData: MMOraclePriceData,
-	useSpread = true,
-	latestSlot?: BN,
-	slotDurationState?: SlotDurationState
+	useSpread = true
 ): [BN, BN, BN] {
 	if (amount.eq(ZERO)) {
 		return [ZERO, ZERO, ZERO];
@@ -212,9 +192,7 @@ export function calculateTradeAcquiredAmounts(
 				market.amm,
 				market.marketStats,
 				direction,
-				mmOraclePriceData,
-				latestSlot,
-				slotDurationState
+				mmOraclePriceData
 			);
 		amm = {
 			baseAssetReserve,
@@ -256,7 +234,6 @@ export function calculateTradeAcquiredAmounts(
  * @param {boolean} [useSpread] - Whether to consider the bid/ask spread when sizing the trade;
  *   defaults to `true`. If `targetPrice` already sits within the current bid/ask spread, returns
  *   a zero-size trade
- * @param {BN} [latestSlot] - Slot used for spread-reserve staleness/decay calc when `useSpread` is true
  * @return {[PositionDirection, BN, BN, BN]} `[direction, tradeSize, entryPrice, targetPrice]` —
  *   `direction` required to move price toward `targetPrice`; `tradeSize` in `outputAssetType`
  *   units (base: BASE_PRECISION (1e9); quote: QUOTE_PRECISION (1e6)); `entryPrice`/`targetPrice`
@@ -268,27 +245,15 @@ export function calculateTargetPriceTrade(
 	pct: BN = MAXPCT,
 	outputAssetType: AssetType = 'quote',
 	mmOraclePriceData?: MMOraclePriceData,
-	useSpread = true,
-	latestSlot?: BN,
-	slotDurationState?: SlotDurationState
+	useSpread = true
 ): [PositionDirection, BN, BN, BN] {
 	assert(market.amm.baseAssetReserve.gt(ZERO));
 	assert(targetPrice.gt(ZERO));
 	assert(pct.lte(MAXPCT) && pct.gt(ZERO));
 
 	const reservePriceBefore = calculateReservePrice(market, mmOraclePriceData);
-	const bidPriceBefore = calculateBidPrice(
-		market,
-		mmOraclePriceData,
-		latestSlot,
-		slotDurationState
-	);
-	const askPriceBefore = calculateAskPrice(
-		market,
-		mmOraclePriceData,
-		latestSlot,
-		slotDurationState
-	);
+	const bidPriceBefore = calculateBidPrice(market, mmOraclePriceData);
+	const askPriceBefore = calculateAskPrice(market, mmOraclePriceData);
 
 	let direction;
 	if (targetPrice.gt(reservePriceBefore)) {
@@ -317,9 +282,7 @@ export function calculateTargetPriceTrade(
 				market.amm,
 				market.marketStats,
 				direction,
-				mmOraclePriceData,
-				latestSlot,
-				slotDurationState
+				mmOraclePriceData
 			);
 		baseAssetReserveBefore = baseAssetReserve;
 		quoteAssetReserveBefore = quoteAssetReserve;
@@ -501,9 +464,7 @@ export function calculateEstimatedPerpEntryPrice(
 			market.amm,
 			market.marketStats,
 			direction,
-			mmOraclePriceData,
-			new BN(slot),
-			slotDurationState
+			mmOraclePriceData
 		);
 	const amm = {
 		baseAssetReserve,

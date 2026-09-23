@@ -349,18 +349,8 @@ class DLOBBuilder {
 					this.velocityClient.getMMOracleDataForPerpMarket(marketIndex);
 				oraclePriceData =
 					this.velocityClient.getOracleDataForPerpMarket(marketIndex);
-				fallbackBid = calculateBidPrice(
-					market,
-					mmOraclePriceData,
-					new BN(this.slotSubscriber.getSlot()),
-					this.velocityClient.getStateAccount()
-				);
-				fallbackAsk = calculateAskPrice(
-					market,
-					mmOraclePriceData,
-					new BN(this.slotSubscriber.getSlot()),
-					this.velocityClient.getStateAccount()
-				);
+				fallbackBid = calculateBidPrice(market, mmOraclePriceData);
+				fallbackAsk = calculateAskPrice(market, mmOraclePriceData);
 			} else {
 				market = this.velocityClient.getSpotMarketAccount(marketIndex);
 				if (!market) {

@@ -30,7 +30,6 @@ import {
 } from '../constants/numericConstants';
 import { getTokenAmount } from './spotBalance';
 import { assert } from '../assert/assert';
-import { SlotDurationState } from './time';
 
 /**
  * Calculates the perp market's current mark (mid) price from its raw (non-spread) AMM reserves,
@@ -61,24 +60,18 @@ export function calculateReservePrice(
  * @param {PerpMarketAccount} market - The perp market account
  * @param {MMOraclePriceData} [mmOraclePriceData] - Current MM oracle price data, used both to
  *   repeg the AMM and to compute the spread reserves
- * @param {BN} [latestSlot] - Current slot, used for reference-price-offset smoothing in the
- *   spread calculation
  * @return {BN} The bid price, PRICE_PRECISION (1e6)
  */
 export function calculateBidPrice(
 	market: PerpMarketAccount,
-	mmOraclePriceData?: MMOraclePriceData,
-	latestSlot?: BN,
-	slotDurationState?: SlotDurationState
+	mmOraclePriceData?: MMOraclePriceData
 ): BN {
 	const { baseAssetReserve, quoteAssetReserve, newPeg } =
 		calculateUpdatedAMMSpreadReserves(
 			market.amm,
 			market.marketStats,
 			PositionDirection.SHORT,
-			mmOraclePriceData,
-			latestSlot,
-			slotDurationState
+			mmOraclePriceData
 		);
 
 	return calculatePrice(baseAssetReserve, quoteAssetReserve, newPeg);
@@ -91,24 +84,18 @@ export function calculateBidPrice(
  * @param {PerpMarketAccount} market - The perp market account
  * @param {MMOraclePriceData} [mmOraclePriceData] - Current MM oracle price data, used both to
  *   repeg the AMM and to compute the spread reserves
- * @param {BN} [latestSlot] - Current slot, used for reference-price-offset smoothing in the
- *   spread calculation
  * @return {BN} The ask price, PRICE_PRECISION (1e6)
  */
 export function calculateAskPrice(
 	market: PerpMarketAccount,
-	mmOraclePriceData?: MMOraclePriceData,
-	latestSlot?: BN,
-	slotDurationState?: SlotDurationState
+	mmOraclePriceData?: MMOraclePriceData
 ): BN {
 	const { baseAssetReserve, quoteAssetReserve, newPeg } =
 		calculateUpdatedAMMSpreadReserves(
 			market.amm,
 			market.marketStats,
 			PositionDirection.LONG,
-			mmOraclePriceData,
-			latestSlot,
-			slotDurationState
+			mmOraclePriceData
 		);
 
 	return calculatePrice(baseAssetReserve, quoteAssetReserve, newPeg);

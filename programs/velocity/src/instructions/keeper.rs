@@ -2706,12 +2706,7 @@ pub fn handle_update_funding_rate(
         &state,
         clock_slot,
     )?;
-    perp_market.refresh_amm_quote_state(
-        &mm_oracle_price_data,
-        validity,
-        clock_slot,
-        state.slot_clock(),
-    )?;
+    perp_market.refresh_amm_quote_state(&mm_oracle_price_data, validity, clock_slot)?;
 
     validate!(
         matches!(
@@ -2836,24 +2831,29 @@ pub fn handle_update_perp_bid_ask_twap<'c: 'info, 'info>(
         &state.oracle_guard_rails.validity,
         state.slot_clock(),
     )?;
-    // PerpMarket-level oracle stats only — this ix walks DLOB makers to
-    // estimate bid/ask TWAP and does not read AMM peg or reserves. The
-    // AMM snap_to_oracle that used to fire here was cargo-cult and is
-    // dropped; oracle TWAP / reference-price-offset bookkeeping still
-    // happens via refresh_perp_market_stats_from_oracle.
     let validity = crate::vlp::amm::refresh::compute_amm_refresh_validity(
         perp_market,
         &mm_oracle_price_data,
         &state,
         slot,
     )?;
-    perp_market.update_oracle_derived_stats(
+    // This ix samples the AMM's bid/ask into the mark TWAP, so the curve must
+    // be projected onto this slot's oracle first, the same way fills and the
+    // funding update refresh before they read it. Sampling a stale peg biases
+    // the mark TWAP, and through it funding, by roughly half the peg's gap to
+    // the oracle. Slot-idempotent: a no-op when a fill already refreshed the
+    // curve this slot. Runs under the same oracle validity and affordability
+    // gates as every other refresh.
+    let projection_inputs =
+        crate::vlp::amm::math::repeg::ProjectionInputs::from_market(perp_market);
+    crate::vlp::amm::refresh::project_and_apply(
+        &mut perp_market.amm,
+        &projection_inputs,
         &mm_oracle_price_data,
         validity,
-        now,
         slot,
-        state.slot_clock(),
     )?;
+    perp_market.update_oracle_derived_stats(&mm_oracle_price_data, validity, now, slot)?;
 
     let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
     let makers = load_user_map(remaining_accounts_iter, false)?;
@@ -2902,7 +2902,6 @@ pub fn handle_update_perp_bid_ask_twap<'c: 'info, 'info>(
             &mm_oracle_price_data,
             reserve_price,
             slot,
-            state.slot_clock(),
         )?;
         market_stats.update_mark_twap_crank(
             amm,

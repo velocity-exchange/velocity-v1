@@ -5,10 +5,9 @@
  *
  * Taker fill quality against the oracle, per market, from Athena into Redis.
  *
- * `/auctionParams` at version 2 and above reads these numbers to widen or
- * narrow an auction from what takers actually paid. Nothing else writes them,
- * so the endpoint silently falls back to its static offsets whenever this does
- * not run.
+ * On a crossed book, `/marketOrderParams` shifts its price estimate by these
+ * numbers toward what takers actually paid. Nothing else writes them, so the
+ * endpoint prices off the book alone whenever this does not run.
  *
  * The query is a 24-hour scan and the answer moves slowly, so it runs on a
  * five-minute timer rather than per request. It is off unless
@@ -21,7 +20,7 @@ import {
 } from '../athena/repositories/fillQualityAnalytics';
 import { logger } from '../utils/logger';
 
-/** The key `/auctionParams` reads. One per market. */
+/** The key `/marketOrderParams` reads. One per market. */
 export const fillQualityKey = (marketIndex: string | number): string =>
 	`taker_fill_vs_oracle_bps:market:${marketIndex}`;
 
@@ -116,7 +115,7 @@ export function startFillQualityPublisher(
 ): (() => void) | undefined {
 	if (!config.enabled) {
 		logger.info(
-			'fill quality analytics disabled; /auctionParams v2+ uses its static offsets'
+			'fill quality analytics disabled; /marketOrderParams prices off the book alone'
 		);
 
 		return undefined;

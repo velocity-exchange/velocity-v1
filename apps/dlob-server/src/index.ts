@@ -18,7 +18,6 @@ import {
 	DelistedMarketSetting,
 	BigNum,
 	PRICE_PRECISION_EXP,
-	MarketTypeStr,
 	AssetType,
 	PerpMarkets,
 } from '@velocity-exchange/sdk';
@@ -41,16 +40,12 @@ import {
 	validateDlobQuery,
 	getRawAccountFromId,
 	selectMostRecentBySlot,
-	createMarketBasedAuctionParams,
 	parseBoolean,
 	parseNumber,
-	mapToMarketOrderParams,
-	formatAuctionParamsForResponse,
 	fetchL2FromRedis,
 } from './utils/utils';
+import { PriceReference, quoteMarketOrder } from './utils/marketOrderParams';
 import { setGlobalDispatcher, Agent } from 'undici';
-import { deriveMarketOrderParams, ENUM_UTILS } from '@velocity-exchange/common';
-import { AuctionParamArgs } from './utils/types';
 import { TakerFillVsOracleBpsRedisResult } from './athena/repositories/fillQualityAnalytics';
 
 setGlobalDispatcher(
@@ -252,9 +247,8 @@ const main = async (): Promise<void> => {
 		selectMostRecentBySlot
 	);
 
-	// `/auctionParams` at version 2 and above reads these. Nothing else writes
-	// them, and a missing answer is invisible at the endpoint, which just falls
-	// back to its static offsets.
+	// `/marketOrderParams` reads these. Nothing else writes them, and a missing
+	// answer is invisible at the endpoint, which prices off the book alone.
 	startFillQualityPublisher(redisClients);
 
 	app.get('/priorityFees', async (req, res, next) => {
@@ -837,200 +831,127 @@ const main = async (): Promise<void> => {
 		}
 	});
 
-	app.get('/auctionParams', async (req, res, next) => {
+	app.get('/marketOrderParams', async (req, res, next) => {
 		try {
 			const {
 				marketIndex,
-				marketType,
 				direction,
 				amount,
 				assetType,
 				reduceOnly,
-				allowInfSlippage,
 				slippageTolerance,
+				priceReference,
 				isOracleOrder,
-				auctionDuration,
-				auctionStartPriceOffset,
-				auctionEndPriceOffset,
-				auctionStartPriceOffsetFrom,
-				auctionEndPriceOffsetFrom,
-				additionalEndPriceBuffer,
+				activationDelaySlots,
 				userOrderId,
-				forceUpToSlippage,
 				maxLeverageSelected,
 				maxLeverageOrderSize,
-				version,
 			} = req.query;
 
-			// Validate required parameters
-			if (!marketIndex || !marketType || !direction || !amount || !assetType) {
+			const parsedMarketIndex = parseInt(marketIndex as string);
+			if (!amount || isNaN(parsedMarketIndex)) {
 				res
 					.status(400)
-					.send(
-						'Bad Request: marketIndex, marketType, direction, amount, and assetType are required'
-					);
-				return;
-			}
-
-			const apiVersion = version ? parseInt(version as string) : 1;
-
-			let redisFillQualityInfo: TakerFillVsOracleBpsRedisResult | undefined;
-			if (apiVersion >= 2) {
-				const redisKey = `taker_fill_vs_oracle_bps:market:${marketIndex}`;
-				try {
-					const redisValue = await fetchFromRedis(
-						redisKey,
-						(responses) => responses[0] as any
-					);
-					if (redisValue) {
-						const parsed = JSON.parse(redisValue);
-						redisFillQualityInfo =
-							typeof parsed === 'string' ? JSON.parse(parsed) : parsed;
-					}
-					// Fall through to existing logic below
-				} catch (err) {
-					logger.error(
-						`Version 2: Error fetching redis stats for market ${marketIndex}:`,
-						err
-					);
-					// Fall through to existing logic below
-				}
-			}
-
-			// Parse and validate values
-			const parsedMarketIndex = parseInt(marketIndex as string);
-			if (isNaN(parsedMarketIndex)) {
-				res.status(400).send('Bad Request: marketIndex must be a valid number');
+					.send('Bad Request: marketIndex and amount are required');
 				return;
 			}
 
 			if (direction !== 'long' && direction !== 'short') {
 				res
 					.status(400)
-					.send('Bad Request: direction must be either "long" or "short"');
+					.send('Bad Request: direction must be "long" or "short"');
 				return;
 			}
 
 			if (assetType !== 'base' && assetType !== 'quote') {
 				res
 					.status(400)
-					.send('Bad Request: assetType must be either "base" or "quote"');
+					.send('Bad Request: assetType must be "base" or "quote"');
 				return;
 			}
 
-			// Build auction params object
-			const auctionParamsInput: AuctionParamArgs = {
-				marketIndex: parsedMarketIndex,
-				marketType: marketType as MarketTypeStr,
-				direction: direction as 'long' | 'short',
-				amount: amount as string,
-				assetType: assetType as AssetType,
-			};
-
-			// Add optional parameters if provided
-			const optionalParams = {
-				reduceOnly: parseBoolean(reduceOnly as string),
-				allowInfSlippage: parseBoolean(allowInfSlippage as string),
-				slippageTolerance:
-					slippageTolerance === 'dynamic'
-						? undefined
-						: parseNumber(slippageTolerance as string), // Convert "dynamic" to undefined for dynamic calculation
-				isOracleOrder: parseBoolean(isOracleOrder as string),
-				auctionDuration: parseNumber(auctionDuration as string),
-				auctionStartPriceOffset:
-					auctionStartPriceOffset === 'marketBased'
-						? 'marketBased'
-						: parseNumber(auctionStartPriceOffset as string),
-				auctionEndPriceOffset: parseNumber(auctionEndPriceOffset as string),
-				auctionStartPriceOffsetFrom:
-					auctionStartPriceOffsetFrom === 'marketBased'
-						? 'marketBased'
-						: (auctionStartPriceOffsetFrom as any),
-				auctionEndPriceOffsetFrom: auctionEndPriceOffsetFrom as any,
-				additionalEndPriceBuffer: additionalEndPriceBuffer as string,
-				userOrderId: parseNumber(userOrderId as string),
-				forceUpToSlippage: parseBoolean(forceUpToSlippage as string),
-				maxLeverageSelected: parseBoolean(maxLeverageSelected as string),
-				maxLeverageOrderSize: maxLeverageOrderSize as string,
-			};
-
-			// Only add non-undefined values
-			Object.entries(optionalParams).forEach(([key, value]) => {
-				if (value !== undefined) {
-					auctionParamsInput[key] = value;
-				}
-			});
-
-			const inputParams = createMarketBasedAuctionParams(
-				auctionParamsInput,
-				undefined,
-				apiVersion
-			);
-
-			const result = await mapToMarketOrderParams(
-				inputParams,
-				velocityClient,
-				fetchFromRedis,
-				selectMostRecentBySlot,
-				redisFillQualityInfo,
-				apiVersion,
-				slotSubscriber.getSlot()
-			);
-
-			if (!result.success) {
-				res.status(400).json({
-					error: result.error,
-				});
+			if (
+				priceReference !== undefined &&
+				!['best', 'mark', 'oracle', 'entry'].includes(priceReference as string)
+			) {
+				res
+					.status(400)
+					.send(
+						'Bad Request: priceReference must be "best", "mark", "oracle" or "entry"'
+					);
 				return;
 			}
 
-			const auctionParams = deriveMarketOrderParams(
-				result.data.marketOrderParams
-			);
-
-			// Log final auction prices for debugging
-			logger.info(
-				JSON.stringify({
-					event: 'auction_params_derived',
+			const quote = await quoteMarketOrder(
+				{
 					marketIndex: parsedMarketIndex,
-					direction: direction,
-					apiVersion,
-					finalAuctionParams: {
-						auctionStartPrice: auctionParams.auctionStartPrice?.toString(),
-						auctionEndPrice: auctionParams.auctionEndPrice?.toString(),
-						price: auctionParams.price?.toString(),
-						oraclePriceOffset: auctionParams.oraclePriceOffset?.toString(),
-						auctionDuration: auctionParams.auctionDuration?.toString(),
-						orderType: ENUM_UTILS.toStr(auctionParams.orderType),
-					},
-				})
+					direction,
+					amount: amount as string,
+					assetType: assetType as AssetType,
+					reduceOnly: parseBoolean(reduceOnly as string),
+					slippageTolerance: parseNumber(slippageTolerance as string),
+					priceReference: priceReference as PriceReference | undefined,
+					isOracleOrder: parseBoolean(isOracleOrder as string),
+					activationDelaySlots: parseNumber(activationDelaySlots as string),
+					userOrderId: parseNumber(userOrderId as string),
+					maxLeverageSelected: parseBoolean(maxLeverageSelected as string),
+					maxLeverageOrderSize: maxLeverageOrderSize as string | undefined,
+				},
+				{
+					velocityClient,
+					fetchFromRedis,
+					selectMostRecentBySlot,
+					fillQualityInfo: await fetchFillQualityInfo(parsedMarketIndex),
+					currentSlot: slotSubscriber.getSlot(),
+				}
 			);
 
-			const response = {
+			const prices = quote.estimatedPrices;
+			res.status(200).json({
 				data: {
-					params: formatAuctionParamsForResponse(auctionParams),
-					entryPrice: result.data.estimatedPrices.entryPrice.toString(),
-					bestPrice: result.data.estimatedPrices.bestPrice.toString(),
-					worstPrice: result.data.estimatedPrices.worstPrice.toString(),
-					oraclePrice: result.data.estimatedPrices.oraclePrice.toString(),
-					markPrice: result.data.estimatedPrices.markPrice.toString(),
+					params: quote.params,
+					entryPrice: prices.entryPrice.toString(),
+					bestPrice: prices.bestPrice.toString(),
+					worstPrice: prices.worstPrice.toString(),
+					oraclePrice: prices.oraclePrice.toString(),
+					markPrice: prices.markPrice.toString(),
 					priceImpact: BigNum.from(
-						result.data.estimatedPrices.priceImpact,
+						prices.priceImpact,
 						PRICE_PRECISION_EXP
 					).toNum(),
-					slippageTolerance: (
-						result.data.marketOrderParams.slippageTolerance / 100
-					).toString(),
-					// Quote timestamp so clients can re-fetch stale params before signing
+					slippageTolerance: quote.slippageTolerance,
+					// Clients re-fetch a stale quote before signing.
 					generatedAt: Date.now(),
 				},
-			};
-
-			res.status(200).json(response);
+			});
 		} catch (err) {
 			next(err);
 		}
 	});
+
+	/** The published taker fill quality for a market, when the publisher runs. */
+	const fetchFillQualityInfo = async (
+		marketIndex: number
+	): Promise<TakerFillVsOracleBpsRedisResult | undefined> => {
+		try {
+			const value = await fetchFromRedis(
+				`taker_fill_vs_oracle_bps:market:${marketIndex}`,
+				(responses) => responses[0] as any
+			);
+			if (!value) {
+				return undefined;
+			}
+
+			const parsed = JSON.parse(value);
+			return typeof parsed === 'string' ? JSON.parse(parsed) : parsed;
+		} catch (err) {
+			logger.error(
+				`Error fetching fill quality for market ${marketIndex}:`,
+				err
+			);
+			return undefined;
+		}
+	};
 
 	server.listen(serverPort, () => {
 		logger.info(`DLOB server listening on port http://localhost:${serverPort}`);

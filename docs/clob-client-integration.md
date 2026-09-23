@@ -46,14 +46,14 @@ const orderParams = getLimitOrderParams({
   baseAssetAmount,  // BASE_PRECISION
   maxTs,            // BN(0) = good-till-cancelled
   postOnly: PostOnlyParams.MUST_POST_ONLY,
+  activationDelaySlots, // null takes the book's default speed bump
 });
 
 await velocityClient.placeAndMakePerpOrder(
   orderParams,
-  clobAccounts,        // { quoterSlab, clobMarket, clobProgram }
+  clobAccounts,     // { quoterSlab, clobMarket, clobProgram }
   txParams,
-  subAccountId,
-  activationDelaySlots // null takes the book's default speed bump
+  subAccountId
 );
 ```
 
@@ -91,6 +91,79 @@ runs the protocol `User` as the taker on both legs and pays it out of the spread
 buys is the placement behaviour a maker wants: refuse rather than rest through the other side.
 Placement turns `postOnly` into the book's `reject_if_crossed` flag. Wire it to the post-only toggle
 and do not describe it as a fee setting.
+
+## Market orders
+
+A market order has no auction. It names one worst price, `price`, and fills no worse than it,
+against the vAMM, the book and the PropAMM quoters in one router pass. What it does not fill rests
+on the book at that price as a taker-origin order, and a counterparty that crosses it later settles
+at the counterparty's price. A market order that names no price takes the oracle plus or minus 0.5
+percent as its worst price.
+
+Three fields bound the order, and they are separate:
+
+| Field | What it bounds |
+| --- | --- |
+| `price` (or `oraclePriceOffset` for an oracle order) | The worst price any fill may reach |
+| `activationDelaySlots` | How long a rested remainder waits before the book will fill it. `null` takes the book's default. A value below the default needs the flow authority's signature, so a UI leaves it `null` unless it goes through swift's attested flow |
+| `maxTs` | When the order ends. A market order that names none lives 30 seconds |
+
+The activation delay is the knob the auction duration used to be. A longer wait lets more
+counterparties cross the remainder, and each crosses at its own price, so the wait can only improve
+the fill. A trigger order refuses `activationDelaySlots`, because its slot stores none.
+
+`dlob-server` quotes the params:
+
+```
+GET /marketOrderParams?marketIndex=0&direction=long&amount=1000000000&assetType=base
+    [&slippageTolerance=0.5][&priceReference=best][&isOracleOrder=true]
+    [&activationDelaySlots=4][&reduceOnly=true][&userOrderId=7]
+```
+
+```jsonc
+{
+  "data": {
+    "params": {
+      "orderType": "market",          // "oracle" when isOracleOrder
+      "marketType": "perp",
+      "marketIndex": 0,
+      "direction": "long",
+      "baseAssetAmount": "1000000000",
+      "price": "161650500",           // the worst price; "0" for an oracle order
+      "oraclePriceOffset": null,      // the worst price less the oracle, for an oracle order
+      "reduceOnly": false,
+      "userOrderId": null,
+      "activationDelaySlots": null,
+      "maxTs": null
+    },
+    "entryPrice": "160050000", "bestPrice": "160050000", "worstPrice": "160050000",
+    "oraclePrice": "160000000", "markPrice": "160000000", "priceImpact": 0.0003,
+    "slippageTolerance": 1,           // percent, the one the price was built from
+    "generatedAt": 1790000000000
+  }
+}
+```
+
+`price` is `priceReference` (the best price on the order's side by default) moved by
+`slippageTolerance` percent, away from the taker. With no tolerance named, the server picks one that
+covers the book walk's `worstPrice`, so a vAMM-only book is always reached. The `params` object
+uses `OptionalOrderParams` names, so a client parses the numeric strings into `BN`s and passes it to
+`placeAndTakePerpOrder`, or signs it into a swift message.
+
+### Migrating from `/auctionParams`
+
+`/auctionParams` is removed. It derived an auction for a program that no longer runs one.
+
+| `/auctionParams` | `/marketOrderParams` |
+| --- | --- |
+| `auctionStartPrice`, `auctionEndPrice` | Gone. `params.price` is the only price |
+| `auctionDuration` | Gone. `activationDelaySlots` bounds the wait, and only for a remainder |
+| `auctionStartPriceOffset`, `auctionEndPriceOffset`, `auctionStartPriceOffsetFrom`, `auctionEndPriceOffsetFrom` | `priceReference` names what the tolerance is measured from |
+| `allowInfSlippage` | Gone. A tolerance is always applied, capped at 99 percent |
+| `additionalEndPriceBuffer`, `forceUpToSlippage` | Gone |
+| `marketType` | Gone. The endpoint quotes perp markets only |
+| `version` | Gone. Fill-quality analytics shift the estimate on a crossed book whenever they are published |
+| `constrainedBySlippage` | Gone |
 
 ## Cancelling and modifying
 

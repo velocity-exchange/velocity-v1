@@ -1,6 +1,4 @@
 import {
-	SLOT_DURATION_BASELINE,
-	msToSlotsCeilNum,
 	BN,
 	BigNum,
 	VelocityClient,
@@ -25,26 +23,13 @@ import {
 	isMajorPerpMarket,
 } from '@velocity-exchange/sdk';
 import { RedisClient } from '@velocity-exchange/common/clients';
-import { TradeOffsetPrice } from '@velocity-exchange/common';
 import { logger } from './logger';
 import { NextFunction, Request, Response } from 'express';
 import FEATURE_FLAGS from './featureFlags';
 import { Connection } from '@solana/web3.js';
-import {
-	DEFAULT_AUCTION_PARAMS,
-	DEFAULT_MARKET_AUCTION_DURATION_MS,
-	FAST_FILL_AUCTION_DURATION_MS,
-	FAST_FILL_AUCTION_START_PRICE_OFFSET,
-	MID_MAJOR_MARKETS,
-} from './constants';
-import { AuctionParamArgs } from './types';
-import {
-	calculateSpreadBidAskMark,
-	ENUM_UTILS,
-} from '@velocity-exchange/common';
-import { TakerFillVsOracleBpsRedisResult } from '../athena/repositories/fillQualityAnalytics';
+import { MID_MAJOR_MARKETS } from './constants';
+import { calculateSpreadBidAskMark } from '@velocity-exchange/common';
 
-const MAX_FILL_QUALITY_AGE_MS = 10 * 60 * 1000; // 10 minutes
 export const GROUPING_OPTIONS = [1, 10, 100, 500, 1000];
 export const GROUPING_DEPENDENCIES = {
 	1: null,
@@ -586,86 +571,6 @@ export const selectMostRecentBySlot = (
 };
 
 /**
- * Resolves `'marketBased'` (and undefined) auction fields into concrete values, keyed off the
- * market's tier and the requested params version. A major market starts the auction at mark
- * with no offset. Every other market starts at the best offer, stepped 0.1 inside it. Version
- * 3 and above ignores the tier and takes the fast-fill path on all markets.
- *
- * @param args the caller's auction params. The `'marketBased'` fields are the ones resolved here
- * @param overrideDefaults values that win over the market-specific defaults, but not over explicit `args`
- * @param version the auction params version. Version 3 and above selects the fast-fill behavior
- * @returns the params with every `'marketBased'` field resolved to a concrete value
- */
-export function createMarketBasedAuctionParams(
-	args: AuctionParamArgs,
-	overrideDefaults?: Partial<AuctionParamArgs>,
-	version: number = 1
-): AuctionParamArgs {
-	const isMajorMarket =
-		args.marketType?.toLowerCase() === 'perp' &&
-		isMajorPerpMarket(args.marketIndex);
-
-	// Version 3 and above weights toward a fast fill. It starts just inside the
-	// touch on all markets and runs a short auction, instead of waiting for
-	// price improvement.
-	const isFastFill = version >= 3;
-
-	const resolvedAuctionStartPriceOffsetFrom =
-		args.auctionStartPriceOffsetFrom === 'marketBased' ||
-		args.auctionStartPriceOffsetFrom === undefined
-			? isFastFill
-				? 'bestOffer'
-				: isMajorMarket
-				? 'mark'
-				: 'bestOffer'
-			: args.auctionStartPriceOffsetFrom;
-
-	const resolvedAuctionStartPriceOffset =
-		args.auctionStartPriceOffset === 'marketBased' ||
-		args.auctionStartPriceOffset === undefined
-			? isFastFill
-				? FAST_FILL_AUCTION_START_PRICE_OFFSET
-				: isMajorMarket
-				? 0
-				: -0.1
-			: args.auctionStartPriceOffset;
-
-	// The default duration is wall-clock milliseconds in the on-chain 400ms unit
-	// encoding that `Order.auction_duration` uses. The program converts elapsed
-	// slots to wall clock at fill time, so the live slot duration is not needed
-	// here.
-	const marketSpecificDefaults: Partial<AuctionParamArgs> = {
-		...DEFAULT_AUCTION_PARAMS,
-		auctionDuration: Math.min(
-			255,
-			msToSlotsCeilNum(
-				isFastFill
-					? FAST_FILL_AUCTION_DURATION_MS
-					: DEFAULT_MARKET_AUCTION_DURATION_MS,
-				SLOT_DURATION_BASELINE
-			)
-		),
-		auctionStartPriceOffsetFrom:
-			isMajorMarket && version === 1 ? 'mark' : 'bestOffer',
-		auctionStartPriceOffset: isMajorMarket && version === 1 ? 0 : -0.1,
-	};
-
-	const finalDefaults = overrideDefaults
-		? { ...marketSpecificDefaults, ...overrideDefaults }
-		: marketSpecificDefaults;
-
-	return {
-		...finalDefaults,
-		...args,
-		auctionStartPriceOffsetFrom:
-			resolvedAuctionStartPriceOffsetFrom ??
-			finalDefaults.auctionStartPriceOffsetFrom,
-		auctionStartPriceOffset:
-			resolvedAuctionStartPriceOffset ?? finalDefaults.auctionStartPriceOffset,
-	};
-}
-
-/**
  * Parse boolean values from string query parameters
  * @param value - string value from query parameter
  * @returns boolean | undefined - true for 'true'/'1', false for other values, undefined if input is undefined
@@ -718,537 +623,6 @@ export const convertRawL2ToBN = (rawL2: any): L2OrderBook => {
 };
 
 /**
- * Maps TradeOffsetPrice values to corresponding property names in estimatedPrices object
- * @param offsetFrom - TradeOffsetPrice type or 'marketBased' or undefined
- * @returns Property name string for accessing estimatedPrices
- */
-export const mapTradeOffsetPriceToProperty = (
-	offsetFrom: TradeOffsetPrice | 'marketBased' | undefined
-): string => {
-	switch (offsetFrom) {
-		case 'best':
-			return 'bestPrice';
-		case 'worst':
-			return 'worstPrice';
-		case 'oracle':
-			return 'oraclePrice';
-		case 'mark':
-			return 'markPrice';
-		case 'entry':
-			return 'entryPrice';
-		case 'bestOffer':
-			// For bestOffer, we'll use the best price (could be refined based on direction)
-			return 'bestPrice';
-		case 'marketBased':
-			// Default to mark price for market-based pricing
-			return 'markPrice';
-		default:
-			// Default fallback to mark price
-			return 'markPrice';
-	}
-};
-
-/**
- * Maps AuctionParamArgs to the format expected by deriveMarketOrderParams
- * @param params - AuctionParamArgs from the API request
- * @param velocityClient - VelocityClient instance (optional, for price calculation)
- * @param fetchFromRedis - Redis fetch function (optional, for price calculation)
- * @param selectMostRecentBySlot - Slot selection function (optional, for price calculation)
- * @param fillQualityInfo - Fill quality analytics data (version 2 only)
- * @param apiVersion - API version (1 or 2)
- * @returns Object formatted for deriveMarketOrderParams function or error response
- */
-export const mapToMarketOrderParams = async (
-	params: AuctionParamArgs,
-	velocityClient?: VelocityClient,
-	fetchFromRedis?: (
-		key: string,
-		selectionCriteria: (responses: any) => any
-	) => Promise<any>,
-	selectMostRecentBySlot?: (responses: any[]) => any,
-	fillQualityInfo?: TakerFillVsOracleBpsRedisResult,
-	apiVersion: number = 1,
-	// The live chain slot. It reaches the vAMM quote and the MM-oracle validity,
-	// so a staged slot-duration switch applies. Callers pass
-	// `dlobProvider.getSlot()`.
-	currentSlot?: number
-): Promise<{
-	success: boolean;
-	data?: {
-		marketOrderParams: any;
-		estimatedPrices: {
-			oraclePrice: BN;
-			bestPrice: BN;
-			entryPrice: BN;
-			worstPrice: BN;
-			markPrice: BN;
-			priceImpact: BN;
-		};
-	};
-	error?: string;
-}> => {
-	// Convert marketType string to MarketType enum
-	const marketType =
-		params.marketType.toLowerCase() === 'spot'
-			? MarketType.SPOT
-			: MarketType.PERP;
-
-	// Convert direction string to PositionDirection enum
-	const direction =
-		params.direction === 'long'
-			? PositionDirection.LONG
-			: PositionDirection.SHORT;
-
-	// Convert amount string to BN - amount is already in base or quote precision
-	const amount = stringToBN(params.amount);
-
-	// Convert additionalEndPriceBuffer string to BN with PRICE_PRECISION (1e6) if provided
-	const additionalEndPriceBuffer = params.additionalEndPriceBuffer
-		? stringToBN(params.additionalEndPriceBuffer).mul(PRICE_PRECISION)
-		: undefined;
-
-	// Calculate estimated prices and handle slippage tolerance calculation
-	let estimatedPrices;
-	let processedSlippageTolerance = params.slippageTolerance;
-
-	// Track debug info for logging
-	const debugInfo = {
-		originalOraclePrice: null as string | null,
-		adjustedOraclePrice: null as string | null,
-		adjustedMarkPrice: null as string | null,
-		isCrossed: false,
-		fillQualityBps: null as number | null,
-		fillQualityDataStale: false,
-		priceReferenceUsed: null as string | null,
-		priceReferenceDistance: null as string | null,
-		reason: null as string | null,
-		markVsOracle: null as string | null,
-		isMarkFavorableForDirection: null as boolean | null,
-		appliedV2Adjustment: false,
-	};
-
-	let conditionalParams = {};
-
-	if (velocityClient && fetchFromRedis && selectMostRecentBySlot) {
-		// Get L2 orderbook data using the utility function
-		const redisL2 = await fetchL2FromRedis(
-			fetchFromRedis,
-			selectMostRecentBySlot,
-			marketType,
-			params.marketIndex
-		);
-
-		// Calculate estimated prices using the fetched L2 data
-		estimatedPrices = await getEstimatedPricesWithL2(
-			velocityClient,
-			marketType,
-			params.marketIndex,
-			direction,
-			amount,
-			params.assetType,
-			redisL2
-		);
-
-		// Store original oracle for debugging
-		debugInfo.originalOraclePrice = estimatedPrices.oraclePrice.toString();
-
-		// VERSION 2+: Adjust oracle price based on fill quality when orderbook is crossed
-		if (apiVersion >= 2 && fillQualityInfo && redisL2) {
-			try {
-				// Convert raw L2 to formatted L2 for cross detection
-				const l2Formatted = convertRawL2ToBN(redisL2);
-
-				const isSpot = isVariant(marketType, 'spot');
-				const oracleData = isSpot
-					? velocityClient.getOracleDataForSpotMarket(params.marketIndex)
-					: velocityClient.getMMOracleDataForPerpMarket(
-							params.marketIndex,
-							currentSlot
-					  );
-				const oraclePrice = oracleData.price ?? ZERO;
-
-				// Detect if orderbook is crossed
-				const spreadInfo = calculateSpreadBidAskMark(l2Formatted, oraclePrice);
-
-				// TODO - apply this to all apiVersions once testing is complete.
-				conditionalParams = {
-					ensureCrossingEndPrice: true,
-					bestBidPrice: spreadInfo.bestBidPrice,
-					bestAskPrice: spreadInfo.bestAskPrice,
-				};
-
-				const isCrossed =
-					spreadInfo.bestBidPrice &&
-					spreadInfo.bestAskPrice &&
-					spreadInfo.bestBidPrice.gte(spreadInfo.bestAskPrice);
-
-				debugInfo.isCrossed = isCrossed;
-
-				if (isCrossed) {
-					// Check data staleness - ignore if older than 10 minutes
-					const dataAge = Date.now() - (fillQualityInfo.updatedAtTs || 0);
-
-					if (dataAge > MAX_FILL_QUALITY_AGE_MS) {
-						logger.warn(
-							`Version 2: Fill quality data is stale (${Math.round(
-								dataAge / 1000
-							)}s old), skipping adjustment for market ${params.marketIndex}`
-						);
-						debugInfo.fillQualityDataStale = true;
-					} else {
-						// Get fill quality metric based on direction
-						const fillQualityBpsStr =
-							direction === PositionDirection.LONG
-								? fillQualityInfo.takerBuyBpsFromOracle?.all
-								: fillQualityInfo.takerSellBpsFromOracle?.all;
-
-						if (
-							fillQualityBpsStr &&
-							fillQualityBpsStr !== 'null' &&
-							fillQualityBpsStr !== null
-						) {
-							const fillQualityBps = Math.round(
-								parseFloat(fillQualityBpsStr) * 100
-							);
-							debugInfo.fillQualityBps = fillQualityBps;
-
-							if (!isNaN(fillQualityBps)) {
-								const adjustment = oraclePrice
-									.muln(fillQualityBps)
-									.divn(10000 * 100);
-								const fillQualityAdjustedPrice = oraclePrice.add(adjustment);
-
-								// Compare fill quality adjusted price vs mark price to determine which is better for takers
-								// We want to use the price that gets takers closer to where makers have been filling
-								// AND consider whether the mark price is favorable for the taker's direction
-								const markPrice = estimatedPrices.markPrice;
-								const originalOraclePrice = oraclePrice;
-
-								// Determine if mark price favors this direction
-								const markVsOracle = markPrice.sub(originalOraclePrice);
-								const isMarkFavorableForDirection =
-									direction === PositionDirection.LONG
-										? markVsOracle.lt(ZERO) // Mark below oracle is good for longs
-										: markVsOracle.gt(ZERO); // Mark above oracle is good for shorts
-
-								// Calculate distances from each price to the fill quality adjusted price
-								// The fill quality adjusted price represents where makers have been filling
-								const distanceFromMark = markPrice
-									.sub(fillQualityAdjustedPrice)
-									.abs();
-								const distanceFromOracle = originalOraclePrice
-									.sub(fillQualityAdjustedPrice)
-									.abs();
-
-								// Decision logic: prefer fill quality adjusted price when:
-								// 1. It's closer to the target, OR
-								// 2. Mark price is unfavorable for this direction
-								if (
-									distanceFromOracle.lt(distanceFromMark) ||
-									!isMarkFavorableForDirection
-								) {
-									// Use fill quality adjusted price
-									estimatedPrices.markPrice = fillQualityAdjustedPrice;
-									debugInfo.priceReferenceUsed = 'oracleAdjusted';
-									debugInfo.priceReferenceDistance =
-										distanceFromOracle.toString();
-									debugInfo.reason = isMarkFavorableForDirection
-										? 'closerToTarget'
-										: 'markUnfavorable';
-								} else {
-									// Use mark price
-									debugInfo.priceReferenceUsed = 'mark';
-									debugInfo.priceReferenceDistance =
-										distanceFromMark.toString();
-									debugInfo.reason = 'markFavorableAndCloser';
-								}
-
-								// Store additional debug info
-								debugInfo.markVsOracle = markVsOracle.toString();
-								debugInfo.isMarkFavorableForDirection =
-									isMarkFavorableForDirection;
-
-								// Always update oracle price with fill quality adjustment for consistency
-								estimatedPrices.oraclePrice = fillQualityAdjustedPrice;
-
-								// Update other prices to maintain consistency
-								estimatedPrices.bestPrice =
-									estimatedPrices.bestPrice.add(adjustment);
-								estimatedPrices.entryPrice =
-									estimatedPrices.entryPrice.add(adjustment);
-								estimatedPrices.worstPrice =
-									estimatedPrices.worstPrice.add(adjustment);
-
-								debugInfo.adjustedOraclePrice =
-									fillQualityAdjustedPrice.toString();
-								debugInfo.adjustedMarkPrice =
-									estimatedPrices.markPrice.toString();
-								debugInfo.appliedV2Adjustment = true;
-							}
-						}
-					}
-				}
-			} catch (error) {
-				logger.warn(
-					'Version 2: Failed to apply fill quality adjustment, using standard oracle:',
-					error
-				);
-				// Fall through to use unadjusted oracle
-			}
-		}
-
-		// Floor (long) / cap (short) the L2-walk worst price at the vAMM side
-		// quote (+ margin). The auction end price is derived from worstPrice
-		// (`min(limitPrice, worst × (1 + auctionEndPriceOffset))`), so an
-		// undershooting worst produces auctions that can never cross the
-		// program's fill-time quote on vAMM-only books and expire unfilled.
-		//
-		// Only applied when the order actually needs vAMM liquidity: if
-		// resting (non-vAMM) makers priced inside the vAMM quote can cover
-		// the full size, their tighter worst estimate stands — the user's
-		// budget is never widened by a quote the auction would not touch.
-		// A user-set (fixed) slippage remains the hard cap either way:
-		// deriveMarketOrderParams takes min(limitPrice, worst-based end).
-		if (isVariant(marketType, 'perp')) {
-			const vammQuote = getVammSideQuoteWithMargin(
-				velocityClient,
-				params.marketIndex,
-				direction,
-				currentSlot
-			);
-			if (vammQuote) {
-				const isLong = isVariant(direction, 'long');
-				const orderBaseAmount =
-					params.maxLeverageSelected && params.maxLeverageOrderSize
-						? stringToBN(params.maxLeverageOrderSize)
-						: params.assetType === 'base'
-						? amount
-						: amount.mul(BASE_PRECISION).div(estimatedPrices.entryPrice);
-
-				let makerDepthInsideQuote = ZERO;
-				try {
-					const l2ForGate = redisL2
-						? convertRawL2ToBN(redisL2)
-						: { bids: [], asks: [] };
-					const levels = isLong ? l2ForGate.asks : l2ForGate.bids;
-					for (const level of levels ?? []) {
-						// levels are sorted best-first; stop at the first level
-						// priced beyond the vAMM quote
-						const insideQuote = isLong
-							? level.price.lte(vammQuote)
-							: level.price.gte(vammQuote);
-						if (!insideQuote) {
-							break;
-						}
-						const vammSize = level.sources?.vamm
-							? new BN(level.sources.vamm)
-							: ZERO;
-						makerDepthInsideQuote = makerDepthInsideQuote.add(
-							BN.max(level.size.sub(vammSize), ZERO)
-						);
-					}
-				} catch (error) {
-					logger.warn(
-						`Failed to compute maker depth inside vAMM quote for market ${params.marketIndex}: ${error}`
-					);
-				}
-
-				if (makerDepthInsideQuote.lt(orderBaseAmount)) {
-					estimatedPrices.worstPrice = isLong
-						? BN.max(estimatedPrices.worstPrice, vammQuote)
-						: BN.min(estimatedPrices.worstPrice, vammQuote);
-				}
-			}
-		}
-
-		// Handle dynamic slippage tolerance calculation if needed
-		if (params.slippageTolerance === undefined) {
-			// Convert raw L2 to formatted L2 for slippage calculation
-			let l2Formatted: L2OrderBook;
-			if (redisL2) {
-				l2Formatted = convertRawL2ToBN(redisL2);
-			} else {
-				l2Formatted = {
-					bids: [],
-					asks: [],
-				};
-			}
-
-			const startPriceProperty = mapTradeOffsetPriceToProperty(
-				params.auctionStartPriceOffsetFrom
-			);
-			const startPrice = estimatedPrices[startPriceProperty];
-
-			processedSlippageTolerance = calculateDynamicSlippage(
-				params.marketIndex,
-				params.marketType,
-				velocityClient,
-				l2Formatted,
-				startPrice,
-				estimatedPrices.worstPrice,
-				apiVersion
-			);
-		}
-	} else {
-		return {
-			success: false,
-			error: 'Cannot create valid auction parameters: could not fetch prices',
-		};
-	}
-
-	// Calculate baseAmount based on maxLeverageSelected or assetType
-	let baseAmount: BN;
-	if (params.maxLeverageSelected && params.maxLeverageOrderSize) {
-		// If maxLeverageSelected is true, use maxLeverageOrderSize directly without any conversion
-		baseAmount = stringToBN(params.maxLeverageOrderSize);
-	} else if (params.assetType === 'base') {
-		// If assetType is base, use the amount directly
-		baseAmount = amount;
-	} else {
-		// If assetType is quote, convert quote amount to base amount using entry price
-		// baseAmount = (quoteAmount * QUOTE_PRECISION * BASE_PRECISION) / entryPrice
-		baseAmount = amount.mul(BASE_PRECISION).div(estimatedPrices.entryPrice);
-	}
-
-	// Comprehensive debug logging
-	logger.info(
-		JSON.stringify({
-			event: 'auction_params_calculated',
-			requestParams: {
-				marketIndex: params.marketIndex,
-				marketType: params.marketType,
-				direction: direction === PositionDirection.LONG ? 'long' : 'short',
-				amount: params.amount,
-				assetType: params.assetType,
-				slippageTolerance: params.slippageTolerance,
-				apiVersion,
-			},
-			priceDiscovery: {
-				originalOraclePrice: debugInfo.originalOraclePrice,
-				finalOraclePrice: estimatedPrices.oraclePrice.toString(),
-				bestPrice: estimatedPrices.bestPrice.toString(),
-				entryPrice: estimatedPrices.entryPrice.toString(),
-				worstPrice: estimatedPrices.worstPrice.toString(),
-				markPrice: estimatedPrices.markPrice.toString(),
-				priceImpactBps: estimatedPrices.priceImpact.toString(),
-			},
-			v2CrossDetection:
-				apiVersion >= 2
-					? {
-							isCrossed: debugInfo.isCrossed,
-							fillQualityBps: debugInfo.fillQualityBps,
-							adjustedOraclePrice: debugInfo.adjustedOraclePrice,
-							adjustedMarkPrice: debugInfo.adjustedMarkPrice,
-							appliedAdjustment: debugInfo.appliedV2Adjustment,
-							fillQualityDataStale: debugInfo.fillQualityDataStale,
-							priceReferenceUsed: debugInfo.priceReferenceUsed,
-							priceReferenceDistance: debugInfo.priceReferenceDistance,
-							reason: debugInfo.reason,
-							markVsOracle: debugInfo.markVsOracle,
-							isMarkFavorableForDirection:
-								debugInfo.isMarkFavorableForDirection,
-							fillQualityData: fillQualityInfo
-								? {
-										takerBuyBpsAll: fillQualityInfo.takerBuyBpsFromOracle?.all,
-										takerSellBpsAll:
-											fillQualityInfo.takerSellBpsFromOracle?.all,
-										updatedAtTs: fillQualityInfo.updatedAtTs,
-								  }
-								: null,
-					  }
-					: undefined,
-			auctionConfig: {
-				duration: params.auctionDuration,
-				startPriceOffset: params.auctionStartPriceOffset,
-				startPriceOffsetFrom: params.auctionStartPriceOffsetFrom,
-				endPriceOffset: params.auctionEndPriceOffset,
-				endPriceOffsetFrom: params.auctionEndPriceOffsetFrom,
-				slippageTolerance: processedSlippageTolerance,
-				isOracleOrder: params.isOracleOrder,
-				reduceOnly: params.reduceOnly ?? false,
-				allowInfSlippage: params.allowInfSlippage ?? false,
-			},
-			calculatedValues: {
-				baseAmount: baseAmount.toString(),
-				slippageToleranceFinal: processedSlippageTolerance,
-			},
-		})
-	);
-
-	return {
-		success: true,
-		data: {
-			marketOrderParams: {
-				marketType,
-				marketIndex: params.marketIndex,
-				direction,
-				maxLeverageSelected: params.maxLeverageSelected ?? false,
-				maxLeverageOrderSize: params.maxLeverageOrderSize
-					? stringToBN(params.maxLeverageOrderSize)
-					: ZERO,
-				baseAmount,
-				reduceOnly: params.reduceOnly ?? false,
-				allowInfSlippage: params.allowInfSlippage ?? false,
-				oraclePrice: estimatedPrices.oraclePrice,
-				bestPrice: estimatedPrices.bestPrice,
-				entryPrice: estimatedPrices.entryPrice,
-				worstPrice: estimatedPrices.worstPrice,
-				markPrice: estimatedPrices.markPrice,
-				auctionDuration: params.auctionDuration,
-				auctionStartPriceOffset: params.auctionStartPriceOffset as number,
-				auctionEndPriceOffset: params.auctionEndPriceOffset,
-				auctionStartPriceOffsetFrom: params.auctionStartPriceOffsetFrom as any,
-				auctionEndPriceOffsetFrom: params.auctionEndPriceOffsetFrom,
-				slippageTolerance: processedSlippageTolerance,
-				isOracleOrder: params.isOracleOrder,
-				additionalEndPriceBuffer,
-				forceUpToSlippage: params.forceUpToSlippage,
-				userOrderId: params.userOrderId,
-				...conditionalParams,
-			},
-			estimatedPrices,
-		},
-	};
-};
-
-/**
- * Format auction parameters for API response
- * @param auctionParams - Raw auction parameters from deriveMarketOrderParams
- * @returns Formatted auction parameters with BNs as strings and enums as readable strings
- */
-export const formatAuctionParamsForResponse = (auctionParams: any) => {
-	const formatted = { ...auctionParams };
-
-	// we don't use this field anymore, TODO to remove from ui
-	delete formatted.constrainedBySlippage;
-
-	// Convert all properties
-	Object.keys(formatted).forEach((key) => {
-		const value = formatted[key];
-
-		// Check if it's a BN using BN.isBN()
-		if (BN.isBN(value)) {
-			formatted[key] = value.toString();
-		}
-		// Check if it's an enum (has nested object structure like {oracle: {}})
-		else if (
-			value &&
-			typeof value === 'object' &&
-			Object.keys(value).length === 1
-		) {
-			try {
-				formatted[key] = ENUM_UTILS.toStr(value);
-			} catch (e) {
-				// If ENUM_UTILS.toStr fails, keep original value
-				formatted[key] = value;
-			}
-		}
-	});
-
-	return formatted;
-};
-
-/**
  * Fetch L2 orderbook data from Redis
  * @param fetchFromRedis - Redis fetch function
  * @param selectMostRecentBySlot - Slot selection function
@@ -1275,27 +649,16 @@ export const fetchL2FromRedis = async (
 };
 
 /**
- * Calculate dynamic slippage tolerance using L2 data
- * @param direction - Position direction ('long' or 'short')
- * @param marketIndex - Market index number
- * @param marketType - Market type ('spot' or 'perp')
- * @param velocityClient - VelocityClient instance for oracle data
- * @param l2Formatted - Already formatted L2OrderBook data
- * @returns Dynamic slippage tolerance as a number
- */
-/**
  * The vAMM quote for the side of the book a taker order executes against
  * (ask for longs, bid for shorts), computed from the perp market account's
  * own AMM state (curve projection + cached spread state), with a safety
  * margin on top.
  *
- * On vAMM-dominated books (e.g. BTC-PERP, which has no resting makers) the
- * L2-walk `worstPrice` systematically undershoots what the program actually
- * quotes at fill time: `AmmQuoter::setup` re-projects the curve and
- * recomputes spreads against the fill-slot oracle, so the realized quote
- * moves with every slot. An auction whose end price is derived from the
- * unfloored L2 worst can sit just below the realized quote for its entire
- * life and expire unfilled ("taker does not cross amm").
+ * On vAMM-dominated books the L2-walk `worstPrice` undershoots what the
+ * program quotes at fill time, because `AmmQuoter::setup` re-projects the
+ * curve and recomputes spreads against the fill-slot oracle. A worst price
+ * set from the unfloored walk can sit just short of that quote and never
+ * fill against the vAMM.
  *
  * `marginPct` (percent, `DYNAMIC_VAMM_QUOTE_MARGIN` env, default 0.15)
  * covers the model-vs-fill-slot drift. Returns `undefined` when the market
@@ -1366,7 +729,6 @@ export const getVammSideQuoteWithMargin = (
  * @param l2Formatted the L2 book the spread component is measured from
  * @param startPrice the best available price for the order
  * @param worstPrice the worst price the order would reach, for the size-adjusted component
- * @param apiVersion at 2 and above, scales the result by a further 1.2, after the clamp
  * @returns the slippage tolerance as a percentage
  */
 export const calculateDynamicSlippage = (
@@ -1375,8 +737,7 @@ export const calculateDynamicSlippage = (
 	velocityClient: VelocityClient,
 	l2Formatted: L2OrderBook,
 	startPrice: BN,
-	worstPrice: BN,
-	apiVersion?: number
+	worstPrice: BN
 ): number => {
 	const isPerp = marketType.toLowerCase() === 'perp';
 	const isMajor = isPerp && isMajorPerpMarket(marketIndex);
@@ -1442,23 +803,18 @@ export const calculateDynamicSlippage = (
 		dynamicSlippage = Math.max(dynamicSlippage, sizeAdjustedSlippage);
 	}
 
-	// The derived limit price (baseline × (1 + slippage)) must be able to
-	// reach the auction end price (worst × (1 + auctionEndPriceOffset)):
-	// deriveMarketOrderParams takes min(limitPrice, worst-based end), so a
-	// slippage smaller than the full start→worst distance caps the auction
-	// below the worst-price estimate — on vAMM-only books the order then
-	// never crosses the program's fill-time quote and expires unfilled.
-	// Floor at the full distance plus the (default 0.1%) end-price offset.
+	// The order's worst price (start × (1 + slippage)) must reach the walk's
+	// worst fill, or the order stops short of the vAMM and rests unfilled.
 	if (isPerp && startPrice && worstPrice && !startPrice.isZero()) {
 		const fullDistancePct =
 			(startPrice.sub(worstPrice).abs().toNumber() / startPrice.toNumber()) *
 			100;
-		const endOffsetMarginPct = parseFloat(
-			process.env.DYNAMIC_SLIPPAGE_END_OFFSET_MARGIN || '0.1'
+		const worstPriceMarginPct = parseFloat(
+			process.env.DYNAMIC_SLIPPAGE_WORST_PRICE_MARGIN || '0.1'
 		);
 		dynamicSlippage = Math.max(
 			dynamicSlippage,
-			fullDistancePct + endOffsetMarginPct
+			fullDistancePct + worstPriceMarginPct
 		);
 	}
 
@@ -1474,17 +830,7 @@ export const calculateDynamicSlippage = (
 	const minSlippage = parseFloat(process.env.DYNAMIC_SLIPPAGE_MIN || '0.035'); // 0.035% minimum
 	const maxSlippage = parseFloat(process.env.DYNAMIC_SLIPPAGE_MAX || '5'); // 5% maximum
 
-	let finalSlippage = Math.min(
-		Math.max(dynamicSlippage, minSlippage),
-		maxSlippage
-	);
-
-	// Apply boost for API v2+
-	if (apiVersion >= 2) {
-		finalSlippage = finalSlippage * 1.2;
-	}
-
-	return finalSlippage;
+	return Math.min(Math.max(dynamicSlippage, minSlippage), maxSlippage);
 };
 
 /**

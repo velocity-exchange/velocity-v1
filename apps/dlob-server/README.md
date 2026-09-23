@@ -77,7 +77,7 @@ To properly configure the DLOB server, set the following environment variables i
 | `RATE_LIMIT_CALLS_PER_SECOND` | Maximum number of API calls per second.                         | `100`                               |
 | `MAX_BOOK_SLOT_LAG`           | How far a published book may trail the chain before it counts as behind. | `150`                      |
 | `BOOK_FRESHNESS_INTERVAL_MS`  | How often to sample the published books for staleness.          | `5000`                              |
-| `ENABLE_FILL_QUALITY_ANALYTICS` | Poll Athena for taker fill quality, which `/auctionParams` v2+ reads. Needs Athena credentials. | `false` |
+| `ENABLE_FILL_QUALITY_ANALYTICS` | Poll Athena for taker fill quality, which `/marketOrderParams` reads on a crossed book. Needs Athena credentials. | `false` |
 | `ELASTICACHE_HOST`            | (for websocket server) Redis host endpoint.                     | `localhost`                         |
 | `ELASTICACHE_PORT`            | (for websocket server) Redis port.                              | `6379`                              |
 | `REDIS_CLIENT`                | (for websocket server) Redis client type (DLOB/DLOB_HELIUS).    | `DLOB`                              |
@@ -94,6 +94,24 @@ describe its routes.
 ```
 bun run dev
 ```
+
+### `GET /marketOrderParams`
+
+Quotes the `OrderParams` a client signs for a perp market order. Required query parameters are
+`marketIndex`, `direction` (`long` or `short`), `amount` and `assetType` (`base` or `quote`).
+Optional ones are `slippageTolerance` (percent, dynamic when omitted), `priceReference` (`best`,
+`mark`, `oracle` or `entry`, default `best`), `isOracleOrder`, `activationDelaySlots`,
+`reduceOnly`, `userOrderId`, `maxLeverageSelected` and `maxLeverageOrderSize`.
+
+`data.params.price` is the order's worst price: the reference price moved by the tolerance, away
+from the taker. An oracle order carries it as `oraclePriceOffset` instead. The response also
+carries the book-walk estimate (`entryPrice`, `bestPrice`, `worstPrice`, `oraclePrice`,
+`markPrice`, `priceImpact`) and the tolerance it used. [Trading the CLOB from a
+client](../../docs/clob-client-integration.md#market-orders) describes the fields.
+
+The dynamic tolerance reads `DYNAMIC_BASE_SLIPPAGE_*`, `DYNAMIC_SLIPPAGE_MULTIPLIER_*`,
+`DYNAMIC_SLIPPAGE_MIN`, `DYNAMIC_SLIPPAGE_MAX`, `DYNAMIC_CROSS_SPREAD_CAP`,
+`DYNAMIC_SLIPPAGE_WORST_PRICE_MARGIN` and `DYNAMIC_VAMM_QUOTE_MARGIN`.
 
 ## Websocket mode
 

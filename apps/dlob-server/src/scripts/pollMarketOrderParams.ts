@@ -1,5 +1,5 @@
 /**
- yarn run ts-node src/scripts/pollAuctionParams.ts [mainnet|staging]
+ bun run ts-node src/scripts/pollMarketOrderParams.ts [mainnet|staging]
  */
 
 import { logger } from '../utils/logger';
@@ -14,17 +14,12 @@ const ENV = envArg ?? 'mainnet';
 if (ENV !== 'mainnet' && ENV !== 'staging') {
 	throw new Error(`Invalid environment: ${ENV}`);
 }
-const VERSION = '&version=2';
-
 // @ts-ignore
 const TARGET_URL = `https://${
 	ENV === 'staging' ? 'staging.' : ''
-}dlob.velocity.exchange/auctionParams?assetType=base&marketType=perp&marketIndex=2&direction=long&maxLeverageSelected=false&maxLeverageOrderSize=18446744073709551615&amount=550000000&reduceOnly=false&auctionDuration=20&auctionStartPriceOffset=-0.1&auctionEndPriceOffset=0.1&auctionStartPriceOffsetFrom=mark&auctionEndPriceOffsetFrom=worst&slippageTolerance=dynamic&isOracleOrder=true&forceUpToSlippage=false${VERSION}`;
+}dlob.velocity.exchange/marketOrderParams?assetType=base&marketIndex=2&direction=long&amount=550000000&reduceOnly=false&isOracleOrder=true`;
 
-// staging
-// const TARGET_URL = 'https://dlob.staging.velocity.exchange/auctionParams?assetType=base&marketType=perp&marketIndex=0&direction=long&maxLeverageSelected=false&maxLeverageOrderSize=18446744073709551615&amount=2150000000&reduceOnly=false&auctionDuration=20&auctionStartPriceOffset=-0.1&auctionEndPriceOffset=0.1&auctionStartPriceOffsetFrom=mark&auctionEndPriceOffsetFrom=worst&slippageTolerance=dynamic&isOracleOrder=true&forceUpToSlippage=false';
-
-const OUTPUT_CSV = process.env.OUTPUT_CSV || `auctionParams-${ENV}.csv`;
+const OUTPUT_CSV = process.env.OUTPUT_CSV || `marketOrderParams-${ENV}.csv`;
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS || 10_000);
 
 const csvPath = path.resolve(process.cwd(), OUTPUT_CSV);
@@ -40,10 +35,10 @@ function ensureCsvHeader(): void {
 			'markPrice',
 			'priceImpact',
 			'slippageTolerance',
-			'auctionDuration',
-			'auctionStartPrice',
-			'auctionEndPrice',
+			'orderType',
+			'price',
 			'oraclePriceOffset',
+			'activationDelaySlots',
 			'direction',
 			'baseAssetAmount',
 			'raw_json',
@@ -62,7 +57,7 @@ function csvEscape(value: unknown): string {
 	return str;
 }
 
-async function fetchAuctionParams(): Promise<any> {
+async function fetchMarketOrderParams(): Promise<any> {
 	const { statusCode, body } = await request(TARGET_URL, { method: 'GET' });
 	if (statusCode < 200 || statusCode >= 300) {
 		throw new Error(`HTTP ${statusCode}`);
@@ -89,10 +84,10 @@ function appendRow(resp: any): void {
 	const slippageTolerance = data?.slippageTolerance ?? '';
 
 	const params = data?.params ?? {};
-	const auctionDuration = params?.auctionDuration ?? '';
-	const auctionStartPrice = params?.auctionStartPrice ?? '';
-	const auctionEndPrice = params?.auctionEndPrice ?? '';
+	const orderType = params?.orderType ?? '';
+	const price = params?.price ?? '';
 	const oraclePriceOffset = params?.oraclePriceOffset ?? '';
+	const activationDelaySlots = params?.activationDelaySlots ?? '';
 	const direction = params?.direction ?? '';
 	const baseAssetAmount = params?.baseAssetAmount ?? '';
 
@@ -107,10 +102,10 @@ function appendRow(resp: any): void {
 		csvEscape(markPrice),
 		csvEscape(priceImpact),
 		csvEscape(slippageTolerance),
-		csvEscape(auctionDuration),
-		csvEscape(auctionStartPrice),
-		csvEscape(auctionEndPrice),
+		csvEscape(orderType),
+		csvEscape(price),
 		csvEscape(oraclePriceOffset),
+		csvEscape(activationDelaySlots),
 		csvEscape(direction),
 		csvEscape(baseAssetAmount),
 		csvEscape(raw),
@@ -129,16 +124,14 @@ async function main(): Promise<void> {
 	for (;;) {
 		try {
 			const start = Date.now();
-			const resp = await fetchAuctionParams();
+			const resp = await fetchMarketOrderParams();
 			logger.info(
-				`[${ENV} - ${VERSION}] Fetched auction params in ${
-					Date.now() - start
-				}ms`
+				`[${ENV}] Fetched market order params in ${Date.now() - start}ms`
 			);
 			appendRow(resp);
 		} catch (e) {
 			logger.error(
-				`Failed to fetch or write auction params: ${(e as Error).message}`
+				`Failed to fetch or write market order params: ${(e as Error).message}`
 			);
 		}
 

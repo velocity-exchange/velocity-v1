@@ -350,32 +350,38 @@ fn validate_amm_quote_state(amm: &AMM) -> VelocityResult<()> {
     Ok(())
 }
 
-/// Keep the final quote on the correct side of the oracle: the bid at or below
-/// it and the ask at or above it. Only ever widens a spread.
+/// Widen whichever side would quote through the oracle, so the bid stays at or
+/// below it and the ask at or above it. Never narrows a spread.
 ///
-/// The marginal price at the spread reserves is
-/// `reserve_price * (1 + s / 2)^2` for the side's signed composite spread `s`
-/// (`offset - short` for the bid, `offset + long` for the ask; see
-/// [`compute_spread_reserves_for_direction`]). A finite fill executes worse
-/// than this for the taker. With `r = sqrt(oracle / reserve_price)`, the bid
-/// stays at or below the oracle when `short >= offset + 2 * (1 - r)`, and the
-/// ask at or above it when `long >= 2 * (r - 1) - offset`. `r` is rounded down
-/// for the bid and up for the ask, and a binding requirement gets one extra
-/// unit for the truncation in the reserve delta.
+/// The quote is read two ways and both must stay on the correct side. Each side
+/// takes the larger of the two requirements.
 ///
-/// Routing (`AmmQuoter::best_price`) and the mark TWAP crank read the quote
-/// through [`AMM::bid_ask_price`], `reserve_price * (1 + s)`. That reading
-/// needs `long >= ceil(oracle / reserve_price) - 1 - offset` and
-/// `short >= 1 + offset - floor(oracle / reserve_price)` in spread units. Each
-/// side takes the larger requirement.
+/// Where the two prices come from. `s` is the side's signed spread: `offset +
+/// long` for the ask, `offset - short` for the bid.
+/// - Marginal price. The curve's price is `quote * peg / base`, and
+///   `base = k / quote`, so the price is `quote^2 * peg / k`.
+///   [`compute_spread_reserves_for_direction`] builds each side's reserves by
+///   moving the quote reserve to `quote * (1 + s/2)` and taking the base
+///   reserve from `k`. Squaring the quote factor gives
+///   `reserve_price * (1 + s/2)^2`. Small fills execute at this price.
+/// - Linear price. [`AMM::bid_price`] and [`AMM::ask_price`] multiply the
+///   reserve price by `1 + s` directly. Routing (`AmmQuoter::best_price`) and
+///   the mark TWAP crank read this one.
 ///
-/// A widened side is capped so the pair stays within
-/// `BID_ASK_SPREAD_PRECISION`, so it can widen only by 100% minus the opposite
-/// spread. When the requirement is larger, the guard returns the capped pair
-/// and that side still quotes through the oracle; callers do not detect this.
-/// With a zero opposite spread and a zero offset the cap binds past about twice
-/// the reserve price (ask) or under a quarter of it (bid). A wide opposite
-/// spread or an offset against the side brings the limit closer.
+/// `(1 + s/2)^2 = 1 + s + s^2/4` is always at least `1 + s`, so the two
+/// readings differ by `s^2/4`. The linear bound is stricter on the ask
+/// (`s > 0`) and the marginal bound on the bid (`s < 0`).
+///
+/// Example: reserve price 100, oracle 102, no offset. The linear ask
+/// `100 * (1 + long)` needs long >= 2%. The marginal ask
+/// `100 * (1 + long / 2)^2` needs about 1.99%. The guard sets long to 2%.
+///
+/// The pair is capped at 100%, so a side can widen only by 100% minus the
+/// opposite spread. When it needs more, it stops at the cap and still quotes
+/// through the oracle; callers do not detect this. With a zero opposite spread
+/// and a zero offset that happens past about twice the reserve price (ask) or
+/// under a quarter of it (bid). A wide opposite spread or an offset against
+/// the side brings the limit closer.
 fn apply_oracle_guard(
     long_spread: u32,
     short_spread: u32,
@@ -387,26 +393,44 @@ fn apply_oracle_guard(
         return Ok((long_spread, short_spread));
     }
 
-    // r^2 = oracle / reserve_price, scaled by BID_ASK_SPREAD_PRECISION^2. The
-    // numerator is at most i64::MAX * 1e12 (about 9.2e30), inside u128.
-    let scaled_ratio_numerator = oracle_price
+    // All values below are in spread units, BID_ASK_SPREAD_PRECISION = 1 = 100%.
+    // The ask side rounds its requirement up and the bid side rounds down, so a
+    // requirement never comes out too small.
+    let one = BID_ASK_SPREAD_PRECISION_I128;
+    let offset = reference_price_offset.cast::<i128>()?;
+
+    // 1. Linear price, reserve_price * (1 + s). With q = oracle / reserve_price:
+    //   ask >= oracle  <=>  1 + offset + long >= q  <=>  long >= q - 1 - offset
+    //   bid <= oracle  <=>  1 + offset - short <= q  <=>  short >= 1 + offset - q
+    let q_numerator = oracle_price.cast::<i128>()?.safe_mul(one)?;
+    let reserve_price_i128 = reserve_price.cast::<i128>()?;
+    let q_down = q_numerator.safe_div(reserve_price_i128)?;
+    let q_up = q_numerator.safe_div_ceil(reserve_price_i128)?;
+    let linear_min_long = q_up.safe_sub(one)?.safe_sub(offset)?;
+    let linear_min_short = one.safe_add(offset)?.safe_sub(q_down)?;
+
+    // 2. Marginal price at the spread reserves, reserve_price * (1 + s/2)^2
+    // (see compute_spread_reserves_for_direction). With r = sqrt(q):
+    //   ask >= oracle  <=>  1 + (offset + long)/2 >= r  <=>  long >= 2(r - 1) - offset
+    //   bid <= oracle  <=>  1 + (offset - short)/2 <= r  <=>  short >= offset + 2(1 - r)
+    // r = isqrt(oracle * one^2 / reserve_price). The numerator is at most
+    // i64::MAX * 1e12 (about 9.2e30), inside u128. A positive requirement gets
+    // one extra unit because the reserve delta truncates.
+    let r_squared_numerator = oracle_price
         .cast::<u128>()?
         .safe_mul(BID_ASK_SPREAD_PRECISION.cast::<u128>()?)?
         .safe_mul(BID_ASK_SPREAD_PRECISION.cast::<u128>()?)?;
     let reserve_price_u128 = reserve_price.cast::<u128>()?;
-    let scaled_ratio = scaled_ratio_numerator.safe_div(reserve_price_u128)?;
-    let ratio_is_exact = scaled_ratio.safe_mul(reserve_price_u128)? == scaled_ratio_numerator;
-    let r_floor_u128 = scaled_ratio.nth_root(2);
-    let r_is_exact = ratio_is_exact && r_floor_u128.safe_mul(r_floor_u128)? == scaled_ratio;
-    let r_floor = r_floor_u128.cast::<i128>()?;
-    let r_ceil = if r_is_exact {
-        r_floor
+    let r_squared = r_squared_numerator.safe_div(reserve_price_u128)?;
+    let r_root = r_squared.nth_root(2);
+    let r_is_exact = r_squared.safe_mul(reserve_price_u128)? == r_squared_numerator
+        && r_root.safe_mul(r_root)? == r_squared;
+    let r_down = r_root.cast::<i128>()?;
+    let r_up = if r_is_exact {
+        r_down
     } else {
-        r_floor.safe_add(1)?
+        r_down.safe_add(1)?
     };
-
-    let precision = BID_ASK_SPREAD_PRECISION_I128;
-    let offset = reference_price_offset.cast::<i128>()?;
     let with_margin = |requirement: i128| -> VelocityResult<i128> {
         if requirement > 0 {
             requirement.safe_add(1)
@@ -414,29 +438,20 @@ fn apply_oracle_guard(
             Ok(requirement)
         }
     };
-    // executed price, reserve_price * (1 + s/2)^2
-    let squared_min_short =
-        with_margin(offset.safe_add(precision.safe_sub(r_floor)?.safe_mul(2)?)?)?;
-    let squared_min_long = with_margin(r_ceil.safe_sub(precision)?.safe_mul(2)?.safe_sub(offset)?)?;
+    let marginal_min_long = with_margin(r_up.safe_sub(one)?.safe_mul(2)?.safe_sub(offset)?)?;
+    let marginal_min_short = with_margin(offset.safe_add(one.safe_sub(r_down)?.safe_mul(2)?)?)?;
 
-    // quoted price read by routing and the mark TWAP, reserve_price * (1 + s)
-    let linear_ratio_numerator = oracle_price.cast::<i128>()?.safe_mul(precision)?;
-    let reserve_price_i128 = reserve_price.cast::<i128>()?;
-    let linear_ratio_floor = linear_ratio_numerator.safe_div(reserve_price_i128)?;
-    let linear_ratio_ceil = linear_ratio_numerator.safe_div_ceil(reserve_price_i128)?;
-    let linear_min_short = precision.safe_add(offset)?.safe_sub(linear_ratio_floor)?;
-    let linear_min_long = linear_ratio_ceil.safe_sub(precision)?.safe_sub(offset)?;
-
-    let min_short = squared_min_short.max(linear_min_short);
-    let min_long = squared_min_long.max(linear_min_long);
-
+    // 3. Raise each side to the larger requirement, never lower it, and keep
+    // long + short <= 100%.
+    let min_long = linear_min_long.max(marginal_min_long);
+    let min_short = linear_min_short.max(marginal_min_short);
     let mut long = long_spread.cast::<i128>()?;
     let mut short = short_spread.cast::<i128>()?;
     if min_short > short {
-        short = min_short.min(precision.safe_sub(long)?).max(short);
+        short = min_short.min(one.safe_sub(long)?).max(short);
     }
     if min_long > long {
-        long = min_long.min(precision.safe_sub(short)?).max(long);
+        long = min_long.min(one.safe_sub(short)?).max(long);
     }
 
     Ok((long.cast()?, short.cast()?))
